@@ -1,0 +1,51 @@
+import { searchCacheFiltered, getCacheStats, clearCacheEntries } from '../cache/store.js';
+import { createLogger } from '../logger.js';
+import type { CacheInput, CacheOutput } from '../types.js';
+
+const log = createLogger('cache');
+
+export function handleCache(input: CacheInput): CacheOutput {
+  try {
+    if (input.stats) {
+      log.debug('Cache stats requested');
+      return { stats: getCacheStats() };
+    }
+
+    if (input.clear) {
+      log.info('Clearing cache entries', {
+        query: input.query,
+        urlPattern: input.url_pattern,
+        since: input.since,
+      });
+      const count = clearCacheEntries({
+        query: input.query,
+        urlPattern: input.url_pattern,
+        since: input.since,
+      });
+      return { cleared: count };
+    }
+
+    log.debug('Cache search', {
+      query: input.query,
+      urlPattern: input.url_pattern,
+      since: input.since,
+    });
+    const results = searchCacheFiltered({
+      query: input.query,
+      urlPattern: input.url_pattern,
+      since: input.since,
+    });
+
+    return {
+      results: results.map((r) => ({
+        url: r.url,
+        title: r.title,
+        markdown: r.markdown,
+        fetched_at: r.fetchedAt,
+      })),
+    };
+  } catch (err) {
+    log.error('Cache tool error', { error: String(err) });
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
