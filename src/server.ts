@@ -11,9 +11,17 @@ import { BrowserPool } from './fetch/browser-pool.js';
 import { httpFetch } from './fetch/http-client.js';
 import { initDatabase, closeDatabase } from './cache/db.js';
 import { handleFetch } from './tools/fetch.js';
+import { handleSearch } from './tools/search.js';
+import { SearxngClient } from './search/searxng.js';
+import { DuckDuckGoEngine } from './search/engines/duckduckgo.js';
+import { BingEngine } from './search/engines/bing.js';
+import { StartpageEngine } from './search/engines/startpage.js';
+import { resolveSearchBackend } from './searxng/bootstrap.js';
+import { SearxngProcess } from './searxng/process.js';
+import { DockerSearxng } from './searxng/docker.js';
 import { getConfig } from './config.js';
 import { createLogger } from './logger.js';
-import type { FetchInput } from './types.js';
+import type { FetchInput, SearchInput, SearchEngine } from './types.js';
 
 const log = createLogger('server');
 
@@ -55,6 +63,21 @@ const FETCH_TOOL_SCHEMA = {
   required: ['url'],
 };
 
+const SEARCH_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    query: { type: 'string', description: 'Search query' },
+    max_results: { type: 'number', description: 'Max results to return (default 5, max 20)' },
+    include_content: { type: 'boolean', description: 'Fetch full content for results (default true)' },
+    content_max_chars: { type: 'number', description: 'Max chars per result content (default 30000)' },
+    max_total_chars: { type: 'number', description: 'Max total chars across all results (default 50000)' },
+    time_range: { type: 'string', enum: ['day', 'week', 'month', 'year'], description: 'Time range filter' },
+    search_engines: { type: 'array', items: { type: 'string' }, description: 'Override engine selection' },
+    language: { type: 'string', description: 'Language preference' },
+  },
+  required: ['query'],
+};
+
 export async function startServer(): Promise<void> {
   const config = getConfig();
 
@@ -66,6 +89,34 @@ export async function startServer(): Promise<void> {
   };
   const browserPool = new BrowserPool();
   const router = new SmartRouter(httpClient, browserPool);
+
+  // --- Search backend initialization ---
+  const backend = await resolveSearchBackend();
+  const searchEngines: SearchEngine[] = [];
+  let searxngProcess: SearxngProcess | null = null;
+  let dockerSearxng: DockerSearxng | null = null;
+
+  if (backend.type === 'external' && backend.url) {
+    searchEngines.push(new SearxngClient(backend.url));
+  } else if (backend.type === 'native' && backend.searxngPath) {
+    searxngProcess = new SearxngProcess(backend.searxngPath, config.dataDir);
+    const url = await searxngProcess.start();
+    if (url) {
+      searchEngines.push(new SearxngClient(url));
+    } else {
+      log.warn('SearXNG failed to start, using direct scraping fallback');
+    }
+  } else if (backend.type === 'docker') {
+    dockerSearxng = new DockerSearxng();
+    const url = await dockerSearxng.start();
+    if (url) {
+      searchEngines.push(new SearxngClient(url));
+    } else {
+      log.warn('Docker SearXNG failed to start, using direct scraping fallback');
+    }
+  }
+
+  searchEngines.push(new BingEngine(), new DuckDuckGoEngine(), new StartpageEngine());
 
   const server = new Server(
     { name: 'wigolo', version: '0.1.0' },
@@ -81,31 +132,40 @@ export async function startServer(): Promise<void> {
           'Supports JavaScript rendering, auth, section extraction, and caching.',
         inputSchema: FETCH_TOOL_SCHEMA,
       },
+      {
+        name: 'search',
+        description:
+          'Search the web and return results with optional full content extraction. ' +
+          'One call: query in, clean markdown out.',
+        inputSchema: SEARCH_TOOL_SCHEMA,
+      },
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
-    if (name !== 'fetch') {
+    if (name === 'fetch') {
+      const input = (args ?? {}) as unknown as FetchInput;
+      const result = await handleFetch(input, router);
       return {
-        content: [{ type: 'text', text: `Unknown tool: ${name}` }],
-        isError: true,
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        isError: !!result.error,
       };
     }
 
-    const input = (args ?? {}) as unknown as FetchInput;
-    const result = await handleFetch(input, router);
-
-    if (result.error) {
+    if (name === 'search') {
+      const input = (args ?? {}) as unknown as SearchInput;
+      const result = await handleSearch(input, searchEngines, router);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        isError: true,
+        isError: !!result.error,
       };
     }
 
     return {
-      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      content: [{ type: 'text', text: `Unknown tool: ${name}` }],
+      isError: true,
     };
   });
 
@@ -115,6 +175,8 @@ export async function startServer(): Promise<void> {
 
   const shutdown = async () => {
     log.info('Shutting down');
+    if (searxngProcess) await searxngProcess.stop();
+    if (dockerSearxng) await dockerSearxng.stop();
     await browserPool.shutdown();
     closeDatabase();
     await server.close();
