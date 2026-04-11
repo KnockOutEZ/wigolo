@@ -8,6 +8,7 @@ import {
   searchCache,
   cacheSearchResults,
   getCachedSearchResults,
+  getCacheStats,
 } from '../../../src/cache/store.js';
 import type { RawFetchResult, ExtractionResult, CachedContent } from '../../../src/types.js';
 import type { SearchResultItem } from '../../../src/types.js';
@@ -343,5 +344,35 @@ describe('search result caching', () => {
 
     expect(cached!.results[0].title).toBe('New');
     expect(cached!.engines_used).toContain('b');
+  });
+});
+
+describe('getCacheStats', () => {
+  beforeEach(() => {
+    initDatabase(':memory:');
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  it('returns zeros for empty cache', () => {
+    const stats = getCacheStats();
+    expect(stats.total_urls).toBe(0);
+    expect(stats.total_size_mb).toBe(0);
+    expect(stats.oldest).toBe('');
+    expect(stats.newest).toBe('');
+  });
+
+  it('returns correct counts after caching content', () => {
+    cacheContent(makeRaw('https://example.com/a'), makeExtraction({ markdown: 'A content' }));
+    cacheContent(makeRaw('https://example.com/b'), makeExtraction({ markdown: 'B content' }));
+
+    const stats = getCacheStats();
+    expect(stats.total_urls).toBe(2);
+    expect(stats.total_size_mb).toBeGreaterThan(0);
+    expect(stats.oldest).toBeTruthy();
+    expect(stats.newest).toBeTruthy();
+    expect(stats.oldest <= stats.newest).toBe(true);
   });
 });

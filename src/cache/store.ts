@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { getDatabase } from './db.js';
 import { getConfig } from '../config.js';
-import type { RawFetchResult, ExtractionResult, CachedContent, SearchResultItem } from '../types.js';
+import type { RawFetchResult, ExtractionResult, CachedContent, SearchResultItem, CacheStats } from '../types.js';
 
 const TRACKING_PARAMS = new Set([
   'utm_source',
@@ -204,5 +204,24 @@ export function getCachedSearchResults(query: string): CachedSearchResult | null
     results: JSON.parse(row.results),
     engines_used: JSON.parse(row.engines_used),
     searched_at: row.searched_at,
+  };
+}
+
+export function getCacheStats(): CacheStats {
+  const db = getDatabase();
+  const row = db.prepare(`
+    SELECT
+      COUNT(*) as total_urls,
+      COALESCE(SUM(LENGTH(markdown) + LENGTH(COALESCE(raw_html, ''))), 0) as total_bytes,
+      MIN(fetched_at) as oldest,
+      MAX(fetched_at) as newest
+    FROM url_cache
+  `).get() as { total_urls: number; total_bytes: number; oldest: string | null; newest: string | null };
+
+  return {
+    total_urls: row.total_urls,
+    total_size_mb: Math.round((row.total_bytes / (1024 * 1024)) * 1e6) / 1e6,
+    oldest: row.oldest ?? '',
+    newest: row.newest ?? '',
   };
 }
