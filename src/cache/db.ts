@@ -18,7 +18,7 @@ export function initDatabase(dbPath: string): Database.Database {
     CREATE TABLE IF NOT EXISTS url_cache (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       url TEXT NOT NULL,
-      normalized_url TEXT NOT NULL,
+      normalized_url TEXT NOT NULL UNIQUE,
       title TEXT,
       markdown TEXT,
       raw_html TEXT,
@@ -81,6 +81,13 @@ export function initDatabase(dbPath: string): Database.Database {
 
   instance = db;
   return db;
+}
+
+export function getDatabase(): Database.Database {
+  if (!instance) {
+    throw new Error('Database not initialized. Call initDatabase() first.');
+  }
+  return instance;
 }
 
 export function closeDatabase(): void {
