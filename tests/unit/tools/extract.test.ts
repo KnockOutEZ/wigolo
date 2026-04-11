@@ -136,6 +136,33 @@ describe('handleExtract', () => {
     );
   });
 
+  it('fetches fresh when cache is expired', async () => {
+    vi.mocked(getCachedContent).mockReturnValue({
+      id: 1,
+      url: 'https://example.com',
+      normalizedUrl: 'https://example.com',
+      title: 'Stale',
+      markdown: '',
+      rawHtml: '<html><head><title>Stale</title></head></html>',
+      metadata: '{}',
+      links: '[]',
+      images: '[]',
+      fetchMethod: 'http',
+      extractorUsed: 'defuddle',
+      contentHash: 'abc',
+      fetchedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    vi.mocked(isExpired).mockReturnValue(true);
+    vi.mocked(extractMetadata).mockReturnValue({ title: 'Fresh' });
+    const router = mockRouter();
+
+    const result = await handleExtract({ url: 'https://example.com' }, router);
+
+    expect(router.fetch).toHaveBeenCalled();
+    expect(result.data).toEqual({ title: 'Fresh' });
+  });
+
   it('dispatches to extractSelector for mode=selector', async () => {
     vi.mocked(extractSelector).mockReturnValue('matched text');
 
