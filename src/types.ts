@@ -191,3 +191,36 @@ export interface CacheOutput {
   cleared?: number;
   error?: string;
 }
+
+// --- Extract tool types ---
+
+export interface ExtractInput {
+  url?: string;
+  html?: string;
+  mode?: 'selector' | 'tables' | 'metadata';
+  css_selector?: string;
+  multiple?: boolean;
+  schema?: Record<string, unknown>; // v2: JSON Schema extraction (accepted, ignored in v1)
+}
+
+export interface MetadataData {
+  title?: string;
+  description?: string;
+  author?: string;
+  date?: string;
+  keywords?: string[];
+  og_image?: string;
+}
+
+export interface TableData {
+  caption?: string;
+  headers: string[];
+  rows: Array<Record<string, string>>;
+}
+
+export interface ExtractOutput {
+  data: string | string[] | TableData[] | MetadataData;
+  source_url?: string;
+  mode: 'selector' | 'tables' | 'metadata';
+  error?: string;
+}
