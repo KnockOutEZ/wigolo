@@ -12,6 +12,7 @@ import { httpFetch } from './fetch/http-client.js';
 import { initDatabase, closeDatabase } from './cache/db.js';
 import { handleFetch } from './tools/fetch.js';
 import { handleSearch } from './tools/search.js';
+import { handleCrawl } from './tools/crawl.js';
 import { SearxngClient } from './search/searxng.js';
 import { DuckDuckGoEngine } from './search/engines/duckduckgo.js';
 import { BingEngine } from './search/engines/bing.js';
@@ -21,7 +22,7 @@ import { SearxngProcess } from './searxng/process.js';
 import { DockerSearxng } from './searxng/docker.js';
 import { getConfig } from './config.js';
 import { createLogger } from './logger.js';
-import type { FetchInput, SearchInput, SearchEngine } from './types.js';
+import type { FetchInput, SearchInput, SearchEngine, CrawlInput } from './types.js';
 
 const log = createLogger('server');
 
@@ -76,6 +77,34 @@ const SEARCH_TOOL_SCHEMA = {
     language: { type: 'string', description: 'Language preference' },
   },
   required: ['query'],
+};
+
+const CRAWL_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    url: { type: 'string', description: 'Seed URL to start crawling from' },
+    max_depth: { type: 'number', description: 'Maximum link depth from seed (default: 2)' },
+    max_pages: { type: 'number', description: 'Maximum pages to crawl (default: 20)' },
+    strategy: {
+      type: 'string',
+      enum: ['bfs', 'dfs', 'sitemap'],
+      description: 'Crawl strategy (default: bfs)',
+    },
+    include_patterns: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'URL regex whitelist — only crawl matching URLs',
+    },
+    exclude_patterns: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'URL regex blacklist — skip matching URLs',
+    },
+    use_auth: { type: 'boolean', description: 'Use stored auth credentials (default: false)' },
+    extract_links: { type: 'boolean', description: 'Return link graph between pages (default: false)' },
+    max_total_chars: { type: 'number', description: 'Max total chars across all pages (default: 100000)' },
+  },
+  required: ['url'],
 };
 
 export async function startServer(): Promise<void> {
@@ -139,6 +168,13 @@ export async function startServer(): Promise<void> {
           'One call: query in, clean markdown out.',
         inputSchema: SEARCH_TOOL_SCHEMA,
       },
+      {
+        name: 'crawl',
+        description:
+          'Crawl a website starting from a seed URL. Supports BFS, DFS, and sitemap strategies ' +
+          'with depth/page limits, URL filtering, and cross-page content deduplication.',
+        inputSchema: CRAWL_TOOL_SCHEMA,
+      },
     ],
   }));
 
@@ -157,6 +193,15 @@ export async function startServer(): Promise<void> {
     if (name === 'search') {
       const input = (args ?? {}) as unknown as SearchInput;
       const result = await handleSearch(input, searchEngines, router);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        isError: !!result.error,
+      };
+    }
+
+    if (name === 'crawl') {
+      const input = (args ?? {}) as unknown as CrawlInput;
+      const result = await handleCrawl(input, router);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         isError: !!result.error,
