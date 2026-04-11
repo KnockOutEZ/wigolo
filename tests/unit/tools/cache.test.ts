@@ -123,6 +123,27 @@ describe('handleCache', () => {
     expect(result.error).toBe('DB error');
   });
 
+  it('rejects clear without filters', () => {
+    const result = handleCache({ clear: true });
+
+    expect(result.error).toBe('clear requires at least one filter (query, url_pattern, or since)');
+    expect(result.cleared).toBeUndefined();
+    expect(clearCacheEntries).not.toHaveBeenCalled();
+  });
+
+  it('clears with combined query + url_pattern', () => {
+    vi.mocked(clearCacheEntries).mockReturnValue(2);
+
+    const result = handleCache({ clear: true, query: 'test', url_pattern: '*example.com*' });
+
+    expect(result.cleared).toBe(2);
+    expect(clearCacheEntries).toHaveBeenCalledWith({
+      query: 'test',
+      urlPattern: '*example.com*',
+      since: undefined,
+    });
+  });
+
   it('stats takes priority over clear', () => {
     const stats: CacheStats = { total_urls: 1, total_size_mb: 0.01, oldest: '', newest: '' };
     vi.mocked(getCacheStats).mockReturnValue(stats);

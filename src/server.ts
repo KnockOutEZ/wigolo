@@ -122,7 +122,7 @@ const CACHE_TOOL_SCHEMA = {
     },
     clear: {
       type: 'boolean',
-      description: 'Clear matching cache entries instead of returning them',
+      description: 'Clear matching cache entries (requires at least one filter: query, url_pattern, or since)',
     },
     stats: {
       type: 'boolean',

@@ -12,6 +12,9 @@ export function handleCache(input: CacheInput): CacheOutput {
     }
 
     if (input.clear) {
+      if (!input.query && !input.url_pattern && !input.since) {
+        return { error: 'clear requires at least one filter (query, url_pattern, or since)' };
+      }
       log.info('Clearing cache entries', {
         query: input.query,
         urlPattern: input.url_pattern,
