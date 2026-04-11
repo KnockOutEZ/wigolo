@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>How do I reverse a string in JavaScript? - Stack Overflow</title>
+</head>
+<body>
+  <div id="question-header">
+    <h1 itemprop="name">
+      <a href="/questions/958908/how-do-i-reverse-a-string-in-javascript" class="question-hyperlink">
+        How do I reverse a string in JavaScript?
+      </a>
+    </h1>
+  </div>
+
+  <div id="mainbar">
+    <div id="question" class="question">
+      <div class="post-layout">
+        <div class="votecell">
+          <div class="js-vote-count" data-value="1542">1542</div>
+        </div>
+        <div class="postcell">
+          <div class="post-text s-prose js-post-body" itemprop="text">
+            <p>
+              I have the string <code>"Hello World"</code> and I need to reverse it to get
+              <code>"dlroW olleH"</code>.
+            </p>
+            <p>
+              What is the most efficient way to reverse a string in JavaScript?
+              I want to avoid using any external libraries if possible.
+            </p>
+            <pre><code>const str = "Hello World";
+// How to reverse this?
+console.log(str);</code></pre>
+          </div>
+          <div class="js-post-tag-list-wrapper">
+            <div class="post-taglist">
+              <a class="post-tag" rel="tag">javascript</a>
+              <a class="post-tag" rel="tag">string</a>
+              <a class="post-tag" rel="tag">reverse</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="answers">
+      <div class="answer accepted-answer" data-answerid="958945" data-score="2103">
+        <div class="post-layout">
+          <div class="votecell">
+            <div class="js-vote-count" data-value="2103">2103</div>
+          </div>
+          <div class="answercell">
+            <div class="post-text s-prose js-post-body" itemprop="text">
+              <p>
+                The most concise and idiomatic way is to split the string into an array,
+                reverse it, and join it back:
+              </p>
+              <pre><code>function reverseString(str) {
+  return str.split('').reverse().join('');
+}
+
+reverseString('Hello World'); // "dlroW olleH"</code></pre>
+              <p>
+                This works by converting the string to an array of characters, reversing the
+                array in place, then joining the characters back into a string.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="answer" data-answerid="959012" data-score="487">
+        <div class="post-layout">
+          <div class="votecell">
+            <div class="js-vote-count" data-value="487">487</div>
+          </div>
+          <div class="answercell">
+            <div class="post-text s-prose js-post-body" itemprop="text">
+              <p>
+                You can also use the spread operator and <code>Array.from</code>
+                for better Unicode handling:
+              </p>
+              <pre><code>const reverseString = str => [...str].reverse().join('');
+
+// Or with Array.from:
+const reverseString2 = str => Array.from(str).reverse().join('');</code></pre>
+              <p>
+                This approach correctly handles multi-byte characters and emoji.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="answer" data-answerid="959034" data-score="112">
+        <div class="post-layout">
+          <div class="votecell">
+            <div class="js-vote-count" data-value="112">112</div>
+          </div>
+          <div class="answercell">
+            <div class="post-text s-prose js-post-body" itemprop="text">
+              <p>
+                A recursive approach, if you prefer functional style:
+              </p>
+              <pre><code>function reverseString(str) {
+  if (str.length <= 1) return str;
+  return reverseString(str.slice(1)) + str[0];
+}</code></pre>
+              <p>Note: this is less efficient than the array approach for long strings.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
