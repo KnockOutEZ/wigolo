@@ -48,8 +48,10 @@ export interface ExtractionResult {
   };
   links: string[];
   images: string[];
-  extractor: 'defuddle' | 'readability' | 'turndown' | 'site-specific';
+  extractor: ExtractorType;
 }
+
+export type ExtractorType = 'defuddle' | 'readability' | 'turndown' | 'site-specific';
 
 export interface CachedContent {
   id: number;
@@ -62,7 +64,7 @@ export interface CachedContent {
   links: string;
   images: string;
   fetchMethod: 'http' | 'playwright';
-  extractorUsed: string;
+  extractorUsed: ExtractorType;
   contentHash: string;
   fetchedAt: string;
   expiresAt: string | null;

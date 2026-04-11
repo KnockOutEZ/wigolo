@@ -1,4 +1,9 @@
 declare module 'pdf-parse' {
-  interface PdfData { text: string; numpages: number; info: Record<string, unknown>; }
-  export default function pdf(buffer: Buffer): Promise<PdfData>;
+  export class PDFParse {
+    constructor(filePath?: string);
+    load(source: Buffer | string): Promise<void>;
+    getText(): Promise<string>;
+    getInfo(): Promise<Record<string, unknown>>;
+    destroy(): void;
+  }
 }
