@@ -1,0 +1,42 @@
+{
+  "name": "wigolo",
+  "version": "0.1.0",
+  "description": "Local-first web search MCP server for AI coding agents",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "wigolo": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "vitest run tests/e2e",
+    "lint": "tsc --noEmit"
+  },
+  "license": "BUSL-1.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@mozilla/readability": "^0.6.0",
+    "better-sqlite3": "^12.8.0",
+    "defuddle": "^0.16.0",
+    "linkedom": "^0.18.12",
+    "pdf-parse": "^2.4.5",
+    "playwright": "^1.59.1",
+    "turndown": "^7.2.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.6.0",
+    "@types/turndown": "^5.0.6",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4"
+  }
+}
