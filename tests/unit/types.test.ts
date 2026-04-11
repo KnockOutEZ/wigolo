@@ -6,6 +6,10 @@ import type {
   SearchOutput,
   SearchResultItem,
   RawSearchResult,
+  CrawlInput,
+  CrawlOutput,
+  CrawlResultItem,
+  LinkEdge,
 } from '../../src/types.js';
 
 describe('types', () => {
@@ -69,5 +73,56 @@ describe('search types', () => {
       engine: 'duckduckgo',
     };
     expect(raw.engine).toBe('duckduckgo');
+  });
+});
+
+describe('crawl types', () => {
+  it('CrawlInput accepts minimal input', () => {
+    const input: CrawlInput = { url: 'https://docs.example.com' };
+    expect(input.url).toBe('https://docs.example.com');
+    expect(input.max_depth).toBeUndefined();
+    expect(input.strategy).toBeUndefined();
+  });
+
+  it('CrawlInput accepts all options', () => {
+    const input: CrawlInput = {
+      url: 'https://docs.example.com',
+      max_depth: 3,
+      max_pages: 50,
+      strategy: 'sitemap',
+      include_patterns: ['/docs/'],
+      exclude_patterns: ['/blog/'],
+      use_auth: true,
+      extract_links: true,
+      max_total_chars: 200000,
+    };
+    expect(input.strategy).toBe('sitemap');
+    expect(input.include_patterns).toEqual(['/docs/']);
+  });
+
+  it('CrawlResultItem has required fields', () => {
+    const item: CrawlResultItem = {
+      url: 'https://docs.example.com/intro',
+      title: 'Intro',
+      markdown: '# Intro\n\nWelcome.',
+      depth: 1,
+    };
+    expect(item.depth).toBe(1);
+  });
+
+  it('CrawlOutput has required fields', () => {
+    const output: CrawlOutput = {
+      pages: [],
+      total_found: 10,
+      crawled: 0,
+    };
+    expect(output.total_found).toBe(10);
+    expect(output.links).toBeUndefined();
+    expect(output.error).toBeUndefined();
+  });
+
+  it('LinkEdge represents a directed link', () => {
+    const edge: LinkEdge = { from: 'https://a.com', to: 'https://a.com/page' };
+    expect(edge.from).toBe('https://a.com');
   });
 });

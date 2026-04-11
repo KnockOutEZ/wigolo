@@ -126,3 +126,37 @@ export interface SearchEngine {
   name: string;
   search(query: string, options?: SearchEngineOptions): Promise<RawSearchResult[]>;
 }
+
+// --- Crawl layer types ---
+
+export interface CrawlInput {
+  url: string;
+  max_depth?: number;
+  max_pages?: number;
+  strategy?: 'bfs' | 'dfs' | 'sitemap';
+  include_patterns?: string[];
+  exclude_patterns?: string[];
+  use_auth?: boolean;
+  extract_links?: boolean;
+  max_total_chars?: number;
+}
+
+export interface CrawlResultItem {
+  url: string;
+  title: string;
+  markdown: string;
+  depth: number;
+}
+
+export interface LinkEdge {
+  from: string;
+  to: string;
+}
+
+export interface CrawlOutput {
+  pages: CrawlResultItem[];
+  total_found: number;
+  crawled: number;
+  links?: LinkEdge[];
+  error?: string;
+}
