@@ -240,3 +240,169 @@ describe('Crawler — BFS', () => {
     expect(result.total_found).toBeGreaterThanOrEqual(result.crawled);
   });
 });
+
+describe('Crawler — DFS', () => {
+  let fetchFn: FetchFn;
+  let rawFetchFn: RawFetchFn;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    fetchFn = vi.fn(async (url: string) => {
+      if (url === 'https://docs.example.com') {
+        return makeFetchOutput(url, 'Root', '# Root', [
+          'https://docs.example.com/a',
+          'https://docs.example.com/b',
+        ]);
+      }
+      if (url === 'https://docs.example.com/a') {
+        return makeFetchOutput(url, 'A', '# A', [
+          'https://docs.example.com/a/deep',
+        ]);
+      }
+      if (url === 'https://docs.example.com/a/deep') {
+        return makeFetchOutput(url, 'A Deep', '# A Deep', []);
+      }
+      if (url === 'https://docs.example.com/b') {
+        return makeFetchOutput(url, 'B', '# B', []);
+      }
+      return makeFetchOutput(url, '', '', []);
+    });
+
+    rawFetchFn = vi.fn(async () => ({
+      url: '',
+      finalUrl: '',
+      html: '',
+      contentType: 'text/plain',
+      statusCode: 200,
+      method: 'http' as const,
+      headers: {},
+    }));
+  });
+
+  it('explores depth-first (last-discovered links visited first)', async () => {
+    const crawler = new Crawler(fetchFn, rawFetchFn);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'dfs',
+      max_depth: 3,
+      max_pages: 10,
+    });
+
+    const urls = result.pages.map((p) => p.url);
+    expect(urls).toContain('https://docs.example.com');
+    expect(urls).toContain('https://docs.example.com/a');
+    expect(urls).toContain('https://docs.example.com/a/deep');
+    expect(urls).toContain('https://docs.example.com/b');
+
+    // In DFS, /b is pushed first then /a. Pop takes /a first. /a discovers /a/deep.
+    // Wait — queue pushes in order [a, b], pop takes b first (LIFO).
+    // Then b has no children. Then pop a, which discovers a/deep. Pop a/deep.
+    // Final order: root, b, a, a/deep
+    const bIdx = urls.indexOf('https://docs.example.com/b');
+    const aIdx = urls.indexOf('https://docs.example.com/a');
+    expect(bIdx).toBeLessThan(aIdx); // DFS pops last-pushed first
+  });
+
+  it('tracks correct depth in DFS', async () => {
+    const crawler = new Crawler(fetchFn, rawFetchFn);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'dfs',
+      max_depth: 3,
+      max_pages: 10,
+    });
+
+    const deepPage = result.pages.find((p) => p.url === 'https://docs.example.com/a/deep');
+    expect(deepPage?.depth).toBe(2);
+  });
+});
+
+describe('Crawler — Sitemap', () => {
+  it('fetches pages from sitemap.xml', async () => {
+    const sitemapXml = `<?xml version="1.0"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://docs.example.com/page1</loc></url>
+  <url><loc>https://docs.example.com/page2</loc></url>
+</urlset>`;
+
+    const rawFetch: RawFetchFn = vi.fn(async (url: string) => {
+      if (url.endsWith('/sitemap.xml')) {
+        return { url, finalUrl: url, html: sitemapXml, contentType: 'text/xml', statusCode: 200, method: 'http' as const, headers: {} };
+      }
+      return { url, finalUrl: url, html: '', contentType: 'text/plain', statusCode: 404, method: 'http' as const, headers: {} };
+    });
+
+    const fetch: FetchFn = vi.fn(async (url) =>
+      makeFetchOutput(url, `Page ${url.split('/').pop()}`, `# Content for ${url}`, []),
+    );
+
+    const crawler = new Crawler(fetch, rawFetch);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'sitemap',
+      max_pages: 10,
+    });
+
+    expect(result.pages.length).toBe(2);
+    expect(result.total_found).toBe(2);
+    const urls = result.pages.map((p) => p.url);
+    expect(urls).toContain('https://docs.example.com/page1');
+    expect(urls).toContain('https://docs.example.com/page2');
+  });
+
+  it('falls back to BFS when no sitemap found', async () => {
+    const rawFetch: RawFetchFn = vi.fn(async (url) => ({
+      url,
+      finalUrl: url,
+      html: 'Not Found',
+      contentType: 'text/plain',
+      statusCode: 404,
+      method: 'http' as const,
+      headers: {},
+    }));
+
+    const fetch: FetchFn = vi.fn(async (url) =>
+      makeFetchOutput(url, 'Home', '# Home', ['https://docs.example.com/page1']),
+    );
+
+    const crawler = new Crawler(fetch, rawFetch);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'sitemap',
+      max_pages: 10,
+      max_depth: 1,
+    });
+
+    // Should have fallen back to BFS and crawled at least the seed
+    expect(result.crawled).toBeGreaterThanOrEqual(1);
+  });
+
+  it('respects max_pages for sitemap strategy', async () => {
+    const urls = Array.from({ length: 50 }, (_, i) =>
+      `<url><loc>https://docs.example.com/p${i}</loc></url>`,
+    ).join('\n');
+    const sitemapXml = `<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`;
+
+    const rawFetch: RawFetchFn = vi.fn(async (url) => {
+      if (url.endsWith('/sitemap.xml')) {
+        return { url, finalUrl: url, html: sitemapXml, contentType: 'text/xml', statusCode: 200, method: 'http' as const, headers: {} };
+      }
+      return { url, finalUrl: url, html: '', contentType: 'text/plain', statusCode: 404, method: 'http' as const, headers: {} };
+    });
+
+    const fetch: FetchFn = vi.fn(async (url) =>
+      makeFetchOutput(url, 'Page', '# Page', []),
+    );
+
+    const crawler = new Crawler(fetch, rawFetch);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'sitemap',
+      max_pages: 5,
+    });
+
+    expect(result.crawled).toBeLessThanOrEqual(5);
+    expect(result.total_found).toBe(50);
+  });
+});
