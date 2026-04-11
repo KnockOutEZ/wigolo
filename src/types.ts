@@ -72,6 +72,6 @@ export interface CachedContent {
 
 export interface Extractor {
   name: string;
-  canHandle(url: string): boolean;
+  canHandle(url: string, html?: string): boolean;
   extract(html: string, url: string): ExtractionResult | null;
 }

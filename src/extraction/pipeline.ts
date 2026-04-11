@@ -2,6 +2,10 @@ import { defuddleExtract } from './defuddle.js';
 import { readabilityExtract } from './readability.js';
 import { htmlToMarkdown, extractSection, extractLinksAndImages } from './markdown.js';
 import type { ExtractionResult, Extractor } from '../types.js';
+import { githubExtractor } from './site-extractors/github.js';
+import { stackoverflowExtractor } from './site-extractors/stackoverflow.js';
+import { mdnExtractor } from './site-extractors/mdn.js';
+import { docsGenericExtractor } from './site-extractors/docs-generic.js';
 
 export interface ExtractionOptions {
   maxChars?: number;
@@ -10,7 +14,12 @@ export interface ExtractionOptions {
   contentType?: string;
 }
 
-const siteExtractors: Extractor[] = [];
+const siteExtractors: Extractor[] = [
+  githubExtractor,
+  stackoverflowExtractor,
+  mdnExtractor,
+  docsGenericExtractor,
+];
 
 export function registerExtractor(extractor: Extractor): void {
   siteExtractors.push(extractor);
@@ -35,7 +44,7 @@ export async function extractContent(
     return applyPostProcessing(result, options);
   }
 
-  const siteExtractor = siteExtractors.find((e) => e.canHandle(url));
+  const siteExtractor = siteExtractors.find((e) => e.canHandle(url, html));
   if (siteExtractor) {
     const extracted = siteExtractor.extract(html, url);
     if (extracted) {

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en" data-docusaurus-page="true">
+<head>
+  <meta charset="UTF-8">
+  <title>Getting Started | My Docs</title>
+  <meta name="description" content="Learn how to get started with My Docs.">
+</head>
+<body>
+  <nav class="navbar" aria-label="Main navigation">
+    <a class="navbar__brand" href="/">My Docs</a>
+    <ul class="navbar__items">
+      <li><a href="/docs">Docs</a></li>
+      <li><a href="/blog">Blog</a></li>
+    </ul>
+  </nav>
+
+  <div class="docs-wrapper">
+    <nav class="docs-sidebar" aria-label="Docs sidebar">
+      <ul class="menu__list">
+        <li class="menu__item">
+          <a class="menu__link" href="/docs/intro">Introduction</a>
+        </li>
+        <li class="menu__item menu__item--active">
+          <a class="menu__link menu__link--active" href="/docs/getting-started">Getting Started</a>
+        </li>
+        <li class="menu__item">
+          <a class="menu__link" href="/docs/configuration">Configuration</a>
+        </li>
+        <li class="menu__item">
+          <a class="menu__link" href="/docs/api">API Reference</a>
+        </li>
+      </ul>
+    </nav>
+
+    <main class="main-wrapper">
+      <div class="version-picker">
+        <button class="version-picker__btn">v2.0.0</button>
+        <ul class="version-picker__list">
+          <li><a href="/docs/2.0.0/getting-started">2.0.0</a></li>
+          <li><a href="/docs/1.5.0/getting-started">1.5.0</a></li>
+          <li><a href="/docs/1.0.0/getting-started">1.0.0</a></li>
+        </ul>
+      </div>
+
+      <article>
+        <div class="markdown">
+          <header>
+            <h1>Getting Started</h1>
+          </header>
+
+          <p>Welcome to My Docs! This guide will help you get up and running quickly.</p>
+
+          <h2>Prerequisites</h2>
+          <p>Before you begin, make sure you have the following installed:</p>
+          <ul>
+            <li>Node.js version 18 or higher</li>
+            <li>npm or yarn package manager</li>
+          </ul>
+
+          <h2>Installation</h2>
+          <p>Install the package using your preferred package manager:</p>
+
+          <pre><code class="language-bash">npm install my-docs-package</code></pre>
+
+          <h2>Basic Usage</h2>
+          <p>Once installed, you can import and use the package:</p>
+
+          <pre><code class="language-typescript">import { createClient } from 'my-docs-package';
+
+const client = createClient({
+  apiKey: 'your-api-key',
+  baseUrl: 'https://api.example.com',
+});
+
+const result = await client.fetch('/endpoint');
+console.log(result);</code></pre>
+
+          <div class="admonition admonition-info alert alert--info">
+            <div class="admonition-heading">
+              <h5>Info</h5>
+            </div>
+            <div class="admonition-content">
+              <p>Make sure to keep your API key secret. Never commit it to version control.</p>
+            </div>
+          </div>
+
+          <div class="admonition admonition-warning alert alert--warning">
+            <div class="admonition-heading">
+              <h5>Warning</h5>
+            </div>
+            <div class="admonition-content">
+              <p>This feature is experimental and may change in future versions.</p>
+            </div>
+          </div>
+
+          <h2>Configuration Options</h2>
+          <p>The client accepts the following configuration options:</p>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Option</th>
+                <th>Type</th>
+                <th>Default</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>apiKey</code></td>
+                <td><code>string</code></td>
+                <td><em>required</em></td>
+                <td>Your API authentication key</td>
+              </tr>
+              <tr>
+                <td><code>baseUrl</code></td>
+                <td><code>string</code></td>
+                <td><code>https://api.example.com</code></td>
+                <td>The base URL for API requests</td>
+              </tr>
+              <tr>
+                <td><code>timeout</code></td>
+                <td><code>number</code></td>
+                <td><code>5000</code></td>
+                <td>Request timeout in milliseconds</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2>Next Steps</h2>
+          <p>Now that you have the basics set up, explore these topics:</p>
+          <ul>
+            <li>Configuration guide</li>
+            <li>API Reference</li>
+            <li>Examples</li>
+          </ul>
+        </div>
+      </article>
+
+      <nav class="pagination-nav" aria-label="Docs pages">
+        <div class="pagination-nav__item">
+          <a class="pagination-nav__link" href="/docs/intro">Previous: Introduction</a>
+        </div>
+        <div class="pagination-nav__item pagination-nav__item--next">
+          <a class="pagination-nav__link" href="/docs/configuration">Next: Configuration</a>
+        </div>
+      </nav>
+
+      <div class="toc-wrapper">
+        <ul class="table-of-contents">
+          <li><a href="#prerequisites">Prerequisites</a></li>
+          <li><a href="#installation">Installation</a></li>
+          <li><a href="#basic-usage">Basic Usage</a></li>
+          <li><a href="#configuration-options">Configuration Options</a></li>
+          <li><a href="#next-steps">Next Steps</a></li>
+        </ul>
+      </div>
+    </main>
+  </div>
+
+  <footer class="footer">
+    <div class="footer__inner">
+      <p>Copyright &copy; 2024 My Docs Team. Built with Docusaurus.</p>
+    </div>
+  </footer>
+</body>
+</html>
