@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Array.prototype.map() - JavaScript | MDN</title>
+  <meta name="description" content="The map() method creates a new array populated with the results of calling a provided function on every element in the calling array.">
+</head>
+<body>
+  <header class="page-header">
+    <nav class="breadcrumbs" aria-label="Breadcrumb">
+      <ol>
+        <li><a href="/en-US/docs/Web">Web technology for developers</a></li>
+        <li><a href="/en-US/docs/Web/JavaScript">JavaScript</a></li>
+        <li><a href="/en-US/docs/Web/JavaScript/Reference">JavaScript Reference</a></li>
+        <li><a href="/en-US/docs/Web/JavaScript/Reference/Global_Objects">Global Objects</a></li>
+        <li><a href="/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a></li>
+      </ol>
+    </nav>
+  </header>
+
+  <nav class="sidebar" id="sidebar" aria-label="Related Topics">
+    <div class="sidebar-inner">
+      <h2>Related Topics</h2>
+      <ul>
+        <li><a href="/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/forEach">forEach()</a></li>
+        <li><a href="/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/filter">filter()</a></li>
+        <li><a href="/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/reduce">reduce()</a></li>
+        <li><a href="/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/find">find()</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main>
+    <article class="main-page-content">
+      <h1>Array.prototype.map()</h1>
+
+      <div class="section-content">
+        <p>
+          The <strong><code>map()</code></strong> method of <code>Array</code> instances creates
+          a new array populated with the results of calling a provided function on every element
+          in the calling array.
+        </p>
+      </div>
+
+      <section aria-labelledby="try_it">
+        <h2 id="try_it">Try it</h2>
+        <div class="section-content">
+          <pre><code class="language-js">const numbers = [1, 2, 3, 4, 5];
+const doubled = numbers.map((x) =&gt; x * 2);
+console.log(doubled); // [2, 4, 6, 8, 10]</code></pre>
+        </div>
+      </section>
+
+      <section aria-labelledby="syntax">
+        <h2 id="syntax">Syntax</h2>
+        <div class="section-content">
+          <pre><code class="language-js">map(callbackFn)
+map(callbackFn, thisArg)</code></pre>
+        </div>
+      </section>
+
+      <section aria-labelledby="parameters">
+        <h2 id="parameters">Parameters</h2>
+        <div class="section-content">
+          <dl>
+            <dt id="callbackfn"><code>callbackFn</code></dt>
+            <dd>
+              <p>A function to execute for each element in the array. Its return value is added
+              as a single element in the new array. The function is called with the following arguments:</p>
+              <dl>
+                <dt id="element"><code>element</code></dt>
+                <dd><p>The current element being processed in the array.</p></dd>
+                <dt id="index"><code>index</code></dt>
+                <dd><p>The index of the current element being processed in the array.</p></dd>
+                <dt id="array"><code>array</code></dt>
+                <dd><p>The array <code>map()</code> was called upon.</p></dd>
+              </dl>
+            </dd>
+            <dt id="thisarg"><code>thisArg</code> <span class="badge inline optional">Optional</span></dt>
+            <dd><p>A value to use as <code>this</code> when executing <code>callbackFn</code>.</p></dd>
+          </dl>
+        </div>
+      </section>
+
+      <section aria-labelledby="return_value">
+        <h2 id="return_value">Return value</h2>
+        <div class="section-content">
+          <p>A new array with each element being the result of the callback function.</p>
+        </div>
+      </section>
+
+      <section aria-labelledby="description">
+        <h2 id="description">Description</h2>
+        <div class="section-content">
+          <p>
+            <code>map()</code> calls a provided <code>callbackFn</code> function once for each
+            element in an array, in order, and constructs a new array from the results.
+          </p>
+          <p>
+            <code>callbackFn</code> is invoked only for array indexes which have assigned values
+            (including <code>undefined</code>). It is not called for missing elements in sparse
+            arrays (that is, indexes that have never been set, which have been deleted, or which
+            have never been assigned a value).
+          </p>
+          <p>
+            The <code>map()</code> method is a copying method. It does not alter <code>this</code>.
+            However, the function provided as <code>callbackFn</code> can mutate the array.
+            Note, however, that the length of the array is saved before the first invocation
+            of <code>callbackFn</code>.
+          </p>
+        </div>
+      </section>
+
+      <section aria-labelledby="examples">
+        <h2 id="examples">Examples</h2>
+
+        <section aria-labelledby="mapping_an_array_of_numbers">
+          <h3 id="mapping_an_array_of_numbers">Mapping an array of numbers to an array of square roots</h3>
+          <div class="section-content">
+            <p>The following code takes an array of numbers and creates a new array containing the square roots of the numbers in the first array.</p>
+            <pre><code class="language-js">const numbers = [1, 4, 9];
+const roots = numbers.map((num) =&gt; Math.sqrt(num));
+// roots is now [1, 2, 3]
+// numbers is still [1, 4, 9]</code></pre>
+          </div>
+        </section>
+
+        <section aria-labelledby="using_map_to_reformat_objects">
+          <h3 id="using_map_to_reformat_objects">Using map to reformat objects in an array</h3>
+          <div class="section-content">
+            <p>The following code takes an array of objects and creates a new array containing the newly reformatted objects.</p>
+            <pre><code class="language-js">const kvArray = [
+  { key: 1, value: 10 },
+  { key: 2, value: 20 },
+  { key: 3, value: 30 },
+];
+
+const reformatted = kvArray.map(({ key, value }) =&gt; ({ [key]: value }));
+// reformatted is [{1: 10}, {2: 20}, {3: 30}]</code></pre>
+          </div>
+        </section>
+      </section>
+
+      <section aria-labelledby="specifications">
+        <h2 id="specifications">Specifications</h2>
+        <div class="section-content">
+          <table class="standard-table">
+            <thead>
+              <tr>
+                <th scope="col">Specification</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><a href="https://tc39.es/ecma262/multipage/indexed-collections.html#sec-array.prototype.map">ECMAScript Language Specification<br><small>Array.prototype.map</small></a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section aria-labelledby="browser_compatibility">
+        <h2 id="browser_compatibility">Browser compatibility</h2>
+        <div class="section-content">
+          <p class="bc-head">
+            <a href="https://github.com/mdn/browser-compat-data">BCD tables only load in the browser with JavaScript enabled.</a>
+          </p>
+        </div>
+      </section>
+
+      <section aria-labelledby="see_also">
+        <h2 id="see_also">See also</h2>
+        <div class="section-content">
+          <ul>
+            <li><a href="/en-US/docs/Web/JavaScript/Guide/Indexed_collections">Indexed collections</a></li>
+            <li><a href="/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a></li>
+            <li><a href="/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/filter">Array.prototype.filter()</a></li>
+            <li><a href="/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/every">Array.prototype.every()</a></li>
+          </ul>
+        </div>
+      </section>
+
+      <div class="metadata">
+        <p>Last modified: <time datetime="2024-01-15">Jan 15, 2024</time></p>
+        <p>Contributors to this page: <a href="/en-US/profiles/mdn">MDN contributors</a></p>
+      </div>
+    </article>
+  </main>
+
+  <footer>
+    <div class="page-footer-grid">
+      <div class="page-footer-logo">
+        <a href="/en-US/"><span>MDN Web Docs</span></a>
+      </div>
+      <ul class="footer-nav">
+        <li><a href="/en-US/about">About</a></li>
+        <li><a href="/en-US/blog/">MDN Blog</a></li>
+        <li><a href="/en-US/community">MDN Community</a></li>
+      </ul>
+    </div>
+  </footer>
+</body>
+</html>
