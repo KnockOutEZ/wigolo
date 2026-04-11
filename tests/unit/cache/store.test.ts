@@ -10,6 +10,7 @@ import {
   getCachedSearchResults,
   getCacheStats,
   searchCacheFiltered,
+  clearCacheEntries,
 } from '../../../src/cache/store.js';
 import type { RawFetchResult, ExtractionResult, CachedContent } from '../../../src/types.js';
 import type { SearchResultItem } from '../../../src/types.js';
@@ -437,5 +438,53 @@ describe('searchCacheFiltered', () => {
     });
     expect(results).toHaveLength(1);
     expect(results[0].title).toBe('TypeScript Guide');
+  });
+});
+
+describe('clearCacheEntries', () => {
+  beforeEach(() => {
+    initDatabase(':memory:');
+    cacheContent(
+      makeRaw('https://example.com/page1'),
+      makeExtraction({ title: 'Page 1', markdown: 'TypeScript content' }),
+    );
+    cacheContent(
+      makeRaw('https://docs.python.org/tutorial'),
+      makeExtraction({ title: 'Python', markdown: 'Python content' }),
+    );
+    cacheContent(
+      makeRaw('https://example.com/page2'),
+      makeExtraction({ title: 'Page 2', markdown: 'React content' }),
+    );
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  it('clears all entries when no filters provided', () => {
+    const count = clearCacheEntries({});
+    expect(count).toBe(3);
+    expect(searchCacheFiltered({})).toHaveLength(0);
+  });
+
+  it('clears entries matching URL pattern', () => {
+    const count = clearCacheEntries({ urlPattern: '*example.com*' });
+    expect(count).toBe(2);
+    const remaining = searchCacheFiltered({});
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].title).toBe('Python');
+  });
+
+  it('clears entries matching FTS5 query', () => {
+    const count = clearCacheEntries({ query: 'TypeScript' });
+    expect(count).toBe(1);
+    expect(searchCacheFiltered({})).toHaveLength(2);
+  });
+
+  it('returns 0 when no entries match', () => {
+    const count = clearCacheEntries({ urlPattern: '*nonexistent.com*' });
+    expect(count).toBe(0);
+    expect(searchCacheFiltered({})).toHaveLength(3);
   });
 });

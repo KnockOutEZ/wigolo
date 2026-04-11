@@ -241,6 +241,38 @@ export function searchCacheFiltered(options: {
   return rows.map(rowToCachedContent);
 }
 
+export function clearCacheEntries(options: {
+  query?: string;
+  urlPattern?: string;
+  since?: string;
+}): number {
+  const db = getDatabase();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (options.query) {
+    conditions.push(
+      'id IN (SELECT url_cache.id FROM url_cache JOIN url_cache_fts ON url_cache.id = url_cache_fts.rowid WHERE url_cache_fts MATCH ?)',
+    );
+    params.push(options.query);
+  }
+
+  if (options.urlPattern) {
+    conditions.push('normalized_url GLOB ?');
+    params.push(options.urlPattern);
+  }
+
+  if (options.since) {
+    conditions.push('fetched_at > datetime(?)');
+    params.push(options.since);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const sql = `DELETE FROM url_cache ${whereClause}`;
+  const result = db.prepare(sql).run(...params);
+  return result.changes;
+}
+
 export function getCacheStats(): CacheStats {
   const db = getDatabase();
   const row = db.prepare(`
