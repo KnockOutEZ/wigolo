@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Fix memory leak in event listener cleanup · Issue #42 · owner/repo</title>
+</head>
+<body>
+  <div class="gh-header">
+    <div class="gh-header-show">
+      <h1 class="gh-header-title">
+        <span class="js-issue-title">Fix memory leak in event listener cleanup</span>
+        <span class="gh-header-number">#42</span>
+      </h1>
+    </div>
+    <div class="gh-header-meta">
+      <span class="State State--open">Open</span>
+    </div>
+  </div>
+
+  <div class="js-issues-results">
+    <div class="timeline-comment-wrapper js-comment-container" id="issue-comment-first">
+      <div class="timeline-comment">
+        <div class="comment-header">
+          <strong class="author">octocat</strong>
+          <span class="js-timestamp">2024-01-15</span>
+        </div>
+        <div class="d-block comment-body js-comment-body">
+          <p>When calling <code>removeEventListener</code> inside a closure, the listener reference is not properly tracked. This causes a memory leak over time, especially in long-running applications.</p>
+          <p>Steps to reproduce:</p>
+          <ol>
+            <li>Create an event listener with an anonymous function</li>
+            <li>Attempt to remove it later</li>
+            <li>Observe that memory usage increases</li>
+          </ol>
+          <p>Expected: listener is cleaned up. Actual: listener remains attached.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="js-issue-labels">
+      <a class="IssueLabel" data-name="bug">bug</a>
+      <a class="IssueLabel" data-name="memory">memory</a>
+      <a class="IssueLabel" data-name="performance">performance</a>
+    </div>
+
+    <div class="timeline-comment-wrapper js-comment-container" id="issue-comment-second">
+      <div class="timeline-comment">
+        <div class="comment-header">
+          <strong class="author">monalisa</strong>
+          <span class="js-timestamp">2024-01-16</span>
+        </div>
+        <div class="d-block comment-body js-comment-body">
+          <p>I can reproduce this. The fix would be to store a reference to the bound function:</p>
+          <pre><code>const boundHandler = handler.bind(this);
+element.addEventListener('click', boundHandler);
+// later:
+element.removeEventListener('click', boundHandler);</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="timeline-comment-wrapper js-comment-container" id="issue-comment-third">
+      <div class="timeline-comment">
+        <div class="comment-header">
+          <strong class="author">hubot</strong>
+          <span class="js-timestamp">2024-01-17</span>
+        </div>
+        <div class="d-block comment-body js-comment-body">
+          <p>PR #43 has been submitted to fix this issue.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
