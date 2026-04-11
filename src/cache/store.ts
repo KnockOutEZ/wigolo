@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { getDatabase } from './db.js';
 import { getConfig } from '../config.js';
-import type { RawFetchResult, ExtractionResult, CachedContent } from '../types.js';
+import type { RawFetchResult, ExtractionResult, CachedContent, SearchResultItem } from '../types.js';
 
 const TRACKING_PARAMS = new Set([
   'utm_source',
@@ -153,4 +153,56 @@ export function searchCache(query: string): CachedContent[] {
   `).all(query) as DbRow[];
 
   return rows.map(rowToCachedContent);
+}
+
+export interface CachedSearchResult {
+  query: string;
+  results: SearchResultItem[];
+  engines_used: string[];
+  searched_at: string;
+}
+
+export function cacheSearchResults(
+  query: string,
+  results: SearchResultItem[],
+  enginesUsed: string[],
+): void {
+  const db = getDatabase();
+  const config = getConfig();
+
+  const queryHash = createHash('sha256').update(query.toLowerCase().trim()).digest('hex');
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + config.cacheTtlSearch * 1000);
+
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO search_cache (query, query_hash, results, engines_used, searched_at, expires_at)
+    VALUES (@query, @queryHash, @results, @enginesUsed, @searchedAt, @expiresAt)
+  `);
+
+  stmt.run({
+    query,
+    queryHash,
+    results: JSON.stringify(results),
+    enginesUsed: JSON.stringify(enginesUsed),
+    searchedAt: toIsoSeconds(now),
+    expiresAt: toIsoSeconds(expiresAt),
+  });
+}
+
+export function getCachedSearchResults(query: string): CachedSearchResult | null {
+  const db = getDatabase();
+  const queryHash = createHash('sha256').update(query.toLowerCase().trim()).digest('hex');
+
+  const row = db.prepare(`
+    SELECT * FROM search_cache WHERE query_hash = ? AND (expires_at IS NULL OR expires_at > datetime('now'))
+  `).get(queryHash) as { query: string; results: string; engines_used: string; searched_at: string } | undefined;
+
+  if (!row) return null;
+
+  return {
+    query: row.query,
+    results: JSON.parse(row.results),
+    engines_used: JSON.parse(row.engines_used),
+    searched_at: row.searched_at,
+  };
 }

@@ -56,12 +56,15 @@ export function initDatabase(dbPath: string): Database.Database {
         VALUES ('delete', old.id, old.title, old.markdown);
     END;
 
+    DROP TABLE IF EXISTS search_cache;
+
     CREATE TABLE IF NOT EXISTS search_cache (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      query TEXT,
-      engine TEXT,
-      results TEXT,
-      fetched_at TEXT,
+      query TEXT NOT NULL,
+      query_hash TEXT UNIQUE NOT NULL,
+      results TEXT NOT NULL,
+      engines_used TEXT,
+      searched_at TEXT NOT NULL DEFAULT (datetime('now')),
       expires_at TEXT
     );
 

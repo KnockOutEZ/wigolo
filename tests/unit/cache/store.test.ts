@@ -6,8 +6,11 @@ import {
   getCachedContent,
   isExpired,
   searchCache,
+  cacheSearchResults,
+  getCachedSearchResults,
 } from '../../../src/cache/store.js';
 import type { RawFetchResult, ExtractionResult, CachedContent } from '../../../src/types.js';
+import type { SearchResultItem } from '../../../src/types.js';
 
 function makeRaw(url: string): RawFetchResult {
   return {
@@ -295,5 +298,50 @@ describe('searchCache (FTS5)', () => {
     cacheContent(makeRaw('https://example.com/trigger-test'), makeExtraction({ title: 'TriggerFired' }));
     const results = searchCache('TriggerFired');
     expect(results.length).toBe(1);
+  });
+});
+
+describe('search result caching', () => {
+  beforeEach(() => {
+    initDatabase(':memory:');
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  it('caches and retrieves search results by query', () => {
+    const results: SearchResultItem[] = [
+      { title: 'React', url: 'https://react.dev', snippet: 'UI lib', relevance_score: 0.95 },
+    ];
+
+    cacheSearchResults('react tutorial', results, ['searxng']);
+    const cached = getCachedSearchResults('react tutorial');
+
+    expect(cached).not.toBeNull();
+    expect(cached!.results).toHaveLength(1);
+    expect(cached!.results[0].title).toBe('React');
+    expect(cached!.engines_used).toContain('searxng');
+  });
+
+  it('returns null for non-existent query', () => {
+    const cached = getCachedSearchResults('nonexistent query xyz 12345');
+    expect(cached).toBeNull();
+  });
+
+  it('updates cache on re-search of same query', () => {
+    const results1: SearchResultItem[] = [
+      { title: 'Old', url: 'https://old.com', snippet: '', relevance_score: 0.5 },
+    ];
+    const results2: SearchResultItem[] = [
+      { title: 'New', url: 'https://new.com', snippet: '', relevance_score: 0.9 },
+    ];
+
+    cacheSearchResults('update test', results1, ['a']);
+    cacheSearchResults('update test', results2, ['b']);
+    const cached = getCachedSearchResults('update test');
+
+    expect(cached!.results[0].title).toBe('New');
+    expect(cached!.engines_used).toContain('b');
   });
 });
