@@ -75,3 +75,54 @@ export interface Extractor {
   canHandle(url: string, html?: string): boolean;
   extract(html: string, url: string): ExtractionResult | null;
 }
+
+// --- Search layer types ---
+
+export interface SearchInput {
+  query: string;
+  max_results?: number;
+  include_content?: boolean;
+  content_max_chars?: number;
+  max_total_chars?: number;
+  time_range?: 'day' | 'week' | 'month' | 'year';
+  search_engines?: string[];
+  language?: string;
+}
+
+export interface SearchResultItem {
+  title: string;
+  url: string;
+  snippet: string;
+  markdown_content?: string;
+  fetch_failed?: string;
+  content_truncated?: boolean;
+  relevance_score: number;
+}
+
+export interface SearchOutput {
+  results: SearchResultItem[];
+  query: string;
+  engines_used: string[];
+  total_time_ms: number;
+  error?: string;
+}
+
+export interface RawSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+  relevance_score: number;
+  engine: string;
+}
+
+export interface SearchEngineOptions {
+  maxResults?: number;
+  timeRange?: string;
+  language?: string;
+  timeoutMs?: number;
+}
+
+export interface SearchEngine {
+  name: string;
+  search(query: string, options?: SearchEngineOptions): Promise<RawSearchResult[]>;
+}
