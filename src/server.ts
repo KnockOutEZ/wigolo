@@ -14,6 +14,7 @@ import { handleFetch } from './tools/fetch.js';
 import { handleSearch } from './tools/search.js';
 import { handleCrawl } from './tools/crawl.js';
 import { handleCache } from './tools/cache.js';
+import { handleExtract } from './tools/extract.js';
 import { SearxngClient } from './search/searxng.js';
 import { DuckDuckGoEngine } from './search/engines/duckduckgo.js';
 import { BingEngine } from './search/engines/bing.js';
@@ -23,7 +24,7 @@ import { SearxngProcess } from './searxng/process.js';
 import { DockerSearxng } from './searxng/docker.js';
 import { getConfig } from './config.js';
 import { createLogger } from './logger.js';
-import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput } from './types.js';
+import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput } from './types.js';
 
 const log = createLogger('server');
 
@@ -131,6 +132,31 @@ const CACHE_TOOL_SCHEMA = {
   },
 };
 
+const EXTRACT_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    url: { type: 'string', description: 'URL to fetch and extract from' },
+    html: { type: 'string', description: 'Raw HTML to extract from (url takes priority if both provided)' },
+    mode: {
+      type: 'string',
+      enum: ['selector', 'tables', 'metadata'],
+      description: 'Extraction mode (default: metadata)',
+    },
+    css_selector: {
+      type: 'string',
+      description: 'CSS selector to match (required when mode="selector")',
+    },
+    multiple: {
+      type: 'boolean',
+      description: 'Return array of all matches instead of first (default: false, only for mode="selector")',
+    },
+    schema: {
+      type: 'object',
+      description: 'JSON Schema for structured extraction (v2 — currently accepted but ignored)',
+    },
+  },
+};
+
 export async function startServer(): Promise<void> {
   const config = getConfig();
 
@@ -207,6 +233,13 @@ export async function startServer(): Promise<void> {
           'Can also return cache statistics or clear entries.',
         inputSchema: CACHE_TOOL_SCHEMA,
       },
+      {
+        name: 'extract',
+        description:
+          'Extract structured data from a web page. Supports CSS selector extraction, ' +
+          'table-to-JSON conversion, and metadata extraction (title, author, date, etc.).',
+        inputSchema: EXTRACT_TOOL_SCHEMA,
+      },
     ],
   }));
 
@@ -243,6 +276,15 @@ export async function startServer(): Promise<void> {
     if (name === 'cache') {
       const input = (args ?? {}) as unknown as CacheInput;
       const result = handleCache(input);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        isError: !!result.error,
+      };
+    }
+
+    if (name === 'extract') {
+      const input = (args ?? {}) as unknown as ExtractInput;
+      const result = await handleExtract(input, router);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         isError: !!result.error,
