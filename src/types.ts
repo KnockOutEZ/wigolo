@@ -160,3 +160,34 @@ export interface CrawlOutput {
   links?: LinkEdge[];
   error?: string;
 }
+
+// --- Cache tool types ---
+
+export interface CacheInput {
+  query?: string;
+  url_pattern?: string;
+  since?: string;
+  clear?: boolean;
+  stats?: boolean;
+}
+
+export interface CacheResultItem {
+  url: string;
+  title: string;
+  markdown: string;
+  fetched_at: string;
+}
+
+export interface CacheStats {
+  total_urls: number;
+  total_size_mb: number;
+  oldest: string;
+  newest: string;
+}
+
+export interface CacheOutput {
+  results?: CacheResultItem[];
+  stats?: CacheStats;
+  cleared?: number;
+  error?: string;
+}
