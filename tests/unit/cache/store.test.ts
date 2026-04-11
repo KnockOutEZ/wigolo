@@ -9,6 +9,7 @@ import {
   cacheSearchResults,
   getCachedSearchResults,
   getCacheStats,
+  searchCacheFiltered,
 } from '../../../src/cache/store.js';
 import type { RawFetchResult, ExtractionResult, CachedContent } from '../../../src/types.js';
 import type { SearchResultItem } from '../../../src/types.js';
@@ -374,5 +375,67 @@ describe('getCacheStats', () => {
     expect(stats.oldest).toBeTruthy();
     expect(stats.newest).toBeTruthy();
     expect(stats.oldest <= stats.newest).toBe(true);
+  });
+});
+
+describe('searchCacheFiltered', () => {
+  beforeEach(() => {
+    initDatabase(':memory:');
+    cacheContent(
+      makeRaw('https://example.com/page1'),
+      makeExtraction({ title: 'TypeScript Guide', markdown: '# TypeScript\n\nLearn TypeScript basics.' }),
+    );
+    cacheContent(
+      makeRaw('https://docs.python.org/tutorial'),
+      makeExtraction({ title: 'Python Tutorial', markdown: '# Python\n\nLearn Python programming.' }),
+    );
+    cacheContent(
+      makeRaw('https://example.com/page2'),
+      makeExtraction({ title: 'React Hooks', markdown: '# React Hooks\n\nUseState and useEffect.' }),
+    );
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  it('returns all entries when no filters provided', () => {
+    const results = searchCacheFiltered({});
+    expect(results).toHaveLength(3);
+  });
+
+  it('filters by FTS5 query', () => {
+    const results = searchCacheFiltered({ query: 'TypeScript' });
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('TypeScript Guide');
+  });
+
+  it('filters by URL glob pattern', () => {
+    const results = searchCacheFiltered({ urlPattern: '*example.com*' });
+    expect(results).toHaveLength(2);
+  });
+
+  it('filters by since date', () => {
+    const results = searchCacheFiltered({ since: '2020-01-01' });
+    expect(results).toHaveLength(3);
+
+    const futureResults = searchCacheFiltered({ since: '2099-01-01' });
+    expect(futureResults).toHaveLength(0);
+  });
+
+  it('combines query + url_pattern', () => {
+    const results = searchCacheFiltered({ query: 'Learn', urlPattern: '*example.com*' });
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('TypeScript Guide');
+  });
+
+  it('combines all three filters', () => {
+    const results = searchCacheFiltered({
+      query: 'TypeScript',
+      urlPattern: '*example.com*',
+      since: '2020-01-01',
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('TypeScript Guide');
   });
 });

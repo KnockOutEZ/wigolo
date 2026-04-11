@@ -207,6 +207,40 @@ export function getCachedSearchResults(query: string): CachedSearchResult | null
   };
 }
 
+export function searchCacheFiltered(options: {
+  query?: string;
+  urlPattern?: string;
+  since?: string;
+}): CachedContent[] {
+  const db = getDatabase();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  let fromClause = 'url_cache';
+
+  if (options.query) {
+    fromClause = 'url_cache JOIN url_cache_fts ON url_cache.id = url_cache_fts.rowid';
+    conditions.push('url_cache_fts MATCH ?');
+    params.push(options.query);
+  }
+
+  if (options.urlPattern) {
+    conditions.push('url_cache.normalized_url GLOB ?');
+    params.push(options.urlPattern);
+  }
+
+  if (options.since) {
+    conditions.push('url_cache.fetched_at > datetime(?)');
+    params.push(options.since);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const orderClause = options.query ? 'ORDER BY rank' : 'ORDER BY url_cache.fetched_at DESC';
+
+  const sql = `SELECT url_cache.* FROM ${fromClause} ${whereClause} ${orderClause} LIMIT 100`;
+  const rows = db.prepare(sql).all(...params) as DbRow[];
+  return rows.map(rowToCachedContent);
+}
+
 export function getCacheStats(): CacheStats {
   const db = getDatabase();
   const row = db.prepare(`
