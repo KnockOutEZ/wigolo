@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Getting Started with Async/Await in TypeScript</title>
+</head>
+<body>
+  <main>
+    <article>
+      <h1>Getting Started with Async/Await in TypeScript</h1>
+
+      <p>Async/await is the modern way to handle asynchronous operations in TypeScript. It makes asynchronous code look and behave like synchronous code, dramatically improving readability and making error handling straightforward. This tutorial covers the essential patterns every TypeScript developer should know.</p>
+
+      <h2>Basic Usage</h2>
+
+      <p>The <code>async</code> keyword marks a function as asynchronous, and <code>await</code> pauses execution until a promise resolves:</p>
+
+      <pre><code class="language-typescript">async function fetchUser(id: string): Promise&lt;User&gt; {
+  const response = await fetch(`/api/users/${id}`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch user: ${response.status}`);
+  }
+  return response.json();
+}</code></pre>
+
+      <h2>Error Handling</h2>
+
+      <p>Use standard try/catch blocks to handle errors in async functions. This is far more readable than chaining <code>.catch()</code> handlers on promises:</p>
+
+      <pre><code class="language-typescript">async function loadData(): Promise&lt;void&gt; {
+  try {
+    const user = await fetchUser('123');
+    const posts = await fetchPosts(user.id);
+    console.log(`Loaded ${posts.length} posts for ${user.name}`);
+  } catch (error) {
+    console.error('Failed to load data:', error);
+  }
+}</code></pre>
+
+      <h2>Parallel Execution</h2>
+
+      <p>When you need to run multiple async operations concurrently, use <code>Promise.all</code>:</p>
+
+      <pre><code class="language-typescript">async function loadDashboard(userId: string) {
+  const [user, posts, notifications] = await Promise.all([
+    fetchUser(userId),
+    fetchPosts(userId),
+    fetchNotifications(userId),
+  ]);
+
+  return { user, posts, notifications };
+}</code></pre>
+
+      <p>This approach runs all three fetch operations simultaneously rather than sequentially, significantly reducing total wait time. It is one of the most important performance patterns for async TypeScript code.</p>
+    </article>
+  </main>
+</body>
+</html>
