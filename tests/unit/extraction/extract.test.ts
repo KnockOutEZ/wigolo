@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractMetadata, extractSelector } from '../../../src/extraction/extract.js';
+import { extractMetadata, extractSelector, extractTables } from '../../../src/extraction/extract.js';
 
 describe('extractMetadata', () => {
   it('extracts title from <title> tag', () => {
@@ -131,5 +131,110 @@ describe('extractSelector', () => {
     const spaceyHtml = '<html><body><p>  padded text  </p></body></html>';
     const result = extractSelector(spaceyHtml, 'p', false);
     expect(result).toBe('padded text');
+  });
+});
+
+describe('extractTables', () => {
+  it('extracts a table with headers', () => {
+    const html = `<html><body><table>
+      <thead><tr><th>Name</th><th>Age</th></tr></thead>
+      <tbody>
+        <tr><td>Alice</td><td>30</td></tr>
+        <tr><td>Bob</td><td>25</td></tr>
+      </tbody>
+    </table></body></html>`;
+
+    const result = extractTables(html);
+    expect(result).toHaveLength(1);
+    expect(result[0].headers).toEqual(['Name', 'Age']);
+    expect(result[0].rows).toEqual([
+      { Name: 'Alice', Age: '30' },
+      { Name: 'Bob', Age: '25' },
+    ]);
+  });
+
+  it('extracts caption when present', () => {
+    const html = `<html><body><table>
+      <caption>Employee List</caption>
+      <thead><tr><th>Name</th></tr></thead>
+      <tbody><tr><td>Alice</td></tr></tbody>
+    </table></body></html>`;
+
+    const result = extractTables(html);
+    expect(result[0].caption).toBe('Employee List');
+  });
+
+  it('omits caption when not present', () => {
+    const html = `<html><body><table>
+      <thead><tr><th>Name</th></tr></thead>
+      <tbody><tr><td>Alice</td></tr></tbody>
+    </table></body></html>`;
+
+    const result = extractTables(html);
+    expect(result[0].caption).toBeUndefined();
+  });
+
+  it('extracts multiple tables', () => {
+    const html = `<html><body>
+      <table><thead><tr><th>A</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table>
+      <table><thead><tr><th>B</th></tr></thead><tbody><tr><td>2</td></tr></tbody></table>
+    </body></html>`;
+
+    const result = extractTables(html);
+    expect(result).toHaveLength(2);
+    expect(result[0].headers).toEqual(['A']);
+    expect(result[1].headers).toEqual(['B']);
+  });
+
+  it('extracts headers from <th> in first row when no <thead>', () => {
+    const html = `<html><body><table>
+      <tr><th>Name</th><th>Age</th></tr>
+      <tr><td>Alice</td><td>30</td></tr>
+    </table></body></html>`;
+
+    const result = extractTables(html);
+    expect(result[0].headers).toEqual(['Name', 'Age']);
+    expect(result[0].rows).toEqual([{ Name: 'Alice', Age: '30' }]);
+  });
+
+  it('generates column names when no <th> headers exist', () => {
+    const html = `<html><body><table>
+      <tr><td>Alice</td><td>30</td></tr>
+      <tr><td>Bob</td><td>25</td></tr>
+    </table></body></html>`;
+
+    const result = extractTables(html);
+    expect(result[0].headers).toEqual(['col_1', 'col_2']);
+    expect(result[0].rows).toEqual([
+      { col_1: 'Alice', col_2: '30' },
+      { col_1: 'Bob', col_2: '25' },
+    ]);
+  });
+
+  it('returns empty array when no tables found', () => {
+    const html = '<html><body><p>No tables here</p></body></html>';
+    const result = extractTables(html);
+    expect(result).toEqual([]);
+  });
+
+  it('handles table with empty cells', () => {
+    const html = `<html><body><table>
+      <thead><tr><th>Name</th><th>Note</th></tr></thead>
+      <tbody><tr><td>Alice</td><td></td></tr></tbody>
+    </table></body></html>`;
+
+    const result = extractTables(html);
+    expect(result[0].rows).toEqual([{ Name: 'Alice', Note: '' }]);
+  });
+
+  it('trims cell text content', () => {
+    const html = `<html><body><table>
+      <thead><tr><th> Name </th></tr></thead>
+      <tbody><tr><td>  Alice  </td></tr></tbody>
+    </table></body></html>`;
+
+    const result = extractTables(html);
+    expect(result[0].headers).toEqual(['Name']);
+    expect(result[0].rows).toEqual([{ Name: 'Alice' }]);
   });
 });
