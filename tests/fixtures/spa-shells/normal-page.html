@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Understanding TypeScript Generics</title>
+</head>
+<body>
+  <header>
+    <nav><a href="/">Home</a> <a href="/blog">Blog</a></nav>
+  </header>
+  <main>
+    <article>
+      <h1>Understanding TypeScript Generics</h1>
+      <p>TypeScript generics are a powerful feature that allow you to write flexible, reusable functions and classes. Instead of committing to a single type, generics let you write code that works with a variety of types while still maintaining full type safety.</p>
+      <p>Consider a simple identity function. Without generics, you might write separate functions for strings and numbers. With generics, you write one function that handles any type. The type parameter acts as a placeholder that gets filled in at the call site.</p>
+      <p>Generics shine in collection types. Arrays, maps, and sets are all generic. When you declare an array of strings in TypeScript, you are using a generic type. The Array type accepts a type parameter that constrains what values can be stored inside it.</p>
+      <p>Constraints further refine generics. Using the extends keyword you can require that a type parameter must have certain properties. This gives you the flexibility of generics while still allowing you to call methods on the type parameter inside the function body.</p>
+      <p>Understanding generics unlocks the full power of TypeScript. Once you are comfortable with them you will find yourself reaching for them whenever you need to write reusable, type-safe utilities that work across multiple data shapes.</p>
+    </article>
+  </main>
+  <footer>
+    <p>Published 2024. All rights reserved.</p>
+  </footer>
+</body>
+</html>
