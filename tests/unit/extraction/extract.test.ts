@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractMetadata } from '../../../src/extraction/extract.js';
+import { extractMetadata, extractSelector } from '../../../src/extraction/extract.js';
 
 describe('extractMetadata', () => {
   it('extracts title from <title> tag', () => {
@@ -85,5 +85,51 @@ describe('extractMetadata', () => {
       keywords: ['a', 'b', 'c'],
       og_image: 'https://example.com/full.png',
     });
+  });
+});
+
+describe('extractSelector', () => {
+  const html = `<html><body>
+    <h1>Title</h1>
+    <p class="intro">First paragraph</p>
+    <p class="intro">Second paragraph</p>
+    <div id="main">Main content</div>
+    <ul><li>Item 1</li><li>Item 2</li><li>Item 3</li></ul>
+  </body></html>`;
+
+  it('extracts text content of first match (multiple=false)', () => {
+    const result = extractSelector(html, 'p.intro', false);
+    expect(result).toBe('First paragraph');
+  });
+
+  it('extracts all matches as array (multiple=true)', () => {
+    const result = extractSelector(html, 'p.intro', true);
+    expect(result).toEqual(['First paragraph', 'Second paragraph']);
+  });
+
+  it('extracts by ID selector', () => {
+    const result = extractSelector(html, '#main', false);
+    expect(result).toBe('Main content');
+  });
+
+  it('extracts list items', () => {
+    const result = extractSelector(html, 'li', true);
+    expect(result).toEqual(['Item 1', 'Item 2', 'Item 3']);
+  });
+
+  it('returns empty string when no match (multiple=false)', () => {
+    const result = extractSelector(html, '.nonexistent', false);
+    expect(result).toBe('');
+  });
+
+  it('returns empty array when no match (multiple=true)', () => {
+    const result = extractSelector(html, '.nonexistent', true);
+    expect(result).toEqual([]);
+  });
+
+  it('trims whitespace from extracted text', () => {
+    const spaceyHtml = '<html><body><p>  padded text  </p></body></html>';
+    const result = extractSelector(spaceyHtml, 'p', false);
+    expect(result).toBe('padded text');
   });
 });

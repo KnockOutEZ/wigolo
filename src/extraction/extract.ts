@@ -36,3 +36,19 @@ export function extractMetadata(html: string): MetadataData {
 
   return result;
 }
+
+export function extractSelector(
+  html: string,
+  selector: string,
+  multiple: boolean,
+): string | string[] {
+  const { document: doc } = parseHTML(html);
+
+  if (multiple) {
+    const elements = doc.querySelectorAll(selector);
+    return Array.from(elements).map((el) => (el.textContent ?? '').trim());
+  }
+
+  const el = doc.querySelector(selector);
+  return el ? (el.textContent ?? '').trim() : '';
+}
