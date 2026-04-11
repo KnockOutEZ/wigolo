@@ -13,6 +13,7 @@ import { initDatabase, closeDatabase } from './cache/db.js';
 import { handleFetch } from './tools/fetch.js';
 import { handleSearch } from './tools/search.js';
 import { handleCrawl } from './tools/crawl.js';
+import { handleCache } from './tools/cache.js';
 import { SearxngClient } from './search/searxng.js';
 import { DuckDuckGoEngine } from './search/engines/duckduckgo.js';
 import { BingEngine } from './search/engines/bing.js';
@@ -22,7 +23,7 @@ import { SearxngProcess } from './searxng/process.js';
 import { DockerSearxng } from './searxng/docker.js';
 import { getConfig } from './config.js';
 import { createLogger } from './logger.js';
-import type { FetchInput, SearchInput, SearchEngine, CrawlInput } from './types.js';
+import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput } from './types.js';
 
 const log = createLogger('server');
 
@@ -107,6 +108,29 @@ const CRAWL_TOOL_SCHEMA = {
   required: ['url'],
 };
 
+const CACHE_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    query: { type: 'string', description: 'Full-text search over cached content' },
+    url_pattern: {
+      type: 'string',
+      description: 'Filter by URL glob pattern (e.g., "*example.com*")',
+    },
+    since: {
+      type: 'string',
+      description: 'ISO date — only results cached after this date',
+    },
+    clear: {
+      type: 'boolean',
+      description: 'Clear matching cache entries instead of returning them',
+    },
+    stats: {
+      type: 'boolean',
+      description: 'Return cache statistics (total URLs, size, date range)',
+    },
+  },
+};
+
 export async function startServer(): Promise<void> {
   const config = getConfig();
 
@@ -175,6 +199,14 @@ export async function startServer(): Promise<void> {
           'with depth/page limits, URL filtering, and cross-page content deduplication.',
         inputSchema: CRAWL_TOOL_SCHEMA,
       },
+      {
+        name: 'cache',
+        description:
+          'Query the local knowledge base of previously fetched content. ' +
+          'Search cached pages by full-text query, URL pattern, or date. ' +
+          'Can also return cache statistics or clear entries.',
+        inputSchema: CACHE_TOOL_SCHEMA,
+      },
     ],
   }));
 
@@ -202,6 +234,15 @@ export async function startServer(): Promise<void> {
     if (name === 'crawl') {
       const input = (args ?? {}) as unknown as CrawlInput;
       const result = await handleCrawl(input, router);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        isError: !!result.error,
+      };
+    }
+
+    if (name === 'cache') {
+      const input = (args ?? {}) as unknown as CacheInput;
+      const result = handleCache(input);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         isError: !!result.error,
