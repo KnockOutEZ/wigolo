@@ -1,11 +1,8 @@
 import { parseHTML } from 'linkedom';
 import { createLogger } from '../logger.js';
+import type { JsonSchema } from './schema.js';
 
 const log = createLogger('jsonld');
-
-interface JsonSchema {
-  properties?: Record<string, JsonSchema>;
-}
 
 export function extractJsonLd(html: string): Record<string, unknown>[] {
   const { document: doc } = parseHTML(html);
