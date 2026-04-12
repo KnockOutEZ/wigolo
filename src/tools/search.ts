@@ -4,6 +4,7 @@ import { deduplicateResults, type MergedSearchResult } from '../search/dedup.js'
 import { decomposeQuery } from '../search/query.js';
 import { validateLinks } from '../search/validator.js';
 import { rerankResults } from '../search/rerank.js';
+import { applyAllFilters } from '../search/filters.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { cacheSearchResults, getCachedSearchResults } from '../cache/store.js';
 import { getConfig } from '../config.js';
@@ -58,13 +59,23 @@ export async function handleSearch(
   const enginesUsed = new Set<string>();
   const errors: string[] = [];
 
+  // Increase overfetch when domain filters are active (more results will be filtered out)
+  const hasFilterAttrition = !!(input.include_domains?.length || input.exclude_domains?.length);
+  const overfetchFactor = hasFilterAttrition ? 3 : 2;
+
   const searchPromises = activeEngines.flatMap(engine =>
     subQueries.map(async (query) => {
       try {
         const results = await engine.search(query, {
-          maxResults: maxResults * 2,
+          maxResults: maxResults * overfetchFactor,
           timeRange: input.time_range,
           language: input.language,
+          // v2 filter params:
+          includeDomains: input.include_domains,
+          excludeDomains: input.exclude_domains,
+          fromDate: input.from_date,
+          toDate: input.to_date,
+          category: input.category,
         });
         for (const r of results) {
           allRaw.push(r);
@@ -92,6 +103,17 @@ export async function handleSearch(
 
   let merged = deduplicateResults(allRaw);
   merged = await rerankResults(input.query, merged);
+
+  // Post-filter: domain + date + category (Slice 7)
+  const filtered = applyAllFilters(merged, {
+    includeDomains: input.include_domains,
+    excludeDomains: input.exclude_domains,
+    fromDate: input.from_date,
+    toDate: input.to_date,
+    category: input.category,
+  });
+  merged = filtered as typeof merged;
+
   merged = await validateLinks(merged);
 
   merged = merged.slice(0, maxResults);
