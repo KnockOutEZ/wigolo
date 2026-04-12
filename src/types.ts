@@ -98,6 +98,12 @@ export interface SearchInput {
   time_range?: 'day' | 'week' | 'month' | 'year';
   search_engines?: string[];
   language?: string;
+  // v2 additions — Slice 7:
+  include_domains?: string[];
+  exclude_domains?: string[];
+  from_date?: string;    // ISO date (YYYY-MM-DD)
+  to_date?: string;      // ISO date (YYYY-MM-DD)
+  category?: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
 }
 
 export interface SearchResultItem {
@@ -131,6 +137,12 @@ export interface SearchEngineOptions {
   timeRange?: string;
   language?: string;
   timeoutMs?: number;
+  // v2 additions — Slice 7:
+  includeDomains?: string[];
+  excludeDomains?: string[];
+  fromDate?: string;
+  toDate?: string;
+  category?: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
 }
 
 export interface SearchEngine {
