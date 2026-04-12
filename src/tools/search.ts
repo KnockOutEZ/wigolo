@@ -3,6 +3,7 @@ import type { SmartRouter } from '../fetch/router.js';
 import { deduplicateResults, type MergedSearchResult } from '../search/dedup.js';
 import { decomposeQuery } from '../search/query.js';
 import { validateLinks } from '../search/validator.js';
+import { rerankResults } from '../search/rerank.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { cacheSearchResults, getCachedSearchResults } from '../cache/store.js';
 import { getConfig } from '../config.js';
@@ -90,7 +91,7 @@ export async function handleSearch(
   }
 
   let merged = deduplicateResults(allRaw);
-
+  merged = await rerankResults(input.query, merged);
   merged = await validateLinks(merged);
 
   merged = merged.slice(0, maxResults);
