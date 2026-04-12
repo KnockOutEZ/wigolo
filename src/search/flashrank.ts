@@ -1,6 +1,6 @@
-import { spawn, execFile as execFileCb } from 'node:child_process';
+import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
-import { getConfig } from '../config.js';
+import { runPythonWithStdin } from '../extraction/trafilatura.js';
 import { createLogger } from '../logger.js';
 
 const execFileAsync = promisify(execFileCb);
@@ -50,25 +50,6 @@ function clampScore(score: number): number {
   return Math.max(0, Math.min(1, score));
 }
 
-function runPythonWithStdin(script: string, stdin: string, timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn('python3', ['-c', script], { timeout: timeoutMs });
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-    proc.on('close', (code) => {
-      if (code === 0) resolve(stdout);
-      else reject(new Error(`Python exited ${code}: ${stderr}`));
-    });
-    proc.on('error', reject);
-
-    proc.stdin.write(stdin);
-    proc.stdin.end();
-  });
-}
-
 export async function flashRankRerank(
   query: string,
   passages: RerankPassage[],
@@ -77,11 +58,10 @@ export async function flashRankRerank(
   if (passages.length === 0) return [];
 
   try {
-    const config = getConfig();
     const input = JSON.stringify({
       query,
       passages,
-      model: model ?? (config as any).rerankerModel,
+      model: model ?? 'ms-marco-MiniLM-L-12-v2',
     });
 
     const stdout = await runPythonWithStdin(FLASHRANK_SCRIPT, input, SUBPROCESS_TIMEOUT_MS);

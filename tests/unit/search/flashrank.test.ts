@@ -6,10 +6,6 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
-vi.mock('../../../src/config.js', () => ({
-  getConfig: vi.fn(() => ({ rerankerModel: 'ms-marco-MiniLM-L-12-v2' })),
-}));
-
 vi.mock('../../../src/logger.js', () => ({
   createLogger: () => ({
     debug: vi.fn(),
