@@ -1,7 +1,9 @@
-import { existsSync } from 'node:fs';
+import { existsSync, cpSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
+import type { CDPSession } from '../types.js';
 
 export interface AuthOptions {
   storageStatePath?: string;
@@ -26,8 +28,15 @@ export function getAuthOptions(): AuthOptions | null {
         profilePath: config.chromeProfilePath,
       });
     }
-    return { userDataDir: config.chromeProfilePath };
+    const tempDir = mkdtempSync(join(tmpdir(), 'wigolo-chrome-'));
+    cpSync(config.chromeProfilePath, tempDir, { recursive: true });
+    logger.debug('copied Chrome profile to temp directory', { from: config.chromeProfilePath, to: tempDir });
+    return { userDataDir: tempDir };
   }
 
   return null;
+}
+
+export async function listSessions(): Promise<CDPSession[]> {
+  return [];
 }

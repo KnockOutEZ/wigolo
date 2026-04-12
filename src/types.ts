@@ -57,6 +57,13 @@ export type ExtractorType = 'defuddle' | 'readability' | 'turndown' | 'site-spec
 
 export type BrowserType = 'chromium' | 'firefox' | 'webkit';
 
+export interface CDPSession {
+  id: string;
+  url: string;
+  title: string;
+  webSocketDebuggerUrl: string;
+}
+
 export interface CachedContent {
   id: number;
   url: string;

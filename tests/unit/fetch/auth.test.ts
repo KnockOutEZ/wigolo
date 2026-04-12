@@ -3,7 +3,8 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resetConfig } from '../../../src/config.js';
-import { getAuthOptions } from '../../../src/fetch/auth.js';
+import { getAuthOptions, listSessions } from '../../../src/fetch/auth.js';
+import type { CDPSession } from '../../../src/types.js';
 
 describe('getAuthOptions()', () => {
   const originalEnv = process.env;
@@ -49,13 +50,16 @@ describe('getAuthOptions()', () => {
     expect(() => getAuthOptions()).toThrow();
   });
 
-  it('returns userDataDir when WIGOLO_CHROME_PROFILE_PATH is set', () => {
+  it('returns userDataDir as a temp copy when WIGOLO_CHROME_PROFILE_PATH is set', () => {
     process.env.WIGOLO_CHROME_PROFILE_PATH = tempDir;
     resetConfig();
 
     const result = getAuthOptions();
     expect(result).not.toBeNull();
-    expect(result?.userDataDir).toBe(tempDir);
+    expect(result?.userDataDir).toBeDefined();
+    // Should be a temp directory, NOT the original
+    expect(result?.userDataDir).not.toBe(tempDir);
+    expect(result?.userDataDir).toContain('wigolo-chrome-');
     expect(result?.storageStatePath).toBeUndefined();
   });
 
@@ -94,5 +98,63 @@ describe('getAuthOptions()', () => {
     const result = getAuthOptions();
     expect(result?.storageStatePath).toBe(stateFile);
     expect(result?.userDataDir).toBeUndefined();
+  });
+});
+
+describe('listSessions', () => {
+  it('returns an empty array (v1 stub)', async () => {
+    const sessions = await listSessions();
+    expect(sessions).toEqual([]);
+  });
+
+  it('returns a typed array', async () => {
+    const sessions = await listSessions();
+    expect(Array.isArray(sessions)).toBe(true);
+  });
+
+  it('returns array with correct CDPSession shape (empty but typed)', async () => {
+    const sessions: CDPSession[] = await listSessions();
+    expect(sessions).toHaveLength(0);
+  });
+
+  it('returns a new array on each call (not shared reference)', async () => {
+    const sessions1 = await listSessions();
+    const sessions2 = await listSessions();
+    expect(sessions1).not.toBe(sessions2);
+    expect(sessions1).toEqual(sessions2);
+  });
+
+  it('resolves (is async-compatible)', async () => {
+    const result = listSessions();
+    expect(result).toBeInstanceOf(Promise);
+    await expect(result).resolves.toEqual([]);
+  });
+
+  it('handles concurrent calls without interference', async () => {
+    const [s1, s2, s3] = await Promise.all([
+      listSessions(),
+      listSessions(),
+      listSessions(),
+    ]);
+    expect(s1).toEqual([]);
+    expect(s2).toEqual([]);
+    expect(s3).toEqual([]);
+    expect(s1).not.toBe(s2);
+    expect(s2).not.toBe(s3);
+  });
+
+  it('result satisfies CDPSession[] type shape', async () => {
+    const sessions = await listSessions();
+    for (const session of sessions) {
+      expect(session).toHaveProperty('id');
+      expect(session).toHaveProperty('url');
+      expect(session).toHaveProperty('title');
+      expect(session).toHaveProperty('webSocketDebuggerUrl');
+    }
+    expect(sessions).toEqual([]);
+  });
+
+  it('does not throw under any conditions', async () => {
+    await expect(listSessions()).resolves.not.toThrow();
   });
 });
