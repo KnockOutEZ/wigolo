@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { handleSearch } from '../../../src/tools/search.js';
 import type { SearchEngine, RawSearchResult } from '../../../src/types.js';
 

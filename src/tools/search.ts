@@ -70,7 +70,6 @@ export async function handleSearch(
           maxResults: maxResults * overfetchFactor,
           timeRange: input.time_range,
           language: input.language,
-          // v2 filter params:
           includeDomains: input.include_domains,
           excludeDomains: input.exclude_domains,
           fromDate: input.from_date,
@@ -112,7 +111,7 @@ export async function handleSearch(
     toDate: input.to_date,
     category: input.category,
   });
-  merged = filtered as typeof merged;
+  merged = filtered;
 
   merged = await validateLinks(merged);
 

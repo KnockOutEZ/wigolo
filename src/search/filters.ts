@@ -1,5 +1,3 @@
-import type { RawSearchResult } from '../types.js';
-
 function getDomain(url: string): string {
   try {
     return new URL(url).hostname.toLowerCase();
@@ -17,11 +15,11 @@ function domainMatches(hostname: string, domain: string): boolean {
   return hostname === normalized || hostname.endsWith('.' + normalized);
 }
 
-export function filterByDomains(
-  results: RawSearchResult[],
+export function filterByDomains<T extends { url: string }>(
+  results: T[],
   includeDomains?: string[],
   excludeDomains?: string[],
-): RawSearchResult[] {
+): T[] {
   if (!includeDomains?.length && !excludeDomains?.length) return results;
 
   return results.filter((r) => {
@@ -44,11 +42,11 @@ function isValidIsoDate(dateStr: string): boolean {
   return !isNaN(parsed.getTime()) && /^\d{4}-\d{2}-\d{2}$/.test(dateStr);
 }
 
-export function filterByDateRange(
-  results: RawSearchResult[],
+export function filterByDateRange<T>(
+  results: T[],
   fromDate?: string,
   toDate?: string,
-): RawSearchResult[] {
+): T[] {
   if (!fromDate && !toDate) return results;
 
   if (fromDate && !isValidIsoDate(fromDate)) return results;
@@ -62,10 +60,10 @@ export function filterByDateRange(
   return results;
 }
 
-export function filterByCategory(
-  results: RawSearchResult[],
+export function filterByCategory<T>(
+  results: T[],
   _category?: string,
-): RawSearchResult[] {
+): T[] {
   // Category filtering is handled by SearXNG natively.
   return results;
 }
@@ -78,10 +76,10 @@ export interface FilterOptions {
   category?: string;
 }
 
-export function applyAllFilters(
-  results: RawSearchResult[],
+export function applyAllFilters<T extends { url: string }>(
+  results: T[],
   options: FilterOptions,
-): RawSearchResult[] {
+): T[] {
   let filtered = filterByDomains(results, options.includeDomains, options.excludeDomains);
   filtered = filterByDateRange(filtered, options.fromDate, options.toDate);
   filtered = filterByCategory(filtered, options.category);
