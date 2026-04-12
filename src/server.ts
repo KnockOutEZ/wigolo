@@ -162,8 +162,8 @@ const EXTRACT_TOOL_SCHEMA = {
     html: { type: 'string', description: 'Raw HTML to extract from (url takes priority if both provided)' },
     mode: {
       type: 'string',
-      enum: ['selector', 'tables', 'metadata'],
-      description: 'Extraction mode (default: metadata)',
+      enum: ['selector', 'tables', 'metadata', 'schema'],
+      description: 'Extraction mode: selector (CSS), tables (HTML tables), metadata (meta tags + JSON-LD), schema (extract fields matching a JSON Schema via heuristic matching)',
     },
     css_selector: {
       type: 'string',
@@ -175,7 +175,7 @@ const EXTRACT_TOOL_SCHEMA = {
     },
     schema: {
       type: 'object',
-      description: 'JSON Schema for structured extraction (v2 — currently accepted but ignored)',
+      description: 'JSON Schema defining fields to extract. Field names are matched against page content via CSS classes, ARIA labels, microdata, and JSON-LD. Required when mode="schema".',
     },
   },
 };
@@ -260,7 +260,8 @@ export async function startServer(): Promise<void> {
         name: 'extract',
         description:
           'Extract structured data from a web page. Supports CSS selector extraction, ' +
-          'table-to-JSON conversion, and metadata extraction (title, author, date, etc.).',
+          'table-to-JSON conversion, metadata extraction (title, author, date, JSON-LD), ' +
+          'and schema-based extraction (provide a JSON Schema to heuristically extract matching fields).',
         inputSchema: EXTRACT_TOOL_SCHEMA,
       },
     ],
