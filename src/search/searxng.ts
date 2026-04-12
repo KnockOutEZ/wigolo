@@ -4,6 +4,28 @@ import { createLogger } from '../logger.js';
 
 const log = createLogger('search');
 
+const CATEGORY_MAP: Record<string, string> = {
+  general: 'general',
+  news: 'news',
+  code: 'it',
+  docs: 'it',
+  papers: 'science',
+  images: 'images',
+};
+
+function computeTimeRange(fromDate?: string, toDate?: string): string | null {
+  if (!fromDate) return null;
+  const from = new Date(fromDate);
+  if (isNaN(from.getTime())) return null;
+  const now = toDate ? new Date(toDate) : new Date();
+  if (isNaN(now.getTime())) return null;
+  const diffDays = Math.ceil((now.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays <= 1) return 'day';
+  if (diffDays <= 7) return 'week';
+  if (diffDays <= 30) return 'month';
+  return 'year';
+}
+
 interface SearxngApiResult {
   title: string;
   url: string;
@@ -29,8 +51,18 @@ export class SearxngClient implements SearchEngine {
     const timeoutMs = options.timeoutMs ?? config.searxngQueryTimeoutMs;
     const maxResults = options.maxResults ?? 10;
 
+    // Build query with domain site: operators
+    let queryStr = query;
+    if (options.includeDomains?.length) {
+      const siteFilter = options.includeDomains.map(d => `site:${d}`).join(' OR ');
+      queryStr = options.includeDomains.length === 1
+        ? `${query} site:${options.includeDomains[0]}`
+        : `${query} (${siteFilter})`;
+    }
+    // exclude_domains are NOT passed to SearXNG — handled by post-filter
+
     const params = new URLSearchParams({
-      q: query,
+      q: queryStr,
       format: 'json',
       pageno: '1',
     });
@@ -38,8 +70,19 @@ export class SearxngClient implements SearchEngine {
     if (options.timeRange) params.set('time_range', options.timeRange);
     if (options.language) params.set('language', options.language);
 
+    // Category pass-through
+    if (options.category) {
+      params.set('categories', CATEGORY_MAP[options.category] ?? 'general');
+    }
+
+    // Date range -> time_range bucket (SearXNG doesn't support arbitrary dates)
+    if (!options.timeRange && (options.fromDate || options.toDate)) {
+      const range = computeTimeRange(options.fromDate, options.toDate);
+      if (range) params.set('time_range', range);
+    }
+
     const url = `${this.baseUrl}/search?${params}`;
-    log.debug('querying searxng', { query, url });
+    log.debug('querying searxng', { query: queryStr, url });
 
     const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
 
