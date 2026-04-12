@@ -19,7 +19,7 @@ function computeTimeRange(fromDate?: string, toDate?: string): string | null {
   if (isNaN(from.getTime())) return null;
   const now = toDate ? new Date(toDate) : new Date();
   if (isNaN(now.getTime())) return null;
-  const diffDays = Math.ceil((now.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
+  const diffDays = Math.round((now.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
   if (diffDays <= 1) return 'day';
   if (diffDays <= 7) return 'week';
   if (diffDays <= 30) return 'month';
@@ -54,6 +54,8 @@ export class SearxngClient implements SearchEngine {
     // Build query with domain site: operators
     let queryStr = query;
     if (options.includeDomains?.length) {
+      // Best-effort: site: syntax works on Google/Bing but not all SearXNG engines.
+      // Post-filter in filters.ts handles the gap for engines that ignore it.
       const siteFilter = options.includeDomains.map(d => `site:${d}`).join(' OR ');
       queryStr = options.includeDomains.length === 1
         ? `${query} site:${options.includeDomains[0]}`
