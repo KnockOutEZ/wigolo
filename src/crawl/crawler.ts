@@ -150,21 +150,24 @@ export class Crawler {
     excludePatterns: string[] | undefined,
     robotsParser: RobotsParser | null,
   ): string[] {
-    return links.filter((link) => {
+    const filtered = links.filter((link) => {
       try {
         const parsed = new URL(link);
-        // Same origin only
         if (parsed.origin !== seedOrigin) return false;
-        // Not already visited
         if (visited.has(link)) return false;
-        // Pattern matching
         if (!matchesPatterns(link, includePatterns, excludePatterns)) return false;
-        // Robots.txt
         if (robotsParser && !robotsParser.isAllowed(parsed.pathname)) return false;
         return true;
       } catch {
         return false;
       }
+    });
+
+    // Prioritize documentation pages over marketing/nav pages
+    return filtered.sort((a, b) => {
+      const aDoc = isDocPage(a) ? 0 : 1;
+      const bDoc = isDocPage(b) ? 0 : 1;
+      return aDoc - bDoc;
     });
   }
 
@@ -226,7 +229,7 @@ export class Crawler {
     };
   }
 
-  private async discoverSitemapUrls(origin: string, robotsTxt: string | null): Promise<string[]> {
+  private async discoverSitemapUrls(origin: string, robotsTxt: string | null | undefined): Promise<string[]> {
     const sitemapLocations: string[] = [];
 
     // Check robots.txt for sitemap references (reuses already-fetched content)
@@ -270,4 +273,11 @@ export class Crawler {
 
     return allUrls;
   }
+}
+
+const DOC_PATH_PATTERNS = ['/docs/', '/guide/', '/api/', '/reference/'];
+
+function isDocPage(url: string): boolean {
+  const path = new URL(url).pathname.toLowerCase();
+  return DOC_PATH_PATTERNS.some(p => path.includes(p));
 }
