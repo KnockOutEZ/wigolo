@@ -28,13 +28,14 @@ print(json.dumps([{"index": int(r.metadata["id"] if hasattr(r, "metadata") else 
 `.trim();
 
 const SUBPROCESS_TIMEOUT_MS = 30000;
+const AVAILABILITY_CHECK_TIMEOUT_MS = 5000;
 
 let availableCache: boolean | null = null;
 
 export async function isFlashRankAvailable(): Promise<boolean> {
   if (availableCache !== null) return availableCache;
   try {
-    await execFileAsync('python3', ['-c', 'import flashrank'], { timeout: 5000 });
+    await execFileAsync('python3', ['-c', 'import flashrank'], { timeout: AVAILABILITY_CHECK_TIMEOUT_MS });
     availableCache = true;
   } catch {
     availableCache = false;

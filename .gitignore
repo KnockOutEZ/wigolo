@@ -1,10 +1,32 @@
+
+# Build & runtime
 node_modules/
 dist/
+*.tgz
+
+# Database files
 *.db
 *.db-journal
 *.db-wal
+
+# wigolo data
 .wigolo/
+
+# Secrets
 .env
+
+# Test coverage
 coverage/
-*.tgz
+
+# Git worktrees
 .worktrees/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

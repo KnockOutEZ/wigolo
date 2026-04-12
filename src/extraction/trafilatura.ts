@@ -118,7 +118,7 @@ export async function trafilaturaExtract(
       },
       links: [],
       images: [],
-      extractor: 'trafilatura' as any,
+      extractor: 'trafilatura',
     };
   } catch (err) {
     log.debug('Trafilatura extraction failed', { url, error: String(err) });
