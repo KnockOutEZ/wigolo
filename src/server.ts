@@ -77,6 +77,29 @@ const SEARCH_TOOL_SCHEMA = {
     time_range: { type: 'string', enum: ['day', 'week', 'month', 'year'], description: 'Time range filter' },
     search_engines: { type: 'array', items: { type: 'string' }, description: 'Override engine selection' },
     language: { type: 'string', description: 'Language preference' },
+    include_domains: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Only return results from these domains (e.g. ["react.dev", "github.com"])',
+    },
+    exclude_domains: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Never return results from these domains',
+    },
+    from_date: {
+      type: 'string',
+      description: 'ISO date (YYYY-MM-DD) — only return results published after this date',
+    },
+    to_date: {
+      type: 'string',
+      description: 'ISO date (YYYY-MM-DD) — only return results published before this date',
+    },
+    category: {
+      type: 'string',
+      enum: ['general', 'news', 'code', 'docs', 'papers', 'images'],
+      description: 'Category of search (general, news, code, docs, papers, images)',
+    },
   },
   required: ['query'],
 };
