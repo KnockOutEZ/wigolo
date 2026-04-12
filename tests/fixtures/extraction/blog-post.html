@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="A deep dive into building extraction pipelines with multiple fallback strategies">
+  <meta name="author" content="Alex Rivera">
+  <meta property="article:published_time" content="2026-03-28T14:00:00Z">
+  <title>Building Robust Extraction Pipelines - Alex's Dev Blog</title>
+  <style>
+    .sidebar { width: 300px; float: right; }
+    .comment { border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
+    .ad-block { background: #f0f0f0; padding: 20px; text-align: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 class="site-title"><a href="/">Alex's Dev Blog</a></h1>
+    <nav>
+      <a href="/posts">All Posts</a>
+      <a href="/about">About</a>
+      <a href="/rss">RSS Feed</a>
+    </nav>
+  </header>
+
+  <div class="ad-block">
+    <p>Advertisement: Learn Python in 30 days!</p>
+    <a href="https://ads.example.com/python-course">Click here</a>
+  </div>
+
+  <div class="content-layout">
+    <article class="post">
+      <header class="post-header">
+        <h1>Building Robust Extraction Pipelines</h1>
+        <div class="post-meta">
+          <span class="author">Alex Rivera</span>
+          <time datetime="2026-03-28T14:00:00Z">March 28, 2026</time>
+          <span class="tags">
+            <a href="/tags/python">Python</a>,
+            <a href="/tags/extraction">Extraction</a>,
+            <a href="/tags/web-scraping">Web Scraping</a>
+          </span>
+        </div>
+      </header>
+
+      <p>If you've ever tried to extract clean text from web pages, you know the pain. Every site has different markup, different ways of embedding content, and different amounts of noise around the actual article. In this post, I'll walk through building an extraction pipeline that handles all of this gracefully.</p>
+
+      <h2>The Problem</h2>
+
+      <p>Web pages are messy. A typical news article page has navigation headers, advertisement banners, sidebar widgets, newsletter signup forms, related article links, comment sections, and footer content — all surrounding the actual article text you want. A naive approach of just grabbing all text from the page gives you a wall of noise with the article buried somewhere in the middle.</p>
+
+      <h2>The Ensemble Approach</h2>
+
+      <p>The key insight is that no single extraction tool works perfectly on all pages. Some tools excel at news articles but struggle with documentation sites. Others handle blog posts well but fail on forum threads. The solution is to chain multiple extractors in a fallback cascade:</p>
+
+      <ol>
+        <li><strong>Site-specific extractors</strong> — hand-crafted rules for known sites like GitHub, Stack Overflow, and MDN</li>
+        <li><strong>Defuddle</strong> — uses structural analysis and content density heuristics</li>
+        <li><strong>Trafilatura</strong> — Python-based extractor with the highest measured F1 score (0.958)</li>
+        <li><strong>Readability</strong> — Mozilla's battle-tested article extraction algorithm</li>
+        <li><strong>Turndown</strong> — raw HTML-to-Markdown as a last resort</li>
+      </ol>
+
+      <p>Each extractor in the chain is tried in order. If one returns content above a quality threshold (typically 100+ characters of meaningful text), we use that result. If it returns null or too-short content, we try the next one.</p>
+
+      <h2>The Subprocess Pattern</h2>
+
+      <p>Running Trafilatura from a TypeScript/Node.js application requires spawning a Python subprocess. This is the same pattern used for any polyglot tool integration. The key considerations are:</p>
+
+      <ul>
+        <li>Send HTML via stdin (avoids file system overhead and temp file cleanup)</li>
+        <li>Set a timeout (15 seconds) to prevent hanging processes</li>
+        <li>Cache availability checks so we don't probe for Python on every request</li>
+        <li>Handle stderr gracefully — Python prints warnings to stderr even on success</li>
+      </ul>
+
+      <pre><code class="language-typescript">
+const proc = spawn('python3', ['-c', script], { timeout: 15000 });
+proc.stdin.write(html);
+proc.stdin.end();
+      </code></pre>
+
+      <h2>Configuration</h2>
+
+      <p>The pipeline should be configurable. Not every deployment has Python installed, and not every use case needs Trafilatura's precision. A simple three-way config handles this: <code>auto</code> (use if installed), <code>always</code> (require it), or <code>never</code> (skip it).</p>
+
+      <h2>Conclusion</h2>
+
+      <p>Building an extraction pipeline that degrades gracefully is more about good engineering than clever algorithms. The ensemble approach gives you the best of every world: precision when you can get it, and reliable fallbacks when you can't. The key is to fail silently, log everything, and let the next extractor in the chain take over.</p>
+    </article>
+
+    <aside class="sidebar">
+      <div class="about-widget">
+        <h3>About the Author</h3>
+        <p>Alex Rivera is a software engineer specializing in web scraping and data extraction.</p>
+      </div>
+      <div class="recent-posts">
+        <h3>Recent Posts</h3>
+        <ul>
+          <li><a href="/posts/sqlite-fts5">Full-Text Search with SQLite</a></li>
+          <li><a href="/posts/playwright-tips">Playwright Tips and Tricks</a></li>
+          <li><a href="/posts/searxng-setup">Setting Up SearXNG</a></li>
+        </ul>
+      </div>
+    </aside>
+  </div>
+
+  <section class="comments" id="comments">
+    <h2>Comments (3)</h2>
+    <div class="comment">
+      <strong>user123</strong> <time>2026-03-29</time>
+      <p>Great post! I've been looking for exactly this kind of pipeline architecture.</p>
+    </div>
+    <div class="comment">
+      <strong>dev_alice</strong> <time>2026-03-29</time>
+      <p>How do you handle the case where Trafilatura is slow? 15 seconds seems like a long timeout.</p>
+    </div>
+    <div class="comment">
+      <strong>webscraperPro</strong> <time>2026-03-30</time>
+      <p>We use a similar approach at work. The site-specific extractors are crucial for getting high-quality results on the top 10 sites you see most often.</p>
+    </div>
+    <form class="comment-form">
+      <textarea placeholder="Leave a comment..."></textarea>
+      <button type="submit">Post Comment</button>
+    </form>
+  </section>
+
+  <footer>
+    <p>&copy; 2026 Alex's Dev Blog. Built with love and TypeScript.</p>
+    <a href="/privacy">Privacy</a> | <a href="/terms">Terms</a>
+  </footer>
+</body>
+</html>
