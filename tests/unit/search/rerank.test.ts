@@ -188,6 +188,21 @@ describe('rerankResults with FlashRank', () => {
     expect(reranked[0].relevance_score).toBe(0.88);
   });
 
+  it('passes configured rerankerModel to FlashRank', async () => {
+    vi.mocked(getConfig).mockReturnValue({ reranker: 'flashrank', relevanceThreshold: 0, rerankerModel: 'ms-marco-MultiBERT-L-12' } as any);
+    vi.mocked(isFlashRankAvailable).mockResolvedValue(true);
+    vi.mocked(flashRankRerank).mockResolvedValue([{ index: 0, score: 0.9 }]);
+
+    const results = [makeResult('A', 0.5)];
+    await rerankResults('query', results);
+
+    expect(flashRankRerank).toHaveBeenCalledWith(
+      'query',
+      expect.any(Array),
+      'ms-marco-MultiBERT-L-12',
+    );
+  });
+
   it('applies threshold even in passthrough mode (no reranker)', async () => {
     vi.mocked(getConfig).mockReturnValue({ reranker: 'none', relevanceThreshold: 0.6 } as any);
 

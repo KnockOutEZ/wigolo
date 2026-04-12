@@ -98,7 +98,7 @@ export function getConfig(): Config {
     trafilatura: (envStr('WIGOLO_TRAFILATURA', 'auto') as 'auto' | 'always' | 'never'),
     reranker: (envStr('WIGOLO_RERANKER') ?? 'none') as Config['reranker'],
     rerankerModel: envStr('WIGOLO_RERANKER_MODEL') ?? 'ms-marco-MiniLM-L-12-v2',
-    relevanceThreshold: parseFloat(envStr('WIGOLO_RELEVANCE_THRESHOLD') ?? '0'),
+    relevanceThreshold: parseFloat(envStr('WIGOLO_RELEVANCE_THRESHOLD') ?? '0') || 0,
   };
 
   return cachedConfig;

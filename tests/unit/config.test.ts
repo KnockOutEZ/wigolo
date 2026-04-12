@@ -97,8 +97,7 @@ describe('config', () => {
     it('handles invalid WIGOLO_RELEVANCE_THRESHOLD (NaN falls back to 0)', () => {
       process.env.WIGOLO_RELEVANCE_THRESHOLD = 'not-a-number';
       resetConfig();
-      const val = getConfig().relevanceThreshold;
-      expect(Number.isNaN(val) || val === 0).toBe(true);
+      expect(getConfig().relevanceThreshold).toBe(0);
     });
 
     it('reads WIGOLO_RERANKER value custom', () => {

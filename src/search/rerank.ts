@@ -20,7 +20,7 @@ export async function rerankResults(
         index: i,
       }));
 
-      const ranked = await flashRankRerank(query, passages);
+      const ranked = await flashRankRerank(query, passages, config.rerankerModel);
       if (ranked) {
         const reordered = ranked.map((r) => ({
           ...results[r.index],
