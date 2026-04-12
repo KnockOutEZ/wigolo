@@ -101,18 +101,18 @@ export async function handleSearch(
   }
 
   let merged = deduplicateResults(allRaw);
-  merged = await rerankResults(input.query, merged);
 
-  // Post-filter: domain + date + category (Slice 7)
-  const filtered = applyAllFilters(merged, {
+  // Post-filter: domain + date + category (Slice 7) — runs before rerank so
+  // the reranker only scores results that pass filters (Slice 9 interaction).
+  merged = applyAllFilters(merged, {
     includeDomains: input.include_domains,
     excludeDomains: input.exclude_domains,
     fromDate: input.from_date,
     toDate: input.to_date,
     category: input.category,
   });
-  merged = filtered;
 
+  merged = await rerankResults(input.query, merged);
   merged = await validateLinks(merged);
 
   merged = merged.slice(0, maxResults);
