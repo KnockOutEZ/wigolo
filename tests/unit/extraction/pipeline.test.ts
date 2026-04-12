@@ -5,6 +5,15 @@ import { join } from 'node:path';
 const fixturesDir = join(import.meta.dirname, '../../fixtures/extraction');
 const loadFixture = (name: string) => readFileSync(join(fixturesDir, name), 'utf-8');
 
+vi.mock('../../../src/extraction/trafilatura.js', () => ({
+  trafilaturaExtract: vi.fn(),
+  isTrafilaturaAvailable: vi.fn(),
+}));
+
+vi.mock('../../../src/config.js', () => ({
+  getConfig: vi.fn(() => ({ trafilatura: 'auto' })),
+}));
+
 vi.mock('../../../src/extraction/defuddle.js', () => ({
   defuddleExtract: vi.fn(),
 }));
@@ -15,11 +24,16 @@ vi.mock('../../../src/extraction/readability.js', () => ({
 
 import { defuddleExtract } from '../../../src/extraction/defuddle.js';
 import { readabilityExtract } from '../../../src/extraction/readability.js';
+import { trafilaturaExtract, isTrafilaturaAvailable } from '../../../src/extraction/trafilatura.js';
+import { getConfig } from '../../../src/config.js';
 import { extractContent, registerExtractor } from '../../../src/extraction/pipeline.js';
 import type { ExtractionResult, Extractor } from '../../../src/types.js';
 
 const mockDefuddle = vi.mocked(defuddleExtract);
 const mockReadability = vi.mocked(readabilityExtract);
+const mockTrafilatura = vi.mocked(trafilaturaExtract);
+const mockTrafilaturaAvailable = vi.mocked(isTrafilaturaAvailable);
+const mockGetConfig = vi.mocked(getConfig);
 
 const ARTICLE_HTML = loadFixture('article.html');
 const MINIMAL_HTML = loadFixture('minimal.html');
@@ -39,6 +53,9 @@ function makeResult(overrides: Partial<ExtractionResult> = {}): ExtractionResult
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockTrafilaturaAvailable.mockResolvedValue(false);
+  mockTrafilatura.mockResolvedValue(null);
+  mockGetConfig.mockReturnValue({ trafilatura: 'auto' } as any);
 });
 
 describe('extractContent — site-specific extractor', () => {
@@ -220,5 +237,119 @@ describe('extractContent — extractor field correctness', () => {
 
     const result = await extractContent(ARTICLE_HTML, 'https://specific.example.com/page');
     expect(result.extractor).toBe('site-specific');
+  });
+});
+
+describe('extractContent — trafilatura path', () => {
+  it('tries Trafilatura when Defuddle returns null and Trafilatura is available', async () => {
+    mockDefuddle.mockResolvedValue(null);
+    mockTrafilaturaAvailable.mockResolvedValue(true);
+    mockTrafilatura.mockResolvedValue(makeResult({
+      extractor: 'trafilatura',
+      title: 'Trafilatura Title',
+      markdown: 'Trafilatura extracted this content.',
+    }));
+
+    const result = await extractContent(ARTICLE_HTML, 'https://other.com/page');
+
+    expect(result.extractor).toBe('trafilatura');
+    expect(result.title).toBe('Trafilatura Title');
+    expect(mockReadability).not.toHaveBeenCalled();
+  });
+
+  it('skips Trafilatura when not available and falls back to Readability', async () => {
+    mockDefuddle.mockResolvedValue(null);
+    mockTrafilaturaAvailable.mockResolvedValue(false);
+    mockReadability.mockReturnValue(makeResult({
+      extractor: 'readability',
+      title: 'Readability Result',
+    }));
+
+    const result = await extractContent(ARTICLE_HTML, 'https://other.com/page');
+
+    expect(result.extractor).toBe('readability');
+    expect(mockTrafilatura).not.toHaveBeenCalled();
+  });
+
+  it('falls back to Readability when Trafilatura returns null', async () => {
+    mockDefuddle.mockResolvedValue(null);
+    mockTrafilaturaAvailable.mockResolvedValue(true);
+    mockTrafilatura.mockResolvedValue(null);
+    mockReadability.mockReturnValue(makeResult({
+      extractor: 'readability',
+      title: 'Readability Fallback',
+    }));
+
+    const result = await extractContent(ARTICLE_HTML, 'https://other.com/page');
+
+    expect(result.extractor).toBe('readability');
+  });
+
+  it('does not try Trafilatura when Defuddle succeeds', async () => {
+    mockDefuddle.mockResolvedValue(makeResult({
+      extractor: 'defuddle',
+      title: 'Defuddle Wins',
+    }));
+    mockTrafilaturaAvailable.mockResolvedValue(true);
+
+    const result = await extractContent(ARTICLE_HTML, 'https://other.com/page');
+
+    expect(result.extractor).toBe('defuddle');
+    expect(mockTrafilatura).not.toHaveBeenCalled();
+    expect(mockTrafilaturaAvailable).not.toHaveBeenCalled();
+  });
+
+  it('skips Trafilatura when config is set to never', async () => {
+    mockDefuddle.mockResolvedValue(null);
+    mockGetConfig.mockReturnValue({ trafilatura: 'never' } as any);
+    mockReadability.mockReturnValue(makeResult({ extractor: 'readability' }));
+
+    const result = await extractContent(ARTICLE_HTML, 'https://other.com/page');
+
+    expect(result.extractor).toBe('readability');
+    expect(mockTrafilaturaAvailable).not.toHaveBeenCalled();
+    expect(mockTrafilatura).not.toHaveBeenCalled();
+  });
+
+  it('tries Trafilatura when config is always even if availability not cached', async () => {
+    mockDefuddle.mockResolvedValue(null);
+    mockGetConfig.mockReturnValue({ trafilatura: 'always' } as any);
+    mockTrafilaturaAvailable.mockResolvedValue(true);
+    mockTrafilatura.mockResolvedValue(makeResult({
+      extractor: 'trafilatura',
+      title: 'Always Mode',
+    }));
+
+    const result = await extractContent(ARTICLE_HTML, 'https://other.com/page');
+
+    expect(result.extractor).toBe('trafilatura');
+  });
+
+  it('falls through entire chain to turndown when all extractors return null', async () => {
+    mockDefuddle.mockResolvedValue(null);
+    mockTrafilaturaAvailable.mockResolvedValue(true);
+    mockTrafilatura.mockResolvedValue(null);
+    mockReadability.mockReturnValue(null);
+
+    const result = await extractContent(ARTICLE_HTML, 'https://other.com/page');
+
+    expect(result.extractor).toBe('turndown');
+    expect(result.markdown.length).toBeGreaterThan(0);
+  });
+
+  it('applies post-processing (maxChars, section) to Trafilatura result', async () => {
+    mockDefuddle.mockResolvedValue(null);
+    mockTrafilaturaAvailable.mockResolvedValue(true);
+    mockTrafilatura.mockResolvedValue(makeResult({
+      extractor: 'trafilatura',
+      markdown: 'A'.repeat(500),
+    }));
+
+    const result = await extractContent(ARTICLE_HTML, 'https://other.com/page', {
+      maxChars: 100,
+    });
+
+    expect(result.extractor).toBe('trafilatura');
+    expect(result.markdown.length).toBeLessThanOrEqual(100);
   });
 });
