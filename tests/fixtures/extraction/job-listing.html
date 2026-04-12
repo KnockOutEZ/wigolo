@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Senior TypeScript Developer - Acme Corp</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "JobPosting",
+    "title": "Senior TypeScript Developer",
+    "hiringOrganization": {
+      "@type": "Organization",
+      "name": "Acme Corp"
+    },
+    "datePosted": "2026-04-01",
+    "employmentType": "FULL_TIME",
+    "jobLocation": {
+      "@type": "Place",
+      "address": {
+        "@type": "PostalAddress",
+        "addressLocality": "San Francisco",
+        "addressRegion": "CA"
+      }
+    },
+    "baseSalary": {
+      "@type": "MonetaryAmount",
+      "currency": "USD",
+      "value": {
+        "@type": "QuantitativeValue",
+        "minValue": 150000,
+        "maxValue": 200000,
+        "unitText": "YEAR"
+      }
+    }
+  }
+  </script>
+</head>
+<body>
+  <div class="job-posting" itemscope itemtype="https://schema.org/JobPosting">
+    <h1 class="job-title" itemprop="title">Senior TypeScript Developer</h1>
+    <div class="company-name" itemprop="hiringOrganization" itemscope itemtype="https://schema.org/Organization">
+      <span itemprop="name">Acme Corp</span>
+    </div>
+    <div class="job-location" aria-label="location">San Francisco, CA</div>
+    <div class="employment-type">Full-time</div>
+    <div class="salary-range" aria-label="salary">$150,000 - $200,000/year</div>
+    <div class="date-posted">Posted: April 1, 2026</div>
+    <div class="job-description" itemprop="description">
+      We are looking for a senior TypeScript developer to join our platform team.
+      You will build tooling for AI coding agents.
+    </div>
+    <ul class="requirements">
+      <li class="requirement">5+ years TypeScript experience</li>
+      <li class="requirement">Node.js and browser runtime expertise</li>
+      <li class="requirement">Experience with MCP or similar protocols</li>
+    </ul>
+    <ul class="benefits">
+      <li>Remote-friendly</li>
+      <li>Health insurance</li>
+      <li>401k matching</li>
+    </ul>
+  </div>
+</body>
+</html>
