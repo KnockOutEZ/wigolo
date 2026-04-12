@@ -17,8 +17,8 @@ export function initDatabase(dbPath: string): Database.Database {
   db.exec(`
     CREATE TABLE IF NOT EXISTS url_cache (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      url TEXT NOT NULL,
-      normalized_url TEXT NOT NULL UNIQUE,
+      url TEXT UNIQUE NOT NULL,
+      normalized_url TEXT NOT NULL,
       title TEXT,
       markdown TEXT,
       raw_html TEXT,
@@ -28,35 +28,36 @@ export function initDatabase(dbPath: string): Database.Database {
       fetch_method TEXT,
       extractor_used TEXT,
       content_hash TEXT,
-      fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
-      expires_at TEXT
+      fetched_at TEXT NOT NULL,
+      expires_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    CREATE INDEX IF NOT EXISTS idx_url_cache_normalized ON url_cache(normalized_url);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_url_cache_normalized ON url_cache(normalized_url);
 
     CREATE VIRTUAL TABLE IF NOT EXISTS url_cache_fts USING fts5(
       title,
       markdown,
+      url,
       content='url_cache',
       content_rowid='id'
     );
 
     CREATE TRIGGER IF NOT EXISTS url_cache_ai AFTER INSERT ON url_cache BEGIN
-      INSERT INTO url_cache_fts(rowid, title, markdown)
-        VALUES (new.id, new.title, new.markdown);
+      INSERT INTO url_cache_fts(rowid, title, markdown, url)
+        VALUES (new.id, new.title, new.markdown, new.url);
     END;
 
     CREATE TRIGGER IF NOT EXISTS url_cache_ad BEFORE DELETE ON url_cache BEGIN
-      INSERT INTO url_cache_fts(url_cache_fts, rowid, title, markdown)
-        VALUES ('delete', old.id, old.title, old.markdown);
+      INSERT INTO url_cache_fts(url_cache_fts, rowid, title, markdown, url)
+        VALUES ('delete', old.id, old.title, old.markdown, old.url);
     END;
 
     CREATE TRIGGER IF NOT EXISTS url_cache_au BEFORE UPDATE ON url_cache BEGIN
-      INSERT INTO url_cache_fts(url_cache_fts, rowid, title, markdown)
-        VALUES ('delete', old.id, old.title, old.markdown);
+      INSERT INTO url_cache_fts(url_cache_fts, rowid, title, markdown, url)
+        VALUES ('delete', old.id, old.title, old.markdown, old.url);
     END;
-
-    DROP TABLE IF EXISTS search_cache;
 
     CREATE TABLE IF NOT EXISTS search_cache (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,15 +71,17 @@ export function initDatabase(dbPath: string): Database.Database {
 
     CREATE TABLE IF NOT EXISTS domain_routing (
       domain TEXT PRIMARY KEY,
-      preferred_method TEXT,
-      failure_count INTEGER DEFAULT 0,
+      prefer_playwright INTEGER DEFAULT 0,
+      http_failures INTEGER DEFAULT 0,
       last_updated TEXT
     );
 
     CREATE TABLE IF NOT EXISTS domain_boilerplate (
-      domain TEXT PRIMARY KEY,
-      selectors TEXT,
-      last_updated TEXT
+      domain TEXT NOT NULL,
+      block_hash TEXT NOT NULL,
+      sample_text TEXT,
+      discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (domain, block_hash)
     );
   `);
 

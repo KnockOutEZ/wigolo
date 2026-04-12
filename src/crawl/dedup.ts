@@ -99,15 +99,21 @@ export function deduplicatePages(pages: PageInput[], domain?: string): PageOutpu
 
 export function getStoredBoilerplate(domain: string): string[] {
   const db = getDatabase();
-  const row = db.prepare('SELECT selectors FROM domain_boilerplate WHERE domain = ?').get(domain) as { selectors: string } | undefined;
-  if (!row || !row.selectors) return [];
-  return JSON.parse(row.selectors) as string[];
+  const rows = db.prepare('SELECT block_hash FROM domain_boilerplate WHERE domain = ?').all(domain) as { block_hash: string }[];
+  return rows.map(r => r.block_hash);
 }
 
 export function storeBoilerplate(domain: string, hashes: string[]): void {
   const db = getDatabase();
-  db.prepare(`
-    INSERT OR REPLACE INTO domain_boilerplate (domain, selectors, last_updated)
-    VALUES (?, ?, datetime('now'))
-  `).run(domain, JSON.stringify(hashes));
+  const del = db.prepare('DELETE FROM domain_boilerplate WHERE domain = ?');
+  const insert = db.prepare(
+    'INSERT OR IGNORE INTO domain_boilerplate (domain, block_hash, sample_text) VALUES (?, ?, ?)',
+  );
+  const tx = db.transaction((items: string[]) => {
+    del.run(domain);
+    for (const hash of items) {
+      insert.run(domain, hash, null);
+    }
+  });
+  tx(hashes);
 }
