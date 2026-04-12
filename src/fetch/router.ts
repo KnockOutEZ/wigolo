@@ -8,6 +8,7 @@ export interface RouterFetchOptions {
   renderJs?: 'auto' | 'always' | 'never';
   useAuth?: boolean;
   headers?: Record<string, string>;
+  screenshot?: boolean;
 }
 
 export interface HttpClient {
@@ -21,13 +22,14 @@ export interface HttpClient {
     contentType: string;
     statusCode: number;
     headers: Record<string, string>;
+    rawBuffer?: Buffer;
   }>;
 }
 
 export interface BrowserPoolInterface {
   fetchWithBrowser(
     url: string,
-    options?: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string },
+    options?: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string; screenshot?: boolean },
   ): Promise<RawFetchResult>;
 }
 
@@ -45,7 +47,7 @@ export class SmartRouter {
   ) {}
 
   async fetch(url: string, options: RouterFetchOptions = {}): Promise<RawFetchResult> {
-    const { renderJs = 'auto', useAuth = false, headers } = options;
+    const { renderJs = 'auto', useAuth = false, headers, screenshot } = options;
     const config = getConfig();
     const logger = createLogger('fetch');
     const threshold = config.browserFallbackThreshold;
@@ -55,7 +57,7 @@ export class SmartRouter {
     if (renderJs === 'always' || useAuth) {
       const authOptions = useAuth ? (getAuthOptions() ?? {}) : {};
       logger.debug('routing to playwright', { url, reason: useAuth ? 'auth' : 'render_js=always' });
-      return this.browserPool.fetchWithBrowser(url, { headers, ...authOptions });
+      return this.browserPool.fetchWithBrowser(url, { headers, screenshot, ...authOptions });
     }
 
     // HTTP only, no fallback
@@ -71,7 +73,7 @@ export class SmartRouter {
 
     if (stats.preferPlaywright) {
       logger.debug('routing to playwright (domain marked)', { url, domain });
-      return this.browserPool.fetchWithBrowser(url, { headers });
+      return this.browserPool.fetchWithBrowser(url, { headers, screenshot });
     }
 
     // Try HTTP first
@@ -82,7 +84,7 @@ export class SmartRouter {
       if (contentAppearsEmpty(result.html)) {
         logger.info('SPA shell detected, marking domain for playwright', { url, domain });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers });
+        return this.browserPool.fetchWithBrowser(url, { headers, screenshot });
       }
 
       return this.toRawFetchResult(result);
@@ -98,7 +100,7 @@ export class SmartRouter {
       if (stats.failureCount >= threshold) {
         logger.info('failure threshold reached, marking domain for playwright', { url, domain, threshold });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers });
+        return this.browserPool.fetchWithBrowser(url, { headers, screenshot });
       }
 
       throw err;
@@ -129,6 +131,7 @@ export class SmartRouter {
       statusCode: result.statusCode,
       method: 'http',
       headers: result.headers,
+      rawBuffer: result.rawBuffer,
     };
   }
 }

@@ -50,6 +50,7 @@ export async function handleFetch(
       renderJs: input.render_js ?? 'auto',
       useAuth: input.use_auth ?? false,
       headers: input.headers,
+      screenshot: input.screenshot,
     });
 
     const extraction = await extractContent(raw.html, raw.finalUrl, {
@@ -57,6 +58,7 @@ export async function handleFetch(
       section: input.section,
       sectionIndex: input.section_index,
       contentType: raw.contentType,
+      pdfBuffer: raw.rawBuffer,
     });
 
     cacheContent(raw, extraction);
@@ -68,6 +70,7 @@ export async function handleFetch(
       metadata: extraction.metadata,
       links: extraction.links,
       images: extraction.images,
+      screenshot: raw.screenshot,
       cached: false,
     };
   } catch (err) {

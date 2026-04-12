@@ -13,11 +13,23 @@ export interface HttpFetchResult {
   contentType: string;
   statusCode: number;
   headers: Record<string, string>;
+  rawBuffer?: Buffer;
 }
 
 const RETRYABLE_STATUSES = new Set([429, 502, 503]);
 const RETRYABLE_ERROR_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED']);
 const REDIRECT_STATUSES = new Set([301, 302, 307, 308]);
+
+const DEFAULT_USER_AGENTS = [
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+];
+
+function getRotatingUserAgent(config: { userAgent?: string | null }): string {
+  if (config.userAgent) return config.userAgent;
+  return DEFAULT_USER_AGENTS[Math.floor(Math.random() * DEFAULT_USER_AGENTS.length)];
+}
 
 function isRetryableError(err: unknown): boolean {
   if (err instanceof Error) {
@@ -110,8 +122,10 @@ async function fetchWithRedirects(
 
     let response: Response;
     try {
+      const ua = getRotatingUserAgent(getConfig());
+      const mergedHeaders = { 'User-Agent': ua, ...options.headers };
       response = await fetch(currentUrl, {
-        headers: options.headers,
+        headers: mergedHeaders,
         redirect: 'manual',
         signal,
       });
@@ -142,12 +156,23 @@ async function fetchWithRedirects(
       throw new HttpFetchError(`HTTP ${response.status} from ${currentUrl}`, true);
     }
 
-    const html = await response.text();
     const contentType = response.headers.get('content-type') ?? '';
     const headers: Record<string, string> = {};
     response.headers.forEach((value, key) => {
       headers[key] = value;
     });
+
+    const isPdf = contentType.includes('application/pdf');
+    let html: string;
+    let rawBuffer: Buffer | undefined;
+
+    if (isPdf) {
+      const arrayBuf = await response.arrayBuffer();
+      rawBuffer = Buffer.from(arrayBuf);
+      html = '';
+    } else {
+      html = await response.text();
+    }
 
     return {
       url: originalUrl,
@@ -156,6 +181,7 @@ async function fetchWithRedirects(
       contentType,
       statusCode: response.status,
       headers,
+      rawBuffer,
     };
   }
 }
