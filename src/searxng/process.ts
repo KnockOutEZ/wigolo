@@ -145,6 +145,11 @@ export class SearxngProcess {
     });
 
     writeFileSync(join(this.dataDir, 'searxng.port'), String(this.port));
+    // Update lock file with the resolved port so other instances can connect
+    writeFileSync(
+      join(this.dataDir, 'searxng.lock'),
+      JSON.stringify({ pid: process.pid, port: this.port, startedAt: new Date().toISOString() }),
+    );
 
     const url = this.getUrl()!;
     const healthy = await waitForHealth(url, HEALTH_TIMEOUT_MS);
