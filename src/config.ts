@@ -35,6 +35,9 @@ export interface Config {
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   logFormat: 'json' | 'text';
   trafilatura: 'auto' | 'always' | 'never';
+  reranker: 'flashrank' | 'none' | 'custom';
+  rerankerModel: string;
+  relevanceThreshold: number;
 }
 
 function envStr(key: string, fallback: string | null = null): string | null {
@@ -93,6 +96,9 @@ export function getConfig(): Config {
     logLevel: (envStr('LOG_LEVEL', 'info') as Config['logLevel']),
     logFormat: (envStr('LOG_FORMAT', 'json') as Config['logFormat']),
     trafilatura: (envStr('WIGOLO_TRAFILATURA', 'auto') as 'auto' | 'always' | 'never'),
+    reranker: (envStr('WIGOLO_RERANKER') ?? 'none') as Config['reranker'],
+    rerankerModel: envStr('WIGOLO_RERANKER_MODEL') ?? 'ms-marco-MiniLM-L-12-v2',
+    relevanceThreshold: parseFloat(envStr('WIGOLO_RELEVANCE_THRESHOLD') ?? '0'),
   };
 
   return cachedConfig;

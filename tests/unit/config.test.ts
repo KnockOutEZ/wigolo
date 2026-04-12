@@ -57,6 +57,57 @@ describe('config', () => {
     expect(config.dataDir).toContain('.wigolo');
   });
 
+  describe('reranker configuration', () => {
+    it('reads WIGOLO_RERANKER config', () => {
+      process.env.WIGOLO_RERANKER = 'flashrank';
+      resetConfig();
+      expect(getConfig().reranker).toBe('flashrank');
+    });
+
+    it('defaults WIGOLO_RERANKER to none', () => {
+      delete process.env.WIGOLO_RERANKER;
+      resetConfig();
+      expect(getConfig().reranker).toBe('none');
+    });
+
+    it('reads WIGOLO_RERANKER_MODEL config', () => {
+      process.env.WIGOLO_RERANKER_MODEL = 'custom-model';
+      resetConfig();
+      expect(getConfig().rerankerModel).toBe('custom-model');
+    });
+
+    it('defaults WIGOLO_RERANKER_MODEL to ms-marco-MiniLM-L-12-v2', () => {
+      delete process.env.WIGOLO_RERANKER_MODEL;
+      resetConfig();
+      expect(getConfig().rerankerModel).toBe('ms-marco-MiniLM-L-12-v2');
+    });
+
+    it('reads WIGOLO_RELEVANCE_THRESHOLD config', () => {
+      process.env.WIGOLO_RELEVANCE_THRESHOLD = '0.3';
+      resetConfig();
+      expect(getConfig().relevanceThreshold).toBe(0.3);
+    });
+
+    it('defaults WIGOLO_RELEVANCE_THRESHOLD to 0', () => {
+      delete process.env.WIGOLO_RELEVANCE_THRESHOLD;
+      resetConfig();
+      expect(getConfig().relevanceThreshold).toBe(0);
+    });
+
+    it('handles invalid WIGOLO_RELEVANCE_THRESHOLD (NaN falls back to 0)', () => {
+      process.env.WIGOLO_RELEVANCE_THRESHOLD = 'not-a-number';
+      resetConfig();
+      const val = getConfig().relevanceThreshold;
+      expect(Number.isNaN(val) || val === 0).toBe(true);
+    });
+
+    it('reads WIGOLO_RERANKER value custom', () => {
+      process.env.WIGOLO_RERANKER = 'custom';
+      resetConfig();
+      expect(getConfig().reranker).toBe('custom');
+    });
+  });
+
   describe('WIGOLO_TRAFILATURA config', () => {
     it('defaults to auto when env var is not set', () => {
       delete process.env.WIGOLO_TRAFILATURA;

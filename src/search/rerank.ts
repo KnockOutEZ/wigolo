@@ -9,7 +9,7 @@ export async function rerankResults(
   query: string,
   results: MergedSearchResult[],
 ): Promise<MergedSearchResult[]> {
-  const config = getConfig() as any;
+  const config = getConfig();
 
   if (results.length === 0) return results;
 
