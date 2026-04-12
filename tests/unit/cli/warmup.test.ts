@@ -88,3 +88,80 @@ describe('runWarmup', () => {
     expect(result.searxng).toBe('no_python');
   });
 });
+
+describe('runWarmup with flags', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+  });
+
+  it('accepts flags parameter without breaking existing behavior', async () => {
+    vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
+
+    const result = await runWarmup([]);
+
+    expect(result.playwright).toBe('ok');
+    expect(result.searxng).toBe('ready');
+  });
+
+  it('accepts no arguments (backward compatible)', async () => {
+    vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
+
+    const result = await runWarmup();
+
+    expect(result.playwright).toBe('ok');
+  });
+
+  it('installs trafilatura when --trafilatura flag is passed', async () => {
+    vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
+
+    const result = await runWarmup(['--trafilatura']);
+
+    expect(execSync).toHaveBeenCalledWith(
+      expect.stringContaining('pip'),
+      expect.objectContaining({ timeout: 120000 }),
+    );
+    // The call list should include both playwright install and pip install
+    const calls = vi.mocked(execSync).mock.calls;
+    const pipCall = calls.find((c) => String(c[0]).includes('trafilatura'));
+    expect(pipCall).toBeDefined();
+  });
+
+  it('installs trafilatura when --all flag is passed', async () => {
+    vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
+
+    await runWarmup(['--all']);
+
+    const calls = vi.mocked(execSync).mock.calls;
+    const pipCall = calls.find((c) => String(c[0]).includes('trafilatura'));
+    expect(pipCall).toBeDefined();
+  });
+
+  it('does not install trafilatura when no flag is passed', async () => {
+    vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
+
+    await runWarmup([]);
+
+    const calls = vi.mocked(execSync).mock.calls;
+    const pipCall = calls.find((c) => String(c[0]).includes('trafilatura'));
+    expect(pipCall).toBeUndefined();
+  });
+
+  it('handles trafilatura install failure gracefully', async () => {
+    vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
+
+    // First call succeeds (playwright), second call fails (pip install trafilatura)
+    let callCount = 0;
+    vi.mocked(execSync).mockImplementation((cmd: string) => {
+      callCount++;
+      if (String(cmd).includes('trafilatura')) {
+        throw new Error('pip install failed: network error');
+      }
+      return Buffer.from('');
+    });
+
+    // Should not throw -- warmup continues despite trafilatura install failure
+    const result = await runWarmup(['--trafilatura']);
+    expect(result.playwright).toBe('ok');
+  });
+});

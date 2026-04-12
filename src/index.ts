@@ -10,7 +10,7 @@ const { command, args } = parseCommand(process.argv.slice(2));
 
 switch (command) {
   case 'warmup':
-    await runWarmup();
+    await runWarmup(args);
     break;
 
   case 'serve':

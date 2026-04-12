@@ -7,6 +7,7 @@ export interface WarmupResult {
   playwrightError?: string;
   searxng: 'ready' | 'bootstrapped' | 'failed' | 'no_python';
   searxngError?: string;
+  trafilatura?: 'ok' | 'failed' | 'skipped';
 }
 
 function log(msg: string): void {
@@ -23,6 +24,22 @@ function installPlaywright(): Pick<WarmupResult, 'playwright' | 'playwrightError
     const message = err instanceof Error ? err.message : String(err);
     log(`Playwright install failed: ${message}`);
     return { playwright: 'failed', playwrightError: message };
+  }
+}
+
+function installTrafilatura(): 'ok' | 'failed' {
+  log('Installing Trafilatura...');
+  try {
+    execSync('python3 -m pip install --quiet trafilatura', {
+      stdio: 'pipe',
+      timeout: 120000,
+    });
+    log('Trafilatura installed');
+    return 'ok';
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`Trafilatura install failed: ${message}`);
+    return 'failed';
   }
 }
 
@@ -46,7 +63,7 @@ function setupSearxng(dataDir: string): SearxngCheckResult {
   return { needsBootstrap: true };
 }
 
-export async function runWarmup(): Promise<WarmupResult> {
+export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
   log('Starting warmup...');
   const config = getConfig();
 
@@ -70,12 +87,21 @@ export async function runWarmup(): Promise<WarmupResult> {
     searxngResult = searxngCheck;
   }
 
-  const result: WarmupResult = { ...pwResult, ...searxngResult };
+  const flagSet = new Set(flags);
+  let trafStatus: 'ok' | 'failed' | 'skipped' = 'skipped';
+  if (flagSet.has('--trafilatura') || flagSet.has('--all')) {
+    trafStatus = installTrafilatura();
+  }
+
+  const result: WarmupResult = { ...pwResult, ...searxngResult, trafilatura: trafStatus };
 
   log('');
   log('Summary:');
-  log(`  Playwright: ${result.playwright}${result.playwrightError ? ` (${result.playwrightError})` : ''}`);
-  log(`  SearXNG:    ${result.searxng}${result.searxngError ? ` (${result.searxngError})` : ''}`);
+  log(`  Playwright:    ${result.playwright}${result.playwrightError ? ` (${result.playwrightError})` : ''}`);
+  log(`  SearXNG:       ${result.searxng}${result.searxngError ? ` (${result.searxngError})` : ''}`);
+  if (trafStatus !== 'skipped') {
+    log(`  Trafilatura:   ${trafStatus}`);
+  }
 
   return result;
 }
