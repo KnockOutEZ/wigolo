@@ -1,26 +1,27 @@
 #!/usr/bin/env node
 
+import { parseCommand } from './cli/index.js';
+import { runWarmup } from './cli/warmup.js';
+import { runDaemon } from './cli/daemon.js';
+import { runHealthCheck } from './cli/health.js';
 import { startServer } from './server.js';
 
-const command = process.argv[2];
+const { command, args } = parseCommand(process.argv.slice(2));
 
 switch (command) {
   case 'warmup':
-    console.log('warmup: not yet implemented');
-    process.exit(0);
+    await runWarmup();
     break;
 
   case 'serve':
-    console.log('serve: not yet implemented');
-    process.exit(0);
+    runDaemon(args);
     break;
 
   case 'health':
-    console.log('health: ok');
-    process.exit(0);
+    runHealthCheck();
     break;
 
-  default:
+  case 'mcp':
     await startServer();
     break;
 }
