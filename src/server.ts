@@ -112,8 +112,8 @@ const CRAWL_TOOL_SCHEMA = {
     max_pages: { type: 'number', description: 'Maximum pages to crawl (default: 20)' },
     strategy: {
       type: 'string',
-      enum: ['bfs', 'dfs', 'sitemap'],
-      description: 'Crawl strategy (default: bfs)',
+      enum: ['bfs', 'dfs', 'sitemap', 'map'],
+      description: 'Crawl strategy: bfs (breadth-first), dfs (depth-first), sitemap (use sitemap.xml), map (URL-only discovery — returns list of URLs without content, faster than full crawl)',
     },
     include_patterns: {
       type: 'array',
