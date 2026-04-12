@@ -275,8 +275,8 @@ describe('trafilaturaExtract — content threshold', () => {
 // ═══════════════════════════════════════════
 
 describe('trafilaturaExtract — timeout and error recovery', () => {
-  it('returns null when Python process hangs beyond timeout', async () => {
-    // Process never emits close/data
+  it('returns null when Python process hangs beyond timeout', () => {
+    // Process never emits close/data — do not await to avoid hanging
     const proc = new EventEmitter() as ChildProcess;
     const stdoutEmitter = new EventEmitter();
     const stderrEmitter = new EventEmitter();
@@ -290,8 +290,9 @@ describe('trafilaturaExtract — timeout and error recovery', () => {
 
     mockSpawn.mockReturnValue(proc);
 
-    // The spawn call should include a timeout option
-    await trafilaturaExtract('<html>test</html>', 'https://example.com');
+    // Fire and forget — we only care that spawn was called with timeout: 15000
+    void trafilaturaExtract('<html>test</html>', 'https://example.com');
+
     expect(mockSpawn).toHaveBeenCalledWith(
       'python3',
       expect.any(Array),

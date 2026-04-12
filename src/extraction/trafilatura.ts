@@ -43,15 +43,18 @@ export function runPythonWithStdin(
   stdin: string,
   timeoutMs: number,
 ): Promise<string> {
+  const procRef = { current: null as ReturnType<typeof spawn> | null };
+
   const procPromise = new Promise<string>((resolve, reject) => {
     const proc = spawn('python3', ['-c', script], { timeout: timeoutMs });
+    procRef.current = proc;
     let stdout = '';
     let stderr = '';
 
-    proc.stdout.on('data', (d: Buffer) => {
+    proc.stdout!.on('data', (d: Buffer) => {
       stdout += d.toString();
     });
-    proc.stderr.on('data', (d: Buffer) => {
+    proc.stderr!.on('data', (d: Buffer) => {
       stderr += d.toString();
     });
     proc.on('close', (code, signal) => {
@@ -65,12 +68,15 @@ export function runPythonWithStdin(
     });
     proc.on('error', reject);
 
-    proc.stdin.write(stdin);
-    proc.stdin.end();
+    proc.stdin!.write(stdin);
+    proc.stdin!.end();
   });
 
   const timeoutPromise = new Promise<string>((_, reject) =>
-    setTimeout(() => reject(new Error(`Python timed out after ${timeoutMs}ms`)), timeoutMs),
+    setTimeout(() => {
+      procRef.current?.kill();
+      reject(new Error(`Python timed out after ${timeoutMs}ms`));
+    }, timeoutMs),
   );
 
   return Promise.race([procPromise, timeoutPromise]);
