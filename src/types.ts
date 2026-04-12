@@ -35,6 +35,8 @@ export interface RawFetchResult {
   statusCode: number;
   method: 'http' | 'playwright';
   headers: Record<string, string>;
+  rawBuffer?: Buffer;
+  screenshot?: string;
 }
 
 export interface ExtractionResult {
@@ -52,6 +54,8 @@ export interface ExtractionResult {
 }
 
 export type ExtractorType = 'defuddle' | 'readability' | 'turndown' | 'site-specific';
+
+export type BrowserType = 'chromium' | 'firefox' | 'webkit';
 
 export interface CachedContent {
   id: number;

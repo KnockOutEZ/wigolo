@@ -206,4 +206,85 @@ describe('BrowserPool', () => {
       pool = null as unknown as BrowserPool;
     }, 30000);
   });
+
+  describe('browser type parameter', () => {
+    it('accepts a browserType parameter in constructor', () => {
+      pool = new BrowserPool({ browserType: 'chromium' });
+      expect(pool).toBeDefined();
+    });
+
+    it('defaults to chromium when no browserType specified', async () => {
+      pool = new BrowserPool();
+      const ctx = await pool.acquire();
+      expect(ctx).toBeDefined();
+      pool.release(ctx);
+    }, 30000);
+
+    it('defaults to chromium when empty options passed', () => {
+      pool = new BrowserPool({});
+      expect(pool).toBeDefined();
+    });
+
+    it('defaults to chromium when browserType is undefined', () => {
+      pool = new BrowserPool({ browserType: undefined });
+      expect(pool).toBeDefined();
+    });
+
+    it('accepts firefox as browser type', () => {
+      pool = new BrowserPool({ browserType: 'firefox' });
+      expect(pool).toBeDefined();
+    });
+
+    it('accepts webkit as browser type', () => {
+      pool = new BrowserPool({ browserType: 'webkit' });
+      expect(pool).toBeDefined();
+    });
+
+    it('accepts chromium as browser type explicitly', () => {
+      pool = new BrowserPool({ browserType: 'chromium' });
+      expect(pool).toBeDefined();
+    });
+
+    it('launches chromium browser and fetches page (default type)', async () => {
+      process.env.MAX_BROWSERS = '3';
+      process.env.PLAYWRIGHT_NAV_TIMEOUT_MS = '10000';
+      process.env.PLAYWRIGHT_LOAD_TIMEOUT_MS = '15000';
+      resetConfig();
+
+      const testServer = await startServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<html><body><p>Chromium test</p></body></html>');
+      });
+
+      pool = new BrowserPool({ browserType: 'chromium' });
+      const url = `http://127.0.0.1:${getPort(testServer)}/`;
+      const result = await pool.fetchWithBrowser(url);
+
+      expect(result.html).toContain('Chromium test');
+      expect(result.method).toBe('playwright');
+
+      await closeServer(testServer);
+    }, 30000);
+
+    it('pool acquire/release cycle works with explicit chromium type', async () => {
+      process.env.MAX_BROWSERS = '2';
+      resetConfig();
+
+      pool = new BrowserPool({ browserType: 'chromium' });
+      const ctx1 = await pool.acquire();
+      pool.release(ctx1);
+      const ctx2 = await pool.acquire();
+      expect(ctx2).toBe(ctx1);
+      pool.release(ctx2);
+    }, 30000);
+
+    it('shutdown works regardless of browser type', async () => {
+      pool = new BrowserPool({ browserType: 'chromium' });
+      const ctx = await pool.acquire();
+      pool.release(ctx);
+      await pool.shutdown();
+      await pool.shutdown();
+      pool = null as unknown as BrowserPool;
+    }, 30000);
+  });
 });

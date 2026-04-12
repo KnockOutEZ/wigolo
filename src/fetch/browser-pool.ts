@@ -1,13 +1,18 @@
-import { chromium, type Browser, type BrowserContext } from 'playwright';
+import { chromium, firefox, webkit, type Browser, type BrowserContext } from 'playwright';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
-import type { RawFetchResult } from '../types.js';
+import type { RawFetchResult, BrowserType } from '../types.js';
 
 export interface BrowserFetchOptions {
   timeoutMs?: number;
   storageStatePath?: string;
   userDataDir?: string;
   headers?: Record<string, string>;
+  screenshot?: boolean;
+}
+
+export interface BrowserPoolOptions {
+  browserType?: BrowserType;
 }
 
 export class BrowserPool {
@@ -17,10 +22,18 @@ export class BrowserPool {
   private waitQueue: Array<(ctx: BrowserContext) => void> = [];
   private idleTimers = new Map<BrowserContext, ReturnType<typeof setTimeout>>();
   private shutdownCalled = false;
+  private readonly browserType: BrowserType;
+
+  constructor(options?: BrowserPoolOptions) {
+    this.browserType = options?.browserType ?? 'chromium';
+  }
 
   private async launchBrowser(): Promise<Browser> {
     if (!this.browser) {
-      this.browser = await chromium.launch({ headless: true });
+      const launcher = this.browserType === 'firefox' ? firefox
+        : this.browserType === 'webkit' ? webkit
+        : chromium;
+      this.browser = await launcher.launch({ headless: true });
     }
     return this.browser;
   }
@@ -116,6 +129,12 @@ export class BrowserPool {
 
       const html = await page.content();
 
+      let screenshotBase64: string | undefined;
+      if (options.screenshot) {
+        const buf = await page.screenshot({ fullPage: true });
+        screenshotBase64 = buf.toString('base64');
+      }
+
       return {
         url,
         finalUrl,
@@ -124,6 +143,7 @@ export class BrowserPool {
         statusCode,
         method: 'playwright',
         headers: responseHeaders,
+        screenshot: screenshotBase64,
       };
     } finally {
       await page.close();
