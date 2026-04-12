@@ -1,7 +1,7 @@
 import { parseHTML } from 'linkedom';
 import { extractJsonLd, matchJsonLdToSchema } from './jsonld.js';
 
-interface JsonSchema {
+export interface JsonSchema {
   type?: string;
   properties?: Record<string, JsonSchema>;
   items?: JsonSchema;
@@ -53,14 +53,12 @@ function cssEscape(value: string): string {
 
 function findSingleValue(doc: Document, variants: string[]): string | undefined {
   for (const name of variants) {
-    // Strategy 1: itemprop (Schema.org microdata) — highest confidence
     const byItemprop = doc.querySelector(`[itemprop="${name}"]`);
     if (byItemprop) {
       const text = byItemprop.getAttribute('content') ?? byItemprop.textContent?.trim();
       if (text) return text;
     }
 
-    // Strategy 2: Match by class name containing field name
     // Substring match is intentional — heuristic best-effort for partial class names
     const byClass = doc.querySelector(`[class*="${name}"]`);
     if (byClass) {
@@ -68,7 +66,6 @@ function findSingleValue(doc: Document, variants: string[]): string | undefined 
       if (text) return text;
     }
 
-    // Strategy 3: aria-label case-insensitive (check all elements)
     const allWithAria = doc.querySelectorAll('[aria-label]');
     for (const el of allWithAria) {
       const label = el.getAttribute('aria-label')?.toLowerCase().replace(/\s+/g, '-') ?? '';
@@ -78,14 +75,12 @@ function findSingleValue(doc: Document, variants: string[]): string | undefined 
       }
     }
 
-    // Strategy 4: Match by id
     const byId = doc.querySelector(`#${cssEscape(name)}`);
     if (byId) {
       const text = byId.textContent?.trim();
       if (text) return text;
     }
 
-    // Strategy 5: Match by data attribute
     const byData = doc.querySelector(`[data-${name}]`);
     if (byData) {
       return byData.getAttribute(`data-${name}`) ?? byData.textContent?.trim() ?? undefined;

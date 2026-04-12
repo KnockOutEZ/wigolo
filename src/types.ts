@@ -1,3 +1,5 @@
+import type { JsonSchema } from './extraction/schema.js';
+
 export interface FetchInput {
   url: string;
   render_js?: 'auto' | 'always' | 'never';
@@ -223,7 +225,7 @@ export interface ExtractInput {
   mode?: 'selector' | 'tables' | 'metadata' | 'schema';
   css_selector?: string;
   multiple?: boolean;
-  schema?: Record<string, unknown>;
+  schema?: JsonSchema;
 }
 
 export interface MetadataData {
@@ -233,6 +235,7 @@ export interface MetadataData {
   date?: string;
   keywords?: string[];
   og_image?: string;
+  jsonld?: Record<string, unknown>[];
 }
 
 export interface TableData {

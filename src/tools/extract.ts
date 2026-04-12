@@ -60,14 +60,14 @@ export async function handleExtract(
         data = extractTables(html);
         break;
       case 'schema':
-        data = extractWithSchema(html, input.schema as any);
+        data = extractWithSchema(html, input.schema!);
         break;
       case 'metadata':
       default: {
         const meta = extractMetadata(html);
         const jsonld = extractJsonLd(html);
         if (jsonld.length > 0) {
-          (meta as any).jsonld = jsonld;
+          meta.jsonld = jsonld;
         }
         data = meta;
         break;

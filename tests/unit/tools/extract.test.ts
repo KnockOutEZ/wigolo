@@ -210,7 +210,7 @@ describe('handleExtract', () => {
     expect(extractTables).toHaveBeenCalledOnce();
   });
 
-  it('accepts schema parameter without error (v2 forward-compat)', async () => {
+  it('ignores schema field when mode is not schema', async () => {
     vi.mocked(extractMetadata).mockReturnValue({ title: 'Test' });
 
     const result = await handleExtract(
@@ -244,7 +244,7 @@ describe('handleExtract mode=schema', () => {
         type: 'object',
         properties: { name: { type: 'string' }, price: { type: 'string' } },
       },
-    }, mockRouter() as any);
+    }, mockRouter());
 
     expect(output.mode).toBe('schema');
     expect(extractWithSchema).toHaveBeenCalledOnce();
@@ -255,7 +255,7 @@ describe('handleExtract mode=schema', () => {
     const output = await handleExtract({
       html: '<p>test</p>',
       mode: 'schema',
-    }, mockRouter() as any);
+    }, mockRouter());
 
     expect(output.error).toContain('schema is required');
     expect(output.mode).toBe('schema');
@@ -266,7 +266,7 @@ describe('handleExtract mode=schema', () => {
       html: '<p>test</p>',
       mode: 'schema',
       schema: {},
-    }, mockRouter() as any);
+    }, mockRouter());
 
     expect(output.error).toContain('schema');
   });
@@ -282,7 +282,7 @@ describe('handleExtract mode=schema', () => {
       html: '<html><head><title>Test</title></head></html>',
       mode: 'schema',
       schema,
-    }, mockRouter() as any);
+    }, mockRouter());
 
     expect(extractWithSchema).toHaveBeenCalledWith(
       expect.any(String),
@@ -314,7 +314,7 @@ describe('handleExtract mode=schema', () => {
       html: '<p>broken</p>',
       mode: 'schema',
       schema: { type: 'object', properties: { x: { type: 'string' } } },
-    }, mockRouter() as any);
+    }, mockRouter());
 
     expect(output.error).toBe('Parse failed');
     expect(output.data).toEqual({});
@@ -332,7 +332,7 @@ describe('handleExtract mode=metadata with JSON-LD', () => {
       <script type="application/ld+json">{"@type": "Article", "headline": "Test Article"}</script>
     </head><body></body></html>`;
 
-    const output = await handleExtract({ html, mode: 'metadata' }, mockRouter() as any);
+    const output = await handleExtract({ html, mode: 'metadata' }, mockRouter());
     const data = output.data as any;
     expect(data.jsonld).toHaveLength(1);
     expect(data.jsonld[0]['@type']).toBe('Article');
@@ -345,7 +345,7 @@ describe('handleExtract mode=metadata with JSON-LD', () => {
     const output = await handleExtract({
       html: '<html><head><title>Plain</title></head></html>',
       mode: 'metadata',
-    }, mockRouter() as any);
+    }, mockRouter());
 
     const data = output.data as any;
     expect(data.jsonld).toBeUndefined();
