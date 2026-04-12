@@ -158,7 +158,7 @@ export interface CrawlInput {
   url: string;
   max_depth?: number;
   max_pages?: number;
-  strategy?: 'bfs' | 'dfs' | 'sitemap';
+  strategy?: 'bfs' | 'dfs' | 'sitemap' | 'map';
   include_patterns?: string[];
   exclude_patterns?: string[];
   use_auth?: boolean;
@@ -183,6 +183,13 @@ export interface CrawlOutput {
   total_found: number;
   crawled: number;
   links?: LinkEdge[];
+  error?: string;
+}
+
+export interface MapOutput {
+  urls: string[];
+  total_found: number;
+  sitemap_found: boolean;
   error?: string;
 }
 

@@ -39,7 +39,8 @@ export class Crawler {
       return this.crawlSitemap(input, seedOrigin, maxPages, robotsParser);
     }
 
-    return this.crawlTraversal(input, seedOrigin, maxDepth, maxPages, strategy, robotsParser);
+    const traversalStrategy = strategy === 'map' ? 'bfs' : strategy;
+    return this.crawlTraversal(input, seedOrigin, maxDepth, maxPages, traversalStrategy, robotsParser);
   }
 
   private robotsTxtContent: string | null = null;
