@@ -1,8 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mapUrls, extractLinks } from '../../../src/crawl/mapper.js';
-import type { RawFetchResult } from '../../../src/types.js';
-
-type LightFetchFn = (url: string) => Promise<{ html: string; finalUrl: string; statusCode: number }>;
+import type { LightFetchFn } from '../../../src/crawl/mapper.js';
 
 function createMockFetch(pages: Record<string, string>): LightFetchFn {
   return async (url: string) => {

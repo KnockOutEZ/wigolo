@@ -2,6 +2,7 @@ import { parseHTML } from 'linkedom';
 import { matchesPatterns } from './url-utils.js';
 import { parseSitemap, parseSitemapIndex, extractSitemapUrlFromRobots } from './sitemap.js';
 import { createLogger } from '../logger.js';
+import type { MapOutput } from '../types.js';
 
 const log = createLogger('crawl');
 
@@ -13,14 +14,7 @@ interface MapInput {
   exclude_patterns?: string[];
 }
 
-interface MapResult {
-  urls: string[];
-  total_found: number;
-  sitemap_found: boolean;
-  error?: string;
-}
-
-type LightFetchFn = (url: string) => Promise<{ html: string; finalUrl: string; statusCode: number }>;
+export type LightFetchFn = (url: string) => Promise<{ html: string; finalUrl: string; statusCode: number }>;
 
 const IGNORED_PROTOCOLS = ['javascript:', 'mailto:', 'tel:', 'data:', 'blob:', 'ftp:'];
 
@@ -32,6 +26,7 @@ export function extractLinks(html: string, origin: string): string[] {
     const anchors = doc.querySelectorAll('a[href]');
     const seen = new Set<string>();
     const links: string[] = [];
+    const parsedOrigin = new URL(origin).origin;
 
     for (const anchor of Array.from(anchors)) {
       const href = anchor.getAttribute('href');
@@ -50,7 +45,7 @@ export function extractLinks(html: string, origin: string): string[] {
         const resolved = new URL(trimmed, origin);
 
         // Same-origin check
-        if (resolved.origin !== new URL(origin).origin) continue;
+        if (resolved.origin !== parsedOrigin) continue;
 
         // Strip fragment, keep path + query
         resolved.hash = '';
@@ -72,7 +67,7 @@ export function extractLinks(html: string, origin: string): string[] {
   }
 }
 
-export async function mapUrls(input: MapInput, fetchFn: LightFetchFn): Promise<MapResult> {
+export async function mapUrls(input: MapInput, fetchFn: LightFetchFn): Promise<MapOutput> {
   const maxDepth = input.max_depth ?? 3;
   const maxPages = input.max_pages ?? 200;
 
