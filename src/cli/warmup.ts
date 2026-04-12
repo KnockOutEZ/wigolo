@@ -26,7 +26,11 @@ function installPlaywright(): Pick<WarmupResult, 'playwright' | 'playwrightError
   }
 }
 
-function setupSearxng(dataDir: string): Pick<WarmupResult, 'searxng' | 'searxngError'> {
+type SearxngCheckResult =
+  | Pick<WarmupResult, 'searxng' | 'searxngError'>
+  | { needsBootstrap: true };
+
+function setupSearxng(dataDir: string): SearxngCheckResult {
   const state = getBootstrapState(dataDir);
 
   if (state?.status === 'ready') {
@@ -39,7 +43,7 @@ function setupSearxng(dataDir: string): Pick<WarmupResult, 'searxng' | 'searxngE
     return { searxng: 'no_python' };
   }
 
-  return { searxng: 'pending' as WarmupResult['searxng'] };
+  return { needsBootstrap: true };
 }
 
 export async function runWarmup(): Promise<WarmupResult> {
@@ -51,7 +55,7 @@ export async function runWarmup(): Promise<WarmupResult> {
   const searxngCheck = setupSearxng(config.dataDir);
   let searxngResult: Pick<WarmupResult, 'searxng' | 'searxngError'>;
 
-  if (searxngCheck.searxng === 'pending') {
+  if ('needsBootstrap' in searxngCheck) {
     log('Bootstrapping SearXNG (this may take a minute)...');
     try {
       await bootstrapNativeSearxng(config.dataDir);

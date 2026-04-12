@@ -15,12 +15,13 @@ vi.mock('../../../src/config.js', () => ({
 }));
 
 import { execSync } from 'node:child_process';
-import { runWarmup, type WarmupResult } from '../../../src/cli/warmup.js';
+import { runWarmup } from '../../../src/cli/warmup.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../../../src/searxng/bootstrap.js';
 
 describe('runWarmup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
   });
 
   it('installs Playwright chromium', async () => {
