@@ -77,7 +77,7 @@ describe('extractJsonLd', () => {
       }</script>
     </head><body></body></html>`;
     const results = extractJsonLd(html);
-    expect(results.length).toBeGreaterThanOrEqual(2);
+    expect(results).toHaveLength(2);
     const types = results.map((r) => r['@type']);
     expect(types).toContain('WebPage');
     expect(types).toContain('Organization');

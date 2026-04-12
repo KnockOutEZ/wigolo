@@ -4,9 +4,7 @@ import { createLogger } from '../logger.js';
 const log = createLogger('jsonld');
 
 interface JsonSchema {
-  type?: string;
   properties?: Record<string, JsonSchema>;
-  items?: JsonSchema;
 }
 
 export function extractJsonLd(html: string): Record<string, unknown>[] {
@@ -14,7 +12,7 @@ export function extractJsonLd(html: string): Record<string, unknown>[] {
   const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
   const results: Record<string, unknown>[] = [];
 
-  for (const script of Array.from(scripts)) {
+  for (const script of scripts) {
     try {
       const text = script.textContent?.trim();
       if (!text) continue;
@@ -73,6 +71,7 @@ function flattenObject(
   for (const [key, value] of Object.entries(obj)) {
     if (key.startsWith('@')) continue;
 
+    // First-wins: earlier blocks and shallower keys take priority
     if (!(key in target)) {
       if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
         flattenObject(value as Record<string, unknown>, target);
