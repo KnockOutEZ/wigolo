@@ -1,8 +1,5 @@
 import { parseHTML } from 'linkedom';
 import { extractJsonLd, matchJsonLdToSchema } from './jsonld.js';
-import { createLogger } from '../logger.js';
-
-const log = createLogger('schema');
 
 interface JsonSchema {
   type?: string;
@@ -64,20 +61,14 @@ function findSingleValue(doc: Document, variants: string[]): string | undefined 
     }
 
     // Strategy 2: Match by class name containing field name
+    // Substring match is intentional — heuristic best-effort for partial class names
     const byClass = doc.querySelector(`[class*="${name}"]`);
     if (byClass) {
       const text = byClass.textContent?.trim();
       if (text) return text;
     }
 
-    // Strategy 3: Match by aria-label (exact match)
-    const byAria = doc.querySelector(`[aria-label="${name}"]`);
-    if (byAria) {
-      const text = byAria.textContent?.trim();
-      if (text) return text;
-    }
-
-    // Strategy 3b: aria-label case-insensitive (check all elements)
+    // Strategy 3: aria-label case-insensitive (check all elements)
     const allWithAria = doc.querySelectorAll('[aria-label]');
     for (const el of allWithAria) {
       const label = el.getAttribute('aria-label')?.toLowerCase().replace(/\s+/g, '-') ?? '';

@@ -256,7 +256,8 @@ describe('extractWithSchema', () => {
         price: { type: 'string' },
       },
     });
-    expect(result.name).toBeDefined();
-    expect(result.price).toBeDefined();
+    // JSON-LD has name="Widget Pro", price="29.99"
+    expect(result.name).toBe('Widget Pro');
+    expect(result.price).toBe('29.99');
   });
 });
