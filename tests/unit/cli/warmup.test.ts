@@ -14,9 +14,15 @@ vi.mock('../../../src/config.js', () => ({
   getConfig: vi.fn(() => ({ dataDir: '/tmp/test-wigolo' })),
 }));
 
+vi.mock('../../../src/search/flashrank.js', () => ({
+  isFlashRankAvailable: vi.fn(),
+  resetAvailabilityCache: vi.fn(),
+}));
+
 import { execSync } from 'node:child_process';
 import { runWarmup } from '../../../src/cli/warmup.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../../../src/searxng/bootstrap.js';
+import { isFlashRankAvailable, resetAvailabilityCache } from '../../../src/search/flashrank.js';
 
 describe('runWarmup', () => {
   beforeEach(() => {
@@ -163,5 +169,78 @@ describe('runWarmup with flags', () => {
     // Should not throw -- warmup continues despite trafilatura install failure
     const result = await runWarmup(['--trafilatura']);
     expect(result.playwright).toBe('ok');
+  });
+});
+
+describe('warmup --reranker', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
+  });
+
+  it('installs FlashRank Python package when --reranker passed', async () => {
+    const result = await runWarmup(['--reranker']);
+
+    expect(execSync).toHaveBeenCalledWith(
+      expect.stringContaining('pip'),
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+    expect(result.reranker).toBe('ok');
+  });
+
+  it('--all flag includes reranker installation', async () => {
+    const result = await runWarmup(['--all']);
+
+    const pipCalls = vi.mocked(execSync).mock.calls.filter(
+      (call) => String(call[0]).includes('pip') && String(call[0]).includes('flashrank'),
+    );
+    expect(pipCalls.length).toBeGreaterThanOrEqual(1);
+    expect(result.reranker).toBe('ok');
+  });
+
+  it('reports failure when pip install fails', async () => {
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (String(cmd).includes('flashrank')) {
+        throw new Error('pip install failed: network error');
+      }
+      return Buffer.from('');
+    });
+
+    const result = await runWarmup(['--reranker']);
+
+    expect(result.reranker).toBe('failed');
+    expect(result.rerankerError).toContain('pip install failed');
+  });
+
+  it('does not install reranker when flag not passed', async () => {
+    const result = await runWarmup([]);
+
+    const pipCalls = vi.mocked(execSync).mock.calls.filter(
+      (call) => String(call[0]).includes('flashrank'),
+    );
+    expect(pipCalls).toHaveLength(0);
+    expect(result.reranker).toBeUndefined();
+  });
+
+  it('verifies FlashRank availability after install', async () => {
+    vi.mocked(isFlashRankAvailable).mockResolvedValue(true);
+
+    await runWarmup(['--reranker']);
+
+    expect(resetAvailabilityCache).toHaveBeenCalled();
+  });
+
+  it('reports failure when python3 not found for reranker install', async () => {
+    vi.mocked(execSync).mockImplementation((cmd: any) => {
+      if (String(cmd).includes('python3')) {
+        throw new Error('ENOENT: python3 not found');
+      }
+      return Buffer.from('');
+    });
+
+    const result = await runWarmup(['--reranker']);
+
+    expect(result.reranker).toBe('failed');
   });
 });

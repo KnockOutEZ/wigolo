@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { getConfig } from '../config.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../searxng/bootstrap.js';
+import { resetAvailabilityCache } from '../search/flashrank.js';
 
 export interface WarmupResult {
   playwright: 'ok' | 'failed';
@@ -8,6 +9,8 @@ export interface WarmupResult {
   searxng: 'ready' | 'bootstrapped' | 'failed' | 'no_python';
   searxngError?: string;
   trafilatura?: 'ok' | 'failed' | 'skipped';
+  reranker?: 'ok' | 'failed';
+  rerankerError?: string;
 }
 
 function log(msg: string): void {
@@ -40,6 +43,20 @@ function installTrafilatura(): 'ok' | 'failed' {
     const message = err instanceof Error ? err.message : String(err);
     log(`Trafilatura install failed: ${message}`);
     return 'failed';
+  }
+}
+
+function installFlashRank(): Pick<WarmupResult, 'reranker' | 'rerankerError'> {
+  log('Installing FlashRank...');
+  try {
+    execSync('python3 -m pip install --quiet flashrank', { stdio: 'pipe', timeout: 120000 });
+    resetAvailabilityCache();
+    log('FlashRank installed successfully');
+    return { reranker: 'ok' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`FlashRank install failed: ${message}`);
+    return { reranker: 'failed', rerankerError: message };
   }
 }
 
@@ -93,7 +110,12 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
     trafStatus = installTrafilatura();
   }
 
-  const result: WarmupResult = { ...pwResult, ...searxngResult, trafilatura: trafStatus };
+  let rerankerResult: Pick<WarmupResult, 'reranker' | 'rerankerError'> = {};
+  if (flagSet.has('--reranker') || flagSet.has('--all')) {
+    rerankerResult = installFlashRank();
+  }
+
+  const result: WarmupResult = { ...pwResult, ...searxngResult, trafilatura: trafStatus, ...rerankerResult };
 
   log('');
   log('Summary:');
@@ -101,6 +123,9 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
   log(`  SearXNG:       ${result.searxng}${result.searxngError ? ` (${result.searxngError})` : ''}`);
   if (trafStatus !== 'skipped') {
     log(`  Trafilatura:   ${trafStatus}`);
+  }
+  if (result.reranker) {
+    log(`  FlashRank:     ${result.reranker}${result.rerankerError ? ` (${result.rerankerError})` : ''}`);
   }
 
   return result;
