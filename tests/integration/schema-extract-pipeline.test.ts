@@ -171,6 +171,28 @@ describe('integration: schema extraction pipeline', () => {
     expect(reqs[0]).toContain('TypeScript');
   });
 
+  it('extracts job salary range via aria-label from job listing', async () => {
+    const result = await handleExtract(
+      {
+        url: `${baseUrl}/job`,
+        mode: 'schema',
+        schema: {
+          type: 'object',
+          properties: {
+            salary: { type: 'string' },
+            location: { type: 'string' },
+          },
+        },
+      },
+      makeRouter(),
+    );
+
+    expect(result.error).toBeUndefined();
+    const data = result.data as Record<string, unknown>;
+    expect(String(data.salary ?? '')).toContain('150,000');
+    expect(String(data.location ?? '')).toContain('San Francisco');
+  });
+
   // --- JSON-LD enriched metadata ---
 
   it('metadata mode includes JSON-LD from article page', async () => {
