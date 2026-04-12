@@ -52,11 +52,15 @@ npx wigolo warmup --all    # + ML reranking + Trafilatura extraction
 
 ## Prerequisites
 
-- **Node.js 20+** — [Download](https://nodejs.org/) or `brew install node`
-- **Python 3.8+** *(recommended)* — Enables embedded SearXNG (70+ search engines). Without it, wigolo falls back to direct scraping of Bing, DuckDuckGo, and Startpage. [Download](https://python.org/)
+- **Node.js 20+** — [Download](https://nodejs.org/) or `brew install node` (macOS) / `winget install OpenJS.NodeJS` (Windows) / `sudo apt install nodejs` (Ubuntu/Debian)
+- **Python 3.8+** *(recommended)* — [Download](https://python.org/) or `brew install python3` (macOS) / `winget install Python.Python.3` (Windows) / `sudo apt install python3` (Ubuntu/Debian)
 - **Docker** *(optional)* — Alternative to Python for running SearXNG.
 
 Everything else (Playwright, SearXNG) is downloaded automatically on first use or via `npx wigolo warmup`.
+
+### What works without Python?
+
+Everything except embedded SearXNG. Without Python, search falls back to direct scraping of Bing, DuckDuckGo, and Startpage — functional but less reliable. All other tools (fetch, crawl, cache, extract) work fully with just Node.js.
 
 ## Features
 
@@ -141,7 +145,7 @@ Modes:
 | Authenticated browsing | Yes | No | No | No |
 | Localhost access | Yes | No | No | No |
 | Local cache + FTS | Yes | No | No | No |
-| Search + extract unified | Yes | Partial | Partial | Partial |
+| Search + extract unified | Yes | Yes | Partial | Partial |
 | ML reranking | Local | Proprietary | No | Neural index |
 | Rate limits | None | Tiered | Tiered | Tiered |
 
@@ -215,20 +219,42 @@ Each step degrades gracefully:
 
 ## Roadmap
 
-### In progress
-- [ ] Daemon mode — persistent HTTP server, zero startup latency per call
+### v2.1 — Next
+- [ ] Daemon mode — persistent HTTP server, zero startup latency
 - [ ] Browser interaction — click, type, scroll before extraction
 - [ ] Content change detection — diff monitoring for cached pages
 - [ ] CDP session discovery — attach to running Chrome for seamless auth
 - [ ] Plugin system — community extractors and search engines
 
-### Planned
+### v2.2
 - [ ] Multi-browser pool — Chromium + Firefox for fingerprint diversity
 - [ ] Interactive REPL (`wigolo shell`)
-- [ ] Answer synthesis — search + LLM = direct answers with citations (bring your own API key)
-- [ ] Semantic search — local vector embeddings over cached content
+- [ ] Agent skill distribution — MCP registry listings, `SKILL.md`
+
+### v3 — The Knowledge Engine
+- [ ] Answer synthesis — search + LLM = direct answers with citations (bring your own key)
+- [ ] Semantic search — local vector embeddings over cached content (`findSimilar`)
+- [ ] Agent endpoint — describe what you need, no URLs required
+- [ ] Streaming answers — real-time generation as results come in
+- [ ] Knowledge graph — entity and relationship extraction from crawled content
 - [ ] Auto re-crawl scheduler — keep documentation fresh automatically
-- [ ] Team knowledge base — shared cache across machines
+- [ ] Lightpanda browser — optional ultra-lightweight headless browser (11x less RAM than Chrome)
+- [ ] Cloud sync — share cache across machines via rclone (S3, Drive, Dropbox)
+- [ ] Team knowledge base — shared indexed content across team members
+
+## Troubleshooting
+
+**SearXNG won't start**
+Make sure `python3` is on your PATH and version 3.8+. Check with `python3 --version`. Alternatively, set `SEARXNG_MODE=docker` if Docker is available.
+
+**Playwright browser not found**
+Run `npx wigolo warmup` to download Chromium. This is done automatically on first use but can fail behind corporate proxies.
+
+**Search returns no results**
+If SearXNG and all fallback engines fail, check your network connection. Behind a proxy? Set `PROXY_URL=http://your-proxy:port`.
+
+**Permission errors on `~/.wigolo/`**
+wigolo stores its cache and SearXNG installation in `~/.wigolo/`. Ensure your user has write access. Override with `WIGOLO_DATA_DIR=/your/path`.
 
 ## Contributing
 
