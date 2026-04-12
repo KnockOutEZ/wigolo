@@ -7,6 +7,21 @@
   "bin": {
     "wigolo": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "web-search",
+    "web-scraping",
+    "ai-agent",
+    "playwright",
+    "searxng",
+    "local-first",
+    "content-extraction"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
