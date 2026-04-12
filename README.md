@@ -15,7 +15,7 @@ Search, fetch, crawl, cache, and extract — zero API keys, zero cloud, zero cos
 </div>
 
 ```
-$ claude mcp add wigolo -- npx wigolo
+$ claude mcp add wigolo -- npx @staticn0va/wigolo
 Added MCP server wigolo
 
 $ # That's it. Your agent now has web search.
@@ -29,7 +29,7 @@ wigolo gives AI coding agents (Claude Code, Cursor, Gemini CLI, Codex, Windsurf)
 
 **Claude Code:**
 ```bash
-claude mcp add wigolo -- npx wigolo
+claude mcp add wigolo -- npx @staticn0va/wigolo
 ```
 
 **Cursor / VS Code / any MCP client:**
@@ -38,7 +38,7 @@ claude mcp add wigolo -- npx wigolo
   "mcpServers": {
     "wigolo": {
       "command": "npx",
-      "args": ["wigolo"]
+      "args": ["@staticn0va/wigolo"]
     }
   }
 }
@@ -46,8 +46,8 @@ claude mcp add wigolo -- npx wigolo
 
 **Optional warmup (improves quality on first use):**
 ```bash
-npx wigolo warmup          # Downloads Playwright + SearXNG
-npx wigolo warmup --all    # + ML reranking + Trafilatura extraction
+npx @staticn0va/wigolo warmup          # Downloads Playwright + SearXNG
+npx @staticn0va/wigolo warmup --all  # + ML reranking + Trafilatura extraction
 ```
 
 ## Prerequisites
@@ -56,7 +56,7 @@ npx wigolo warmup --all    # + ML reranking + Trafilatura extraction
 - **Python 3.8+** *(recommended)* — [Download](https://python.org/) or `brew install python3` (macOS) / `winget install Python.Python.3` (Windows) / `sudo apt install python3` (Ubuntu/Debian)
 - **Docker** *(optional)* — Alternative to Python for running SearXNG.
 
-Everything else (Playwright, SearXNG) is downloaded automatically on first use or via `npx wigolo warmup`.
+Everything else (Playwright, SearXNG) is downloaded automatically on first use or via `npx @staticn0va/wigolo warmup`.
 
 ### What works without Python?
 
@@ -163,7 +163,7 @@ WIGOLO_AUTH_STATE_PATH=~/.wigolo/auth.json
 # Or use your Chrome profile directly (close Chrome first)
 WIGOLO_CHROME_PROFILE_PATH=~/.config/google-chrome/Default
 
-# ML reranking (install with: npx wigolo warmup --reranker)
+# ML reranking (install with: npx @staticn0va/wigolo warmup --reranker)
 WIGOLO_RERANKER=flashrank
 
 # Tune extraction — auto/always/never
@@ -248,7 +248,7 @@ Each step degrades gracefully:
 Make sure `python3` is on your PATH and version 3.8+. Check with `python3 --version`. Alternatively, set `SEARXNG_MODE=docker` if Docker is available.
 
 **Playwright browser not found**
-Run `npx wigolo warmup` to download Chromium. This is done automatically on first use but can fail behind corporate proxies.
+Run `npx @staticn0va/wigolo warmup` to download Chromium. This is done automatically on first use but can fail behind corporate proxies.
 
 **Search returns no results**
 If SearXNG and all fallback engines fail, check your network connection. Behind a proxy? Set `PROXY_URL=http://your-proxy:port`.
