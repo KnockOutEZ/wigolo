@@ -7,6 +7,14 @@ vi.mock('../../../src/extraction/extract.js', () => ({
   extractTables: vi.fn(),
 }));
 
+vi.mock('../../../src/extraction/schema.js', () => ({
+  extractWithSchema: vi.fn(),
+}));
+
+vi.mock('../../../src/extraction/jsonld.js', () => ({
+  extractJsonLd: vi.fn().mockReturnValue([]),
+}));
+
 vi.mock('../../../src/cache/store.js', () => ({
   getCachedContent: vi.fn(),
   isExpired: vi.fn(),
@@ -24,6 +32,8 @@ vi.mock('../../../src/logger.js', () => ({
 import { handleExtract } from '../../../src/tools/extract.js';
 import { extractMetadata, extractSelector, extractTables } from '../../../src/extraction/extract.js';
 import { getCachedContent, isExpired } from '../../../src/cache/store.js';
+import { extractWithSchema } from '../../../src/extraction/schema.js';
+import { extractJsonLd } from '../../../src/extraction/jsonld.js';
 
 function mockRouter(html = '<html><body>Hello</body></html>') {
   return {
@@ -220,5 +230,124 @@ describe('handleExtract', () => {
 
     expect(result.error).toBe('Network timeout');
     expect(result.mode).toBe('metadata');
+  });
+});
+
+describe('handleExtract mode=schema', () => {
+  it('dispatches to extractWithSchema for mode=schema', async () => {
+    vi.mocked(extractWithSchema).mockReturnValue({ name: 'Widget', price: '$10' });
+
+    const output = await handleExtract({
+      html: '<div class="product-name">Widget</div><span class="price">$10</span>',
+      mode: 'schema',
+      schema: {
+        type: 'object',
+        properties: { name: { type: 'string' }, price: { type: 'string' } },
+      },
+    }, mockRouter() as any);
+
+    expect(output.mode).toBe('schema');
+    expect(extractWithSchema).toHaveBeenCalledOnce();
+    expect((output.data as any).name).toBe('Widget');
+  });
+
+  it('returns error when schema mode used without schema property', async () => {
+    const output = await handleExtract({
+      html: '<p>test</p>',
+      mode: 'schema',
+    }, mockRouter() as any);
+
+    expect(output.error).toContain('schema is required');
+    expect(output.mode).toBe('schema');
+  });
+
+  it('returns error when schema mode has empty schema', async () => {
+    const output = await handleExtract({
+      html: '<p>test</p>',
+      mode: 'schema',
+      schema: {},
+    }, mockRouter() as any);
+
+    expect(output.error).toContain('schema');
+  });
+
+  it('passes schema through to extractWithSchema', async () => {
+    vi.mocked(extractWithSchema).mockReturnValue({ title: 'Test' });
+    const schema = {
+      type: 'object',
+      properties: { title: { type: 'string' } },
+    };
+
+    await handleExtract({
+      html: '<html><head><title>Test</title></head></html>',
+      mode: 'schema',
+      schema,
+    }, mockRouter() as any);
+
+    expect(extractWithSchema).toHaveBeenCalledWith(
+      expect.any(String),
+      schema,
+    );
+  });
+
+  it('fetches URL then extracts with schema', async () => {
+    vi.mocked(extractWithSchema).mockReturnValue({ name: 'Fetched' });
+    const router = mockRouter();
+
+    const output = await handleExtract({
+      url: 'https://example.com/product',
+      mode: 'schema',
+      schema: { type: 'object', properties: { name: { type: 'string' } } },
+    }, router as any);
+
+    expect(router.fetch).toHaveBeenCalledWith('https://example.com/product', expect.any(Object));
+    expect(output.source_url).toBe('https://example.com');
+    expect(output.mode).toBe('schema');
+  });
+
+  it('returns empty object on schema extraction error', async () => {
+    vi.mocked(extractWithSchema).mockImplementation(() => {
+      throw new Error('Parse failed');
+    });
+
+    const output = await handleExtract({
+      html: '<p>broken</p>',
+      mode: 'schema',
+      schema: { type: 'object', properties: { x: { type: 'string' } } },
+    }, mockRouter() as any);
+
+    expect(output.error).toBe('Parse failed');
+    expect(output.data).toEqual({});
+  });
+});
+
+describe('handleExtract mode=metadata with JSON-LD', () => {
+  it('includes JSON-LD data in metadata output', async () => {
+    vi.mocked(extractMetadata).mockReturnValue({ title: 'Test' });
+    vi.mocked(extractJsonLd).mockReturnValue([
+      { '@type': 'Article', headline: 'Test Article' },
+    ]);
+
+    const html = `<html><head><title>Test</title>
+      <script type="application/ld+json">{"@type": "Article", "headline": "Test Article"}</script>
+    </head><body></body></html>`;
+
+    const output = await handleExtract({ html, mode: 'metadata' }, mockRouter() as any);
+    const data = output.data as any;
+    expect(data.jsonld).toHaveLength(1);
+    expect(data.jsonld[0]['@type']).toBe('Article');
+  });
+
+  it('omits jsonld key when no JSON-LD blocks found', async () => {
+    vi.mocked(extractMetadata).mockReturnValue({ title: 'Plain' });
+    vi.mocked(extractJsonLd).mockReturnValue([]);
+
+    const output = await handleExtract({
+      html: '<html><head><title>Plain</title></head></html>',
+      mode: 'metadata',
+    }, mockRouter() as any);
+
+    const data = output.data as any;
+    expect(data.jsonld).toBeUndefined();
   });
 });

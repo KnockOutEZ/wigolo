@@ -1,6 +1,8 @@
 import type { ExtractInput, ExtractOutput } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import { extractMetadata, extractSelector, extractTables } from '../extraction/extract.js';
+import { extractWithSchema } from '../extraction/schema.js';
+import { extractJsonLd } from '../extraction/jsonld.js';
 import { getCachedContent, isExpired } from '../cache/store.js';
 import { createLogger } from '../logger.js';
 
@@ -41,6 +43,10 @@ export async function handleExtract(
     return { data: '', mode, error: 'css_selector is required when mode is "selector"' };
   }
 
+  if (mode === 'schema' && (!input.schema || !input.schema.properties)) {
+    return { data: {}, mode, error: 'schema is required when mode is "schema" and must have properties' };
+  }
+
   try {
     const { html, sourceUrl } = await resolveHtml(input, router);
 
@@ -53,10 +59,19 @@ export async function handleExtract(
       case 'tables':
         data = extractTables(html);
         break;
-      case 'metadata':
-      default:
-        data = extractMetadata(html);
+      case 'schema':
+        data = extractWithSchema(html, input.schema as any);
         break;
+      case 'metadata':
+      default: {
+        const meta = extractMetadata(html);
+        const jsonld = extractJsonLd(html);
+        if (jsonld.length > 0) {
+          (meta as any).jsonld = jsonld;
+        }
+        data = meta;
+        break;
+      }
     }
 
     return { data, source_url: sourceUrl, mode };
