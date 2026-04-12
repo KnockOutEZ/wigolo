@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Widget Pro - Amazing Product</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "name": "Widget Pro",
+    "description": "The best widget for professionals",
+    "offers": {
+      "@type": "Offer",
+      "price": "29.99",
+      "priceCurrency": "USD",
+      "availability": "https://schema.org/InStock"
+    },
+    "aggregateRating": {
+      "@type": "AggregateRating",
+      "ratingValue": "4.5",
+      "reviewCount": "128"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div class="product" itemscope itemtype="https://schema.org/Product">
+    <h1 class="product-name" itemprop="name">Widget Pro</h1>
+    <span class="price" itemprop="price" content="29.99">$29.99</span>
+    <p class="description" itemprop="description">The best widget for professionals. Lightweight and durable.</p>
+    <div class="product-rating" aria-label="rating">
+      <span class="rating-value">4.5</span> out of 5
+    </div>
+    <span class="review-count">128 reviews</span>
+    <div class="availability" itemprop="availability" content="InStock">In Stock</div>
+    <ul class="features">
+      <li class="feature">Lightweight</li>
+      <li class="feature">Durable</li>
+      <li class="feature">Waterproof</li>
+    </ul>
+  </div>
+</body>
+</html>
