@@ -34,6 +34,7 @@ export interface Config {
   braveApiKey: string | null;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   logFormat: 'json' | 'text';
+  trafilatura: 'auto' | 'always' | 'never';
 }
 
 function envStr(key: string, fallback: string | null = null): string | null {
@@ -91,6 +92,7 @@ export function getConfig(): Config {
     braveApiKey: envStr('BRAVE_API_KEY'),
     logLevel: (envStr('LOG_LEVEL', 'info') as Config['logLevel']),
     logFormat: (envStr('LOG_FORMAT', 'json') as Config['logFormat']),
+    trafilatura: (envStr('WIGOLO_TRAFILATURA', 'auto') as 'auto' | 'always' | 'never'),
   };
 
   return cachedConfig;

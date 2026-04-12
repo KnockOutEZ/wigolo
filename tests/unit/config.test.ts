@@ -56,4 +56,30 @@ describe('config', () => {
     const config = getConfig();
     expect(config.dataDir).toContain('.wigolo');
   });
+
+  describe('WIGOLO_TRAFILATURA config', () => {
+    it('defaults to auto when env var is not set', () => {
+      delete process.env.WIGOLO_TRAFILATURA;
+      resetConfig();
+      expect(getConfig().trafilatura).toBe('auto');
+    });
+
+    it('reads WIGOLO_TRAFILATURA=always', () => {
+      process.env.WIGOLO_TRAFILATURA = 'always';
+      resetConfig();
+      expect(getConfig().trafilatura).toBe('always');
+    });
+
+    it('reads WIGOLO_TRAFILATURA=never', () => {
+      process.env.WIGOLO_TRAFILATURA = 'never';
+      resetConfig();
+      expect(getConfig().trafilatura).toBe('never');
+    });
+
+    it('reads WIGOLO_TRAFILATURA=auto explicitly', () => {
+      process.env.WIGOLO_TRAFILATURA = 'auto';
+      resetConfig();
+      expect(getConfig().trafilatura).toBe('auto');
+    });
+  });
 });
