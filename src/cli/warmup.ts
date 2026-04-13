@@ -1,6 +1,9 @@
 import { execSync } from 'node:child_process';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { getConfig } from '../config.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../searxng/bootstrap.js';
+import { isProcessAlive } from '../searxng/process.js';
 import { resetAvailabilityCache } from '../search/flashrank.js';
 
 export interface WarmupResult {
@@ -15,6 +18,30 @@ export interface WarmupResult {
 
 function log(msg: string): void {
   process.stderr.write(`[wigolo warmup] ${msg}\n`);
+}
+
+function wipeSearxngState(dataDir: string): void {
+  const bootstrapLockPath = join(dataDir, 'bootstrap.lock');
+  if (existsSync(bootstrapLockPath)) {
+    try {
+      const lock = JSON.parse(readFileSync(bootstrapLockPath, 'utf-8')) as { pid?: number };
+      if (lock.pid && isProcessAlive(lock.pid)) {
+        throw new Error(
+          `Cannot --force: another wigolo bootstrap is in progress (pid ${lock.pid}). ` +
+          `Kill it first: kill ${lock.pid}`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('Cannot --force')) throw err;
+      // malformed lock → treat as stale, fall through to wipe
+    }
+  }
+  rmSync(join(dataDir, 'state.json'), { force: true });
+  rmSync(join(dataDir, 'searxng'), { recursive: true, force: true });
+  rmSync(bootstrapLockPath, { force: true });
+  rmSync(join(dataDir, 'searxng.lock'), { force: true });
+  rmSync(join(dataDir, 'searxng.port'), { force: true });
+  log('Wiped SearXNG state, install, and locks (--force)');
 }
 
 function installPlaywright(): Pick<WarmupResult, 'playwright' | 'playwrightError'> {
@@ -84,6 +111,11 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
   log('Starting warmup...');
   const config = getConfig();
 
+  const flagSet = new Set(flags);
+  if (flagSet.has('--force')) {
+    wipeSearxngState(config.dataDir);
+  }
+
   const pwResult = installPlaywright();
 
   const searxngCheck = setupSearxng(config.dataDir);
@@ -104,7 +136,6 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
     searxngResult = searxngCheck;
   }
 
-  const flagSet = new Set(flags);
   let trafStatus: 'ok' | 'failed' | 'skipped' = 'skipped';
   if (flagSet.has('--trafilatura') || flagSet.has('--all')) {
     trafStatus = installTrafilatura();
