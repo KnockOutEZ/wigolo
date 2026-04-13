@@ -9,7 +9,26 @@ const log = createLogger('searxng');
 export interface BootstrapState {
   status: 'downloading' | 'ready' | 'failed' | 'no_runtime';
   searxngPath?: string;
+  attempts?: number;
+  lastAttemptAt?: string;
+  nextRetryAt?: string;
+  lastError?: {
+    message: string;
+    stderr: string;
+    exitCode: number | null;
+    command: string;
+    timestamp: string;
+  };
+  /** @deprecated legacy field; read-only for back-compat. Never written by new code. */
   error?: string;
+}
+
+export function backoffSchedule(attempt: number): number | null {
+  const config = getConfig();
+  const max = config.bootstrapMaxAttempts;
+  const schedule = config.bootstrapBackoffSeconds;
+  if (attempt < 1 || attempt > max) return null;
+  return schedule[attempt - 1] ?? null;
 }
 
 export interface BackendResolution {
