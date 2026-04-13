@@ -32,6 +32,10 @@
     "test:e2e": "vitest run tests/e2e",
     "lint": "tsc --noEmit"
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "license": "BUSL-1.1",
   "repository": {
     "type": "git",
