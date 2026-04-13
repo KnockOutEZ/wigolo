@@ -38,6 +38,9 @@ export interface Config {
   reranker: 'flashrank' | 'none' | 'custom';
   rerankerModel: string;
   relevanceThreshold: number;
+  bootstrapMaxAttempts: number;
+  bootstrapBackoffSeconds: number[];
+  healthProbeIntervalMs: number;
 }
 
 function envStr(key: string, fallback: string | null = null): string | null {
@@ -49,6 +52,14 @@ function envInt(key: string, fallback: number): number {
   if (val === undefined) return fallback;
   const parsed = parseInt(val, 10);
   return isNaN(parsed) ? fallback : parsed;
+}
+
+function envIntArray(key: string, fallback: number[]): number[] {
+  const val = process.env[key];
+  if (val === undefined) return fallback;
+  const parts = val.split(',').map(s => parseInt(s.trim(), 10));
+  if (parts.some(n => isNaN(n))) return fallback;
+  return parts;
 }
 
 function envBool(key: string, fallback: boolean): boolean {
@@ -99,6 +110,9 @@ export function getConfig(): Config {
     reranker: (envStr('WIGOLO_RERANKER') ?? 'none') as Config['reranker'],
     rerankerModel: envStr('WIGOLO_RERANKER_MODEL') ?? 'ms-marco-MiniLM-L-12-v2',
     relevanceThreshold: parseFloat(envStr('WIGOLO_RELEVANCE_THRESHOLD') ?? '0') || 0,
+    bootstrapMaxAttempts: envInt('WIGOLO_BOOTSTRAP_MAX_ATTEMPTS', 3),
+    bootstrapBackoffSeconds: envIntArray('WIGOLO_BOOTSTRAP_BACKOFF_SECONDS', [30, 3600, 86400]),
+    healthProbeIntervalMs: envInt('WIGOLO_HEALTH_PROBE_INTERVAL_MS', 30000),
   };
 
   return cachedConfig;

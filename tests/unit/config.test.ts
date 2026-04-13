@@ -132,4 +132,42 @@ describe('config', () => {
       expect(getConfig().trafilatura).toBe('auto');
     });
   });
+
+  describe('config — bootstrap reliability', () => {
+    it('defaults bootstrapMaxAttempts to 3', () => {
+      expect(getConfig().bootstrapMaxAttempts).toBe(3);
+    });
+
+    it('reads WIGOLO_BOOTSTRAP_MAX_ATTEMPTS as integer', () => {
+      process.env.WIGOLO_BOOTSTRAP_MAX_ATTEMPTS = '5';
+      resetConfig();
+      expect(getConfig().bootstrapMaxAttempts).toBe(5);
+    });
+
+    it('defaults bootstrapBackoffSeconds to [30, 3600, 86400]', () => {
+      expect(getConfig().bootstrapBackoffSeconds).toEqual([30, 3600, 86400]);
+    });
+
+    it('parses WIGOLO_BOOTSTRAP_BACKOFF_SECONDS as comma-separated ints', () => {
+      process.env.WIGOLO_BOOTSTRAP_BACKOFF_SECONDS = '10,60,3600';
+      resetConfig();
+      expect(getConfig().bootstrapBackoffSeconds).toEqual([10, 60, 3600]);
+    });
+
+    it('ignores malformed backoff entries and falls back to default', () => {
+      process.env.WIGOLO_BOOTSTRAP_BACKOFF_SECONDS = 'abc,def';
+      resetConfig();
+      expect(getConfig().bootstrapBackoffSeconds).toEqual([30, 3600, 86400]);
+    });
+
+    it('defaults healthProbeIntervalMs to 30000', () => {
+      expect(getConfig().healthProbeIntervalMs).toBe(30000);
+    });
+
+    it('reads WIGOLO_HEALTH_PROBE_INTERVAL_MS as integer', () => {
+      process.env.WIGOLO_HEALTH_PROBE_INTERVAL_MS = '5000';
+      resetConfig();
+      expect(getConfig().healthProbeIntervalMs).toBe(5000);
+    });
+  });
 });
