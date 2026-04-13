@@ -64,9 +64,11 @@ interface BootstrapState {
     command: string;            // e.g. "/path/venv/bin/pip install -r requirements.txt"
     timestamp: string;
   };
-  error?: string;               // legacy field; read for back-compat, not written
+  error?: string;               // legacy field; read for back-compat, NEVER written by new code
 }
 ```
+
+`setBootstrapState` always writes the new shape (`lastError`, never `error`). The legacy `error` field exists only as a read fallback for state files written by the previous version. After one successful state write post-upgrade, the legacy field is gone.
 
 ### Backoff schedule
 
@@ -127,6 +129,10 @@ if (state?.status === 'failed') {
 
   if (retryWindowOpen && budgetRemaining && checkPythonAvailable()) {
     log.info('SearXNG bootstrap retry window reached', { attempts, nextRetryAt });
+    // Safe: the bootstrap lock guards this directory, and the SearxngProcess
+    // lock guards a running install. A stuck `failed` state means no live
+    // process holds either lock. If a stale lock points at a live PID, the
+    // bootstrap lock acquisition below will block before we touch the dir.
     rmSync(join(dataDir, 'searxng'), { recursive: true, force: true });
     return { type: 'native', searxngPath: join(dataDir, 'searxng') };
   }
@@ -300,7 +306,7 @@ Then runs the existing `setupSearxng` → `bootstrapNativeSearxng` path. State s
 
 ### `doctor` (new command)
 
-Adds `'doctor'` to `KNOWN_COMMANDS` in `src/cli/index.ts`. New file `src/cli/doctor.ts` and a switch case in `src/index.ts`.
+Atomic change in `src/cli/index.ts`: extend the `Command` type union to include `'doctor'` AND add `'doctor'` to `KNOWN_COMMANDS`. Both must change together — the type guard depends on the union. New file `src/cli/doctor.ts` and a switch case in `src/index.ts`.
 
 Single-shot diagnostic dump to stderr:
 
