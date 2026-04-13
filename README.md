@@ -51,7 +51,7 @@ npx @staticn0va/wigolo warmup --all  # + ML reranking + Trafilatura extraction
 npx @staticn0va/wigolo warmup --force     # Wipe SearXNG state/install/locks and re-bootstrap
 ```
 
-### Diagnostics
+## Diagnostics
 
 Run `npx @staticn0va/wigolo doctor` to see the health of every component (Python, Docker, Playwright, Trafilatura, FlashRank, SearXNG install + process). Exits 0 when healthy, 1 when any required component is degraded. Usable in scripts: `npx @staticn0va/wigolo doctor && my-agent`.
 
