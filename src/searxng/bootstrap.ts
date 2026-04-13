@@ -1,5 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
@@ -199,13 +199,33 @@ export async function resolveSearchBackend(): Promise<BackendResolution> {
   }
 
   if (state?.status === 'downloading') {
-    log.warn('previous SearXNG download was interrupted, cleaning up');
-    const searxngDir = join(dataDir, 'searxng');
-    try { rmSync(searxngDir, { recursive: true, force: true }); } catch {}
+    log.warn('previous SearXNG download was interrupted; bootstrapNativeSearxng will clean up under lock');
   }
 
-  if (state?.status === 'failed' || state?.status === 'no_runtime') {
-    log.warn('SearXNG bootstrap previously failed', { error: state.error });
+  if (state?.status === 'failed') {
+    const attempts = state.attempts ?? 1;
+    const nextRetryAt = state.nextRetryAt ? new Date(state.nextRetryAt) : new Date(0);
+    const retryWindowOpen = new Date() >= nextRetryAt;
+    const budgetRemaining = attempts < config.bootstrapMaxAttempts;
+
+    if (retryWindowOpen && budgetRemaining && checkPythonAvailable()) {
+      log.info('SearXNG bootstrap retry window reached', { attempts, nextRetryAt: state.nextRetryAt });
+      return { type: 'native', searxngPath: join(dataDir, 'searxng') };
+    }
+
+    log.warn('SearXNG bootstrap stuck', {
+      attempts,
+      nextRetryAt: state.nextRetryAt,
+      error: state.lastError?.message ?? state.error,
+    });
+    if (checkDockerAvailable() && config.searxngMode !== 'native') {
+      return { type: 'docker' };
+    }
+    return { type: 'scraping' };
+  }
+
+  if (state?.status === 'no_runtime') {
+    log.warn('SearXNG runtime not found, using fallback', { error: state.error });
     if (checkDockerAvailable() && config.searxngMode !== 'native') {
       return { type: 'docker' };
     }

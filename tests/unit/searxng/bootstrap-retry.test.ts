@@ -82,8 +82,8 @@ describe('backoffSchedule', () => {
   });
 });
 
-import { spawnSync } from 'node:child_process';
-import { BootstrapError, runStep } from '../../../src/searxng/bootstrap.js';
+import { execSync, spawnSync } from 'node:child_process';
+import { BootstrapError, runStep, resolveSearchBackend } from '../../../src/searxng/bootstrap.js';
 
 describe('runStep', () => {
   beforeEach(() => { vi.clearAllMocks(); });
@@ -132,5 +132,55 @@ describe('runStep', () => {
       expect(e.detail.exitCode).toBeNull();
       expect(e.detail.command).toContain('pip');
     }
+  });
+});
+
+describe('resolveSearchBackend — retry-aware failed state', () => {
+  beforeEach(() => {
+    process.env = { ...process.env };
+    delete process.env.SEARXNG_URL;
+    resetConfig();
+    vi.clearAllMocks();
+  });
+
+  it('returns native when retry window is open, attempts < MAX, python present', async () => {
+    const pastIso = new Date(Date.now() - 60_000).toISOString();
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      status: 'failed', attempts: 1, nextRetryAt: pastIso,
+    }));
+    vi.mocked(execSync).mockReturnValue(Buffer.from('Python 3.12.0')); // python available
+    const r = await resolveSearchBackend();
+    expect(r.type).toBe('native');
+  });
+
+  it('returns scraping when retry window is in the future', async () => {
+    const futureIso = new Date(Date.now() + 3_600_000).toISOString();
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      status: 'failed', attempts: 1, nextRetryAt: futureIso,
+    }));
+    vi.mocked(execSync).mockImplementation(() => { throw new Error('no docker'); });
+    const r = await resolveSearchBackend();
+    expect(r.type).toBe('scraping');
+  });
+
+  it('returns scraping when attempts >= MAX_AUTO_ATTEMPTS even if window open', async () => {
+    const pastIso = new Date(0).toISOString();
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      status: 'failed', attempts: 3, nextRetryAt: pastIso,
+    }));
+    vi.mocked(execSync).mockImplementation(() => { throw new Error('no docker'); });
+    const r = await resolveSearchBackend();
+    expect(r.type).toBe('scraping');
+  });
+
+  it('retries immediately for legacy state (no attempts/nextRetryAt)', async () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ status: 'failed', error: 'legacy' }));
+    vi.mocked(execSync).mockReturnValue(Buffer.from('Python 3.12.0'));
+    const r = await resolveSearchBackend();
+    expect(r.type).toBe('native');
   });
 });
