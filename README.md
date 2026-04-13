@@ -273,9 +273,10 @@ Releases are triggered by pushing a version tag. CI handles the rest.
 
 ```bash
 # on main, all changes committed and pushed
-npm version patch   # or: minor / major
-git push --follow-tags
+make release-patch   # or: release-minor / release-major
 ```
+
+Run `make help` for all targets, or `make release-dry-run` to preview the npm tarball.
 
 The `release` workflow will:
 1. Build a clean `dist/`
