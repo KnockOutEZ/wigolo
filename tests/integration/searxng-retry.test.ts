@@ -40,7 +40,7 @@ describe('SearXNG bootstrap retry (integration)', () => {
     expect(r.searxngPath).toContain(dataDir);
   });
 
-  it('returns scraping when attempts >= MAX_AUTO_ATTEMPTS regardless of window', async () => {
+  it('returns scraping once attempts reach the configured cap regardless of window', async () => {
     setBootstrapState(dataDir, {
       status: 'failed',
       attempts: 3,

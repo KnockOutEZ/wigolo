@@ -68,7 +68,7 @@ describe('backoffSchedule', () => {
     expect(backoffSchedule(3)).toBe(86400);
   });
 
-  it('returns null once attempts exceed MAX_AUTO_ATTEMPTS', () => {
+  it('returns null once attempts exceed the configured cap', () => {
     expect(backoffSchedule(0)).toBeNull();
     expect(backoffSchedule(4)).toBeNull();
     expect(backoffSchedule(99)).toBeNull();
@@ -165,7 +165,7 @@ describe('resolveSearchBackend — retry-aware failed state', () => {
     expect(r.type).toBe('scraping');
   });
 
-  it('returns scraping when attempts >= MAX_AUTO_ATTEMPTS even if window open', async () => {
+  it('returns scraping once attempts reach the cap even with window open', async () => {
     const pastIso = new Date(0).toISOString();
     vi.mocked(existsSync).mockReturnValue(true);
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
