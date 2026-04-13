@@ -1,5 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
@@ -246,31 +246,42 @@ export async function resolveSearchBackend(): Promise<BackendResolution> {
 }
 
 export async function bootstrapNativeSearxng(dataDir: string): Promise<void> {
-  const searxngDir = join(dataDir, 'searxng');
-
-  setBootstrapState(dataDir, { status: 'downloading' });
-  log.info('bootstrapping SearXNG', { path: searxngDir });
-
+  const release = acquireBootstrapLock(dataDir);
   try {
+    const searxngDir = join(dataDir, 'searxng');
+
+    if (existsSync(searxngDir)) {
+      log.info('removing previous SearXNG install before (re)bootstrap');
+      rmSync(searxngDir, { recursive: true, force: true });
+    }
+
+    setBootstrapState(dataDir, { status: 'downloading' });
+    log.info('bootstrapping SearXNG', { path: searxngDir });
+
     mkdirSync(searxngDir, { recursive: true });
-    execSync(`python3 -m venv ${join(searxngDir, 'venv')}`, { stdio: 'pipe' });
+    runStep('python3', ['-m', 'venv', join(searxngDir, 'venv')], { timeout: 60_000 });
 
     const pip = join(searxngDir, 'venv', 'bin', 'pip');
-    execSync(`${pip} install --upgrade pip setuptools wheel`, { stdio: 'pipe', timeout: 60000 });
+    runStep(pip, ['install', '--upgrade', 'pip', 'setuptools', 'wheel'], { timeout: 60_000 });
 
-    // Download SearXNG tarball and install with deps (pip install from zip fails due to build-time imports)
     const repoDir = join(searxngDir, 'repo');
     mkdirSync(repoDir, { recursive: true });
     const tarPath = join(searxngDir, 'searxng.tar.gz');
 
     log.info('downloading SearXNG source');
     const response = await fetch('https://github.com/searxng/searxng/archive/refs/heads/master.tar.gz');
-    if (!response.ok) throw new Error(`SearXNG download failed: ${response.status} ${response.statusText}`);
+    if (!response.ok) {
+      throw new BootstrapError({
+        stderr: `SearXNG download failed: ${response.status} ${response.statusText}`,
+        exitCode: response.status,
+        command: 'fetch searxng.tar.gz',
+      });
+    }
     writeFileSync(tarPath, Buffer.from(await response.arrayBuffer()));
-    execSync(`tar xzf ${tarPath} --strip-components=1 -C ${repoDir}`, { stdio: 'pipe' });
+    runStep('tar', ['xzf', tarPath, '--strip-components=1', '-C', repoDir], { timeout: 60_000 });
 
-    execSync(`${pip} install -r ${join(repoDir, 'requirements.txt')}`, { stdio: 'pipe', timeout: 300000 });
-    execSync(`${pip} install --no-build-isolation --no-deps ${repoDir}`, { stdio: 'pipe', timeout: 120000 });
+    runStep(pip, ['install', '-r', join(repoDir, 'requirements.txt')], { timeout: 300_000 });
+    runStep(pip, ['install', '--no-build-isolation', '--no-deps', repoDir], { timeout: 120_000 });
 
     const config = getConfig();
     const settings = generateSettings(config.searxngPort);
@@ -279,9 +290,39 @@ export async function bootstrapNativeSearxng(dataDir: string): Promise<void> {
     setBootstrapState(dataDir, { status: 'ready', searxngPath: searxngDir });
     log.info('SearXNG bootstrap complete');
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    log.error('SearXNG bootstrap failed', { error });
-    setBootstrapState(dataDir, { status: 'failed', error });
+    const prev = getBootstrapState(dataDir);
+    const attempts = (prev?.attempts ?? 0) + 1;
+    const backoffSecs = backoffSchedule(attempts);
+    const nextRetryAt = backoffSecs === null
+      ? undefined
+      : new Date(Date.now() + backoffSecs * 1000).toISOString();
+
+    const lastError = err instanceof BootstrapError
+      ? {
+          message: err.message,
+          stderr: err.detail.stderr,
+          exitCode: err.detail.exitCode,
+          command: err.detail.command,
+          timestamp: new Date().toISOString(),
+        }
+      : {
+          message: err instanceof Error ? err.message : String(err),
+          stderr: '',
+          exitCode: null,
+          command: '',
+          timestamp: new Date().toISOString(),
+        };
+
+    setBootstrapState(dataDir, {
+      status: 'failed',
+      attempts,
+      lastAttemptAt: new Date().toISOString(),
+      nextRetryAt,
+      lastError,
+    });
+    log.error('SearXNG bootstrap failed', { attempts, nextRetryAt, error: lastError.message });
     throw err;
+  } finally {
+    release();
   }
 }

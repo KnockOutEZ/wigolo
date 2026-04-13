@@ -18,8 +18,8 @@ vi.mock('node:fs', async () => {
   };
 });
 
-import { existsSync, readFileSync } from 'node:fs';
-import { getBootstrapState, backoffSchedule } from '../../../src/searxng/bootstrap.js';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { getBootstrapState, backoffSchedule, type BootstrapState } from '../../../src/searxng/bootstrap.js';
 
 describe('BootstrapState back-compat read', () => {
   beforeEach(() => { resetConfig(); vi.clearAllMocks(); });
@@ -83,7 +83,7 @@ describe('backoffSchedule', () => {
 });
 
 import { execSync, spawnSync } from 'node:child_process';
-import { BootstrapError, runStep, resolveSearchBackend } from '../../../src/searxng/bootstrap.js';
+import { BootstrapError, runStep, resolveSearchBackend, bootstrapNativeSearxng } from '../../../src/searxng/bootstrap.js';
 
 describe('runStep', () => {
   beforeEach(() => { vi.clearAllMocks(); });
@@ -182,5 +182,44 @@ describe('resolveSearchBackend — retry-aware failed state', () => {
     vi.mocked(execSync).mockReturnValue(Buffer.from('Python 3.12.0'));
     const r = await resolveSearchBackend();
     expect(r.type).toBe('native');
+  });
+});
+
+describe('bootstrapNativeSearxng — failure path', () => {
+  beforeEach(() => { resetConfig(); vi.clearAllMocks(); });
+
+  it('writes failed state with attempts=1 and lastError from BootstrapError', async () => {
+    vi.mocked(spawnSync).mockReturnValue({
+      status: 1, stdout: '', stderr: 'pip install failure',
+      signal: null, pid: 1, output: [], error: undefined,
+    } as ReturnType<typeof spawnSync>);
+    vi.mocked(existsSync).mockImplementation((p) => !String(p).includes('bootstrap.lock'));
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ status: 'downloading' }));
+
+    await expect(bootstrapNativeSearxng('/tmp/.wigolo')).rejects.toBeInstanceOf(Error);
+
+    const calls = vi.mocked(writeFileSync).mock.calls
+      .filter((c) => String(c[0]).includes('state.json'));
+    const last = JSON.parse(String(calls[calls.length - 1][1])) as BootstrapState;
+    expect(last.status).toBe('failed');
+    expect(last.attempts).toBe(1);
+    expect(last.nextRetryAt).toBeDefined();
+    expect(last.lastError?.stderr).toBe('pip install failure');
+  });
+
+  it('increments attempts on successive failures', async () => {
+    vi.mocked(spawnSync).mockReturnValue({
+      status: 1, stdout: '', stderr: 'pip install failure',
+      signal: null, pid: 1, output: [], error: undefined,
+    } as ReturnType<typeof spawnSync>);
+    vi.mocked(existsSync).mockImplementation((p) => !String(p).includes('bootstrap.lock'));
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ status: 'failed', attempts: 2 }));
+
+    await expect(bootstrapNativeSearxng('/tmp/.wigolo')).rejects.toBeInstanceOf(Error);
+
+    const calls = vi.mocked(writeFileSync).mock.calls
+      .filter((c) => String(c[0]).includes('state.json'));
+    const last = JSON.parse(String(calls[calls.length - 1][1])) as BootstrapState;
+    expect(last.attempts).toBe(3);
   });
 });
