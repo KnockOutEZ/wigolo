@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
@@ -29,6 +29,63 @@ export function backoffSchedule(attempt: number): number | null {
   const schedule = config.bootstrapBackoffSeconds;
   if (attempt < 1 || attempt > max) return null;
   return schedule[attempt - 1] ?? null;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function acquireBootstrapLock(dataDir: string): () => void {
+  const lockFile = join(dataDir, 'bootstrap.lock');
+
+  if (existsSync(lockFile)) {
+    let stale = false;
+    try {
+      const data = JSON.parse(readFileSync(lockFile, 'utf-8')) as { pid?: number };
+      if (data.pid && isProcessAlive(data.pid)) {
+        throw new Error(
+          `SearXNG bootstrap already in progress (pid ${data.pid}). ` +
+          `Wait for it to finish, or force-recover: kill ${data.pid} && npx @staticn0va/wigolo warmup --force`,
+        );
+      }
+      stale = true;
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('SearXNG bootstrap already in progress')) throw err;
+      stale = true; // unparseable → treat as stale
+    }
+    if (stale) {
+      log.info('wiping stale bootstrap lock');
+      try { unlinkSync(lockFile); } catch {}
+    }
+  }
+
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(lockFile, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+
+  return function release(): void {
+    try { unlinkSync(lockFile); } catch {}
+  };
+}
+
+export interface WaitForBootstrapOpts {
+  timeoutMs: number;
+  intervalMs: number;
+}
+
+export async function waitForBootstrap(dataDir: string, opts: WaitForBootstrapOpts): Promise<'ready' | 'failed'> {
+  const deadline = Date.now() + opts.timeoutMs;
+  while (Date.now() < deadline) {
+    const state = getBootstrapState(dataDir);
+    if (state?.status === 'ready') return 'ready';
+    if (state?.status === 'failed') return 'failed';
+    await new Promise(r => setTimeout(r, opts.intervalMs));
+  }
+  throw new Error(`waitForBootstrap timed out after ${opts.timeoutMs}ms`);
 }
 
 export interface BackendResolution {
