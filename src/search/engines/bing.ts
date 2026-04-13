@@ -4,6 +4,26 @@ import { createLogger } from '../../logger.js';
 
 const log = createLogger('search');
 
+export function decodeBingTrackerUrl(href: string): string {
+  let u: URL;
+  try { u = new URL(href); } catch { return href; }
+  if (!u.hostname.endsWith('bing.com') || u.pathname !== '/ck/a') return href;
+
+  const encoded = u.searchParams.get('u');
+  if (!encoded || encoded.length < 4) return href;
+
+  // Bing format: 2-char prefix (commonly "a1") + URL-safe base64 of the destination.
+  const trimmed = encoded.slice(2).replace(/-/g, '+').replace(/_/g, '/');
+  const padded = trimmed + '='.repeat((4 - trimmed.length % 4) % 4);
+  try {
+    const decoded = Buffer.from(padded, 'base64').toString('utf-8');
+    new URL(decoded);
+    return decoded;
+  } catch {
+    return href;
+  }
+}
+
 export class BingEngine implements SearchEngine {
   name = 'bing';
 
@@ -42,7 +62,8 @@ export class BingEngine implements SearchEngine {
       const link = item.querySelector('h2 a');
       const snippetEl = item.querySelector('.b_lineclamp2, .b_lineclamp3, .b_caption p');
 
-      const href = link?.getAttribute('href');
+      const rawHref = link?.getAttribute('href');
+      const href = rawHref ? decodeBingTrackerUrl(rawHref) : undefined;
       const title = link?.textContent?.trim();
 
       if (href && title) {
