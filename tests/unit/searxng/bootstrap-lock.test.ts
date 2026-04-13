@@ -83,4 +83,10 @@ describe('waitForBootstrap', () => {
     await expect(waitForBootstrap('/tmp/.wigolo', { timeoutMs: 50, intervalMs: 10 }))
       .rejects.toThrow(/timed out/i);
   });
+
+  it('resolves as failed when status is no_runtime', async () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ status: 'no_runtime' }));
+    await expect(waitForBootstrap('/tmp/.wigolo', { timeoutMs: 5000, intervalMs: 10 })).resolves.toBe('failed');
+  });
 });

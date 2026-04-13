@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, unlinkSync 
 import { join } from 'node:path';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
+import { isProcessAlive } from './process.js';
 
 const log = createLogger('searxng');
 
@@ -29,15 +30,6 @@ export function backoffSchedule(attempt: number): number | null {
   const schedule = config.bootstrapBackoffSeconds;
   if (attempt < 1 || attempt > max) return null;
   return schedule[attempt - 1] ?? null;
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export function acquireBootstrapLock(dataDir: string): () => void {
@@ -83,6 +75,7 @@ export async function waitForBootstrap(dataDir: string, opts: WaitForBootstrapOp
     const state = getBootstrapState(dataDir);
     if (state?.status === 'ready') return 'ready';
     if (state?.status === 'failed') return 'failed';
+    if (state?.status === 'no_runtime') return 'failed';
     await new Promise(r => setTimeout(r, opts.intervalMs));
   }
   throw new Error(`waitForBootstrap timed out after ${opts.timeoutMs}ms`);
