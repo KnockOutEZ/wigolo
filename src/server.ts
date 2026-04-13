@@ -26,6 +26,7 @@ import { DockerSearxng } from './searxng/docker.js';
 import { BackendStatus } from './server/backend-status.js';
 import { getConfig } from './config.js';
 import { createLogger } from './logger.js';
+import { WIGOLO_INSTRUCTIONS, TOOL_DESCRIPTIONS } from './instructions.js';
 import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput } from './types.js';
 
 const log = createLogger('server');
@@ -222,46 +223,37 @@ export async function startServer(): Promise<void> {
 
   const server = new Server(
     { name: 'wigolo', version: SERVER_VERSION },
-    { capabilities: { tools: {} } },
+    {
+      capabilities: { tools: {} },
+      instructions: WIGOLO_INSTRUCTIONS,
+    },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
         name: 'fetch',
-        description:
-          'Fetch a web page and return its content as clean markdown. ' +
-          'Supports JavaScript rendering, auth, section extraction, and caching.',
+        description: TOOL_DESCRIPTIONS.fetch,
         inputSchema: FETCH_TOOL_SCHEMA,
       },
       {
         name: 'search',
-        description:
-          'Search the web and return results with optional full content extraction. ' +
-          'One call: query in, clean markdown out.',
+        description: TOOL_DESCRIPTIONS.search,
         inputSchema: SEARCH_TOOL_SCHEMA,
       },
       {
         name: 'crawl',
-        description:
-          'Crawl a website starting from a seed URL. Supports BFS, DFS, and sitemap strategies ' +
-          'with depth/page limits, URL filtering, and cross-page content deduplication.',
+        description: TOOL_DESCRIPTIONS.crawl,
         inputSchema: CRAWL_TOOL_SCHEMA,
       },
       {
         name: 'cache',
-        description:
-          'Query the local knowledge base of previously fetched content. ' +
-          'Search cached pages by full-text query, URL pattern, or date. ' +
-          'Can also return cache statistics or clear entries.',
+        description: TOOL_DESCRIPTIONS.cache,
         inputSchema: CACHE_TOOL_SCHEMA,
       },
       {
         name: 'extract',
-        description:
-          'Extract structured data from a web page. Supports CSS selector extraction, ' +
-          'table-to-JSON conversion, metadata extraction (title, author, date, JSON-LD), ' +
-          'and schema-based extraction (provide a JSON Schema to heuristically extract matching fields).',
+        description: TOOL_DESCRIPTIONS.extract,
         inputSchema: EXTRACT_TOOL_SCHEMA,
       },
     ],
