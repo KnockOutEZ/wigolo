@@ -49,7 +49,7 @@ export function runStep(command: string, args: string[], opts: { timeout: number
   const result = spawnSync(command, args, { encoding: 'utf-8', timeout: opts.timeout });
   if (result.status !== 0 || result.error) {
     throw new BootstrapError({
-      stderr: result.stderr ?? String(result.error ?? ''),
+      stderr: result.stderr || String(result.error ?? ''),
       exitCode: result.status,
       command: `${command} ${args.join(' ')}`,
     });

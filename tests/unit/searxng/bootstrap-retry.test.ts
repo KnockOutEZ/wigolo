@@ -122,6 +122,15 @@ describe('runStep', () => {
       signal: null, pid: 0, output: [],
       error: new Error('spawn pip ENOENT'),
     } as ReturnType<typeof spawnSync>);
-    expect(() => runStep('pip', [], { timeout: 1000 })).toThrow(BootstrapError);
+    try {
+      runStep('pip', [], { timeout: 1000 });
+      expect.fail('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(BootstrapError);
+      const e = err as BootstrapError;
+      expect(e.detail.stderr).toContain('ENOENT');
+      expect(e.detail.exitCode).toBeNull();
+      expect(e.detail.command).toContain('pip');
+    }
   });
 });
