@@ -193,18 +193,24 @@ describe('bootstrapNativeSearxng — failure path', () => {
       status: 1, stdout: '', stderr: 'pip install failure',
       signal: null, pid: 1, output: [], error: undefined,
     } as ReturnType<typeof spawnSync>);
+
+    let stateOnDisk = JSON.stringify({ status: 'downloading' });
     vi.mocked(existsSync).mockImplementation((p) => !String(p).includes('bootstrap.lock'));
-    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ status: 'downloading' }));
+    vi.mocked(readFileSync).mockImplementation((p) => {
+      if (String(p).includes('state.json')) return stateOnDisk;
+      return '';
+    });
+    vi.mocked(writeFileSync).mockImplementation((p, data) => {
+      if (String(p).includes('state.json')) stateOnDisk = String(data);
+    });
 
     await expect(bootstrapNativeSearxng('/tmp/.wigolo')).rejects.toBeInstanceOf(Error);
 
-    const calls = vi.mocked(writeFileSync).mock.calls
-      .filter((c) => String(c[0]).includes('state.json'));
-    const last = JSON.parse(String(calls[calls.length - 1][1])) as BootstrapState;
-    expect(last.status).toBe('failed');
-    expect(last.attempts).toBe(1);
-    expect(last.nextRetryAt).toBeDefined();
-    expect(last.lastError?.stderr).toBe('pip install failure');
+    const final = JSON.parse(stateOnDisk) as BootstrapState;
+    expect(final.status).toBe('failed');
+    expect(final.attempts).toBe(1);
+    expect(final.nextRetryAt).toBeDefined();
+    expect(final.lastError?.stderr).toBe('pip install failure');
   });
 
   it('increments attempts on successive failures', async () => {
@@ -212,14 +218,21 @@ describe('bootstrapNativeSearxng — failure path', () => {
       status: 1, stdout: '', stderr: 'pip install failure',
       signal: null, pid: 1, output: [], error: undefined,
     } as ReturnType<typeof spawnSync>);
+
+    let stateOnDisk = JSON.stringify({ status: 'failed', attempts: 2 });
     vi.mocked(existsSync).mockImplementation((p) => !String(p).includes('bootstrap.lock'));
-    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ status: 'failed', attempts: 2 }));
+    vi.mocked(readFileSync).mockImplementation((p) => {
+      if (String(p).includes('state.json')) return stateOnDisk;
+      return '';
+    });
+    vi.mocked(writeFileSync).mockImplementation((p, data) => {
+      if (String(p).includes('state.json')) stateOnDisk = String(data);
+    });
 
     await expect(bootstrapNativeSearxng('/tmp/.wigolo')).rejects.toBeInstanceOf(Error);
 
-    const calls = vi.mocked(writeFileSync).mock.calls
-      .filter((c) => String(c[0]).includes('state.json'));
-    const last = JSON.parse(String(calls[calls.length - 1][1])) as BootstrapState;
-    expect(last.attempts).toBe(3);
+    const final = JSON.parse(stateOnDisk) as BootstrapState;
+    expect(final.status).toBe('failed');
+    expect(final.attempts).toBe(3);
   });
 });

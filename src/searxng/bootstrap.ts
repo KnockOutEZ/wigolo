@@ -247,6 +247,7 @@ export async function resolveSearchBackend(): Promise<BackendResolution> {
 
 export async function bootstrapNativeSearxng(dataDir: string): Promise<void> {
   const release = acquireBootstrapLock(dataDir);
+  const priorAttempts = getBootstrapState(dataDir)?.attempts ?? 0;
   try {
     const searxngDir = join(dataDir, 'searxng');
 
@@ -290,8 +291,7 @@ export async function bootstrapNativeSearxng(dataDir: string): Promise<void> {
     setBootstrapState(dataDir, { status: 'ready', searxngPath: searxngDir });
     log.info('SearXNG bootstrap complete');
   } catch (err) {
-    const prev = getBootstrapState(dataDir);
-    const attempts = (prev?.attempts ?? 0) + 1;
+    const attempts = priorAttempts + 1;
     const backoffSecs = backoffSchedule(attempts);
     const nextRetryAt = backoffSecs === null
       ? undefined
