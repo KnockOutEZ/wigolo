@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { resetConfig } from '../../../src/config.js';
 
+vi.mock('node:child_process', () => ({
+  execSync: vi.fn(),
+  spawnSync: vi.fn(),
+}));
+
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
   return {
@@ -74,5 +79,49 @@ describe('backoffSchedule', () => {
     resetConfig();
     expect(backoffSchedule(1)).toBe(1);
     expect(backoffSchedule(3)).toBe(3);
+  });
+});
+
+import { spawnSync } from 'node:child_process';
+import { BootstrapError, runStep } from '../../../src/searxng/bootstrap.js';
+
+describe('runStep', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('returns silently on exit 0', () => {
+    vi.mocked(spawnSync).mockReturnValue({
+      status: 0, stdout: '', stderr: '', signal: null, pid: 1, output: [], error: undefined,
+    } as ReturnType<typeof spawnSync>);
+    expect(() => runStep('echo', ['hi'], { timeout: 1000 })).not.toThrow();
+  });
+
+  it('throws BootstrapError on non-zero exit, capturing stderr and command', () => {
+    vi.mocked(spawnSync).mockReturnValue({
+      status: 1,
+      stdout: '',
+      stderr: 'ERROR: could not satisfy requirement',
+      signal: null, pid: 1, output: [], error: undefined,
+    } as ReturnType<typeof spawnSync>);
+    try {
+      runStep('pip', ['install', '-r', 'reqs.txt'], { timeout: 1000 });
+      expect.fail('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(BootstrapError);
+      const e = err as BootstrapError;
+      expect(e.detail.stderr).toBe('ERROR: could not satisfy requirement');
+      expect(e.detail.exitCode).toBe(1);
+      expect(e.detail.command).toBe('pip install -r reqs.txt');
+    }
+  });
+
+  it('throws BootstrapError when spawnSync returns an error (e.g. ENOENT)', () => {
+    vi.mocked(spawnSync).mockReturnValue({
+      status: null,
+      stdout: '',
+      stderr: '',
+      signal: null, pid: 0, output: [],
+      error: new Error('spawn pip ENOENT'),
+    } as ReturnType<typeof spawnSync>);
+    expect(() => runStep('pip', [], { timeout: 1000 })).toThrow(BootstrapError);
   });
 });

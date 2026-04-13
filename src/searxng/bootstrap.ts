@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { getConfig } from '../config.js';
@@ -30,6 +30,30 @@ export function backoffSchedule(attempt: number): number | null {
   const schedule = config.bootstrapBackoffSeconds;
   if (attempt < 1 || attempt > max) return null;
   return schedule[attempt - 1] ?? null;
+}
+
+export interface BootstrapErrorDetail {
+  stderr: string;
+  exitCode: number | null;
+  command: string;
+}
+
+export class BootstrapError extends Error {
+  constructor(public readonly detail: BootstrapErrorDetail) {
+    super(`bootstrap step failed: ${detail.command} (exit ${detail.exitCode})`);
+    this.name = 'BootstrapError';
+  }
+}
+
+export function runStep(command: string, args: string[], opts: { timeout: number }): void {
+  const result = spawnSync(command, args, { encoding: 'utf-8', timeout: opts.timeout });
+  if (result.status !== 0 || result.error) {
+    throw new BootstrapError({
+      stderr: result.stderr ?? String(result.error ?? ''),
+      exitCode: result.status,
+      command: `${command} ${args.join(' ')}`,
+    });
+  }
 }
 
 export function acquireBootstrapLock(dataDir: string): () => void {
