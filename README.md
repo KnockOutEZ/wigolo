@@ -48,7 +48,12 @@ claude mcp add wigolo -- npx @staticn0va/wigolo
 ```bash
 npx @staticn0va/wigolo warmup          # Downloads Playwright + SearXNG
 npx @staticn0va/wigolo warmup --all  # + ML reranking + Trafilatura extraction
+npx @staticn0va/wigolo warmup --force     # Wipe SearXNG state/install/locks and re-bootstrap
 ```
+
+### Diagnostics
+
+Run `npx @staticn0va/wigolo doctor` to see the health of every component (Python, Docker, Playwright, Trafilatura, FlashRank, SearXNG install + process). Exits 0 when healthy, 1 when any required component is degraded. Usable in scripts: `npx @staticn0va/wigolo doctor && my-agent`.
 
 ## Prerequisites
 
@@ -190,6 +195,9 @@ Full list of env vars:
 | `FETCH_TIMEOUT_MS` | `10000` | HTTP fetch timeout |
 | `CRAWL_CONCURRENCY` | `2` | Concurrent crawl requests |
 | `RESPECT_ROBOTS_TXT` | `true` | Honor robots.txt |
+| `WIGOLO_BOOTSTRAP_MAX_ATTEMPTS` | `3` | Cap on SearXNG bootstrap auto-retries |
+| `WIGOLO_BOOTSTRAP_BACKOFF_SECONDS` | `30,3600,86400` | Backoff seconds for retry attempts 1, 2, 3 |
+| `WIGOLO_HEALTH_PROBE_INTERVAL_MS` | `30000` | Interval between SearXNG `/healthz` probes |
 
 ## How it works
 
@@ -209,6 +217,8 @@ Each step degrades gracefully:
   Extractor fails?     → ensemble: site-specific → Defuddle → Trafilatura → Readability → Turndown
   Already fetched?     → served from SQLite cache with FTS5
 ```
+
+SearXNG bootstrap failures are self-healing: wigolo retries after 30 seconds, 1 hour, and 24 hours on successive server restarts. Once attempts are exhausted, direct-scraping stays permanent until the user runs `warmup --force`. Tool responses include a one-time fallback warning so agents can surface the recovery command. See `doctor` for the full state.
 
 **Extraction ensemble** — every page runs through multiple extractors in order, falling back if content is below threshold:
 1. Site-specific extractors (GitHub, Stack Overflow, MDN, docs frameworks)
