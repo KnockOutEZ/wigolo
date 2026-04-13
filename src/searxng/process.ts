@@ -15,6 +15,11 @@ const MAX_CRASH_RESTARTS = 3;
 const CRASH_WINDOW_MS = 60000;
 const SHUTDOWN_GRACE_MS = 5000;
 
+export interface ProcessCallbacks {
+  onUnhealthy?: (reason: string) => void;
+  onHealthy?: () => void;
+}
+
 export function findAvailablePort(startPort: number): Promise<number> {
   return new Promise((resolve, reject) => {
     let port = startPort;
@@ -104,10 +109,12 @@ export class SearxngProcess {
   private port: number | null = null;
   private crashTimes: number[] = [];
   private stopped = false;
+  private isCurrentlyUnhealthy = false;
 
   constructor(
     private readonly searxngPath: string,
     private readonly dataDir: string,
+    private readonly callbacks: ProcessCallbacks = {},
   ) {}
 
   getUrl(): string | null {
@@ -190,6 +197,12 @@ export class SearxngProcess {
       if (this.crashTimes.length >= MAX_CRASH_RESTARTS) {
         log.error('too many crashes, giving up on SearXNG', { crashes: this.crashTimes.length });
         releaseLock(this.dataDir);
+        if (!this.isCurrentlyUnhealthy) {
+          this.isCurrentlyUnhealthy = true;
+          this.callbacks.onUnhealthy?.(
+            `SearXNG process crashed ${this.crashTimes.length} times in ${CRASH_WINDOW_MS / 1000}s`,
+          );
+        }
         return;
       }
 
