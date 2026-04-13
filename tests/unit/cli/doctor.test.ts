@@ -84,6 +84,26 @@ describe('runDoctor', () => {
     expect(code).toBe(0);
   });
 
+  it('exits 1 when Playwright is installed but chromium browser is missing', async () => {
+    vi.mocked(spawnSync).mockImplementation((cmd, args) => {
+      const joined = [cmd, ...((args ?? []) as string[])].join(' ');
+      if (joined.includes('--version')) return okProc('1.50.0');
+      if (joined.includes('--dry-run') && joined.includes('chromium'))
+        return okProc('chromium is not installed');
+      return okProc();
+    });
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockImplementation((p) => {
+      const s = String(p);
+      if (s.endsWith('state.json')) return JSON.stringify({ status: 'ready', searxngPath: '/tmp/searxng' });
+      if (s.endsWith('searxng.lock')) return JSON.stringify({ pid: process.pid, port: 8888 });
+      return '';
+    });
+    const code = await runDoctor('/tmp/.wigolo');
+    expect(code).toBe(1);
+    expect(outBuffer).toContain('chromium missing');
+  });
+
   it('exits 1 when no state file exists', async () => {
     vi.mocked(spawnSync).mockImplementation(() => okProc('Python 3.12.4'));
     vi.mocked(existsSync).mockReturnValue(false);
