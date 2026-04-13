@@ -11,9 +11,9 @@
       "expected": "https://developer.mozilla.org/en-US/docs/Web/JavaScript"
     },
     {
-      "description": "URL-safe base64 with - and _ requiring unpad",
-      "encoded": "https://www.bing.com/ck/a?&u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9hP2I9Yy1kJmU9Zl9n",
-      "expected": "https://example.com/a?b=c-d&e=f_g"
+      "description": "URL-safe base64 with - (encoded +) requiring conversion",
+      "encoded": "https://www.bing.com/ck/a?&u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9-dXNlci9maWxl",
+      "expected": "https://example.com/~user/file"
     }
   ]
 }
