@@ -1,11 +1,11 @@
-export type Command = 'mcp' | 'warmup' | 'serve' | 'health';
+export type Command = 'mcp' | 'warmup' | 'serve' | 'health' | 'doctor';
 
 export interface ParsedCommand {
   command: Command;
   args: string[];
 }
 
-const KNOWN_COMMANDS: ReadonlySet<string> = new Set(['warmup', 'serve', 'health']);
+const KNOWN_COMMANDS: ReadonlySet<string> = new Set(['warmup', 'serve', 'health', 'doctor']);
 
 export function parseCommand(argv: string[]): ParsedCommand {
   const first = argv[0];
