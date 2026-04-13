@@ -1,5 +1,6 @@
-import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -27,6 +28,20 @@ import { createLogger } from './logger.js';
 import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput } from './types.js';
 
 const log = createLogger('server');
+
+function readPackageVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    // src/server.ts in dev, dist/server.js in build — both are siblings of package.json
+    const pkgPath = join(here, '..', 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+const SERVER_VERSION = readPackageVersion();
 
 const FETCH_TOOL_SCHEMA = {
   type: 'object' as const,
@@ -192,47 +207,18 @@ export async function startServer(): Promise<void> {
   const browserPool = new BrowserPool();
   const router = new SmartRouter(httpClient, browserPool);
 
-  // --- Search backend initialization ---
-  const backend = await resolveSearchBackend();
-  const searchEngines: SearchEngine[] = [];
+  // Direct scraping engines work without any bootstrap — always available so
+  // search() succeeds immediately even before SearXNG finishes setup.
+  const searchEngines: SearchEngine[] = [
+    new BingEngine(),
+    new DuckDuckGoEngine(),
+    new StartpageEngine(),
+  ];
   let searxngProcess: SearxngProcess | null = null;
   let dockerSearxng: DockerSearxng | null = null;
 
-  if (backend.type === 'external' && backend.url) {
-    searchEngines.push(new SearxngClient(backend.url));
-  } else if (backend.type === 'native' && backend.searxngPath) {
-    const state = getBootstrapState(config.dataDir);
-    if (state?.status !== 'ready') {
-      try {
-        await bootstrapNativeSearxng(config.dataDir);
-      } catch {
-        log.warn('SearXNG bootstrap failed, using direct scraping fallback');
-      }
-    }
-    const postBootstrapState = getBootstrapState(config.dataDir);
-    if (postBootstrapState?.status === 'ready') {
-      searxngProcess = new SearxngProcess(backend.searxngPath, config.dataDir);
-      const url = await searxngProcess.start();
-      if (url) {
-        searchEngines.push(new SearxngClient(url));
-      } else {
-        log.warn('SearXNG failed to start, using direct scraping fallback');
-      }
-    }
-  } else if (backend.type === 'docker') {
-    dockerSearxng = new DockerSearxng();
-    const url = await dockerSearxng.start();
-    if (url) {
-      searchEngines.push(new SearxngClient(url));
-    } else {
-      log.warn('Docker SearXNG failed to start, using direct scraping fallback');
-    }
-  }
-
-  searchEngines.push(new BingEngine(), new DuckDuckGoEngine(), new StartpageEngine());
-
   const server = new Server(
-    { name: 'wigolo', version: '0.1.0' },
+    { name: 'wigolo', version: SERVER_VERSION },
     { capabilities: { tools: {} } },
   );
 
@@ -336,8 +322,71 @@ export async function startServer(): Promise<void> {
   await server.connect(transport);
   log.info('MCP server started');
 
+  // Bootstrap SearXNG in the background. The MCP server is already responding
+  // to initialize/tools/list/tools/call. search() falls back to direct engines
+  // until SearXNG becomes available, at which point it is unshifted to the
+  // front of the engine list and used preferentially on subsequent calls.
+  let searxngBootstrap: Promise<void> | null = null;
+  searxngBootstrap = (async () => {
+    try {
+      const backend = await resolveSearchBackend();
+
+      if (backend.type === 'external' && backend.url) {
+        searchEngines.unshift(new SearxngClient(backend.url));
+        log.info('using external SearXNG', { url: backend.url });
+        return;
+      }
+
+      if (backend.type === 'native' && backend.searxngPath) {
+        const state = getBootstrapState(config.dataDir);
+        if (state?.status !== 'ready') {
+          log.info('SearXNG not ready — bootstrapping in background; search uses direct engines until ready');
+          try {
+            await bootstrapNativeSearxng(config.dataDir);
+          } catch {
+            log.warn('SearXNG bootstrap failed, continuing with direct scraping fallback');
+            return;
+          }
+        }
+        const postBootstrapState = getBootstrapState(config.dataDir);
+        if (postBootstrapState?.status === 'ready') {
+          searxngProcess = new SearxngProcess(backend.searxngPath, config.dataDir);
+          const url = await searxngProcess.start();
+          if (url) {
+            searchEngines.unshift(new SearxngClient(url));
+            log.info('SearXNG ready and added to search engines', { url });
+          } else {
+            log.warn('SearXNG failed to start, using direct scraping fallback');
+          }
+        }
+        return;
+      }
+
+      if (backend.type === 'docker') {
+        dockerSearxng = new DockerSearxng();
+        const url = await dockerSearxng.start();
+        if (url) {
+          searchEngines.unshift(new SearxngClient(url));
+          log.info('Docker SearXNG ready', { url });
+        } else {
+          log.warn('Docker SearXNG failed to start, using direct scraping fallback');
+        }
+      }
+    } catch (err) {
+      log.warn('background backend setup failed', { error: String(err) });
+    }
+  })();
+
   const shutdown = async () => {
     log.info('Shutting down');
+    if (searxngBootstrap) {
+      // Let an in-flight bootstrap settle so we don't kill venv/pip mid-install
+      // and corrupt ~/.wigolo/searxng. Bounded so we don't hang forever.
+      await Promise.race([
+        searxngBootstrap.catch(() => {}),
+        new Promise<void>((r) => setTimeout(r, 2000)),
+      ]);
+    }
     if (searxngProcess) await searxngProcess.stop();
     if (dockerSearxng) await dockerSearxng.stop();
     await browserPool.shutdown();
