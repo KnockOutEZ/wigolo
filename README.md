@@ -267,6 +267,24 @@ npm install
 npm test
 ```
 
+## Releasing
+
+Releases are triggered by pushing a version tag. CI handles the rest.
+
+```bash
+# on main, all changes committed and pushed
+npm version patch   # or: minor / major
+git push --follow-tags
+```
+
+The `release` workflow will:
+1. Build a clean `dist/`
+2. Verify the tag matches `package.json` version
+3. Publish to npm with provenance
+4. Create a GitHub Release with auto-generated notes
+
+Requires the `NPM_TOKEN` repository secret (npm automation token with publish scope).
+
 ## License
 
 [BSL 1.1](LICENSE) — free for individuals, small teams (under $1M revenue), education, and open source. Converts to MIT on 2029-04-12.
