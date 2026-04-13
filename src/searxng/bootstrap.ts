@@ -143,7 +143,21 @@ export async function bootstrapNativeSearxng(dataDir: string): Promise<void> {
     execSync(`python3 -m venv ${join(searxngDir, 'venv')}`, { stdio: 'pipe' });
 
     const pip = join(searxngDir, 'venv', 'bin', 'pip');
-    execSync(`${pip} install searxng`, { stdio: 'pipe', timeout: 120000 });
+    execSync(`${pip} install --upgrade pip setuptools wheel`, { stdio: 'pipe', timeout: 60000 });
+
+    // Download SearXNG tarball and install with deps (pip install from zip fails due to build-time imports)
+    const repoDir = join(searxngDir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+    const tarPath = join(searxngDir, 'searxng.tar.gz');
+
+    log.info('downloading SearXNG source');
+    const response = await fetch('https://github.com/searxng/searxng/archive/refs/heads/master.tar.gz');
+    if (!response.ok) throw new Error(`SearXNG download failed: ${response.status} ${response.statusText}`);
+    writeFileSync(tarPath, Buffer.from(await response.arrayBuffer()));
+    execSync(`tar xzf ${tarPath} --strip-components=1 -C ${repoDir}`, { stdio: 'pipe' });
+
+    execSync(`${pip} install -r ${join(repoDir, 'requirements.txt')}`, { stdio: 'pipe', timeout: 300000 });
+    execSync(`${pip} install --no-build-isolation --no-deps ${repoDir}`, { stdio: 'pipe', timeout: 120000 });
 
     const config = getConfig();
     const settings = generateSettings(config.searxngPort);

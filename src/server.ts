@@ -19,7 +19,7 @@ import { SearxngClient } from './search/searxng.js';
 import { DuckDuckGoEngine } from './search/engines/duckduckgo.js';
 import { BingEngine } from './search/engines/bing.js';
 import { StartpageEngine } from './search/engines/startpage.js';
-import { resolveSearchBackend } from './searxng/bootstrap.js';
+import { resolveSearchBackend, bootstrapNativeSearxng, getBootstrapState } from './searxng/bootstrap.js';
 import { SearxngProcess } from './searxng/process.js';
 import { DockerSearxng } from './searxng/docker.js';
 import { getConfig } from './config.js';
@@ -201,12 +201,23 @@ export async function startServer(): Promise<void> {
   if (backend.type === 'external' && backend.url) {
     searchEngines.push(new SearxngClient(backend.url));
   } else if (backend.type === 'native' && backend.searxngPath) {
-    searxngProcess = new SearxngProcess(backend.searxngPath, config.dataDir);
-    const url = await searxngProcess.start();
-    if (url) {
-      searchEngines.push(new SearxngClient(url));
-    } else {
-      log.warn('SearXNG failed to start, using direct scraping fallback');
+    const state = getBootstrapState(config.dataDir);
+    if (state?.status !== 'ready') {
+      try {
+        await bootstrapNativeSearxng(config.dataDir);
+      } catch {
+        log.warn('SearXNG bootstrap failed, using direct scraping fallback');
+      }
+    }
+    const postBootstrapState = getBootstrapState(config.dataDir);
+    if (postBootstrapState?.status === 'ready') {
+      searxngProcess = new SearxngProcess(backend.searxngPath, config.dataDir);
+      const url = await searxngProcess.start();
+      if (url) {
+        searchEngines.push(new SearxngClient(url));
+      } else {
+        log.warn('SearXNG failed to start, using direct scraping fallback');
+      }
     }
   } else if (backend.type === 'docker') {
     dockerSearxng = new DockerSearxng();

@@ -139,9 +139,19 @@ export class SearxngProcess {
     const settingsPath = join(this.searxngPath, 'settings.yml');
     const pythonBin = join(this.searxngPath, 'venv', 'bin', 'python');
 
+    if (!existsSync(pythonBin)) {
+      log.error('SearXNG python not found — run warmup first', { path: pythonBin });
+      releaseLock(this.dataDir);
+      return null;
+    }
+
     this.child = spawn(pythonBin, ['-m', 'searx.webapp'], {
       env: { ...process.env, SEARXNG_SETTINGS_PATH: settingsPath },
       stdio: 'pipe',
+    });
+
+    this.child.on('error', (err) => {
+      log.error('SearXNG spawn error', { error: String(err) });
     });
 
     writeFileSync(join(this.dataDir, 'searxng.port'), String(this.port));
