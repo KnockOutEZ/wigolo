@@ -52,7 +52,10 @@ describe('BootstrapState back-compat read', () => {
 });
 
 describe('backoffSchedule', () => {
-  beforeEach(() => { resetConfig(); });
+  const originalEnv = process.env;
+
+  beforeEach(() => { process.env = { ...originalEnv }; resetConfig(); });
+  afterEach(() => { process.env = originalEnv; resetConfig(); });
 
   it('returns 30s / 1h / 24h for attempts 1, 2, 3', () => {
     expect(backoffSchedule(1)).toBe(30);
@@ -61,6 +64,7 @@ describe('backoffSchedule', () => {
   });
 
   it('returns null once attempts exceed MAX_AUTO_ATTEMPTS', () => {
+    expect(backoffSchedule(0)).toBeNull();
     expect(backoffSchedule(4)).toBeNull();
     expect(backoffSchedule(99)).toBeNull();
   });
