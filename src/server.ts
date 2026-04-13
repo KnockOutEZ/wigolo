@@ -360,7 +360,23 @@ export async function startServer(): Promise<void> {
         }
         const postBootstrapState = getBootstrapState(config.dataDir);
         if (postBootstrapState?.status === 'ready') {
-          searxngProcess = new SearxngProcess(backend.searxngPath, config.dataDir);
+          searxngProcess = new SearxngProcess(backend.searxngPath, config.dataDir, {
+            onUnhealthy: (reason) => {
+              backendStatus.markUnhealthy(reason);
+              const idx = searchEngines.findIndex(e => e.name === 'searxng');
+              if (idx >= 0) searchEngines.splice(idx, 1);
+              log.warn('SearXNG marked unhealthy', { reason });
+            },
+            onHealthy: () => {
+              const url = searxngProcess?.getUrl();
+              if (!url) return;
+              backendStatus.markHealthy();
+              if (!searchEngines.some(e => e.name === 'searxng')) {
+                searchEngines.unshift(new SearxngClient(url));
+              }
+              log.info('SearXNG recovered');
+            },
+          });
           const url = await searxngProcess.start();
           if (url) {
             searchEngines.unshift(new SearxngClient(url));
