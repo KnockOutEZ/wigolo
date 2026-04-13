@@ -1,5 +1,6 @@
 import type { SearchInput, SearchOutput, SearchResultItem, SearchEngine, RawSearchResult } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
+import type { BackendStatus } from '../server/backend-status.js';
 import { deduplicateResults, type MergedSearchResult } from '../search/dedup.js';
 import { decomposeQuery } from '../search/query.js';
 import { validateLinks } from '../search/validator.js';
@@ -21,6 +22,7 @@ export async function handleSearch(
   input: SearchInput,
   engines: SearchEngine[],
   router: SmartRouter,
+  backendStatus?: BackendStatus,
 ): Promise<SearchOutput> {
   const start = Date.now();
   const config = getConfig();
@@ -35,12 +37,15 @@ export async function handleSearch(
   const cached = getCachedSearchResults(input.query);
   if (cached && !includeContent) {
     log.info('serving search results from cache', { query: input.query });
-    return {
+    const output: SearchOutput = {
       results: cached.results.slice(0, maxResults),
       query: input.query,
       engines_used: cached.engines_used,
       total_time_ms: Date.now() - start,
     };
+    const warning = backendStatus?.consumeWarning();
+    if (warning) output.warning = warning;
+    return output;
   }
 
   let activeEngines = engines;
@@ -91,13 +96,16 @@ export async function handleSearch(
   await Promise.allSettled(searchPromises);
 
   if (allRaw.length === 0) {
-    return {
+    const output: SearchOutput = {
       results: [],
       query: input.query,
       engines_used: [...enginesUsed],
       total_time_ms: Date.now() - start,
       error: errors.length > 0 ? errors.join('; ') : 'No results found',
     };
+    const warning = backendStatus?.consumeWarning();
+    if (warning) output.warning = warning;
+    return output;
   }
 
   let merged = deduplicateResults(allRaw);
@@ -139,12 +147,15 @@ export async function handleSearch(
     log.warn('failed to cache search results', { error: String(err) });
   }
 
-  return {
+  const output: SearchOutput = {
     results,
     query: input.query,
     engines_used: [...enginesUsed],
     total_time_ms: Date.now() - start,
   };
+  const warning = backendStatus?.consumeWarning();
+  if (warning) output.warning = warning;
+  return output;
 }
 
 interface FetchContext {

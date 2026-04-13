@@ -124,6 +124,7 @@ export interface SearchOutput {
   engines_used: string[];
   total_time_ms: number;
   error?: string;
+  warning?: string;
 }
 
 export interface RawSearchResult {
