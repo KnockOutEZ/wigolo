@@ -23,6 +23,7 @@ import { StartpageEngine } from './search/engines/startpage.js';
 import { resolveSearchBackend, bootstrapNativeSearxng, getBootstrapState } from './searxng/bootstrap.js';
 import { SearxngProcess } from './searxng/process.js';
 import { DockerSearxng } from './searxng/docker.js';
+import { BackendStatus } from './server/backend-status.js';
 import { getConfig } from './config.js';
 import { createLogger } from './logger.js';
 import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput } from './types.js';
@@ -207,6 +208,8 @@ export async function startServer(): Promise<void> {
   const browserPool = new BrowserPool();
   const router = new SmartRouter(httpClient, browserPool);
 
+  const backendStatus = new BackendStatus();
+
   // Direct scraping engines work without any bootstrap — always available so
   // search() succeeds immediately even before SearXNG finishes setup.
   const searchEngines: SearchEngine[] = [
@@ -278,9 +281,14 @@ export async function startServer(): Promise<void> {
 
     if (name === 'search') {
       const input = (args ?? {}) as unknown as SearchInput;
-      const result = await handleSearch(input, searchEngines, router);
+      const result = await handleSearch(input, searchEngines, router, backendStatus);
+      const blocks: { type: 'text'; text: string }[] = [];
+      if (result.warning) {
+        blocks.push({ type: 'text', text: `[wigolo notice] ${result.warning}` });
+      }
+      blocks.push({ type: 'text', text: JSON.stringify(result, null, 2) });
       return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        content: blocks,
         isError: !!result.error,
       };
     }
@@ -333,6 +341,7 @@ export async function startServer(): Promise<void> {
 
       if (backend.type === 'external' && backend.url) {
         searchEngines.unshift(new SearxngClient(backend.url));
+        backendStatus.markHealthy();
         log.info('using external SearXNG', { url: backend.url });
         return;
       }
@@ -343,8 +352,9 @@ export async function startServer(): Promise<void> {
           log.info('SearXNG not ready — bootstrapping in background; search uses direct engines until ready');
           try {
             await bootstrapNativeSearxng(config.dataDir);
-          } catch {
+          } catch (err) {
             log.warn('SearXNG bootstrap failed, continuing with direct scraping fallback');
+            backendStatus.markUnhealthy(`bootstrap exception: ${String(err)}`);
             return;
           }
         }
@@ -354,9 +364,11 @@ export async function startServer(): Promise<void> {
           const url = await searxngProcess.start();
           if (url) {
             searchEngines.unshift(new SearxngClient(url));
+            backendStatus.markHealthy();
             log.info('SearXNG ready and added to search engines', { url });
           } else {
             log.warn('SearXNG failed to start, using direct scraping fallback');
+            backendStatus.markUnhealthy('SearXNG process failed to start');
           }
         }
         return;
@@ -367,13 +379,22 @@ export async function startServer(): Promise<void> {
         const url = await dockerSearxng.start();
         if (url) {
           searchEngines.unshift(new SearxngClient(url));
+          backendStatus.markHealthy();
           log.info('Docker SearXNG ready', { url });
         } else {
           log.warn('Docker SearXNG failed to start, using direct scraping fallback');
+          backendStatus.markUnhealthy('Docker SearXNG failed to start');
         }
+      }
+
+      if (backend.type === 'scraping') {
+        const state = getBootstrapState(config.dataDir);
+        const reason = state?.lastError?.message ?? state?.error ?? 'no SearXNG backend available';
+        backendStatus.markUnhealthy(reason);
       }
     } catch (err) {
       log.warn('background backend setup failed', { error: String(err) });
+      backendStatus.markUnhealthy(`backend setup failed: ${String(err)}`);
     }
   })();
 
