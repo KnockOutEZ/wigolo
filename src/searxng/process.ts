@@ -110,6 +110,8 @@ export class SearxngProcess {
   private crashTimes: number[] = [];
   private stopped = false;
   private isCurrentlyUnhealthy = false;
+  private healthProbeFailures = 0;
+  private healthProbeTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly searxngPath: string,
@@ -178,6 +180,7 @@ export class SearxngProcess {
     }
 
     this.monitorCrashes();
+    this.startHealthProbe();
     log.info('SearXNG started', { port: this.port, url });
     return url;
   }
@@ -214,7 +217,46 @@ export class SearxngProcess {
     });
   }
 
+  private startHealthProbe(): void {
+    if (this.healthProbeTimer) clearInterval(this.healthProbeTimer);
+    const config = getConfig();
+    const intervalMs = config.healthProbeIntervalMs;
+    this.healthProbeTimer = setInterval(() => {
+      void this.probeOnce();
+    }, intervalMs);
+  }
+
+  private async probeOnce(): Promise<void> {
+    if (this.stopped || !this.port) return;
+    try {
+      const r = await fetch(`http://127.0.0.1:${this.port}/healthz`, { signal: AbortSignal.timeout(2000) });
+      if (r.ok) {
+        this.healthProbeFailures = 0;
+        if (this.isCurrentlyUnhealthy) {
+          this.isCurrentlyUnhealthy = false;
+          this.callbacks.onHealthy?.();
+        }
+      } else {
+        this.notePotentialFailure();
+      }
+    } catch {
+      this.notePotentialFailure();
+    }
+  }
+
+  private notePotentialFailure(): void {
+    this.healthProbeFailures++;
+    if (this.healthProbeFailures === 3 && !this.isCurrentlyUnhealthy) {
+      this.isCurrentlyUnhealthy = true;
+      this.callbacks.onUnhealthy?.('SearXNG /healthz unreachable for 3 consecutive probes');
+    }
+  }
+
   async stop(): Promise<void> {
+    if (this.healthProbeTimer) {
+      clearInterval(this.healthProbeTimer);
+      this.healthProbeTimer = null;
+    }
     this.stopped = true;
 
     if (this.child) {
