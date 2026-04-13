@@ -74,12 +74,14 @@ interface BootstrapState {
 
 | Attempt N fails | `nextRetryAt = now + ...` |
 |---|---|
-| 1 | 5 minutes |
+| 1 | 30 seconds |
 | 2 | 1 hour |
 | 3 | 24 hours (last auto-retry) |
 | 4+ | not scheduled — `status: failed` stays until `warmup --force` |
 
-`MAX_AUTO_ATTEMPTS = 3`. Both the cap and the schedule are tunable via env (`WIGOLO_BOOTSTRAP_MAX_ATTEMPTS`, `WIGOLO_BOOTSTRAP_BACKOFF_SECONDS=300,3600,86400`).
+`MAX_AUTO_ATTEMPTS = 3`. Both the cap and the schedule are tunable via env (`WIGOLO_BOOTSTRAP_MAX_ATTEMPTS`, `WIGOLO_BOOTSTRAP_BACKOFF_SECONDS=30,3600,86400`).
+
+The 30s first-retry is intentionally short: wigolo is a dev tool, and a developer hitting a transient pip blip and restarting their editor 30 seconds later should NOT have to wait 5 minutes. If 30s isn't enough breathing room (genuinely flaky network), the second attempt's 1-hour wait absorbs that. The 24h third-retry covers extended outages without burning startup time on broken environments.
 
 ### Lifecycle
 
@@ -92,7 +94,7 @@ interface BootstrapState {
      (failure)
         |
         v
-   failed { attempts: 1, nextRetryAt: now+5min, lastError: {...} }
+   failed { attempts: 1, nextRetryAt: now+30s, lastError: {...} }
         |
    +----+---------+
    | now >= nextRetryAt  AND  attempts < MAX:
@@ -129,11 +131,6 @@ if (state?.status === 'failed') {
 
   if (retryWindowOpen && budgetRemaining && checkPythonAvailable()) {
     log.info('SearXNG bootstrap retry window reached', { attempts, nextRetryAt });
-    // Safe: the bootstrap lock guards this directory, and the SearxngProcess
-    // lock guards a running install. A stuck `failed` state means no live
-    // process holds either lock. If a stale lock points at a live PID, the
-    // bootstrap lock acquisition below will block before we touch the dir.
-    rmSync(join(dataDir, 'searxng'), { recursive: true, force: true });
     return { type: 'native', searxngPath: join(dataDir, 'searxng') };
   }
 
@@ -150,6 +147,8 @@ if (state?.status === 'failed') {
 ```
 
 The `no_runtime` branch stays as-is — Python/Docker not being installed is a legitimate hard failure that does not warrant retry.
+
+`resolveSearchBackend` is a pure decision function — it does NOT mutate the filesystem. Cleanup of any half-written install lives inside `bootstrapNativeSearxng` and runs only after the bootstrap lock is held (see next section).
 
 ### Stderr capture in `bootstrapNativeSearxng`
 
@@ -211,6 +210,36 @@ Two concurrent MCP servers (e.g., user runs the same MCP from two clients) could
 
 Released in a `finally` block whether bootstrap succeeded or threw.
 
+### Cleanup of partial installs (inside `bootstrapNativeSearxng`)
+
+After acquiring the bootstrap lock, before recreating the venv, wipe any partial install from a previous failed attempt:
+
+```ts
+export async function bootstrapNativeSearxng(dataDir: string): Promise<void> {
+  const releaseBootstrapLock = acquireBootstrapLock(dataDir);
+  try {
+    const searxngDir = join(dataDir, 'searxng');
+    // Safe: bootstrap lock is held; no other wigolo process can be touching this directory.
+    // SearxngProcess holds searxng.lock separately for a running instance — stop() must
+    // run before bootstrap is retried (server.ts already does this when state is failed).
+    if (existsSync(searxngDir)) {
+      log.info('removing previous SearXNG install before retry');
+      rmSync(searxngDir, { recursive: true, force: true });
+    }
+
+    setBootstrapState(dataDir, { status: 'downloading', attempts: ((getBootstrapState(dataDir)?.attempts) ?? 0) + 0 });
+    // ... existing install logic using runStep() ...
+  } catch (err) {
+    // ... write failed state with backoff (see "Stderr capture" section) ...
+    throw err;
+  } finally {
+    releaseBootstrapLock();
+  }
+}
+```
+
+The cleanup is local to `bootstrapNativeSearxng`. `resolveSearchBackend` callers cannot accidentally race with another process's in-progress bootstrap because the lock acquisition happens first.
+
 ---
 
 ## 2. Search-Side Fixes
@@ -247,40 +276,77 @@ We do **not** decode in `searxng.ts` — SearXNG's Bing engine already decodes s
 
 ### MCP response warning (one-shot per fallback session)
 
-A new `BackendStatus` ref shared between `server.ts` and `handleSearch`:
+`BackendStatus` is a class (not a plain object) so the one-shot semantic is encapsulated and can't be subverted by accidental field mutation in callers. Lives in a new file `src/server/backend-status.ts`:
 
 ```ts
-interface BackendStatus {
-  searxngActive: boolean;        // is SearXNG currently in the engine list?
-  fallbackReason?: string;       // human-readable reason
-  warningSurfaced: boolean;      // has this fallback been mentioned in a tool response yet?
+export class BackendStatus {
+  private _active = false;
+  private _reason: string | undefined;
+  private _warned = false;
+
+  get isActive(): boolean { return this._active; }
+
+  markUnhealthy(reason: string): void {
+    this._active = false;
+    this._reason = reason;
+    this._warned = false;          // next response surfaces the warning
+  }
+
+  markHealthy(): void {
+    this._active = true;
+    this._reason = undefined;
+    this._warned = false;          // reset so a future fallback warns fresh
+  }
+
+  /** Returns warning text once per fallback session, then undefined. */
+  consumeWarning(): string | undefined {
+    if (this._active || this._warned) return undefined;
+    this._warned = true;
+    return (
+      `SearXNG embedded search is unavailable; using direct engine scraping (lower quality). ` +
+      `Reason: ${this._reason ?? 'unknown'}. ` +
+      `To retry: \`npx @staticn0va/wigolo warmup --force\`. ` +
+      `For details: \`npx @staticn0va/wigolo doctor\`.`
+    );
+  }
 }
 ```
 
-Owned by `server.ts`, passed by reference into `handleSearch` via the existing tool-handler closure. Transitions:
+Owned by `server.ts`, passed as a constructor-style argument into `handleSearch`. Transitions:
 
-| Event | Effect |
+| Event | Method |
 |---|---|
-| Bootstrap completes, SearXNG starts | `searxngActive=true, warningSurfaced=false, fallbackReason=undefined` |
-| Bootstrap stays failed at startup | `searxngActive=false, warningSurfaced=false, fallbackReason="bootstrap stuck after N attempts: <message>"` |
-| Process crashes past restart limit | `searxngActive=false, warningSurfaced=false, fallbackReason="SearXNG process crashed N times in 60s"` |
-| `/healthz` probe fails 3 times | `searxngActive=false, warningSurfaced=false, fallbackReason="SearXNG /healthz unreachable"` |
-| Process recovers / restart succeeds | `searxngActive=true, warningSurfaced=false, fallbackReason=undefined` |
+| Bootstrap completes, SearXNG starts | `markHealthy()` |
+| Bootstrap stays failed at startup | `markUnhealthy("bootstrap stuck after N attempts: <message>")` |
+| Process crashes past restart limit | `markUnhealthy("SearXNG process crashed N times in 60s")` |
+| `/healthz` probe fails 3 times | `markUnhealthy("SearXNG /healthz unreachable")` |
+| Process recovers (probe or external restart) | `markHealthy()` |
 
 In `handleSearch`, after building the response:
 
 ```ts
-if (!status.searxngActive && !status.warningSurfaced) {
-  output.warning =
-    `SearXNG embedded search is unavailable; using direct engine scraping (lower quality). ` +
-    `Reason: ${status.fallbackReason ?? 'unknown'}. ` +
-    `To retry: \`npx @staticn0va/wigolo warmup --force\`. ` +
-    `For details: \`npx @staticn0va/wigolo doctor\`.`;
-  status.warningSurfaced = true;
-}
+const warning = status.consumeWarning();
+if (warning) output.warning = warning;
 ```
 
-Add `warning?: string` to `SearchOutput` in `src/types.ts`. The flag resets each time SearXNG goes from active → inactive, so subsequent fallbacks re-surface.
+The class API hides `_warned` from handlers — they cannot accidentally re-surface or suppress the warning.
+
+### MCP-level surfacing
+
+The MCP tool result includes the warning in TWO places, belt-and-suspenders, so any client with any rendering strategy sees it:
+
+1. **A separate `text` content block prepended to the result**, so MCP clients that show only the first content block still see the notice prominently:
+   ```ts
+   const blocks: { type: 'text'; text: string }[] = [];
+   if (result.warning) {
+     blocks.push({ type: 'text', text: `[wigolo notice] ${result.warning}` });
+   }
+   blocks.push({ type: 'text', text: JSON.stringify(result, null, 2) });
+   return { content: blocks, isError: !!result.error };
+   ```
+2. **Top-level `warning` field on `SearchOutput`**, so agents that parse the JSON see it as part of the search result schema. Add `warning?: string` to `SearchOutput` in `src/types.ts`.
+
+The MCP spec allows multiple content blocks in a tool result; this is well-supported by all known MCP clients (Claude Code, Cursor, Gemini CLI tested). If the notice text block were the only surface, programmatic agents that JSON.parse the result would lose it. If the JSON field were the only surface, naive clients that show only the first content block would lose it. Both surfaces cost ~1 line each.
 
 **Why one-shot, not every response:** Matches the "agent surfaces it once → user takes action or ignores" mental model. Persistent warnings would noise up every search response and likely get filtered out by agent prompts.
 
@@ -296,11 +362,16 @@ Extends `runWarmup` in `src/cli/warmup.ts`. When `--force` is in the flag set, b
 function wipeSearxngState(dataDir: string): void {
   rmSync(join(dataDir, 'state.json'), { force: true });
   rmSync(join(dataDir, 'searxng'), { recursive: true, force: true });
-  log('Wiped SearXNG state and install (--force)');
+  rmSync(join(dataDir, 'bootstrap.lock'), { force: true });
+  rmSync(join(dataDir, 'searxng.lock'), { force: true });
+  rmSync(join(dataDir, 'searxng.port'), { force: true });
+  log('Wiped SearXNG state, install, and locks (--force)');
 }
 ```
 
 Then runs the existing `setupSearxng` → `bootstrapNativeSearxng` path. State starts fresh, so `attempts` resets to 1 and the user is back to a clean retry budget.
+
+The lock files are wiped because a stale `bootstrap.lock` (process died mid-bootstrap with the lock held) would otherwise block the new bootstrap until the stale-PID detection ran. `--force` is the user's "I want this fixed now" signal — don't make them wait. The `searxng.lock` and `searxng.port` are also wiped in case a previous server instance died ungracefully.
 
 `--force` only affects SearXNG. Playwright/Trafilatura/FlashRank steps are not re-run unless their respective flags are also set.
 
@@ -308,15 +379,26 @@ Then runs the existing `setupSearxng` → `bootstrapNativeSearxng` path. State s
 
 Atomic change in `src/cli/index.ts`: extend the `Command` type union to include `'doctor'` AND add `'doctor'` to `KNOWN_COMMANDS`. Both must change together — the type guard depends on the union. New file `src/cli/doctor.ts` and a switch case in `src/index.ts`.
 
-Single-shot diagnostic dump to stderr:
+`doctor` is the single command that answers "what does my wigolo setup look like right now?" It checks every component, not just SearXNG.
+
+Diagnostic dump to stderr:
 
 ```
-[wigolo doctor] Data dir: /Users/foo/.wigolo
-[wigolo doctor] Python 3:    available (3.12.4)
-[wigolo doctor] Docker:      not available
-[wigolo doctor] Playwright:  installed
+[wigolo doctor] Data dir:        /Users/foo/.wigolo
 
-[wigolo doctor] SearXNG state:
+[wigolo doctor] Runtime:
+  Python 3:      available (3.12.4)
+  Docker:        not available
+
+[wigolo doctor] Playwright:
+  Installation:  installed (v1.45.2)
+  Browsers:      chromium ✓  firefox ✗  webkit ✗
+
+[wigolo doctor] Optional Python packages:
+  Trafilatura:   installed (v1.12.0)
+  FlashRank:     not installed
+
+[wigolo doctor] SearXNG install:
   status:        failed
   attempts:      2 / 3
   lastAttemptAt: 2026-04-13T09:15:01Z
@@ -328,12 +410,28 @@ Single-shot diagnostic dump to stderr:
     ERROR: Could not find a version that satisfies the requirement msgspec>=0.18.4
     ...
 
+[wigolo doctor] SearXNG process:  not running
+
 [wigolo doctor] Recovery:
   - Wait until next auto-retry (47 minutes), or
   - Force retry now: npx @staticn0va/wigolo warmup --force
+
+[wigolo doctor] Overall: DEGRADED (SearXNG not running)
 ```
 
-If state is `ready`, prints OK summary and the SearXNG path. If no state file exists, prints "not bootstrapped — run `npx @staticn0va/wigolo warmup`".
+If state is `ready` and the process is up, the SearXNG section prints OK + path + port. If no state file exists, prints "not bootstrapped — run `npx @staticn0va/wigolo warmup`".
+
+**Detection strategy for each component:**
+- Python: `spawnSync('python3', ['--version'])` → parse version string.
+- Docker: `spawnSync('docker', ['--version'])` → boolean check.
+- Playwright installation: `require.resolve('playwright')` + `require('playwright/package.json').version`.
+- Playwright browsers: check `~/Library/Caches/ms-playwright/` (macOS) / equivalent paths per platform; safer fallback is `spawnSync('npx', ['playwright', '--version'])`.
+- Trafilatura: `spawnSync('python3', ['-c', 'import trafilatura; print(trafilatura.__version__)'])`.
+- FlashRank: same pattern as Trafilatura.
+- SearXNG state: read `state.json` directly.
+- SearXNG process: read `searxng.lock` → `isProcessAlive(pid)` + `fetch(/healthz)` if alive.
+
+**Exit code (Question 1 answered):** `doctor` exits **0** when all components are OK or only optional ones (Trafilatura/FlashRank not installed) are missing. Exits **1** when ANY required component is degraded — bootstrap state is `failed` or `no_runtime`, the SearXNG process is supposed to be up but isn't, Playwright browsers are missing, or Python is missing. This lets users script health checks: `npx @staticn0va/wigolo doctor && start-my-agent`.
 
 The existing `health` stub command stays as-is (scoped to v2 daemon mode).
 
@@ -362,89 +460,94 @@ class SearxngProcess {
 
 ### Crash-limit handler (`monitorCrashes`)
 
-The existing crash-restart logic (`process.ts:178-201`) restarts up to `MAX_CRASH_RESTARTS` (3) within `CRASH_WINDOW_MS` (60s). When the limit is hit (currently just logs), additionally fire `onUnhealthy(...)`:
+The existing crash-restart logic (`process.ts:178-201`) restarts up to `MAX_CRASH_RESTARTS` (3) within `CRASH_WINDOW_MS` (60s). When the limit is hit (currently just logs), additionally flip `isCurrentlyUnhealthy` and fire `onUnhealthy(...)`:
 
 ```ts
 if (this.crashTimes.length >= MAX_CRASH_RESTARTS) {
   log.error('too many crashes, giving up on SearXNG', { crashes: this.crashTimes.length });
   releaseLock(this.dataDir);
-  this.callbacks.onUnhealthy?.(
-    `SearXNG process crashed ${this.crashTimes.length} times in ${CRASH_WINDOW_MS / 1000}s`,
-  );
+  if (!this.isCurrentlyUnhealthy) {
+    this.isCurrentlyUnhealthy = true;
+    this.callbacks.onUnhealthy?.(
+      `SearXNG process crashed ${this.crashTimes.length} times in ${CRASH_WINDOW_MS / 1000}s`,
+    );
+  }
   return;
 }
 ```
 
+If the user later re-runs `warmup --force` or manually starts a SearXNG instance on the same port, the next probe tick observes `/healthz` healthy AND `isCurrentlyUnhealthy === true` → fires `onHealthy()`. Recovery works regardless of which path triggered the unhealthy state.
+
 ### Periodic `/healthz` probe
 
-A new method in `SearxngProcess` started after the initial health check passes:
+A new method in `SearxngProcess` started after the initial health check passes. Interval is configurable via `WIGOLO_HEALTH_PROBE_INTERVAL_MS` (default 30000).
 
 ```ts
 private healthProbeFailures = 0;
 private healthProbeTimer?: NodeJS.Timeout;
+private isCurrentlyUnhealthy = false;   // single source of truth for callback firing
 
 private startHealthProbe(): void {
+  const intervalMs = getConfig().healthProbeIntervalMs;  // env: WIGOLO_HEALTH_PROBE_INTERVAL_MS
   this.healthProbeTimer = setInterval(async () => {
     if (this.stopped || !this.port) return;
     try {
       const r = await fetch(`http://127.0.0.1:${this.port}/healthz`, { signal: AbortSignal.timeout(2000) });
       if (r.ok) {
-        if (this.healthProbeFailures > 0) {
+        this.healthProbeFailures = 0;
+        if (this.isCurrentlyUnhealthy) {
+          this.isCurrentlyUnhealthy = false;
           this.callbacks.onHealthy?.();
         }
-        this.healthProbeFailures = 0;
       } else {
         this.notePotentialFailure();
       }
     } catch {
       this.notePotentialFailure();
     }
-  }, 30000);
+  }, intervalMs);
 }
 
 private notePotentialFailure(): void {
   this.healthProbeFailures++;
-  if (this.healthProbeFailures === 3) {
+  if (this.healthProbeFailures === 3 && !this.isCurrentlyUnhealthy) {
+    this.isCurrentlyUnhealthy = true;
     this.callbacks.onUnhealthy?.('SearXNG /healthz unreachable for 3 consecutive probes');
   }
 }
 ```
+
+The `isCurrentlyUnhealthy` flag is the single source of truth for whether `onUnhealthy` has fired since the last healthy state. The crash-limit handler (below) also flips this flag, so a process that was killed by crash-limit and then manually restarted by the user externally is correctly detected as recovered on the next successful probe — even though `healthProbeFailures` was 0 throughout that path.
 
 Cleared on `stop()`.
 
 ### Server wiring
 
 ```ts
-const backendStatus: BackendStatus = { searxngActive: false, warningSurfaced: false };
+const backendStatus = new BackendStatus();
 
 searxngProcess = new SearxngProcess(backend.searxngPath, config.dataDir, {
   onUnhealthy: (reason) => {
-    backendStatus.searxngActive = false;
-    backendStatus.fallbackReason = reason;
-    backendStatus.warningSurfaced = false;
+    backendStatus.markUnhealthy(reason);
     const idx = searchEngines.findIndex(e => e.name === 'searxng');
     if (idx >= 0) searchEngines.splice(idx, 1);
     log.warn('SearXNG marked unhealthy', { reason });
   },
   onHealthy: () => {
-    if (backendStatus.searxngActive) return;
     const url = searxngProcess?.getUrl();
-    if (url) {
-      backendStatus.searxngActive = true;
-      backendStatus.fallbackReason = undefined;
-      backendStatus.warningSurfaced = false;
-      if (!searchEngines.some(e => e.name === 'searxng')) {
-        searchEngines.unshift(new SearxngClient(url));
-      }
-      log.info('SearXNG recovered');
+    if (!url) return;
+    backendStatus.markHealthy();
+    if (!searchEngines.some(e => e.name === 'searxng')) {
+      searchEngines.unshift(new SearxngClient(url));
     }
+    log.info('SearXNG recovered');
   },
 });
 
 const url = await searxngProcess.start();
 if (url) {
   searchEngines.unshift(new SearxngClient(url));
-  backendStatus.searxngActive = true;
+  backendStatus.markHealthy();
 }
 ```
 
@@ -458,7 +561,7 @@ Same wiring for `DockerSearxng` (out of scope to refactor docker.ts beyond passi
 
 `tests/unit/searxng/bootstrap.test.ts`:
 - Retry-window logic: `failed` with `nextRetryAt` past → returns `native`; future → returns `scraping`.
-- Backoff schedule: attempts 1/2/3 produce 5min/1h/24h `nextRetryAt`; attempt 4 returns `null` (no further retry).
+- Backoff schedule: attempts 1/2/3 produce 30s/1h/24h `nextRetryAt`; attempt 4 returns `null` (no further retry).
 - Attempt cap: `attempts >= MAX_AUTO_ATTEMPTS` → no retry even if window open.
 - Legacy state migration: `{status: 'failed', error: 'x'}` with no `attempts`/`nextRetryAt` → retries immediately on next call.
 - `BootstrapError` capture: failed `spawnSync` writes `lastError.stderr` containing the captured stream.
@@ -481,9 +584,20 @@ Fixtures: `tests/fixtures/bing-tracker-urls.json` with hand-captured real URLs (
 - No state file → "not bootstrapped" message.
 
 `tests/unit/server/backend-status.test.ts`:
-- `handleSearch` injects `warning` exactly once when `searxngActive=false && warningSurfaced=false`.
-- Subsequent calls don't re-inject while `searxngActive` stays false.
-- After `onHealthy()` then `onUnhealthy()`, warning re-surfaces once.
+- `BackendStatus` starts inactive; `consumeWarning()` returns text once, then `undefined` on subsequent calls.
+- `markHealthy()` followed by `markUnhealthy(reason)` resets the one-shot, so `consumeWarning()` returns text again.
+- `consumeWarning()` returns `undefined` when `isActive === true`.
+- The warning text includes the reason, the `warmup --force` command, and the `doctor` command.
+
+`tests/unit/cli/doctor.test.ts`:
+- Mock filesystem + `spawnSync` to construct each component state. Verify exit code 0 when all OK, exit 1 when SearXNG `failed`, exit 1 when Playwright browsers missing, exit 0 when only Trafilatura/FlashRank missing (optional).
+- Output snapshot: failed state includes attempts, human-readable `nextRetryAt`, stderr, recovery commands, and `Overall: DEGRADED` line.
+
+`tests/unit/searxng/process-health.test.ts`:
+- Mock `setInterval` and `fetch`. Probe success when previously unhealthy → fires `onHealthy` once and clears `isCurrentlyUnhealthy`.
+- Probe failures (3 consecutive) → fires `onUnhealthy` once with the right reason, sets `isCurrentlyUnhealthy`.
+- After crash-limit fires `onUnhealthy`, the next successful probe still fires `onHealthy` (recovery from external restart path).
+- `isCurrentlyUnhealthy` prevents double-firing of either callback.
 
 ### Integration tests
 
@@ -497,7 +611,16 @@ Fixtures: `tests/fixtures/bing-tracker-urls.json` with hand-captured real URLs (
 ### E2E (gated by `WIGOLO_E2E=1`)
 
 `tests/e2e/searxng-cold-bootstrap.e2e.test.ts`:
-- Empty `~/.wigolo/`-equivalent, MCP server starts, search() works on direct scrapers immediately, background bootstrap completes (~17s), subsequent search() uses SearXNG. Slow + network-dependent — gated.
+- Empty `~/.wigolo/`-equivalent, MCP server starts, search() works on direct scrapers immediately. Background bootstrap eventually completes — the test polls `state.json` for `status === 'ready'` rather than waiting a fixed duration:
+  ```ts
+  await waitFor(
+    () => getBootstrapState(dataDir)?.status === 'ready',
+    { timeoutMs: 120_000, intervalMs: 1000 },
+  );
+  ```
+  After the poll resolves, a subsequent search() call confirms SearXNG is in the engine list. Slow + network-dependent — gated. The 120s timeout is generous enough for slow PyPI/network conditions; CI failures here indicate either a real bug or a network outage that should be retried, not a flake.
+
+A small `waitFor(predicate, opts)` helper lives in `tests/helpers/wait-for.ts` (new file) — used by this test and reusable for future E2Es.
 
 ### Manual verification checklist
 
@@ -512,7 +635,10 @@ Fixtures: `tests/fixtures/bing-tracker-urls.json` with hand-captured real URLs (
 
 **New:**
 - `src/cli/doctor.ts`
+- `src/server/backend-status.ts`
+- `tests/helpers/wait-for.ts`
 - `tests/unit/searxng/bootstrap.test.ts`
+- `tests/unit/searxng/process-health.test.ts`
 - `tests/unit/search/engines/bing-decoder.test.ts`
 - `tests/unit/cli/doctor.test.ts`
 - `tests/unit/server/backend-status.test.ts`
@@ -522,27 +648,51 @@ Fixtures: `tests/fixtures/bing-tracker-urls.json` with hand-captured real URLs (
 - `tests/fixtures/bing-tracker-urls.json`
 
 **Modified:**
-- `src/searxng/bootstrap.ts` — new state schema, retry logic, stderr capture, bootstrap lock
-- `src/searxng/process.ts` — callbacks, periodic `/healthz` probe
+- `src/searxng/bootstrap.ts` — new state schema, retry logic, stderr capture, bootstrap lock, cleanup of partial install
+- `src/searxng/process.ts` — callbacks, periodic `/healthz` probe, `isCurrentlyUnhealthy` flag
 - `src/search/engines/bing.ts` — `decodeBingTrackerUrl`
-- `src/server.ts` — `BackendStatus`, wire process callbacks, manage engine list, pass status to handlers
-- `src/tools/search.ts` — accept `BackendStatus`, inject `warning` field
+- `src/server.ts` — instantiate `BackendStatus`, wire process callbacks, manage engine list, pass status to handlers, prepend warning content block in tool result
+- `src/tools/search.ts` — accept `BackendStatus`, call `consumeWarning()` and inject `warning` field
 - `src/types.ts` — add `warning?: string` to `SearchOutput`
-- `src/cli/index.ts` — register `doctor` command
-- `src/cli/warmup.ts` — `--force` flag
-- `src/index.ts` — switch case for `doctor`
-- `README.md` — document `warmup --force` and `doctor`, mention auto-recovery behavior
+- `src/config.ts` — add `bootstrapMaxAttempts`, `bootstrapBackoffSeconds: number[]`, `healthProbeIntervalMs`
+- `src/cli/index.ts` — extend `Command` union and `KNOWN_COMMANDS` (atomic) for `doctor`
+- `src/cli/warmup.ts` — `--force` flag (wipes state.json, searxng/, bootstrap.lock, searxng.lock, searxng.port)
+- `src/index.ts` — switch case for `doctor` (calls `process.exit(code)` based on doctor return)
+- `README.md` — document `warmup --force`, `doctor`, auto-recovery behavior, and the three new env vars
 
 ## Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
-| Concurrent MCP servers race on bootstrap | `bootstrap.lock` file with stale-pid detection (mirrors existing `searxng.lock` pattern) |
+| Concurrent MCP servers race on bootstrap | `bootstrap.lock` file with stale-pid detection (mirrors existing `searxng.lock` pattern); `resolveSearchBackend` does no filesystem mutation, all cleanup is inside the lock-protected bootstrap function |
 | Stale `nextRetryAt` after system clock change | Backoff is wall-clock based; clock skew at most causes one premature/delayed retry — acceptable |
 | Bing decoder breaks on a Bing URL format change | Decoder returns original on any failure; `validateLinks` drops non-resolving URLs; existing fallback behavior preserved |
-| Periodic `/healthz` probes add load | 30s interval, 2s timeout, only when SearXNG is supposed to be running. Negligible. |
+| Periodic `/healthz` probes add load | Default 30s interval, 2s timeout, only when SearXNG is supposed to be running. Configurable via `WIGOLO_HEALTH_PROBE_INTERVAL_MS`. Negligible at default. |
 | `warmup --force` deletes user's working SearXNG install | Acceptable — the flag name signals intent; install is reproducible. Optional confirmation prompt skipped (warmup is non-interactive by design). |
+| `warmup --force` deletes a `bootstrap.lock` held by a live process | Live process detection: if `bootstrap.lock` exists AND `isProcessAlive(pid)`, `--force` aborts with an explicit error suggesting the user `kill <pid>` first. Stale locks are wiped silently. |
+| 30s first-retry kicks in mid-development too aggressively | The first retry only fires on the *next* server start AFTER the failed bootstrap; it doesn't restart in-process. A developer's editor keeps the same MCP process alive between queries. |
 | `doctor` exposes raw stderr that may contain paths | Already in user's own home dir; nothing sensitive. No redaction needed. |
+| `doctor` exit code 1 in scripts breaks user workflows that previously didn't check | New command — no existing scripts to break. README documents the contract. |
+
+## Configuration
+
+New env vars added in `src/config.ts`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WIGOLO_BOOTSTRAP_MAX_ATTEMPTS` | `3` | Cap on auto-retry attempts before bootstrap stays `failed` until `warmup --force` |
+| `WIGOLO_BOOTSTRAP_BACKOFF_SECONDS` | `30,3600,86400` | Comma-separated backoff seconds for attempts 1, 2, 3. Length should equal `MAX_ATTEMPTS`. |
+| `WIGOLO_HEALTH_PROBE_INTERVAL_MS` | `30000` | Interval between `/healthz` probes against the running SearXNG process. |
+
+All three documented in `README.md` env var table.
+
+## Decisions Recorded
+
+These were open questions resolved during spec review:
+
+1. **`doctor` exit code:** 0 when all components healthy or only optional packages missing; 1 when any required component (Python, Playwright browsers, SearXNG bootstrap, SearXNG process when expected) is degraded. Scripts can use `npx wigolo doctor && ...`.
+2. **`warmup --force` lock cleanup:** Yes — `--force` wipes `bootstrap.lock`, `searxng.lock`, and `searxng.port` in addition to `state.json` and the install dir. Aborts with an error if `bootstrap.lock` belongs to a *live* PID.
+3. **MCP warning surfacing:** Belt-and-suspenders. Warning appears as both a separate prepended `text` content block (visible to clients that show the first block only) AND a top-level `warning` field on `SearchOutput` (visible to agents that JSON.parse the result).
 
 ## Out of Scope
 
