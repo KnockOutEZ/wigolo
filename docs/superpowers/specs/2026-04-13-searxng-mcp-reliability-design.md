@@ -227,7 +227,9 @@ export async function bootstrapNativeSearxng(dataDir: string): Promise<void> {
       rmSync(searxngDir, { recursive: true, force: true });
     }
 
-    setBootstrapState(dataDir, { status: 'downloading', attempts: ((getBootstrapState(dataDir)?.attempts) ?? 0) + 0 });
+    setBootstrapState(dataDir, { status: 'downloading' });
+    // attempts and lastError are only set in the catch block on failure;
+    // downloading is an in-progress signal, not a counted attempt.
     // ... existing install logic using runStep() ...
   } catch (err) {
     // ... write failed state with backoff (see "Stderr capture" section) ...
@@ -360,9 +362,26 @@ Extends `runWarmup` in `src/cli/warmup.ts`. When `--force` is in the flag set, b
 
 ```ts
 function wipeSearxngState(dataDir: string): void {
+  // Refuse if a live process holds the bootstrap lock — the user should kill it first.
+  const bootstrapLockPath = join(dataDir, 'bootstrap.lock');
+  if (existsSync(bootstrapLockPath)) {
+    try {
+      const lock = JSON.parse(readFileSync(bootstrapLockPath, 'utf-8')) as { pid?: number };
+      if (lock.pid && isProcessAlive(lock.pid)) {
+        throw new Error(
+          `Cannot --force: another wigolo bootstrap is in progress (pid ${lock.pid}). ` +
+          `Kill it first: kill ${lock.pid}`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('Cannot --force')) throw err;
+      // malformed lock file → treat as stale, proceed to wipe
+    }
+  }
+
   rmSync(join(dataDir, 'state.json'), { force: true });
   rmSync(join(dataDir, 'searxng'), { recursive: true, force: true });
-  rmSync(join(dataDir, 'bootstrap.lock'), { force: true });
+  rmSync(bootstrapLockPath, { force: true });
   rmSync(join(dataDir, 'searxng.lock'), { force: true });
   rmSync(join(dataDir, 'searxng.port'), { force: true });
   log('Wiped SearXNG state, install, and locks (--force)');
