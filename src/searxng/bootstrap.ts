@@ -256,7 +256,7 @@ export async function bootstrapNativeSearxng(dataDir: string): Promise<void> {
       rmSync(searxngDir, { recursive: true, force: true });
     }
 
-    setBootstrapState(dataDir, { status: 'downloading' });
+    setBootstrapState(dataDir, { status: 'downloading', attempts: priorAttempts });
     log.info('bootstrapping SearXNG', { path: searxngDir });
 
     mkdirSync(searxngDir, { recursive: true });
