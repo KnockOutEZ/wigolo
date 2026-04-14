@@ -86,6 +86,8 @@ export interface CDPSession {
   url: string;
   title: string;
   webSocketDebuggerUrl: string;
+  type?: string;
+  devtoolsFrontendUrl?: string;
 }
 
 export interface CachedContent {

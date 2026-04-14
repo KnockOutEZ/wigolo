@@ -246,4 +246,37 @@ describe('config', () => {
       expect(getConfig().daemonHost).toBe('127.0.0.1');
     });
   });
+
+  describe('config --- CDP discovery', () => {
+    beforeEach(() => { resetConfig(); });
+    afterEach(() => { resetConfig(); });
+
+    it('defaults cdpUrl to null', () => {
+      expect(getConfig().cdpUrl).toBeNull();
+    });
+
+    it('reads WIGOLO_CDP_URL as string', () => {
+      process.env.WIGOLO_CDP_URL = 'http://localhost:9222';
+      resetConfig();
+      expect(getConfig().cdpUrl).toBe('http://localhost:9222');
+    });
+
+    it('reads custom CDP port', () => {
+      process.env.WIGOLO_CDP_URL = 'http://localhost:9333';
+      resetConfig();
+      expect(getConfig().cdpUrl).toBe('http://localhost:9333');
+    });
+
+    it('reads remote CDP URL', () => {
+      process.env.WIGOLO_CDP_URL = 'http://192.168.1.100:9222';
+      resetConfig();
+      expect(getConfig().cdpUrl).toBe('http://192.168.1.100:9222');
+    });
+
+    it('handles empty string as null', () => {
+      process.env.WIGOLO_CDP_URL = '';
+      resetConfig();
+      expect(getConfig().cdpUrl).toBeNull();
+    });
+  });
 });

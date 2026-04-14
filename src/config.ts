@@ -19,6 +19,7 @@ export interface Config {
   browserFallbackThreshold: number;
   authStatePath: string | null;
   chromeProfilePath: string | null;
+  cdpUrl: string | null;
   dataDir: string;
   cacheTtlSearch: number;
   cacheTtlContent: number;
@@ -93,6 +94,7 @@ export function getConfig(): Config {
     browserFallbackThreshold: envInt('BROWSER_FALLBACK_THRESHOLD', 3),
     authStatePath: envStr('WIGOLO_AUTH_STATE_PATH'),
     chromeProfilePath: envStr('WIGOLO_CHROME_PROFILE_PATH'),
+    cdpUrl: envStr('WIGOLO_CDP_URL') || null,
     dataDir: envStr('WIGOLO_DATA_DIR') ?? join(homedir(), '.wigolo'),
     cacheTtlSearch: envInt('CACHE_TTL_SEARCH', 86400),
     cacheTtlContent: envInt('CACHE_TTL_CONTENT', 604800),
