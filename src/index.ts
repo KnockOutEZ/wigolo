@@ -19,9 +19,11 @@ switch (command) {
     runDaemon(args);
     break;
 
-  case 'health':
-    runHealthCheck();
+  case 'health': {
+    const exitCode = await runHealthCheck();
+    process.exit(exitCode);
     break;
+  }
 
   case 'doctor': {
     const code = await runDoctor(getConfig().dataDir);
