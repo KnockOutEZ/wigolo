@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Form Test Page</title>
+  <style>
+    .result { display: none; padding: 20px; background: #e0ffe0; margin-top: 10px; }
+    .result.visible { display: block; }
+    form { padding: 20px; }
+    input, button { display: block; margin: 10px 0; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Login Form</h1>
+  <form id="login-form" onsubmit="event.preventDefault(); handleSubmit();">
+    <label for="username">Username:</label>
+    <input type="text" id="username" name="username" placeholder="Enter username">
+    <label for="password">Password:</label>
+    <input type="password" id="password" name="password" placeholder="Enter password">
+    <button type="submit" id="submit-btn">Login</button>
+  </form>
+  <div id="result" class="result">
+    <h2>Welcome!</h2>
+    <p id="greeting">You have successfully logged in.</p>
+  </div>
+  <script>
+    function handleSubmit() {
+      var user = document.getElementById('username').value;
+      var greeting = document.getElementById('greeting');
+      greeting.textContent = 'Welcome, ' + user + '! You have successfully logged in.';
+      document.getElementById('result').classList.add('visible');
+    }
+  </script>
+</body>
+</html>

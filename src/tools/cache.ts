@@ -1,11 +1,70 @@
 import { searchCacheFiltered, getCacheStats, clearCacheEntries } from '../cache/store.js';
+import { detectChange } from '../cache/change-detector.js';
+import { extractContent } from '../extraction/pipeline.js';
 import { createLogger } from '../logger.js';
-import type { CacheInput, CacheOutput } from '../types.js';
+import type { CacheInput, CacheOutput, ChangeReport } from '../types.js';
+import type { SmartRouter } from '../fetch/router.js';
 
 const log = createLogger('cache');
 
-export function handleCache(input: CacheInput): CacheOutput {
+export async function handleCache(input: CacheInput, router?: SmartRouter): Promise<CacheOutput> {
   try {
+    if (input.check_changes) {
+      log.info('Checking for content changes', {
+        query: input.query,
+        urlPattern: input.url_pattern,
+        since: input.since,
+      });
+
+      const entries = searchCacheFiltered({
+        query: input.query,
+        urlPattern: input.url_pattern,
+        since: input.since,
+      });
+
+      const changes: ChangeReport[] = [];
+      for (const entry of entries) {
+        try {
+          if (!router) {
+            changes.push({
+              url: entry.url,
+              changed: false,
+              current_hash: entry.contentHash,
+              error: 'no router available for re-fetch',
+            });
+            continue;
+          }
+          const raw = await router.fetch(entry.url, { renderJs: 'auto' });
+          const extraction = await extractContent(raw.html, raw.finalUrl, {
+            contentType: raw.contentType,
+          });
+          const changeResult = detectChange(entry.url, extraction.markdown);
+          changes.push({
+            url: entry.url,
+            changed: changeResult.changed,
+            current_hash: entry.contentHash,
+            ...(changeResult.changed ? {
+              previous_hash: changeResult.previousHash,
+              diff_summary: changeResult.diffSummary,
+            } : {}),
+          });
+        } catch (err) {
+          log.warn('change check failed for URL', {
+            url: entry.url,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          changes.push({
+            url: entry.url,
+            changed: false,
+            current_hash: entry.contentHash,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      return { changes };
+    }
+
     if (input.stats) {
       log.debug('Cache stats requested');
       return { stats: getCacheStats() };

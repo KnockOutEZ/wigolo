@@ -4,23 +4,41 @@
   "description": "Local-first web search MCP server for AI coding agents",
   "type": "module",
   "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./types": {
+      "import": "./dist/types.js",
+      "types": "./dist/types.d.ts"
+    }
+  },
+  "types": "dist/types.d.ts",
   "bin": {
     "wigolo": "dist/index.js"
   },
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "SKILL.md"
   ],
   "keywords": [
     "mcp",
+    "mcp-server",
     "web-search",
     "web-scraping",
     "ai-agent",
     "playwright",
     "searxng",
     "local-first",
-    "content-extraction"
+    "content-extraction",
+    "search",
+    "scraping",
+    "crawler",
+    "claude",
+    "agent-tools"
   ],
   "scripts": {
     "build": "tsc",
@@ -41,6 +59,12 @@
     "type": "git",
     "url": "https://github.com/KnockOutEZ/wigolo"
   },
+  "mcp": {
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["@staticn0va/wigolo"],
+    "tools": ["search", "fetch", "crawl", "cache", "extract"]
+  },
   "engines": {
     "node": ">=20"
   },
@@ -48,6 +72,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mozilla/readability": "^0.6.0",
     "better-sqlite3": "^12.8.0",
+    "chalk": "^5.6.2",
     "defuddle": "^0.16.0",
     "linkedom": "^0.18.12",
     "pdf-parse": "^2.4.5",

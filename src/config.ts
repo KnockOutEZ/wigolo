@@ -1,5 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { parseBrowserTypes } from './fetch/browser-types.js';
+import type { BrowserType } from './types.js';
 
 export interface Config {
   searxngUrl: string | null;
@@ -19,6 +21,7 @@ export interface Config {
   browserFallbackThreshold: number;
   authStatePath: string | null;
   chromeProfilePath: string | null;
+  cdpUrl: string | null;
   dataDir: string;
   cacheTtlSearch: number;
   cacheTtlContent: number;
@@ -41,6 +44,11 @@ export interface Config {
   bootstrapMaxAttempts: number;
   bootstrapBackoffSeconds: number[];
   healthProbeIntervalMs: number;
+  daemonPort: number;
+  daemonHost: string;
+  pluginsDir: string;
+  browserTypes: BrowserType[];
+  shellHistoryPath: string;
 }
 
 function envStr(key: string, fallback: string | null = null): string | null {
@@ -91,6 +99,7 @@ export function getConfig(): Config {
     browserFallbackThreshold: envInt('BROWSER_FALLBACK_THRESHOLD', 3),
     authStatePath: envStr('WIGOLO_AUTH_STATE_PATH'),
     chromeProfilePath: envStr('WIGOLO_CHROME_PROFILE_PATH'),
+    cdpUrl: envStr('WIGOLO_CDP_URL') || null,
     dataDir: envStr('WIGOLO_DATA_DIR') ?? join(homedir(), '.wigolo'),
     cacheTtlSearch: envInt('CACHE_TTL_SEARCH', 86400),
     cacheTtlContent: envInt('CACHE_TTL_CONTENT', 604800),
@@ -113,6 +122,18 @@ export function getConfig(): Config {
     bootstrapMaxAttempts: envInt('WIGOLO_BOOTSTRAP_MAX_ATTEMPTS', 3),
     bootstrapBackoffSeconds: envIntArray('WIGOLO_BOOTSTRAP_BACKOFF_SECONDS', [30, 3600, 86400]),
     healthProbeIntervalMs: envInt('WIGOLO_HEALTH_PROBE_INTERVAL_MS', 30000),
+    daemonPort: envInt('WIGOLO_DAEMON_PORT', 3333),
+    daemonHost: envStr('WIGOLO_DAEMON_HOST', '127.0.0.1')?.trim() || '127.0.0.1',
+    pluginsDir: (() => {
+      const raw = envStr('WIGOLO_PLUGINS_DIR');
+      if (raw) {
+        if (raw.startsWith('~')) return join(homedir(), raw.slice(1));
+        return raw;
+      }
+      return join(envStr('WIGOLO_DATA_DIR') ?? join(homedir(), '.wigolo'), 'plugins');
+    })(),
+    browserTypes: parseBrowserTypes(envStr('WIGOLO_BROWSER_TYPES')),
+    shellHistoryPath: envStr('WIGOLO_SHELL_HISTORY_PATH') ?? join(homedir(), '.wigolo', 'shell-history'),
   };
 
   return cachedConfig;

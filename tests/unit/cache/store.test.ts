@@ -11,6 +11,8 @@ import {
   getCacheStats,
   searchCacheFiltered,
   clearCacheEntries,
+  getHashForNormalizedUrl,
+  getMarkdownForNormalizedUrl,
 } from '../../../src/cache/store.js';
 import type { RawFetchResult, ExtractionResult, CachedContent } from '../../../src/types.js';
 import type { SearchResultItem } from '../../../src/types.js';
@@ -486,5 +488,110 @@ describe('clearCacheEntries', () => {
     const count = clearCacheEntries({ urlPattern: '*nonexistent.com*' });
     expect(count).toBe(0);
     expect(searchCacheFiltered({})).toHaveLength(3);
+  });
+});
+
+describe('getHashForNormalizedUrl', () => {
+  beforeEach(() => {
+    initDatabase(':memory:');
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  it('returns the content_hash for a cached URL', () => {
+    const raw = makeRaw('https://example.com/page');
+    const extraction = makeExtraction({ markdown: 'test content' });
+    cacheContent(raw, extraction);
+
+    const hash = getHashForNormalizedUrl(normalizeUrl('https://example.com/page'));
+    expect(hash).toBeDefined();
+    expect(typeof hash).toBe('string');
+    expect(hash!.length).toBe(64);
+  });
+
+  it('returns null for an uncached URL', () => {
+    const hash = getHashForNormalizedUrl('https://not-cached.com');
+    expect(hash).toBeNull();
+  });
+
+  it('finds the hash via normalized URL even when original differs', () => {
+    const raw = makeRaw('https://www.example.com/page/?utm_source=google');
+    const extraction = makeExtraction({ markdown: 'some content' });
+    cacheContent(raw, extraction);
+
+    const hash = getHashForNormalizedUrl(normalizeUrl('https://example.com/page'));
+    expect(hash).toBeDefined();
+    expect(hash!.length).toBe(64);
+  });
+
+  it('returns the most recent hash when URL was cached multiple times', () => {
+    const raw = makeRaw('https://example.com/page');
+    cacheContent(raw, makeExtraction({ markdown: 'version 1' }));
+    cacheContent(raw, makeExtraction({ markdown: 'version 2' }));
+
+    const hash = getHashForNormalizedUrl(normalizeUrl('https://example.com/page'));
+    expect(hash).toBeDefined();
+  });
+
+  it('handles URLs with unicode characters', () => {
+    const raw = makeRaw('https://example.com/cafe');
+    cacheContent(raw, makeExtraction({ markdown: 'cafe content' }));
+
+    const hash = getHashForNormalizedUrl(normalizeUrl('https://example.com/cafe'));
+    expect(hash).toBeDefined();
+  });
+});
+
+describe('getMarkdownForNormalizedUrl', () => {
+  beforeEach(() => {
+    initDatabase(':memory:');
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  it('returns the markdown for a cached URL', () => {
+    const raw = makeRaw('https://example.com/page');
+    const extraction = makeExtraction({ markdown: '# Test\n\nContent here.' });
+    cacheContent(raw, extraction);
+
+    const md = getMarkdownForNormalizedUrl(normalizeUrl('https://example.com/page'));
+    expect(md).toBe('# Test\n\nContent here.');
+  });
+
+  it('returns null for an uncached URL', () => {
+    const md = getMarkdownForNormalizedUrl('https://not-cached.com');
+    expect(md).toBeNull();
+  });
+
+  it('finds markdown via normalized URL', () => {
+    const raw = makeRaw('https://www.example.com/page/');
+    const extraction = makeExtraction({ markdown: 'normalized content' });
+    cacheContent(raw, extraction);
+
+    const md = getMarkdownForNormalizedUrl(normalizeUrl('https://example.com/page'));
+    expect(md).toBe('normalized content');
+  });
+
+  it('handles empty markdown', () => {
+    const raw = makeRaw('https://example.com/empty');
+    const extraction = makeExtraction({ markdown: '' });
+    cacheContent(raw, extraction);
+
+    const md = getMarkdownForNormalizedUrl(normalizeUrl('https://example.com/empty'));
+    expect(md).toBe('');
+  });
+
+  it('handles very long markdown content', () => {
+    const longContent = 'Line\n'.repeat(10000);
+    const raw = makeRaw('https://example.com/long');
+    const extraction = makeExtraction({ markdown: longContent });
+    cacheContent(raw, extraction);
+
+    const md = getMarkdownForNormalizedUrl(normalizeUrl('https://example.com/long'));
+    expect(md).toBe(longContent);
   });
 });

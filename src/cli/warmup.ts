@@ -14,6 +14,10 @@ export interface WarmupResult {
   trafilatura?: 'ok' | 'failed' | 'skipped';
   reranker?: 'ok' | 'failed';
   rerankerError?: string;
+  firefox?: 'ok' | 'failed';
+  firefoxError?: string;
+  webkit?: 'ok' | 'failed';
+  webkitError?: string;
 }
 
 function log(msg: string): void {
@@ -87,6 +91,32 @@ function installFlashRank(): Pick<WarmupResult, 'reranker' | 'rerankerError'> {
   }
 }
 
+function installFirefox(): Pick<WarmupResult, 'firefox' | 'firefoxError'> {
+  log('Installing Playwright Firefox...');
+  try {
+    execSync('npx playwright install firefox', { stdio: 'pipe', timeout: 120000 });
+    log('Playwright Firefox installed');
+    return { firefox: 'ok' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`Firefox install failed: ${message}`);
+    return { firefox: 'failed', firefoxError: message };
+  }
+}
+
+function installWebkit(): Pick<WarmupResult, 'webkit' | 'webkitError'> {
+  log('Installing Playwright WebKit...');
+  try {
+    execSync('npx playwright install webkit', { stdio: 'pipe', timeout: 120000 });
+    log('Playwright WebKit installed');
+    return { webkit: 'ok' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`WebKit install failed: ${message}`);
+    return { webkit: 'failed', webkitError: message };
+  }
+}
+
 type SearxngCheckResult =
   | Pick<WarmupResult, 'searxng' | 'searxngError'>
   | { needsBootstrap: true };
@@ -146,7 +176,24 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
     rerankerResult = installFlashRank();
   }
 
-  const result: WarmupResult = { ...pwResult, ...searxngResult, trafilatura: trafStatus, ...rerankerResult };
+  let firefoxResult: Pick<WarmupResult, 'firefox' | 'firefoxError'> = {};
+  if (flagSet.has('--firefox') || flagSet.has('--all')) {
+    firefoxResult = installFirefox();
+  }
+
+  let webkitResult: Pick<WarmupResult, 'webkit' | 'webkitError'> = {};
+  if (flagSet.has('--webkit') || flagSet.has('--all')) {
+    webkitResult = installWebkit();
+  }
+
+  const result: WarmupResult = {
+    ...pwResult,
+    ...searxngResult,
+    trafilatura: trafStatus,
+    ...rerankerResult,
+    ...firefoxResult,
+    ...webkitResult,
+  };
 
   log('');
   log('Summary:');
@@ -157,6 +204,12 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
   }
   if (result.reranker) {
     log(`  FlashRank:     ${result.reranker}${result.rerankerError ? ` (${result.rerankerError})` : ''}`);
+  }
+  if (result.firefox) {
+    log(`  Firefox:       ${result.firefox}${result.firefoxError ? ` (${result.firefoxError})` : ''}`);
+  }
+  if (result.webkit) {
+    log(`  WebKit:        ${result.webkit}${result.webkitError ? ` (${result.webkitError})` : ''}`);
   }
 
   return result;

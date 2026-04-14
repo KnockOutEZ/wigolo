@@ -3,14 +3,16 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
+import { discoverSessions, isCDPReachable } from './cdp-client.js';
 import type { CDPSession } from '../types.js';
 
 export interface AuthOptions {
   storageStatePath?: string;
   userDataDir?: string;
+  cdpUrl?: string;
 }
 
-export function getAuthOptions(): AuthOptions | null {
+export async function getAuthOptions(): Promise<AuthOptions | null> {
   const config = getConfig();
   const logger = createLogger('fetch');
 
@@ -34,9 +36,37 @@ export function getAuthOptions(): AuthOptions | null {
     return { userDataDir: tempDir };
   }
 
+  if (config.cdpUrl) {
+    try {
+      const reachable = await isCDPReachable(config.cdpUrl);
+      if (reachable) {
+        logger.info('CDP endpoint reachable, using for auth', { cdpUrl: config.cdpUrl });
+        return { cdpUrl: config.cdpUrl };
+      }
+      logger.debug('CDP endpoint not reachable', { cdpUrl: config.cdpUrl });
+    } catch (err) {
+      logger.warn('CDP reachability check failed', {
+        cdpUrl: config.cdpUrl,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   return null;
 }
 
 export async function listSessions(): Promise<CDPSession[]> {
-  return [];
+  const config = getConfig();
+
+  if (!config.cdpUrl) {
+    return [];
+  }
+
+  try {
+    return await discoverSessions(config.cdpUrl);
+  } catch (err) {
+    const logger = createLogger('fetch');
+    logger.warn('listSessions failed', { error: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
 }

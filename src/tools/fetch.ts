@@ -3,6 +3,7 @@ import type { SmartRouter } from '../fetch/router.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { getCachedContent, cacheContent, isExpired } from '../cache/store.js';
 import { extractSection } from '../extraction/markdown.js';
+import { detectChange } from '../cache/change-detector.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('fetch');
@@ -41,7 +42,7 @@ export async function handleFetch(
 ): Promise<FetchOutput> {
   try {
     const cached = getCachedContent(input.url);
-    if (cached && !isExpired(cached)) {
+    if (cached && !isExpired(cached) && (!input.actions || input.actions.length === 0)) {
       log.info('Serving from cache', { url: input.url });
       return formatCachedResponse(cached, input);
     }
@@ -51,6 +52,7 @@ export async function handleFetch(
       useAuth: input.use_auth ?? false,
       headers: input.headers,
       screenshot: input.screenshot,
+      actions: input.actions,
     });
 
     const extraction = await extractContent(raw.html, raw.finalUrl, {
@@ -60,6 +62,13 @@ export async function handleFetch(
       contentType: raw.contentType,
       pdfBuffer: raw.rawBuffer,
     });
+
+    let changeResult: { changed: boolean; previousHash?: string; diffSummary?: string } | undefined;
+    try {
+      changeResult = detectChange(raw.finalUrl, extraction.markdown);
+    } catch (err) {
+      log.warn('change detection failed', { url: raw.finalUrl, error: String(err) });
+    }
 
     cacheContent(raw, extraction);
 
@@ -72,6 +81,12 @@ export async function handleFetch(
       images: extraction.images,
       screenshot: raw.screenshot,
       cached: false,
+      action_results: raw.actionResults,
+      ...(changeResult?.changed ? {
+        changed: true,
+        previous_hash: changeResult.previousHash,
+        diff_summary: changeResult.diffSummary,
+      } : {}),
     };
   } catch (err) {
     log.error('Fetch failed', { url: input.url, error: String(err) });

@@ -1,5 +1,21 @@
 import type { JsonSchema } from './extraction/schema.js';
 
+export type BrowserAction =
+  | { type: 'click'; selector: string }
+  | { type: 'type'; selector: string; text: string }
+  | { type: 'wait'; ms: number }
+  | { type: 'wait_for'; selector: string; timeout?: number }
+  | { type: 'scroll'; direction: 'down' | 'up'; amount?: number }
+  | { type: 'screenshot' };
+
+export interface ActionResult {
+  action_index: number;
+  type: BrowserAction['type'];
+  success: boolean;
+  error?: string;
+  screenshot?: string;
+}
+
 export interface FetchInput {
   url: string;
   render_js?: 'auto' | 'always' | 'never';
@@ -9,6 +25,7 @@ export interface FetchInput {
   section_index?: number;
   screenshot?: boolean;
   headers?: Record<string, string>;
+  actions?: BrowserAction[];
 }
 
 export interface FetchOutput {
@@ -27,6 +44,10 @@ export interface FetchOutput {
   screenshot?: string;
   cached: boolean;
   error?: string;
+  action_results?: ActionResult[];
+  changed?: boolean;
+  previous_hash?: string;
+  diff_summary?: string;
 }
 
 export interface RawFetchResult {
@@ -39,6 +60,7 @@ export interface RawFetchResult {
   headers: Record<string, string>;
   rawBuffer?: Buffer;
   screenshot?: string;
+  actionResults?: ActionResult[];
 }
 
 export interface ExtractionResult {
@@ -64,6 +86,8 @@ export interface CDPSession {
   url: string;
   title: string;
   webSocketDebuggerUrl: string;
+  type?: string;
+  devtoolsFrontendUrl?: string;
 }
 
 export interface CachedContent {
@@ -106,6 +130,7 @@ export interface SearchInput {
   from_date?: string;    // ISO date (YYYY-MM-DD)
   to_date?: string;      // ISO date (YYYY-MM-DD)
   category?: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
+  format?: 'full' | 'context';
 }
 
 export interface SearchResultItem {
@@ -125,6 +150,7 @@ export interface SearchOutput {
   total_time_ms: number;
   error?: string;
   warning?: string;
+  context_text?: string;
 }
 
 export interface RawSearchResult {
@@ -202,6 +228,7 @@ export interface CacheInput {
   since?: string;
   clear?: boolean;
   stats?: boolean;
+  check_changes?: boolean;
 }
 
 export interface CacheResultItem {
@@ -222,6 +249,16 @@ export interface CacheOutput {
   results?: CacheResultItem[];
   stats?: CacheStats;
   cleared?: number;
+  error?: string;
+  changes?: ChangeReport[];
+}
+
+export interface ChangeReport {
+  url: string;
+  changed: boolean;
+  previous_hash?: string;
+  current_hash?: string;
+  diff_summary?: string;
   error?: string;
 }
 
