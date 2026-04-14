@@ -142,12 +142,12 @@ describe('multi-browser integration', () => {
       }
     });
 
-    it('hostname-hash handles empty string consistently', () => {
+    it('hostname-hash falls back to round-robin for empty hostname', () => {
       const selector = new BrowserSelector(['chromium', 'firefox'], 'hostname-hash');
-      const first = selector.selectForHostname('');
-      for (let i = 0; i < 10; i++) {
-        expect(selector.selectForHostname('')).toBe(first);
-      }
+      // Empty hostname cannot be hashed, so selectForHostname falls back to round-robin
+      expect(selector.selectForHostname('')).toBe('chromium');
+      expect(selector.selectForHostname('')).toBe('firefox');
+      expect(selector.selectForHostname('')).toBe('chromium');
     });
   });
 
