@@ -197,7 +197,16 @@ const EXTRACT_TOOL_SCHEMA = {
   },
 };
 
-export async function startServer(): Promise<void> {
+export interface Subsystems {
+  searchEngines: SearchEngine[];
+  browserPool: BrowserPool;
+  router: SmartRouter;
+  backendStatus: BackendStatus;
+  shutdown: () => Promise<void>;
+  bootstrapSearxng: () => Promise<void>;
+}
+
+export async function initSubsystems(): Promise<Subsystems> {
   const config = getConfig();
 
   mkdirSync(config.dataDir, { recursive: true });
@@ -211,8 +220,6 @@ export async function startServer(): Promise<void> {
 
   const backendStatus = new BackendStatus();
 
-  // Direct scraping engines work without any bootstrap — always available so
-  // search() succeeds immediately even before SearXNG finishes setup.
   const searchEngines: SearchEngine[] = [
     new BingEngine(),
     new DuckDuckGoEngine(),
@@ -220,6 +227,113 @@ export async function startServer(): Promise<void> {
   ];
   let searxngProcess: SearxngProcess | null = null;
   let dockerSearxng: DockerSearxng | null = null;
+  let searxngBootstrap: Promise<void> | null = null;
+
+  async function bootstrapSearxng(): Promise<void> {
+    try {
+      const backend = await resolveSearchBackend();
+
+      if (backend.type === 'external' && backend.url) {
+        searchEngines.unshift(new SearxngClient(backend.url));
+        backendStatus.markHealthy();
+        log.info('using external SearXNG', { url: backend.url });
+        return;
+      }
+
+      if (backend.type === 'native' && backend.searxngPath) {
+        const state = getBootstrapState(config.dataDir);
+        if (state?.status !== 'ready') {
+          log.info('SearXNG not ready — bootstrapping in background; search uses direct engines until ready');
+          try {
+            await bootstrapNativeSearxng(config.dataDir);
+          } catch (err) {
+            log.warn('SearXNG bootstrap failed, continuing with direct scraping fallback');
+            backendStatus.markUnhealthy(`bootstrap exception: ${String(err)}`);
+            return;
+          }
+        }
+        const postBootstrapState = getBootstrapState(config.dataDir);
+        if (postBootstrapState?.status === 'ready') {
+          searxngProcess = new SearxngProcess(backend.searxngPath, config.dataDir, {
+            onUnhealthy: (reason) => {
+              backendStatus.markUnhealthy(reason);
+              const idx = searchEngines.findIndex(e => e.name === 'searxng');
+              if (idx >= 0) searchEngines.splice(idx, 1);
+              log.warn('SearXNG marked unhealthy', { reason });
+            },
+            onHealthy: () => {
+              const url = searxngProcess?.getUrl();
+              if (!url) return;
+              backendStatus.markHealthy();
+              if (!searchEngines.some(e => e.name === 'searxng')) {
+                searchEngines.unshift(new SearxngClient(url));
+              }
+              log.info('SearXNG recovered');
+            },
+          });
+          const url = await searxngProcess.start();
+          if (url) {
+            searchEngines.unshift(new SearxngClient(url));
+            backendStatus.markHealthy();
+            log.info('SearXNG ready and added to search engines', { url });
+          } else {
+            log.warn('SearXNG failed to start, using direct scraping fallback');
+            backendStatus.markUnhealthy('SearXNG process failed to start');
+          }
+        }
+        return;
+      }
+
+      if (backend.type === 'docker') {
+        dockerSearxng = new DockerSearxng();
+        const url = await dockerSearxng.start();
+        if (url) {
+          searchEngines.unshift(new SearxngClient(url));
+          backendStatus.markHealthy();
+          log.info('Docker SearXNG ready', { url });
+        } else {
+          log.warn('Docker SearXNG failed to start, using direct scraping fallback');
+          backendStatus.markUnhealthy('Docker SearXNG failed to start');
+        }
+      }
+
+      if (backend.type === 'scraping') {
+        const state = getBootstrapState(config.dataDir);
+        const reason = state?.lastError?.message ?? state?.error ?? 'no SearXNG backend available';
+        backendStatus.markUnhealthy(reason);
+      }
+    } catch (err) {
+      log.warn('background backend setup failed', { error: String(err) });
+      backendStatus.markUnhealthy(`backend setup failed: ${String(err)}`);
+    }
+  }
+
+  async function shutdown(): Promise<void> {
+    log.info('Shutting down');
+    if (searxngBootstrap) {
+      await Promise.race([
+        searxngBootstrap.catch(() => {}),
+        new Promise<void>((r) => setTimeout(r, 2000)),
+      ]);
+    }
+    if (searxngProcess) await searxngProcess.stop();
+    if (dockerSearxng) await dockerSearxng.stop();
+    await browserPool.shutdown();
+    closeDatabase();
+  }
+
+  return {
+    searchEngines,
+    browserPool,
+    router,
+    backendStatus,
+    shutdown,
+    bootstrapSearxng,
+  };
+}
+
+export function createMcpServer(subsystems: Subsystems): Server {
+  const { searchEngines, router, backendStatus } = subsystems;
 
   const server = new Server(
     { name: 'wigolo', version: SERVER_VERSION },
@@ -318,108 +432,23 @@ export async function startServer(): Promise<void> {
     };
   });
 
+  return server;
+}
+
+export async function startServer(): Promise<void> {
+  const subs = await initSubsystems();
+  const server = createMcpServer(subs);
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log.info('MCP server started');
 
-  // Bootstrap SearXNG in the background. The MCP server is already responding
-  // to initialize/tools/list/tools/call. search() falls back to direct engines
-  // until SearXNG becomes available, at which point it is unshifted to the
-  // front of the engine list and used preferentially on subsequent calls.
-  let searxngBootstrap: Promise<void> | null = null;
-  searxngBootstrap = (async () => {
-    try {
-      const backend = await resolveSearchBackend();
-
-      if (backend.type === 'external' && backend.url) {
-        searchEngines.unshift(new SearxngClient(backend.url));
-        backendStatus.markHealthy();
-        log.info('using external SearXNG', { url: backend.url });
-        return;
-      }
-
-      if (backend.type === 'native' && backend.searxngPath) {
-        const state = getBootstrapState(config.dataDir);
-        if (state?.status !== 'ready') {
-          log.info('SearXNG not ready — bootstrapping in background; search uses direct engines until ready');
-          try {
-            await bootstrapNativeSearxng(config.dataDir);
-          } catch (err) {
-            log.warn('SearXNG bootstrap failed, continuing with direct scraping fallback');
-            backendStatus.markUnhealthy(`bootstrap exception: ${String(err)}`);
-            return;
-          }
-        }
-        const postBootstrapState = getBootstrapState(config.dataDir);
-        if (postBootstrapState?.status === 'ready') {
-          searxngProcess = new SearxngProcess(backend.searxngPath, config.dataDir, {
-            onUnhealthy: (reason) => {
-              backendStatus.markUnhealthy(reason);
-              const idx = searchEngines.findIndex(e => e.name === 'searxng');
-              if (idx >= 0) searchEngines.splice(idx, 1);
-              log.warn('SearXNG marked unhealthy', { reason });
-            },
-            onHealthy: () => {
-              const url = searxngProcess?.getUrl();
-              if (!url) return;
-              backendStatus.markHealthy();
-              if (!searchEngines.some(e => e.name === 'searxng')) {
-                searchEngines.unshift(new SearxngClient(url));
-              }
-              log.info('SearXNG recovered');
-            },
-          });
-          const url = await searxngProcess.start();
-          if (url) {
-            searchEngines.unshift(new SearxngClient(url));
-            backendStatus.markHealthy();
-            log.info('SearXNG ready and added to search engines', { url });
-          } else {
-            log.warn('SearXNG failed to start, using direct scraping fallback');
-            backendStatus.markUnhealthy('SearXNG process failed to start');
-          }
-        }
-        return;
-      }
-
-      if (backend.type === 'docker') {
-        dockerSearxng = new DockerSearxng();
-        const url = await dockerSearxng.start();
-        if (url) {
-          searchEngines.unshift(new SearxngClient(url));
-          backendStatus.markHealthy();
-          log.info('Docker SearXNG ready', { url });
-        } else {
-          log.warn('Docker SearXNG failed to start, using direct scraping fallback');
-          backendStatus.markUnhealthy('Docker SearXNG failed to start');
-        }
-      }
-
-      if (backend.type === 'scraping') {
-        const state = getBootstrapState(config.dataDir);
-        const reason = state?.lastError?.message ?? state?.error ?? 'no SearXNG backend available';
-        backendStatus.markUnhealthy(reason);
-      }
-    } catch (err) {
-      log.warn('background backend setup failed', { error: String(err) });
-      backendStatus.markUnhealthy(`backend setup failed: ${String(err)}`);
-    }
-  })();
+  subs.bootstrapSearxng().catch((err) => {
+    log.warn('SearXNG bootstrap failed', { error: String(err) });
+  });
 
   const shutdown = async () => {
-    log.info('Shutting down');
-    if (searxngBootstrap) {
-      // Let an in-flight bootstrap settle so we don't kill venv/pip mid-install
-      // and corrupt ~/.wigolo/searxng. Bounded so we don't hang forever.
-      await Promise.race([
-        searxngBootstrap.catch(() => {}),
-        new Promise<void>((r) => setTimeout(r, 2000)),
-      ]);
-    }
-    if (searxngProcess) await searxngProcess.stop();
-    if (dockerSearxng) await dockerSearxng.stop();
-    await browserPool.shutdown();
-    closeDatabase();
+    await subs.shutdown();
     await server.close();
     process.exit(0);
   };
