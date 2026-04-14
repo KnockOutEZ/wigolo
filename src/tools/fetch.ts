@@ -41,7 +41,7 @@ export async function handleFetch(
 ): Promise<FetchOutput> {
   try {
     const cached = getCachedContent(input.url);
-    if (cached && !isExpired(cached)) {
+    if (cached && !isExpired(cached) && (!input.actions || input.actions.length === 0)) {
       log.info('Serving from cache', { url: input.url });
       return formatCachedResponse(cached, input);
     }
@@ -51,6 +51,7 @@ export async function handleFetch(
       useAuth: input.use_auth ?? false,
       headers: input.headers,
       screenshot: input.screenshot,
+      actions: input.actions,
     });
 
     const extraction = await extractContent(raw.html, raw.finalUrl, {
@@ -72,6 +73,7 @@ export async function handleFetch(
       images: extraction.images,
       screenshot: raw.screenshot,
       cached: false,
+      action_results: raw.actionResults,
     };
   } catch (err) {
     log.error('Fetch failed', { url: input.url, error: String(err) });

@@ -57,6 +57,7 @@ export interface RawFetchResult {
   headers: Record<string, string>;
   rawBuffer?: Buffer;
   screenshot?: string;
+  actionResults?: ActionResult[];
 }
 
 export interface ExtractionResult {

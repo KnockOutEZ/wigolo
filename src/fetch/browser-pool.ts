@@ -1,7 +1,8 @@
 import { chromium, firefox, webkit, type Browser, type BrowserContext } from 'playwright';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
-import type { RawFetchResult, BrowserType } from '../types.js';
+import { executeActions } from './action-executor.js';
+import type { RawFetchResult, BrowserType, ActionResult, BrowserAction } from '../types.js';
 
 export interface BrowserFetchOptions {
   timeoutMs?: number;
@@ -9,6 +10,7 @@ export interface BrowserFetchOptions {
   userDataDir?: string;
   headers?: Record<string, string>;
   screenshot?: boolean;
+  actions?: BrowserAction[];
 }
 
 export interface BrowserPoolOptions {
@@ -127,6 +129,11 @@ export class BrowserPool {
         logger.debug('networkidle timeout, using page content as-is', { url });
       }
 
+      let actionResults: ActionResult[] | undefined;
+      if (options.actions && options.actions.length > 0) {
+        actionResults = await executeActions(page, options.actions);
+      }
+
       const html = await page.content();
 
       let screenshotBase64: string | undefined;
@@ -144,6 +151,7 @@ export class BrowserPool {
         method: 'playwright',
         headers: responseHeaders,
         screenshot: screenshotBase64,
+        actionResults,
       };
     } finally {
       await page.close();

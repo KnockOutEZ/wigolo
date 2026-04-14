@@ -257,3 +257,116 @@ describe('handleFetch', () => {
     expect(vi.mocked(cacheContent)).toHaveBeenCalledOnce();
   });
 });
+
+describe('handleFetch --- actions support', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getCachedContent).mockReturnValue(null);
+    vi.mocked(isExpired).mockReturnValue(false);
+  });
+
+  it('passes actions to router.fetch', async () => {
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction());
+
+    const router = mockRouter();
+    const actions = [
+      { type: 'click' as const, selector: '.accept-cookies' },
+      { type: 'wait' as const, ms: 300 },
+    ];
+    const input: FetchInput = { url: 'https://example.com', actions };
+
+    await handleFetch(input, router);
+
+    expect(router.fetch).toHaveBeenCalledWith('https://example.com', expect.objectContaining({ actions }));
+  });
+
+  it('returns action_results when present in raw result', async () => {
+    const actionResults = [
+      { action_index: 0, type: 'click' as const, success: true },
+      { action_index: 1, type: 'wait' as const, success: true },
+    ];
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction());
+    const router = mockRouter({ actionResults });
+    const input: FetchInput = {
+      url: 'https://example.com',
+      actions: [{ type: 'click', selector: '.btn' }, { type: 'wait', ms: 100 }],
+    };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.action_results).toBeDefined();
+    expect(result.action_results).toHaveLength(2);
+    expect(result.action_results![0].success).toBe(true);
+  });
+
+  it('does not include action_results when no actions provided', async () => {
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction());
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.action_results).toBeUndefined();
+  });
+
+  it('skips cache when actions are present (always fetches fresh)', async () => {
+    const cached = makeCached();
+    vi.mocked(getCachedContent).mockReturnValue(cached);
+    vi.mocked(isExpired).mockReturnValue(false);
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction());
+
+    const router = mockRouter();
+    const input: FetchInput = {
+      url: 'https://example.com',
+      actions: [{ type: 'click', selector: '.btn' }],
+    };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.cached).toBe(false);
+    expect(router.fetch).toHaveBeenCalledOnce();
+  });
+
+  it('handles error during actions gracefully', async () => {
+    const router = mockRouter();
+    router.fetch.mockRejectedValue(new Error('Action chain failed'));
+
+    const input: FetchInput = {
+      url: 'https://example.com',
+      actions: [{ type: 'click', selector: '.nonexistent' }],
+    };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.error).toBe('Action chain failed');
+    expect(result.cached).toBe(false);
+  });
+
+  it('includes action screenshots in results', async () => {
+    const actionResults = [
+      { action_index: 0, type: 'screenshot' as const, success: true, screenshot: 'base64data' },
+    ];
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction());
+    const router = mockRouter({ actionResults });
+    const input: FetchInput = {
+      url: 'https://example.com',
+      actions: [{ type: 'screenshot' }],
+    };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.action_results).toBeDefined();
+    expect(result.action_results![0].screenshot).toBe('base64data');
+  });
+
+  it('handles empty actions array (no-op)', async () => {
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction());
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com', actions: [] };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.error).toBeUndefined();
+    expect(result.action_results).toBeUndefined();
+  });
+});
