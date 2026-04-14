@@ -1,5 +1,21 @@
 import type { JsonSchema } from './extraction/schema.js';
 
+export type BrowserAction =
+  | { type: 'click'; selector: string }
+  | { type: 'type'; selector: string; text: string }
+  | { type: 'wait'; ms: number }
+  | { type: 'wait_for'; selector: string; timeout?: number }
+  | { type: 'scroll'; direction: 'down' | 'up'; amount?: number }
+  | { type: 'screenshot' };
+
+export interface ActionResult {
+  action_index: number;
+  type: BrowserAction['type'];
+  success: boolean;
+  error?: string;
+  screenshot?: string;
+}
+
 export interface FetchInput {
   url: string;
   render_js?: 'auto' | 'always' | 'never';
@@ -9,6 +25,7 @@ export interface FetchInput {
   section_index?: number;
   screenshot?: boolean;
   headers?: Record<string, string>;
+  actions?: BrowserAction[];
 }
 
 export interface FetchOutput {
@@ -27,6 +44,7 @@ export interface FetchOutput {
   screenshot?: string;
   cached: boolean;
   error?: string;
+  action_results?: ActionResult[];
 }
 
 export interface RawFetchResult {

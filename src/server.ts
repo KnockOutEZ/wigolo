@@ -79,6 +79,48 @@ const FETCH_TOOL_SCHEMA = {
       description: 'Additional HTTP headers',
       additionalProperties: { type: 'string' },
     },
+    actions: {
+      type: 'array',
+      description:
+        'Sequential browser actions to perform before extracting content. ' +
+        'When present, forces Playwright rendering (bypasses HTTP-first routing).',
+      items: {
+        type: 'object',
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['click', 'type', 'wait', 'wait_for', 'scroll', 'screenshot'],
+            description: 'Action type',
+          },
+          selector: {
+            type: 'string',
+            description: 'CSS selector (required for click, type, wait_for)',
+          },
+          text: {
+            type: 'string',
+            description: 'Text to type (required for type action)',
+          },
+          ms: {
+            type: 'number',
+            description: 'Milliseconds to wait (required for wait action)',
+          },
+          timeout: {
+            type: 'number',
+            description: 'Timeout in ms for wait_for action (default: 5000)',
+          },
+          direction: {
+            type: 'string',
+            enum: ['down', 'up'],
+            description: 'Scroll direction (required for scroll action)',
+          },
+          amount: {
+            type: 'number',
+            description: 'Scroll amount in pixels (default: viewport height)',
+          },
+        },
+        required: ['type'],
+      },
+    },
   },
   required: ['url'],
 };

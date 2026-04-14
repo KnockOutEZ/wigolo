@@ -126,3 +126,140 @@ describe('crawl types', () => {
     expect(edge.from).toBe('https://a.com');
   });
 });
+
+import type { BrowserAction, ActionResult } from '../../src/types.js';
+
+describe('BrowserAction type — compile-time shape tests', () => {
+  it('accepts a click action', () => {
+    const action: BrowserAction = { type: 'click', selector: '.btn' };
+    expect(action.type).toBe('click');
+    expect(action.selector).toBe('.btn');
+  });
+
+  it('accepts a type action with selector and text', () => {
+    const action: BrowserAction = { type: 'type', selector: '#email', text: 'test@example.com' };
+    expect(action.type).toBe('type');
+    expect(action.text).toBe('test@example.com');
+  });
+
+  it('accepts a wait action with ms', () => {
+    const action: BrowserAction = { type: 'wait', ms: 1000 };
+    expect(action.type).toBe('wait');
+    expect(action.ms).toBe(1000);
+  });
+
+  it('accepts a wait_for action with selector and optional timeout', () => {
+    const action: BrowserAction = { type: 'wait_for', selector: '.loaded', timeout: 5000 };
+    expect(action.type).toBe('wait_for');
+    expect(action.timeout).toBe(5000);
+  });
+
+  it('accepts a wait_for action without timeout', () => {
+    const action: BrowserAction = { type: 'wait_for', selector: '.loaded' };
+    expect(action.type).toBe('wait_for');
+    expect(action.timeout).toBeUndefined();
+  });
+
+  it('accepts a scroll action with direction and optional amount', () => {
+    const action: BrowserAction = { type: 'scroll', direction: 'down', amount: 500 };
+    expect(action.type).toBe('scroll');
+    expect(action.direction).toBe('down');
+    expect(action.amount).toBe(500);
+  });
+
+  it('accepts a scroll action with direction only', () => {
+    const action: BrowserAction = { type: 'scroll', direction: 'up' };
+    expect(action.type).toBe('scroll');
+    expect(action.amount).toBeUndefined();
+  });
+
+  it('accepts a screenshot action', () => {
+    const action: BrowserAction = { type: 'screenshot' };
+    expect(action.type).toBe('screenshot');
+  });
+});
+
+describe('ActionResult type shape', () => {
+  it('represents a successful action', () => {
+    const result: ActionResult = { action_index: 0, type: 'click', success: true };
+    expect(result.success).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('represents a failed action', () => {
+    const result: ActionResult = {
+      action_index: 1,
+      type: 'wait_for',
+      success: false,
+      error: 'Timeout waiting for selector .missing',
+    };
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Timeout');
+  });
+
+  it('represents a screenshot action with data', () => {
+    const result: ActionResult = {
+      action_index: 2,
+      type: 'screenshot',
+      success: true,
+      screenshot: 'base64encodeddata...',
+    };
+    expect(result.screenshot).toBeDefined();
+  });
+});
+
+describe('FetchInput.actions field', () => {
+  it('accepts undefined actions (backwards compatible)', () => {
+    const input: FetchInput = { url: 'https://example.com' };
+    expect(input.actions).toBeUndefined();
+  });
+
+  it('accepts an array of BrowserActions', () => {
+    const input: FetchInput = {
+      url: 'https://example.com',
+      actions: [
+        { type: 'wait_for', selector: '.cookie-banner', timeout: 3000 },
+        { type: 'click', selector: '.cookie-banner .accept' },
+        { type: 'wait', ms: 500 },
+      ],
+    };
+    expect(input.actions).toHaveLength(3);
+  });
+
+  it('accepts an empty actions array', () => {
+    const input: FetchInput = { url: 'https://example.com', actions: [] };
+    expect(input.actions).toEqual([]);
+  });
+});
+
+describe('FetchOutput.action_results field', () => {
+  it('is optional (backwards compatible)', () => {
+    const output: FetchOutput = {
+      url: 'https://example.com',
+      title: 'Test',
+      markdown: '# Test',
+      metadata: {},
+      links: [],
+      images: [],
+      cached: false,
+    };
+    expect(output.action_results).toBeUndefined();
+  });
+
+  it('accepts an array of ActionResults', () => {
+    const output: FetchOutput = {
+      url: 'https://example.com',
+      title: 'Test',
+      markdown: '# Test',
+      metadata: {},
+      links: [],
+      images: [],
+      cached: false,
+      action_results: [
+        { action_index: 0, type: 'click', success: true },
+        { action_index: 1, type: 'screenshot', success: true, screenshot: 'base64...' },
+      ],
+    };
+    expect(output.action_results).toHaveLength(2);
+  });
+});
