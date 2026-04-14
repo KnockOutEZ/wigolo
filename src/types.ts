@@ -45,6 +45,9 @@ export interface FetchOutput {
   cached: boolean;
   error?: string;
   action_results?: ActionResult[];
+  changed?: boolean;
+  previous_hash?: string;
+  diff_summary?: string;
 }
 
 export interface RawFetchResult {
@@ -221,6 +224,7 @@ export interface CacheInput {
   since?: string;
   clear?: boolean;
   stats?: boolean;
+  check_changes?: boolean;
 }
 
 export interface CacheResultItem {
@@ -241,6 +245,16 @@ export interface CacheOutput {
   results?: CacheResultItem[];
   stats?: CacheStats;
   cleared?: number;
+  error?: string;
+  changes?: ChangeReport[];
+}
+
+export interface ChangeReport {
+  url: string;
+  changed: boolean;
+  previous_hash?: string;
+  current_hash?: string;
+  diff_summary?: string;
   error?: string;
 }
 

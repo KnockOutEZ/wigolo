@@ -211,6 +211,13 @@ const CACHE_TOOL_SCHEMA = {
       type: 'boolean',
       description: 'Return cache statistics (total URLs, size, date range)',
     },
+    check_changes: {
+      type: 'boolean',
+      description:
+        'Re-fetch all matching cached URLs and report which ones have changed. ' +
+        'Returns a list of URLs with changed/unchanged status and diff summaries. ' +
+        'Use with query or url_pattern to scope which cached entries to check.',
+    },
   },
 };
 

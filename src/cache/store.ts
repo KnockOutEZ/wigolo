@@ -136,6 +136,22 @@ export function getCachedContent(url: string): CachedContent | null {
   return row ? rowToCachedContent(row) : null;
 }
 
+export function getHashForNormalizedUrl(normalizedUrl: string): string | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    'SELECT content_hash FROM url_cache WHERE normalized_url = ? LIMIT 1',
+  ).get(normalizedUrl) as { content_hash: string } | undefined;
+  return row?.content_hash ?? null;
+}
+
+export function getMarkdownForNormalizedUrl(normalizedUrl: string): string | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    'SELECT markdown FROM url_cache WHERE normalized_url = ? LIMIT 1',
+  ).get(normalizedUrl) as { markdown: string } | undefined;
+  return row ? row.markdown : null;
+}
+
 export function isExpired(cached: CachedContent): boolean {
   if (!cached.expiresAt) return false;
   return new Date(cached.expiresAt).getTime() < Date.now();
