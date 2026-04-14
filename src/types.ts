@@ -164,6 +164,38 @@ export interface Citation {
   snippet: string;
 }
 
+// --- Research tool types (v3) ---
+
+export interface ResearchInput {
+  question: string;
+  depth?: 'quick' | 'standard' | 'comprehensive';
+  max_sources?: number;
+  include_domains?: string[];
+  exclude_domains?: string[];
+  schema?: Record<string, unknown>;
+  stream?: boolean;
+}
+
+export interface ResearchSource {
+  url: string;
+  title: string;
+  markdown_content: string;
+  relevance_score: number;
+  fetched: boolean;
+  fetch_error?: string;
+}
+
+export interface ResearchOutput {
+  report: string;
+  citations: Citation[];
+  sources: ResearchSource[];
+  sub_queries: string[];
+  depth: string;
+  total_time_ms: number;
+  sampling_supported: boolean;
+  error?: string;
+}
+
 export interface RawSearchResult {
   title: string;
   url: string;
