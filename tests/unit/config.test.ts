@@ -170,4 +170,80 @@ describe('config', () => {
       expect(getConfig().healthProbeIntervalMs).toBe(5000);
     });
   });
+
+  describe('config -- daemon mode', () => {
+    it('defaults daemonPort to 3333', () => {
+      expect(getConfig().daemonPort).toBe(3333);
+    });
+
+    it('reads WIGOLO_DAEMON_PORT as integer', () => {
+      process.env.WIGOLO_DAEMON_PORT = '4444';
+      resetConfig();
+      expect(getConfig().daemonPort).toBe(4444);
+    });
+
+    it('defaults daemonHost to 127.0.0.1', () => {
+      expect(getConfig().daemonHost).toBe('127.0.0.1');
+    });
+
+    it('reads WIGOLO_DAEMON_HOST from env', () => {
+      process.env.WIGOLO_DAEMON_HOST = '0.0.0.0';
+      resetConfig();
+      expect(getConfig().daemonHost).toBe('0.0.0.0');
+    });
+
+    it('ignores non-numeric WIGOLO_DAEMON_PORT and falls back to default', () => {
+      process.env.WIGOLO_DAEMON_PORT = 'not-a-number';
+      resetConfig();
+      expect(getConfig().daemonPort).toBe(3333);
+    });
+
+    it('handles empty WIGOLO_DAEMON_PORT string', () => {
+      process.env.WIGOLO_DAEMON_PORT = '';
+      resetConfig();
+      expect(getConfig().daemonPort).toBe(3333);
+    });
+
+    it('handles WIGOLO_DAEMON_PORT=0 (valid port for OS-assigned)', () => {
+      process.env.WIGOLO_DAEMON_PORT = '0';
+      resetConfig();
+      expect(getConfig().daemonPort).toBe(0);
+    });
+
+    it('handles negative WIGOLO_DAEMON_PORT (parsed but caller validates)', () => {
+      process.env.WIGOLO_DAEMON_PORT = '-1';
+      resetConfig();
+      expect(getConfig().daemonPort).toBe(-1);
+    });
+
+    it('handles float WIGOLO_DAEMON_PORT (parseInt truncates)', () => {
+      process.env.WIGOLO_DAEMON_PORT = '3333.7';
+      resetConfig();
+      expect(getConfig().daemonPort).toBe(3333);
+    });
+
+    it('WIGOLO_DAEMON_HOST can be an IPv6 address', () => {
+      process.env.WIGOLO_DAEMON_HOST = '::1';
+      resetConfig();
+      expect(getConfig().daemonHost).toBe('::1');
+    });
+
+    it('WIGOLO_DAEMON_HOST can be a hostname', () => {
+      process.env.WIGOLO_DAEMON_HOST = 'localhost';
+      resetConfig();
+      expect(getConfig().daemonHost).toBe('localhost');
+    });
+
+    it('empty WIGOLO_DAEMON_HOST falls back to default', () => {
+      process.env.WIGOLO_DAEMON_HOST = '';
+      resetConfig();
+      expect(getConfig().daemonHost).toBe('127.0.0.1');
+    });
+
+    it('whitespace-only WIGOLO_DAEMON_HOST falls back to default', () => {
+      process.env.WIGOLO_DAEMON_HOST = '   ';
+      resetConfig();
+      expect(getConfig().daemonHost).toBe('127.0.0.1');
+    });
+  });
 });

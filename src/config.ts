@@ -41,6 +41,8 @@ export interface Config {
   bootstrapMaxAttempts: number;
   bootstrapBackoffSeconds: number[];
   healthProbeIntervalMs: number;
+  daemonPort: number;
+  daemonHost: string;
 }
 
 function envStr(key: string, fallback: string | null = null): string | null {
@@ -113,6 +115,8 @@ export function getConfig(): Config {
     bootstrapMaxAttempts: envInt('WIGOLO_BOOTSTRAP_MAX_ATTEMPTS', 3),
     bootstrapBackoffSeconds: envIntArray('WIGOLO_BOOTSTRAP_BACKOFF_SECONDS', [30, 3600, 86400]),
     healthProbeIntervalMs: envInt('WIGOLO_HEALTH_PROBE_INTERVAL_MS', 30000),
+    daemonPort: envInt('WIGOLO_DAEMON_PORT', 3333),
+    daemonHost: envStr('WIGOLO_DAEMON_HOST', '127.0.0.1')?.trim() || '127.0.0.1',
   };
 
   return cachedConfig;
