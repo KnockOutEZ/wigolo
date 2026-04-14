@@ -1,9 +1,9 @@
 import type { BackendStatus } from '../server/backend-status.js';
-import type { BrowserPool } from '../fetch/browser-pool.js';
+import type { MultiBrowserPool } from '../fetch/browser-pool.js';
 
 export interface HealthProbeInput {
   backendStatus: BackendStatus | null;
-  browserPool: BrowserPool | null;
+  browserPool: MultiBrowserPool | null;
   startedAt: number;
 }
 

@@ -8,7 +8,7 @@ import {
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { SmartRouter, type HttpClient } from './fetch/router.js';
-import { BrowserPool } from './fetch/browser-pool.js';
+import { MultiBrowserPool } from './fetch/browser-pool.js';
 import { httpFetch } from './fetch/http-client.js';
 import { initDatabase, closeDatabase } from './cache/db.js';
 import { handleFetch } from './tools/fetch.js';
@@ -251,7 +251,7 @@ const EXTRACT_TOOL_SCHEMA = {
 
 export interface Subsystems {
   searchEngines: SearchEngine[];
-  browserPool: BrowserPool;
+  browserPool: MultiBrowserPool;
   router: SmartRouter;
   backendStatus: BackendStatus;
   pluginRegistry: PluginRegistry;
@@ -268,7 +268,10 @@ export async function initSubsystems(): Promise<Subsystems> {
   const httpClient: HttpClient = {
     fetch: (url, options) => httpFetch(url, options),
   };
-  const browserPool = new BrowserPool();
+  const browserPool = new MultiBrowserPool({
+    browserTypes: config.browserTypes,
+    selectionStrategy: 'round-robin',
+  });
   const router = new SmartRouter(httpClient, browserPool);
 
   const backendStatus = new BackendStatus();

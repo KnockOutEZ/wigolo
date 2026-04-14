@@ -57,6 +57,10 @@ export class BrowserSelector {
     return [...this.types];
   }
 
+  getStrategy(): SelectionStrategy {
+    return this.strategy;
+  }
+
   reset(): void {
     this.roundRobinIndex = 0;
   }
