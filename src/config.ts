@@ -1,5 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { parseBrowserTypes } from './fetch/browser-types.js';
+import type { BrowserType } from './types.js';
 
 export interface Config {
   searxngUrl: string | null;
@@ -45,6 +47,7 @@ export interface Config {
   daemonPort: number;
   daemonHost: string;
   pluginsDir: string;
+  browserTypes: BrowserType[];
 }
 
 function envStr(key: string, fallback: string | null = null): string | null {
@@ -128,6 +131,7 @@ export function getConfig(): Config {
       }
       return join(envStr('WIGOLO_DATA_DIR') ?? join(homedir(), '.wigolo'), 'plugins');
     })(),
+    browserTypes: parseBrowserTypes(envStr('WIGOLO_BROWSER_TYPES')),
   };
 
   return cachedConfig;
