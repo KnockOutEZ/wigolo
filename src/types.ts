@@ -196,6 +196,41 @@ export interface ResearchOutput {
   error?: string;
 }
 
+// --- Agent tool types (v3) ---
+
+export interface AgentInput {
+  prompt: string;
+  urls?: string[];
+  schema?: Record<string, unknown>;
+  max_pages?: number;
+  max_time_ms?: number;
+  stream?: boolean;
+}
+
+export interface AgentSource {
+  url: string;
+  title: string;
+  markdown_content: string;
+  fetched: boolean;
+  fetch_error?: string;
+}
+
+export interface AgentStep {
+  action: 'plan' | 'search' | 'fetch' | 'extract' | 'synthesize';
+  detail: string;
+  time_ms: number;
+}
+
+export interface AgentOutput {
+  result: string | Record<string, unknown>;
+  sources: AgentSource[];
+  pages_fetched: number;
+  steps: AgentStep[];
+  total_time_ms: number;
+  sampling_supported: boolean;
+  error?: string;
+}
+
 export interface RawSearchResult {
   title: string;
   url: string;
