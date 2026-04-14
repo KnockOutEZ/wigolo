@@ -49,6 +49,8 @@ export interface Config {
   pluginsDir: string;
   browserTypes: BrowserType[];
   shellHistoryPath: string;
+  multiQueryConcurrency: number;
+  multiQueryMax: number;
 }
 
 function envStr(key: string, fallback: string | null = null): string | null {
@@ -134,6 +136,8 @@ export function getConfig(): Config {
     })(),
     browserTypes: parseBrowserTypes(envStr('WIGOLO_BROWSER_TYPES')),
     shellHistoryPath: envStr('WIGOLO_SHELL_HISTORY_PATH') ?? join(homedir(), '.wigolo', 'shell-history'),
+    multiQueryConcurrency: envInt('WIGOLO_MULTI_QUERY_CONCURRENCY', 5),
+    multiQueryMax: envInt('WIGOLO_MULTI_QUERY_MAX', 10),
   };
 
   return cachedConfig;

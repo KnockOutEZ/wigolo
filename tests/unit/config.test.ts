@@ -279,4 +279,38 @@ describe('config', () => {
       expect(getConfig().cdpUrl).toBeNull();
     });
   });
+
+  describe('config — multi-query', () => {
+    it('multiQueryConcurrency defaults to 5', () => {
+      expect(getConfig().multiQueryConcurrency).toBe(5);
+    });
+
+    it('multiQueryConcurrency reads from WIGOLO_MULTI_QUERY_CONCURRENCY', () => {
+      process.env.WIGOLO_MULTI_QUERY_CONCURRENCY = '3';
+      resetConfig();
+      expect(getConfig().multiQueryConcurrency).toBe(3);
+    });
+
+    it('multiQueryMax defaults to 10', () => {
+      expect(getConfig().multiQueryMax).toBe(10);
+    });
+
+    it('multiQueryMax reads from WIGOLO_MULTI_QUERY_MAX', () => {
+      process.env.WIGOLO_MULTI_QUERY_MAX = '20';
+      resetConfig();
+      expect(getConfig().multiQueryMax).toBe(20);
+    });
+
+    it('multiQueryConcurrency falls back to default on non-numeric', () => {
+      process.env.WIGOLO_MULTI_QUERY_CONCURRENCY = 'abc';
+      resetConfig();
+      expect(getConfig().multiQueryConcurrency).toBe(5);
+    });
+
+    it('multiQueryMax falls back to default on non-numeric', () => {
+      process.env.WIGOLO_MULTI_QUERY_MAX = '';
+      resetConfig();
+      expect(getConfig().multiQueryMax).toBe(10);
+    });
+  });
 });

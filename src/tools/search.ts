@@ -35,12 +35,16 @@ export async function handleSearch(
   const totalTimeoutMs = config.searchTotalTimeoutMs;
   const fetchTimeoutMs = config.searchFetchTimeoutMs;
 
-  const cached = getCachedSearchResults(input.query);
+  // Multi-query support: if array, will be handled in Task 3.
+  // For now, narrow to string for the single-query path.
+  const queryStr = Array.isArray(input.query) ? input.query[0] ?? '' : input.query;
+
+  const cached = getCachedSearchResults(queryStr);
   if (cached && !includeContent) {
-    log.info('serving search results from cache', { query: input.query });
+    log.info('serving search results from cache', { query: queryStr });
     const output: SearchOutput = {
       results: cached.results.slice(0, maxResults),
-      query: input.query,
+      query: queryStr,
       engines_used: cached.engines_used,
       total_time_ms: Date.now() - start,
     };
@@ -61,8 +65,8 @@ export async function handleSearch(
     }
   }
 
-  const subQueries = decomposeQuery(input.query);
-  log.debug('query decomposition', { original: input.query, parts: subQueries.length });
+  const subQueries = decomposeQuery(queryStr);
+  log.debug('query decomposition', { original: queryStr, parts: subQueries.length });
 
   const allRaw: RawSearchResult[] = [];
   const enginesUsed = new Set<string>();
@@ -102,7 +106,7 @@ export async function handleSearch(
   if (allRaw.length === 0) {
     const output: SearchOutput = {
       results: [],
-      query: input.query,
+      query: queryStr,
       engines_used: [...enginesUsed],
       total_time_ms: Date.now() - start,
       error: errors.length > 0 ? errors.join('; ') : 'No results found',
@@ -127,7 +131,7 @@ export async function handleSearch(
     category: input.category,
   });
 
-  merged = await rerankResults(input.query, merged);
+  merged = await rerankResults(queryStr, merged);
   merged = await validateLinks(merged);
 
   merged = merged.slice(0, maxResults);
@@ -149,14 +153,14 @@ export async function handleSearch(
   }
 
   try {
-    cacheSearchResults(input.query, results, [...enginesUsed]);
+    cacheSearchResults(queryStr, results, [...enginesUsed]);
   } catch (err) {
     log.warn('failed to cache search results', { error: String(err) });
   }
 
   const output: SearchOutput = {
     results,
-    query: input.query,
+    query: queryStr,
     engines_used: [...enginesUsed],
     total_time_ms: Date.now() - start,
   };

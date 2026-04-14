@@ -116,7 +116,7 @@ export interface Extractor {
 // --- Search layer types ---
 
 export interface SearchInput {
-  query: string;
+  query: string | string[];
   max_results?: number;
   include_content?: boolean;
   content_max_chars?: number;
@@ -151,6 +151,7 @@ export interface SearchOutput {
   error?: string;
   warning?: string;
   context_text?: string;
+  queries_executed?: string[];
 }
 
 export interface RawSearchResult {
