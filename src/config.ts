@@ -44,6 +44,7 @@ export interface Config {
   healthProbeIntervalMs: number;
   daemonPort: number;
   daemonHost: string;
+  pluginsDir: string;
 }
 
 function envStr(key: string, fallback: string | null = null): string | null {
@@ -119,6 +120,14 @@ export function getConfig(): Config {
     healthProbeIntervalMs: envInt('WIGOLO_HEALTH_PROBE_INTERVAL_MS', 30000),
     daemonPort: envInt('WIGOLO_DAEMON_PORT', 3333),
     daemonHost: envStr('WIGOLO_DAEMON_HOST', '127.0.0.1')?.trim() || '127.0.0.1',
+    pluginsDir: (() => {
+      const raw = envStr('WIGOLO_PLUGINS_DIR');
+      if (raw) {
+        if (raw.startsWith('~')) return join(homedir(), raw.slice(1));
+        return raw;
+      }
+      return join(envStr('WIGOLO_DATA_DIR') ?? join(homedir(), '.wigolo'), 'plugins');
+    })(),
   };
 
   return cachedConfig;
