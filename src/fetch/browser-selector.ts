@@ -47,7 +47,7 @@ export class BrowserSelector {
   }
 
   selectForHostname(hostname: string): BrowserType {
-    if (this.strategy === 'hostname-hash' || hostname) {
+    if (this.strategy === 'hostname-hash' && hostname) {
       return this.selectByHostnameHash(hostname);
     }
     return this.select();
