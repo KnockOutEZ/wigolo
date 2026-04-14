@@ -130,6 +130,7 @@ export interface SearchInput {
   from_date?: string;    // ISO date (YYYY-MM-DD)
   to_date?: string;      // ISO date (YYYY-MM-DD)
   category?: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
+  format?: 'full' | 'context';
 }
 
 export interface SearchResultItem {
@@ -149,6 +150,7 @@ export interface SearchOutput {
   total_time_ms: number;
   error?: string;
   warning?: string;
+  context_text?: string;
 }
 
 export interface RawSearchResult {
