@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Load More Test Page</title>
+  <style>
+    .item { padding: 10px; border-bottom: 1px solid #ccc; }
+    #load-more { padding: 10px 20px; margin: 10px; cursor: pointer; }
+    #items-container { max-width: 600px; }
+  </style>
+</head>
+<body>
+  <h1>Item List</h1>
+  <div id="items-container">
+    <div class="item" data-id="1">Item 1: Initial content</div>
+    <div class="item" data-id="2">Item 2: Initial content</div>
+    <div class="item" data-id="3">Item 3: Initial content</div>
+  </div>
+  <button id="load-more" onclick="loadMore()">Load More</button>
+  <script>
+    var nextId = 4;
+    function loadMore() {
+      var container = document.getElementById('items-container');
+      for (var i = 0; i < 3; i++) {
+        var div = document.createElement('div');
+        div.className = 'item';
+        div.setAttribute('data-id', String(nextId));
+        div.textContent = 'Item ' + nextId + ': Dynamically loaded content';
+        container.appendChild(div);
+        nextId++;
+      }
+      if (nextId > 9) {
+        document.getElementById('load-more').style.display = 'none';
+      }
+    }
+  </script>
+</body>
+</html>
