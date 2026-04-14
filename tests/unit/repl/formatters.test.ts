@@ -5,6 +5,7 @@ import {
   formatSearchResults,
   formatFetchResult,
   formatCrawlResult,
+  formatMapResult,
   formatExtractResult,
   formatCacheResult,
   stripAnsi,
@@ -13,6 +14,7 @@ import type {
   SearchOutput,
   FetchOutput,
   CrawlOutput,
+  MapOutput,
   ExtractOutput,
   CacheOutput,
 } from '../../../src/types.js';
@@ -266,6 +268,43 @@ describe('formatCacheResult', () => {
     const emptyOutput: CacheOutput = { results: [] };
     const formatted = stripAnsi(formatCacheResult(emptyOutput));
     expect(formatted).toContain('No cached');
+  });
+});
+
+describe('formatMapResult', () => {
+  it('formats map output with URL list', () => {
+    const output: MapOutput = {
+      urls: ['https://example.com/', 'https://example.com/about', 'https://example.com/docs'],
+      total_found: 3,
+      sitemap_found: true,
+    };
+    const formatted = stripAnsi(formatMapResult(output, 'https://example.com'));
+    expect(formatted).toContain('Map:');
+    expect(formatted).toContain('3 URLs found');
+    expect(formatted).toContain('sitemap: yes');
+    expect(formatted).toContain('/about');
+    expect(formatted).toContain('/docs');
+  });
+
+  it('formats empty map output', () => {
+    const output: MapOutput = {
+      urls: [],
+      total_found: 0,
+      sitemap_found: false,
+    };
+    const formatted = stripAnsi(formatMapResult(output, 'https://example.com'));
+    expect(formatted).toContain('No URLs found');
+  });
+
+  it('formats map output with error', () => {
+    const output: MapOutput = {
+      urls: [],
+      total_found: 0,
+      sitemap_found: false,
+      error: 'timeout',
+    };
+    const formatted = stripAnsi(formatMapResult(output, 'https://example.com'));
+    expect(formatted).toContain('timeout');
   });
 });
 

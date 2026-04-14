@@ -8,6 +8,7 @@ import {
   formatSearchResults,
   formatFetchResult,
   formatCrawlResult,
+  formatMapResult,
   formatExtractResult,
   formatCacheResult,
   formatJson,
@@ -18,7 +19,7 @@ import { executeCrawl } from './commands/crawl.js';
 import { executeExtract } from './commands/extract.js';
 import { executeCache } from './commands/cache.js';
 import type { ReplDeps } from './commands/types.js';
-import type { CrawlOutput } from '../types.js';
+import type { CrawlOutput, MapOutput } from '../types.js';
 
 const log = createLogger('repl');
 
@@ -152,7 +153,11 @@ export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Pr
             write(formatJson(result));
           } else {
             const url = parsed.positional[0] || '';
-            write(formatCrawlResult(result as CrawlOutput, url));
+            if ('urls' in result && !('pages' in result)) {
+              write(formatMapResult(result as MapOutput, url));
+            } else {
+              write(formatCrawlResult(result as CrawlOutput, url));
+            }
           }
           break;
         }

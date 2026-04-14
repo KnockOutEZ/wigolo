@@ -4,6 +4,7 @@ import type {
   SearchOutput,
   FetchOutput,
   CrawlOutput,
+  MapOutput,
   ExtractOutput,
   CacheOutput,
   TableData,
@@ -126,6 +127,31 @@ export function formatCrawlResult(output: CrawlOutput, seedUrl: string): string 
     const p = output.pages[i];
     const path = pathFromUrl(p.url, seedUrl);
     lines.push(`  ${chalk.bold(`[${i + 1}]`)} ${chalk.white(path)} ${chalk.dim(`(depth: ${p.depth}, ${p.markdown.length} chars)`)}`);
+  }
+
+  return lines.join('\n');
+}
+
+export function formatMapResult(output: MapOutput, seedUrl: string): string {
+  const lines: string[] = [];
+
+  lines.push(`Map: ${chalk.cyan(seedUrl)} (${output.urls.length} URLs found, sitemap: ${output.sitemap_found ? 'yes' : 'no'})`);
+
+  if (output.error) {
+    lines.push('');
+    lines.push(chalk.red(`  Error: ${output.error}`));
+    return lines.join('\n');
+  }
+
+  if (output.urls.length === 0) {
+    lines.push('');
+    lines.push(chalk.dim('  No URLs found'));
+    return lines.join('\n');
+  }
+
+  for (let i = 0; i < output.urls.length; i++) {
+    const path = pathFromUrl(output.urls[i], seedUrl);
+    lines.push(`  ${chalk.bold(`[${i + 1}]`)} ${chalk.white(path)}`);
   }
 
   return lines.join('\n');
