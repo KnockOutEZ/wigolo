@@ -7,12 +7,17 @@ vi.mock('../../../src/cache/db.js', () => ({
 }));
 
 vi.mock('../../../src/fetch/browser-pool.js', () => {
+  class MockMultiBrowserPool {
+    shutdown = vi.fn().mockResolvedValue(undefined);
+    fetchWithBrowser = vi.fn();
+    getConfiguredTypes = vi.fn().mockReturnValue(['chromium']);
+    getStats = vi.fn().mockReturnValue([]);
+  }
   return {
-    BrowserPool: class MockBrowserPool {
-      shutdown = vi.fn().mockResolvedValue(undefined);
+    MultiBrowserPool: MockMultiBrowserPool,
+    BrowserPool: class MockBrowserPool extends MockMultiBrowserPool {
       acquire = vi.fn();
       release = vi.fn();
-      fetchWithBrowser = vi.fn();
     },
   };
 });
