@@ -162,6 +162,11 @@ const SEARCH_TOOL_SCHEMA = {
       enum: ['general', 'news', 'code', 'docs', 'papers', 'images'],
       description: 'Category of search (general, news, code, docs, papers, images)',
     },
+    format: {
+      type: 'string',
+      enum: ['full', 'context'],
+      description: "Output format: 'full' returns structured results (default), 'context' returns a single token-budgeted string ready for LLM context injection",
+    },
   },
   required: ['query'],
 };

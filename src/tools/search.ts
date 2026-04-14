@@ -6,6 +6,7 @@ import { decomposeQuery } from '../search/query.js';
 import { validateLinks } from '../search/validator.js';
 import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
+import { formatSearchContext } from '../search/context-formatter.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { cacheSearchResults, getCachedSearchResults } from '../cache/store.js';
 import { getConfig } from '../config.js';
@@ -45,6 +46,9 @@ export async function handleSearch(
     };
     const warning = backendStatus?.consumeWarning();
     if (warning) output.warning = warning;
+    if (input.format === 'context') {
+      output.context_text = formatSearchContext(output.results, maxTotalChars);
+    }
     return output;
   }
 
@@ -105,6 +109,9 @@ export async function handleSearch(
     };
     const warning = backendStatus?.consumeWarning();
     if (warning) output.warning = warning;
+    if (input.format === 'context') {
+      output.context_text = '';
+    }
     return output;
   }
 
@@ -155,6 +162,9 @@ export async function handleSearch(
   };
   const warning = backendStatus?.consumeWarning();
   if (warning) output.warning = warning;
+  if (input.format === 'context') {
+    output.context_text = formatSearchContext(output.results, maxTotalChars);
+  }
   return output;
 }
 
