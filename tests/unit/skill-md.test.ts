@@ -72,8 +72,9 @@ function parseYamlFrontmatter(content: string): Record<string, unknown> | null {
 }
 
 const SKILL_PATH = join(import.meta.dirname, '..', '..', 'SKILL.md');
+const INSTRUCTIONS_PATH = join(import.meta.dirname, '..', '..', 'src', 'instructions.ts');
 
-describe('SKILL.md', () => {
+describe('SKILL.md — v3 structure and content', () => {
   let content: string;
   let frontmatter: Record<string, unknown> | null;
 
@@ -88,61 +89,7 @@ describe('SKILL.md', () => {
     expect(content.indexOf('\n---', 4)).toBeGreaterThan(4);
   });
 
-  it('frontmatter has required top-level fields', () => {
-    content = readFileSync(SKILL_PATH, 'utf-8');
-    frontmatter = parseYamlFrontmatter(content);
-    expect(frontmatter).not.toBeNull();
-    expect(frontmatter!.name).toBe('wigolo');
-    expect(frontmatter!.description).toBeDefined();
-    expect(typeof frontmatter!.description).toBe('string');
-    expect(frontmatter!.author).toBeDefined();
-    expect(frontmatter!.license).toBe('BUSL-1.1');
-    expect(frontmatter!.repository).toContain('github.com/KnockOutEZ/wigolo');
-  });
-
-  it('frontmatter has transport field', () => {
-    content = readFileSync(SKILL_PATH, 'utf-8');
-    frontmatter = parseYamlFrontmatter(content);
-    expect(frontmatter).not.toBeNull();
-    expect(frontmatter!.transport).toBe('stdio');
-  });
-
-  it('frontmatter lists all 5 tools', () => {
-    content = readFileSync(SKILL_PATH, 'utf-8');
-    frontmatter = parseYamlFrontmatter(content);
-    expect(frontmatter).not.toBeNull();
-    const tools = frontmatter!.tools as unknown[];
-    expect(Array.isArray(tools)).toBe(true);
-    expect(tools.length).toBe(5);
-  });
-
-  it('each tool entry has name and description', () => {
-    content = readFileSync(SKILL_PATH, 'utf-8');
-    frontmatter = parseYamlFrontmatter(content);
-    const tools = frontmatter!.tools as Array<Record<string, unknown>>;
-    const expectedNames = ['search', 'fetch', 'crawl', 'cache', 'extract'];
-    const foundNames = tools.map(t => t.name);
-    for (const name of expectedNames) {
-      expect(foundNames).toContain(name);
-    }
-    for (const tool of tools) {
-      expect(typeof tool.description).toBe('string');
-      expect((tool.description as string).length).toBeGreaterThan(10);
-    }
-  });
-
-  it('body contains installation instructions', () => {
-    content = readFileSync(SKILL_PATH, 'utf-8');
-    expect(content).toContain('npx @staticn0va/wigolo');
-  });
-
-  it('body contains example invocations', () => {
-    content = readFileSync(SKILL_PATH, 'utf-8');
-    expect(content).toContain('search');
-    expect(content).toContain('fetch');
-  });
-
-  it('body does not exceed 500 lines (keep it focused)', () => {
+  it('body does not exceed 500 lines', () => {
     content = readFileSync(SKILL_PATH, 'utf-8');
     const lineCount = content.split('\n').length;
     expect(lineCount).toBeLessThan(500);
@@ -153,5 +100,149 @@ describe('SKILL.md', () => {
     expect(content).not.toContain('TODO');
     expect(content).not.toContain('TBD');
     expect(content).not.toContain('PLACEHOLDER');
+    expect(content).not.toContain('FIXME');
+  });
+
+  it('frontmatter has required top-level fields', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    frontmatter = parseYamlFrontmatter(content);
+    expect(frontmatter).not.toBeNull();
+    expect(frontmatter!.name).toBe('wigolo');
+    expect(typeof frontmatter!.description).toBe('string');
+    expect((frontmatter!.description as string).length).toBeGreaterThan(20);
+    expect(frontmatter!.author).toBe('KnockOutEZ');
+    expect(frontmatter!.license).toBe('BUSL-1.1');
+    expect(frontmatter!.repository).toContain('github.com/KnockOutEZ/wigolo');
+    expect(frontmatter!.transport).toBe('stdio');
+    expect(frontmatter!.install).toContain('npx @staticn0va/wigolo');
+    expect(frontmatter!.runtime).toBe('node');
+  });
+
+  it('frontmatter lists all 8 v3 tools', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    frontmatter = parseYamlFrontmatter(content);
+    expect(frontmatter).not.toBeNull();
+    const tools = frontmatter!.tools as unknown[];
+    expect(Array.isArray(tools)).toBe(true);
+    expect(tools.length).toBe(8);
+  });
+
+  it('frontmatter tools include v3 additions: find_similar, research, agent', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    frontmatter = parseYamlFrontmatter(content);
+    const tools = frontmatter!.tools as Array<Record<string, unknown>>;
+    const toolNames = tools.map(t => t.name);
+    for (const name of ['find_similar', 'research', 'agent']) {
+      expect(toolNames).toContain(name);
+    }
+  });
+
+  it('frontmatter tools include all v1/v2 tools', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    frontmatter = parseYamlFrontmatter(content);
+    const tools = frontmatter!.tools as Array<Record<string, unknown>>;
+    const toolNames = tools.map(t => t.name);
+    for (const name of ['search', 'fetch', 'crawl', 'cache', 'extract']) {
+      expect(toolNames).toContain(name);
+    }
+  });
+
+  it('each tool entry has name and non-empty description', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    frontmatter = parseYamlFrontmatter(content);
+    const tools = frontmatter!.tools as Array<Record<string, unknown>>;
+    for (const tool of tools) {
+      expect(typeof tool.name).toBe('string');
+      expect(typeof tool.description).toBe('string');
+      expect((tool.description as string).length).toBeGreaterThan(10);
+    }
+  });
+
+  it('body contains installation instructions for Claude Code and generic MCP', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    expect(content).toContain('npx @staticn0va/wigolo');
+    expect(content).toContain('claude mcp add');
+    expect(content).toContain('mcpServers');
+  });
+
+  it('body contains a workflow patterns section', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    const lower = content.toLowerCase();
+    expect(lower).toContain('workflow');
+    expect(content).toContain('search');
+    expect(content).toContain('fetch');
+    expect(content).toContain('crawl');
+    expect(content).toContain('find_similar');
+    expect(content).toContain('research');
+    expect(content).toContain('agent');
+  });
+
+  it('workflow patterns describe when to use each tool type', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    const guidePatterns = [
+      /when.*search/i,
+      /when.*fetch/i,
+      /when.*crawl/i,
+    ];
+    for (const pattern of guidePatterns) {
+      expect(content).toMatch(pattern);
+    }
+  });
+
+  it('body contains parameter optimization guidance', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    const lower = content.toLowerCase();
+    expect(lower).toContain('parameter');
+    expect(content).toContain('max_results');
+    expect(content).toContain('include_domains');
+  });
+
+  it('parameter guidance includes concrete values', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    const hasNumbers = /max_results.*\d+/i.test(content) || /\d+.*max_results/i.test(content);
+    expect(hasNumbers).toBe(true);
+  });
+
+  it('body contains an anti-patterns section', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    const lower = content.toLowerCase();
+    const hasAntiPatterns = lower.includes('anti-pattern') ||
+      lower.includes('don\'t') || lower.includes('avoid') ||
+      lower.includes('never') || lower.includes('do not');
+    expect(hasAntiPatterns).toBe(true);
+  });
+
+  it('anti-patterns warn against retrying same query', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    const lower = content.toLowerCase();
+    const hasRetryWarning = lower.includes('retry') || lower.includes('same query') ||
+      lower.includes('repeat') || lower.includes('identical');
+    expect(hasRetryWarning).toBe(true);
+  });
+
+  it('anti-patterns warn against skipping cache', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    const lower = content.toLowerCase();
+    const hasCacheWarning = (lower.includes('skip') && lower.includes('cache')) ||
+      (lower.includes('cache') && lower.includes('first'));
+    expect(hasCacheWarning).toBe(true);
+  });
+
+  it('does not copy WIGOLO_INSTRUCTIONS verbatim', () => {
+    content = readFileSync(SKILL_PATH, 'utf-8');
+    let instructionsSrc: string;
+    try {
+      instructionsSrc = readFileSync(INSTRUCTIONS_PATH, 'utf-8');
+    } catch {
+      return;
+    }
+    const instrMatch = instructionsSrc.match(/WIGOLO_INSTRUCTIONS\s*=\s*`([\s\S]*?)`/);
+    if (!instrMatch) return;
+    const instructions = instrMatch[1];
+    const paragraphs = instructions.split('\n\n').filter(p => p.trim().length > 80);
+    for (const para of paragraphs) {
+      const trimmedPara = para.trim();
+      expect(content).not.toContain(trimmedPara);
+    }
   });
 });
