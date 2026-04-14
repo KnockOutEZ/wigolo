@@ -257,10 +257,19 @@ export class DaemonHttpServer {
     }
   }
 
-  private readJsonBody(req: IncomingMessage): Promise<unknown> {
+  private readJsonBody(req: IncomingMessage, maxBytes = 10 * 1024 * 1024): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      let size = 0;
+      req.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > maxBytes) {
+          req.destroy();
+          reject(new Error('Request body too large'));
+          return;
+        }
+        chunks.push(chunk);
+      });
       req.on('end', () => {
         try {
           resolve(JSON.parse(Buffer.concat(chunks).toString()));

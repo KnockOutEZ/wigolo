@@ -25,6 +25,9 @@ export async function tryConnectDaemon(port: number, host: string): Promise<Heal
   }
 }
 
+// NOTE: callTool and listTools are incomplete — they skip the MCP initialize
+// handshake required by StreamableHTTP transport. Full proxy deferred to v2.1.
+// Only checkHealth (which uses /health, not /mcp) works today.
 export class DaemonProxy {
   private readonly baseUrl: string;
 
