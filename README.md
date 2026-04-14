@@ -55,6 +55,45 @@ npx @staticn0va/wigolo warmup --force     # Wipe SearXNG state/install/locks and
 
 Run `npx @staticn0va/wigolo doctor` to see the health of every component (Python, Docker, Playwright, Trafilatura, FlashRank, SearXNG install + process). Exits 0 when healthy, 1 when any required component is degraded. Usable in scripts: `npx @staticn0va/wigolo doctor && my-agent`.
 
+## Daemon Mode
+
+Run wigolo as a persistent HTTP server for lower latency and shared infrastructure:
+
+### Start the daemon
+
+```bash
+npx @staticn0va/wigolo serve
+npx @staticn0va/wigolo serve --port 4444 --host 0.0.0.0
+```
+
+The daemon exposes:
+- `POST /mcp` -- StreamableHTTP MCP transport (preferred)
+- `GET /sse` -- SSE MCP transport (legacy compatibility)
+- `GET /health` -- Health check endpoint
+
+### Check health
+
+```bash
+npx @staticn0va/wigolo health
+# or
+curl http://127.0.0.1:3333/health
+```
+
+Returns:
+```json
+{
+  "status": "healthy",
+  "searxng": "active",
+  "browsers": "ready",
+  "cache": "active",
+  "uptime_seconds": 3600
+}
+```
+
+### Auto-connect
+
+When starting in stdio mode, wigolo checks if a daemon is already running on `WIGOLO_DAEMON_PORT`. If detected, a notice is printed to stderr. Full stdio-to-daemon proxy is planned for v2.1.
+
 ## Prerequisites
 
 - **Node.js 20+** — [Download](https://nodejs.org/) or `brew install node` (macOS) / `winget install OpenJS.NodeJS` (Windows) / `sudo apt install nodejs` (Ubuntu/Debian)
@@ -198,6 +237,8 @@ Full list of env vars:
 | `WIGOLO_BOOTSTRAP_MAX_ATTEMPTS` | `3` | Cap on SearXNG bootstrap auto-retries |
 | `WIGOLO_BOOTSTRAP_BACKOFF_SECONDS` | `30,3600,86400` | Backoff seconds for retry attempts 1, 2, 3 |
 | `WIGOLO_HEALTH_PROBE_INTERVAL_MS` | `30000` | Interval between SearXNG `/healthz` probes |
+| `WIGOLO_DAEMON_PORT` | `3333` | HTTP server port for daemon mode |
+| `WIGOLO_DAEMON_HOST` | `127.0.0.1` | HTTP server bind address for daemon mode |
 
 ## How it works
 
@@ -230,7 +271,7 @@ SearXNG bootstrap failures are self-healing: wigolo retries after 30 seconds, 1 
 ## Roadmap
 
 ### v2.1 — Next
-- [ ] Daemon mode — persistent HTTP server, zero startup latency
+- [x] Daemon mode — persistent HTTP server, zero startup latency
 - [ ] Browser interaction — click, type, scroll before extraction
 - [ ] Content change detection — diff monitoring for cached pages
 - [ ] CDP session discovery — attach to running Chrome for seamless auth
