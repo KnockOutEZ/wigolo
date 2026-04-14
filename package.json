@@ -1,6 +1,6 @@
 {
   "name": "@staticn0va/wigolo",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Local-first web search MCP server for AI coding agents",
   "type": "module",
   "main": "dist/index.js",
@@ -62,8 +62,16 @@
   "mcp": {
     "transport": "stdio",
     "command": "npx",
-    "args": ["@staticn0va/wigolo"],
-    "tools": ["search", "fetch", "crawl", "cache", "extract"]
+    "args": [
+      "@staticn0va/wigolo"
+    ],
+    "tools": [
+      "search",
+      "fetch",
+      "crawl",
+      "cache",
+      "extract"
+    ]
   },
   "engines": {
     "node": ">=20"
