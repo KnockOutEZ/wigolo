@@ -59,6 +59,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mozilla/readability": "^0.6.0",
     "better-sqlite3": "^12.8.0",
+    "chalk": "^5.6.2",
     "defuddle": "^0.16.0",
     "linkedom": "^0.18.12",
     "pdf-parse": "^2.4.5",
