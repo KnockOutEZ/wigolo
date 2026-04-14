@@ -63,9 +63,10 @@ Key parameters:
 
 Returns title, markdown content, links, images, and metadata. Result is cached locally — subsequent fetches of the same URL return instantly. Works with localhost URLs (localhost:3000, etc.) for reading local dev servers.`,
 
-  search: `Search the web and return full markdown content from top results. Use for finding information on any topic — returns extracted page content, not just snippets.
+  search: `Search the web and return full markdown content from top results. Use for finding information on any topic — returns extracted page content, not just snippets. Accepts a single query string or an array of query variants for parallel multi-query search with deduplication and reranking.
 
 Key parameters:
+- query: string or string[] — pass an array for multi-perspective search (e.g., ["react hooks tutorial", "useEffect best practices"])
 - include_domains/exclude_domains: scope results to specific sites (e.g., include_domains: ["react.dev"])
 - category: "general", "news", "code", "docs", "papers" — filters by content type
 - from_date/to_date: ISO dates for time-bounded queries

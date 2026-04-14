@@ -131,7 +131,17 @@ const FETCH_TOOL_SCHEMA = {
 const SEARCH_TOOL_SCHEMA = {
   type: 'object' as const,
   properties: {
-    query: { type: 'string', description: 'Search query' },
+    query: {
+      oneOf: [
+        { type: 'string', description: 'Search query' },
+        {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array of query variants to search in parallel, deduplicate, and rerank',
+        },
+      ],
+      description: 'Search query — a single string or array of query variants for parallel multi-query search',
+    },
     max_results: { type: 'number', description: 'Max results to return (default 5, max 20)' },
     include_content: { type: 'boolean', description: 'Fetch full content for results (default true)' },
     content_max_chars: { type: 'number', description: 'Max chars per result content (default 30000)' },
