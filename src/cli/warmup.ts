@@ -18,6 +18,8 @@ export interface WarmupResult {
   firefoxError?: string;
   webkit?: 'ok' | 'failed';
   webkitError?: string;
+  embeddings?: 'ok' | 'failed';
+  embeddingsError?: string;
 }
 
 function log(msg: string): void {
@@ -104,6 +106,22 @@ function installFirefox(): Pick<WarmupResult, 'firefox' | 'firefoxError'> {
   }
 }
 
+function installSentenceTransformers(): Pick<WarmupResult, 'embeddings' | 'embeddingsError'> {
+  log('Installing sentence-transformers...');
+  try {
+    execSync('python3 -m pip install --quiet sentence-transformers', {
+      stdio: 'pipe',
+      timeout: 300000,
+    });
+    log('sentence-transformers installed successfully');
+    return { embeddings: 'ok' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`sentence-transformers install failed: ${message}`);
+    return { embeddings: 'failed', embeddingsError: message };
+  }
+}
+
 function installWebkit(): Pick<WarmupResult, 'webkit' | 'webkitError'> {
   log('Installing Playwright WebKit...');
   try {
@@ -186,6 +204,11 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
     webkitResult = installWebkit();
   }
 
+  let embeddingsResult: Pick<WarmupResult, 'embeddings' | 'embeddingsError'> = {};
+  if (flagSet.has('--embeddings') || flagSet.has('--all')) {
+    embeddingsResult = installSentenceTransformers();
+  }
+
   const result: WarmupResult = {
     ...pwResult,
     ...searxngResult,
@@ -193,6 +216,7 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
     ...rerankerResult,
     ...firefoxResult,
     ...webkitResult,
+    ...embeddingsResult,
   };
 
   log('');
@@ -210,6 +234,9 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
   }
   if (result.webkit) {
     log(`  WebKit:        ${result.webkit}${result.webkitError ? ` (${result.webkitError})` : ''}`);
+  }
+  if (result.embeddings) {
+    log(`  Embeddings:    ${result.embeddings}${result.embeddingsError ? ` (${result.embeddingsError})` : ''}`);
   }
 
   return result;

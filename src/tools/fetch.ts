@@ -4,6 +4,7 @@ import { extractContent } from '../extraction/pipeline.js';
 import { getCachedContent, cacheContent, isExpired } from '../cache/store.js';
 import { extractSection } from '../extraction/markdown.js';
 import { detectChange } from '../cache/change-detector.js';
+import { getEmbeddingService } from '../embedding/embed.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('fetch');
@@ -71,6 +72,15 @@ export async function handleFetch(
     }
 
     cacheContent(raw, extraction);
+
+    try {
+      const embeddingService = getEmbeddingService();
+      if (embeddingService.isAvailable()) {
+        embeddingService.embedAsync(raw.finalUrl, extraction.markdown);
+      }
+    } catch (err) {
+      log.debug('embedding hook skipped', { error: String(err) });
+    }
 
     return {
       url: raw.finalUrl,
