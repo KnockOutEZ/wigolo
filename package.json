@@ -4,6 +4,17 @@
   "description": "Local-first web search MCP server for AI coding agents",
   "type": "module",
   "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./types": {
+      "import": "./dist/types.js",
+      "types": "./dist/types.d.ts"
+    }
+  },
+  "types": "dist/types.d.ts",
   "bin": {
     "wigolo": "dist/index.js"
   },
