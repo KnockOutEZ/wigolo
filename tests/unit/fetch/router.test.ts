@@ -4,7 +4,7 @@ import { resetConfig } from '../../../src/config.js';
 // We import SmartRouter dynamically after mocking auth to avoid real fs checks
 // Auth mock — getAuthOptions returns null by default
 vi.mock('../../../src/fetch/auth.js', () => ({
-  getAuthOptions: vi.fn(() => null),
+  getAuthOptions: vi.fn(async () => null),
 }));
 
 import { SmartRouter } from '../../../src/fetch/router.js';
@@ -66,7 +66,7 @@ describe('SmartRouter', () => {
 
     router = new SmartRouter(httpClient, browserPool);
 
-    vi.mocked(getAuthOptions).mockReturnValue(null);
+    vi.mocked(getAuthOptions).mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -265,7 +265,7 @@ describe('SmartRouter --- actions routing', () => {
   });
 
   it('routes to Playwright for actions + useAuth combined', async () => {
-    vi.mocked(getAuthOptions).mockReturnValue({ storageStatePath: '/tmp/state.json' });
+    vi.mocked(getAuthOptions).mockResolvedValue({ storageStatePath: '/tmp/state.json' });
     const actions = [{ type: 'click' as const, selector: '.btn' }];
     const result = await router.fetch('https://example.com/page', { useAuth: true, actions });
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();

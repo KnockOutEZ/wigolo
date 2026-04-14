@@ -30,7 +30,7 @@ export interface HttpClient {
 export interface BrowserPoolInterface {
   fetchWithBrowser(
     url: string,
-    options?: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string; screenshot?: boolean; actions?: BrowserAction[] },
+    options?: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string; screenshot?: boolean; actions?: BrowserAction[]; cdpUrl?: string },
   ): Promise<RawFetchResult>;
 }
 
@@ -56,14 +56,14 @@ export class SmartRouter {
 
     // Actions always force Playwright --- actions need a live browser page
     if (actions && actions.length > 0) {
-      const authOptions = useAuth ? (getAuthOptions() ?? {}) : {};
+      const authOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
       logger.debug('routing to playwright', { url, reason: 'actions present' });
       return this.browserPool.fetchWithBrowser(url, { headers, screenshot, actions, ...authOptions });
     }
 
     // Always Playwright for auth or explicit override
     if (renderJs === 'always' || useAuth) {
-      const authOptions = useAuth ? (getAuthOptions() ?? {}) : {};
+      const authOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
       logger.debug('routing to playwright', { url, reason: useAuth ? 'auth' : 'render_js=always' });
       return this.browserPool.fetchWithBrowser(url, { headers, screenshot, ...authOptions });
     }

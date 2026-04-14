@@ -11,6 +11,7 @@ export interface BrowserFetchOptions {
   headers?: Record<string, string>;
   screenshot?: boolean;
   actions?: BrowserAction[];
+  cdpUrl?: string;
 }
 
 export interface BrowserPoolOptions {
@@ -96,7 +97,26 @@ export class BrowserPool {
     const navTimeoutMs = options.timeoutMs ?? config.playwrightNavTimeoutMs;
     const loadTimeoutMs = config.playwrightLoadTimeoutMs;
 
-    const ctx = await this.acquire();
+    let ctx: BrowserContext;
+    let cdpBrowser: Browser | null = null;
+
+    if (options.cdpUrl) {
+      try {
+        logger.info('connecting via CDP', { cdpUrl: options.cdpUrl });
+        cdpBrowser = await chromium.connectOverCDP(options.cdpUrl);
+        const contexts = cdpBrowser.contexts();
+        ctx = contexts.length > 0 ? contexts[0] : await cdpBrowser.newContext();
+      } catch (err) {
+        logger.warn('CDP connection failed, falling back to launch', {
+          cdpUrl: options.cdpUrl,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        ctx = await this.acquire();
+      }
+    } else {
+      ctx = await this.acquire();
+    }
+
     const page = await ctx.newPage();
 
     if (options.headers) {
@@ -155,7 +175,11 @@ export class BrowserPool {
       };
     } finally {
       await page.close();
-      this.release(ctx);
+      if (cdpBrowser) {
+        await cdpBrowser.close().catch(() => {});
+      } else {
+        this.release(ctx);
+      }
     }
   }
 
