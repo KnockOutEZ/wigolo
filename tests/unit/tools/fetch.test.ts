@@ -24,10 +24,16 @@ vi.mock('../../../src/logger.js', () => ({
   }),
 }));
 
+vi.mock('../../../src/cache/change-detector.js', () => ({
+  detectChange: vi.fn(),
+}));
+
 import { handleFetch } from '../../../src/tools/fetch.js';
 import { getCachedContent, cacheContent, isExpired } from '../../../src/cache/store.js';
 import { extractContent } from '../../../src/extraction/pipeline.js';
 import { extractSection } from '../../../src/extraction/markdown.js';
+import { detectChange } from '../../../src/cache/change-detector.js';
+import type { ChangeResult } from '../../../src/cache/change-detector.js';
 
 function mockRouter(result?: Partial<RawFetchResult>) {
   const defaults: RawFetchResult = {
@@ -368,5 +374,146 @@ describe('handleFetch --- actions support', () => {
 
     expect(result.error).toBeUndefined();
     expect(result.action_results).toBeUndefined();
+  });
+});
+
+describe('handleFetch --- change detection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getCachedContent).mockReturnValue(null);
+    vi.mocked(isExpired).mockReturnValue(false);
+    vi.mocked(detectChange).mockReturnValue({ changed: false });
+  });
+
+  it('calls detectChange after extraction for fresh fetch', async () => {
+    const extraction = makeExtraction({ markdown: '# New Content' });
+    vi.mocked(extractContent).mockResolvedValue(extraction);
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com/page' };
+
+    await handleFetch(input, router);
+
+    expect(vi.mocked(detectChange)).toHaveBeenCalledWith(
+      expect.any(String),
+      '# New Content',
+    );
+  });
+
+  it('includes changed=true in response when content changed', async () => {
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction());
+    vi.mocked(detectChange).mockReturnValue({
+      changed: true,
+      previousHash: 'abc123def456',
+      diffSummary: '2 lines added, 1 line removed, 0 lines modified',
+    });
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com/page' };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.changed).toBe(true);
+    expect(result.previous_hash).toBe('abc123def456');
+    expect(result.diff_summary).toContain('2 lines added');
+  });
+
+  it('does not include change fields when content is unchanged', async () => {
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction());
+    vi.mocked(detectChange).mockReturnValue({ changed: false });
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com/page' };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.changed).toBeUndefined();
+    expect(result.previous_hash).toBeUndefined();
+    expect(result.diff_summary).toBeUndefined();
+  });
+
+  it('does not call detectChange when serving from cache', async () => {
+    const cached = makeCached();
+    vi.mocked(getCachedContent).mockReturnValue(cached);
+    vi.mocked(isExpired).mockReturnValue(false);
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.cached).toBe(true);
+    expect(vi.mocked(detectChange)).not.toHaveBeenCalled();
+  });
+
+  it('handles detectChange throwing gracefully', async () => {
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction());
+    vi.mocked(detectChange).mockImplementation(() => { throw new Error('DB error'); });
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.error).toBeUndefined();
+    expect(result.changed).toBeUndefined();
+    expect(result.markdown).toBeDefined();
+  });
+
+  it('includes change detection fields alongside existing output fields', async () => {
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction({
+      title: 'My Page',
+      markdown: '# Updated',
+    }));
+    vi.mocked(detectChange).mockReturnValue({
+      changed: true,
+      previousHash: 'prev123',
+      diffSummary: '1 line modified',
+    });
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.title).toBe('My Page');
+    expect(result.markdown).toBe('# Updated');
+    expect(result.cached).toBe(false);
+    expect(result.changed).toBe(true);
+    expect(result.previous_hash).toBe('prev123');
+    expect(result.diff_summary).toBe('1 line modified');
+  });
+
+  it('detects change after cache expiry triggers re-fetch', async () => {
+    const cached = makeCached();
+    vi.mocked(getCachedContent).mockReturnValue(cached);
+    vi.mocked(isExpired).mockReturnValue(true);
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction({ markdown: 'new content' }));
+    vi.mocked(detectChange).mockReturnValue({
+      changed: true,
+      previousHash: 'old-hash',
+      diffSummary: '5 lines added, 3 lines removed, 0 lines modified',
+    });
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.cached).toBe(false);
+    expect(result.changed).toBe(true);
+    expect(vi.mocked(detectChange)).toHaveBeenCalled();
+  });
+
+  it('returns changed=false for first-time fetch (no prior cache)', async () => {
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction());
+    vi.mocked(detectChange).mockReturnValue({ changed: false });
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://brand-new-site.com' };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.changed).toBeUndefined();
   });
 });
