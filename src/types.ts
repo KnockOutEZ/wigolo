@@ -130,7 +130,7 @@ export interface SearchInput {
   from_date?: string;    // ISO date (YYYY-MM-DD)
   to_date?: string;      // ISO date (YYYY-MM-DD)
   category?: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
-  format?: 'full' | 'context';
+  format?: 'full' | 'context' | 'answer' | 'stream_answer';
 }
 
 export interface SearchResultItem {
@@ -152,6 +152,16 @@ export interface SearchOutput {
   warning?: string;
   context_text?: string;
   queries_executed?: string[];
+  answer?: string;
+  citations?: Citation[];
+  streaming?: boolean;
+}
+
+export interface Citation {
+  index: number;
+  url: string;
+  title: string;
+  snippet: string;
 }
 
 export interface RawSearchResult {
