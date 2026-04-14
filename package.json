@@ -21,17 +21,24 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "SKILL.md"
   ],
   "keywords": [
     "mcp",
+    "mcp-server",
     "web-search",
     "web-scraping",
     "ai-agent",
     "playwright",
     "searxng",
     "local-first",
-    "content-extraction"
+    "content-extraction",
+    "search",
+    "scraping",
+    "crawler",
+    "claude",
+    "agent-tools"
   ],
   "scripts": {
     "build": "tsc",
@@ -51,6 +58,12 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/KnockOutEZ/wigolo"
+  },
+  "mcp": {
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["@staticn0va/wigolo"],
+    "tools": ["search", "fetch", "crawl", "cache", "extract"]
   },
   "engines": {
     "node": ">=20"
