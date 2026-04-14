@@ -31,7 +31,23 @@ switch (command) {
     break;
   }
 
-  case 'mcp':
+  case 'mcp': {
+    const config = getConfig();
+
+    try {
+      const { tryConnectDaemon } = await import('./daemon/proxy.js');
+      const report = await tryConnectDaemon(config.daemonPort, config.daemonHost);
+      if (report) {
+        process.stderr.write(
+          `[wigolo] Daemon detected at ${config.daemonHost}:${config.daemonPort} ` +
+          `(status: ${report.status}). Full proxy deferred to v2.1; starting local server.\n`,
+        );
+      }
+    } catch {
+      // Daemon proxy module may not be available -- fall through to local server
+    }
+
     await startServer();
     break;
+  }
 }

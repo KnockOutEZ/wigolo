@@ -215,7 +215,6 @@ export class DaemonHttpServer {
       const server = createMcpServer(this.subsystems);
 
       await server.connect(transport);
-      await transport.start();
 
       const sessionId = transport.sessionId;
       this.sseSessions.set(sessionId, { transport, server });
