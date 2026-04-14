@@ -1,11 +1,13 @@
 import { searchCacheFiltered, getCacheStats, clearCacheEntries } from '../cache/store.js';
 import { detectChange } from '../cache/change-detector.js';
+import { extractContent } from '../extraction/pipeline.js';
 import { createLogger } from '../logger.js';
 import type { CacheInput, CacheOutput, ChangeReport } from '../types.js';
+import type { SmartRouter } from '../fetch/router.js';
 
 const log = createLogger('cache');
 
-export function handleCache(input: CacheInput): CacheOutput {
+export async function handleCache(input: CacheInput, router?: SmartRouter): Promise<CacheOutput> {
   try {
     if (input.check_changes) {
       log.info('Checking for content changes', {
@@ -23,7 +25,20 @@ export function handleCache(input: CacheInput): CacheOutput {
       const changes: ChangeReport[] = [];
       for (const entry of entries) {
         try {
-          const changeResult = detectChange(entry.url, entry.markdown);
+          if (!router) {
+            changes.push({
+              url: entry.url,
+              changed: false,
+              current_hash: entry.contentHash,
+              error: 'no router available for re-fetch',
+            });
+            continue;
+          }
+          const raw = await router.fetch(entry.url, { renderJs: 'auto' });
+          const extraction = await extractContent(raw.html, raw.finalUrl, {
+            contentType: raw.contentType,
+          });
+          const changeResult = detectChange(entry.url, extraction.markdown);
           changes.push({
             url: entry.url,
             changed: changeResult.changed,

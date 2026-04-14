@@ -131,21 +131,21 @@ describe('Change Detection Integration', () => {
 
     await handleFetch(input, router);
 
-    const cacheResult = handleCache({
+    const cacheResult = await handleCache({
       check_changes: true,
       url_pattern: `*127.0.0.1*`,
-    });
+    }, router);
 
     expect(cacheResult.changes).toBeDefined();
     expect(cacheResult.changes!.length).toBeGreaterThanOrEqual(1);
     expect(cacheResult.changes![0].url).toContain('127.0.0.1');
   }, 15000);
 
-  it('check_changes returns empty array when no URLs match', () => {
-    const cacheResult = handleCache({
+  it('check_changes returns empty array when no URLs match', async () => {
+    const cacheResult = await handleCache({
       check_changes: true,
       url_pattern: '*nonexistent*',
-    });
+    }, router);
 
     expect(cacheResult.changes).toBeDefined();
     expect(cacheResult.changes).toHaveLength(0);

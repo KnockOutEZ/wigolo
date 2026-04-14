@@ -462,7 +462,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
 
     if (name === 'cache') {
       const input = (args ?? {}) as unknown as CacheInput;
-      const result = handleCache(input);
+      const result = await handleCache(input, router);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         isError: !!result.error,

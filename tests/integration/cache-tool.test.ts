@@ -40,7 +40,7 @@ describe('cache tool integration', () => {
     resetConfig();
   });
 
-  it('populates cache and queries via cache tool', () => {
+  it('populates cache and queries via cache tool', async () => {
     cacheContent(
       makeRaw('https://example.com/ts-guide'),
       makeExtraction({ title: 'TypeScript Guide', markdown: '# TypeScript\n\nLearn TypeScript.' }),
@@ -50,7 +50,7 @@ describe('cache tool integration', () => {
       makeExtraction({ title: 'React Tutorial', markdown: '# React\n\nLearn React hooks.' }),
     );
 
-    const result = handleCache({ query: 'TypeScript' });
+    const result = await handleCache({ query: 'TypeScript' });
 
     expect(result.results).toHaveLength(1);
     expect(result.results![0].title).toBe('TypeScript Guide');
@@ -58,41 +58,41 @@ describe('cache tool integration', () => {
     expect(result.results![0].markdown).toContain('Learn TypeScript');
   });
 
-  it('filters by URL pattern', () => {
+  it('filters by URL pattern', async () => {
     cacheContent(makeRaw('https://docs.example.com/api'), makeExtraction({ title: 'API Docs' }));
     cacheContent(makeRaw('https://blog.example.com/post'), makeExtraction({ title: 'Blog Post' }));
 
-    const result = handleCache({ url_pattern: '*docs.example.com*' });
+    const result = await handleCache({ url_pattern: '*docs.example.com*' });
 
     expect(result.results).toHaveLength(1);
     expect(result.results![0].title).toBe('API Docs');
   });
 
-  it('returns stats', () => {
+  it('returns stats', async () => {
     cacheContent(makeRaw('https://example.com/a'), makeExtraction({ markdown: 'Content A' }));
     cacheContent(makeRaw('https://example.com/b'), makeExtraction({ markdown: 'Content B' }));
 
-    const result = handleCache({ stats: true });
+    const result = await handleCache({ stats: true });
 
     expect(result.stats).toBeDefined();
     expect(result.stats!.total_urls).toBe(2);
     expect(result.stats!.total_size_mb).toBeGreaterThanOrEqual(0);
   });
 
-  it('clears matching entries and returns count', () => {
+  it('clears matching entries and returns count', async () => {
     cacheContent(makeRaw('https://example.com/a'), makeExtraction({}));
     cacheContent(makeRaw('https://other.com/b'), makeExtraction({}));
 
-    const result = handleCache({ clear: true, url_pattern: '*example.com*' });
+    const result = await handleCache({ clear: true, url_pattern: '*example.com*' });
 
     expect(result.cleared).toBe(1);
 
-    const remaining = handleCache({});
+    const remaining = await handleCache({});
     expect(remaining.results).toHaveLength(1);
     expect(remaining.results![0].url).toBe('https://other.com/b');
   });
 
-  it('combines query + url_pattern', () => {
+  it('combines query + url_pattern', async () => {
     cacheContent(
       makeRaw('https://example.com/ts'),
       makeExtraction({ title: 'TS', markdown: 'TypeScript guide' }),
@@ -106,7 +106,7 @@ describe('cache tool integration', () => {
       makeExtraction({ title: 'Python', markdown: 'Python guide' }),
     );
 
-    const result = handleCache({ query: 'TypeScript', url_pattern: '*example.com*' });
+    const result = await handleCache({ query: 'TypeScript', url_pattern: '*example.com*' });
 
     expect(result.results).toHaveLength(1);
     expect(result.results![0].title).toBe('TS');
