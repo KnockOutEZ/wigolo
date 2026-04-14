@@ -16,8 +16,13 @@ vi.mock('../../../src/logger.js', () => ({
   }),
 }));
 
+vi.mock('../../../src/cache/change-detector.js', () => ({
+  detectChange: vi.fn(),
+}));
+
 import { handleCache } from '../../../src/tools/cache.js';
 import { searchCacheFiltered, getCacheStats, clearCacheEntries } from '../../../src/cache/store.js';
+import { detectChange } from '../../../src/cache/change-detector.js';
 
 function makeCachedContent(overrides: Partial<CachedContent> = {}): CachedContent {
   return {
@@ -153,5 +158,192 @@ describe('handleCache', () => {
     expect(result.stats).toBeDefined();
     expect(result.cleared).toBeUndefined();
     expect(clearCacheEntries).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleCache --- check_changes mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(detectChange).mockReturnValue({ changed: false });
+  });
+
+  it('returns changes array when check_changes is true', () => {
+    vi.mocked(searchCacheFiltered).mockReturnValue([
+      {
+        id: 1,
+        url: 'https://example.com/a',
+        normalizedUrl: 'https://example.com/a',
+        title: 'Page A',
+        markdown: 'content A',
+        rawHtml: '',
+        metadata: '{}',
+        links: '[]',
+        images: '[]',
+        fetchMethod: 'http' as const,
+        extractorUsed: 'defuddle' as const,
+        contentHash: 'abc123',
+        fetchedAt: '2026-04-14T00:00:00',
+        expiresAt: null,
+      },
+    ]);
+
+    vi.mocked(detectChange).mockReturnValue({ changed: false });
+
+    const result = handleCache({
+      check_changes: true,
+      url_pattern: '*example.com*',
+    });
+
+    expect(result.changes).toBeDefined();
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes![0].url).toBe('https://example.com/a');
+    expect(result.changes![0].changed).toBe(false);
+  });
+
+  it('reports changed=true for URLs with different content', () => {
+    vi.mocked(searchCacheFiltered).mockReturnValue([
+      {
+        id: 1,
+        url: 'https://example.com/b',
+        normalizedUrl: 'https://example.com/b',
+        title: 'Page B',
+        markdown: 'old content',
+        rawHtml: '',
+        metadata: '{}',
+        links: '[]',
+        images: '[]',
+        fetchMethod: 'http' as const,
+        extractorUsed: 'defuddle' as const,
+        contentHash: 'old-hash',
+        fetchedAt: '2026-04-14T00:00:00',
+        expiresAt: null,
+      },
+    ]);
+
+    vi.mocked(detectChange).mockReturnValue({
+      changed: true,
+      previousHash: 'old-hash',
+      diffSummary: '3 lines added, 1 line removed, 0 lines modified',
+    });
+
+    const result = handleCache({
+      check_changes: true,
+      url_pattern: '*example.com*',
+    });
+
+    expect(result.changes![0].changed).toBe(true);
+    expect(result.changes![0].previous_hash).toBe('old-hash');
+    expect(result.changes![0].diff_summary).toContain('3 lines added');
+  });
+
+  it('handles multiple cached URLs', () => {
+    vi.mocked(searchCacheFiltered).mockReturnValue([
+      {
+        id: 1, url: 'https://a.com', normalizedUrl: 'https://a.com',
+        title: 'A', markdown: 'a', rawHtml: '', metadata: '{}',
+        links: '[]', images: '[]', fetchMethod: 'http' as const,
+        extractorUsed: 'defuddle' as const, contentHash: 'ha',
+        fetchedAt: '2026-04-14T00:00:00', expiresAt: null,
+      },
+      {
+        id: 2, url: 'https://b.com', normalizedUrl: 'https://b.com',
+        title: 'B', markdown: 'b', rawHtml: '', metadata: '{}',
+        links: '[]', images: '[]', fetchMethod: 'http' as const,
+        extractorUsed: 'defuddle' as const, contentHash: 'hb',
+        fetchedAt: '2026-04-14T00:00:00', expiresAt: null,
+      },
+    ]);
+
+    vi.mocked(detectChange)
+      .mockReturnValueOnce({ changed: false })
+      .mockReturnValueOnce({ changed: true, previousHash: 'hb', diffSummary: '1 line added' });
+
+    const result = handleCache({ check_changes: true });
+
+    expect(result.changes).toHaveLength(2);
+    expect(result.changes![0].changed).toBe(false);
+    expect(result.changes![1].changed).toBe(true);
+  });
+
+  it('returns empty changes array when no cached entries match', () => {
+    vi.mocked(searchCacheFiltered).mockReturnValue([]);
+
+    const result = handleCache({ check_changes: true, url_pattern: '*nonexistent*' });
+
+    expect(result.changes).toBeDefined();
+    expect(result.changes).toHaveLength(0);
+  });
+
+  it('uses query and url_pattern to scope entries', () => {
+    vi.mocked(searchCacheFiltered).mockReturnValue([]);
+
+    handleCache({
+      check_changes: true,
+      query: 'react',
+      url_pattern: '*docs*',
+    });
+
+    expect(vi.mocked(searchCacheFiltered)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: 'react',
+        urlPattern: '*docs*',
+      }),
+    );
+  });
+
+  it('handles detectChange error for individual URLs', () => {
+    vi.mocked(searchCacheFiltered).mockReturnValue([
+      {
+        id: 1, url: 'https://error.com', normalizedUrl: 'https://error.com',
+        title: 'Error Page', markdown: 'content', rawHtml: '', metadata: '{}',
+        links: '[]', images: '[]', fetchMethod: 'http' as const,
+        extractorUsed: 'defuddle' as const, contentHash: 'h',
+        fetchedAt: '2026-04-14T00:00:00', expiresAt: null,
+      },
+    ]);
+
+    vi.mocked(detectChange).mockImplementation(() => { throw new Error('DB locked'); });
+
+    const result = handleCache({ check_changes: true });
+
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes![0].error).toContain('DB locked');
+    expect(result.changes![0].changed).toBe(false);
+  });
+
+  it('check_changes takes priority over stats', () => {
+    vi.mocked(searchCacheFiltered).mockReturnValue([]);
+
+    const result = handleCache({ check_changes: true, stats: true });
+
+    expect(result.changes).toBeDefined();
+    expect(result.stats).toBeUndefined();
+  });
+
+  it('check_changes takes priority over clear', () => {
+    vi.mocked(searchCacheFiltered).mockReturnValue([]);
+
+    const result = handleCache({ check_changes: true, clear: true });
+
+    expect(result.changes).toBeDefined();
+    expect(result.cleared).toBeUndefined();
+  });
+
+  it('includes current_hash in change report', () => {
+    vi.mocked(searchCacheFiltered).mockReturnValue([
+      {
+        id: 1, url: 'https://example.com/c', normalizedUrl: 'https://example.com/c',
+        title: 'C', markdown: 'content', rawHtml: '', metadata: '{}',
+        links: '[]', images: '[]', fetchMethod: 'http' as const,
+        extractorUsed: 'defuddle' as const, contentHash: 'current-h',
+        fetchedAt: '2026-04-14T00:00:00', expiresAt: null,
+      },
+    ]);
+
+    vi.mocked(detectChange).mockReturnValue({ changed: false });
+
+    const result = handleCache({ check_changes: true });
+
+    expect(result.changes![0].current_hash).toBe('current-h');
   });
 });
