@@ -5,6 +5,7 @@ import { runWarmup } from './cli/warmup.js';
 import { runDaemon } from './cli/daemon.js';
 import { runHealthCheck } from './cli/health.js';
 import { runDoctor } from './cli/doctor.js';
+import { runAuth } from './cli/auth.js';
 import { getConfig } from './config.js';
 import { startServer } from './server.js';
 
@@ -28,6 +29,12 @@ switch (command) {
   case 'doctor': {
     const code = await runDoctor(getConfig().dataDir);
     process.exit(code);
+    break;
+  }
+
+  case 'auth': {
+    const authCode = await runAuth(args);
+    process.exit(authCode);
     break;
   }
 
