@@ -17,6 +17,7 @@ import { handleCrawl } from './tools/crawl.js';
 import { handleCache } from './tools/cache.js';
 import { handleExtract } from './tools/extract.js';
 import { handleFindSimilar } from './tools/find-similar.js';
+import { handleResearch } from './tools/research.js';
 import type { SamplingCapableServer } from './search/sampling.js';
 import { SearxngClient } from './search/searxng.js';
 import { DuckDuckGoEngine } from './search/engines/duckduckgo.js';
@@ -32,7 +33,7 @@ import { WIGOLO_INSTRUCTIONS, TOOL_DESCRIPTIONS } from './instructions.js';
 import { loadPlugins } from './plugins/loader.js';
 import { PluginRegistry } from './plugins/registry.js';
 import { registerExtractor } from './extraction/pipeline.js';
-import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput } from './types.js';
+import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput } from './types.js';
 
 const log = createLogger('server');
 
@@ -302,6 +303,41 @@ const FIND_SIMILAR_TOOL_SCHEMA = {
   },
 };
 
+const RESEARCH_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    question: { type: 'string', description: 'The research question to investigate' },
+    depth: {
+      type: 'string',
+      enum: ['quick', 'standard', 'comprehensive'],
+      description: 'Research depth: quick (~15s), standard (~40s, default), comprehensive (~80s)',
+    },
+    max_sources: {
+      type: 'number',
+      description: 'Override the default source count for the chosen depth (max 50)',
+    },
+    include_domains: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Only search results from these domains',
+    },
+    exclude_domains: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Exclude results from these domains',
+    },
+    schema: {
+      type: 'object',
+      description: 'Optional JSON Schema -- structure the report to extract these fields',
+    },
+    stream: {
+      type: 'boolean',
+      description: 'Send progress notifications as each research phase completes',
+    },
+  },
+  required: ['question'],
+};
+
 export interface Subsystems {
   searchEngines: SearchEngine[];
   browserPool: MultiBrowserPool;
@@ -515,6 +551,11 @@ export function createMcpServer(subsystems: Subsystems): Server {
         description: TOOL_DESCRIPTIONS.find_similar,
         inputSchema: FIND_SIMILAR_TOOL_SCHEMA,
       },
+      {
+        name: 'research',
+        description: TOOL_DESCRIPTIONS.research,
+        inputSchema: RESEARCH_TOOL_SCHEMA,
+      },
     ],
   }));
 
@@ -575,6 +616,16 @@ export function createMcpServer(subsystems: Subsystems): Server {
     if (name === 'find_similar') {
       const input = (args ?? {}) as unknown as FindSimilarInput;
       const result = await handleFindSimilar(input, searchEngines, router, backendStatus);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        isError: !!result.error,
+      };
+    }
+
+    if (name === 'research') {
+      const input = (args ?? {}) as unknown as ResearchInput;
+      const samplingServer = server as unknown as SamplingCapableServer;
+      const result = await handleResearch(input, searchEngines, router, backendStatus, samplingServer);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         isError: !!result.error,
