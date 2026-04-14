@@ -1,5 +1,4 @@
 import chalk from 'chalk';
-import { createLogger } from '../logger.js';
 import type {
   SearchOutput,
   FetchOutput,
@@ -11,7 +10,6 @@ import type {
   MetadataData,
 } from '../types.js';
 
-const log = createLogger('repl');
 
 const SNIPPET_MAX_LENGTH = 200;
 

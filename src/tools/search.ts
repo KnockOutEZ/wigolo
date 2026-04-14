@@ -1,7 +1,7 @@
 import type { SearchInput, SearchOutput, SearchResultItem, SearchEngine, RawSearchResult } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import type { BackendStatus } from '../server/backend-status.js';
-import { deduplicateResults, type MergedSearchResult } from '../search/dedup.js';
+import { deduplicateResults } from '../search/dedup.js';
 import { decomposeQuery } from '../search/query.js';
 import { validateLinks } from '../search/validator.js';
 import { rerankResults } from '../search/rerank.js';
