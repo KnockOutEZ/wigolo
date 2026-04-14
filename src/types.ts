@@ -296,3 +296,40 @@ export interface ExtractOutput {
   mode: 'selector' | 'tables' | 'metadata' | 'schema';
   error?: string;
 }
+
+// --- Find Similar tool types (v3, Slice 23) ---
+
+export interface MatchSignals {
+  embedding_rank?: number;
+  fts5_rank?: number;
+  fused_score: number;
+}
+
+export interface FindSimilarResult {
+  url: string;
+  title: string;
+  markdown: string;
+  relevance_score: number;
+  source: 'cache' | 'search';
+  match_signals: MatchSignals;
+}
+
+export interface FindSimilarInput {
+  url?: string;
+  concept?: string;
+  max_results?: number;
+  include_domains?: string[];
+  exclude_domains?: string[];
+  include_cache?: boolean;
+  include_web?: boolean;
+}
+
+export interface FindSimilarOutput {
+  results: FindSimilarResult[];
+  method: 'hybrid' | 'embedding' | 'fts5' | 'search';
+  cache_hits: number;
+  search_hits: number;
+  embedding_available: boolean;
+  error?: string;
+  total_time_ms: number;
+}
