@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { resetConfig } from '../../../src/config.js';
 
 vi.mock('node:child_process', () => ({
-  execSync: vi.fn(),
+  execFileSync: vi.fn(),
   spawnSync: vi.fn(),
 }));
 
@@ -20,7 +20,7 @@ vi.mock('node:fs', async () => {
   };
 });
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import {
   runPluginAdd,
@@ -45,13 +45,14 @@ describe('runPluginAdd', () => {
   it('clones a git repo into the plugins directory', () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(mkdirSync).mockReturnValue(undefined);
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
 
     runPluginAdd('https://github.com/user/wigolo-plugin-example.git');
 
     expect(mkdirSync).toHaveBeenCalledWith('/tmp/test-plugins', { recursive: true });
-    expect(execSync).toHaveBeenCalledWith(
-      expect.stringContaining('git clone'),
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['clone', '--depth', '1']),
       expect.objectContaining({ cwd: '/tmp/test-plugins' }),
     );
   });
@@ -59,12 +60,13 @@ describe('runPluginAdd', () => {
   it('extracts repo name from git URL for the clone directory', () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(mkdirSync).mockReturnValue(undefined);
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
 
     runPluginAdd('https://github.com/user/my-plugin.git');
 
-    expect(execSync).toHaveBeenCalledWith(
-      expect.stringContaining('my-plugin'),
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['my-plugin']),
       expect.anything(),
     );
   });
@@ -72,12 +74,13 @@ describe('runPluginAdd', () => {
   it('extracts repo name from URL without .git suffix', () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(mkdirSync).mockReturnValue(undefined);
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
 
     runPluginAdd('https://github.com/user/no-git-suffix');
 
-    expect(execSync).toHaveBeenCalledWith(
-      expect.stringContaining('no-git-suffix'),
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['no-git-suffix']),
       expect.anything(),
     );
   });
@@ -93,7 +96,7 @@ describe('runPluginAdd', () => {
   it('throws on git clone failure', () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(mkdirSync).mockReturnValue(undefined);
-    vi.mocked(execSync).mockImplementation(() => {
+    vi.mocked(execFileSync).mockImplementation(() => {
       throw new Error('fatal: repository not found');
     });
 
@@ -113,12 +116,13 @@ describe('runPluginAdd', () => {
   it('handles SSH-style git URLs (git@github.com:user/repo.git)', () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(mkdirSync).mockReturnValue(undefined);
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
 
     runPluginAdd('git@github.com:user/ssh-plugin.git');
 
-    expect(execSync).toHaveBeenCalledWith(
-      expect.stringContaining('ssh-plugin'),
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['ssh-plugin']),
       expect.anything(),
     );
   });
@@ -299,12 +303,13 @@ describe('runPluginCommand -- dispatcher', () => {
   it('routes "add" subcommand', () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(mkdirSync).mockReturnValue(undefined);
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
 
     runPluginCommand(['add', 'https://github.com/user/repo.git']);
 
-    expect(execSync).toHaveBeenCalledWith(
-      expect.stringContaining('git clone'),
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['clone']),
       expect.anything(),
     );
   });

@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { getConfig } from '../config.js';
@@ -67,7 +67,7 @@ export function runPluginAdd(gitUrl: string): void {
 
   log(`cloning ${gitUrl} into ${targetDir}...`);
   try {
-    execSync(`git clone --depth 1 ${gitUrl} ${repoName}`, {
+    execFileSync('git', ['clone', '--depth', '1', gitUrl, repoName], {
       cwd: pluginsDir,
       stdio: 'pipe',
       timeout: 60000,

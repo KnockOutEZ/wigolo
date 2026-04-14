@@ -254,6 +254,7 @@ export interface Subsystems {
   browserPool: BrowserPool;
   router: SmartRouter;
   backendStatus: BackendStatus;
+  pluginRegistry: PluginRegistry;
   shutdown: () => Promise<void>;
   bootstrapSearxng: () => Promise<void>;
 }
@@ -406,6 +407,7 @@ export async function initSubsystems(): Promise<Subsystems> {
     browserPool,
     router,
     backendStatus,
+    pluginRegistry,
     shutdown,
     bootstrapSearxng: () => {
       searxngBootstrap = bootstrapSearxng();

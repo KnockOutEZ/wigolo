@@ -87,19 +87,9 @@ export async function loadPlugins(): Promise<PluginLoadResult> {
       continue;
     }
 
-    if (!stat.isDirectory() && !stat.isSymbolicLink()) {
+    // statSync follows symlinks, so this also handles symlinked plugin dirs
+    if (!stat.isDirectory()) {
       continue;
-    }
-
-    // If it's a symlink, resolve and check if target is a directory
-    if (stat.isSymbolicLink()) {
-      try {
-        const resolved = resolve(pluginDir);
-        const resolvedStat = statSync(resolved);
-        if (!resolvedStat.isDirectory()) continue;
-      } catch {
-        continue;
-      }
     }
 
     const pkgJson = readPluginPackageJson(pluginDir);
