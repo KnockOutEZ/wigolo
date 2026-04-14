@@ -2,13 +2,14 @@ import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { contentAppearsEmpty } from './content-check.js';
 import { getAuthOptions } from './auth.js';
-import type { RawFetchResult } from '../types.js';
+import type { RawFetchResult, BrowserAction } from '../types.js';
 
 export interface RouterFetchOptions {
   renderJs?: 'auto' | 'always' | 'never';
   useAuth?: boolean;
   headers?: Record<string, string>;
   screenshot?: boolean;
+  actions?: BrowserAction[];
 }
 
 export interface HttpClient {
@@ -29,7 +30,7 @@ export interface HttpClient {
 export interface BrowserPoolInterface {
   fetchWithBrowser(
     url: string,
-    options?: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string; screenshot?: boolean },
+    options?: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string; screenshot?: boolean; actions?: BrowserAction[] },
   ): Promise<RawFetchResult>;
 }
 
@@ -47,11 +48,18 @@ export class SmartRouter {
   ) {}
 
   async fetch(url: string, options: RouterFetchOptions = {}): Promise<RawFetchResult> {
-    const { renderJs = 'auto', useAuth = false, headers, screenshot } = options;
+    const { renderJs = 'auto', useAuth = false, headers, screenshot, actions } = options;
     const config = getConfig();
     const logger = createLogger('fetch');
     const threshold = config.browserFallbackThreshold;
     const domain = new URL(url).hostname;
+
+    // Actions always force Playwright --- actions need a live browser page
+    if (actions && actions.length > 0) {
+      const authOptions = useAuth ? (getAuthOptions() ?? {}) : {};
+      logger.debug('routing to playwright', { url, reason: 'actions present' });
+      return this.browserPool.fetchWithBrowser(url, { headers, screenshot, actions, ...authOptions });
+    }
 
     // Always Playwright for auth or explicit override
     if (renderJs === 'always' || useAuth) {
