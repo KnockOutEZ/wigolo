@@ -59,6 +59,11 @@ export function initDatabase(dbPath: string): Database.Database {
         VALUES ('delete', old.id, old.title, old.markdown, old.url);
     END;
 
+    CREATE TRIGGER IF NOT EXISTS url_cache_au_after AFTER UPDATE ON url_cache BEGIN
+      INSERT INTO url_cache_fts(rowid, title, markdown, url)
+        VALUES (new.id, new.title, new.markdown, new.url);
+    END;
+
     CREATE TABLE IF NOT EXISTS search_cache (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       query TEXT NOT NULL,
@@ -84,6 +89,24 @@ export function initDatabase(dbPath: string): Database.Database {
       PRIMARY KEY (domain, block_hash)
     );
   `);
+
+  // Embedding columns migration (Slice 22)
+  try {
+    const columns = db.pragma('table_info(url_cache)') as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('embedding')) {
+      db.exec('ALTER TABLE url_cache ADD COLUMN embedding BLOB');
+    }
+    if (!columnNames.has('embedding_model')) {
+      db.exec('ALTER TABLE url_cache ADD COLUMN embedding_model TEXT');
+    }
+    if (!columnNames.has('embedding_dims')) {
+      db.exec('ALTER TABLE url_cache ADD COLUMN embedding_dims INTEGER');
+    }
+  } catch {
+    // Migration already applied or column already exists
+  }
 
   instance = db;
   return db;

@@ -51,6 +51,9 @@ export interface Config {
   shellHistoryPath: string;
   multiQueryConcurrency: number;
   multiQueryMax: number;
+  embeddingModel: string;
+  embeddingIdleTimeoutMs: number;
+  embeddingMaxTextLength: number;
 }
 
 function envStr(key: string, fallback: string | null = null): string | null {
@@ -138,6 +141,9 @@ export function getConfig(): Config {
     shellHistoryPath: envStr('WIGOLO_SHELL_HISTORY_PATH') ?? join(homedir(), '.wigolo', 'shell-history'),
     multiQueryConcurrency: envInt('WIGOLO_MULTI_QUERY_CONCURRENCY', 5),
     multiQueryMax: envInt('WIGOLO_MULTI_QUERY_MAX', 10),
+    embeddingModel: envStr('WIGOLO_EMBEDDING_MODEL') ?? 'BAAI/bge-small-en-v1.5',
+    embeddingIdleTimeoutMs: envInt('WIGOLO_EMBEDDING_IDLE_TIMEOUT', 120000),
+    embeddingMaxTextLength: envInt('WIGOLO_EMBEDDING_MAX_TEXT_LENGTH', 8000),
   };
 
   return cachedConfig;

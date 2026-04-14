@@ -1,7 +1,7 @@
 import { getConfig } from './config.js';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-type Module = 'fetch' | 'search' | 'crawl' | 'cache' | 'extract' | 'searxng' | 'server' | 'cli' | 'jsonld' | 'repl';
+type Module = 'fetch' | 'search' | 'crawl' | 'cache' | 'extract' | 'searxng' | 'server' | 'cli' | 'jsonld' | 'repl' | 'embedding';
 
 const LEVEL_PRIORITY: Record<LogLevel, number> = {
   debug: 0,

@@ -313,4 +313,48 @@ describe('config', () => {
       expect(getConfig().multiQueryMax).toBe(10);
     });
   });
+
+  describe('config — embedding', () => {
+    it('embeddingModel defaults to bge-small-en-v1.5', () => {
+      expect(getConfig().embeddingModel).toBe('BAAI/bge-small-en-v1.5');
+    });
+
+    it('embeddingModel reads from WIGOLO_EMBEDDING_MODEL', () => {
+      process.env.WIGOLO_EMBEDDING_MODEL = 'all-MiniLM-L6-v2';
+      resetConfig();
+      expect(getConfig().embeddingModel).toBe('all-MiniLM-L6-v2');
+    });
+
+    it('embeddingIdleTimeoutMs defaults to 120000', () => {
+      expect(getConfig().embeddingIdleTimeoutMs).toBe(120000);
+    });
+
+    it('embeddingIdleTimeoutMs reads from WIGOLO_EMBEDDING_IDLE_TIMEOUT', () => {
+      process.env.WIGOLO_EMBEDDING_IDLE_TIMEOUT = '60000';
+      resetConfig();
+      expect(getConfig().embeddingIdleTimeoutMs).toBe(60000);
+    });
+
+    it('embeddingMaxTextLength defaults to 8000', () => {
+      expect(getConfig().embeddingMaxTextLength).toBe(8000);
+    });
+
+    it('embeddingMaxTextLength reads from WIGOLO_EMBEDDING_MAX_TEXT_LENGTH', () => {
+      process.env.WIGOLO_EMBEDDING_MAX_TEXT_LENGTH = '4000';
+      resetConfig();
+      expect(getConfig().embeddingMaxTextLength).toBe(4000);
+    });
+
+    it('embeddingIdleTimeoutMs falls back to default on non-numeric', () => {
+      process.env.WIGOLO_EMBEDDING_IDLE_TIMEOUT = 'invalid';
+      resetConfig();
+      expect(getConfig().embeddingIdleTimeoutMs).toBe(120000);
+    });
+
+    it('embeddingMaxTextLength falls back to default on non-numeric', () => {
+      process.env.WIGOLO_EMBEDDING_MAX_TEXT_LENGTH = 'abc';
+      resetConfig();
+      expect(getConfig().embeddingMaxTextLength).toBe(8000);
+    });
+  });
 });

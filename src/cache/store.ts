@@ -307,3 +307,99 @@ export function getCacheStats(): CacheStats {
     newest: row.newest ?? '',
   };
 }
+
+// --- Embedding store functions (Slice 22) ---
+
+export function updateCacheEmbedding(
+  url: string,
+  embedding: Buffer,
+  model: string,
+  dims: number,
+): boolean {
+  try {
+    const db = getDatabase();
+    let normalized: string;
+    try {
+      normalized = normalizeUrl(url);
+    } catch {
+      normalized = url;
+    }
+
+    const result = db.prepare(`
+      UPDATE url_cache
+      SET embedding = ?, embedding_model = ?, embedding_dims = ?, updated_at = datetime('now')
+      WHERE normalized_url = ?
+    `).run(embedding, model, dims, normalized);
+
+    return result.changes > 0;
+  } catch {
+    return false;
+  }
+}
+
+export interface EmbeddingData {
+  embedding: Buffer;
+  model: string;
+  dims: number;
+}
+
+export function getEmbeddingForUrl(url: string): EmbeddingData | null {
+  try {
+    const db = getDatabase();
+    let normalized: string;
+    try {
+      normalized = normalizeUrl(url);
+    } catch {
+      normalized = url;
+    }
+
+    const row = db.prepare(`
+      SELECT embedding, embedding_model, embedding_dims
+      FROM url_cache
+      WHERE (url = ? OR normalized_url = ?) AND embedding IS NOT NULL
+      LIMIT 1
+    `).get(url, normalized) as { embedding: Buffer; embedding_model: string; embedding_dims: number } | undefined;
+
+    if (!row) return null;
+
+    return {
+      embedding: row.embedding,
+      model: row.embedding_model,
+      dims: row.embedding_dims,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface StoredEmbedding {
+  normalizedUrl: string;
+  embedding: Buffer;
+  model: string;
+  dims: number;
+}
+
+export function getAllEmbeddings(): StoredEmbedding[] {
+  try {
+    const db = getDatabase();
+    const rows = db.prepare(`
+      SELECT normalized_url, embedding, embedding_model, embedding_dims
+      FROM url_cache
+      WHERE embedding IS NOT NULL
+    `).all() as Array<{
+      normalized_url: string;
+      embedding: Buffer;
+      embedding_model: string;
+      embedding_dims: number;
+    }>;
+
+    return rows.map(r => ({
+      normalizedUrl: r.normalized_url,
+      embedding: r.embedding,
+      model: r.embedding_model,
+      dims: r.embedding_dims,
+    }));
+  } catch {
+    return [];
+  }
+}
