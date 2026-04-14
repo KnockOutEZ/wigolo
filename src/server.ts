@@ -18,6 +18,7 @@ import { handleCache } from './tools/cache.js';
 import { handleExtract } from './tools/extract.js';
 import { handleFindSimilar } from './tools/find-similar.js';
 import { handleResearch } from './tools/research.js';
+import { handleAgent } from './tools/agent.js';
 import type { SamplingCapableServer } from './search/sampling.js';
 import { SearxngClient } from './search/searxng.js';
 import { DuckDuckGoEngine } from './search/engines/duckduckgo.js';
@@ -33,7 +34,7 @@ import { WIGOLO_INSTRUCTIONS, TOOL_DESCRIPTIONS } from './instructions.js';
 import { loadPlugins } from './plugins/loader.js';
 import { PluginRegistry } from './plugins/registry.js';
 import { registerExtractor } from './extraction/pipeline.js';
-import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput } from './types.js';
+import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput, AgentInput } from './types.js';
 
 const log = createLogger('server');
 
@@ -338,6 +339,38 @@ const RESEARCH_TOOL_SCHEMA = {
   required: ['question'],
 };
 
+const AGENT_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    prompt: {
+      type: 'string',
+      description: 'Natural-language description of what data to gather',
+    },
+    urls: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Specific URLs to include in the data gathering',
+    },
+    schema: {
+      type: 'object',
+      description: 'Optional JSON Schema -- extract structured data matching this schema from each page',
+    },
+    max_pages: {
+      type: 'number',
+      description: 'Maximum pages to fetch (default 10, max 100)',
+    },
+    max_time_ms: {
+      type: 'number',
+      description: 'Maximum execution time in milliseconds (default 60000)',
+    },
+    stream: {
+      type: 'boolean',
+      description: 'Send progress notifications as each step completes',
+    },
+  },
+  required: ['prompt'],
+};
+
 export interface Subsystems {
   searchEngines: SearchEngine[];
   browserPool: MultiBrowserPool;
@@ -556,6 +589,11 @@ export function createMcpServer(subsystems: Subsystems): Server {
         description: TOOL_DESCRIPTIONS.research,
         inputSchema: RESEARCH_TOOL_SCHEMA,
       },
+      {
+        name: 'agent',
+        description: TOOL_DESCRIPTIONS.agent,
+        inputSchema: AGENT_TOOL_SCHEMA,
+      },
     ],
   }));
 
@@ -626,6 +664,15 @@ export function createMcpServer(subsystems: Subsystems): Server {
       const input = (args ?? {}) as unknown as ResearchInput;
       const samplingServer = server as unknown as SamplingCapableServer;
       const result = await handleResearch(input, searchEngines, router, backendStatus, samplingServer);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        isError: !!result.error,
+      };
+    }
+
+    if (name === 'agent') {
+      const input = (args ?? {}) as unknown as AgentInput;
+      const result = await handleAgent(input, searchEngines, router, backendStatus);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         isError: !!result.error,
