@@ -48,6 +48,7 @@ export interface Config {
   daemonHost: string;
   pluginsDir: string;
   browserTypes: BrowserType[];
+  shellHistoryPath: string;
 }
 
 function envStr(key: string, fallback: string | null = null): string | null {
@@ -132,6 +133,7 @@ export function getConfig(): Config {
       return join(envStr('WIGOLO_DATA_DIR') ?? join(homedir(), '.wigolo'), 'plugins');
     })(),
     browserTypes: parseBrowserTypes(envStr('WIGOLO_BROWSER_TYPES')),
+    shellHistoryPath: envStr('WIGOLO_SHELL_HISTORY_PATH') ?? join(homedir(), '.wigolo', 'shell-history'),
   };
 
   return cachedConfig;
