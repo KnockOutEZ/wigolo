@@ -27,6 +27,9 @@ import { BackendStatus } from './server/backend-status.js';
 import { getConfig } from './config.js';
 import { createLogger } from './logger.js';
 import { WIGOLO_INSTRUCTIONS, TOOL_DESCRIPTIONS } from './instructions.js';
+import { loadPlugins } from './plugins/loader.js';
+import { PluginRegistry } from './plugins/registry.js';
+import { registerExtractor } from './extraction/pipeline.js';
 import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput } from './types.js';
 
 const log = createLogger('server');
@@ -274,6 +277,33 @@ export async function initSubsystems(): Promise<Subsystems> {
     new DuckDuckGoEngine(),
     new StartpageEngine(),
   ];
+  // Load plugins from ~/.wigolo/plugins/
+  const pluginRegistry = new PluginRegistry();
+  try {
+    const pluginResult = await loadPlugins();
+    for (const ext of pluginResult.extractors) {
+      pluginRegistry.registerExtractor(ext, ext.name);
+      registerExtractor(ext);
+    }
+    for (const eng of pluginResult.searchEngines) {
+      pluginRegistry.registerSearchEngine(eng, eng.name);
+      searchEngines.push(eng);
+    }
+    if (pluginResult.errors.length > 0) {
+      log.warn('some plugins failed to load', {
+        errors: pluginResult.errors.map(e => `${e.pluginName}: ${e.message}`),
+      });
+    }
+    if (pluginResult.loaded.length > 0) {
+      log.info('plugins loaded', {
+        count: pluginResult.loaded.length,
+        names: pluginResult.loaded.map(p => p.name),
+      });
+    }
+  } catch (err) {
+    log.error('plugin loading failed', { error: String(err) });
+  }
+
   let searxngProcess: SearxngProcess | null = null;
   let dockerSearxng: DockerSearxng | null = null;
   let searxngBootstrap: Promise<void> | null = null;
