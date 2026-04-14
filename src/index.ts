@@ -6,6 +6,7 @@ import { runDaemon } from './cli/daemon.js';
 import { runHealthCheck } from './cli/health.js';
 import { runDoctor } from './cli/doctor.js';
 import { runAuth } from './cli/auth.js';
+import { runPluginCommand } from './cli/plugin.js';
 import { getConfig } from './config.js';
 import { startServer } from './server.js';
 
@@ -37,6 +38,10 @@ switch (command) {
     process.exit(authCode);
     break;
   }
+
+  case 'plugin':
+    runPluginCommand(args);
+    break;
 
   case 'mcp': {
     const config = getConfig();
