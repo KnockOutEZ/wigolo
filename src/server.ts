@@ -370,7 +370,10 @@ export async function initSubsystems(): Promise<Subsystems> {
     router,
     backendStatus,
     shutdown,
-    bootstrapSearxng,
+    bootstrapSearxng: () => {
+      searxngBootstrap = bootstrapSearxng();
+      return searxngBootstrap;
+    },
   };
 }
 
