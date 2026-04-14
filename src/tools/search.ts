@@ -7,6 +7,7 @@ import { validateLinks } from '../search/validator.js';
 import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
 import { formatSearchContext } from '../search/context-formatter.js';
+import { normalizeQueries, fanOutSearch, synthesizeIntent } from '../search/multi-query.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { cacheSearchResults, getCachedSearchResults } from '../cache/store.js';
 import { getConfig } from '../config.js';
@@ -35,9 +36,142 @@ export async function handleSearch(
   const totalTimeoutMs = config.searchTotalTimeoutMs;
   const fetchTimeoutMs = config.searchFetchTimeoutMs;
 
-  // Multi-query support: if array, will be handled in Task 3.
-  // For now, narrow to string for the single-query path.
-  const queryStr = Array.isArray(input.query) ? input.query[0] ?? '' : input.query;
+  const isMultiQuery = Array.isArray(input.query);
+
+  // --- Multi-query path ---
+  if (isMultiQuery) {
+    const normalizedQueries = normalizeQueries(input.query as string[]);
+
+    if (normalizedQueries.length === 0) {
+      const output: SearchOutput = {
+        results: [],
+        query: Array.isArray(input.query) ? (input.query[0] ?? '') : input.query,
+        engines_used: [],
+        total_time_ms: Date.now() - start,
+        error: 'All queries were empty after normalization',
+        queries_executed: [],
+      };
+      const warning = backendStatus?.consumeWarning();
+      if (warning) output.warning = warning;
+      return output;
+    }
+
+    const displayQuery = normalizedQueries[0];
+    const cacheKey = normalizedQueries.join(' | ');
+
+    const cached = getCachedSearchResults(cacheKey);
+    if (cached && !includeContent) {
+      log.info('serving multi-query search results from cache', { queries: normalizedQueries });
+      const output: SearchOutput = {
+        results: cached.results.slice(0, maxResults),
+        query: displayQuery,
+        engines_used: cached.engines_used,
+        total_time_ms: Date.now() - start,
+        queries_executed: normalizedQueries,
+      };
+      const warning = backendStatus?.consumeWarning();
+      if (warning) output.warning = warning;
+      if (input.format === 'context') {
+        output.context_text = formatSearchContext(output.results, maxTotalChars);
+      }
+      return output;
+    }
+
+    let activeEngines = engines;
+    if (input.search_engines && input.search_engines.length > 0) {
+      activeEngines = engines.filter(e => input.search_engines!.includes(e.name));
+      if (activeEngines.length === 0) {
+        log.warn('no engines matched search_engines filter, using all', { requested: input.search_engines });
+        activeEngines = engines;
+      }
+    }
+
+    const { results: rawResults, enginesUsed, errors } = await fanOutSearch(
+      normalizedQueries,
+      activeEngines,
+      {
+        maxResults,
+        timeRange: input.time_range,
+        language: input.language,
+        includeDomains: input.include_domains,
+        excludeDomains: input.exclude_domains,
+        fromDate: input.from_date,
+        toDate: input.to_date,
+        category: input.category,
+      },
+    );
+
+    if (rawResults.length === 0) {
+      const output: SearchOutput = {
+        results: [],
+        query: displayQuery,
+        engines_used: enginesUsed,
+        total_time_ms: Date.now() - start,
+        error: errors.length > 0 ? errors.join('; ') : 'No results found',
+        queries_executed: normalizedQueries,
+      };
+      const warning = backendStatus?.consumeWarning();
+      if (warning) output.warning = warning;
+      if (input.format === 'context') {
+        output.context_text = '';
+      }
+      return output;
+    }
+
+    let merged = deduplicateResults(rawResults);
+
+    merged = applyAllFilters(merged, {
+      includeDomains: input.include_domains,
+      excludeDomains: input.exclude_domains,
+      fromDate: input.from_date,
+      toDate: input.to_date,
+      category: input.category,
+    });
+
+    const intentString = synthesizeIntent(normalizedQueries);
+    merged = await rerankResults(intentString, merged);
+    merged = await validateLinks(merged);
+    merged = merged.slice(0, maxResults);
+
+    const results: SearchResultItem[] = merged.map(m => ({
+      title: m.title,
+      url: m.url,
+      snippet: m.snippet,
+      relevance_score: m.relevance_score,
+    }));
+
+    if (includeContent && results.length > 0) {
+      await fetchContentForResults(results, router, {
+        contentMaxChars,
+        maxTotalChars,
+        fetchTimeoutMs,
+        totalDeadline: start + totalTimeoutMs,
+      });
+    }
+
+    try {
+      cacheSearchResults(cacheKey, results, enginesUsed);
+    } catch (err) {
+      log.warn('failed to cache multi-query search results', { error: String(err) });
+    }
+
+    const output: SearchOutput = {
+      results,
+      query: displayQuery,
+      engines_used: enginesUsed,
+      total_time_ms: Date.now() - start,
+      queries_executed: normalizedQueries,
+    };
+    const warning = backendStatus?.consumeWarning();
+    if (warning) output.warning = warning;
+    if (input.format === 'context') {
+      output.context_text = formatSearchContext(output.results, maxTotalChars);
+    }
+    return output;
+  }
+
+  // --- Single-query path (unchanged from v2) ---
+  const queryStr = input.query as string;
 
   const cached = getCachedSearchResults(queryStr);
   if (cached && !includeContent) {
@@ -72,7 +206,6 @@ export async function handleSearch(
   const enginesUsed = new Set<string>();
   const errors: string[] = [];
 
-  // Increase overfetch when domain filters are active (more results will be filtered out)
   const hasFilterAttrition = !!(input.include_domains?.length || input.exclude_domains?.length);
   const overfetchFactor = hasFilterAttrition ? 3 : 2;
 
@@ -121,8 +254,6 @@ export async function handleSearch(
 
   let merged = deduplicateResults(allRaw);
 
-  // Post-filter: domain + date + category (Slice 7) — runs before rerank so
-  // the reranker only scores results that pass filters (Slice 9 interaction).
   merged = applyAllFilters(merged, {
     includeDomains: input.include_domains,
     excludeDomains: input.exclude_domains,
