@@ -7,6 +7,8 @@ import { validateLinks } from '../search/validator.js';
 import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
 import { formatSearchContext } from '../search/context-formatter.js';
+import type { SamplingCapableServer } from '../search/sampling.js';
+import { synthesizeAnswer } from '../search/answer-synthesis.js';
 import { normalizeQueries, fanOutSearch, synthesizeIntent } from '../search/multi-query.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { cacheSearchResults, getCachedSearchResults } from '../cache/store.js';
@@ -25,6 +27,7 @@ export async function handleSearch(
   engines: SearchEngine[],
   router: SmartRouter,
   backendStatus?: BackendStatus,
+  samplingServer?: SamplingCapableServer,
 ): Promise<SearchOutput> {
   const start = Date.now();
   const config = getConfig();
@@ -167,6 +170,9 @@ export async function handleSearch(
     if (input.format === 'context') {
       output.context_text = formatSearchContext(output.results, maxTotalChars);
     }
+    if ((input.format === 'answer' || input.format === 'stream_answer') && results.length > 0) {
+      await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer);
+    }
     return output;
   }
 
@@ -186,6 +192,9 @@ export async function handleSearch(
     if (warning) output.warning = warning;
     if (input.format === 'context') {
       output.context_text = formatSearchContext(output.results, maxTotalChars);
+    }
+    if ((input.format === 'answer' || input.format === 'stream_answer') && output.results.length > 0) {
+      await applyAnswerSynthesis(input, output, output.results, maxTotalChars, samplingServer);
     }
     return output;
   }
@@ -300,7 +309,42 @@ export async function handleSearch(
   if (input.format === 'context') {
     output.context_text = formatSearchContext(output.results, maxTotalChars);
   }
+  if ((input.format === 'answer' || input.format === 'stream_answer') && results.length > 0) {
+    await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer);
+  }
   return output;
+}
+
+async function applyAnswerSynthesis(
+  input: SearchInput,
+  output: SearchOutput,
+  results: SearchResultItem[],
+  maxTotalChars: number,
+  samplingServer?: SamplingCapableServer,
+): Promise<void> {
+  const isStreaming = input.format === 'stream_answer';
+
+  if (samplingServer) {
+    const synthesis = await synthesizeAnswer(results, typeof input.query === 'string' ? input.query : input.query[0], samplingServer);
+
+    if (!synthesis.fallback && synthesis.answer) {
+      output.answer = synthesis.answer;
+      output.citations = synthesis.citations;
+      if (isStreaming) output.streaming = true;
+    } else {
+      output.context_text = formatSearchContext(results, maxTotalChars);
+      if (synthesis.warning) {
+        output.warning = output.warning
+          ? `${output.warning}; ${synthesis.warning}`
+          : synthesis.warning;
+      }
+    }
+  } else {
+    output.context_text = formatSearchContext(results, maxTotalChars);
+    output.warning = output.warning
+      ? `${output.warning}; No sampling server available`
+      : 'No sampling server available; falling back to context format';
+  }
 }
 
 interface FetchContext {

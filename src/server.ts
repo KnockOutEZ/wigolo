@@ -17,6 +17,7 @@ import { handleCrawl } from './tools/crawl.js';
 import { handleCache } from './tools/cache.js';
 import { handleExtract } from './tools/extract.js';
 import { handleFindSimilar } from './tools/find-similar.js';
+import type { SamplingCapableServer } from './search/sampling.js';
 import { SearxngClient } from './search/searxng.js';
 import { DuckDuckGoEngine } from './search/engines/duckduckgo.js';
 import { BingEngine } from './search/engines/bing.js';
@@ -175,8 +176,8 @@ const SEARCH_TOOL_SCHEMA = {
     },
     format: {
       type: 'string',
-      enum: ['full', 'context'],
-      description: "Output format: 'full' returns structured results (default), 'context' returns a single token-budgeted string ready for LLM context injection",
+      enum: ['full', 'context', 'answer', 'stream_answer'],
+      description: "Output format: 'full' returns structured results (default), 'context' returns a single token-budgeted string for LLM injection, 'answer' synthesizes a direct answer with citations via MCP sampling, 'stream_answer' same as answer with streaming flag",
     },
   },
   required: ['query'],
@@ -531,7 +532,8 @@ export function createMcpServer(subsystems: Subsystems): Server {
 
     if (name === 'search') {
       const input = (args ?? {}) as unknown as SearchInput;
-      const result = await handleSearch(input, searchEngines, router, backendStatus);
+      const samplingServer = server as unknown as SamplingCapableServer;
+      const result = await handleSearch(input, searchEngines, router, backendStatus, samplingServer);
       const blocks: { type: 'text'; text: string }[] = [];
       if (result.warning) {
         blocks.push({ type: 'text', text: `[wigolo notice] ${result.warning}` });
