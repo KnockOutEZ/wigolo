@@ -28,4 +28,15 @@ describe('parseCommand', () => {
   it('treats unknown commands as mcp mode', () => {
     expect(parseCommand(['unknown'])).toEqual({ command: 'mcp', args: [] });
   });
+
+  it('returns "shell" for shell argument', () => {
+    expect(parseCommand(['shell'])).toEqual({ command: 'shell', args: [] });
+  });
+
+  it('returns "shell" with --json flag', () => {
+    expect(parseCommand(['shell', '--json'])).toEqual({
+      command: 'shell',
+      args: ['--json'],
+    });
+  });
 });

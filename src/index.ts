@@ -5,6 +5,7 @@ import { runWarmup } from './cli/warmup.js';
 import { runDaemon } from './cli/daemon.js';
 import { runHealthCheck } from './cli/health.js';
 import { runDoctor } from './cli/doctor.js';
+import { runShell } from './cli/shell.js';
 import { runAuth } from './cli/auth.js';
 import { runPluginCommand } from './cli/plugin.js';
 import { getConfig } from './config.js';
@@ -38,6 +39,10 @@ switch (command) {
     process.exit(authCode);
     break;
   }
+
+  case 'shell':
+    await runShell(args);
+    break;
 
   case 'plugin':
     runPluginCommand(args);
