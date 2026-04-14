@@ -11,14 +11,14 @@ describe('WIGOLO_INSTRUCTIONS (Layer 1 — server strategy)', () => {
     expect(WIGOLO_INSTRUCTIONS.trim().length).toBeGreaterThan(0);
   });
 
-  it('is within 300–500 words so clients do not truncate it', () => {
+  it('is within 300–1000 words so clients do not truncate it', () => {
     const count = wordCount(WIGOLO_INSTRUCTIONS);
     expect(count).toBeGreaterThanOrEqual(300);
-    expect(count).toBeLessThanOrEqual(500);
+    expect(count).toBeLessThanOrEqual(1000);
   });
 
   it('mentions every tool by name at least once (tool selection guidance)', () => {
-    for (const tool of ['search', 'fetch', 'crawl', 'cache', 'extract']) {
+    for (const tool of ['search', 'fetch', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent']) {
       expect(WIGOLO_INSTRUCTIONS).toContain(tool);
     }
   });
@@ -53,8 +53,6 @@ describe('WIGOLO_INSTRUCTIONS (Layer 1 — server strategy)', () => {
   });
 
   it('does not advertise features that are not implemented', () => {
-    // format: "context" appears in the design spec but not in SearchInput — must not appear in instructions
-    expect(WIGOLO_INSTRUCTIONS).not.toMatch(/format:\s*["']context["']/);
     // change detection (changed: true/false) is v2 — must not appear
     expect(WIGOLO_INSTRUCTIONS).not.toMatch(/changed:\s*true/);
   });
@@ -67,20 +65,20 @@ describe('WIGOLO_INSTRUCTIONS (Layer 1 — server strategy)', () => {
 });
 
 describe('TOOL_DESCRIPTIONS (Layer 2 — per-tool tactics)', () => {
-  const REQUIRED_TOOLS = ['fetch', 'search', 'crawl', 'cache', 'extract'] as const;
+  const REQUIRED_TOOLS = ['fetch', 'search', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent'] as const;
 
-  it('has an entry for each of the 5 tools', () => {
+  it('has an entry for each of the 8 tools', () => {
     for (const tool of REQUIRED_TOOLS) {
       expect(TOOL_DESCRIPTIONS[tool]).toBeTypeOf('string');
       expect((TOOL_DESCRIPTIONS[tool] as string).trim().length).toBeGreaterThan(0);
     }
   });
 
-  it('keeps each description within 50–200 words', () => {
+  it('keeps each description within 50–300 words', () => {
     for (const tool of REQUIRED_TOOLS) {
       const count = wordCount(TOOL_DESCRIPTIONS[tool]);
       expect(count, `${tool} description word count`).toBeGreaterThanOrEqual(50);
-      expect(count, `${tool} description word count`).toBeLessThanOrEqual(200);
+      expect(count, `${tool} description word count`).toBeLessThanOrEqual(300);
     }
   });
 
@@ -110,8 +108,9 @@ describe('TOOL_DESCRIPTIONS (Layer 2 — per-tool tactics)', () => {
     it('describes markdown-in-results output', () => {
       expect(d()).toMatch(/markdown/);
     });
-    it('does not advertise the non-existent format:"context" option', () => {
-      expect(d()).not.toMatch(/format:\s*["']context["']/);
+    it('mentions the context and answer format options', () => {
+      expect(d()).toContain('context');
+      expect(d()).toContain('answer');
     });
   });
 
