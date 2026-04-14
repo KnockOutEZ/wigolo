@@ -24,6 +24,7 @@ export const WIGOLO_INSTRUCTIONS = `Wigolo is a local-first web access layer: se
 - \`crawl\` — you need multiple pages from the same site (docs, wikis, references).
 - \`cache\` — you want to know if the content is already on disk from an earlier read.
 - \`extract\` — you need specific data points (tables, metadata, schema-shaped fields) rather than a whole page as markdown.
+- \`find_similar\` — you have a URL or concept and want to discover related pages, both from the local cache and via web search.
 
 ## Check the cache before going to the network
 
@@ -104,6 +105,16 @@ Key parameters:
 - multiple: true to return array of all matches (mode="selector" only)
 
 For mode="tables", returns array of table objects with headers and row data. For mode="schema", pass { price: "string", name: "string" } and get structured fields extracted from the page.`,
+
+  find_similar: `Find pages semantically similar to a given URL or concept. Uses hybrid search combining local cache (FTS5) and web search with Reciprocal Rank Fusion.
+
+Key parameters:
+- url: find pages similar to this URL (page is analyzed for key terms)
+- concept: find pages about this topic (use when no URL is available)
+- include_cache/include_web: control which sources to search (both default true)
+- include_domains/exclude_domains: scope results to specific sites
+
+Returns ranked results with match signals showing how each result was found. Best used after building up a cache via fetch/crawl — the more cached content, the better the local similarity matching.`,
 } as const;
 
 export type ToolName = keyof typeof TOOL_DESCRIPTIONS;

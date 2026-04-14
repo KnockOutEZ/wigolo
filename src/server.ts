@@ -16,6 +16,7 @@ import { handleSearch } from './tools/search.js';
 import { handleCrawl } from './tools/crawl.js';
 import { handleCache } from './tools/cache.js';
 import { handleExtract } from './tools/extract.js';
+import { handleFindSimilar } from './tools/find-similar.js';
 import { SearxngClient } from './search/searxng.js';
 import { DuckDuckGoEngine } from './search/engines/duckduckgo.js';
 import { BingEngine } from './search/engines/bing.js';
@@ -30,7 +31,7 @@ import { WIGOLO_INSTRUCTIONS, TOOL_DESCRIPTIONS } from './instructions.js';
 import { loadPlugins } from './plugins/loader.js';
 import { PluginRegistry } from './plugins/registry.js';
 import { registerExtractor } from './extraction/pipeline.js';
-import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput } from './types.js';
+import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput } from './types.js';
 
 const log = createLogger('server');
 
@@ -264,6 +265,42 @@ const EXTRACT_TOOL_SCHEMA = {
   },
 };
 
+const FIND_SIMILAR_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    url: {
+      type: 'string',
+      description: 'Find pages similar to this URL. The page is fetched (or read from cache) and its content analyzed for key terms.',
+    },
+    concept: {
+      type: 'string',
+      description: 'Find pages related to this concept or topic description. Use when you don\'t have a specific URL.',
+    },
+    max_results: {
+      type: 'number',
+      description: 'Maximum results to return (default 10, max 50)',
+    },
+    include_domains: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Only return results from these domains',
+    },
+    exclude_domains: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Never return results from these domains',
+    },
+    include_cache: {
+      type: 'boolean',
+      description: 'Search local cache for similar pages (default: true)',
+    },
+    include_web: {
+      type: 'boolean',
+      description: 'Supplement with web search if needed (default: true)',
+    },
+  },
+};
+
 export interface Subsystems {
   searchEngines: SearchEngine[];
   browserPool: MultiBrowserPool;
@@ -472,6 +509,11 @@ export function createMcpServer(subsystems: Subsystems): Server {
         description: TOOL_DESCRIPTIONS.extract,
         inputSchema: EXTRACT_TOOL_SCHEMA,
       },
+      {
+        name: 'find_similar',
+        description: TOOL_DESCRIPTIONS.find_similar,
+        inputSchema: FIND_SIMILAR_TOOL_SCHEMA,
+      },
     ],
   }));
 
@@ -522,6 +564,15 @@ export function createMcpServer(subsystems: Subsystems): Server {
     if (name === 'extract') {
       const input = (args ?? {}) as unknown as ExtractInput;
       const result = await handleExtract(input, router);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        isError: !!result.error,
+      };
+    }
+
+    if (name === 'find_similar') {
+      const input = (args ?? {}) as unknown as FindSimilarInput;
+      const result = await handleFindSimilar(input, searchEngines, router, backendStatus);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         isError: !!result.error,
