@@ -280,7 +280,7 @@ SearXNG bootstrap failures are self-healing: wigolo retries after 30 seconds, 1 
 ### v2.2
 - [ ] Multi-browser pool — Chromium + Firefox for fingerprint diversity
 - [ ] Interactive REPL (`wigolo shell`)
-- [ ] Agent skill distribution — MCP registry listings, `SKILL.md`
+- [x] Agent skill distribution — MCP registry listings, `SKILL.md`
 
 ### v3 — The Knowledge Engine
 - [ ] Answer synthesis — search + LLM = direct answers with citations (bring your own key)
@@ -292,6 +292,20 @@ SearXNG bootstrap failures are self-healing: wigolo retries after 30 seconds, 1 
 - [ ] Lightpanda browser — optional ultra-lightweight headless browser (11x less RAM than Chrome)
 - [ ] Cloud sync — share cache across machines via rclone (S3, Drive, Dropbox)
 - [ ] Team knowledge base — shared indexed content across team members
+
+## Discovery
+
+wigolo is listed on MCP server registries for agent discovery:
+
+- **SKILL.md** -- machine-readable tool description at repo root
+- **npm** -- `npm info @staticn0va/wigolo` or search for `mcp-server` keyword
+
+To add wigolo to your agent's toolset:
+```bash
+claude mcp add wigolo -- npx @staticn0va/wigolo
+```
+
+See `SKILL.md` for the full tool schema in agent-discovery format.
 
 ## Troubleshooting
 
