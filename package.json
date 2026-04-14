@@ -70,7 +70,10 @@
       "fetch",
       "crawl",
       "cache",
-      "extract"
+      "extract",
+      "find_similar",
+      "research",
+      "agent"
     ]
   },
   "engines": {
