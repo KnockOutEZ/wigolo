@@ -6,6 +6,7 @@ import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
 import { fanOutSearch } from '../search/multi-query.js';
 import { extractContent } from '../extraction/pipeline.js';
+import { truncateSmartly } from '../search/truncate.js';
 import { cacheContent } from '../cache/store.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
 import type {
@@ -23,6 +24,9 @@ const DEPTH_CONFIG: Record<string, { subQueries: number; minSources: number; max
   standard: { subQueries: 4, minSources: 10, maxSources: 15 },
   comprehensive: { subQueries: 7, minSources: 20, maxSources: 25 },
 };
+
+const PER_SOURCE_CHAR_CAP = 3000;
+const TOTAL_SOURCES_CHAR_CAP = 40000;
 
 export async function runResearchPipeline(
   input: ResearchInput,
@@ -89,6 +93,7 @@ export async function runResearchPipeline(
 
     // Phase 4: Fetch top sources in parallel
     const sources: ResearchSource[] = await fetchSources(merged, router, maxSources);
+    applySourceBudget(sources, PER_SOURCE_CHAR_CAP, TOTAL_SOURCES_CHAR_CAP);
     log.info('fetch phase complete', {
       fetched: sources.filter((s) => s.fetched).length,
       failed: sources.filter((s) => !s.fetched).length,
@@ -156,6 +161,7 @@ async function fetchSources(
         maxChars: 30000,
         contentType: raw.contentType,
       });
+      const truncated = truncateSmartly(extraction.markdown, PER_SOURCE_CHAR_CAP);
 
       try {
         cacheContent(raw, extraction);
@@ -166,7 +172,7 @@ async function fetchSources(
       return {
         url: result.url,
         title: extraction.title || result.title,
-        markdown_content: extraction.markdown,
+        markdown_content: truncated,
         relevance_score: result.relevance_score,
         fetched: true,
       };
@@ -187,4 +193,28 @@ async function fetchSources(
   });
 
   return Promise.all(fetchPromises);
+}
+
+// Cap total returned markdown_content across sources in relevance order.
+// Later (lower-relevance) sources get trimmed further when budget runs low;
+// any source past the cap is set to empty content (caller still sees url/title).
+function applySourceBudget(
+  sources: ResearchSource[],
+  perSourceCap: number,
+  totalCap: number,
+): void {
+  let used = 0;
+  for (const s of sources) {
+    if (!s.markdown_content) continue;
+    if (used >= totalCap) {
+      s.markdown_content = '';
+      continue;
+    }
+    const remaining = totalCap - used;
+    const cap = Math.min(perSourceCap, remaining);
+    if (s.markdown_content.length > cap) {
+      s.markdown_content = truncateSmartly(s.markdown_content, cap);
+    }
+    used += s.markdown_content.length;
+  }
 }
