@@ -1,0 +1,46 @@
+name: Search Benchmark
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'  # Weekly, Monday 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'Filter benchmarks by category/id/tag'
+        required: false
+        type: string
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Run search benchmark
+        run: npm run bench:search -- ${{ github.event.inputs.filter && format('--filter {0}', github.event.inputs.filter) || '' }}
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-benchmark-${{ github.run_number }}
+          path: |
+            benchmarks/search/output/search-benchmark.json
+            benchmarks/search/output/search-benchmark.md
+          retention-days: 90
+
+      - name: Check for regressions
+        run: |
+          MRR=$(node -e "const r=require('./benchmarks/search/output/search-benchmark.json'); console.log(r.summary.meanReciprocalRank)")
+          echo "MRR: $MRR"
+          node -e "if (parseFloat('$MRR') < 0.4) { console.error('MRR below threshold (0.4)'); process.exit(1); }"

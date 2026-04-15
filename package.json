@@ -49,7 +49,8 @@
     "test:integration": "vitest run tests/integration",
     "test:e2e": "vitest run tests/e2e",
     "lint": "tsc --noEmit",
-    "bench:extraction": "tsx benchmarks/extraction/runner.ts"
+    "bench:extraction": "tsx benchmarks/extraction/runner.ts",
+    "bench:search": "tsx benchmarks/search/runner.ts"
   },
   "publishConfig": {
     "access": "public",
