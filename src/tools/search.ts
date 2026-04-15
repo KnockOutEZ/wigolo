@@ -8,7 +8,7 @@ import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
 import { formatSearchContext } from '../search/context-formatter.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
-import { synthesizeAnswer } from '../search/answer-synthesis.js';
+import { synthesizeAnswer, buildStructuredFallback } from '../search/answer-synthesis.js';
 import { normalizeQueries, fanOutSearch, synthesizeIntent } from '../search/multi-query.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { truncateSmartly } from '../search/truncate.js';
@@ -401,18 +401,37 @@ async function applyAnswerSynthesis(
         }
       }
     } else {
-      output.context_text = formatSearchContext(results, maxTotalChars);
-      if (synthesis.warning) {
+      const fallback = buildStructuredFallback(
+        results,
+        typeof input.query === 'string' ? input.query : input.query[0],
+      );
+      if (fallback.answer) {
+        output.answer = fallback.answer;
+        output.citations = fallback.citations;
+      } else {
+        output.context_text = formatSearchContext(results, maxTotalChars);
+      }
+      const combined = synthesis.warning ?? fallback.warning;
+      if (combined) {
         output.warning = output.warning
-          ? `${output.warning}; ${synthesis.warning}`
-          : synthesis.warning;
+          ? `${output.warning}; ${combined}`
+          : combined;
       }
     }
   } else {
-    output.context_text = formatSearchContext(results, maxTotalChars);
+    const fallback = buildStructuredFallback(
+      results,
+      typeof input.query === 'string' ? input.query : input.query[0],
+    );
+    if (fallback.answer) {
+      output.answer = fallback.answer;
+      output.citations = fallback.citations;
+    } else {
+      output.context_text = formatSearchContext(results, maxTotalChars);
+    }
     output.warning = output.warning
-      ? `${output.warning}; No sampling server available`
-      : 'No sampling server available; falling back to context format';
+      ? `${output.warning}; ${fallback.warning}`
+      : fallback.warning;
   }
 }
 

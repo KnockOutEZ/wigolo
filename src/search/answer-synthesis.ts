@@ -11,6 +11,8 @@ const log = createLogger('search');
 
 const MAX_CHARS_PER_SOURCE = 3000;
 const MAX_RESPONSE_TOKENS = 1500;
+const FALLBACK_MAX_BULLETS = 5;
+const FALLBACK_KEYPOINT_MAX_CHARS = 240;
 
 export interface SynthesisResult {
   answer?: string;
@@ -121,6 +123,72 @@ Instructions:
 - If sources contain conflicting information, note the discrepancy.
 - If the sources don't adequately answer the question, say so.
 - Do not include information not found in the provided sources.`;
+}
+
+export interface StructuredFallbackResult {
+  answer: string;
+  citations: Citation[];
+  warning: string;
+}
+
+// Heuristic answer without LLM sampling: top-N sources as bulleted key points
+// with numeric citations. Used when client lacks sampling capability.
+export function buildStructuredFallback(
+  results: SearchResultItem[],
+  query: string,
+): StructuredFallbackResult {
+  const bullets: string[] = [];
+  const citations: Citation[] = [];
+  let n = 0;
+
+  for (const r of results) {
+    if (n >= FALLBACK_MAX_BULLETS) break;
+    const body = (r.markdown_content && r.markdown_content.trim()) || (r.snippet && r.snippet.trim()) || '';
+    if (!body) continue;
+
+    const keypoint = extractKeypoint(body, FALLBACK_KEYPOINT_MAX_CHARS);
+    if (!keypoint) continue;
+
+    n += 1;
+    bullets.push(`- **${r.title}** — ${keypoint} [${n}]`);
+    citations.push({ index: n, url: r.url, title: r.title, snippet: r.snippet });
+  }
+
+  if (bullets.length === 0) {
+    return { answer: '', citations: [], warning: 'No sampling server available; no content to summarize' };
+  }
+
+  const q = query && query.trim() ? query.trim() : 'this query';
+  const answer = `Based on the top ${bullets.length} sources for "${q}":\n\n${bullets.join('\n')}\n\nSources:\n${citations.map(c => `[${c.index}] ${c.title} — ${c.url}`).join('\n')}`;
+
+  return {
+    answer,
+    citations,
+    warning: 'Client does not support MCP sampling; returning heuristic key-point summary instead of synthesized answer',
+  };
+}
+
+function extractKeypoint(body: string, maxChars: number): string {
+  const trimmed = body.trim();
+  if (!trimmed) return '';
+
+  // First paragraph before a blank line
+  const firstPara = trimmed.split(/\n\s*\n/)[0].trim();
+  if (!firstPara) return '';
+
+  // Strip markdown headings at the start
+  const stripped = firstPara.replace(/^#+\s*/, '').trim();
+  if (!stripped) return '';
+
+  if (stripped.length <= maxChars) return stripped;
+
+  // Try to cut at sentence end within budget
+  const window = stripped.slice(0, maxChars);
+  const lastStop = Math.max(window.lastIndexOf('. '), window.lastIndexOf('! '), window.lastIndexOf('? '));
+  if (lastStop > maxChars * 0.6) {
+    return window.slice(0, lastStop + 1);
+  }
+  return window + '…';
 }
 
 export function extractCitations(
