@@ -4,6 +4,7 @@ import { synthesizeReport } from './synthesize.js';
 import { deduplicateResults } from '../search/dedup.js';
 import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
+import { fanOutSearch } from '../search/multi-query.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { cacheContent } from '../cache/store.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
@@ -12,7 +13,6 @@ import type {
   ResearchOutput,
   ResearchSource,
   SearchEngine,
-  RawSearchResult,
 } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 
@@ -46,33 +46,22 @@ export async function runResearchPipeline(
     const subQueries = decomposeResult.subQueries;
     log.info('decomposition complete', { subQueryCount: subQueries.length, samplingUsed: decomposeResult.samplingUsed });
 
-    // Phase 2: Parallel search across sub-queries
-    const allRaw: RawSearchResult[] = [];
-    const enginesUsed = new Set<string>();
-
-    const searchPromises = engines.flatMap((engine) =>
-      subQueries.map(async (query) => {
-        try {
-          const results = await engine.search(query, {
-            maxResults: Math.ceil(maxSources / subQueries.length) * 2,
-            includeDomains: input.include_domains,
-            excludeDomains: input.exclude_domains,
-          });
-          for (const r of results) {
-            allRaw.push(r);
-            enginesUsed.add(engine.name);
-          }
-        } catch (err) {
-          log.warn('search sub-query failed', {
-            engine: engine.name,
-            query,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }),
+    // Phase 2: Parallel search across sub-queries via multi-query fan-out
+    const { results: allRaw, enginesUsed: enginesUsedArr, errors: searchErrors } = await fanOutSearch(
+      subQueries,
+      engines,
+      {
+        maxResults: Math.ceil(maxSources / subQueries.length) * 2,
+        includeDomains: input.include_domains,
+        excludeDomains: input.exclude_domains,
+      },
     );
 
-    await Promise.allSettled(searchPromises);
+    if (searchErrors.length > 0) {
+      log.warn('some search sub-queries failed', { errors: searchErrors });
+    }
+
+    const enginesUsed = new Set<string>(enginesUsedArr);
     log.info('search phase complete', { totalRaw: allRaw.length, engines: [...enginesUsed] });
 
     // Phase 3: Deduplicate, filter, rerank

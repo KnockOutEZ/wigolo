@@ -62,6 +62,7 @@ export interface AgentBenchmarkSummary {
   averageCompleteness: number;
   averagePagesFetched: number;
   averageLatencyMs: number;
+  averageTokenEfficiency: number;
   byTaskType: Record<string, TaskTypeSummary>;
 }
 
@@ -71,6 +72,7 @@ export interface TaskTypeSummary {
   averageAccuracy: number;
   averageCompleteness: number;
   averageLatencyMs: number;
+  tokenEfficiency?: number;
 }
 
 export interface AgentBenchmarkReport {

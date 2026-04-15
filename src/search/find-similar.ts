@@ -13,6 +13,7 @@ import { searchCache, getCachedContent, normalizeUrl } from '../cache/store.js';
 import { filterByDomains } from './filters.js';
 import { handleSearch } from '../tools/search.js';
 import { extractContent } from '../extraction/pipeline.js';
+import { getEmbeddingService } from '../embedding/embed.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('search');
@@ -339,6 +340,19 @@ async function runWebSearchFallback(
       } catch (err) {
         log.warn('web search query failed', { query, error: String(err) });
       }
+    }
+
+    try {
+      const embeddingService = getEmbeddingService();
+      if (embeddingService.isAvailable()) {
+        for (const result of allResults) {
+          if (result.markdown) {
+            embeddingService.embedAsync(result.url, result.markdown);
+          }
+        }
+      }
+    } catch (err) {
+      log.debug('embedding hook skipped for find_similar results', { error: String(err) });
     }
 
     return allResults;

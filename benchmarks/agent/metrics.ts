@@ -22,6 +22,7 @@ export function computeAgentSummary(results: TaskEvaluation[]): AgentBenchmarkSu
         averageCompleteness: 0,
         averagePagesFetched: 0,
         averageLatencyMs: 0,
+        averageTokenEfficiency: 0,
         byTaskType: {},
       };
     }
@@ -38,6 +39,7 @@ export function computeAgentSummary(results: TaskEvaluation[]): AgentBenchmarkSu
     const sumCompleteness = successful.reduce((s, r) => s + r.completeness, 0);
     const sumPages = results.reduce((s, r) => s + r.pagesFetched, 0);
     const sumLatency = results.reduce((s, r) => s + r.latencyMs, 0);
+    const sumEfficiency = successful.reduce((s, r) => s + r.factsFound / Math.max(r.pagesFetched, 1), 0);
 
     // Group by task type
     const byTaskType: Record<string, TaskTypeSummary> = {};
@@ -49,6 +51,7 @@ export function computeAgentSummary(results: TaskEvaluation[]): AgentBenchmarkSu
           averageAccuracy: 0,
           averageCompleteness: 0,
           averageLatencyMs: 0,
+          tokenEfficiency: 0,
         };
       }
       const tt = byTaskType[r.taskType];
@@ -56,6 +59,7 @@ export function computeAgentSummary(results: TaskEvaluation[]): AgentBenchmarkSu
       tt.averageAccuracy += r.factualAccuracy;
       tt.averageCompleteness += r.completeness;
       tt.averageLatencyMs += r.latencyMs;
+      tt.tokenEfficiency = (tt.tokenEfficiency ?? 0) + r.factsFound / Math.max(r.pagesFetched, 1);
       if (r.completeness >= COMPLETION_THRESHOLD) tt.completionRate++;
     }
     for (const key of Object.keys(byTaskType)) {
@@ -64,6 +68,7 @@ export function computeAgentSummary(results: TaskEvaluation[]): AgentBenchmarkSu
       tt.averageAccuracy /= tt.count;
       tt.averageCompleteness /= tt.count;
       tt.averageLatencyMs /= tt.count;
+      tt.tokenEfficiency = (tt.tokenEfficiency ?? 0) / tt.count;
     }
 
     return {
@@ -76,6 +81,7 @@ export function computeAgentSummary(results: TaskEvaluation[]): AgentBenchmarkSu
       averageCompleteness: sumCompleteness / sn,
       averagePagesFetched: sumPages / n,
       averageLatencyMs: sumLatency / n,
+      averageTokenEfficiency: sumEfficiency / sn,
       byTaskType,
     };
   } catch (err) {
@@ -90,6 +96,7 @@ export function computeAgentSummary(results: TaskEvaluation[]): AgentBenchmarkSu
       averageCompleteness: 0,
       averagePagesFetched: 0,
       averageLatencyMs: 0,
+      averageTokenEfficiency: 0,
       byTaskType: {},
     };
   }

@@ -6,6 +6,9 @@ import type {
   MapOutput,
   ExtractOutput,
   CacheOutput,
+  FindSimilarOutput,
+  ResearchOutput,
+  AgentOutput,
   TableData,
   MetadataData,
 } from '../types.js';
@@ -244,6 +247,97 @@ export function formatCacheResult(output: CacheOutput): string {
   }
 
   return chalk.dim('No output');
+}
+
+export function formatFindSimilarResult(output: FindSimilarOutput): string {
+  const lines: string[] = [];
+
+  lines.push(`Find Similar: method=${chalk.yellow(output.method)}, cache=${output.cache_hits}, web=${output.search_hits}, embedding=${output.embedding_available ? 'yes' : 'no'} (${output.total_time_ms}ms)`);
+
+  if (output.error) {
+    lines.push('');
+    lines.push(chalk.red(`  Error: ${output.error}`));
+    return lines.join('\n');
+  }
+
+  if (output.results.length === 0) {
+    lines.push('');
+    lines.push(chalk.dim('  No similar results found'));
+    return lines.join('\n');
+  }
+
+  for (let i = 0; i < output.results.length; i++) {
+    const r = output.results[i];
+    const domain = domainFromUrl(r.url);
+    const score = r.relevance_score.toFixed(2);
+    lines.push('');
+    lines.push(`  ${chalk.bold(`[${i + 1}]`)} ${chalk.white(r.title)} ${chalk.dim(`- ${domain}`)} ${chalk.green(`(score: ${score}, ${r.source})`)}`);
+  }
+
+  return lines.join('\n');
+}
+
+export function formatResearchResult(output: ResearchOutput): string {
+  const lines: string[] = [];
+
+  lines.push(`Research: depth=${chalk.yellow(output.depth)}, ${output.sources.length} sources, ${output.citations.length} citations (${output.total_time_ms}ms)`);
+
+  if (output.error) {
+    lines.push('');
+    lines.push(chalk.red(`  Error: ${output.error}`));
+    return lines.join('\n');
+  }
+
+  if (output.sub_queries.length > 0) {
+    lines.push('');
+    lines.push(chalk.bold('  Sub-queries:'));
+    for (const sq of output.sub_queries) {
+      lines.push(`    - ${sq}`);
+    }
+  }
+
+  if (output.report) {
+    lines.push('');
+    const preview = output.report.split('\n').slice(0, 10).map(l => `  ${l}`).join('\n');
+    lines.push(preview);
+    if (output.report.split('\n').length > 10) {
+      lines.push(chalk.dim(`  ... (${output.report.length} chars total)`));
+    }
+  }
+
+  return lines.join('\n');
+}
+
+export function formatAgentResult(output: AgentOutput): string {
+  const lines: string[] = [];
+
+  lines.push(`Agent: ${output.pages_fetched} pages fetched, ${output.steps.length} steps (${output.total_time_ms}ms)`);
+
+  if (output.error) {
+    lines.push('');
+    lines.push(chalk.red(`  Error: ${output.error}`));
+    return lines.join('\n');
+  }
+
+  if (output.steps.length > 0) {
+    lines.push('');
+    lines.push(chalk.bold('  Steps:'));
+    for (const step of output.steps) {
+      lines.push(`    ${chalk.yellow(step.action)} ${chalk.dim(`(${step.time_ms}ms)`)} ${step.detail}`);
+    }
+  }
+
+  if (output.result) {
+    lines.push('');
+    const text = typeof output.result === 'string' ? output.result : JSON.stringify(output.result, null, 2);
+    const preview = text.split('\n').slice(0, 10).map(l => `  ${l}`).join('\n');
+    lines.push(preview);
+    if (text.split('\n').length > 10) {
+      lines.push(chalk.dim(`  ... (${text.length} chars total)`));
+    }
+  }
+
+  return lines.join('\n');
 }
 
 export function formatJson(data: unknown): string {

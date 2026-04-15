@@ -26,6 +26,7 @@ export function generateAgentMarkdownReport(report: AgentBenchmarkReport): strin
     lines.push(`| Completeness | ${(summary.averageCompleteness * 100).toFixed(1)}% |`);
     lines.push(`| Avg Pages Fetched | ${summary.averagePagesFetched.toFixed(1)} |`);
     lines.push(`| Avg Latency | ${summary.averageLatencyMs.toFixed(0)}ms |`);
+    lines.push(`| Token Efficiency (facts/page) | ${summary.averageTokenEfficiency.toFixed(2)} |`);
     lines.push('');
 
     // Task type breakdown
@@ -33,11 +34,11 @@ export function generateAgentMarkdownReport(report: AgentBenchmarkReport): strin
     if (types.length > 0) {
       lines.push('## By Task Type');
       lines.push('');
-      lines.push('| Task Type | Count | Completion | Accuracy | Completeness | Avg Latency |');
-      lines.push('|-----------|-------|------------|----------|--------------|-------------|');
+      lines.push('| Task Type | Count | Completion | Accuracy | Completeness | Avg Latency | Efficiency |');
+      lines.push('|-----------|-------|------------|----------|--------------|-------------|------------|');
       for (const type of types) {
         const t = summary.byTaskType[type];
-        lines.push(`| ${type} | ${t.count} | ${(t.completionRate * 100).toFixed(0)}% | ${(t.averageAccuracy * 100).toFixed(1)}% | ${(t.averageCompleteness * 100).toFixed(1)}% | ${t.averageLatencyMs.toFixed(0)}ms |`);
+        lines.push(`| ${type} | ${t.count} | ${(t.completionRate * 100).toFixed(0)}% | ${(t.averageAccuracy * 100).toFixed(1)}% | ${(t.averageCompleteness * 100).toFixed(1)}% | ${t.averageLatencyMs.toFixed(0)}ms | ${(t.tokenEfficiency ?? 0).toFixed(2)} |`);
       }
       lines.push('');
     }
