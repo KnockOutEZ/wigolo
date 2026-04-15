@@ -1,0 +1,68 @@
+{
+  "version": "1.0.0",
+  "created": "2026-04-14",
+  "entries": [
+    {
+      "id": "article-001",
+      "url": "https://example.com/blog/typescript-guide",
+      "category": "article",
+      "htmlFixturePath": "html/article-001.html",
+      "goldenPath": "golden/article-001.md",
+      "expectedExtractor": "defuddle",
+      "tags": ["typescript", "tutorial"]
+    },
+    {
+      "id": "docs-001",
+      "url": "https://docs.example.com/api/reference",
+      "category": "docs",
+      "htmlFixturePath": "html/docs-001.html",
+      "goldenPath": "golden/docs-001.md",
+      "expectedExtractor": "defuddle",
+      "tags": ["api", "reference"]
+    },
+    {
+      "id": "github-001",
+      "url": "https://github.com/user/repo",
+      "category": "github",
+      "htmlFixturePath": "html/github-001.html",
+      "goldenPath": "golden/github-001.md",
+      "expectedExtractor": "site-specific",
+      "tags": ["readme", "repository"]
+    },
+    {
+      "id": "so-001",
+      "url": "https://stackoverflow.com/questions/12345",
+      "category": "stackoverflow",
+      "htmlFixturePath": "html/so-001.html",
+      "goldenPath": "golden/so-001.md",
+      "expectedExtractor": "site-specific",
+      "tags": ["javascript", "error"]
+    },
+    {
+      "id": "spa-001",
+      "url": "https://spa-app.example.com/page",
+      "category": "spa",
+      "htmlFixturePath": "html/spa-001.html",
+      "goldenPath": "golden/spa-001.md",
+      "tags": ["react", "dynamic"]
+    },
+    {
+      "id": "table-001",
+      "url": "https://example.com/data/comparison",
+      "category": "table-heavy",
+      "htmlFixturePath": "html/table-001.html",
+      "goldenPath": "golden/table-001.md",
+      "expectedExtractor": "defuddle",
+      "tags": ["tables", "data"]
+    },
+    {
+      "id": "code-001",
+      "url": "https://example.com/snippets/advanced",
+      "category": "code-heavy",
+      "htmlFixturePath": "html/code-001.html",
+      "goldenPath": "golden/code-001.md",
+      "expectedExtractor": "defuddle",
+      "tags": ["code", "typescript"]
+    }
+  ]
+}
