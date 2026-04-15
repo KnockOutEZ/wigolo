@@ -58,3 +58,23 @@ describe('parseCommand', () => {
     });
   });
 });
+
+describe('parseCommand — setup', () => {
+  it('parses "setup mcp" into command=setup, args=[mcp]', () => {
+    const parsed = parseCommand(['setup', 'mcp']);
+    expect(parsed.command).toBe('setup');
+    expect(parsed.args).toEqual(['mcp']);
+  });
+
+  it('parses "setup" alone into command=setup, args=[]', () => {
+    const parsed = parseCommand(['setup']);
+    expect(parsed.command).toBe('setup');
+    expect(parsed.args).toEqual([]);
+  });
+
+  it('forwards trailing flags on "setup mcp --non-interactive"', () => {
+    const parsed = parseCommand(['setup', 'mcp', '--non-interactive']);
+    expect(parsed.command).toBe('setup');
+    expect(parsed.args).toEqual(['mcp', '--non-interactive']);
+  });
+});
