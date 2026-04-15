@@ -92,3 +92,68 @@ describe('runVerify — SearXNG branches', () => {
     expect(stopMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('runVerify — test search', () => {
+  beforeEach(() => {
+    startMock.mockResolvedValue('http://127.0.0.1:8888');
+    execSyncMock.mockReturnValue(Buffer.from(''));
+  });
+
+  it('records testSearch: ok with count on 200', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ results: [{}, {}, {}, {}, {}] }),
+    });
+
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
+
+    expect(result.testSearch).toBe('ok');
+    expect(result.testSearchCount).toBe(5);
+    expect(reporter.events).toContain('start:test-search:Running test search');
+    expect(reporter.events).toContain('success:test-search:5 results');
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:8888/search?q=test&format=json');
+  });
+
+  it('records testSearch: ok with 0 count when results missing', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
+
+    expect(result.testSearch).toBe('ok');
+    expect(result.testSearchCount).toBe(0);
+    expect(reporter.events).toContain('success:test-search:0 results');
+  });
+
+  it('records testSearch: failed on non-2xx', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      json: async () => ({}),
+    });
+
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
+
+    expect(result.testSearch).toBe('failed');
+    expect(result.testSearchError).toBe('HTTP 502');
+    expect(reporter.events).toContain('fail:test-search:HTTP 502');
+  });
+
+  it('records testSearch: failed when fetch throws', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
+
+    expect(result.testSearch).toBe('failed');
+    expect(result.testSearchError).toContain('ECONNREFUSED');
+    expect(reporter.events).toContain('fail:test-search:ECONNREFUSED');
+  });
+});

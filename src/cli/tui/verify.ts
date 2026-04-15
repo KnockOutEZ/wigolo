@@ -66,9 +66,30 @@ export async function runVerify(
   result.searxngUrl = url;
   reporter.success('searxng', url);
 
+  reporter.start('test-search', TEST_SEARCH_LABEL);
+  try {
+    const response = await fetch(`${url}/search?q=test&format=json`);
+    if (response.ok) {
+      const body = (await response.json()) as { results?: unknown[] };
+      const count = Array.isArray(body.results) ? body.results.length : 0;
+      result.testSearch = 'ok';
+      result.testSearchCount = count;
+      reporter.success('test-search', `${count} results`);
+    } else {
+      const message = `HTTP ${response.status}`;
+      result.testSearch = 'failed';
+      result.testSearchError = message;
+      reporter.fail('test-search', message);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    result.testSearch = 'failed';
+    result.testSearchError = message;
+    reporter.fail('test-search', message);
+  }
+
   void execSync;
   void getPythonBin;
-  void TEST_SEARCH_LABEL;
   void FLASHRANK_LABEL;
   void TRAFILATURA_LABEL;
   void EMBEDDINGS_LABEL;
