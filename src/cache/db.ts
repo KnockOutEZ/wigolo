@@ -81,6 +81,16 @@ export function initDatabase(dbPath: string): Database.Database {
       last_updated TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS lightpanda_routing (
+      domain TEXT PRIMARY KEY,
+      success_count INTEGER DEFAULT 0,
+      failure_count INTEGER DEFAULT 0,
+      prefer_chromium INTEGER DEFAULT 0,
+      last_success TEXT,
+      last_failure TEXT,
+      last_updated TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS domain_boilerplate (
       domain TEXT NOT NULL,
       block_hash TEXT NOT NULL,

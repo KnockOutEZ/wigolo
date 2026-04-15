@@ -54,6 +54,9 @@ export interface Config {
   embeddingModel: string;
   embeddingIdleTimeoutMs: number;
   embeddingMaxTextLength: number;
+  lightpandaUrl: string | null;
+  lightpandaEnabled: boolean;
+  lightpandaFailureThreshold: number;
 }
 
 function envStr(key: string, fallback: string | null = null): string | null {
@@ -144,6 +147,9 @@ export function getConfig(): Config {
     embeddingModel: envStr('WIGOLO_EMBEDDING_MODEL') ?? 'BAAI/bge-small-en-v1.5',
     embeddingIdleTimeoutMs: envInt('WIGOLO_EMBEDDING_IDLE_TIMEOUT', 120000),
     embeddingMaxTextLength: envInt('WIGOLO_EMBEDDING_MAX_TEXT_LENGTH', 8000),
+    lightpandaUrl: envStr('WIGOLO_LIGHTPANDA_URL'),
+    lightpandaEnabled: envBool('WIGOLO_LIGHTPANDA_ENABLED', false),
+    lightpandaFailureThreshold: envInt('WIGOLO_LIGHTPANDA_FAILURE_THRESHOLD', 3),
   };
 
   return cachedConfig;

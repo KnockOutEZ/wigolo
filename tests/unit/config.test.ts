@@ -314,6 +314,65 @@ describe('config', () => {
     });
   });
 
+  describe('config — lightpanda', () => {
+    it('reads WIGOLO_LIGHTPANDA_URL', () => {
+      process.env.WIGOLO_LIGHTPANDA_URL = 'http://localhost:9222';
+      resetConfig();
+      const config = getConfig();
+      expect(config.lightpandaUrl).toBe('http://localhost:9222');
+      delete process.env.WIGOLO_LIGHTPANDA_URL;
+      resetConfig();
+    });
+
+    it('defaults lightpandaUrl to null', () => {
+      delete process.env.WIGOLO_LIGHTPANDA_URL;
+      resetConfig();
+      const config = getConfig();
+      expect(config.lightpandaUrl).toBeNull();
+    });
+
+    it('reads WIGOLO_LIGHTPANDA_ENABLED', () => {
+      process.env.WIGOLO_LIGHTPANDA_ENABLED = 'true';
+      resetConfig();
+      const config = getConfig();
+      expect(config.lightpandaEnabled).toBe(true);
+      delete process.env.WIGOLO_LIGHTPANDA_ENABLED;
+      resetConfig();
+    });
+
+    it('defaults lightpandaEnabled to false', () => {
+      delete process.env.WIGOLO_LIGHTPANDA_ENABLED;
+      resetConfig();
+      const config = getConfig();
+      expect(config.lightpandaEnabled).toBe(false);
+    });
+
+    it('lightpandaEnabled is false when set to "false"', () => {
+      process.env.WIGOLO_LIGHTPANDA_ENABLED = 'false';
+      resetConfig();
+      const config = getConfig();
+      expect(config.lightpandaEnabled).toBe(false);
+      delete process.env.WIGOLO_LIGHTPANDA_ENABLED;
+      resetConfig();
+    });
+
+    it('reads WIGOLO_LIGHTPANDA_FAILURE_THRESHOLD', () => {
+      process.env.WIGOLO_LIGHTPANDA_FAILURE_THRESHOLD = '5';
+      resetConfig();
+      const config = getConfig();
+      expect(config.lightpandaFailureThreshold).toBe(5);
+      delete process.env.WIGOLO_LIGHTPANDA_FAILURE_THRESHOLD;
+      resetConfig();
+    });
+
+    it('defaults lightpandaFailureThreshold to 3', () => {
+      delete process.env.WIGOLO_LIGHTPANDA_FAILURE_THRESHOLD;
+      resetConfig();
+      const config = getConfig();
+      expect(config.lightpandaFailureThreshold).toBe(3);
+    });
+  });
+
   describe('config — embedding', () => {
     it('embeddingModel defaults to bge-small-en-v1.5', () => {
       expect(getConfig().embeddingModel).toBe('BAAI/bge-small-en-v1.5');
