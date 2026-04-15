@@ -189,6 +189,70 @@ export class MultiBrowserPool {
     let cdpBrowser: Browser | null = null;
     let resolvedType: BrowserType;
 
+    if (!options.cdpUrl && config.lightpandaEnabled && config.lightpandaUrl) {
+      try {
+        const domain = new URL(url).hostname;
+        const { shouldUseLightpanda, recordSuccess, recordFailure, LightpandaAdapter } = await import('./lightpanda.js');
+
+        if (shouldUseLightpanda(domain)) {
+          log.debug('trying lightpanda for domain', { url, domain });
+          const adapter = new LightpandaAdapter(config.lightpandaUrl);
+          const connection = await adapter.connect();
+
+          if (connection.connected) {
+            try {
+              const lpCtx = await adapter.getContext();
+              if (lpCtx) {
+                const page = await lpCtx.newPage();
+                if (options.headers) await page.setExtraHTTPHeaders(options.headers);
+
+                try {
+                  const response = await page.goto(url, {
+                    timeout: navTimeoutMs,
+                    waitUntil: 'domcontentloaded',
+                  });
+
+                  const html = await page.content();
+                  const statusCode = response?.status() ?? 200;
+                  const finalUrl = response?.url() ?? url;
+                  const responseHeaders = response?.headers() ?? {};
+                  const contentType = responseHeaders['content-type'] ?? '';
+
+                  await page.close();
+                  await adapter.disconnect();
+                  recordSuccess(domain);
+
+                  return {
+                    url,
+                    finalUrl,
+                    html,
+                    contentType,
+                    statusCode,
+                    method: 'playwright' as const,
+                    headers: responseHeaders,
+                  };
+                } catch (pageErr) {
+                  await page.close().catch(() => {});
+                  throw pageErr;
+                }
+              }
+            } catch (fetchErr) {
+              log.warn('lightpanda fetch failed, falling back to chromium', {
+                url, domain,
+                error: fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
+              });
+              recordFailure(domain);
+              await adapter.disconnect();
+            }
+          }
+        }
+      } catch (lpErr) {
+        log.debug('lightpanda integration error, using standard pool', {
+          error: lpErr instanceof Error ? lpErr.message : String(lpErr),
+        });
+      }
+    }
+
     if (options.cdpUrl) {
       // CDP is always Chromium
       resolvedType = 'chromium';
