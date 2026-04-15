@@ -1,0 +1,46 @@
+name: Agent Benchmark
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'  # Weekly, Monday 08:00 UTC
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'Filter tasks by type/id/tag'
+        required: false
+        type: string
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Run agent benchmark
+        run: npm run bench:agent -- ${{ github.event.inputs.filter && format('--filter {0}', github.event.inputs.filter) || '' }}
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-benchmark-${{ github.run_number }}
+          path: |
+            benchmarks/agent/output/agent-benchmark.json
+            benchmarks/agent/output/agent-benchmark.md
+          retention-days: 90
+
+      - name: Check for regressions
+        run: |
+          RATE=$(node -e "const r=require('./benchmarks/agent/output/agent-benchmark.json'); console.log(r.summary.taskCompletionRate)")
+          echo "Task Completion Rate: $RATE"
+          node -e "if (parseFloat('$RATE') < 0.5) { console.error('Task completion rate below threshold (50%)'); process.exit(1); }"
