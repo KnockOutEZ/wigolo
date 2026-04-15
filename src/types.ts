@@ -26,6 +26,7 @@ export interface FetchInput {
   screenshot?: boolean;
   headers?: Record<string, string>;
   actions?: BrowserAction[];
+  force_refresh?: boolean;
 }
 
 export interface FetchOutput {
@@ -131,6 +132,7 @@ export interface SearchInput {
   to_date?: string;      // ISO date (YYYY-MM-DD)
   category?: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
   format?: 'full' | 'context' | 'answer' | 'stream_answer';
+  force_refresh?: boolean;
 }
 
 export interface SearchResultItem {

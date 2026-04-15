@@ -87,6 +87,10 @@ const FETCH_TOOL_SCHEMA = {
       description: 'Additional HTTP headers',
       additionalProperties: { type: 'string' },
     },
+    force_refresh: {
+      type: 'boolean',
+      description: 'Bypass cache and fetch fresh content from the network. Use for rapidly changing pages (news, changelogs, dashboards).',
+    },
     actions: {
       type: 'array',
       description:
@@ -181,6 +185,10 @@ const SEARCH_TOOL_SCHEMA = {
       type: 'string',
       enum: ['full', 'context', 'answer', 'stream_answer'],
       description: "Output format: 'full' returns structured results (default), 'context' returns a single token-budgeted string for LLM injection, 'answer' synthesizes a direct answer with citations via MCP sampling, 'stream_answer' same as answer but emits notifications/progress between pipeline phases (search/fetch/synthesize) when the client supplies a progressToken",
+    },
+    force_refresh: {
+      type: 'boolean',
+      description: 'Bypass all caches (search results and page content). Use when you need the most current information.',
     },
   },
   required: ['query'],

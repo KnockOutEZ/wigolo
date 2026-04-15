@@ -42,10 +42,12 @@ export async function handleFetch(
   router: SmartRouter,
 ): Promise<FetchOutput> {
   try {
-    const cached = getCachedContent(input.url);
-    if (cached && !isExpired(cached) && (!input.actions || input.actions.length === 0)) {
-      log.info('Serving from cache', { url: input.url });
-      return formatCachedResponse(cached, input);
+    if (!input.force_refresh) {
+      const cached = getCachedContent(input.url);
+      if (cached && !isExpired(cached) && (!input.actions || input.actions.length === 0)) {
+        log.info('Serving from cache', { url: input.url });
+        return formatCachedResponse(cached, input);
+      }
     }
 
     const raw = await router.fetch(input.url, {

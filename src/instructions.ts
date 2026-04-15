@@ -42,6 +42,15 @@ export const WIGOLO_INSTRUCTIONS = `Wigolo is a local-first web access layer: se
 | Structured extraction | \`extract\` | \`mode: "schema"\` with a JSON Schema, or \`mode: "tables"\` |
 | Site inventory | \`crawl\` | \`strategy: "map"\` for URL-only discovery, no content fetched |
 
+## Rapidly changing content
+
+For news, prices, status pages, release notes, or any content that changes frequently, bypass the cache with \`force_refresh: true\`:
+
+  search({ query: "...", force_refresh: true })
+  fetch({ url: "...", force_refresh: true })
+
+When freshness matters more than speed, use \`force_refresh\`. When speed matters more than freshness (documentation, tutorials, reference pages), let the cache work -- it is much faster.
+
 ## Check the cache before going to the network
 
 Before every \`search\` or \`fetch\`, consider a \`cache\` call with the query text or URL pattern. Pages read in this or a prior session return instantly with their full markdown -- no network, no rate limits. The \`research\` and \`agent\` tools check the cache internally, so you do not need a separate call for those.
@@ -87,8 +96,11 @@ Key parameters:
 - use_auth: true to use stored browser session for authenticated/private pages
 - render_js: "auto" (default, detects JS need), "always" (force browser), "never" (HTTP only, fastest)
 - headers: custom HTTP headers if needed
+- force_refresh: true to bypass cache and fetch fresh content from the network
 
-Returns title, markdown content, links, images, and metadata. Result is cached locally -- subsequent fetches of the same URL return instantly. Works with localhost URLs (localhost:3000, etc.) for reading local dev servers.`,
+Returns title, markdown content, links, images, and metadata. Result is cached locally -- subsequent fetches of the same URL return instantly. Works with localhost URLs (localhost:3000, etc.) for reading local dev servers.
+
+Use force_refresh: true for pages that change frequently (news sites, changelogs, dashboards, API status pages). By default, previously fetched pages are served from local cache for speed.`,
 
   search: `Search the web and return full markdown content from top results. Use for finding information on any topic -- returns extracted page content, not just snippets.
 
@@ -99,10 +111,13 @@ Key parameters:
 - from_date/to_date: ISO dates for time-bounded queries
 - max_results: default 5. Use 3 for focused queries, 10+ for research.
 - format: "full" (default, structured JSON), "context" (single token-budgeted string for LLM injection), "answer" (synthesized direct answer via requestSampling), "stream_answer" (same as answer, with MCP progress notifications emitted between pipeline phases)
+- force_refresh: true to bypass all caches (search results and page content)
 
 The "answer" format uses the MCP client's sampling capability to synthesize a direct response from search results. If sampling is not supported, falls back to "context" format. "stream_answer" emits notifications/progress messages at each pipeline phase (search, fetch, synthesize) when the client provides a progressToken via request._meta — token-level streaming of the LLM response is not supported by MCP sampling, so the answer itself still arrives as one block.
 
-Results include title, URL, relevance_score, and full markdown_content per result. Previously fetched pages are served from local cache.`,
+Results include title, URL, relevance_score, and full markdown_content per result. Previously fetched pages are served from local cache.
+
+Use force_refresh: true when you need current information that may have changed since the last search. Default behavior uses cached results when available.`,
 
   crawl: `Crawl a website starting from a URL and return content from multiple pages. Use for indexing documentation sites, wikis, or any multi-page resource.
 

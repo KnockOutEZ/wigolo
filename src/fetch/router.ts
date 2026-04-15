@@ -10,6 +10,7 @@ export interface RouterFetchOptions {
   headers?: Record<string, string>;
   screenshot?: boolean;
   actions?: BrowserAction[];
+  force_refresh?: boolean;
 }
 
 export interface HttpClient {

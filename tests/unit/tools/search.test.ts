@@ -4,6 +4,7 @@ import type { SearchInput, RawSearchResult } from '../../../src/types.js';
 import type { SmartRouter } from '../../../src/fetch/router.js';
 import { resetConfig } from '../../../src/config.js';
 import { initDatabase, closeDatabase } from '../../../src/cache/db.js';
+import { cacheSearchResults } from '../../../src/cache/store.js';
 
 vi.mock('../../../src/extraction/pipeline.js', () => ({
   extractContent: vi.fn().mockResolvedValue({
@@ -175,6 +176,64 @@ describe('handleSearch', () => {
     expect(engine2.search).toHaveBeenCalled();
     expect(output.engines_used).toContain('duckduckgo');
     expect(output.engines_used).not.toContain('searxng');
+  });
+
+  describe('force_refresh', () => {
+    it('bypasses search cache when force_refresh is true', async () => {
+      cacheSearchResults('test', [
+        { title: 'Stale', url: 'https://cached.example/1', snippet: 'stale snippet', relevance_score: 0.9 },
+      ], ['cached-engine']);
+
+      const input: SearchInput = { query: 'test', include_content: false, force_refresh: true };
+      const output = await handleSearch(input, [mockSearchBackend], mockRouter);
+
+      expect(mockSearchBackend.search).toHaveBeenCalled();
+      expect(output.engines_used).toContain('mock');
+      expect(output.engines_used).not.toContain('cached-engine');
+    });
+
+    it('uses search cache when force_refresh is false/undefined', async () => {
+      cacheSearchResults('test', [
+        { title: 'Stale', url: 'https://cached.example/1', snippet: 'stale snippet', relevance_score: 0.9 },
+      ], ['cached-engine']);
+
+      const input: SearchInput = { query: 'test', include_content: false };
+      const output = await handleSearch(input, [mockSearchBackend], mockRouter);
+
+      expect(mockSearchBackend.search).not.toHaveBeenCalled();
+      expect(output.engines_used).toContain('cached-engine');
+      expect(output.results[0].title).toBe('Stale');
+    });
+
+    it('passes force_refresh to content fetching', async () => {
+      const input: SearchInput = { query: 'test', max_results: 1, force_refresh: true };
+      await handleSearch(input, [mockSearchBackend], mockRouter);
+
+      expect(mockRouter.fetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ force_refresh: true }),
+      );
+    });
+
+    it('does not pass force_refresh to content fetching when false', async () => {
+      const input: SearchInput = { query: 'test', max_results: 1 };
+      await handleSearch(input, [mockSearchBackend], mockRouter);
+
+      const callArgs = vi.mocked(mockRouter.fetch).mock.calls[0][1];
+      expect(callArgs?.force_refresh).toBeUndefined();
+    });
+
+    it('bypasses multi-query search cache when force_refresh is true', async () => {
+      cacheSearchResults('test a | test b', [
+        { title: 'Stale Multi', url: 'https://cached.example/2', snippet: 'stale', relevance_score: 0.9 },
+      ], ['multi-cached']);
+
+      const input: SearchInput = { query: ['test a', 'test b'], include_content: false, force_refresh: true };
+      const output = await handleSearch(input, [mockSearchBackend], mockRouter);
+
+      expect(mockSearchBackend.search).toHaveBeenCalled();
+      expect(output.engines_used).not.toContain('multi-cached');
+    });
   });
 
   it('uses all engines when search_engines filter matches none', async () => {

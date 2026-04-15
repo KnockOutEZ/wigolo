@@ -74,7 +74,7 @@ export async function handleSearch(
     const displayQuery = normalizedQueries[0];
     const cacheKey = normalizedQueries.join(' | ');
 
-    const cached = getCachedSearchResults(cacheKey);
+    const cached = input.force_refresh ? null : getCachedSearchResults(cacheKey);
     if (cached && !includeContent) {
       log.info('serving multi-query search results from cache', { queries: normalizedQueries });
       const output: SearchOutput = {
@@ -166,6 +166,7 @@ export async function handleSearch(
         maxTotalChars,
         fetchTimeoutMs,
         totalDeadline: start + totalTimeoutMs,
+        forceRefresh: input.force_refresh ?? false,
       });
     }
 
@@ -196,7 +197,7 @@ export async function handleSearch(
   // --- Single-query path (unchanged from v2) ---
   const queryStr = input.query as string;
 
-  const cached = getCachedSearchResults(queryStr);
+  const cached = input.force_refresh ? null : getCachedSearchResults(queryStr);
   if (cached && !includeContent) {
     log.info('serving search results from cache', { query: queryStr });
     const output: SearchOutput = {
@@ -311,6 +312,7 @@ export async function handleSearch(
       maxTotalChars,
       fetchTimeoutMs,
       totalDeadline: start + totalTimeoutMs,
+      forceRefresh: input.force_refresh ?? false,
     });
   }
 
@@ -399,6 +401,7 @@ interface FetchContext {
   maxTotalChars: number;
   fetchTimeoutMs: number;
   totalDeadline: number;
+  forceRefresh: boolean;
 }
 
 // v1: sequential fetch for correct budget enforcement. v2: parallel fetch then apply budget in relevance order.
@@ -422,7 +425,10 @@ async function fetchContentForResults(
 
     try {
       const raw = await Promise.race([
-        router.fetch(result.url, { renderJs: 'auto' }),
+        router.fetch(result.url, {
+          renderJs: 'auto',
+          ...(ctx.forceRefresh && { force_refresh: true }),
+        }),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('timeout')), ctx.fetchTimeoutMs),
         ),

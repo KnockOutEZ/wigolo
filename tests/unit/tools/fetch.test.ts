@@ -264,6 +264,69 @@ describe('handleFetch', () => {
   });
 });
 
+describe('handleFetch --- force_refresh', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getCachedContent).mockReturnValue(null);
+    vi.mocked(isExpired).mockReturnValue(false);
+  });
+
+  it('bypasses cache when force_refresh is true', async () => {
+    const cached = makeCached();
+    vi.mocked(getCachedContent).mockReturnValue(cached);
+    vi.mocked(isExpired).mockReturnValue(false);
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction({ markdown: 'fresh content' }));
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com', force_refresh: true };
+
+    const result = await handleFetch(input, router);
+
+    expect(router.fetch).toHaveBeenCalledOnce();
+    expect(result.cached).toBe(false);
+    expect(result.markdown).toContain('fresh content');
+  });
+
+  it('still caches the fresh result after force_refresh', async () => {
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction({ markdown: 'newly fetched' }));
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com', force_refresh: true };
+
+    await handleFetch(input, router);
+
+    expect(vi.mocked(cacheContent)).toHaveBeenCalledOnce();
+  });
+
+  it('uses cache when force_refresh is false', async () => {
+    const cached = makeCached();
+    vi.mocked(getCachedContent).mockReturnValue(cached);
+    vi.mocked(isExpired).mockReturnValue(false);
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com', force_refresh: false };
+
+    const result = await handleFetch(input, router);
+
+    expect(router.fetch).not.toHaveBeenCalled();
+    expect(result.cached).toBe(true);
+  });
+
+  it('uses cache when force_refresh is undefined', async () => {
+    const cached = makeCached();
+    vi.mocked(getCachedContent).mockReturnValue(cached);
+    vi.mocked(isExpired).mockReturnValue(false);
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const result = await handleFetch(input, router);
+
+    expect(router.fetch).not.toHaveBeenCalled();
+    expect(result.cached).toBe(true);
+  });
+});
+
 describe('handleFetch --- actions support', () => {
   beforeEach(() => {
     vi.clearAllMocks();
