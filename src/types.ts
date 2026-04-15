@@ -143,6 +143,7 @@ export interface SearchResultItem {
   fetch_failed?: string;
   content_truncated?: boolean;
   relevance_score: number;
+  published_date?: string; // ISO date string, when engine provides it
 }
 
 export interface SearchOutput {
@@ -247,6 +248,7 @@ export interface RawSearchResult {
   snippet: string;
   relevance_score: number;
   engine: string;
+  published_date?: string; // ISO date string, when engine provides it
 }
 
 export interface SearchEngineOptions {

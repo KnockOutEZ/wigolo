@@ -70,4 +70,13 @@ describe('SearxngClient', () => {
     const client = new SearxngClient('http://localhost:8888');
     expect(client.name).toBe('searxng');
   });
+
+  it('propagates publishedDate when SearXNG response includes it', async () => {
+    const client = new SearxngClient(`http://127.0.0.1:${port}`);
+    const results = await client.search('typescript tutorial');
+    const dated = results.find(r => r.url === 'https://www.learn-ts.org/');
+    expect(dated?.published_date).toBe('2026-04-01T00:00:00Z');
+    const undated = results.find(r => r.title === 'TypeScript: Handbook');
+    expect(undated?.published_date).toBeUndefined();
+  });
 });

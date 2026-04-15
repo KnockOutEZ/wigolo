@@ -46,4 +46,23 @@ describe('deduplicateResults', () => {
     const merged = deduplicateResults(results);
     expect(merged[0].url).toBe('https://www.example.com/page?ref=1');
   });
+
+  it('preserves published_date on merge (best score wins)', () => {
+    const results: RawSearchResult[] = [
+      { title: 'Fresh', url: 'https://a.com', snippet: '', relevance_score: 0.9, engine: 'a', published_date: '2026-04-10T00:00:00Z' },
+      { title: 'Fresh dup', url: 'https://a.com', snippet: '', relevance_score: 0.5, engine: 'b' },
+    ];
+    const merged = deduplicateResults(results);
+    expect(merged[0].published_date).toBe('2026-04-10T00:00:00Z');
+  });
+
+  it('preserves published_date when higher-score duplicate has it', () => {
+    const results: RawSearchResult[] = [
+      { title: 'Old', url: 'https://a.com', snippet: '', relevance_score: 0.5, engine: 'a' },
+      { title: 'New', url: 'https://a.com', snippet: '', relevance_score: 0.9, engine: 'b', published_date: '2026-04-10T00:00:00Z' },
+    ];
+    const merged = deduplicateResults(results);
+    expect(merged[0].published_date).toBe('2026-04-10T00:00:00Z');
+    expect(merged[0].relevance_score).toBe(0.9);
+  });
 });

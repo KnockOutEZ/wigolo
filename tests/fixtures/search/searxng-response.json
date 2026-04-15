@@ -16,7 +16,8 @@
       "content": "An interactive TypeScript tutorial for beginners.",
       "score": 0.82,
       "engine": "bing",
-      "engines": ["bing"]
+      "engines": ["bing"],
+      "publishedDate": "2026-04-01T00:00:00Z"
     },
     {
       "title": "TypeScript for JavaScript Developers",

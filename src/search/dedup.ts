@@ -7,6 +7,7 @@ export interface MergedSearchResult {
   snippet: string;
   relevance_score: number;
   engines: string[];
+  published_date?: string;
 }
 
 export function deduplicateResults(results: RawSearchResult[]): MergedSearchResult[] {
@@ -28,6 +29,9 @@ export function deduplicateResults(results: RawSearchResult[]): MergedSearchResu
         existing.title = result.title;
         existing.snippet = result.snippet;
       }
+      if (result.published_date && !existing.published_date) {
+        existing.published_date = result.published_date;
+      }
       if (!existing.engines.includes(result.engine)) {
         existing.engines.push(result.engine);
       }
@@ -38,6 +42,7 @@ export function deduplicateResults(results: RawSearchResult[]): MergedSearchResu
         snippet: result.snippet,
         relevance_score: result.relevance_score,
         engines: [result.engine],
+        ...(result.published_date ? { published_date: result.published_date } : {}),
       });
     }
   }

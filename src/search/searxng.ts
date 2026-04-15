@@ -38,6 +38,8 @@ interface SearxngApiResult {
   score?: number | null;
   engine: string;
   engines: string[];
+  publishedDate?: string | null;
+  pubdate?: string | null;
 }
 
 interface SearxngApiResponse {
@@ -100,12 +102,16 @@ export class SearxngClient implements SearchEngine {
     const data = (await response.json()) as SearxngApiResponse;
     const total = data.results.length;
 
-    return data.results.slice(0, maxResults).map((r, i) => ({
-      title: r.title,
-      url: r.url,
-      snippet: r.content,
-      relevance_score: r.score != null ? Math.min(r.score, 1) : 1 - i / Math.max(total, 1),
-      engine: 'searxng',
-    }));
+    return data.results.slice(0, maxResults).map((r, i) => {
+      const published = r.publishedDate ?? r.pubdate ?? undefined;
+      return {
+        title: r.title,
+        url: r.url,
+        snippet: r.content,
+        relevance_score: r.score != null ? Math.min(r.score, 1) : 1 - i / Math.max(total, 1),
+        engine: 'searxng',
+        ...(published ? { published_date: published } : {}),
+      };
+    });
   }
 }
