@@ -50,4 +50,11 @@ describe('parseCommand', () => {
       args: ['--non-interactive', '--agents', 'claude-code,cursor'],
     });
   });
+
+  it('passes --plain flag through to warmup args', () => {
+    expect(parseCommand(['warmup', '--plain'])).toEqual({
+      command: 'warmup',
+      args: ['--plain'],
+    });
+  });
 });
