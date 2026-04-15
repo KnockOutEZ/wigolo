@@ -20,6 +20,8 @@ export interface WarmupResult {
   webkitError?: string;
   embeddings?: 'ok' | 'failed';
   embeddingsError?: string;
+  lightpanda?: 'ok' | 'failed';
+  lightpandaError?: string;
 }
 
 function log(msg: string): void {
@@ -122,6 +124,32 @@ function installSentenceTransformers(): Pick<WarmupResult, 'embeddings' | 'embed
   }
 }
 
+function installLightpanda(): Pick<WarmupResult, 'lightpanda' | 'lightpandaError'> {
+  log('Installing Lightpanda...');
+  try {
+    const config = getConfig();
+    const binDir = join(config.dataDir, 'bin');
+    const binPath = join(binDir, 'lightpanda');
+    if (existsSync(binPath)) {
+      log('Lightpanda already installed');
+      return { lightpanda: 'ok' };
+    }
+    const platform = process.platform === 'darwin' ? 'macos' : 'linux';
+    const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
+    const url = `https://github.com/nichochar/lightpanda/releases/latest/download/lightpanda-${platform}-${arch}`;
+    execSync(`mkdir -p "${binDir}" && curl -fsSL "${url}" -o "${binPath}" && chmod +x "${binPath}"`, {
+      stdio: 'pipe',
+      timeout: 120000,
+    });
+    log('Lightpanda installed');
+    return { lightpanda: 'ok' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`Lightpanda install failed: ${message}`);
+    return { lightpanda: 'failed', lightpandaError: message };
+  }
+}
+
 function installWebkit(): Pick<WarmupResult, 'webkit' | 'webkitError'> {
   log('Installing Playwright WebKit...');
   try {
@@ -209,6 +237,11 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
     embeddingsResult = installSentenceTransformers();
   }
 
+  let lightpandaResult: Pick<WarmupResult, 'lightpanda' | 'lightpandaError'> = {};
+  if (flagSet.has('--lightpanda') || flagSet.has('--all')) {
+    lightpandaResult = installLightpanda();
+  }
+
   const result: WarmupResult = {
     ...pwResult,
     ...searxngResult,
@@ -217,6 +250,7 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
     ...firefoxResult,
     ...webkitResult,
     ...embeddingsResult,
+    ...lightpandaResult,
   };
 
   log('');
@@ -237,6 +271,9 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
   }
   if (result.embeddings) {
     log(`  Embeddings:    ${result.embeddings}${result.embeddingsError ? ` (${result.embeddingsError})` : ''}`);
+  }
+  if (result.lightpanda) {
+    log(`  Lightpanda:    ${result.lightpanda}${result.lightpandaError ? ` (${result.lightpandaError})` : ''}`);
   }
 
   return result;

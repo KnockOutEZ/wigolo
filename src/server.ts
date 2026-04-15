@@ -679,7 +679,8 @@ export function createMcpServer(subsystems: Subsystems): Server {
 
     if (name === 'agent') {
       const input = (args ?? {}) as unknown as AgentInput;
-      const result = await handleAgent(input, searchEngines, router, backendStatus);
+      const samplingServer = server as unknown as SamplingCapableServer;
+      const result = await handleAgent(input, searchEngines, router, backendStatus, samplingServer);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         isError: !!result.error,

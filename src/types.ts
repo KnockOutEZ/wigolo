@@ -79,7 +79,7 @@ export interface ExtractionResult {
 
 export type ExtractorType = 'defuddle' | 'readability' | 'turndown' | 'site-specific' | 'trafilatura';
 
-export type BrowserType = 'chromium' | 'firefox' | 'webkit';
+export type BrowserType = 'chromium' | 'firefox' | 'webkit' | 'lightpanda';
 
 export interface CDPSession {
   id: string;
