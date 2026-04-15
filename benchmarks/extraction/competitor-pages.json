@@ -1,0 +1,46 @@
+{
+  "version": "1.0.0",
+  "description": "Real URLs used to compare wigolo extraction quality against Tavily, Firecrawl, and Exa. Pages chosen for diversity (docs, articles, code-heavy) and stability.",
+  "pages": [
+    {
+      "id": "mdn-js-functions",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Functions",
+      "category": "docs"
+    },
+    {
+      "id": "react-usestate",
+      "url": "https://react.dev/reference/react/useState",
+      "category": "docs"
+    },
+    {
+      "id": "python-functools",
+      "url": "https://docs.python.org/3/library/functools.html",
+      "category": "docs"
+    },
+    {
+      "id": "wiki-llm",
+      "url": "https://en.wikipedia.org/wiki/Large_language_model",
+      "category": "article"
+    },
+    {
+      "id": "ts-readme",
+      "url": "https://github.com/microsoft/TypeScript/blob/main/README.md",
+      "category": "github"
+    },
+    {
+      "id": "so-closures",
+      "url": "https://stackoverflow.com/questions/111102/how-do-javascript-closures-work",
+      "category": "stackoverflow"
+    },
+    {
+      "id": "arxiv-gpt4",
+      "url": "https://arxiv.org/abs/2303.08774",
+      "category": "article"
+    },
+    {
+      "id": "rust-ownership",
+      "url": "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html",
+      "category": "docs"
+    }
+  ]
+}

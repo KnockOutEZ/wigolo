@@ -50,6 +50,7 @@
     "test:e2e": "vitest run tests/e2e",
     "lint": "tsc --noEmit",
     "bench:extraction": "tsx benchmarks/extraction/runner.ts",
+    "bench:compare": "tsx --env-file-if-exists=.env benchmarks/extraction/compare.ts",
     "bench:search": "tsx benchmarks/search/runner.ts",
     "bench:agent": "tsx benchmarks/agent/runner.ts"
   },

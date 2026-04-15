@@ -18,6 +18,10 @@ dist/
 # Test coverage
 coverage/
 
+# Benchmark output (generated)
+benchmarks/extraction/output/
+benchmarks/extraction/.compare-cache/
+
 # Git worktrees
 .worktrees/
 
