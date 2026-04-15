@@ -32,8 +32,8 @@ export const WIGOLO_INSTRUCTIONS = `Wigolo is a local-first web access layer: se
 
 | Intent | Tool | Key parameters |
 |--------|------|----------------|
-| Documentation lookup | \`search\` | \`include_domains: ["react.dev", "docs.python.org"]\`, \`category: "docs"\` |
-| Error debugging | \`search\` | exact error string as query, \`category: "code"\` |
+| Documentation lookup | \`search\` | \`include_domains: ["react.dev", "nextjs.org"]\` -- scope to the project's official site, do not rely on \`category: "docs"\` alone |
+| Error debugging | \`search\` | exact error string as query, \`category: "code"\` (no domain scoping -- errors appear everywhere) |
 | Library research | \`crawl\` | seed URL of docs site, \`strategy: "sitemap"\`, then \`cache\` for later queries |
 | Related content | \`find_similar\` | \`url\` of a known good page, or \`concept\` as free text |
 | Direct answer | \`search\` | \`format: "answer"\` for a synthesized direct response |
@@ -44,40 +44,57 @@ export const WIGOLO_INSTRUCTIONS = `Wigolo is a local-first web access layer: se
 
 ## Rapidly changing content
 
-For news, prices, status pages, release notes, or any content that changes frequently, bypass the cache with \`force_refresh: true\`:
+For news, prices, status pages, or release notes, bypass the cache with \`force_refresh: true\`:
 
   search({ query: "...", force_refresh: true })
   fetch({ url: "...", force_refresh: true })
 
-When freshness matters more than speed, use \`force_refresh\`. When speed matters more than freshness (documentation, tutorials, reference pages), let the cache work -- it is much faster.
+For docs, tutorials, and reference pages, let the cache work -- much faster.
 
 ## Check the cache before going to the network
 
-Before every \`search\` or \`fetch\`, consider a \`cache\` call with the query text or URL pattern. Pages read in this or a prior session return instantly with their full markdown -- no network, no rate limits. The \`research\` and \`agent\` tools check the cache internally, so you do not need a separate call for those.
+Before every \`search\` or \`fetch\`, consider a \`cache\` call. Pages read this session or earlier return instantly with full markdown -- no network. \`research\` and \`agent\` check the cache internally.
 
 ## Multi-query search strategy
 
-For broad or exploratory queries, pass an array of 3-5 semantically varied keyword forms rather than a single natural-language question. Example: instead of "how does React handle state management", pass \`["react state management", "useState useReducer patterns", "react hooks state", "react context vs redux"]\`. The search tool deduplicates across sub-queries automatically.
+For broad queries, pass an array of 3-5 semantically varied keyword forms rather than one natural-language question. Example: instead of "how does React handle state management", pass \`["react state management", "useState useReducer", "react hooks state", "react context vs redux"]\`. Sub-queries are deduplicated automatically.
 
 ## Pick the right strategy
 
-- For documentation sites, prefer \`crawl\` with \`strategy: "sitemap"\` -- it is faster and more complete than BFS because it reads sitemap.xml directly.
-- When you only need to discover what pages exist on a site, use \`crawl\` with \`strategy: "map"\`. It returns URLs only, no content, and is far cheaper than a full crawl. Follow up with targeted \`fetch\` calls.
-- For structured data (prices, specs, listings, table rows), use \`extract\` with \`mode: "schema"\` or \`mode: "tables"\`. Reach for \`fetch\` only when you want the whole page as markdown.
-- For complex questions requiring synthesis from multiple sources, use \`research\` instead of manually chaining \`search\` + \`fetch\` calls.
-- For natural-language data gathering tasks ("find the pricing for the top 5 CRM tools"), use \`agent\` with an optional \`schema\` to structure the output.
+- For docs sites, prefer \`crawl\` with \`strategy: "sitemap"\` -- faster and more complete than BFS.
+- For URL discovery only, use \`crawl\` with \`strategy: "map"\` -- URLs only, no content. Follow with targeted \`fetch\` calls.
+- For structured data (prices, specs, table rows), use \`extract\` with \`mode: "schema"\` or \`mode: "tables"\`. Use \`fetch\` only when you want the whole page as markdown.
+- For multi-source synthesis, use \`research\` instead of chaining \`search\` + \`fetch\` manually.
+- For natural-language data gathering ("find pricing for top 5 CRM tools"), use \`agent\` with optional \`schema\`.
 
-## Scope searches, do not just broaden queries
+## Scope searches by domain — biggest single quality lever
 
-\`search\` accepts \`include_domains\` (e.g. \`["react.dev", "developer.mozilla.org"]\`) and a \`category\` such as \`"docs"\`, \`"code"\`, \`"news"\`, or \`"papers"\`. A scoped query usually beats a broader query with post-filtering.
+For framework, library, SDK, or tool-specific queries, **always pass \`include_domains\` with the project's official site(s)**. Unscoped queries return generic results from sites that happen to mention the keywords (MDN glossary entries, Docker images, unrelated tutorials). Domain scoping is the single biggest quality improvement for these queries.
+
+Examples:
+
+  search({ query: "Next.js authentication App Router", include_domains: ["nextjs.org", "authjs.dev", "clerk.com"] })
+  search({ query: "react server components", include_domains: ["react.dev", "nextjs.org"] })
+  search({ query: "prisma migrations", include_domains: ["prisma.io"] })
+  search({ query: "stripe webhooks", include_domains: ["stripe.com", "docs.stripe.com"] })
+
+When NOT to scope:
+
+- Error strings (errors surface across many sites)
+- Broad exploration ("state management 2026")
+- News and current events
+
+If a first unscoped \`search\` returns noisy results, retry with \`include_domains\` scoped to the official source rather than rephrasing the query.
+
+\`category\` (\`"general"\`, \`"news"\`, \`"code"\`, \`"docs"\`, \`"papers"\`) is a coarse content-type filter and is no substitute for domain scoping. \`category: "docs"\` on its own returns generic documentation portals, not the docs you want -- pair it with \`include_domains\` or omit it.
 
 ## Performance
 
-- \`max_results: 3\` for focused lookups; \`5\` is the default; \`10+\` only for broad research.
-- \`fetch\` with \`section: "Heading Name"\` returns just the content under that heading. Cheaper and more relevant than the whole page.
-- Repeated fetches of the same URL are free -- served directly from the SQLite cache.
-- \`research\` with \`depth: "quick"\` is fast (~15s) and sufficient for most factual questions. Reserve \`"comprehensive"\` for topics requiring deep investigation.
-- \`agent\` respects \`max_pages\` (default 10) and \`max_time_ms\` (default 60s) to bound resource usage.
+- \`max_results: 3\` for focused lookups; \`5\` default; \`10+\` only for broad research.
+- \`fetch\` with \`section: "Heading Name"\` returns content under that heading -- cheaper than the whole page.
+- Repeated fetches of the same URL are free (SQLite cache).
+- \`research\` with \`depth: "quick"\` (~15s) suits most factual questions; reserve \`"comprehensive"\` for deep investigation.
+- \`agent\` respects \`max_pages\` (default 10) and \`max_time_ms\` (default 60s).
 
 ## Capabilities worth knowing
 
@@ -106,8 +123,8 @@ Use force_refresh: true for pages that change frequently (news sites, changelogs
 
 Key parameters:
 - query: a search string, or an array of 3-5 semantically varied keyword forms for broader coverage. Arrays are deduplicated and merged automatically.
-- include_domains/exclude_domains: scope results to specific sites (e.g., include_domains: ["react.dev"])
-- category: "general", "news", "code", "docs", "papers" -- filters by content type
+- include_domains/exclude_domains: scope results to specific sites (e.g., ["react.dev", "nextjs.org"]). For framework/library queries, ALWAYS scope to the official site -- unscoped queries return noise.
+- category: "general", "news", "code", "docs", "papers" -- coarse content-type filter. "docs" alone returns generic portals; pair with include_domains or omit.
 - from_date/to_date: ISO dates for time-bounded queries
 - max_results: default 5. Use 3 for focused queries, 10+ for research.
 - format: "full" (default, structured JSON), "context" (single token-budgeted string for LLM injection), "answer" (synthesized direct answer via requestSampling), "stream_answer" (same as answer, with MCP progress notifications emitted between pipeline phases)

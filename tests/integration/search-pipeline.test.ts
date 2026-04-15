@@ -27,7 +27,9 @@ describe('search pipeline integration', () => {
   afterAll(() => contentServer.close());
 
   beforeEach(() => {
-    process.env = { ...originalEnv, VALIDATE_LINKS: 'false' };
+    // Pin reranker off so dedup score assertions are not rewritten by FlashRank
+    // (the default reranker is now 'flashrank' when the model is available).
+    process.env = { ...originalEnv, VALIDATE_LINKS: 'false', WIGOLO_RERANKER: 'none' };
     resetConfig();
     initDatabase(':memory:');
   });

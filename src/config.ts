@@ -124,7 +124,7 @@ export function getConfig(): Config {
     logLevel: (envStr('LOG_LEVEL', 'info') as Config['logLevel']),
     logFormat: (envStr('LOG_FORMAT', 'json') as Config['logFormat']),
     trafilatura: (envStr('WIGOLO_TRAFILATURA', 'auto') as 'auto' | 'always' | 'never'),
-    reranker: (envStr('WIGOLO_RERANKER') ?? 'none') as Config['reranker'],
+    reranker: (envStr('WIGOLO_RERANKER') ?? 'flashrank') as Config['reranker'],
     rerankerModel: envStr('WIGOLO_RERANKER_MODEL') ?? 'ms-marco-MiniLM-L-12-v2',
     relevanceThreshold: parseFloat(envStr('WIGOLO_RELEVANCE_THRESHOLD') ?? '0') || 0,
     bootstrapMaxAttempts: envInt('WIGOLO_BOOTSTRAP_MAX_ATTEMPTS', 3),

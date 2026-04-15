@@ -32,7 +32,10 @@ describe('integration: rerank in search pipeline', () => {
   } as unknown as SmartRouter;
 
   beforeEach(() => {
-    process.env = { ...originalEnv, VALIDATE_LINKS: 'false' };
+    // These tests assert engine-provided scores pass through unchanged.
+    // The default reranker is now 'flashrank' which would rewrite scores when
+    // the FlashRank model is available, so opt out explicitly for passthrough.
+    process.env = { ...originalEnv, VALIDATE_LINKS: 'false', WIGOLO_RERANKER: 'none' };
     resetConfig();
     initDatabase(':memory:');
     vi.clearAllMocks();

@@ -64,8 +64,14 @@ describe('config', () => {
       expect(getConfig().reranker).toBe('flashrank');
     });
 
-    it('defaults WIGOLO_RERANKER to none', () => {
+    it('defaults WIGOLO_RERANKER to flashrank (graceful fallback when not installed)', () => {
       delete process.env.WIGOLO_RERANKER;
+      resetConfig();
+      expect(getConfig().reranker).toBe('flashrank');
+    });
+
+    it('respects explicit WIGOLO_RERANKER=none to disable reranking', () => {
+      process.env.WIGOLO_RERANKER = 'none';
       resetConfig();
       expect(getConfig().reranker).toBe('none');
     });

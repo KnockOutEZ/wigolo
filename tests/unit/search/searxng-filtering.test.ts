@@ -71,8 +71,10 @@ describe('SearxngClient search filtering params', () => {
     expect(calledUrl.searchParams.get('categories')).toBe('science');
   });
 
-  // 4. Category mapping: 'docs' -> SearXNG 'it'
-  it('maps category "docs" to SearXNG categories param "it"', async () => {
+  // 4. Category 'docs' without include_domains routes to 'general' to avoid generic
+  // documentation noise (MDN, Docker docs) returned by SearXNG's 'it' category.
+  // Relevance is left to reranking + post-filtering.
+  it('maps category "docs" to SearXNG categories param "general" (no include_domains)', async () => {
     const fetchSpy = mockFetch();
     globalThis.fetch = fetchSpy;
 
@@ -80,7 +82,21 @@ describe('SearxngClient search filtering params', () => {
     await client.search('typescript generics', { category: 'docs' });
 
     const calledUrl = new URL(fetchSpy.mock.calls[0][0]);
-    expect(calledUrl.searchParams.get('categories')).toBe('it');
+    expect(calledUrl.searchParams.get('categories')).toBe('general');
+  });
+
+  // 4a. Category 'docs' with include_domains keeps 'general' too — domain scoping
+  // already narrows the result set, IT category would be redundant.
+  it('maps category "docs" + include_domains to SearXNG "general"', async () => {
+    const fetchSpy = mockFetch();
+    globalThis.fetch = fetchSpy;
+
+    const client = new SearxngClient('http://localhost:8888');
+    await client.search('hooks', { category: 'docs', includeDomains: ['react.dev'] });
+
+    const calledUrl = new URL(fetchSpy.mock.calls[0][0]);
+    expect(calledUrl.searchParams.get('categories')).toBe('general');
+    expect(calledUrl.searchParams.get('q')).toContain('site:react.dev');
   });
 
   // 5. No category — categories param not sent

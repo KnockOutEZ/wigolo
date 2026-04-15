@@ -4,11 +4,16 @@ import { createLogger } from '../logger.js';
 
 const log = createLogger('search');
 
+// 'docs' deliberately routes to 'general' instead of SearXNG's 'it' category.
+// SearXNG 'it' returns generic developer docs (MDN, Docker, Stack Overflow, etc.)
+// regardless of the query subject — e.g. "Next.js authentication" surfaces
+// MDN WebRTC docs. Domain scoping (include_domains) + reranking handle relevance
+// far better than category narrowing for AI-driven queries.
 const CATEGORY_MAP: Record<string, string> = {
   general: 'general',
   news: 'news',
   code: 'it',
-  docs: 'it',
+  docs: 'general',
   papers: 'science',
   images: 'images',
 };
