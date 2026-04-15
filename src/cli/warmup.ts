@@ -2,12 +2,13 @@ import { existsSync, readFileSync, rmSync, mkdirSync, createWriteStream, chmodSy
 import { join } from 'node:path';
 import { getConfig } from '../config.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../searxng/bootstrap.js';
-import { isProcessAlive, SearxngProcess } from '../searxng/process.js';
+import { isProcessAlive } from '../searxng/process.js';
 import { resetAvailabilityCache } from '../search/flashrank.js';
 import { getPythonBin } from '../python-env.js';
 import { runCommand } from './tui/run-command.js';
 import type { WarmupReporter } from './tui/reporter.js';
 import { autoReporter } from './tui/reporter-auto.js';
+import { runVerify as runVerifyTui } from './tui/verify.js';
 
 export interface WarmupResult {
   playwright: 'ok' | 'failed';
@@ -213,60 +214,9 @@ async function runSearxngPhase(dataDir: string, reporter: WarmupReporter): Promi
 async function runVerify(dataDir: string, reporter: WarmupReporter): Promise<void> {
   reporter.note('');
   reporter.note('Verifying setup...');
-
-  const searxngPath = join(dataDir, 'searxng');
-  const proc = new SearxngProcess(searxngPath, dataDir);
-  let url: string | null = null;
-  try {
-    url = await proc.start();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    reporter.note(`  SearXNG:       FAILED to start (${message})`);
-    try { await proc.stop(); } catch {}
-    return;
-  }
-
-  if (!url) {
-    reporter.note('  SearXNG:       FAILED to start');
-    try { await proc.stop(); } catch {}
-    return;
-  }
-
-  reporter.note(`  SearXNG:       OK (${url})`);
-
-  try {
-    const response = await fetch(`${url}/search?q=test&format=json`);
-    if (response.ok) {
-      const body = await response.json() as { results?: unknown[] };
-      const count = Array.isArray(body.results) ? body.results.length : 0;
-      reporter.note(`  Test search:   OK (${count} results)`);
-    } else {
-      reporter.note(`  Test search:   FAILED (HTTP ${response.status})`);
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    reporter.note(`  Test search:   FAILED (${message})`);
-  }
-
-  const py = getPythonBin(dataDir);
-  const pkgs: Array<[string, string]> = [
-    ['flashrank', 'FlashRank'],
-    ['trafilatura', 'Trafilatura'],
-    ['sentence_transformers', 'Embeddings'],
-  ];
-  for (const [mod, label] of pkgs) {
-    const r = await runCommand(py, ['-c', `import ${mod}`], { timeout: 30000 });
-    if (r.code === 0) {
-      reporter.note(`  ${label.padEnd(13)}  OK`);
-    } else {
-      reporter.note(`  ${label.padEnd(13)}  not installed`);
-    }
-  }
-
-  try { await proc.stop(); } catch {}
-
+  await runVerifyTui(dataDir, reporter);
   reporter.note('');
-  reporter.note('✓ All systems ready. Connect to your AI tool:');
+  reporter.note('✓ Done. Connect to your AI tool:');
   reporter.note('  claude mcp add wigolo -- npx @staticn0va/wigolo');
 }
 
