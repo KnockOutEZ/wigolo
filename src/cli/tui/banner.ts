@@ -15,3 +15,16 @@ export function renderBanner(version: string): string {
 
   return [colored, tagline, versionText, ''].filter(l => l !== '').join('\n') + '\n';
 }
+
+const ADD_MCP_BANNER_LINES: readonly string[] = [
+  '  ╔═╗╔╦╗╔╦╗  ╔╦╗╔═╗╔═╗',
+  '  ╠═╣ ║║ ║║  ║║║║  ╠═╝',
+  '  ╩ ╩═╩╝═╩╝  ╩ ╩╚═╝╩  ',
+];
+
+export function printAddMcpBanner(): void {
+  for (const line of ADD_MCP_BANNER_LINES) {
+    process.stderr.write(`${line}\n`);
+  }
+  process.stderr.write('  ADD MCP — Wire wigolo into your AI tools.\n\n');
+}

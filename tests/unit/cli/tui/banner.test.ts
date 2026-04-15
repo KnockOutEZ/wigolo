@@ -41,3 +41,24 @@ describe('renderBanner', () => {
     expect(banner.split('\n').length).toBeGreaterThanOrEqual(4);
   });
 });
+
+describe('printAddMcpBanner', () => {
+  it('writes the ADD MCP banner block to stderr', async () => {
+    const { printAddMcpBanner } = await import('../../../../src/cli/tui/banner.js');
+    const chunks: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    (process.stderr.write as unknown) = ((s: string | Uint8Array) => {
+      chunks.push(typeof s === 'string' ? s : Buffer.from(s).toString('utf-8'));
+      return true;
+    });
+    try {
+      printAddMcpBanner();
+    } finally {
+      (process.stderr.write as unknown) = orig;
+    }
+    const output = chunks.join('');
+    expect(output).toContain('ADD');
+    expect(output).toContain('MCP');
+    expect(output.split('\n').length).toBeGreaterThanOrEqual(3);
+  });
+});
