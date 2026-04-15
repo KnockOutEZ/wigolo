@@ -3,6 +3,7 @@ import { spawn, execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ExtractionResult } from '../types.js';
 import { createLogger } from '../logger.js';
+import { getPythonBin } from '../python-env.js';
 
 const execFileAsync = promisify(execFileCb);
 const log = createLogger('extract');
@@ -24,7 +25,7 @@ let availableCache: boolean | null = null;
 export async function isTrafilaturaAvailable(): Promise<boolean> {
   if (availableCache !== null) return availableCache;
   try {
-    await execFileAsync('python3', ['-c', 'import trafilatura'], {
+    await execFileAsync(getPythonBin(), ['-c', 'import trafilatura'], {
       timeout: AVAILABILITY_CHECK_TIMEOUT_MS,
     });
     availableCache = true;
@@ -46,7 +47,7 @@ export function runPythonWithStdin(
   const procRef = { current: null as ReturnType<typeof spawn> | null };
 
   const procPromise = new Promise<string>((resolve, reject) => {
-    const proc = spawn('python3', ['-c', script], { timeout: timeoutMs });
+    const proc = spawn(getPythonBin(), ['-c', script], { timeout: timeoutMs });
     procRef.current = proc;
     let stdout = '';
     let stderr = '';

@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getBootstrapState, type BootstrapState } from '../searxng/bootstrap.js';
 import { isProcessAlive } from '../searxng/process.js';
+import { getPythonBin } from '../python-env.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
 
@@ -38,10 +39,13 @@ function checkPlaywright(): { installed: boolean; version?: string; browsers: { 
   return { installed, version, browsers: { chromium: probe('chromium'), firefox: probe('firefox'), webkit: probe('webkit') } };
 }
 
-function checkPyPackage(name: string): { ok: boolean; version?: string } {
-  const r = spawnSync('python3', ['-c', `import ${name}; print(${name}.__version__)`], { encoding: 'utf-8' });
-  if (r.status !== 0 || r.error) return { ok: false };
-  return { ok: true, version: (r.stdout || '').trim() };
+function checkPyPackage(name: string, pythonBin: string): { ok: boolean; version?: string } {
+  const importCheck = spawnSync(pythonBin, ['-c', `import ${name}`], { encoding: 'utf-8' });
+  if (importCheck.status !== 0 || importCheck.error) return { ok: false };
+  const versionCheck = spawnSync(pythonBin, ['-c', `import ${name}; print(${name}.__version__)`], { encoding: 'utf-8' });
+  if (versionCheck.status !== 0 || versionCheck.error) return { ok: true };
+  const version = (versionCheck.stdout || '').trim();
+  return { ok: true, version: version || undefined };
 }
 
 function humanRetry(nextRetryAt?: string): string {
@@ -81,11 +85,12 @@ export async function runDoctor(dataDir: string): Promise<number> {
   if (!pw.installed || !pw.browsers.chromium) degraded = true;
 
   out('');
-  const traf = checkPyPackage('trafilatura');
-  const flash = checkPyPackage('flashrank');
+  const pythonBin = getPythonBin(dataDir);
+  const traf = checkPyPackage('trafilatura', pythonBin);
+  const flash = checkPyPackage('flashrank', pythonBin);
   out('[wigolo doctor] Optional Python packages:');
-  out(`  Trafilatura:   ${traf.ok ? `installed (v${traf.version})` : 'not installed'}`);
-  out(`  FlashRank:     ${flash.ok ? `installed (v${flash.version})` : 'not installed'}`);
+  out(`  Trafilatura:   ${traf.ok ? `installed${traf.version ? ` (v${traf.version})` : ''}` : 'not installed'}`);
+  out(`  FlashRank:     ${flash.ok ? `installed${flash.version ? ` (v${flash.version})` : ''}` : 'not installed'}`);
 
   out('');
   const state = getBootstrapState(dataDir) as BootstrapState | null;
@@ -119,15 +124,13 @@ export async function runDoctor(dataDir: string): Promise<number> {
       if (lock.pid && isProcessAlive(lock.pid)) {
         out(`[wigolo doctor] SearXNG process:  running (pid ${lock.pid}, port ${lock.port ?? '?'})`);
       } else {
-        out('[wigolo doctor] SearXNG process:  lock exists but pid is dead');
-        if (state?.status === 'ready') degraded = true;
+        out('[wigolo doctor] SearXNG process:  stale lock (process exited) — will be cleaned on next start');
       }
     } catch {
-      out('[wigolo doctor] SearXNG process:  lock file unparseable');
+      out('[wigolo doctor] SearXNG process:  lock file unparseable — will be cleaned on next start');
     }
   } else {
-    out('[wigolo doctor] SearXNG process:  not running');
-    if (state?.status === 'ready') degraded = true;
+    out('[wigolo doctor] SearXNG process:  not running (starts on-demand with MCP server)');
   }
 
   if (state?.status === 'failed') {

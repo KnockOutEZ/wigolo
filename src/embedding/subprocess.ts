@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
+import { getPythonBin } from '../python-env.js';
 
 const log = createLogger('embedding');
 
@@ -122,7 +123,7 @@ export class EmbeddingSubprocess {
     try {
       log.info('spawning embedding subprocess', { model: config.embeddingModel });
 
-      const proc = spawn('python3', [
+      const proc = spawn(getPythonBin(), [
         SCRIPT_PATH,
         config.embeddingModel,
         String(config.embeddingMaxTextLength),

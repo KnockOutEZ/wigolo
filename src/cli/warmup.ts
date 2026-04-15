@@ -3,8 +3,9 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { getConfig } from '../config.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../searxng/bootstrap.js';
-import { isProcessAlive } from '../searxng/process.js';
+import { isProcessAlive, SearxngProcess } from '../searxng/process.js';
 import { resetAvailabilityCache } from '../search/flashrank.js';
+import { getPythonBin } from '../python-env.js';
 
 export interface WarmupResult {
   playwright: 'ok' | 'failed';
@@ -65,10 +66,11 @@ function installPlaywright(): Pick<WarmupResult, 'playwright' | 'playwrightError
   }
 }
 
-function installTrafilatura(): 'ok' | 'failed' {
+function installTrafilatura(dataDir: string): 'ok' | 'failed' {
   log('Installing Trafilatura...');
   try {
-    execSync('python3 -m pip install --quiet trafilatura', {
+    const py = getPythonBin(dataDir);
+    execSync(`${py} -m pip install --quiet trafilatura`, {
       stdio: 'pipe',
       timeout: 120000,
     });
@@ -81,10 +83,11 @@ function installTrafilatura(): 'ok' | 'failed' {
   }
 }
 
-function installFlashRank(): Pick<WarmupResult, 'reranker' | 'rerankerError'> {
+function installFlashRank(dataDir: string): Pick<WarmupResult, 'reranker' | 'rerankerError'> {
   log('Installing FlashRank...');
   try {
-    execSync('python3 -m pip install --quiet flashrank', { stdio: 'pipe', timeout: 120000 });
+    const py = getPythonBin(dataDir);
+    execSync(`${py} -m pip install --quiet flashrank`, { stdio: 'pipe', timeout: 120000 });
     resetAvailabilityCache();
     log('FlashRank installed successfully');
     return { reranker: 'ok' };
@@ -108,10 +111,11 @@ function installFirefox(): Pick<WarmupResult, 'firefox' | 'firefoxError'> {
   }
 }
 
-function installSentenceTransformers(): Pick<WarmupResult, 'embeddings' | 'embeddingsError'> {
+function installSentenceTransformers(dataDir: string): Pick<WarmupResult, 'embeddings' | 'embeddingsError'> {
   log('Installing sentence-transformers...');
   try {
-    execSync('python3 -m pip install --quiet sentence-transformers', {
+    const py = getPythonBin(dataDir);
+    execSync(`${py} -m pip install --quiet sentence-transformers`, {
       stdio: 'pipe',
       timeout: 300000,
     });
@@ -124,6 +128,15 @@ function installSentenceTransformers(): Pick<WarmupResult, 'embeddings' | 'embed
   }
 }
 
+function getLightpandaUrl(): string {
+  const platform = process.platform;
+  const arch = process.arch;
+  const base = 'https://github.com/lightpanda-io/browser/releases/download/nightly';
+  if (platform === 'darwin' && arch === 'arm64') return `${base}/lightpanda-aarch64-macos`;
+  if (platform === 'linux' && arch === 'x64') return `${base}/lightpanda-x86_64-linux`;
+  throw new Error(`Lightpanda not available for ${platform}/${arch}`);
+}
+
 function installLightpanda(): Pick<WarmupResult, 'lightpanda' | 'lightpandaError'> {
   log('Installing Lightpanda...');
   try {
@@ -134,9 +147,7 @@ function installLightpanda(): Pick<WarmupResult, 'lightpanda' | 'lightpandaError
       log('Lightpanda already installed');
       return { lightpanda: 'ok' };
     }
-    const platform = process.platform === 'darwin' ? 'macos' : 'linux';
-    const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
-    const url = `https://github.com/nichochar/lightpanda/releases/latest/download/lightpanda-${platform}-${arch}`;
+    const url = getLightpandaUrl();
     execSync(`mkdir -p "${binDir}" && curl -fsSL "${url}" -o "${binPath}" && chmod +x "${binPath}"`, {
       stdio: 'pipe',
       timeout: 120000,
@@ -148,6 +159,66 @@ function installLightpanda(): Pick<WarmupResult, 'lightpanda' | 'lightpandaError
     log(`Lightpanda install failed: ${message}`);
     return { lightpanda: 'failed', lightpandaError: message };
   }
+}
+
+async function runVerify(dataDir: string): Promise<void> {
+  log('');
+  log('Verifying setup...');
+
+  const searxngPath = join(dataDir, 'searxng');
+  const proc = new SearxngProcess(searxngPath, dataDir);
+  let url: string | null = null;
+  try {
+    url = await proc.start();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`  SearXNG:       FAILED to start (${message})`);
+    try { await proc.stop(); } catch {}
+    return;
+  }
+
+  if (!url) {
+    log('  SearXNG:       FAILED to start');
+    try { await proc.stop(); } catch {}
+    return;
+  }
+
+  log(`  SearXNG:       OK (${url})`);
+
+  try {
+    const response = await fetch(`${url}/search?q=test&format=json`);
+    if (response.ok) {
+      const body = await response.json() as { results?: unknown[] };
+      const count = Array.isArray(body.results) ? body.results.length : 0;
+      log(`  Test search:   OK (${count} results)`);
+    } else {
+      log(`  Test search:   FAILED (HTTP ${response.status})`);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`  Test search:   FAILED (${message})`);
+  }
+
+  const py = getPythonBin(dataDir);
+  const pkgs: Array<[string, string]> = [
+    ['flashrank', 'FlashRank'],
+    ['trafilatura', 'Trafilatura'],
+    ['sentence_transformers', 'Embeddings'],
+  ];
+  for (const [mod, label] of pkgs) {
+    try {
+      execSync(`${py} -c "import ${mod}"`, { stdio: 'pipe', timeout: 30000 });
+      log(`  ${label.padEnd(13)}  OK`);
+    } catch {
+      log(`  ${label.padEnd(13)}  not installed`);
+    }
+  }
+
+  try { await proc.stop(); } catch {}
+
+  log('');
+  log('✓ All systems ready. Connect to your AI tool:');
+  log('  claude mcp add wigolo -- npx @staticn0va/wigolo');
 }
 
 function installWebkit(): Pick<WarmupResult, 'webkit' | 'webkitError'> {
@@ -214,12 +285,12 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
 
   let trafStatus: 'ok' | 'failed' | 'skipped' = 'skipped';
   if (flagSet.has('--trafilatura') || flagSet.has('--all')) {
-    trafStatus = installTrafilatura();
+    trafStatus = installTrafilatura(config.dataDir);
   }
 
   let rerankerResult: Pick<WarmupResult, 'reranker' | 'rerankerError'> = {};
   if (flagSet.has('--reranker') || flagSet.has('--all')) {
-    rerankerResult = installFlashRank();
+    rerankerResult = installFlashRank(config.dataDir);
   }
 
   let firefoxResult: Pick<WarmupResult, 'firefox' | 'firefoxError'> = {};
@@ -234,7 +305,7 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
 
   let embeddingsResult: Pick<WarmupResult, 'embeddings' | 'embeddingsError'> = {};
   if (flagSet.has('--embeddings') || flagSet.has('--all')) {
-    embeddingsResult = installSentenceTransformers();
+    embeddingsResult = installSentenceTransformers(config.dataDir);
   }
 
   let lightpandaResult: Pick<WarmupResult, 'lightpanda' | 'lightpandaError'> = {};
@@ -274,6 +345,10 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
   }
   if (result.lightpanda) {
     log(`  Lightpanda:    ${result.lightpanda}${result.lightpandaError ? ` (${result.lightpandaError})` : ''}`);
+  }
+
+  if (flagSet.has('--verify') || flagSet.has('--all')) {
+    await runVerify(config.dataDir);
   }
 
   return result;

@@ -463,6 +463,11 @@ export async function initSubsystems(): Promise<Subsystems> {
 
   async function bootstrapSearxng(): Promise<void> {
     try {
+      const initialState = getBootstrapState(config.dataDir);
+      if (!config.searxngUrl && initialState?.status !== 'ready') {
+        backendStatus.markBootstrapping();
+      }
+
       const backend = await resolveSearchBackend();
 
       if (backend.type === 'external' && backend.url) {

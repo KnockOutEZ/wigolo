@@ -10,11 +10,12 @@ Search, fetch, crawl, cache, and extract — zero API keys, zero cloud, zero cos
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue)](https://www.typescriptlang.org/)
 
-[Quick Start](#quick-start) · [Features](#features) · [Why wigolo?](#why-wigolo) · [Roadmap](#roadmap)
+[Quick Start](#quick-start) · [Features](#features) · [Why wigolo?](#why-wigolo)
 
 </div>
 
 ```
+$ npx @staticn0va/wigolo warmup --all
 $ claude mcp add wigolo -- npx @staticn0va/wigolo
 Added MCP server wigolo
 
@@ -26,6 +27,30 @@ $ # That's it. Your agent now has web search.
 wigolo gives AI coding agents (Claude Code, Cursor, Gemini CLI, Codex, Windsurf) web search, page fetching, site crawling, content extraction, and a local knowledge cache. It runs entirely on your machine. No API keys, no cloud, no cost — works out of the box with `npx`.
 
 ## Quick Start
+
+### 1. Warm up (required)
+
+Install Playwright, bootstrap SearXNG, install Python extras (FlashRank, Trafilatura, sentence-transformers), then verify the setup end-to-end:
+
+```bash
+npx @staticn0va/wigolo warmup --all
+```
+
+`--all` runs verification automatically: it starts SearXNG, runs a test search, checks every Python package, then shuts SearXNG down. You see proof everything works before connecting an agent. Re-run any time with `warmup --verify`.
+
+Flag menu:
+
+```bash
+npx @staticn0va/wigolo warmup                # Playwright + SearXNG only
+npx @staticn0va/wigolo warmup --all          # + reranker + trafilatura + embeddings + lightpanda + verify
+npx @staticn0va/wigolo warmup --reranker     # Install FlashRank (ML reranking)
+npx @staticn0va/wigolo warmup --trafilatura  # Install Trafilatura (content extraction)
+npx @staticn0va/wigolo warmup --embeddings   # Install sentence-transformers
+npx @staticn0va/wigolo warmup --verify       # Start SearXNG, test search, test Python packages
+npx @staticn0va/wigolo warmup --force        # Wipe SearXNG state/install/locks and re-bootstrap
+```
+
+### 2. Connect your agent
 
 **Claude Code:**
 ```bash
@@ -44,12 +69,7 @@ claude mcp add wigolo -- npx @staticn0va/wigolo
 }
 ```
 
-**Optional warmup (improves quality on first use):**
-```bash
-npx @staticn0va/wigolo warmup          # Downloads Playwright + SearXNG
-npx @staticn0va/wigolo warmup --all  # + ML reranking + Trafilatura extraction
-npx @staticn0va/wigolo warmup --force     # Wipe SearXNG state/install/locks and re-bootstrap
-```
+> Skipping warmup still works — wigolo will bootstrap in the background on first tool call — but early searches will be lower quality until the install finishes. Running `warmup --all` up front is strongly recommended.
 
 ## Diagnostics
 
@@ -268,31 +288,6 @@ SearXNG bootstrap failures are self-healing: wigolo retries after 30 seconds, 1 
 4. Readability.js — battle-tested Mozilla algorithm
 5. Raw Turndown — last resort HTML-to-markdown
 
-## Roadmap
-
-### v2.1 — Next
-- [x] Daemon mode — persistent HTTP server, zero startup latency
-- [ ] Browser interaction — click, type, scroll before extraction
-- [ ] Content change detection — diff monitoring for cached pages
-- [ ] CDP session discovery — attach to running Chrome for seamless auth
-- [ ] Plugin system — community extractors and search engines
-
-### v2.2
-- [ ] Multi-browser pool — Chromium + Firefox for fingerprint diversity
-- [ ] Interactive REPL (`wigolo shell`)
-- [x] Agent skill distribution — MCP registry listings, `SKILL.md`
-
-### v3 — The Knowledge Engine
-- [ ] Answer synthesis — search + LLM = direct answers with citations (bring your own key)
-- [ ] Semantic search — local vector embeddings over cached content (`findSimilar`)
-- [ ] Agent endpoint — describe what you need, no URLs required
-- [ ] Streaming answers — real-time generation as results come in
-- [ ] Knowledge graph — entity and relationship extraction from crawled content
-- [ ] Auto re-crawl scheduler — keep documentation fresh automatically
-- [ ] Lightpanda browser — optional ultra-lightweight headless browser (11x less RAM than Chrome)
-- [ ] Cloud sync — share cache across machines via rclone (S3, Drive, Dropbox)
-- [ ] Team knowledge base — shared indexed content across team members
-
 ## Discovery
 
 wigolo is listed on MCP server registries for agent discovery:
@@ -309,8 +304,19 @@ See `SKILL.md` for the full tool schema in agent-discovery format.
 
 ## Troubleshooting
 
+Start with `npx @staticn0va/wigolo doctor` — it reports the state of every component and is the fastest way to find the cause.
+
+**First search is slow or returns odd results**
+SearXNG is still bootstrapping in the background. Either wait a minute, or (recommended) run `npx @staticn0va/wigolo warmup --all` before connecting your agent.
+
+**FlashRank / Trafilatura / sentence-transformers "not installed"**
+These are optional Python extras. Install them with `npx @staticn0va/wigolo warmup --all` (or per-package: `--reranker`, `--trafilatura`, `--embeddings`). wigolo uses a private venv under `~/.wigolo/searxng/venv` so your system Python stays untouched.
+
 **SearXNG won't start**
-Make sure `python3` is on your PATH and version 3.8+. Check with `python3 --version`. Alternatively, set `SEARXNG_MODE=docker` if Docker is available.
+Make sure `python3` is on your PATH and version 3.8+. Check with `python3 --version`. If bootstrap got interrupted, `npx @staticn0va/wigolo warmup --force` wipes the state and reinstalls. Alternatively, set `SEARXNG_MODE=docker` if Docker is available.
+
+**Doctor reports SearXNG "not running"**
+That's expected when you haven't made a search yet — the process starts on-demand when the MCP server needs it. Doctor only marks it degraded if the install is broken.
 
 **Playwright browser not found**
 Run `npx @staticn0va/wigolo warmup` to download Chromium. This is done automatically on first use but can fail behind corporate proxies.
@@ -320,6 +326,12 @@ If SearXNG and all fallback engines fail, check your network connection. Behind 
 
 **Permission errors on `~/.wigolo/`**
 wigolo stores its cache and SearXNG installation in `~/.wigolo/`. Ensure your user has write access. Override with `WIGOLO_DATA_DIR=/your/path`.
+
+**Start fresh**
+```bash
+rm -rf ~/.wigolo
+npx @staticn0va/wigolo warmup --all
+```
 
 ## Contributing
 
@@ -353,4 +365,4 @@ Requires the `NPM_TOKEN` repository secret (npm automation token with publish sc
 
 ## License
 
-[BSL 1.1](LICENSE) — free for individuals, small teams (under $1M revenue), education, and open source. Converts to MIT on 2029-04-12.
+[BSL 1.1](LICENSE) — free for individuals, small teams (under $1M revenue), education, and open source. Converts to AGPL-3.0 on 2029-04-12.

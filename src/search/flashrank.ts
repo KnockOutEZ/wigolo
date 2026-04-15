@@ -2,6 +2,7 @@ import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { runPythonWithStdin } from '../extraction/trafilatura.js';
 import { createLogger } from '../logger.js';
+import { getPythonBin } from '../python-env.js';
 
 const execFileAsync = promisify(execFileCb);
 const log = createLogger('search');
@@ -35,7 +36,7 @@ let availableCache: boolean | null = null;
 export async function isFlashRankAvailable(): Promise<boolean> {
   if (availableCache !== null) return availableCache;
   try {
-    await execFileAsync('python3', ['-c', 'import flashrank'], { timeout: AVAILABILITY_CHECK_TIMEOUT_MS });
+    await execFileAsync(getPythonBin(), ['-c', 'import flashrank'], { timeout: AVAILABILITY_CHECK_TIMEOUT_MS });
     availableCache = true;
   } catch {
     availableCache = false;
