@@ -1,4 +1,5 @@
 import { detectAgents } from './tui/agents.js';
+import type { AgentId } from './tui/agents.js';
 import { selectAgents, NotTtyError } from './tui/select-agents.js';
 import { applyConfigs, type ConfigApplyResult } from './tui/config-writer.js';
 import { printAddMcpBanner } from './tui/banner.js';
@@ -48,7 +49,7 @@ export async function runSetupMcp(args: string[]): Promise<number> {
     return 0;
   }
 
-  let selected: string[] = [];
+  let selected: AgentId[] = [];
   try {
     selected = await selectAgents(detected);
   } catch (err) {
@@ -80,12 +81,13 @@ export async function runSetupMcp(args: string[]): Promise<number> {
   writeErr('Summary:');
   let hadError = false;
   for (const r of results) {
-    const name = detected.find(d => d.id === r.agentId)?.displayName ?? r.agentId;
-    if (r.status === 'ok') {
-      writeErr(`  ✓ ${name}: ${r.path}`);
+    const name = r.displayName;
+    if (r.ok) {
+      writeErr(`  ✓ ${name}: ${r.configPath ?? r.code}`);
     } else {
       hadError = true;
-      writeErr(`  ✗ ${name}: ${r.error ?? 'unknown error'} (${r.path})`);
+      const loc = r.configPath ? ` (${r.configPath})` : '';
+      writeErr(`  ✗ ${name}: ${r.message ?? r.code}${loc}`);
     }
   }
   writeErr('');

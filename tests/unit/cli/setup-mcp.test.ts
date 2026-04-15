@@ -64,8 +64,8 @@ describe('runSetupMcp — happy path', () => {
     ]);
     selectAgentsMock.mockResolvedValue(['claude-code', 'cursor']);
     applyConfigsMock.mockResolvedValue([
-      { agentId: 'claude-code', status: 'ok', path: 'cli-command' },
-      { agentId: 'cursor', status: 'ok', path: '/home/u/.cursor/mcp.json' },
+      { id: 'claude-code', displayName: 'Claude Code', ok: true, code: 'OK', configPath: null },
+      { id: 'cursor', displayName: 'Cursor', ok: true, code: 'OK', configPath: '/home/u/.cursor/mcp.json' },
     ]);
 
     const code = await runSetupMcp(['mcp']);
@@ -131,11 +131,20 @@ describe('runSetupMcp — writer errors', () => {
     ]);
     selectAgentsMock.mockResolvedValue(['cursor']);
     applyConfigsMock.mockResolvedValue([
-      { agentId: 'cursor', status: 'error', path: '/home/u/.cursor/mcp.json', error: 'EACCES' },
+      { id: 'cursor', displayName: 'Cursor', ok: false, code: 'PERMISSION_DENIED', configPath: '/home/u/.cursor/mcp.json', message: 'EACCES' },
     ]);
 
     const code = await runSetupMcp(['mcp']);
 
     expect(code).toBe(1);
+  });
+});
+
+describe('entrypoint dispatch', () => {
+  it('is reachable via "setup mcp" through parseCommand wiring', async () => {
+    const { parseCommand } = await import('../../../src/cli/index.js');
+    const parsed = parseCommand(['setup', 'mcp']);
+    expect(parsed.command).toBe('setup');
+    expect(parsed.args).toEqual(['mcp']);
   });
 });
