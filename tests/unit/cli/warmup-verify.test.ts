@@ -3,10 +3,18 @@ import { resetConfig } from '../../../src/config.js';
 
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
-  return { ...actual, existsSync: vi.fn(() => false) };
+  return {
+    ...actual,
+    existsSync: vi.fn(() => false),
+    mkdirSync: vi.fn(),
+    createWriteStream: vi.fn(),
+    chmodSync: vi.fn(),
+  };
 });
 
-vi.mock('node:child_process', () => ({ execSync: vi.fn(() => Buffer.from('')) }));
+vi.mock('../../../src/cli/tui/run-command.js', () => ({
+  runCommand: vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '', timedOut: false }),
+}));
 
 vi.mock('../../../src/searxng/bootstrap.js', () => ({
   checkPythonAvailable: () => true,
@@ -37,17 +45,17 @@ import { runWarmup } from '../../../src/cli/warmup.js';
 
 describe('runWarmup verify step', () => {
   let outBuffer = '';
-  let writeSpy: ReturnType<typeof vi.spyOn>;
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     outBuffer = '';
     resetConfig();
     vi.clearAllMocks();
     global.fetch = fetchMock as unknown as typeof fetch;
-    writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
-      outBuffer += String(chunk);
-      return true;
-    });
+    const capture = (chunk: unknown) => { outBuffer += String(chunk); return true; };
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(capture as never);
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(capture as never);
     mockStart.mockResolvedValue('http://127.0.0.1:8888');
     mockStop.mockResolvedValue(undefined);
     fetchMock.mockResolvedValue({
@@ -58,41 +66,42 @@ describe('runWarmup verify step', () => {
 
   afterEach(() => {
     resetConfig();
-    writeSpy.mockRestore();
+    stderrSpy.mockRestore();
+    stdoutSpy.mockRestore();
     global.fetch = originalFetch;
   });
 
   it('runs verify step when --verify flag passed', async () => {
-    await runWarmup(['--verify']);
+    await runWarmup(['--verify', '--plain']);
     expect(outBuffer).toMatch(/Verifying setup/);
     expect(mockStart).toHaveBeenCalled();
     expect(mockStop).toHaveBeenCalled();
   });
 
   it('runs verify step when --all flag passed', async () => {
-    await runWarmup(['--all']);
+    await runWarmup(['--all', '--plain']);
     expect(outBuffer).toMatch(/Verifying setup/);
   });
 
   it('does not run verify without flag', async () => {
-    await runWarmup([]);
+    await runWarmup(['--plain']);
     expect(outBuffer).not.toMatch(/Verifying setup/);
     expect(mockStart).not.toHaveBeenCalled();
   });
 
   it('verify reports SearXNG failure when start returns null', async () => {
     mockStart.mockResolvedValue(null);
-    await runWarmup(['--verify']);
+    await runWarmup(['--verify', '--plain']);
     expect(outBuffer).toMatch(/SearXNG.*FAILED to start/i);
   });
 
   it('verify prints connect instructions on success', async () => {
-    await runWarmup(['--verify']);
+    await runWarmup(['--verify', '--plain']);
     expect(outBuffer).toMatch(/claude mcp add wigolo/);
   });
 
   it('verify stops SearXNG after checks complete', async () => {
-    await runWarmup(['--verify']);
+    await runWarmup(['--verify', '--plain']);
     expect(mockStop).toHaveBeenCalledTimes(1);
   });
 });

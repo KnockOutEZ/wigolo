@@ -1,11 +1,13 @@
-import { execSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, mkdirSync, createWriteStream, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { getConfig } from '../config.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../searxng/bootstrap.js';
 import { isProcessAlive, SearxngProcess } from '../searxng/process.js';
 import { resetAvailabilityCache } from '../search/flashrank.js';
 import { getPythonBin } from '../python-env.js';
+import { runCommand } from './tui/run-command.js';
+import type { WarmupReporter } from './tui/reporter.js';
+import { autoReporter } from './tui/reporter-auto.js';
 
 export interface WarmupResult {
   playwright: 'ok' | 'failed';
@@ -25,11 +27,7 @@ export interface WarmupResult {
   lightpandaError?: string;
 }
 
-function log(msg: string): void {
-  process.stderr.write(`[wigolo warmup] ${msg}\n`);
-}
-
-function wipeSearxngState(dataDir: string): void {
+function wipeSearxngState(dataDir: string, reporter: WarmupReporter): void {
   const bootstrapLockPath = join(dataDir, 'bootstrap.lock');
   if (existsSync(bootstrapLockPath)) {
     try {
@@ -42,7 +40,6 @@ function wipeSearxngState(dataDir: string): void {
       }
     } catch (err) {
       if (err instanceof Error && err.message.startsWith('Cannot --force')) throw err;
-      // malformed lock → treat as stale, fall through to wipe
     }
   }
   rmSync(join(dataDir, 'state.json'), { force: true });
@@ -50,82 +47,83 @@ function wipeSearxngState(dataDir: string): void {
   rmSync(bootstrapLockPath, { force: true });
   rmSync(join(dataDir, 'searxng.lock'), { force: true });
   rmSync(join(dataDir, 'searxng.port'), { force: true });
-  log('Wiped SearXNG state, install, and locks (--force)');
+  reporter.note('Wiped SearXNG state, install, and locks (--force)');
 }
 
-function installPlaywright(): Pick<WarmupResult, 'playwright' | 'playwrightError'> {
-  log('Installing Playwright Chromium...');
-  try {
-    execSync('npx playwright install chromium', { stdio: 'pipe', timeout: 120000 });
-    log('Playwright Chromium installed');
+async function installPlaywright(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'playwright' | 'playwrightError'>> {
+  reporter.start('playwright', 'Installing Playwright Chromium');
+  const r = await runCommand('npx', ['playwright', 'install', 'chromium'], { timeout: 180000 });
+  if (r.code === 0) {
+    reporter.success('playwright', 'installed');
     return { playwright: 'ok' };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log(`Playwright install failed: ${message}`);
-    return { playwright: 'failed', playwrightError: message };
   }
+  const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
+  reporter.fail('playwright', message);
+  return { playwright: 'failed', playwrightError: message };
 }
 
-function installTrafilatura(dataDir: string): 'ok' | 'failed' {
-  log('Installing Trafilatura...');
-  try {
-    const py = getPythonBin(dataDir);
-    execSync(`${py} -m pip install --quiet trafilatura`, {
-      stdio: 'pipe',
-      timeout: 120000,
-    });
-    log('Trafilatura installed');
+async function installTrafilatura(dataDir: string, reporter: WarmupReporter): Promise<'ok' | 'failed'> {
+  reporter.start('trafilatura', 'Installing Trafilatura');
+  const py = getPythonBin(dataDir);
+  const r = await runCommand(py, ['-m', 'pip', 'install', '--quiet', 'trafilatura'], { timeout: 180000 });
+  if (r.code === 0) {
+    reporter.success('trafilatura', 'installed');
     return 'ok';
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log(`Trafilatura install failed: ${message}`);
-    return 'failed';
   }
+  const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
+  reporter.fail('trafilatura', message);
+  return 'failed';
 }
 
-function installFlashRank(dataDir: string): Pick<WarmupResult, 'reranker' | 'rerankerError'> {
-  log('Installing FlashRank...');
-  try {
-    const py = getPythonBin(dataDir);
-    execSync(`${py} -m pip install --quiet flashrank`, { stdio: 'pipe', timeout: 120000 });
+async function installFlashRank(dataDir: string, reporter: WarmupReporter): Promise<Pick<WarmupResult, 'reranker' | 'rerankerError'>> {
+  reporter.start('flashrank', 'Installing FlashRank (ML reranker)');
+  const py = getPythonBin(dataDir);
+  const r = await runCommand(py, ['-m', 'pip', 'install', '--quiet', 'flashrank'], { timeout: 180000 });
+  if (r.code === 0) {
     resetAvailabilityCache();
-    log('FlashRank installed successfully');
+    reporter.success('flashrank', 'installed');
     return { reranker: 'ok' };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log(`FlashRank install failed: ${message}`);
-    return { reranker: 'failed', rerankerError: message };
   }
+  const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
+  reporter.fail('flashrank', message);
+  return { reranker: 'failed', rerankerError: message };
 }
 
-function installFirefox(): Pick<WarmupResult, 'firefox' | 'firefoxError'> {
-  log('Installing Playwright Firefox...');
-  try {
-    execSync('npx playwright install firefox', { stdio: 'pipe', timeout: 120000 });
-    log('Playwright Firefox installed');
+async function installFirefox(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'firefox' | 'firefoxError'>> {
+  reporter.start('firefox', 'Installing Playwright Firefox');
+  const r = await runCommand('npx', ['playwright', 'install', 'firefox'], { timeout: 180000 });
+  if (r.code === 0) {
+    reporter.success('firefox', 'installed');
     return { firefox: 'ok' };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log(`Firefox install failed: ${message}`);
-    return { firefox: 'failed', firefoxError: message };
   }
+  const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
+  reporter.fail('firefox', message);
+  return { firefox: 'failed', firefoxError: message };
 }
 
-function installSentenceTransformers(dataDir: string): Pick<WarmupResult, 'embeddings' | 'embeddingsError'> {
-  log('Installing sentence-transformers...');
-  try {
-    const py = getPythonBin(dataDir);
-    execSync(`${py} -m pip install --quiet sentence-transformers`, {
-      stdio: 'pipe',
-      timeout: 300000,
-    });
-    log('sentence-transformers installed successfully');
-    return { embeddings: 'ok' };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log(`sentence-transformers install failed: ${message}`);
-    return { embeddings: 'failed', embeddingsError: message };
+async function installWebkit(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'webkit' | 'webkitError'>> {
+  reporter.start('webkit', 'Installing Playwright WebKit');
+  const r = await runCommand('npx', ['playwright', 'install', 'webkit'], { timeout: 180000 });
+  if (r.code === 0) {
+    reporter.success('webkit', 'installed');
+    return { webkit: 'ok' };
   }
+  const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
+  reporter.fail('webkit', message);
+  return { webkit: 'failed', webkitError: message };
+}
+
+async function installSentenceTransformers(dataDir: string, reporter: WarmupReporter): Promise<Pick<WarmupResult, 'embeddings' | 'embeddingsError'>> {
+  reporter.start('embeddings', 'Installing sentence-transformers');
+  const py = getPythonBin(dataDir);
+  const r = await runCommand(py, ['-m', 'pip', 'install', '--quiet', 'sentence-transformers'], { timeout: 300000 });
+  if (r.code === 0) {
+    reporter.success('embeddings', 'installed');
+    return { embeddings: 'ok' };
+  }
+  const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
+  reporter.fail('embeddings', message);
+  return { embeddings: 'failed', embeddingsError: message };
 }
 
 function getLightpandaUrl(): string {
@@ -137,33 +135,84 @@ function getLightpandaUrl(): string {
   throw new Error(`Lightpanda not available for ${platform}/${arch}`);
 }
 
-function installLightpanda(): Pick<WarmupResult, 'lightpanda' | 'lightpandaError'> {
-  log('Installing Lightpanda...');
+async function installLightpanda(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'lightpanda' | 'lightpandaError'>> {
   try {
     const config = getConfig();
     const binDir = join(config.dataDir, 'bin');
     const binPath = join(binDir, 'lightpanda');
     if (existsSync(binPath)) {
-      log('Lightpanda already installed');
+      reporter.start('lightpanda', 'Installing Lightpanda');
+      reporter.success('lightpanda', 'already installed');
       return { lightpanda: 'ok' };
     }
     const url = getLightpandaUrl();
-    execSync(`mkdir -p "${binDir}" && curl -fsSL "${url}" -o "${binPath}" && chmod +x "${binPath}"`, {
-      stdio: 'pipe',
-      timeout: 120000,
-    });
-    log('Lightpanda installed');
+    mkdirSync(binDir, { recursive: true });
+
+    const head = await fetch(url, { method: 'HEAD' });
+    const totalBytes = Number(head.headers.get('content-length') ?? 0);
+
+    reporter.start('lightpanda', 'Downloading Lightpanda', { totalBytes: totalBytes || undefined });
+
+    const resp = await fetch(url);
+    if (!resp.ok || !resp.body) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+
+    let downloaded = 0;
+    const reader = resp.body.getReader();
+    const ws = createWriteStream(binPath);
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!ws.write(value)) await new Promise<void>((resolve) => ws.once('drain', resolve));
+        downloaded += value.byteLength;
+        if (totalBytes > 0) reporter.progress('lightpanda', downloaded / totalBytes);
+      }
+    } finally {
+      ws.end();
+      await new Promise<void>((resolve) => ws.once('finish', () => resolve()));
+    }
+
+    chmodSync(binPath, 0o755);
+    reporter.success('lightpanda', 'installed');
     return { lightpanda: 'ok' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(`Lightpanda install failed: ${message}`);
+    reporter.fail('lightpanda', message);
     return { lightpanda: 'failed', lightpandaError: message };
   }
 }
 
-async function runVerify(dataDir: string): Promise<void> {
-  log('');
-  log('Verifying setup...');
+async function runSearxngPhase(dataDir: string, reporter: WarmupReporter): Promise<Pick<WarmupResult, 'searxng' | 'searxngError'>> {
+  const state = getBootstrapState(dataDir);
+  if (state?.status === 'ready') {
+    reporter.start('searxng', 'Checking SearXNG');
+    reporter.success('searxng', 'already set up');
+    return { searxng: 'ready' };
+  }
+
+  if (!checkPythonAvailable()) {
+    reporter.start('searxng', 'Checking SearXNG');
+    reporter.fail('searxng', 'Python 3 not found — install Python 3 or set SEARXNG_MODE=docker');
+    return { searxng: 'no_python' };
+  }
+
+  reporter.start('searxng', 'Bootstrapping SearXNG (this may take a minute)');
+  try {
+    await bootstrapNativeSearxng(dataDir);
+    reporter.success('searxng', 'bootstrapped');
+    return { searxng: 'bootstrapped' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    reporter.fail('searxng', message);
+    return { searxng: 'failed', searxngError: message };
+  }
+}
+
+async function runVerify(dataDir: string, reporter: WarmupReporter): Promise<void> {
+  reporter.note('');
+  reporter.note('Verifying setup...');
 
   const searxngPath = join(dataDir, 'searxng');
   const proc = new SearxngProcess(searxngPath, dataDir);
@@ -172,31 +221,31 @@ async function runVerify(dataDir: string): Promise<void> {
     url = await proc.start();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(`  SearXNG:       FAILED to start (${message})`);
+    reporter.note(`  SearXNG:       FAILED to start (${message})`);
     try { await proc.stop(); } catch {}
     return;
   }
 
   if (!url) {
-    log('  SearXNG:       FAILED to start');
+    reporter.note('  SearXNG:       FAILED to start');
     try { await proc.stop(); } catch {}
     return;
   }
 
-  log(`  SearXNG:       OK (${url})`);
+  reporter.note(`  SearXNG:       OK (${url})`);
 
   try {
     const response = await fetch(`${url}/search?q=test&format=json`);
     if (response.ok) {
       const body = await response.json() as { results?: unknown[] };
       const count = Array.isArray(body.results) ? body.results.length : 0;
-      log(`  Test search:   OK (${count} results)`);
+      reporter.note(`  Test search:   OK (${count} results)`);
     } else {
-      log(`  Test search:   FAILED (HTTP ${response.status})`);
+      reporter.note(`  Test search:   FAILED (HTTP ${response.status})`);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(`  Test search:   FAILED (${message})`);
+    reporter.note(`  Test search:   FAILED (${message})`);
   }
 
   const py = getPythonBin(dataDir);
@@ -206,111 +255,68 @@ async function runVerify(dataDir: string): Promise<void> {
     ['sentence_transformers', 'Embeddings'],
   ];
   for (const [mod, label] of pkgs) {
-    try {
-      execSync(`${py} -c "import ${mod}"`, { stdio: 'pipe', timeout: 30000 });
-      log(`  ${label.padEnd(13)}  OK`);
-    } catch {
-      log(`  ${label.padEnd(13)}  not installed`);
+    const r = await runCommand(py, ['-c', `import ${mod}`], { timeout: 30000 });
+    if (r.code === 0) {
+      reporter.note(`  ${label.padEnd(13)}  OK`);
+    } else {
+      reporter.note(`  ${label.padEnd(13)}  not installed`);
     }
   }
 
   try { await proc.stop(); } catch {}
 
-  log('');
-  log('✓ All systems ready. Connect to your AI tool:');
-  log('  claude mcp add wigolo -- npx @staticn0va/wigolo');
+  reporter.note('');
+  reporter.note('✓ All systems ready. Connect to your AI tool:');
+  reporter.note('  claude mcp add wigolo -- npx @staticn0va/wigolo');
 }
 
-function installWebkit(): Pick<WarmupResult, 'webkit' | 'webkitError'> {
-  log('Installing Playwright WebKit...');
-  try {
-    execSync('npx playwright install webkit', { stdio: 'pipe', timeout: 120000 });
-    log('Playwright WebKit installed');
-    return { webkit: 'ok' };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log(`WebKit install failed: ${message}`);
-    return { webkit: 'failed', webkitError: message };
-  }
-}
+export async function runWarmup(
+  flags: string[] = [],
+  reporter?: WarmupReporter,
+): Promise<WarmupResult> {
+  const flagSet = new Set(flags);
+  const plain = flagSet.has('--plain');
+  const reporterImpl = reporter ?? autoReporter({ plain });
 
-type SearxngCheckResult =
-  | Pick<WarmupResult, 'searxng' | 'searxngError'>
-  | { needsBootstrap: true };
-
-function setupSearxng(dataDir: string): SearxngCheckResult {
-  const state = getBootstrapState(dataDir);
-
-  if (state?.status === 'ready') {
-    log('SearXNG already set up');
-    return { searxng: 'ready' };
-  }
-
-  if (!checkPythonAvailable()) {
-    log('Python 3 not found — SearXNG requires Python. Install Python 3 or use Docker mode (SEARXNG_MODE=docker)');
-    return { searxng: 'no_python' };
-  }
-
-  return { needsBootstrap: true };
-}
-
-export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
-  log('Starting warmup...');
   const config = getConfig();
 
-  const flagSet = new Set(flags);
   if (flagSet.has('--force')) {
-    wipeSearxngState(config.dataDir);
+    wipeSearxngState(config.dataDir, reporterImpl);
   }
 
-  const pwResult = installPlaywright();
+  reporterImpl.note('Starting wigolo warmup');
 
-  const searxngCheck = setupSearxng(config.dataDir);
-  let searxngResult: Pick<WarmupResult, 'searxng' | 'searxngError'>;
-
-  if ('needsBootstrap' in searxngCheck) {
-    log('Bootstrapping SearXNG (this may take a minute)...');
-    try {
-      await bootstrapNativeSearxng(config.dataDir);
-      log('SearXNG bootstrapped successfully');
-      searxngResult = { searxng: 'bootstrapped' };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log(`SearXNG bootstrap failed: ${message}`);
-      searxngResult = { searxng: 'failed', searxngError: message };
-    }
-  } else {
-    searxngResult = searxngCheck;
-  }
+  const pwResult = await installPlaywright(reporterImpl);
+  const searxngResult = await runSearxngPhase(config.dataDir, reporterImpl);
 
   let trafStatus: 'ok' | 'failed' | 'skipped' = 'skipped';
   if (flagSet.has('--trafilatura') || flagSet.has('--all')) {
-    trafStatus = installTrafilatura(config.dataDir);
+    trafStatus = await installTrafilatura(config.dataDir, reporterImpl);
   }
 
   let rerankerResult: Pick<WarmupResult, 'reranker' | 'rerankerError'> = {};
   if (flagSet.has('--reranker') || flagSet.has('--all')) {
-    rerankerResult = installFlashRank(config.dataDir);
+    rerankerResult = await installFlashRank(config.dataDir, reporterImpl);
   }
 
   let firefoxResult: Pick<WarmupResult, 'firefox' | 'firefoxError'> = {};
   if (flagSet.has('--firefox') || flagSet.has('--all')) {
-    firefoxResult = installFirefox();
+    firefoxResult = await installFirefox(reporterImpl);
   }
 
   let webkitResult: Pick<WarmupResult, 'webkit' | 'webkitError'> = {};
   if (flagSet.has('--webkit') || flagSet.has('--all')) {
-    webkitResult = installWebkit();
+    webkitResult = await installWebkit(reporterImpl);
   }
 
   let embeddingsResult: Pick<WarmupResult, 'embeddings' | 'embeddingsError'> = {};
   if (flagSet.has('--embeddings') || flagSet.has('--all')) {
-    embeddingsResult = installSentenceTransformers(config.dataDir);
+    embeddingsResult = await installSentenceTransformers(config.dataDir, reporterImpl);
   }
 
   let lightpandaResult: Pick<WarmupResult, 'lightpanda' | 'lightpandaError'> = {};
   if (flagSet.has('--lightpanda') || flagSet.has('--all')) {
-    lightpandaResult = installLightpanda();
+    lightpandaResult = await installLightpanda(reporterImpl);
   }
 
   const result: WarmupResult = {
@@ -324,32 +330,21 @@ export async function runWarmup(flags: string[] = []): Promise<WarmupResult> {
     ...lightpandaResult,
   };
 
-  log('');
-  log('Summary:');
-  log(`  Playwright:    ${result.playwright}${result.playwrightError ? ` (${result.playwrightError})` : ''}`);
-  log(`  SearXNG:       ${result.searxng}${result.searxngError ? ` (${result.searxngError})` : ''}`);
-  if (trafStatus !== 'skipped') {
-    log(`  Trafilatura:   ${trafStatus}`);
-  }
-  if (result.reranker) {
-    log(`  FlashRank:     ${result.reranker}${result.rerankerError ? ` (${result.rerankerError})` : ''}`);
-  }
-  if (result.firefox) {
-    log(`  Firefox:       ${result.firefox}${result.firefoxError ? ` (${result.firefoxError})` : ''}`);
-  }
-  if (result.webkit) {
-    log(`  WebKit:        ${result.webkit}${result.webkitError ? ` (${result.webkitError})` : ''}`);
-  }
-  if (result.embeddings) {
-    log(`  Embeddings:    ${result.embeddings}${result.embeddingsError ? ` (${result.embeddingsError})` : ''}`);
-  }
-  if (result.lightpanda) {
-    log(`  Lightpanda:    ${result.lightpanda}${result.lightpandaError ? ` (${result.lightpandaError})` : ''}`);
-  }
+  reporterImpl.note('');
+  reporterImpl.note('Summary:');
+  reporterImpl.note(`  Playwright:    ${result.playwright}${result.playwrightError ? ` (${result.playwrightError})` : ''}`);
+  reporterImpl.note(`  SearXNG:       ${result.searxng}${result.searxngError ? ` (${result.searxngError})` : ''}`);
+  if (trafStatus !== 'skipped') reporterImpl.note(`  Trafilatura:   ${trafStatus}`);
+  if (result.reranker) reporterImpl.note(`  FlashRank:     ${result.reranker}${result.rerankerError ? ` (${result.rerankerError})` : ''}`);
+  if (result.firefox) reporterImpl.note(`  Firefox:       ${result.firefox}${result.firefoxError ? ` (${result.firefoxError})` : ''}`);
+  if (result.webkit) reporterImpl.note(`  WebKit:        ${result.webkit}${result.webkitError ? ` (${result.webkitError})` : ''}`);
+  if (result.embeddings) reporterImpl.note(`  Embeddings:    ${result.embeddings}${result.embeddingsError ? ` (${result.embeddingsError})` : ''}`);
+  if (result.lightpanda) reporterImpl.note(`  Lightpanda:    ${result.lightpanda}${result.lightpandaError ? ` (${result.lightpandaError})` : ''}`);
 
   if (flagSet.has('--verify') || flagSet.has('--all')) {
-    await runVerify(config.dataDir);
+    await runVerify(config.dataDir, reporterImpl);
   }
 
+  reporterImpl.finish();
   return result;
 }
