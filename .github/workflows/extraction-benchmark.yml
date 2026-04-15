@@ -1,0 +1,46 @@
+name: Extraction Benchmark
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly, Monday 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'Filter benchmarks by category/id/tag'
+        required: false
+        type: string
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Run extraction benchmark
+        run: npm run bench:extraction -- ${{ github.event.inputs.filter && format('--filter {0}', github.event.inputs.filter) || '' }}
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: extraction-benchmark-${{ github.run_number }}
+          path: |
+            benchmarks/extraction/output/extraction-benchmark.json
+            benchmarks/extraction/output/extraction-benchmark.md
+          retention-days: 90
+
+      - name: Check for regressions
+        run: |
+          F1=$(node -e "const r=require('./benchmarks/extraction/output/extraction-benchmark.json'); console.log(r.summary.averageF1)")
+          echo "Average F1: $F1"
+          node -e "if (parseFloat('$F1') < 0.6) { console.error('F1 score below threshold (0.6)'); process.exit(1); }"
