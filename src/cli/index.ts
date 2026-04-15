@@ -1,4 +1,4 @@
-export type Command = 'mcp' | 'warmup' | 'serve' | 'health' | 'doctor' | 'auth' | 'plugin' | 'shell' | 'init' | 'setup';
+export type Command = 'mcp' | 'warmup' | 'serve' | 'health' | 'doctor' | 'auth' | 'plugin' | 'shell' | 'init' | 'setup' | 'status';
 
 export interface ParsedCommand {
   command: Command;
@@ -15,6 +15,7 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'shell',
   'init',
   'setup',
+  'status',
 ]);
 
 export function parseCommand(argv: string[]): ParsedCommand {
