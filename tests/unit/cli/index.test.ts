@@ -39,4 +39,15 @@ describe('parseCommand', () => {
       args: ['--json'],
     });
   });
+
+  it('returns "init" for init argument', () => {
+    expect(parseCommand(['init'])).toEqual({ command: 'init', args: [] });
+  });
+
+  it('returns "init" with flags preserved in args', () => {
+    expect(parseCommand(['init', '--non-interactive', '--agents', 'claude-code,cursor'])).toEqual({
+      command: 'init',
+      args: ['--non-interactive', '--agents', 'claude-code,cursor'],
+    });
+  });
 });

@@ -8,6 +8,7 @@ import { runDoctor } from './cli/doctor.js';
 import { runShell } from './cli/shell.js';
 import { runAuth } from './cli/auth.js';
 import { runPluginCommand } from './cli/plugin.js';
+import { runInit } from './cli/init.js';
 import { getConfig } from './config.js';
 import { startServer } from './server.js';
 
@@ -47,6 +48,12 @@ switch (command) {
   case 'plugin':
     runPluginCommand(args);
     break;
+
+  case 'init': {
+    const initCode = await runInit(args);
+    process.exit(initCode);
+    break;
+  }
 
   case 'mcp': {
     const config = getConfig();
