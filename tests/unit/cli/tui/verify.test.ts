@@ -238,3 +238,39 @@ describe('runVerify — python package probes', () => {
     expect(result.allPassed).toBe(true);
   });
 });
+
+describe('runVerify — suggestions on failure', () => {
+  it('emits one reporter.note per failing check when something failed', async () => {
+    startMock.mockRejectedValueOnce(new Error('cannot bind'));
+
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
+
+    expect(result.allPassed).toBe(false);
+    const notes = reporter.events.filter(e => e.startsWith('note:'));
+    expect(notes.length).toBeGreaterThanOrEqual(1);
+    expect(notes.some(n => n.includes('wigolo warmup --force'))).toBe(true);
+  });
+
+  it('emits no notes when everything passes', async () => {
+    startMock.mockResolvedValue('http://127.0.0.1:8888');
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ results: [{}] }),
+    });
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd.includes('import flashrank')) return Buffer.from('');
+      if (cmd.includes('import trafilatura')) return Buffer.from('');
+      if (cmd.includes('sentence_transformers')) return Buffer.from('384\n');
+      throw new Error('unexpected cmd: ' + cmd);
+    });
+
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
+
+    expect(result.allPassed).toBe(true);
+    const notes = reporter.events.filter(e => e.startsWith('note:'));
+    expect(notes).toEqual([]);
+  });
+});

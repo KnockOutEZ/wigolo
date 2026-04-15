@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import { SearxngProcess } from '../../searxng/process.js';
 import { getPythonBin } from '../../python-env.js';
 import type { WarmupReporter } from './reporter.js';
+import { suggestionsFromResult } from './verify-suggestions.js';
 
 export interface VerifyResult {
   searxng: 'ok' | 'failed';
@@ -51,7 +52,7 @@ export async function runVerify(
     result.searxngError = message;
     reporter.fail('searxng', message);
     try { await proc.stop(); } catch { /* already dead */ }
-    return finalize(result);
+    return finalize(result, reporter);
   }
 
   if (!url) {
@@ -59,7 +60,7 @@ export async function runVerify(
     result.searxngError = 'did not return a listening URL';
     reporter.fail('searxng', 'did not return a listening URL');
     try { await proc.stop(); } catch { /* already dead */ }
-    return finalize(result);
+    return finalize(result, reporter);
   }
 
   result.searxng = 'ok';
@@ -151,12 +152,15 @@ function runEmbeddingsProbe(
   }
 }
 
-function finalize(result: VerifyResult): VerifyResult {
+function finalize(result: VerifyResult, reporter?: WarmupReporter): VerifyResult {
   result.allPassed =
     result.searxng === 'ok' &&
     result.testSearch === 'ok' &&
     result.flashrank === 'ok' &&
     result.trafilatura === 'ok' &&
     result.embeddings === 'ok';
+  if (!result.allPassed && reporter) {
+    for (const note of suggestionsFromResult(result)) reporter.note(note);
+  }
   return result;
 }
