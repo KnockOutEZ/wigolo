@@ -1,10 +1,45 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import * as http from 'node:http';
 import { DaemonHttpServer } from '../../src/daemon/http-server.js';
 import { tryConnectDaemon, DaemonProxy } from '../../src/daemon/proxy.js';
 
 let daemon: DaemonHttpServer;
 let daemonUrl: string;
 let daemonPort: number;
+
+// Plain one-shot HTTP GET with Connection: close to bypass undici's keep-alive
+// pool. Avoids ECONNRESET flakes on GH Actions when tests pause between fetches
+// and a pooled socket silently closes before reuse.
+async function httpGetJson(url: string): Promise<{ status: number; body: unknown }> {
+  const parsed = new URL(url);
+  return new Promise((resolve, reject) => {
+    const req = http.get(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname + parsed.search,
+        headers: { 'Connection': 'close' },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf-8');
+          try {
+            resolve({ status: res.statusCode ?? 0, body: JSON.parse(text) });
+          } catch (err) {
+            reject(err);
+          }
+        });
+        res.on('error', reject);
+      },
+    );
+    req.on('error', reject);
+    req.setTimeout(5000, () => {
+      req.destroy(new Error('httpGetJson timeout'));
+    });
+  });
+}
 
 describe('Daemon Mode Integration', () => {
   beforeAll(async () => {
@@ -110,15 +145,13 @@ describe('Daemon Mode Integration', () => {
   });
 
   it('uptime_seconds increases over time', async () => {
-    const resp1 = await fetch(`${daemonUrl}/health`);
-    const body1 = await resp1.json();
-    const uptime1 = body1.uptime_seconds;
+    const first = await httpGetJson(`${daemonUrl}/health`);
+    const uptime1 = (first.body as { uptime_seconds: number }).uptime_seconds;
 
     await new Promise(r => setTimeout(r, 1100));
 
-    const resp2 = await fetch(`${daemonUrl}/health`);
-    const body2 = await resp2.json();
-    const uptime2 = body2.uptime_seconds;
+    const second = await httpGetJson(`${daemonUrl}/health`);
+    const uptime2 = (second.body as { uptime_seconds: number }).uptime_seconds;
 
     expect(uptime2).toBeGreaterThanOrEqual(uptime1);
   });
