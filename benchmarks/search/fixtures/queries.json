@@ -1,0 +1,49 @@
+{
+  "version": "1.0.0",
+  "queries": [
+    {
+      "id": "docs-001",
+      "query": "typescript Record utility type",
+      "category": "docs",
+      "expectedDomains": ["typescriptlang.org"],
+      "tags": ["typescript", "utility-types"]
+    },
+    {
+      "id": "docs-002",
+      "query": "playwright page.goto options",
+      "category": "docs",
+      "expectedDomains": ["playwright.dev"],
+      "tags": ["playwright", "api"]
+    },
+    {
+      "id": "error-001",
+      "query": "TypeError: Cannot read properties of undefined",
+      "category": "error",
+      "tags": ["javascript", "runtime-error"]
+    },
+    {
+      "id": "error-002",
+      "query": "ECONNREFUSED 127.0.0.1:3000 node",
+      "category": "error",
+      "tags": ["node", "network"]
+    },
+    {
+      "id": "concept-001",
+      "query": "how does javascript event loop work",
+      "category": "conceptual",
+      "tags": ["javascript", "fundamentals"]
+    },
+    {
+      "id": "code-001",
+      "query": "express middleware error handling pattern",
+      "category": "code",
+      "tags": ["express", "patterns"]
+    },
+    {
+      "id": "multi-001",
+      "query": "[\"vitest mock\", \"vitest vi.fn\"]",
+      "category": "multi-query",
+      "tags": ["vitest", "testing"]
+    }
+  ]
+}

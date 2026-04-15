@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "judgments": [
+    { "queryId": "docs-001", "url": "https://www.typescriptlang.org/docs/handbook/utility-types.html", "grade": 3 },
+    { "queryId": "docs-001", "url": "https://www.typescriptlang.org/docs/handbook/2/mapped-types.html", "grade": 2 },
+    { "queryId": "docs-001", "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object", "grade": 0 },
+    { "queryId": "docs-002", "url": "https://playwright.dev/docs/api/class-page#page-goto", "grade": 3 },
+    { "queryId": "docs-002", "url": "https://playwright.dev/docs/navigations", "grade": 2 },
+    { "queryId": "error-001", "url": "https://stackoverflow.com/questions/14782232/how-to-avoid-cannot-read-properties-of-undefined", "grade": 3 },
+    { "queryId": "error-002", "url": "https://stackoverflow.com/questions/20259473/econnrefused", "grade": 3 },
+    { "queryId": "concept-001", "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/EventLoop", "grade": 3 },
+    { "queryId": "concept-001", "url": "https://nodejs.org/en/docs/guides/event-loop-timers-and-nexttick", "grade": 2 },
+    { "queryId": "code-001", "url": "https://expressjs.com/en/guide/error-handling.html", "grade": 3 },
+    { "queryId": "multi-001", "url": "https://vitest.dev/api/vi.html", "grade": 3 },
+    { "queryId": "multi-001", "url": "https://vitest.dev/guide/mocking.html", "grade": 2 }
+  ]
+}
