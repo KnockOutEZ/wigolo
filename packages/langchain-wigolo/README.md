@@ -86,4 +86,4 @@ LangChain `BaseTool` wrappers for wigolo search and fetch.
 
 ## License
 
-MIT
+AGPL-3.0-or-later

@@ -97,4 +97,4 @@ Each returns a single Vercel AI SDK tool definition with typed parameters (via z
 
 ## License
 
-MIT
+AGPL-3.0-or-later

@@ -357,4 +357,4 @@ Full list: see `src/config.ts`.
 
 - Repository: https://github.com/KnockOutEZ/wigolo
 - npm: https://www.npmjs.com/package/@staticn0va/wigolo
-- License: BUSL-1.1 (converts to open source on 2029-04-12)
+- License: BUSL-1.1 (converts to AGPL-3.0 on 2029-04-12)
