@@ -1,9 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const detectAgentsMock = vi.fn();
-const selectAgentsMock = vi.fn();
-const applyConfigsMock = vi.fn();
-const printAddMcpBannerMock = vi.fn();
+const { detectAgentsMock, selectAgentsMock, applyConfigsMock, printAddMcpBannerMock } = vi.hoisted(() => ({
+  detectAgentsMock: vi.fn(),
+  selectAgentsMock: vi.fn(),
+  applyConfigsMock: vi.fn(),
+  printAddMcpBannerMock: vi.fn(),
+}));
 
 vi.mock('../../../src/cli/tui/agents.js', () => ({
   detectAgents: detectAgentsMock,
