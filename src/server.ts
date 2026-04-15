@@ -28,6 +28,7 @@ import { resolveSearchBackend, bootstrapNativeSearxng, getBootstrapState } from 
 import { SearxngProcess } from './searxng/process.js';
 import { DockerSearxng } from './searxng/docker.js';
 import { BackendStatus } from './server/backend-status.js';
+import { getEmbeddingService, resetEmbeddingService } from './embedding/embed.js';
 import { getConfig } from './config.js';
 import { createLogger } from './logger.js';
 import { WIGOLO_INSTRUCTIONS, TOOL_DESCRIPTIONS } from './instructions.js';
@@ -387,6 +388,17 @@ export async function initSubsystems(): Promise<Subsystems> {
   mkdirSync(config.dataDir, { recursive: true });
   initDatabase(join(config.dataDir, 'wigolo.db'));
 
+  // Initialize embedding service: loads stored vectors into in-memory index
+  // so find_similar can run the embedding path. Subprocess starts lazily on
+  // first embed() call, so this is cheap if no embeddings exist yet.
+  try {
+    await getEmbeddingService().init();
+  } catch (err) {
+    log.warn('embedding service init failed, find_similar will run without embedding path', {
+      error: String(err),
+    });
+  }
+
   const httpClient: HttpClient = {
     fetch: (url, options) => httpFetch(url, options),
   };
@@ -531,6 +543,7 @@ export async function initSubsystems(): Promise<Subsystems> {
     if (searxngProcess) await searxngProcess.stop();
     if (dockerSearxng) await dockerSearxng.stop();
     await browserPool.shutdown();
+    resetEmbeddingService();
     closeDatabase();
   }
 
