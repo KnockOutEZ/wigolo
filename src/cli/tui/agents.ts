@@ -50,11 +50,56 @@ const zed: AgentDescriptor = {
   configPath: ({ home }) => join(home, '.config', 'zed', 'settings.json'),
 };
 
+const geminiCli: AgentDescriptor = {
+  id: 'gemini-cli',
+  displayName: 'Gemini CLI',
+  installType: 'config-file',
+  detect: ({ home }) =>
+    binaryInPath('gemini') !== null ||
+    dirExists(join(home, '.gemini')),
+  configPath: ({ home }) => join(home, '.gemini', 'settings.json'),
+};
+
+const windsurf: AgentDescriptor = {
+  id: 'windsurf',
+  displayName: 'Windsurf',
+  installType: 'config-file',
+  detect: ({ home }) =>
+    dirExists(join(home, '.codeium', 'windsurf')) ||
+    dirExists(join(home, '.windsurf')) ||
+    binaryInPath('windsurf') !== null,
+  configPath: ({ home }) => join(home, '.codeium', 'windsurf', 'mcp_config.json'),
+};
+
+const codex: AgentDescriptor = {
+  id: 'codex',
+  displayName: 'Codex (OpenAI CLI)',
+  installType: 'config-toml',
+  detect: ({ home }) =>
+    binaryInPath('codex') !== null ||
+    dirExists(join(home, '.codex')),
+  configPath: ({ home }) => join(home, '.codex', 'config.toml'),
+};
+
+const opencode: AgentDescriptor = {
+  id: 'opencode',
+  displayName: 'OpenCode',
+  installType: 'config-file',
+  detect: ({ home }) =>
+    binaryInPath('opencode') !== null ||
+    dirExists(join(home, '.config', 'opencode')),
+  configPath: ({ home }) => join(home, '.config', 'opencode', 'config.json'),
+};
+
 export const AGENTS: readonly AgentDescriptor[] = [
   claudeCode,
   cursor,
   vscode,
   zed,
+  geminiCli,
+  windsurf,
+  codex,
+  opencode,
 ];
 
 export interface DetectAgentsOptions {
