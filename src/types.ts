@@ -21,6 +21,7 @@ export interface FetchInput {
   render_js?: 'auto' | 'always' | 'never';
   use_auth?: boolean;
   max_chars?: number;
+  max_content_chars?: number;
   section?: string;
   section_index?: number;
   screenshot?: boolean;
@@ -121,6 +122,7 @@ export interface SearchInput {
   max_results?: number;
   include_content?: boolean;
   content_max_chars?: number;
+  max_content_chars?: number;
   max_total_chars?: number;
   time_range?: 'day' | 'week' | 'month' | 'year';
   search_engines?: string[];

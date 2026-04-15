@@ -11,6 +11,7 @@ import type { SamplingCapableServer } from '../search/sampling.js';
 import { synthesizeAnswer } from '../search/answer-synthesis.js';
 import { normalizeQueries, fanOutSearch, synthesizeIntent } from '../search/multi-query.js';
 import { extractContent } from '../extraction/pipeline.js';
+import { truncateSmartly } from '../search/truncate.js';
 import { cacheSearchResults, getCachedSearchResults } from '../cache/store.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
@@ -36,6 +37,7 @@ export async function handleSearch(
   const maxResults = Math.min(input.max_results ?? DEFAULT_MAX_RESULTS, MAX_RESULTS_CAP);
   const includeContent = input.include_content ?? true;
   const contentMaxChars = input.content_max_chars ?? DEFAULT_CONTENT_MAX_CHARS;
+  const maxContentChars = input.max_content_chars;
   const maxTotalChars = input.max_total_chars ?? DEFAULT_MAX_TOTAL_CHARS;
   const totalTimeoutMs = config.searchTotalTimeoutMs;
   const fetchTimeoutMs = config.searchFetchTimeoutMs;
@@ -168,6 +170,7 @@ export async function handleSearch(
       const fetchStart = Date.now();
       await fetchContentForResults(results, router, {
         contentMaxChars,
+        maxContentChars,
         maxTotalChars,
         fetchTimeoutMs,
         totalDeadline: start + totalTimeoutMs,
@@ -322,6 +325,7 @@ export async function handleSearch(
     const fetchStart = Date.now();
     await fetchContentForResults(results, router, {
       contentMaxChars,
+      maxContentChars,
       maxTotalChars,
       fetchTimeoutMs,
       totalDeadline: start + totalTimeoutMs,
@@ -414,6 +418,7 @@ async function applyAnswerSynthesis(
 
 interface FetchContext {
   contentMaxChars: number;
+  maxContentChars?: number;
   maxTotalChars: number;
   fetchTimeoutMs: number;
   totalDeadline: number;
@@ -444,7 +449,10 @@ async function fetchContentForResults(
         maxChars: ctx.contentMaxChars,
         contentType: raw.contentType,
       });
-      return { content: extraction.markdown };
+      const md = ctx.maxContentChars !== undefined
+        ? truncateSmartly(extraction.markdown, ctx.maxContentChars)
+        : extraction.markdown;
+      return { content: md };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.debug('content fetch failed', { url: result.url, error: msg });

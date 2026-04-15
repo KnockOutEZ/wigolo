@@ -91,6 +91,7 @@ If a first unscoped \`search\` returns noisy results, retry with \`include_domai
 ## Performance
 
 - \`max_results: 3\` for focused lookups; \`5\` default; \`10+\` only for broad research.
+- \`max_content_chars: 3000\` on \`search\` or \`fetch\` smart-truncates each result's markdown at a paragraph/heading boundary with a \`[... content truncated]\` marker. Keeps context compact for AI agents. Prefer this over raw \`max_chars\` slicing.
 - \`fetch\` with \`section: "Heading Name"\` returns content under that heading -- cheaper than the whole page.
 - Repeated fetches of the same URL are free (SQLite cache).
 - \`research\` with \`depth: "quick"\` (~15s) suits most factual questions; reserve \`"comprehensive"\` for deep investigation.
@@ -110,6 +111,7 @@ export const TOOL_DESCRIPTIONS = {
 
 Key parameters:
 - section: extract content under a specific heading (e.g., section: "API Reference") -- faster than reading the whole page
+- max_content_chars: smart-truncate markdown at a paragraph/heading boundary with a \`[... content truncated]\` marker (e.g., 3000 for compact context). Preferred over max_chars for AI agents.
 - use_auth: true to use stored browser session for authenticated/private pages
 - render_js: "auto" (default, detects JS need), "always" (force browser), "never" (HTTP only, fastest)
 - headers: custom HTTP headers if needed
@@ -128,6 +130,7 @@ Key parameters:
 - from_date/to_date: ISO dates for time-bounded queries
 - max_results: default 5. Use 3 for focused queries, 10+ for research.
 - format: "full" (default, structured JSON), "context" (single token-budgeted string for LLM injection), "answer" (synthesized direct answer via requestSampling), "stream_answer" (same as answer, with MCP progress notifications emitted between pipeline phases)
+- max_content_chars: smart-truncate each result's markdown at a paragraph boundary with a \`[... content truncated]\` marker (e.g., 3000 for compact context). Keeps total tokens under control.
 - force_refresh: true to bypass all caches (search results and page content)
 
 The "answer" format uses the MCP client's sampling capability to synthesize a direct response from search results. If sampling is not supported, falls back to "context" format. "stream_answer" emits notifications/progress messages at each pipeline phase (search, fetch, synthesize) when the client provides a progressToken via request._meta — token-level streaming of the LLM response is not supported by MCP sampling, so the answer itself still arrives as one block.

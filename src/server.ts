@@ -68,7 +68,11 @@ const FETCH_TOOL_SCHEMA = {
     },
     max_chars: {
       type: 'number',
-      description: 'Maximum characters to return',
+      description: 'Maximum characters to return (hard slice)',
+    },
+    max_content_chars: {
+      type: 'number',
+      description: 'Smart truncate markdown to N chars at paragraph/heading boundary with [... content truncated] marker. Preferred over max_chars for AI agents.',
     },
     section: {
       type: 'string',
@@ -153,7 +157,8 @@ const SEARCH_TOOL_SCHEMA = {
     },
     max_results: { type: 'number', description: 'Max results to return (default 5, max 20)' },
     include_content: { type: 'boolean', description: 'Fetch full content for results (default true)' },
-    content_max_chars: { type: 'number', description: 'Max chars per result content (default 30000)' },
+    content_max_chars: { type: 'number', description: 'Max chars per result content at extraction (default 30000)' },
+    max_content_chars: { type: 'number', description: 'Smart-truncate each result markdown at paragraph boundary with marker (e.g. 3000 for compact context)' },
     max_total_chars: { type: 'number', description: 'Max total chars across all results (default 50000)' },
     time_range: { type: 'string', enum: ['day', 'week', 'month', 'year'], description: 'Time range filter' },
     search_engines: { type: 'array', items: { type: 'string' }, description: 'Override engine selection' },

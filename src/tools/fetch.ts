@@ -5,6 +5,7 @@ import { getCachedContent, cacheContent, isExpired } from '../cache/store.js';
 import { extractSection } from '../extraction/markdown.js';
 import { detectChange } from '../cache/change-detector.js';
 import { getEmbeddingService } from '../embedding/embed.js';
+import { truncateSmartly } from '../search/truncate.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('fetch');
@@ -21,6 +22,10 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
 
   if (input.max_chars && markdown.length > input.max_chars) {
     markdown = markdown.slice(0, input.max_chars);
+  }
+
+  if (input.max_content_chars !== undefined) {
+    markdown = truncateSmartly(markdown, input.max_content_chars);
   }
 
   return {
@@ -84,10 +89,14 @@ export async function handleFetch(
       log.debug('embedding hook skipped', { error: String(err) });
     }
 
+    const finalMarkdown = input.max_content_chars !== undefined
+      ? truncateSmartly(extraction.markdown, input.max_content_chars)
+      : extraction.markdown;
+
     return {
       url: raw.finalUrl,
       title: extraction.title,
-      markdown: extraction.markdown,
+      markdown: finalMarkdown,
       metadata: extraction.metadata,
       links: extraction.links,
       images: extraction.images,
