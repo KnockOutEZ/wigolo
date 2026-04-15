@@ -157,3 +157,84 @@ describe('runVerify — test search', () => {
     expect(reporter.events).toContain('fail:test-search:ECONNREFUSED');
   });
 });
+
+describe('runVerify — python package probes', () => {
+  beforeEach(() => {
+    startMock.mockResolvedValue('http://127.0.0.1:8888');
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ results: [] }),
+    });
+  });
+
+  it('marks flashrank ok when import succeeds', async () => {
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd.includes('import flashrank')) return Buffer.from('');
+      if (cmd.includes('import trafilatura')) return Buffer.from('');
+      if (cmd.includes('sentence_transformers')) return Buffer.from('384\n');
+      throw new Error('unexpected cmd: ' + cmd);
+    });
+
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
+
+    expect(result.flashrank).toBe('ok');
+    expect(result.trafilatura).toBe('ok');
+    expect(result.embeddings).toBe('ok');
+    expect(result.embeddingsDim).toBe(384);
+    expect(reporter.events).toContain('success:flashrank:installed');
+    expect(reporter.events).toContain('success:trafilatura:installed');
+    expect(reporter.events).toContain('success:embeddings:384-dim');
+  });
+
+  it('marks each package missing when its import throws', async () => {
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd.includes('import flashrank')) throw new Error('ModuleNotFoundError: flashrank');
+      if (cmd.includes('import trafilatura')) throw new Error('ModuleNotFoundError: trafilatura');
+      if (cmd.includes('sentence_transformers')) throw new Error('ModuleNotFoundError: sentence_transformers');
+      return Buffer.from('');
+    });
+
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
+
+    expect(result.flashrank).toBe('missing');
+    expect(result.flashrankError).toContain('flashrank');
+    expect(result.trafilatura).toBe('missing');
+    expect(result.embeddings).toBe('missing');
+    expect(result.embeddingsDim).toBeUndefined();
+    expect(reporter.events).toContain('fail:flashrank:not installed');
+    expect(reporter.events).toContain('fail:trafilatura:not installed');
+    expect(reporter.events).toContain('fail:embeddings:not installed');
+  });
+
+  it('marks embeddings missing when dim parse fails', async () => {
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd.includes('import flashrank')) return Buffer.from('');
+      if (cmd.includes('import trafilatura')) return Buffer.from('');
+      if (cmd.includes('sentence_transformers')) return Buffer.from('not-a-number\n');
+      throw new Error('unexpected cmd: ' + cmd);
+    });
+
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
+
+    expect(result.embeddings).toBe('missing');
+    expect(result.embeddingsError).toContain('could not parse');
+  });
+
+  it('allPassed is true only when every check is ok', async () => {
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd.includes('import flashrank')) return Buffer.from('');
+      if (cmd.includes('import trafilatura')) return Buffer.from('');
+      if (cmd.includes('sentence_transformers')) return Buffer.from('384\n');
+      throw new Error('unexpected cmd: ' + cmd);
+    });
+
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
+
+    expect(result.allPassed).toBe(true);
+  });
+});

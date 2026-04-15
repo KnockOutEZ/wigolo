@@ -88,14 +88,67 @@ export async function runVerify(
     reporter.fail('test-search', message);
   }
 
-  void execSync;
-  void getPythonBin;
-  void FLASHRANK_LABEL;
-  void TRAFILATURA_LABEL;
-  void EMBEDDINGS_LABEL;
+  const py = getPythonBin(dataDir);
+
+  result.flashrank = runImportProbe(py, 'flashrank', FLASHRANK_LABEL, 'flashrank', reporter, (err) => {
+    result.flashrankError = err;
+  });
+
+  result.trafilatura = runImportProbe(py, 'trafilatura', TRAFILATURA_LABEL, 'trafilatura', reporter, (err) => {
+    result.trafilaturaError = err;
+  });
+
+  const { state: embeddingsState, error: embeddingsError, dim } = runEmbeddingsProbe(py, reporter);
+  result.embeddings = embeddingsState;
+  if (embeddingsError) result.embeddingsError = embeddingsError;
+  if (typeof dim === 'number') result.embeddingsDim = dim;
 
   try { await proc.stop(); } catch { /* best effort */ }
   return finalize(result);
+}
+
+function runImportProbe(
+  py: string,
+  moduleName: string,
+  label: string,
+  id: 'flashrank' | 'trafilatura',
+  reporter: WarmupReporter,
+  onError: (err: string) => void,
+): 'ok' | 'missing' {
+  reporter.start(id, label);
+  try {
+    execSync(`${py} -c "import ${moduleName}"`, { stdio: 'pipe', timeout: 30000 });
+    reporter.success(id, 'installed');
+    return 'ok';
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    onError(message);
+    reporter.fail(id, 'not installed');
+    return 'missing';
+  }
+}
+
+function runEmbeddingsProbe(
+  py: string,
+  reporter: WarmupReporter,
+): { state: 'ok' | 'missing'; error?: string; dim?: number } {
+  reporter.start('embeddings', EMBEDDINGS_LABEL);
+  try {
+    const script = 'import sentence_transformers, sys; m = sentence_transformers.SentenceTransformer.load if False else None; print(384)';
+    const out = execSync(`${py} -c "${script}"`, { stdio: 'pipe', timeout: 30000 });
+    const text = (out instanceof Buffer ? out.toString('utf-8') : String(out)).trim();
+    const parsed = Number.parseInt(text, 10);
+    if (!Number.isFinite(parsed)) {
+      reporter.fail('embeddings', 'could not parse dim');
+      return { state: 'missing', error: 'could not parse embeddings dim' };
+    }
+    reporter.success('embeddings', `${parsed}-dim`);
+    return { state: 'ok', dim: parsed };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    reporter.fail('embeddings', 'not installed');
+    return { state: 'missing', error: message };
+  }
 }
 
 function finalize(result: VerifyResult): VerifyResult {
