@@ -84,7 +84,8 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@inquirer/prompts": "^8.4.1",
+    "@iarna/toml": "^2.2.5",
+    "@inquirer/prompts": "^7.10.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mozilla/readability": "^0.6.0",
     "better-sqlite3": "^12.8.0",
