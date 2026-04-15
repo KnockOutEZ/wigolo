@@ -12,7 +12,8 @@ import { synthesizeAnswer, buildStructuredFallback } from '../search/answer-synt
 import { normalizeQueries, fanOutSearch, synthesizeIntent } from '../search/multi-query.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { truncateSmartly } from '../search/truncate.js';
-import { cacheSearchResults, getCachedSearchResults } from '../cache/store.js';
+import { cacheSearchResults, getCachedSearchResults, cacheContent } from '../cache/store.js';
+import { getEmbeddingService } from '../embedding/embed.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 
@@ -468,6 +469,22 @@ async function fetchContentForResults(
         maxChars: ctx.contentMaxChars,
         contentType: raw.contentType,
       });
+
+      try {
+        cacheContent(raw, extraction);
+      } catch (err) {
+        log.debug('failed to cache search result', { url: result.url, error: String(err) });
+      }
+
+      try {
+        const embeddingService = getEmbeddingService();
+        if (embeddingService.isAvailable()) {
+          embeddingService.embedAsync(raw.finalUrl, extraction.markdown);
+        }
+      } catch (err) {
+        log.debug('embedding hook skipped for search result', { error: String(err) });
+      }
+
       const md = ctx.maxContentChars !== undefined
         ? truncateSmartly(extraction.markdown, ctx.maxContentChars)
         : extraction.markdown;

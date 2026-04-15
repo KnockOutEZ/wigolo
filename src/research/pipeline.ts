@@ -8,6 +8,7 @@ import { fanOutSearch } from '../search/multi-query.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { truncateSmartly } from '../search/truncate.js';
 import { cacheContent } from '../cache/store.js';
+import { getEmbeddingService } from '../embedding/embed.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
 import type {
   ResearchInput,
@@ -167,6 +168,15 @@ async function fetchSources(
         cacheContent(raw, extraction);
       } catch (err) {
         log.debug('failed to cache research source', { url: result.url, error: String(err) });
+      }
+
+      try {
+        const embeddingService = getEmbeddingService();
+        if (embeddingService.isAvailable()) {
+          embeddingService.embedAsync(raw.finalUrl, extraction.markdown);
+        }
+      } catch (err) {
+        log.debug('embedding hook skipped for research source', { error: String(err) });
       }
 
       return {
