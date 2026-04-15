@@ -157,10 +157,15 @@ export async function handleSearch(
       url: m.url,
       snippet: m.snippet,
       relevance_score: m.relevance_score,
+      ...(m.published_date ? { published_date: m.published_date } : {}),
     }));
+
+    const searchElapsed = Date.now() - start;
+    let fetchElapsed = 0;
 
     if (includeContent && results.length > 0) {
       await emit(3, 5, `Fetching content from ${results.length} sources...`);
+      const fetchStart = Date.now();
       await fetchContentForResults(results, router, {
         contentMaxChars,
         maxTotalChars,
@@ -168,6 +173,7 @@ export async function handleSearch(
         totalDeadline: start + totalTimeoutMs,
         forceRefresh: input.force_refresh ?? false,
       });
+      fetchElapsed = Date.now() - fetchStart;
     }
 
     try {
@@ -181,6 +187,8 @@ export async function handleSearch(
       query: displayQuery,
       engines_used: enginesUsed,
       total_time_ms: Date.now() - start,
+      search_time_ms: searchElapsed,
+      fetch_time_ms: fetchElapsed,
       queries_executed: normalizedQueries,
     };
     const warning = backendStatus?.consumeWarning();
@@ -303,10 +311,15 @@ export async function handleSearch(
     url: m.url,
     snippet: m.snippet,
     relevance_score: m.relevance_score,
+    ...(m.published_date ? { published_date: m.published_date } : {}),
   }));
+
+  const searchElapsed = Date.now() - start;
+  let fetchElapsed = 0;
 
   if (includeContent && results.length > 0) {
     await emit(3, 5, `Fetching content from ${results.length} sources...`);
+    const fetchStart = Date.now();
     await fetchContentForResults(results, router, {
       contentMaxChars,
       maxTotalChars,
@@ -314,6 +327,7 @@ export async function handleSearch(
       totalDeadline: start + totalTimeoutMs,
       forceRefresh: input.force_refresh ?? false,
     });
+    fetchElapsed = Date.now() - fetchStart;
   }
 
   try {
@@ -327,6 +341,8 @@ export async function handleSearch(
     query: queryStr,
     engines_used: [...enginesUsed],
     total_time_ms: Date.now() - start,
+    search_time_ms: searchElapsed,
+    fetch_time_ms: fetchElapsed,
   };
   const warning = backendStatus?.consumeWarning();
   if (warning) output.warning = warning;
@@ -404,25 +420,16 @@ interface FetchContext {
   forceRefresh: boolean;
 }
 
-// v1: sequential fetch for correct budget enforcement. v2: parallel fetch then apply budget in relevance order.
+// Parallel fetch all URLs; then apply total-char budget in relevance (input) order.
 async function fetchContentForResults(
   results: SearchResultItem[],
   router: SmartRouter,
   ctx: FetchContext,
 ): Promise<void> {
-  let totalCharsUsed = 0;
-
-  for (const result of results) {
+  const fetches = results.map(async (result): Promise<{ content?: string; error?: string }> => {
     if (Date.now() >= ctx.totalDeadline) {
-      result.fetch_failed = 'total_timeout';
-      continue;
+      return { error: 'total_timeout' };
     }
-
-    if (totalCharsUsed >= ctx.maxTotalChars) {
-      result.content_truncated = true;
-      continue;
-    }
-
     try {
       const raw = await Promise.race([
         router.fetch(result.url, {
@@ -433,26 +440,44 @@ async function fetchContentForResults(
           setTimeout(() => reject(new Error('timeout')), ctx.fetchTimeoutMs),
         ),
       ]);
-
       const extraction = await extractContent(raw.html, raw.finalUrl, {
         maxChars: ctx.contentMaxChars,
         contentType: raw.contentType,
       });
-
-      let content = extraction.markdown;
-
-      const remaining = ctx.maxTotalChars - totalCharsUsed;
-      if (content.length > remaining) {
-        content = content.slice(0, remaining);
-        result.content_truncated = true;
-      }
-
-      totalCharsUsed += content.length;
-      result.markdown_content = content;
+      return { content: extraction.markdown };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.debug('content fetch failed', { url: result.url, error: msg });
-      result.fetch_failed = msg;
+      return { error: msg };
     }
+  });
+
+  const fetched = await Promise.all(fetches);
+
+  let totalCharsUsed = 0;
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    const { content, error } = fetched[i];
+
+    if (error) {
+      result.fetch_failed = error;
+      continue;
+    }
+    if (content === undefined) continue;
+
+    if (totalCharsUsed >= ctx.maxTotalChars) {
+      result.content_truncated = true;
+      continue;
+    }
+
+    let out = content;
+    const remaining = ctx.maxTotalChars - totalCharsUsed;
+    if (out.length > remaining) {
+      out = out.slice(0, remaining);
+      result.content_truncated = true;
+    }
+
+    totalCharsUsed += out.length;
+    result.markdown_content = out;
   }
 }

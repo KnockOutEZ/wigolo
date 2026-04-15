@@ -151,6 +151,8 @@ export interface SearchOutput {
   query: string;
   engines_used: string[];
   total_time_ms: number;
+  search_time_ms?: number;
+  fetch_time_ms?: number;
   error?: string;
   warning?: string;
   context_text?: string;
