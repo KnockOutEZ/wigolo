@@ -1,6 +1,6 @@
 ---
 name: wigolo
-description: Local-first web search MCP server for AI coding agents. Search, fetch, crawl, cache, extract, find similar pages, deep research, and autonomous agent mode with zero API keys.
+description: Local-first web access MCP server for AI coding agents. Eight tools for search, fetch, crawl, cache, extract, find similar, research, and agent-driven data gathering. No API keys. Results cached in local SQLite.
 author: KnockOutEZ
 license: BUSL-1.1
 repository: https://github.com/KnockOutEZ/wigolo
@@ -9,29 +9,29 @@ install: npx @staticn0va/wigolo
 runtime: node
 min_runtime_version: "20"
 tools:
-  - name: search
-    description: Search the web and return results with optional full content extraction. Supports domain filtering, date ranges, categories, and ML reranking.
   - name: fetch
-    description: Fetch a web page and return its content as clean markdown. Supports JavaScript rendering, authenticated browsing, section extraction, and caching.
+    description: Fetch one URL, return clean markdown. Auto-routes between HTTP and Playwright. Supports sections, auth, screenshots, browser actions.
+  - name: search
+    description: Search the web, return extracted markdown per result. Single query or array of query variants. Domain, category, date filters. Optional synthesized answer via MCP sampling.
   - name: crawl
-    description: Crawl a website starting from a seed URL. Supports BFS, DFS, sitemap, and map (URL-only) strategies with depth/page limits and URL filtering.
+    description: Crawl a site from a seed URL. BFS, DFS, sitemap, or map (URL-only) strategies with regex include/exclude filters.
   - name: cache
-    description: Query the local knowledge base of previously fetched content. Full-text search over cached pages by query, URL pattern, or date. Cache stats and clearing.
+    description: FTS5 search over previously fetched content. URL glob, date filters, stats, clear, and change detection via re-fetch.
   - name: extract
-    description: Extract structured data from a web page. CSS selector extraction, HTML table parsing, metadata extraction (title, author, JSON-LD), and JSON Schema heuristic matching.
+    description: Structured extraction from URL or raw HTML. Modes: selector (CSS), tables, metadata (meta + JSON-LD), schema (heuristic field matching).
   - name: find_similar
-    description: Find pages semantically similar to a given URL or concept. Uses cached embeddings and web search to discover related content.
+    description: Find pages similar to a URL or concept. Hybrid cache (FTS5 + embeddings) + optional web supplement.
   - name: research
-    description: Deep multi-step research on a question. Decomposes into sub-queries, searches in parallel, fetches sources, and synthesizes a report with citations.
+    description: Multi-step research pipeline. Question decomposition, parallel sub-search, source synthesis with citations. Quick, standard, or comprehensive depth.
   - name: agent
-    description: Autonomous data gathering agent. Plans search queries from a prompt, fetches pages within budget, optionally extracts structured data via JSON Schema, and synthesizes results.
+    description: Natural-language data gathering. Plans searches/URLs, fetches in parallel within page and time budgets, optionally applies a JSON Schema to each page.
 ---
 
 # wigolo
 
-Local-first web search MCP server for AI coding agents.
+Local-first web search MCP server for AI coding agents. Ships eight tools over stdio. All network results land in a local SQLite cache.
 
-## Installation
+## Quick Setup
 
 **Claude Code:**
 ```bash
@@ -50,147 +50,301 @@ claude mcp add wigolo -- npx @staticn0va/wigolo
 }
 ```
 
-**Optional warmup (improves search quality):**
+**Warmup (recommended, one-time):**
 ```bash
-npx @staticn0va/wigolo warmup
+npx @staticn0va/wigolo warmup          # installs Playwright Chromium + bootstraps SearXNG
+npx @staticn0va/wigolo warmup --all    # also installs Firefox, WebKit, reranker, embeddings, trafilatura
+npx @staticn0va/wigolo warmup --force  # wipe SearXNG state and rebuild
 ```
+
+Warmup flags: `--force`, `--all`, `--trafilatura`, `--reranker`, `--firefox`, `--webkit`, `--embeddings`, `--lightpanda`.
 
 ## Tools
 
-### search
-Search the web and get full markdown content in one call.
+### fetch
+
+Fetch a single URL and return clean markdown. Use when you already have a specific URL.
+
+Parameters:
+- `url` (string, required)
+- `render_js`: `"auto"` (default) | `"always"` | `"never"`
+- `use_auth`: boolean (default `false`) — reuses the user's browser session
+- `max_chars`: number
+- `section`: string — return only the content under a heading
+- `section_index`: number (default `0`) — which heading match when multiple hit
+- `screenshot`: boolean (default `false`)
+- `headers`: object
+- `force_refresh`: boolean — bypass cache
+- `actions`: array of `{type, selector, text, ms, timeout, direction, amount}` — `click`, `type`, `wait`, `wait_for`, `scroll`, `screenshot`. Forces Playwright when present.
+
+Example:
 ```json
-{ "query": "React Server Components best practices", "max_results": 5, "include_domains": ["react.dev"] }
+{ "url": "https://react.dev/reference/react/useState", "section": "Parameters" }
 ```
 
-### fetch
-Fetch any URL and get clean markdown.
+Tip: `section` is much cheaper than reading the full page. Repeat fetches of the same URL are free from cache unless `force_refresh: true`.
+
+### search
+
+Search the web and return extracted markdown per result. Use when you don't have a URL yet.
+
+Parameters:
+- `query` (string OR `string[]`, required) — array runs variants in parallel and dedupes
+- `max_results`: number (default `5`, cap `20`)
+- `include_content`: boolean (default `true`)
+- `content_max_chars`: number (default `30000`)
+- `max_total_chars`: number (default `50000`)
+- `time_range`: `"day"` | `"week"` | `"month"` | `"year"`
+- `include_domains` / `exclude_domains`: `string[]`
+- `from_date` / `to_date`: ISO `YYYY-MM-DD`
+- `category`: `"general"` | `"news"` | `"code"` | `"docs"` | `"papers"` | `"images"`
+- `language`: string
+- `search_engines`: `string[]` — override engine selection
+- `format`: `"full"` (default) | `"context"` (token-budgeted string) | `"answer"` (synthesized via MCP sampling) | `"stream_answer"` (answer + phase progress notifications)
+- `force_refresh`: boolean
+
+Example:
 ```json
-{ "url": "https://docs.react.dev/reference/react/useState", "section": "Parameters" }
+{ "query": ["react server components patterns", "RSC data fetching", "react server components streaming"], "category": "docs", "include_domains": ["react.dev"], "max_results": 5 }
 ```
+
+Tip: keyword queries beat natural-language questions. A 3–5 item `query` array usually finds more unique sources than one longer query.
 
 ### crawl
-Crawl a site from a seed URL.
+
+Crawl a site starting from a seed URL.
+
+Parameters:
+- `url` (string, required)
+- `strategy`: `"bfs"` (default) | `"dfs"` | `"sitemap"` | `"map"` (URL-only discovery, no content)
+- `max_depth`: number (default `2`)
+- `max_pages`: number (default `20`)
+- `include_patterns` / `exclude_patterns`: regex `string[]`
+- `use_auth`: boolean (default `false`)
+- `extract_links`: boolean (default `false`) — returns inter-page link graph
+- `max_total_chars`: number (default `100000`)
+
+Example:
 ```json
-{ "url": "https://docs.example.com", "strategy": "sitemap", "max_pages": 50 }
+{ "url": "https://docs.python.org/3/library/", "strategy": "sitemap", "max_pages": 30, "include_patterns": ["^https://docs\\.python\\.org/3/library/asyncio"] }
 ```
+
+Tip: `strategy: "sitemap"` is faster and more complete than BFS on doc sites. `strategy: "map"` returns URLs only — cheap way to scope before targeted fetches.
 
 ### cache
-Query previously fetched content without hitting the network.
+
+Search previously fetched content without hitting the network.
+
+Parameters:
+- `query`: FTS5 syntax — supports `AND`, `OR`, `NOT`, `"exact phrase"`
+- `url_pattern`: glob (e.g. `"*react.dev*"`)
+- `since`: ISO date
+- `stats`: boolean — returns total URLs, size, date range
+- `clear`: boolean — deletes matching entries (requires one of `query`, `url_pattern`, `since`)
+- `check_changes`: boolean — re-fetches matching URLs, reports changed/unchanged with diff summaries
+
+Example:
 ```json
-{ "query": "React hooks", "url_pattern": "*react.dev*" }
+{ "query": "useState OR useReducer", "url_pattern": "*react.dev*" }
 ```
+
+Tip: cache hits are instant and cross-session. Run this before `search` or `fetch` when you suspect the content is already on disk.
 
 ### extract
-Structured data extraction from any URL or HTML.
+
+Structured extraction from URL or raw HTML.
+
+Parameters:
+- `url` OR `html` (one required; `url` wins if both provided)
+- `mode`: `"metadata"` (default) | `"selector"` | `"tables"` | `"schema"`
+- `css_selector`: string — required for `mode: "selector"`
+- `multiple`: boolean (default `false`) — return all matches, selector mode only
+- `schema`: JSON Schema object with `properties` — required for `mode: "schema"`
+
+Example:
 ```json
-{ "url": "https://example.com/product", "mode": "schema", "schema": { "type": "object", "properties": { "price": { "type": "string" }, "name": { "type": "string" } } } }
+{ "url": "https://example.com/product", "mode": "schema", "schema": { "type": "object", "properties": { "price": { "type": "string" }, "name": { "type": "string" }, "sku": { "type": "string" } } } }
 ```
+
+Tip: `mode: "schema"` does heuristic matching over CSS classes, ARIA labels, microdata, and JSON-LD — no LLM call required.
 
 ### find_similar
-Find pages related to a URL or concept.
+
+Find pages related to a URL or a free-text concept.
+
+Parameters:
+- `url` OR `concept` (one required)
+- `max_results`: number (default `10`, cap `50`)
+- `include_domains` / `exclude_domains`: `string[]`
+- `include_cache`: boolean (default `true`)
+- `include_web`: boolean (default `true`)
+
+Example:
 ```json
-{ "url": "https://react.dev/reference/react/useState", "max_results": 5 }
+{ "url": "https://react.dev/reference/react/useState", "max_results": 8, "include_domains": ["react.dev", "developer.mozilla.org"] }
 ```
+
+Tip: uses hybrid 3-way search — FTS5 over titles, FTS5 over body, plus embeddings when available. Cache path is near-instant; web supplement runs only if cache yields too few results.
 
 ### research
-Deep multi-step research that plans queries, fetches, and synthesizes.
+
+Multi-step research pipeline with decomposition, parallel search, and cited synthesis.
+
+Parameters:
+- `question` (string, required)
+- `depth`: `"quick"` (~15s, 2 sub-queries, 5–8 sources) | `"standard"` (~40s, default) | `"comprehensive"` (~80s, 7 sub-queries, 20–25 sources)
+- `max_sources`: number (cap `50`) — overrides depth default
+- `include_domains` / `exclude_domains`: `string[]`
+- `schema`: JSON Schema — if present, report is structured to fill these fields
+- `stream`: boolean — emit progress notifications per phase
+
+Example:
 ```json
-{ "question": "How do modern bundlers handle tree-shaking of ESM vs CJS", "depth": "standard", "max_sources": 10 }
+{ "question": "How do modern JS bundlers tree-shake ESM vs CJS?", "depth": "standard", "include_domains": ["webpack.js.org", "rollupjs.org", "esbuild.github.io", "vitejs.dev"] }
 ```
 
+Tip: `research` checks cache internally — no need to pre-probe. Requires MCP sampling-capable client for synthesis; without sampling, returns raw sources in context format.
+
 ### agent
-Autonomous data gathering from a natural-language prompt.
+
+Natural-language data gathering. Plans queries and URLs from a prompt, runs them in parallel within budget, optionally applies a schema.
+
+Parameters:
+- `prompt` (string, required)
+- `urls`: `string[]` — seed URLs to include
+- `schema`: JSON Schema — extract structured fields per page and merge
+- `max_pages`: number (default `10`, cap `100`)
+- `max_time_ms`: number (default `60000`, cap `600000`)
+- `stream`: boolean
+
+Example:
 ```json
-{ "prompt": "Compare authentication strategies of Supabase, Firebase, and Clerk", "max_pages": 15, "max_time_ms": 90000 }
+{ "prompt": "Compare pricing tiers for Supabase, Firebase, and Clerk", "schema": { "type": "object", "properties": { "provider": { "type": "string" }, "free_tier": { "type": "string" }, "paid_start": { "type": "string" } } }, "max_pages": 12 }
 ```
+
+Tip: output includes a `steps` array showing every action (plan, search, fetch, extract, synthesize) with timings. Use this to debug why an agent run produced a weak result.
 
 ## Workflow Patterns
 
-Use the right tool for the right situation.
+**Cache-first lookup.** Before any `fetch` or `search`, probe the cache.
+```json
+cache({ "query": "oauth2 pkce", "url_pattern": "*auth0.com*" })
+// empty? fall through to search
+search({ "query": "oauth2 pkce flow", "include_domains": ["auth0.com"] })
+```
 
-**When you know the URL** -- use `fetch`. One URL, clean markdown. Add `section` to read only the heading you need.
+**Fresh content (news, dashboards, changelogs).** Bypass cache explicitly.
+```json
+search({ "query": "node.js 22 release notes", "force_refresh": true, "time_range": "week" })
+fetch({ "url": "https://nodejs.org/en/blog", "force_refresh": true })
+```
 
-**When you need to find information** -- use `search`. Formulate a keyword query (not a natural language question). Scope with `include_domains` and `category` when you know where the answer lives.
+**Scoped documentation research.** Crawl the relevant slice, then query cache.
+```json
+crawl({ "url": "https://docs.astro.build", "strategy": "sitemap", "max_pages": 40 })
+cache({ "query": "server islands hydration", "url_pattern": "*docs.astro.build*" })
+```
 
-**When you need multiple pages from one site** -- use `crawl`. For documentation sites, use `strategy: "sitemap"`. When you just want to discover what pages exist, use `strategy: "map"` (URL list only) then follow up with targeted `fetch` calls.
+**Broad exploration.** Pass a query array; dedup is automatic.
+```json
+search({ "query": ["rust async runtimes comparison", "tokio vs async-std vs smol", "rust executor benchmarks"], "max_results": 8 })
+```
 
-**When you need structured data** -- use `extract` with `mode: "tables"` or `mode: "schema"`. Do not use `fetch` when you need prices, specs, or table rows.
+**More like this.** Start with a known-good URL, widen via `find_similar`.
+```json
+find_similar({ "url": "https://react.dev/reference/react/useMemo", "max_results": 6, "include_domains": ["react.dev"] })
+```
 
-**When you already have content and want related pages** -- use `find_similar`. It searches the local cache by semantic similarity. No network calls needed.
+**Complex synthesis.** One `research` call replaces 5+ manual search/fetch cycles.
+```json
+research({ "question": "Tradeoffs of vector DBs for RAG at 100M+ embeddings", "depth": "comprehensive" })
+```
 
-**When you need a thorough answer on a complex topic** -- use `research`. It plans multiple search queries, fetches sources, and produces a cited synthesis. Prefer this over running 5+ manual search/fetch cycles.
+**Structured data from multiple sources.** Use `agent` with a schema.
+```json
+agent({ "prompt": "Find latency and pricing for top 5 edge compute providers", "schema": { "type": "object", "properties": { "provider": {"type":"string"}, "cold_start_ms": {"type":"string"}, "price_per_million": {"type":"string"} } } })
+```
 
-**When the task requires multi-step data gathering** -- use `agent`. It breaks prompts into search queries and URL fetches, respects page and time budgets, and can extract structured data via JSON Schema.
+**Table extraction.** Skip markdown entirely.
+```json
+extract({ "url": "https://en.wikipedia.org/wiki/List_of_programming_languages", "mode": "tables" })
+```
 
-**Before any network call** -- check `cache` first. Pages from prior sessions are still there. A cache hit is instant and free.
+## Parameter Cheat Sheet
 
-## Parameter Optimization
-
-### search
-- `max_results: 3` for focused lookups, `5` for exploration (default), `10+` for broad research
-- `include_domains` narrows to trusted sources -- always use when you know the domain
-- `category: "code"` for programming, `"docs"` for library docs, `"news"` for recent events
-- `from_date` / `to_date` for time-sensitive queries
-- `format: "context"` returns a single token-budgeted string for LLM injection
-
-### fetch
-- `section: "heading text"` extracts only content under that heading -- much cheaper than the full page
-- `render_js: "never"` is fastest for static sites; `"always"` for SPAs
-- `use_auth: true` to access pages behind login using the user's browser session
-
-### crawl
-- `strategy: "sitemap"` is 5-10x faster than BFS for doc sites
-- `strategy: "map"` returns URLs only -- use to scope a site before targeted fetches
-- `include_patterns` / `exclude_patterns` accept regex to stay in one section
-
-### research
-- `depth: "quick"` (~15s, 2 sub-queries), `"standard"` (~40s, default), `"comprehensive"` (~80s, 7 sub-queries)
-- `max_sources` overrides the default source count for the chosen depth
-
-### agent
-- `max_pages` caps total page fetches (default 10, max 100)
-- `max_time_ms` caps total execution time (default 60000)
-- `schema` enables structured extraction from each page -- results are merged across sources
+| Situation | Tool + parameters |
+|---|---|
+| Focused lookup, known site | `search` + `max_results: 3` + `include_domains` |
+| Broad topic survey | `search` + `query: [...3-5 variants]` + `max_results: 8` |
+| Fresh content required | any tool + `force_refresh: true` |
+| Doc site indexing | `crawl` + `strategy: "sitemap"` |
+| Site URL inventory only | `crawl` + `strategy: "map"` |
+| Single heading from long page | `fetch` + `section: "..."` |
+| Behind login | `fetch` / `crawl` + `use_auth: true` |
+| Direct answer (sampling client) | `search` + `format: "answer"` |
+| LLM-ready context blob | `search` + `format: "context"` |
+| Complex question, multi-source | `research` + `depth: "standard"` |
+| Structured multi-page extraction | `agent` + `schema` |
+| One-page structured data | `extract` + `mode: "schema"` or `"tables"` |
+| Change tracking | `cache` + `check_changes: true` |
 
 ## Anti-Patterns
 
-These waste tokens, time, and rate limits. Avoid them.
+**Do not skip the cache.** Running `search` or `fetch` without probing `cache` wastes time on content already on disk. `research` and `agent` check cache internally; manual `search`/`fetch` do not.
 
-**Do not retry the same query.** If `search` returns no results, reformulate with different keywords. Repeating an identical query returns the same empty results.
+**Do not send natural-language questions to `search`.** Use keywords. `"how do I debounce in React hooks"` loses to `"react useDebounce hook custom"`.
 
-**Do not skip the cache.** Every `fetch`, `search`, and `crawl` result is cached locally. Before any network call, run `cache` with the URL pattern or query text. Cached results return instantly.
+**Do not retry an identical failing query.** Reformulate keywords, swap `category`, or add `include_domains`. Same query → same empty result.
 
-**Do not send natural language questions as search queries.** Search engines work best with keywords. Instead of `"What is the best way to handle authentication in Next.js?"`, use `"Next.js authentication best practices 2025"`.
+**Do not use `agent` or `research` for one-URL lookups.** Use `fetch`. `agent` is for multi-source gathering; `research` is for decomposable questions.
 
-**Do not use `agent` for simple lookups.** One fact from one URL = `fetch`. Quick search result = `search`. Reserve `agent` for tasks requiring multiple search/fetch cycles.
+**Do not crawl `max_pages: 100` without filters.** Always add `include_patterns` to stay in-scope. Unfiltered crawls fetch nav, footer, and sitemap garbage.
 
-**Do not use `research` when you already know the URLs.** If you have URLs to read, use `fetch` or `crawl`. `research` is for when you need the tool to discover sources autonomously.
+**Do not fetch whole pages when you need one section.** `fetch` + `section` reads under one heading only.
 
-**Do not fetch entire pages when you need one section.** Use `fetch` with `section` to extract just the relevant part.
+**Do not set `force_refresh: true` by default.** It defeats the cache. Use it for news, status, changelogs — content that actually churns.
 
-**Do not crawl with high max_pages without filtering.** A `max_pages: 100` crawl without `include_patterns` fetches navigation pages, footers, and irrelevant content.
+**Do not pass a JSON Schema to `extract` without `properties`.** The handler rejects schemas that lack a `properties` key.
 
-**Do not ignore `format: "context"` for search.** When injecting search results into a prompt, use `format: "context"` instead of manually concatenating results.
+## CLI Commands
 
-## Key Features
+```bash
+wigolo                  # default: start MCP server on stdio
+wigolo mcp              # explicit: start MCP server
+wigolo warmup [flags]   # install Playwright, bootstrap SearXNG, optional extras
+wigolo serve            # start HTTP daemon on WIGOLO_DAEMON_PORT (default 3333)
+wigolo health           # health probe, exits 0 if ok
+wigolo doctor           # environment diagnostics (Python, Docker, Playwright, SearXNG)
+wigolo auth discover    # list CDP sessions (needs WIGOLO_CDP_URL)
+wigolo auth status      # show configured auth paths
+wigolo plugin add <git-url>    # clone plugin into ~/.wigolo/plugins/
+wigolo plugin list             # list installed plugins
+wigolo plugin remove <name>    # remove a plugin
+wigolo shell [--json]   # interactive REPL against subsystems
+```
 
-- Zero API keys required
-- Zero cloud dependency -- runs entirely local
-- Authenticated browsing (Chrome profiles, session state)
-- Localhost access (develop against local servers)
-- SQLite FTS5 cache with full-text search
-- ML reranking (optional, via FlashRank)
-- Extraction ensemble: site-specific, Defuddle, Trafilatura, Readability, Turndown
+## Configuration
 
-## Requirements
+Top environment variables. All optional — defaults are safe.
 
-- Node.js 20+
-- Python 3.8+ (recommended, for embedded SearXNG search)
-- Docker (optional, alternative to Python for SearXNG)
+| Variable | Default | Purpose |
+|---|---|---|
+| `WIGOLO_DATA_DIR` | `~/.wigolo` | Cache DB, SearXNG state, plugins, embeddings |
+| `SEARXNG_URL` | unset | Point at an existing SearXNG (skips native bootstrap) |
+| `SEARXNG_MODE` | `native` | `native` runs local Python SearXNG; `docker` runs container |
+| `WIGOLO_CHROME_PROFILE_PATH` | unset | Chrome profile for `use_auth: true` |
+| `WIGOLO_CDP_URL` | unset | Chrome DevTools endpoint (e.g. `http://localhost:9222`) |
+| `MAX_BROWSERS` | `3` | Playwright pool size |
+| `WIGOLO_BROWSER_TYPES` | `chromium` | Comma list: `chromium,firefox,webkit` |
+| `WIGOLO_RERANKER` | `none` | `flashrank` for ML reranking |
+| `WIGOLO_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Used by `find_similar` |
+| `CACHE_TTL_CONTENT` | `604800` (7d) | Seconds before cached pages expire |
+| `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
+
+Full list: see `src/config.ts`.
 
 ## Links
 
 - Repository: https://github.com/KnockOutEZ/wigolo
 - npm: https://www.npmjs.com/package/@staticn0va/wigolo
-- License: BSL 1.1 (converts to MIT on 2029-04-12)
+- License: BUSL-1.1 (converts to open source on 2029-04-12)
