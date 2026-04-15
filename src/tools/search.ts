@@ -1,4 +1,4 @@
-import type { SearchInput, SearchOutput, SearchResultItem, SearchEngine, RawSearchResult } from '../types.js';
+import type { SearchInput, SearchOutput, SearchResultItem, SearchEngine, RawSearchResult, ProgressCallback } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import type { BackendStatus } from '../server/backend-status.js';
 import { deduplicateResults } from '../search/dedup.js';
@@ -28,6 +28,7 @@ export async function handleSearch(
   router: SmartRouter,
   backendStatus?: BackendStatus,
   samplingServer?: SamplingCapableServer,
+  onProgress?: ProgressCallback,
 ): Promise<SearchOutput> {
   const start = Date.now();
   const config = getConfig();
@@ -38,6 +39,17 @@ export async function handleSearch(
   const maxTotalChars = input.max_total_chars ?? DEFAULT_MAX_TOTAL_CHARS;
   const totalTimeoutMs = config.searchTotalTimeoutMs;
   const fetchTimeoutMs = config.searchFetchTimeoutMs;
+
+  // Progress notifications are only emitted for stream_answer format
+  const streamProgress = input.format === 'stream_answer' ? onProgress : undefined;
+  const emit = async (progress: number, total: number, message: string): Promise<void> => {
+    if (!streamProgress) return;
+    try {
+      await streamProgress({ progress, total, message });
+    } catch (err) {
+      log.debug('progress notification failed', { error: String(err) });
+    }
+  };
 
   const isMultiQuery = Array.isArray(input.query);
 
@@ -89,6 +101,8 @@ export async function handleSearch(
       }
     }
 
+    await emit(1, 5, `Running ${normalizedQueries.length} search queries across engines...`);
+
     const { results: rawResults, enginesUsed, errors } = await fanOutSearch(
       normalizedQueries,
       activeEngines,
@@ -121,6 +135,8 @@ export async function handleSearch(
       return output;
     }
 
+    await emit(2, 5, `Deduplicating and reranking ${rawResults.length} results...`);
+
     let merged = deduplicateResults(rawResults);
 
     merged = applyAllFilters(merged, {
@@ -144,6 +160,7 @@ export async function handleSearch(
     }));
 
     if (includeContent && results.length > 0) {
+      await emit(3, 5, `Fetching content from ${results.length} sources...`);
       await fetchContentForResults(results, router, {
         contentMaxChars,
         maxTotalChars,
@@ -171,7 +188,7 @@ export async function handleSearch(
       output.context_text = formatSearchContext(output.results, maxTotalChars);
     }
     if ((input.format === 'answer' || input.format === 'stream_answer') && results.length > 0) {
-      await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer);
+      await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer, streamProgress);
     }
     return output;
   }
@@ -194,7 +211,7 @@ export async function handleSearch(
       output.context_text = formatSearchContext(output.results, maxTotalChars);
     }
     if ((input.format === 'answer' || input.format === 'stream_answer') && output.results.length > 0) {
-      await applyAnswerSynthesis(input, output, output.results, maxTotalChars, samplingServer);
+      await applyAnswerSynthesis(input, output, output.results, maxTotalChars, samplingServer, streamProgress);
     }
     return output;
   }
@@ -210,6 +227,8 @@ export async function handleSearch(
 
   const subQueries = decomposeQuery(queryStr);
   log.debug('query decomposition', { original: queryStr, parts: subQueries.length });
+
+  await emit(1, 5, `Running ${subQueries.length} search queries across ${activeEngines.length} engines...`);
 
   const allRaw: RawSearchResult[] = [];
   const enginesUsed = new Set<string>();
@@ -261,6 +280,8 @@ export async function handleSearch(
     return output;
   }
 
+  await emit(2, 5, `Deduplicating and reranking ${allRaw.length} results...`);
+
   let merged = deduplicateResults(allRaw);
 
   merged = applyAllFilters(merged, {
@@ -284,6 +305,7 @@ export async function handleSearch(
   }));
 
   if (includeContent && results.length > 0) {
+    await emit(3, 5, `Fetching content from ${results.length} sources...`);
     await fetchContentForResults(results, router, {
       contentMaxChars,
       maxTotalChars,
@@ -310,7 +332,7 @@ export async function handleSearch(
     output.context_text = formatSearchContext(output.results, maxTotalChars);
   }
   if ((input.format === 'answer' || input.format === 'stream_answer') && results.length > 0) {
-    await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer);
+    await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer, streamProgress);
   }
   return output;
 }
@@ -321,16 +343,41 @@ async function applyAnswerSynthesis(
   results: SearchResultItem[],
   maxTotalChars: number,
   samplingServer?: SamplingCapableServer,
+  onProgress?: ProgressCallback,
 ): Promise<void> {
   const isStreaming = input.format === 'stream_answer';
 
   if (samplingServer) {
+    if (isStreaming && onProgress) {
+      try {
+        await onProgress({
+          progress: 4,
+          total: 5,
+          message: `Synthesizing answer from ${results.length} sources...`,
+        });
+      } catch (err) {
+        log.debug('progress notification failed', { error: String(err) });
+      }
+    }
+
     const synthesis = await synthesizeAnswer(results, typeof input.query === 'string' ? input.query : input.query[0], samplingServer);
 
     if (!synthesis.fallback && synthesis.answer) {
       output.answer = synthesis.answer;
       output.citations = synthesis.citations;
       if (isStreaming) output.streaming = true;
+
+      if (isStreaming && onProgress) {
+        try {
+          await onProgress({
+            progress: 5,
+            total: 5,
+            message: `Answer synthesis complete (${synthesis.answer.length} chars, ${synthesis.citations?.length ?? 0} citations)`,
+          });
+        } catch (err) {
+          log.debug('progress notification failed', { error: String(err) });
+        }
+      }
     } else {
       output.context_text = formatSearchContext(results, maxTotalChars);
       if (synthesis.warning) {

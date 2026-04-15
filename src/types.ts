@@ -164,6 +164,14 @@ export interface Citation {
   snippet: string;
 }
 
+export interface ProgressUpdate {
+  progress: number;
+  total?: number;
+  message?: string;
+}
+
+export type ProgressCallback = (update: ProgressUpdate) => void | Promise<void>;
+
 // --- Research tool types (v3) ---
 
 export interface ResearchInput {

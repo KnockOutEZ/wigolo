@@ -188,6 +188,102 @@ describe('handleSearch with format=answer', () => {
     expect(result.streaming).toBe(true);
   });
 
+  it('format=stream_answer invokes onProgress at each pipeline phase', async () => {
+    const server = createMockServer({ samplingSupported: true });
+    const onProgress = vi.fn();
+
+    const result = await handleSearch(
+      { query: 'test', format: 'stream_answer' },
+      [stubEngine],
+      mockRouter,
+      undefined,
+      server,
+      onProgress,
+    );
+
+    expect(result.answer).toBeDefined();
+    expect(onProgress).toHaveBeenCalled();
+
+    const calls = onProgress.mock.calls.map(c => c[0]);
+    // Expect: search (1/5), dedup (2/5), fetch (3/5), synthesize (4/5), complete (5/5)
+    expect(calls.length).toBeGreaterThanOrEqual(4);
+    const messages = calls.map(c => c.message as string);
+    expect(messages.some(m => /search quer/i.test(m))).toBe(true);
+    expect(messages.some(m => /dedup|rerank/i.test(m))).toBe(true);
+    expect(messages.some(m => /synthesiz/i.test(m))).toBe(true);
+
+    // Each progress update should have numeric progress and total
+    for (const call of calls) {
+      expect(typeof call.progress).toBe('number');
+      expect(typeof call.total).toBe('number');
+    }
+  });
+
+  it('format=stream_answer works without onProgress callback', async () => {
+    const server = createMockServer({ samplingSupported: true });
+
+    const result = await handleSearch(
+      { query: 'test', format: 'stream_answer' },
+      [stubEngine],
+      mockRouter,
+      undefined,
+      server,
+      undefined,
+    );
+
+    expect(result.answer).toBeDefined();
+    expect(result.streaming).toBe(true);
+  });
+
+  it('format=answer does NOT invoke onProgress (progress is stream_answer only)', async () => {
+    const server = createMockServer({ samplingSupported: true });
+    const onProgress = vi.fn();
+
+    await handleSearch(
+      { query: 'test', format: 'answer' },
+      [stubEngine],
+      mockRouter,
+      undefined,
+      server,
+      onProgress,
+    );
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('format=full does NOT invoke onProgress', async () => {
+    const server = createMockServer({ samplingSupported: true });
+    const onProgress = vi.fn();
+
+    await handleSearch(
+      { query: 'test', format: 'full' },
+      [stubEngine],
+      mockRouter,
+      undefined,
+      server,
+      onProgress,
+    );
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('onProgress failures do not break stream_answer', async () => {
+    const server = createMockServer({ samplingSupported: true });
+    const onProgress = vi.fn().mockRejectedValue(new Error('transport closed'));
+
+    const result = await handleSearch(
+      { query: 'test', format: 'stream_answer' },
+      [stubEngine],
+      mockRouter,
+      undefined,
+      server,
+      onProgress,
+    );
+
+    expect(result.answer).toBeDefined();
+    expect(onProgress).toHaveBeenCalled();
+  });
+
   it('format=full does not trigger answer synthesis', async () => {
     const server = createMockServer({ samplingSupported: true });
 

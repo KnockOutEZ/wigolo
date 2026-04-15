@@ -35,7 +35,7 @@ import { WIGOLO_INSTRUCTIONS, TOOL_DESCRIPTIONS } from './instructions.js';
 import { loadPlugins } from './plugins/loader.js';
 import { PluginRegistry } from './plugins/registry.js';
 import { registerExtractor } from './extraction/pipeline.js';
-import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput, AgentInput } from './types.js';
+import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput, AgentInput, ProgressCallback } from './types.js';
 
 const log = createLogger('server');
 
@@ -180,7 +180,7 @@ const SEARCH_TOOL_SCHEMA = {
     format: {
       type: 'string',
       enum: ['full', 'context', 'answer', 'stream_answer'],
-      description: "Output format: 'full' returns structured results (default), 'context' returns a single token-budgeted string for LLM injection, 'answer' synthesizes a direct answer with citations via MCP sampling, 'stream_answer' same as answer with streaming flag",
+      description: "Output format: 'full' returns structured results (default), 'context' returns a single token-budgeted string for LLM injection, 'answer' synthesizes a direct answer with citations via MCP sampling, 'stream_answer' same as answer but emits notifications/progress between pipeline phases (search/fetch/synthesize) when the client supplies a progressToken",
     },
   },
   required: ['query'],
@@ -617,8 +617,32 @@ export function createMcpServer(subsystems: Subsystems): Server {
     ],
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
+
+    // If the client supplied a progressToken in request._meta, build a
+    // callback that forwards progress updates as notifications/progress.
+    // Used by stream_answer to emit pipeline-phase progress.
+    const meta = (request.params as { _meta?: { progressToken?: string | number } })._meta;
+    const progressToken = meta?.progressToken;
+    const onProgress: ProgressCallback | undefined =
+      progressToken !== undefined && extra && typeof extra.sendNotification === 'function'
+        ? async (update) => {
+            try {
+              await extra.sendNotification({
+                method: 'notifications/progress',
+                params: {
+                  progressToken,
+                  progress: update.progress,
+                  total: update.total,
+                  message: update.message,
+                },
+              } as Parameters<typeof extra.sendNotification>[0]);
+            } catch (err) {
+              log.debug('sendNotification failed', { error: String(err) });
+            }
+          }
+        : undefined;
 
     if (name === 'fetch') {
       const input = (args ?? {}) as unknown as FetchInput;
@@ -632,7 +656,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
     if (name === 'search') {
       const input = (args ?? {}) as unknown as SearchInput;
       const samplingServer = server as unknown as SamplingCapableServer;
-      const result = await handleSearch(input, searchEngines, router, backendStatus, samplingServer);
+      const result = await handleSearch(input, searchEngines, router, backendStatus, samplingServer, onProgress);
       const blocks: { type: 'text'; text: string }[] = [];
       if (result.warning) {
         blocks.push({ type: 'text', text: `[wigolo notice] ${result.warning}` });

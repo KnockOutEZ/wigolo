@@ -98,9 +98,9 @@ Key parameters:
 - category: "general", "news", "code", "docs", "papers" -- filters by content type
 - from_date/to_date: ISO dates for time-bounded queries
 - max_results: default 5. Use 3 for focused queries, 10+ for research.
-- format: "full" (default, structured JSON), "context" (single token-budgeted string for LLM injection), "answer" (synthesized direct answer via requestSampling), "stream_answer" (streaming answer chunks)
+- format: "full" (default, structured JSON), "context" (single token-budgeted string for LLM injection), "answer" (synthesized direct answer via requestSampling), "stream_answer" (same as answer, with MCP progress notifications emitted between pipeline phases)
 
-The "answer" format uses the MCP client's sampling capability to synthesize a direct response from search results. If sampling is not supported, falls back to "context" format. "stream_answer" sends incremental progress notifications.
+The "answer" format uses the MCP client's sampling capability to synthesize a direct response from search results. If sampling is not supported, falls back to "context" format. "stream_answer" emits notifications/progress messages at each pipeline phase (search, fetch, synthesize) when the client provides a progressToken via request._meta — token-level streaming of the LLM response is not supported by MCP sampling, so the answer itself still arrives as one block.
 
 Results include title, URL, relevance_score, and full markdown_content per result. Previously fetched pages are served from local cache.`,
 
