@@ -1,15 +1,17 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
-const startMock = vi.fn();
-const stopMock = vi.fn();
-const execSyncMock = vi.fn();
-const fetchMock = vi.fn();
+const { startMock, stopMock, execSyncMock, fetchMock } = vi.hoisted(() => ({
+  startMock: vi.fn(),
+  stopMock: vi.fn(),
+  execSyncMock: vi.fn(),
+  fetchMock: vi.fn(),
+}));
 
 vi.mock('../../../../src/searxng/process.js', () => ({
-  SearxngProcess: vi.fn().mockImplementation(() => ({
-    start: startMock,
-    stop: stopMock,
-  })),
+  SearxngProcess: vi.fn().mockImplementation(function (this: any) {
+    this.start = startMock;
+    this.stop = stopMock;
+  }),
 }));
 
 vi.mock('node:child_process', () => ({
