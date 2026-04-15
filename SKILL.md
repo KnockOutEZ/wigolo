@@ -226,6 +226,16 @@ Tip: output includes a `steps` array showing every action (plan, search, fetch, 
 
 ## Workflow Patterns
 
+Quick routing:
+- Use when `search` — you need information but don't have a URL.
+- Use when `fetch` — you already have the URL.
+- Use when `crawl` — you need multiple pages from one site.
+- Use when `cache` — you want to check whether something is already on disk.
+- Use when `extract` — you need specific fields, tables, or metadata, not the whole page.
+- Use when `find_similar` — you have a good page/concept and want related content.
+- Use when `research` — a question needs decomposition and multi-source synthesis.
+- Use when `agent` — a natural-language task needs multi-step data gathering.
+
 **Cache-first lookup.** Before any `fetch` or `search`, probe the cache.
 ```json
 cache({ "query": "oauth2 pkce", "url_pattern": "*auth0.com*" })
