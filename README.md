@@ -62,13 +62,13 @@ npx @staticn0va/wigolo warmup --all
 Flag menu:
 
 ```bash
-npx @staticn0va/wigolo warmup                # Playwright + SearXNG only
+npx @staticn0va/wigolo warmup                # browser engine + search engine only
 npx @staticn0va/wigolo warmup --all          # + reranker + trafilatura + embeddings + lightpanda + verify
 npx @staticn0va/wigolo warmup --reranker     # Install ML reranker
 npx @staticn0va/wigolo warmup --trafilatura  # Install content extractor
 npx @staticn0va/wigolo warmup --embeddings   # Install semantic embeddings
 npx @staticn0va/wigolo warmup --verify       # Start search engine, test all components
-npx @staticn0va/wigolo warmup --force        # Wipe SearXNG state/install/locks and re-bootstrap
+npx @staticn0va/wigolo warmup --force        # Wipe search engine state/install/locks and re-bootstrap
 ```
 
 **2. Connect your agent:**
@@ -167,7 +167,7 @@ search("React Server Components best practices", { max_results: 5 })
 - Date filtering: `from_date: "2024-01-01"`, `to_date: "2025-01-01"`
 - Category search: `general`, `news`, `code`, `docs`, `papers`
 - ML reranking when installed
-- Falls back to direct engine scraping when SearXNG is unavailable
+- Falls back to direct engine scraping when search engine is unavailable
 
 ### fetch
 
@@ -280,9 +280,9 @@ Full list of env vars:
 | `FETCH_TIMEOUT_MS` | `10000` | HTTP fetch timeout |
 | `CRAWL_CONCURRENCY` | `2` | Concurrent crawl requests |
 | `RESPECT_ROBOTS_TXT` | `true` | Honor robots.txt |
-| `WIGOLO_BOOTSTRAP_MAX_ATTEMPTS` | `3` | Cap on SearXNG bootstrap auto-retries |
+| `WIGOLO_BOOTSTRAP_MAX_ATTEMPTS` | `3` | Cap on search engine bootstrap auto-retries |
 | `WIGOLO_BOOTSTRAP_BACKOFF_SECONDS` | `30,3600,86400` | Backoff seconds for retry attempts 1, 2, 3 |
-| `WIGOLO_HEALTH_PROBE_INTERVAL_MS` | `30000` | Interval between SearXNG `/healthz` probes |
+| `WIGOLO_HEALTH_PROBE_INTERVAL_MS` | `30000` | Interval between search engine health probes |
 | `WIGOLO_DAEMON_PORT` | `3333` | HTTP server port for daemon mode |
 | `WIGOLO_DAEMON_HOST` | `127.0.0.1` | HTTP server bind address for daemon mode |
 
@@ -331,7 +331,7 @@ claude mcp add wigolo -- npx @staticn0va/wigolo
 Start with `npx @staticn0va/wigolo doctor` — it reports the state of every component and is the fastest way to find the cause.
 
 **First search is slow or returns odd results**
-SearXNG is still bootstrapping in the background. Either wait a minute, or (recommended) run `npx @staticn0va/wigolo warmup --all` before connecting your agent.
+Search engine is still bootstrapping in the background. Either wait a minute, or (recommended) run `npx @staticn0va/wigolo warmup --all` before connecting your agent.
 
 **ML reranker / content extractor / embeddings "not installed"**
 These are optional Python extras. Install them with `npx @staticn0va/wigolo warmup --all` (or per-component: `--reranker`, `--trafilatura`, `--embeddings`). wigolo uses a private venv under `~/.wigolo/searxng/venv` so your system Python stays untouched.
@@ -346,10 +346,10 @@ That's expected when you haven't made a search yet — the process starts on-dem
 Run `npx @staticn0va/wigolo warmup` to download Chromium. This is done automatically on first use but can fail behind corporate proxies.
 
 **Search returns no results**
-If SearXNG and all fallback engines fail, check your network connection. Behind a proxy? Set `PROXY_URL=http://your-proxy:port`.
+If all search engines fail, check your network connection. Behind a proxy? Set `PROXY_URL=http://your-proxy:port`.
 
 **Permission errors on `~/.wigolo/`**
-wigolo stores its cache and SearXNG installation in `~/.wigolo/`. Ensure your user has write access. Override with `WIGOLO_DATA_DIR=/your/path`.
+wigolo stores its cache and search engine state in `~/.wigolo/`. Ensure your user has write access. Override with `WIGOLO_DATA_DIR=/your/path`.
 
 **Start fresh**
 ```bash

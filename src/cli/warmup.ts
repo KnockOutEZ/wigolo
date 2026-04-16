@@ -48,7 +48,7 @@ function wipeSearxngState(dataDir: string, reporter: WarmupReporter): void {
   rmSync(bootstrapLockPath, { force: true });
   rmSync(join(dataDir, 'searxng.lock'), { force: true });
   rmSync(join(dataDir, 'searxng.port'), { force: true });
-  reporter.note('Wiped SearXNG state, install, and locks (--force)');
+  reporter.note('Wiped search engine state, install, and locks (--force)');
 }
 
 async function installPlaywright(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'playwright' | 'playwrightError'>> {

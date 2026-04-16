@@ -190,7 +190,7 @@ const SEARCH_TOOL_SCHEMA = {
       type: 'string',
       enum: ['full', 'context', 'answer', 'highlights', 'stream_answer'],
       description:
-        "Output format: 'full' returns structured results (default); 'context' returns a single token-budgeted string for LLM injection; 'highlights' returns FlashRank-scored passages per source with citations (no LLM needed — the host agent synthesizes); 'answer' requests LLM synthesis via MCP sampling and falls back to 'highlights' when sampling is unsupported; 'stream_answer' same as 'answer' but emits progress notifications between pipeline phases (search/fetch/synthesize) when the client supplies a progressToken",
+        "Output format: 'full' returns structured results (default); 'context' returns a single token-budgeted string for LLM injection; 'highlights' returns ML-scored passages per source with citations (no LLM needed — the host agent synthesizes); 'answer' requests LLM synthesis via MCP sampling and falls back to 'highlights' when sampling is unsupported; 'stream_answer' same as 'answer' but emits progress notifications between pipeline phases (search/fetch/synthesize) when the client supplies a progressToken",
     },
     max_highlights: {
       type: 'number',
@@ -506,7 +506,7 @@ export async function initSubsystems(): Promise<Subsystems> {
               backendStatus.markUnhealthy(reason);
               const idx = searchEngines.findIndex(e => e.name === 'searxng');
               if (idx >= 0) searchEngines.splice(idx, 1);
-              log.warn('SearXNG marked unhealthy', { reason });
+              log.warn('search engine marked unhealthy', { reason });
             },
             onHealthy: () => {
               const url = searxngProcess?.getUrl();
@@ -515,7 +515,7 @@ export async function initSubsystems(): Promise<Subsystems> {
               if (!searchEngines.some(e => e.name === 'searxng')) {
                 searchEngines.unshift(new SearxngClient(url));
               }
-              log.info('SearXNG recovered');
+              log.info('search engine recovered');
             },
           });
           const url = await searxngProcess.start();
@@ -525,7 +525,7 @@ export async function initSubsystems(): Promise<Subsystems> {
             log.info('search engine ready', { url });
           } else {
             log.warn('search engine failed to start, using fallback scraping');
-            backendStatus.markUnhealthy('SearXNG process failed to start');
+            backendStatus.markUnhealthy('search engine process failed to start');
           }
         }
         return;
@@ -540,13 +540,13 @@ export async function initSubsystems(): Promise<Subsystems> {
           log.info('search engine (docker) ready', { url });
         } else {
           log.warn('search engine (docker) failed to start, using fallback scraping');
-          backendStatus.markUnhealthy('Docker SearXNG failed to start');
+          backendStatus.markUnhealthy('search engine (docker) failed to start');
         }
       }
 
       if (backend.type === 'scraping') {
         const state = getBootstrapState(config.dataDir);
-        const reason = state?.lastError?.message ?? state?.error ?? 'no SearXNG backend available';
+        const reason = state?.lastError?.message ?? state?.error ?? 'no search engine backend available';
         backendStatus.markUnhealthy(reason);
       }
     } catch (err) {
@@ -765,7 +765,7 @@ export async function startServer(): Promise<void> {
   log.info('MCP server started');
 
   subs.bootstrapSearxng().catch((err) => {
-    log.warn('SearXNG bootstrap failed', { error: String(err) });
+    log.warn('search engine bootstrap failed', { error: String(err) });
   });
 
   const shutdown = async () => {

@@ -10,7 +10,7 @@ runtime: node
 min_runtime_version: "20"
 tools:
   - name: fetch
-    description: Fetch one URL, return clean markdown. Auto-routes between HTTP and Playwright. Supports sections, auth, screenshots, browser actions.
+    description: Fetch one URL, return clean markdown. Auto-routes between HTTP and browser engine. Supports sections, auth, screenshots, browser actions.
   - name: search
     description: Search the web, return extracted markdown per result. Single query or array of query variants. Domain, category, date filters. Formats include ML-scored highlights with citations for host-LLM synthesis.
   - name: crawl
@@ -85,7 +85,7 @@ Parameters:
 - `screenshot`: boolean (default `false`)
 - `headers`: object
 - `force_refresh`: boolean — bypass cache
-- `actions`: array of `{type, selector, text, ms, timeout, direction, amount}` — `click`, `type`, `wait`, `wait_for`, `scroll`, `screenshot`. Forces Playwright when present.
+- `actions`: array of `{type, selector, text, ms, timeout, direction, amount}` — `click`, `type`, `wait`, `wait_for`, `scroll`, `screenshot`. Forces browser rendering when present.
 
 Example:
 ```json
@@ -366,7 +366,7 @@ Top environment variables. All optional — defaults are safe.
 | `SEARXNG_MODE` | `native` | `native` runs local Python search engine; `docker` runs container |
 | `WIGOLO_CHROME_PROFILE_PATH` | unset | Chrome profile for `use_auth: true` |
 | `WIGOLO_CDP_URL` | unset | Chrome DevTools endpoint (e.g. `http://localhost:9222`) |
-| `MAX_BROWSERS` | `3` | Playwright pool size |
+| `MAX_BROWSERS` | `3` | Browser pool size |
 | `WIGOLO_BROWSER_TYPES` | `chromium` | Comma list: `chromium,firefox,webkit` |
 | `WIGOLO_RERANKER` | `none` | `flashrank` for ML reranking |
 | `WIGOLO_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Used by `find_similar` |
