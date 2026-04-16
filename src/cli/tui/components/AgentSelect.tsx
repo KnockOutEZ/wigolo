@@ -5,15 +5,15 @@ import { useAgentDetect } from '../hooks/useAgentDetect.js';
 import { applyConfigs } from '../config-writer.js';
 import type { AgentId, DetectedAgent } from '../agents.js';
 
-interface AgentSelectProps {
-  onComplete: (selectedIds: AgentId[]) => void;
-}
-
-interface ConfigResult {
+export interface AgentResult {
   id: string;
   displayName: string;
   ok: boolean;
   message?: string;
+}
+
+interface AgentSelectProps {
+  onComplete: (selectedIds: AgentId[], results: AgentResult[]) => void;
 }
 
 function buildOptions(agents: DetectedAgent[]) {
@@ -26,13 +26,13 @@ function buildOptions(agents: DetectedAgent[]) {
 export function AgentSelect({ onComplete }: AgentSelectProps) {
   const { agents, done: detectDone } = useAgentDetect();
   const [configuring, setConfiguring] = useState(false);
-  const [results, setResults] = useState<ConfigResult[]>([]);
+  const [results, setResults] = useState<AgentResult[]>([]);
   const [configDone, setConfigDone] = useState(false);
 
   useEffect(() => {
     if (configDone) {
       const ids = results.filter((r) => r.ok).map((r) => r.id as AgentId);
-      const timer = setTimeout(() => onComplete(ids), 400);
+      const timer = setTimeout(() => onComplete(ids, results), 400);
       return () => clearTimeout(timer);
     }
   }, [configDone, results, onComplete]);
@@ -76,19 +76,18 @@ export function AgentSelect({ onComplete }: AgentSelectProps) {
 
   async function handleSubmit(selectedIds: string[]) {
     if (selectedIds.length === 0) {
-      onComplete([]);
+      onComplete([], []);
       return;
     }
     setConfiguring(true);
     const configResults = await applyConfigs(agents, selectedIds as AgentId[]);
-    setResults(
-      configResults.map((r) => ({
-        id: r.id,
-        displayName: r.displayName,
-        ok: r.ok,
-        message: r.message,
-      })),
-    );
+    const mapped: AgentResult[] = configResults.map((r) => ({
+      id: r.id,
+      displayName: r.displayName,
+      ok: r.ok,
+      message: r.message,
+    }));
+    setResults(mapped);
     setConfigDone(true);
   }
 

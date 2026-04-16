@@ -6,7 +6,7 @@ import type { BrowserChoice } from './BrowserSelect.js';
 
 interface InstallProgressProps {
   browser: BrowserChoice;
-  onComplete: () => void;
+  onComplete: (items: InstallItem[]) => void;
 }
 
 function formatTime(ms: number): string {
@@ -50,10 +50,10 @@ export function InstallProgress({ browser, onComplete }: InstallProgressProps) {
 
   useEffect(() => {
     if (done) {
-      const timer = setTimeout(onComplete, 300);
+      const timer = setTimeout(() => onComplete(items), 300);
       return () => clearTimeout(timer);
     }
-  }, [done, onComplete]);
+  }, [done, items, onComplete]);
 
   return (
     <Box flexDirection="column" paddingX={2}>
@@ -66,3 +66,5 @@ export function InstallProgress({ browser, onComplete }: InstallProgressProps) {
     </Box>
   );
 }
+
+export type { InstallItem };

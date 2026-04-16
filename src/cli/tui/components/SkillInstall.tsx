@@ -12,9 +12,16 @@ interface SkillResult {
   detail: string;
 }
 
+export interface SkillResultInfo {
+  id: string;
+  status: string;
+  name: string;
+  detail: string;
+}
+
 interface SkillInstallProps {
   agents: AgentId[];
-  onComplete: () => void;
+  onComplete: (results: SkillResultInfo[]) => void;
 }
 
 function getSkillContent(): string | null {
@@ -121,10 +128,16 @@ export function SkillInstall({ agents, onComplete }: SkillInstallProps) {
 
   useEffect(() => {
     if (done) {
-      const timer = setTimeout(onComplete, 300);
+      const mapped: SkillResultInfo[] = results.map((r) => ({
+        id: r.id,
+        status: r.status,
+        name: AGENT_NAMES[r.id] ?? r.id,
+        detail: r.detail,
+      }));
+      const timer = setTimeout(() => onComplete(mapped), 300);
       return () => clearTimeout(timer);
     }
-  }, [done, onComplete]);
+  }, [done, results, onComplete]);
 
   if (!done) {
     return (

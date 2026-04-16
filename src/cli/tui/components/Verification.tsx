@@ -5,7 +5,7 @@ import { useVerify, type VerifyItem } from '../hooks/useVerify.js';
 
 interface VerificationProps {
   dataDir: string;
-  onComplete: () => void;
+  onComplete: (items: VerifyItem[]) => void;
 }
 
 function VerifyLine({ item }: { item: VerifyItem }) {
@@ -50,10 +50,10 @@ export function Verification({ dataDir, onComplete }: VerificationProps) {
 
   useEffect(() => {
     if (done) {
-      const timer = setTimeout(onComplete, 400);
+      const timer = setTimeout(() => onComplete(items), 400);
       return () => clearTimeout(timer);
     }
-  }, [done, onComplete]);
+  }, [done, items, onComplete]);
 
   return (
     <Box flexDirection="column" paddingX={2}>
@@ -66,3 +66,5 @@ export function Verification({ dataDir, onComplete }: VerificationProps) {
     </Box>
   );
 }
+
+export type { VerifyItem };

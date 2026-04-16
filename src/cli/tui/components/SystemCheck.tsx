@@ -4,8 +4,8 @@ import { Spinner } from '@inkjs/ui';
 import { useSystemCheck, type CheckItem } from '../hooks/useSystemCheck.js';
 
 interface SystemCheckProps {
-  onComplete: () => void;
-  onFail: () => void;
+  onComplete: (checks: CheckItem[]) => void;
+  onFail: (checks: CheckItem[]) => void;
 }
 
 function CheckLine({ check }: { check: CheckItem }) {
@@ -44,13 +44,13 @@ export function SystemCheck({ onComplete, onFail }: SystemCheckProps) {
   useEffect(() => {
     if (done) {
       if (hardFailure) {
-        onFail();
+        onFail(checks);
       } else {
-        const timer = setTimeout(onComplete, 400);
+        const timer = setTimeout(() => onComplete(checks), 400);
         return () => clearTimeout(timer);
       }
     }
-  }, [done, hardFailure, onComplete, onFail]);
+  }, [done, hardFailure, checks, onComplete, onFail]);
 
   return (
     <Box flexDirection="column" paddingX={2}>
@@ -68,3 +68,5 @@ export function SystemCheck({ onComplete, onFail }: SystemCheckProps) {
     </Box>
   );
 }
+
+export type { CheckItem };
