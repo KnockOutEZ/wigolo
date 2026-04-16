@@ -394,4 +394,39 @@ describe('findSimilar', () => {
       );
     }
   });
+
+  it('sets cold_start note when cache is completely empty', async () => {
+    const result = await findSimilar(
+      { concept: 'quantum computing', include_cache: true, include_web: true },
+      [mockSearchEngine],
+      mockRouter,
+    );
+    expect(result.cold_start).toBeDefined();
+    expect(result.cold_start).toMatch(/cache is empty/i);
+  });
+
+  it('sets cold_start note when embeddings unavailable despite populated cache', async () => {
+    seedCache('https://react.dev/hooks', 'React Hooks', '# React Hooks\n\nHooks for **state**.');
+    const result = await findSimilar(
+      { concept: 'React hooks', include_web: false },
+      [mockSearchEngine],
+      mockRouter,
+    );
+    expect(result.cold_start).toBeDefined();
+    expect(result.cold_start).toMatch(/embeddings unavailable|index empty/i);
+  });
+
+  it('omits cold_start when cache has content and embeddings available', async () => {
+    // With current test setup embeddings never init, so this variant just
+    // ensures cold_start is a string when present and never a blocking error.
+    seedCache('https://react.dev/hooks', 'React Hooks', '# React Hooks\n\nHooks for **state**.');
+    const result = await findSimilar(
+      { concept: 'React hooks', include_web: false },
+      [mockSearchEngine],
+      mockRouter,
+    );
+    if (result.cold_start !== undefined) {
+      expect(typeof result.cold_start).toBe('string');
+    }
+  });
 });

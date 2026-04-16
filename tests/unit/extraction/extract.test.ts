@@ -59,6 +59,18 @@ describe('extractMetadata', () => {
     expect(result.og_image).toBe('https://example.com/img.png');
   });
 
+  it('extracts og:type', () => {
+    const html = '<html><head><meta property="og:type" content="article"></head><body></body></html>';
+    const result = extractMetadata(html);
+    expect(result.og_type).toBe('article');
+  });
+
+  it('extracts canonical url from link[rel=canonical]', () => {
+    const html = '<html><head><link rel="canonical" href="https://example.com/page"></head><body></body></html>';
+    const result = extractMetadata(html);
+    expect(result.canonical_url).toBe('https://example.com/page');
+  });
+
   it('returns empty object for HTML with no metadata', () => {
     const html = '<html><head></head><body><p>Hello</p></body></html>';
     const result = extractMetadata(html);

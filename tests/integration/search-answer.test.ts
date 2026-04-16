@@ -120,7 +120,7 @@ describe('search answer synthesis -- integration', () => {
     expect(result.total_time_ms).toBeGreaterThanOrEqual(0);
   });
 
-  it('end-to-end: format=answer falls back to context when sampling unavailable', async () => {
+  it('end-to-end: format=answer falls back to highlights when sampling unavailable', async () => {
     const server = createMockServer({ samplingSupported: false });
 
     const result = await handleSearch(
@@ -132,12 +132,14 @@ describe('search answer synthesis -- integration', () => {
     );
 
     expect(result.answer).toBeUndefined();
-    expect(result.context_text).toBeDefined();
-    expect(result.context_text!.length).toBeGreaterThan(0);
+    expect(result.highlights).toBeDefined();
+    expect(result.highlights!.length).toBeGreaterThan(0);
+    expect(result.citations).toBeDefined();
+    expect(result.citations!.length).toBeGreaterThan(0);
     expect(result.warning).toBeDefined();
   });
 
-  it('end-to-end: format=answer without server falls back gracefully', async () => {
+  it('end-to-end: format=answer without server falls back to highlights', async () => {
     const result = await handleSearch(
       { query: 'React Server Components', format: 'answer', include_content: false },
       [stubEngine],
@@ -147,7 +149,8 @@ describe('search answer synthesis -- integration', () => {
     );
 
     expect(result.answer).toBeUndefined();
-    expect(result.context_text).toBeDefined();
+    expect(result.highlights).toBeDefined();
+    expect(result.highlights!.length).toBeGreaterThan(0);
   });
 
   it('end-to-end: format=stream_answer sets streaming flag', async () => {
@@ -165,7 +168,7 @@ describe('search answer synthesis -- integration', () => {
     expect(result.streaming).toBe(true);
   });
 
-  it('end-to-end: sampling error falls back to context with warning', async () => {
+  it('end-to-end: sampling error falls back to highlights with warning', async () => {
     const server = createMockServer({
       samplingSupported: true,
       samplingError: new Error('context window exceeded'),
@@ -180,7 +183,8 @@ describe('search answer synthesis -- integration', () => {
     );
 
     expect(result.answer).toBeUndefined();
-    expect(result.context_text).toBeDefined();
+    expect(result.highlights).toBeDefined();
+    expect(result.highlights!.length).toBeGreaterThan(0);
     expect(result.warning).toContain('context window exceeded');
   });
 

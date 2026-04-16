@@ -1,7 +1,14 @@
 import { defuddleExtract } from './defuddle.js';
 import { readabilityExtract } from './readability.js';
 import { trafilaturaExtract, isTrafilaturaAvailable } from './trafilatura.js';
-import { htmlToMarkdown, extractSection, extractLinksAndImages } from './markdown.js';
+import {
+  htmlToMarkdown,
+  extractSection,
+  extractLinksAndImages,
+  filterDecorativeImages,
+  resolveRelativeUrls,
+} from './markdown.js';
+import { extractMetadata } from './extract.js';
 import type { ExtractionResult, Extractor } from '../types.js';
 import { githubExtractor } from './site-extractors/github.js';
 import { stackoverflowExtractor } from './site-extractors/stackoverflow.js';
@@ -57,7 +64,7 @@ export async function extractContent(
       images: [],
       extractor: 'turndown',
     };
-    return applyPostProcessing(result, options);
+    return applyPostProcessing(result, url, html, options);
   }
 
   const siteExtractor = siteExtractors.find((e) => e.canHandle(url, html));
@@ -65,7 +72,7 @@ export async function extractContent(
     const extracted = siteExtractor.extract(html, url);
     if (extracted) {
       result = extracted;
-      return applyPostProcessing(result, options);
+      return applyPostProcessing(result, url, html, options);
     }
   }
 
@@ -79,7 +86,7 @@ export async function extractContent(
         result = await trafilaturaExtract(html, url);
         if (result) {
           log.info('Trafilatura extraction succeeded', { url, chars: result.markdown.length });
-          return applyPostProcessing(result, options);
+          return applyPostProcessing(result, url, html, options);
         }
       }
     }
@@ -101,14 +108,43 @@ export async function extractContent(
     };
   }
 
-  return applyPostProcessing(result, options);
+  return applyPostProcessing(result, url, html, options);
+}
+
+function mergeMetadata(
+  base: ExtractionResult['metadata'],
+  html: string,
+): ExtractionResult['metadata'] {
+  try {
+    const meta = extractMetadata(html);
+    return {
+      ...meta,
+      // Extractor-provided fields win when set (they already inspected the article body).
+      description: base.description || meta.description,
+      author: base.author || meta.author,
+      date: base.date || meta.date,
+      language: base.language,
+      og_image: base.og_image ?? meta.og_image,
+      og_type: base.og_type ?? meta.og_type,
+      canonical_url: base.canonical_url ?? meta.canonical_url,
+      keywords: base.keywords ?? meta.keywords,
+    };
+  } catch {
+    return base;
+  }
 }
 
 function applyPostProcessing(
   result: ExtractionResult,
+  url: string,
+  html: string,
   options: ExtractionOptions,
 ): ExtractionResult {
   let markdown = result.markdown;
+
+  // Resolve relative links/images before slicing so downstream consumers get absolute URLs.
+  markdown = resolveRelativeUrls(markdown, url);
+  markdown = filterDecorativeImages(markdown);
 
   if (options.section) {
     const { content } = extractSection(markdown, options.section, options.sectionIndex ?? 0);
@@ -116,10 +152,11 @@ function applyPostProcessing(
   }
 
   const { links, images } = extractLinksAndImages(markdown);
+  const metadata = mergeMetadata(result.metadata, html);
 
   if (options.maxChars && markdown.length > options.maxChars) {
     markdown = markdown.slice(0, options.maxChars);
   }
 
-  return { ...result, markdown, links, images };
+  return { ...result, markdown, links, images, metadata };
 }

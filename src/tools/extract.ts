@@ -3,6 +3,7 @@ import type { SmartRouter } from '../fetch/router.js';
 import { extractMetadata, extractSelector, extractTables } from '../extraction/extract.js';
 import { extractWithSchema } from '../extraction/schema.js';
 import { extractJsonLd } from '../extraction/jsonld.js';
+import { extractStructured } from '../extraction/structured.js';
 import { getCachedContent, isExpired } from '../cache/store.js';
 import { createLogger } from '../logger.js';
 
@@ -59,6 +60,9 @@ export async function handleExtract(
       case 'tables':
         data = extractTables(html);
         break;
+      case 'structured':
+        data = extractStructured(html);
+        break;
       case 'schema':
         data = extractWithSchema(html, input.schema!);
         break;
@@ -77,8 +81,22 @@ export async function handleExtract(
     return { data, source_url: sourceUrl, mode };
   } catch (err) {
     log.error('Extract failed', { url: input.url, error: String(err) });
+    let fallbackData: ExtractOutput['data'];
+    switch (mode) {
+      case 'selector':
+        fallbackData = '';
+        break;
+      case 'tables':
+        fallbackData = [];
+        break;
+      case 'structured':
+        fallbackData = { tables: [], definitions: [], jsonld: [], chart_hints: [], key_value_pairs: [] };
+        break;
+      default:
+        fallbackData = {};
+    }
     return {
-      data: mode === 'selector' ? '' : mode === 'tables' ? [] : {},
+      data: fallbackData,
       source_url: input.url,
       mode,
       error: err instanceof Error ? err.message : String(err),

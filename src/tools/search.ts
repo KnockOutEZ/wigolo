@@ -9,6 +9,7 @@ import { applyAllFilters } from '../search/filters.js';
 import { formatSearchContext } from '../search/context-formatter.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
 import { synthesizeAnswer, buildStructuredFallback } from '../search/answer-synthesis.js';
+import { extractHighlights } from '../search/highlights.js';
 import { normalizeQueries, fanOutSearch, synthesizeIntent } from '../search/multi-query.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { truncateSmartly } from '../search/truncate.js';
@@ -91,6 +92,12 @@ export async function handleSearch(
       if (warning) output.warning = warning;
       if (input.format === 'context') {
         output.context_text = formatSearchContext(output.results, maxTotalChars);
+      }
+      if (input.format === 'highlights' && output.results.length > 0) {
+        await applyHighlightsFormat(output, output.results, displayQuery, input.max_highlights);
+      }
+      if ((input.format === 'answer' || input.format === 'stream_answer') && output.results.length > 0) {
+        await applyAnswerSynthesis(input, output, output.results, maxTotalChars, samplingServer, streamProgress);
       }
       return output;
     }
@@ -203,6 +210,9 @@ export async function handleSearch(
     if ((input.format === 'answer' || input.format === 'stream_answer') && results.length > 0) {
       await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer, streamProgress);
     }
+    if (input.format === 'highlights' && results.length > 0) {
+      await applyHighlightsFormat(output, results, displayQuery, input.max_highlights);
+    }
     return output;
   }
 
@@ -222,6 +232,9 @@ export async function handleSearch(
     if (warning) output.warning = warning;
     if (input.format === 'context') {
       output.context_text = formatSearchContext(output.results, maxTotalChars);
+    }
+    if (input.format === 'highlights' && output.results.length > 0) {
+      await applyHighlightsFormat(output, output.results, queryStr, input.max_highlights);
     }
     if ((input.format === 'answer' || input.format === 'stream_answer') && output.results.length > 0) {
       await applyAnswerSynthesis(input, output, output.results, maxTotalChars, samplingServer, streamProgress);
@@ -354,6 +367,9 @@ export async function handleSearch(
   if (input.format === 'context') {
     output.context_text = formatSearchContext(output.results, maxTotalChars);
   }
+  if (input.format === 'highlights' && results.length > 0) {
+    await applyHighlightsFormat(output, results, queryStr, input.max_highlights);
+  }
   if ((input.format === 'answer' || input.format === 'stream_answer') && results.length > 0) {
     await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer, streamProgress);
   }
@@ -369,6 +385,7 @@ async function applyAnswerSynthesis(
   onProgress?: ProgressCallback,
 ): Promise<void> {
   const isStreaming = input.format === 'stream_answer';
+  const queryStr = typeof input.query === 'string' ? input.query : input.query[0];
 
   if (samplingServer) {
     if (isStreaming && onProgress) {
@@ -383,7 +400,7 @@ async function applyAnswerSynthesis(
       }
     }
 
-    const synthesis = await synthesizeAnswer(results, typeof input.query === 'string' ? input.query : input.query[0], samplingServer);
+    const synthesis = await synthesizeAnswer(results, queryStr, samplingServer);
 
     if (!synthesis.fallback && synthesis.answer) {
       output.answer = synthesis.answer;
@@ -401,39 +418,71 @@ async function applyAnswerSynthesis(
           log.debug('progress notification failed', { error: String(err) });
         }
       }
-    } else {
-      const fallback = buildStructuredFallback(
-        results,
-        typeof input.query === 'string' ? input.query : input.query[0],
-      );
-      if (fallback.answer) {
-        output.answer = fallback.answer;
-        output.citations = fallback.citations;
-      } else {
-        output.context_text = formatSearchContext(results, maxTotalChars);
-      }
-      const combined = synthesis.warning ?? fallback.warning;
-      if (combined) {
-        output.warning = output.warning
-          ? `${output.warning}; ${combined}`
-          : combined;
-      }
+      return;
     }
-  } else {
-    const fallback = buildStructuredFallback(
-      results,
-      typeof input.query === 'string' ? input.query : input.query[0],
-    );
-    if (fallback.answer) {
-      output.answer = fallback.answer;
-      output.citations = fallback.citations;
-    } else {
-      output.context_text = formatSearchContext(results, maxTotalChars);
+
+    await applyHighlightsFallback(output, results, queryStr, maxTotalChars, input.max_highlights);
+    if (synthesis.warning) {
+      output.warning = output.warning
+        ? `${output.warning}; ${synthesis.warning}`
+        : synthesis.warning;
     }
-    output.warning = output.warning
-      ? `${output.warning}; ${fallback.warning}`
-      : fallback.warning;
+    return;
   }
+
+  await applyHighlightsFallback(output, results, queryStr, maxTotalChars, input.max_highlights);
+  const fallbackNotice =
+    'Client does not support MCP sampling; returning FlashRank-scored highlights for host-side synthesis';
+  output.warning = output.warning ? `${output.warning}; ${fallbackNotice}` : fallbackNotice;
+}
+
+async function applyHighlightsFallback(
+  output: SearchOutput,
+  results: SearchResultItem[],
+  query: string,
+  maxTotalChars: number,
+  maxHighlights?: number,
+): Promise<void> {
+  try {
+    const { highlights, citations } = await extractHighlights(
+      query,
+      results,
+      maxHighlights ?? 10,
+    );
+    if (highlights.length > 0) {
+      output.highlights = highlights;
+      output.citations = citations;
+      return;
+    }
+  } catch (err) {
+    log.debug('highlights extraction failed, using structured fallback', { error: String(err) });
+  }
+
+  const fallback = buildStructuredFallback(results, query);
+  if (fallback.answer) {
+    output.answer = fallback.answer;
+    output.citations = fallback.citations;
+  } else {
+    output.context_text = formatSearchContext(results, maxTotalChars);
+  }
+  if (fallback.warning && !output.warning) {
+    output.warning = fallback.warning;
+  }
+}
+
+async function applyHighlightsFormat(
+  output: SearchOutput,
+  results: SearchResultItem[],
+  query: string,
+  maxHighlights?: number,
+): Promise<void> {
+  const { highlights, citations } = await extractHighlights(
+    query,
+    results,
+    maxHighlights ?? 10,
+  );
+  output.highlights = highlights;
+  output.citations = citations;
 }
 
 interface FetchContext {

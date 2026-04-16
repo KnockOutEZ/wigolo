@@ -188,8 +188,13 @@ const SEARCH_TOOL_SCHEMA = {
     },
     format: {
       type: 'string',
-      enum: ['full', 'context', 'answer', 'stream_answer'],
-      description: "Output format: 'full' returns structured results (default), 'context' returns a single token-budgeted string for LLM injection, 'answer' synthesizes a direct answer with citations via MCP sampling, 'stream_answer' same as answer but emits notifications/progress between pipeline phases (search/fetch/synthesize) when the client supplies a progressToken",
+      enum: ['full', 'context', 'answer', 'highlights', 'stream_answer'],
+      description:
+        "Output format: 'full' returns structured results (default); 'context' returns a single token-budgeted string for LLM injection; 'highlights' returns FlashRank-scored passages per source with citations (no LLM needed — the host agent synthesizes); 'answer' requests LLM synthesis via MCP sampling and falls back to 'highlights' when sampling is unsupported; 'stream_answer' same as 'answer' but emits progress notifications between pipeline phases (search/fetch/synthesize) when the client supplies a progressToken",
+    },
+    max_highlights: {
+      type: 'number',
+      description: "Maximum highlights to return when format is 'highlights' (default 10). Highlights are 1-3 sentence passages scored by relevance to the query.",
     },
     force_refresh: {
       type: 'boolean',
@@ -264,8 +269,8 @@ const EXTRACT_TOOL_SCHEMA = {
     html: { type: 'string', description: 'Raw HTML to extract from (url takes priority if both provided)' },
     mode: {
       type: 'string',
-      enum: ['selector', 'tables', 'metadata', 'schema'],
-      description: 'Extraction mode: selector (CSS), tables (HTML tables), metadata (meta tags + JSON-LD), schema (extract fields matching a JSON Schema via heuristic matching)',
+      enum: ['selector', 'tables', 'metadata', 'schema', 'structured'],
+      description: 'Extraction mode: selector (CSS), tables (HTML tables), metadata (meta tags + JSON-LD), schema (fields matching a JSON Schema), structured (tables + definition lists + JSON-LD + chart hints + key/value pairs — one-shot structured brief)',
     },
     css_selector: {
       type: 'string',

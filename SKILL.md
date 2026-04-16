@@ -12,13 +12,13 @@ tools:
   - name: fetch
     description: Fetch one URL, return clean markdown. Auto-routes between HTTP and Playwright. Supports sections, auth, screenshots, browser actions.
   - name: search
-    description: Search the web, return extracted markdown per result. Single query or array of query variants. Domain, category, date filters. Optional synthesized answer via MCP sampling.
+    description: Search the web, return extracted markdown per result. Single query or array of query variants. Domain, category, date filters. Formats include FlashRank-scored highlights with citations for host-LLM synthesis.
   - name: crawl
     description: Crawl a site from a seed URL. BFS, DFS, sitemap, or map (URL-only) strategies with regex include/exclude filters.
   - name: cache
     description: FTS5 search over previously fetched content. URL glob, date filters, stats, clear, and change detection via re-fetch.
   - name: extract
-    description: Structured extraction from URL or raw HTML. Modes: selector (CSS), tables, metadata (meta + JSON-LD), schema (heuristic field matching).
+    description: Structured extraction from URL or raw HTML. Modes: selector (CSS), tables, metadata (meta + JSON-LD), schema (heuristic field matching), structured (tables + dl + JSON-LD + chart hints + key-value pairs in one call).
   - name: find_similar
     description: Find pages similar to a URL or concept. Hybrid cache (FTS5 + embeddings) + optional web supplement.
   - name: research
@@ -30,6 +30,16 @@ tools:
 # wigolo
 
 Local-first web search MCP server for AI coding agents. Ships eight tools over stdio. All network results land in a local SQLite cache.
+
+## Host-LLM synthesis (read me first)
+
+Wigolo has no internal LLM. It returns *structured evidence* so the calling model (you) writes the final answer. Fold structure into your reply rather than collapsing it away:
+
+- `search` with `format: "highlights"` — FlashRank-scored passages + `citations`. Quote and cite [N].
+- `research` — when MCP sampling is unavailable (common), the output carries a `brief` with `topics`, `highlights`, `key_findings`. Use it as the scaffold for the report you write.
+- `find_similar` — may return a `cold_start` string. Pass it to the user; it explains why results came from the web and how to warm the cache.
+- `extract` with `mode: "structured"` — one call for tables + `<dl>` definitions + JSON-LD + chart hints + key-value pairs.
+- `fetch` metadata — surfaces `og_type`, `canonical_url`, and `og_image`; use `canonical_url` to dedupe tracked/canonical URLs.
 
 ## Quick Setup
 
@@ -100,7 +110,8 @@ Parameters:
 - `category`: `"general"` | `"news"` | `"code"` | `"docs"` | `"papers"` | `"images"`
 - `language`: string
 - `search_engines`: `string[]` — override engine selection
-- `format`: `"full"` (default) | `"context"` (token-budgeted string) | `"answer"` (synthesized via MCP sampling) | `"stream_answer"` (answer + phase progress notifications)
+- `format`: `"full"` (default) | `"context"` (token-budgeted string) | `"highlights"` (FlashRank-scored passages + citations) | `"answer"` (synthesized via MCP sampling; falls back to `highlights` when unsupported) | `"stream_answer"` (answer + phase progress notifications)
+- `max_highlights`: number (default `10`) — cap when `format: "highlights"`
 - `force_refresh`: boolean
 
 Example:
@@ -156,7 +167,7 @@ Structured extraction from URL or raw HTML.
 
 Parameters:
 - `url` OR `html` (one required; `url` wins if both provided)
-- `mode`: `"metadata"` (default) | `"selector"` | `"tables"` | `"schema"`
+- `mode`: `"metadata"` (default) | `"selector"` | `"tables"` | `"schema"` | `"structured"` (tables + `<dl>` definitions + JSON-LD + chart hints + microdata/data-attr/grid key-value pairs in one call)
 - `css_selector`: string — required for `mode: "selector"`
 - `multiple`: boolean (default `false`) — return all matches, selector mode only
 - `schema`: JSON Schema object with `properties` — required for `mode: "schema"`
@@ -166,7 +177,7 @@ Example:
 { "url": "https://example.com/product", "mode": "schema", "schema": { "type": "object", "properties": { "price": { "type": "string" }, "name": { "type": "string" }, "sku": { "type": "string" } } } }
 ```
 
-Tip: `mode: "schema"` does heuristic matching over CSS classes, ARIA labels, microdata, and JSON-LD — no LLM call required.
+Tip: `mode: "schema"` does heuristic matching over CSS classes, ARIA labels, microdata, and JSON-LD — no LLM call required. `mode: "structured"` returns every structured pattern on the page (`tables`, `definitions`, `jsonld`, `chart_hints`, `key_value_pairs`) in one response — prefer it over chaining multiple extract calls.
 
 ### find_similar
 
@@ -184,7 +195,7 @@ Example:
 { "url": "https://react.dev/reference/react/useState", "max_results": 8, "include_domains": ["react.dev", "developer.mozilla.org"] }
 ```
 
-Tip: uses hybrid 3-way search — FTS5 over titles, FTS5 over body, plus embeddings when available. Cache path is near-instant; web supplement runs only if cache yields too few results.
+Tip: uses hybrid 3-way RRF fusion — FTS5 + sentence-transformer embeddings + live web search. Each result carries `match_signals` with `embedding_rank`, `fts5_rank`, and `fused_score`. If the cache is empty or embeddings aren't set up, the response includes a `cold_start` string — pass it to the user to explain why results came from the web.
 
 ### research
 
@@ -203,7 +214,7 @@ Example:
 { "question": "How do modern JS bundlers tree-shake ESM vs CJS?", "depth": "standard", "include_domains": ["webpack.js.org", "rollupjs.org", "esbuild.github.io", "vitejs.dev"] }
 ```
 
-Tip: `research` checks cache internally — no need to pre-probe. Requires MCP sampling-capable client for synthesis; without sampling, returns raw sources in context format.
+Tip: `research` checks cache internally — no need to pre-probe. With MCP sampling, the tool synthesizes the report directly. Without sampling (the common case), the output ships a `brief` with `topics`, `highlights`, and `key_findings`, plus the raw sources — the host LLM writes the final report from the brief.
 
 ### agent
 
@@ -280,6 +291,16 @@ agent({ "prompt": "Find latency and pricing for top 5 edge compute providers", "
 extract({ "url": "https://en.wikipedia.org/wiki/List_of_programming_languages", "mode": "tables" })
 ```
 
+**One-shot structured brief.** Tables + definition lists + JSON-LD + chart hints + key-value pairs in one call.
+```json
+extract({ "url": "https://example.com/product-page", "mode": "structured" })
+```
+
+**Direct quotes with citations.** FlashRank passages are ideal for host-LLM synthesis.
+```json
+search({ "query": "react server components data fetching", "format": "highlights", "max_highlights": 6, "include_domains": ["react.dev", "nextjs.org"] })
+```
+
 ## Parameter Cheat Sheet
 
 | Situation | Tool + parameters |
@@ -292,10 +313,11 @@ extract({ "url": "https://en.wikipedia.org/wiki/List_of_programming_languages", 
 | Single heading from long page | `fetch` + `section: "..."` |
 | Behind login | `fetch` / `crawl` + `use_auth: true` |
 | Direct answer (sampling client) | `search` + `format: "answer"` |
+| FlashRank-scored quotes + citations | `search` + `format: "highlights"` |
 | LLM-ready context blob | `search` + `format: "context"` |
 | Complex question, multi-source | `research` + `depth: "standard"` |
 | Structured multi-page extraction | `agent` + `schema` |
-| One-page structured data | `extract` + `mode: "schema"` or `"tables"` |
+| One-page structured data | `extract` + `mode: "structured"` (everything) or `"schema"` / `"tables"` (targeted) |
 | Change tracking | `cache` + `check_changes: true` |
 
 ## Anti-Patterns

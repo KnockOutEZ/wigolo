@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { htmlToMarkdown, extractSection, extractLinksAndImages } from '../../../src/extraction/markdown.js';
+import {
+  htmlToMarkdown,
+  extractSection,
+  extractLinksAndImages,
+  filterDecorativeImages,
+  resolveRelativeUrls,
+} from '../../../src/extraction/markdown.js';
 
 describe('htmlToMarkdown', () => {
   it('converts basic HTML to markdown', () => {
@@ -250,5 +256,79 @@ describe('extractLinksAndImages', () => {
     expect(result.images).toContain('https://img.com/a.png');
     expect(result.links).not.toContain('https://img.com/a.png');
     expect(result.images).not.toContain('https://link.com');
+  });
+});
+
+describe('filterDecorativeImages', () => {
+  it('drops images with no alt text', () => {
+    const md = 'Before ![](https://example.com/deco.png) after';
+    expect(filterDecorativeImages(md)).toBe('Before  after');
+  });
+
+  it('keeps images with meaningful alt text', () => {
+    const md = '![Architecture diagram](https://example.com/diagram.png)';
+    expect(filterDecorativeImages(md)).toBe(md);
+  });
+
+  it('drops avatar/icon/logo/tracking marked urls even with alt', () => {
+    const md = [
+      '![Jane](https://cdn.example.com/avatars/jane.jpg)',
+      '![Home](https://example.com/icons/home.svg)',
+      '![Brand](https://example.com/logo.png)',
+      '![Build](https://img.shields.io/badge/build-passing)',
+      '![](https://pixel.track.com/1x1.gif)',
+    ].join('\n');
+    expect(filterDecorativeImages(md).trim()).toBe('');
+  });
+
+  it('drops base64 GIF tracking pixels', () => {
+    const md = '![tracker](data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==)';
+    expect(filterDecorativeImages(md)).toBe('');
+  });
+
+  it('drops short inline svg icons', () => {
+    const md = '![](data:image/svg+xml;utf8,<svg/>)';
+    expect(filterDecorativeImages(md)).toBe('');
+  });
+
+  it('preserves non-image markdown and text around images', () => {
+    const md = 'Leading text ![Real Diagram](https://example.com/real.png) trailing';
+    expect(filterDecorativeImages(md)).toBe(md);
+  });
+});
+
+describe('resolveRelativeUrls', () => {
+  it('resolves relative link paths against the base url', () => {
+    const md = 'See [Docs](/guide/index.html) and [FAQ](../faq.html)';
+    const resolved = resolveRelativeUrls(md, 'https://astro.build/v2/getting-started/');
+    expect(resolved).toContain('https://astro.build/guide/index.html');
+    expect(resolved).toContain('https://astro.build/v2/faq.html');
+  });
+
+  it('leaves absolute urls unchanged', () => {
+    const md = '[Abs](https://example.com/page) and [Mail](mailto:a@b.com)';
+    expect(resolveRelativeUrls(md, 'https://foo.com/')).toBe(md);
+  });
+
+  it('leaves fragment-only links unchanged', () => {
+    const md = '[Top](#toc)';
+    expect(resolveRelativeUrls(md, 'https://x.com/page')).toBe(md);
+  });
+
+  it('resolves relative image sources', () => {
+    const md = '![Diag](/assets/diagram.png)';
+    expect(resolveRelativeUrls(md, 'https://example.com/docs/intro')).toContain(
+      'https://example.com/assets/diagram.png',
+    );
+  });
+
+  it('resolves protocol-relative urls', () => {
+    const md = '[CDN](//cdn.example.com/foo)';
+    expect(resolveRelativeUrls(md, 'https://site.com/')).toContain('https://cdn.example.com/foo');
+  });
+
+  it('returns input unchanged when baseUrl is empty', () => {
+    const md = '[Rel](/x)';
+    expect(resolveRelativeUrls(md, '')).toBe(md);
   });
 });

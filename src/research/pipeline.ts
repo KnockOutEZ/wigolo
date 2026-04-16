@@ -1,6 +1,7 @@
 import { createLogger } from '../logger.js';
 import { decomposeQuestion } from './decompose.js';
 import { synthesizeReport } from './synthesize.js';
+import { buildResearchBrief } from './brief.js';
 import { deduplicateResults } from '../search/dedup.js';
 import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
@@ -109,6 +110,19 @@ export async function runResearchPipeline(
     );
     log.info('synthesis complete', { samplingUsed: synthesisResult.samplingUsed, reportLength: synthesisResult.report.length });
 
+    // Phase 6: Structured brief — populated when internal sampling is
+    // unavailable so the host LLM has well-shaped data to write the report
+    // from without re-reading raw markdown.
+    const brief = !synthesisResult.samplingUsed
+      ? await buildResearchBrief(
+          input.question,
+          sources,
+          subQueries,
+          PER_SOURCE_CHAR_CAP,
+          TOTAL_SOURCES_CHAR_CAP,
+        )
+      : undefined;
+
     return {
       report: synthesisResult.report,
       citations: synthesisResult.citations,
@@ -117,6 +131,7 @@ export async function runResearchPipeline(
       depth,
       total_time_ms: Date.now() - start,
       sampling_supported: !!server,
+      ...(brief ? { brief } : {}),
     };
   } catch (err) {
     log.error('research pipeline failed', {

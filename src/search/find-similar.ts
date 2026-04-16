@@ -9,7 +9,7 @@ import type { SmartRouter } from '../fetch/router.js';
 import type { BackendStatus } from '../server/backend-status.js';
 import { extractKeyTerms, buildFTS5Query } from '../embedding/key-terms.js';
 import { reciprocalRankFusion, buildRankMap, sortByRRFScore } from './rrf.js';
-import { searchCache, getCachedContent, normalizeUrl } from '../cache/store.js';
+import { searchCache, getCachedContent, normalizeUrl, getCacheStats } from '../cache/store.js';
 import { filterByDomains } from './filters.js';
 import { handleSearch } from '../tools/search.js';
 import { extractContent } from '../extraction/pipeline.js';
@@ -41,6 +41,12 @@ export async function findSimilar(
 
   // Probe embedding availability once up front for the whole request
   const embeddingAvailable = checkEmbeddingAvailable();
+
+  // Snapshot cache/embedding posture BEFORE the web fallback writes new
+  // entries into cache, otherwise the cold-start note would wrongly report a
+  // populated cache simply because we just fetched during this call.
+  const initialCacheSize = safeCacheCount();
+  const initialEmbedIndexSize = safeEmbedIndexSize();
 
   try {
     const url = input.url?.trim();
@@ -165,12 +171,20 @@ export async function findSimilar(
     const cacheHits = finalResults.filter(r => r.source === 'cache').length;
     const searchHits = finalResults.filter(r => r.source === 'search').length;
 
+    const coldStart = buildColdStartNote(
+      cacheHits,
+      embeddingAvailable,
+      initialCacheSize,
+      initialEmbedIndexSize,
+    );
+
     return {
       results: finalResults,
       method,
       cache_hits: cacheHits,
       search_hits: searchHits,
       embedding_available: embeddingAvailable,
+      ...(coldStart ? { cold_start: coldStart } : {}),
       total_time_ms: Date.now() - start,
     };
   } catch (err) {
@@ -194,6 +208,45 @@ function checkEmbeddingAvailable(): boolean {
   } catch {
     return false;
   }
+}
+
+function safeCacheCount(): number {
+  try {
+    return getCacheStats().total_urls;
+  } catch {
+    return 0;
+  }
+}
+
+function safeEmbedIndexSize(): number {
+  try {
+    return getEmbeddingService().getIndex().size();
+  } catch {
+    return 0;
+  }
+}
+
+// Surface a note when local hybrid signals are weak so host LLMs can
+// explain to users why results are search-heavy. Avoids silent fallbacks.
+function buildColdStartNote(
+  cacheHits: number,
+  embeddingAvailable: boolean,
+  initialCacheSize: number,
+  initialEmbedIndexSize: number,
+): string | undefined {
+  if (initialCacheSize === 0) {
+    return 'Cache is empty. Results come from live web search only. Use wigolo_fetch / wigolo_crawl to warm the cache, then re-run find_similar for hybrid local+web ranking.';
+  }
+  if (!embeddingAvailable && initialCacheSize > 0) {
+    return 'Embeddings unavailable or index empty (cached pages have not been embedded yet). Falling back to FTS5 keyword ranking. Set up sentence-transformers to enable semantic matching.';
+  }
+  if (cacheHits === 0 && initialCacheSize < 20) {
+    return `Cache has only ${initialCacheSize} pages. Add more context by fetching or crawling relevant sites before relying on find_similar for cross-source similarity.`;
+  }
+  if (!embeddingAvailable && initialEmbedIndexSize === 0) {
+    return 'Embedding index is empty. Semantic matching disabled until background embedding jobs catch up.';
+  }
+  return undefined;
 }
 
 function safeNormalize(url: string): string {
