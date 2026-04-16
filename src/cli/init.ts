@@ -1,17 +1,4 @@
-import { renderBanner } from './tui/banner.js';
-import { getPackageVersion } from './tui/version.js';
-import { runSystemCheck, type SystemCheckResult } from './tui/system-check.js';
-import { ok, fail, warn, info } from './tui/format.js';
-import chalk from 'chalk';
 import { parseInitFlags, FlagParseError } from './tui/flags.js';
-import { runWarmup } from './warmup.js';
-import { detectAgents } from './tui/agents.js';
-import type { AgentId } from './tui/agents.js';
-import { selectAgents, NotTtyError } from './tui/select-agents.js';
-import { applyConfigs } from './tui/config-writer.js';
-import { runVerify } from './tui/verify.js';
-import { autoReporter } from './tui/reporter-auto.js';
-import { getConfig } from '../config.js';
 
 const INIT_USAGE = [
   'Usage: wigolo init [options]',
@@ -24,47 +11,6 @@ const INIT_USAGE = [
   '  --help, -h              Show this message',
   '',
 ].join('\n');
-
-function out(line = ''): void {
-  process.stdout.write(`${line}\n`);
-}
-
-function renderSystemCheck(result: SystemCheckResult): void {
-  out(chalk.bold('  Checking your system...'));
-
-  if (result.node.ok) {
-    out(`  ${ok(`Node.js ${result.node.version}`)}`);
-  } else {
-    out(`  ${fail(`Node.js ${result.node.version ?? '(unknown)'}`)}`);
-    if (result.node.message) out(`    ${chalk.gray(result.node.message)}`);
-  }
-
-  if (result.python.ok) {
-    out(`  ${ok(`Python ${result.python.version} (${result.python.binary})`)}`);
-  } else {
-    out(`  ${fail('Python 3 not found')}`);
-    if (result.python.message) out(`    ${chalk.gray(result.python.message)}`);
-    out(`    ${chalk.gray('Install: https://python.org/downloads or `brew install python3`')}`);
-  }
-
-  if (result.docker.ok) {
-    const ver = result.docker.version ?? '';
-    out(`  ${ok(`Docker ${ver} ${chalk.gray('(optional, available)')}`.trim())}`);
-  } else {
-    out(`  ${warn(`Docker not found ${chalk.gray('(optional — only needed for docker-mode SearXNG)')}`)}`);
-  }
-
-  if (result.disk.ok) {
-    out(`  ${ok(`Disk: ${result.disk.freeMb} MB free`)}`);
-  } else {
-    out(`  ${warn(`Disk: ${result.disk.message ?? 'low free space'}`)}`);
-  }
-}
-
-function renderHardFailure(): void {
-  out();
-  out(chalk.red.bold('  Setup cannot continue until the issues above are resolved.'));
-}
 
 export async function runInit(args: string[]): Promise<number> {
   let flags;
@@ -90,16 +36,85 @@ export async function runInit(args: string[]): Promise<number> {
     return 2;
   }
 
+  const isTTY = Boolean(process.stdout.isTTY);
+  const isCI =
+    process.env.CI === 'true' ||
+    process.env.CI === '1' ||
+    process.env.GITHUB_ACTIONS === 'true';
+  const useInk = !flags.plain && !flags.nonInteractive && isTTY && !isCI;
+
+  if (useInk) {
+    const { runInkInit } = await import('./tui/ink-init.js');
+    runInkInit();
+    // Ink takes over from here, never returns
+    return 0;
+  }
+
+  // Plain / non-interactive mode — use the existing text-based flow
+  return runInitPlain(flags);
+}
+
+interface InitFlagsResolved {
+  nonInteractive: boolean;
+  agents: readonly string[];
+  skipVerify: boolean;
+  plain: boolean;
+  help: boolean;
+}
+
+async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
+  const { renderBanner } = await import('./tui/banner.js');
+  const { getPackageVersion } = await import('./tui/version.js');
+  const { runSystemCheck } = await import('./tui/system-check.js');
+  const { ok, fail, warn, info } = await import('./tui/format.js');
+  const { default: chalk } = await import('chalk');
+  const { runWarmup } = await import('./warmup.js');
+  const { detectAgents } = await import('./tui/agents.js');
+  const { applyConfigs } = await import('./tui/config-writer.js');
+  const { runVerify } = await import('./tui/verify.js');
+  const { autoReporter } = await import('./tui/reporter-auto.js');
+  const { getConfig } = await import('../config.js');
+  const { saveInitConfig } = await import('./tui/utils/config-writer.js');
+  type AgentId = import('./tui/agents.js').AgentId;
+
+  function out(line = ''): void {
+    process.stdout.write(`${line}\n`);
+  }
+
   const version = getPackageVersion();
   process.stdout.write(renderBanner(version));
 
   const sysResult = await runSystemCheck();
-  renderSystemCheck(sysResult);
+
+  out(chalk.bold('  Checking your system...'));
+  if (sysResult.node.ok) {
+    out(`  ${ok(`Node.js ${sysResult.node.version}`)}`);
+  } else {
+    out(`  ${fail(`Node.js ${sysResult.node.version ?? '(unknown)'}`)}`);
+    if (sysResult.node.message) out(`    ${chalk.gray(sysResult.node.message)}`);
+  }
+  if (sysResult.python.ok) {
+    out(`  ${ok(`Python ${sysResult.python.version} (${sysResult.python.binary})`)}`);
+  } else {
+    out(`  ${fail('Python 3 not found')}`);
+    if (sysResult.python.message) out(`    ${chalk.gray(sysResult.python.message)}`);
+    out(`    ${chalk.gray('Install: https://python.org/downloads or `brew install python3`')}`);
+  }
+  if (sysResult.docker.ok) {
+    out(`  ${ok(`Docker ${sysResult.docker.version ?? ''} ${chalk.gray('(optional)')}`)}`.trim());
+  } else {
+    out(`  ${warn(`Docker not found ${chalk.gray('(optional)')}`)}`);
+  }
+  if (sysResult.disk.ok) {
+    out(`  ${ok(`Disk: ${sysResult.disk.freeMb} MB free`)}`);
+  } else {
+    out(`  ${warn(`Disk: ${sysResult.disk.message ?? 'low free space'}`)}`);
+  }
   if (sysResult.hardFailure) {
-    renderHardFailure();
+    out();
+    out(chalk.red.bold('  Setup cannot continue until the issues above are resolved.'));
     return 1;
   }
-
   out();
   out(`  ${info('System check passed.')}`);
   out();
@@ -127,6 +142,7 @@ export async function runInit(args: string[]): Promise<number> {
   if (flags.nonInteractive) {
     selected = [...flags.agents] as AgentId[];
   } else {
+    const { selectAgents, NotTtyError } = await import('./tui/select-agents.js');
     try {
       selected = await selectAgents(detected);
     } catch (err) {
@@ -154,6 +170,11 @@ export async function runInit(args: string[]): Promise<number> {
     process.stderr.write(`Writing configs failed: ${message}\n`);
     return 1;
   }
+
+  saveInitConfig(config.dataDir, {
+    configuredAgents: selected,
+    lastInit: new Date().toISOString(),
+  });
 
   if (!flags.skipVerify) {
     try {
