@@ -77,9 +77,9 @@ export function mergeBlock(filePath: string, block: string): void {
   }
 }
 
-/** Remove the wigolo block from a file (noop if missing). */
-export function removeBlock(filePath: string): void {
-  if (!existsSync(filePath)) return;
+/** Remove the wigolo block from a file. Returns true if a block was removed. */
+export function removeBlock(filePath: string): boolean {
+  if (!existsSync(filePath)) return false;
 
   const START = '<!-- wigolo:start';
   const END = '<!-- wigolo:end -->';
@@ -87,13 +87,14 @@ export function removeBlock(filePath: string): void {
   const startIdx = content.indexOf(START);
   const endIdx = content.indexOf(END);
 
-  if (startIdx === -1 || endIdx === -1) return;
+  if (startIdx === -1 || endIdx === -1) return false;
 
   const before = content.slice(0, startIdx).trimEnd();
   const after = content.slice(endIdx + END.length).trimStart();
   const parts = [before, after].filter(Boolean);
   const newContent = parts.join('\n\n');
   writeFileSync(filePath, newContent ? newContent + '\n' : '', 'utf-8');
+  return true;
 }
 
 /**

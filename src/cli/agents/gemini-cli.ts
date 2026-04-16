@@ -43,8 +43,7 @@ async function uninstall(): Promise<{ removed: string[] }> {
   }
 
   const instructionsFile = join(process.cwd(), 'GEMINI.md');
-  if (existsSync(instructionsFile)) {
-    removeBlock(instructionsFile);
+  if (existsSync(instructionsFile) && removeBlock(instructionsFile)) {
     removed.push('GEMINI.md block');
   }
 

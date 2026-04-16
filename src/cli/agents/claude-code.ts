@@ -92,8 +92,7 @@ async function uninstall(): Promise<{ removed: string[] }> {
 
   // Remove instructions block
   const claudeMd = join(claudeDir(), 'CLAUDE.md');
-  if (existsSync(claudeMd)) {
-    removeBlock(claudeMd);
+  if (existsSync(claudeMd) && removeBlock(claudeMd)) {
     removed.push('~/.claude/CLAUDE.md block');
   }
 

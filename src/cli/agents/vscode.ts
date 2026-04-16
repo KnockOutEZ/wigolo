@@ -50,8 +50,7 @@ async function uninstall(): Promise<{ removed: string[] }> {
   }
 
   const instructionsFile = join(process.cwd(), INSTRUCTIONS_FILE);
-  if (existsSync(instructionsFile)) {
-    removeBlock(instructionsFile);
+  if (existsSync(instructionsFile) && removeBlock(instructionsFile)) {
     removed.push('.github/copilot-instructions.md block');
   }
 
