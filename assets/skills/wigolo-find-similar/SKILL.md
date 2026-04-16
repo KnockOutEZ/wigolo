@@ -6,7 +6,7 @@ description: |
 
 # wigolo find_similar
 
-Hybrid semantic discovery: sentence-transformer embeddings + FTS5 keywords + web search, fused via Reciprocal Rank Fusion (RRF).
+Hybrid semantic discovery: semantic embeddings + keyword search + web search, fused via Reciprocal Rank Fusion (RRF).
 
 ## Quick Reference
 
@@ -41,7 +41,7 @@ Provide either `url` or `concept` (not both).
 ## How It Works
 
 1. Embeds the input (URL content or concept text) into a vector
-2. Searches local cache via embedding similarity + FTS5 keyword matching
+2. Searches local cache via embedding similarity + keyword matching
 3. Falls back to web search if local hits are sparse
 4. Fuses all signals via 3-way Reciprocal Rank Fusion (RRF)
 5. Returns ranked results with `match_signals` (embedding_rank, fts5_rank, fused_score)

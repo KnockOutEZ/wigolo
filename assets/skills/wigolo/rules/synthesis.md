@@ -9,7 +9,7 @@ Wigolo has no internal LLM — it returns structured evidence. You (the host LLM
 
 ## From highlights (`search` with `format: "highlights"`)
 
-Wigolo returns FlashRank-scored passages with `[N]` citation indices.
+Wigolo returns ML-scored passages with `[N]` citation indices.
 
 1. Read the passages — already ranked by relevance
 2. Group overlapping themes across sources

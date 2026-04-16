@@ -6,7 +6,7 @@ description: |
 
 # wigolo fetch
 
-Smart URL fetching: HTTP-first with automatic Playwright fallback for JS-rendered pages.
+Smart URL fetching: HTTP-first with automatic browser fallback for JS-rendered pages.
 
 ## Quick Reference
 

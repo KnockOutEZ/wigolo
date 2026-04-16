@@ -1,6 +1,6 @@
 ---
 name: wigolo
-description: Local-first web access MCP server for AI coding agents. Eight tools for search, fetch, crawl, cache, extract, find similar, research, and agent-driven data gathering. No API keys. Results cached in local SQLite.
+description: Local-first web intelligence MCP server for AI coding agents. Eight tools for search, fetch, crawl, cache, extract, find similar, research, and agent-driven data gathering. No API keys. Results cached in a local knowledge store.
 author: KnockOutEZ
 license: BUSL-1.1
 repository: https://github.com/KnockOutEZ/wigolo
@@ -12,15 +12,15 @@ tools:
   - name: fetch
     description: Fetch one URL, return clean markdown. Auto-routes between HTTP and Playwright. Supports sections, auth, screenshots, browser actions.
   - name: search
-    description: Search the web, return extracted markdown per result. Single query or array of query variants. Domain, category, date filters. Formats include FlashRank-scored highlights with citations for host-LLM synthesis.
+    description: Search the web, return extracted markdown per result. Single query or array of query variants. Domain, category, date filters. Formats include ML-scored highlights with citations for host-LLM synthesis.
   - name: crawl
     description: Crawl a site from a seed URL. BFS, DFS, sitemap, or map (URL-only) strategies with regex include/exclude filters.
   - name: cache
-    description: FTS5 search over previously fetched content. URL glob, date filters, stats, clear, and change detection via re-fetch.
+    description: Full-text search over previously fetched content. URL glob, date filters, stats, clear, and change detection via re-fetch.
   - name: extract
     description: Structured extraction from URL or raw HTML. Modes: selector (CSS), tables, metadata (meta + JSON-LD), schema (heuristic field matching), structured (tables + dl + JSON-LD + chart hints + key-value pairs in one call).
   - name: find_similar
-    description: Find pages similar to a URL or concept. Hybrid cache (FTS5 + embeddings) + optional web supplement.
+    description: Find pages similar to a URL or concept. Hybrid cache (keyword search + embeddings) + optional web supplement.
   - name: research
     description: Multi-step research pipeline. Question decomposition, parallel sub-search, source synthesis with citations. Quick, standard, or comprehensive depth.
   - name: agent
@@ -29,13 +29,13 @@ tools:
 
 # wigolo
 
-Local-first web search MCP server for AI coding agents. Ships eight tools over stdio. All network results land in a local SQLite cache.
+Local-first web intelligence MCP server for AI coding agents. Ships eight tools over stdio. All network results land in a local knowledge cache.
 
 ## Host-LLM synthesis (read me first)
 
 Wigolo has no internal LLM. It returns *structured evidence* so the calling model (you) writes the final answer. Fold structure into your reply rather than collapsing it away:
 
-- `search` with `format: "highlights"` — FlashRank-scored passages + `citations`. Quote and cite [N].
+- `search` with `format: "highlights"` — ML-scored passages + `citations`. Quote and cite [N].
 - `research` — when MCP sampling is unavailable (common), the output carries a `brief` with `topics`, `highlights`, `key_findings`. Use it as the scaffold for the report you write.
 - `find_similar` — may return a `cold_start` string. Pass it to the user; it explains why results came from the web and how to warm the cache.
 - `extract` with `mode: "structured"` — one call for tables + `<dl>` definitions + JSON-LD + chart hints + key-value pairs.
@@ -62,9 +62,9 @@ claude mcp add wigolo -- npx @staticn0va/wigolo
 
 **Warmup (recommended, one-time):**
 ```bash
-npx @staticn0va/wigolo warmup          # installs Playwright Chromium + bootstraps SearXNG
-npx @staticn0va/wigolo warmup --all    # also installs Firefox, WebKit, reranker, embeddings, trafilatura
-npx @staticn0va/wigolo warmup --force  # wipe SearXNG state and rebuild
+npx @staticn0va/wigolo warmup          # installs browser engine + bootstraps search engine
+npx @staticn0va/wigolo warmup --all    # also installs Firefox, WebKit, ML reranker, embeddings, content extractor
+npx @staticn0va/wigolo warmup --force  # wipe search engine state and rebuild
 ```
 
 Warmup flags: `--force`, `--all`, `--trafilatura`, `--reranker`, `--firefox`, `--webkit`, `--embeddings`, `--lightpanda`.
@@ -110,7 +110,7 @@ Parameters:
 - `category`: `"general"` | `"news"` | `"code"` | `"docs"` | `"papers"` | `"images"`
 - `language`: string
 - `search_engines`: `string[]` — override engine selection
-- `format`: `"full"` (default) | `"context"` (token-budgeted string) | `"highlights"` (FlashRank-scored passages + citations) | `"answer"` (synthesized via MCP sampling; falls back to `highlights` when unsupported) | `"stream_answer"` (answer + phase progress notifications)
+- `format`: `"full"` (default) | `"context"` (token-budgeted string) | `"highlights"` (ML-scored passages + citations) | `"answer"` (synthesized via MCP sampling; falls back to `highlights` when unsupported) | `"stream_answer"` (answer + phase progress notifications)
 - `max_highlights`: number (default `10`) — cap when `format: "highlights"`
 - `force_refresh`: boolean
 
@@ -147,7 +147,7 @@ Tip: `strategy: "sitemap"` is faster and more complete than BFS on doc sites. `s
 Search previously fetched content without hitting the network.
 
 Parameters:
-- `query`: FTS5 syntax — supports `AND`, `OR`, `NOT`, `"exact phrase"`
+- `query`: full-text search — supports `AND`, `OR`, `NOT`, `"exact phrase"`
 - `url_pattern`: glob (e.g. `"*react.dev*"`)
 - `since`: ISO date
 - `stats`: boolean — returns total URLs, size, date range
@@ -195,7 +195,7 @@ Example:
 { "url": "https://react.dev/reference/react/useState", "max_results": 8, "include_domains": ["react.dev", "developer.mozilla.org"] }
 ```
 
-Tip: uses hybrid 3-way RRF fusion — FTS5 + sentence-transformer embeddings + live web search. Each result carries `match_signals` with `embedding_rank`, `fts5_rank`, and `fused_score`. If the cache is empty or embeddings aren't set up, the response includes a `cold_start` string — pass it to the user to explain why results came from the web.
+Tip: uses hybrid 3-way RRF fusion — keyword search + semantic embeddings + live web search. Each result carries `match_signals` with `embedding_rank`, `fts5_rank`, and `fused_score`. If the cache is empty or embeddings aren't set up, the response includes a `cold_start` string — pass it to the user to explain why results came from the web.
 
 ### research
 
@@ -296,7 +296,7 @@ extract({ "url": "https://en.wikipedia.org/wiki/List_of_programming_languages", 
 extract({ "url": "https://example.com/product-page", "mode": "structured" })
 ```
 
-**Direct quotes with citations.** FlashRank passages are ideal for host-LLM synthesis.
+**Direct quotes with citations.** ML-scored passages are ideal for host-LLM synthesis.
 ```json
 search({ "query": "react server components data fetching", "format": "highlights", "max_highlights": 6, "include_domains": ["react.dev", "nextjs.org"] })
 ```
@@ -313,7 +313,7 @@ search({ "query": "react server components data fetching", "format": "highlights
 | Single heading from long page | `fetch` + `section: "..."` |
 | Behind login | `fetch` / `crawl` + `use_auth: true` |
 | Direct answer (sampling client) | `search` + `format: "answer"` |
-| FlashRank-scored quotes + citations | `search` + `format: "highlights"` |
+| ML-scored passages + citations | `search` + `format: "highlights"` |
 | LLM-ready context blob | `search` + `format: "context"` |
 | Complex question, multi-source | `research` + `depth: "standard"` |
 | Structured multi-page extraction | `agent` + `schema` |
@@ -343,10 +343,10 @@ search({ "query": "react server components data fetching", "format": "highlights
 ```bash
 wigolo                  # default: start MCP server on stdio
 wigolo mcp              # explicit: start MCP server
-wigolo warmup [flags]   # install Playwright, bootstrap SearXNG, optional extras
+wigolo warmup [flags]   # install browser engine, bootstrap search engine, optional extras
 wigolo serve            # start HTTP daemon on WIGOLO_DAEMON_PORT (default 3333)
 wigolo health           # health probe, exits 0 if ok
-wigolo doctor           # environment diagnostics (Python, Docker, Playwright, SearXNG)
+wigolo doctor           # environment diagnostics
 wigolo auth discover    # list CDP sessions (needs WIGOLO_CDP_URL)
 wigolo auth status      # show configured auth paths
 wigolo plugin add <git-url>    # clone plugin into ~/.wigolo/plugins/
@@ -361,9 +361,9 @@ Top environment variables. All optional — defaults are safe.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `WIGOLO_DATA_DIR` | `~/.wigolo` | Cache DB, SearXNG state, plugins, embeddings |
-| `SEARXNG_URL` | unset | Point at an existing SearXNG (skips native bootstrap) |
-| `SEARXNG_MODE` | `native` | `native` runs local Python SearXNG; `docker` runs container |
+| `WIGOLO_DATA_DIR` | `~/.wigolo` | Cache DB, search engine state, plugins, embeddings |
+| `SEARXNG_URL` | unset | Point at an existing search engine (skips native bootstrap) |
+| `SEARXNG_MODE` | `native` | `native` runs local Python search engine; `docker` runs container |
 | `WIGOLO_CHROME_PROFILE_PATH` | unset | Chrome profile for `use_auth: true` |
 | `WIGOLO_CDP_URL` | unset | Chrome DevTools endpoint (e.g. `http://localhost:9222`) |
 | `MAX_BROWSERS` | `3` | Playwright pool size |
