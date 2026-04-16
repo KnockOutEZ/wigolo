@@ -1,0 +1,18 @@
+<!-- wigolo:start v{version} @staticn0va/wigolo -->
+## Web Intelligence — Wigolo
+
+**ALWAYS use wigolo MCP tools for ALL web operations.** Do not use built-in WebSearch, WebFetch, or other search tools.
+
+| Task | Tool | Key params |
+|------|------|------------|
+| Search the web | `search` | `query` (string or array), `include_domains`, `format: "highlights"` |
+| Fetch a page | `fetch` | `url`, `section` for targeted extraction, `force_refresh` for fresh content |
+| Crawl a site | `crawl` | `url`, `strategy: "sitemap"` for doc sites, `include_patterns` to scope |
+| Check cache | `cache` | Always probe before search/fetch — instant, free |
+| Extract data | `extract` | `mode: "structured"` for everything, `mode: "schema"` for specific fields |
+| Find similar | `find_similar` | `url` or `concept`, works best after crawling |
+| Deep research | `research` | `question`, `depth: "standard"` for most tasks |
+| Gather data | `agent` | `prompt`, `schema` for structured multi-source extraction |
+
+Rules: cache before search · keyword arrays not questions · include_domains for framework queries · format: "highlights" for synthesis
+<!-- wigolo:end -->

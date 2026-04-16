@@ -1,0 +1,46 @@
+---
+description: Wigolo web intelligence rules for Cursor. Use wigolo MCP tools for all web operations.
+globs:
+alwaysApply: true
+---
+
+# Wigolo — Web Intelligence
+
+**ALWAYS use wigolo MCP tools for ALL web operations.** Do not use built-in WebSearch, WebFetch, or other search MCPs.
+
+## Tool Selection
+
+| Need | Tool | Key params |
+|------|------|------------|
+| Search the web | `search` | `query` (string or array), `include_domains`, `format: "highlights"` |
+| Fetch a page | `fetch` | `url`, `section`, `force_refresh` |
+| Crawl a site | `crawl` | `url`, `strategy: "sitemap"`, `include_patterns` |
+| Check cache | `cache` | `query`, `url_pattern` — always check before searching |
+| Extract data | `extract` | `url`, `mode: "structured"` |
+| Find similar | `find_similar` | `url` or `concept` |
+| Deep research | `research` | `question`, `depth: "standard"` |
+| Gather data | `agent` | `prompt`, `schema` |
+
+## Key Rules
+
+1. **Cache first** — probe `cache` before every `search` or `fetch`
+2. **Keyword queries** — NOT natural language: "react useState tutorial" not "how do I use useState"
+3. **Domain scoping** — for framework docs: `include_domains: ["react.dev"]`
+4. **Multi-query** — use `query` array for broader coverage: `["topic A", "topic B", "topic C"]`
+5. **Highlights** — use `format: "highlights"` to get scored passages for synthesis
+
+## Quick Examples
+
+```json
+// Search with highlights for synthesis
+{ "query": ["RSC patterns", "react server components data"], "format": "highlights", "include_domains": ["react.dev", "nextjs.org"] }
+
+// Fetch a specific section
+{ "url": "https://react.dev/reference/react/useState", "section": "Parameters" }
+
+// Crawl docs site
+{ "url": "https://docs.astro.build", "strategy": "sitemap", "max_pages": 30 }
+
+// Extract pricing table
+{ "url": "https://example.com/pricing", "mode": "structured" }
+```
