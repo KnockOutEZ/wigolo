@@ -17,6 +17,16 @@
 
 export const WIGOLO_INSTRUCTIONS = `Wigolo is a local-first web access layer: search the open web, fetch pages, crawl sites, extract structured data, find related content, run multi-step research, and execute agent-driven data gathering. All results land in a local SQLite cache that persists across sessions.
 
+## Host-LLM synthesis pattern (read this first)
+
+Wigolo has no internal LLM. It returns *structured evidence* so YOU (the host LLM) write the final answer. Fold structure into your reply:
+
+- \`search\` \`format: "highlights"\` → FlashRank-scored passages + \`citations\`. Quote [N].
+- \`research\` → \`brief\` with \`topics\`, \`highlights\`, \`key_findings\` when sampling unavailable. Use as report scaffold.
+- \`find_similar\` → \`cold_start\` string when local signals are weak. Pass to user verbatim.
+- \`extract\` \`mode: "structured"\` → tables + definitions + jsonld + chart_hints + key_value_pairs in one call.
+- \`fetch\` metadata → \`og_type\`, \`canonical_url\`, \`og_image\` when present.
+
 ## When to use which tool
 
 - \`search\` -- you need information on a topic but do not have a URL yet. Pass a query string or an array of 3-5 semantically varied keyword forms for broader coverage.
@@ -36,10 +46,11 @@ export const WIGOLO_INSTRUCTIONS = `Wigolo is a local-first web access layer: se
 | Error debugging | \`search\` | exact error string as query, \`category: "code"\` (no domain scoping -- errors appear everywhere) |
 | Library research | \`crawl\` | seed URL of docs site, \`strategy: "sitemap"\`, then \`cache\` for later queries |
 | Related content | \`find_similar\` | \`url\` of a known good page, or \`concept\` as free text |
-| Direct answer | \`search\` | \`format: "answer"\` for a synthesized direct response |
+| Direct quote | \`search\` | \`format: "highlights"\` returns FlashRank-scored passages with citations; cite [N] in your reply |
+| Direct answer | \`search\` | \`format: "answer"\` if client supports sampling, else falls back to \`highlights\` (not plain context) |
 | Comprehensive research | \`research\` | \`depth: "comprehensive"\`, optional \`include_domains\` to scope |
 | Data gathering | \`agent\` | natural-language \`prompt\`, optional \`schema\` for structured output |
-| Structured extraction | \`extract\` | \`mode: "schema"\` with a JSON Schema, or \`mode: "tables"\` |
+| Structured extraction | \`extract\` | \`mode: "structured"\` (tables + dl + JSON-LD + chart hints + kv pairs), or \`mode: "schema"\` with a JSON Schema |
 | Site inventory | \`crawl\` | \`strategy: "map"\` for URL-only discovery, no content fetched |
 
 ## Rapidly changing content
@@ -65,28 +76,12 @@ For broad queries, pass an array of 3-5 semantically varied keyword forms rather
 - For URL discovery only, use \`crawl\` with \`strategy: "map"\` -- URLs only, no content. Follow with targeted \`fetch\` calls.
 - For structured data (prices, specs, table rows), use \`extract\` with \`mode: "schema"\` or \`mode: "tables"\`. Use \`fetch\` only when you want the whole page as markdown.
 - For multi-source synthesis, use \`research\` instead of chaining \`search\` + \`fetch\` manually.
-- For natural-language data gathering ("find pricing for top 5 CRM tools"), use \`agent\` with optional \`schema\`.
+- For natural-language data gathering, use \`agent\` with optional \`schema\`.
+- \`crawl\` accepts regex \`include_patterns\` and \`exclude_patterns\` to stay inside a section of a large site.
 
-## Scope searches by domain — biggest single quality lever
+## Scope searches by domain
 
-For framework, library, SDK, or tool-specific queries, **always pass \`include_domains\` with the project's official site(s)**. Unscoped queries return generic results from sites that happen to mention the keywords (MDN glossary entries, Docker images, unrelated tutorials). Domain scoping is the single biggest quality improvement for these queries.
-
-Examples:
-
-  search({ query: "Next.js authentication App Router", include_domains: ["nextjs.org", "authjs.dev", "clerk.com"] })
-  search({ query: "react server components", include_domains: ["react.dev", "nextjs.org"] })
-  search({ query: "prisma migrations", include_domains: ["prisma.io"] })
-  search({ query: "stripe webhooks", include_domains: ["stripe.com", "docs.stripe.com"] })
-
-When NOT to scope:
-
-- Error strings (errors surface across many sites)
-- Broad exploration ("state management 2026")
-- News and current events
-
-If a first unscoped \`search\` returns noisy results, retry with \`include_domains\` scoped to the official source rather than rephrasing the query.
-
-\`category\` (\`"general"\`, \`"news"\`, \`"code"\`, \`"docs"\`, \`"papers"\`) is a coarse content-type filter and is no substitute for domain scoping. \`category: "docs"\` on its own returns generic documentation portals, not the docs you want -- pair it with \`include_domains\` or omit it.
+For library/framework/SDK queries, **always pass \`include_domains\`** with official sites. Unscoped queries return generic noise. \`category: "docs"\` alone returns generic portals -- pair with \`include_domains\` or omit. Skip domain scoping for error strings, broad exploration, and news.
 
 ## Performance
 
@@ -97,14 +92,12 @@ If a first unscoped \`search\` returns noisy results, retry with \`include_domai
 - \`research\` with \`depth: "quick"\` (~15s) suits most factual questions; reserve \`"comprehensive"\` for deep investigation.
 - \`agent\` respects \`max_pages\` (default 10) and \`max_time_ms\` (default 60s).
 
-## Capabilities worth knowing
+## Extras
 
-- Localhost URLs work: \`http://localhost:3000\`, \`http://127.0.0.1:8080\`, and similar. Useful for reading local dev servers and internal docs.
-- \`use_auth: true\` on \`fetch\` and \`crawl\` reuses the user's configured browser session for pages behind a login.
-- \`cache\` accepts FTS5 query syntax (\`AND\`, \`OR\`, \`NOT\`, \`"exact phrase"\`) for precise lookups.
-- \`crawl\` accepts regex \`include_patterns\` and \`exclude_patterns\` to stay inside a section of a large site.
-- \`find_similar\` uses cached embeddings when available -- no network call needed if the content has been seen before.
-- \`research\` and \`agent\` use MCP requestSampling for intelligent decomposition and synthesis when the client supports it. Without sampling support, they return raw sources in context format.`;
+- Localhost URLs (\`localhost:3000\`, \`127.0.0.1:8080\`) work for local dev servers.
+- \`use_auth: true\` on \`fetch\`/\`crawl\` reuses browser session for logged-in pages.
+- \`cache\` supports FTS5 syntax (\`AND\`, \`OR\`, \`NOT\`, \`"phrase"\`).
+- \`research\`/\`agent\` use MCP sampling when supported; fall back to structured data for host-LLM synthesis.`;
 
 export const TOOL_DESCRIPTIONS = {
   fetch: `Fetch a single URL and return clean markdown. Use when you have a specific URL to read. Automatically detects if JavaScript rendering is needed.
@@ -117,27 +110,24 @@ Key parameters:
 - headers: custom HTTP headers if needed
 - force_refresh: true to bypass cache and fetch fresh content from the network
 
-Returns title, markdown content, links, images, and metadata. Result is cached locally -- subsequent fetches of the same URL return instantly. Works with localhost URLs (localhost:3000, etc.) for reading local dev servers.
+Returns title, markdown, links, images, metadata (og_image, og_type, canonical_url, keywords). Decorative images filtered, relative URLs resolved. Cached locally; repeat fetches are instant. Localhost URLs work.
 
-Use force_refresh: true for pages that change frequently (news sites, changelogs, dashboards, API status pages). By default, previously fetched pages are served from local cache for speed.`,
+Use force_refresh: true for frequently changing content. Default serves from cache.`,
 
-  search: `Search the web and return full markdown content from top results. Use for finding information on any topic -- returns extracted page content, not just snippets.
+  search: `Search the web and return full markdown content from top results. Returns extracted page content, not just snippets.
 
 Key parameters:
-- query: a search string, or an array of 3-5 semantically varied keyword forms for broader coverage. Arrays are deduplicated and merged automatically.
-- include_domains/exclude_domains: scope results to specific sites (e.g., ["react.dev", "nextjs.org"]). For framework/library queries, ALWAYS scope to the official site -- unscoped queries return noise.
-- category: "general", "news", "code", "docs", "papers" -- coarse content-type filter. "docs" alone returns generic portals; pair with include_domains or omit.
-- from_date/to_date: ISO dates for time-bounded queries
-- max_results: default 5. Use 3 for focused queries, 10+ for research.
-- format: "full" (default), "context", "answer" (sampling synthesis; heuristic key-point summary if unsupported), "stream_answer" (answer + progress notifications)
-- max_content_chars: smart-truncate each result markdown at a paragraph boundary with a \`[... content truncated]\` marker (e.g., 3000). Preferred for AI agent context budgets.
-- force_refresh: true to bypass all caches (search results and page content)
+- query: string or string[] array (3-5 keyword variants for broader coverage; deduplicated automatically)
+- include_domains/exclude_domains: scope to specific sites. ALWAYS scope library/framework queries.
+- category: "general" | "news" | "code" | "docs" | "papers" — coarse filter, pair with include_domains.
+- from_date/to_date: ISO YYYY-MM-DD for time-bounded queries
+- max_results: default 5; use 3 for focused, 10+ for research
+- format: "full" (default), "context", "highlights" (FlashRank-scored passages + [N] citations), "answer" (sampling synthesis; falls back to highlights), "stream_answer"
+- max_highlights: cap highlights count (default 10)
+- max_content_chars: smart-truncate markdown at paragraph boundary (e.g., 3000)
+- force_refresh: true to bypass all caches
 
-The "answer" format uses the MCP client's sampling capability to synthesize a direct response from search results. If sampling is not supported, falls back to "context" format. "stream_answer" emits notifications/progress messages at each pipeline phase (search, fetch, synthesize) when the client provides a progressToken via request._meta — token-level streaming of the LLM response is not supported by MCP sampling, so the answer itself still arrives as one block.
-
-Results include title, URL, relevance_score, and full markdown_content per result. Previously fetched pages are served from local cache.
-
-Use force_refresh: true when you need current information that may have changed since the last search. Default behavior uses cached results when available.`,
+"answer" falls back to "highlights" when sampling unsupported (most clients). Results include title, URL, relevance_score, and full markdown_content. Cache serves previously fetched pages instantly.`,
 
   crawl: `Crawl a website starting from a URL and return content from multiple pages. Use for indexing documentation sites, wikis, or any multi-page resource.
 
@@ -163,10 +153,15 @@ Returns matching cached pages with full markdown content. Cache persists across 
   extract: `Extract structured data from a URL or raw HTML. Use when you need specific data points, tables, or metadata rather than full page markdown.
 
 Key parameters:
-- mode: "selector" (CSS selector -> text), "tables" (HTML tables -> JSON rows), "metadata" (title/author/date/description), "schema" (JSON Schema -> heuristic field extraction)
+- mode: "selector" (CSS selector -> text), "tables" (HTML tables only), "metadata" (title/author/date/description/og_* + JSON-LD), "schema" (JSON Schema -> heuristic field extraction), "structured" (ONE-SHOT: tables + <dl> definitions + JSON-LD + chart hints from SVG/figure + microdata/data-attr/grid key-value pairs)
 - css_selector: required for mode="selector" -- any valid CSS selector
 - schema: for mode="schema", a JSON Schema object describing the fields to extract
 - multiple: true to return array of all matches (mode="selector" only)
+
+Prefer mode="structured" over chaining multiple extract calls — it returns every structured pattern on the page in one response:
+  { tables, definitions, jsonld, chart_hints, key_value_pairs }
+
+chart_hints surfaces SVG titles, aria-labels, and figcaptions — host LLMs use these to describe data visualizations even when the underlying data is rendered by JavaScript.
 
 For mode="tables", returns array of table objects with headers and row data. For mode="schema", pass { price: "string", name: "string" } and get structured fields extracted from the page.`,
 
@@ -179,9 +174,11 @@ Key parameters:
 - include_cached: true (default) to search the local cache first, false to skip cache and search the web only
 - threshold: minimum similarity score (0-1, default 0.5) -- higher values return fewer, more relevant results
 
-Provide either url or concept (not both). Results are ranked by cosine similarity of embeddings. Cached content with embeddings is searched first for instant results. If fewer than max_results are found in cache, a web search supplements the results.
+Provide either url or concept (not both). Results are fused from three signals via 3-way RRF: FTS5 keyword match, sentence-transformer embeddings, and (if local hits are sparse) a live web search. Each result carries \`match_signals\` with \`embedding_rank\`, \`fts5_rank\`, and \`fused_score\` so you can explain ranking to the user.
 
-Returns title, URL, similarity_score, and markdown_content per result.`,
+The response may include a \`cold_start\` string when local signals are weak (empty cache, embeddings unavailable, < 20 cached pages). Pass this verbatim to the user — it explains why results came from web search and how to warm the cache.
+
+Returns results array, method used ("hybrid" | "embedding" | "fts5" | "search"), cache_hits, search_hits, embedding_available, and total_time_ms.`,
 
   research: `Run multi-step research on a complex question. Decomposes the question into sub-queries, searches in parallel, fetches top sources, and synthesizes a report with citations.
 
@@ -195,9 +192,15 @@ Key parameters:
 
 The pipeline: (1) decompose question into sub-queries, (2) parallel search across sub-queries, (3) fetch and extract top unique sources, (4) synthesize report with citations from all sources, (5) optionally structure report fields if schema is provided.
 
-Uses MCP requestSampling for intelligent decomposition and synthesis. Without sampling support, returns raw sources in context format with sampling_supported: false.
+Uses MCP requestSampling for intelligent decomposition and synthesis when available. Without sampling support (the common case), the output includes a \`brief\` field with:
+  - \`topics\`: sub-query labels or distilled source-title topics
+  - \`highlights\`: FlashRank-scored passages with source_index, source_url, relevance_score
+  - \`key_findings\`: first substantive paragraph per source, ordered by relevance
+  - \`per_source_char_cap\` / \`total_sources_char_cap\`: budget hints so you know what was trimmed
 
-Returns report (markdown), citations array, sources with full content, sub_queries used, depth level, and total_time_ms.`,
+The host LLM (you) should build its final report from the brief rather than re-reading every source — the brief is the structured scaffold this tool produces when it cannot synthesize internally.
+
+Returns report (markdown), citations array, sources with full content, sub_queries used, depth level, total_time_ms, sampling_supported flag, and optional brief.`,
 
   agent: `Execute a natural-language data gathering task. Plans search queries and URLs from a prompt, executes them in parallel, and synthesizes results. Full step transparency.
 

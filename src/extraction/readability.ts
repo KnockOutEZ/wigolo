@@ -5,7 +5,7 @@ import type { ExtractionResult } from '../types.js';
 
 const MIN_CONTENT_THRESHOLD = 100;
 
-export function readabilityExtract(html: string, url: string): ExtractionResult | null {
+export function readabilityExtract(html: string, _url: string): ExtractionResult | null {
   try {
     const { document } = parseHTML(html);
     const reader = new Readability(document as any);

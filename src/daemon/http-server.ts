@@ -203,7 +203,7 @@ export class DaemonHttpServer {
     await session.transport.handleRequest(req, res);
   }
 
-  private async handleSseRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handleSseRequest(_req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.subsystems) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Server not ready' }));

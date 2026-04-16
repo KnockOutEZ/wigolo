@@ -39,6 +39,10 @@ export interface FetchOutput {
     author?: string;
     date?: string;
     language?: string;
+    og_image?: string;
+    og_type?: string;
+    canonical_url?: string;
+    keywords?: string[];
     section_matched?: boolean;
   };
   links: string[];
@@ -73,6 +77,10 @@ export interface ExtractionResult {
     author?: string;
     date?: string;
     language?: string;
+    og_image?: string;
+    og_type?: string;
+    canonical_url?: string;
+    keywords?: string[];
   };
   links: string[];
   images: string[];
@@ -133,7 +141,8 @@ export interface SearchInput {
   from_date?: string;    // ISO date (YYYY-MM-DD)
   to_date?: string;      // ISO date (YYYY-MM-DD)
   category?: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
-  format?: 'full' | 'context' | 'answer' | 'stream_answer';
+  format?: 'full' | 'context' | 'answer' | 'highlights' | 'stream_answer';
+  max_highlights?: number;
   force_refresh?: boolean;
 }
 
@@ -161,7 +170,16 @@ export interface SearchOutput {
   queries_executed?: string[];
   answer?: string;
   citations?: Citation[];
+  highlights?: Highlight[];
   streaming?: boolean;
+}
+
+export interface Highlight {
+  text: string;
+  source_index: number;
+  relevance_score: number;
+  source_url: string;
+  source_title: string;
 }
 
 export interface Citation {
@@ -208,7 +226,16 @@ export interface ResearchOutput {
   depth: string;
   total_time_ms: number;
   sampling_supported: boolean;
+  brief?: ResearchBrief;
   error?: string;
+}
+
+export interface ResearchBrief {
+  topics: string[];
+  highlights: Highlight[];
+  key_findings: string[];
+  per_source_char_cap: number;
+  total_sources_char_cap: number;
 }
 
 // --- Agent tool types (v3) ---
@@ -361,7 +388,7 @@ export interface ChangeReport {
 export interface ExtractInput {
   url?: string;
   html?: string;
-  mode?: 'selector' | 'tables' | 'metadata' | 'schema';
+  mode?: 'selector' | 'tables' | 'metadata' | 'schema' | 'structured';
   css_selector?: string;
   multiple?: boolean;
   schema?: JsonSchema;
@@ -374,6 +401,8 @@ export interface MetadataData {
   date?: string;
   keywords?: string[];
   og_image?: string;
+  og_type?: string;
+  canonical_url?: string;
   jsonld?: Record<string, unknown>[];
 }
 
@@ -383,10 +412,36 @@ export interface TableData {
   rows: Array<Record<string, string>>;
 }
 
+export interface DefinitionPair {
+  term: string;
+  description: string;
+}
+
+export interface ChartHint {
+  title?: string;
+  aria_label?: string;
+  figcaption?: string;
+  type_hint?: 'chart' | 'diagram' | 'graph';
+}
+
+export interface KeyValuePair {
+  key: string;
+  value: string;
+  source: 'microdata' | 'data-attr' | 'comparison-grid' | 'text-pattern';
+}
+
+export interface StructuredData {
+  tables: TableData[];
+  definitions: DefinitionPair[];
+  jsonld: Record<string, unknown>[];
+  chart_hints: ChartHint[];
+  key_value_pairs: KeyValuePair[];
+}
+
 export interface ExtractOutput {
-  data: string | string[] | TableData[] | MetadataData | Record<string, unknown>;
+  data: string | string[] | TableData[] | MetadataData | StructuredData | Record<string, unknown>;
   source_url?: string;
-  mode: 'selector' | 'tables' | 'metadata' | 'schema';
+  mode: 'selector' | 'tables' | 'metadata' | 'schema' | 'structured';
   error?: string;
 }
 
@@ -423,6 +478,7 @@ export interface FindSimilarOutput {
   cache_hits: number;
   search_hits: number;
   embedding_available: boolean;
+  cold_start?: string;
   error?: string;
   total_time_ms: number;
 }

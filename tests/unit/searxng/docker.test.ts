@@ -41,7 +41,7 @@ describe('SearXNG Docker', () => {
     it('runs docker stop and rm', () => {
       stopContainer('wigolo-searxng');
       expect(execSync).toHaveBeenCalledWith(
-        expect.stringContaining('docker stop wigolo-searxng'),
+        expect.stringContaining('docker stop'),
         expect.anything(),
       );
     });

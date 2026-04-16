@@ -1,8 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('node:child_process', () => ({
-  execSync: vi.fn(),
+vi.mock('../../../src/cli/tui/run-command.js', () => ({
+  runCommand: vi.fn(),
 }));
+
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  return {
+    ...actual,
+    existsSync: vi.fn().mockReturnValue(true),
+    mkdirSync: vi.fn(),
+    rmSync: vi.fn(),
+    createWriteStream: vi.fn(),
+    chmodSync: vi.fn(),
+    readFileSync: vi.fn(),
+  };
+});
 
 vi.mock('../../../src/searxng/bootstrap.js', () => ({
   checkPythonAvailable: vi.fn(),
@@ -19,15 +32,22 @@ vi.mock('../../../src/search/flashrank.js', () => ({
   resetAvailabilityCache: vi.fn(),
 }));
 
-import { execSync } from 'node:child_process';
+import { runCommand } from '../../../src/cli/tui/run-command.js';
 import { runWarmup } from '../../../src/cli/warmup.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../../../src/searxng/bootstrap.js';
 import { isFlashRankAvailable, resetAvailabilityCache } from '../../../src/search/flashrank.js';
 
+const ok = { code: 0, stdout: '', stderr: '', timedOut: false };
+const failWith = (msg: string) => ({ code: 1, stdout: '', stderr: msg, timedOut: false });
+
+const argsOf = (call: unknown[]): string[] => (call[1] as string[]) ?? [];
+const includesArg = (call: unknown[], needle: string): boolean =>
+  argsOf(call).some((a) => String(a).includes(needle));
+
 describe('runWarmup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(runCommand).mockResolvedValue(ok);
   });
 
   it('installs Playwright chromium', async () => {
@@ -35,17 +55,16 @@ describe('runWarmup', () => {
 
     const result = await runWarmup();
 
-    expect(execSync).toHaveBeenCalledWith(
-      'npx playwright install chromium',
-      expect.objectContaining({ stdio: 'pipe' }),
+    expect(runCommand).toHaveBeenCalledWith(
+      'npx',
+      ['playwright', 'install', 'chromium'],
+      expect.objectContaining({ timeout: expect.any(Number) }),
     );
     expect(result.playwright).toBe('ok');
   });
 
   it('reports playwright failure without throwing', async () => {
-    vi.mocked(execSync).mockImplementation(() => {
-      throw new Error('install failed');
-    });
+    vi.mocked(runCommand).mockResolvedValue(failWith('install failed'));
     vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
 
     const result = await runWarmup();
@@ -95,10 +114,22 @@ describe('runWarmup', () => {
   });
 });
 
+const mockFetchNoop = () => {
+  const headers = new Headers({ 'content-length': '0' });
+  const resp = {
+    ok: true,
+    status: 200,
+    headers,
+    body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) },
+  };
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(resp as unknown as Response);
+};
+
 describe('runWarmup with flags', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(runCommand).mockResolvedValue(ok);
+    mockFetchNoop();
   });
 
   it('accepts flags parameter without breaking existing behavior', async () => {
@@ -121,16 +152,12 @@ describe('runWarmup with flags', () => {
   it('installs trafilatura when --trafilatura flag is passed', async () => {
     vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
 
-    const result = await runWarmup(['--trafilatura']);
+    await runWarmup(['--trafilatura']);
 
-    expect(execSync).toHaveBeenCalledWith(
-      expect.stringContaining('pip'),
-      expect.objectContaining({ timeout: 120000 }),
-    );
-    // The call list should include both playwright install and pip install
-    const calls = vi.mocked(execSync).mock.calls;
-    const pipCall = calls.find((c) => String(c[0]).includes('trafilatura'));
+    const calls = vi.mocked(runCommand).mock.calls;
+    const pipCall = calls.find((c) => includesArg(c, 'trafilatura'));
     expect(pipCall).toBeDefined();
+    expect(argsOf(pipCall!)).toEqual(expect.arrayContaining(['-m', 'pip', 'install']));
   });
 
   it('installs trafilatura when --all flag is passed', async () => {
@@ -138,8 +165,8 @@ describe('runWarmup with flags', () => {
 
     await runWarmup(['--all']);
 
-    const calls = vi.mocked(execSync).mock.calls;
-    const pipCall = calls.find((c) => String(c[0]).includes('trafilatura'));
+    const calls = vi.mocked(runCommand).mock.calls;
+    const pipCall = calls.find((c) => includesArg(c, 'trafilatura'));
     expect(pipCall).toBeDefined();
   });
 
@@ -148,25 +175,21 @@ describe('runWarmup with flags', () => {
 
     await runWarmup([]);
 
-    const calls = vi.mocked(execSync).mock.calls;
-    const pipCall = calls.find((c) => String(c[0]).includes('trafilatura'));
+    const calls = vi.mocked(runCommand).mock.calls;
+    const pipCall = calls.find((c) => includesArg(c, 'trafilatura'));
     expect(pipCall).toBeUndefined();
   });
 
   it('handles trafilatura install failure gracefully', async () => {
     vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
 
-    // First call succeeds (playwright), second call fails (pip install trafilatura)
-    let callCount = 0;
-    vi.mocked(execSync).mockImplementation((cmd: string) => {
-      callCount++;
-      if (String(cmd).includes('trafilatura')) {
-        throw new Error('pip install failed: network error');
+    vi.mocked(runCommand).mockImplementation(async (_cmd, args) => {
+      if (args.some((a) => String(a).includes('trafilatura'))) {
+        return failWith('pip install failed: network error');
       }
-      return Buffer.from('');
+      return ok;
     });
 
-    // Should not throw -- warmup continues despite trafilatura install failure
     const result = await runWarmup(['--trafilatura']);
     expect(result.playwright).toBe('ok');
   });
@@ -175,36 +198,35 @@ describe('runWarmup with flags', () => {
 describe('warmup --reranker', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(runCommand).mockResolvedValue(ok);
     vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
   });
 
   it('installs FlashRank Python package when --reranker passed', async () => {
     const result = await runWarmup(['--reranker']);
 
-    expect(execSync).toHaveBeenCalledWith(
-      expect.stringContaining('pip'),
-      expect.objectContaining({ timeout: expect.any(Number) }),
-    );
+    const calls = vi.mocked(runCommand).mock.calls;
+    const pipCall = calls.find((c) => includesArg(c, 'flashrank'));
+    expect(pipCall).toBeDefined();
     expect(result.reranker).toBe('ok');
   });
 
   it('--all flag includes reranker installation', async () => {
     const result = await runWarmup(['--all']);
 
-    const pipCalls = vi.mocked(execSync).mock.calls.filter(
-      (call) => String(call[0]).includes('pip') && String(call[0]).includes('flashrank'),
+    const pipCalls = vi.mocked(runCommand).mock.calls.filter(
+      (c) => includesArg(c, 'pip') && includesArg(c, 'flashrank'),
     );
     expect(pipCalls.length).toBeGreaterThanOrEqual(1);
     expect(result.reranker).toBe('ok');
   });
 
   it('reports failure when pip install fails', async () => {
-    vi.mocked(execSync).mockImplementation((cmd: any) => {
-      if (String(cmd).includes('flashrank')) {
-        throw new Error('pip install failed: network error');
+    vi.mocked(runCommand).mockImplementation(async (_cmd, args) => {
+      if (args.some((a) => String(a).includes('flashrank'))) {
+        return failWith('pip install failed: network error');
       }
-      return Buffer.from('');
+      return ok;
     });
 
     const result = await runWarmup(['--reranker']);
@@ -216,8 +238,8 @@ describe('warmup --reranker', () => {
   it('does not install reranker when flag not passed', async () => {
     const result = await runWarmup([]);
 
-    const pipCalls = vi.mocked(execSync).mock.calls.filter(
-      (call) => String(call[0]).includes('flashrank'),
+    const pipCalls = vi.mocked(runCommand).mock.calls.filter(
+      (c) => includesArg(c, 'flashrank'),
     );
     expect(pipCalls).toHaveLength(0);
     expect(result.reranker).toBeUndefined();
@@ -232,11 +254,11 @@ describe('warmup --reranker', () => {
   });
 
   it('reports failure when python3 not found for reranker install', async () => {
-    vi.mocked(execSync).mockImplementation((cmd: any) => {
-      if (String(cmd).includes('python3')) {
-        throw new Error('ENOENT: python3 not found');
+    vi.mocked(runCommand).mockImplementation(async (cmd, args) => {
+      if (String(cmd).includes('python') || args.some((a) => String(a).includes('flashrank'))) {
+        return failWith('ENOENT: python3 not found');
       }
-      return Buffer.from('');
+      return ok;
     });
 
     const result = await runWarmup(['--reranker']);

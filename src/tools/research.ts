@@ -13,7 +13,7 @@ export async function handleResearch(
   input: ResearchInput,
   engines: SearchEngine[],
   router: SmartRouter,
-  backendStatus?: unknown,
+  _backendStatus?: unknown,
   server?: SamplingCapableServer,
 ): Promise<ResearchOutput> {
   const start = Date.now();

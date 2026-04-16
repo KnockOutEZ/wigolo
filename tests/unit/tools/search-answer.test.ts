@@ -110,7 +110,7 @@ describe('handleSearch with format=answer', () => {
     expect(result.citations!.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('falls back to heuristic key-point summary when sampling not supported', async () => {
+  it('falls back to highlights when sampling not supported', async () => {
     const server = createMockServer({ samplingSupported: false });
 
     const result = await handleSearch(
@@ -121,13 +121,14 @@ describe('handleSearch with format=answer', () => {
       server,
     );
 
-    expect(result.answer).toBeDefined();
-    expect(result.answer).toContain('[1]');
+    expect(result.answer).toBeUndefined();
+    expect(result.highlights).toBeDefined();
+    expect(result.highlights!.length).toBeGreaterThan(0);
     expect(result.citations?.length).toBeGreaterThanOrEqual(1);
     expect(result.warning).toContain('sampling');
   });
 
-  it('falls back to heuristic summary when server is not provided', async () => {
+  it('falls back to highlights when server is not provided', async () => {
     const result = await handleSearch(
       { query: 'test', format: 'answer' },
       [stubEngine],
@@ -136,12 +137,13 @@ describe('handleSearch with format=answer', () => {
       undefined,
     );
 
-    expect(result.answer).toBeDefined();
-    expect(result.answer).toContain('[1]');
+    expect(result.answer).toBeUndefined();
+    expect(result.highlights).toBeDefined();
+    expect(result.highlights!.length).toBeGreaterThan(0);
     expect(result.citations?.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('falls back to heuristic summary when sampling throws', async () => {
+  it('falls back to highlights when sampling throws', async () => {
     const server = createMockServer({
       samplingSupported: true,
       samplingError: new Error('timeout'),
@@ -155,7 +157,9 @@ describe('handleSearch with format=answer', () => {
       server,
     );
 
-    expect(result.answer).toBeDefined();
+    expect(result.answer).toBeUndefined();
+    expect(result.highlights).toBeDefined();
+    expect(result.highlights!.length).toBeGreaterThan(0);
     expect(result.citations?.length).toBeGreaterThanOrEqual(1);
     expect(result.warning).toBeDefined();
   });

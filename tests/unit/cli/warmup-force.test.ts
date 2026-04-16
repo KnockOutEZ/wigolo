@@ -13,10 +13,9 @@ vi.mock('node:fs', async () => {
   };
 });
 
-vi.mock('node:child_process', async () => {
-  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
-  return { ...actual, execSync: vi.fn(), spawnSync: vi.fn() };
-});
+vi.mock('../../../src/cli/tui/run-command.js', () => ({
+  runCommand: vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '', timedOut: false }),
+}));
 
 // Stub out the heavy work — we only care about the wipe.
 vi.mock('../../../src/searxng/bootstrap.js', () => ({

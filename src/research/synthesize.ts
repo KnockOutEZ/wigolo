@@ -64,7 +64,7 @@ export async function synthesizeReport(
 async function synthesizeWithSampling(
   question: string,
   sources: ResearchSource[],
-  citations: Citation[],
+  _citations: Citation[],
   limits: { reportChars: number; perSourceChars: number; totalSourceChars: number },
   server: SamplingCapableServer,
 ): Promise<string | null> {

@@ -3,13 +3,18 @@ import { resetConfig } from '../../../src/config.js';
 
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
-  return { ...actual, existsSync: vi.fn() };
+  return {
+    ...actual,
+    existsSync: vi.fn(),
+    mkdirSync: vi.fn(),
+    createWriteStream: vi.fn(),
+    chmodSync: vi.fn(),
+  };
 });
 
-vi.mock('node:child_process', async () => {
-  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
-  return { ...actual, execSync: vi.fn() };
-});
+vi.mock('../../../src/cli/tui/run-command.js', () => ({
+  runCommand: vi.fn(),
+}));
 
 vi.mock('../../../src/searxng/bootstrap.js', () => ({
   checkPythonAvailable: () => true,
@@ -23,17 +28,21 @@ vi.mock('../../../src/search/flashrank.js', () => ({
 }));
 
 import { existsSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { runCommand } from '../../../src/cli/tui/run-command.js';
 import { runWarmup } from '../../../src/cli/warmup.js';
 
+const ok = { code: 0, stdout: '', stderr: '', timedOut: false };
 const VENV_PYTHON = '/tmp/wigolo/searxng/venv/bin/python';
+
+const pipCallFor = (needle: string) =>
+  vi.mocked(runCommand).mock.calls.find((c) => (c[1] as string[]).some((a) => String(a).includes(needle)));
 
 describe('warmup uses venv python', () => {
   beforeEach(() => {
     resetConfig();
     vi.clearAllMocks();
     process.env.WIGOLO_DATA_DIR = '/tmp/wigolo';
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(runCommand).mockResolvedValue(ok);
   });
   afterEach(() => {
     resetConfig();
@@ -45,11 +54,10 @@ describe('warmup uses venv python', () => {
 
     await runWarmup(['--trafilatura']);
 
-    const calls = vi.mocked(execSync).mock.calls.map((c) => String(c[0]));
-    const trafCall = calls.find((c) => c.includes('trafilatura'));
+    const trafCall = pipCallFor('trafilatura');
     expect(trafCall).toBeDefined();
-    expect(trafCall).toContain(VENV_PYTHON);
-    expect(trafCall).toContain('-m pip install');
+    expect(trafCall![0]).toBe(VENV_PYTHON);
+    expect(trafCall![1]).toEqual(expect.arrayContaining(['-m', 'pip', 'install']));
   });
 
   it('installs flashrank via venv python when venv exists', async () => {
@@ -57,10 +65,9 @@ describe('warmup uses venv python', () => {
 
     await runWarmup(['--reranker']);
 
-    const calls = vi.mocked(execSync).mock.calls.map((c) => String(c[0]));
-    const fr = calls.find((c) => c.includes('flashrank'));
+    const fr = pipCallFor('flashrank');
     expect(fr).toBeDefined();
-    expect(fr).toContain(VENV_PYTHON);
+    expect(fr![0]).toBe(VENV_PYTHON);
   });
 
   it('installs sentence-transformers via venv python when venv exists', async () => {
@@ -68,10 +75,9 @@ describe('warmup uses venv python', () => {
 
     await runWarmup(['--embeddings']);
 
-    const calls = vi.mocked(execSync).mock.calls.map((c) => String(c[0]));
-    const st = calls.find((c) => c.includes('sentence-transformers'));
+    const st = pipCallFor('sentence-transformers');
     expect(st).toBeDefined();
-    expect(st).toContain(VENV_PYTHON);
+    expect(st![0]).toBe(VENV_PYTHON);
   });
 
   it('falls back to system python3 when venv does not exist', async () => {
@@ -79,40 +85,49 @@ describe('warmup uses venv python', () => {
 
     await runWarmup(['--trafilatura']);
 
-    const calls = vi.mocked(execSync).mock.calls.map((c) => String(c[0]));
-    const trafCall = calls.find((c) => c.includes('trafilatura'));
+    const trafCall = pipCallFor('trafilatura');
     expect(trafCall).toBeDefined();
-    expect(trafCall).toMatch(/^python3\s+-m pip install/);
-    expect(trafCall).not.toContain(VENV_PYTHON);
+    expect(trafCall![0]).toBe('python3');
+    expect(trafCall![1]).toEqual(expect.arrayContaining(['-m', 'pip', 'install']));
   });
 });
 
 describe('warmup Lightpanda URL', () => {
   const realPlatform = process.platform;
   const realArch = process.arch;
+  const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
     resetConfig();
     vi.clearAllMocks();
     process.env.WIGOLO_DATA_DIR = '/tmp/wigolo';
     vi.mocked(existsSync).mockReturnValue(false); // force "needs install" path
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(runCommand).mockResolvedValue(ok);
   });
   afterEach(() => {
     resetConfig();
     delete process.env.WIGOLO_DATA_DIR;
     Object.defineProperty(process, 'platform', { value: realPlatform });
     Object.defineProperty(process, 'arch', { value: realArch });
+    globalThis.fetch = originalFetch;
   });
 
   it('uses lightpanda-io/browser nightly URL for darwin arm64', async () => {
     Object.defineProperty(process, 'platform', { value: 'darwin' });
     Object.defineProperty(process, 'arch', { value: 'arm64' });
 
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-length': '0' }),
+      body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) },
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
     await runWarmup(['--lightpanda']);
 
-    const calls = vi.mocked(execSync).mock.calls.map((c) => String(c[0]));
-    const lp = calls.find((c) => c.includes('lightpanda'));
+    const urls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    const lp = urls.find((u) => u.includes('lightpanda'));
     expect(lp).toBeDefined();
     expect(lp).toContain('github.com/lightpanda-io/browser');
     expect(lp).toContain('nightly');
@@ -124,10 +139,18 @@ describe('warmup Lightpanda URL', () => {
     Object.defineProperty(process, 'platform', { value: 'linux' });
     Object.defineProperty(process, 'arch', { value: 'x64' });
 
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-length': '0' }),
+      body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) },
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
     await runWarmup(['--lightpanda']);
 
-    const calls = vi.mocked(execSync).mock.calls.map((c) => String(c[0]));
-    const lp = calls.find((c) => c.includes('lightpanda'));
+    const urls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    const lp = urls.find((u) => u.includes('lightpanda'));
     expect(lp).toBeDefined();
     expect(lp).toContain('lightpanda-x86_64-linux');
     expect(lp).toContain('nightly');

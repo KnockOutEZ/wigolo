@@ -140,3 +140,81 @@ export function extractLinksAndImages(markdown: string): { links: string[]; imag
 
   return { links: Array.from(links), images: Array.from(images) };
 }
+
+const DECORATIVE_URL_MARKERS = [
+  'avatar',
+  'icon',
+  'logo',
+  'badge',
+  'shield',
+  'tracking',
+  'pixel',
+  'sprite',
+  'emoji',
+  'favicon',
+];
+
+// Drop `![alt](src)` tokens that look decorative. Heuristic only -- keep
+// images that have alt text unless the URL clearly marks them decorative.
+// Tracking pixels (tiny data-URI gifs) and empty-alt icons are removed.
+export function filterDecorativeImages(markdown: string): string {
+  if (!markdown) return markdown;
+  return markdown.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt: string, src: string) => {
+    const trimmedAlt = alt.trim();
+    const lowerSrc = src.toLowerCase();
+
+    // Tiny animated-GIF tracking pixel / 1x1 beacons
+    if (lowerSrc.startsWith('data:image/gif;base64,')) return '';
+
+    // Inline SVG icon data URIs (short = tiny, likely decorative glyph)
+    if (lowerSrc.startsWith('data:image/svg+xml') && src.length < 200) return '';
+
+    // URL marks it as decorative regardless of alt
+    for (const marker of DECORATIVE_URL_MARKERS) {
+      if (lowerSrc.includes(marker)) return '';
+    }
+
+    // No alt text + no title = decorative
+    if (!trimmedAlt) return '';
+
+    return match;
+  });
+}
+
+// Resolve relative `[text](path)` and `![alt](path)` targets against baseUrl.
+// Leaves absolute URLs, mailto:, tel:, javascript:, and #fragments untouched.
+export function resolveRelativeUrls(markdown: string, baseUrl: string): string {
+  if (!markdown || !baseUrl) return markdown;
+
+  const rewrite = (path: string): string => {
+    const trimmed = path.trim();
+    if (!trimmed) return path;
+    if (/^(?:https?:|mailto:|tel:|javascript:|data:|#)/i.test(trimmed)) return path;
+    if (trimmed.startsWith('//')) {
+      try {
+        const base = new URL(baseUrl);
+        return `${base.protocol}${trimmed}`;
+      } catch {
+        return path;
+      }
+    }
+    try {
+      return new URL(trimmed, baseUrl).href;
+    } catch {
+      return path;
+    }
+  };
+
+  // Image links first so the shared link regex does not rewrite them twice.
+  let result = markdown.replace(
+    /(!\[[^\]]*\]\()([^)\s]+)(\s*(?:"[^"]*")?\))/g,
+    (_m, open, path, close) => `${open}${rewrite(path)}${close}`,
+  );
+
+  result = result.replace(
+    /(^|[^!])(\[[^\]]*\]\()([^)\s]+)(\s*(?:"[^"]*")?\))/g,
+    (_m, pre, open, path, close) => `${pre}${open}${rewrite(path)}${close}`,
+  );
+
+  return result;
+}

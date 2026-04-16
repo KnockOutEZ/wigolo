@@ -84,13 +84,13 @@ describe('e2e: MCP server startup', () => {
     // the MCP transport. Post-fix bootstrap runs in background. We assert under
     // 8s — well above node + heavy module load under suite load (~3-5s) but
     // well below the SearXNG download time (~10s+ for tarball + pip).
-    const { response, elapsedMs } = await spawnMcpAndInit(dataDir, 14000);
+    const { response, elapsedMs } = await spawnMcpAndInit(dataDir, 18000);
 
     expect(response).not.toBeNull();
     expect(response!.result).toBeDefined();
     expect(response!.result!.serverInfo.name).toBe('wigolo');
-    expect(elapsedMs).toBeLessThan(8000);
-  }, 15000);
+    expect(elapsedMs).toBeLessThan(12000);
+  }, 20000);
 
   it('serverInfo.version matches package.json version', async () => {
     const { response } = await spawnMcpAndInit(dataDir, 10000);

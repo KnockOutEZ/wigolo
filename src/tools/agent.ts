@@ -2,7 +2,7 @@ import { createLogger } from '../logger.js';
 import { runAgentPipeline } from '../agent/pipeline.js';
 import type { AgentInput, AgentOutput, SearchEngine } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
-import type { BackendStatus } from '../server/backend-status.js';
+import type { SamplingCapableServer } from '../search/sampling.js';
 
 const log = createLogger('agent');
 
@@ -13,8 +13,8 @@ export async function handleAgent(
   input: AgentInput,
   engines: SearchEngine[],
   router: SmartRouter,
-  backendStatus?: BackendStatus,
-  server?: unknown,
+  _backendStatus?: unknown,
+  server?: SamplingCapableServer,
 ): Promise<AgentOutput> {
   const start = Date.now();
 
@@ -63,7 +63,7 @@ export async function handleAgent(
       input,
       engines,
       router,
-      server as any,
+      server,
     );
 
     return result;

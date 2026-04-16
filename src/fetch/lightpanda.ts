@@ -181,8 +181,8 @@ export class LightpandaAdapter {
     try {
       if (!this.browser) return false;
 
-      if (typeof (this.browser as any).isConnected === 'function') {
-        if (!(this.browser as any).isConnected()) return false;
+      if ('isConnected' in this.browser && typeof this.browser.isConnected === 'function') {
+        if (!this.browser.isConnected()) return false;
       }
 
       return await isCDPReachable(this.url);

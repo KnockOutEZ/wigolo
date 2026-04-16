@@ -79,7 +79,7 @@ export const stackoverflowExtractor: Extractor = {
     }
   },
 
-  extract(html: string, url: string): ExtractionResult | null {
+  extract(html: string, _url: string): ExtractionResult | null {
     if (!html) return null;
 
     const { document } = parseHTML(html);

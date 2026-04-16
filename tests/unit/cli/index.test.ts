@@ -39,4 +39,42 @@ describe('parseCommand', () => {
       args: ['--json'],
     });
   });
+
+  it('returns "init" for init argument', () => {
+    expect(parseCommand(['init'])).toEqual({ command: 'init', args: [] });
+  });
+
+  it('returns "init" with flags preserved in args', () => {
+    expect(parseCommand(['init', '--non-interactive', '--agents', 'claude-code,cursor'])).toEqual({
+      command: 'init',
+      args: ['--non-interactive', '--agents', 'claude-code,cursor'],
+    });
+  });
+
+  it('passes --plain flag through to warmup args', () => {
+    expect(parseCommand(['warmup', '--plain'])).toEqual({
+      command: 'warmup',
+      args: ['--plain'],
+    });
+  });
+});
+
+describe('parseCommand — setup', () => {
+  it('parses "setup mcp" into command=setup, args=[mcp]', () => {
+    const parsed = parseCommand(['setup', 'mcp']);
+    expect(parsed.command).toBe('setup');
+    expect(parsed.args).toEqual(['mcp']);
+  });
+
+  it('parses "setup" alone into command=setup, args=[]', () => {
+    const parsed = parseCommand(['setup']);
+    expect(parsed.command).toBe('setup');
+    expect(parsed.args).toEqual([]);
+  });
+
+  it('forwards trailing flags on "setup mcp --non-interactive"', () => {
+    const parsed = parseCommand(['setup', 'mcp', '--non-interactive']);
+    expect(parsed.command).toBe('setup');
+    expect(parsed.args).toEqual(['mcp', '--non-interactive']);
+  });
 });

@@ -10,7 +10,7 @@ const IMAGE = 'searxng/searxng:latest';
 export function isContainerRunning(name: string): boolean {
   try {
     const result = execSync(
-      `docker inspect --format '{{.State.Running}}' ${name}`,
+      `docker inspect --format '{{.State.Running}}' -- ${shellEscape(name)}`,
       { stdio: 'pipe', encoding: 'utf-8' },
     ).trim();
     return result === 'true';
@@ -21,11 +21,16 @@ export function isContainerRunning(name: string): boolean {
 
 export function stopContainer(name: string): void {
   try {
-    execSync(`docker stop ${name} && docker rm ${name}`, { stdio: 'pipe' });
+    const escaped = shellEscape(name);
+    execSync(`docker stop -- ${escaped} && docker rm -- ${escaped}`, { stdio: 'pipe' });
     log.info('stopped Docker SearXNG container');
   } catch {
     log.debug('container was not running');
   }
+}
+
+function shellEscape(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
 export class DockerSearxng {

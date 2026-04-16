@@ -34,6 +34,12 @@ export function extractMetadata(html: string): MetadataData {
   const ogImage = getMetaContent(doc, 'og:image');
   if (ogImage) result.og_image = ogImage;
 
+  const ogType = getMetaContent(doc, 'og:type');
+  if (ogType) result.og_type = ogType;
+
+  const canonical = doc.querySelector('link[rel="canonical"]')?.getAttribute('href');
+  if (canonical) result.canonical_url = canonical;
+
   return result;
 }
 
