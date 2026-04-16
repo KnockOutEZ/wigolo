@@ -9,6 +9,7 @@ import { runShell } from './cli/shell.js';
 import { runAuth } from './cli/auth.js';
 import { runPluginCommand } from './cli/plugin.js';
 import { runInit } from './cli/init.js';
+import { runUninstall } from './cli/uninstall.js';
 import { runSetupMcp } from './cli/setup-mcp.js';
 import { runStatus } from './cli/status.js';
 import { getConfig } from './config.js';
@@ -54,6 +55,12 @@ switch (command) {
   case 'init': {
     const initCode = await runInit(args);
     process.exit(initCode);
+    break;
+  }
+
+  case 'uninstall': {
+    const uninstallCode = await runUninstall(args);
+    process.exit(uninstallCode);
     break;
   }
 

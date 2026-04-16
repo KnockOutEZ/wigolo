@@ -170,6 +170,31 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
     return 1;
   }
 
+  // Install instructions, skills, and commands for agents that support them
+  {
+    const { getAgentHandler } = await import('./agents/registry.js');
+    for (const id of selected) {
+      const handler = getAgentHandler(id);
+      if (!handler) continue;
+      try {
+        out(`  Configuring ${handler.displayName}...`);
+        await handler.installInstructions();
+        out(`  ${ok('Global instructions updated')}`);
+        if (handler.supportsSkills && handler.installSkills) {
+          await handler.installSkills();
+          out(`  ${ok('8 skills installed')}`);
+        }
+        if (handler.supportsCommands && handler.installCommand) {
+          await handler.installCommand();
+          out(`  ${ok('Command installed')}`);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        out(`  ${warn(`Skills/instructions skipped: ${message}`)}`);
+      }
+    }
+  }
+
   saveInitConfig(config.dataDir, {
     configuredAgents: selected,
     lastInit: new Date().toISOString(),

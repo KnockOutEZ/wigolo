@@ -1,103 +1,112 @@
 import React from 'react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
+
+// Mock the agent registry so tests don't hit real fs/execSync
+vi.mock('../../../../src/cli/agents/registry.js', () => ({
+  getAgentHandler: vi.fn(),
+}));
+
+import { getAgentHandler } from '../../../../src/cli/agents/registry.js';
 import { SkillInstall } from '../../../../src/cli/tui/components/SkillInstall.js';
 
-const mockExistsSync = vi.fn();
-const mockReadFileSync = vi.fn();
-const mockWriteFileSync = vi.fn();
-const mockMkdirSync = vi.fn();
-const mockAppendFileSync = vi.fn();
+function makeHandler(opts: {
+  id: string;
+  supportsSkills?: boolean;
+  supportsCommands?: boolean;
+  failInstructions?: boolean;
+}) {
+  return {
+    id: opts.id,
+    displayName: opts.id,
+    supportsSkills: opts.supportsSkills ?? false,
+    supportsCommands: opts.supportsCommands ?? false,
+    detect: vi.fn().mockReturnValue(true),
+    installMcp: vi.fn().mockResolvedValue(undefined),
+    installInstructions: opts.failInstructions
+      ? vi.fn().mockRejectedValue(new Error('permissions denied'))
+      : vi.fn().mockResolvedValue(undefined),
+    installSkills: vi.fn().mockResolvedValue(undefined),
+    installCommand: vi.fn().mockResolvedValue(undefined),
+    uninstall: vi.fn().mockResolvedValue({ removed: [] }),
+  };
+}
 
-vi.mock('node:fs', () => ({
-  existsSync: (...args: unknown[]) => mockExistsSync(...args),
-  readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
-  writeFileSync: (...args: unknown[]) => mockWriteFileSync(...args),
-  mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
-  appendFileSync: (...args: unknown[]) => mockAppendFileSync(...args),
-}));
-
-vi.mock('node:os', () => ({
-  homedir: () => '/fake/home',
-}));
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 afterEach(() => {
   cleanup();
-  vi.restoreAllMocks();
 });
-
-beforeEach(() => {
-  mockExistsSync.mockReset();
-  mockReadFileSync.mockReset();
-  mockWriteFileSync.mockReset();
-  mockMkdirSync.mockReset();
-  mockAppendFileSync.mockReset();
-});
-
-function setupSkillMdFound() {
-  mockExistsSync.mockImplementation((path: string) => {
-    if (path.endsWith('SKILL.md')) return true;
-    return false;
-  });
-  mockReadFileSync.mockImplementation((path: string) => {
-    if (path.endsWith('SKILL.md')) return '# wigolo skill content';
-    throw new Error('not found');
-  });
-}
 
 describe('SkillInstall', () => {
-  it('renders header when agents provided', async () => {
-    setupSkillMdFound();
+  it('renders "Installing agent skills" header when agents provided', async () => {
+    vi.mocked(getAgentHandler).mockReturnValue(makeHandler({ id: 'claude-code', supportsSkills: true, supportsCommands: true }));
     const { lastFrame } = render(
       <SkillInstall agents={['claude-code']} onComplete={() => {}} />,
     );
     await new Promise((r) => setTimeout(r, 100));
-    const frame = lastFrame()!;
-    expect(frame).toContain('Installing agent skills');
+    expect(lastFrame()!).toContain('Installing agent skills');
   });
 
-  it('writes skill file for claude-code', async () => {
-    setupSkillMdFound();
+  it('calls installInstructions for claude-code', async () => {
+    const handler = makeHandler({ id: 'claude-code', supportsSkills: true, supportsCommands: true });
+    vi.mocked(getAgentHandler).mockReturnValue(handler);
     const onComplete = vi.fn();
     render(<SkillInstall agents={['claude-code']} onComplete={onComplete} />);
     await new Promise((r) => setTimeout(r, 500));
+    expect(handler.installInstructions).toHaveBeenCalled();
+  });
 
-    expect(onComplete).toHaveBeenCalled();
+  it('calls installSkills and installCommand for claude-code', async () => {
+    const handler = makeHandler({ id: 'claude-code', supportsSkills: true, supportsCommands: true });
+    vi.mocked(getAgentHandler).mockReturnValue(handler);
+    const onComplete = vi.fn();
+    render(<SkillInstall agents={['claude-code']} onComplete={onComplete} />);
+    await new Promise((r) => setTimeout(r, 500));
+    expect(handler.installSkills).toHaveBeenCalled();
+    expect(handler.installCommand).toHaveBeenCalled();
     const results = onComplete.mock.calls[0][0];
     expect(results[0].status).toBe('installed');
-    expect(results[0].detail).toContain('.claude/commands/wigolo.md');
-
-    expect(mockWriteFileSync).toHaveBeenCalledWith(
-      expect.stringContaining('.claude/commands/wigolo.md'),
-      expect.any(String),
-    );
+    expect(results[0].detail).toContain('8 skills');
+    expect(results[0].detail).toContain('command');
   });
 
-  it('writes instruction snippet to CLAUDE.md for claude-code', async () => {
-    setupSkillMdFound();
-    render(<SkillInstall agents={['claude-code']} onComplete={() => {}} />);
-    await new Promise((r) => setTimeout(r, 100));
-
-    // CLAUDE.md doesn't exist -> writeFileSync with snippet
-    expect(mockWriteFileSync).toHaveBeenCalledWith(
-      expect.stringContaining('CLAUDE.md'),
-      expect.stringContaining('Wigolo'),
-    );
-  });
-
-  it('writes skill file for cursor', async () => {
-    setupSkillMdFound();
+  it('calls installInstructions for cursor, reports installed', async () => {
+    const handler = makeHandler({ id: 'cursor', supportsSkills: false, supportsCommands: false });
+    vi.mocked(getAgentHandler).mockReturnValue(handler);
     const onComplete = vi.fn();
     render(<SkillInstall agents={['cursor']} onComplete={onComplete} />);
     await new Promise((r) => setTimeout(r, 500));
-
+    expect(handler.installInstructions).toHaveBeenCalled();
     const results = onComplete.mock.calls[0][0];
     expect(results[0].status).toBe('installed');
-    expect(results[0].detail).toContain('.cursor/rules/wigolo.md');
+    expect(results[0].detail).toContain('instructions');
+  });
+
+  it('reports not_supported for unknown agent id (no handler)', async () => {
+    vi.mocked(getAgentHandler).mockReturnValue(undefined);
+    const onComplete = vi.fn();
+    render(<SkillInstall agents={['zed' as never]} onComplete={onComplete} />);
+    await new Promise((r) => setTimeout(r, 500));
+    const results = onComplete.mock.calls[0][0];
+    expect(results[0].status).toBe('not_supported');
+  });
+
+  it('reports failed when installInstructions throws', async () => {
+    const handler = makeHandler({ id: 'cursor', failInstructions: true });
+    vi.mocked(getAgentHandler).mockReturnValue(handler);
+    const onComplete = vi.fn();
+    render(<SkillInstall agents={['cursor']} onComplete={onComplete} />);
+    await new Promise((r) => setTimeout(r, 500));
+    const results = onComplete.mock.calls[0][0];
+    expect(results[0].status).toBe('failed');
   });
 
   it('calls onComplete after processing', async () => {
-    setupSkillMdFound();
+    const handler = makeHandler({ id: 'claude-code' });
+    vi.mocked(getAgentHandler).mockReturnValue(handler);
     const onComplete = vi.fn();
     render(<SkillInstall agents={['claude-code']} onComplete={onComplete} />);
     await new Promise((r) => setTimeout(r, 500));
@@ -109,23 +118,5 @@ describe('SkillInstall', () => {
     render(<SkillInstall agents={[]} onComplete={onComplete} />);
     await new Promise((r) => setTimeout(r, 500));
     expect(onComplete).toHaveBeenCalled();
-  });
-
-  it('skips instruction snippet if marker already present', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
-      if (path.endsWith('SKILL.md')) return true;
-      if (path.endsWith('CLAUDE.md')) return true;
-      return false;
-    });
-    mockReadFileSync.mockImplementation((path: string) => {
-      if (path.endsWith('SKILL.md')) return '# wigolo skill content';
-      if (path.endsWith('CLAUDE.md')) return '# existing\n<!-- @staticn0va/wigolo -->';
-      throw new Error('not found');
-    });
-
-    render(<SkillInstall agents={['claude-code']} onComplete={() => {}} />);
-    await new Promise((r) => setTimeout(r, 100));
-
-    expect(mockAppendFileSync).not.toHaveBeenCalled();
   });
 });
