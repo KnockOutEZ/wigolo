@@ -7,7 +7,7 @@ export interface PythonProbeResult {
   embeddings: 'ok' | 'missing';
 }
 
-const PROBE_TIMEOUT_MS = 3000;
+const PROBE_TIMEOUT_MS = 10000;
 
 export function probePythonPackages(dataDir: string): PythonProbeResult {
   const py = getPythonBin(dataDir);
