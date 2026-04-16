@@ -4,6 +4,22 @@ import { createLogger } from '../../logger.js';
 
 const log = createLogger('search');
 
+const DATE_SNIPPET_PATTERN = /^(\w{3}\s+\d{1,2},\s+\d{4}|\d{4}-\d{2}-\d{2})\s*[·—–-]/;
+
+function parseDateFromEl(el: { textContent?: string | null } | null): string | undefined {
+  if (!el?.textContent) return undefined;
+  const text = el.textContent.trim();
+  const d = new Date(text);
+  return isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
+function parseDateFromSnippet(snippet: string): string | undefined {
+  const match = snippet.trim().match(DATE_SNIPPET_PATTERN);
+  if (!match) return undefined;
+  const d = new Date(match[1]);
+  return isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
 export class StartpageEngine implements SearchEngine {
   name = 'startpage';
 
@@ -48,12 +64,18 @@ export class StartpageEngine implements SearchEngine {
       const title = link?.textContent?.trim();
 
       if (href && title) {
+        // Startpage sometimes shows dates in a dedicated element or snippet prefix
+        const dateEl = item.querySelector('.w-gl__result-date, time');
+        const snippetText = snippetEl?.textContent?.trim() ?? '';
+        const published_date = parseDateFromEl(dateEl) ?? parseDateFromSnippet(snippetText);
+
         results.push({
           title,
           url: href,
-          snippet: snippetEl?.textContent?.trim() ?? '',
+          snippet: snippetText,
           relevance_score: 1 - i / Math.max(items.length, 1),
           engine: 'startpage',
+          ...(published_date ? { published_date } : {}),
         });
       }
     }

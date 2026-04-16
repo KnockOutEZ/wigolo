@@ -10,6 +10,16 @@ const USER_AGENTS = [
   'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0',
 ];
 
+// DDG Lite sometimes prefixes snippets with dates like "Jan 15, 2025 -" or "2025-01-15 ·"
+const DATE_SNIPPET_PATTERN = /^(\w{3}\s+\d{1,2},\s+\d{4}|\d{4}-\d{2}-\d{2})\s*[·—–-]/;
+
+function parseDateFromSnippet(snippet: string): string | undefined {
+  const match = snippet.trim().match(DATE_SNIPPET_PATTERN);
+  if (!match) return undefined;
+  const d = new Date(match[1]);
+  return isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
 export class DuckDuckGoEngine implements SearchEngine {
   name = 'duckduckgo';
 
@@ -49,12 +59,16 @@ export class DuckDuckGoEngine implements SearchEngine {
       const title = link?.textContent?.trim();
 
       if (href && title) {
+        const snippetText = snippet?.textContent?.trim() ?? '';
+        const published_date = parseDateFromSnippet(snippetText);
+
         results.push({
           title,
           url: href,
-          snippet: snippet?.textContent?.trim() ?? '',
+          snippet: snippetText,
           relevance_score: 1 - i / Math.max(links.length, 1),
           engine: 'duckduckgo',
+          ...(published_date ? { published_date } : {}),
         });
       }
     }

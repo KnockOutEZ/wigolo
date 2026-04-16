@@ -11,6 +11,7 @@ export class EmbeddingService {
   private subprocess: EmbeddingSubprocess;
   private index: VectorIndex;
   private available = false;
+  private subprocessVerified = false;
 
   constructor() {
     this.subprocess = new EmbeddingSubprocess();
@@ -32,6 +33,20 @@ export class EmbeddingService {
         log.info('loaded embeddings into index', { count: loaded });
       }
 
+      // Probe the subprocess to verify Python + sentence-transformers work.
+      // This forces the lazy spawn so we know right away if embedding is broken.
+      try {
+        const probeId = 'init-probe';
+        await this.subprocess.embed(probeId, 'embedding service probe');
+        this.subprocessVerified = true;
+        log.info('embedding subprocess verified');
+      } catch (err) {
+        log.warn('embedding subprocess probe failed — embeddings disabled', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        this.subprocessVerified = false;
+      }
+
       this.available = true;
 
     } catch (err) {
@@ -46,6 +61,10 @@ export class EmbeddingService {
 
   setAvailable(value: boolean): void {
     this.available = value;
+  }
+
+  isSubprocessReady(): boolean {
+    return this.subprocessVerified;
   }
 
   getIndex(): VectorIndex {

@@ -240,10 +240,13 @@ describe('EmbeddingService', () => {
     const service = new EmbeddingService();
     await service.init();
 
+    // init() calls embed once for the probe, so we start with 1 ID
+    const idsAfterInit = ids.size;
+
     await service.embedAndStore('https://a.com', 'A');
     await service.embedAndStore('https://b.com', 'B');
 
-    expect(ids.size).toBe(2);
+    expect(ids.size - idsAfterInit).toBe(2);
   });
 
   it('converts number[] vector to Float32Array for index', async () => {

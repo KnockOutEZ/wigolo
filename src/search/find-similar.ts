@@ -142,6 +142,25 @@ export async function findSimilar(
         searchRankMap,
       );
       log.debug('web search fallback complete', { hits: searchResults.length });
+
+      // After web fallback, re-run embedding search against newly-populated index.
+      // The web fallback used embedAndStore() (awaited) so vectors are already in
+      // the index — no sleep needed, just re-query.
+      if (embeddingAvailable && signal.queryText && searchResults.length > 0) {
+        const freshEmbeddingResults = await runEmbeddingSearch(
+          signal.queryText,
+          signal.inputNormalizedUrl,
+          input.include_domains,
+          input.exclude_domains,
+          MAX_EMBEDDING_CANDIDATES,
+          embeddingRankMap,
+        );
+
+        if (freshEmbeddingResults.length > 0) {
+          embeddingResults = freshEmbeddingResults;
+          log.debug('re-ran embedding search after web fallback', { hits: embeddingResults.length });
+        }
+      }
     }
 
     // Phase 3: 3-way RRF fusion
@@ -204,7 +223,11 @@ export async function findSimilar(
 function checkEmbeddingAvailable(): boolean {
   try {
     const svc = getEmbeddingService();
-    return svc.isAvailable() && svc.getIndex().size() > 0;
+    // Available = service initialized + subprocess verified (Python + model work).
+    // We no longer require index.size() > 0 because the embedding path can
+    // generate query embeddings on-the-fly and compare against freshly-embedded
+    // web fallback results within the same request.
+    return svc.isAvailable() && svc.isSubprocessReady();
   } catch {
     return false;
   }
@@ -354,7 +377,8 @@ async function runEmbeddingSearch(
 ): Promise<FindSimilarResult[]> {
   try {
     const service = getEmbeddingService();
-    if (!service.isAvailable() || service.getIndex().size() === 0) return [];
+    if (!service.isAvailable() || !service.isSubprocessReady()) return [];
+    if (service.getIndex().size() === 0) return [];
 
     const excludeUrls = excludeNormalizedUrl ? new Set([excludeNormalizedUrl]) : undefined;
     const similar = await service.findSimilar(queryText, topK, excludeUrls);
@@ -530,14 +554,18 @@ async function runWebSearchFallback(
       }
     }
 
+    // Embed web results synchronously so they're in the index for the
+    // re-query pass that runs after this fallback. Other tools use embedAsync
+    // (fire-and-forget), but find_similar needs embeddings in THIS request.
     try {
       const embeddingService = getEmbeddingService();
-      if (embeddingService.isAvailable()) {
-        for (const result of allResults) {
-          if (result.markdown) {
-            embeddingService.embedAsync(result.url, result.markdown);
-          }
-        }
+      if (embeddingService.isAvailable() && embeddingService.isSubprocessReady()) {
+        const embedPromises = allResults
+          .filter(r => r.markdown)
+          .slice(0, 10) // cap to avoid blocking too long
+          .map(r => embeddingService.embedAndStore(r.url, r.markdown));
+        await Promise.allSettled(embedPromises);
+        log.debug('embedded web fallback results', { count: embedPromises.length });
       }
     } catch (err) {
       log.debug('embedding hook skipped for find_similar results', { error: String(err) });

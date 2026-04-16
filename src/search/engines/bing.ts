@@ -24,6 +24,42 @@ export function decodeBingTrackerUrl(href: string): string {
   }
 }
 
+// Date patterns commonly found in Bing result snippets: "Jan 15, 2025", "2025-01-15", "3 days ago"
+const DATE_SNIPPET_PATTERN = /^(\w{3}\s+\d{1,2},\s+\d{4}|\d{4}-\d{2}-\d{2})\s*[·—–-]/;
+const RELATIVE_DATE_PATTERN = /^(\d+)\s+(day|hour|minute|week|month)s?\s+ago/i;
+
+function parseDateFromEl(el: { textContent?: string | null } | null): string | undefined {
+  if (!el?.textContent) return undefined;
+  const text = el.textContent.trim();
+  const d = new Date(text);
+  return isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
+function parseDateFromSnippet(snippet: string): string | undefined {
+  const trimmed = snippet.trim();
+
+  const absMatch = trimmed.match(DATE_SNIPPET_PATTERN);
+  if (absMatch) {
+    const d = new Date(absMatch[1]);
+    return isNaN(d.getTime()) ? undefined : d.toISOString();
+  }
+
+  const relMatch = trimmed.match(RELATIVE_DATE_PATTERN);
+  if (relMatch) {
+    const amount = parseInt(relMatch[1], 10);
+    const unit = relMatch[2].toLowerCase();
+    const now = new Date();
+    if (unit.startsWith('day')) now.setDate(now.getDate() - amount);
+    else if (unit.startsWith('hour')) now.setHours(now.getHours() - amount);
+    else if (unit.startsWith('minute')) now.setMinutes(now.getMinutes() - amount);
+    else if (unit.startsWith('week')) now.setDate(now.getDate() - amount * 7);
+    else if (unit.startsWith('month')) now.setMonth(now.getMonth() - amount);
+    return now.toISOString();
+  }
+
+  return undefined;
+}
+
 export class BingEngine implements SearchEngine {
   name = 'bing';
 
@@ -67,12 +103,17 @@ export class BingEngine implements SearchEngine {
       const title = link?.textContent?.trim();
 
       if (href && title) {
+        // Bing sometimes shows dates in a <span class="news_dt"> or generic date text
+        const dateEl = item.querySelector('.news_dt, span[aria-label]');
+        const published_date = parseDateFromEl(dateEl) ?? parseDateFromSnippet(snippetEl?.textContent ?? '');
+
         results.push({
           title,
           url: href,
           snippet: snippetEl?.textContent?.trim() ?? '',
           relevance_score: 1 - i / Math.max(items.length, 1),
           engine: 'bing',
+          ...(published_date ? { published_date } : {}),
         });
       }
     }

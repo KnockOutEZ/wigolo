@@ -21,6 +21,7 @@ vi.mock('../../../src/extraction/pipeline.js', () => ({
 // individual tests configure the mock's behavior.
 const mockEmbeddingState = {
   available: false,
+  subprocessReady: false,
   vectors: new Map<string, number>(), // url -> mock score stored in-index
   findSimilarImpl: null as
     | ((queryText: string, topK: number, excludeUrls?: Set<string>) => Promise<Array<{ url: string; score: number }>>)
@@ -41,11 +42,12 @@ const mockIndex = {
 
 const mockService = {
   isAvailable: () => mockEmbeddingState.available,
+  isSubprocessReady: () => mockEmbeddingState.subprocessReady,
   setAvailable: vi.fn(),
   getIndex: () => mockIndex,
   init: vi.fn(),
   embedAsync: vi.fn(),
-  embedAndStore: vi.fn(),
+  embedAndStore: vi.fn().mockResolvedValue(undefined),
   findSimilar: vi.fn(async (queryText: string, topK: number, excludeUrls?: Set<string>) => {
     if (mockEmbeddingState.findSimilarImpl) {
       return mockEmbeddingState.findSimilarImpl(queryText, topK, excludeUrls);
@@ -124,6 +126,7 @@ describe('findSimilar embedding integration', () => {
     vi.clearAllMocks();
     // Reset mock state
     mockEmbeddingState.available = false;
+    mockEmbeddingState.subprocessReady = false;
     mockEmbeddingState.vectors.clear();
     mockEmbeddingState.findSimilarImpl = null;
   });
@@ -147,9 +150,10 @@ describe('findSimilar embedding integration', () => {
     expect(result.embedding_available).toBe(false);
   });
 
-  it('embedding_available=false when index is empty even if service is available', async () => {
+  it('embedding_available=false when subprocess not ready', async () => {
     mockEmbeddingState.available = true;
-    mockEmbeddingState.vectors.clear();
+    mockEmbeddingState.subprocessReady = true;
+    mockEmbeddingState.subprocessReady = false;
 
     const result = await findSimilar(
       { concept: 'React hooks', include_web: false },
@@ -162,6 +166,7 @@ describe('findSimilar embedding integration', () => {
 
   it('embedding_available=true when service available and index has vectors', async () => {
     mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
     mockEmbeddingState.vectors.set('https://example.com/', 1);
     mockEmbeddingState.findSimilarImpl = async () => [];
 
@@ -182,6 +187,7 @@ describe('findSimilar embedding integration', () => {
     );
 
     mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
     mockEmbeddingState.vectors.set('https://react.dev/hooks', 1);
     mockEmbeddingState.findSimilarImpl = async () => [
       { url: 'https://react.dev/hooks', score: 0.95 },
@@ -208,6 +214,7 @@ describe('findSimilar embedding integration', () => {
     );
 
     mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
     mockEmbeddingState.vectors.set('https://semantic-match.example.com/page', 1);
     // Embedding returns this page as similar despite no keyword match
     mockEmbeddingState.findSimilarImpl = async () => [
@@ -236,6 +243,7 @@ describe('findSimilar embedding integration', () => {
     );
 
     mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
     mockEmbeddingState.vectors.set('https://semantic-only.example.com/page', 1);
     mockEmbeddingState.findSimilarImpl = async () => [
       { url: 'https://semantic-only.example.com/page', score: 0.88 },
@@ -268,6 +276,7 @@ describe('findSimilar embedding integration', () => {
     );
 
     mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
     mockEmbeddingState.vectors.set('https://a.com/react-hooks', 1);
     mockEmbeddingState.findSimilarImpl = async () => [
       { url: 'https://a.com/react-hooks', score: 0.99 },
@@ -297,6 +306,7 @@ describe('findSimilar embedding integration', () => {
     );
 
     mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
     mockEmbeddingState.vectors.set('https://react.dev/hooks', 1);
     mockEmbeddingState.vectors.set('https://other.dev/hooks', 1);
     // Embedding service would normally filter via excludeUrls; verify it's called correctly
@@ -331,6 +341,7 @@ describe('findSimilar embedding integration', () => {
     );
 
     mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
     mockEmbeddingState.vectors.set('https://good.com/page', 1);
     mockEmbeddingState.vectors.set('https://spam.com/page', 1);
     mockEmbeddingState.findSimilarImpl = async () => [
@@ -355,6 +366,7 @@ describe('findSimilar embedding integration', () => {
 
   it('embedding skipped when include_cache=false', async () => {
     mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
     mockEmbeddingState.vectors.set('https://foo.com/', 1);
     mockEmbeddingState.findSimilarImpl = async () => [
       { url: 'https://foo.com/', score: 0.9 },
@@ -377,6 +389,7 @@ describe('findSimilar embedding integration', () => {
     );
 
     mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
     mockEmbeddingState.vectors.set('https://something', 1);
     mockEmbeddingState.findSimilarImpl = async () => {
       throw new Error('subprocess crashed');
