@@ -98,10 +98,10 @@ export function Summary({ agentResults, skillResults, installItems, verifyItems 
 
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Commands:</Text>
-          <Text>  <Text color="cyan">wigolo doctor</Text>    system diagnostics</Text>
-          <Text>  <Text color="cyan">wigolo shell</Text>     interactive REPL</Text>
-          <Text>  <Text color="cyan">wigolo status</Text>    quick health check</Text>
-          <Text>  <Text color="cyan">wigolo init</Text>      re-run this setup</Text>
+          <Text>  <Text color="cyan">npx @staticn0va/wigolo doctor</Text>  system diagnostics</Text>
+          <Text>  <Text color="cyan">npx @staticn0va/wigolo shell</Text>   interactive REPL</Text>
+          <Text>  <Text color="cyan">npx @staticn0va/wigolo status</Text>  quick health check</Text>
+          <Text>  <Text color="cyan">npx @staticn0va/wigolo init</Text>    re-run this setup</Text>
         </Box>
 
         <Box marginTop={1}>

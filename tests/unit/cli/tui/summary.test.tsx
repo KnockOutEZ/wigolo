@@ -58,8 +58,8 @@ describe('Summary', () => {
   it('shows available commands', () => {
     const { lastFrame } = render(<Summary {...defaultProps} />);
     const frame = lastFrame()!;
-    expect(frame).toContain('wigolo doctor');
-    expect(frame).toContain('wigolo shell');
+    expect(frame).toContain('npx @staticn0va/wigolo doctor');
+    expect(frame).toContain('npx @staticn0va/wigolo shell');
   });
 
   it('shows docs link', () => {
