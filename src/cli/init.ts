@@ -45,8 +45,7 @@ export async function runInit(args: string[]): Promise<number> {
 
   if (useInk) {
     const { runInkInit } = await import('./tui/ink-init.js');
-    runInkInit();
-    // Ink takes over from here, never returns
+    await runInkInit();
     return 0;
   }
 

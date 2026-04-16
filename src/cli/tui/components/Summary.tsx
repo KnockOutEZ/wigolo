@@ -1,7 +1,13 @@
-import React from 'react';
-import { Box, Text } from 'ink';
+import React, { useEffect } from 'react';
+import { Box, Text, useApp } from 'ink';
 
 export function Summary() {
+  const { exit } = useApp();
+
+  useEffect(() => {
+    const timer = setTimeout(exit, 500);
+    return () => clearTimeout(timer);
+  }, [exit]);
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>
       <Box

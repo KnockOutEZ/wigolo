@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { render } from 'ink';
+import { render, useApp } from 'ink';
 import { enableTuiMode } from './utils/suppress-logs.js';
 import { Banner } from './components/Banner.js';
 import { SystemCheck } from './components/SystemCheck.js';
@@ -44,10 +44,11 @@ function WigoloInit() {
     setScreen('skills');
   }, [config.dataDir]);
 
+  const { exit } = useApp();
+
   const handleSysFail = useCallback(() => {
-    // Hard failure — exit after showing errors
-    setTimeout(() => process.exit(1), 1000);
-  }, []);
+    setTimeout(() => exit(new Error('System check failed')), 1000);
+  }, [exit]);
 
   switch (screen) {
     case 'banner':
@@ -69,10 +70,8 @@ function WigoloInit() {
   }
 }
 
-export function runInkInit(): void {
+export async function runInkInit(): Promise<void> {
   enableTuiMode();
   const { waitUntilExit } = render(<WigoloInit />);
-  waitUntilExit().then(() => {
-    process.exit(0);
-  });
+  await waitUntilExit();
 }
