@@ -171,7 +171,11 @@ export function detectQueryType(question: string): QueryType {
 }
 
 export function extractComparisonEntities(question: string): { entities: string[]; context: string } {
-  const cleaned = question.replace(/[?!.]/g, '').trim();
+  // Strip common question prefixes so "how does X vs Y" still matches
+  const cleaned = question
+    .replace(/[?!.]/g, '')
+    .replace(/^(?:how\s+(?:does|do|is|are|about)|what\s+(?:is|are)\s+(?:the\s+)?(?:difference|differences)\s+(?:between)?|should\s+I\s+(?:use|choose)|which\s+is\s+better)\s*/i, '')
+    .trim();
 
   // "X vs Y vs Z for/in/with context"
   const vsMatch = cleaned.match(/^(.+?)\s+(?:vs\.?|versus)\s+(.+?)(?:\s+(?:vs\.?|versus)\s+(.+?))?(?:\s+(?:for|in|with|when)\s+(.+))?$/i);
@@ -330,6 +334,7 @@ function extractNounPhrases(text: string): string[] {
     'this', 'that', 'these', 'those', 'i', 'me', 'my', 'we', 'our',
     'you', 'your', 'he', 'him', 'his', 'she', 'her', 'it', 'its',
     'they', 'them', 'their',
+    'vs', 'versus', 'compare', 'compared', 'comparison',
   ]);
 
   const words = text.replace(/[?!.,;:'"()\[\]{}]/g, ' ').split(/\s+/).filter(Boolean);

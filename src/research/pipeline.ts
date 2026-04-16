@@ -10,7 +10,7 @@ import { extractContent } from '../extraction/pipeline.js';
 import { truncateSmartly } from '../search/truncate.js';
 import { cacheContent } from '../cache/store.js';
 import { getEmbeddingService } from '../embedding/embed.js';
-import type { SamplingCapableServer } from '../search/sampling.js';
+import { checkSamplingSupport, type SamplingCapableServer } from '../search/sampling.js';
 import type {
   ResearchInput,
   ResearchOutput,
@@ -90,7 +90,7 @@ export async function runResearchPipeline(
         sub_queries: subQueries,
         depth,
         total_time_ms: Date.now() - start,
-        sampling_supported: !!server,
+        sampling_supported: !!server && checkSamplingSupport(server),
       };
     }
 
@@ -136,7 +136,7 @@ export async function runResearchPipeline(
       sub_queries: subQueries,
       depth,
       total_time_ms: Date.now() - start,
-      sampling_supported: !!server,
+      sampling_supported: !!server && checkSamplingSupport(server),
       ...(brief ? { brief } : {}),
     };
   } catch (err) {
@@ -151,7 +151,7 @@ export async function runResearchPipeline(
       sub_queries: [],
       depth,
       total_time_ms: Date.now() - start,
-      sampling_supported: !!server,
+      sampling_supported: !!server && checkSamplingSupport(server),
       error: err instanceof Error ? err.message : String(err),
     };
   }
@@ -188,7 +188,7 @@ async function fetchSources(
       try {
         cacheContent(raw, extraction);
       } catch (err) {
-        log.debug('failed to cache research source', { url: result.url, error: String(err) });
+        log.warn('failed to cache research source', { url: result.url, error: String(err) });
       }
 
       try {

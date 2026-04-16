@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { getDatabase } from './db.js';
 import { getConfig } from '../config.js';
+import { createLogger } from '../logger.js';
 import type { RawFetchResult, ExtractionResult, CachedContent, SearchResultItem, CacheStats } from '../types.js';
+
+const log = createLogger('cache');
 
 const TRACKING_PARAMS = new Set([
   'utm_source',
@@ -50,43 +53,51 @@ function toIsoSeconds(date: Date): string {
 }
 
 export function cacheContent(result: RawFetchResult, extraction: ExtractionResult): void {
-  const db = getDatabase();
-  const config = getConfig();
+  try {
+    const db = getDatabase();
+    const config = getConfig();
 
-  const normalizedUrl = normalizeUrl(result.finalUrl || result.url);
-  const contentHash = createHash('sha256').update(extraction.markdown).digest('hex');
+    const normalizedUrl = normalizeUrl(result.finalUrl || result.url);
+    const contentHash = createHash('sha256').update(extraction.markdown).digest('hex');
 
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + config.cacheTtlContent * 1000);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + config.cacheTtlContent * 1000);
 
-  const stmt = db.prepare(`
-    INSERT OR REPLACE INTO url_cache (
-      url, normalized_url, title, markdown, raw_html,
-      metadata, links, images, fetch_method, extractor_used,
-      content_hash, fetched_at, expires_at
-    )
-    VALUES (
-      @url, @normalizedUrl, @title, @markdown, @rawHtml,
-      @metadata, @links, @images, @fetchMethod, @extractorUsed,
-      @contentHash, @fetchedAt, @expiresAt
-    )
-  `);
+    const stmt = db.prepare(`
+      INSERT OR REPLACE INTO url_cache (
+        url, normalized_url, title, markdown, raw_html,
+        metadata, links, images, fetch_method, extractor_used,
+        content_hash, fetched_at, expires_at
+      )
+      VALUES (
+        @url, @normalizedUrl, @title, @markdown, @rawHtml,
+        @metadata, @links, @images, @fetchMethod, @extractorUsed,
+        @contentHash, @fetchedAt, @expiresAt
+      )
+    `);
 
-  stmt.run({
-    url: result.url,
-    normalizedUrl,
-    title: extraction.title,
-    markdown: extraction.markdown,
-    rawHtml: result.html,
-    metadata: JSON.stringify(extraction.metadata),
-    links: JSON.stringify(extraction.links),
-    images: JSON.stringify(extraction.images),
-    fetchMethod: result.method,
-    extractorUsed: extraction.extractor,
-    contentHash: contentHash,
-    fetchedAt: toIsoSeconds(now),
-    expiresAt: toIsoSeconds(expiresAt),
-  });
+    stmt.run({
+      url: result.url,
+      normalizedUrl,
+      title: extraction.title,
+      markdown: extraction.markdown,
+      rawHtml: result.html,
+      metadata: JSON.stringify(extraction.metadata),
+      links: JSON.stringify(extraction.links),
+      images: JSON.stringify(extraction.images),
+      fetchMethod: result.method,
+      extractorUsed: extraction.extractor,
+      contentHash: contentHash,
+      fetchedAt: toIsoSeconds(now),
+      expiresAt: toIsoSeconds(expiresAt),
+    });
+  } catch (err) {
+    log.warn('cacheContent failed', {
+      url: result.url,
+      finalUrl: result.finalUrl,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 interface DbRow {

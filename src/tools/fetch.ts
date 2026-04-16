@@ -78,7 +78,11 @@ export async function handleFetch(
       log.warn('change detection failed', { url: raw.finalUrl, error: String(err) });
     }
 
-    cacheContent(raw, extraction);
+    try {
+      cacheContent(raw, extraction);
+    } catch (err) {
+      log.warn('failed to cache fetched content', { url: raw.finalUrl, error: String(err) });
+    }
 
     try {
       const embeddingService = getEmbeddingService();

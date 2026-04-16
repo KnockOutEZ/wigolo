@@ -522,7 +522,7 @@ async function fetchContentForResults(
       try {
         cacheContent(raw, extraction);
       } catch (err) {
-        log.debug('failed to cache search result', { url: result.url, error: String(err) });
+        log.warn('failed to cache search result', { url: result.url, error: String(err) });
       }
 
       try {

@@ -79,7 +79,7 @@ export async function runAgentPipeline(
           pages_fetched: pagesFetched,
           steps,
           total_time_ms: Date.now() - start,
-          sampling_supported: !!server,
+          sampling_supported: !!server && checkSamplingSupport(server),
         };
       }
     }
@@ -99,7 +99,7 @@ export async function runAgentPipeline(
       pages_fetched: pagesFetched,
       steps,
       total_time_ms: Date.now() - start,
-      sampling_supported: !!server,
+      sampling_supported: !!server && checkSamplingSupport(server),
     };
   } catch (err) {
     log.error('agent pipeline failed', {
@@ -112,7 +112,7 @@ export async function runAgentPipeline(
       pages_fetched: 0,
       steps,
       total_time_ms: Date.now() - start,
-      sampling_supported: !!server,
+      sampling_supported: !!server && checkSamplingSupport(server),
       error: err instanceof Error ? err.message : String(err),
     };
   }
