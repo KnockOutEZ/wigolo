@@ -15,28 +15,49 @@ Search, fetch, crawl, cache, and extract — zero API keys, zero cloud, zero cos
 </div>
 
 ```
-$ npx @staticn0va/wigolo warmup --all
-$ claude mcp add wigolo -- npx @staticn0va/wigolo
-Added MCP server wigolo
-
-$ # That's it. Your agent now has web search.
+$ npx @staticn0va/wigolo init
 ```
+
+One command. Interactive TUI walks you through everything: system check, browser selection, dependency installation, verification, agent detection, MCP configuration, and skill installation. Done in under two minutes.
+
+</div>
 
 ## What is this?
 
-wigolo gives AI coding agents (Claude Code, Cursor, Gemini CLI, Codex, Windsurf) web search, page fetching, site crawling, content extraction, and a local knowledge cache. It runs entirely on your machine. No API keys, no cloud, no cost — works out of the box with `npx`.
+wigolo gives AI coding agents (Claude Code, Cursor, Gemini CLI, Codex, Windsurf, Zed, OpenCode) web search, page fetching, site crawling, content extraction, and a local knowledge cache. It runs entirely on your machine. No API keys, no cloud, no cost — works out of the box with `npx`.
 
 ## Quick Start
 
-### 1. Warm up (required)
+### Option A: Interactive setup (recommended)
 
-Install Playwright, bootstrap SearXNG, install Python extras (FlashRank, Trafilatura, sentence-transformers), then verify the setup end-to-end:
+```bash
+npx @staticn0va/wigolo init
+```
+
+The TUI handles everything:
+1. **System check** — verifies Node.js, Python, Docker, disk space
+2. **Browser selection** — Lightpanda (fast headless), Chromium, or Firefox
+3. **Install** — SearXNG, browser, Trafilatura, FlashRank, embeddings
+4. **Verify** — starts SearXNG, checks all Python packages
+5. **Agent config** — detects and configures MCP for your AI tools
+6. **Skill install** — writes tool documentation to each agent's instruction system
+
+For ongoing use, install globally:
+```bash
+npm i -g @staticn0va/wigolo
+wigolo init      # re-run setup
+wigolo doctor    # system diagnostics
+wigolo status    # quick health check
+wigolo shell     # interactive REPL
+```
+
+### Option B: Manual setup
+
+**1. Warm up:**
 
 ```bash
 npx @staticn0va/wigolo warmup --all
 ```
-
-`--all` runs verification automatically: it starts SearXNG, runs a test search, checks every Python package, then shuts SearXNG down. You see proof everything works before connecting an agent. Re-run any time with `warmup --verify`.
 
 Flag menu:
 
@@ -50,7 +71,7 @@ npx @staticn0va/wigolo warmup --verify       # Start SearXNG, test search, test 
 npx @staticn0va/wigolo warmup --force        # Wipe SearXNG state/install/locks and re-bootstrap
 ```
 
-### 2. Connect your agent
+**2. Connect your agent:**
 
 **Claude Code:**
 ```bash
@@ -69,11 +90,16 @@ claude mcp add wigolo -- npx @staticn0va/wigolo
 }
 ```
 
-> Skipping warmup still works — wigolo will bootstrap in the background on first tool call — but early searches will be lower quality until the install finishes. Running `warmup --all` up front is strongly recommended.
+> Skipping setup still works — wigolo bootstraps in the background on first tool call — but early searches will be lower quality until the install finishes.
 
 ## Diagnostics
 
-Run `npx @staticn0va/wigolo doctor` to see the health of every component (Python, Docker, Playwright, Trafilatura, FlashRank, SearXNG install + process). Exits 0 when healthy, 1 when any required component is degraded. Usable in scripts: `npx @staticn0va/wigolo doctor && my-agent`.
+```bash
+wigolo doctor    # full component health check
+wigolo status    # quick overview
+```
+
+Or via npx: `npx @staticn0va/wigolo doctor`. Reports the state of every component (Python, Docker, Playwright, Trafilatura, FlashRank, SearXNG). Exits 0 when healthy, 1 when degraded. Usable in scripts: `wigolo doctor && my-agent`.
 
 ## Daemon Mode
 
@@ -292,15 +318,13 @@ SearXNG bootstrap failures are self-healing: wigolo retries after 30 seconds, 1 
 
 wigolo is listed on MCP server registries for agent discovery:
 
-- **SKILL.md** -- machine-readable tool description at repo root
-- **npm** -- `npm info @staticn0va/wigolo` or search for `mcp-server` keyword
+- **SKILL.md** — machine-readable tool description at repo root, auto-installed to each agent's instruction system by `wigolo init`
+- **npm** — `npm info @staticn0va/wigolo` or search for `mcp-server` keyword
 
-To add wigolo to your agent's toolset:
+The `init` TUI automatically configures MCP and installs SKILL.md for all selected agents. Manual setup:
 ```bash
 claude mcp add wigolo -- npx @staticn0va/wigolo
 ```
-
-See `SKILL.md` for the full tool schema in agent-discovery format.
 
 ## Troubleshooting
 
@@ -330,7 +354,7 @@ wigolo stores its cache and SearXNG installation in `~/.wigolo/`. Ensure your us
 **Start fresh**
 ```bash
 rm -rf ~/.wigolo
-npx @staticn0va/wigolo warmup --all
+npx @staticn0va/wigolo init    # or: warmup --all
 ```
 
 ## Contributing
