@@ -113,7 +113,10 @@ describe('runVerify — test search', () => {
     expect(result.testSearchCount).toBe(5);
     expect(reporter.events).toContain('start:test-search:Running test search');
     expect(reporter.events).toContain('success:test-search:5 results');
-    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:8888/search?q=test&format=json');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8888/search?q=test&format=json',
+      expect.objectContaining({ signal: expect.anything() }),
+    );
   });
 
   it('records testSearch: ok with 0 count when results missing', async () => {

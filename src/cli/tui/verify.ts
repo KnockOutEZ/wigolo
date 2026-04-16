@@ -69,7 +69,9 @@ export async function runVerify(
 
   reporter.start('test-search', TEST_SEARCH_LABEL);
   try {
-    const response = await fetch(`${url}/search?q=test&format=json`);
+    const response = await fetch(`${url}/search?q=test&format=json`, {
+      signal: AbortSignal.timeout(15000),
+    });
     if (response.ok) {
       const body = (await response.json()) as { results?: unknown[] };
       const count = Array.isArray(body.results) ? body.results.length : 0;
@@ -84,9 +86,10 @@ export async function runVerify(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const isTimeout = message.includes('abort') || message.includes('timeout');
     result.testSearch = 'failed';
-    result.testSearchError = message;
-    reporter.fail('test-search', message);
+    result.testSearchError = isTimeout ? 'timed out (SearXNG cold start — will work on next use)' : message;
+    reporter.fail('test-search', result.testSearchError);
   }
 
   const py = getPythonBin(dataDir);
