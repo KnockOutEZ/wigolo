@@ -72,4 +72,29 @@ describe('logger', () => {
     expect(stdoutSpy).not.toHaveBeenCalled();
     stdoutSpy.mockRestore();
   });
+
+  it('suppresses stderr output in TUI mode', () => {
+    process.env.WIGOLO_TUI_MODE = 'true';
+    process.env.LOG_FORMAT = 'json';
+    process.env.LOG_LEVEL = 'debug';
+    resetConfig();
+    const log = createLogger('fetch');
+    log.info('should not appear on stderr');
+    log.warn('this neither');
+
+    expect(stderrSpy).not.toHaveBeenCalled();
+    delete process.env.WIGOLO_TUI_MODE;
+  });
+
+  it('suppresses stderr in TUI mode for text format too', () => {
+    process.env.WIGOLO_TUI_MODE = 'true';
+    process.env.LOG_FORMAT = 'text';
+    process.env.LOG_LEVEL = 'debug';
+    resetConfig();
+    const log = createLogger('search');
+    log.error('should not appear');
+
+    expect(stderrSpy).not.toHaveBeenCalled();
+    delete process.env.WIGOLO_TUI_MODE;
+  });
 });

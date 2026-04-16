@@ -1,3 +1,5 @@
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { getConfig } from './config.js';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -17,6 +19,25 @@ export interface Logger {
   error(msg: string, data?: Record<string, unknown>): void;
 }
 
+let tuiLogPath: string | null = null;
+
+function getTuiLogPath(): string {
+  if (!tuiLogPath) {
+    const dataDir = getConfig().dataDir;
+    mkdirSync(dataDir, { recursive: true });
+    tuiLogPath = join(dataDir, 'init.log');
+  }
+  return tuiLogPath;
+}
+
+function appendToLogFile(line: string): void {
+  try {
+    appendFileSync(getTuiLogPath(), line + '\n');
+  } catch {
+    // best effort — don't crash the TUI
+  }
+}
+
 function writeJson(level: LogLevel, module: string, msg: string, data?: Record<string, unknown>): void {
   const line = JSON.stringify({
     ts: new Date().toISOString(),
@@ -25,13 +46,22 @@ function writeJson(level: LogLevel, module: string, msg: string, data?: Record<s
     module,
     ...(data ? { data } : {}),
   });
+  if (process.env.WIGOLO_TUI_MODE === 'true') {
+    appendToLogFile(line);
+    return;
+  }
   process.stderr.write(line + '\n');
 }
 
 function writeText(level: LogLevel, module: string, msg: string, data?: Record<string, unknown>): void {
   const ts = new Date().toISOString();
   const dataStr = data ? ' ' + Object.entries(data).map(([k, v]) => `${k}=${v}`).join(' ') : '';
-  process.stderr.write(`[${ts}] ${level.toUpperCase().padEnd(5)} [${module}] ${msg}${dataStr}\n`);
+  const line = `[${ts}] ${level.toUpperCase().padEnd(5)} [${module}] ${msg}${dataStr}`;
+  if (process.env.WIGOLO_TUI_MODE === 'true') {
+    appendToLogFile(line);
+    return;
+  }
+  process.stderr.write(line + '\n');
 }
 
 export function createLogger(module: Module): Logger {
