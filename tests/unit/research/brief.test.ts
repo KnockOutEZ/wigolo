@@ -6,7 +6,7 @@ vi.mock('../../../src/search/flashrank.js', () => ({
   flashRankRerank: vi.fn(),
 }));
 
-const { buildResearchBrief } = await import('../../../src/research/brief.js');
+const { buildResearchBrief, detectCrossReferences } = await import('../../../src/research/brief.js');
 
 function mkSource(overrides: Partial<ResearchSource> = {}): ResearchSource {
   return {
@@ -95,5 +95,99 @@ describe('buildResearchBrief', () => {
     const brief = await buildResearchBrief('q', sources, ['topic', 'topic'], 3000, 40000);
     expect(brief.topics).toEqual(['topic']);
     expect(brief.key_findings.length).toBe(1);
+  });
+
+  it('includes sections with overview and gaps', async () => {
+    const sources = [mkSource()];
+    const brief = await buildResearchBrief('server components', sources, ['server components rendering', 'missing topic XYZ'], 3000, 40000);
+    expect(brief.sections).toBeDefined();
+    expect(brief.sections.overview).toBeDefined();
+    expect(brief.sections.overview.key_findings.length).toBeGreaterThan(0);
+    expect(brief.sections.gaps).toBeDefined();
+  });
+
+  it('returns query_type field', async () => {
+    const sources = [mkSource()];
+    const brief = await buildResearchBrief('q', sources, [], 3000, 40000, 'comparison', ['React', 'Vue']);
+    expect(brief.query_type).toBe('comparison');
+  });
+
+  it('includes comparison section for comparison queries', async () => {
+    const sources = [
+      mkSource({ markdown_content: 'React is faster than Vue for large applications and has better performance characteristics overall.' }),
+      mkSource({ url: 'https://b.com', markdown_content: 'Vue has a simpler API than React and is easier to learn for beginners.' }),
+    ];
+    const brief = await buildResearchBrief('React vs Vue', sources, [], 3000, 40000, 'comparison', ['React', 'Vue']);
+    expect(brief.sections.comparison).toBeDefined();
+    expect(brief.sections.comparison!.entities).toEqual(['React', 'Vue']);
+    expect(brief.sections.comparison!.comparison_points.length).toBeGreaterThan(0);
+  });
+
+  it('omits comparison section for non-comparison queries', async () => {
+    const sources = [mkSource()];
+    const brief = await buildResearchBrief('q', sources, [], 3000, 40000, 'concept');
+    expect(brief.sections.comparison).toBeUndefined();
+  });
+
+  it('detects gaps when sub-queries have no source coverage', async () => {
+    const sources = [
+      mkSource({ markdown_content: 'This source talks about Python and Django web development exclusively.' }),
+    ];
+    const brief = await buildResearchBrief('q', sources, ['quantum computing applications', 'blockchain scalability'], 3000, 40000);
+    expect(brief.sections.gaps.length).toBeGreaterThan(0);
+    expect(brief.sections.gaps.some(g => g.includes('quantum'))).toBe(true);
+  });
+});
+
+describe('detectCrossReferences', () => {
+  it('finds findings mentioned in multiple sources', () => {
+    const sources: ResearchSource[] = [
+      mkSource({ url: 'https://a.com', markdown_content: 'DuckDB columnar storage engine provides excellent performance for analytical workloads.' }),
+      mkSource({ url: 'https://b.com', markdown_content: 'The DuckDB columnar storage engine handles OLAP queries efficiently in production systems.' }),
+      mkSource({ url: 'https://c.com', markdown_content: 'SQLite is best for embedded transactional use cases, not analytics.' }),
+    ];
+    const refs = detectCrossReferences(sources);
+    expect(refs.some(r => r.source_indices.length >= 2)).toBe(true);
+  });
+
+  it('returns empty for single source', () => {
+    const sources = [mkSource()];
+    const refs = detectCrossReferences(sources);
+    expect(refs).toEqual([]);
+  });
+
+  it('sets confidence high for 3+ sources', () => {
+    const sharedContent = 'kubernetes container orchestration platform runs production workloads efficiently';
+    const sources: ResearchSource[] = [
+      mkSource({ url: 'https://a.com', markdown_content: sharedContent }),
+      mkSource({ url: 'https://b.com', markdown_content: sharedContent }),
+      mkSource({ url: 'https://c.com', markdown_content: sharedContent }),
+    ];
+    const refs = detectCrossReferences(sources);
+    expect(refs.some(r => r.confidence === 'high')).toBe(true);
+  });
+
+  it('sets confidence medium for exactly 2 sources', () => {
+    const sources: ResearchSource[] = [
+      mkSource({ url: 'https://a.com', markdown_content: 'Python machine learning framework supports neural network training efficiently' }),
+      mkSource({ url: 'https://b.com', markdown_content: 'Using Python machine learning framework for neural network training tasks' }),
+    ];
+    const refs = detectCrossReferences(sources);
+    if (refs.length > 0) {
+      expect(refs.every(r => r.confidence === 'medium')).toBe(true);
+    }
+  });
+
+  it('limits to 10 cross-references', () => {
+    // Create sources with many shared phrases
+    const content = Array.from({ length: 50 }, (_, i) =>
+      `unique phrase number ${i} appears here with shared terminology across all documents`
+    ).join('. ');
+    const sources: ResearchSource[] = [
+      mkSource({ url: 'https://a.com', markdown_content: content }),
+      mkSource({ url: 'https://b.com', markdown_content: content }),
+    ];
+    const refs = detectCrossReferences(sources);
+    expect(refs.length).toBeLessThanOrEqual(10);
   });
 });

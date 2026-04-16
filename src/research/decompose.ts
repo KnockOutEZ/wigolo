@@ -13,9 +13,12 @@ const DEPTH_SUB_QUERY_COUNT: Record<string, number> = {
   comprehensive: 7,
 };
 
+export type QueryType = 'comparison' | 'how-to' | 'concept' | 'general';
+
 export interface DecomposeResult {
   subQueries: string[];
   samplingUsed: boolean;
+  queryType: QueryType;
 }
 
 export async function decomposeQuestion(
@@ -24,12 +27,13 @@ export async function decomposeQuestion(
   server?: SamplingCapableServer,
 ): Promise<DecomposeResult> {
   const targetCount = DEPTH_SUB_QUERY_COUNT[depth] ?? 4;
+  const queryType = detectQueryType(question);
 
   if (server) {
     try {
       const result = await decomposeWithSampling(question, targetCount, server);
       if (result) {
-        return { subQueries: result, samplingUsed: true };
+        return { subQueries: result, samplingUsed: true, queryType };
       }
     } catch (err) {
       log.warn('sampling decomposition failed, using fallback', {
@@ -38,8 +42,28 @@ export async function decomposeQuestion(
     }
   }
 
+  const templateQueries = decomposeWithTemplate(question, queryType, targetCount);
+  if (templateQueries && templateQueries.length >= targetCount) {
+    return { subQueries: templateQueries, samplingUsed: false, queryType };
+  }
+
+  // Template produced some queries but not enough — supplement with fallback
+  if (templateQueries && templateQueries.length > 0) {
+    const fallback = decomposeWithFallback(question, targetCount);
+    const merged = [...templateQueries];
+    const seen = new Set(merged.map(q => q.toLowerCase()));
+    for (const q of fallback) {
+      if (merged.length >= targetCount) break;
+      if (!seen.has(q.toLowerCase())) {
+        merged.push(q);
+        seen.add(q.toLowerCase());
+      }
+    }
+    return { subQueries: merged.slice(0, targetCount), samplingUsed: false, queryType };
+  }
+
   const fallback = decomposeWithFallback(question, targetCount);
-  return { subQueries: fallback, samplingUsed: false };
+  return { subQueries: fallback, samplingUsed: false, queryType };
 }
 
 async function decomposeWithSampling(
@@ -116,6 +140,123 @@ Respond with ONLY valid JSON: {"subQueries": ["query1", "query2", ...]}`;
     });
     return null;
   }
+}
+
+export function detectQueryType(question: string): QueryType {
+  const q = question.trim().toLowerCase();
+
+  // Comparison: "X vs Y", "X versus Y", "compare X and Y", "X or Y for Z"
+  if (/\bvs\.?\s/i.test(q) || /\bversus\b/i.test(q) || /^compare\b/i.test(q)) {
+    return 'comparison';
+  }
+  if (/\b(?:difference|differences)\s+between\b/i.test(q)) {
+    return 'comparison';
+  }
+  // "X or Y for Z" pattern (choice between alternatives)
+  if (/\b\w+\s+or\s+\w+\s+for\b/i.test(q)) {
+    return 'comparison';
+  }
+
+  // How-to: "how to ...", "how do I ...", "how can I ...", "steps to ..."
+  if (/^how\s+(?:to|do|does|can|should)\b/i.test(q) || /^steps\s+to\b/i.test(q)) {
+    return 'how-to';
+  }
+
+  // Concept: "what is ...", "explain ...", "overview of ..."
+  if (/^(?:what\s+(?:is|are)|explain|overview\s+of|describe)\b/i.test(q)) {
+    return 'concept';
+  }
+
+  return 'general';
+}
+
+export function extractComparisonEntities(question: string): { entities: string[]; context: string } {
+  const cleaned = question.replace(/[?!.]/g, '').trim();
+
+  // "X vs Y vs Z for/in/with context"
+  const vsMatch = cleaned.match(/^(.+?)\s+(?:vs\.?|versus)\s+(.+?)(?:\s+(?:vs\.?|versus)\s+(.+?))?(?:\s+(?:for|in|with|when)\s+(.+))?$/i);
+  if (vsMatch) {
+    const entities = [vsMatch[1], vsMatch[2], vsMatch[3]].filter(Boolean).map(e => e.trim());
+    return { entities, context: vsMatch[4]?.trim() || '' };
+  }
+
+  // "compare X and Y for context" / "compare X, Y, and Z"
+  const compareMatch = cleaned.match(/^compare\s+(.+?)(?:\s+(?:for|in|with|when)\s+(.+))?$/i);
+  if (compareMatch) {
+    const entityPart = compareMatch[1];
+    const entities = entityPart.split(/(?:,\s*|\s+and\s+)/).map(e => e.trim()).filter(Boolean);
+    return { entities, context: compareMatch[2]?.trim() || '' };
+  }
+
+  // "differences between X and Y"
+  const diffMatch = cleaned.match(/differences?\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+(?:for|in|with)\s+(.+))?$/i);
+  if (diffMatch) {
+    return { entities: [diffMatch[1].trim(), diffMatch[2].trim()], context: diffMatch[3]?.trim() || '' };
+  }
+
+  return { entities: [], context: '' };
+}
+
+function decomposeWithTemplate(question: string, queryType: QueryType, targetCount: number): string[] | null {
+  if (queryType === 'comparison') {
+    const { entities, context } = extractComparisonEntities(question);
+    if (entities.length < 2) return null;
+
+    const queries: string[] = [];
+
+    // Per-entity queries
+    for (const entity of entities) {
+      queries.push(`${entity} ${context} features performance`.trim());
+    }
+    // Cross-comparison queries
+    for (let i = 0; i < entities.length; i++) {
+      for (let j = i + 1; j < entities.length; j++) {
+        queries.push(`${entities[i]} vs ${entities[j]} ${context} comparison`.trim());
+      }
+    }
+    // Ecosystem/adoption query
+    queries.push(`${entities.join(' vs ')} which to choose ${context}`.trim());
+
+    return [...new Set(queries)].slice(0, targetCount);
+  }
+
+  if (queryType === 'how-to') {
+    const cleaned = question.replace(/[?!.]/g, '').trim();
+    const task = cleaned.replace(/^(?:how\s+(?:to|do\s+I|does\s+one|can\s+I|should\s+I)|steps\s+to)\s+/i, '').trim();
+    if (task.length < 5) return null;
+
+    const queries = [
+      `${task} tutorial guide`,
+      `${task} best practices`,
+      `${task} common mistakes pitfalls`,
+      `${task} examples production`,
+      `${task} step by step`,
+      `${task} tools libraries`,
+      `${task} troubleshooting`,
+    ];
+
+    return [...new Set(queries)].slice(0, targetCount);
+  }
+
+  if (queryType === 'concept') {
+    const cleaned = question.replace(/[?!.]/g, '').trim();
+    const concept = cleaned.replace(/^(?:what\s+(?:is|are)|explain|overview\s+of|describe)\s+/i, '').trim();
+    if (concept.length < 3) return null;
+
+    const queries = [
+      `${concept} definition overview`,
+      `${concept} how it works architecture`,
+      `${concept} use cases applications`,
+      `${concept} alternatives comparison`,
+      `${concept} advantages disadvantages`,
+      `${concept} examples real world`,
+      `${concept} best practices`,
+    ];
+
+    return [...new Set(queries)].slice(0, targetCount);
+  }
+
+  return null;
 }
 
 function decomposeWithFallback(question: string, targetCount: number): string[] {

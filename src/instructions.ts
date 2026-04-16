@@ -22,7 +22,7 @@ export const WIGOLO_INSTRUCTIONS = `Wigolo is a local-first web access layer: se
 Wigolo has no internal LLM. It returns *structured evidence* so YOU (the host LLM) write the final answer. Fold structure into your reply:
 
 - \`search\` \`format: "highlights"\` → FlashRank-scored passages + \`citations\`. Quote [N].
-- \`research\` → \`brief\` with \`topics\`, \`highlights\`, \`key_findings\` when sampling unavailable. Use as report scaffold.
+- \`research\` → \`brief\` with \`topics\`, \`highlights\`, \`key_findings\`, \`sections\` when sampling unavailable. Use \`sections.overview.cross_references\` for corroborated findings, \`sections.gaps\` for coverage limits, \`sections.comparison\` for entity-vs-entity analysis. \`query_type\` indicates decomposition strategy used.
 - \`find_similar\` → \`cold_start\` string when local signals are weak. Pass to user verbatim.
 - \`extract\` \`mode: "structured"\` → tables + definitions + jsonld + chart_hints + key_value_pairs in one call.
 - \`fetch\` metadata → \`og_type\`, \`canonical_url\`, \`og_image\` when present.
@@ -192,13 +192,14 @@ Key parameters:
 
 The pipeline: (1) decompose question into sub-queries, (2) parallel search across sub-queries, (3) fetch and extract top unique sources, (4) synthesize report with citations from all sources, (5) optionally structure report fields if schema is provided.
 
-Uses MCP requestSampling for intelligent decomposition and synthesis when available. Without sampling support (the common case), the output includes a \`brief\` field with:
-  - \`topics\`: sub-query labels or distilled source-title topics
-  - \`highlights\`: FlashRank-scored passages with source_index, source_url, relevance_score
-  - \`key_findings\`: first substantive paragraph per source, ordered by relevance
-  - \`per_source_char_cap\` / \`total_sources_char_cap\`: budget hints so you know what was trimmed
+Uses MCP requestSampling for intelligent decomposition and synthesis when available. Without sampling support (the common case), the output includes a \`brief\` with:
+  - \`topics\`, \`highlights\` (FlashRank-scored), \`key_findings\` (per-source, by relevance)
+  - \`query_type\`: "comparison" | "how-to" | "concept" | "general"
+  - \`sections.overview\`: top findings + cross_references (corroborated by 2+ sources)
+  - \`sections.comparison\`: entities + comparison_points (comparison queries only)
+  - \`sections.gaps\`: sub-queries with limited source coverage
 
-The host LLM (you) should build its final report from the brief rather than re-reading every source — the brief is the structured scaffold this tool produces when it cannot synthesize internally.
+Build your report: overview from key_findings, cross-referenced findings first (most reliable), per-topic sections, comparison table if present, then gaps and sources.
 
 Returns report (markdown), citations array, sources with full content, sub_queries used, depth level, total_time_ms, sampling_supported flag, and optional brief.`,
 

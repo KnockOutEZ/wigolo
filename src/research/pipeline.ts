@@ -1,5 +1,5 @@
 import { createLogger } from '../logger.js';
-import { decomposeQuestion } from './decompose.js';
+import { decomposeQuestion, detectQueryType, extractComparisonEntities, type QueryType } from './decompose.js';
 import { synthesizeReport } from './synthesize.js';
 import { buildResearchBrief } from './brief.js';
 import { deduplicateResults } from '../search/dedup.js';
@@ -50,7 +50,8 @@ export async function runResearchPipeline(
       server,
     );
     const subQueries = decomposeResult.subQueries;
-    log.info('decomposition complete', { subQueryCount: subQueries.length, samplingUsed: decomposeResult.samplingUsed });
+    const queryType = decomposeResult.queryType;
+    log.info('decomposition complete', { subQueryCount: subQueries.length, samplingUsed: decomposeResult.samplingUsed, queryType });
 
     // Phase 2: Parallel search across sub-queries via multi-query fan-out
     const { results: allRaw, enginesUsed: enginesUsedArr, errors: searchErrors } = await fanOutSearch(
@@ -113,6 +114,9 @@ export async function runResearchPipeline(
     // Phase 6: Structured brief — populated when internal sampling is
     // unavailable so the host LLM has well-shaped data to write the report
     // from without re-reading raw markdown.
+    const comparisonEntities = queryType === 'comparison'
+      ? extractComparisonEntities(input.question).entities
+      : [];
     const brief = !synthesisResult.samplingUsed
       ? await buildResearchBrief(
           input.question,
@@ -120,6 +124,8 @@ export async function runResearchPipeline(
           subQueries,
           PER_SOURCE_CHAR_CAP,
           TOTAL_SOURCES_CHAR_CAP,
+          queryType,
+          comparisonEntities,
         )
       : undefined;
 

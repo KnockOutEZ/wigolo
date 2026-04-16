@@ -230,12 +230,30 @@ export interface ResearchOutput {
   error?: string;
 }
 
+export interface CrossReference {
+  finding: string;
+  source_indices: number[];
+  confidence: 'high' | 'medium';
+}
+
 export interface ResearchBrief {
   topics: string[];
   highlights: Highlight[];
   key_findings: string[];
   per_source_char_cap: number;
   total_sources_char_cap: number;
+  sections: {
+    overview: {
+      key_findings: string[];
+      cross_references: CrossReference[];
+    };
+    comparison?: {
+      entities: string[];
+      comparison_points: string[];
+    };
+    gaps: string[];
+  };
+  query_type: 'comparison' | 'how-to' | 'concept' | 'general';
 }
 
 // --- Agent tool types (v3) ---
