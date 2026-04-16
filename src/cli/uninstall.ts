@@ -12,7 +12,7 @@ export async function runUninstall(args: string[]): Promise<number> {
       '  - Skills (~/.claude/skills/wigolo*/)',
       '  - Slash command (~/.claude/commands/wigolo.md)',
       '',
-      'Does NOT remove ~/.wigolo data (cache, SearXNG, embeddings).',
+      'Does NOT remove ~/.wigolo data (cache, search engine, embeddings).',
       'For a full cleanup run: rm -rf ~/.wigolo',
       '',
     ].join('\n'));
@@ -47,7 +47,7 @@ export async function runUninstall(args: string[]): Promise<number> {
   }
 
   process.stdout.write(`\nDone. ${totalRemoved} item(s) removed.\n`);
-  process.stdout.write('Note: ~/.wigolo data (cache, SearXNG) preserved.\n');
+  process.stdout.write('Note: ~/.wigolo data (cache, search engine) preserved.\n');
   process.stdout.write('For full cleanup: rm -rf ~/.wigolo\n');
 
   return 0;

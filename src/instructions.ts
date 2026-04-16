@@ -88,7 +88,7 @@ For library/framework/SDK queries, **always pass \`include_domains\`** with offi
 - \`max_results: 3\` for focused lookups; \`5\` default; \`10+\` only for broad research.
 - \`max_content_chars: 3000\` on \`search\` or \`fetch\` smart-truncates each result's markdown at a paragraph/heading boundary with a \`[... content truncated]\` marker. Keeps context compact for AI agents. Prefer this over raw \`max_chars\` slicing.
 - \`fetch\` with \`section: "Heading Name"\` returns content under that heading -- cheaper than the whole page.
-- Repeated fetches of the same URL are free (SQLite cache).
+- Repeated fetches of the same URL are free (local cache).
 - \`research\` with \`depth: "quick"\` (~15s) suits most factual questions; reserve \`"comprehensive"\` for deep investigation.
 - \`agent\` respects \`max_pages\` (default 10) and \`max_time_ms\` (default 60s).
 

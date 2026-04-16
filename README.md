@@ -178,7 +178,7 @@ fetch("https://docs.react.dev/reference/react/useState")
 → clean markdown, links, images, metadata, cached for future use
 ```
 
-- Smart routing: HTTP first, Playwright fallback for JS-rendered pages (auto-detected)
+- Smart routing: HTTP first, browser engine fallback for JS-rendered pages (auto-detected)
 - Section targeting: `section: "Parameters"` extracts content under that heading
 - Authenticated browsing: `use_auth: true` with stored session or Chrome profile
 - PDF support: text extraction via pdf-parse
@@ -247,7 +247,7 @@ wigolo works with zero configuration. For advanced use:
 # Use an existing search engine instance instead of the embedded one
 SEARXNG_URL=http://localhost:8888
 
-# Authenticated browsing — export session state via Playwright
+# Authenticated browsing — export browser session state
 WIGOLO_AUTH_STATE_PATH=~/.wigolo/auth.json
 
 # Or use your Chrome profile directly (close Chrome first)
@@ -272,11 +272,11 @@ Full list of env vars:
 | `SEARXNG_MODE` | `native` | `native` or `docker` |
 | `SEARXNG_PORT` | `8888` | Port for embedded search engine |
 | `WIGOLO_DATA_DIR` | `~/.wigolo` | Data + cache directory |
-| `WIGOLO_AUTH_STATE_PATH` | — | Playwright storage state JSON |
+| `WIGOLO_AUTH_STATE_PATH` | — | Browser session state JSON |
 | `WIGOLO_CHROME_PROFILE_PATH` | — | Chrome user data directory |
 | `WIGOLO_RERANKER` | `none` | ML reranker: `flashrank` or `none` |
 | `WIGOLO_TRAFILATURA` | `auto` | Content extractor: `auto`, `always`, or `never` |
-| `MAX_BROWSERS` | `3` | Concurrent Playwright contexts |
+| `MAX_BROWSERS` | `3` | Concurrent browser contexts |
 | `FETCH_TIMEOUT_MS` | `10000` | HTTP fetch timeout |
 | `CRAWL_CONCURRENCY` | `2` | Concurrent crawl requests |
 | `RESPECT_ROBOTS_TXT` | `true` | Honor robots.txt |

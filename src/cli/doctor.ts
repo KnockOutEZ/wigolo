@@ -79,7 +79,7 @@ export async function runDoctor(dataDir: string): Promise<number> {
 
   out('');
   const pw = checkPlaywright();
-  out('[wigolo doctor] Playwright:');
+  out('[wigolo doctor] Browser engine:');
   out(`  Installation:  ${pw.installed ? `installed${pw.version ? ` (v${pw.version})` : ''}` : 'not installed'}`);
   out(`  Browsers:      chromium ${pw.browsers.chromium ? 'OK' : 'missing'}  firefox ${pw.browsers.firefox ? 'OK' : 'missing'}  webkit ${pw.browsers.webkit ? 'OK' : 'missing'}`);
   if (!pw.installed || !pw.browsers.chromium) degraded = true;

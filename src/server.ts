@@ -99,7 +99,7 @@ const FETCH_TOOL_SCHEMA = {
       type: 'array',
       description:
         'Sequential browser actions to perform before extracting content. ' +
-        'When present, forces Playwright rendering (bypasses HTTP-first routing).',
+        'When present, forces browser rendering (bypasses HTTP-first routing).',
       items: {
         type: 'object',
         properties: {
