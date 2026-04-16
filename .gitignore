@@ -34,3 +34,7 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Local dev files
+CLAUDE.md
+docs/
