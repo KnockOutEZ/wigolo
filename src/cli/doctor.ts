@@ -60,9 +60,9 @@ function humanRetry(nextRetryAt?: string): string {
 
 /**
  * Exit code contract:
- * - 0 when all required components OK, or only optional packages (Trafilatura/FlashRank) missing.
- * - 1 when any required component is degraded: Python missing, Playwright browsers missing,
- *   SearXNG bootstrap failed/no_runtime, or SearXNG process supposed to be up but isn't.
+ * - 0 when all required components OK, or only optional packages (content extractor/ML reranker) missing.
+ * - 1 when any required component is degraded: Python missing, browser missing,
+ *   search engine bootstrap failed/no_runtime, or search engine process supposed to be up but isn't.
  */
 export async function runDoctor(dataDir: string): Promise<number> {
   let degraded = false;
@@ -88,13 +88,13 @@ export async function runDoctor(dataDir: string): Promise<number> {
   const pythonBin = getPythonBin(dataDir);
   const traf = checkPyPackage('trafilatura', pythonBin);
   const flash = checkPyPackage('flashrank', pythonBin);
-  out('[wigolo doctor] Optional Python packages:');
-  out(`  Trafilatura:   ${traf.ok ? `installed${traf.version ? ` (v${traf.version})` : ''}` : 'not installed'}`);
-  out(`  FlashRank:     ${flash.ok ? `installed${flash.version ? ` (v${flash.version})` : ''}` : 'not installed'}`);
+  out('[wigolo doctor] Optional components:');
+  out(`  Content extractor:  ${traf.ok ? `installed (trafilatura${traf.version ? ` v${traf.version}` : ''})` : 'not installed'}`);
+  out(`  ML reranker:        ${flash.ok ? `installed (flashrank${flash.version ? ` v${flash.version}` : ''})` : 'not installed'}`);
 
   out('');
   const state = getBootstrapState(dataDir) as BootstrapState | null;
-  out('[wigolo doctor] SearXNG install:');
+  out('[wigolo doctor] Search engine:');
   if (!state) {
     out('  status:        not bootstrapped — run `npx @staticn0va/wigolo warmup`');
     degraded = true;
@@ -122,15 +122,15 @@ export async function runDoctor(dataDir: string): Promise<number> {
     try {
       const lock = JSON.parse(readFileSync(lockPath, 'utf-8')) as { pid?: number; port?: number };
       if (lock.pid && isProcessAlive(lock.pid)) {
-        out(`[wigolo doctor] SearXNG process:  running (pid ${lock.pid}, port ${lock.port ?? '?'})`);
+        out(`[wigolo doctor] Search engine process:  running (pid ${lock.pid}, port ${lock.port ?? '?'})`);
       } else {
-        out('[wigolo doctor] SearXNG process:  stale lock (process exited) — will be cleaned on next start');
+        out('[wigolo doctor] Search engine process:  stale lock (process exited) — will be cleaned on next start');
       }
     } catch {
-      out('[wigolo doctor] SearXNG process:  lock file unparseable — will be cleaned on next start');
+      out('[wigolo doctor] Search engine process:  lock file unparseable — will be cleaned on next start');
     }
   } else {
-    out('[wigolo doctor] SearXNG process:  not running (starts on-demand with MCP server)');
+    out('[wigolo doctor] Search engine process:  not running (starts on-demand with MCP server)');
   }
 
   if (state?.status === 'failed') {

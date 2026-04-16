@@ -52,7 +52,7 @@ function wipeSearxngState(dataDir: string, reporter: WarmupReporter): void {
 }
 
 async function installPlaywright(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'playwright' | 'playwrightError'>> {
-  reporter.start('playwright', 'Installing Playwright Chromium');
+  reporter.start('playwright', 'Installing browser engine (chromium)');
   const r = await runCommand('npx', ['playwright', 'install', 'chromium'], { timeout: 180000 });
   if (r.code === 0) {
     reporter.success('playwright', 'installed');
@@ -64,7 +64,7 @@ async function installPlaywright(reporter: WarmupReporter): Promise<Pick<WarmupR
 }
 
 async function installTrafilatura(dataDir: string, reporter: WarmupReporter): Promise<'ok' | 'failed'> {
-  reporter.start('trafilatura', 'Installing Trafilatura');
+  reporter.start('trafilatura', 'Installing content extractor (trafilatura)');
   const py = getPythonBin(dataDir);
   const r = await runCommand(py, ['-m', 'pip', 'install', '--quiet', 'trafilatura'], { timeout: 180000 });
   if (r.code === 0) {
@@ -77,7 +77,7 @@ async function installTrafilatura(dataDir: string, reporter: WarmupReporter): Pr
 }
 
 async function installFlashRank(dataDir: string, reporter: WarmupReporter): Promise<Pick<WarmupResult, 'reranker' | 'rerankerError'>> {
-  reporter.start('flashrank', 'Installing FlashRank (ML reranker)');
+  reporter.start('flashrank', 'Installing ML reranker (flashrank)');
   const py = getPythonBin(dataDir);
   const r = await runCommand(py, ['-m', 'pip', 'install', '--quiet', 'flashrank'], { timeout: 180000 });
   if (r.code === 0) {
@@ -91,7 +91,7 @@ async function installFlashRank(dataDir: string, reporter: WarmupReporter): Prom
 }
 
 async function installFirefox(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'firefox' | 'firefoxError'>> {
-  reporter.start('firefox', 'Installing Playwright Firefox');
+  reporter.start('firefox', 'Installing browser engine (firefox)');
   const r = await runCommand('npx', ['playwright', 'install', 'firefox'], { timeout: 180000 });
   if (r.code === 0) {
     reporter.success('firefox', 'installed');
@@ -103,7 +103,7 @@ async function installFirefox(reporter: WarmupReporter): Promise<Pick<WarmupResu
 }
 
 async function installWebkit(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'webkit' | 'webkitError'>> {
-  reporter.start('webkit', 'Installing Playwright WebKit');
+  reporter.start('webkit', 'Installing browser engine (webkit)');
   const r = await runCommand('npx', ['playwright', 'install', 'webkit'], { timeout: 180000 });
   if (r.code === 0) {
     reporter.success('webkit', 'installed');
@@ -115,7 +115,7 @@ async function installWebkit(reporter: WarmupReporter): Promise<Pick<WarmupResul
 }
 
 async function installSentenceTransformers(dataDir: string, reporter: WarmupReporter): Promise<Pick<WarmupResult, 'embeddings' | 'embeddingsError'>> {
-  reporter.start('embeddings', 'Installing sentence-transformers');
+  reporter.start('embeddings', 'Installing semantic embeddings (sentence-transformers)');
   const py = getPythonBin(dataDir);
   const r = await runCommand(py, ['-m', 'pip', 'install', '--quiet', 'sentence-transformers'], { timeout: 300000 });
   if (r.code === 0) {
@@ -188,18 +188,18 @@ async function installLightpanda(reporter: WarmupReporter): Promise<Pick<WarmupR
 async function runSearxngPhase(dataDir: string, reporter: WarmupReporter): Promise<Pick<WarmupResult, 'searxng' | 'searxngError'>> {
   const state = getBootstrapState(dataDir);
   if (state?.status === 'ready') {
-    reporter.start('searxng', 'Checking SearXNG');
+    reporter.start('searxng', 'Checking search engine (searxng)');
     reporter.success('searxng', 'already set up');
     return { searxng: 'ready' };
   }
 
   if (!checkPythonAvailable()) {
-    reporter.start('searxng', 'Checking SearXNG');
+    reporter.start('searxng', 'Checking search engine (searxng)');
     reporter.fail('searxng', 'Python 3 not found — install Python 3 or set SEARXNG_MODE=docker');
     return { searxng: 'no_python' };
   }
 
-  reporter.start('searxng', 'Bootstrapping SearXNG (this may take a minute)');
+  reporter.start('searxng', 'Bootstrapping search engine (searxng) — this may take a minute');
   try {
     await bootstrapNativeSearxng(dataDir);
     reporter.success('searxng', 'bootstrapped');
@@ -282,10 +282,10 @@ export async function runWarmup(
 
   reporterImpl.note('');
   reporterImpl.note('Summary:');
-  reporterImpl.note(`  Playwright:    ${result.playwright}${result.playwrightError ? ` (${result.playwrightError})` : ''}`);
-  reporterImpl.note(`  SearXNG:       ${result.searxng}${result.searxngError ? ` (${result.searxngError})` : ''}`);
-  if (trafStatus !== 'skipped') reporterImpl.note(`  Trafilatura:   ${trafStatus}`);
-  if (result.reranker) reporterImpl.note(`  FlashRank:     ${result.reranker}${result.rerankerError ? ` (${result.rerankerError})` : ''}`);
+  reporterImpl.note(`  Browser:       ${result.playwright}${result.playwrightError ? ` (${result.playwrightError})` : ''}`);
+  reporterImpl.note(`  Search engine: ${result.searxng}${result.searxngError ? ` (${result.searxngError})` : ''}`);
+  if (trafStatus !== 'skipped') reporterImpl.note(`  Content extractor: ${trafStatus}`);
+  if (result.reranker) reporterImpl.note(`  ML reranker:   ${result.reranker}${result.rerankerError ? ` (${result.rerankerError})` : ''}`);
   if (result.firefox) reporterImpl.note(`  Firefox:       ${result.firefox}${result.firefoxError ? ` (${result.firefoxError})` : ''}`);
   if (result.webkit) reporterImpl.note(`  WebKit:        ${result.webkit}${result.webkitError ? ` (${result.webkitError})` : ''}`);
   if (result.embeddings) reporterImpl.note(`  Embeddings:    ${result.embeddings}${result.embeddingsError ? ` (${result.embeddingsError})` : ''}`);

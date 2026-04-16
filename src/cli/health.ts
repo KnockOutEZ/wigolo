@@ -25,7 +25,7 @@ export async function runHealthCheck(): Promise<number> {
     const report = await response.json();
 
     log(`Status: ${report.status}`);
-    log(`SearXNG: ${report.searxng}`);
+    log(`Search engine: ${report.searxng}`);
     log(`Browsers: ${report.browsers}`);
     log(`Cache: ${report.cache}`);
     log(`Uptime: ${report.uptime_seconds}s`);

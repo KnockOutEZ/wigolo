@@ -7,9 +7,9 @@ export type VerifyCheckId =
   | 'embeddings';
 
 const TABLE: Record<VerifyCheckId, string> = {
-  'searxng': 'SearXNG failed to start. Try: npx @staticn0va/wigolo warmup --force',
-  'flashrank': 'FlashRank is not installed. Run: npx @staticn0va/wigolo warmup',
-  'trafilatura': 'Trafilatura is not installed. Run: npx @staticn0va/wigolo warmup',
+  'searxng': 'Search engine failed to start. Try: npx @staticn0va/wigolo warmup --force',
+  'flashrank': 'ML reranker is not installed. Run: npx @staticn0va/wigolo warmup',
+  'trafilatura': 'Content extractor is not installed. Run: npx @staticn0va/wigolo warmup',
   'embeddings': 'Embeddings model is not installed. Run: npx @staticn0va/wigolo warmup',
 };
 

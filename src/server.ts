@@ -483,18 +483,18 @@ export async function initSubsystems(): Promise<Subsystems> {
       if (backend.type === 'external' && backend.url) {
         searchEngines.unshift(new SearxngClient(backend.url));
         backendStatus.markHealthy();
-        log.info('using external SearXNG', { url: backend.url });
+        log.info('using external search engine', { url: backend.url });
         return;
       }
 
       if (backend.type === 'native' && backend.searxngPath) {
         const state = getBootstrapState(config.dataDir);
         if (state?.status !== 'ready') {
-          log.info('SearXNG not ready — bootstrapping in background; search uses direct engines until ready');
+          log.info('search engine not ready — bootstrapping in background; search uses fallback engines until ready');
           try {
             await bootstrapNativeSearxng(config.dataDir);
           } catch (err) {
-            log.warn('SearXNG bootstrap failed, continuing with direct scraping fallback');
+            log.warn('search engine bootstrap failed, continuing with fallback scraping');
             backendStatus.markUnhealthy(`bootstrap exception: ${String(err)}`);
             return;
           }
@@ -522,9 +522,9 @@ export async function initSubsystems(): Promise<Subsystems> {
           if (url) {
             searchEngines.unshift(new SearxngClient(url));
             backendStatus.markHealthy();
-            log.info('SearXNG ready and added to search engines', { url });
+            log.info('search engine ready', { url });
           } else {
-            log.warn('SearXNG failed to start, using direct scraping fallback');
+            log.warn('search engine failed to start, using fallback scraping');
             backendStatus.markUnhealthy('SearXNG process failed to start');
           }
         }
@@ -537,9 +537,9 @@ export async function initSubsystems(): Promise<Subsystems> {
         if (url) {
           searchEngines.unshift(new SearxngClient(url));
           backendStatus.markHealthy();
-          log.info('Docker SearXNG ready', { url });
+          log.info('search engine (docker) ready', { url });
         } else {
-          log.warn('Docker SearXNG failed to start, using direct scraping fallback');
+          log.warn('search engine (docker) failed to start, using fallback scraping');
           backendStatus.markUnhealthy('Docker SearXNG failed to start');
         }
       }

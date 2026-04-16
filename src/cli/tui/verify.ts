@@ -18,9 +18,9 @@ export interface VerifyResult {
   allPassed: boolean;
 }
 
-const SEARXNG_LABEL = 'Starting SearXNG';
-const FLASHRANK_LABEL = 'Checking FlashRank';
-const TRAFILATURA_LABEL = 'Checking Trafilatura';
+const SEARXNG_LABEL = 'Starting search engine (searxng)';
+const FLASHRANK_LABEL = 'Checking ML reranker (flashrank)';
+const TRAFILATURA_LABEL = 'Checking content extractor (trafilatura)';
 const EMBEDDINGS_LABEL = 'Checking embeddings';
 
 export async function runVerify(

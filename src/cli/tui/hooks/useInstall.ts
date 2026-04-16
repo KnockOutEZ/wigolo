@@ -13,15 +13,15 @@ export interface InstallItem {
 
 function buildItems(browser: BrowserChoice): InstallItem[] {
   const items: InstallItem[] = [
-    { id: 'searxng', name: 'SearXNG', status: 'waiting' },
+    { id: 'searxng', name: 'Search engine', status: 'waiting' },
     { id: 'playwright', name: 'Chromium', status: 'waiting' },
   ];
   if (browser === 'firefox') {
     items.push({ id: 'firefox', name: 'Firefox', status: 'waiting' });
   }
   items.push(
-    { id: 'trafilatura', name: 'Trafilatura', status: 'waiting' },
-    { id: 'flashrank', name: 'FlashRank', status: 'waiting' },
+    { id: 'trafilatura', name: 'Content extractor', status: 'waiting' },
+    { id: 'flashrank', name: 'ML reranker', status: 'waiting' },
     { id: 'embeddings', name: 'Embeddings', status: 'waiting' },
   );
   if (browser === 'lightpanda') {
