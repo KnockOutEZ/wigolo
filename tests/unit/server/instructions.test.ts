@@ -137,8 +137,8 @@ describe('TOOL_DESCRIPTIONS (Layer 2 — per-tool tactics)', () => {
       expect(d()).toContain('stats');
       expect(d()).toContain('clear');
     });
-    it('mentions FTS5 syntax (real capability of the cache)', () => {
-      expect(d()).toMatch(/FTS5/);
+    it('mentions supported query operators (real capability of the cache)', () => {
+      expect(d()).toMatch(/AND, OR, NOT/);
     });
   });
 

@@ -50,7 +50,7 @@ describe('runVerify — SearXNG branches', () => {
     expect(result.searxng).toBe('failed');
     expect(result.searxngError).toContain('port bind');
     expect(result.allPassed).toBe(false);
-    expect(reporter.events).toContain('start:searxng:Starting SearXNG');
+    expect(reporter.events).toContain('start:searxng:Starting search engine (searxng)');
     expect(reporter.events).toContain('fail:searxng:port bind');
     expect(stopMock).toHaveBeenCalledTimes(1);
   });

@@ -78,8 +78,8 @@ describe('runWarmup TUI integration', () => {
 
     expect(reporter.events).toEqual(expect.arrayContaining([
       'note:Summary:',
-      expect.stringMatching(/^note:\s+Playwright:/),
-      expect.stringMatching(/^note:\s+SearXNG:/),
+      expect.stringMatching(/^note:\s+Browser:/),
+      expect.stringMatching(/^note:\s+Search engine:/),
     ]));
   });
 });

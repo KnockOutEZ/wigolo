@@ -81,7 +81,7 @@ describe('WIGOLO_INSTRUCTIONS v3 routing patterns', () => {
   it('preserves existing v2 routing guidance', () => {
     expect(WIGOLO_INSTRUCTIONS).toContain('localhost');
     expect(WIGOLO_INSTRUCTIONS).toContain('use_auth');
-    expect(WIGOLO_INSTRUCTIONS).toContain('FTS5');
+    expect(WIGOLO_INSTRUCTIONS).toContain('full-text search syntax');
     expect(WIGOLO_INSTRUCTIONS).toContain('sitemap');
     expect(WIGOLO_INSTRUCTIONS).toContain('include_patterns');
   });
@@ -179,7 +179,7 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(TOOL_DESCRIPTIONS.fetch).toContain('section');
     expect(TOOL_DESCRIPTIONS.fetch).toContain('render_js');
     expect(TOOL_DESCRIPTIONS.crawl).toContain('sitemap');
-    expect(TOOL_DESCRIPTIONS.cache).toContain('FTS5');
+    expect(TOOL_DESCRIPTIONS.cache).toContain('AND, OR, NOT');
     expect(TOOL_DESCRIPTIONS.extract).toContain('schema');
   });
 });
