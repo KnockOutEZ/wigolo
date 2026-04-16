@@ -68,28 +68,38 @@ export async function runVerify(
   reporter.success('searxng', url);
 
   reporter.start('test-search', TEST_SEARCH_LABEL);
-  try {
-    const response = await fetch(`${url}/search?q=test&format=json`, {
-      signal: AbortSignal.timeout(15000),
-    });
-    if (response.ok) {
-      const body = (await response.json()) as { results?: unknown[] };
-      const count = Array.isArray(body.results) ? body.results.length : 0;
-      result.testSearch = 'ok';
-      result.testSearchCount = count;
-      reporter.success('test-search', `${count} results`);
-    } else {
-      const message = `HTTP ${response.status}`;
-      result.testSearch = 'failed';
-      result.testSearchError = message;
-      reporter.fail('test-search', message);
+  const MAX_ATTEMPTS = 3;
+  const RETRY_DELAY_MS = 3000;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      if (attempt > 1) {
+        reporter.update('test-search', `Retry ${attempt}/${MAX_ATTEMPTS}…`);
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+      }
+      const response = await fetch(`${url}/search?q=test&format=json`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      if (response.ok) {
+        const body = (await response.json()) as { results?: unknown[] };
+        const count = Array.isArray(body.results) ? body.results.length : 0;
+        result.testSearch = 'ok';
+        result.testSearchCount = count;
+        reporter.success('test-search', `${count} results`);
+        break;
+      } else if (attempt === MAX_ATTEMPTS) {
+        const message = `HTTP ${response.status}`;
+        result.testSearch = 'failed';
+        result.testSearchError = message;
+        reporter.fail('test-search', message);
+      }
+    } catch (err) {
+      if (attempt === MAX_ATTEMPTS) {
+        const message = err instanceof Error ? err.message : String(err);
+        result.testSearch = 'failed';
+        result.testSearchError = message;
+        reporter.fail('test-search', message);
+      }
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const isTimeout = message.includes('abort') || message.includes('timeout');
-    result.testSearch = 'failed';
-    result.testSearchError = isTimeout ? 'timed out (SearXNG cold start — will work on next use)' : message;
-    reporter.fail('test-search', result.testSearchError);
   }
 
   const py = getPythonBin(dataDir);

@@ -134,12 +134,9 @@ describe('runVerify — test search', () => {
     expect(reporter.events).toContain('success:test-search:0 results');
   });
 
-  it('records testSearch: failed on non-2xx', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 502,
-      json: async () => ({}),
-    });
+  it('records testSearch: failed on non-2xx after retries', async () => {
+    const badResponse = { ok: false, status: 502, json: async () => ({}) };
+    fetchMock.mockResolvedValue(badResponse);
 
     const reporter = new FakeReporter();
     const result = await runVerify('/tmp/wigolo-data', reporter);
@@ -147,10 +144,11 @@ describe('runVerify — test search', () => {
     expect(result.testSearch).toBe('failed');
     expect(result.testSearchError).toBe('HTTP 502');
     expect(reporter.events).toContain('fail:test-search:HTTP 502');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it('records testSearch: failed when fetch throws', async () => {
-    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+  it('records testSearch: failed when fetch throws after retries', async () => {
+    fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
 
     const reporter = new FakeReporter();
     const result = await runVerify('/tmp/wigolo-data', reporter);
@@ -158,6 +156,24 @@ describe('runVerify — test search', () => {
     expect(result.testSearch).toBe('failed');
     expect(result.testSearchError).toContain('ECONNREFUSED');
     expect(reporter.events).toContain('fail:test-search:ECONNREFUSED');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('succeeds on retry after initial failure', async () => {
+    fetchMock
+      .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ results: [{}, {}] }),
+      });
+
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
+
+    expect(result.testSearch).toBe('ok');
+    expect(result.testSearchCount).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 
