@@ -92,7 +92,7 @@ describe('runWarmup verify step', () => {
   it('verify reports SearXNG failure when start returns null', async () => {
     mockStart.mockResolvedValue(null);
     await runWarmup(['--verify', '--plain']);
-    expect(outBuffer).toMatch(/SearXNG.*FAILED to start/i);
+    expect(outBuffer).toMatch(/Search engine.*failed to start/i);
   });
 
   it('verify prints connect instructions on success', async () => {

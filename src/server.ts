@@ -99,7 +99,7 @@ const FETCH_TOOL_SCHEMA = {
       type: 'array',
       description:
         'Sequential browser actions to perform before extracting content. ' +
-        'When present, forces Playwright rendering (bypasses HTTP-first routing).',
+        'When present, forces browser rendering (bypasses HTTP-first routing).',
       items: {
         type: 'object',
         properties: {
@@ -190,7 +190,7 @@ const SEARCH_TOOL_SCHEMA = {
       type: 'string',
       enum: ['full', 'context', 'answer', 'highlights', 'stream_answer'],
       description:
-        "Output format: 'full' returns structured results (default); 'context' returns a single token-budgeted string for LLM injection; 'highlights' returns FlashRank-scored passages per source with citations (no LLM needed — the host agent synthesizes); 'answer' requests LLM synthesis via MCP sampling and falls back to 'highlights' when sampling is unsupported; 'stream_answer' same as 'answer' but emits progress notifications between pipeline phases (search/fetch/synthesize) when the client supplies a progressToken",
+        "Output format: 'full' returns structured results (default); 'context' returns a single token-budgeted string for LLM injection; 'highlights' returns ML-scored passages per source with citations (no LLM needed — the host agent synthesizes); 'answer' requests LLM synthesis via MCP sampling and falls back to 'highlights' when sampling is unsupported; 'stream_answer' same as 'answer' but emits progress notifications between pipeline phases (search/fetch/synthesize) when the client supplies a progressToken",
     },
     max_highlights: {
       type: 'number',
@@ -483,18 +483,18 @@ export async function initSubsystems(): Promise<Subsystems> {
       if (backend.type === 'external' && backend.url) {
         searchEngines.unshift(new SearxngClient(backend.url));
         backendStatus.markHealthy();
-        log.info('using external SearXNG', { url: backend.url });
+        log.info('using external search engine', { url: backend.url });
         return;
       }
 
       if (backend.type === 'native' && backend.searxngPath) {
         const state = getBootstrapState(config.dataDir);
         if (state?.status !== 'ready') {
-          log.info('SearXNG not ready — bootstrapping in background; search uses direct engines until ready');
+          log.info('search engine not ready — bootstrapping in background; search uses fallback engines until ready');
           try {
             await bootstrapNativeSearxng(config.dataDir);
           } catch (err) {
-            log.warn('SearXNG bootstrap failed, continuing with direct scraping fallback');
+            log.warn('search engine bootstrap failed, continuing with fallback scraping');
             backendStatus.markUnhealthy(`bootstrap exception: ${String(err)}`);
             return;
           }
@@ -506,7 +506,7 @@ export async function initSubsystems(): Promise<Subsystems> {
               backendStatus.markUnhealthy(reason);
               const idx = searchEngines.findIndex(e => e.name === 'searxng');
               if (idx >= 0) searchEngines.splice(idx, 1);
-              log.warn('SearXNG marked unhealthy', { reason });
+              log.warn('search engine marked unhealthy', { reason });
             },
             onHealthy: () => {
               const url = searxngProcess?.getUrl();
@@ -515,17 +515,17 @@ export async function initSubsystems(): Promise<Subsystems> {
               if (!searchEngines.some(e => e.name === 'searxng')) {
                 searchEngines.unshift(new SearxngClient(url));
               }
-              log.info('SearXNG recovered');
+              log.info('search engine recovered');
             },
           });
           const url = await searxngProcess.start();
           if (url) {
             searchEngines.unshift(new SearxngClient(url));
             backendStatus.markHealthy();
-            log.info('SearXNG ready and added to search engines', { url });
+            log.info('search engine ready', { url });
           } else {
-            log.warn('SearXNG failed to start, using direct scraping fallback');
-            backendStatus.markUnhealthy('SearXNG process failed to start');
+            log.warn('search engine failed to start, using fallback scraping');
+            backendStatus.markUnhealthy('search engine process failed to start');
           }
         }
         return;
@@ -537,16 +537,16 @@ export async function initSubsystems(): Promise<Subsystems> {
         if (url) {
           searchEngines.unshift(new SearxngClient(url));
           backendStatus.markHealthy();
-          log.info('Docker SearXNG ready', { url });
+          log.info('search engine (docker) ready', { url });
         } else {
-          log.warn('Docker SearXNG failed to start, using direct scraping fallback');
-          backendStatus.markUnhealthy('Docker SearXNG failed to start');
+          log.warn('search engine (docker) failed to start, using fallback scraping');
+          backendStatus.markUnhealthy('search engine (docker) failed to start');
         }
       }
 
       if (backend.type === 'scraping') {
         const state = getBootstrapState(config.dataDir);
-        const reason = state?.lastError?.message ?? state?.error ?? 'no SearXNG backend available';
+        const reason = state?.lastError?.message ?? state?.error ?? 'no search engine backend available';
         backendStatus.markUnhealthy(reason);
       }
     } catch (err) {
@@ -765,7 +765,7 @@ export async function startServer(): Promise<void> {
   log.info('MCP server started');
 
   subs.bootstrapSearxng().catch((err) => {
-    log.warn('SearXNG bootstrap failed', { error: String(err) });
+    log.warn('search engine bootstrap failed', { error: String(err) });
   });
 
   const shutdown = async () => {

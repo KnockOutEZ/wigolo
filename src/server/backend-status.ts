@@ -33,12 +33,12 @@ export class BackendStatus {
     this._warned = true;
     if (this._bootstrapping) {
       return (
-        `SearXNG is still starting up. Results may be lower quality until bootstrap finishes. ` +
+        `Search engine is still starting up. Results may be lower quality until setup finishes. ` +
         `For best results, run: \`npx @staticn0va/wigolo warmup --all\` before connecting your agent.`
       );
     }
     return (
-      `SearXNG embedded search is unavailable; using direct engine scraping (lower quality). ` +
+      `Multi-engine search is unavailable; using fallback engines (lower quality). ` +
       `Reason: ${this._reason ?? 'unknown'}. ` +
       `To retry: \`npx @staticn0va/wigolo warmup --force\`. ` +
       `For details: \`npx @staticn0va/wigolo doctor\`.`

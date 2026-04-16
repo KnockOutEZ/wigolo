@@ -24,14 +24,14 @@ describe('formatStatus', () => {
 
   it('renders SearXNG ready with the "starts on demand" note', () => {
     const out = formatStatus(baseBag);
-    expect(out).toMatch(/✓ SearXNG ready/);
+    expect(out).toMatch(/✓ Search engine ready/);
     expect(out).toMatch(/starts on demand/);
   });
 
   it('shows ✓ for installed python packages, ⊘ for missing', () => {
     const out = formatStatus({ ...baseBag, flashrank: 'ok', trafilatura: 'missing', embeddings: 'ok' });
-    expect(out).toMatch(/✓ FlashRank/);
-    expect(out).toMatch(/⊘ Trafilatura/);
+    expect(out).toMatch(/✓ ML reranker/);
+    expect(out).toMatch(/⊘ Content extractor/);
     expect(out).toMatch(/✓ Embeddings/);
   });
 
@@ -58,8 +58,8 @@ describe('formatStatus', () => {
 
   it('handles searxng: "failed" and "pending" states', () => {
     const failed = formatStatus({ ...baseBag, searxng: 'failed' });
-    expect(failed).toMatch(/✗ SearXNG: failed/);
+    expect(failed).toMatch(/✗ Search engine: failed/);
     const pending = formatStatus({ ...baseBag, searxng: 'pending' });
-    expect(pending).toMatch(/⊘ SearXNG: not installed/);
+    expect(pending).toMatch(/⊘ Search engine: not installed/);
   });
 });

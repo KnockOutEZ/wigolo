@@ -16,18 +16,18 @@ export function formatStatus(bag: StatusBag): string {
 
   switch (bag.searxng) {
     case 'ready':
-      lines.push('✓ SearXNG ready (not running — starts on demand)');
+      lines.push('✓ Search engine ready (not running — starts on demand)');
       break;
     case 'failed':
-      lines.push('✗ SearXNG: failed (see `wigolo doctor`)');
+      lines.push('✗ Search engine: failed (see `wigolo doctor`)');
       break;
     case 'pending':
-      lines.push('⊘ SearXNG: not installed (run `wigolo warmup`)');
+      lines.push('⊘ Search engine: not installed (run `wigolo warmup`)');
       break;
   }
 
-  lines.push(line('FlashRank',   bag.flashrank));
-  lines.push(line('Trafilatura', bag.trafilatura));
+  lines.push(line('ML reranker',      bag.flashrank));
+  lines.push(line('Content extractor', bag.trafilatura));
   lines.push(line('Embeddings',  bag.embeddings));
   lines.push(`  Cache: ${bag.cache.pages} pages, ${formatBytes(bag.cache.bytes)}`);
 

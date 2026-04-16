@@ -51,8 +51,8 @@ describe('runStatus', () => {
     expect(code).toBe(0);
     const out = chunks.join('');
     expect(out).toContain('wigolo');
-    expect(out).toContain('✓ SearXNG ready');
-    expect(out).toContain('✓ FlashRank installed');
+    expect(out).toContain('✓ Search engine ready');
+    expect(out).toContain('✓ ML reranker installed');
     expect(out).toContain('Cache: 7 pages, 2.0 MB');
     expect(out).toContain('✓ Cursor');
   });
@@ -73,7 +73,7 @@ describe('runStatus', () => {
     }
 
     const out = chunks.join('');
-    expect(out).toContain('⊘ SearXNG: not installed');
+    expect(out).toContain('⊘ Search engine: not installed');
   });
 
   it('reports searxng: failed when bootstrap state is "failed"', async () => {
@@ -92,6 +92,6 @@ describe('runStatus', () => {
     }
 
     const out = chunks.join('');
-    expect(out).toContain('✗ SearXNG: failed');
+    expect(out).toContain('✗ Search engine: failed');
   });
 });

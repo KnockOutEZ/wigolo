@@ -432,7 +432,7 @@ async function applyAnswerSynthesis(
 
   await applyHighlightsFallback(output, results, queryStr, maxTotalChars, input.max_highlights);
   const fallbackNotice =
-    'Client does not support MCP sampling; returning FlashRank-scored highlights for host-side synthesis';
+    'Client does not support MCP sampling; returning ML-scored highlights for host-side synthesis';
   output.warning = output.warning ? `${output.warning}; ${fallbackNotice}` : fallbackNotice;
 }
 

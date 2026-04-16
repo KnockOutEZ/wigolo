@@ -105,7 +105,7 @@ describe('doctor — package detected even when __version__ missing', () => {
 
     const code = await runDoctor('/tmp/wigolo');
 
-    expect(outBuffer).toMatch(/FlashRank:\s+installed/);
+    expect(outBuffer).toMatch(/ML reranker:\s+installed/);
     expect(code).toBe(0);
   });
 });

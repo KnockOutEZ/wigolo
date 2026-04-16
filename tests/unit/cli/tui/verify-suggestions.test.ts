@@ -50,7 +50,7 @@ describe('suggestionsFromResult', () => {
     const msgs = suggestionsFromResult(failing);
     expect(msgs).toHaveLength(3);
     expect(msgs.some(m => m.includes('wigolo warmup --force'))).toBe(true);
-    expect(msgs.some(m => m.includes('FlashRank'))).toBe(true);
+    expect(msgs.some(m => m.includes('ML reranker'))).toBe(true);
     expect(msgs.some(m => m.includes('Embeddings'))).toBe(true);
   });
 
@@ -61,6 +61,6 @@ describe('suggestionsFromResult', () => {
       allPassed: false,
     };
     const msgs = suggestionsFromResult(failing);
-    expect(msgs.filter(m => m.toLowerCase().includes('searxng')).length).toBeGreaterThan(0);
+    expect(msgs.filter(m => m.toLowerCase().includes('search engine')).length).toBeGreaterThan(0);
   });
 });

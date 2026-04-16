@@ -15,13 +15,13 @@
  * Schema, not here. Installation/configuration is for humans, not LLMs.
  */
 
-export const WIGOLO_INSTRUCTIONS = `Wigolo is a local-first web access layer: search the open web, fetch pages, crawl sites, extract structured data, find related content, run multi-step research, and execute agent-driven data gathering. All results land in a local SQLite cache that persists across sessions.
+export const WIGOLO_INSTRUCTIONS = `Wigolo is a local-first web access layer: search the open web, fetch pages, crawl sites, extract structured data, find related content, run multi-step research, and execute agent-driven data gathering. All results land in a local knowledge cache that persists across sessions.
 
 ## Host-LLM synthesis pattern (read this first)
 
 Wigolo has no internal LLM. It returns *structured evidence* so YOU (the host LLM) write the final answer. Fold structure into your reply:
 
-- \`search\` \`format: "highlights"\` → FlashRank-scored passages + \`citations\`. Quote [N].
+- \`search\` \`format: "highlights"\` → ML-scored passages + \`citations\`. Quote [N].
 - \`research\` → \`brief\` with \`topics\`, \`highlights\`, \`key_findings\`, \`sections\` when sampling unavailable. Use \`sections.overview.cross_references\` for corroborated findings, \`sections.gaps\` for coverage limits, \`sections.comparison\` for entity-vs-entity analysis. \`query_type\` indicates decomposition strategy used.
 - \`find_similar\` → \`cold_start\` string when local signals are weak. Pass to user verbatim.
 - \`extract\` \`mode: "structured"\` → tables + definitions + jsonld + chart_hints + key_value_pairs in one call.
@@ -46,7 +46,7 @@ Wigolo has no internal LLM. It returns *structured evidence* so YOU (the host LL
 | Error debugging | \`search\` | exact error string as query, \`category: "code"\` (no domain scoping -- errors appear everywhere) |
 | Library research | \`crawl\` | seed URL of docs site, \`strategy: "sitemap"\`, then \`cache\` for later queries |
 | Related content | \`find_similar\` | \`url\` of a known good page, or \`concept\` as free text |
-| Direct quote | \`search\` | \`format: "highlights"\` returns FlashRank-scored passages with citations; cite [N] in your reply |
+| Direct quote | \`search\` | \`format: "highlights"\` returns ML-scored passages with citations; cite [N] in your reply |
 | Direct answer | \`search\` | \`format: "answer"\` if client supports sampling, else falls back to \`highlights\` (not plain context) |
 | Comprehensive research | \`research\` | \`depth: "comprehensive"\`, optional \`include_domains\` to scope |
 | Data gathering | \`agent\` | natural-language \`prompt\`, optional \`schema\` for structured output |
@@ -88,7 +88,7 @@ For library/framework/SDK queries, **always pass \`include_domains\`** with offi
 - \`max_results: 3\` for focused lookups; \`5\` default; \`10+\` only for broad research.
 - \`max_content_chars: 3000\` on \`search\` or \`fetch\` smart-truncates each result's markdown at a paragraph/heading boundary with a \`[... content truncated]\` marker. Keeps context compact for AI agents. Prefer this over raw \`max_chars\` slicing.
 - \`fetch\` with \`section: "Heading Name"\` returns content under that heading -- cheaper than the whole page.
-- Repeated fetches of the same URL are free (SQLite cache).
+- Repeated fetches of the same URL are free (local cache).
 - \`research\` with \`depth: "quick"\` (~15s) suits most factual questions; reserve \`"comprehensive"\` for deep investigation.
 - \`agent\` respects \`max_pages\` (default 10) and \`max_time_ms\` (default 60s).
 
@@ -96,7 +96,7 @@ For library/framework/SDK queries, **always pass \`include_domains\`** with offi
 
 - Localhost URLs (\`localhost:3000\`, \`127.0.0.1:8080\`) work for local dev servers.
 - \`use_auth: true\` on \`fetch\`/\`crawl\` reuses browser session for logged-in pages.
-- \`cache\` supports FTS5 syntax (\`AND\`, \`OR\`, \`NOT\`, \`"phrase"\`).
+- \`cache\` supports full-text search syntax (\`AND\`, \`OR\`, \`NOT\`, \`"phrase"\`).
 - \`research\`/\`agent\` use MCP sampling when supported; fall back to structured data for host-LLM synthesis.`;
 
 export const TOOL_DESCRIPTIONS = {
@@ -122,7 +122,7 @@ Key parameters:
 - category: "general" | "news" | "code" | "docs" | "papers" — coarse filter, pair with include_domains.
 - from_date/to_date: ISO YYYY-MM-DD for time-bounded queries
 - max_results: default 5; use 3 for focused, 10+ for research
-- format: "full" (default), "context", "highlights" (FlashRank-scored passages + [N] citations), "answer" (sampling synthesis; falls back to highlights), "stream_answer"
+- format: "full" (default), "context", "highlights" (ML-scored passages + [N] citations), "answer" (sampling synthesis; falls back to highlights), "stream_answer"
 - max_highlights: cap highlights count (default 10)
 - max_content_chars: smart-truncate markdown at paragraph boundary (e.g., 3000)
 - force_refresh: true to bypass all caches
@@ -142,13 +142,13 @@ Returns an array of pages with title, markdown, and depth. Content is deduplicat
   cache: `Search previously fetched content without hitting the network. Use before searching the web -- if relevant content was already fetched or crawled, this returns it instantly.
 
 Key parameters:
-- query: full-text search over cached markdown and titles (supports FTS5 syntax: AND, OR, NOT, "phrase match")
+- query: full-text search over cached markdown and titles (supports AND, OR, NOT, "phrase match")
 - url_pattern: glob filter on URLs (e.g., "*example.com*")
 - since: ISO date -- only results cached after this date
 - stats: true to get cache size, entry count, oldest/newest dates
 - clear: true to delete matching entries
 
-Returns matching cached pages with full markdown content. Cache persists across sessions in local SQLite.`,
+Returns matching cached pages with full markdown content. Cache persists across sessions locally.`,
 
   extract: `Extract structured data from a URL or raw HTML. Use when you need specific data points, tables, or metadata rather than full page markdown.
 
@@ -174,7 +174,7 @@ Key parameters:
 - include_cached: true (default) to search the local cache first, false to skip cache and search the web only
 - threshold: minimum similarity score (0-1, default 0.5) -- higher values return fewer, more relevant results
 
-Provide either url or concept (not both). Results are fused from three signals via 3-way RRF: FTS5 keyword match, sentence-transformer embeddings, and (if local hits are sparse) a live web search. Each result carries \`match_signals\` with \`embedding_rank\`, \`fts5_rank\`, and \`fused_score\` so you can explain ranking to the user.
+Provide either url or concept (not both). Results are fused from three signals via 3-way RRF: keyword match, semantic embeddings, and (if local hits are sparse) a live web search. Each result carries \`match_signals\` with \`embedding_rank\`, \`fts5_rank\`, and \`fused_score\` so you can explain ranking to the user.
 
 The response may include a \`cold_start\` string when local signals are weak (empty cache, embeddings unavailable, < 20 cached pages). Pass this verbatim to the user — it explains why results came from web search and how to warm the cache.
 
@@ -193,7 +193,7 @@ Key parameters:
 The pipeline: (1) decompose question into sub-queries, (2) parallel search across sub-queries, (3) fetch and extract top unique sources, (4) synthesize report with citations from all sources, (5) optionally structure report fields if schema is provided.
 
 Uses MCP requestSampling for intelligent decomposition and synthesis when available. Without sampling support (the common case), the output includes a \`brief\` with:
-  - \`topics\`, \`highlights\` (FlashRank-scored), \`key_findings\` (per-source, by relevance)
+  - \`topics\`, \`highlights\` (ML-scored), \`key_findings\` (per-source, by relevance)
   - \`query_type\`: "comparison" | "how-to" | "concept" | "general"
   - \`sections.overview\`: top findings + cross_references (corroborated by 2+ sources)
   - \`sections.comparison\`: entities + comparison_points (comparison queries only)
