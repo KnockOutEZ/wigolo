@@ -1,5 +1,5 @@
 import { parseHTML } from 'linkedom';
-import type { StructuredData, TableData, DefinitionPair, ChartHint, KeyValuePair } from '../types.js';
+import type { StructuredData, DefinitionPair, ChartHint, KeyValuePair } from '../types.js';
 import { extractTables } from './extract.js';
 import { extractJsonLd } from './jsonld.js';
 

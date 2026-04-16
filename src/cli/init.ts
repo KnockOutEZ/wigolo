@@ -84,6 +84,12 @@ export async function runInit(args: string[]): Promise<number> {
     return 0;
   }
 
+  if (flags.nonInteractive && flags.agents.length === 0) {
+    process.stderr.write('--non-interactive requires --agents=<csv>\n');
+    process.stderr.write(INIT_USAGE);
+    return 2;
+  }
+
   const version = getPackageVersion();
   process.stdout.write(renderBanner(version));
 
@@ -119,11 +125,6 @@ export async function runInit(args: string[]): Promise<number> {
 
   let selected: AgentId[];
   if (flags.nonInteractive) {
-    if (flags.agents.length === 0) {
-      process.stderr.write('--non-interactive requires --agents=<csv>\n');
-      process.stderr.write(INIT_USAGE);
-      return 2;
-    }
     selected = [...flags.agents] as AgentId[];
   } else {
     try {

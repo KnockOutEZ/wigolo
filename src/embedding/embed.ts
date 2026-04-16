@@ -11,7 +11,6 @@ export class EmbeddingService {
   private subprocess: EmbeddingSubprocess;
   private index: VectorIndex;
   private available = false;
-  private initialized = false;
 
   constructor() {
     this.subprocess = new EmbeddingSubprocess();
@@ -34,7 +33,7 @@ export class EmbeddingService {
       }
 
       this.available = true;
-      this.initialized = true;
+
     } catch (err) {
       log.error('EmbeddingService init failed', { error: String(err) });
       this.available = false;
@@ -128,7 +127,6 @@ export class EmbeddingService {
       this.subprocess.shutdown();
       this.index.clear();
       this.available = false;
-      this.initialized = false;
       log.info('EmbeddingService shut down');
     } catch (err) {
       log.error('EmbeddingService shutdown error', { error: String(err) });

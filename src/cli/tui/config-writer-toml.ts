@@ -19,13 +19,13 @@ export interface WriteTomlConfigResult {
 }
 
 function setAtPath(obj: JsonMap, tablePath: string[], value: unknown): void {
-  let cursor: any = obj;
+  let cursor: Record<string, unknown> = obj;
   for (let i = 0; i < tablePath.length - 1; i++) {
     const k = tablePath[i];
     if (typeof cursor[k] !== 'object' || cursor[k] === null || Array.isArray(cursor[k])) {
       cursor[k] = {};
     }
-    cursor = cursor[k];
+    cursor = cursor[k] as Record<string, unknown>;
   }
   cursor[tablePath[tablePath.length - 1]] = value;
 }

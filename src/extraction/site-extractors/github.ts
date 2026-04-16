@@ -12,7 +12,7 @@ function isBlob(url: string): boolean {
   return /\/blob\//.test(url);
 }
 
-function extractIssue(document: Document, url: string): ExtractionResult | null {
+function extractIssue(document: Document, _url: string): ExtractionResult | null {
   const titleEl = document.querySelector('.js-issue-title') ?? document.querySelector('.gh-header-title');
   if (!titleEl) return null;
 

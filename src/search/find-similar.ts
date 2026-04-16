@@ -8,7 +8,7 @@ import type {
 import type { SmartRouter } from '../fetch/router.js';
 import type { BackendStatus } from '../server/backend-status.js';
 import { extractKeyTerms, buildFTS5Query } from '../embedding/key-terms.js';
-import { reciprocalRankFusion, buildRankMap, sortByRRFScore } from './rrf.js';
+import { reciprocalRankFusion, sortByRRFScore } from './rrf.js';
 import { searchCache, getCachedContent, normalizeUrl, getCacheStats } from '../cache/store.js';
 import { filterByDomains } from './filters.js';
 import { handleSearch } from '../tools/search.js';
