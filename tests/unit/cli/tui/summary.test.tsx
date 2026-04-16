@@ -21,7 +21,6 @@ const defaultProps = {
   ],
   verifyItems: [
     { id: 'searxng', name: 'SearXNG', status: 'pass' as const, detail: 'http://localhost:8888' },
-    { id: 'test-search', name: 'Test search', status: 'pass' as const, detail: '26 results' },
   ],
 };
 

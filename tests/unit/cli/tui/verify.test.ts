@@ -1,10 +1,9 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const { startMock, stopMock, execSyncMock, fetchMock } = vi.hoisted(() => ({
+const { startMock, stopMock, execSyncMock } = vi.hoisted(() => ({
   startMock: vi.fn(),
   stopMock: vi.fn(),
   execSyncMock: vi.fn(),
-  fetchMock: vi.fn(),
 }));
 
 vi.mock('../../../../src/searxng/process.js', () => ({
@@ -39,12 +38,6 @@ beforeEach(() => {
   startMock.mockReset();
   stopMock.mockReset();
   execSyncMock.mockReset();
-  fetchMock.mockReset();
-  vi.stubGlobal('fetch', fetchMock);
-});
-
-afterEach(() => {
-  vi.unstubAllGlobals();
 });
 
 describe('runVerify — SearXNG branches', () => {
@@ -56,7 +49,6 @@ describe('runVerify — SearXNG branches', () => {
 
     expect(result.searxng).toBe('failed');
     expect(result.searxngError).toContain('port bind');
-    expect(result.testSearch).toBe('skipped');
     expect(result.allPassed).toBe(false);
     expect(reporter.events).toContain('start:searxng:Starting SearXNG');
     expect(reporter.events).toContain('fail:searxng:port bind');
@@ -70,17 +62,11 @@ describe('runVerify — SearXNG branches', () => {
     const result = await runVerify('/tmp/wigolo-data', reporter);
 
     expect(result.searxng).toBe('failed');
-    expect(result.testSearch).toBe('skipped');
     expect(reporter.events).toContain('fail:searxng:did not return a listening URL');
   });
 
   it('records searxng: ok and URL when start() resolves', async () => {
     startMock.mockResolvedValueOnce('http://127.0.0.1:8888');
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({ results: [{}, {}, {}] }),
-    });
     execSyncMock.mockReturnValue(Buffer.from(''));
 
     const reporter = new FakeReporter();
@@ -93,98 +79,9 @@ describe('runVerify — SearXNG branches', () => {
   });
 });
 
-describe('runVerify — test search', () => {
-  beforeEach(() => {
-    startMock.mockResolvedValue('http://127.0.0.1:8888');
-    execSyncMock.mockReturnValue(Buffer.from(''));
-  });
-
-  it('records testSearch: ok with count on 200', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({ results: [{}, {}, {}, {}, {}] }),
-    });
-
-    const reporter = new FakeReporter();
-    const result = await runVerify('/tmp/wigolo-data', reporter);
-
-    expect(result.testSearch).toBe('ok');
-    expect(result.testSearchCount).toBe(5);
-    expect(reporter.events).toContain('start:test-search:Running test search');
-    expect(reporter.events).toContain('success:test-search:5 results');
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8888/search?q=test&format=json',
-      expect.objectContaining({ signal: expect.anything() }),
-    );
-  });
-
-  it('records testSearch: ok with 0 count when results missing', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({}),
-    });
-
-    const reporter = new FakeReporter();
-    const result = await runVerify('/tmp/wigolo-data', reporter);
-
-    expect(result.testSearch).toBe('ok');
-    expect(result.testSearchCount).toBe(0);
-    expect(reporter.events).toContain('success:test-search:0 results');
-  });
-
-  it('records testSearch: failed on non-2xx after retries', async () => {
-    const badResponse = { ok: false, status: 502, json: async () => ({}) };
-    fetchMock.mockResolvedValue(badResponse);
-
-    const reporter = new FakeReporter();
-    const result = await runVerify('/tmp/wigolo-data', reporter);
-
-    expect(result.testSearch).toBe('failed');
-    expect(result.testSearchError).toBe('HTTP 502');
-    expect(reporter.events).toContain('fail:test-search:HTTP 502');
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-  });
-
-  it('records testSearch: failed when fetch throws after retries', async () => {
-    fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
-
-    const reporter = new FakeReporter();
-    const result = await runVerify('/tmp/wigolo-data', reporter);
-
-    expect(result.testSearch).toBe('failed');
-    expect(result.testSearchError).toContain('ECONNREFUSED');
-    expect(reporter.events).toContain('fail:test-search:ECONNREFUSED');
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-  });
-
-  it('succeeds on retry after initial failure', async () => {
-    fetchMock
-      .mockRejectedValueOnce(new Error('ECONNREFUSED'))
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({ results: [{}, {}] }),
-      });
-
-    const reporter = new FakeReporter();
-    const result = await runVerify('/tmp/wigolo-data', reporter);
-
-    expect(result.testSearch).toBe('ok');
-    expect(result.testSearchCount).toBe(2);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-});
-
 describe('runVerify — python package probes', () => {
   beforeEach(() => {
     startMock.mockResolvedValue('http://127.0.0.1:8888');
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ results: [] }),
-    });
   });
 
   it('marks flashrank ok when import succeeds', async () => {
@@ -273,11 +170,6 @@ describe('runVerify — suggestions on failure', () => {
 
   it('emits no notes when everything passes', async () => {
     startMock.mockResolvedValue('http://127.0.0.1:8888');
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ results: [{}] }),
-    });
     execSyncMock.mockImplementation((cmd: string) => {
       if (cmd.includes('import flashrank')) return Buffer.from('');
       if (cmd.includes('import trafilatura')) return Buffer.from('');

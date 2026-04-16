@@ -72,7 +72,6 @@ export function AgentSelect({ onComplete }: AgentSelectProps) {
   }
 
   const options = buildOptions(agents);
-  const defaultSelected = agents.filter((a) => a.detected).map((a) => a.id);
 
   async function handleSubmit(selectedIds: string[]) {
     if (selectedIds.length === 0) {
@@ -98,7 +97,6 @@ export function AgentSelect({ onComplete }: AgentSelectProps) {
       <Box marginTop={1}>
         <MultiSelect
           options={options}
-          defaultValue={defaultSelected}
           onSubmit={handleSubmit}
         />
       </Box>

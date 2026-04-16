@@ -12,7 +12,6 @@ export interface VerifyItem {
 
 const INITIAL_ITEMS: VerifyItem[] = [
   { id: 'searxng', name: 'SearXNG', status: 'pending', detail: '' },
-  { id: 'test-search', name: 'Test search', status: 'pending', detail: '' },
   { id: 'flashrank', name: 'FlashRank', status: 'pending', detail: '' },
   { id: 'trafilatura', name: 'Trafilatura', status: 'pending', detail: '' },
   { id: 'embeddings', name: 'Embeddings', status: 'pending', detail: '' },

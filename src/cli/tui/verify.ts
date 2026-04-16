@@ -8,9 +8,6 @@ export interface VerifyResult {
   searxng: 'ok' | 'failed';
   searxngUrl?: string;
   searxngError?: string;
-  testSearch: 'ok' | 'failed' | 'skipped';
-  testSearchError?: string;
-  testSearchCount?: number;
   flashrank: 'ok' | 'missing';
   flashrankError?: string;
   trafilatura: 'ok' | 'missing';
@@ -22,7 +19,6 @@ export interface VerifyResult {
 }
 
 const SEARXNG_LABEL = 'Starting SearXNG';
-const TEST_SEARCH_LABEL = 'Running test search';
 const FLASHRANK_LABEL = 'Checking FlashRank';
 const TRAFILATURA_LABEL = 'Checking Trafilatura';
 const EMBEDDINGS_LABEL = 'Checking embeddings';
@@ -33,7 +29,6 @@ export async function runVerify(
 ): Promise<VerifyResult> {
   const result: VerifyResult = {
     searxng: 'failed',
-    testSearch: 'skipped',
     flashrank: 'missing',
     trafilatura: 'missing',
     embeddings: 'missing',
@@ -66,41 +61,6 @@ export async function runVerify(
   result.searxng = 'ok';
   result.searxngUrl = url;
   reporter.success('searxng', url);
-
-  reporter.start('test-search', TEST_SEARCH_LABEL);
-  const MAX_ATTEMPTS = 3;
-  const RETRY_DELAY_MS = 3000;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      if (attempt > 1) {
-        reporter.update('test-search', `Retry ${attempt}/${MAX_ATTEMPTS}…`);
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-      }
-      const response = await fetch(`${url}/search?q=test&format=json`, {
-        signal: AbortSignal.timeout(10000),
-      });
-      if (response.ok) {
-        const body = (await response.json()) as { results?: unknown[] };
-        const count = Array.isArray(body.results) ? body.results.length : 0;
-        result.testSearch = 'ok';
-        result.testSearchCount = count;
-        reporter.success('test-search', `${count} results`);
-        break;
-      } else if (attempt === MAX_ATTEMPTS) {
-        const message = `HTTP ${response.status}`;
-        result.testSearch = 'failed';
-        result.testSearchError = message;
-        reporter.fail('test-search', message);
-      }
-    } catch (err) {
-      if (attempt === MAX_ATTEMPTS) {
-        const message = err instanceof Error ? err.message : String(err);
-        result.testSearch = 'failed';
-        result.testSearchError = message;
-        reporter.fail('test-search', message);
-      }
-    }
-  }
 
   const py = getPythonBin(dataDir);
 
@@ -168,7 +128,6 @@ function runEmbeddingsProbe(
 function finalize(result: VerifyResult, reporter?: WarmupReporter): VerifyResult {
   result.allPassed =
     result.searxng === 'ok' &&
-    result.testSearch === 'ok' &&
     result.flashrank === 'ok' &&
     result.trafilatura === 'ok' &&
     result.embeddings === 'ok';
