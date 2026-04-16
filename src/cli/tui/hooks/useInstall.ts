@@ -87,7 +87,13 @@ export function useInstall(browser: BrowserChoice): {
     async function run() {
       const { runWarmup } = await import('../../warmup.js');
 
-      const flags = ['--all'];
+      // Pass individual flags instead of --all to avoid triggering
+      // warmup's built-in --verify (the TUI has its own Verification screen)
+      const flags = [
+        '--trafilatura',
+        '--reranker',
+        '--embeddings',
+      ];
       if (browser === 'lightpanda') flags.push('--lightpanda');
       if (browser === 'firefox') flags.push('--firefox');
 
