@@ -465,21 +465,6 @@ async function applyHighlightsFallback(
   }
 }
 
-async function applyHighlightsFormat(
-  output: SearchOutput,
-  results: SearchResultItem[],
-  query: string,
-  maxHighlights?: number,
-): Promise<void> {
-  const { highlights, citations } = await extractHighlights(
-    query,
-    results,
-    maxHighlights ?? 10,
-  );
-  output.highlights = highlights;
-  output.citations = citations;
-}
-
 interface FetchContext {
   contentMaxChars: number;
   maxContentChars?: number;
