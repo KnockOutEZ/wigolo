@@ -196,6 +196,7 @@ export interface SearchOutput {
   highlights?: Highlight[];
   streaming?: boolean;
   evidence?: EvidenceItem[];
+  citations_xml?: string;
 }
 
 export interface SourceSpan {

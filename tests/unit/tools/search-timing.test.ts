@@ -114,7 +114,7 @@ describe('handleSearch timing metadata', () => {
       extractor: 'defuddle' as const,
     } as any));
 
-    const input: SearchInput = { query: 'test', max_results: 5, max_total_chars: 50000 };
+    const input: SearchInput = { query: 'test', max_results: 5, max_total_chars: 50000, include_full_markdown: true };
     const out = await handleSearch(input, [engine], router);
 
     // top 2 (R1, R2) should be present; tail should be truncated or empty

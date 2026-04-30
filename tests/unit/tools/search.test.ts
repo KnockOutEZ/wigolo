@@ -70,7 +70,7 @@ describe('handleSearch', () => {
   });
 
   it('fetches content when include_content=true (default)', async () => {
-    const input: SearchInput = { query: 'test', max_results: 2 };
+    const input: SearchInput = { query: 'test', max_results: 2, include_full_markdown: true };
     const output = await handleSearch(input, [mockSearchBackend], mockRouter);
 
     expect(output.results).toHaveLength(2);

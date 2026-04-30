@@ -176,6 +176,7 @@ describe('handleSearch with multi-query array input', () => {
     const input: SearchInput = {
       query: ['react hooks', 'vue composition'],
       max_results: 2,
+      include_full_markdown: true,
     };
 
     const output = await handleSearch(input, [engine], mockRouter);

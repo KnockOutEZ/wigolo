@@ -83,6 +83,7 @@ describe('Multi-query integration', () => {
       query: ['React Hooks', 'Vue Composition API'],
       max_results: 5,
       include_content: true,
+      include_full_markdown: true,
     };
 
     const output = await handleSearch(input, [engine], mockRouter);
