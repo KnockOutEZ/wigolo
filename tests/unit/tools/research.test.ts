@@ -81,7 +81,7 @@ describe('handleResearch', () => {
   });
 
   it('validates invalid depth', async () => {
-    const input = { question: 'test', depth: 'invalid' as any };
+    const input = { question: 'test', depth: 'invalid' as unknown as ResearchInput['depth'] };
 
     const result = await handleResearch(input, [stubEngine], stubRouter);
 
@@ -198,5 +198,65 @@ describe('handleResearch', () => {
     const result = await handleResearch(input, [stubEngine], stubRouter);
 
     expect(result.sampling_supported).toBe(false);
+  });
+
+  describe('evidence shape', () => {
+    it('default response includes evidence and strips source markdown_content', async () => {
+      const { extractContent } = await import('../../../src/extraction/pipeline.js');
+      const longMd =
+        '# Research Topic\n\n' +
+        'TypeScript is a strongly typed programming language built on JavaScript. ' +
+        'It compiles to plain JavaScript and runs anywhere JavaScript runs. The ' +
+        'language adds optional static typing on top of dynamic JavaScript.\n\n' +
+        'TypeScript supports many useful features for large applications.';
+      vi.mocked(extractContent).mockResolvedValue({
+        title: 'Research Source',
+        markdown: longMd,
+        metadata: {},
+        links: [],
+        images: [],
+        extractor: 'defuddle' as const,
+      });
+
+      const input: ResearchInput = { question: 'What is TypeScript?', depth: 'quick' };
+      const result = await handleResearch(input, [stubEngine], stubRouter);
+
+      expect(result.evidence).toBeDefined();
+      expect(result.evidence!.length).toBeGreaterThan(0);
+      const ev = result.evidence![0];
+      expect(ev.excerpt.length).toBeGreaterThan(0);
+      expect(ev.citation_id).toMatch(/^[a-f0-9]{12}$/);
+      expect(ev.source_span.end).toBeGreaterThan(ev.source_span.start);
+      for (const s of result.sources) {
+        expect(s.markdown_content).toBe('');
+      }
+    });
+
+    it('include_full_markdown=true preserves source markdown_content', async () => {
+      const { extractContent } = await import('../../../src/extraction/pipeline.js');
+      const longMd =
+        '# Research Topic\n\n' +
+        'TypeScript is a strongly typed programming language. It builds on JavaScript ' +
+        'with optional static types and excellent tooling for large codebases.';
+      vi.mocked(extractContent).mockResolvedValue({
+        title: 'Research Source',
+        markdown: longMd,
+        metadata: {},
+        links: [],
+        images: [],
+        extractor: 'defuddle' as const,
+      });
+
+      const input: ResearchInput = {
+        question: 'What is TypeScript?',
+        depth: 'quick',
+        include_full_markdown: true,
+      };
+      const result = await handleResearch(input, [stubEngine], stubRouter);
+
+      expect(result.evidence).toBeDefined();
+      const hasContent = result.sources.some((s) => s.markdown_content.length > 0);
+      expect(hasContent).toBe(true);
+    });
   });
 });

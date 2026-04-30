@@ -21,7 +21,9 @@ export const WIGOLO_INSTRUCTIONS = `Wigolo is a local-first web access layer: se
 
 Wigolo has no internal LLM. It returns *structured evidence* so YOU (the host LLM) write the final answer. Fold structure into your reply:
 
-- \`search\` \`format: "highlights"\` → ML-scored passages + \`citations\`. Quote [N].
+- \`search\` → evidence (title/url/section_heading/excerpt/score/citation_id/source_span) + citations. Quote [N] or {citation_id}.
+- \`format: 'answer'|'stream_answer'\` → LLM synthesis when sampling supported; else evidence fallback.
+- \`max_tokens_out\` caps total output (cl100k-base, ~5-15% drift on non-OpenAI). \`include_full_markdown: true\` restores full body. \`citation_format\`: \`'numbered'\`|\`'json'\`|\`'anthropic_tags'\`.
 - \`research\` → \`brief\` with \`topics\`, \`highlights\`, \`key_findings\`, \`sections\` when sampling unavailable. Use \`sections.overview.cross_references\` for corroborated findings, \`sections.gaps\` for coverage limits, \`sections.comparison\` for entity-vs-entity analysis. \`query_type\` indicates decomposition strategy used.
 - \`find_similar\` → \`cold_start\` string when local signals are weak. Pass to user verbatim.
 - \`extract\` \`mode: "structured"\` → tables + definitions + jsonld + chart_hints + key_value_pairs in one call.
@@ -46,8 +48,8 @@ Wigolo has no internal LLM. It returns *structured evidence* so YOU (the host LL
 | Error debugging | \`search\` | exact error string as query, \`category: "code"\` (no domain scoping -- errors appear everywhere) |
 | Library research | \`crawl\` | seed URL of docs site, \`strategy: "sitemap"\`, then \`cache\` for later queries |
 | Related content | \`find_similar\` | \`url\` of a known good page, or \`concept\` as free text |
-| Direct quote | \`search\` | \`format: "highlights"\` returns ML-scored passages with citations; cite [N] in your reply |
-| Direct answer | \`search\` | \`format: "answer"\` if client supports sampling, else falls back to \`highlights\` (not plain context) |
+| Evidence excerpt | \`search\` | default output; cite [N] or {citation_id} from each evidence item |
+| Direct answer | \`search\` | \`format: "answer"\` if client supports sampling, else falls back to evidence |
 | Comprehensive research | \`research\` | \`depth: "comprehensive"\`, optional \`include_domains\` to scope |
 | Data gathering | \`agent\` | natural-language \`prompt\`, optional \`schema\` for structured output |
 | Structured extraction | \`extract\` | \`mode: "structured"\` (tables + dl + JSON-LD + chart hints + kv pairs), or \`mode: "schema"\` with a JSON Schema |
@@ -86,7 +88,8 @@ For library/framework/SDK queries, **always pass \`include_domains\`** with offi
 ## Performance
 
 - \`max_results: 3\` for focused lookups; \`5\` default; \`10+\` only for broad research.
-- \`max_content_chars: 3000\` on \`search\` or \`fetch\` smart-truncates each result's markdown at a paragraph/heading boundary with a \`[... content truncated]\` marker. Keeps context compact for AI agents. Prefer this over raw \`max_chars\` slicing.
+- \`max_tokens_out\` caps total response size (cl100k-base BPE); prefer this over \`max_chars\` for budget-aware agents. When both are set, \`max_tokens_out\` wins.
+- \`max_content_chars: 3000\` remains a legitimate per-page budget — smart-truncates each result's markdown at a paragraph/heading boundary with a \`[... content truncated]\` marker.
 - \`fetch\` with \`section: "Heading Name"\` returns content under that heading -- cheaper than the whole page.
 - Repeated fetches of the same URL are free (local cache).
 - \`research\` with \`depth: "quick"\` (~15s) suits most factual questions; reserve \`"comprehensive"\` for deep investigation.
@@ -105,29 +108,32 @@ export const TOOL_DESCRIPTIONS = {
 Key parameters:
 - section: extract content under a specific heading (e.g., section: "API Reference") -- faster than reading the whole page
 - max_content_chars: smart-truncate markdown at a paragraph/heading boundary with a \`[... content truncated]\` marker (e.g., 3000 for compact context). Preferred over max_chars for AI agents.
+- max_tokens_out: token-budget cap on total output (cl100k-base BPE). Takes precedence over max_chars when both are set.
+- include_full_markdown: default false. Set true to include the full markdown body in addition to evidence excerpts.
+- citation_format: 'numbered' (default) | 'json' | 'anthropic_tags'.
 - use_auth: true to use stored browser session for authenticated/private pages
 - render_js: "auto" (default, detects JS need), "always" (force browser), "never" (HTTP only, fastest)
 - headers: custom HTTP headers if needed
 - force_refresh: true to bypass cache and fetch fresh content from the network
 
-Returns title, markdown, links, images, metadata (og_image, og_type, canonical_url, keywords). Decorative images filtered, relative URLs resolved. Cached locally; repeat fetches are instant. Localhost URLs work.
+Returns title, markdown, links, images, metadata (og_image, og_type, canonical_url, keywords). Cached locally; repeat fetches are instant. Localhost URLs work.`,
 
-Use force_refresh: true for frequently changing content. Default serves from cache.`,
-
-  search: `Search the web and return full markdown content from top results. Returns extracted page content, not just snippets.
+  search: `Search the web and return scored evidence excerpts (title/url/section_heading/excerpt/score/citation_id/source_span) plus citations. Default shape is evidence-only — no full markdown body.
 
 Key parameters:
-- query: string or string[] array (3-5 keyword variants for broader coverage; deduplicated automatically)
+- query: string or string[] array (3-5 keyword variants; deduplicated automatically)
 - include_domains/exclude_domains: scope to specific sites. ALWAYS scope library/framework queries.
 - category: "general" | "news" | "code" | "docs" | "papers" — coarse filter, pair with include_domains.
 - from_date/to_date: ISO YYYY-MM-DD for time-bounded queries
 - max_results: default 5; use 3 for focused, 10+ for research
-- format: "full" (default), "context", "highlights" (ML-scored passages + [N] citations), "answer" (sampling synthesis; falls back to highlights), "stream_answer"
-- max_highlights: cap highlights count (default 10)
-- max_content_chars: smart-truncate markdown at paragraph boundary (e.g., 3000)
+- format: omit for default evidence shape. 'answer'/'stream_answer' = sampling synthesis (falls back to evidence). Retired values 'full'/'context'/'highlights' reject with a migration error.
+- max_tokens_out: token-budget cap on total output (cl100k-base; wins over max_chars).
+- include_full_markdown: true to restore full markdown body alongside evidence (default false).
+- citation_format: 'numbered' (default) | 'json' | 'anthropic_tags'.
+- max_content_chars: smart-truncate per-page markdown at paragraph boundary (e.g., 3000)
 - force_refresh: true to bypass all caches
 
-"answer" falls back to "highlights" when sampling unsupported (most clients). Results include title, URL, relevance_score, and full markdown_content. Cache serves previously fetched pages instantly.`,
+Quote [N] or {citation_id} from the evidence list.`,
 
   crawl: `Crawl a website starting from a URL and return content from multiple pages. Use for indexing documentation sites, wikis, or any multi-page resource.
 
@@ -136,8 +142,11 @@ Key parameters:
 - max_depth: how many links deep to follow (default 2)
 - max_pages: maximum pages to fetch (default 20)
 - include_patterns/exclude_patterns: regex filters on URLs
+- max_tokens_out: token-budget cap on total output (cl100k-base; wins over max_chars).
+- include_full_markdown: default false — pages return evidence excerpts; set true for full bodies.
+- citation_format: 'numbered' (default) | 'json' | 'anthropic_tags'.
 
-Returns an array of pages with title, markdown, and depth. Content is deduplicated across pages (repeated nav/headers/footers stripped). All pages are cached for later cache queries.`,
+Returns an array of pages with title, evidence, and depth. Content is deduplicated across pages. All pages are cached for later cache queries.`,
 
   cache: `Search previously fetched content without hitting the network. Use before searching the web -- if relevant content was already fetched or crawled, this returns it instantly.
 
@@ -172,11 +181,14 @@ Key parameters:
 - concept: free-text description of what you want similar content for. Use when you do not have a specific URL.
 - max_results: number of similar items to return (default 5)
 - include_cached: true (default) to search the local cache first, false to skip cache and search the web only
-- threshold: minimum similarity score (0-1, default 0.5) -- higher values return fewer, more relevant results
+- threshold: minimum similarity score (0-1, default 0.5)
+- max_tokens_out: token-budget cap on total output (cl100k-base; wins over max_chars).
+- include_full_markdown: default false — results return evidence excerpts; set true for full bodies.
+- citation_format: 'numbered' (default) | 'json' | 'anthropic_tags'.
 
-Provide either url or concept (not both). Results are fused from three signals via 3-way RRF: keyword match, semantic embeddings, and (if local hits are sparse) a live web search. Each result carries \`match_signals\` with \`embedding_rank\`, \`fts5_rank\`, and \`fused_score\` so you can explain ranking to the user.
+Provide either url or concept. Results fuse three signals via 3-way RRF: keyword match, semantic embeddings, and (if local hits sparse) live web search. Each result carries \`match_signals\` with \`embedding_rank\`, \`fts5_rank\`, and \`fused_score\`.
 
-The response may include a \`cold_start\` string when local signals are weak (empty cache, embeddings unavailable, < 20 cached pages). Pass this verbatim to the user — it explains why results came from web search and how to warm the cache.
+The response may include a \`cold_start\` string when local signals are weak. Pass this verbatim to the user.
 
 Returns results array, method used ("hybrid" | "embedding" | "fts5" | "search"), cache_hits, search_hits, embedding_available, and total_time_ms.`,
 
@@ -189,6 +201,9 @@ Key parameters:
 - include_domains/exclude_domains: scope research to specific sites
 - schema: optional JSON Schema -- structures the report to extract matching fields
 - stream: true to receive progress notifications as each phase completes
+- max_tokens_out: token-budget cap on total output (cl100k-base; wins over max_chars).
+- include_full_markdown: default false — sources return evidence excerpts; set true for full bodies.
+- citation_format: 'numbered' (default) | 'json' | 'anthropic_tags'.
 
 Returns report (markdown with [N] citations), citations array, sources, sub_queries, depth, total_time_ms, sampling_supported, and brief (topics, highlights, key_findings, sections.overview/comparison/gaps).`,
 
@@ -201,14 +216,15 @@ Key parameters:
 - max_pages: maximum pages to fetch (default 10)
 - max_time_ms: maximum execution time in milliseconds (default 60000)
 - stream: true to receive progress notifications as each step completes
+- max_tokens_out: token-budget cap on total output (cl100k-base; wins over max_chars).
+- include_full_markdown: default false — pages return evidence excerpts; set true for full bodies.
+- citation_format: 'numbered' (default) | 'json' | 'anthropic_tags'.
 
-The pipeline: (1) plan -- interpret prompt to determine search queries and URLs to visit, (2) execute -- run searches and fetch URLs in parallel within budget, (3) extract -- if schema provided, apply schema extraction to each page and merge, (4) synthesize -- produce natural-language or structured result.
+Pipeline: (1) plan, (2) execute search+fetch in parallel within budget, (3) optional schema extraction, (4) synthesize. The steps array exposes every action with timing.
 
-The steps array in the output provides full transparency into every action taken (plan, search, fetch, extract, synthesize) with timing. This differentiates from black-box alternatives.
+Uses MCP requestSampling for planning and synthesis. Without sampling support, uses keyword extraction.
 
-Uses MCP requestSampling for planning and synthesis. Without sampling support, uses keyword extraction for planning and returns raw content.
-
-Returns result (string or structured object), sources array, pages_fetched count, steps array with action/detail/time_ms, total_time_ms, and sampling_supported flag.`,
+Returns result, sources array, pages_fetched count, steps array, total_time_ms, sampling_supported.`,
 } as const;
 
 export type ToolName = keyof typeof TOOL_DESCRIPTIONS;

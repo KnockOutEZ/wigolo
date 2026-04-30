@@ -1,6 +1,17 @@
 import { createLogger } from '../logger.js';
 import { runAgentPipeline } from '../agent/pipeline.js';
-import type { AgentInput, AgentOutput, SearchEngine } from '../types.js';
+import {
+  buildEvidenceFromMarkdown,
+  applyTokenBudget,
+  applyAggregateMarkdownBudget,
+} from '../search/evidence.js';
+import { applyOutputBudget } from '../search/truncate.js';
+import type {
+  AgentInput,
+  AgentOutput,
+  EvidenceItem,
+  SearchEngine,
+} from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
 
@@ -8,6 +19,7 @@ const log = createLogger('agent');
 
 const MAX_PAGES_LIMIT = 100;
 const MAX_TIME_LIMIT_MS = 600000;
+const DEFAULT_MAX_TOKENS_OUT = 4000;
 
 export async function handleAgent(
   input: AgentInput,
@@ -66,6 +78,16 @@ export async function handleAgent(
       server,
     );
 
+    // Only populate evidence on the no-schema path; schema callers want the
+    // structured object intact and not buried under prose excerpts.
+    if (!input.schema) {
+      await attachEvidence(result, input);
+      // Cap result text under the same budget. Schema results are left intact.
+      if (input.max_tokens_out !== undefined && typeof result.result === 'string' && result.result) {
+        result.result = applyOutputBudget(result.result, { maxTokensOut: input.max_tokens_out });
+      }
+    }
+
     return result;
   } catch (err) {
     log.error('agent handler failed', {
@@ -75,6 +97,41 @@ export async function handleAgent(
     return errorResult(
       err instanceof Error ? err.message : String(err),
       start,
+    );
+  }
+}
+
+async function attachEvidence(out: AgentOutput, input: AgentInput): Promise<void> {
+  if (out.sources.length === 0) return;
+  const includeFull = input.include_full_markdown ?? false;
+  const maxTokensOut = input.max_tokens_out ?? DEFAULT_MAX_TOKENS_OUT;
+
+  const collected: EvidenceItem[] = [];
+  for (const s of out.sources) {
+    if (!s.markdown_content) continue;
+    const evs = await buildEvidenceFromMarkdown(
+      input.prompt,
+      s.title,
+      s.url,
+      s.markdown_content,
+      { maxItems: 1 },
+    );
+    collected.push(...evs);
+  }
+
+  const budgeted = applyTokenBudget(collected, maxTokensOut);
+  if (budgeted.length > 0) out.evidence = budgeted;
+
+  if (!includeFull) {
+    for (const s of out.sources) {
+      s.markdown_content = '';
+    }
+  } else {
+    applyAggregateMarkdownBudget(
+      out.sources,
+      (s) => s.markdown_content ?? '',
+      (s, body) => { s.markdown_content = body; },
+      { maxTokensOut },
     );
   }
 }

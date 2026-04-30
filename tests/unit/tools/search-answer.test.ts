@@ -257,22 +257,6 @@ describe('handleSearch with format=answer', () => {
     expect(onProgress).not.toHaveBeenCalled();
   });
 
-  it('format=full does NOT invoke onProgress', async () => {
-    const server = createMockServer({ samplingSupported: true });
-    const onProgress = vi.fn();
-
-    await handleSearch(
-      { query: 'test', format: 'full' },
-      [stubEngine],
-      mockRouter,
-      undefined,
-      server,
-      onProgress,
-    );
-
-    expect(onProgress).not.toHaveBeenCalled();
-  });
-
   it('onProgress failures do not break stream_answer', async () => {
     const server = createMockServer({ samplingSupported: true });
     const onProgress = vi.fn().mockRejectedValue(new Error('transport closed'));
@@ -288,38 +272,6 @@ describe('handleSearch with format=answer', () => {
 
     expect(result.answer).toBeDefined();
     expect(onProgress).toHaveBeenCalled();
-  });
-
-  it('format=full does not trigger answer synthesis', async () => {
-    const server = createMockServer({ samplingSupported: true });
-
-    const result = await handleSearch(
-      { query: 'test', format: 'full' },
-      [stubEngine],
-      mockRouter,
-      undefined,
-      server,
-    );
-
-    expect(result.answer).toBeUndefined();
-    expect(result.citations).toBeUndefined();
-    expect(server.createMessage).not.toHaveBeenCalled();
-  });
-
-  it('format=context does not trigger answer synthesis', async () => {
-    const server = createMockServer({ samplingSupported: true });
-
-    const result = await handleSearch(
-      { query: 'test', format: 'context', include_content: false },
-      [stubEngine],
-      mockRouter,
-      undefined,
-      server,
-    );
-
-    expect(result.answer).toBeUndefined();
-    expect(result.context_text).toBeDefined();
-    expect(server.createMessage).not.toHaveBeenCalled();
   });
 
   it('handles empty search results with answer format', async () => {

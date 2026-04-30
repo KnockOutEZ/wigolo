@@ -70,7 +70,7 @@ describe('e2e: fetch tool', () => {
   });
 
   it('full fetch returns title, markdown, metadata, and links', async () => {
-    const result = await handleFetch({ url: `${baseUrl}/article` }, router);
+    const result = await handleFetch({ url: `${baseUrl}/article`, include_full_markdown: true }, router);
 
     expect(result.error).toBeUndefined();
     expect(result.cached).toBe(false);
@@ -88,7 +88,7 @@ describe('e2e: fetch tool', () => {
     expect(first.cached).toBe(false);
     expect(first.error).toBeUndefined();
 
-    const second = await handleFetch({ url }, router);
+    const second = await handleFetch({ url, include_full_markdown: true }, router);
     expect(second.cached).toBe(true);
     expect(second.title).toBe(first.title);
     expect(second.markdown).toContain('TypeScript');
@@ -96,7 +96,7 @@ describe('e2e: fetch tool', () => {
 
   it('section extraction returns only the requested section', async () => {
     const result = await handleFetch(
-      { url: `${baseUrl}/article`, section: 'Conclusion' },
+      { url: `${baseUrl}/article`, section: 'Conclusion', include_full_markdown: true },
       router,
     );
 
@@ -109,7 +109,7 @@ describe('e2e: fetch tool', () => {
     const url = `${baseUrl}/article`;
     await handleFetch({ url }, router);
 
-    const result = await handleFetch({ url, section: 'Conclusion' }, router);
+    const result = await handleFetch({ url, section: 'Conclusion', include_full_markdown: true }, router);
 
     expect(result.cached).toBe(true);
     expect(result.markdown).toContain('start simple');

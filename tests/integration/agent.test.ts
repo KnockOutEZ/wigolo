@@ -135,7 +135,7 @@ describe('agent tool integration', () => {
   });
 
   it('sources include URL, title, and content', async () => {
-    const input: AgentInput = { prompt: 'CRM data' };
+    const input: AgentInput = { prompt: 'CRM data', include_full_markdown: true };
 
     const result = await handleAgent(input, [stubEngine], stubRouter);
 

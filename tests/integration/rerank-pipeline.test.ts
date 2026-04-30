@@ -99,7 +99,7 @@ describe('integration: rerank in search pipeline', () => {
       ] satisfies RawSearchResult[]),
     };
 
-    const input: SearchInput = { query: 'content test', max_results: 1 };
+    const input: SearchInput = { query: 'content test', max_results: 1, include_full_markdown: true };
     const output = await handleSearch(input, [engine], mockRouter);
 
     expect(output.results).toHaveLength(1);

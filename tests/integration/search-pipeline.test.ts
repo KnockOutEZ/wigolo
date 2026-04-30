@@ -58,7 +58,7 @@ describe('search pipeline integration', () => {
     const router = new SmartRouter(httpClient, mockBrowserPool);
 
     const output = await handleSearch(
-      { query: 'test', max_results: 2, include_content: true },
+      { query: 'test', max_results: 2, include_content: true, include_full_markdown: true },
       [engine],
       router,
     );

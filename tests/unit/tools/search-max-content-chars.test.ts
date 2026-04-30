@@ -50,7 +50,7 @@ describe('max_content_chars — search', () => {
   });
 
   it('truncates result content to max_content_chars with marker', async () => {
-    const input: SearchInput = { query: 'test', max_results: 1, max_content_chars: 3000 };
+    const input: SearchInput = { query: 'test', max_results: 1, max_content_chars: 3000, include_full_markdown: true };
     const out = await handleSearch(input, [engine], router);
     const md = out.results[0].markdown_content ?? '';
     expect(md.length).toBeLessThanOrEqual(3000 + 30);
@@ -63,7 +63,7 @@ describe('max_content_chars — search', () => {
       title: 'Short', markdown: 'short content', metadata: {}, links: [], images: [],
       extractor: 'defuddle' as const,
     });
-    const input: SearchInput = { query: 'test', max_results: 1, max_content_chars: 3000 };
+    const input: SearchInput = { query: 'test', max_results: 1, max_content_chars: 3000, include_full_markdown: true };
     const out = await handleSearch(input, [engine], router);
     expect(out.results[0].markdown_content).toBe('short content');
   });
@@ -99,7 +99,7 @@ describe('max_content_chars — fetch', () => {
       title: 'Long', markdown: 'x'.repeat(10000), metadata: {}, links: [], images: [],
       extractor: 'defuddle' as const,
     });
-    const input: FetchInput = { url: 'https://e.com/1', max_content_chars: 2000 };
+    const input: FetchInput = { url: 'https://e.com/1', max_content_chars: 2000, include_full_markdown: true };
     const out = await handleFetch(input, router);
     expect(out.markdown.length).toBeLessThanOrEqual(2000 + 30);
     expect(out.markdown.endsWith('[... content truncated]')).toBe(true);

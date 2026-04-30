@@ -28,6 +28,9 @@ export interface FetchInput {
   headers?: Record<string, string>;
   actions?: BrowserAction[];
   force_refresh?: boolean;
+  max_tokens_out?: number;
+  include_full_markdown?: boolean;
+  citation_format?: CitationFormat;
 }
 
 export interface FetchOutput {
@@ -54,6 +57,7 @@ export interface FetchOutput {
   changed?: boolean;
   previous_hash?: string;
   diff_summary?: string;
+  evidence?: EvidenceItem[];
 }
 
 export interface RawFetchResult {
@@ -157,9 +161,12 @@ export interface SearchInput {
   from_date?: string;    // ISO date (YYYY-MM-DD)
   to_date?: string;      // ISO date (YYYY-MM-DD)
   category?: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
-  format?: 'full' | 'context' | 'answer' | 'highlights' | 'stream_answer';
+  format?: 'answer' | 'stream_answer';
   max_highlights?: number;
   force_refresh?: boolean;
+  max_tokens_out?: number;
+  include_full_markdown?: boolean;
+  citation_format?: CitationFormat;
 }
 
 export interface SearchResultItem {
@@ -188,7 +195,26 @@ export interface SearchOutput {
   citations?: Citation[];
   highlights?: Highlight[];
   streaming?: boolean;
+  evidence?: EvidenceItem[];
+  citations_xml?: string;
 }
+
+export interface SourceSpan {
+  start: number;
+  end: number;
+}
+
+export interface EvidenceItem {
+  title: string;
+  url: string;
+  section_heading: string | null;
+  excerpt: string;
+  score: number;
+  citation_id: string;
+  source_span: SourceSpan;
+}
+
+export type CitationFormat = 'numbered' | 'anthropic_tags' | 'json';
 
 export interface Highlight {
   text: string;
@@ -196,6 +222,8 @@ export interface Highlight {
   relevance_score: number;
   source_url: string;
   source_title: string;
+  section_heading?: string | null;
+  source_span?: SourceSpan;
 }
 
 export interface Citation {
@@ -203,6 +231,7 @@ export interface Citation {
   url: string;
   title: string;
   snippet: string;
+  citation_id?: string;
 }
 
 export interface ProgressUpdate {
@@ -223,6 +252,9 @@ export interface ResearchInput {
   exclude_domains?: string[];
   schema?: Record<string, unknown>;
   stream?: boolean;
+  max_tokens_out?: number;
+  include_full_markdown?: boolean;
+  citation_format?: CitationFormat;
 }
 
 export interface ResearchSource {
@@ -244,6 +276,7 @@ export interface ResearchOutput {
   sampling_supported: boolean;
   brief?: ResearchBrief;
   error?: string;
+  evidence?: EvidenceItem[];
 }
 
 export interface CrossReference {
@@ -281,6 +314,9 @@ export interface AgentInput {
   max_pages?: number;
   max_time_ms?: number;
   stream?: boolean;
+  max_tokens_out?: number;
+  include_full_markdown?: boolean;
+  citation_format?: CitationFormat;
 }
 
 export interface AgentSource {
@@ -305,6 +341,7 @@ export interface AgentOutput {
   total_time_ms: number;
   sampling_supported: boolean;
   error?: string;
+  evidence?: EvidenceItem[];
 }
 
 export interface RawSearchResult {
@@ -346,6 +383,9 @@ export interface CrawlInput {
   use_auth?: boolean;
   extract_links?: boolean;
   max_total_chars?: number;
+  max_tokens_out?: number;
+  include_full_markdown?: boolean;
+  citation_format?: CitationFormat;
 }
 
 export interface CrawlResultItem {
@@ -353,6 +393,7 @@ export interface CrawlResultItem {
   title: string;
   markdown: string;
   depth: number;
+  evidence?: EvidenceItem[];
 }
 
 export interface LinkEdge {
@@ -504,6 +545,9 @@ export interface FindSimilarInput {
   exclude_domains?: string[];
   include_cache?: boolean;
   include_web?: boolean;
+  max_tokens_out?: number;
+  include_full_markdown?: boolean;
+  citation_format?: CitationFormat;
 }
 
 export interface FindSimilarOutput {
@@ -515,4 +559,5 @@ export interface FindSimilarOutput {
   cold_start?: string;
   error?: string;
   total_time_ms: number;
+  evidence?: EvidenceItem[];
 }

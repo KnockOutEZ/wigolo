@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CrawlInput, CrawlOutput, FetchOutput, RawFetchResult } from '../../../src/types.js';
+import type { SmartRouter } from '../../../src/fetch/router.js';
 
 vi.mock('../../../src/crawl/crawler.js', () => {
   const MockCrawler = vi.fn();
@@ -134,6 +135,65 @@ describe('handleCrawl', () => {
     expect(result.error).toBe('Crawler exploded');
     expect(result.pages).toEqual([]);
     expect(result.crawled).toBe(0);
+  });
+
+  describe('evidence shape', () => {
+    const longMd =
+      '# Page Title\n\n' +
+      'TypeScript is a strongly typed programming language that builds on JavaScript. ' +
+      'It compiles to plain JavaScript and runs in any browser, Node.js, or anywhere ' +
+      'JavaScript runs at all.\n\nTypeScript adds static typing to JavaScript.';
+
+    beforeEach(() => {
+      const mockCrawl = vi.fn().mockResolvedValue({
+        pages: [
+          { url: 'https://docs.example.com', title: 'Home', markdown: longMd, depth: 0 },
+          { url: 'https://docs.example.com/intro', title: 'Intro', markdown: longMd, depth: 1 },
+        ],
+        total_found: 2,
+        crawled: 2,
+      });
+      vi.mocked(Crawler).mockImplementation(function (this: any) {
+        this.crawl = mockCrawl;
+        this.crawlSitemap = vi.fn();
+      } as unknown as typeof Crawler);
+    });
+
+    it('default emits per-page evidence and strips page markdown', async () => {
+      const router = mockRouter();
+      const input: CrawlInput = { url: 'https://docs.example.com' };
+
+      const result = await handleCrawl(input, router as unknown as SmartRouter) as CrawlOutput;
+
+      const pagesWithEvidence = result.pages.filter((p) => p.evidence && p.evidence.length > 0);
+      expect(pagesWithEvidence.length).toBeGreaterThan(0);
+      // Each page that has evidence should carry exactly its own item(s)
+      for (const p of pagesWithEvidence) {
+        expect(p.evidence!.length).toBeGreaterThan(0);
+        const ev = p.evidence![0];
+        expect(ev.url).toBe(p.url);
+        expect(ev.excerpt.length).toBeGreaterThan(0);
+        expect(ev.citation_id).toMatch(/^[a-f0-9]{12}$/);
+        expect(ev.source_span.end).toBeGreaterThan(ev.source_span.start);
+      }
+      for (const p of result.pages) {
+        expect(p.markdown).toBe('');
+      }
+    });
+
+    it('include_full_markdown=true keeps page markdown', async () => {
+      const router = mockRouter();
+      const input: CrawlInput = {
+        url: 'https://docs.example.com',
+        include_full_markdown: true,
+      };
+
+      const result = await handleCrawl(input, router as unknown as SmartRouter) as CrawlOutput;
+
+      const pagesWithEvidence = result.pages.filter((p) => p.evidence && p.evidence.length > 0);
+      expect(pagesWithEvidence.length).toBeGreaterThan(0);
+      expect(result.pages.every((p) => p.markdown.length > 0)).toBe(true);
+    });
   });
 
   it('uses default max_total_chars of 100000', async () => {

@@ -83,6 +83,7 @@ describe('Multi-query integration', () => {
       query: ['React Hooks', 'Vue Composition API'],
       max_results: 5,
       include_content: true,
+      include_full_markdown: true,
     };
 
     const output = await handleSearch(input, [engine], mockRouter);
@@ -113,29 +114,6 @@ describe('Multi-query integration', () => {
     expect(output.queries_executed).toBeUndefined();
     expect(output.query).toBe('simple test');
     expect(output.results.length).toBeGreaterThan(0);
-  });
-
-  it('end-to-end: multi-query with context format', async () => {
-    const engine = makeEngine({
-      'typescript generics': [
-        { title: 'TS Generics', url: `http://127.0.0.1:${serverPort}/ts-gen`, snippet: 'Generics guide', relevance_score: 0.95, engine: 'integration-mock' },
-      ],
-      'rust generics': [
-        { title: 'Rust Generics', url: `http://127.0.0.1:${serverPort}/rs-gen`, snippet: 'Rust guide', relevance_score: 0.9, engine: 'integration-mock' },
-      ],
-    });
-
-    const input: SearchInput = {
-      query: ['TypeScript Generics', 'Rust Generics'],
-      format: 'context',
-      include_content: false,
-    };
-
-    const output = await handleSearch(input, [engine], mockRouter);
-
-    expect(output.context_text).toBeDefined();
-    expect(output.context_text!.length).toBeGreaterThan(0);
-    expect(output.queries_executed).toEqual(['typescript generics', 'rust generics']);
   });
 
   it('end-to-end: multi-query with max exceeded', async () => {

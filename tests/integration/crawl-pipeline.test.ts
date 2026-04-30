@@ -167,7 +167,7 @@ describe('Crawl Pipeline Integration', () => {
   it('crawls a site BFS and deduplicates shared navigation', async () => {
     const router = mockRouter();
     const result = await handleCrawl(
-      { url: 'https://docs.test.com', max_depth: 1, max_pages: 10 },
+      { url: 'https://docs.test.com', max_depth: 1, max_pages: 10, include_full_markdown: true },
       router as any,
     );
 

@@ -11,9 +11,15 @@ vi.mock('../../../src/extraction/pipeline.js', () => ({
   extractContent: vi.fn(),
 }));
 
-vi.mock('../../../src/extraction/markdown.js', () => ({
-  extractSection: vi.fn(),
-}));
+vi.mock('../../../src/extraction/markdown.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/extraction/markdown.js')>(
+    '../../../src/extraction/markdown.js',
+  );
+  return {
+    ...actual,
+    extractSection: vi.fn(),
+  };
+});
 
 vi.mock('../../../src/logger.js', () => ({
   createLogger: () => ({
@@ -95,7 +101,7 @@ describe('handleFetch', () => {
     vi.mocked(extractContent).mockResolvedValue(extraction);
 
     const router = mockRouter();
-    const input: FetchInput = { url: 'https://example.com' };
+    const input: FetchInput = { url: 'https://example.com', include_full_markdown: true };
 
     const result = await handleFetch(input, router);
 
@@ -126,7 +132,7 @@ describe('handleFetch', () => {
     vi.mocked(isExpired).mockReturnValue(false);
 
     const router = mockRouter();
-    const input: FetchInput = { url: 'https://example.com' };
+    const input: FetchInput = { url: 'https://example.com', include_full_markdown: true };
 
     const result = await handleFetch(input, router);
 
@@ -170,7 +176,7 @@ describe('handleFetch', () => {
     vi.mocked(extractSection).mockReturnValue({ content: '# Install\n\nInstall steps', matched: true });
 
     const router = mockRouter();
-    const input: FetchInput = { url: 'https://example.com', section: 'Install' };
+    const input: FetchInput = { url: 'https://example.com', section: 'Install', include_full_markdown: true };
 
     const result = await handleFetch(input, router);
 
@@ -278,7 +284,7 @@ describe('handleFetch --- force_refresh', () => {
     vi.mocked(extractContent).mockResolvedValue(makeExtraction({ markdown: 'fresh content' }));
 
     const router = mockRouter();
-    const input: FetchInput = { url: 'https://example.com', force_refresh: true };
+    const input: FetchInput = { url: 'https://example.com', force_refresh: true, include_full_markdown: true };
 
     const result = await handleFetch(input, router);
 
@@ -535,7 +541,7 @@ describe('handleFetch --- change detection', () => {
     });
 
     const router = mockRouter();
-    const input: FetchInput = { url: 'https://example.com' };
+    const input: FetchInput = { url: 'https://example.com', include_full_markdown: true };
 
     const result = await handleFetch(input, router);
 
@@ -578,5 +584,72 @@ describe('handleFetch --- change detection', () => {
     const result = await handleFetch(input, router);
 
     expect(result.changed).toBeUndefined();
+  });
+});
+
+describe('handleFetch --- evidence shape', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getCachedContent).mockReturnValue(null);
+    vi.mocked(isExpired).mockReturnValue(false);
+  });
+
+  const longMarkdown =
+    '# Hello World\n\n' +
+    'TypeScript is a strongly typed programming language that builds on JavaScript, ' +
+    'giving you better tooling at any scale. It compiles to plain JavaScript and runs ' +
+    'in any browser, in Node.js, or wherever JavaScript runs at all.\n\n' +
+    'TypeScript adds static typing to JavaScript so you can catch errors during build.';
+
+  it('default response includes evidence with citation_id and source_span', async () => {
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction({ markdown: longMarkdown }));
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.evidence).toBeDefined();
+    expect(result.evidence!.length).toBeGreaterThan(0);
+    const ev = result.evidence![0];
+    expect(ev.excerpt.length).toBeGreaterThan(0);
+    expect(ev.citation_id).toMatch(/^[a-f0-9]{12}$/);
+    expect(ev.source_span.end).toBeGreaterThan(ev.source_span.start);
+  });
+
+  it('default response strips full markdown body', async () => {
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction({ markdown: longMarkdown }));
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.markdown).toBe('');
+  });
+
+  it('include_full_markdown=true preserves the full markdown body', async () => {
+    vi.mocked(extractContent).mockResolvedValue(makeExtraction({ markdown: longMarkdown }));
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com', include_full_markdown: true };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.markdown).toBe(longMarkdown);
+    expect(result.evidence).toBeDefined();
+  });
+
+  it('cached response also emits evidence and strips markdown by default', async () => {
+    const cached = makeCached({ markdown: longMarkdown });
+    vi.mocked(getCachedContent).mockReturnValue(cached);
+    vi.mocked(isExpired).mockReturnValue(false);
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const result = await handleFetch(input, router);
+
+    expect(result.cached).toBe(true);
+    expect(result.markdown).toBe('');
+    expect(result.evidence).toBeDefined();
+    expect(result.evidence![0].citation_id).toMatch(/^[a-f0-9]{12}$/);
   });
 });

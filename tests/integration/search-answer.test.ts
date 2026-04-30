@@ -213,40 +213,6 @@ describe('search answer synthesis -- integration', () => {
     }
   });
 
-  it('end-to-end: format=full is unaffected by answer synthesis', async () => {
-    const server = createMockServer({ samplingSupported: true });
-
-    const result = await handleSearch(
-      { query: 'test', format: 'full', include_content: false },
-      [stubEngine],
-      mockRouter,
-      undefined,
-      server,
-    );
-
-    expect(result.answer).toBeUndefined();
-    expect(result.citations).toBeUndefined();
-    expect(result.context_text).toBeUndefined();
-    expect(result.streaming).toBeUndefined();
-    expect(result.results.length).toBeGreaterThan(0);
-  });
-
-  it('end-to-end: format=context is unaffected by answer synthesis', async () => {
-    const server = createMockServer({ samplingSupported: true });
-
-    const result = await handleSearch(
-      { query: 'test', format: 'context', include_content: false },
-      [stubEngine],
-      mockRouter,
-      undefined,
-      server,
-    );
-
-    expect(result.context_text).toBeDefined();
-    expect(result.answer).toBeUndefined();
-    expect(result.citations).toBeUndefined();
-  });
-
   it('end-to-end: empty search results with answer format', async () => {
     const emptyEngine: SearchEngine = {
       name: 'empty',
