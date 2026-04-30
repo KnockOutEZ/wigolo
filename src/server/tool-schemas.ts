@@ -48,6 +48,19 @@ export const FETCH_TOOL_SCHEMA = {
       type: 'boolean',
       description: 'Bypass cache and fetch fresh content from the network. Use for rapidly changing pages (news, changelogs, dashboards).',
     },
+    max_tokens_out: {
+      type: 'number',
+      description: "Token-budget cap on total output. Uses cl100k-base BPE; non-OpenAI tokenizer counts may drift ~5-15%. When both max_tokens_out and max_chars are set, max_tokens_out wins.",
+    },
+    include_full_markdown: {
+      type: 'boolean',
+      description: 'Include full markdown body in the response. Default false on multi-result tools (returns evidence excerpts only); set true to restore.',
+    },
+    citation_format: {
+      type: 'string',
+      enum: ['numbered', 'anthropic_tags', 'json'],
+      description: "Citation rendering style. 'numbered' (default) inline [N] markers; 'json' returns a citations[] array; 'anthropic_tags' wraps sources in <source id='...'> tags.",
+    },
     actions: {
       type: 'array',
       description:
@@ -141,17 +154,30 @@ export const SEARCH_TOOL_SCHEMA = {
     },
     format: {
       type: 'string',
-      enum: ['full', 'context', 'answer', 'highlights', 'stream_answer'],
+      enum: ['answer', 'stream_answer'],
       description:
-        "Output format. 'full' (default) returns structured results; 'context' single LLM-injection string; 'highlights' ML-scored passages with citations; 'answer'/'stream_answer' request LLM synthesis (falls back to highlights when sampling unsupported).",
+        "LLM-synthesis modes only. Omit for the default evidence shape (title/url/section_heading/excerpt/score/citation_id/source_span). 'answer' and 'stream_answer' request sampling-based synthesis (falls back to evidence list when sampling unsupported).",
     },
     max_highlights: {
       type: 'number',
-      description: "Maximum highlights to return when format is 'highlights' (default 10). Highlights are 1-3 sentence passages scored by relevance to the query.",
+      description: "Maximum highlights to return (default 10). Highlights are 1-3 sentence passages scored by relevance to the query.",
     },
     force_refresh: {
       type: 'boolean',
       description: 'Bypass all caches (search results and page content). Use when you need the most current information.',
+    },
+    max_tokens_out: {
+      type: 'number',
+      description: "Token-budget cap on total output. Uses cl100k-base BPE; non-OpenAI tokenizer counts may drift ~5-15%. When both max_tokens_out and max_chars are set, max_tokens_out wins.",
+    },
+    include_full_markdown: {
+      type: 'boolean',
+      description: 'Include full markdown body in the response. Default false on multi-result tools (returns evidence excerpts only); set true to restore.',
+    },
+    citation_format: {
+      type: 'string',
+      enum: ['numbered', 'anthropic_tags', 'json'],
+      description: "Citation rendering style. 'numbered' (default) inline [N] markers; 'json' returns a citations[] array; 'anthropic_tags' wraps sources in <source id='...'> tags.",
     },
   },
   required: ['query'],
@@ -181,6 +207,19 @@ export const CRAWL_TOOL_SCHEMA = {
     use_auth: { type: 'boolean', description: 'Use stored auth credentials (default: false)' },
     extract_links: { type: 'boolean', description: 'Return link graph between pages (default: false)' },
     max_total_chars: { type: 'number', description: 'Max total chars across all pages (default: 100000)' },
+    max_tokens_out: {
+      type: 'number',
+      description: "Token-budget cap on total output. Uses cl100k-base BPE; non-OpenAI tokenizer counts may drift ~5-15%. When both max_tokens_out and max_chars are set, max_tokens_out wins.",
+    },
+    include_full_markdown: {
+      type: 'boolean',
+      description: 'Include full markdown body in the response. Default false on multi-result tools (returns evidence excerpts only); set true to restore.',
+    },
+    citation_format: {
+      type: 'string',
+      enum: ['numbered', 'anthropic_tags', 'json'],
+      description: "Citation rendering style. 'numbered' (default) inline [N] markers; 'json' returns a citations[] array; 'anthropic_tags' wraps sources in <source id='...'> tags.",
+    },
   },
   required: ['url'],
 };
@@ -273,6 +312,19 @@ export const FIND_SIMILAR_TOOL_SCHEMA = {
       type: 'boolean',
       description: 'Supplement with web search if needed (default: true)',
     },
+    max_tokens_out: {
+      type: 'number',
+      description: "Token-budget cap on total output. Uses cl100k-base BPE; non-OpenAI tokenizer counts may drift ~5-15%. When both max_tokens_out and max_chars are set, max_tokens_out wins.",
+    },
+    include_full_markdown: {
+      type: 'boolean',
+      description: 'Include full markdown body in the response. Default false on multi-result tools (returns evidence excerpts only); set true to restore.',
+    },
+    citation_format: {
+      type: 'string',
+      enum: ['numbered', 'anthropic_tags', 'json'],
+      description: "Citation rendering style. 'numbered' (default) inline [N] markers; 'json' returns a citations[] array; 'anthropic_tags' wraps sources in <source id='...'> tags.",
+    },
   },
 };
 
@@ -307,6 +359,19 @@ export const RESEARCH_TOOL_SCHEMA = {
       type: 'boolean',
       description: 'Send progress notifications as each research phase completes',
     },
+    max_tokens_out: {
+      type: 'number',
+      description: "Token-budget cap on total output. Uses cl100k-base BPE; non-OpenAI tokenizer counts may drift ~5-15%. When both max_tokens_out and max_chars are set, max_tokens_out wins.",
+    },
+    include_full_markdown: {
+      type: 'boolean',
+      description: 'Include full markdown body in the response. Default false on multi-result tools (returns evidence excerpts only); set true to restore.',
+    },
+    citation_format: {
+      type: 'string',
+      enum: ['numbered', 'anthropic_tags', 'json'],
+      description: "Citation rendering style. 'numbered' (default) inline [N] markers; 'json' returns a citations[] array; 'anthropic_tags' wraps sources in <source id='...'> tags.",
+    },
   },
   required: ['question'],
 };
@@ -338,6 +403,19 @@ export const AGENT_TOOL_SCHEMA = {
     stream: {
       type: 'boolean',
       description: 'Send progress notifications as each step completes',
+    },
+    max_tokens_out: {
+      type: 'number',
+      description: "Token-budget cap on total output. Uses cl100k-base BPE; non-OpenAI tokenizer counts may drift ~5-15%. When both max_tokens_out and max_chars are set, max_tokens_out wins.",
+    },
+    include_full_markdown: {
+      type: 'boolean',
+      description: 'Include full markdown body in the response. Default false on multi-result tools (returns evidence excerpts only); set true to restore.',
+    },
+    citation_format: {
+      type: 'string',
+      enum: ['numbered', 'anthropic_tags', 'json'],
+      description: "Citation rendering style. 'numbered' (default) inline [N] markers; 'json' returns a citations[] array; 'anthropic_tags' wraps sources in <source id='...'> tags.",
     },
   },
   required: ['prompt'],

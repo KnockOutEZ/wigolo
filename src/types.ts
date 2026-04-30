@@ -161,7 +161,7 @@ export interface SearchInput {
   from_date?: string;    // ISO date (YYYY-MM-DD)
   to_date?: string;      // ISO date (YYYY-MM-DD)
   category?: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
-  format?: 'full' | 'context' | 'answer' | 'highlights' | 'stream_answer';
+  format?: 'answer' | 'stream_answer';
   max_highlights?: number;
   force_refresh?: boolean;
   max_tokens_out?: number;

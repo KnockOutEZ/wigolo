@@ -184,23 +184,6 @@ describe('handleSearch with multi-query array input', () => {
     expect(withContent.length).toBeGreaterThan(0);
   });
 
-  it('context format works with multi-query', async () => {
-    const engine = makeMockEngine('mock', () => [
-      { title: 'Context Result', url: 'https://ctx.com', snippet: 'context snippet', relevance_score: 0.9, engine: 'mock' },
-    ]);
-
-    const input: SearchInput = {
-      query: ['query one', 'query two'],
-      format: 'context',
-      include_content: false,
-    };
-
-    const output = await handleSearch(input, [engine], mockRouter);
-
-    expect(output.context_text).toBeDefined();
-    expect(output.context_text!.length).toBeGreaterThan(0);
-  });
-
   it('handles empty array query gracefully', async () => {
     const engine = makeMockEngine('mock', () => []);
 

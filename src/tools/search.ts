@@ -36,6 +36,31 @@ export async function handleSearch(
   const start = Date.now();
   const config = getConfig();
 
+  const RETIRED_FORMATS = new Set(['full', 'context', 'highlights']);
+  const VALID_FORMATS = new Set(['answer', 'stream_answer']);
+
+  if (input.format != null) {
+    const fmt = String(input.format);
+    if (RETIRED_FORMATS.has(fmt)) {
+      return {
+        results: [],
+        query: typeof input.query === 'string' ? input.query : (input.query?.[0] ?? ''),
+        engines_used: [],
+        total_time_ms: Date.now() - start,
+        error: `format renamed; pass 'evidence' (default — omit) or 'answer'/'stream_answer' for synthesis`,
+      };
+    }
+    if (!VALID_FORMATS.has(fmt)) {
+      return {
+        results: [],
+        query: typeof input.query === 'string' ? input.query : (input.query?.[0] ?? ''),
+        engines_used: [],
+        total_time_ms: Date.now() - start,
+        error: `unknown format='${fmt}'. Valid: omit (evidence), 'answer', 'stream_answer'`,
+      };
+    }
+  }
+
   const maxResults = Math.min(input.max_results ?? DEFAULT_MAX_RESULTS, MAX_RESULTS_CAP);
   const includeContent = input.include_content ?? true;
   const contentMaxChars = input.content_max_chars ?? DEFAULT_CONTENT_MAX_CHARS;
@@ -90,12 +115,6 @@ export async function handleSearch(
       };
       const warning = backendStatus?.consumeWarning();
       if (warning) output.warning = warning;
-      if (input.format === 'context') {
-        output.context_text = formatSearchContext(output.results, maxTotalChars);
-      }
-      if (input.format === 'highlights' && output.results.length > 0) {
-        await applyHighlightsFormat(output, output.results, displayQuery, input.max_highlights);
-      }
       if ((input.format === 'answer' || input.format === 'stream_answer') && output.results.length > 0) {
         await applyAnswerSynthesis(input, output, output.results, maxTotalChars, samplingServer, streamProgress);
       }
@@ -139,9 +158,6 @@ export async function handleSearch(
       };
       const warning = backendStatus?.consumeWarning();
       if (warning) output.warning = warning;
-      if (input.format === 'context') {
-        output.context_text = '';
-      }
       return output;
     }
 
@@ -204,14 +220,8 @@ export async function handleSearch(
     };
     const warning = backendStatus?.consumeWarning();
     if (warning) output.warning = warning;
-    if (input.format === 'context') {
-      output.context_text = formatSearchContext(output.results, maxTotalChars);
-    }
     if ((input.format === 'answer' || input.format === 'stream_answer') && results.length > 0) {
       await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer, streamProgress);
-    }
-    if (input.format === 'highlights' && results.length > 0) {
-      await applyHighlightsFormat(output, results, displayQuery, input.max_highlights);
     }
     return output;
   }
@@ -230,12 +240,6 @@ export async function handleSearch(
     };
     const warning = backendStatus?.consumeWarning();
     if (warning) output.warning = warning;
-    if (input.format === 'context') {
-      output.context_text = formatSearchContext(output.results, maxTotalChars);
-    }
-    if (input.format === 'highlights' && output.results.length > 0) {
-      await applyHighlightsFormat(output, output.results, queryStr, input.max_highlights);
-    }
     if ((input.format === 'answer' || input.format === 'stream_answer') && output.results.length > 0) {
       await applyAnswerSynthesis(input, output, output.results, maxTotalChars, samplingServer, streamProgress);
     }
@@ -300,9 +304,6 @@ export async function handleSearch(
     };
     const warning = backendStatus?.consumeWarning();
     if (warning) output.warning = warning;
-    if (input.format === 'context') {
-      output.context_text = '';
-    }
     return output;
   }
 
@@ -364,12 +365,6 @@ export async function handleSearch(
   };
   const warning = backendStatus?.consumeWarning();
   if (warning) output.warning = warning;
-  if (input.format === 'context') {
-    output.context_text = formatSearchContext(output.results, maxTotalChars);
-  }
-  if (input.format === 'highlights' && results.length > 0) {
-    await applyHighlightsFormat(output, results, queryStr, input.max_highlights);
-  }
   if ((input.format === 'answer' || input.format === 'stream_answer') && results.length > 0) {
     await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer, streamProgress);
   }

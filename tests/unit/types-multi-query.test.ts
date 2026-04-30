@@ -27,7 +27,7 @@ describe('SearchInput multi-query types', () => {
       from_date: '2025-01-01',
       to_date: '2025-12-31',
       category: 'general',
-      format: 'context',
+      format: 'answer',
     };
     expectTypeOf(input).toMatchTypeOf<SearchInput>();
   });
