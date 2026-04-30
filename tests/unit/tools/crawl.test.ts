@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CrawlInput, CrawlOutput, FetchOutput, RawFetchResult } from '../../../src/types.js';
+import type { SmartRouter } from '../../../src/fetch/router.js';
 
 vi.mock('../../../src/crawl/crawler.js', () => {
   const MockCrawler = vi.fn();
@@ -155,14 +156,14 @@ describe('handleCrawl', () => {
       vi.mocked(Crawler).mockImplementation(function (this: any) {
         this.crawl = mockCrawl;
         this.crawlSitemap = vi.fn();
-      } as any);
+      } as unknown as typeof Crawler);
     });
 
     it('default emits per-page evidence and strips page markdown', async () => {
       const router = mockRouter();
       const input: CrawlInput = { url: 'https://docs.example.com' };
 
-      const result = await handleCrawl(input, router as any) as CrawlOutput;
+      const result = await handleCrawl(input, router as unknown as SmartRouter) as CrawlOutput;
 
       const pagesWithEvidence = result.pages.filter((p) => p.evidence && p.evidence.length > 0);
       expect(pagesWithEvidence.length).toBeGreaterThan(0);
@@ -187,7 +188,7 @@ describe('handleCrawl', () => {
         include_full_markdown: true,
       };
 
-      const result = await handleCrawl(input, router as any) as CrawlOutput;
+      const result = await handleCrawl(input, router as unknown as SmartRouter) as CrawlOutput;
 
       const pagesWithEvidence = result.pages.filter((p) => p.evidence && p.evidence.length > 0);
       expect(pagesWithEvidence.length).toBeGreaterThan(0);

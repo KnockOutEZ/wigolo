@@ -16,6 +16,7 @@ const log = createLogger('search');
 
 const DEFAULT_MAX_TOKENS_OUT = 4000;
 const MAX_EVIDENCE_PASSAGES = 20;
+const TRUNCATION_MARKER = '[... content truncated]';
 
 export interface BuildEvidenceOptions {
   maxTokensOut?: number;
@@ -65,7 +66,7 @@ export async function buildEvidenceFromMarkdown(
       const remaining = budget - used;
       if (remaining <= 0) break;
       excerpt = truncateByTokens(h.text, remaining);
-      if (!excerpt) break;
+      if (!excerpt || excerpt.trim() === TRUNCATION_MARKER) break;
     }
     const span = h.source_span ?? { start: 0, end: excerpt.length };
     out.push(buildEvidenceItem({

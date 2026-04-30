@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildEvidenceItem, stableCitationId } from '../../../src/search/evidence.js';
+import { buildEvidenceFromMarkdown, buildEvidenceItem, stableCitationId } from '../../../src/search/evidence.js';
 
 describe('stableCitationId', () => {
   it('is identical for the same url + start across calls', () => {
@@ -40,5 +40,22 @@ describe('buildEvidenceItem', () => {
       excerpt: 'x', score: 0, sourceSpan: { start: 0, end: 1 },
     });
     expect(ev.section_heading).toBeNull();
+  });
+});
+
+describe('buildEvidenceFromMarkdown', () => {
+  it('skips items whose truncated excerpt is only the truncation marker', async () => {
+    const markdown =
+      '# Heading\n\n' +
+      'TypeScript is a strongly typed programming language built on JavaScript. ' +
+      'It compiles to plain JavaScript and runs anywhere JavaScript runs at all.';
+    const items = await buildEvidenceFromMarkdown(
+      'TypeScript',
+      'Title',
+      'https://example.com/a',
+      markdown,
+      { maxTokensOut: 3 },
+    );
+    expect(items).toEqual([]);
   });
 });

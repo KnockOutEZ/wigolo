@@ -81,7 +81,7 @@ describe('handleResearch', () => {
   });
 
   it('validates invalid depth', async () => {
-    const input = { question: 'test', depth: 'invalid' as any };
+    const input = { question: 'test', depth: 'invalid' as unknown as ResearchInput['depth'] };
 
     const result = await handleResearch(input, [stubEngine], stubRouter);
 
