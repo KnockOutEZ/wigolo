@@ -83,7 +83,7 @@ describe('search tool E2E', () => {
   it('search with include_content=true returns markdown', async () => {
     const router = await makeRouter();
     const output = await handleSearch(
-      { query: 'react tutorial', max_results: 2 },
+      { query: 'react tutorial', max_results: 2, include_full_markdown: true },
       [makeEngine(contentPort)],
       router,
     );
@@ -140,7 +140,7 @@ describe('search tool E2E', () => {
     };
 
     const router = await makeRouter();
-    const output = await handleSearch({ query: 'test', max_results: 2 }, [engine], router);
+    const output = await handleSearch({ query: 'test', max_results: 2, include_full_markdown: true }, [engine], router);
 
     expect(output.results).toHaveLength(2);
     const good = output.results.find(r => r.title === 'Good');
