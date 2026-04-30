@@ -1,6 +1,7 @@
 import type { SearchResultItem, Citation, Highlight } from '../types.js';
 import { flashRankRerank, isFlashRankAvailable } from './flashrank.js';
 import { createLogger } from '../logger.js';
+import { parseHeadings, lineStartCharOffsets } from '../extraction/markdown.js';
 
 const log = createLogger('search');
 
@@ -14,6 +15,12 @@ export interface HighlightSynthesisResult {
   flashrank_used: boolean;
 }
 
+export interface Passage {
+  text: string;
+  charStart: number;
+  charEnd: number;
+}
+
 interface PassageCandidate {
   text: string;
   sourceIndex: number;
@@ -21,20 +28,72 @@ interface PassageCandidate {
   sourceTitle: string;
 }
 
-// Split a single source's markdown into candidate passages for scoring.
-// Filters out headings, table rows, code fences, and short fragments so
-// that scored passages are readable prose.
-export function splitIntoPassages(markdown: string): string[] {
+function shouldKeep(trimmed: string): boolean {
+  if (trimmed.length < MIN_PASSAGE_LENGTH) return false;
+  if (trimmed.startsWith('#')) return false;
+  if (trimmed.startsWith('|')) return false;
+  if (trimmed.startsWith('```')) return false;
+  if (trimmed.startsWith('- ') && trimmed.length <= 120) return false;
+  return true;
+}
+
+// Walk the source markdown block-by-block (separated by blank lines) tracking
+// char offsets so each surviving passage carries an accurate {charStart,
+// charEnd} range pointing back into the original markdown.
+export function splitIntoPassages(markdown: string): Passage[] {
   if (!markdown) return [];
-  return markdown
-    .split(/\n\n+/)
-    .map((p) => p.trim())
-    .filter((p) => p.length >= MIN_PASSAGE_LENGTH)
-    .filter((p) => !p.startsWith('#'))
-    .filter((p) => !p.startsWith('|'))
-    .filter((p) => !p.startsWith('```'))
-    .filter((p) => !p.startsWith('- ') || p.length > 120)
-    .map((p) => (p.length > MAX_PASSAGE_LENGTH ? p.slice(0, MAX_PASSAGE_LENGTH) : p));
+  const out: Passage[] = [];
+  const re = /\n\n+/g;
+  let blockStart = 0;
+  let m: RegExpExecArray | null;
+  const consider = (rawStart: number, rawEnd: number) => {
+    // raw block is markdown.slice(rawStart, rawEnd); compute trimmed range.
+    const raw = markdown.slice(rawStart, rawEnd);
+    if (!raw) return;
+    let leading = 0;
+    while (leading < raw.length && /\s/.test(raw[leading])) leading++;
+    let trailing = raw.length;
+    while (trailing > leading && /\s/.test(raw[trailing - 1])) trailing--;
+    if (trailing <= leading) return;
+    const trimmedStart = rawStart + leading;
+    const trimmedEnd = rawStart + trailing;
+    const trimmed = markdown.slice(trimmedStart, trimmedEnd);
+    if (!shouldKeep(trimmed)) return;
+    const text = trimmed.length > MAX_PASSAGE_LENGTH ? trimmed.slice(0, MAX_PASSAGE_LENGTH) : trimmed;
+    out.push({ text, charStart: trimmedStart, charEnd: trimmedEnd });
+  };
+  while ((m = re.exec(markdown)) !== null) {
+    consider(blockStart, m.index);
+    blockStart = m.index + m[0].length;
+  }
+  consider(blockStart, markdown.length);
+  return out;
+}
+
+// Internal helper preserved for callers that only need the text strings.
+function splitIntoPassageStrings(markdown: string): string[] {
+  return splitIntoPassages(markdown).map((p) => p.text);
+}
+
+// Annotate each passage with the nearest preceding markdown heading. Uses
+// `parseHeadings` and a char-offset prefix sum so the lookup is O(passages
+// * headings) without re-parsing markdown for every passage.
+export function mapPassageHeadings(
+  markdown: string,
+  passages: Passage[],
+): Array<Passage & { sectionHeading: string | null }> {
+  const lines = markdown.split('\n');
+  const headings = parseHeadings(lines);
+  const offsets = lineStartCharOffsets(lines);
+  const headingOffsets = headings.map((h) => ({ text: h.text, charStart: offsets[h.lineIndex] }));
+  return passages.map((p) => {
+    let nearest: string | null = null;
+    for (const h of headingOffsets) {
+      if (h.charStart <= p.charStart) nearest = h.text;
+      else break;
+    }
+    return { ...p, sectionHeading: nearest };
+  });
 }
 
 // Score passages across all results and return the top N, FlashRank-first
@@ -58,7 +117,7 @@ export async function extractHighlights(
     });
 
     const source = r.markdown_content ?? r.snippet ?? '';
-    const passages = splitIntoPassages(source);
+    const passages = splitIntoPassageStrings(source);
     for (const text of passages) {
       candidates.push({
         text,
@@ -120,7 +179,7 @@ export function fallbackHighlights(
   for (let i = 0; i < results.length && out.length < maxHighlights; i++) {
     const r = results[i];
     const source = r.markdown_content ?? r.snippet ?? '';
-    const firstPara = splitIntoPassages(source)[0] ?? r.snippet ?? '';
+    const firstPara = splitIntoPassageStrings(source)[0] ?? r.snippet ?? '';
     if (!firstPara) continue;
     out.push({
       text: firstPara.slice(0, MAX_PASSAGE_LENGTH),

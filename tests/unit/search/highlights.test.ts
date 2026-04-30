@@ -51,7 +51,7 @@ describe('splitIntoPassages', () => {
     const md = '# Title\n\n| h | h |\n| --- |\n\n```\ncode\n```\n\nReal paragraph that is definitely longer than the minimum threshold for passages.';
     const parts = splitIntoPassages(md);
     expect(parts).toHaveLength(1);
-    expect(parts[0]).toContain('Real paragraph');
+    expect(parts[0].text).toContain('Real paragraph');
   });
 
   it('drops short fragments below 50 chars', () => {
@@ -61,7 +61,7 @@ describe('splitIntoPassages', () => {
 
   it('caps long passages at 500 chars', () => {
     const md = 'x'.repeat(800);
-    expect(splitIntoPassages(md)[0]).toHaveLength(500);
+    expect(splitIntoPassages(md)[0].text).toHaveLength(500);
   });
 
   it('returns empty for empty input', () => {

@@ -53,13 +53,13 @@ export function htmlToMarkdown(html: string): string {
   return turndown.turndown(html);
 }
 
-interface Heading {
+export interface Heading {
   level: number;
   text: string;
   lineIndex: number;
 }
 
-function parseHeadings(lines: string[]): Heading[] {
+export function parseHeadings(lines: string[]): Heading[] {
   const headings: Heading[] = [];
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(/^(#{1,6})\s+(.+)/);
@@ -68,6 +68,18 @@ function parseHeadings(lines: string[]): Heading[] {
     }
   }
   return headings;
+}
+
+// Prefix-sum array of char offsets: offsets[i] is the index in
+// `lines.join('\n')` at which lines[i] begins.
+export function lineStartCharOffsets(lines: string[]): number[] {
+  const offsets = new Array<number>(lines.length);
+  let acc = 0;
+  for (let i = 0; i < lines.length; i++) {
+    offsets[i] = acc;
+    acc += lines[i].length + 1; // +1 for the '\n' separator
+  }
+  return offsets;
 }
 
 function extractFromHeading(lines: string[], headings: Heading[], headingIdx: number): string {
