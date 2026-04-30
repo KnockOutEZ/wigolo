@@ -19,7 +19,7 @@ export function extractStructuredData(html: string): StructuredDataResult[] {
   const out: StructuredDataResult[] = [];
   out.push(...extractJsonLdBlocks(doc));
   out.push(...extractMicrodataBlocks(doc));
-  // rdfa added in a later step
+  out.push(...extractRdfaBlocks(doc));
   return out;
 }
 
@@ -142,6 +142,57 @@ function mergeProp(target: Record<string, unknown>, prop: string, value: unknown
     return;
   }
   target[prop] = [target[prop], value];
+}
+
+function extractRdfaBlocks(doc: Document): StructuredDataResult[] {
+  const out: StructuredDataResult[] = [];
+  const all = Array.from(doc.querySelectorAll('[typeof]'));
+  const tops = all.filter((el) => !hasTypeofAncestor(el));
+  for (const el of tops) {
+    const typeAttr = el.getAttribute('typeof') ?? '';
+    const type = typeAttr.split(/\s+/)[0]?.split(/[:/]/).pop() ?? '';
+    if (!type) continue;
+    const fields: Record<string, unknown> = {};
+    collectRdfaProps(el, fields);
+    out.push({ provenance: 'rdfa', type, fields });
+  }
+  return out;
+}
+
+function hasTypeofAncestor(el: Element): boolean {
+  let cur = el.parentElement;
+  while (cur) {
+    if (cur.hasAttribute('typeof')) return true;
+    cur = cur.parentElement;
+  }
+  return false;
+}
+
+function collectRdfaProps(root: Element, target: Record<string, unknown>): void {
+  const stack: Element[] = Array.from(root.children);
+  while (stack.length) {
+    const el = stack.shift()!;
+    const prop = el.getAttribute('property');
+    if (prop) {
+      const propName = prop.split(/[:/]/).pop() ?? prop;
+      let value: unknown;
+      if (el.hasAttribute('typeof')) {
+        const nested: Record<string, unknown> = {};
+        collectRdfaProps(el, nested);
+        value = nested;
+      } else {
+        value =
+          el.getAttribute('content') ??
+          el.getAttribute('href') ??
+          el.getAttribute('resource') ??
+          (el.textContent ?? '').trim();
+      }
+      mergeProp(target, propName, value);
+    }
+    // Always stop at any nested typeof, regardless of property — independent item.
+    if (el.hasAttribute('typeof')) continue;
+    for (const c of el.children) stack.push(c);
+  }
 }
 
 export const KNOWN_SCHEMA_TYPES: ReadonlySet<string> = KNOWN_TYPES;

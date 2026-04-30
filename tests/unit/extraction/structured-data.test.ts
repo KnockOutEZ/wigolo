@@ -65,4 +65,12 @@ describe('extractStructuredData', () => {
     // Nested ListItem must not emit as separate top-level blocks.
     expect(blocks.filter((b) => b.type === 'ListItem')).toHaveLength(0);
   });
+
+  it('extracts Organization from RDFa with name + nested address', () => {
+    const blocks = extractStructuredData(fixture('organization-rdfa.html'));
+    const org = blocks.find((b) => b.type === 'Organization' && b.provenance === 'rdfa');
+    expect(org).toBeDefined();
+    expect(org!.fields.name).toBeTruthy();
+    expect(org!.fields.address).toBeDefined();
+  });
 });
