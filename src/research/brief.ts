@@ -22,7 +22,7 @@ export async function buildResearchBrief(
 ): Promise<ResearchBrief> {
   const fetched = sources.filter((s) => s.fetched && s.markdown_content.length > 0);
 
-  // Highlights reuse the FlashRank-or-paragraph scorer so briefs align with
+  // Highlights reuse the ONNX-reranker-or-paragraph scorer so briefs align with
   // whatever format='highlights' produces for single-query searches.
   const searchItems: SearchResultItem[] = fetched.map((s) => ({
     title: s.title,

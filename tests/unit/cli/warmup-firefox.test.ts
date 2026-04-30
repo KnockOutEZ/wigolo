@@ -25,8 +25,16 @@ vi.mock('../../../src/searxng/bootstrap.js', () => ({
   getBootstrapState: vi.fn().mockReturnValue(null),
 }));
 
-vi.mock('../../../src/search/flashrank.js', () => ({
-  resetAvailabilityCache: vi.fn(),
+vi.mock('../../../src/search/reranker/download.js', () => ({
+  downloadModelAssets: vi.fn().mockResolvedValue({
+    modelPath: '/tmp/model.onnx',
+    tokenizerPath: '/tmp/tokenizer.json',
+    configPath: '/tmp/tokenizer_config.json',
+  }),
+}));
+
+vi.mock('../../../src/search/reranker/onnx.js', () => ({
+  onnxRerank: vi.fn().mockResolvedValue([{ index: 0, score: 0.5 }]),
 }));
 
 import { runCommand } from '../../../src/cli/tui/run-command.js';
@@ -181,7 +189,6 @@ describe('warmup --firefox flag', () => {
 
     const calls = vi.mocked(runCommand).mock.calls;
     expect(calls.find(hasFirefoxInstall)).toBeDefined();
-    expect(calls.find((c) => includesArg(c, 'flashrank'))).toBeDefined();
     expect(result.firefox).toBe('ok');
     expect(result.reranker).toBe('ok');
   });

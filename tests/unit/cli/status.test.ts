@@ -9,7 +9,7 @@ vi.mock('../../../src/cli/tui/status-cache.js', () => ({
 }));
 
 vi.mock('../../../src/cli/tui/status-python.js', () => ({
-  probePythonPackages: vi.fn().mockReturnValue({ flashrank: 'ok', trafilatura: 'ok', embeddings: 'ok' }),
+  probePythonPackages: vi.fn().mockReturnValue({ reranker: 'ok', trafilatura: 'ok', embeddings: 'ok' }),
 }));
 
 vi.mock('../../../src/cli/tui/status-agents.js', () => ({

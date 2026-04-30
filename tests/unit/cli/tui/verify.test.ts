@@ -1,9 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const { startMock, stopMock, execSyncMock } = vi.hoisted(() => ({
+const { startMock, stopMock, execSyncMock, existsSyncMock } = vi.hoisted(() => ({
   startMock: vi.fn(),
   stopMock: vi.fn(),
   execSyncMock: vi.fn(),
+  existsSyncMock: vi.fn(),
 }));
 
 vi.mock('../../../../src/searxng/process.js', () => ({
@@ -17,8 +18,21 @@ vi.mock('node:child_process', () => ({
   execSync: execSyncMock,
 }));
 
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  return { ...actual, existsSync: existsSyncMock };
+});
+
 vi.mock('../../../../src/python-env.js', () => ({
   getPythonBin: (_dir: string) => '/fake/venv/python',
+}));
+
+vi.mock('../../../../src/config.js', () => ({
+  getConfig: () => ({ rerankerModel: 'bge-reranker-v2-m3' }),
+}));
+
+vi.mock('../../../../src/search/reranker/models.js', () => ({
+  resolveModelId: (id: string) => id,
 }));
 
 import { runVerify } from '../../../../src/cli/tui/verify.js';
@@ -38,6 +52,9 @@ beforeEach(() => {
   startMock.mockReset();
   stopMock.mockReset();
   execSyncMock.mockReset();
+  existsSyncMock.mockReset();
+  // default: reranker model files present
+  existsSyncMock.mockReturnValue(true);
 });
 
 describe('runVerify — SearXNG branches', () => {
@@ -79,14 +96,14 @@ describe('runVerify — SearXNG branches', () => {
   });
 });
 
-describe('runVerify — python package probes', () => {
+describe('runVerify — package probes', () => {
   beforeEach(() => {
     startMock.mockResolvedValue('http://127.0.0.1:8888');
   });
 
-  it('marks flashrank ok when import succeeds', async () => {
+  it('marks reranker ok when model files exist', async () => {
+    existsSyncMock.mockReturnValue(true);
     execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('import flashrank')) return Buffer.from('');
       if (cmd.includes('import trafilatura')) return Buffer.from('');
       if (cmd.includes('sentence_transformers')) return Buffer.from('384\n');
       throw new Error('unexpected cmd: ' + cmd);
@@ -95,18 +112,18 @@ describe('runVerify — python package probes', () => {
     const reporter = new FakeReporter();
     const result = await runVerify('/tmp/wigolo-data', reporter);
 
-    expect(result.flashrank).toBe('ok');
+    expect(result.reranker).toBe('ok');
     expect(result.trafilatura).toBe('ok');
     expect(result.embeddings).toBe('ok');
     expect(result.embeddingsDim).toBe(384);
-    expect(reporter.events).toContain('success:flashrank:installed');
+    expect(reporter.events).toContain('success:reranker:installed (bge-reranker-v2-m3)');
     expect(reporter.events).toContain('success:trafilatura:installed');
     expect(reporter.events).toContain('success:embeddings:384-dim');
   });
 
-  it('marks each package missing when its import throws', async () => {
+  it('marks each package missing when its probe fails', async () => {
+    existsSyncMock.mockReturnValue(false);
     execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('import flashrank')) throw new Error('ModuleNotFoundError: flashrank');
       if (cmd.includes('import trafilatura')) throw new Error('ModuleNotFoundError: trafilatura');
       if (cmd.includes('sentence_transformers')) throw new Error('ModuleNotFoundError: sentence_transformers');
       return Buffer.from('');
@@ -115,19 +132,19 @@ describe('runVerify — python package probes', () => {
     const reporter = new FakeReporter();
     const result = await runVerify('/tmp/wigolo-data', reporter);
 
-    expect(result.flashrank).toBe('missing');
-    expect(result.flashrankError).toContain('flashrank');
+    expect(result.reranker).toBe('missing');
+    expect(result.rerankerError).toContain('missing');
     expect(result.trafilatura).toBe('missing');
     expect(result.embeddings).toBe('missing');
     expect(result.embeddingsDim).toBeUndefined();
-    expect(reporter.events).toContain('fail:flashrank:not installed');
+    expect(reporter.events).toContain('fail:reranker:not installed');
     expect(reporter.events).toContain('fail:trafilatura:not installed');
     expect(reporter.events).toContain('fail:embeddings:not installed');
   });
 
   it('marks embeddings missing when dim parse fails', async () => {
+    existsSyncMock.mockReturnValue(true);
     execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('import flashrank')) return Buffer.from('');
       if (cmd.includes('import trafilatura')) return Buffer.from('');
       if (cmd.includes('sentence_transformers')) return Buffer.from('not-a-number\n');
       throw new Error('unexpected cmd: ' + cmd);
@@ -141,8 +158,8 @@ describe('runVerify — python package probes', () => {
   });
 
   it('allPassed is true only when every check is ok', async () => {
+    existsSyncMock.mockReturnValue(true);
     execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('import flashrank')) return Buffer.from('');
       if (cmd.includes('import trafilatura')) return Buffer.from('');
       if (cmd.includes('sentence_transformers')) return Buffer.from('384\n');
       throw new Error('unexpected cmd: ' + cmd);
@@ -170,8 +187,8 @@ describe('runVerify — suggestions on failure', () => {
 
   it('emits no notes when everything passes', async () => {
     startMock.mockResolvedValue('http://127.0.0.1:8888');
+    existsSyncMock.mockReturnValue(true);
     execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('import flashrank')) return Buffer.from('');
       if (cmd.includes('import trafilatura')) return Buffer.from('');
       if (cmd.includes('sentence_transformers')) return Buffer.from('384\n');
       throw new Error('unexpected cmd: ' + cmd);

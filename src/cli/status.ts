@@ -27,7 +27,7 @@ export async function runStatus(_args: string[]): Promise<number> {
   const bag: StatusBag = {
     version: pkg.version ?? '0.0.0',
     searxng,
-    flashrank: python.flashrank,
+    reranker: python.reranker,
     trafilatura: python.trafilatura,
     embeddings: python.embeddings,
     cache,

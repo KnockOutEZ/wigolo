@@ -181,7 +181,7 @@ export async function extractHighlights(
   return { highlights: fallbackHighlights(results, maxHighlights), citations, reranker_used: false };
 }
 
-// Fallback when FlashRank is unavailable: take the first substantive paragraph
+// Fallback when the ONNX reranker is unavailable: take the first substantive paragraph
 // from each source (ordered by engine relevance). Preserves citation indices
 // so host LLMs can still cite [N] correctly.
 export function fallbackHighlights(

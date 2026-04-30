@@ -1,6 +1,10 @@
 import { execSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { SearxngProcess } from '../../searxng/process.js';
 import { getPythonBin } from '../../python-env.js';
+import { getConfig } from '../../config.js';
+import { resolveModelId } from '../../search/reranker/models.js';
 import type { WarmupReporter } from './reporter.js';
 import { suggestionsFromResult } from './verify-suggestions.js';
 
@@ -8,8 +12,8 @@ export interface VerifyResult {
   searxng: 'ok' | 'failed';
   searxngUrl?: string;
   searxngError?: string;
-  flashrank: 'ok' | 'missing';
-  flashrankError?: string;
+  reranker: 'ok' | 'missing';
+  rerankerError?: string;
   trafilatura: 'ok' | 'missing';
   trafilaturaError?: string;
   embeddings: 'ok' | 'missing';
@@ -19,7 +23,7 @@ export interface VerifyResult {
 }
 
 const SEARXNG_LABEL = 'Starting search engine (searxng)';
-const FLASHRANK_LABEL = 'Checking ML reranker (flashrank)';
+const RERANKER_LABEL = 'Checking ML reranker (onnx)';
 const TRAFILATURA_LABEL = 'Checking content extractor (trafilatura)';
 const EMBEDDINGS_LABEL = 'Checking embeddings';
 
@@ -29,7 +33,7 @@ export async function runVerify(
 ): Promise<VerifyResult> {
   const result: VerifyResult = {
     searxng: 'failed',
-    flashrank: 'missing',
+    reranker: 'missing',
     trafilatura: 'missing',
     embeddings: 'missing',
     allPassed: false,
@@ -64,9 +68,9 @@ export async function runVerify(
 
   const py = getPythonBin(dataDir);
 
-  result.flashrank = runImportProbe(py, 'flashrank', FLASHRANK_LABEL, 'flashrank', reporter, (err) => {
-    result.flashrankError = err;
-  });
+  const rerankerProbe = runOnnxRerankerProbe(dataDir, reporter);
+  result.reranker = rerankerProbe.state;
+  if (rerankerProbe.error) result.rerankerError = rerankerProbe.error;
 
   result.trafilatura = runImportProbe(py, 'trafilatura', TRAFILATURA_LABEL, 'trafilatura', reporter, (err) => {
     result.trafilaturaError = err;
@@ -81,11 +85,35 @@ export async function runVerify(
   return finalize(result);
 }
 
+function runOnnxRerankerProbe(
+  dataDir: string,
+  reporter: WarmupReporter,
+): { state: 'ok' | 'missing'; error?: string } {
+  reporter.start('reranker', RERANKER_LABEL);
+  let modelId: string;
+  try {
+    modelId = resolveModelId(getConfig().rerankerModel);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    reporter.fail('reranker', 'config error');
+    return { state: 'missing', error: message };
+  }
+  const dir = join(dataDir, 'models', modelId);
+  const required = ['model_quantized.onnx', 'tokenizer.json', 'tokenizer_config.json'];
+  const missing = required.filter((f) => !existsSync(join(dir, f)));
+  if (missing.length > 0) {
+    reporter.fail('reranker', 'not installed');
+    return { state: 'missing', error: `missing: ${missing.join(', ')}` };
+  }
+  reporter.success('reranker', `installed (${modelId})`);
+  return { state: 'ok' };
+}
+
 function runImportProbe(
   py: string,
   moduleName: string,
   label: string,
-  id: 'flashrank' | 'trafilatura',
+  id: 'trafilatura',
   reporter: WarmupReporter,
   onError: (err: string) => void,
 ): 'ok' | 'missing' {
@@ -128,7 +156,7 @@ function runEmbeddingsProbe(
 function finalize(result: VerifyResult, reporter?: WarmupReporter): VerifyResult {
   result.allPassed =
     result.searxng === 'ok' &&
-    result.flashrank === 'ok' &&
+    result.reranker === 'ok' &&
     result.trafilatura === 'ok' &&
     result.embeddings === 'ok';
   if (!result.allPassed && reporter) {

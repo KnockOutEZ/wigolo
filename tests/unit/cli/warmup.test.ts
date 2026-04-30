@@ -27,15 +27,23 @@ vi.mock('../../../src/config.js', () => ({
   getConfig: vi.fn(() => ({ dataDir: '/tmp/test-wigolo' })),
 }));
 
-vi.mock('../../../src/search/flashrank.js', () => ({
-  isFlashRankAvailable: vi.fn(),
-  resetAvailabilityCache: vi.fn(),
+vi.mock('../../../src/search/reranker/download.js', () => ({
+  downloadModelAssets: vi.fn().mockResolvedValue({
+    modelPath: '/tmp/model.onnx',
+    tokenizerPath: '/tmp/tokenizer.json',
+    configPath: '/tmp/tokenizer_config.json',
+  }),
+}));
+
+vi.mock('../../../src/search/reranker/onnx.js', () => ({
+  onnxRerank: vi.fn().mockResolvedValue([{ index: 0, score: 0.5 }]),
 }));
 
 import { runCommand } from '../../../src/cli/tui/run-command.js';
 import { runWarmup } from '../../../src/cli/warmup.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../../../src/searxng/bootstrap.js';
-import { isFlashRankAvailable, resetAvailabilityCache } from '../../../src/search/flashrank.js';
+import { downloadModelAssets } from '../../../src/search/reranker/download.js';
+import { onnxRerank } from '../../../src/search/reranker/onnx.js';
 
 const ok = { code: 0, stdout: '', stderr: '', timedOut: false };
 const failWith = (msg: string) => ({ code: 1, stdout: '', stderr: msg, timedOut: false });
@@ -200,69 +208,51 @@ describe('warmup --reranker', () => {
     vi.clearAllMocks();
     vi.mocked(runCommand).mockResolvedValue(ok);
     vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
+    vi.mocked(downloadModelAssets).mockResolvedValue({
+      modelPath: '/tmp/model.onnx',
+      tokenizerPath: '/tmp/tokenizer.json',
+      configPath: '/tmp/tokenizer_config.json',
+    });
+    vi.mocked(onnxRerank).mockResolvedValue([{ index: 0, score: 0.5 }]);
   });
 
-  it('installs FlashRank Python package when --reranker passed', async () => {
+  it('downloads ONNX reranker assets when --reranker passed', async () => {
     const result = await runWarmup(['--reranker']);
 
-    const calls = vi.mocked(runCommand).mock.calls;
-    const pipCall = calls.find((c) => includesArg(c, 'flashrank'));
-    expect(pipCall).toBeDefined();
+    expect(downloadModelAssets).toHaveBeenCalled();
+    expect(onnxRerank).toHaveBeenCalled();
     expect(result.reranker).toBe('ok');
   });
 
   it('--all flag includes reranker installation', async () => {
     const result = await runWarmup(['--all']);
 
-    const pipCalls = vi.mocked(runCommand).mock.calls.filter(
-      (c) => includesArg(c, 'pip') && includesArg(c, 'flashrank'),
-    );
-    expect(pipCalls.length).toBeGreaterThanOrEqual(1);
+    expect(downloadModelAssets).toHaveBeenCalled();
     expect(result.reranker).toBe('ok');
   });
 
-  it('reports failure when pip install fails', async () => {
-    vi.mocked(runCommand).mockImplementation(async (_cmd, args) => {
-      if (args.some((a) => String(a).includes('flashrank'))) {
-        return failWith('pip install failed: network error');
-      }
-      return ok;
-    });
+  it('reports failure when download fails', async () => {
+    vi.mocked(downloadModelAssets).mockRejectedValueOnce(new Error('SHA-256 mismatch'));
 
     const result = await runWarmup(['--reranker']);
 
     expect(result.reranker).toBe('failed');
-    expect(result.rerankerError).toContain('pip install failed');
+    expect(result.rerankerError).toContain('SHA-256');
   });
 
   it('does not install reranker when flag not passed', async () => {
     const result = await runWarmup([]);
 
-    const pipCalls = vi.mocked(runCommand).mock.calls.filter(
-      (c) => includesArg(c, 'flashrank'),
-    );
-    expect(pipCalls).toHaveLength(0);
+    expect(downloadModelAssets).not.toHaveBeenCalled();
     expect(result.reranker).toBeUndefined();
   });
 
-  it('verifies FlashRank availability after install', async () => {
-    vi.mocked(isFlashRankAvailable).mockResolvedValue(true);
-
-    await runWarmup(['--reranker']);
-
-    expect(resetAvailabilityCache).toHaveBeenCalled();
-  });
-
-  it('reports failure when python3 not found for reranker install', async () => {
-    vi.mocked(runCommand).mockImplementation(async (cmd, args) => {
-      if (String(cmd).includes('python') || args.some((a) => String(a).includes('flashrank'))) {
-        return failWith('ENOENT: python3 not found');
-      }
-      return ok;
-    });
+  it('reports failure when smoke rerank fails', async () => {
+    vi.mocked(onnxRerank).mockRejectedValueOnce(new Error('ONNX session init failed'));
 
     const result = await runWarmup(['--reranker']);
 
     expect(result.reranker).toBe('failed');
+    expect(result.rerankerError).toContain('ONNX session');
   });
 });

@@ -21,7 +21,7 @@ function buildItems(browser: BrowserChoice): InstallItem[] {
   }
   items.push(
     { id: 'trafilatura', name: 'Content extractor', status: 'waiting' },
-    { id: 'flashrank', name: 'ML reranker', status: 'waiting' },
+    { id: 'reranker', name: 'ML reranker', status: 'waiting' },
     { id: 'embeddings', name: 'Embeddings', status: 'waiting' },
   );
   if (browser === 'lightpanda') {

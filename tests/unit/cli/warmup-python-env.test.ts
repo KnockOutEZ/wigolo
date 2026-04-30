@@ -22,9 +22,16 @@ vi.mock('../../../src/searxng/bootstrap.js', () => ({
   bootstrapNativeSearxng: vi.fn(),
 }));
 
-vi.mock('../../../src/search/flashrank.js', () => ({
-  isFlashRankAvailable: vi.fn(),
-  resetAvailabilityCache: vi.fn(),
+vi.mock('../../../src/search/reranker/download.js', () => ({
+  downloadModelAssets: vi.fn().mockResolvedValue({
+    modelPath: '/tmp/model.onnx',
+    tokenizerPath: '/tmp/tokenizer.json',
+    configPath: '/tmp/tokenizer_config.json',
+  }),
+}));
+
+vi.mock('../../../src/search/reranker/onnx.js', () => ({
+  onnxRerank: vi.fn().mockResolvedValue([{ index: 0, score: 0.5 }]),
 }));
 
 import { existsSync } from 'node:fs';
@@ -60,14 +67,13 @@ describe('warmup uses venv python', () => {
     expect(trafCall![1]).toEqual(expect.arrayContaining(['-m', 'pip', 'install']));
   });
 
-  it('installs flashrank via venv python when venv exists', async () => {
+  it('--reranker no longer invokes pip (ONNX runs in-process)', async () => {
     vi.mocked(existsSync).mockImplementation((p) => String(p) === VENV_PYTHON);
 
     await runWarmup(['--reranker']);
 
-    const fr = pipCallFor('flashrank');
-    expect(fr).toBeDefined();
-    expect(fr![0]).toBe(VENV_PYTHON);
+    expect(pipCallFor('flashrank')).toBeUndefined();
+    expect(pipCallFor('onnx')).toBeUndefined();
   });
 
   it('installs sentence-transformers via venv python when venv exists', async () => {

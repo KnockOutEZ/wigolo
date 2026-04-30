@@ -4,7 +4,7 @@ import { formatStatus, type StatusBag } from '../../../../src/cli/tui/status-for
 const baseBag: StatusBag = {
   version: '0.6.3',
   searxng: 'ready',
-  flashrank: 'ok',
+  reranker: 'ok',
   trafilatura: 'ok',
   embeddings: 'ok',
   cache: { pages: 142, bytes: 13 * 1024 * 1024 },
@@ -29,7 +29,7 @@ describe('formatStatus', () => {
   });
 
   it('shows ✓ for installed python packages, ⊘ for missing', () => {
-    const out = formatStatus({ ...baseBag, flashrank: 'ok', trafilatura: 'missing', embeddings: 'ok' });
+    const out = formatStatus({ ...baseBag, reranker: 'ok', trafilatura: 'missing', embeddings: 'ok' });
     expect(out).toMatch(/✓ ML reranker/);
     expect(out).toMatch(/⊘ Content extractor/);
     expect(out).toMatch(/✓ Embeddings/);

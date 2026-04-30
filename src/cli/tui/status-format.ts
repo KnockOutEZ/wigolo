@@ -3,7 +3,7 @@ import type { ConnectedAgent } from './status-agents.js';
 export interface StatusBag {
   version: string;
   searxng: 'ready' | 'failed' | 'pending';
-  flashrank: 'ok' | 'missing';
+  reranker: 'ok' | 'missing';
   trafilatura: 'ok' | 'missing';
   embeddings: 'ok' | 'missing';
   cache: { pages: number; bytes: number };
@@ -26,7 +26,7 @@ export function formatStatus(bag: StatusBag): string {
       break;
   }
 
-  lines.push(line('ML reranker',      bag.flashrank));
+  lines.push(line('ML reranker',      bag.reranker));
   lines.push(line('Content extractor', bag.trafilatura));
   lines.push(line('Embeddings',  bag.embeddings));
   lines.push(`  Cache: ${bag.cache.pages} pages, ${formatBytes(bag.cache.bytes)}`);

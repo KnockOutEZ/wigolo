@@ -9,7 +9,7 @@ import type { VerifyResult } from '../../../../src/cli/tui/verify.js';
 describe('suggestionFor', () => {
   const table: Array<[VerifyCheckId, RegExp]> = [
     ['searxng', /wigolo warmup --force/],
-    ['flashrank', /wigolo warmup/],
+    ['reranker', /wigolo warmup/],
     ['trafilatura', /wigolo warmup/],
     ['embeddings', /wigolo warmup/],
   ];
@@ -27,7 +27,7 @@ describe('suggestionsFromResult', () => {
   const okResult: VerifyResult = {
     searxng: 'ok',
     searxngUrl: 'http://127.0.0.1:8888',
-    flashrank: 'ok',
+    reranker: 'ok',
     trafilatura: 'ok',
     embeddings: 'ok',
     embeddingsDim: 384,
@@ -42,7 +42,7 @@ describe('suggestionsFromResult', () => {
     const failing: VerifyResult = {
       ...okResult,
       searxng: 'failed',
-      flashrank: 'missing',
+      reranker: 'missing',
       trafilatura: 'ok',
       embeddings: 'missing',
       allPassed: false,
