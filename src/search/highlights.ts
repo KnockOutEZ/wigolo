@@ -26,6 +26,9 @@ interface PassageCandidate {
   sourceIndex: number;
   sourceUrl: string;
   sourceTitle: string;
+  charStart: number;
+  charEnd: number;
+  sectionHeading: string | null;
 }
 
 function shouldKeep(trimmed: string): boolean {
@@ -122,13 +125,17 @@ export async function extractHighlights(
     });
 
     const source = r.markdown_content ?? r.snippet ?? '';
-    const passages = splitIntoPassageStrings(source);
-    for (const text of passages) {
+    const passages = splitIntoPassages(source);
+    const annotated = mapPassageHeadings(source, passages);
+    for (const p of annotated) {
       candidates.push({
-        text,
+        text: p.text,
         sourceIndex: i + 1,
         sourceUrl: r.url,
         sourceTitle: r.title,
+        charStart: p.charStart,
+        charEnd: p.charEnd,
+        sectionHeading: p.sectionHeading,
       });
     }
   }
@@ -163,6 +170,8 @@ export async function extractHighlights(
           relevance_score: r.score,
           source_url: cand.sourceUrl,
           source_title: cand.sourceTitle,
+          section_heading: cand.sectionHeading,
+          source_span: { start: cand.charStart, end: cand.charEnd },
         };
       });
       return { highlights, citations, flashrank_used: true };
@@ -183,15 +192,33 @@ export function fallbackHighlights(
   const out: Highlight[] = [];
   for (let i = 0; i < results.length && out.length < maxHighlights; i++) {
     const r = results[i];
-    const source = r.markdown_content ?? r.snippet ?? '';
-    const firstPara = splitIntoPassageStrings(source)[0] ?? r.snippet ?? '';
-    if (!firstPara) continue;
+    const source = r.markdown_content ?? '';
+    const passages = source ? splitIntoPassages(source) : [];
+    if (passages.length > 0) {
+      const annotated = mapPassageHeadings(source, [passages[0]])[0];
+      const text = annotated.text.slice(0, MAX_PASSAGE_LENGTH);
+      out.push({
+        text,
+        source_index: i + 1,
+        relevance_score: r.relevance_score,
+        source_url: r.url,
+        source_title: r.title,
+        section_heading: annotated.sectionHeading,
+        source_span: { start: annotated.charStart, end: annotated.charStart + text.length },
+      });
+      continue;
+    }
+    const snippet = r.snippet ?? '';
+    if (!snippet) continue;
+    const text = snippet.slice(0, MAX_PASSAGE_LENGTH);
     out.push({
-      text: firstPara.slice(0, MAX_PASSAGE_LENGTH),
+      text,
       source_index: i + 1,
       relevance_score: r.relevance_score,
       source_url: r.url,
       source_title: r.title,
+      section_heading: null,
+      source_span: { start: 0, end: text.length },
     });
   }
   return out;
