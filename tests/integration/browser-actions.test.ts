@@ -83,6 +83,7 @@ describe('Browser Actions Integration', () => {
   it('dismisses cookie banner then extracts content', async () => {
     const input: FetchInput = {
       url: `http://127.0.0.1:${port}/cookie-banner.html`,
+      include_full_markdown: true,
       actions: [
         { type: 'wait_for', selector: '.cookie-accept', timeout: 5000 },
         { type: 'click', selector: '.cookie-accept' },
@@ -104,6 +105,7 @@ describe('Browser Actions Integration', () => {
   it('fills form and captures result', async () => {
     const input: FetchInput = {
       url: `http://127.0.0.1:${port}/form-page.html`,
+      include_full_markdown: true,
       actions: [
         { type: 'wait_for', selector: '#username', timeout: 5000 },
         { type: 'type', selector: '#username', text: 'testuser' },
@@ -126,6 +128,7 @@ describe('Browser Actions Integration', () => {
   it('clicks Load More button to reveal additional content', async () => {
     const input: FetchInput = {
       url: `http://127.0.0.1:${port}/load-more.html`,
+      include_full_markdown: true,
       actions: [
         { type: 'wait_for', selector: '#load-more', timeout: 5000 },
         { type: 'click', selector: '#load-more' },
@@ -200,6 +203,7 @@ describe('Browser Actions Integration', () => {
   it('handles empty actions array identically to no actions', async () => {
     const input: FetchInput = {
       url: `http://127.0.0.1:${port}/load-more.html`,
+      include_full_markdown: true,
       render_js: 'always',
       actions: [],
     };
@@ -214,6 +218,7 @@ describe('Browser Actions Integration', () => {
   it('complex multi-step flow: dismiss, type, scroll, screenshot', async () => {
     const input: FetchInput = {
       url: `http://127.0.0.1:${port}/form-page.html`,
+      include_full_markdown: true,
       actions: [
         { type: 'wait_for', selector: '#username' },
         { type: 'type', selector: '#username', text: 'admin' },

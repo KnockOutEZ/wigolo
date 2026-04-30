@@ -341,6 +341,7 @@ export interface AgentOutput {
   total_time_ms: number;
   sampling_supported: boolean;
   error?: string;
+  evidence?: EvidenceItem[];
 }
 
 export interface RawSearchResult {

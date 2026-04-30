@@ -1,6 +1,15 @@
 import { createLogger } from '../logger.js';
 import { runResearchPipeline } from '../research/pipeline.js';
-import type { ResearchInput, ResearchOutput, SearchEngine } from '../types.js';
+import {
+  buildEvidenceFromMarkdown,
+  applyTokenBudget,
+} from '../search/evidence.js';
+import type {
+  EvidenceItem,
+  ResearchInput,
+  ResearchOutput,
+  SearchEngine,
+} from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
 
@@ -8,6 +17,7 @@ const log = createLogger('research');
 
 const VALID_DEPTHS = new Set(['quick', 'standard', 'comprehensive']);
 const MAX_SOURCES_LIMIT = 50;
+const DEFAULT_MAX_TOKENS_OUT = 4000;
 
 export async function handleResearch(
   input: ResearchInput,
@@ -46,7 +56,9 @@ export async function handleResearch(
       max_sources: input.max_sources,
     });
 
-    return await runResearchPipeline(input, engines, router, server);
+    const out = await runResearchPipeline(input, engines, router, server);
+    await attachEvidence(out, input);
+    return out;
   } catch (err) {
     log.error('research handler failed', {
       question: input.question?.slice(0, 100),
@@ -57,6 +69,34 @@ export async function handleResearch(
       input,
       start,
     );
+  }
+}
+
+async function attachEvidence(out: ResearchOutput, input: ResearchInput): Promise<void> {
+  if (out.sources.length === 0) return;
+  const includeFull = input.include_full_markdown ?? false;
+  const maxTokensOut = input.max_tokens_out ?? DEFAULT_MAX_TOKENS_OUT;
+
+  const collected: EvidenceItem[] = [];
+  for (const s of out.sources) {
+    if (!s.markdown_content) continue;
+    const evs = await buildEvidenceFromMarkdown(
+      input.question,
+      s.title,
+      s.url,
+      s.markdown_content,
+      { maxItems: 1 },
+    );
+    collected.push(...evs);
+  }
+
+  const budgeted = applyTokenBudget(collected, maxTokensOut);
+  if (budgeted.length > 0) out.evidence = budgeted;
+
+  if (!includeFull) {
+    for (const s of out.sources) {
+      s.markdown_content = '';
+    }
   }
 }
 

@@ -99,7 +99,7 @@ describe('max_content_chars — fetch', () => {
       title: 'Long', markdown: 'x'.repeat(10000), metadata: {}, links: [], images: [],
       extractor: 'defuddle' as const,
     });
-    const input: FetchInput = { url: 'https://e.com/1', max_content_chars: 2000 };
+    const input: FetchInput = { url: 'https://e.com/1', max_content_chars: 2000, include_full_markdown: true };
     const out = await handleFetch(input, router);
     expect(out.markdown.length).toBeLessThanOrEqual(2000 + 30);
     expect(out.markdown.endsWith('[... content truncated]')).toBe(true);

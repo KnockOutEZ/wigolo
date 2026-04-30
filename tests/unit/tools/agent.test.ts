@@ -1,4 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../../../src/extraction/pipeline.js', () => ({
+  extractContent: vi.fn().mockResolvedValue({
+    title: 'Default Title',
+    markdown: '# Default\n\nDefault extracted content.',
+    metadata: {},
+    links: [],
+    images: [],
+    extractor: 'defuddle' as const,
+  }),
+}));
+
 import { handleAgent } from '../../../src/tools/agent.js';
 import type { SearchEngine, RawSearchResult, AgentInput } from '../../../src/types.js';
 import type { SmartRouter } from '../../../src/fetch/router.js';
@@ -195,4 +207,101 @@ describe('handleAgent', () => {
     expect(result.error).toBeDefined();
     expect(result.error).toContain('url');
   });
+
+  describe('evidence shape', () => {
+    const longMd =
+      '# Topic\n\n' +
+      'TypeScript is a strongly typed programming language built on JavaScript. ' +
+      'It compiles to plain JavaScript and supports advanced type-system features ' +
+      'such as generics, conditional types, and template literal types.\n\n' +
+      'TypeScript catches type errors at build time which improves reliability.';
+
+    const richRouter = {
+      fetch: vi.fn().mockResolvedValue({
+        url: 'https://example.com/topic',
+        finalUrl: 'https://example.com/topic',
+        html: `<html><body><h1>Topic</h1><p>${longMd}</p></body></html>`,
+        contentType: 'text/html',
+        statusCode: 200,
+        method: 'http' as const,
+        headers: {},
+      }),
+    } as unknown as SmartRouter;
+
+    it('default response (no schema) populates evidence and strips source markdown_content', async () => {
+      const { extractContent } = await import('../../../src/extraction/pipeline.js');
+      vi.mocked(extractContent).mockResolvedValue({
+        title: 'Topic',
+        markdown: longMd,
+        metadata: {},
+        links: [],
+        images: [],
+        extractor: 'defuddle' as const,
+      });
+
+      const input: AgentInput = {
+        prompt: 'Tell me about TypeScript',
+        urls: ['https://example.com/topic'],
+        max_pages: 1,
+      };
+      const result = await handleAgent(input, [stubEngine], richRouter);
+
+      expect(result.evidence).toBeDefined();
+      expect(result.evidence!.length).toBeGreaterThan(0);
+      const ev = result.evidence![0];
+      expect(ev.excerpt.length).toBeGreaterThan(0);
+      expect(ev.citation_id).toMatch(/^[a-f0-9]{12}$/);
+      expect(ev.source_span.end).toBeGreaterThan(ev.source_span.start);
+      for (const s of result.sources) {
+        expect(s.markdown_content).toBe('');
+      }
+    });
+
+    it('include_full_markdown=true preserves source markdown_content', async () => {
+      const { extractContent } = await import('../../../src/extraction/pipeline.js');
+      vi.mocked(extractContent).mockResolvedValue({
+        title: 'Topic',
+        markdown: longMd,
+        metadata: {},
+        links: [],
+        images: [],
+        extractor: 'defuddle' as const,
+      });
+
+      const input: AgentInput = {
+        prompt: 'Tell me about TypeScript',
+        urls: ['https://example.com/topic'],
+        max_pages: 1,
+        include_full_markdown: true,
+      };
+      const result = await handleAgent(input, [stubEngine], richRouter);
+
+      expect(result.evidence).toBeDefined();
+      const hasContent = result.sources.some((s) => s.markdown_content.length > 0);
+      expect(hasContent).toBe(true);
+    });
+
+    it('schema path leaves evidence absent', async () => {
+      const { extractContent } = await import('../../../src/extraction/pipeline.js');
+      vi.mocked(extractContent).mockResolvedValue({
+        title: 'Topic',
+        markdown: longMd,
+        metadata: {},
+        links: [],
+        images: [],
+        extractor: 'defuddle' as const,
+      });
+
+      const input: AgentInput = {
+        prompt: 'Extract types',
+        urls: ['https://example.com/topic'],
+        schema: { type: 'object', properties: { name: { type: 'string' } } },
+      };
+      const result = await handleAgent(input, [stubEngine], richRouter);
+
+      // When schema is provided, evidence is not populated.
+      expect(result.evidence).toBeUndefined();
+    });
+  });
 });
+

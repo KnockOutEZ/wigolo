@@ -136,6 +136,59 @@ describe('handleCrawl', () => {
     expect(result.crawled).toBe(0);
   });
 
+  describe('evidence shape', () => {
+    const longMd =
+      '# Page Title\n\n' +
+      'TypeScript is a strongly typed programming language that builds on JavaScript. ' +
+      'It compiles to plain JavaScript and runs in any browser, Node.js, or anywhere ' +
+      'JavaScript runs at all.\n\nTypeScript adds static typing to JavaScript.';
+
+    beforeEach(() => {
+      const mockCrawl = vi.fn().mockResolvedValue({
+        pages: [
+          { url: 'https://docs.example.com', title: 'Home', markdown: longMd, depth: 0 },
+          { url: 'https://docs.example.com/intro', title: 'Intro', markdown: longMd, depth: 1 },
+        ],
+        total_found: 2,
+        crawled: 2,
+      });
+      vi.mocked(Crawler).mockImplementation(function (this: any) {
+        this.crawl = mockCrawl;
+        this.crawlSitemap = vi.fn();
+      } as any);
+    });
+
+    it('default emits per-page evidence and strips page markdown', async () => {
+      const router = mockRouter();
+      const input: CrawlInput = { url: 'https://docs.example.com' };
+
+      const result = await handleCrawl(input, router as any) as CrawlOutput;
+
+      expect(result.evidence).toBeDefined();
+      expect(result.evidence!.length).toBeGreaterThan(0);
+      const ev = result.evidence![0];
+      expect(ev.excerpt.length).toBeGreaterThan(0);
+      expect(ev.citation_id).toMatch(/^[a-f0-9]{12}$/);
+      expect(ev.source_span.end).toBeGreaterThan(ev.source_span.start);
+      for (const p of result.pages) {
+        expect(p.markdown).toBe('');
+      }
+    });
+
+    it('include_full_markdown=true keeps page markdown', async () => {
+      const router = mockRouter();
+      const input: CrawlInput = {
+        url: 'https://docs.example.com',
+        include_full_markdown: true,
+      };
+
+      const result = await handleCrawl(input, router as any) as CrawlOutput;
+
+      expect(result.evidence).toBeDefined();
+      expect(result.pages.every((p) => p.markdown.length > 0)).toBe(true);
+    });
+  });
+
   it('uses default max_total_chars of 100000', async () => {
     const longPages = Array.from({ length: 5 }, (_, i) => ({
       url: `https://a.com/${i}`,

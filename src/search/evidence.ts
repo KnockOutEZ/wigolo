@@ -17,6 +17,88 @@ const log = createLogger('search');
 const DEFAULT_MAX_TOKENS_OUT = 4000;
 const MAX_EVIDENCE_PASSAGES = 20;
 
+export interface BuildEvidenceOptions {
+  maxTokensOut?: number;
+  maxItems?: number;
+}
+
+// Build evidence items from a single page's markdown. Used by per-page tools
+// (fetch, crawl pages, find_similar results, agent/research sources). The
+// returned list is already truncated to fit `maxTokensOut` if provided; pass
+// `maxItems` to cap how many highlights are projected.
+export async function buildEvidenceFromMarkdown(
+  query: string,
+  title: string,
+  url: string,
+  markdown: string,
+  opts: BuildEvidenceOptions = {},
+): Promise<EvidenceItem[]> {
+  if (!markdown) return [];
+  const maxItems = opts.maxItems ?? 1;
+  const synthetic: SearchResultItem[] = [{
+    title,
+    url,
+    snippet: '',
+    markdown_content: markdown,
+    relevance_score: 1,
+  }];
+
+  let result;
+  try {
+    result = await extractHighlights(query, synthetic, Math.max(maxItems, 1));
+  } catch (err) {
+    log.debug('buildEvidenceFromMarkdown: extractHighlights failed', { error: String(err) });
+    return [];
+  }
+
+  const ranked = result.highlights
+    .slice()
+    .sort((a, b) => b.relevance_score - a.relevance_score)
+    .slice(0, maxItems);
+
+  const out: EvidenceItem[] = [];
+  let used = 0;
+  const budget = opts.maxTokensOut;
+  for (const h of ranked) {
+    let excerpt = h.text;
+    if (budget !== undefined) {
+      const remaining = budget - used;
+      if (remaining <= 0) break;
+      excerpt = truncateByTokens(h.text, remaining);
+      if (!excerpt) break;
+    }
+    const span = h.source_span ?? { start: 0, end: excerpt.length };
+    out.push(buildEvidenceItem({
+      title: h.source_title || title,
+      url: h.source_url || url,
+      sectionHeading: h.section_heading ?? null,
+      excerpt,
+      score: h.relevance_score,
+      sourceSpan: span,
+    }));
+    if (budget !== undefined) used += countTokens(excerpt);
+  }
+  return out;
+}
+
+// Apply an aggregate token budget across an already-built list of evidence
+// items, truncating excerpts in order until the budget is exhausted. Items
+// past the budget are dropped.
+export function applyTokenBudget(items: EvidenceItem[], maxTokensOut: number): EvidenceItem[] {
+  if (maxTokensOut <= 0) return [];
+  const out: EvidenceItem[] = [];
+  let used = 0;
+  for (const item of items) {
+    const remaining = maxTokensOut - used;
+    if (remaining <= 0) break;
+    const excerpt = truncateByTokens(item.excerpt, remaining);
+    if (!excerpt) break;
+    out.push({ ...item, excerpt });
+    used += countTokens(excerpt);
+  }
+  return out;
+}
+
 export function stableCitationId(url: string, start: number): string {
   return createHash('sha1').update(`${url}#${start}`).digest('hex').slice(0, 12);
 }

@@ -6,9 +6,33 @@ import { extractSection } from '../extraction/markdown.js';
 import { detectChange } from '../cache/change-detector.js';
 import { getEmbeddingService } from '../embedding/embed.js';
 import { truncateSmartly } from '../search/truncate.js';
+import { buildEvidenceFromMarkdown } from '../search/evidence.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('fetch');
+
+const DEFAULT_MAX_TOKENS_OUT = 4000;
+
+async function attachEvidence(
+  output: FetchOutput,
+  input: FetchInput,
+  markdown: string,
+): Promise<void> {
+  if (!markdown) return;
+  const includeFull = input.include_full_markdown ?? false;
+  const maxTokensOut = input.max_tokens_out ?? DEFAULT_MAX_TOKENS_OUT;
+  const evidence = await buildEvidenceFromMarkdown(
+    output.title || output.url,
+    output.title,
+    output.url,
+    markdown,
+    { maxTokensOut, maxItems: 1 },
+  );
+  if (evidence.length > 0) output.evidence = evidence;
+  if (!includeFull) {
+    output.markdown = '';
+  }
+}
 
 function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOutput {
   let markdown = cached.markdown;
@@ -51,7 +75,10 @@ export async function handleFetch(
       const cached = getCachedContent(input.url);
       if (cached && !isExpired(cached) && (!input.actions || input.actions.length === 0)) {
         log.info('Serving from cache', { url: input.url });
-        return formatCachedResponse(cached, input);
+        const out = formatCachedResponse(cached, input);
+        const fullMarkdown = out.markdown;
+        await attachEvidence(out, input, fullMarkdown);
+        return out;
       }
     }
 
@@ -97,7 +124,7 @@ export async function handleFetch(
       ? truncateSmartly(extraction.markdown, input.max_content_chars)
       : extraction.markdown;
 
-    return {
+    const out: FetchOutput = {
       url: raw.finalUrl,
       title: extraction.title,
       markdown: finalMarkdown,
@@ -113,6 +140,9 @@ export async function handleFetch(
         diff_summary: changeResult.diffSummary,
       } : {}),
     };
+
+    await attachEvidence(out, input, finalMarkdown);
+    return out;
   } catch (err) {
     log.error('Fetch failed', { url: input.url, error: String(err) });
     return {

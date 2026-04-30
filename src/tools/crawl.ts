@@ -1,14 +1,21 @@
-import type { CrawlInput, CrawlOutput, MapOutput } from '../types.js';
+import type {
+  CrawlInput,
+  CrawlOutput,
+  EvidenceItem,
+  MapOutput,
+} from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import { Crawler } from '../crawl/crawler.js';
 import { deduplicatePages } from '../crawl/dedup.js';
 import { mapUrls } from '../crawl/mapper.js';
 import { handleFetch } from './fetch.js';
+import { buildEvidenceFromMarkdown, applyTokenBudget } from '../search/evidence.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('crawl');
 
 const DEFAULT_MAX_TOTAL_CHARS = 100000;
+const DEFAULT_MAX_TOKENS_OUT = 4000;
 
 export async function handleCrawl(
   input: CrawlInput,
@@ -20,8 +27,10 @@ export async function handleCrawl(
       return handleMapStrategy(input, router);
     }
 
+    // Crawler needs full markdown internally for dedup; opt in explicitly so
+    // handleFetch's default strip does not steal page bodies mid-crawl.
     const fetchFn = async (url: string) =>
-      handleFetch({ url, use_auth: input.use_auth }, router);
+      handleFetch({ url, use_auth: input.use_auth, include_full_markdown: true }, router);
 
     const rawFetchFn = async (url: string) =>
       router.fetch(url, { renderJs: 'never' });
@@ -62,12 +71,15 @@ export async function handleCrawl(
       totalChars: charCount,
     });
 
-    return {
+    const out: CrawlOutput = {
       pages: budgetedPages,
       total_found: result.total_found,
       crawled: result.crawled,
       ...(result.links ? { links: result.links } : {}),
     };
+
+    await attachEvidence(out, input);
+    return out;
   } catch (err) {
     log.error('Crawl failed', { url: input.url, error: String(err) });
     return {
@@ -76,6 +88,34 @@ export async function handleCrawl(
       crawled: 0,
       error: err instanceof Error ? err.message : String(err),
     };
+  }
+}
+
+async function attachEvidence(out: CrawlOutput, input: CrawlInput): Promise<void> {
+  if (out.pages.length === 0) return;
+  const includeFull = input.include_full_markdown ?? false;
+  const maxTokensOut = input.max_tokens_out ?? DEFAULT_MAX_TOKENS_OUT;
+
+  const collected: EvidenceItem[] = [];
+  for (const page of out.pages) {
+    if (!page.markdown) continue;
+    const evs = await buildEvidenceFromMarkdown(
+      page.title || page.url,
+      page.title,
+      page.url,
+      page.markdown,
+      { maxItems: 1 },
+    );
+    collected.push(...evs);
+  }
+
+  const budgeted = applyTokenBudget(collected, maxTokensOut);
+  if (budgeted.length > 0) out.evidence = budgeted;
+
+  if (!includeFull) {
+    for (const page of out.pages) {
+      page.markdown = '';
+    }
   }
 }
 

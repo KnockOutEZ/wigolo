@@ -224,6 +224,89 @@ describe('handleFindSimilar', () => {
     }
   });
 
+  describe('evidence shape', () => {
+    it('default response includes evidence and strips per-result markdown', async () => {
+      const { cacheContent } = await import('../../../src/cache/store.js');
+      cacheContent(
+        {
+          url: 'https://cached.example.com/page',
+          finalUrl: 'https://cached.example.com/page',
+          html: '<html><body><h1>React Hooks</h1></body></html>',
+          contentType: 'text/html',
+          statusCode: 200,
+          method: 'http',
+          headers: {},
+        },
+        {
+          title: 'React Hooks Guide',
+          markdown:
+            '# React Hooks\n\n' +
+            'React Hooks let you use state and other React features without writing a class. ' +
+            'Hooks are functions that let you hook into React state and lifecycle features ' +
+            'from function components. They are a powerful addition to the React API.\n\n' +
+            'useState is the most common hook for adding stateful logic to components.',
+          metadata: {},
+          links: [],
+          images: [],
+          extractor: 'defuddle',
+        },
+      );
+
+      const result = await handleFindSimilar(
+        { concept: 'React Hooks', include_web: false },
+        [mockEngine],
+        mockRouter,
+      );
+
+      expect(result.evidence).toBeDefined();
+      expect(result.evidence!.length).toBeGreaterThan(0);
+      const ev = result.evidence![0];
+      expect(ev.excerpt.length).toBeGreaterThan(0);
+      expect(ev.citation_id).toMatch(/^[a-f0-9]{12}$/);
+      expect(ev.source_span.end).toBeGreaterThan(ev.source_span.start);
+      for (const r of result.results) {
+        expect(r.markdown).toBe('');
+      }
+    });
+
+    it('include_full_markdown=true preserves per-result markdown', async () => {
+      const { cacheContent } = await import('../../../src/cache/store.js');
+      const fullMarkdown =
+        '# React Hooks\n\n' +
+        'React Hooks let you use state and other React features without writing a class. ' +
+        'Hooks are functions that let you hook into React state and lifecycle features.';
+      cacheContent(
+        {
+          url: 'https://cached2.example.com/page',
+          finalUrl: 'https://cached2.example.com/page',
+          html: '<html></html>',
+          contentType: 'text/html',
+          statusCode: 200,
+          method: 'http',
+          headers: {},
+        },
+        {
+          title: 'React Hooks Guide',
+          markdown: fullMarkdown,
+          metadata: {},
+          links: [],
+          images: [],
+          extractor: 'defuddle',
+        },
+      );
+
+      const result = await handleFindSimilar(
+        { concept: 'React Hooks', include_web: false, include_full_markdown: true },
+        [mockEngine],
+        mockRouter,
+      );
+
+      expect(result.evidence).toBeDefined();
+      const hasFullMarkdown = result.results.some((r) => r.markdown.length > 0);
+      expect(hasFullMarkdown).toBe(true);
+    });
+  });
+
   it('concurrent calls do not interfere with each other', async () => {
     const results = await Promise.all([
       handleFindSimilar(

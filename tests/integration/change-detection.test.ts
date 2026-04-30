@@ -76,6 +76,7 @@ describe('Change Detection Integration', () => {
     const input: FetchInput = {
       url: `http://127.0.0.1:${port}/doc`,
       render_js: 'never',
+      include_full_markdown: true,
     };
 
     const result = await handleFetch(input, router);
