@@ -187,21 +187,10 @@ Key parameters:
 - depth: "quick" (~15s, 2 sub-queries, 5-8 sources), "standard" (~40s, 4 sub-queries, 10-15 sources, default), "comprehensive" (~80s, 7 sub-queries, 20-25 sources)
 - max_sources: override the default source count for the chosen depth
 - include_domains/exclude_domains: scope research to specific sites
-- schema: optional JSON Schema -- if provided, the report is structured to extract fields matching the schema
-- stream: true to receive progress notifications as each research phase completes
+- schema: optional JSON Schema -- structures the report to extract matching fields
+- stream: true to receive progress notifications as each phase completes
 
-The pipeline: (1) decompose question into sub-queries, (2) parallel search across sub-queries, (3) fetch and extract top unique sources, (4) synthesize report with citations from all sources, (5) optionally structure report fields if schema is provided.
-
-Uses MCP requestSampling for intelligent decomposition and synthesis when available. Without sampling support (the common case), the output includes a \`brief\` with:
-  - \`topics\`, \`highlights\` (ML-scored), \`key_findings\` (per-source, by relevance)
-  - \`query_type\`: "comparison" | "how-to" | "concept" | "general"
-  - \`sections.overview\`: top findings + cross_references (corroborated by 2+ sources)
-  - \`sections.comparison\`: entities + comparison_points (comparison queries only)
-  - \`sections.gaps\`: sub-queries with limited source coverage
-
-Build your report: overview from key_findings, cross-referenced findings first (most reliable), per-topic sections, comparison table if present, then gaps and sources.
-
-Returns report (markdown), citations array, sources with full content, sub_queries used, depth level, total_time_ms, sampling_supported flag, and optional brief.`,
+Returns report (markdown with [N] citations), citations array, sources, sub_queries, depth, total_time_ms, sampling_supported, and brief (topics, highlights, key_findings, sections.overview/comparison/gaps).`,
 
   agent: `Execute a natural-language data gathering task. Plans search queries and URLs from a prompt, executes them in parallel, and synthesizes results. Full step transparency.
 
