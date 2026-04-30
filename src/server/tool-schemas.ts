@@ -156,7 +156,7 @@ export const SEARCH_TOOL_SCHEMA = {
       type: 'string',
       enum: ['answer', 'stream_answer'],
       description:
-        "LLM-synthesis modes only. Omit for the default evidence shape (title/url/section_heading/excerpt/score/citation_id/source_span). 'answer' and 'stream_answer' request sampling-based synthesis (falls back to evidence list when sampling unsupported).",
+        "LLM-synthesis modes only. Omit for default evidence shape. 'answer'/'stream_answer' request sampling synthesis (falls back to evidence). Retired values 'full'/'context'/'highlights' reject with a migration error.",
     },
     max_highlights: {
       type: 'number',
