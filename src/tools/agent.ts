@@ -3,9 +3,9 @@ import { runAgentPipeline } from '../agent/pipeline.js';
 import {
   buildEvidenceFromMarkdown,
   applyTokenBudget,
+  applyAggregateMarkdownBudget,
 } from '../search/evidence.js';
 import { applyOutputBudget } from '../search/truncate.js';
-import { countTokens } from '../search/tokens.js';
 import type {
   AgentInput,
   AgentOutput,
@@ -127,17 +127,12 @@ async function attachEvidence(out: AgentOutput, input: AgentInput): Promise<void
       s.markdown_content = '';
     }
   } else {
-    let used = 0;
-    for (const s of out.sources) {
-      if (!s.markdown_content) continue;
-      const remaining = maxTokensOut - used;
-      if (remaining <= 0) {
-        s.markdown_content = '';
-        continue;
-      }
-      s.markdown_content = applyOutputBudget(s.markdown_content, { maxTokensOut: remaining });
-      used += countTokens(s.markdown_content);
-    }
+    applyAggregateMarkdownBudget(
+      out.sources,
+      (s) => s.markdown_content ?? '',
+      (s, body) => { s.markdown_content = body; },
+      { maxTokensOut },
+    );
   }
 }
 

@@ -83,6 +83,37 @@ export async function buildEvidenceFromMarkdown(
   return out;
 }
 
+// Walk items in order, capping each item's body text against a shared token
+// budget. Bodies past the budget are cleared (set to ''). Used by all
+// multi-item tools (search markdown_content, find_similar, crawl, research,
+// agent) so per-tool max_tokens_out is an aggregate cap, not per-item.
+export function applyAggregateMarkdownBudget<T>(
+  items: T[],
+  getBody: (item: T) => string,
+  setBody: (item: T, body: string) => void,
+  opts: { maxTokensOut?: number; maxChars?: number },
+): void {
+  const budget = opts.maxTokensOut;
+  let used = 0;
+  for (const item of items) {
+    const body = getBody(item);
+    if (!body) continue;
+    if (budget !== undefined) {
+      const remaining = budget - used;
+      if (remaining <= 0) {
+        setBody(item, '');
+        continue;
+      }
+      const trimmed = applyOutputBudget(body, { maxTokensOut: remaining, maxChars: opts.maxChars });
+      setBody(item, trimmed);
+      used += countTokens(trimmed);
+    } else {
+      const trimmed = applyOutputBudget(body, { maxChars: opts.maxChars });
+      setBody(item, trimmed);
+    }
+  }
+}
+
 // Apply an aggregate token budget across an already-built list of evidence
 // items, truncating excerpts in order until the budget is exhausted. Items
 // past the budget are dropped.
@@ -153,6 +184,9 @@ export async function applyEvidenceDefault(
   // When the caller sets max_tokens_out explicitly, evidence shares the budget
   // with citations/results metadata. Reserve room for the structural overhead
   // so the total stringified output stays under the cap.
+  // NOTE: this relies on JSON.stringify dropping `undefined` keys, and on
+  // applyEvidenceDefault running before any post-evidence mutation that grows
+  // the skeleton (e.g. output.warning); reserve overhead first, mutate later.
   let evidenceBudget = maxTokensOut;
   if (input.max_tokens_out !== undefined) {
     const skeleton: SearchOutput = { ...output, citations: undefined, evidence: undefined, citations_xml: undefined };
@@ -203,15 +237,14 @@ export async function applyEvidenceDefault(
       if (r.markdown_content !== undefined) r.markdown_content = undefined;
     }
   } else if (input.max_tokens_out !== undefined) {
-    // When full bodies are kept, honour the same budget per item so a single
-    // multi-result page cannot blow past max_tokens_out.
-    for (const r of results) {
-      if (typeof r.markdown_content === 'string' && r.markdown_content.length > 0) {
-        r.markdown_content = applyOutputBudget(r.markdown_content, {
-          maxTokensOut: input.max_tokens_out,
-        });
-      }
-    }
+    // Aggregate cap across all results in score order — sum of markdown_content
+    // tokens stays under max_tokens_out; bodies past the budget are dropped.
+    applyAggregateMarkdownBudget(
+      results,
+      (r) => (typeof r.markdown_content === 'string' ? r.markdown_content : ''),
+      (r, body) => { r.markdown_content = body; },
+      { maxTokensOut: input.max_tokens_out },
+    );
   }
 }
 

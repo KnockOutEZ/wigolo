@@ -173,6 +173,20 @@ describe('max_tokens_out budget', () => {
     expect(perItemSum).toBeGreaterThan(0);
   });
 
+  it('search: aggregate markdown_content across results stays within budget when include_full_markdown=true', async () => {
+    const input: SearchInput = {
+      query: 'rust async',
+      max_tokens_out: 400,
+      include_full_markdown: true,
+    };
+    const out = await handleSearch(input, [stubEngine], stubRouter);
+    const total = out.results.reduce(
+      (s, r) => s + (r.markdown_content ? countTokens(r.markdown_content) : 0),
+      0,
+    );
+    expect(total).toBeLessThanOrEqual(400 + TOLERANCE);
+  });
+
   it('crawl: total page-body tokens stay under budget when include_full_markdown=true', async () => {
     const input: CrawlInput = {
       url: 'https://docs.example.com',
