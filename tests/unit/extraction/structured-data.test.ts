@@ -66,11 +66,26 @@ describe('extractStructuredData', () => {
     expect(blocks.filter((b) => b.type === 'ListItem')).toHaveLength(0);
   });
 
-  it('extracts Organization from RDFa with name + nested address', () => {
+  it('extracts Organization from RDFa with name and projects nested address as object', () => {
     const blocks = extractStructuredData(fixture('organization-rdfa.html'));
     const org = blocks.find((b) => b.type === 'Organization' && b.provenance === 'rdfa');
     expect(org).toBeDefined();
-    expect(org!.fields.name).toBeTruthy();
-    expect(org!.fields.address).toBeDefined();
+    expect(org!.fields.name).toBe('Acme Robotics');
+    expect(org!.fields.address).toMatchObject({
+      streetAddress: '500 Innovation Way',
+      addressLocality: 'Springfield',
+    });
+    // Nested PostalAddress must not surface as a separate top-level block.
+    expect(blocks.filter((b) => b.type === 'PostalAddress')).toHaveLength(0);
+  });
+
+  it('strips curie prefix from RDFa typeof tokens', () => {
+    const html =
+      '<html><body><div typeof="schema:Organization"><span property="name">Curie Org</span></div></body></html>';
+    const blocks = extractStructuredData(html);
+    const org = blocks.find((b) => b.provenance === 'rdfa');
+    expect(org).toBeDefined();
+    expect(org!.type).toBe('Organization');
+    expect(org!.fields.name).toBe('Curie Org');
   });
 });
