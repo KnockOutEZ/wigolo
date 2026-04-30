@@ -39,4 +39,18 @@ describe('extractStructuredData', () => {
     expect(() => extractStructuredData(html)).not.toThrow();
     expect(extractStructuredData(html)).toEqual([]);
   });
+
+  it('extracts Product fields from microdata', () => {
+    const blocks = extractStructuredData(fixture('product-microdata.html'));
+    const product = blocks.find((b) => b.type === 'Product' && b.provenance === 'microdata');
+    expect(product).toBeDefined();
+    expect(product!.fields.name).toBeTruthy();
+    expect(product!.fields.description).toBeTruthy();
+  });
+
+  it('extracts BreadcrumbList from microdata with positions', () => {
+    const blocks = extractStructuredData(fixture('breadcrumb-microdata.html'));
+    const list = blocks.find((b) => b.type === 'BreadcrumbList');
+    expect(list).toBeDefined();
+  });
 });
