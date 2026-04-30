@@ -1,12 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SearchResultItem } from '../../../src/types.js';
 
-vi.mock('../../../src/search/flashrank.js', () => ({
-  isFlashRankAvailable: vi.fn(),
-  flashRankRerank: vi.fn(),
+vi.mock('../../../src/search/reranker/onnx.js', () => ({
+  onnxRerank: vi.fn(),
+}));
+vi.mock('../../../src/config.js', () => ({
+  getConfig: vi.fn(() => ({ reranker: 'onnx', rerankerModel: 'bge-reranker-v2-m3' })),
 }));
 
-const { isFlashRankAvailable, flashRankRerank } = await import('../../../src/search/flashrank.js');
+const { onnxRerank } = await import('../../../src/search/reranker/onnx.js');
+const { getConfig } = await import('../../../src/config.js');
 const { extractHighlights, fallbackHighlights, splitIntoPassages } = await import(
   '../../../src/search/highlights.js'
 );
@@ -95,17 +98,17 @@ describe('fallbackHighlights', () => {
 describe('extractHighlights', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getConfig).mockReturnValue({ reranker: 'onnx', rerankerModel: 'bge-reranker-v2-m3' } as any);
   });
 
-  it('uses FlashRank when available and sorts passages by score', async () => {
-    vi.mocked(isFlashRankAvailable).mockResolvedValue(true);
-    vi.mocked(flashRankRerank).mockImplementation(async (_q, passages) =>
-      passages.map((p) => ({ index: p.index, score: 1 / (p.index + 1) })),
+  it('uses ONNX reranker when configured and sorts passages by score', async () => {
+    vi.mocked(onnxRerank).mockImplementation(async (_q, passages) =>
+      passages.map((_p, idx) => ({ index: idx, score: 1 / (idx + 1) })),
     );
 
     const out = await extractHighlights('server components', results, 3);
 
-    expect(out.flashrank_used).toBe(true);
+    expect(out.reranker_used).toBe(true);
     expect(out.highlights.length).toBeGreaterThan(0);
     expect(out.highlights.length).toBeLessThanOrEqual(3);
     for (let i = 1; i < out.highlights.length; i++) {
@@ -118,27 +121,25 @@ describe('extractHighlights', () => {
     expect(out.citations[0].url).toBe('https://react.dev/rsc');
   });
 
-  it('falls back when FlashRank is unavailable', async () => {
-    vi.mocked(isFlashRankAvailable).mockResolvedValue(false);
+  it('falls back when reranker is disabled', async () => {
+    vi.mocked(getConfig).mockReturnValue({ reranker: 'none', rerankerModel: 'bge-reranker-v2-m3' } as any);
 
     const out = await extractHighlights('server components', results, 5);
 
-    expect(out.flashrank_used).toBe(false);
+    expect(out.reranker_used).toBe(false);
     expect(out.highlights.length).toBeGreaterThan(0);
     expect(out.citations).toHaveLength(2);
   });
 
-  it('falls back when FlashRank returns null', async () => {
-    vi.mocked(isFlashRankAvailable).mockResolvedValue(true);
-    vi.mocked(flashRankRerank).mockResolvedValue(null);
+  it('falls back when ONNX rerank throws', async () => {
+    vi.mocked(onnxRerank).mockRejectedValue(new Error('boom'));
 
     const out = await extractHighlights('x', results, 5);
-    expect(out.flashrank_used).toBe(false);
+    expect(out.reranker_used).toBe(false);
     expect(out.highlights.length).toBeGreaterThan(0);
   });
 
   it('returns empty highlights array when no content', async () => {
-    vi.mocked(isFlashRankAvailable).mockResolvedValue(true);
     const empty: SearchResultItem[] = [
       { title: 'No content', url: 'u', snippet: '', relevance_score: 0 },
     ];
@@ -148,7 +149,7 @@ describe('extractHighlights', () => {
   });
 
   it('source_index maps back to citations correctly', async () => {
-    vi.mocked(isFlashRankAvailable).mockResolvedValue(false);
+    vi.mocked(getConfig).mockReturnValue({ reranker: 'none', rerankerModel: 'bge-reranker-v2-m3' } as any);
     const out = await extractHighlights('q', results, 10);
     for (const h of out.highlights) {
       const citation = out.citations.find((c) => c.index === h.source_index);

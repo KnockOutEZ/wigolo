@@ -3,7 +3,9 @@ import { join } from 'node:path';
 import { getConfig } from '../config.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../searxng/bootstrap.js';
 import { isProcessAlive } from '../searxng/process.js';
-import { resetAvailabilityCache } from '../search/flashrank.js';
+import { downloadModelAssets } from '../search/reranker/download.js';
+import { onnxRerank } from '../search/reranker/onnx.js';
+import { resolveModelId } from '../search/reranker/models.js';
 import { getPythonBin } from '../python-env.js';
 import { runCommand } from './tui/run-command.js';
 import type { WarmupReporter } from './tui/reporter.js';
@@ -76,18 +78,22 @@ async function installTrafilatura(dataDir: string, reporter: WarmupReporter): Pr
   return 'failed';
 }
 
-async function installFlashRank(dataDir: string, reporter: WarmupReporter): Promise<Pick<WarmupResult, 'reranker' | 'rerankerError'>> {
-  reporter.start('flashrank', 'Installing ML reranker (flashrank)');
-  const py = getPythonBin(dataDir);
-  const r = await runCommand(py, ['-m', 'pip', 'install', '--quiet', 'flashrank'], { timeout: 180000 });
-  if (r.code === 0) {
-    resetAvailabilityCache();
-    reporter.success('flashrank', 'installed');
+async function downloadOnnxReranker(
+  dataDir: string,
+  reporter: WarmupReporter,
+): Promise<Pick<WarmupResult, 'reranker' | 'rerankerError'>> {
+  const modelId = resolveModelId(getConfig().rerankerModel);
+  reporter.start('reranker', `Installing ML reranker (${modelId})`);
+  try {
+    await downloadModelAssets(modelId, dataDir, reporter);
+    await onnxRerank('warmup', [{ text: 'hello world' }], { modelId });
+    reporter.success('reranker', 'installed');
     return { reranker: 'ok' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    reporter.fail('reranker', message);
+    return { reranker: 'failed', rerankerError: message };
   }
-  const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
-  reporter.fail('flashrank', message);
-  return { reranker: 'failed', rerankerError: message };
 }
 
 async function installFirefox(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'firefox' | 'firefoxError'>> {
@@ -246,7 +252,7 @@ export async function runWarmup(
 
   let rerankerResult: Pick<WarmupResult, 'reranker' | 'rerankerError'> = {};
   if (flagSet.has('--reranker') || flagSet.has('--all')) {
-    rerankerResult = await installFlashRank(config.dataDir, reporterImpl);
+    rerankerResult = await downloadOnnxReranker(config.dataDir, reporterImpl);
   }
 
   let firefoxResult: Pick<WarmupResult, 'firefox' | 'firefoxError'> = {};

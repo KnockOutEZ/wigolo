@@ -1,5 +1,6 @@
 import type { SearchResultItem, Citation, Highlight } from '../types.js';
-import { flashRankRerank, isFlashRankAvailable } from './flashrank.js';
+import { onnxRerank } from './reranker/onnx.js';
+import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { parseHeadings, lineStartCharOffsets } from '../extraction/markdown.js';
 
@@ -12,7 +13,7 @@ const DEFAULT_MAX_HIGHLIGHTS = 10;
 export interface HighlightSynthesisResult {
   highlights: Highlight[];
   citations: Citation[];
-  flashrank_used: boolean;
+  reranker_used: boolean;
 }
 
 export interface Passage {
@@ -104,9 +105,9 @@ export function mapPassageHeadings(
   });
 }
 
-// Score passages across all results and return the top N, FlashRank-first
-// with a graceful first-paragraph fallback when the Python binding is
-// unavailable. Each Highlight carries a source_index suitable for citing.
+// Score passages across all results and return the top N using the in-process
+// ONNX reranker, with a graceful first-paragraph fallback when reranking is
+// disabled or fails. Each Highlight carries a source_index suitable for citing.
 export async function extractHighlights(
   query: string,
   results: SearchResultItem[],
@@ -141,45 +142,43 @@ export async function extractHighlights(
   }
 
   if (candidates.length === 0) {
-    // No passages survived the min-length filter (common with snippets-only
-    // results). Fall back to snippet-level highlights so host LLMs still get
-    // structured evidence rather than an empty array.
     return {
       highlights: fallbackHighlights(results, maxHighlights),
       citations,
-      flashrank_used: false,
+      reranker_used: false,
     };
   }
 
-  const available = await isFlashRankAvailable();
-  if (available) {
-    const scored = await flashRankRerank(
-      query,
-      candidates.map((c, idx) => ({ text: c.text, index: idx })),
-    );
-    if (scored && scored.length > 0) {
-      const ranked = scored
-        .slice()
-        .sort((a, b) => b.score - a.score)
-        .slice(0, maxHighlights);
-      const highlights = ranked.map<Highlight>((r) => {
-        const cand = candidates[r.index];
-        return {
-          text: cand.text,
-          source_index: cand.sourceIndex,
-          relevance_score: r.score,
-          source_url: cand.sourceUrl,
-          source_title: cand.sourceTitle,
-          section_heading: cand.sectionHeading,
-          source_span: { start: cand.charStart, end: cand.charEnd },
-        };
-      });
-      return { highlights, citations, flashrank_used: true };
+  const cfg = getConfig();
+  if (cfg.reranker === 'onnx') {
+    try {
+      const scored = await onnxRerank(
+        query,
+        candidates.map((c) => ({ text: c.text })),
+        { modelId: cfg.rerankerModel },
+      );
+      if (scored.length > 0) {
+        const ranked = scored.slice(0, maxHighlights);
+        const highlights = ranked.map<Highlight>((s) => {
+          const cand = candidates[s.index];
+          return {
+            text: cand.text,
+            source_index: cand.sourceIndex,
+            relevance_score: s.score,
+            source_url: cand.sourceUrl,
+            source_title: cand.sourceTitle,
+            section_heading: cand.sectionHeading,
+            source_span: { start: cand.charStart, end: cand.charEnd },
+          };
+        });
+        return { highlights, citations, reranker_used: true };
+      }
+    } catch (err) {
+      log.debug('onnx reranker failed, using fallback passages', { error: String(err) });
     }
-    log.debug('flashrank returned null, using fallback passages');
   }
 
-  return { highlights: fallbackHighlights(results, maxHighlights), citations, flashrank_used: false };
+  return { highlights: fallbackHighlights(results, maxHighlights), citations, reranker_used: false };
 }
 
 // Fallback when FlashRank is unavailable: take the first substantive paragraph

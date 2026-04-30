@@ -174,7 +174,7 @@ export async function applyEvidenceDefault(
     log.debug('evidence extraction failed', { error: String(err) });
     const msg = 'evidence extraction failed; results returned without highlights';
     output.warning = output.warning ? `${output.warning}; ${msg}` : msg;
-    highlightsResult = { highlights: [], citations: [], flashrank_used: false };
+    highlightsResult = { highlights: [], citations: [], reranker_used: false };
   }
 
   const ranked = highlightsResult.highlights

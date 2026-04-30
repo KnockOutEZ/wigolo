@@ -98,7 +98,7 @@ describe('applyEvidenceDefault', () => {
       citations: [
         { index: 1, url: 'https://example.com/a', title: 'T', snippet: 'snippet text' },
       ],
-      flashrank_used: false,
+      reranker_used: false,
     });
     const results = [makeResult()];
     const output = makeOutput(results);
@@ -111,7 +111,7 @@ describe('applyEvidenceDefault', () => {
     mockedExtract.mockResolvedValueOnce({
       highlights: [],
       citations: [],
-      flashrank_used: false,
+      reranker_used: false,
     });
     const results = [makeResult({ markdown_content: 'BIG MARKDOWN CONTENT' })];
     const output = makeOutput(results);
@@ -124,7 +124,7 @@ describe('applyEvidenceDefault', () => {
     mockedExtract.mockResolvedValueOnce({
       highlights: [],
       citations: [],
-      flashrank_used: false,
+      reranker_used: false,
     });
     const results = [makeResult({ markdown_content: 'BIG MARKDOWN CONTENT' })];
     const output = makeOutput(results);
