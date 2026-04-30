@@ -60,7 +60,8 @@ export function splitIntoPassages(markdown: string): Passage[] {
     const trimmed = markdown.slice(trimmedStart, trimmedEnd);
     if (!shouldKeep(trimmed)) return;
     const text = trimmed.length > MAX_PASSAGE_LENGTH ? trimmed.slice(0, MAX_PASSAGE_LENGTH) : trimmed;
-    out.push({ text, charStart: trimmedStart, charEnd: trimmedEnd });
+    const charEnd = trimmedStart + text.length;
+    out.push({ text, charStart: trimmedStart, charEnd });
   };
   while ((m = re.exec(markdown)) !== null) {
     consider(blockStart, m.index);
@@ -75,13 +76,17 @@ function splitIntoPassageStrings(markdown: string): string[] {
   return splitIntoPassages(markdown).map((p) => p.text);
 }
 
+export interface AnnotatedPassage extends Passage {
+  sectionHeading: string | null;
+}
+
 // Annotate each passage with the nearest preceding markdown heading. Uses
 // `parseHeadings` and a char-offset prefix sum so the lookup is O(passages
 // * headings) without re-parsing markdown for every passage.
 export function mapPassageHeadings(
   markdown: string,
   passages: Passage[],
-): Array<Passage & { sectionHeading: string | null }> {
+): AnnotatedPassage[] {
   const lines = markdown.split('\n');
   const headings = parseHeadings(lines);
   const offsets = lineStartCharOffsets(lines);

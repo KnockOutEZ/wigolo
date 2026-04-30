@@ -28,6 +28,16 @@ describe('splitIntoPassages spans', () => {
     const passages = splitIntoPassages(MD);
     expect(passages.find(p => p.text.startsWith('#'))).toBeUndefined();
   });
+
+  it('charEnd matches text length when paragraph exceeds MAX_PASSAGE_LENGTH', () => {
+    const longPara = 'word '.repeat(200); // 1000 chars, well over the 500 cap
+    const md = '# Heading\n\n' + longPara;
+    const passages = splitIntoPassages(md);
+    const p = passages[0];
+    expect(p.text.length).toBeLessThanOrEqual(500);
+    expect(p.charEnd - p.charStart).toBe(p.text.length);
+    expect(md.slice(p.charStart, p.charEnd)).toBe(p.text);
+  });
 });
 
 describe('mapPassageHeadings', () => {
