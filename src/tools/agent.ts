@@ -4,6 +4,8 @@ import {
   buildEvidenceFromMarkdown,
   applyTokenBudget,
 } from '../search/evidence.js';
+import { applyOutputBudget } from '../search/truncate.js';
+import { countTokens } from '../search/tokens.js';
 import type {
   AgentInput,
   AgentOutput,
@@ -80,6 +82,10 @@ export async function handleAgent(
     // structured object intact and not buried under prose excerpts.
     if (!input.schema) {
       await attachEvidence(result, input);
+      // Cap result text under the same budget. Schema results are left intact.
+      if (input.max_tokens_out !== undefined && typeof result.result === 'string' && result.result) {
+        result.result = applyOutputBudget(result.result, { maxTokensOut: input.max_tokens_out });
+      }
     }
 
     return result;
@@ -119,6 +125,18 @@ async function attachEvidence(out: AgentOutput, input: AgentInput): Promise<void
   if (!includeFull) {
     for (const s of out.sources) {
       s.markdown_content = '';
+    }
+  } else {
+    let used = 0;
+    for (const s of out.sources) {
+      if (!s.markdown_content) continue;
+      const remaining = maxTokensOut - used;
+      if (remaining <= 0) {
+        s.markdown_content = '';
+        continue;
+      }
+      s.markdown_content = applyOutputBudget(s.markdown_content, { maxTokensOut: remaining });
+      used += countTokens(s.markdown_content);
     }
   }
 }

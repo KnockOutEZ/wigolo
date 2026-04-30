@@ -4,6 +4,8 @@ import {
   buildEvidenceFromMarkdown,
   applyTokenBudget,
 } from '../search/evidence.js';
+import { applyOutputBudget } from '../search/truncate.js';
+import { countTokens } from '../search/tokens.js';
 import type {
   EvidenceItem,
   ResearchInput,
@@ -73,6 +75,11 @@ export async function handleResearch(
 }
 
 async function attachEvidence(out: ResearchOutput, input: ResearchInput): Promise<void> {
+  // Always honour max_tokens_out for the report text, regardless of sources.
+  if (input.max_tokens_out !== undefined && out.report) {
+    out.report = applyOutputBudget(out.report, { maxTokensOut: input.max_tokens_out });
+  }
+
   if (out.sources.length === 0) return;
   const includeFull = input.include_full_markdown ?? false;
   const maxTokensOut = input.max_tokens_out ?? DEFAULT_MAX_TOKENS_OUT;
@@ -96,6 +103,18 @@ async function attachEvidence(out: ResearchOutput, input: ResearchInput): Promis
   if (!includeFull) {
     for (const s of out.sources) {
       s.markdown_content = '';
+    }
+  } else {
+    let used = 0;
+    for (const s of out.sources) {
+      if (!s.markdown_content) continue;
+      const remaining = maxTokensOut - used;
+      if (remaining <= 0) {
+        s.markdown_content = '';
+        continue;
+      }
+      s.markdown_content = applyOutputBudget(s.markdown_content, { maxTokensOut: remaining });
+      used += countTokens(s.markdown_content);
     }
   }
 }

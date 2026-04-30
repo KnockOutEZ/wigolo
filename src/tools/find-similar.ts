@@ -8,6 +8,8 @@ import type { SmartRouter } from '../fetch/router.js';
 import type { BackendStatus } from '../server/backend-status.js';
 import { findSimilar } from '../search/find-similar.js';
 import { buildEvidenceFromMarkdown, applyTokenBudget } from '../search/evidence.js';
+import { countTokens } from '../search/tokens.js';
+import { applyOutputBudget } from '../search/truncate.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('search');
@@ -93,6 +95,18 @@ async function attachEvidence(
   if (!includeFull) {
     for (const r of out.results) {
       r.markdown = '';
+    }
+  } else {
+    let used = 0;
+    for (const r of out.results) {
+      if (!r.markdown) continue;
+      const remaining = maxTokensOut - used;
+      if (remaining <= 0) {
+        r.markdown = '';
+        continue;
+      }
+      r.markdown = applyOutputBudget(r.markdown, { maxTokensOut: remaining });
+      used += countTokens(r.markdown);
     }
   }
 }

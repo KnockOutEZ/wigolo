@@ -10,6 +10,7 @@ import { mapUrls } from '../crawl/mapper.js';
 import { handleFetch } from './fetch.js';
 import { buildEvidenceFromMarkdown } from '../search/evidence.js';
 import { countTokens } from '../search/tokens.js';
+import { applyOutputBudget } from '../search/truncate.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('crawl');
@@ -117,6 +118,18 @@ async function attachEvidence(out: CrawlOutput, input: CrawlInput): Promise<void
   if (!includeFull) {
     for (const page of out.pages) {
       page.markdown = '';
+    }
+  } else {
+    let bodyUsed = 0;
+    for (const page of out.pages) {
+      if (!page.markdown) continue;
+      const remaining = maxTokensOut - bodyUsed;
+      if (remaining <= 0) {
+        page.markdown = '';
+        continue;
+      }
+      page.markdown = applyOutputBudget(page.markdown, { maxTokensOut: remaining });
+      bodyUsed += countTokens(page.markdown);
     }
   }
 }

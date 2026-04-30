@@ -10,6 +10,7 @@ import type {
 } from '../types.js';
 import { extractHighlights } from './highlights.js';
 import { countTokens, truncateByTokens } from './tokens.js';
+import { applyOutputBudget } from './truncate.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('search');
@@ -149,11 +150,23 @@ export async function applyEvidenceDefault(
     .slice()
     .sort((a, b) => b.relevance_score - a.relevance_score);
 
+  // When the caller sets max_tokens_out explicitly, evidence shares the budget
+  // with citations/results metadata. Reserve room for the structural overhead
+  // so the total stringified output stays under the cap.
+  let evidenceBudget = maxTokensOut;
+  if (input.max_tokens_out !== undefined) {
+    const skeleton: SearchOutput = { ...output, citations: undefined, evidence: undefined, citations_xml: undefined };
+    const skeletonTokens = countTokens(JSON.stringify(skeleton));
+    const resultsTokens = countTokens(JSON.stringify(results));
+    const overhead = skeletonTokens + resultsTokens;
+    evidenceBudget = Math.max(0, maxTokensOut - overhead);
+  }
+
   const evidence: EvidenceItem[] = [];
   let usedTokens = 0;
   for (const h of ranked) {
-    if (usedTokens >= maxTokensOut) break;
-    const remaining = maxTokensOut - usedTokens;
+    if (usedTokens >= evidenceBudget) break;
+    const remaining = evidenceBudget - usedTokens;
     const excerpt = truncateByTokens(h.text, remaining);
     if (!excerpt) continue;
     const span = h.source_span ?? { start: 0, end: excerpt.length };
@@ -188,6 +201,16 @@ export async function applyEvidenceDefault(
   if (!includeFullMarkdown) {
     for (const r of results) {
       if (r.markdown_content !== undefined) r.markdown_content = undefined;
+    }
+  } else if (input.max_tokens_out !== undefined) {
+    // When full bodies are kept, honour the same budget per item so a single
+    // multi-result page cannot blow past max_tokens_out.
+    for (const r of results) {
+      if (typeof r.markdown_content === 'string' && r.markdown_content.length > 0) {
+        r.markdown_content = applyOutputBudget(r.markdown_content, {
+          maxTokensOut: input.max_tokens_out,
+        });
+      }
     }
   }
 }

@@ -5,7 +5,7 @@ import { getCachedContent, cacheContent, isExpired } from '../cache/store.js';
 import { extractSection } from '../extraction/markdown.js';
 import { detectChange } from '../cache/change-detector.js';
 import { getEmbeddingService } from '../embedding/embed.js';
-import { truncateSmartly } from '../search/truncate.js';
+import { truncateSmartly, applyOutputBudget } from '../search/truncate.js';
 import { buildEvidenceFromMarkdown } from '../search/evidence.js';
 import { createLogger } from '../logger.js';
 
@@ -31,6 +31,11 @@ async function attachEvidence(
   if (evidence.length > 0) output.evidence = evidence;
   if (!includeFull) {
     output.markdown = '';
+  } else if (output.markdown) {
+    output.markdown = applyOutputBudget(output.markdown, {
+      maxTokensOut: input.max_tokens_out,
+      maxChars: input.max_chars,
+    });
   }
 }
 
