@@ -84,6 +84,8 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
+    "@google/genai": "^1.51.0",
     "@iarna/toml": "^2.2.5",
     "@inkjs/ui": "^2.0.0",
     "@inquirer/prompts": "^7.10.1",
@@ -96,11 +98,13 @@
     "cli-progress": "^3.12.0",
     "defuddle": "^0.16.0",
     "gpt-tokenizer": "^3.4.0",
+    "groq-sdk": "^1.1.2",
     "ink": "^5.2.1",
     "ink-big-text": "^2.0.0",
     "ink-gradient": "^3.0.0",
     "linkedom": "^0.18.12",
     "onnxruntime-node": "^1.20.0",
+    "openai": "^6.35.0",
     "ora": "^9.3.0",
     "pdf-parse": "^2.4.5",
     "playwright": "^1.59.1",
