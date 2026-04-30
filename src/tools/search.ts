@@ -1,4 +1,4 @@
-import type { SearchInput, SearchOutput, SearchResultItem, SearchEngine, RawSearchResult, ProgressCallback, Citation, EvidenceItem, CitationFormat } from '../types.js';
+import type { SearchInput, SearchOutput, SearchResultItem, SearchEngine, RawSearchResult, ProgressCallback } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import type { BackendStatus } from '../server/backend-status.js';
 import { deduplicateResults } from '../search/dedup.js';
@@ -10,8 +10,7 @@ import { formatSearchContext } from '../search/context-formatter.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
 import { synthesizeAnswer, buildStructuredFallback } from '../search/answer-synthesis.js';
 import { extractHighlights } from '../search/highlights.js';
-import { buildEvidenceItem, stableCitationId } from '../search/evidence.js';
-import { countTokens, truncateByTokens } from '../search/tokens.js';
+import { applyEvidenceDefault } from '../search/evidence.js';
 import { normalizeQueries, fanOutSearch, synthesizeIntent } from '../search/multi-query.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { truncateSmartly } from '../search/truncate.js';
@@ -379,127 +378,6 @@ export async function handleSearch(
     await applyEvidenceDefault(input, output, results, queryStr);
   }
   return output;
-}
-
-const DEFAULT_MAX_TOKENS_OUT = 4000;
-const MAX_EVIDENCE_PASSAGES = 20;
-
-async function applyEvidenceDefault(
-  input: SearchInput,
-  output: SearchOutput,
-  results: SearchResultItem[],
-  query: string,
-): Promise<void> {
-  if (results.length === 0) return;
-
-  const includeFullMarkdown = input.include_full_markdown ?? false;
-  const citationFormat: CitationFormat = input.citation_format ?? 'numbered';
-  const maxTokensOut = input.max_tokens_out ?? DEFAULT_MAX_TOKENS_OUT;
-
-  let highlightsResult;
-  try {
-    highlightsResult = await extractHighlights(query, results, MAX_EVIDENCE_PASSAGES);
-  } catch (err) {
-    log.debug('evidence extraction failed', { error: String(err) });
-    highlightsResult = { highlights: [], citations: [], flashrank_used: false };
-  }
-
-  const ranked = highlightsResult.highlights
-    .slice()
-    .sort((a, b) => b.relevance_score - a.relevance_score);
-
-  const evidence: EvidenceItem[] = [];
-  let usedTokens = 0;
-  for (const h of ranked) {
-    if (usedTokens >= maxTokensOut) break;
-    const remaining = maxTokensOut - usedTokens;
-    const excerpt = truncateByTokens(h.text, remaining);
-    if (!excerpt) continue;
-    const span = h.source_span ?? { start: 0, end: excerpt.length };
-    const item = buildEvidenceItem({
-      title: h.source_title,
-      url: h.source_url,
-      sectionHeading: h.section_heading ?? null,
-      excerpt,
-      score: h.relevance_score,
-      sourceSpan: span,
-    });
-    evidence.push(item);
-    usedTokens += countTokens(excerpt);
-  }
-
-  if (evidence.length > 0) {
-    output.evidence = evidence;
-  }
-
-  const citations = buildCitationsFromEvidence(results, evidence, highlightsResult.citations);
-
-  if (citationFormat === 'numbered') {
-    if (citations.length > 0) output.citations = citations;
-  } else if (citationFormat === 'json') {
-    if (citations.length > 0) output.citations = citations;
-  } else if (citationFormat === 'anthropic_tags') {
-    if (citations.length > 0) {
-      output.citations = citations;
-      output.citations_xml = renderCitationsXml(citations);
-    }
-  }
-
-  if (!includeFullMarkdown) {
-    for (const r of results) {
-      if (r.markdown_content !== undefined) delete r.markdown_content;
-    }
-  }
-}
-
-function buildCitationsFromEvidence(
-  results: SearchResultItem[],
-  evidence: EvidenceItem[],
-  baseCitations: Citation[],
-): Citation[] {
-  // Pick the primary citation_id per source: the first evidence item for that URL
-  // (highest score after sort). Falls back to a stableCitationId at offset 0
-  // for sources with no surviving evidence so every citation carries an id.
-  const primaryByUrl = new Map<string, string>();
-  for (const ev of evidence) {
-    if (!primaryByUrl.has(ev.url)) primaryByUrl.set(ev.url, ev.citation_id);
-  }
-  const baseByUrl = new Map<string, Citation>();
-  for (const c of baseCitations) baseByUrl.set(c.url, c);
-
-  const out: Citation[] = [];
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
-    const base = baseByUrl.get(r.url);
-    const citation: Citation = base ?? {
-      index: i + 1,
-      url: r.url,
-      title: r.title,
-      snippet: r.snippet,
-    };
-    citation.citation_id = primaryByUrl.get(r.url) ?? stableCitationId(r.url, 0);
-    out.push(citation);
-  }
-  return out;
-}
-
-function renderCitationsXml(citations: Citation[]): string {
-  return citations
-    .map((c) => {
-      const id = c.citation_id ?? stableCitationId(c.url, 0);
-      const inner = escapeXml(`${c.title}\n${c.url}\n${c.snippet}`);
-      return `<source id="${id}">${inner}</source>`;
-    })
-    .join('\n');
-}
-
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
 }
 
 async function applyAnswerSynthesis(
