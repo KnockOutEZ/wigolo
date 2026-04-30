@@ -18,4 +18,25 @@ describe('extractStructuredData', () => {
     const fields = JSON.stringify(product!.fields);
     expect(fields).toMatch(/price/i);
   });
+
+  it('extracts Article headline/author/date from JSON-LD', () => {
+    const blocks = extractStructuredData(fixture('article-jsonld.html'));
+    const article = blocks.find((b) => b.type === 'Article');
+    expect(article).toBeDefined();
+    expect(article!.fields.headline).toBeTruthy();
+    expect(article!.fields.datePublished).toBeTruthy();
+  });
+
+  it('flattens @graph and surfaces Recipe + Person', () => {
+    const blocks = extractStructuredData(fixture('recipe-jsonld.html'));
+    const types = blocks.map((b) => b.type);
+    expect(types).toContain('Recipe');
+    expect(types).toContain('Person');
+  });
+
+  it('skips malformed JSON-LD without throwing and warns', async () => {
+    const html = '<html><head><script type="application/ld+json">{not json</script></head></html>';
+    expect(() => extractStructuredData(html)).not.toThrow();
+    expect(extractStructuredData(html)).toEqual([]);
+  });
 });
