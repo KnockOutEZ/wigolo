@@ -1,5 +1,10 @@
 import { parseHTML } from 'linkedom';
-import { extractJsonLd, matchJsonLdToSchema } from './jsonld.js';
+import { extractStructuredData } from './structured-data.js';
+import type {
+  FieldProvenance,
+  SchemaExtractionResult,
+  StructuredDataResult,
+} from '../types.js';
 
 export interface JsonSchema {
   type?: string;
@@ -7,29 +12,75 @@ export interface JsonSchema {
   items?: JsonSchema;
 }
 
+const PROVENANCE_PRIORITY: StructuredDataResult['provenance'][] = [
+  'json-ld',
+  'microdata',
+  'rdfa',
+];
+
 export function extractWithSchema(
   html: string,
   schema: JsonSchema,
 ): Record<string, unknown> {
-  if (!html || !schema.properties) return {};
+  return extractWithSchemaDetailed(html, schema).values;
+}
 
-  const jsonLdBlocks = extractJsonLd(html);
-  const jsonLdResult = matchJsonLdToSchema(jsonLdBlocks, schema);
+export function extractWithSchemaDetailed(
+  html: string,
+  schema: JsonSchema,
+): SchemaExtractionResult {
+  const values: Record<string, unknown> = {};
+  const provenance: Record<string, FieldProvenance> = {};
+  if (!html || !schema.properties) return { values, provenance };
 
-  const { document: doc } = parseHTML(html);
-  const heuristicResult: Record<string, unknown> = {};
+  const blocks = extractStructuredData(html);
 
-  for (const [fieldName, fieldSchema] of Object.entries(schema.properties)) {
-    if (jsonLdResult[fieldName] !== undefined) continue;
-
-    const value = findFieldValue(doc, fieldName, fieldSchema);
-    if (value !== undefined) {
-      heuristicResult[fieldName] = value;
+  for (const source of PROVENANCE_PRIORITY) {
+    for (const block of blocks) {
+      if (block.provenance !== source) continue;
+      for (const fieldName of Object.keys(schema.properties)) {
+        if (values[fieldName] !== undefined) continue;
+        const v = pickField(block.fields, fieldName);
+        if (v !== undefined) {
+          values[fieldName] = v;
+          provenance[fieldName] = source;
+        }
+      }
     }
   }
 
-  return { ...jsonLdResult, ...heuristicResult };
+  const allCovered = Object.keys(schema.properties).every(
+    (k) => values[k] !== undefined,
+  );
+  if (allCovered) return { values, provenance };
+
+  // Heuristic fallback only for fields still missing
+  const { document: doc } = parseHTML(html);
+  for (const [fieldName, fieldSchema] of Object.entries(schema.properties)) {
+    if (values[fieldName] !== undefined) continue;
+    const v = findFieldValue(doc, fieldName, fieldSchema);
+    if (v !== undefined) {
+      values[fieldName] = v;
+      provenance[fieldName] = 'heuristic';
+    }
+  }
+
+  return { values, provenance };
 }
+
+function pickField(fields: Record<string, unknown>, name: string): unknown {
+  if (fields[name] !== undefined) return fields[name];
+  // Shallow nested — e.g. JSON-LD Product.offers.price
+  for (const v of Object.values(fields)) {
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const nested = (v as Record<string, unknown>)[name];
+      if (nested !== undefined) return nested;
+    }
+  }
+  return undefined;
+}
+
+// ---------- heuristic helpers (preserved from prior schema.ts) ----------
 
 function findFieldValue(
   doc: Document,
@@ -59,7 +110,6 @@ function findSingleValue(doc: Document, variants: string[]): string | undefined 
       if (text) return text;
     }
 
-    // Substring match is intentional — heuristic best-effort for partial class names
     const byClass = doc.querySelector(`[class*="${name}"]`);
     if (byClass) {
       const text = byClass.textContent?.trim();

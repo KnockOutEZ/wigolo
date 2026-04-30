@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { extractWithSchema } from '../../../src/extraction/schema.js';
+import { extractWithSchema, extractWithSchemaDetailed } from '../../../src/extraction/schema.js';
+
+const structuredFixture = (name: string) =>
+  readFileSync(join(import.meta.dirname, '../../fixtures/structured-data', name), 'utf-8');
 
 const productHtml = readFileSync(
   join(import.meta.dirname, '../../fixtures/extraction/product-page.html'),
@@ -259,5 +262,42 @@ describe('extractWithSchema', () => {
     // JSON-LD has name="Widget Pro", price="29.99"
     expect(result.name).toBe('Widget Pro');
     expect(result.price).toBe('29.99');
+  });
+});
+
+describe('extractWithSchemaDetailed', () => {
+  it('returns name + price + description with json-ld provenance for Product (spec AC#2)', () => {
+    const html = structuredFixture('product-jsonld.html');
+    const schema = {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        price: { type: 'string' },
+        description: { type: 'string' },
+      },
+    };
+    const result = extractWithSchemaDetailed(html, schema);
+    expect(result.values.name).toBeTruthy();
+    expect(result.values.price).toBeTruthy();
+    expect(result.values.description).toBeTruthy();
+    expect(result.provenance.name).toBe('json-ld');
+    expect(result.provenance.price).toBe('json-ld');
+    expect(result.provenance.description).toBe('json-ld');
+  });
+
+  it('falls back to heuristic provenance when no structured data is present', () => {
+    const html = '<html><body><div class="product-name">Foo</div></body></html>';
+    const schema = { type: 'object', properties: { product_name: { type: 'string' } } };
+    const result = extractWithSchemaDetailed(html, schema);
+    expect(result.values.product_name).toBeTruthy();
+    expect(result.provenance.product_name).toBe('heuristic');
+  });
+
+  it('marks fields sourced from microdata-only HTML as microdata', () => {
+    const html = '<html><body><div itemscope itemtype="https://schema.org/Product"><span itemprop="name">Foo</span></div></body></html>';
+    const schema = { type: 'object', properties: { name: { type: 'string' } } };
+    const result = extractWithSchemaDetailed(html, schema);
+    expect(result.values.name).toBe('Foo');
+    expect(result.provenance.name).toBe('microdata');
   });
 });

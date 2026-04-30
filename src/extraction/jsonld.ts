@@ -24,7 +24,7 @@ export function extractJsonLd(html: string): Record<string, unknown>[] {
         results.push(parsed);
       }
     } catch (err) {
-      log.debug('Failed to parse JSON-LD block', { error: String(err) });
+      log.warn('Failed to parse JSON-LD block', { error: String(err) });
     }
   }
 

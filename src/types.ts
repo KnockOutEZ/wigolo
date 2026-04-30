@@ -123,6 +123,22 @@ export interface Extractor {
   extract(html: string, url: string): ExtractionResult | null;
 }
 
+// Provenance source for a single extracted field
+export type FieldProvenance = 'json-ld' | 'microdata' | 'rdfa' | 'heuristic';
+
+// One block of structured data found in HTML
+export interface StructuredDataResult {
+  provenance: 'json-ld' | 'microdata' | 'rdfa';
+  type: string;
+  fields: Record<string, unknown>;
+}
+
+// Schema-mode extraction with provenance
+export interface SchemaExtractionResult {
+  values: Record<string, unknown>;
+  provenance: Record<string, FieldProvenance>;
+}
+
 // --- Search layer types ---
 
 export interface SearchInput {
