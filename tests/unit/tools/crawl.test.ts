@@ -164,12 +164,17 @@ describe('handleCrawl', () => {
 
       const result = await handleCrawl(input, router as any) as CrawlOutput;
 
-      expect(result.evidence).toBeDefined();
-      expect(result.evidence!.length).toBeGreaterThan(0);
-      const ev = result.evidence![0];
-      expect(ev.excerpt.length).toBeGreaterThan(0);
-      expect(ev.citation_id).toMatch(/^[a-f0-9]{12}$/);
-      expect(ev.source_span.end).toBeGreaterThan(ev.source_span.start);
+      const pagesWithEvidence = result.pages.filter((p) => p.evidence && p.evidence.length > 0);
+      expect(pagesWithEvidence.length).toBeGreaterThan(0);
+      // Each page that has evidence should carry exactly its own item(s)
+      for (const p of pagesWithEvidence) {
+        expect(p.evidence!.length).toBeGreaterThan(0);
+        const ev = p.evidence![0];
+        expect(ev.url).toBe(p.url);
+        expect(ev.excerpt.length).toBeGreaterThan(0);
+        expect(ev.citation_id).toMatch(/^[a-f0-9]{12}$/);
+        expect(ev.source_span.end).toBeGreaterThan(ev.source_span.start);
+      }
       for (const p of result.pages) {
         expect(p.markdown).toBe('');
       }
@@ -184,7 +189,8 @@ describe('handleCrawl', () => {
 
       const result = await handleCrawl(input, router as any) as CrawlOutput;
 
-      expect(result.evidence).toBeDefined();
+      const pagesWithEvidence = result.pages.filter((p) => p.evidence && p.evidence.length > 0);
+      expect(pagesWithEvidence.length).toBeGreaterThan(0);
       expect(result.pages.every((p) => p.markdown.length > 0)).toBe(true);
     });
   });

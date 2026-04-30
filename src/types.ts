@@ -393,6 +393,7 @@ export interface CrawlResultItem {
   title: string;
   markdown: string;
   depth: number;
+  evidence?: EvidenceItem[];
 }
 
 export interface LinkEdge {
@@ -406,7 +407,6 @@ export interface CrawlOutput {
   crawled: number;
   links?: LinkEdge[];
   error?: string;
-  evidence?: EvidenceItem[];
 }
 
 export interface MapOutput {

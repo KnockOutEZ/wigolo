@@ -1,7 +1,6 @@
 import type {
   CrawlInput,
   CrawlOutput,
-  EvidenceItem,
   MapOutput,
 } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
@@ -9,7 +8,8 @@ import { Crawler } from '../crawl/crawler.js';
 import { deduplicatePages } from '../crawl/dedup.js';
 import { mapUrls } from '../crawl/mapper.js';
 import { handleFetch } from './fetch.js';
-import { buildEvidenceFromMarkdown, applyTokenBudget } from '../search/evidence.js';
+import { buildEvidenceFromMarkdown } from '../search/evidence.js';
+import { countTokens } from '../search/tokens.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('crawl');
@@ -96,21 +96,23 @@ async function attachEvidence(out: CrawlOutput, input: CrawlInput): Promise<void
   const includeFull = input.include_full_markdown ?? false;
   const maxTokensOut = input.max_tokens_out ?? DEFAULT_MAX_TOKENS_OUT;
 
-  const collected: EvidenceItem[] = [];
+  let used = 0;
   for (const page of out.pages) {
     if (!page.markdown) continue;
+    const remaining = maxTokensOut - used;
+    if (remaining <= 0) break;
     const evs = await buildEvidenceFromMarkdown(
       page.title || page.url,
       page.title,
       page.url,
       page.markdown,
-      { maxItems: 1 },
+      { maxItems: 1, maxTokensOut: remaining },
     );
-    collected.push(...evs);
+    if (evs.length > 0) {
+      page.evidence = evs;
+      for (const ev of evs) used += countTokens(ev.excerpt);
+    }
   }
-
-  const budgeted = applyTokenBudget(collected, maxTokensOut);
-  if (budgeted.length > 0) out.evidence = budgeted;
 
   if (!includeFull) {
     for (const page of out.pages) {
