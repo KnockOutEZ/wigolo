@@ -143,7 +143,7 @@ export const SEARCH_TOOL_SCHEMA = {
       type: 'string',
       enum: ['full', 'context', 'answer', 'highlights', 'stream_answer'],
       description:
-        "Output format: 'full' returns structured results (default); 'context' returns a single token-budgeted string for LLM injection; 'highlights' returns ML-scored passages per source with citations (no LLM needed — the host agent synthesizes); 'answer' requests LLM synthesis via MCP sampling and falls back to 'highlights' when sampling is unsupported; 'stream_answer' same as 'answer' but emits progress notifications between pipeline phases (search/fetch/synthesize) when the client supplies a progressToken",
+        "Output format. 'full' (default) returns structured results; 'context' single LLM-injection string; 'highlights' ML-scored passages with citations; 'answer'/'stream_answer' request LLM synthesis (falls back to highlights when sampling unsupported).",
     },
     max_highlights: {
       type: 'number',
