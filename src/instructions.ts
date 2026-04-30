@@ -21,11 +21,9 @@ export const WIGOLO_INSTRUCTIONS = `Wigolo is a local-first web access layer: se
 
 Wigolo has no internal LLM. It returns *structured evidence* so YOU (the host LLM) write the final answer. Fold structure into your reply:
 
-- \`search\` → evidence list (title/url/section_heading/excerpt/score/citation_id/source_span) + citations. Quote [N] or {citation_id}.
-- \`search\` \`format: 'answer' | 'stream_answer'\` → LLM synthesis when sampling supported; falls back to evidence.
-- \`max_tokens_out\` caps total output (cl100k-base; non-OpenAI tokenizers drift ~5-15%).
-- \`include_full_markdown: true\` on \`fetch\` (or any multi-result tool) restores full body when needed.
-- \`citation_format: 'numbered'\` (default) | \`'json'\` | \`'anthropic_tags'\`.
+- \`search\` → evidence (title/url/section_heading/excerpt/score/citation_id/source_span) + citations. Quote [N] or {citation_id}.
+- \`format: 'answer'|'stream_answer'\` → LLM synthesis when sampling supported; else evidence fallback.
+- \`max_tokens_out\` caps total output (cl100k-base, ~5-15% drift on non-OpenAI). \`include_full_markdown: true\` restores full body. \`citation_format\`: \`'numbered'\`|\`'json'\`|\`'anthropic_tags'\`.
 - \`research\` → \`brief\` with \`topics\`, \`highlights\`, \`key_findings\`, \`sections\` when sampling unavailable. Use \`sections.overview.cross_references\` for corroborated findings, \`sections.gaps\` for coverage limits, \`sections.comparison\` for entity-vs-entity analysis. \`query_type\` indicates decomposition strategy used.
 - \`find_similar\` → \`cold_start\` string when local signals are weak. Pass to user verbatim.
 - \`extract\` \`mode: "structured"\` → tables + definitions + jsonld + chart_hints + key_value_pairs in one call.
@@ -50,7 +48,7 @@ Wigolo has no internal LLM. It returns *structured evidence* so YOU (the host LL
 | Error debugging | \`search\` | exact error string as query, \`category: "code"\` (no domain scoping -- errors appear everywhere) |
 | Library research | \`crawl\` | seed URL of docs site, \`strategy: "sitemap"\`, then \`cache\` for later queries |
 | Related content | \`find_similar\` | \`url\` of a known good page, or \`concept\` as free text |
-| Evidence excerpt | \`search\` | default output — evidence list with title/url/section_heading/excerpt/score/citation_id/source_span; cite [N] or {citation_id} in your reply |
+| Evidence excerpt | \`search\` | default output; cite [N] or {citation_id} from each evidence item |
 | Direct answer | \`search\` | \`format: "answer"\` if client supports sampling, else falls back to evidence |
 | Comprehensive research | \`research\` | \`depth: "comprehensive"\`, optional \`include_domains\` to scope |
 | Data gathering | \`agent\` | natural-language \`prompt\`, optional \`schema\` for structured output |
