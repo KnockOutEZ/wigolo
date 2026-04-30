@@ -40,17 +40,29 @@ describe('extractStructuredData', () => {
     expect(extractStructuredData(html)).toEqual([]);
   });
 
-  it('extracts Product fields from microdata', () => {
+  it('extracts Product fields from microdata with nested Offer', () => {
     const blocks = extractStructuredData(fixture('product-microdata.html'));
     const product = blocks.find((b) => b.type === 'Product' && b.provenance === 'microdata');
     expect(product).toBeDefined();
     expect(product!.fields.name).toBeTruthy();
     expect(product!.fields.description).toBeTruthy();
+    // Nested itemscope must produce a nested object, not leak into parent fields.
+    expect(product!.fields.offers).toMatchObject({ price: '49.99', priceCurrency: 'USD' });
+    // And must not emit as an additional top-level block.
+    expect(blocks.filter((b) => b.type === 'Offer')).toHaveLength(0);
   });
 
-  it('extracts BreadcrumbList from microdata with positions', () => {
+  it('extracts BreadcrumbList from microdata with three nested ListItem entries', () => {
     const blocks = extractStructuredData(fixture('breadcrumb-microdata.html'));
     const list = blocks.find((b) => b.type === 'BreadcrumbList');
     expect(list).toBeDefined();
+    const items = list!.fields.itemListElement as unknown[] | undefined;
+    expect(Array.isArray(items)).toBe(true);
+    expect(items!).toHaveLength(3);
+    const first = items![0] as Record<string, unknown>;
+    expect(first.position).toBe('1');
+    expect(first.name).toBe('Home');
+    // Nested ListItem must not emit as separate top-level blocks.
+    expect(blocks.filter((b) => b.type === 'ListItem')).toHaveLength(0);
   });
 });

@@ -123,9 +123,11 @@ function collectItemprops(root: Element, target: Record<string, unknown>): void 
           (el.textContent ?? '').trim();
       }
       mergeProp(target, prop, value);
-      // Do not descend into nested itemscope; we already handled it.
-      if (el.hasAttribute('itemscope')) continue;
     }
+    // Always stop at any itemscope: it is an independent item, regardless of
+    // whether it carries an itemprop. Otherwise its descendants' itemprops
+    // would leak into the parent record.
+    if (el.hasAttribute('itemscope')) continue;
     for (const c of el.children) stack.push(c);
   }
 }
