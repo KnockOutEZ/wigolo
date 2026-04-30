@@ -2,15 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { rerankResults } from '../../../src/search/rerank.js';
 import type { MergedSearchResult } from '../../../src/search/dedup.js';
 
-vi.mock('../../../src/search/flashrank.js', () => ({
-  isFlashRankAvailable: vi.fn(),
-  flashRankRerank: vi.fn(),
+vi.mock('../../../src/search/reranker/onnx.js', () => ({
+  onnxRerank: vi.fn(),
 }));
 vi.mock('../../../src/config.js', () => ({ getConfig: vi.fn() }));
 vi.mock('../../../src/logger.js', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 
+import { onnxRerank } from '../../../src/search/reranker/onnx.js';
 import { getConfig } from '../../../src/config.js';
 
 function isoDaysAgo(days: number): string {
@@ -64,10 +64,8 @@ describe('rerankResults recency boost (intent-gated)', () => {
     expect(out[0].relevance_score).toBe(0.5);
   });
   it('boost applies AFTER cross-encoder scoring', async () => {
-    const flash = await import('../../../src/search/flashrank.js');
-    vi.mocked(getConfig).mockReturnValue({ reranker: 'flashrank', relevanceThreshold: 0 } as any);
-    vi.mocked(flash.isFlashRankAvailable).mockResolvedValue(true);
-    vi.mocked(flash.flashRankRerank).mockResolvedValue([{ index: 0, score: 0.8 }]);
+    vi.mocked(getConfig).mockReturnValue({ reranker: 'onnx', relevanceThreshold: 0 } as any);
+    vi.mocked(onnxRerank).mockResolvedValue([{ index: 0, score: 0.8 }]);
     const out = await rerankResults('latest pgEdge', [makeResult('Fresh', 0.1, 3)]);
     expect(out[0].relevance_score).toBeCloseTo(0.8 * 1.5, 5);
   });
