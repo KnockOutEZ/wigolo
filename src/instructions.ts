@@ -115,6 +115,7 @@ Key parameters:
 - render_js: "auto" (default, detects JS need), "always" (force browser), "never" (HTTP only, fastest)
 - headers: custom HTTP headers if needed
 - force_refresh: true to bypass cache and fetch fresh content from the network
+- mode: 'fast' | 'balanced' (default) | 'deep'. fast=HTTP-only, accepts cache up to 24h stale. deep=full render + freshness.
 
 Returns title, markdown, links, images, metadata (og_image, og_type, canonical_url, keywords). Cached locally; repeat fetches are instant. Localhost URLs work.`,
 
@@ -132,6 +133,7 @@ Key parameters:
 - citation_format: 'numbered' (default) | 'json' | 'anthropic_tags'.
 - max_content_chars: smart-truncate per-page markdown at paragraph boundary (e.g., 3000)
 - force_refresh: true to bypass all caches
+- mode: 'fast' | 'balanced' (default) | 'deep'. fast=single-engine, no rerank, 24h-stale cache. deep=multi-query expansion + full-body top-K.
 
 Quote [N] or {citation_id} from the evidence list.`,
 
