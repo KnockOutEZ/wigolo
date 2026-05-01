@@ -121,6 +121,15 @@ describe('htmlToMarkdown — code language detection', () => {
     expect(result).toContain('```go\n');
     expect(result).toContain('fmt.Println()');
   });
+
+  it('extends fence length when body contains triple backticks', () => {
+    const html =
+      '<pre><code class="language-md">```js\nfoo\n```</code></pre>';
+    const result = htmlToMarkdown(html);
+    // outer fence must be longer than any backtick run inside the body
+    expect(result).toContain('````md\n');
+    expect(result).toMatch(/````md\n```js\nfoo\n```\n````/);
+  });
 });
 
 describe('extractSection', () => {

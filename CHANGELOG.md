@@ -15,8 +15,9 @@
   removed from the leading 30 / trailing 20 lines per page (kicks in at
   4+ pages so small captures stay intact).
 - Anchor-only and path+fragment links resolve correctly in extracted
-  markdown — fragment-only `href="#section"` is preserved verbatim;
-  `/path#section` becomes an absolute URL with the fragment retained.
+  markdown — fragment-only `href="#section"` resolves to the page's
+  canonical URL with the fragment retained; `/path#section` becomes an
+  absolute URL with the fragment retained.
 
 ### NEW: BYO cloud LLM extract fallback (opt-in)
 - When the deterministic extractor leaves required schema fields empty, an

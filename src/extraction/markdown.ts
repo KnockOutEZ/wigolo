@@ -1,6 +1,20 @@
 import TurndownService from 'turndown';
 import { detectCodeLanguage } from './lang-hints.js';
 
+function longestBacktickRun(s: string): number {
+  let max = 0;
+  let cur = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s.charCodeAt(i) === 96) {
+      cur++;
+      if (cur > max) max = cur;
+    } else {
+      cur = 0;
+    }
+  }
+  return max;
+}
+
 export function buildTurndown(): TurndownService {
   const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
 
@@ -54,7 +68,7 @@ export function buildTurndown(): TurndownService {
       const cls = code?.getAttribute('class') ?? pre.getAttribute('class') ?? '';
       const lang = detectCodeLanguage(cls);
       const body = code?.textContent ?? pre.textContent ?? '';
-      const fence = '```';
+      const fence = '`'.repeat(Math.max(3, longestBacktickRun(body) + 1));
       return `\n\n${fence}${lang ?? ''}\n${body.replace(/\n+$/, '')}\n${fence}\n\n`;
     },
   });
