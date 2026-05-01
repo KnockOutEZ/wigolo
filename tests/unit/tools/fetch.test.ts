@@ -127,7 +127,8 @@ describe('handleFetch', () => {
   });
 
   it('returns cached: true when content served from cache', async () => {
-    const cached = makeCached();
+    const knownFetchedAt = '2026-04-15T10:30:00.000Z';
+    const cached = makeCached({ fetchedAt: knownFetchedAt });
     vi.mocked(getCachedContent).mockReturnValue(cached);
     vi.mocked(isExpired).mockReturnValue(false);
 
@@ -140,6 +141,9 @@ describe('handleFetch', () => {
     expect(result.title).toBe('Cached Page');
     expect(result.markdown).toContain('Cached');
     expect(router.fetch).not.toHaveBeenCalled();
+    expect(result.cached_at).toBeDefined();
+    expect(typeof result.cached_at).toBe('string');
+    expect(result.cached_at).toBe(knownFetchedAt);
   });
 
   it('returns cached: false when freshly fetched', async () => {

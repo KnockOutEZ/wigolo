@@ -56,6 +56,9 @@ export interface FetchOutput {
   images: string[];
   screenshot?: string;
   cached: boolean;
+  cached_at?: string;
+  stale?: boolean;
+  js_required?: boolean;
   error?: string;
   action_results?: ActionResult[];
   changed?: boolean;
@@ -75,6 +78,7 @@ export interface RawFetchResult {
   rawBuffer?: Buffer;
   screenshot?: string;
   actionResults?: ActionResult[];
+  jsRequired?: boolean;
 }
 
 export interface ExtractionResult {
@@ -183,6 +187,9 @@ export interface SearchResultItem {
   content_truncated?: boolean;
   relevance_score: number;
   published_date?: string; // ISO date string, when engine provides it
+  cached?: boolean;
+  cached_at?: string;
+  stale?: boolean;
 }
 
 export interface SearchOutput {

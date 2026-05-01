@@ -69,6 +69,7 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     links: JSON.parse(cached.links || '[]'),
     images: JSON.parse(cached.images || '[]'),
     cached: true,
+    cached_at: cached.fetchedAt,
   };
 }
 
