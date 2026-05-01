@@ -93,6 +93,36 @@ describe('htmlToMarkdown', () => {
   });
 });
 
+describe('htmlToMarkdown — code language detection', () => {
+  it('detects language hint on inner <code class="language-ts">', () => {
+    const html = '<pre><code class="language-ts">const x: number = 1;</code></pre>';
+    const result = htmlToMarkdown(html);
+    expect(result).toContain('```ts\n');
+    expect(result).toContain('const x: number = 1;');
+  });
+
+  it('canonicalizes hljs+language-python to py', () => {
+    const html = '<pre><code class="hljs language-python">print(\'x\')</code></pre>';
+    const result = htmlToMarkdown(html);
+    expect(result).toContain('```py\n');
+    expect(result).toContain("print('x')");
+  });
+
+  it('emits bare fence when no language hint', () => {
+    const html = '<pre><code>plain</code></pre>';
+    const result = htmlToMarkdown(html);
+    expect(result).toContain('```\nplain');
+    expect(result).not.toMatch(/```[a-z]/i);
+  });
+
+  it('falls back to <pre> class when <code> has no class', () => {
+    const html = '<pre class="prism-language-go"><code>fmt.Println()</code></pre>';
+    const result = htmlToMarkdown(html);
+    expect(result).toContain('```go\n');
+    expect(result).toContain('fmt.Println()');
+  });
+});
+
 describe('extractSection', () => {
   const markdown = `# Introduction
 

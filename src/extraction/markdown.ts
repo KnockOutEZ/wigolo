@@ -1,4 +1,5 @@
 import TurndownService from 'turndown';
+import { detectCodeLanguage } from './lang-hints.js';
 
 export function buildTurndown(): TurndownService {
   const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
@@ -40,6 +41,21 @@ export function buildTurndown(): TurndownService {
     filter: ['thead', 'tbody', 'tfoot', 'tr', 'th', 'td'],
     replacement(content) {
       return content;
+    },
+  });
+
+  td.addRule('codeBlockLang', {
+    filter(node) {
+      return node.nodeName === 'PRE' && (node as Element).querySelector('code') !== null;
+    },
+    replacement(_content, node) {
+      const pre = node as Element;
+      const code = pre.querySelector('code');
+      const cls = code?.getAttribute('class') ?? pre.getAttribute('class') ?? '';
+      const lang = detectCodeLanguage(cls);
+      const body = code?.textContent ?? pre.textContent ?? '';
+      const fence = '```';
+      return `\n\n${fence}${lang ?? ''}\n${body.replace(/\n+$/, '')}\n${fence}\n\n`;
     },
   });
 
