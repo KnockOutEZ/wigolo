@@ -106,11 +106,23 @@ export async function handleSearch(
     const displayQuery = normalizedQueries[0];
     const cacheKey = normalizedQueries.join(' | ');
 
-    const cached = input.force_refresh ? null : getCachedSearchResults(cacheKey);
+    const staleMaxSeconds = mode === 'fast' ? config.fastStaleMaxHours * 3600 : 0;
+    const cached = input.force_refresh
+      ? null
+      : getCachedSearchResults(cacheKey, { staleMaxSeconds });
     if (cached && !includeContent) {
-      log.info('serving multi-query search results from cache', { queries: normalizedQueries });
+      log.info('serving multi-query search results from cache', {
+        queries: normalizedQueries,
+        stale: cached.stale ?? false,
+      });
+      const stamped: SearchResultItem[] = cached.results.slice(0, maxResults).map(r => ({
+        ...r,
+        cached: true,
+        cached_at: cached.searched_at,
+        ...(cached.stale ? { stale: true } : {}),
+      }));
       const output: SearchOutput = {
-        results: cached.results.slice(0, maxResults),
+        results: stamped,
         query: displayQuery,
         engines_used: cached.engines_used,
         total_time_ms: Date.now() - start,
@@ -236,11 +248,23 @@ export async function handleSearch(
   // --- Single-query path (unchanged from v2) ---
   const queryStr = input.query as string;
 
-  const cached = input.force_refresh ? null : getCachedSearchResults(queryStr);
+  const staleMaxSeconds = mode === 'fast' ? config.fastStaleMaxHours * 3600 : 0;
+  const cached = input.force_refresh
+    ? null
+    : getCachedSearchResults(queryStr, { staleMaxSeconds });
   if (cached && !includeContent) {
-    log.info('serving search results from cache', { query: queryStr });
+    log.info('serving search results from cache', {
+      query: queryStr,
+      stale: cached.stale ?? false,
+    });
+    const stamped: SearchResultItem[] = cached.results.slice(0, maxResults).map(r => ({
+      ...r,
+      cached: true,
+      cached_at: cached.searched_at,
+      ...(cached.stale ? { stale: true } : {}),
+    }));
     const output: SearchOutput = {
-      results: cached.results.slice(0, maxResults),
+      results: stamped,
       query: queryStr,
       engines_used: cached.engines_used,
       total_time_ms: Date.now() - start,

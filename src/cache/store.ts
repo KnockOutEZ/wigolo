@@ -204,6 +204,7 @@ export interface CachedSearchResult {
   results: SearchResultItem[];
   engines_used: string[];
   searched_at: string;
+  stale?: boolean;
 }
 
 export function cacheSearchResults(
@@ -233,20 +234,41 @@ export function cacheSearchResults(
   });
 }
 
-export function getCachedSearchResults(query: string): CachedSearchResult | null {
+export function getCachedSearchResults(
+  query: string,
+  opts: CacheLookupOptions = {},
+): CachedSearchResult | null {
   const db = getDatabase();
   const queryHash = createHash('sha256').update(query.toLowerCase().trim()).digest('hex');
 
-  const row = db.prepare(`
-    SELECT * FROM search_cache WHERE query_hash = ? AND (expires_at IS NULL OR expires_at > datetime('now'))
-  `).get(queryHash) as { query: string; results: string; engines_used: string; searched_at: string } | undefined;
+  const row = db.prepare(
+    'SELECT query, results, engines_used, searched_at, expires_at FROM search_cache WHERE query_hash = ? LIMIT 1',
+  ).get(queryHash) as
+    | { query: string; results: string; engines_used: string; searched_at: string; expires_at: string | null }
+    | undefined;
 
   if (!row) return null;
 
+  if (row.expires_at) {
+    const expiresMs = new Date(row.expires_at).getTime();
+    const now = Date.now();
+    if (expiresMs < now) {
+      const staleMaxMs = (opts.staleMaxSeconds ?? 0) * 1000;
+      if (now - expiresMs > staleMaxMs) return null;
+      return {
+        query: row.query,
+        results: JSON.parse(row.results) as SearchResultItem[],
+        engines_used: JSON.parse(row.engines_used) as string[],
+        searched_at: row.searched_at,
+        stale: true,
+      };
+    }
+  }
+
   return {
     query: row.query,
-    results: JSON.parse(row.results),
-    engines_used: JSON.parse(row.engines_used),
+    results: JSON.parse(row.results) as SearchResultItem[],
+    engines_used: JSON.parse(row.engines_used) as string[],
     searched_at: row.searched_at,
   };
 }
