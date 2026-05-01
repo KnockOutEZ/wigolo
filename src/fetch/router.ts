@@ -2,7 +2,7 @@ import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { contentAppearsEmpty } from './content-check.js';
 import { getAuthOptions } from './auth.js';
-import type { RawFetchResult, BrowserAction } from '../types.js';
+import type { RawFetchResult, BrowserAction, Mode } from '../types.js';
 
 export interface RouterFetchOptions {
   renderJs?: 'auto' | 'always' | 'never';
@@ -11,6 +11,7 @@ export interface RouterFetchOptions {
   screenshot?: boolean;
   actions?: BrowserAction[];
   force_refresh?: boolean;
+  mode?: Mode;
 }
 
 export interface HttpClient {
@@ -49,11 +50,24 @@ export class SmartRouter {
   ) {}
 
   async fetch(url: string, options: RouterFetchOptions = {}): Promise<RawFetchResult> {
-    const { renderJs = 'auto', useAuth = false, headers, screenshot, actions } = options;
+    const { renderJs = 'auto', useAuth = false, headers, screenshot, actions, mode } = options;
     const config = getConfig();
     const logger = createLogger('fetch');
     const threshold = config.browserFallbackThreshold;
     const domain = new URL(url).hostname;
+
+    // Fast mode: HTTP-only with tight timeout, never escalates to a browser.
+    if (mode === 'fast') {
+      logger.debug('routing to http (fast)', { url });
+      const result = await this.httpClient.fetch(url, {
+        headers,
+        timeoutMs: config.fastTimeoutMs,
+      });
+      this.ensureStats(domain);
+      const raw = this.toRawFetchResult(result);
+      raw.jsRequired = contentAppearsEmpty(result.html);
+      return raw;
+    }
 
     // Actions always force Playwright --- actions need a live browser page
     if (actions && actions.length > 0) {

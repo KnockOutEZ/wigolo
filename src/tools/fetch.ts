@@ -78,7 +78,6 @@ export async function handleFetch(
   router: SmartRouter,
 ): Promise<FetchOutput> {
   const mode = resolveMode(input.mode);
-  void mode;
   try {
     if (!input.force_refresh) {
       const cached = getCachedContent(input.url);
@@ -92,11 +91,12 @@ export async function handleFetch(
     }
 
     const raw = await router.fetch(input.url, {
-      renderJs: input.render_js ?? 'auto',
+      renderJs: mode === 'fast' ? 'never' : (input.render_js ?? 'auto'),
       useAuth: input.use_auth ?? false,
       headers: input.headers,
       screenshot: input.screenshot,
       actions: input.actions,
+      mode,
     });
 
     const extraction = await extractContent(raw.html, raw.finalUrl, {
@@ -143,6 +143,7 @@ export async function handleFetch(
       screenshot: raw.screenshot,
       cached: false,
       action_results: raw.actionResults,
+      ...(raw.jsRequired ? { js_required: true } : {}),
       ...(changeResult?.changed ? {
         changed: true,
         previous_hash: changeResult.previousHash,
