@@ -340,9 +340,30 @@ describe('resolveRelativeUrls', () => {
     expect(resolveRelativeUrls(md, 'https://foo.com/')).toBe(md);
   });
 
-  it('leaves fragment-only links unchanged', () => {
+  it('resolves fragment-only links against the base url', () => {
     const md = '[Top](#toc)';
-    expect(resolveRelativeUrls(md, 'https://x.com/page')).toBe(md);
+    expect(resolveRelativeUrls(md, 'https://x.com/page')).toBe('[Top](https://x.com/page#toc)');
+  });
+
+  it('resolves bare fragment anchors to absolute urls', () => {
+    const md = '[See logs](#logs)';
+    expect(resolveRelativeUrls(md, 'https://react.dev/learn/managing-state')).toBe(
+      '[See logs](https://react.dev/learn/managing-state#logs)',
+    );
+  });
+
+  it('resolves relative path with fragment', () => {
+    const md = '[Other](./effects#cleanup)';
+    expect(resolveRelativeUrls(md, 'https://react.dev/learn/managing-state')).toBe(
+      '[Other](https://react.dev/learn/effects#cleanup)',
+    );
+  });
+
+  it('resolves query+fragment relative links', () => {
+    const md = '[Same path](?tab=usage#a)';
+    expect(resolveRelativeUrls(md, 'https://x.com/y')).toBe(
+      '[Same path](https://x.com/y?tab=usage#a)',
+    );
   });
 
   it('resolves relative image sources', () => {

@@ -217,7 +217,14 @@ export function resolveRelativeUrls(markdown: string, baseUrl: string): string {
   const rewrite = (path: string): string => {
     const trimmed = path.trim();
     if (!trimmed) return path;
-    if (/^(?:https?:|mailto:|tel:|javascript:|data:|#)/i.test(trimmed)) return path;
+    if (/^(?:https?:|mailto:|tel:|javascript:|data:)/i.test(trimmed)) return path;
+    if (trimmed.startsWith('#')) {
+      try {
+        return new URL(trimmed, baseUrl).href;
+      } catch {
+        return path;
+      }
+    }
     if (trimmed.startsWith('//')) {
       try {
         const base = new URL(baseUrl);
