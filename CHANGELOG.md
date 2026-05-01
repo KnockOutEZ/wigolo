@@ -2,6 +2,24 @@
 
 ## Unreleased — v1 prep
 
+### NEW: mode parameter on search and fetch
+- `mode: 'fast' | 'balanced' | 'deep'` on both `search` and `fetch` tools.
+  Default `balanced` (no behavior change vs. prior release).
+- **fast** — HTTP-only fetch (never spawns a browser; sets `js_required: true`
+  when the HTTP body looks like a JS shell), single search engine, reranker
+  skipped, cache rows up to 24h past expiry are returned with `stale: true`
+  and `cached_at`. Hard 800ms HTTP timeout (`WIGOLO_FAST_TIMEOUT_MS`).
+- **balanced** — current behavior: full engine fan-out, reranker on, standard
+  cache freshness.
+- **deep** — single string queries auto-expand to 3–5 deterministic variants;
+  reranker on; the top 5 results are fetched full-body via the smart router.
+- New env vars: `WIGOLO_FAST_STALE_MAX_HOURS` (default 24),
+  `WIGOLO_FAST_TIMEOUT_MS` (default 800).
+- Output additions: `FetchOutput.cached_at`, `.stale`, `.js_required`;
+  `SearchResultItem.cached`, `.cached_at`, `.stale`. Note: `cached` and
+  `cached_at` are stamped on every cache-hit result (all modes), not just
+  stale fast-mode rows — strict superset of the issue acceptance criteria.
+
 ### NEW: Markdown post-processor
 - Code blocks now carry language tags (e.g. ` ```ts `, ` ```py `) when the
   source HTML exposes a hint via `language-*`, `lang-*`, `hljs-*`,
