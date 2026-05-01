@@ -2,6 +2,26 @@
 
 ## Unreleased — v1 prep
 
+### NEW: BYO cloud LLM extract fallback (opt-in)
+- When the deterministic extractor leaves required schema fields empty, an
+  optional cloud LLM call fills them. Set any of `ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`, `GOOGLE_API_KEY`, or `GROQ_API_KEY` to enable; with no
+  keys set, extract returns the partial result plus a warning listing each
+  env var.
+- Provider order: anthropic → openai → gemini → groq. Override with
+  `WIGOLO_LLM_PROVIDER=<name>` (ignored when its key is missing).
+- Default models: Claude Haiku 4.5, gpt-4o-mini, gemini-2.5-flash-lite,
+  llama-3.3-70b-versatile.
+- All calls cached in a new `llm_cache` SQLite table keyed by
+  (model, prompt-hash, schema-hash). Default 7-day TTL — override via
+  `WIGOLO_LLM_CACHE_TTL_DAYS`.
+- Hard cap of 1 LLM call per `extract()` request; override via
+  `WIGOLO_LLM_MAX_CALLS_PER_REQUEST`.
+- Filled fields carry provenance `'llm'`. The orchestrator never overrides
+  fields the deterministic extractor already populated.
+- New `wigolo doctor` section reports configured providers and current
+  budget/TTL settings.
+
 ### BREAKING: reranker rewritten to in-process ONNX
 - The `WIGOLO_RERANKER=flashrank` value is retired and now throws on startup.
   Default is `onnx`. The Python `flashrank` package is no longer used and may

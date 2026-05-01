@@ -114,4 +114,59 @@ describe('runDoctor', () => {
     expect(code).toBe(1);
     expect(outBuffer).toContain('not bootstrapped');
   });
+
+  describe('LLM fallback section', () => {
+    const originalEnv = process.env;
+
+    beforeEach(() => {
+      process.env = { ...originalEnv };
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.OPENAI_API_KEY;
+      delete process.env.GOOGLE_API_KEY;
+      delete process.env.GROQ_API_KEY;
+      delete process.env.WIGOLO_LLM_PROVIDER;
+      vi.mocked(spawnSync).mockImplementation(() => okProc('Python 3.12.4'));
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockImplementation((p) => {
+        const s = String(p);
+        if (s.endsWith('state.json'))
+          return JSON.stringify({ status: 'ready', searxngPath: '/tmp/sx' });
+        if (s.endsWith('searxng.lock'))
+          return JSON.stringify({ pid: process.pid, port: 8888 });
+        return '';
+      });
+    });
+
+    afterEach(() => {
+      process.env = originalEnv;
+    });
+
+    it('lists all four providers and marks unset ones', async () => {
+      await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toMatch(/LLM fallback/);
+      expect(outBuffer).toMatch(/anthropic\s+no key/);
+      expect(outBuffer).toMatch(/openai\s+no key/);
+      expect(outBuffer).toMatch(/gemini\s+no key/);
+      expect(outBuffer).toMatch(/groq\s+no key/);
+    });
+
+    it('marks providers with their key set as configured', async () => {
+      process.env.ANTHROPIC_API_KEY = 'k';
+      process.env.GROQ_API_KEY = 'k';
+      await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toMatch(/anthropic\s+configured/);
+      expect(outBuffer).toMatch(/groq\s+configured/);
+      expect(outBuffer).toMatch(/openai\s+no key/);
+    });
+
+    it('shows override and budget settings', async () => {
+      process.env.WIGOLO_LLM_PROVIDER = 'gemini';
+      process.env.WIGOLO_LLM_CACHE_TTL_DAYS = '14';
+      process.env.WIGOLO_LLM_MAX_CALLS_PER_REQUEST = '3';
+      await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toMatch(/WIGOLO_LLM_PROVIDER=gemini/);
+      expect(outBuffer).toMatch(/cache TTL:\s+14 days/);
+      expect(outBuffer).toMatch(/per-request:\s+3 call/);
+    });
+  });
 });

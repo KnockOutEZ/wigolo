@@ -7,6 +7,7 @@ import { getPythonBin } from '../python-env.js';
 import { getConfig } from '../config.js';
 import { resolveModelId } from '../search/reranker/models.js';
 import { onnxRerank } from '../search/reranker/onnx.js';
+import { allProviders, providerEnvVar } from '../extraction/llm/select.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
 
@@ -131,6 +132,22 @@ export async function runDoctor(dataDir: string): Promise<number> {
   } else {
     out(`  ML reranker:        not installed${reranker.reason ? ` (${reranker.reason})` : ''}`);
   }
+
+  out('');
+  out('[wigolo doctor] LLM fallback (extract):');
+  const cfg = getConfig();
+  for (const p of allProviders()) {
+    const envVar = providerEnvVar(p);
+    const set = !!process.env[envVar];
+    out(
+      `  ${p.padEnd(10)} ${set ? 'configured' : 'no key'} (${envVar}${set ? '' : ' unset'})`,
+    );
+  }
+  if (cfg.llmProvider) {
+    out(`  override:    WIGOLO_LLM_PROVIDER=${cfg.llmProvider}`);
+  }
+  out(`  cache TTL:   ${cfg.llmCacheTtlDays} days`);
+  out(`  per-request: ${cfg.llmMaxCallsPerRequest} call(s) max`);
 
   out('');
   const state = getBootstrapState(dataDir) as BootstrapState | null;

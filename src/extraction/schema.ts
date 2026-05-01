@@ -1,5 +1,6 @@
 import { parseHTML } from 'linkedom';
 import { extractStructuredData } from './structured-data.js';
+import { extractWithLLM, type LLMFallbackBudget } from './llm-fallback.js';
 import type {
   FieldProvenance,
   SchemaExtractionResult,
@@ -10,6 +11,12 @@ export interface JsonSchema {
   type?: string;
   properties?: Record<string, JsonSchema>;
   items?: JsonSchema;
+  required?: string[];
+}
+
+export interface SchemaExtractionOpts {
+  signal?: AbortSignal;
+  budget?: LLMFallbackBudget;
 }
 
 const PROVENANCE_PRIORITY: StructuredDataResult['provenance'][] = [
@@ -66,6 +73,47 @@ export function extractWithSchemaDetailed(
   }
 
   return { values, provenance };
+}
+
+export interface SchemaExtractionAsyncResult extends SchemaExtractionResult {
+  warnings: string[];
+}
+
+export async function extractWithSchemaDetailedAsync(
+  html: string,
+  schema: JsonSchema,
+  opts: SchemaExtractionOpts = {},
+): Promise<SchemaExtractionAsyncResult> {
+  const det = extractWithSchemaDetailed(html, schema);
+  const warnings: string[] = [];
+
+  if (!schema.required || schema.required.length === 0) {
+    return { ...det, warnings };
+  }
+
+  const missing = schema.required.filter((k) => det.values[k] === undefined);
+  if (missing.length === 0) {
+    return { ...det, warnings };
+  }
+
+  const llm = await extractWithLLM({
+    html,
+    jsonSchema: schema as unknown as Record<string, unknown>,
+    partial: det.values,
+    missing,
+    signal: opts.signal,
+    budget: opts.budget,
+  });
+
+  const values = { ...det.values };
+  const provenance: Record<string, FieldProvenance> = { ...det.provenance };
+  for (const key of missing) {
+    if (llm.values[key] !== undefined && values[key] === undefined) {
+      values[key] = llm.values[key];
+      provenance[key] = 'llm';
+    }
+  }
+  return { values, provenance, warnings: llm.warnings };
 }
 
 function pickField(fields: Record<string, unknown>, name: string): unknown {

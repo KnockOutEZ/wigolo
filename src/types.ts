@@ -128,7 +128,7 @@ export interface Extractor {
 }
 
 // Provenance source for a single extracted field
-export type FieldProvenance = 'json-ld' | 'microdata' | 'rdfa' | 'heuristic';
+export type FieldProvenance = 'json-ld' | 'microdata' | 'rdfa' | 'heuristic' | 'llm';
 
 // One block of structured data found in HTML
 export interface StructuredDataResult {
@@ -518,6 +518,7 @@ export interface ExtractOutput {
   source_url?: string;
   mode: 'selector' | 'tables' | 'metadata' | 'schema' | 'structured';
   error?: string;
+  warnings?: string[];
 }
 
 // --- Find Similar tool types (v3, Slice 23) ---

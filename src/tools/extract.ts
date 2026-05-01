@@ -1,7 +1,10 @@
 import type { ExtractInput, ExtractOutput } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import { extractMetadata, extractSelector, extractTables } from '../extraction/extract.js';
-import { extractWithSchema } from '../extraction/schema.js';
+import {
+  extractWithSchema,
+  extractWithSchemaDetailedAsync,
+} from '../extraction/schema.js';
 import { extractJsonLd } from '../extraction/jsonld.js';
 import { extractStructured } from '../extraction/structured.js';
 import { getCachedContent, isExpired } from '../cache/store.js';
@@ -63,9 +66,24 @@ export async function handleExtract(
       case 'structured':
         data = extractStructured(html);
         break;
-      case 'schema':
-        data = extractWithSchema(html, input.schema!);
+      case 'schema': {
+        const schema = input.schema!;
+        if (Array.isArray(schema.required) && schema.required.length > 0) {
+          const detailed = await extractWithSchemaDetailedAsync(html, schema);
+          data = detailed.values;
+          if (detailed.warnings.length > 0) {
+            return {
+              data,
+              source_url: sourceUrl,
+              mode,
+              warnings: detailed.warnings,
+            };
+          }
+        } else {
+          data = extractWithSchema(html, schema);
+        }
         break;
+      }
       case 'metadata':
       default: {
         const meta = extractMetadata(html);

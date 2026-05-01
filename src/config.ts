@@ -57,6 +57,9 @@ export interface Config {
   lightpandaUrl: string | null;
   lightpandaEnabled: boolean;
   lightpandaFailureThreshold: number;
+  llmProvider: string | null;
+  llmCacheTtlDays: number;
+  llmMaxCallsPerRequest: number;
 }
 
 function envStr(key: string, fallback: string | null = null): string | null {
@@ -160,6 +163,9 @@ export function getConfig(): Config {
     lightpandaUrl: envStr('WIGOLO_LIGHTPANDA_URL'),
     lightpandaEnabled: envBool('WIGOLO_LIGHTPANDA_ENABLED', false),
     lightpandaFailureThreshold: envInt('WIGOLO_LIGHTPANDA_FAILURE_THRESHOLD', 3),
+    llmProvider: envStr('WIGOLO_LLM_PROVIDER'),
+    llmCacheTtlDays: envInt('WIGOLO_LLM_CACHE_TTL_DAYS', 7),
+    llmMaxCallsPerRequest: envInt('WIGOLO_LLM_MAX_CALLS_PER_REQUEST', 1),
   };
 
   return cachedConfig;

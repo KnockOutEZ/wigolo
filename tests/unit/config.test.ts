@@ -405,6 +405,50 @@ describe('config', () => {
     });
   });
 
+  describe('config — llm fallback', () => {
+    it('llmProvider defaults to null', () => {
+      delete process.env.WIGOLO_LLM_PROVIDER;
+      resetConfig();
+      expect(getConfig().llmProvider).toBeNull();
+    });
+
+    it('reads WIGOLO_LLM_PROVIDER', () => {
+      process.env.WIGOLO_LLM_PROVIDER = 'openai';
+      resetConfig();
+      expect(getConfig().llmProvider).toBe('openai');
+    });
+
+    it('llmCacheTtlDays defaults to 7', () => {
+      delete process.env.WIGOLO_LLM_CACHE_TTL_DAYS;
+      resetConfig();
+      expect(getConfig().llmCacheTtlDays).toBe(7);
+    });
+
+    it('reads WIGOLO_LLM_CACHE_TTL_DAYS', () => {
+      process.env.WIGOLO_LLM_CACHE_TTL_DAYS = '30';
+      resetConfig();
+      expect(getConfig().llmCacheTtlDays).toBe(30);
+    });
+
+    it('llmMaxCallsPerRequest defaults to 1', () => {
+      delete process.env.WIGOLO_LLM_MAX_CALLS_PER_REQUEST;
+      resetConfig();
+      expect(getConfig().llmMaxCallsPerRequest).toBe(1);
+    });
+
+    it('reads WIGOLO_LLM_MAX_CALLS_PER_REQUEST', () => {
+      process.env.WIGOLO_LLM_MAX_CALLS_PER_REQUEST = '3';
+      resetConfig();
+      expect(getConfig().llmMaxCallsPerRequest).toBe(3);
+    });
+
+    it('non-numeric WIGOLO_LLM_CACHE_TTL_DAYS falls back to default', () => {
+      process.env.WIGOLO_LLM_CACHE_TTL_DAYS = 'abc';
+      resetConfig();
+      expect(getConfig().llmCacheTtlDays).toBe(7);
+    });
+  });
+
   describe('reranker config rename (ticket #10)', () => {
     it('default reranker is "onnx"', () => {
       delete process.env.WIGOLO_RERANKER;
