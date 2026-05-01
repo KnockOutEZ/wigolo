@@ -2,6 +2,22 @@
 
 ## Unreleased — v1 prep
 
+### NEW: Markdown post-processor
+- Code blocks now carry language tags (e.g. ` ```ts `, ` ```py `) when the
+  source HTML exposes a hint via `language-*`, `lang-*`, `hljs-*`,
+  `prism-language-*`, or `highlight-source-*` class attributes. Common
+  aliases collapse to short forms (`typescript→ts`, `javascript→js`,
+  `python→py`, `rust→rs`, `golang→go`, `shell→sh`).
+- Boilerplate stripping runs both as a DOM pre-pass (cookie banners, share
+  bars, "On this page" rails, feedback widgets, related/recommended modules,
+  newsletter signups) and as a post-Turndown text pass for residual markers.
+- Cross-page navigation lines that repeat across ≥60% of a crawl batch are
+  removed from the leading 30 / trailing 20 lines per page (kicks in at
+  4+ pages so small captures stay intact).
+- Anchor-only and path+fragment links resolve correctly in extracted
+  markdown — fragment-only `href="#section"` is preserved verbatim;
+  `/path#section` becomes an absolute URL with the fragment retained.
+
 ### NEW: BYO cloud LLM extract fallback (opt-in)
 - When the deterministic extractor leaves required schema fields empty, an
   optional cloud LLM call fills them. Set any of `ANTHROPIC_API_KEY`,
