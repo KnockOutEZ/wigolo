@@ -53,7 +53,7 @@ describe('scoreAndFilterSources', () => {
     const { kept, excluded } = await scoreAndFilterSources('latest postgres release', sources, { threshold: 0.1 });
     expect(kept.find((k) => k.url === 'https://a')).toBeDefined();
     const exclB = excluded.find((e) => e.source.url === 'https://b');
-    expect(exclB?.excluded_reason).toMatch(/below_threshold|low_relevance/);
+    expect(exclB?.excluded_reason).toMatch(/^below_threshold/);
   });
 });
 

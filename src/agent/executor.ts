@@ -24,11 +24,6 @@ export interface ScoreFilterOptions {
   threshold: number;
 }
 
-export interface ScoredSource<T extends AgentSourceLike = AgentSourceLike> {
-  source: T;
-  score: number;
-}
-
 export interface ExcludedSource<T extends AgentSourceLike = AgentSourceLike> {
   source: T;
   score: number;
@@ -102,7 +97,9 @@ export async function scoreAndFilterSources<T extends AgentSourceLike>(
   for (const source of sources) {
     let score = scoreByUrl.get(source.url);
     if (score === undefined) {
-      // rerank dropped via internal threshold OR reranker disabled OR error.
+      // rerank dropped this URL via its internal threshold, OR rerank threw and we're
+      // in the catch path — fall back to lightweight token-overlap so the source is
+      // still scored.
       score = tokenOverlapScore(prompt, source);
     }
     if (score < opts.threshold) {
@@ -181,6 +178,11 @@ export async function executeAgentPlan(
     // fallback is too noisy to drop sources from on its own.
     const trimmedPrompt = prompt.trim();
     const cfg = getConfig();
+    if (trimmedPrompt.length > 0 && cfg.reranker === 'none') {
+      log.debug(
+        'agent post-fetch relevance filter disabled (reranker=none); relying on pre-fetch filter only',
+      );
+    }
     if (trimmedPrompt.length > 0 && cfg.reranker !== 'none') {
       const fetched = sources.filter((s) => s.fetched && s.markdown_content.length > 0);
       const candidates: AgentSourceLike[] = fetched.map((s) => ({
