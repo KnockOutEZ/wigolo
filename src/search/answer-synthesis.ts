@@ -195,6 +195,7 @@ export interface SynthesisInput {
   query: string;
   results: SearchResultItem[];
   samplingServer?: SamplingCapableServer;
+  /** Reserved for future per-source truncation; T6 currently relies on MAX_CHARS_PER_SOURCE. */
   maxTotalChars: number;
 }
 
@@ -234,8 +235,8 @@ export async function runSynthesis(
           },
         };
       }
-    } catch {
-      // fall through to level 2
+    } catch (err) {
+      log.warn('synthesis level-1 sampling failed, falling through to heuristic', { error: String(err) });
     }
   }
 
