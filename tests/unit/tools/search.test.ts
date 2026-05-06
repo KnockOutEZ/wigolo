@@ -195,7 +195,9 @@ describe('handleSearch', () => {
     });
 
     it('uses search cache when force_refresh is false/undefined', async () => {
-      cacheSearchResults('test', [
+      // Single strings are auto-expanded; cache key uses the expanded multi-query join
+      const expandedKey = 'test | test guide | test tutorial | test examples | test best practices';
+      cacheSearchResults(expandedKey, [
         { title: 'Stale', url: 'https://cached.example/1', snippet: 'stale snippet', relevance_score: 0.9 },
       ], ['cached-engine']);
 

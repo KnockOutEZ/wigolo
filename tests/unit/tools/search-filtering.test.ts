@@ -7,6 +7,8 @@ vi.mock('../../../src/config.js', () => ({
     searchTotalTimeoutMs: 30000,
     searchFetchTimeoutMs: 10000,
     searxngQueryTimeoutMs: 5000,
+    multiQueryConcurrency: 5,
+    multiQueryMax: 10,
   }),
 }));
 

@@ -112,9 +112,11 @@ describe('handleSearch with multi-query array input', () => {
     const input: SearchInput = { query: 'single query', include_content: false };
     const output = await handleSearch(input, [engine], mockRouter);
 
+    // Single strings are now auto-expanded and routed through multi-query path
     expect(output.query).toBe('single query');
     expect(output.results.length).toBeGreaterThan(0);
-    expect(output.queries_executed).toBeUndefined();
+    expect(output.queries_executed).toBeDefined();
+    expect(output.queries_executed![0]).toBe('single query');
   });
 
   it('returns error when all queries across all engines fail', async () => {

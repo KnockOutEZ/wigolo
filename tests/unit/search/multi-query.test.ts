@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { normalizeQueries, fanOutSearch, mergeWithRRF, synthesizeIntent } from '../../../src/search/multi-query.js';
+import { normalizeQueries, fanOutSearch, mergeWithRRF, synthesizeIntent, expandIfSingle } from '../../../src/search/multi-query.js';
 import type { RawSearchResult, SearchEngine, SearchEngineOptions } from '../../../src/types.js';
 import type { MergedSearchResult } from '../../../src/search/dedup.js';
 
@@ -349,6 +349,30 @@ describe('mergeWithRRF', () => {
 
     expect(merged[0].relevance_score).toBeGreaterThan(0);
     expect(merged[0].relevance_score).toBeLessThanOrEqual(1);
+  });
+});
+
+// --- expandIfSingle tests ---
+
+describe('expandIfSingle', () => {
+  it('expands a single string into up to 5 variants', () => {
+    const out = expandIfSingle('postgres replication');
+    expect(out.length).toBeGreaterThanOrEqual(2);
+    expect(out.length).toBeLessThanOrEqual(5);
+    expect(out[0]).toBe('postgres replication');
+  });
+
+  it('passes a string[] through unchanged (no expansion)', () => {
+    const input = ['postgres replication', 'wal shipping setup'];
+    const out = expandIfSingle(input);
+    expect(out).toEqual(input);
+  });
+
+  it('does not stack expansion suffixes on top of an array', () => {
+    const input = ['postgres replication'];
+    const out = expandIfSingle(input);
+    expect(out).toEqual(['postgres replication']);
+    expect(out).not.toContain('postgres replication guide');
   });
 });
 
