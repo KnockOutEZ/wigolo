@@ -1,4 +1,4 @@
-import type { SearchResultItem, Citation } from '../types.js';
+import type { SearchResultItem, Citation, StageResult } from '../types.js';
 import type { SamplingCapableServer } from './sampling.js';
 import {
   checkSamplingSupport,
@@ -189,6 +189,92 @@ function extractKeypoint(body: string, maxChars: number): string {
     return window.slice(0, lastStop + 1);
   }
   return window + '…';
+}
+
+export interface SynthesisInput {
+  query: string;
+  results: SearchResultItem[];
+  samplingServer?: SamplingCapableServer;
+  maxTotalChars: number;
+}
+
+export interface SynthesizedAnswer {
+  answer: string;
+  citations: Citation[];
+  warning?: string;
+  fallback_level: 1 | 2 | 3;
+}
+
+export async function runSynthesis(
+  input: SynthesisInput,
+): Promise<StageResult<SynthesizedAnswer>> {
+  const { query, results, samplingServer } = input;
+
+  if (!results || results.length === 0) {
+    return {
+      ok: false,
+      error: 'no_content',
+      error_reason: 'No sources returned content for this query',
+      stage: 'synthesize',
+      hint: 'Broaden the query, increase max_results, or remove restrictive filters',
+    };
+  }
+
+  if (samplingServer) {
+    try {
+      const r = await synthesizeAnswer(results, query, samplingServer);
+      if (r.answer && !r.fallback) {
+        return {
+          ok: true,
+          data: {
+            answer: r.answer,
+            citations: r.citations ?? [],
+            warning: r.warning,
+            fallback_level: 1,
+          },
+        };
+      }
+    } catch {
+      // fall through to level 2
+    }
+  }
+
+  const fb = buildStructuredFallback(results, query);
+  if (fb.answer && fb.answer.length > 0) {
+    return {
+      ok: true,
+      data: {
+        answer: fb.answer,
+        citations: fb.citations,
+        warning: fb.warning,
+        fallback_level: 2,
+      },
+    };
+  }
+
+  const top = results.slice(0, 5);
+  const citations: Citation[] = top.map((r, i) => ({
+    index: i + 1, url: r.url, title: r.title, snippet: r.snippet,
+  }));
+  if (citations.length > 0) {
+    const lines = citations.map(c => `[${c.index}] ${c.title} — ${c.url}\n${c.snippet ?? ''}`);
+    return {
+      ok: true,
+      data: {
+        answer: `Evidence for "${query}" (no synthesis available — content too sparse to summarize):\n\n${lines.join('\n\n')}`,
+        citations,
+        warning: 'sparse_content: returned raw evidence dump instead of synthesized answer',
+        fallback_level: 3,
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    error: 'no_content',
+    error_reason: 'Sources returned but contained no usable text',
+    stage: 'synthesize',
+  };
 }
 
 export function extractCitations(

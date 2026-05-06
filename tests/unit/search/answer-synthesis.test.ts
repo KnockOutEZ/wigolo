@@ -4,6 +4,7 @@ import {
   buildSynthesisPrompt,
   extractCitations,
   buildSourcesText,
+  runSynthesis,
 } from '../../../src/search/answer-synthesis.js';
 import type { SearchResultItem, Citation } from '../../../src/types.js';
 
@@ -414,5 +415,54 @@ describe('synthesizeAnswer', () => {
     expect(server.createMessage).toHaveBeenCalledWith(
       expect.objectContaining({ maxTokens: 1500 }),
     );
+  });
+});
+
+describe('runSynthesis', () => {
+  it('level 4: returns StageError when results are empty', async () => {
+    const out = await runSynthesis({
+      query: 'postgres replication',
+      results: [],
+      samplingServer: undefined,
+      maxTotalChars: 8000,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error).toBe('no_content');
+      expect(out.stage).toBe('synthesize');
+      expect(out.error_reason).toMatch(/no sources/i);
+    }
+  });
+
+  it('level 2: heuristic fallback when no sampling server but results exist', async () => {
+    const results = [
+      { url: 'https://a', title: 'A', snippet: 'aa', markdown_content: 'A long body about postgres replication...' },
+    ] as SearchResultItem[];
+    const out = await runSynthesis({
+      query: 'postgres replication',
+      results,
+      samplingServer: undefined,
+      maxTotalChars: 8000,
+    });
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.data.answer).toContain('postgres replication');
+      expect(out.data.warning).toMatch(/heuristic|sampling/i);
+    }
+  });
+
+  it('level 3: evidence dump when content is too sparse for bullets', async () => {
+    const results = [
+      { url: 'https://a', title: 'A', snippet: '', markdown_content: '' },
+      { url: 'https://b', title: 'B', snippet: '', markdown_content: '' },
+    ] as SearchResultItem[];
+    const out = await runSynthesis({
+      query: 'q', results, samplingServer: undefined, maxTotalChars: 8000,
+    });
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.data.warning).toMatch(/evidence|sparse/i);
+      expect(out.data.citations.length).toBeGreaterThan(0);
+    }
   });
 });
