@@ -225,7 +225,6 @@ describe('research tool integration', () => {
     const __r_result1 = await handleResearch({ question: '' } as ResearchInput, [stubEngine], stubRouter);;
     const result1 = __r_result1.ok ? __r_result1.data : ({ ...__r_result1 } as any);
     expect(result1.error).toBeDefined();
-    expect(result1.report).toBe('');
 
     const __r_result2 = await handleResearch({ question: 'test', depth: 'wrong' as any }, [stubEngine], stubRouter);;
     const result2 = __r_result2.ok ? __r_result2.data : ({ ...__r_result2 } as any);

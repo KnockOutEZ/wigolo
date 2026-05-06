@@ -279,7 +279,7 @@ describe('search answer synthesis -- integration', () => {
       responseText: 'Concurrent answer [1].',
     });
 
-    const [result1, result2] = await Promise.all([
+    const [__r1, __r2] = await Promise.all([
       handleSearch(
         { query: 'query one', format: 'answer' },
         [stubEngine],
@@ -295,6 +295,8 @@ describe('search answer synthesis -- integration', () => {
         server,
       ),
     ]);
+    const result1 = __r1.ok ? __r1.data : ({ ...__r1 } as any);
+    const result2 = __r2.ok ? __r2.data : ({ ...__r2 } as any);
 
     expect(result1.answer).toBeDefined();
     expect(result2.answer).toBeDefined();

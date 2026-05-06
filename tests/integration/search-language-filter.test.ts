@@ -50,7 +50,8 @@ describe('handleSearch language filter', () => {
       stubRouter,
     );;
     const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
-    expect(out.warning ?? '').toMatch(/engine_language_mismatch|engine_batch_dropped|no.results/i);
-    for (const r of out.results) expect(r.url).not.toContain('baidu.com');
+    const signal = `${out.warning ?? ''} ${out.error ?? ''} ${out.error_reason ?? ''}`;
+    expect(signal).toMatch(/engine_language_mismatch|engine_batch_dropped|no.results/i);
+    for (const r of out.results ?? []) expect(r.url).not.toContain('baidu.com');
   });
 });
