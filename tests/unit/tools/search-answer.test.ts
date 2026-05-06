@@ -156,6 +156,10 @@ describe('handleSearch with format=answer', () => {
     expect(result.citations?.length).toBeGreaterThanOrEqual(1);
   });
 
+  it.todo('sampling-less hosts: contract change from highlights[] to answer should be either restored or documented (T15 decides)');
+  it.todo('sampling-not-supported fallback should re-emit warning containing "sampling" (regression in T7, restore in T15)');
+  it.todo('sampling-throws fallback should populate result.warning (regression in T7, restore in T15)');
+
   it('still returns structured results alongside answer', async () => {
     const server = createMockServer({ samplingSupported: true });
 
@@ -185,6 +189,8 @@ describe('handleSearch with format=answer', () => {
     expect(result.answer).toBeDefined();
   });
 
+  it.todo('format=stream_answer should set output.streaming=true (regression in T7, restore in T15)');
+
   it('format=stream_answer invokes onProgress for pre-synthesis phases', async () => {
     const server = createMockServer({ samplingSupported: true });
     const onProgress = vi.fn();
@@ -213,6 +219,8 @@ describe('handleSearch with format=answer', () => {
     }
   });
 
+  it.todo('format=stream_answer should emit synthesize-phase progress 4/5 and 5/5 (regression in T7, restore in T15)');
+
   it('format=stream_answer works without onProgress callback', async () => {
     const server = createMockServer({ samplingSupported: true });
 
@@ -227,6 +235,8 @@ describe('handleSearch with format=answer', () => {
 
     expect(result.answer).toBeDefined();
   });
+
+  it.todo('format=stream_answer without onProgress should still set output.streaming=true (regression in T7, restore in T15)');
 
   it('format=answer does NOT invoke onProgress (progress is stream_answer only)', async () => {
     const server = createMockServer({ samplingSupported: true });
@@ -297,6 +307,8 @@ describe('handleSearch with format=answer', () => {
 
     expect(result.warning).toBeDefined();
   });
+
+  it.todo('synthesis warning should propagate underlying error message (e.g., "model overloaded") to result.warning (regression in T7, restore in T15)');
 
   it('answer format respects max_results', async () => {
     const server = createMockServer({ samplingSupported: true });
