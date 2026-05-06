@@ -70,7 +70,8 @@ describe('integration: search + rerank pipeline', () => {
     ]);
 
     const input: SearchInput = { query: 'typescript tutorial', include_content: false };
-    const output = await handleSearch(input, [mockEngine], mockRouter);
+    const __r_output = await handleSearch(input, [mockEngine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results.length).toBeGreaterThanOrEqual(3);
     // Verify reranking changed the order from position-based
@@ -90,7 +91,8 @@ describe('integration: search + rerank pipeline', () => {
     ]);
 
     const input: SearchInput = { query: 'typescript tutorial', include_content: false };
-    const output = await handleSearch(input, [mockEngine], mockRouter);
+    const __r_output = await handleSearch(input, [mockEngine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results.every(r => r.relevance_score >= 0.5)).toBe(true);
   });
@@ -99,7 +101,8 @@ describe('integration: search + rerank pipeline', () => {
     vi.mocked(onnxRerank).mockRejectedValue(new Error('model not available'));
 
     const input: SearchInput = { query: 'typescript tutorial', include_content: false };
-    const output = await handleSearch(input, [mockEngine], mockRouter);
+    const __r_output = await handleSearch(input, [mockEngine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results.length).toBeGreaterThan(0);
     // Original position-based order preserved

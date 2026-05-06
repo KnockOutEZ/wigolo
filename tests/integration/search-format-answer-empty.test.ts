@@ -36,11 +36,12 @@ describe('handleSearch format:answer with zero results', () => {
       fetch: async () => { throw new Error('not used'); },
     } as unknown as Parameters<typeof handleSearch>[2];
 
-    const out = await handleSearch(
+    const __r_out = await handleSearch(
       { query: 'this will not match anything zzz', format: 'answer' },
       [stubEngine],
       stubRouter,
-    );
+    );;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect((out as Record<string, unknown>).error).toBe('no_content');
     expect((out as Record<string, unknown>).error_reason).toMatch(/no sources/i);
     expect((out as Record<string, unknown>).stage).toBe('synthesize');

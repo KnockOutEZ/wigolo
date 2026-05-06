@@ -63,25 +63,28 @@ describe('handleExtract', () => {
   });
 
   it('returns error when neither url nor html provided', async () => {
-    const result = await handleExtract({}, mockRouter());
-    expect(result.error).toBe('Either url or html must be provided');
+    const __r_result = await handleExtract({}, mockRouter());;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+    expect(result.error_reason).toBe('Either url or html must be provided');
   });
 
   it('returns error when mode=selector but no css_selector', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { html: '<html></html>', mode: 'selector' },
       mockRouter(),
-    );
-    expect(result.error).toBe('css_selector is required when mode is "selector"');
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+    expect(result.error_reason).toBe('css_selector is required when mode is "selector"');
   });
 
   it('uses metadata mode by default', async () => {
     vi.mocked(extractMetadata).mockReturnValue({ title: 'Test' });
 
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { html: '<html><head><title>Test</title></head></html>' },
       mockRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.mode).toBe('metadata');
     expect(extractMetadata).toHaveBeenCalledOnce();
@@ -91,7 +94,8 @@ describe('handleExtract', () => {
     vi.mocked(extractMetadata).mockReturnValue({ title: 'Fetched' });
     const router = mockRouter();
 
-    const result = await handleExtract({ url: 'https://example.com' }, router);
+    const __r_result = await handleExtract({ url: 'https://example.com' }, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(router.fetch).toHaveBeenCalledWith('https://example.com', expect.any(Object));
     expect(result.source_url).toBe('https://example.com');
@@ -101,10 +105,11 @@ describe('handleExtract', () => {
     vi.mocked(extractMetadata).mockReturnValue({ title: 'Direct' });
     const router = mockRouter();
 
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { html: '<html><head><title>Direct</title></head></html>' },
       router,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(router.fetch).not.toHaveBeenCalled();
     expect(result.source_url).toBeUndefined();
@@ -172,7 +177,8 @@ describe('handleExtract', () => {
     vi.mocked(extractMetadata).mockReturnValue({ title: 'Fresh' });
     const router = mockRouter();
 
-    const result = await handleExtract({ url: 'https://example.com' }, router);
+    const __r_result = await handleExtract({ url: 'https://example.com' }, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(router.fetch).toHaveBeenCalled();
     expect(result.data).toEqual({ title: 'Fresh' });
@@ -181,10 +187,11 @@ describe('handleExtract', () => {
   it('dispatches to extractSelector for mode=selector', async () => {
     vi.mocked(extractSelector).mockReturnValue('matched text');
 
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { html: '<html><body><p>test</p></body></html>', mode: 'selector', css_selector: 'p' },
       mockRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.mode).toBe('selector');
     expect(extractSelector).toHaveBeenCalledWith(expect.any(String), 'p', false);
@@ -194,10 +201,11 @@ describe('handleExtract', () => {
   it('passes multiple=true to extractSelector', async () => {
     vi.mocked(extractSelector).mockReturnValue(['a', 'b']);
 
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { html: '<html></html>', mode: 'selector', css_selector: 'p', multiple: true },
       mockRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(extractSelector).toHaveBeenCalledWith(expect.any(String), 'p', true);
     expect(result.data).toEqual(['a', 'b']);
@@ -206,10 +214,11 @@ describe('handleExtract', () => {
   it('dispatches to extractTables for mode=tables', async () => {
     vi.mocked(extractTables).mockReturnValue([{ headers: ['A'], rows: [{ A: '1' }] }]);
 
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { html: '<html><body><table></table></body></html>', mode: 'tables' },
       mockRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.mode).toBe('tables');
     expect(extractTables).toHaveBeenCalledOnce();
@@ -218,10 +227,11 @@ describe('handleExtract', () => {
   it('ignores schema field when mode is not schema', async () => {
     vi.mocked(extractMetadata).mockReturnValue({ title: 'Test' });
 
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { html: '<html></html>', mode: 'metadata', schema: { type: 'object' } },
       mockRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.mode).toBe('metadata');
@@ -231,10 +241,11 @@ describe('handleExtract', () => {
     const router = mockRouter();
     router.fetch.mockRejectedValue(new Error('Network timeout'));
 
-    const result = await handleExtract({ url: 'https://example.com/broken' }, router);
+    const __r_result = await handleExtract({ url: 'https://example.com/broken' }, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
-    expect(result.error).toBe('Network timeout');
-    expect(result.mode).toBe('metadata');
+    expect(result.error_reason).toBe('Network timeout');
+    expect(result.error).toBe('extract_failed');
   });
 });
 
@@ -242,14 +253,15 @@ describe('handleExtract mode=schema', () => {
   it('dispatches to extractWithSchema for mode=schema', async () => {
     vi.mocked(extractWithSchema).mockReturnValue({ name: 'Widget', price: '$10' });
 
-    const output = await handleExtract({
+    const __r_output = await handleExtract({
       html: '<div class="product-name">Widget</div><span class="price">$10</span>',
       mode: 'schema',
       schema: {
         type: 'object',
         properties: { name: { type: 'string' }, price: { type: 'string' } },
       },
-    }, mockRouter());
+    }, mockRouter());;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.mode).toBe('schema');
     expect(extractWithSchema).toHaveBeenCalledOnce();
@@ -257,23 +269,24 @@ describe('handleExtract mode=schema', () => {
   });
 
   it('returns error when schema mode used without schema property', async () => {
-    const output = await handleExtract({
+    const __r_output = await handleExtract({
       html: '<p>test</p>',
       mode: 'schema',
-    }, mockRouter());
+    }, mockRouter());;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
-    expect(output.error).toContain('schema is required');
-    expect(output.mode).toBe('schema');
+    expect(output.error_reason).toContain('schema is required');
   });
 
   it('returns error when schema mode has empty schema', async () => {
-    const output = await handleExtract({
+    const __r_output = await handleExtract({
       html: '<p>test</p>',
       mode: 'schema',
       schema: {},
-    }, mockRouter());
+    }, mockRouter());;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
-    expect(output.error).toContain('schema');
+    expect(output.error_reason).toContain('schema');
   });
 
   it('passes schema through to extractWithSchema', async () => {
@@ -299,11 +312,12 @@ describe('handleExtract mode=schema', () => {
     vi.mocked(extractWithSchema).mockReturnValue({ name: 'Fetched' });
     const router = mockRouter();
 
-    const output = await handleExtract({
+    const __r_output = await handleExtract({
       url: 'https://example.com/product',
       mode: 'schema',
       schema: { type: 'object', properties: { name: { type: 'string' } } },
-    }, router as any);
+    }, router as any);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(router.fetch).toHaveBeenCalledWith('https://example.com/product', expect.any(Object));
     expect(output.source_url).toBe('https://example.com');
@@ -315,14 +329,15 @@ describe('handleExtract mode=schema', () => {
       throw new Error('Parse failed');
     });
 
-    const output = await handleExtract({
+    const __r_output = await handleExtract({
       html: '<p>broken</p>',
       mode: 'schema',
       schema: { type: 'object', properties: { x: { type: 'string' } } },
-    }, mockRouter());
+    }, mockRouter());;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
-    expect(output.error).toBe('Parse failed');
-    expect(output.data).toEqual({});
+    expect(output.error_reason).toBe('Parse failed');
+    expect(output.error).toBe('extract_failed');
   });
 });
 
@@ -336,10 +351,11 @@ describe('handleExtract honesty', () => {
 
   it('returns no_tables_detected StageError when zero tables found', async () => {
     const router = mockRouter();
-    const out = await handleExtract(
+    const __r_out = await handleExtract(
       { url: 'https://example.com', mode: 'tables' } as any,
       router as any,
-    );
+    );;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect((out as any).error).toBe('no_tables_detected');
     expect((out as any).hint).toMatch(/stealth/);
     expect((out as any).stage).toBe('extract');
@@ -364,10 +380,11 @@ describe('handleExtract execution_mode:stealth', () => {
 
     const router = { fetch: vi.fn(), getDomainStats: vi.fn() };
 
-    const out = await handleExtract(
+    const __r_out = await handleExtract(
       { url: 'https://js-page.test/', mode: 'tables', execution_mode: 'stealth' } as any,
       router as any,
-    );
+    );;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
 
     expect(getCachedContent).not.toHaveBeenCalled();
     expect(router.fetch).not.toHaveBeenCalled();
@@ -389,7 +406,8 @@ describe('handleExtract mode=metadata with JSON-LD', () => {
       <script type="application/ld+json">{"@type": "Article", "headline": "Test Article"}</script>
     </head><body></body></html>`;
 
-    const output = await handleExtract({ html, mode: 'metadata' }, mockRouter());
+    const __r_output = await handleExtract({ html, mode: 'metadata' }, mockRouter());;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
     const data = output.data as any;
     expect(data.jsonld).toHaveLength(1);
     expect(data.jsonld[0]['@type']).toBe('Article');
@@ -399,10 +417,11 @@ describe('handleExtract mode=metadata with JSON-LD', () => {
     vi.mocked(extractMetadata).mockReturnValue({ title: 'Plain' });
     vi.mocked(extractJsonLd).mockReturnValue([]);
 
-    const output = await handleExtract({
+    const __r_output = await handleExtract({
       html: '<html><head><title>Plain</title></head></html>',
       mode: 'metadata',
-    }, mockRouter());
+    }, mockRouter());;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     const data = output.data as any;
     expect(data.jsonld).toBeUndefined();

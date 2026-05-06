@@ -54,7 +54,19 @@ export async function executeFindSimilar(
     }
 
     log.debug('executing find-similar command', { target, flags: args.flags });
-    return await handleFindSimilar(input, deps.engines, deps.router, deps.backendStatus);
+    const r = await handleFindSimilar(input, deps.engines, deps.router, deps.backendStatus);
+    if (!r.ok) {
+      return {
+        results: [],
+        method: 'fts5',
+        cache_hits: 0,
+        search_hits: 0,
+        embedding_available: false,
+        total_time_ms: 0,
+        error: r.error_reason,
+      };
+    }
+    return r.data;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error('find-similar command failed', { error: msg });

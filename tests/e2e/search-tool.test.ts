@@ -82,11 +82,12 @@ describe('search tool E2E', () => {
 
   it('search with include_content=true returns markdown', async () => {
     const router = await makeRouter();
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       { query: 'react tutorial', max_results: 2, include_full_markdown: true },
       [makeEngine(contentPort)],
       router,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.query).toBe('react tutorial');
     expect(output.results).toHaveLength(2);
@@ -98,11 +99,12 @@ describe('search tool E2E', () => {
 
   it('search with include_content=false returns only snippets', async () => {
     const router = await makeRouter();
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       { query: 'test', include_content: false },
       [makeEngine(contentPort)],
       router,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results[0].markdown_content).toBeUndefined();
     expect(output.results[0].snippet).toBeDefined();
@@ -113,18 +115,20 @@ describe('search tool E2E', () => {
     const engine = makeEngine(contentPort);
 
     await handleSearch({ query: 'cached query', include_content: false }, [engine], router);
-    const output = await handleSearch({ query: 'cached query', include_content: false }, [engine], router);
+    const __r_output = await handleSearch({ query: 'cached query', include_content: false }, [engine], router);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results.length).toBeGreaterThan(0);
   });
 
   it('max_total_chars budget is enforced', async () => {
     const router = await makeRouter();
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       { query: 'test', max_results: 2, max_total_chars: 50 },
       [makeEngine(contentPort)],
       router,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     const totalChars = output.results.reduce((s, r) => s + (r.markdown_content?.length ?? 0), 0);
     expect(totalChars).toBeLessThanOrEqual(50);
@@ -140,7 +144,8 @@ describe('search tool E2E', () => {
     };
 
     const router = await makeRouter();
-    const output = await handleSearch({ query: 'test', max_results: 2, include_full_markdown: true }, [engine], router);
+    const __r_output = await handleSearch({ query: 'test', max_results: 2, include_full_markdown: true }, [engine], router);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toHaveLength(2);
     const good = output.results.find(r => r.title === 'Good');

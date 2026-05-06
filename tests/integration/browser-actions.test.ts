@@ -91,7 +91,8 @@ describe('Browser Actions Integration', () => {
       ],
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.cached).toBe(false);
@@ -115,7 +116,8 @@ describe('Browser Actions Integration', () => {
       ],
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.markdown).toContain('Welcome');
@@ -136,7 +138,8 @@ describe('Browser Actions Integration', () => {
       ],
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.markdown).toContain('Item 4');
@@ -156,7 +159,8 @@ describe('Browser Actions Integration', () => {
       ],
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.action_results).toHaveLength(4);
@@ -175,7 +179,8 @@ describe('Browser Actions Integration', () => {
       ],
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.action_results).toBeDefined();
     expect(result.action_results![0].success).toBe(false);
@@ -193,7 +198,8 @@ describe('Browser Actions Integration', () => {
       ],
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.action_results).toBeDefined();
@@ -208,7 +214,8 @@ describe('Browser Actions Integration', () => {
       actions: [],
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.action_results).toBeUndefined();
@@ -230,7 +237,8 @@ describe('Browser Actions Integration', () => {
       ],
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.action_results).toHaveLength(7);

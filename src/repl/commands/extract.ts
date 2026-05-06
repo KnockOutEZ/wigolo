@@ -30,7 +30,15 @@ export async function executeExtract(args: ParsedArgs, deps: ReplDeps): Promise<
     }
 
     log.debug('executing extract command', { url, flags: args.flags });
-    return await handleExtract(input, deps.router);
+    const r = await handleExtract(input, deps.router);
+    if (!r.ok) {
+      return {
+        data: {},
+        mode: input.mode ?? 'metadata',
+        error: r.error_reason,
+      };
+    }
+    return r.data;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error('extract command failed', { error: msg });

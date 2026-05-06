@@ -37,7 +37,19 @@ export async function executeAgent(args: ParsedArgs, deps: ReplDeps): Promise<Ag
     }
 
     log.debug('executing agent command', { prompt, flags: args.flags });
-    return await handleAgent(input, deps.engines, deps.router, deps.backendStatus);
+    const r = await handleAgent(input, deps.engines, deps.router, deps.backendStatus);
+    if (!r.ok) {
+      return {
+        result: '',
+        sources: [],
+        pages_fetched: 0,
+        steps: [],
+        total_time_ms: 0,
+        sampling_supported: false,
+        error: r.error_reason,
+      };
+    }
+    return r.data;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error('agent command failed', { error: msg });

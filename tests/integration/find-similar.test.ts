@@ -104,11 +104,12 @@ describe('find_similar integration', () => {
       '# React Components\n\nBuild UIs with reusable **components** that manage their own state.',
     );
 
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: 'React hooks state management' },
       [searchEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.results.length).toBeGreaterThan(0);
@@ -137,14 +138,15 @@ describe('find_similar integration', () => {
       '# useReducer Hook\n\nAn alternative to **useState** for complex state logic.',
     );
 
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       {
         url: 'https://react.dev/hooks',
         include_web: false,
       },
       [searchEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     const urls = result.results.map(r => r.url);
@@ -165,7 +167,7 @@ describe('find_similar integration', () => {
       '# Angular Guide\n\nAngular **state** management.',
     );
 
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       {
         concept: 'state management hooks',
         include_domains: ['react.dev'],
@@ -173,7 +175,8 @@ describe('find_similar integration', () => {
       },
       [searchEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     for (const r of result.results) {
       expect(r.url).toContain('react.dev');
@@ -181,11 +184,12 @@ describe('find_similar integration', () => {
   });
 
   it('end-to-end: empty cache falls back to web search', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: 'quantum computing latest research' },
       [searchEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.search_hits).toBeGreaterThan(0);
     expect(result.cache_hits).toBe(0);
@@ -193,7 +197,7 @@ describe('find_similar integration', () => {
   });
 
   it('end-to-end: both sources disabled returns empty results', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       {
         concept: 'anything',
         include_cache: false,
@@ -201,7 +205,8 @@ describe('find_similar integration', () => {
       },
       [searchEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.results).toEqual([]);
   });
@@ -213,11 +218,12 @@ describe('find_similar integration', () => {
       '# React Hooks\n\nHooks for **state** management.',
     );
 
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: 'React hooks', include_web: false },
       [searchEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     for (const r of result.results) {
       expect(r.match_signals).toBeDefined();
@@ -238,11 +244,12 @@ describe('find_similar integration', () => {
       search: vi.fn().mockRejectedValue(new Error('all engines down')),
     };
 
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { url: 'https://nonexistent.example.com/page' },
       [failEngine],
       failRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result).toHaveProperty('results');
     expect(result).toHaveProperty('method');
@@ -258,11 +265,12 @@ describe('find_similar integration', () => {
       );
     }
 
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: 'React hooks state', max_results: 5, include_web: false },
       [searchEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.results.length).toBeLessThanOrEqual(5);
     expect(result.results.length).toBeGreaterThan(0);
@@ -280,11 +288,12 @@ describe('find_similar integration', () => {
       '# Intro to React\n\nReact is a **JavaScript** library for building user interfaces.',
     );
 
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: 'React hooks state management', include_web: false },
       [searchEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     for (let i = 1; i < result.results.length; i++) {
       expect(result.results[i].relevance_score).toBeLessThanOrEqual(

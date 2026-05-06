@@ -48,7 +48,8 @@ describe('handleResearch', () => {
   it('returns structured ResearchOutput', async () => {
     const input: ResearchInput = { question: 'What is TypeScript?' };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.report).toBeDefined();
     expect(typeof result.report).toBe('string');
@@ -66,16 +67,18 @@ describe('handleResearch', () => {
   it('validates question is required', async () => {
     const input = {} as ResearchInput;
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
-    expect(result.error).toContain('question');
+    expect(result.error_reason).toContain('question');
   });
 
   it('validates empty question', async () => {
     const input: ResearchInput = { question: '' };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
   });
@@ -83,16 +86,18 @@ describe('handleResearch', () => {
   it('validates invalid depth', async () => {
     const input = { question: 'test', depth: 'invalid' as unknown as ResearchInput['depth'] };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
-    expect(result.error).toContain('depth');
+    expect(result.error_reason).toContain('depth');
   });
 
   it('accepts quick depth', async () => {
     const input: ResearchInput = { question: 'Quick test', depth: 'quick' };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.depth).toBe('quick');
     expect(result.error).toBeUndefined();
@@ -101,7 +106,8 @@ describe('handleResearch', () => {
   it('accepts comprehensive depth', async () => {
     const input: ResearchInput = { question: 'Deep test', depth: 'comprehensive' };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.depth).toBe('comprehensive');
     expect(result.error).toBeUndefined();
@@ -113,7 +119,8 @@ describe('handleResearch', () => {
       include_domains: ['react.dev'],
     };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.report.length).toBeGreaterThan(0);
@@ -125,7 +132,8 @@ describe('handleResearch', () => {
       exclude_domains: ['w3schools.com'],
     };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
   });
@@ -136,7 +144,8 @@ describe('handleResearch', () => {
       max_sources: 3,
     };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.sources.length).toBeLessThanOrEqual(3);
@@ -149,7 +158,8 @@ describe('handleResearch', () => {
     };
 
     const input: ResearchInput = { question: 'Error test' };
-    const result = await handleResearch(input, [brokenEngine], stubRouter);
+    const __r_result = await handleResearch(input, [brokenEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result).toBeDefined();
     expect(typeof result.total_time_ms).toBe('number');
@@ -161,7 +171,8 @@ describe('handleResearch', () => {
     } as unknown as SmartRouter;
 
     const input: ResearchInput = { question: 'Router error test' };
-    const result = await handleResearch(input, [stubEngine], brokenRouter);
+    const __r_result = await handleResearch(input, [stubEngine], brokenRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result).toBeDefined();
     expect(result.report.length).toBeGreaterThan(0);
@@ -170,7 +181,8 @@ describe('handleResearch', () => {
   it('never throws -- always returns structured output', async () => {
     const input: ResearchInput = { question: 'Stability test' };
 
-    const result = await handleResearch(input, [], stubRouter);
+    const __r_result = await handleResearch(input, [], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result).toBeDefined();
     expect(result.report).toBeDefined();
@@ -179,7 +191,8 @@ describe('handleResearch', () => {
   it('validates max_sources is positive', async () => {
     const input: ResearchInput = { question: 'test', max_sources: -1 };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
   });
@@ -187,7 +200,8 @@ describe('handleResearch', () => {
   it('validates max_sources is not excessively large', async () => {
     const input: ResearchInput = { question: 'test', max_sources: 1000 };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
   });
@@ -195,7 +209,8 @@ describe('handleResearch', () => {
   it('sampling_supported is false when no server provided', async () => {
     const input: ResearchInput = { question: 'test' };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.sampling_supported).toBe(false);
   });
@@ -219,7 +234,8 @@ describe('handleResearch', () => {
       });
 
       const input: ResearchInput = { question: 'What is TypeScript?', depth: 'quick' };
-      const result = await handleResearch(input, [stubEngine], stubRouter);
+      const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+      const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
       expect(result.evidence).toBeDefined();
       expect(result.evidence!.length).toBeGreaterThan(0);
@@ -252,7 +268,8 @@ describe('handleResearch', () => {
         depth: 'quick',
         include_full_markdown: true,
       };
-      const result = await handleResearch(input, [stubEngine], stubRouter);
+      const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+      const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
       expect(result.evidence).toBeDefined();
       const hasContent = result.sources.some((s) => s.markdown_content.length > 0);

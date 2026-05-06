@@ -1,4 +1,4 @@
-import type { FetchInput, FetchOutput, CachedContent } from '../types.js';
+import type { FetchInput, FetchOutput, CachedContent, StageResult } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { getCachedContent, cacheContent, isCacheUsable } from '../cache/store.js';
@@ -81,7 +81,7 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
 export async function handleFetch(
   input: FetchInput,
   router: SmartRouter,
-): Promise<FetchOutput> {
+): Promise<StageResult<FetchOutput>> {
   const mode = resolveMode(input.mode);
   try {
     if (!input.force_refresh) {
@@ -95,19 +95,19 @@ export async function handleFetch(
           if (stale) out.stale = true;
           const fullMarkdown = out.markdown;
           await attachEvidence(out, input, fullMarkdown);
-          return out;
+          return { ok: true, data: out };
         }
       }
     }
 
     if (mode === 'cache') {
-      // StageError-shaped response; type widening deferred to T15
       return {
+        ok: false,
         error: 'cache_miss',
         error_reason: `URL not in cache: ${input.url}`,
         stage: 'fetch',
         hint: 'Use mode:default to fetch live, or run search/crawl first to populate cache',
-      } as unknown as FetchOutput;
+      };
     }
 
     const raw = await router.fetch(input.url, {
@@ -122,7 +122,14 @@ export async function handleFetch(
     // T11: stealth mode can return a StageError (e.g., playwright_not_installed,
     // playwright_fetch_failed). Surface it directly.
     if ('error' in raw && typeof (raw as { error?: unknown }).error === 'string') {
-      return raw as unknown as FetchOutput;
+      const stageErr = raw as unknown as { error: string; error_reason?: string; stage?: string; hint?: string };
+      return {
+        ok: false,
+        error: stageErr.error,
+        error_reason: stageErr.error_reason ?? stageErr.error,
+        stage: stageErr.stage ?? 'fetch',
+        ...(stageErr.hint ? { hint: stageErr.hint } : {}),
+      };
     }
 
     const extraction = await extractContent(raw.html, raw.finalUrl, {
@@ -178,18 +185,15 @@ export async function handleFetch(
     };
 
     await attachEvidence(out, input, finalMarkdown);
-    return out;
+    return { ok: true, data: out };
   } catch (err) {
     log.error('Fetch failed', { url: input.url, error: String(err) });
+    const msg = err instanceof Error ? err.message : String(err);
     return {
-      url: input.url,
-      title: '',
-      markdown: '',
-      metadata: {},
-      links: [],
-      images: [],
-      cached: false,
-      error: err instanceof Error ? err.message : String(err),
+      ok: false,
+      error: 'fetch_failed',
+      error_reason: msg,
+      stage: 'fetch',
     };
   }
 }

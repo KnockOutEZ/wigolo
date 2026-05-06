@@ -59,11 +59,12 @@ describe('search pipeline filtering', () => {
       { title: 'GH Repo', url: 'https://github.com/react', snippet: 'repo', relevance_score: 0.7, engine: 'test' },
     ]);
 
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       { query: 'react', include_domains: ['react.dev'], include_content: false },
       [engine],
       mockRouter,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toHaveLength(1);
     expect(output.results[0].url).toContain('react.dev');
@@ -76,11 +77,12 @@ describe('search pipeline filtering', () => {
       { title: 'Medium Post', url: 'https://medium.com/react', snippet: 'post', relevance_score: 0.8, engine: 'test' },
     ]);
 
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       { query: 'react', exclude_domains: ['medium.com'], include_content: false },
       [engine],
       mockRouter,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toHaveLength(1);
     expect(output.results[0].url).toContain('react.dev');
@@ -127,11 +129,12 @@ describe('search pipeline filtering', () => {
       { title: 'A', url: 'https://medium.com/a', snippet: 's', relevance_score: 0.9, engine: 'test' },
     ]);
 
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       { query: 'react', include_domains: ['nonexistent.dev'], include_content: false },
       [engine],
       mockRouter,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toEqual([]);
     expect(output.error).toBeUndefined();

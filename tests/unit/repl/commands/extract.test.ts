@@ -22,7 +22,7 @@ describe('executeExtract', () => {
   };
 
   it('passes url from positional args', async () => {
-    vi.mocked(handleExtract).mockResolvedValue(baseOutput);
+    vi.mocked(handleExtract).mockResolvedValue({ ok: true, data: baseOutput });
     const result = await executeExtract({ command: 'extract', positional: ['https://ex.com'], flags: {} }, deps);
     expect(handleExtract).toHaveBeenCalledWith(
       expect.objectContaining({ url: 'https://ex.com' }),
@@ -32,7 +32,7 @@ describe('executeExtract', () => {
   });
 
   it('maps --mode flag', async () => {
-    vi.mocked(handleExtract).mockResolvedValue(baseOutput);
+    vi.mocked(handleExtract).mockResolvedValue({ ok: true, data: baseOutput });
     await executeExtract({ command: 'extract', positional: ['https://ex.com'], flags: { mode: 'tables' } }, deps);
     expect(handleExtract).toHaveBeenCalledWith(
       expect.objectContaining({ mode: 'tables' }),
@@ -41,7 +41,7 @@ describe('executeExtract', () => {
   });
 
   it('maps --selector flag to css_selector', async () => {
-    vi.mocked(handleExtract).mockResolvedValue(baseOutput);
+    vi.mocked(handleExtract).mockResolvedValue({ ok: true, data: baseOutput });
     await executeExtract({ command: 'extract', positional: ['https://ex.com'], flags: { mode: 'selector', selector: '.content' } }, deps);
     expect(handleExtract).toHaveBeenCalledWith(
       expect.objectContaining({ mode: 'selector', css_selector: '.content' }),

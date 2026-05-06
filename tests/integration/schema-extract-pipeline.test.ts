@@ -77,7 +77,7 @@ describe('integration: schema extraction pipeline', () => {
   // --- Product page schema extraction ---
 
   it('extracts product name and price via schema mode from URL', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       {
         url: `${baseUrl}/product`,
         mode: 'schema',
@@ -91,7 +91,8 @@ describe('integration: schema extraction pipeline', () => {
         },
       },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.mode).toBe('schema');
@@ -104,7 +105,7 @@ describe('integration: schema extraction pipeline', () => {
   });
 
   it('extracts product features as array via schema mode', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       {
         url: `${baseUrl}/product`,
         mode: 'schema',
@@ -116,7 +117,8 @@ describe('integration: schema extraction pipeline', () => {
         },
       },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     const data = result.data as Record<string, unknown>;
@@ -126,7 +128,7 @@ describe('integration: schema extraction pipeline', () => {
   // --- Job listing schema extraction ---
 
   it('extracts job title and company from job listing via schema mode', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       {
         url: `${baseUrl}/job`,
         mode: 'schema',
@@ -140,7 +142,8 @@ describe('integration: schema extraction pipeline', () => {
         },
       },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     const data = result.data as Record<string, unknown>;
@@ -150,7 +153,7 @@ describe('integration: schema extraction pipeline', () => {
   });
 
   it('extracts job requirements as array', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       {
         url: `${baseUrl}/job`,
         mode: 'schema',
@@ -162,7 +165,8 @@ describe('integration: schema extraction pipeline', () => {
         },
       },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     const data = result.data as Record<string, unknown>;
@@ -172,7 +176,7 @@ describe('integration: schema extraction pipeline', () => {
   });
 
   it('extracts job salary range via aria-label from job listing', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       {
         url: `${baseUrl}/job`,
         mode: 'schema',
@@ -185,7 +189,8 @@ describe('integration: schema extraction pipeline', () => {
         },
       },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     const data = result.data as Record<string, unknown>;
@@ -196,10 +201,11 @@ describe('integration: schema extraction pipeline', () => {
   // --- JSON-LD enriched metadata ---
 
   it('metadata mode includes JSON-LD from article page', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { url: `${baseUrl}/article`, mode: 'metadata' },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.mode).toBe('metadata');
@@ -212,10 +218,11 @@ describe('integration: schema extraction pipeline', () => {
   });
 
   it('metadata mode includes JSON-LD from product page', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { url: `${baseUrl}/product`, mode: 'metadata' },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     const data = result.data as Record<string, unknown>;
@@ -227,7 +234,7 @@ describe('integration: schema extraction pipeline', () => {
   // --- Direct HTML (no URL fetch) ---
 
   it('works with direct HTML in schema mode', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       {
         html: PRODUCT_HTML,
         mode: 'schema',
@@ -237,7 +244,8 @@ describe('integration: schema extraction pipeline', () => {
         },
       },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.source_url).toBeUndefined();
@@ -247,17 +255,18 @@ describe('integration: schema extraction pipeline', () => {
   // --- Error handling ---
 
   it('returns validation error for schema mode without schema', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { html: '<p>test</p>', mode: 'schema' },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
     expect(result.mode).toBe('schema');
   });
 
   it('handles 404 URL gracefully in schema mode', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       {
         url: `${baseUrl}/nonexistent`,
         mode: 'schema',
@@ -267,7 +276,8 @@ describe('integration: schema extraction pipeline', () => {
         },
       },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.mode).toBe('schema');
     expect(result.error).toBeUndefined();
@@ -279,12 +289,13 @@ describe('integration: schema extraction pipeline', () => {
   // --- Cross-mode verification ---
 
   it('schema mode and metadata mode return consistent data for same URL', async () => {
-    const metadataResult = await handleExtract(
+    const __r_metadataResult = await handleExtract(
       { url: `${baseUrl}/product`, mode: 'metadata' },
       makeRouter(),
-    );
+    );;
+    const metadataResult = __r_metadataResult.ok ? __r_metadataResult.data : ({ ...__r_metadataResult } as any);
 
-    const schemaResult = await handleExtract(
+    const __r_schemaResult = await handleExtract(
       {
         url: `${baseUrl}/product`,
         mode: 'schema',
@@ -294,7 +305,8 @@ describe('integration: schema extraction pipeline', () => {
         },
       },
       makeRouter(),
-    );
+    );;
+    const schemaResult = __r_schemaResult.ok ? __r_schemaResult.data : ({ ...__r_schemaResult } as any);
 
     const metaData = metadataResult.data as Record<string, unknown>;
     const jsonld = metaData.jsonld as Record<string, unknown>[];

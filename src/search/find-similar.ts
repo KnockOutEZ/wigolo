@@ -511,7 +511,7 @@ async function runWebSearchFallback(
 
     for (const query of queries) {
       try {
-        const searchOutput = await handleSearch(
+        const searchResult = await handleSearch(
           {
             query,
             max_results: maxResults,
@@ -523,6 +523,12 @@ async function runWebSearchFallback(
           router,
           backendStatus,
         );
+
+        if (!searchResult.ok) {
+          log.warn('web search query failed', { query, error: searchResult.error_reason });
+          continue;
+        }
+        const searchOutput = searchResult.data;
 
         for (const item of searchOutput.results) {
           let nUrl: string;

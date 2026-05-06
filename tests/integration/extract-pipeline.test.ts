@@ -65,10 +65,11 @@ describe('integration: extract pipeline', () => {
   });
 
   it('extracts metadata from a URL', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { url: `${baseUrl}/metadata`, mode: 'metadata' },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.mode).toBe('metadata');
@@ -86,10 +87,11 @@ describe('integration: extract pipeline', () => {
   });
 
   it('extracts tables from a URL', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { url: `${baseUrl}/tables`, mode: 'tables' },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.mode).toBe('tables');
@@ -104,10 +106,11 @@ describe('integration: extract pipeline', () => {
   });
 
   it('extracts by CSS selector from a URL', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { url: `${baseUrl}/metadata`, mode: 'selector', css_selector: 'h1' },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.mode).toBe('selector');
@@ -115,7 +118,7 @@ describe('integration: extract pipeline', () => {
   });
 
   it('extracts multiple selector matches from a URL', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       {
         url: `${baseUrl}/metadata`,
         mode: 'selector',
@@ -123,17 +126,19 @@ describe('integration: extract pipeline', () => {
         multiple: true,
       },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.data).toEqual(['typescript', 'generics', 'tutorial']);
   });
 
   it('works with direct HTML (no URL fetch)', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { html: METADATA_HTML, mode: 'metadata' },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.source_url).toBeUndefined();
@@ -142,10 +147,11 @@ describe('integration: extract pipeline', () => {
   });
 
   it('handles 404 URL gracefully', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { url: `${baseUrl}/nonexistent`, mode: 'metadata' },
       makeRouter(),
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.mode).toBe('metadata');
     const data = result.data as Record<string, unknown>;

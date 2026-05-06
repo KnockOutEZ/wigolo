@@ -103,7 +103,8 @@ describe('handleFetch', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com', include_full_markdown: true };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.url).toBe('https://example.com');
     expect(result.title).toBe('Test Page');
@@ -119,11 +120,10 @@ describe('handleFetch', () => {
 
     const input: FetchInput = { url: '' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
-    expect(result.markdown).toBe('');
-    expect(result.cached).toBe(false);
   });
 
   it('returns cached: true when content served from cache', async () => {
@@ -135,7 +135,8 @@ describe('handleFetch', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com', include_full_markdown: true };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.cached).toBe(true);
     expect(result.title).toBe('Cached Page');
@@ -152,7 +153,8 @@ describe('handleFetch', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.cached).toBe(false);
     expect(router.fetch).toHaveBeenCalledOnce();
@@ -182,7 +184,8 @@ describe('handleFetch', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com', section: 'Install', include_full_markdown: true };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(vi.mocked(extractSection)).toHaveBeenCalledWith(cached.markdown, 'Install', undefined);
     expect(result.markdown).toBe('# Install\n\nInstall steps');
@@ -214,7 +217,8 @@ describe('handleFetch', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com', max_chars: 50 };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.markdown.length).toBeLessThanOrEqual(50);
   });
@@ -225,14 +229,12 @@ describe('handleFetch', () => {
 
     const input: FetchInput = { url: 'https://example.com/broken' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
-    expect(result.error).toBe('Network timeout');
-    expect(result.url).toBe('https://example.com/broken');
-    expect(result.markdown).toBe('');
-    expect(result.cached).toBe(false);
-    expect(result.links).toEqual([]);
-    expect(result.images).toEqual([]);
+    expect(result.error).toBe('fetch_failed');
+    expect(result.error_reason).toBe('Network timeout');
+    expect(result.stage).toBe('fetch');
   });
 
   it('returns structured error for non-Error throws', async () => {
@@ -241,10 +243,11 @@ describe('handleFetch', () => {
 
     const input: FetchInput = { url: 'https://example.com' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
-    expect(result.error).toBe('string error');
-    expect(result.cached).toBe(false);
+    expect(result.error).toBe('fetch_failed');
+    expect(result.error_reason).toBe('string error');
   });
 
   it('fetches fresh when cache is expired', async () => {
@@ -256,7 +259,8 @@ describe('handleFetch', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.cached).toBe(false);
     expect(router.fetch).toHaveBeenCalledOnce();
@@ -290,7 +294,8 @@ describe('handleFetch --- force_refresh', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com', force_refresh: true, include_full_markdown: true };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(router.fetch).toHaveBeenCalledOnce();
     expect(result.cached).toBe(false);
@@ -316,7 +321,8 @@ describe('handleFetch --- force_refresh', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com', force_refresh: false };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(router.fetch).not.toHaveBeenCalled();
     expect(result.cached).toBe(true);
@@ -330,7 +336,8 @@ describe('handleFetch --- force_refresh', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(router.fetch).not.toHaveBeenCalled();
     expect(result.cached).toBe(true);
@@ -371,7 +378,8 @@ describe('handleFetch --- actions support', () => {
       actions: [{ type: 'click', selector: '.btn' }, { type: 'wait', ms: 100 }],
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.action_results).toBeDefined();
     expect(result.action_results).toHaveLength(2);
@@ -383,7 +391,8 @@ describe('handleFetch --- actions support', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.action_results).toBeUndefined();
   });
@@ -400,7 +409,8 @@ describe('handleFetch --- actions support', () => {
       actions: [{ type: 'click', selector: '.btn' }],
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.cached).toBe(false);
     expect(router.fetch).toHaveBeenCalledOnce();
@@ -415,10 +425,11 @@ describe('handleFetch --- actions support', () => {
       actions: [{ type: 'click', selector: '.nonexistent' }],
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
-    expect(result.error).toBe('Action chain failed');
-    expect(result.cached).toBe(false);
+    expect(result.error_reason).toBe('Action chain failed');
+    expect(result.error).toBe('fetch_failed');
   });
 
   it('includes action screenshots in results', async () => {
@@ -432,7 +443,8 @@ describe('handleFetch --- actions support', () => {
       actions: [{ type: 'screenshot' }],
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.action_results).toBeDefined();
     expect(result.action_results![0].screenshot).toBe('base64data');
@@ -443,7 +455,8 @@ describe('handleFetch --- actions support', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com', actions: [] };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.action_results).toBeUndefined();
@@ -484,7 +497,8 @@ describe('handleFetch --- change detection', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com/page' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.changed).toBe(true);
     expect(result.previous_hash).toBe('abc123def456');
@@ -498,7 +512,8 @@ describe('handleFetch --- change detection', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com/page' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.changed).toBeUndefined();
     expect(result.previous_hash).toBeUndefined();
@@ -513,7 +528,8 @@ describe('handleFetch --- change detection', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.cached).toBe(true);
     expect(vi.mocked(detectChange)).not.toHaveBeenCalled();
@@ -526,7 +542,8 @@ describe('handleFetch --- change detection', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.changed).toBeUndefined();
@@ -547,7 +564,8 @@ describe('handleFetch --- change detection', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com', include_full_markdown: true };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.title).toBe('My Page');
     expect(result.markdown).toBe('# Updated');
@@ -571,7 +589,8 @@ describe('handleFetch --- change detection', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.cached).toBe(false);
     expect(result.changed).toBe(true);
@@ -585,7 +604,8 @@ describe('handleFetch --- change detection', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://brand-new-site.com' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.changed).toBeUndefined();
   });
@@ -610,7 +630,8 @@ describe('handleFetch --- evidence shape', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.evidence).toBeDefined();
     expect(result.evidence!.length).toBeGreaterThan(0);
@@ -625,7 +646,8 @@ describe('handleFetch --- evidence shape', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.markdown).toBe(longMarkdown);
     expect(result.evidence).toBeDefined();
@@ -636,7 +658,8 @@ describe('handleFetch --- evidence shape', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com', include_full_markdown: false };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.markdown).toBe('');
   });
@@ -649,7 +672,8 @@ describe('handleFetch --- evidence shape', () => {
     const router = mockRouter();
     const input: FetchInput = { url: 'https://example.com' };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.cached).toBe(true);
     expect(result.markdown).toBe(longMarkdown);

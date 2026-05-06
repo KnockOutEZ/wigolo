@@ -103,13 +103,14 @@ describe('search answer synthesis -- integration', () => {
       responseText: 'React Server Components render on the server before bundling [1]. This improves performance [2].',
     });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'What are React Server Components?', format: 'answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeDefined();
     expect(result.answer).toContain('React Server Components');
@@ -123,13 +124,14 @@ describe('search answer synthesis -- integration', () => {
   it('end-to-end: format=answer falls back to highlights when sampling unavailable', async () => {
     const server = createMockServer({ samplingSupported: false });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'React Server Components', format: 'answer', include_content: false },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeUndefined();
     expect(result.highlights).toBeDefined();
@@ -140,13 +142,14 @@ describe('search answer synthesis -- integration', () => {
   });
 
   it('end-to-end: format=answer without server falls back to highlights', async () => {
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'React Server Components', format: 'answer', include_content: false },
       [stubEngine],
       mockRouter,
       undefined,
       undefined,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeUndefined();
     expect(result.highlights).toBeDefined();
@@ -156,13 +159,14 @@ describe('search answer synthesis -- integration', () => {
   it('end-to-end: format=stream_answer sets streaming flag', async () => {
     const server = createMockServer({ samplingSupported: true });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'stream_answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeDefined();
     expect(result.streaming).toBe(true);
@@ -174,13 +178,14 @@ describe('search answer synthesis -- integration', () => {
       samplingError: new Error('context window exceeded'),
     });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeUndefined();
     expect(result.highlights).toBeDefined();
@@ -194,13 +199,14 @@ describe('search answer synthesis -- integration', () => {
       responseText: 'RSC renders on server [1]. Vercel explains the model [2]. Deep dive covers architecture [3].',
     });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'React Server Components', format: 'answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.citations).toBeDefined();
     const citationUrls = result.citations!.map(c => c.url);
@@ -221,13 +227,14 @@ describe('search answer synthesis -- integration', () => {
 
     const server = createMockServer({ samplingSupported: true });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'nonexistent topic xyz123', format: 'answer' },
       [emptyEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.results).toEqual([]);
     expect(result.answer).toBeUndefined();

@@ -54,7 +54,8 @@ describe('fetch mode=fast', () => {
   it('returns cache_miss without calling router when mode=fast and url not cached', async () => {
     const router = { fetch: vi.fn() } as unknown as SmartRouter;
 
-    const out = await handleFetch({ url: 'https://example.com/', mode: 'fast' }, router);
+    const __r_out = await handleFetch({ url: 'https://example.com/', mode: 'fast' }, router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
 
     expect(router.fetch).not.toHaveBeenCalled();
     expect((out as any).error).toBe('cache_miss');
@@ -66,7 +67,8 @@ describe('fetch mode=fast', () => {
     expireCacheRow();
 
     const router = { fetch: vi.fn() } as unknown as SmartRouter;
-    const out = await handleFetch({ url: 'https://stale.test/', mode: 'fast' }, router);
+    const __r_out = await handleFetch({ url: 'https://stale.test/', mode: 'fast' }, router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
 
     expect(router.fetch).not.toHaveBeenCalled();
     expect(out.cached).toBe(true);
@@ -90,7 +92,8 @@ describe('fetch mode=fast', () => {
       }),
     } as unknown as SmartRouter;
 
-    const out = await handleFetch({ url: 'https://stale.test/', mode: 'balanced' }, router);
+    const __r_out = await handleFetch({ url: 'https://stale.test/', mode: 'balanced' }, router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
 
     expect(router.fetch).toHaveBeenCalledTimes(1);
     expect(out.cached).toBe(false);
@@ -115,7 +118,8 @@ describe('fetch js_required handling', () => {
         jsRequired: true,
       }),
     } as unknown as SmartRouter;
-    const out = await handleFetch({ url: 'https://spa.test/' }, router);
+    const __r_out = await handleFetch({ url: 'https://spa.test/' }, router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(out.js_required).toBe(true);
   });
 });

@@ -59,7 +59,8 @@ describe('handleSearch', () => {
 
   it('returns search results with snippets (include_content=false)', async () => {
     const input: SearchInput = { query: 'test', include_content: false };
-    const output = await handleSearch(input, [mockSearchBackend], mockRouter);
+    const __r_output = await handleSearch(input, [mockSearchBackend], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toHaveLength(3);
     expect(output.results[0].title).toBe('Result 1');
@@ -72,7 +73,8 @@ describe('handleSearch', () => {
 
   it('fetches content when include_content=true (default)', async () => {
     const input: SearchInput = { query: 'test', max_results: 2, include_full_markdown: true };
-    const output = await handleSearch(input, [mockSearchBackend], mockRouter);
+    const __r_output = await handleSearch(input, [mockSearchBackend], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toHaveLength(2);
     expect(output.results[0].markdown_content).toContain('Mock Content');
@@ -80,7 +82,8 @@ describe('handleSearch', () => {
 
   it('respects max_results', async () => {
     const input: SearchInput = { query: 'test', max_results: 1, include_content: false };
-    const output = await handleSearch(input, [mockSearchBackend], mockRouter);
+    const __r_output = await handleSearch(input, [mockSearchBackend], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
     expect(output.results).toHaveLength(1);
   });
 
@@ -90,7 +93,8 @@ describe('handleSearch', () => {
     } as unknown as SmartRouter;
 
     const input: SearchInput = { query: 'test', max_results: 1 };
-    const output = await handleSearch(input, [mockSearchBackend], failRouter);
+    const __r_output = await handleSearch(input, [mockSearchBackend], failRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results[0].markdown_content).toBeUndefined();
     expect(output.results[0].fetch_failed).toBe('timeout');
@@ -120,7 +124,8 @@ describe('handleSearch', () => {
     });
 
     const input: SearchInput = { query: 'test', max_results: 3, max_total_chars: 50000 };
-    const output = await handleSearch(input, [mockSearchBackend], bigContentRouter);
+    const __r_output = await handleSearch(input, [mockSearchBackend], bigContentRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     const totalChars = output.results.reduce(
       (sum, r) => sum + (r.markdown_content?.length ?? 0), 0
@@ -137,9 +142,10 @@ describe('handleSearch', () => {
 
     const input: SearchInput = { query: 'test' };
     const output = await handleSearch(input, [failEngine], mockRouter);
-
-    expect(output.results).toHaveLength(0);
-    expect(output.error).toBeDefined();
+    expect(output.ok).toBe(false);
+    if (!output.ok) {
+      expect(output.error).toBeDefined();
+    }
   });
 
   it('merges results from multiple engines', async () => {
@@ -151,7 +157,8 @@ describe('handleSearch', () => {
     };
 
     const input: SearchInput = { query: 'test', include_content: false };
-    const output = await handleSearch(input, [mockSearchBackend, engine2], mockRouter);
+    const __r_output = await handleSearch(input, [mockSearchBackend, engine2], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results.length).toBeGreaterThanOrEqual(3);
     expect(output.engines_used).toContain('mock');
@@ -173,7 +180,8 @@ describe('handleSearch', () => {
     };
 
     const input: SearchInput = { query: 'test', include_content: false, search_engines: ['duckduckgo'] };
-    const output = await handleSearch(input, [engine1, engine2], mockRouter);
+    const __r_output = await handleSearch(input, [engine1, engine2], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(engine1.search).not.toHaveBeenCalled();
     expect(engine2.search).toHaveBeenCalled();
@@ -188,7 +196,8 @@ describe('handleSearch', () => {
       ], ['cached-engine']);
 
       const input: SearchInput = { query: 'test', include_content: false, force_refresh: true };
-      const output = await handleSearch(input, [mockSearchBackend], mockRouter);
+      const __r_output = await handleSearch(input, [mockSearchBackend], mockRouter);;
+      const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
       expect(mockSearchBackend.search).toHaveBeenCalled();
       expect(output.engines_used).toContain('mock');
@@ -203,7 +212,8 @@ describe('handleSearch', () => {
       ], ['cached-engine']);
 
       const input: SearchInput = { query: 'test', include_content: false };
-      const output = await handleSearch(input, [mockSearchBackend], mockRouter);
+      const __r_output = await handleSearch(input, [mockSearchBackend], mockRouter);;
+      const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
       expect(mockSearchBackend.search).not.toHaveBeenCalled();
       expect(output.engines_used).toContain('cached-engine');
@@ -234,7 +244,8 @@ describe('handleSearch', () => {
       ], ['multi-cached']);
 
       const input: SearchInput = { query: ['test a', 'test b'], include_content: false, force_refresh: true };
-      const output = await handleSearch(input, [mockSearchBackend], mockRouter);
+      const __r_output = await handleSearch(input, [mockSearchBackend], mockRouter);;
+      const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
       expect(mockSearchBackend.search).toHaveBeenCalled();
       expect(output.engines_used).not.toContain('multi-cached');
@@ -250,7 +261,8 @@ describe('handleSearch', () => {
     };
 
     const input: SearchInput = { query: 'test', include_content: false, search_engines: ['nonexistent'] };
-    const output = await handleSearch(input, [engine1], mockRouter);
+    const __r_output = await handleSearch(input, [engine1], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(engine1.search).toHaveBeenCalled();
     expect(output.results.length).toBeGreaterThan(0);

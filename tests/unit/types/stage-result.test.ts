@@ -1,5 +1,6 @@
 import { describe, it, expectTypeOf } from 'vitest';
-import type { StageResult, StageError } from '../../../src/types.js';
+import type { StageResult } from '../../../src/types.js';
+import type { handleSearch } from '../../../src/tools/search.js';
 
 describe('StageResult', () => {
   it('discriminates ok=true (data) from ok=false (error)', () => {
@@ -21,5 +22,11 @@ describe('StageResult', () => {
     // @ts-expect-error error_reason required
     const bad: StageResult<{ n: number }> = { ok: false, error: 'x', stage: 's' };
     void bad;
+  });
+
+  it('handleSearch return type is StageResult-compatible', () => {
+    type Ret = Awaited<ReturnType<typeof handleSearch>>;
+    const sample: Ret = { ok: false, error: 'x', error_reason: 'y', stage: 'z' } as Ret;
+    void sample;
   });
 });

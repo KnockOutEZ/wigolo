@@ -96,13 +96,14 @@ describe('handleSearch with format=answer', () => {
       responseText: 'React Hooks enable state management [1].',
     });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'What are React hooks?', format: 'answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeDefined();
     expect(result.answer).toContain('React Hooks');
@@ -113,26 +114,28 @@ describe('handleSearch with format=answer', () => {
   it('falls back to structured answer when sampling not supported', async () => {
     const server = createMockServer({ samplingSupported: false });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeDefined();
     expect(result.citations?.length).toBeGreaterThanOrEqual(1);
   });
 
   it('falls back to structured answer when server is not provided', async () => {
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'answer' },
       [stubEngine],
       mockRouter,
       undefined,
       undefined,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeDefined();
     expect(result.citations?.length).toBeGreaterThanOrEqual(1);
@@ -144,13 +147,14 @@ describe('handleSearch with format=answer', () => {
       samplingError: new Error('timeout'),
     });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeDefined();
     expect(result.citations?.length).toBeGreaterThanOrEqual(1);
@@ -163,13 +167,14 @@ describe('handleSearch with format=answer', () => {
   it('still returns structured results alongside answer', async () => {
     const server = createMockServer({ samplingSupported: true });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.results.length).toBeGreaterThan(0);
     expect(result.answer).toBeDefined();
@@ -178,13 +183,14 @@ describe('handleSearch with format=answer', () => {
   it('format=stream_answer behaves same as answer (produces an answer)', async () => {
     const server = createMockServer({ samplingSupported: true });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'stream_answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeDefined();
   });
@@ -195,14 +201,15 @@ describe('handleSearch with format=answer', () => {
     const server = createMockServer({ samplingSupported: true });
     const onProgress = vi.fn();
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'stream_answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
       onProgress,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeDefined();
     expect(onProgress).toHaveBeenCalled();
@@ -224,14 +231,15 @@ describe('handleSearch with format=answer', () => {
   it('format=stream_answer works without onProgress callback', async () => {
     const server = createMockServer({ samplingSupported: true });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'stream_answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
       undefined,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeDefined();
   });
@@ -258,14 +266,15 @@ describe('handleSearch with format=answer', () => {
     const server = createMockServer({ samplingSupported: true });
     const onProgress = vi.fn().mockRejectedValue(new Error('transport closed'));
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'stream_answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
       onProgress,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeDefined();
     expect(onProgress).toHaveBeenCalled();
@@ -279,13 +288,14 @@ describe('handleSearch with format=answer', () => {
 
     const server = createMockServer({ samplingSupported: true });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'obscure query', format: 'answer' },
       [emptyEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.results).toEqual([]);
     expect(result.answer).toBeUndefined();
@@ -297,13 +307,14 @@ describe('handleSearch with format=answer', () => {
       samplingError: new Error('model overloaded'),
     });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.warning).toBeDefined();
   });
@@ -313,13 +324,14 @@ describe('handleSearch with format=answer', () => {
   it('answer format respects max_results', async () => {
     const server = createMockServer({ samplingSupported: true });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'answer', max_results: 1 },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.results).toHaveLength(1);
     expect(result.answer).toBeDefined();
@@ -331,13 +343,14 @@ describe('handleSearch with format=answer', () => {
       responseText: 'Based on snippets [1].',
     });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'answer', include_content: false },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeDefined();
   });
@@ -348,13 +361,14 @@ describe('handleSearch with format=answer', () => {
       responseText: 'Good answer [1].',
     });
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'answer' },
       [stubEngine],
       mockRouter,
       undefined,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.answer).toBeDefined();
     expect(result.context_text).toBeUndefined();
@@ -367,13 +381,14 @@ describe('handleSearch with format=answer', () => {
       consumeWarning: vi.fn().mockReturnValue('SearXNG unhealthy'),
     };
 
-    const result = await handleSearch(
+    const __r_result = await handleSearch(
       { query: 'test', format: 'answer' },
       [stubEngine],
       mockRouter,
       backendStatus as any,
       server,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.warning).toBeDefined();
   });

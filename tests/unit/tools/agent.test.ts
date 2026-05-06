@@ -42,7 +42,8 @@ describe('handleAgent', () => {
   it('returns structured AgentOutput', async () => {
     const input: AgentInput = { prompt: 'Find CRM pricing' };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.result).toBeDefined();
     expect(result.sources).toBeDefined();
@@ -57,16 +58,18 @@ describe('handleAgent', () => {
   it('validates prompt is required', async () => {
     const input = {} as AgentInput;
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
-    expect(result.error).toContain('prompt');
+    expect(result.error_reason).toContain('prompt');
   });
 
   it('validates empty prompt', async () => {
     const input: AgentInput = { prompt: '' };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
   });
@@ -74,16 +77,18 @@ describe('handleAgent', () => {
   it('validates max_pages is positive', async () => {
     const input: AgentInput = { prompt: 'test', max_pages: 0 };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
-    expect(result.error).toContain('max_pages');
+    expect(result.error_reason).toContain('max_pages');
   });
 
   it('validates max_pages is not too large', async () => {
     const input: AgentInput = { prompt: 'test', max_pages: 1000 };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
   });
@@ -91,16 +96,18 @@ describe('handleAgent', () => {
   it('validates max_time_ms is positive', async () => {
     const input: AgentInput = { prompt: 'test', max_time_ms: 0 };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
-    expect(result.error).toContain('max_time_ms');
+    expect(result.error_reason).toContain('max_time_ms');
   });
 
   it('validates max_time_ms is not too large', async () => {
     const input: AgentInput = { prompt: 'test', max_time_ms: 600001 };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
   });
@@ -108,7 +115,8 @@ describe('handleAgent', () => {
   it('accepts valid max_pages', async () => {
     const input: AgentInput = { prompt: 'Find data', max_pages: 5 };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.pages_fetched).toBeLessThanOrEqual(5);
@@ -117,7 +125,8 @@ describe('handleAgent', () => {
   it('accepts valid max_time_ms', async () => {
     const input: AgentInput = { prompt: 'Find data', max_time_ms: 30000 };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
   });
@@ -128,7 +137,8 @@ describe('handleAgent', () => {
       urls: ['https://example.com/a', 'https://example.com/b'],
     };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.sources.length).toBeGreaterThanOrEqual(2);
@@ -140,17 +150,19 @@ describe('handleAgent', () => {
       schema: { type: 'object', properties: { name: { type: 'string' } } },
     };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
   });
 
   it('never throws -- always returns structured output', async () => {
-    const result = await handleAgent(
+    const __r_result = await handleAgent(
       { prompt: 'test' },
       [],
       stubRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result).toBeDefined();
     expect(result.result).toBeDefined();
@@ -162,11 +174,12 @@ describe('handleAgent', () => {
       search: vi.fn().mockRejectedValue(new Error('engine down')),
     };
 
-    const result = await handleAgent(
+    const __r_result = await handleAgent(
       { prompt: 'Error test' },
       [brokenEngine],
       stubRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result).toBeDefined();
     expect(typeof result.total_time_ms).toBe('number');
@@ -177,21 +190,23 @@ describe('handleAgent', () => {
       fetch: vi.fn().mockRejectedValue(new Error('network down')),
     } as unknown as SmartRouter;
 
-    const result = await handleAgent(
+    const __r_result = await handleAgent(
       { prompt: 'Router error test' },
       [stubEngine],
       brokenRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result).toBeDefined();
   });
 
   it('sampling_supported is false when no server provided', async () => {
-    const result = await handleAgent(
+    const __r_result = await handleAgent(
       { prompt: 'test' },
       [stubEngine],
       stubRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.sampling_supported).toBe(false);
   });
@@ -202,10 +217,11 @@ describe('handleAgent', () => {
       urls: ['not-a-url', 'also-not-valid'],
     };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
-    expect(result.error).toContain('url');
+    expect(result.error_reason).toContain('url');
   });
 
   describe('evidence shape', () => {
@@ -244,7 +260,8 @@ describe('handleAgent', () => {
         urls: ['https://example.com/topic'],
         max_pages: 1,
       };
-      const result = await handleAgent(input, [stubEngine], richRouter);
+      const __r_result = await handleAgent(input, [stubEngine], richRouter);;
+      const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
       expect(result.evidence).toBeDefined();
       expect(result.evidence!.length).toBeGreaterThan(0);
@@ -274,7 +291,8 @@ describe('handleAgent', () => {
         max_pages: 1,
         include_full_markdown: true,
       };
-      const result = await handleAgent(input, [stubEngine], richRouter);
+      const __r_result = await handleAgent(input, [stubEngine], richRouter);;
+      const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
       expect(result.evidence).toBeDefined();
       const hasContent = result.sources.some((s) => s.markdown_content.length > 0);
@@ -297,7 +315,8 @@ describe('handleAgent', () => {
         urls: ['https://example.com/topic'],
         schema: { type: 'object', properties: { name: { type: 'string' } } },
       };
-      const result = await handleAgent(input, [stubEngine], richRouter);
+      const __r_result = await handleAgent(input, [stubEngine], richRouter);;
+      const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
       // When schema is provided, evidence is not populated.
       expect(result.evidence).toBeUndefined();

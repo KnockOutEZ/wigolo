@@ -63,7 +63,8 @@ describe('handleSearch with multi-query array input', () => {
       include_content: false,
     };
 
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.queries_executed).toBeDefined();
     expect(output.queries_executed).toContain('react hooks');
@@ -81,7 +82,8 @@ describe('handleSearch with multi-query array input', () => {
       include_content: false,
     };
 
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     const urls = output.results.map(r => r.url);
     const uniqueUrls = new Set(urls);
@@ -98,7 +100,8 @@ describe('handleSearch with multi-query array input', () => {
       include_content: false,
     };
 
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.queries_executed).toHaveLength(1);
     expect(output.queries_executed![0]).toBe('react hooks');
@@ -110,7 +113,8 @@ describe('handleSearch with multi-query array input', () => {
     ]);
 
     const input: SearchInput = { query: 'single query', include_content: false };
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     // Single strings are now auto-expanded and routed through multi-query path
     expect(output.query).toBe('single query');
@@ -131,10 +135,10 @@ describe('handleSearch with multi-query array input', () => {
     };
 
     const output = await handleSearch(input, [engine], mockRouter);
-
-    expect(output.results).toHaveLength(0);
-    expect(output.error).toBeDefined();
-    expect(output.queries_executed).toBeDefined();
+    expect(output.ok).toBe(false);
+    if (!output.ok) {
+      expect(output.error).toBeDefined();
+    }
   });
 
   it('populates query field with first query for display', async () => {
@@ -147,7 +151,8 @@ describe('handleSearch with multi-query array input', () => {
       include_content: false,
     };
 
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.query).toBe('first query');
   });
@@ -164,7 +169,8 @@ describe('handleSearch with multi-query array input', () => {
       include_domains: ['allowed.com'],
     };
 
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     const urls = output.results.map(r => r.url);
     expect(urls.every(u => u.includes('allowed.com'))).toBe(true);
@@ -181,7 +187,8 @@ describe('handleSearch with multi-query array input', () => {
       include_full_markdown: true,
     };
 
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     const withContent = output.results.filter(r => r.markdown_content);
     expect(withContent.length).toBeGreaterThan(0);
@@ -196,9 +203,10 @@ describe('handleSearch with multi-query array input', () => {
     };
 
     const output = await handleSearch(input, [engine], mockRouter);
-
-    expect(output.results).toHaveLength(0);
-    expect(output.error).toBeDefined();
+    expect(output.ok).toBe(false);
+    if (!output.ok) {
+      expect(output.error).toBeDefined();
+    }
   });
 
   it('handles array of empty strings gracefully', async () => {
@@ -210,9 +218,10 @@ describe('handleSearch with multi-query array input', () => {
     };
 
     const output = await handleSearch(input, [engine], mockRouter);
-
-    expect(output.results).toHaveLength(0);
-    expect(output.error).toBeDefined();
+    expect(output.ok).toBe(false);
+    if (!output.ok) {
+      expect(output.error).toBeDefined();
+    }
   });
 
   it('respects max_results cap with multi-query', async () => {
@@ -232,7 +241,8 @@ describe('handleSearch with multi-query array input', () => {
       include_content: false,
     };
 
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results.length).toBeLessThanOrEqual(5);
   });
@@ -249,7 +259,8 @@ describe('handleSearch with multi-query array input', () => {
 
     await handleSearch(input, [engine], mockRouter);
 
-    const output2 = await handleSearch(input, [engine], mockRouter);
+    const __r_output2 = await handleSearch(input, [engine], mockRouter);;
+    const output2 = __r_output2.ok ? __r_output2.data : ({ ...__r_output2 } as any);
     expect(output2.results.length).toBeGreaterThan(0);
   });
 
@@ -267,7 +278,8 @@ describe('handleSearch with multi-query array input', () => {
       search_engines: ['bing'],
     };
 
-    const output = await handleSearch(input, [engine1, engine2], mockRouter);
+    const __r_output = await handleSearch(input, [engine1, engine2], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(engine1.search).not.toHaveBeenCalled();
     expect(engine2.search).toHaveBeenCalled();

@@ -38,7 +38,20 @@ export async function executeResearch(args: ParsedArgs, deps: ReplDeps): Promise
     }
 
     log.debug('executing research command', { question, flags: args.flags });
-    return await handleResearch(input, deps.engines, deps.router, deps.backendStatus);
+    const r = await handleResearch(input, deps.engines, deps.router, deps.backendStatus);
+    if (!r.ok) {
+      return {
+        report: '',
+        citations: [],
+        sources: [],
+        sub_queries: [],
+        depth: input.depth ?? 'standard',
+        total_time_ms: 0,
+        sampling_supported: false,
+        error: r.error_reason,
+      };
+    }
+    return r.data;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error('research command failed', { error: msg });

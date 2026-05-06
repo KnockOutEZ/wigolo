@@ -34,7 +34,7 @@ describe('extract mode:structured end-to-end', () => {
   });
 
   it('returns tables, definitions, jsonld, chart_hints, and key_value_pairs from HTML', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       {
         html: `<html><body>
           <table><thead><tr><th>Name</th><th>Price</th></tr></thead>
@@ -47,7 +47,8 @@ describe('extract mode:structured end-to-end', () => {
         mode: 'structured',
       },
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.mode).toBe('structured');
     expect(result.error).toBeUndefined();
@@ -67,7 +68,7 @@ describe('extract mode:structured end-to-end', () => {
   });
 
   it('extracts chart hints from SVG title, aria-label, and figcaption', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       {
         html: `<html><body>
           <figure>
@@ -81,7 +82,8 @@ describe('extract mode:structured end-to-end', () => {
         mode: 'structured',
       },
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     const data = result.data as { chart_hints: Array<{ title?: string; figcaption?: string; aria_label?: string }> };
     expect(data.chart_hints.length).toBeGreaterThan(0);
@@ -94,10 +96,11 @@ describe('extract mode:structured end-to-end', () => {
   });
 
   it('returns empty structured data for empty HTML', async () => {
-    const result = await handleExtract(
+    const __r_result = await handleExtract(
       { html: '<html><body></body></html>', mode: 'structured' },
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     const data = result.data as { tables: unknown[]; chart_hints: unknown[] };
     expect(data.tables).toEqual([]);

@@ -1,4 +1,4 @@
-import type { SearchInput, SearchOutput, SearchResultItem, SearchEngine, RawSearchResult, ProgressCallback } from '../types.js';
+import type { SearchInput, SearchOutput, SearchResultItem, SearchEngine, RawSearchResult, ProgressCallback, StageResult } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import type { BackendStatus } from '../server/backend-status.js';
 import { deduplicateResults } from '../search/dedup.js';
@@ -34,7 +34,7 @@ export async function handleSearch(
   backendStatus?: BackendStatus,
   samplingServer?: SamplingCapableServer,
   onProgress?: ProgressCallback,
-): Promise<SearchOutput> {
+): Promise<StageResult<SearchOutput>> {
   const mode = resolveMode(input.mode);
   const start = Date.now();
   const config = getConfig();
@@ -46,20 +46,18 @@ export async function handleSearch(
     const fmt = String(input.format);
     if (RETIRED_FORMATS.has(fmt)) {
       return {
-        results: [],
-        query: typeof input.query === 'string' ? input.query : (input.query?.[0] ?? ''),
-        engines_used: [],
-        total_time_ms: Date.now() - start,
-        error: `format renamed; pass 'evidence' (default — omit) or 'answer'/'stream_answer' for synthesis`,
+        ok: false,
+        error: 'invalid_format',
+        error_reason: `format renamed; pass 'evidence' (default — omit) or 'answer'/'stream_answer' for synthesis`,
+        stage: 'search',
       };
     }
     if (!VALID_FORMATS.has(fmt)) {
       return {
-        results: [],
-        query: typeof input.query === 'string' ? input.query : (input.query?.[0] ?? ''),
-        engines_used: [],
-        total_time_ms: Date.now() - start,
-        error: `unknown format='${fmt}'. Valid: omit (evidence), 'answer', 'stream_answer'`,
+        ok: false,
+        error: 'invalid_format',
+        error_reason: `unknown format='${fmt}'. Valid: omit (evidence), 'answer', 'stream_answer'`,
+        stage: 'search',
       };
     }
   }
@@ -97,17 +95,12 @@ export async function handleSearch(
     const normalizedQueries = normalizeQueries(normalizedQuery as string[]);
 
     if (normalizedQueries.length === 0) {
-      const output: SearchOutput = {
-        results: [],
-        query: Array.isArray(input.query) ? (input.query[0] ?? '') : input.query,
-        engines_used: [],
-        total_time_ms: Date.now() - start,
-        error: 'All queries were empty after normalization',
-        queries_executed: [],
+      return {
+        ok: false,
+        error: 'invalid_input',
+        error_reason: 'All queries were empty after normalization',
+        stage: 'search',
       };
-      const warning = backendStatus?.consumeWarning();
-      if (warning) output.warning = warning;
-      return output;
     }
 
     const displayQuery = autoExpanded && typeof input.query === 'string'
@@ -161,7 +154,7 @@ export async function handleSearch(
       } else if (output.results.length > 0 && mode !== 'cache') {
         await applyEvidenceDefault(input, output, output.results, displayQuery);
       }
-      return output;
+      return { ok: true, data: output };
     }
 
     let activeEngines = engines;
@@ -199,17 +192,12 @@ export async function handleSearch(
     const filteredRaw = filteredMq.results;
 
     if (filteredRaw.length === 0 && input.format !== 'answer' && input.format !== 'stream_answer') {
-      const output: SearchOutput = {
-        results: [],
-        query: displayQuery,
-        engines_used: enginesUsed,
-        total_time_ms: Date.now() - start,
-        error: errors.length > 0 ? errors.join('; ') : 'No results found',
-        queries_executed: normalizedQueries,
+      return {
+        ok: false,
+        error: 'no_results',
+        error_reason: errors.length > 0 ? errors.join('; ') : 'No results found',
+        stage: 'search',
       };
-      const combined = [filterWarningsMq, backendStatus?.consumeWarning()].filter(Boolean).join('; ');
-      if (combined) output.warning = combined;
-      return output;
     }
 
     await emit(2, 5, `Deduplicating and reranking ${filteredRaw.length} results...`);
@@ -293,7 +281,7 @@ export async function handleSearch(
     } else if (results.length > 0 && mode !== 'cache') {
       await applyEvidenceDefault(input, output, results, displayQuery);
     }
-    return output;
+    return { ok: true, data: output };
   }
 
   // --- Single-query path ---
@@ -346,7 +334,7 @@ export async function handleSearch(
     } else if (output.results.length > 0 && mode !== 'cache') {
       await applyEvidenceDefault(input, output, output.results, queryStr);
     }
-    return output;
+    return { ok: true, data: output };
   }
 
   let activeEngines = engines;
@@ -408,16 +396,12 @@ export async function handleSearch(
   const filteredAllRaw = filteredSq.results;
 
   if (filteredAllRaw.length === 0 && input.format !== 'answer' && input.format !== 'stream_answer') {
-    const output: SearchOutput = {
-      results: [],
-      query: queryStr,
-      engines_used: [...enginesUsed],
-      total_time_ms: Date.now() - start,
-      error: errors.length > 0 ? errors.join('; ') : 'No results found',
+    return {
+      ok: false,
+      error: 'no_results',
+      error_reason: errors.length > 0 ? errors.join('; ') : 'No results found',
+      stage: 'search',
     };
-    const combined = [filterWarningsSq, backendStatus?.consumeWarning()].filter(Boolean).join('; ');
-    if (combined) output.warning = combined;
-    return output;
   }
 
   await emit(2, 5, `Deduplicating and reranking ${filteredAllRaw.length} results...`);
@@ -500,7 +484,7 @@ export async function handleSearch(
   } else if (results.length > 0 && mode !== 'cache') {
     await applyEvidenceDefault(input, output, results, queryStr);
   }
-  return output;
+  return { ok: true, data: output };
 }
 
 async function applyAnswerSynthesis(

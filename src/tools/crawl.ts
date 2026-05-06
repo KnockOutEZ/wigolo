@@ -32,8 +32,22 @@ export async function handleCrawl(
 
     // Crawler needs full markdown internally for dedup; opt in explicitly so
     // handleFetch's default strip does not steal page bodies mid-crawl.
-    const fetchFn = async (url: string) =>
-      handleFetch({ url, use_auth: input.use_auth, include_full_markdown: true }, router);
+    const fetchFn = async (url: string) => {
+      const r = await handleFetch({ url, use_auth: input.use_auth, include_full_markdown: true }, router);
+      if (!r.ok) {
+        return {
+          url,
+          title: '',
+          markdown: '',
+          metadata: {},
+          links: [],
+          images: [],
+          cached: false,
+          error: r.error_reason,
+        };
+      }
+      return r.data;
+    };
 
     const rawFetchFn = async (url: string) =>
       router.fetch(url, { renderJs: 'never' });

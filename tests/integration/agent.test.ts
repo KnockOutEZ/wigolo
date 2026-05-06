@@ -63,7 +63,8 @@ describe('agent tool integration', () => {
       prompt: 'Find pricing for the top CRM tools',
     };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(typeof result.result).toBe('string');
@@ -78,7 +79,8 @@ describe('agent tool integration', () => {
   it('steps provide full transparency', async () => {
     const input: AgentInput = { prompt: 'Find CRM pricing' };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     const planStep = result.steps.find((s) => s.action === 'plan');
     expect(planStep).toBeDefined();
@@ -95,7 +97,8 @@ describe('agent tool integration', () => {
       urls: ['https://salesforce.com/pricing', 'https://hubspot.com/pricing'],
     };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.sources.length).toBeGreaterThanOrEqual(2);
@@ -116,7 +119,8 @@ describe('agent tool integration', () => {
       },
     };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     const extractStep = result.steps.find((s) => s.action === 'extract');
@@ -129,7 +133,8 @@ describe('agent tool integration', () => {
       max_pages: 1,
     };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.pages_fetched).toBeLessThanOrEqual(1);
   });
@@ -137,7 +142,8 @@ describe('agent tool integration', () => {
   it('sources include URL, title, and content', async () => {
     const input: AgentInput = { prompt: 'CRM data', include_full_markdown: true };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     for (const source of result.sources.filter((s) => s.fetched)) {
       expect(source.url).toBeTruthy();
@@ -167,7 +173,8 @@ describe('agent tool integration', () => {
     } as unknown as SmartRouter;
 
     const input: AgentInput = { prompt: 'Flaky test' };
-    const result = await handleAgent(input, [stubEngine], flakeyRouter);
+    const __r_result = await handleAgent(input, [stubEngine], flakeyRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.result).toBeDefined();
@@ -176,23 +183,28 @@ describe('agent tool integration', () => {
   });
 
   it('input validation returns structured errors', async () => {
-    const result1 = await handleAgent({ prompt: '' } as AgentInput, [stubEngine], stubRouter);
+    const __r_result1 = await handleAgent({ prompt: '' } as AgentInput, [stubEngine], stubRouter);;
+    const result1 = __r_result1.ok ? __r_result1.data : ({ ...__r_result1 } as any);
     expect(result1.error).toBeDefined();
 
-    const result2 = await handleAgent({ prompt: 'test', max_pages: -1 }, [stubEngine], stubRouter);
+    const __r_result2 = await handleAgent({ prompt: 'test', max_pages: -1 }, [stubEngine], stubRouter);;
+    const result2 = __r_result2.ok ? __r_result2.data : ({ ...__r_result2 } as any);
     expect(result2.error).toBeDefined();
 
-    const result3 = await handleAgent({ prompt: 'test', max_time_ms: -1 }, [stubEngine], stubRouter);
+    const __r_result3 = await handleAgent({ prompt: 'test', max_time_ms: -1 }, [stubEngine], stubRouter);;
+    const result3 = __r_result3.ok ? __r_result3.data : ({ ...__r_result3 } as any);
     expect(result3.error).toBeDefined();
 
-    const result4 = await handleAgent({ prompt: 'test', urls: ['bad-url'] }, [stubEngine], stubRouter);
+    const __r_result4 = await handleAgent({ prompt: 'test', urls: ['bad-url'] }, [stubEngine], stubRouter);;
+    const result4 = __r_result4.ok ? __r_result4.data : ({ ...__r_result4 } as any);
     expect(result4.error).toBeDefined();
   });
 
   it('result is a string when no schema provided', async () => {
     const input: AgentInput = { prompt: 'Find info' };
 
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(typeof result.result).toBe('string');
     expect((result.result as string).length).toBeGreaterThan(0);
@@ -202,7 +214,8 @@ describe('agent tool integration', () => {
     const input: AgentInput = { prompt: 'Quick test' };
 
     const before = Date.now();
-    const result = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_result = await handleAgent(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
     const after = Date.now();
 
     expect(result.total_time_ms).toBeGreaterThanOrEqual(0);

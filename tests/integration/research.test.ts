@@ -86,7 +86,8 @@ describe('research tool integration', () => {
       depth: 'quick',
     };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.report.length).toBeGreaterThan(0);
@@ -104,7 +105,8 @@ describe('research tool integration', () => {
       depth: 'standard',
     };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.sub_queries.length).toBe(4);
     expect(result.sources.length).toBeGreaterThan(0);
@@ -117,7 +119,8 @@ describe('research tool integration', () => {
       depth: 'comprehensive',
     };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.sub_queries.length).toBe(7);
     expect(result.depth).toBe('comprehensive');
@@ -129,7 +132,8 @@ describe('research tool integration', () => {
       depth: 'quick',
     };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     for (const citation of result.citations) {
       const matchingSource = result.sources.find((s) => s.url === citation.url);
@@ -159,7 +163,8 @@ describe('research tool integration', () => {
     } as unknown as SmartRouter;
 
     const input: ResearchInput = { question: 'Flakey test', depth: 'quick' };
-    const result = await handleResearch(input, [stubEngine], flakeyRouter);
+    const __r_result = await handleResearch(input, [stubEngine], flakeyRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.report.length).toBeGreaterThan(0);
@@ -174,7 +179,8 @@ describe('research tool integration', () => {
       max_sources: 2,
     };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.sources.length).toBeLessThanOrEqual(2);
   });
@@ -185,7 +191,8 @@ describe('research tool integration', () => {
       depth: 'quick',
     };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.report).toContain('#');
     expect(result.report.length).toBeGreaterThan(50);
@@ -198,7 +205,8 @@ describe('research tool integration', () => {
       include_domains: ['typescriptlang.org'],
     };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.report.length).toBeGreaterThan(0);
@@ -207,20 +215,24 @@ describe('research tool integration', () => {
   it('total_time_ms is populated', async () => {
     const input: ResearchInput = { question: 'Quick timing test', depth: 'quick' };
 
-    const result = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_result = await handleResearch(input, [stubEngine], stubRouter);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.total_time_ms).toBeGreaterThanOrEqual(0);
   });
 
   it('input validation errors return structured output, not exceptions', async () => {
-    const result1 = await handleResearch({ question: '' } as ResearchInput, [stubEngine], stubRouter);
+    const __r_result1 = await handleResearch({ question: '' } as ResearchInput, [stubEngine], stubRouter);;
+    const result1 = __r_result1.ok ? __r_result1.data : ({ ...__r_result1 } as any);
     expect(result1.error).toBeDefined();
     expect(result1.report).toBe('');
 
-    const result2 = await handleResearch({ question: 'test', depth: 'wrong' as any }, [stubEngine], stubRouter);
+    const __r_result2 = await handleResearch({ question: 'test', depth: 'wrong' as any }, [stubEngine], stubRouter);;
+    const result2 = __r_result2.ok ? __r_result2.data : ({ ...__r_result2 } as any);
     expect(result2.error).toBeDefined();
 
-    const result3 = await handleResearch({ question: 'test', max_sources: -5 }, [stubEngine], stubRouter);
+    const __r_result3 = await handleResearch({ question: 'test', max_sources: -5 }, [stubEngine], stubRouter);;
+    const result3 = __r_result3.ok ? __r_result3.data : ({ ...__r_result3 } as any);
     expect(result3.error).toBeDefined();
   });
 });

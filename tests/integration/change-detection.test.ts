@@ -79,7 +79,8 @@ describe('Change Detection Integration', () => {
       include_full_markdown: true,
     };
 
-    const result = await handleFetch(input, router);
+    const __r_result = await handleFetch(input, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.cached).toBe(false);
@@ -99,7 +100,8 @@ describe('Change Detection Integration', () => {
 
     expireCacheEntries();
 
-    const result = await handleFetch({ ...input }, router);
+    const __r_result = await handleFetch({ ...input }, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.cached).toBe(false);
     expect(result.changed).toBeUndefined();
@@ -109,14 +111,16 @@ describe('Change Detection Integration', () => {
     const url = `http://127.0.0.1:${port}/doc`;
     const input: FetchInput = { url, render_js: 'never' };
 
-    const first = await handleFetch(input, router);
+    const __r_first = await handleFetch(input, router);;
+    const first = __r_first.ok ? __r_first.data : ({ ...__r_first } as any);
     expect(first.error).toBeUndefined();
     expect(first.cached).toBe(false);
 
     currentVersion = 'v2';
     expireCacheEntries();
 
-    const second = await handleFetch({ url, render_js: 'never' }, router);
+    const __r_second = await handleFetch({ url, render_js: 'never' }, router);;
+    const second = __r_second.ok ? __r_second.data : ({ ...__r_second } as any);
 
     expect(second.cached).toBe(false);
     expect(second.changed).toBe(true);
@@ -156,14 +160,16 @@ describe('Change Detection Integration', () => {
     const url = `http://127.0.0.1:${port}/doc?utm_source=test`;
     const input: FetchInput = { url, render_js: 'never' };
 
-    const first = await handleFetch(input, router);
+    const __r_first = await handleFetch(input, router);;
+    const first = __r_first.ok ? __r_first.data : ({ ...__r_first } as any);
     expect(first.error).toBeUndefined();
 
     currentVersion = 'v2';
     expireCacheEntries();
 
     const url2 = `http://127.0.0.1:${port}/doc?utm_source=other`;
-    const second = await handleFetch({ url: url2, render_js: 'never' }, router);
+    const __r_second = await handleFetch({ url: url2, render_js: 'never' }, router);;
+    const second = __r_second.ok ? __r_second.data : ({ ...__r_second } as any);
 
     expect(second.cached).toBe(false);
     expect(second.changed).toBe(true);
@@ -176,7 +182,8 @@ describe('Change Detection Integration', () => {
     currentVersion = 'v2';
     expireCacheEntries();
 
-    const result = await handleFetch({ url, render_js: 'never' }, router);
+    const __r_result = await handleFetch({ url, render_js: 'never' }, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     if (!result.cached && result.changed) {
       expect(result.diff_summary).toMatch(/\d+ lines? added, \d+ lines? removed, \d+ lines? modified/);

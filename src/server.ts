@@ -344,25 +344,37 @@ export function createMcpServer(subsystems: Subsystems): Server {
 
     if (name === 'fetch') {
       const input = (args ?? {}) as unknown as FetchInput;
-      const result = await handleFetch(input, router);
+      const r = await handleFetch(input, router);
+      if (!r.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: r.error, error_reason: r.error_reason, stage: r.stage, ...(r.hint ? { hint: r.hint } : {}) }, null, 2) }],
+          isError: true,
+        };
+      }
       return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        isError: !!result.error,
+        content: [{ type: 'text', text: JSON.stringify(r.data, null, 2) }],
+        isError: false,
       };
     }
 
     if (name === 'search') {
       const input = (args ?? {}) as unknown as SearchInput;
       const samplingServer = server as unknown as SamplingCapableServer;
-      const result = await handleSearch(input, searchEngines, router, backendStatus, samplingServer, onProgress);
-      const blocks: { type: 'text'; text: string }[] = [];
-      if (result.warning) {
-        blocks.push({ type: 'text', text: `[wigolo notice] ${result.warning}` });
+      const r = await handleSearch(input, searchEngines, router, backendStatus, samplingServer, onProgress);
+      if (!r.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: r.error, error_reason: r.error_reason, stage: r.stage, ...(r.hint ? { hint: r.hint } : {}) }, null, 2) }],
+          isError: true,
+        };
       }
-      blocks.push({ type: 'text', text: JSON.stringify(result, null, 2) });
+      const blocks: { type: 'text'; text: string }[] = [];
+      if (r.data.warning) {
+        blocks.push({ type: 'text', text: `[wigolo notice] ${r.data.warning}` });
+      }
+      blocks.push({ type: 'text', text: JSON.stringify(r.data, null, 2) });
       return {
         content: blocks,
-        isError: !!result.error,
+        isError: !!r.data.error,
       };
     }
 
@@ -386,39 +398,63 @@ export function createMcpServer(subsystems: Subsystems): Server {
 
     if (name === 'extract') {
       const input = (args ?? {}) as unknown as ExtractInput;
-      const result = await handleExtract(input, router);
+      const r = await handleExtract(input, router);
+      if (!r.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: r.error, error_reason: r.error_reason, stage: r.stage, ...(r.hint ? { hint: r.hint } : {}) }, null, 2) }],
+          isError: true,
+        };
+      }
       return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        isError: !!result.error,
+        content: [{ type: 'text', text: JSON.stringify(r.data, null, 2) }],
+        isError: false,
       };
     }
 
     if (name === 'find_similar') {
       const input = (args ?? {}) as unknown as FindSimilarInput;
-      const result = await handleFindSimilar(input, searchEngines, router, backendStatus);
+      const r = await handleFindSimilar(input, searchEngines, router, backendStatus);
+      if (!r.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: r.error, error_reason: r.error_reason, stage: r.stage, ...(r.hint ? { hint: r.hint } : {}) }, null, 2) }],
+          isError: true,
+        };
+      }
       return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        isError: !!result.error,
+        content: [{ type: 'text', text: JSON.stringify(r.data, null, 2) }],
+        isError: false,
       };
     }
 
     if (name === 'research') {
       const input = (args ?? {}) as unknown as ResearchInput;
       const samplingServer = server as unknown as SamplingCapableServer;
-      const result = await handleResearch(input, searchEngines, router, backendStatus, samplingServer);
+      const r = await handleResearch(input, searchEngines, router, backendStatus, samplingServer);
+      if (!r.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: r.error, error_reason: r.error_reason, stage: r.stage, ...(r.hint ? { hint: r.hint } : {}) }, null, 2) }],
+          isError: true,
+        };
+      }
       return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        isError: !!result.error,
+        content: [{ type: 'text', text: JSON.stringify(r.data, null, 2) }],
+        isError: false,
       };
     }
 
     if (name === 'agent') {
       const input = (args ?? {}) as unknown as AgentInput;
       const samplingServer = server as unknown as SamplingCapableServer;
-      const result = await handleAgent(input, searchEngines, router, backendStatus, samplingServer);
+      const r = await handleAgent(input, searchEngines, router, backendStatus, samplingServer);
+      if (!r.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: r.error, error_reason: r.error_reason, stage: r.stage, ...(r.hint ? { hint: r.hint } : {}) }, null, 2) }],
+          isError: true,
+        };
+      }
       return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        isError: !!result.error,
+        content: [{ type: 'text', text: JSON.stringify(r.data, null, 2) }],
+        isError: false,
       };
     }
 

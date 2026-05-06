@@ -58,7 +58,8 @@ describe('integration: rerank in search pipeline', () => {
     };
 
     const input: SearchInput = { query: 'test rerank', include_content: false };
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toHaveLength(3);
     expect(output.results[0].relevance_score).toBe(0.9);
@@ -82,7 +83,8 @@ describe('integration: rerank in search pipeline', () => {
     };
 
     const input: SearchInput = { query: 'multi engine', include_content: false };
-    const output = await handleSearch(input, [engine1, engine2], mockRouter);
+    const __r_output = await handleSearch(input, [engine1, engine2], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results[0].relevance_score).toBe(0.95);
     expect(output.results[1].relevance_score).toBe(0.80);
@@ -100,7 +102,8 @@ describe('integration: rerank in search pipeline', () => {
     };
 
     const input: SearchInput = { query: 'content test', max_results: 1, include_full_markdown: true };
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toHaveLength(1);
     expect(output.results[0].markdown_content).toContain('Mock Content');
@@ -123,7 +126,8 @@ describe('integration: rerank in search pipeline', () => {
     };
 
     const input: SearchInput = { query: 'overlap test', include_content: false, max_results: 5 };
-    const output = await handleSearch(input, [engine1, engine2], mockRouter);
+    const __r_output = await handleSearch(input, [engine1, engine2], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     const overlapResults = output.results.filter(r => r.url.includes('overlap.com'));
     expect(overlapResults).toHaveLength(1);

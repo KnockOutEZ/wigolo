@@ -11,6 +11,7 @@ import type {
   ResearchInput,
   ResearchOutput,
   SearchEngine,
+  StageResult,
 } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
@@ -27,28 +28,24 @@ export async function handleResearch(
   router: SmartRouter,
   _backendStatus?: unknown,
   server?: SamplingCapableServer,
-): Promise<ResearchOutput> {
-  const start = Date.now();
-
+): Promise<StageResult<ResearchOutput>> {
   try {
     if (!input.question || typeof input.question !== 'string' || input.question.trim().length === 0) {
-      return errorResult('question is required and must be a non-empty string', input, start);
+      return invalidInput('question is required and must be a non-empty string');
     }
 
     if (input.depth && !VALID_DEPTHS.has(input.depth)) {
-      return errorResult(
+      return invalidInput(
         `depth must be one of: quick, standard, comprehensive. Got: "${input.depth}"`,
-        input,
-        start,
       );
     }
 
     if (input.max_sources !== undefined) {
       if (typeof input.max_sources !== 'number' || input.max_sources < 1) {
-        return errorResult('max_sources must be a positive number', input, start);
+        return invalidInput('max_sources must be a positive number');
       }
       if (input.max_sources > MAX_SOURCES_LIMIT) {
-        return errorResult(`max_sources must be at most ${MAX_SOURCES_LIMIT}`, input, start);
+        return invalidInput(`max_sources must be at most ${MAX_SOURCES_LIMIT}`);
       }
     }
 
@@ -60,17 +57,26 @@ export async function handleResearch(
 
     const out = await runResearchPipeline(input, engines, router, server);
     await attachEvidence(out, input);
-    return out;
+    if (out.error) {
+      return {
+        ok: false,
+        error: out.error,
+        error_reason: out.error,
+        stage: 'research',
+      };
+    }
+    return { ok: true, data: out };
   } catch (err) {
     log.error('research handler failed', {
       question: input.question?.slice(0, 100),
       error: err instanceof Error ? err.message : String(err),
     });
-    return errorResult(
-      err instanceof Error ? err.message : String(err),
-      input,
-      start,
-    );
+    return {
+      ok: false,
+      error: 'research_failed',
+      error_reason: err instanceof Error ? err.message : String(err),
+      stage: 'research',
+    };
   }
 }
 
@@ -114,15 +120,11 @@ async function attachEvidence(out: ResearchOutput, input: ResearchInput): Promis
   }
 }
 
-function errorResult(error: string, input: ResearchInput, start: number): ResearchOutput {
+function invalidInput(error_reason: string): StageResult<ResearchOutput> {
   return {
-    report: '',
-    citations: [],
-    sources: [],
-    sub_queries: [],
-    depth: input.depth ?? 'standard',
-    total_time_ms: Date.now() - start,
-    sampling_supported: false,
-    error,
+    ok: false,
+    error: 'invalid_input',
+    error_reason,
+    stage: 'research',
   };
 }

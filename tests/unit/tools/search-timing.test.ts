@@ -54,7 +54,8 @@ describe('handleSearch timing metadata', () => {
     } as unknown as SmartRouter;
 
     const input: SearchInput = { query: 'test', max_results: 2 };
-    const out = await handleSearch(input, [engine], router);
+    const __r_out = await handleSearch(input, [engine], router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
 
     expect(out.search_time_ms).toBeGreaterThanOrEqual(0);
     expect(out.fetch_time_ms).toBeGreaterThanOrEqual(0);
@@ -65,7 +66,8 @@ describe('handleSearch timing metadata', () => {
     const router = { fetch: vi.fn() } as unknown as SmartRouter;
 
     const input: SearchInput = { query: 'test', include_content: false };
-    const out = await handleSearch(input, [engine], router);
+    const __r_out = await handleSearch(input, [engine], router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
 
     expect(out.search_time_ms).toBeGreaterThanOrEqual(0);
     expect(out.fetch_time_ms).toBe(0);
@@ -86,7 +88,8 @@ describe('handleSearch timing metadata', () => {
 
     const input: SearchInput = { query: 'test', max_results: 5 };
     const start = Date.now();
-    const out = await handleSearch(input, [engine], router);
+    const __r_out = await handleSearch(input, [engine], router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     const elapsed = Date.now() - start;
 
     expect(out.results).toHaveLength(5);
@@ -115,7 +118,8 @@ describe('handleSearch timing metadata', () => {
     } as any));
 
     const input: SearchInput = { query: 'test', max_results: 5, max_total_chars: 50000, include_full_markdown: true };
-    const out = await handleSearch(input, [engine], router);
+    const __r_out = await handleSearch(input, [engine], router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
 
     // top 2 (R1, R2) should be present; tail should be truncated or empty
     const r1 = out.results.find(r => r.url === 'https://e.com/1');

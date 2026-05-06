@@ -44,11 +44,12 @@ describe('handleSearch language filter', () => {
       fetch: async () => { throw new Error('not used'); },
     } as unknown as Parameters<typeof handleSearch>[2];
 
-    const out = await handleSearch(
+    const __r_out = await handleSearch(
       { query: ['postgres replication'], format: undefined, include_content: false },
       [stubEngine],
       stubRouter,
-    );
+    );;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(out.warning ?? '').toMatch(/engine_language_mismatch|engine_batch_dropped|no.results/i);
     for (const r of out.results) expect(r.url).not.toContain('baidu.com');
   });
