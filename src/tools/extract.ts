@@ -1,4 +1,4 @@
-import type { ExtractInput, ExtractOutput } from '../types.js';
+import type { ExtractInput, ExtractOutput, StageResult } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import { extractMetadata, extractSelector, extractTables } from '../extraction/extract.js';
 import {
@@ -8,6 +8,7 @@ import {
 import { extractJsonLd } from '../extraction/jsonld.js';
 import { extractStructured } from '../extraction/structured.js';
 import { getCachedContent, isExpired } from '../cache/store.js';
+import { fetchWithPlaywright } from '../fetch/playwright-tier.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('extract');
@@ -16,6 +17,11 @@ async function resolveHtml(
   input: ExtractInput,
   router: SmartRouter,
 ): Promise<{ html: string; sourceUrl?: string }> {
+  if (input.execution_mode === 'stealth' && input.url) {
+    const pw = await fetchWithPlaywright(input.url);
+    return { html: pw.html, sourceUrl: input.url };
+  }
+
   if (input.url) {
     const cached = getCachedContent(input.url);
     if (cached && !isExpired(cached)) {
@@ -36,19 +42,34 @@ async function resolveHtml(
 export async function handleExtract(
   input: ExtractInput,
   router: SmartRouter,
-): Promise<ExtractOutput> {
+): Promise<StageResult<ExtractOutput>> {
   const mode = input.mode ?? 'metadata';
 
   if (!input.url && !input.html) {
-    return { data: {}, mode, error: 'Either url or html must be provided' };
+    return {
+      ok: false,
+      error: 'invalid_input',
+      error_reason: 'Either url or html must be provided',
+      stage: 'extract',
+    };
   }
 
   if (mode === 'selector' && !input.css_selector) {
-    return { data: '', mode, error: 'css_selector is required when mode is "selector"' };
+    return {
+      ok: false,
+      error: 'invalid_input',
+      error_reason: 'css_selector is required when mode is "selector"',
+      stage: 'extract',
+    };
   }
 
   if (mode === 'schema' && (!input.schema || !input.schema.properties)) {
-    return { data: {}, mode, error: 'schema is required when mode is "schema" and must have properties' };
+    return {
+      ok: false,
+      error: 'invalid_input',
+      error_reason: 'schema is required when mode is "schema" and must have properties',
+      stage: 'extract',
+    };
   }
 
   try {
@@ -73,10 +94,13 @@ export async function handleExtract(
           data = detailed.values;
           if (detailed.warnings.length > 0) {
             return {
-              data,
-              source_url: sourceUrl,
-              mode,
-              warnings: detailed.warnings,
+              ok: true,
+              data: {
+                data,
+                source_url: sourceUrl,
+                mode,
+                warnings: detailed.warnings,
+              },
             };
           }
         } else {
@@ -96,28 +120,28 @@ export async function handleExtract(
       }
     }
 
-    return { data, source_url: sourceUrl, mode };
+    if (mode === 'tables' && Array.isArray(data) && data.length === 0) {
+      const hint =
+        input.execution_mode === 'stealth'
+          ? 'no_tables_detected — page genuinely contains no tables'
+          : 'no_tables_detected — page may require JavaScript; retry with execution_mode: "stealth"';
+      return {
+        ok: false,
+        error: 'no_tables_detected',
+        error_reason: 'No tables found on page',
+        stage: 'extract',
+        hint,
+      };
+    }
+
+    return { ok: true, data: { data, source_url: sourceUrl, mode } };
   } catch (err) {
     log.error('Extract failed', { url: input.url, error: String(err) });
-    let fallbackData: ExtractOutput['data'];
-    switch (mode) {
-      case 'selector':
-        fallbackData = '';
-        break;
-      case 'tables':
-        fallbackData = [];
-        break;
-      case 'structured':
-        fallbackData = { tables: [], definitions: [], jsonld: [], chart_hints: [], key_value_pairs: [] };
-        break;
-      default:
-        fallbackData = {};
-    }
     return {
-      data: fallbackData,
-      source_url: input.url,
-      mode,
-      error: err instanceof Error ? err.message : String(err),
+      ok: false,
+      error: 'extract_failed',
+      error_reason: err instanceof Error ? err.message : String(err),
+      stage: 'extract',
     };
   }
 }

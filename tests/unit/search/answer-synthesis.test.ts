@@ -4,6 +4,7 @@ import {
   buildSynthesisPrompt,
   extractCitations,
   buildSourcesText,
+  runSynthesis,
 } from '../../../src/search/answer-synthesis.js';
 import type { SearchResultItem, Citation } from '../../../src/types.js';
 
@@ -414,5 +415,126 @@ describe('synthesizeAnswer', () => {
     expect(server.createMessage).toHaveBeenCalledWith(
       expect.objectContaining({ maxTokens: 1500 }),
     );
+  });
+});
+
+describe('runSynthesis', () => {
+  it('level 4: returns StageError when results are empty', async () => {
+    const out = await runSynthesis({
+      query: 'postgres replication',
+      results: [],
+      samplingServer: undefined,
+      maxTotalChars: 8000,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error).toBe('no_content');
+      expect(out.stage).toBe('synthesize');
+      expect(out.error_reason).toMatch(/no sources/i);
+    }
+  });
+
+  it('level 2: heuristic fallback when no sampling server but results exist', async () => {
+    const results = [
+      { url: 'https://a', title: 'A', snippet: 'aa', markdown_content: 'A long body about postgres replication...' },
+    ] as SearchResultItem[];
+    const out = await runSynthesis({
+      query: 'postgres replication',
+      results,
+      samplingServer: undefined,
+      maxTotalChars: 8000,
+    });
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.data.answer).toContain('postgres replication');
+      expect(out.data.warning).toMatch(/heuristic|sampling/i);
+      expect(out.data.fallback_level).toBe(2);
+    }
+  });
+
+  it('level 3: evidence dump when content is too sparse for bullets', async () => {
+    const results = [
+      { url: 'https://a', title: 'A', snippet: '', markdown_content: '' },
+      { url: 'https://b', title: 'B', snippet: '', markdown_content: '' },
+    ] as SearchResultItem[];
+    const out = await runSynthesis({
+      query: 'q', results, samplingServer: undefined, maxTotalChars: 8000,
+    });
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.data.warning).toMatch(/evidence|sparse/i);
+      expect(out.data.citations.length).toBeGreaterThan(0);
+      expect(out.data.fallback_level).toBe(3);
+    }
+  });
+});
+
+describe('runSynthesis level 1 (sampling success)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('returns synthesized answer with fallback_level=1 when sampling succeeds', async () => {
+    vi.doMock('../../../src/search/sampling.js', () => ({
+      checkSamplingSupport: vi.fn().mockReturnValue(true),
+      requestSampling: vi.fn().mockResolvedValue({
+        model: 'test-model',
+        content: { type: 'text', text: 'Postgres replication uses WAL streaming [1]. Logical replication is also supported [2].' },
+      }),
+      extractTextFromSamplingResponse: vi.fn().mockReturnValue(
+        'Postgres replication uses WAL streaming [1]. Logical replication is also supported [2].',
+      ),
+    }));
+
+    const mod = await import('../../../src/search/answer-synthesis.js');
+
+    const samplingServer = {
+      getClientCapabilities: vi.fn().mockReturnValue({ sampling: {} }),
+      createMessage: vi.fn(),
+    };
+
+    const results: SearchResultItem[] = [
+      makeResult({
+        title: 'Streaming Replication',
+        url: 'https://postgres.example/streaming',
+        snippet: 'WAL streaming overview',
+        markdown_content: 'Postgres streaming replication ships WAL records to replicas.',
+      }),
+      makeResult({
+        title: 'Logical Replication',
+        url: 'https://postgres.example/logical',
+        snippet: 'Logical replication overview',
+        markdown_content: 'Logical replication uses a publish/subscribe model.',
+      }),
+    ];
+
+    const out = await mod.runSynthesis({
+      query: 'postgres replication',
+      results,
+      samplingServer,
+      maxTotalChars: 8000,
+    });
+
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.data.answer).toBe(
+        'Postgres replication uses WAL streaming [1]. Logical replication is also supported [2].',
+      );
+      expect(out.data.fallback_level).toBe(1);
+      expect(out.data.citations).toHaveLength(2);
+      expect(out.data.citations[0]).toEqual<Citation>({
+        index: 1,
+        url: 'https://postgres.example/streaming',
+        title: 'Streaming Replication',
+        snippet: 'WAL streaming overview',
+      });
+      expect(out.data.citations[1]).toEqual<Citation>({
+        index: 2,
+        url: 'https://postgres.example/logical',
+        title: 'Logical Replication',
+        snippet: 'Logical replication overview',
+      });
+    }
   });
 });

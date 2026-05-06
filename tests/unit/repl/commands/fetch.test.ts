@@ -27,7 +27,7 @@ describe('executeFetch', () => {
   };
 
   it('passes url from positional args', async () => {
-    vi.mocked(handleFetch).mockResolvedValue(baseOutput);
+    vi.mocked(handleFetch).mockResolvedValue({ ok: true, data: baseOutput });
     const result = await executeFetch({ command: 'fetch', positional: ['https://example.com'], flags: {} }, deps);
     expect(handleFetch).toHaveBeenCalledWith(
       expect.objectContaining({ url: 'https://example.com' }),
@@ -37,7 +37,7 @@ describe('executeFetch', () => {
   });
 
   it('maps --mode=raw to render_js=never', async () => {
-    vi.mocked(handleFetch).mockResolvedValue(baseOutput);
+    vi.mocked(handleFetch).mockResolvedValue({ ok: true, data: baseOutput });
     await executeFetch({ command: 'fetch', positional: ['https://example.com'], flags: { mode: 'raw' } }, deps);
     expect(handleFetch).toHaveBeenCalledWith(
       expect.objectContaining({ render_js: 'never' }),
@@ -46,7 +46,7 @@ describe('executeFetch', () => {
   });
 
   it('maps --mode=markdown to render_js=auto', async () => {
-    vi.mocked(handleFetch).mockResolvedValue(baseOutput);
+    vi.mocked(handleFetch).mockResolvedValue({ ok: true, data: baseOutput });
     await executeFetch({ command: 'fetch', positional: ['https://example.com'], flags: { mode: 'markdown' } }, deps);
     expect(handleFetch).toHaveBeenCalledWith(
       expect.objectContaining({ render_js: 'auto' }),

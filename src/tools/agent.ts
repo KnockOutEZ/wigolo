@@ -11,6 +11,7 @@ import type {
   AgentOutput,
   EvidenceItem,
   SearchEngine,
+  StageResult,
 } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
@@ -27,29 +28,27 @@ export async function handleAgent(
   router: SmartRouter,
   _backendStatus?: unknown,
   server?: SamplingCapableServer,
-): Promise<AgentOutput> {
-  const start = Date.now();
-
+): Promise<StageResult<AgentOutput>> {
   try {
     if (!input.prompt || typeof input.prompt !== 'string' || input.prompt.trim().length === 0) {
-      return errorResult('prompt is required and must be a non-empty string', start);
+      return invalidInput('prompt is required and must be a non-empty string');
     }
 
     if (input.max_pages !== undefined) {
       if (typeof input.max_pages !== 'number' || input.max_pages < 1) {
-        return errorResult('max_pages must be a positive number', start);
+        return invalidInput('max_pages must be a positive number');
       }
       if (input.max_pages > MAX_PAGES_LIMIT) {
-        return errorResult(`max_pages must be at most ${MAX_PAGES_LIMIT}`, start);
+        return invalidInput(`max_pages must be at most ${MAX_PAGES_LIMIT}`);
       }
     }
 
     if (input.max_time_ms !== undefined) {
       if (typeof input.max_time_ms !== 'number' || input.max_time_ms < 1) {
-        return errorResult('max_time_ms must be a positive number', start);
+        return invalidInput('max_time_ms must be a positive number');
       }
       if (input.max_time_ms > MAX_TIME_LIMIT_MS) {
-        return errorResult(`max_time_ms must be at most ${MAX_TIME_LIMIT_MS}`, start);
+        return invalidInput(`max_time_ms must be at most ${MAX_TIME_LIMIT_MS}`);
       }
     }
 
@@ -58,7 +57,7 @@ export async function handleAgent(
         try {
           new URL(url);
         } catch {
-          return errorResult(`Invalid url in urls array: "${url}"`, start);
+          return invalidInput(`Invalid url in urls array: "${url}"`);
         }
       }
     }
@@ -88,16 +87,26 @@ export async function handleAgent(
       }
     }
 
-    return result;
+    if (result.error) {
+      return {
+        ok: false,
+        error: result.error,
+        error_reason: result.error,
+        stage: 'agent',
+      };
+    }
+    return { ok: true, data: result };
   } catch (err) {
     log.error('agent handler failed', {
       prompt: input.prompt?.slice(0, 100),
       error: err instanceof Error ? err.message : String(err),
     });
-    return errorResult(
-      err instanceof Error ? err.message : String(err),
-      start,
-    );
+    return {
+      ok: false,
+      error: 'agent_failed',
+      error_reason: err instanceof Error ? err.message : String(err),
+      stage: 'agent',
+    };
   }
 }
 
@@ -136,14 +145,11 @@ async function attachEvidence(out: AgentOutput, input: AgentInput): Promise<void
   }
 }
 
-function errorResult(error: string, start: number): AgentOutput {
+function invalidInput(error_reason: string): StageResult<AgentOutput> {
   return {
-    result: '',
-    sources: [],
-    pages_fetched: 0,
-    steps: [],
-    total_time_ms: Date.now() - start,
-    sampling_supported: false,
-    error,
+    ok: false,
+    error: 'invalid_input',
+    error_reason,
+    stage: 'agent',
   };
 }

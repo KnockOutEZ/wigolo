@@ -70,7 +70,8 @@ describe('e2e: fetch tool', () => {
   });
 
   it('full fetch returns title, markdown, metadata, and links', async () => {
-    const result = await handleFetch({ url: `${baseUrl}/article`, include_full_markdown: true }, router);
+    const __r_result = await handleFetch({ url: `${baseUrl}/article`, include_full_markdown: true }, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.cached).toBe(false);
@@ -84,21 +85,24 @@ describe('e2e: fetch tool', () => {
 
   it('second fetch returns cached: true', async () => {
     const url = `${baseUrl}/article`;
-    const first = await handleFetch({ url }, router);
+    const __r_first = await handleFetch({ url }, router);;
+    const first = __r_first.ok ? __r_first.data : ({ ...__r_first } as any);
     expect(first.cached).toBe(false);
     expect(first.error).toBeUndefined();
 
-    const second = await handleFetch({ url, include_full_markdown: true }, router);
+    const __r_second = await handleFetch({ url, include_full_markdown: true }, router);;
+    const second = __r_second.ok ? __r_second.data : ({ ...__r_second } as any);
     expect(second.cached).toBe(true);
     expect(second.title).toBe(first.title);
     expect(second.markdown).toContain('TypeScript');
   });
 
   it('section extraction returns only the requested section', async () => {
-    const result = await handleFetch(
+    const __r_result = await handleFetch(
       { url: `${baseUrl}/article`, section: 'Conclusion', include_full_markdown: true },
       router,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.markdown).toContain('start simple');
@@ -109,27 +113,30 @@ describe('e2e: fetch tool', () => {
     const url = `${baseUrl}/article`;
     await handleFetch({ url }, router);
 
-    const result = await handleFetch({ url, section: 'Conclusion', include_full_markdown: true }, router);
+    const __r_result = await handleFetch({ url, section: 'Conclusion', include_full_markdown: true }, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.cached).toBe(true);
     expect(result.markdown).toContain('start simple');
   });
 
   it('max_chars limits markdown length', async () => {
-    const result = await handleFetch(
+    const __r_result = await handleFetch(
       { url: `${baseUrl}/article`, max_chars: 150 },
       router,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.markdown.length).toBeLessThanOrEqual(150);
   });
 
   it('non-existent URL returns error response without throwing', async () => {
-    const result = await handleFetch(
+    const __r_result = await handleFetch(
       { url: 'http://localhost:1/nonexistent' },
       router,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
     expect(result.markdown).toBe('');
@@ -139,27 +146,30 @@ describe('e2e: fetch tool', () => {
   });
 
   it('invalid URL returns error response without throwing', async () => {
-    const result = await handleFetch(
+    const __r_result = await handleFetch(
       { url: 'not-a-valid-url' },
       router,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
     expect(result.cached).toBe(false);
   });
 
   it('render_js=never skips browser fallback', async () => {
-    const result = await handleFetch(
+    const __r_result = await handleFetch(
       { url: `${baseUrl}/article`, render_js: 'never' },
       router,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeUndefined();
     expect(result.title).toContain('Building Modern Web Scrapers');
   });
 
   it('metadata includes extracted description', async () => {
-    const result = await handleFetch({ url: `${baseUrl}/article` }, router);
+    const __r_result = await handleFetch({ url: `${baseUrl}/article` }, router);;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.metadata).toBeDefined();
   });

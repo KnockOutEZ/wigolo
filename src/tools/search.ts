@@ -1,4 +1,4 @@
-import type { SearchInput, SearchOutput, SearchResultItem, SearchEngine, RawSearchResult, ProgressCallback } from '../types.js';
+import type { SearchInput, SearchOutput, SearchResultItem, SearchEngine, RawSearchResult, ProgressCallback, StageResult } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import type { BackendStatus } from '../server/backend-status.js';
 import { deduplicateResults } from '../search/dedup.js';
@@ -8,10 +8,11 @@ import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
 import { formatSearchContext } from '../search/context-formatter.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
-import { synthesizeAnswer, buildStructuredFallback } from '../search/answer-synthesis.js';
+import { synthesizeAnswer, buildStructuredFallback, runSynthesis } from '../search/answer-synthesis.js';
 import { extractHighlights } from '../search/highlights.js';
 import { applyEvidenceDefault } from '../search/evidence.js';
-import { normalizeQueries, fanOutSearch, synthesizeIntent, expandQueryHeuristic } from '../search/multi-query.js';
+import { normalizeQueries, fanOutSearch, synthesizeIntent, expandIfSingle } from '../search/multi-query.js';
+import { filterByLanguage } from '../search/language-filter.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { truncateSmartly } from '../search/truncate.js';
 import { cacheSearchResults, getCachedSearchResults, cacheContent } from '../cache/store.js';
@@ -26,8 +27,6 @@ const DEFAULT_MAX_RESULTS = 5;
 const MAX_RESULTS_CAP = 20;
 const DEFAULT_CONTENT_MAX_CHARS = 30000;
 const DEFAULT_MAX_TOTAL_CHARS = 50000;
-const TOP_K_DEEP = 5;
-
 export async function handleSearch(
   input: SearchInput,
   engines: SearchEngine[],
@@ -35,7 +34,7 @@ export async function handleSearch(
   backendStatus?: BackendStatus,
   samplingServer?: SamplingCapableServer,
   onProgress?: ProgressCallback,
-): Promise<SearchOutput> {
+): Promise<StageResult<SearchOutput>> {
   const mode = resolveMode(input.mode);
   const start = Date.now();
   const config = getConfig();
@@ -47,29 +46,24 @@ export async function handleSearch(
     const fmt = String(input.format);
     if (RETIRED_FORMATS.has(fmt)) {
       return {
-        results: [],
-        query: typeof input.query === 'string' ? input.query : (input.query?.[0] ?? ''),
-        engines_used: [],
-        total_time_ms: Date.now() - start,
-        error: `format renamed; pass 'evidence' (default — omit) or 'answer'/'stream_answer' for synthesis`,
+        ok: false,
+        error: 'invalid_format',
+        error_reason: `format renamed; pass 'evidence' (default — omit) or 'answer'/'stream_answer' for synthesis`,
+        stage: 'search',
       };
     }
     if (!VALID_FORMATS.has(fmt)) {
       return {
-        results: [],
-        query: typeof input.query === 'string' ? input.query : (input.query?.[0] ?? ''),
-        engines_used: [],
-        total_time_ms: Date.now() - start,
-        error: `unknown format='${fmt}'. Valid: omit (evidence), 'answer', 'stream_answer'`,
+        ok: false,
+        error: 'invalid_format',
+        error_reason: `unknown format='${fmt}'. Valid: omit (evidence), 'answer', 'stream_answer'`,
+        stage: 'search',
       };
     }
   }
 
   const maxResults = Math.min(input.max_results ?? DEFAULT_MAX_RESULTS, MAX_RESULTS_CAP);
-  const includeContent = mode === 'deep' ? true : (input.include_content ?? true);
-  const deepFetchCap = mode === 'deep'
-    ? Math.min(input.max_results ?? 10, TOP_K_DEEP)
-    : undefined;
+  const includeContent = input.include_content ?? true;
   const contentMaxChars = input.content_max_chars ?? DEFAULT_CONTENT_MAX_CHARS;
   const maxContentChars = input.max_content_chars;
   const maxTotalChars = input.max_total_chars ?? DEFAULT_MAX_TOTAL_CHARS;
@@ -88,10 +82,10 @@ export async function handleSearch(
   };
 
   let normalizedQuery: string | string[] = input.query;
-  let deepAutoExpanded = false;
-  if (mode === 'deep' && typeof normalizedQuery === 'string') {
-    normalizedQuery = expandQueryHeuristic(normalizedQuery);
-    deepAutoExpanded = true;
+  let autoExpanded = false;
+  if (mode !== 'cache' && typeof normalizedQuery === 'string') {
+    normalizedQuery = expandIfSingle(normalizedQuery);
+    autoExpanded = true;
   }
 
   const isMultiQuery = Array.isArray(normalizedQuery);
@@ -101,25 +95,20 @@ export async function handleSearch(
     const normalizedQueries = normalizeQueries(normalizedQuery as string[]);
 
     if (normalizedQueries.length === 0) {
-      const output: SearchOutput = {
-        results: [],
-        query: Array.isArray(input.query) ? (input.query[0] ?? '') : input.query,
-        engines_used: [],
-        total_time_ms: Date.now() - start,
-        error: 'All queries were empty after normalization',
-        queries_executed: [],
+      return {
+        ok: false,
+        error: 'invalid_input',
+        error_reason: 'All queries were empty after normalization',
+        stage: 'search',
       };
-      const warning = backendStatus?.consumeWarning();
-      if (warning) output.warning = warning;
-      return output;
     }
 
-    const displayQuery = deepAutoExpanded && typeof input.query === 'string'
+    const displayQuery = autoExpanded && typeof input.query === 'string'
       ? input.query
       : normalizedQueries[0];
     const cacheKey = normalizedQueries.join(' | ');
 
-    const staleMaxSeconds = mode === 'fast' ? config.fastStaleMaxHours * 3600 : 0;
+    const staleMaxSeconds = mode === 'cache' ? config.fastStaleMaxHours * 3600 : 0;
     const cached = input.force_refresh
       ? null
       : getCachedSearchResults(cacheKey, { staleMaxSeconds });
@@ -143,12 +132,29 @@ export async function handleSearch(
       };
       const warning = backendStatus?.consumeWarning();
       if (warning) output.warning = warning;
-      if ((input.format === 'answer' || input.format === 'stream_answer') && output.results.length > 0) {
-        await applyAnswerSynthesis(input, output, output.results, maxTotalChars, samplingServer, streamProgress);
-      } else if (output.results.length > 0 && mode !== 'fast') {
+      if (input.format === 'answer' || input.format === 'stream_answer') {
+        const synth = await runSynthesis({
+          query: displayQuery,
+          results: output.results,
+          samplingServer,
+          maxTotalChars,
+        });
+        if (!synth.ok) {
+          output.error = synth.error;
+          (output as unknown as Record<string, unknown>).error_reason = synth.error_reason;
+          (output as unknown as Record<string, unknown>).stage = synth.stage;
+          if (synth.hint) (output as unknown as Record<string, unknown>).hint = synth.hint;
+        } else {
+          output.answer = synth.data.answer;
+          output.citations = synth.data.citations;
+          if (synth.data.warning) {
+            output.warning = output.warning ? `${output.warning}; ${synth.data.warning}` : synth.data.warning;
+          }
+        }
+      } else if (output.results.length > 0 && mode !== 'cache') {
         await applyEvidenceDefault(input, output, output.results, displayQuery);
       }
-      return output;
+      return { ok: true, data: output };
     }
 
     let activeEngines = engines;
@@ -164,7 +170,7 @@ export async function handleSearch(
 
     const { results: rawResults, enginesUsed, errors } = await fanOutSearch(
       normalizedQueries,
-      mode === 'fast' ? activeEngines.slice(0, 1) : activeEngines,
+      mode === 'cache' ? activeEngines.slice(0, 1) : activeEngines,
       {
         maxResults,
         timeRange: input.time_range,
@@ -177,23 +183,26 @@ export async function handleSearch(
       },
     );
 
-    if (rawResults.length === 0) {
-      const output: SearchOutput = {
-        results: [],
-        query: displayQuery,
-        engines_used: enginesUsed,
-        total_time_ms: Date.now() - start,
-        error: errors.length > 0 ? errors.join('; ') : 'No results found',
-        queries_executed: normalizedQueries,
+    const filterTargetMq = (input.language ?? 'en').slice(0, 2).toLowerCase();
+    const filteredMq = filterByLanguage(rawResults, {
+      target: filterTargetMq,
+      dropThreshold: 0.4,
+    });
+    const filterWarningsMq = filteredMq.warnings.join('; ');
+    const filteredRaw = filteredMq.results;
+
+    if (filteredRaw.length === 0 && input.format !== 'answer' && input.format !== 'stream_answer') {
+      return {
+        ok: false,
+        error: 'no_results',
+        error_reason: errors.length > 0 ? errors.join('; ') : 'No results found',
+        stage: 'search',
       };
-      const warning = backendStatus?.consumeWarning();
-      if (warning) output.warning = warning;
-      return output;
     }
 
-    await emit(2, 5, `Deduplicating and reranking ${rawResults.length} results...`);
+    await emit(2, 5, `Deduplicating and reranking ${filteredRaw.length} results...`);
 
-    let merged = deduplicateResults(rawResults);
+    let merged = deduplicateResults(filteredRaw);
 
     merged = applyAllFilters(merged, {
       includeDomains: input.include_domains,
@@ -204,8 +213,8 @@ export async function handleSearch(
     });
 
     const intentString = synthesizeIntent(normalizedQueries);
-    merged = await rerankResults(intentString, merged, { skip: mode === 'fast' });
-    if (mode !== 'fast') merged = await validateLinks(merged);
+    merged = await rerankResults(intentString, merged, { skip: mode === 'cache' });
+    if (mode !== 'cache') merged = await validateLinks(merged);
     merged = merged.slice(0, maxResults);
 
     const results: SearchResultItem[] = merged.map(m => ({
@@ -229,7 +238,6 @@ export async function handleSearch(
         fetchTimeoutMs,
         totalDeadline: start + totalTimeoutMs,
         forceRefresh: input.force_refresh ?? false,
-        maxFetches: deepFetchCap,
       });
       fetchElapsed = Date.now() - fetchStart;
     }
@@ -249,20 +257,39 @@ export async function handleSearch(
       fetch_time_ms: fetchElapsed,
       queries_executed: normalizedQueries,
     };
-    const warning = backendStatus?.consumeWarning();
-    if (warning) output.warning = warning;
-    if ((input.format === 'answer' || input.format === 'stream_answer') && results.length > 0) {
-      await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer, streamProgress);
-    } else if (results.length > 0 && mode !== 'fast') {
+    const combinedMq = [filterWarningsMq, backendStatus?.consumeWarning()].filter(Boolean).join('; ');
+    if (combinedMq) output.warning = combinedMq;
+    if (input.format === 'answer' || input.format === 'stream_answer') {
+      const synth = await runSynthesis({
+        query: displayQuery,
+        results,
+        samplingServer,
+        maxTotalChars,
+      });
+      if (!synth.ok) {
+        output.error = synth.error;
+        (output as unknown as Record<string, unknown>).error_reason = synth.error_reason;
+        (output as unknown as Record<string, unknown>).stage = synth.stage;
+        if (synth.hint) (output as unknown as Record<string, unknown>).hint = synth.hint;
+      } else {
+        output.answer = synth.data.answer;
+        output.citations = synth.data.citations;
+        if (synth.data.warning) {
+          output.warning = output.warning ? `${output.warning}; ${synth.data.warning}` : synth.data.warning;
+        }
+      }
+    } else if (results.length > 0 && mode !== 'cache') {
       await applyEvidenceDefault(input, output, results, displayQuery);
     }
-    return output;
+    return { ok: true, data: output };
   }
 
-  // --- Single-query path (unchanged from v2) ---
+  // --- Single-query path ---
+  // Reachable only via mode='cache' with a string input. default/stealth string inputs
+  // are converted to string[] by expandIfSingle above and handled by the multi-query path.
   const queryStr = input.query as string;
 
-  const staleMaxSeconds = mode === 'fast' ? config.fastStaleMaxHours * 3600 : 0;
+  const staleMaxSeconds = mode === 'cache' ? config.fastStaleMaxHours * 3600 : 0;
   const cached = input.force_refresh
     ? null
     : getCachedSearchResults(queryStr, { staleMaxSeconds });
@@ -285,12 +312,29 @@ export async function handleSearch(
     };
     const warning = backendStatus?.consumeWarning();
     if (warning) output.warning = warning;
-    if ((input.format === 'answer' || input.format === 'stream_answer') && output.results.length > 0) {
-      await applyAnswerSynthesis(input, output, output.results, maxTotalChars, samplingServer, streamProgress);
-    } else if (output.results.length > 0 && mode !== 'fast') {
+    if (input.format === 'answer' || input.format === 'stream_answer') {
+      const synth = await runSynthesis({
+        query: queryStr,
+        results: output.results,
+        samplingServer,
+        maxTotalChars,
+      });
+      if (!synth.ok) {
+        output.error = synth.error;
+        (output as unknown as Record<string, unknown>).error_reason = synth.error_reason;
+        (output as unknown as Record<string, unknown>).stage = synth.stage;
+        if (synth.hint) (output as unknown as Record<string, unknown>).hint = synth.hint;
+      } else {
+        output.answer = synth.data.answer;
+        output.citations = synth.data.citations;
+        if (synth.data.warning) {
+          output.warning = output.warning ? `${output.warning}; ${synth.data.warning}` : synth.data.warning;
+        }
+      }
+    } else if (output.results.length > 0 && mode !== 'cache') {
       await applyEvidenceDefault(input, output, output.results, queryStr);
     }
-    return output;
+    return { ok: true, data: output };
   }
 
   let activeEngines = engines;
@@ -305,7 +349,7 @@ export async function handleSearch(
   const subQueries = decomposeQuery(queryStr);
   log.debug('query decomposition', { original: queryStr, parts: subQueries.length });
 
-  const effectiveEngines = mode === 'fast' ? activeEngines.slice(0, 1) : activeEngines;
+  const effectiveEngines = mode === 'cache' ? activeEngines.slice(0, 1) : activeEngines;
 
   await emit(1, 5, `Running ${subQueries.length} search queries across ${effectiveEngines.length} engines...`);
 
@@ -343,22 +387,26 @@ export async function handleSearch(
 
   await Promise.allSettled(searchPromises);
 
-  if (allRaw.length === 0) {
-    const output: SearchOutput = {
-      results: [],
-      query: queryStr,
-      engines_used: [...enginesUsed],
-      total_time_ms: Date.now() - start,
-      error: errors.length > 0 ? errors.join('; ') : 'No results found',
+  const filterTargetSq = (input.language ?? 'en').slice(0, 2).toLowerCase();
+  const filteredSq = filterByLanguage(allRaw, {
+    target: filterTargetSq,
+    dropThreshold: 0.4,
+  });
+  const filterWarningsSq = filteredSq.warnings.join('; ');
+  const filteredAllRaw = filteredSq.results;
+
+  if (filteredAllRaw.length === 0 && input.format !== 'answer' && input.format !== 'stream_answer') {
+    return {
+      ok: false,
+      error: 'no_results',
+      error_reason: errors.length > 0 ? errors.join('; ') : 'No results found',
+      stage: 'search',
     };
-    const warning = backendStatus?.consumeWarning();
-    if (warning) output.warning = warning;
-    return output;
   }
 
-  await emit(2, 5, `Deduplicating and reranking ${allRaw.length} results...`);
+  await emit(2, 5, `Deduplicating and reranking ${filteredAllRaw.length} results...`);
 
-  let merged = deduplicateResults(allRaw);
+  let merged = deduplicateResults(filteredAllRaw);
 
   merged = applyAllFilters(merged, {
     includeDomains: input.include_domains,
@@ -368,8 +416,8 @@ export async function handleSearch(
     category: input.category,
   });
 
-  merged = await rerankResults(queryStr, merged, { skip: mode === 'fast' });
-  if (mode !== 'fast') merged = await validateLinks(merged);
+  merged = await rerankResults(queryStr, merged, { skip: mode === 'cache' });
+  if (mode !== 'cache') merged = await validateLinks(merged);
 
   merged = merged.slice(0, maxResults);
 
@@ -412,14 +460,31 @@ export async function handleSearch(
     search_time_ms: searchElapsed,
     fetch_time_ms: fetchElapsed,
   };
-  const warning = backendStatus?.consumeWarning();
-  if (warning) output.warning = warning;
-  if ((input.format === 'answer' || input.format === 'stream_answer') && results.length > 0) {
-    await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer, streamProgress);
-  } else if (results.length > 0 && mode !== 'fast') {
+  const combinedSq = [filterWarningsSq, backendStatus?.consumeWarning()].filter(Boolean).join('; ');
+  if (combinedSq) output.warning = combinedSq;
+  if (input.format === 'answer' || input.format === 'stream_answer') {
+    const synth = await runSynthesis({
+      query: queryStr,
+      results,
+      samplingServer,
+      maxTotalChars,
+    });
+    if (!synth.ok) {
+      output.error = synth.error;
+      (output as unknown as Record<string, unknown>).error_reason = synth.error_reason;
+      (output as unknown as Record<string, unknown>).stage = synth.stage;
+      if (synth.hint) (output as unknown as Record<string, unknown>).hint = synth.hint;
+    } else {
+      output.answer = synth.data.answer;
+      output.citations = synth.data.citations;
+      if (synth.data.warning) {
+        output.warning = output.warning ? `${output.warning}; ${synth.data.warning}` : synth.data.warning;
+      }
+    }
+  } else if (results.length > 0 && mode !== 'cache') {
     await applyEvidenceDefault(input, output, results, queryStr);
   }
-  return output;
+  return { ok: true, data: output };
 }
 
 async function applyAnswerSynthesis(

@@ -79,11 +79,12 @@ describe('search default → evidence shape', () => {
   });
 
   it('returns evidence list with non-empty excerpts under 2000 tokens', async () => {
-    const out = await handleSearch(
+    const __r_out = await handleSearch(
       { query: 'rust async', max_tokens_out: 2000 },
       [stubEngine],
       stubRouter,
-    );
+    );;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(out.evidence).toBeDefined();
     expect(out.evidence!.length).toBeGreaterThan(0);
     for (const ev of out.evidence!) {
@@ -96,11 +97,12 @@ describe('search default → evidence shape', () => {
   });
 
   it('strips markdown_content by default (include_full_markdown=false)', async () => {
-    const out = await handleSearch(
+    const __r_out = await handleSearch(
       { query: 'rust async' },
       [stubEngine],
       stubRouter,
-    );
+    );;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(out.results.length).toBeGreaterThan(0);
     for (const r of out.results) {
       expect(r.markdown_content).toBeUndefined();
@@ -108,22 +110,24 @@ describe('search default → evidence shape', () => {
   });
 
   it('preserves markdown_content when include_full_markdown=true', async () => {
-    const out = await handleSearch(
+    const __r_out = await handleSearch(
       { query: 'rust async', include_full_markdown: true },
       [stubEngine],
       stubRouter,
-    );
+    );;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(out.results.length).toBeGreaterThan(0);
     const anyHasMarkdown = out.results.some((r) => typeof r.markdown_content === 'string' && r.markdown_content.length > 0);
     expect(anyHasMarkdown).toBe(true);
   });
 
   it('citation_format=numbered (default) appends citation_id to numeric citations', async () => {
-    const out = await handleSearch(
+    const __r_out = await handleSearch(
       { query: 'rust async' },
       [stubEngine],
       stubRouter,
-    );
+    );;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(out.citations).toBeDefined();
     expect(out.citations!.length).toBeGreaterThan(0);
     for (const c of out.citations!) {
@@ -134,11 +138,12 @@ describe('search default → evidence shape', () => {
   });
 
   it('citation_format=json emits citations[] with citation_id', async () => {
-    const out = await handleSearch(
+    const __r_out = await handleSearch(
       { query: 'rust async', citation_format: 'json' },
       [stubEngine],
       stubRouter,
-    );
+    );;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(out.citations).toBeDefined();
     expect(out.citations![0].citation_id).toBeTruthy();
     expect(out.citations![0].citation_id).toMatch(/^[a-f0-9]{12}$/);
@@ -146,11 +151,12 @@ describe('search default → evidence shape', () => {
   });
 
   it('citation_format=anthropic_tags emits citations_xml string of <source> tags', async () => {
-    const out = await handleSearch(
+    const __r_out = await handleSearch(
       { query: 'rust async', citation_format: 'anthropic_tags' },
       [stubEngine],
       stubRouter,
-    );
+    );;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(out.citations).toBeDefined();
     expect(out.citations!.length).toBeGreaterThan(0);
     expect(out.citations_xml).toBeDefined();
@@ -159,8 +165,10 @@ describe('search default → evidence shape', () => {
   });
 
   it('citation_id is stable for same url+passage start across calls', async () => {
-    const out1 = await handleSearch({ query: 'rust async' }, [stubEngine], stubRouter);
-    const out2 = await handleSearch({ query: 'rust async' }, [stubEngine], stubRouter);
+    const __r_out1 = await handleSearch({ query: 'rust async' }, [stubEngine], stubRouter);;
+    const out1 = __r_out1.ok ? __r_out1.data : ({ ...__r_out1 } as any);
+    const __r_out2 = await handleSearch({ query: 'rust async' }, [stubEngine], stubRouter);;
+    const out2 = __r_out2.ok ? __r_out2.data : ({ ...__r_out2 } as any);
     const ids1 = (out1.evidence ?? []).map((e) => e.citation_id).sort();
     const ids2 = (out2.evidence ?? []).map((e) => e.citation_id).sort();
     expect(ids1).toEqual(ids2);

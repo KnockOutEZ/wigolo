@@ -71,7 +71,8 @@ describe('integration: onnx rerank E2E', () => {
       ] satisfies RawSearchResult[]),
     };
     const input: SearchInput = { query: 'test query', include_content: false };
-    const out = await handleSearch(input, [engine], router);
+    const __r_out = await handleSearch(input, [engine], router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(out.results.length).toBeGreaterThanOrEqual(3);
     for (let i = 1; i < out.results.length; i++) {
       expect(out.results[i - 1].relevance_score).toBeGreaterThanOrEqual(out.results[i].relevance_score);

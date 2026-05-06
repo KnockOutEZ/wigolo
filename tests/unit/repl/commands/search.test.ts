@@ -27,7 +27,7 @@ describe('executeSearch', () => {
   };
 
   it('passes query from positional args to handleSearch', async () => {
-    vi.mocked(handleSearch).mockResolvedValue(baseOutput);
+    vi.mocked(handleSearch).mockResolvedValue({ ok: true, data: baseOutput });
     const result = await executeSearch({ command: 'search', positional: ['react hooks'], flags: {} }, deps);
     expect(handleSearch).toHaveBeenCalledWith(
       expect.objectContaining({ query: 'react hooks' }),
@@ -39,7 +39,7 @@ describe('executeSearch', () => {
   });
 
   it('maps --limit flag to max_results', async () => {
-    vi.mocked(handleSearch).mockResolvedValue(baseOutput);
+    vi.mocked(handleSearch).mockResolvedValue({ ok: true, data: baseOutput });
     await executeSearch({ command: 'search', positional: ['q'], flags: { limit: '10' } }, deps);
     expect(handleSearch).toHaveBeenCalledWith(
       expect.objectContaining({ max_results: 10 }),
@@ -50,7 +50,7 @@ describe('executeSearch', () => {
   });
 
   it('maps --domains flag to include_domains', async () => {
-    vi.mocked(handleSearch).mockResolvedValue(baseOutput);
+    vi.mocked(handleSearch).mockResolvedValue({ ok: true, data: baseOutput });
     await executeSearch({ command: 'search', positional: ['q'], flags: { domains: 'a.com,b.com' } }, deps);
     expect(handleSearch).toHaveBeenCalledWith(
       expect.objectContaining({ include_domains: ['a.com', 'b.com'] }),
@@ -61,7 +61,7 @@ describe('executeSearch', () => {
   });
 
   it('maps --from flag to from_date', async () => {
-    vi.mocked(handleSearch).mockResolvedValue(baseOutput);
+    vi.mocked(handleSearch).mockResolvedValue({ ok: true, data: baseOutput });
     await executeSearch({ command: 'search', positional: ['q'], flags: { from: '2024-01-01' } }, deps);
     expect(handleSearch).toHaveBeenCalledWith(
       expect.objectContaining({ from_date: '2024-01-01' }),

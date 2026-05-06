@@ -60,67 +60,75 @@ function setupFetchMock() {
 
     if (url === 'https://docs.test.com') {
       return {
-        url,
-        title: 'Docs Home',
-        markdown: `# Docs Home\n\nWelcome to the docs.\n\n${sharedNav}`,
-        metadata: {},
-        links: [
-          'https://docs.test.com/getting-started',
-          'https://docs.test.com/api-reference',
-          'https://docs.test.com/changelog',
-          'https://external.com/link',
-        ],
-        images: [],
-        cached: false,
-      } as FetchOutput;
+        ok: true,
+        data: {
+          url,
+          title: 'Docs Home',
+          markdown: `# Docs Home\n\nWelcome to the docs.\n\n${sharedNav}`,
+          metadata: {},
+          links: [
+            'https://docs.test.com/getting-started',
+            'https://docs.test.com/api-reference',
+            'https://docs.test.com/changelog',
+            'https://external.com/link',
+          ],
+          images: [],
+          cached: false,
+        } as FetchOutput,
+      };
     }
 
     if (url === 'https://docs.test.com/getting-started') {
       return {
-        url,
-        title: 'Getting Started',
-        markdown: `# Getting Started\n\nFollow these steps.\n\n${sharedNav}`,
-        metadata: {},
-        links: ['https://docs.test.com/api-reference'],
-        images: [],
-        cached: false,
-      } as FetchOutput;
+        ok: true,
+        data: {
+          url,
+          title: 'Getting Started',
+          markdown: `# Getting Started\n\nFollow these steps.\n\n${sharedNav}`,
+          metadata: {},
+          links: ['https://docs.test.com/api-reference'],
+          images: [],
+          cached: false,
+        } as FetchOutput,
+      };
     }
 
     if (url === 'https://docs.test.com/api-reference') {
       return {
-        url,
-        title: 'API Reference',
-        markdown: `# API Reference\n\nEndpoint documentation.\n\n${sharedNav}`,
-        metadata: {},
-        links: [],
-        images: [],
-        cached: false,
-      } as FetchOutput;
+        ok: true,
+        data: {
+          url,
+          title: 'API Reference',
+          markdown: `# API Reference\n\nEndpoint documentation.\n\n${sharedNav}`,
+          metadata: {},
+          links: [],
+          images: [],
+          cached: false,
+        } as FetchOutput,
+      };
     }
 
     if (url === 'https://docs.test.com/changelog') {
       return {
-        url,
-        title: 'Changelog',
-        markdown: `# Changelog\n\nVersion history.\n\n${sharedNav}`,
-        metadata: {},
-        links: [],
-        images: [],
-        cached: false,
-      } as FetchOutput;
+        ok: true,
+        data: {
+          url,
+          title: 'Changelog',
+          markdown: `# Changelog\n\nVersion history.\n\n${sharedNav}`,
+          metadata: {},
+          links: [],
+          images: [],
+          cached: false,
+        } as FetchOutput,
+      };
     }
 
     return {
-      url,
-      title: '',
-      markdown: '',
-      metadata: {},
-      links: [],
-      images: [],
-      cached: false,
-      error: 'Not found',
-    } as FetchOutput;
+      ok: false,
+      error: 'not_found',
+      error_reason: 'Not found',
+      stage: 'fetch',
+    };
   });
 }
 

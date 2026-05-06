@@ -8,14 +8,18 @@ describe('search format hard rename', () => {
   for (const old of ['full', 'context', 'highlights'] as const) {
     it(`rejects format='${old}' with migration error`, async () => {
       const out = await handleSearch({ query: 'x', format: old as any }, noEngines, stubRouter);
-      expect(out.error).toMatch(/format renamed/i);
-      expect(out.error).toMatch(/evidence/i);
-      expect(out.results).toEqual([]);
+      expect(out.ok).toBe(false);
+      if (!out.ok) {
+        expect(out.error_reason).toMatch(/format renamed/i);
+        expect(out.error_reason).toMatch(/evidence/i);
+      }
     });
   }
   it('rejects unknown format with valid-values list', async () => {
     const out = await handleSearch({ query: 'x', format: 'wat' as any }, noEngines, stubRouter);
-    expect(out.error).toMatch(/unknown format/i);
-    expect(out.results).toEqual([]);
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error_reason).toMatch(/unknown format/i);
+    }
   });
 });

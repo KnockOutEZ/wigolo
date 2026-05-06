@@ -1,5 +1,9 @@
 import { getConfig } from '../config.js';
+import { createLogger } from '../logger.js';
 import { DaemonHttpServer } from '../daemon/http-server.js';
+import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
+
+const logger = createLogger('cli');
 
 function log(msg: string): void {
   process.stderr.write(`[wigolo serve] ${msg}\n`);
@@ -62,6 +66,7 @@ export function runDaemon(args: string[]): void {
     } catch (err) {
       log(`Shutdown error: ${err instanceof Error ? err.message : String(err)}`);
     }
+    await closeDaemonBrowser().catch((e) => logger.debug('closeDaemonBrowser failed', { error: e instanceof Error ? e.message : String(e) }));
     process.exit(0);
   };
 

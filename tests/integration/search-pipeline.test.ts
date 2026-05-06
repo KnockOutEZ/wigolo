@@ -57,11 +57,12 @@ describe('search pipeline integration', () => {
     const httpClient = { fetch: (url: string, opts?: any) => httpFetch(url, opts) };
     const router = new SmartRouter(httpClient, mockBrowserPool);
 
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       { query: 'test', max_results: 2, include_content: true, include_full_markdown: true },
       [engine],
       router,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toHaveLength(2);
     expect(output.results[0].markdown_content).toBeDefined();
@@ -91,11 +92,12 @@ describe('search pipeline integration', () => {
       { fetchWithBrowser: async () => { throw new Error('not implemented'); } },
     );
 
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       { query: 'test', include_content: false },
       [engine1, engine2],
       router,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toHaveLength(1);
     expect(output.results[0].relevance_score).toBe(0.8);
@@ -120,11 +122,12 @@ describe('search pipeline integration', () => {
       { fetchWithBrowser: async () => { throw new Error('not implemented'); } },
     );
 
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       { query: 'test', include_content: false },
       [failEngine, goodEngine],
       router,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toHaveLength(1);
     expect(output.results[0].title).toBe('OK');

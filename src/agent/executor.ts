@@ -1,7 +1,9 @@
 import { createLogger } from '../logger.js';
-import { deduplicateResults } from '../search/dedup.js';
+import { deduplicateResults, type MergedSearchResult } from '../search/dedup.js';
 import { extractContent } from '../extraction/pipeline.js';
 import { cacheContent } from '../cache/store.js';
+import { rerankResults } from '../search/rerank.js';
+import { getConfig } from '../config.js';
 import type { AgentPlan } from './planner.js';
 import type { AgentSource, AgentStep, SearchEngine, RawSearchResult } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
@@ -9,6 +11,110 @@ import type { SmartRouter } from '../fetch/router.js';
 const log = createLogger('agent');
 
 const FETCH_TIMEOUT_MS = 15000;
+const DEFAULT_RELEVANCE_THRESHOLD = 0.1;
+
+export interface AgentSourceLike {
+  url: string;
+  title: string;
+  body?: string;
+  snippet?: string;
+}
+
+export interface ScoreFilterOptions {
+  threshold: number;
+}
+
+export interface ExcludedSource<T extends AgentSourceLike = AgentSourceLike> {
+  source: T;
+  score: number;
+  excluded_reason: string;
+}
+
+export function agentSourcesToSearchResults(sources: AgentSourceLike[]): MergedSearchResult[] {
+  return sources.map((s) => ({
+    title: s.title,
+    url: s.url,
+    snippet: s.snippet ?? s.body ?? '',
+    relevance_score: 0,
+    engines: ['agent'],
+  }));
+}
+
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 2);
+}
+
+function tokenOverlapScore(query: string, source: AgentSourceLike): number {
+  const qTokens = new Set(tokenize(query));
+  if (qTokens.size === 0) return 0;
+  const docText = `${source.title} ${source.body ?? ''} ${source.snippet ?? ''}`;
+  const dTokens = tokenize(docText);
+  if (dTokens.length === 0) return 0;
+  let hits = 0;
+  for (const t of dTokens) {
+    if (qTokens.has(t)) hits++;
+  }
+  // Recall over query tokens: how many distinct query tokens appear in doc.
+  const distinctHits = new Set(dTokens.filter((t) => qTokens.has(t))).size;
+  const recall = distinctHits / qTokens.size;
+  // Bias toward recall; light precision component prevents trivial 1.0.
+  const precision = hits / dTokens.length;
+  return Math.min(1, recall * 0.85 + precision * 0.15);
+}
+
+export async function scoreAndFilterSources<T extends AgentSourceLike>(
+  prompt: string,
+  sources: T[],
+  opts: ScoreFilterOptions,
+): Promise<{ kept: T[]; excluded: ExcludedSource<T>[] }> {
+  if (sources.length === 0) return { kept: [], excluded: [] };
+
+  const cfg = getConfig();
+  const useReranker = cfg.reranker !== 'none';
+  const scoreByUrl = new Map<string, number>();
+
+  if (useReranker) {
+    try {
+      const merged = agentSourcesToSearchResults(sources);
+      const ranked = await rerankResults(prompt, merged, { skip: false });
+      for (const r of ranked) {
+        scoreByUrl.set(r.url, r.relevance_score);
+      }
+    } catch (err) {
+      log.warn('agent reranker failed, falling back to token overlap', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const kept: T[] = [];
+  const excluded: ExcludedSource<T>[] = [];
+
+  for (const source of sources) {
+    let score = scoreByUrl.get(source.url);
+    if (score === undefined) {
+      // rerank dropped this URL via its internal threshold, OR rerank threw and we're
+      // in the catch path — fall back to lightweight token-overlap so the source is
+      // still scored.
+      score = tokenOverlapScore(prompt, source);
+    }
+    if (score < opts.threshold) {
+      excluded.push({
+        source,
+        score,
+        excluded_reason: `below_threshold(${opts.threshold})`,
+      });
+    } else {
+      kept.push(source);
+    }
+  }
+
+  return { kept, excluded };
+}
 
 export interface ExecutionBudget {
   maxPages: number;
@@ -25,6 +131,7 @@ export async function executeAgentPlan(
   engines: SearchEngine[],
   router: SmartRouter,
   budget: ExecutionBudget,
+  prompt = '',
 ): Promise<ExecutionResult> {
   const steps: AgentStep[] = [];
   const allUrls = new Set<string>();
@@ -65,6 +172,49 @@ export async function executeAgentPlan(
       detail: `Fetched ${sources.filter((s) => s.fetched).length}/${urlsToFetch.length} pages`,
       time_ms: Date.now() - fetchStart,
     });
+
+    // Phase 4: Post-fetch relevance scoring (Bug 3 fix)
+    // Only filter when a real reranker is configured; the token-overlap
+    // fallback is too noisy to drop sources from on its own.
+    const trimmedPrompt = prompt.trim();
+    const cfg = getConfig();
+    if (trimmedPrompt.length > 0 && cfg.reranker === 'none') {
+      log.debug(
+        'agent post-fetch relevance filter disabled (reranker=none); relying on pre-fetch filter only',
+      );
+    }
+    if (trimmedPrompt.length > 0 && cfg.reranker !== 'none') {
+      const fetched = sources.filter((s) => s.fetched && s.markdown_content.length > 0);
+      const candidates: AgentSourceLike[] = fetched.map((s) => ({
+        url: s.url,
+        title: s.title,
+        body: s.markdown_content,
+      }));
+      const { kept, excluded } = await scoreAndFilterSources(
+        trimmedPrompt,
+        candidates,
+        { threshold: DEFAULT_RELEVANCE_THRESHOLD },
+      );
+
+      if (excluded.length > 0) {
+        log.info('agent post-fetch relevance filter excluded sources', {
+          excluded_count: excluded.length,
+          kept_count: kept.length,
+          excluded: excluded.map((e) => ({
+            url: e.source.url,
+            score: Number(e.score.toFixed(4)),
+            excluded_reason: e.excluded_reason,
+          })),
+        });
+      }
+
+      const keptUrls = new Set(kept.map((k) => k.url));
+      // Preserve unfetched sources (they were never candidates) plus kept fetched.
+      const filteredSources = sources.filter(
+        (s) => !s.fetched || s.markdown_content.length === 0 || keptUrls.has(s.url),
+      );
+      return { sources: filteredSources, steps };
+    }
 
     return { sources, steps };
   } catch (err) {

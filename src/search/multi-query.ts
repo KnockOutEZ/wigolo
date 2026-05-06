@@ -204,3 +204,8 @@ export function expandQueryHeuristic(query: string): string[] {
   }
   return variants;
 }
+
+export function expandIfSingle(query: string | string[]): string[] {
+  if (Array.isArray(query)) return [...query];
+  return expandQueryHeuristic(query);
+}

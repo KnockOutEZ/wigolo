@@ -4,6 +4,7 @@ import {
   requestSampling,
   checkSamplingSupport,
 } from '../search/sampling.js';
+import { preFilterCandidates } from './relevance.js';
 
 const log = createLogger('agent');
 
@@ -15,6 +16,20 @@ export interface AgentPlan {
   urls: string[];
   notes: string;
   samplingUsed: boolean;
+  excluded_urls?: { url: string; reason: 'invalid_url' | 'blocklisted_domain' }[];
+}
+
+function applyUrlFilter(urls: string[]): {
+  kept: string[];
+  excluded: { url: string; reason: 'invalid_url' | 'blocklisted_domain' }[];
+} {
+  const filtered = preFilterCandidates(urls.map((url) => ({ url })));
+  const kept = filtered.kept.map((k) => k.url);
+  const excluded = filtered.excluded.map((e) => ({ url: e.item.url, reason: e.reason }));
+  if (excluded.length > 0) {
+    log.info('agent pre-filter', { kept: kept.length, excluded: excluded.length });
+  }
+  return { kept, excluded };
 }
 
 export async function planExecution(
@@ -25,11 +40,13 @@ export async function planExecution(
   const trimmedPrompt = prompt.trim();
 
   if (!trimmedPrompt) {
+    const { kept, excluded } = applyUrlFilter(urls ?? []);
     return {
       searches: [],
-      urls: urls ?? [],
+      urls: kept,
       notes: 'Empty prompt provided',
       samplingUsed: false,
+      excluded_urls: excluded,
     };
   }
 
@@ -38,11 +55,13 @@ export async function planExecution(
       const samplingResult = await planWithSampling(trimmedPrompt, server);
       if (samplingResult) {
         const mergedUrls = mergeUrls(samplingResult.urls, urls ?? []);
+        const { kept, excluded } = applyUrlFilter(mergedUrls);
         return {
           searches: samplingResult.searches,
-          urls: mergedUrls,
+          urls: kept,
           notes: samplingResult.notes,
           samplingUsed: true,
+          excluded_urls: excluded,
         };
       }
     } catch (err) {
@@ -54,12 +73,14 @@ export async function planExecution(
 
   const fallback = planWithFallback(trimmedPrompt);
   const mergedUrls = mergeUrls(fallback.urls, urls ?? []);
+  const { kept, excluded } = applyUrlFilter(mergedUrls);
 
   return {
     searches: fallback.searches,
-    urls: mergedUrls,
+    urls: kept,
     notes: fallback.notes,
     samplingUsed: false,
+    excluded_urls: excluded,
   };
 }
 

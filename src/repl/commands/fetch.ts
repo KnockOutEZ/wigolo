@@ -41,7 +41,20 @@ export async function executeFetch(args: ParsedArgs, deps: ReplDeps): Promise<Fe
     }
 
     log.debug('executing fetch command', { url, flags: args.flags });
-    return await handleFetch(input, deps.router);
+    const r = await handleFetch(input, deps.router);
+    if (!r.ok) {
+      return {
+        url,
+        title: '',
+        markdown: '',
+        metadata: {},
+        links: [],
+        images: [],
+        cached: false,
+        error: r.error_reason,
+      };
+    }
+    return r.data;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error('fetch command failed', { error: msg });

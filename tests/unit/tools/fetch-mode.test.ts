@@ -42,8 +42,8 @@ describe('fetch mode validation', () => {
   it('rejects unknown mode', async () => {
     const router = { fetch: vi.fn() } as unknown as SmartRouter;
     await expect(
-      handleFetch({ url: 'https://example.com', mode: 'turbo' as 'fast' }, router),
-    ).rejects.toThrow(/mode.*fast.*balanced.*deep/i);
+      handleFetch({ url: 'https://example.com', mode: 'turbo' as 'cache' }, router),
+    ).rejects.toThrow(/Invalid mode/i);
   });
 });
 
@@ -51,42 +51,15 @@ describe('fetch mode=fast', () => {
   beforeEach(() => { initDatabase(':memory:'); resetConfig(); });
   afterEach(() => { closeDatabase(); resetConfig(); });
 
-  it('passes mode=fast and renderJs=never to the router', async () => {
-    const router = {
-      fetch: vi.fn().mockResolvedValue({
-        url: 'https://example.com/',
-        finalUrl: 'https://example.com/',
-        html: '<html><body><p>hello world</p></body></html>',
-        contentType: 'text/html',
-        statusCode: 200,
-        method: 'http',
-        headers: {},
-      }),
-    } as unknown as SmartRouter;
+  it('returns cache_miss without calling router when mode=fast and url not cached', async () => {
+    const router = { fetch: vi.fn() } as unknown as SmartRouter;
 
-    await handleFetch({ url: 'https://example.com/', mode: 'fast' }, router);
+    const __r_out = await handleFetch({ url: 'https://example.com/', mode: 'fast' }, router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
 
-    expect(router.fetch).toHaveBeenCalledWith(
-      'https://example.com/',
-      expect.objectContaining({ mode: 'fast', renderJs: 'never' }),
-    );
-  });
-
-  it('surfaces js_required when the router marks the raw result as a JS shell', async () => {
-    const router = {
-      fetch: vi.fn().mockResolvedValue({
-        url: 'https://spa.test/',
-        finalUrl: 'https://spa.test/',
-        html: '<div id="root"></div>',
-        contentType: 'text/html',
-        statusCode: 200,
-        method: 'http',
-        headers: {},
-        jsRequired: true,
-      }),
-    } as unknown as SmartRouter;
-    const out = await handleFetch({ url: 'https://spa.test/', mode: 'fast' }, router);
-    expect(out.js_required).toBe(true);
+    expect(router.fetch).not.toHaveBeenCalled();
+    expect((out as any).error).toBe('cache_miss');
+    expect((out as any).stage).toBe('fetch');
   });
 
   it('serves stale cache (within 24h window) without calling router and marks stale=true', async () => {
@@ -94,7 +67,8 @@ describe('fetch mode=fast', () => {
     expireCacheRow();
 
     const router = { fetch: vi.fn() } as unknown as SmartRouter;
-    const out = await handleFetch({ url: 'https://stale.test/', mode: 'fast' }, router);
+    const __r_out = await handleFetch({ url: 'https://stale.test/', mode: 'fast' }, router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
 
     expect(router.fetch).not.toHaveBeenCalled();
     expect(out.cached).toBe(true);
@@ -118,10 +92,34 @@ describe('fetch mode=fast', () => {
       }),
     } as unknown as SmartRouter;
 
-    const out = await handleFetch({ url: 'https://stale.test/', mode: 'balanced' }, router);
+    const __r_out = await handleFetch({ url: 'https://stale.test/', mode: 'balanced' }, router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
 
     expect(router.fetch).toHaveBeenCalledTimes(1);
     expect(out.cached).toBe(false);
     expect(out.stale).toBeUndefined();
+  });
+});
+
+describe('fetch js_required handling', () => {
+  beforeEach(() => { initDatabase(':memory:'); resetConfig(); });
+  afterEach(() => { closeDatabase(); resetConfig(); });
+
+  it('surfaces js_required when the router marks the raw result as a JS shell', async () => {
+    const router = {
+      fetch: vi.fn().mockResolvedValue({
+        url: 'https://spa.test/',
+        finalUrl: 'https://spa.test/',
+        html: '<div id="root"></div>',
+        contentType: 'text/html',
+        statusCode: 200,
+        method: 'http',
+        headers: {},
+        jsRequired: true,
+      }),
+    } as unknown as SmartRouter;
+    const __r_out = await handleFetch({ url: 'https://spa.test/' }, router);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
+    expect(out.js_required).toBe(true);
   });
 });

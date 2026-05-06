@@ -55,7 +55,7 @@ export async function runAgentPipeline(
     const execResult = await executeAgentPlan(plan, engines, router, {
       maxPages,
       deadlineMs,
-    });
+    }, input.prompt);
 
     steps.push(...execResult.steps);
 

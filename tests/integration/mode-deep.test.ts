@@ -75,11 +75,12 @@ describe('search mode=deep — query expansion', () => {
         })) satisfies RawSearchResult[],
       ),
     };
-    const out = await handleSearch(
+    const __r_out = await handleSearch(
       { query: 'topic', mode: 'deep', max_results: 10, include_full_markdown: true },
       [engine],
       router,
-    );
+    );;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(router.fetch).toHaveBeenCalled();
     // K cap: at most 5 fetches even though 8 candidates exist (max_results=10)
     expect((router.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(5);

@@ -33,16 +33,19 @@ describe('handleSearch — warning injection', () => {
   it('attaches warning once when BackendStatus is unhealthy', async () => {
     const status = new BackendStatus();
     status.markUnhealthy('test reason');
-    const r1 = await handleSearch({ query: 'x', include_content: false }, [stubEngine], fakeRouter, status);
+    const __r_r1 = await handleSearch({ query: 'x', include_content: false }, [stubEngine], fakeRouter, status);;
+    const r1 = __r_r1.ok ? __r_r1.data : ({ ...__r_r1 } as any);
     expect(r1.warning).toContain('test reason');
-    const r2 = await handleSearch({ query: 'y', include_content: false }, [stubEngine], fakeRouter, status);
+    const __r_r2 = await handleSearch({ query: 'y', include_content: false }, [stubEngine], fakeRouter, status);;
+    const r2 = __r_r2.ok ? __r_r2.data : ({ ...__r_r2 } as any);
     expect(r2.warning).toBeUndefined();
   });
 
   it('does not attach warning when healthy', async () => {
     const status = new BackendStatus();
     status.markHealthy();
-    const r = await handleSearch({ query: 'x', include_content: false }, [stubEngine], fakeRouter, status);
+    const __r_r = await handleSearch({ query: 'x', include_content: false }, [stubEngine], fakeRouter, status);;
+    const r = __r_r.ok ? __r_r.data : ({ ...__r_r } as any);
     expect(r.warning).toBeUndefined();
   });
 });

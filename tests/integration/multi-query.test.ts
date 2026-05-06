@@ -86,7 +86,8 @@ describe('Multi-query integration', () => {
       include_full_markdown: true,
     };
 
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.queries_executed).toEqual(['react hooks', 'vue composition api']);
 
@@ -109,7 +110,8 @@ describe('Multi-query integration', () => {
       include_content: false,
     };
 
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.queries_executed).toBeUndefined();
     expect(output.query).toBe('simple test');
@@ -131,7 +133,8 @@ describe('Multi-query integration', () => {
       include_content: false,
     };
 
-    const output = await handleSearch(input, [engine], mockRouter);
+    const __r_output = await handleSearch(input, [engine], mockRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.queries_executed!.length).toBeLessThanOrEqual(2);
 

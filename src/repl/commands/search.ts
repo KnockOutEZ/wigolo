@@ -53,7 +53,17 @@ export async function executeSearch(args: ParsedArgs, deps: ReplDeps): Promise<S
     }
 
     log.debug('executing search command', { query, flags: args.flags });
-    return await handleSearch(input, deps.engines, deps.router, deps.backendStatus);
+    const r = await handleSearch(input, deps.engines, deps.router, deps.backendStatus);
+    if (!r.ok) {
+      return {
+        results: [],
+        query,
+        engines_used: [],
+        total_time_ms: 0,
+        error: r.error_reason,
+      };
+    }
+    return r.data;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error('search command failed', { error: msg });

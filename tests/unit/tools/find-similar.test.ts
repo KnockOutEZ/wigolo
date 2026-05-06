@@ -64,20 +64,22 @@ describe('handleFindSimilar', () => {
   });
 
   it('returns error when neither url nor concept provided', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       {} as FindSimilarInput,
       [mockEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
     expect(result.error).toBeDefined();
   });
 
   it('returns FindSimilarOutput shape for concept input', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: 'React hooks' },
       [mockEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result).toHaveProperty('results');
     expect(result).toHaveProperty('method');
@@ -89,11 +91,12 @@ describe('handleFindSimilar', () => {
   });
 
   it('returns FindSimilarOutput shape for url input', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { url: 'https://example.com/page' },
       [mockEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result).toHaveProperty('results');
     expect(result).toHaveProperty('method');
@@ -101,17 +104,18 @@ describe('handleFindSimilar', () => {
   });
 
   it('passes through max_results to pipeline', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: 'test', max_results: 2, include_web: false },
       [mockEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.results.length).toBeLessThanOrEqual(2);
   });
 
   it('passes through domain filters to pipeline', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       {
         concept: 'test',
         include_domains: ['example.com'],
@@ -119,7 +123,8 @@ describe('handleFindSimilar', () => {
       },
       [mockEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result).toHaveProperty('results');
   });
@@ -134,82 +139,94 @@ describe('handleFindSimilar', () => {
       search: vi.fn().mockRejectedValue(new Error('engine down')),
     };
 
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: 'test', include_web: true },
       [failEngine],
       failRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result).toHaveProperty('results');
     expect(result).toHaveProperty('method');
   });
 
   it('returns embedding_available as false (no embedding engine yet)', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: 'test' },
       [mockEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.embedding_available).toBe(false);
   });
 
   it('validates input: concept must be non-empty string', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: '' },
       [mockEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
   });
 
   it('validates input: url must be non-empty string', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { url: '' },
       [mockEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.error).toBeDefined();
   });
 
   it('validates input: url must be valid URL format', async () => {
-    const result = await handleFindSimilar(
+    const r = await handleFindSimilar(
       { url: 'not-a-url' },
       [mockEngine],
       mockRouter,
     );
-
-    expect(result).toHaveProperty('results');
+    // With an invalid URL, the handler still returns either a successful
+    // empty result set or a structured StageError — never throws.
+    if (r.ok) {
+      expect(r.data).toHaveProperty('results');
+    } else {
+      expect(r.error).toBeDefined();
+    }
   });
 
   it('max_results is capped at 50', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: 'test', max_results: 1000 },
       [mockEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.results.length).toBeLessThanOrEqual(50);
   });
 
   it('max_results defaults to 10 when not specified', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: 'test', include_web: false },
       [mockEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.results.length).toBeLessThanOrEqual(10);
   });
 
   it('returns valid FindSimilarResult items with all required fields', async () => {
-    const result = await handleFindSimilar(
+    const __r_result = await handleFindSimilar(
       { concept: 'test', include_web: true },
       [mockEngine],
       mockRouter,
-    );
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     for (const item of result.results) {
       expect(item).toHaveProperty('url');
@@ -252,11 +269,12 @@ describe('handleFindSimilar', () => {
         },
       );
 
-      const result = await handleFindSimilar(
+      const __r_result = await handleFindSimilar(
         { concept: 'React Hooks', include_web: false },
         [mockEngine],
         mockRouter,
-      );
+      );;
+      const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
       expect(result.evidence).toBeDefined();
       expect(result.evidence!.length).toBeGreaterThan(0);
@@ -295,15 +313,82 @@ describe('handleFindSimilar', () => {
         },
       );
 
-      const result = await handleFindSimilar(
+      const __r_result = await handleFindSimilar(
         { concept: 'React Hooks', include_web: false, include_full_markdown: true },
         [mockEngine],
         mockRouter,
-      );
+      );;
+      const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
       expect(result.evidence).toBeDefined();
       const hasFullMarkdown = result.results.some((r) => r.markdown.length > 0);
       expect(hasFullMarkdown).toBe(true);
+    });
+  });
+
+  describe('cold start auto-seed', () => {
+    it('seeds cache via search and returns cache_seeded:true when domain has < 5 cached URLs', async () => {
+      const store = await import('../../../src/cache/store.js');
+      const search = await import('../../../src/tools/search.js');
+      vi.spyOn(store, 'countCachedUrlsForDomain').mockReturnValue(2);
+      const handleSearchSpy = vi.spyOn(search, 'handleSearch').mockResolvedValue({
+        results: [
+          { url: 'https://a.example.com/1', title: 'A', snippet: 'aa', relevance_score: 1, engines: ['mock'] },
+          { url: 'https://b.example.com/2', title: 'B', snippet: 'bb', relevance_score: 0.9, engines: ['mock'] },
+          { url: 'https://c.example.com/3', title: 'C', snippet: 'cc', relevance_score: 0.8, engines: ['mock'] },
+        ],
+        query: 'seed',
+        engines_used: ['mock'],
+        total_time_ms: 10,
+      });
+
+      const __r_out = await handleFindSimilar(
+        { url: 'https://example.com/post-title' },
+        [mockEngine],
+        mockRouter,
+      );;
+      const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
+
+      const seedCall = handleSearchSpy.mock.calls.find(
+        (c) => (c[0] as { query?: string }).query === 'post title example',
+      );
+      expect(seedCall).toBeDefined();
+      expect(out.cache_seeded).toBe(true);
+    });
+
+    it('does NOT seed when domain has >= 5 cached URLs', async () => {
+      const store = await import('../../../src/cache/store.js');
+      const search = await import('../../../src/tools/search.js');
+      vi.spyOn(store, 'countCachedUrlsForDomain').mockReturnValue(7);
+      const handleSearchSpy = vi.spyOn(search, 'handleSearch');
+
+      const __r_out = await handleFindSimilar(
+        { url: 'https://example.com/post-title' },
+        [mockEngine],
+        mockRouter,
+      );;
+      const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
+
+      const seedCall = handleSearchSpy.mock.calls.find(
+        (c) => (c[0] as { query?: string }).query === 'post title example',
+      );
+      expect(seedCall).toBeUndefined();
+      expect(out.cache_seeded).toBeUndefined();
+    });
+
+    it('does NOT seed when only concept is provided (no url)', async () => {
+      const store = await import('../../../src/cache/store.js');
+      const countSpy = vi.spyOn(store, 'countCachedUrlsForDomain');
+
+      const __r_out = await handleFindSimilar(
+        { concept: 'react hooks' },
+        [mockEngine],
+        mockRouter,
+      );;
+      const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
+
+      expect(countSpy).not.toHaveBeenCalled();
+      expect(out.cache_seeded).toBeUndefined();
     });
   });
 
@@ -321,9 +406,11 @@ describe('handleFindSimilar', () => {
       ),
     ]);
 
-    for (const result of results) {
-      expect(result).toHaveProperty('results');
-      expect(result.error).toBeUndefined();
+    for (const r of results) {
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.data).toHaveProperty('results');
+      }
     }
   });
 });

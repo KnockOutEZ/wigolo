@@ -139,7 +139,8 @@ describe('max_tokens_out budget', () => {
 
   it('search output never exceeds budget (sum of evidence excerpts + answer + warnings)', async () => {
     const input: SearchInput = { query: 'rust async', max_tokens_out: 500 };
-    const out = await handleSearch(input, [stubEngine], stubRouter);
+    const __r_out = await handleSearch(input, [stubEngine], stubRouter);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     const all = JSON.stringify(out);
     expect(countTokens(all)).toBeLessThanOrEqual(500 + TOLERANCE);
   });
@@ -151,7 +152,8 @@ describe('max_tokens_out budget', () => {
       max_chars: 1_000_000,
       max_tokens_out: 200,
     };
-    const out = await handleFetch(input, stubRouter);
+    const __r_out = await handleFetch(input, stubRouter);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(countTokens(out.markdown ?? '')).toBeLessThanOrEqual(200 + TOLERANCE);
   });
 
@@ -161,7 +163,8 @@ describe('max_tokens_out budget', () => {
       max_tokens_out: 400,
       include_full_markdown: true,
     };
-    const out = await handleSearch(input, [stubEngine], stubRouter);
+    const __r_out = await handleSearch(input, [stubEngine], stubRouter);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     let perItemSum = 0;
     for (const r of out.results) {
       if (r.markdown_content) {
@@ -179,7 +182,8 @@ describe('max_tokens_out budget', () => {
       max_tokens_out: 400,
       include_full_markdown: true,
     };
-    const out = await handleSearch(input, [stubEngine], stubRouter);
+    const __r_out = await handleSearch(input, [stubEngine], stubRouter);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     const total = out.results.reduce(
       (s, r) => s + (r.markdown_content ? countTokens(r.markdown_content) : 0),
       0,
@@ -213,7 +217,8 @@ describe('max_tokens_out budget', () => {
       max_tokens_out: 300,
       include_full_markdown: true,
     };
-    const out = await handleFindSimilar(input, [stubEngine], stubRouter);
+    const __r_out = await handleFindSimilar(input, [stubEngine], stubRouter);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     let total = 0;
     for (const r of out.results) {
       if (r.markdown) total += countTokens(r.markdown);
@@ -227,7 +232,8 @@ describe('max_tokens_out budget', () => {
       depth: 'quick',
       max_tokens_out: 250,
     };
-    const out = await handleResearch(input, [stubEngine], stubRouter);
+    const __r_out = await handleResearch(input, [stubEngine], stubRouter);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(countTokens(out.report ?? '')).toBeLessThanOrEqual(250 + TOLERANCE);
   });
 
@@ -237,7 +243,8 @@ describe('max_tokens_out budget', () => {
       max_pages: 2,
       max_tokens_out: 200,
     };
-    const out = await handleAgent(input, [stubEngine], stubRouter);
+    const __r_out = await handleAgent(input, [stubEngine], stubRouter);;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     const text = typeof out.result === 'string' ? out.result : JSON.stringify(out.result);
     expect(countTokens(text)).toBeLessThanOrEqual(200 + TOLERANCE);
   });

@@ -1,7 +1,21 @@
 import type { JsonSchema } from './extraction/schema.js';
 
-export type Mode = 'fast' | 'balanced' | 'deep';
-export const MODES: readonly Mode[] = ['fast', 'balanced', 'deep'] as const;
+export type Mode = 'cache' | 'default' | 'stealth';
+export const MODES: readonly Mode[] = ['cache', 'default', 'stealth'] as const;
+
+export type DeprecatedMode = 'fast' | 'balanced' | 'deep';
+export const DEPRECATED_MODES: readonly DeprecatedMode[] = ['fast', 'balanced', 'deep'] as const;
+
+export interface StageError {
+  error: string;
+  error_reason: string;
+  stage: string;
+  hint?: string;
+}
+
+export type StageResult<T> =
+  | { ok: true; data: T }
+  | ({ ok: false } & StageError);
 
 export type BrowserAction =
   | { type: 'click'; selector: string }
@@ -79,6 +93,7 @@ export interface RawFetchResult {
   screenshot?: string;
   actionResults?: ActionResult[];
   jsRequired?: boolean;
+  escalated?: boolean;
 }
 
 export interface ExtractionResult {
@@ -479,6 +494,7 @@ export interface ExtractInput {
   css_selector?: string;
   multiple?: boolean;
   schema?: JsonSchema;
+  execution_mode?: Mode;
 }
 
 export interface MetadataData {
@@ -570,6 +586,7 @@ export interface FindSimilarOutput {
   search_hits: number;
   embedding_available: boolean;
   cold_start?: string;
+  cache_seeded?: boolean;
   error?: string;
   total_time_ms: number;
   evidence?: EvidenceItem[];

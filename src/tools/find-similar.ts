@@ -3,6 +3,7 @@ import type {
   FindSimilarOutput,
   SearchEngine,
   EvidenceItem,
+  StageResult,
 } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import type { BackendStatus } from '../server/backend-status.js';
@@ -12,6 +13,8 @@ import {
   applyTokenBudget,
   applyAggregateMarkdownBudget,
 } from '../search/evidence.js';
+import * as cacheStore from '../cache/store.js';
+import * as searchTool from './search.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('search');
@@ -24,20 +27,17 @@ export async function handleFindSimilar(
   engines: SearchEngine[],
   router: SmartRouter,
   backendStatus?: BackendStatus,
-): Promise<FindSimilarOutput> {
+): Promise<StageResult<FindSimilarOutput>> {
   try {
     const url = input.url?.trim();
     const concept = input.concept?.trim();
 
     if (!url && !concept) {
       return {
-        results: [],
-        method: 'fts5',
-        cache_hits: 0,
-        search_hits: 0,
-        embedding_available: false,
-        error: 'Either url or concept must be provided',
-        total_time_ms: 0,
+        ok: false,
+        error: 'invalid_input',
+        error_reason: 'Either url or concept must be provided',
+        stage: 'find_similar',
       };
     }
 
@@ -56,19 +56,63 @@ export async function handleFindSimilar(
       includeWeb: sanitizedInput.include_web,
     });
 
+    let cacheSeeded = false;
+    if (url) {
+      try {
+        const u = new URL(url);
+        const host = u.hostname;
+        const cachedCount = cacheStore.countCachedUrlsForDomain(host);
+        if (cachedCount < 5) {
+          const rawSeg = u.pathname.split('/').filter(Boolean).pop() ?? '';
+          let lastSeg = rawSeg;
+          try { lastSeg = decodeURIComponent(rawSeg); } catch { /* leave raw */ }
+          const seedQuery = (
+            lastSeg.replace(/[-_]/g, ' ') +
+            ' ' +
+            host.replace(/^www\./, '').split('.')[0]
+          ).trim();
+          if (seedQuery.length > 0) {
+            try {
+              await searchTool.handleSearch(
+                { query: seedQuery },
+                engines,
+                router,
+                backendStatus,
+              );
+              cacheSeeded = true;
+            } catch (seedErr) {
+              log.warn('find_similar cold-start seed failed', {
+                error: seedErr instanceof Error ? seedErr.message : String(seedErr),
+              });
+            }
+          }
+        }
+      } catch (parseErr) {
+        log.warn('find_similar cold-start url parse failed', {
+          error: parseErr instanceof Error ? parseErr.message : String(parseErr),
+        });
+      }
+    }
+
     const out = await findSimilar(sanitizedInput, engines, router, backendStatus);
     await attachEvidence(out, input);
-    return out;
+    if (cacheSeeded) out.cache_seeded = true;
+    if (out.error) {
+      return {
+        ok: false,
+        error: out.error,
+        error_reason: out.error,
+        stage: 'find_similar',
+      };
+    }
+    return { ok: true, data: out };
   } catch (err) {
     log.error('handleFindSimilar failed', { error: String(err) });
     return {
-      results: [],
-      method: 'fts5',
-      cache_hits: 0,
-      search_hits: 0,
-      embedding_available: false,
-      error: `find_similar handler error: ${err instanceof Error ? err.message : String(err)}`,
-      total_time_ms: 0,
+      ok: false,
+      error: 'find_similar_failed',
+      error_reason: `find_similar handler error: ${err instanceof Error ? err.message : String(err)}`,
+      stage: 'find_similar',
     };
   }
 }

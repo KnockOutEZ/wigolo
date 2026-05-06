@@ -77,8 +77,10 @@ describe('citation_id stability across pagination', () => {
   });
 
   it('same url + offset produces same citation_id when re-queried', async () => {
-    const a = await handleSearch({ query: 'rust async', max_results: 10 }, fakeEngines(), fakeRouter());
-    const b = await handleSearch({ query: 'rust async', max_results: 5 }, fakeEngines(), fakeRouter());
+    const __r_a = await handleSearch({ query: 'rust async', max_results: 10 }, fakeEngines(), fakeRouter());;
+    const a = __r_a.ok ? __r_a.data : ({ ...__r_a } as any);
+    const __r_b = await handleSearch({ query: 'rust async', max_results: 5 }, fakeEngines(), fakeRouter());;
+    const b = __r_b.ok ? __r_b.data : ({ ...__r_b } as any);
     const aById = new Map((a.evidence ?? []).map((e) => [e.citation_id, e]));
     let overlapCount = 0;
     for (const ev of b.evidence ?? []) {

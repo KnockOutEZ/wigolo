@@ -13,8 +13,8 @@ describe('search mode validation', () => {
   it('rejects unknown mode with a clear message', async () => {
     const router = { fetch: vi.fn() } as unknown as SmartRouter;
     await expect(
-      handleSearch({ query: 'x', mode: 'turbo' as 'fast' }, [], router),
-    ).rejects.toThrow(/mode.*fast.*balanced.*deep/i);
+      handleSearch({ query: 'x', mode: 'turbo' as 'cache' }, [], router),
+    ).rejects.toThrow(/Invalid mode/i);
   });
 });
 
@@ -48,11 +48,12 @@ describe('search mode=fast', () => {
     const rerankSpy = vi.spyOn(rerankMod, 'rerankResults');
     const router = { fetch: vi.fn() } as unknown as SmartRouter;
 
-    const out = await handleSearch(
+    const __r_out = await handleSearch(
       { query: 'hello', mode: 'fast', include_content: false },
       engines,
       router,
-    );
+    );;
+    const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(new Set(calls).size).toBe(1);
     if (rerankSpy.mock.calls.length > 0) {
       const opts = rerankSpy.mock.calls[0][2] as { skip?: boolean } | undefined;

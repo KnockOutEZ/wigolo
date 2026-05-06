@@ -67,7 +67,7 @@ describe('search filtering pipeline integration', () => {
       ]),
     };
 
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       {
         query: 'react hooks tutorial',
         include_domains: ['react.dev', 'github.com'],
@@ -77,7 +77,8 @@ describe('search filtering pipeline integration', () => {
       },
       [searxngEngine, ddgEngine],
       mockRouter,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     // After dedup: react.dev/learn merged, ~7 unique URLs
     // After domain filter (react.dev, github.com): react.dev/learn, react.dev/blog, github.com/facebook/react
@@ -114,7 +115,7 @@ describe('search filtering pipeline integration', () => {
       ]),
     };
 
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       {
         query: 'react',
         exclude_domains: ['medium.com'],
@@ -122,7 +123,8 @@ describe('search filtering pipeline integration', () => {
       },
       [engine],
       mockRouter,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toHaveLength(2);
     expect(output.results.every(r => !r.url.includes('medium.com'))).toBe(true);
@@ -138,7 +140,7 @@ describe('search filtering pipeline integration', () => {
       ]),
     };
 
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       {
         query: 'react hooks',
         include_domains: ['react.dev'],
@@ -148,7 +150,8 @@ describe('search filtering pipeline integration', () => {
       },
       [engine],
       mockRouter,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     // Domain filter: docs.react.dev and blog.react.dev match react.dev
     // Date filter: best-effort pass-through (all kept)
@@ -174,11 +177,12 @@ describe('search filtering pipeline integration', () => {
       ]),
     };
 
-    const output = await handleSearch(
+    const __r_output = await handleSearch(
       { query: 'react', include_content: false },
       [engine],
       mockRouter,
-    );
+    );;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
     expect(output.results).toHaveLength(3);
   });
