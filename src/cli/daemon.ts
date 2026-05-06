@@ -1,5 +1,6 @@
 import { getConfig } from '../config.js';
 import { DaemonHttpServer } from '../daemon/http-server.js';
+import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
 
 function log(msg: string): void {
   process.stderr.write(`[wigolo serve] ${msg}\n`);
@@ -62,6 +63,7 @@ export function runDaemon(args: string[]): void {
     } catch (err) {
       log(`Shutdown error: ${err instanceof Error ? err.message : String(err)}`);
     }
+    await closeDaemonBrowser().catch(() => {});
     process.exit(0);
   };
 

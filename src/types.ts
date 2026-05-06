@@ -93,6 +93,7 @@ export interface RawFetchResult {
   screenshot?: string;
   actionResults?: ActionResult[];
   jsRequired?: boolean;
+  escalated?: boolean;
 }
 
 export interface ExtractionResult {

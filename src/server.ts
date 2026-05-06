@@ -9,6 +9,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { SmartRouter, type HttpClient } from './fetch/router.js';
 import { MultiBrowserPool } from './fetch/browser-pool.js';
+import { closeDaemonBrowser } from './fetch/playwright-tier.js';
 import { httpFetch } from './fetch/http-client.js';
 import { initDatabase, closeDatabase } from './cache/db.js';
 import { handleFetch } from './tools/fetch.js';
@@ -239,6 +240,7 @@ export async function initSubsystems(): Promise<Subsystems> {
     if (searxngProcess) await searxngProcess.stop();
     if (dockerSearxng) await dockerSearxng.stop();
     await browserPool.shutdown();
+    await closeDaemonBrowser().catch(() => {});
     resetEmbeddingService();
     closeDatabase();
   }
