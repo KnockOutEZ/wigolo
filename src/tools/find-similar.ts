@@ -65,7 +65,9 @@ export async function handleFindSimilar(
         const host = u.hostname;
         const cachedCount = cacheStore.countCachedUrlsForDomain(host);
         if (cachedCount < 5) {
-          const lastSeg = u.pathname.split('/').filter(Boolean).pop() ?? '';
+          const rawSeg = u.pathname.split('/').filter(Boolean).pop() ?? '';
+          let lastSeg = rawSeg;
+          try { lastSeg = decodeURIComponent(rawSeg); } catch { /* leave raw */ }
           const seedQuery = (
             lastSeg.replace(/[-_]/g, ' ') +
             ' ' +

@@ -339,6 +339,9 @@ export function clearCacheEntries(options: {
   return result.changes;
 }
 
+// Counts cached URLs for an exact host (apex scoping — `blog.example.com`
+// and `example.com` are NOT collapsed). Leading `www.` is stripped to align
+// with normalizeUrl.
 export function countCachedUrlsForDomain(domain: string): number {
   const db = getDatabase();
   const normalized = domain.toLowerCase().replace(/^www\./, '');
