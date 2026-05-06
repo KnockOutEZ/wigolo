@@ -28,22 +28,34 @@ export function shouldEscalate(body: string): boolean {
 
 let _browser: Browser | null = null;
 let _ctx: BrowserContext | null = null;
+let _launching: Promise<{ browser: Browser; context: BrowserContext }> | null = null;
 
 export async function getDaemonBrowser(): Promise<{ browser: Browser; context: BrowserContext }> {
   if (_browser && _ctx) return { browser: _browser, context: _ctx };
-  const status = await detectPlaywrightInstall();
-  if (!status.installed) {
-    const err = new Error('playwright_not_installed') as Error & { hint?: string };
-    err.hint = status.hint;
-    throw err;
-  }
-  _browser = await chromium.launch({ headless: true });
-  _ctx = await _browser.newContext();
-  log.info('Playwright daemon browser launched');
-  return { browser: _browser, context: _ctx };
+  if (_launching) return _launching;
+  _launching = (async () => {
+    try {
+      const status = await detectPlaywrightInstall();
+      if (!status.installed) {
+        const err = new Error('playwright_not_installed') as Error & { hint?: string };
+        err.hint = status.hint;
+        throw err;
+      }
+      const browser = await chromium.launch({ headless: true });
+      const context = await browser.newContext();
+      _browser = browser;
+      _ctx = context;
+      log.info('Playwright daemon browser launched');
+      return { browser, context };
+    } finally {
+      _launching = null;
+    }
+  })();
+  return _launching;
 }
 
 export async function closeDaemonBrowser(): Promise<void> {
+  _launching = null;
   if (_ctx) { await _ctx.close(); _ctx = null; }
   if (_browser) { await _browser.close(); _browser = null; }
 }
