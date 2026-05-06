@@ -240,7 +240,7 @@ export async function initSubsystems(): Promise<Subsystems> {
     if (searxngProcess) await searxngProcess.stop();
     if (dockerSearxng) await dockerSearxng.stop();
     await browserPool.shutdown();
-    await closeDaemonBrowser().catch(() => {});
+    await closeDaemonBrowser().catch((e) => log.debug('closeDaemonBrowser failed', { error: e instanceof Error ? e.message : String(e) }));
     resetEmbeddingService();
     closeDatabase();
   }

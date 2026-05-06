@@ -84,6 +84,9 @@ export class SmartRouter {
         'playwrightFetcher' in httpClientOrOptions)
     ) {
       const opts = httpClientOrOptions as SmartRouterOptions;
+      if (!opts.httpFetcher && !opts.httpClient) {
+        throw new Error('SmartRouter: must provide either httpFetcher or httpClient in options');
+      }
       this.httpClient = opts.httpClient;
       this.browserPool = opts.browserPool;
       this.httpFetcher = opts.httpFetcher ?? this.makeDefaultHttpFetcher();
@@ -157,7 +160,12 @@ export class SmartRouter {
             hint,
           };
         }
-        throw err;
+        return {
+          error: 'playwright_fetch_failed',
+          error_reason: err instanceof Error ? err.message : String(err),
+          stage: 'fetch',
+          hint: 'Stealth fetch failed; check network or retry',
+        };
       }
     }
 
