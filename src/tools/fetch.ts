@@ -87,7 +87,7 @@ export async function handleFetch(
     if (!input.force_refresh) {
       const cached = getCachedContent(input.url);
       if (cached && (!input.actions || input.actions.length === 0)) {
-        const staleMaxSeconds = mode === 'fast' ? getConfig().fastStaleMaxHours * 3600 : 0;
+        const staleMaxSeconds = mode === 'cache' ? getConfig().fastStaleMaxHours * 3600 : 0;
         const { usable, stale } = isCacheUsable(cached, { staleMaxSeconds });
         if (usable) {
           log.info('Serving from cache', { url: input.url, stale });
@@ -101,7 +101,7 @@ export async function handleFetch(
     }
 
     const raw = await router.fetch(input.url, {
-      renderJs: mode === 'fast' ? 'never' : (input.render_js ?? 'auto'),
+      renderJs: mode === 'cache' ? 'never' : (input.render_js ?? 'auto'),
       useAuth: input.use_auth ?? false,
       headers: input.headers,
       screenshot: input.screenshot,

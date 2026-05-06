@@ -42,8 +42,8 @@ describe('fetch mode validation', () => {
   it('rejects unknown mode', async () => {
     const router = { fetch: vi.fn() } as unknown as SmartRouter;
     await expect(
-      handleFetch({ url: 'https://example.com', mode: 'turbo' as 'fast' }, router),
-    ).rejects.toThrow(/mode.*fast.*balanced.*deep/i);
+      handleFetch({ url: 'https://example.com', mode: 'turbo' as 'cache' }, router),
+    ).rejects.toThrow(/Invalid mode/i);
   });
 });
 
@@ -68,7 +68,7 @@ describe('fetch mode=fast', () => {
 
     expect(router.fetch).toHaveBeenCalledWith(
       'https://example.com/',
-      expect.objectContaining({ mode: 'fast', renderJs: 'never' }),
+      expect.objectContaining({ mode: 'cache', renderJs: 'never' }),
     );
   });
 

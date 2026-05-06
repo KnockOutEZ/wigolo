@@ -1,29 +1,29 @@
-import { describe, it, expect } from 'vitest';
-import { assertMode, resolveMode } from '../../../src/util/mode.js';
-
-describe('assertMode', () => {
-  it('accepts undefined and the three valid modes', () => {
-    expect(() => assertMode(undefined)).not.toThrow();
-    for (const m of ['fast', 'balanced', 'deep']) {
-      expect(() => assertMode(m)).not.toThrow();
-    }
-  });
-  it('rejects unknown values with a message listing valid ones', () => {
-    expect(() => assertMode('turbo')).toThrow(/fast.*balanced.*deep/);
-    expect(() => assertMode(42)).toThrow();
-    expect(() => assertMode(null)).toThrow();
-  });
-});
+import { describe, it, expect, vi } from 'vitest';
+import { resolveMode } from '../../../src/util/mode.js';
 
 describe('resolveMode', () => {
-  it('returns balanced for undefined', () => {
-    expect(resolveMode(undefined)).toBe('balanced');
+  it('defaults to "default" when value is undefined', () => {
+    expect(resolveMode(undefined)).toBe('default');
   });
-  it('returns the value for valid modes', () => {
-    expect(resolveMode('fast')).toBe('fast');
-    expect(resolveMode('deep')).toBe('deep');
+
+  it('passes through "cache", "default", "stealth"', () => {
+    expect(resolveMode('cache')).toBe('cache');
+    expect(resolveMode('default')).toBe('default');
+    expect(resolveMode('stealth')).toBe('stealth');
   });
-  it('throws for invalid', () => {
-    expect(() => resolveMode('x')).toThrow();
+
+  it('aliases deprecated "fast" → "cache" with a warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(resolveMode('fast')).toBe('cache');
+    warn.mockRestore();
+  });
+
+  it('aliases deprecated "balanced" and "deep" → "default"', () => {
+    expect(resolveMode('balanced')).toBe('default');
+    expect(resolveMode('deep')).toBe('default');
+  });
+
+  it('rejects unknown modes', () => {
+    expect(() => resolveMode('turbo')).toThrow(/Invalid mode/);
   });
 });

@@ -23,7 +23,7 @@ function makeBrowserResult(url: string): RawFetchResult {
   };
 }
 
-describe('SmartRouter mode=fast', () => {
+describe('SmartRouter mode=cache', () => {
   let httpClient: HttpClient;
   let browserPool: BrowserPoolInterface;
   let router: SmartRouter;
@@ -52,7 +52,7 @@ describe('SmartRouter mode=fast', () => {
   });
 
   it('does not spawn a browser even when content is a SPA shell', async () => {
-    const result = await router.fetch('https://spa.test/page', { mode: 'fast' });
+    const result = await router.fetch('https://spa.test/page', { mode: 'cache' });
 
     expect(httpClient.fetch).toHaveBeenCalledTimes(1);
     expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
@@ -61,7 +61,7 @@ describe('SmartRouter mode=fast', () => {
   });
 
   it('passes the fast timeout to the http client', async () => {
-    await router.fetch('https://spa.test/page', { mode: 'fast' });
+    await router.fetch('https://spa.test/page', { mode: 'cache' });
 
     expect(httpClient.fetch).toHaveBeenCalledWith(
       'https://spa.test/page',
@@ -83,14 +83,14 @@ describe('SmartRouter mode=fast', () => {
     });
 
     await router.fetch('https://spa.test/page', {
-      mode: 'fast',
+      mode: 'cache',
       actions: [{ type: 'click', selector: '#x' }],
     });
 
     expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
     expect(httpClient.fetch).toHaveBeenCalledTimes(1);
     expect(
-      warnings.some(w => /mode=fast.*ignores.*actions/i.test(w.msg)),
+      warnings.some(w => /mode=cache.*ignores.*actions/i.test(w.msg)),
     ).toBe(true);
 
     stderrSpy.mockRestore();
@@ -106,7 +106,7 @@ describe('SmartRouter mode=fast', () => {
       headers: {},
     }));
 
-    const result = await router.fetch('https://example.com/page', { mode: 'fast' });
+    const result = await router.fetch('https://example.com/page', { mode: 'cache' });
 
     expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
     expect(result.jsRequired).toBe(false);

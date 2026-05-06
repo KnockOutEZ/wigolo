@@ -66,10 +66,8 @@ export async function handleSearch(
   }
 
   const maxResults = Math.min(input.max_results ?? DEFAULT_MAX_RESULTS, MAX_RESULTS_CAP);
-  const includeContent = mode === 'deep' ? true : (input.include_content ?? true);
-  const deepFetchCap = mode === 'deep'
-    ? Math.min(input.max_results ?? 10, TOP_K_DEEP)
-    : undefined;
+  const includeContent = input.include_content ?? true;
+  const deepFetchCap: number | undefined = undefined;
   const contentMaxChars = input.content_max_chars ?? DEFAULT_CONTENT_MAX_CHARS;
   const maxContentChars = input.max_content_chars;
   const maxTotalChars = input.max_total_chars ?? DEFAULT_MAX_TOTAL_CHARS;
@@ -89,7 +87,7 @@ export async function handleSearch(
 
   let normalizedQuery: string | string[] = input.query;
   let deepAutoExpanded = false;
-  if (mode === 'deep' && typeof normalizedQuery === 'string') {
+  if (mode === 'stealth' && typeof normalizedQuery === 'string') {
     normalizedQuery = expandQueryHeuristic(normalizedQuery);
     deepAutoExpanded = true;
   }
@@ -119,7 +117,7 @@ export async function handleSearch(
       : normalizedQueries[0];
     const cacheKey = normalizedQueries.join(' | ');
 
-    const staleMaxSeconds = mode === 'fast' ? config.fastStaleMaxHours * 3600 : 0;
+    const staleMaxSeconds = mode === 'cache' ? config.fastStaleMaxHours * 3600 : 0;
     const cached = input.force_refresh
       ? null
       : getCachedSearchResults(cacheKey, { staleMaxSeconds });
@@ -145,7 +143,7 @@ export async function handleSearch(
       if (warning) output.warning = warning;
       if ((input.format === 'answer' || input.format === 'stream_answer') && output.results.length > 0) {
         await applyAnswerSynthesis(input, output, output.results, maxTotalChars, samplingServer, streamProgress);
-      } else if (output.results.length > 0 && mode !== 'fast') {
+      } else if (output.results.length > 0 && mode !== 'cache') {
         await applyEvidenceDefault(input, output, output.results, displayQuery);
       }
       return output;
@@ -164,7 +162,7 @@ export async function handleSearch(
 
     const { results: rawResults, enginesUsed, errors } = await fanOutSearch(
       normalizedQueries,
-      mode === 'fast' ? activeEngines.slice(0, 1) : activeEngines,
+      mode === 'cache' ? activeEngines.slice(0, 1) : activeEngines,
       {
         maxResults,
         timeRange: input.time_range,
@@ -204,8 +202,8 @@ export async function handleSearch(
     });
 
     const intentString = synthesizeIntent(normalizedQueries);
-    merged = await rerankResults(intentString, merged, { skip: mode === 'fast' });
-    if (mode !== 'fast') merged = await validateLinks(merged);
+    merged = await rerankResults(intentString, merged, { skip: mode === 'cache' });
+    if (mode !== 'cache') merged = await validateLinks(merged);
     merged = merged.slice(0, maxResults);
 
     const results: SearchResultItem[] = merged.map(m => ({
@@ -253,16 +251,16 @@ export async function handleSearch(
     if (warning) output.warning = warning;
     if ((input.format === 'answer' || input.format === 'stream_answer') && results.length > 0) {
       await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer, streamProgress);
-    } else if (results.length > 0 && mode !== 'fast') {
+    } else if (results.length > 0 && mode !== 'cache') {
       await applyEvidenceDefault(input, output, results, displayQuery);
     }
     return output;
   }
 
-  // --- Single-query path (unchanged from v2) ---
+  // --- Single-query path ---
   const queryStr = input.query as string;
 
-  const staleMaxSeconds = mode === 'fast' ? config.fastStaleMaxHours * 3600 : 0;
+  const staleMaxSeconds = mode === 'cache' ? config.fastStaleMaxHours * 3600 : 0;
   const cached = input.force_refresh
     ? null
     : getCachedSearchResults(queryStr, { staleMaxSeconds });
@@ -287,7 +285,7 @@ export async function handleSearch(
     if (warning) output.warning = warning;
     if ((input.format === 'answer' || input.format === 'stream_answer') && output.results.length > 0) {
       await applyAnswerSynthesis(input, output, output.results, maxTotalChars, samplingServer, streamProgress);
-    } else if (output.results.length > 0 && mode !== 'fast') {
+    } else if (output.results.length > 0 && mode !== 'cache') {
       await applyEvidenceDefault(input, output, output.results, queryStr);
     }
     return output;
@@ -305,7 +303,7 @@ export async function handleSearch(
   const subQueries = decomposeQuery(queryStr);
   log.debug('query decomposition', { original: queryStr, parts: subQueries.length });
 
-  const effectiveEngines = mode === 'fast' ? activeEngines.slice(0, 1) : activeEngines;
+  const effectiveEngines = mode === 'cache' ? activeEngines.slice(0, 1) : activeEngines;
 
   await emit(1, 5, `Running ${subQueries.length} search queries across ${effectiveEngines.length} engines...`);
 
@@ -368,8 +366,8 @@ export async function handleSearch(
     category: input.category,
   });
 
-  merged = await rerankResults(queryStr, merged, { skip: mode === 'fast' });
-  if (mode !== 'fast') merged = await validateLinks(merged);
+  merged = await rerankResults(queryStr, merged, { skip: mode === 'cache' });
+  if (mode !== 'cache') merged = await validateLinks(merged);
 
   merged = merged.slice(0, maxResults);
 
@@ -416,7 +414,7 @@ export async function handleSearch(
   if (warning) output.warning = warning;
   if ((input.format === 'answer' || input.format === 'stream_answer') && results.length > 0) {
     await applyAnswerSynthesis(input, output, results, maxTotalChars, samplingServer, streamProgress);
-  } else if (results.length > 0 && mode !== 'fast') {
+  } else if (results.length > 0 && mode !== 'cache') {
     await applyEvidenceDefault(input, output, results, queryStr);
   }
   return output;

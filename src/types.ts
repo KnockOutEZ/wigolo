@@ -1,7 +1,10 @@
 import type { JsonSchema } from './extraction/schema.js';
 
-export type Mode = 'fast' | 'balanced' | 'deep';
-export const MODES: readonly Mode[] = ['fast', 'balanced', 'deep'] as const;
+export type Mode = 'cache' | 'default' | 'stealth';
+export const MODES: readonly Mode[] = ['cache', 'default', 'stealth'] as const;
+
+export type DeprecatedMode = 'fast' | 'balanced' | 'deep';
+export const DEPRECATED_MODES: readonly DeprecatedMode[] = ['fast', 'balanced', 'deep'] as const;
 
 export interface StageError {
   error: string;

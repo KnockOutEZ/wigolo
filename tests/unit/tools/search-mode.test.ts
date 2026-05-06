@@ -13,8 +13,8 @@ describe('search mode validation', () => {
   it('rejects unknown mode with a clear message', async () => {
     const router = { fetch: vi.fn() } as unknown as SmartRouter;
     await expect(
-      handleSearch({ query: 'x', mode: 'turbo' as 'fast' }, [], router),
-    ).rejects.toThrow(/mode.*fast.*balanced.*deep/i);
+      handleSearch({ query: 'x', mode: 'turbo' as 'cache' }, [], router),
+    ).rejects.toThrow(/Invalid mode/i);
   });
 });
 

@@ -105,8 +105,8 @@ export const FETCH_TOOL_SCHEMA = {
     },
     mode: {
       type: 'string',
-      enum: ['fast', 'balanced', 'deep'],
-      description: "fast=low-latency, deep=multi-query+full-body, balanced=default",
+      enum: ['cache', 'default', 'stealth'],
+      description: "cache=HTTP-only, accepts stale cache. default=standard fetch with JS detection. stealth=full browser render.",
     },
   },
   required: ['url'],
@@ -186,8 +186,8 @@ export const SEARCH_TOOL_SCHEMA = {
     },
     mode: {
       type: 'string',
-      enum: ['fast', 'balanced', 'deep'],
-      description: "fast=low-latency, deep=multi-query+full-body, balanced=default",
+      enum: ['cache', 'default', 'stealth'],
+      description: "cache=single-engine, no rerank, stale cache ok. default=standard multi-engine search. stealth=full browser for JS-heavy result pages.",
     },
   },
   required: ['query'],

@@ -56,15 +56,15 @@ export class SmartRouter {
     const threshold = config.browserFallbackThreshold;
     const domain = new URL(url).hostname;
 
-    // Fast mode: HTTP-only with tight timeout, never escalates to a browser.
-    if (mode === 'fast') {
+    // Cache mode: HTTP-only with tight timeout, never escalates to a browser.
+    if (mode === 'cache') {
       if (actions && actions.length > 0) {
-        logger.warn('mode=fast ignores browser actions; switch to balanced/deep to execute them', {
+        logger.warn('mode=cache ignores browser actions; switch to default/stealth to execute them', {
           url,
           actionCount: actions.length,
         });
       }
-      logger.debug('routing to http (fast)', { url });
+      logger.debug('routing to http (cache)', { url });
       const result = await this.httpClient.fetch(url, {
         headers,
         timeoutMs: config.fastTimeoutMs,
