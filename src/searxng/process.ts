@@ -156,11 +156,21 @@ export class SearxngProcess {
 
     this.child = spawn(pythonBin, ['-m', 'searx.webapp'], {
       env: { ...process.env, SEARXNG_SETTINGS_PATH: settingsPath },
-      stdio: 'pipe',
+      stdio: ['ignore', 'ignore', 'pipe'],
     });
 
     this.child.on('error', (err) => {
       log.error('SearXNG spawn error', { error: String(err) });
+    });
+
+    let stderrTail = '';
+    this.child.stderr?.on('data', (chunk: Buffer) => {
+      stderrTail = (stderrTail + chunk.toString('utf8')).slice(-4096);
+    });
+    this.child.on('exit', (code) => {
+      if (code !== 0 && code !== null && stderrTail) {
+        log.warn('SearXNG stderr tail', { code, stderrTail: stderrTail.slice(-1024) });
+      }
     });
 
     writeFileSync(join(this.dataDir, 'searxng.port'), String(this.port));
