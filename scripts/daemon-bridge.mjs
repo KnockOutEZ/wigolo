@@ -43,9 +43,7 @@ export const version = readPkgVersion();
 let subsystemsPromise = null;
 async function getSubsystems() {
   if (!subsystemsPromise) {
-    subsystemsPromise = initSubsystems().then((subs) => {
-      // Best-effort shutdown on process exit. Daemon's start_daemon.sh sends
-      // SIGTERM / SIGINT; daemon.mjs forwards those into server.close().
+    subsystemsPromise = initSubsystems().then(async (subs) => {
       const onExit = async () => {
         try {
           await subs.shutdown();
@@ -56,6 +54,7 @@ async function getSubsystems() {
       process.once("exit", onExit);
       process.once("SIGTERM", onExit);
       process.once("SIGINT", onExit);
+      await subs.bootstrapSearxng();
       return subs;
     });
   }
