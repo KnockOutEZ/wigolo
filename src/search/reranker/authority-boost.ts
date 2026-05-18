@@ -17,17 +17,6 @@ const KNOWN_DOCS_HOSTS = new Set([
   'docs.anthropic.com',
 ]);
 
-const RANK_QUERY_RE = /\b(best|top|popular|popularity|ranking|ranked|leading|dominant|most[\s-]?used|widely[\s-]?used|adopted|adoption|trending|hottest)\b/i;
-const RANKING_AUTHORITY_HOSTS = new Set([
-  'tiobe.com', 'www.tiobe.com',
-  'redmonk.com', 'www.redmonk.com',
-  'octoverse.github.com', 'octoverse.com',
-  'github.blog',
-  'insights.stackoverflow.com', 'survey.stackoverflow.co',
-  'spectrum.ieee.org',
-  'pypl.github.io',
-]);
-
 const KNOWN_SUBJECT_DOMAIN: Record<string, string[]> = {
   redis: ['redis.io', 'redis.com'],
   postgres: ['postgresql.org'],
@@ -87,7 +76,6 @@ export function applyAuthorityBoost(
 ): MergedSearchResult[] {
   if (results.length === 0) return results;
   const subjects = extractSubjects(query);
-  const isRankQuery = RANK_QUERY_RE.test(query);
   const knownDomains = new Set<string>();
   for (const s of subjects) {
     const mapped = KNOWN_SUBJECT_DOMAIN[s];
@@ -99,8 +87,6 @@ export function applyAuthorityBoost(
     if (!host) return r;
 
     let boost = 0;
-
-    if (isRankQuery && RANKING_AUTHORITY_HOSTS.has(host)) boost += 0.18;
 
     if (knownDomains.has(host)) boost += 0.20;
     else for (const dom of knownDomains) {
