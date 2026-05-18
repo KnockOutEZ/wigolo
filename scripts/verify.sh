@@ -33,10 +33,17 @@ echo "[verify] build"
 echo "[verify] daemon"
 ./scripts/start_daemon.sh
 
-# 4. Bench (full, all four tools, via MCP)
-echo "[verify] bench (full, ~5-10min)"
+# 4. Bench (all four tools, via MCP)
+EXTRA_ARGS=""
+if [[ -n "${WIGOLO_VERIFY_SUBSET:-}" ]]; then
+  EXTRA_ARGS="$EXTRA_ARGS --subset $WIGOLO_VERIFY_SUBSET"
+fi
+if [[ -n "${WIGOLO_VERIFY_QUERIES:-}" ]]; then
+  EXTRA_ARGS="$EXTRA_ARGS --queries $WIGOLO_VERIFY_QUERIES"
+fi
+echo "[verify] bench ($EXTRA_ARGS)"
 cd "$BENCH_DIR"
-./harness/run_bench.sh
+./harness/run_bench.sh $EXTRA_ARGS
 
 # 5. Score
 SCORE=$(jq -r '.score' results/latest/aggregate.json)
