@@ -21,6 +21,27 @@ export function _resetOnnxSessionCache(): void {
   sessionCache.clear();
 }
 
+/**
+ * Release all cached ONNX InferenceSessions before process exit. Without this,
+ * the native onnxruntime destructor asserts `env_ptr == p_instance_.get()` at
+ * shutdown (a known bug in onnxruntime-node's static OrtEnv teardown), spamming
+ * stderr with a `libc++abi: terminating` message after Node has already
+ * finished running JS. Call from any CLI that opens reranker sessions.
+ */
+export async function disposeOnnxSessions(): Promise<void> {
+  const entries = [...sessionCache.values()];
+  sessionCache.clear();
+  for (const p of entries) {
+    try {
+      const session = await p;
+      const maybeRelease = (session as unknown as { release?: () => Promise<void> }).release;
+      if (typeof maybeRelease === 'function') await maybeRelease.call(session);
+    } catch {
+      // session never opened or already released; ignore
+    }
+  }
+}
+
 async function getSession(modelId: string, modelPath: string): Promise<ort.InferenceSession> {
   const id = resolveModelId(modelId);
   const existing = sessionCache.get(id);

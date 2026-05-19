@@ -301,6 +301,15 @@ export async function runWarmup(
     await runVerify(config.dataDir, reporterImpl);
   }
 
+  // Release ONNX sessions before exit so onnxruntime-node's static OrtEnv
+  // destructor sees an empty session registry.
+  try {
+    const { disposeOnnxSessions } = await import('../search/reranker/onnx.js');
+    await disposeOnnxSessions();
+  } catch {
+    // best-effort cleanup; never block warmup success on it
+  }
+
   reporterImpl.finish();
   return result;
 }
