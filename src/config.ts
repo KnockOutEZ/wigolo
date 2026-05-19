@@ -162,7 +162,7 @@ export function getConfig(): Config {
     multiQueryConcurrency: envInt('WIGOLO_MULTI_QUERY_CONCURRENCY', 5),
     multiQueryMax: envInt('WIGOLO_MULTI_QUERY_MAX', 10),
     embeddingModel: envStr('WIGOLO_EMBEDDING_MODEL') ?? 'BAAI/bge-small-en-v1.5',
-    embeddingIdleTimeoutMs: envInt('WIGOLO_EMBEDDING_IDLE_TIMEOUT', 120000),
+    embeddingIdleTimeoutMs: envInt('WIGOLO_EMBEDDING_IDLE_TIMEOUT', 1800000),
     embeddingMaxTextLength: envInt('WIGOLO_EMBEDDING_MAX_TEXT_LENGTH', 8000),
     lightpandaUrl: envStr('WIGOLO_LIGHTPANDA_URL'),
     lightpandaEnabled: envBool('WIGOLO_LIGHTPANDA_ENABLED', false),
