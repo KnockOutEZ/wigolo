@@ -127,6 +127,7 @@ export const SEARCH_TOOL_SCHEMA = {
       description: 'Search query — a single string or array of query variants for parallel multi-query search',
     },
     max_results: { type: 'number', description: 'Max results to return (default 5, max 20)' },
+    max_fetches: { type: 'number', description: 'Cap on how many top-ranked results have their page content fetched. Defaults to max_results. Set lower (e.g. 3) to keep snippet-only listings cheap and only deep-read the most relevant.' },
     include_content: { type: 'boolean', description: 'Fetch full content for results (default true)' },
     content_max_chars: { type: 'number', description: 'Max chars per result content at extraction (default 30000)' },
     max_content_chars: { type: 'number', description: 'Smart-truncate each result markdown at paragraph boundary with marker (e.g. 3000 for compact context)' },

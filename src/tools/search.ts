@@ -250,6 +250,7 @@ export async function handleSearch(
         fetchTimeoutMs,
         totalDeadline: start + totalTimeoutMs,
         forceRefresh: input.force_refresh ?? false,
+        maxFetches: input.max_fetches,
       });
       fetchElapsed = Date.now() - fetchStart;
     }
@@ -454,6 +455,7 @@ export async function handleSearch(
       fetchTimeoutMs,
       totalDeadline: start + totalTimeoutMs,
       forceRefresh: input.force_refresh ?? false,
+      maxFetches: input.max_fetches,
     });
     fetchElapsed = Date.now() - fetchStart;
   }

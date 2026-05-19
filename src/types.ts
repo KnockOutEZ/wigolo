@@ -175,6 +175,7 @@ export interface SearchInput {
   content_max_chars?: number;
   max_content_chars?: number;
   max_total_chars?: number;
+  max_fetches?: number;
   time_range?: 'day' | 'week' | 'month' | 'year';
   search_engines?: string[];
   language?: string;
