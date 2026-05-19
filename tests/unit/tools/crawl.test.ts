@@ -216,5 +216,9 @@ describe('handleCrawl', () => {
 
     const totalChars = result.pages.reduce((sum, p) => sum + p.markdown.length, 0);
     expect(totalChars).toBeLessThanOrEqual(100000);
+    // crawled reflects pages actually returned, not raw fetch count
+    expect(result.crawled).toBe(result.pages.length);
+    // dropped_over_budget surfaces pages excluded by max_total_chars budget
+    expect(result.dropped_over_budget).toBe(5 - result.pages.length);
   });
 });

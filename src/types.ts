@@ -434,6 +434,8 @@ export interface CrawlOutput {
   pages: CrawlResultItem[];
   total_found: number;
   crawled: number;
+  /** Pages fetched but excluded from `pages` due to max_total_chars budget. */
+  dropped_over_budget?: number;
   links?: LinkEdge[];
   error?: string;
 }
