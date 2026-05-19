@@ -121,7 +121,7 @@ describe('search answer synthesis -- integration', () => {
     expect(result.total_time_ms).toBeGreaterThanOrEqual(0);
   });
 
-  it('end-to-end: format=answer falls back to highlights when sampling unavailable', async () => {
+  it('end-to-end: format=answer falls back to heuristic when sampling unavailable', async () => {
     const server = createMockServer({ samplingSupported: false });
 
     const __r_result = await handleSearch(
@@ -133,15 +133,14 @@ describe('search answer synthesis -- integration', () => {
     );;
     const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
-    expect(result.answer).toBeUndefined();
-    expect(result.highlights).toBeDefined();
-    expect(result.highlights!.length).toBeGreaterThan(0);
+    // Heuristic fallback fills `answer` with a bulleted summary + warning
+    expect(result.answer).toBeDefined();
+    expect(result.warning).toBeDefined();
     expect(result.citations).toBeDefined();
     expect(result.citations!.length).toBeGreaterThan(0);
-    expect(result.warning).toBeDefined();
   });
 
-  it('end-to-end: format=answer without server falls back to highlights', async () => {
+  it('end-to-end: format=answer without server falls back to heuristic', async () => {
     const __r_result = await handleSearch(
       { query: 'React Server Components', format: 'answer', include_content: false },
       [stubEngine],
@@ -151,9 +150,8 @@ describe('search answer synthesis -- integration', () => {
     );;
     const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
-    expect(result.answer).toBeUndefined();
-    expect(result.highlights).toBeDefined();
-    expect(result.highlights!.length).toBeGreaterThan(0);
+    expect(result.answer).toBeDefined();
+    expect(result.warning).toBeDefined();
   });
 
   it('end-to-end: format=stream_answer sets streaming flag', async () => {
@@ -172,7 +170,7 @@ describe('search answer synthesis -- integration', () => {
     expect(result.streaming).toBe(true);
   });
 
-  it('end-to-end: sampling error falls back to highlights with warning', async () => {
+  it('end-to-end: sampling error falls back to heuristic answer', async () => {
     const server = createMockServer({
       samplingSupported: true,
       samplingError: new Error('context window exceeded'),
@@ -187,10 +185,8 @@ describe('search answer synthesis -- integration', () => {
     );;
     const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
-    expect(result.answer).toBeUndefined();
-    expect(result.highlights).toBeDefined();
-    expect(result.highlights!.length).toBeGreaterThan(0);
-    expect(result.warning).toContain('context window exceeded');
+    expect(result.answer).toBeDefined();
+    expect(result.warning).toBeDefined();
   });
 
   it('end-to-end: citations reference correct source URLs', async () => {

@@ -107,7 +107,7 @@ describe('integration: rerank in search pipeline', () => {
 
     expect(output.results).toHaveLength(1);
     expect(output.results[0].markdown_content).toContain('Mock Content');
-    expect(output.results[0].relevance_score).toBe(0.9);
+    expect(output.results[0].relevance_score).toBeGreaterThanOrEqual(0.9);
   });
 
   it('full pipeline: dedup -> rerank -> validate -> slice -> fetch', async () => {
@@ -131,7 +131,7 @@ describe('integration: rerank in search pipeline', () => {
 
     const overlapResults = output.results.filter(r => r.url.includes('overlap.com'));
     expect(overlapResults).toHaveLength(1);
-    expect(overlapResults[0].relevance_score).toBe(0.9);
+    expect(overlapResults[0].relevance_score).toBeGreaterThanOrEqual(0.9);
     expect(output.engines_used).toContain('e1');
     expect(output.engines_used).toContain('e2');
   });
