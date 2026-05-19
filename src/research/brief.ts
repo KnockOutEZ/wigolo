@@ -211,7 +211,14 @@ function firstSubstantiveParagraph(markdown: string): string | null {
   for (const p of paragraphs) {
     if (p.length < 80) continue;
     if (p.startsWith('#') || p.startsWith('|') || p.startsWith('```')) continue;
-    return p.replace(/\s+/g, ' ');
+    // Strip leading images / links-around-images that pad alt text into the
+    // paragraph; if nothing of substance remains, skip.
+    const stripped = p
+      .replace(/^!\[[^\]]*\]\([^)]*\)\s*/g, '')
+      .replace(/^\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)\s*/g, '')
+      .trim();
+    if (stripped.length < 80) continue;
+    return stripped.replace(/\s+/g, ' ');
   }
   return null;
 }
