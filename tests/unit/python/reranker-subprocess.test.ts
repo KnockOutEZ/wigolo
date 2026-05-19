@@ -130,4 +130,39 @@ describe('RerankSubprocess', () => {
     await expect(sub.score('q', ['d'])).rejects.toThrow(/timed out/i);
     expect((proc as any).kill).toHaveBeenCalled();
   });
+
+  it('shutdown evicts from registry; next get() spawns fresh', () => {
+    const a = getRerankSubprocess('bge-reranker-v2-m3', 512);
+    a.shutdown();
+    const b = getRerankSubprocess('bge-reranker-v2-m3', 512);
+    expect(b).not.toBe(a);
+  });
+
+  it('explicit shutdown does NOT affect a different registry entry', () => {
+    const a = getRerankSubprocess('bge-reranker-v2-m3', 512);
+    const b = getRerankSubprocess('bge-reranker-v2-m3', 256);
+    a.shutdown();
+    const aAfter = getRerankSubprocess('bge-reranker-v2-m3', 512);
+    const bAfter = getRerankSubprocess('bge-reranker-v2-m3', 256);
+    expect(aAfter).not.toBe(a);
+    expect(bAfter).toBe(b);  // unaffected
+  });
+
+  it('envInt rejects negative WIGOLO_RERANKER_REQUEST_TIMEOUT_MS', async () => {
+    // Set an invalid value; verify the constructed worker uses the default 30_000
+    // (not -1). Probe via the public worker reference.
+    process.env.WIGOLO_RERANKER_REQUEST_TIMEOUT_MS = '-1';
+    resetAllRerankSubprocesses();
+    const sub = getRerankSubprocess('bge-reranker-v2-m3', 512);
+    expect((sub.worker as unknown as { requestTimeoutMs: number }).requestTimeoutMs).toBe(30_000);
+    delete process.env.WIGOLO_RERANKER_REQUEST_TIMEOUT_MS;
+  });
+
+  it('envInt rejects zero WIGOLO_RERANKER_READY_TIMEOUT_MS', () => {
+    process.env.WIGOLO_RERANKER_READY_TIMEOUT_MS = '0';
+    resetAllRerankSubprocesses();
+    const sub = getRerankSubprocess('bge-reranker-v2-m3', 512);
+    expect((sub.worker as unknown as { readyTimeoutMs: number }).readyTimeoutMs).toBe(60_000);
+    delete process.env.WIGOLO_RERANKER_READY_TIMEOUT_MS;
+  });
 });
