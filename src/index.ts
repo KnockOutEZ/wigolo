@@ -20,8 +20,8 @@ const { command, args } = parseCommand(process.argv.slice(2));
 switch (command) {
   case 'warmup':
     await runWarmup(args);
-    // Explicit exit short-circuits onnxruntime-node's static destructor that
-    // asserts on natural process shutdown (`env_ptr == p_instance_.get()`).
+    // Explicit exit for clean teardown — ensures all child subprocesses
+    // (reranker, embedding) are reaped before Node returns.
     process.exit(0);
     break;
 

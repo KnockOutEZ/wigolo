@@ -317,8 +317,9 @@ export async function runWarmup(
     await runVerify(config.dataDir, reporterImpl);
   }
 
-  // Release ONNX sessions before exit so onnxruntime-node's static OrtEnv
-  // destructor sees an empty session registry.
+  // Reset the reranker subprocess registry before exit (legacy no-op shim
+  // retained from the pre-Python-migration shape; subprocess teardown happens
+  // via process.exit(0) in src/index.ts).
   try {
     const { disposeOnnxSessions } = await import('../search/reranker/onnx.js');
     await disposeOnnxSessions();
