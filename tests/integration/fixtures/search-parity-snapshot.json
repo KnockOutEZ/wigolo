@@ -1,0 +1,13 @@
+{
+  "_comment": "Scaffold snapshot for tests/integration/search-legacy-parity.test.ts. The parity test is gated on RUN_LEGACY_PARITY=1 because it needs a reachable SearXNG instance. To regenerate: run the pre-refactor search code against a live SearXNG and overwrite this file with the real { query, expectedUrls } pairs. Generation script is deferred to a follow-up task.",
+  "queries": [
+    {
+      "query": "typescript provider pattern",
+      "expectedUrls": []
+    },
+    {
+      "query": "vitest skipif pattern",
+      "expectedUrls": []
+    }
+  ]
+}
