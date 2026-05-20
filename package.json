@@ -40,7 +40,7 @@
     "agent-tools"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"require('fs').cpSync('src/scripts','dist/scripts',{recursive:true})\"",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
