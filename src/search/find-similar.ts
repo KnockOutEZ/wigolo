@@ -15,6 +15,8 @@ import { handleSearch } from '../tools/search.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { getEmbeddingService } from '../embedding/embed.js';
 import { createLogger } from '../logger.js';
+import { selectMode } from './find-similar/mode.js';
+import { crawlRank } from './find-similar/crawl-rank.js';
 
 const log = createLogger('search');
 
@@ -49,6 +51,26 @@ export async function findSimilar(
   const initialEmbedIndexSize = safeEmbedIndexSize();
 
   try {
+    // Mode dispatch: only 'crawl-rank' diverts. All other modes (cache,
+    // web-expansion, auto) fall through to the existing hybrid flow.
+    const mode = selectMode(input);
+    if (mode === 'crawl-rank') {
+      const seed = input.url?.trim();
+      if (!seed) {
+        return {
+          results: [],
+          method: 'fts5',
+          cache_hits: 0,
+          search_hits: 0,
+          embedding_available: embeddingAvailable,
+          error: 'crawl-rank mode requires a url',
+          total_time_ms: Date.now() - start,
+        };
+      }
+      const cr = await crawlRank(seed, input, router);
+      return { ...cr, total_time_ms: Date.now() - start };
+    }
+
     const url = input.url?.trim();
     const concept = input.concept?.trim();
 

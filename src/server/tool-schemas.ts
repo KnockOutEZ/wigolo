@@ -346,6 +346,12 @@ export const FIND_SIMILAR_TOOL_SCHEMA = {
       type: 'boolean',
       description: 'Supplement with web search if needed (default: true)',
     },
+    mode: {
+      type: 'string',
+      enum: ['auto', 'cache', 'web-expansion', 'crawl-rank'],
+      default: 'auto',
+      description: "Retrieval strategy: cache (local hybrid), web-expansion (key terms + web search), crawl-rank (1-hop crawl from seed URL + embed + cosine rank), or auto.",
+    },
     max_tokens_out: {
       type: 'number',
       description: "Token-budget cap on total output. Uses cl100k-base BPE; non-OpenAI tokenizer counts may drift ~5-15%. When both max_tokens_out and max_chars are set, max_tokens_out wins.",

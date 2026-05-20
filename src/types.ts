@@ -601,6 +601,7 @@ export interface FindSimilarInput {
   exclude_domains?: string[];
   include_cache?: boolean;
   include_web?: boolean;
+  mode?: 'auto' | 'cache' | 'web-expansion' | 'crawl-rank';
   max_tokens_out?: number;
   include_full_markdown?: boolean;
   citation_format?: CitationFormat;
