@@ -41,6 +41,8 @@
   ],
   "scripts": {
     "build": "tsc && node -e \"require('fs').cpSync('src/scripts','dist/scripts',{recursive:true})\"",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run build",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",

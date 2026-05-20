@@ -1,0 +1,25 @@
+name: Release Smoke Test
+on:
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'src/scripts/**'
+      - '.github/workflows/release-smoke.yml'
+  push:
+    branches: [main]
+jobs:
+  smoke:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ['20', '22']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm pack
+      - run: |
+          tar -tzf *.tgz | grep 'dist/scripts/.*\.py' || (echo "FAIL: Python scripts missing from tarball" && exit 1)
