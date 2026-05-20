@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { getConfig } from './config.js';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-type Module = 'fetch' | 'search' | 'crawl' | 'cache' | 'extract' | 'searxng' | 'server' | 'cli' | 'jsonld' | 'repl' | 'embedding' | 'research' | 'agent' | 'structured-data' | 'reranker' | 'mode' | 'language-filter' | 'playwright-tier' | 'python-worker';
+type Module = 'fetch' | 'search' | 'crawl' | 'cache' | 'extract' | 'searxng' | 'server' | 'cli' | 'jsonld' | 'repl' | 'embedding' | 'research' | 'agent' | 'structured-data' | 'reranker' | 'mode' | 'language-filter' | 'playwright-tier' | 'python-worker' | 'providers';
 
 const LEVEL_PRIORITY: Record<LogLevel, number> = {
   debug: 0,

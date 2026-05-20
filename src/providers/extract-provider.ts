@@ -10,6 +10,9 @@
  * site-specific extractor within the ensemble pipeline.
  */
 import type { ExtractionResult } from '../types.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('providers');
 
 export interface ExtractProviderOptions {
   maxChars?: number;
@@ -32,7 +35,10 @@ let cached: Promise<ExtractProvider> | null = null;
 export function getExtractor(): Promise<ExtractProvider> {
   if (cached) return cached;
   cached = import('../extraction/legacy-provider.js').then(
-    m => new m.LegacyExtractProvider(),
+    m => {
+      log.info('extract provider ready', { provider: 'extract', impl: 'legacy' });
+      return new m.LegacyExtractProvider();
+    },
     err => { cached = null; throw err; },
   );
   return cached;

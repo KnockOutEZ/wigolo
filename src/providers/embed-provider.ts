@@ -6,6 +6,10 @@
  * without touching call sites. Today the factory always returns the
  * legacy adapter.
  */
+import { createLogger } from '../logger.js';
+
+const log = createLogger('providers');
+
 export interface EmbedProvider {
   /** Embed a batch of strings; returns one Float32Array per input. */
   embed(texts: string[]): Promise<Float32Array[]>;
@@ -19,14 +23,18 @@ let cached: Promise<EmbedProvider> | null = null;
 
 export function getEmbedProvider(): Promise<EmbedProvider> {
   if (cached) return cached;
-  cached = import('../embedding/legacy-provider.js').then(
-    async m => {
+  cached = import('../embedding/legacy-provider.js')
+    .then(async m => {
       const p = new m.LegacyEmbedProvider();
       await p.warmup();
+      log.info('embed provider ready', { provider: 'embed', impl: 'legacy', modelId: p.modelId, dim: p.dim });
       return p;
-    },
-    err => { cached = null; throw err; },
-  );
+    })
+    .catch(err => {
+      // Clear cache on any failure (import or warmup) so the next call retries.
+      cached = null;
+      throw err;
+    });
   return cached;
 }
 

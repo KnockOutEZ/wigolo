@@ -2,6 +2,9 @@ import type { SearchInput, SearchOutput, StageResult, ProgressCallback, SearchEn
 import type { SmartRouter } from '../fetch/router.js';
 import type { BackendStatus } from '../server/backend-status.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('providers');
 
 /**
  * Runtime dependencies the legacy SearxNG orchestrator needs. These are wired
@@ -34,12 +37,18 @@ export function getSearchProvider(): Promise<SearchProvider> {
   const which = raw === undefined || raw === '' ? 'searxng' : raw;
   if (which === 'searxng') {
     cached = import('../search/legacy/searxng-provider.js').then(
-      m => new m.LegacySearxngProvider(),
+      m => {
+        log.info('search provider selected', { provider: 'searxng' });
+        return new m.LegacySearxngProvider();
+      },
       err => { cached = null; throw err; },
     );
   } else if (which === 'v1') {
     cached = import('../search/v1/stub-provider.js').then(
-      m => new m.V1StubProvider(),
+      m => {
+        log.info('search provider selected', { provider: 'v1' });
+        return new m.V1StubProvider();
+      },
       err => { cached = null; throw err; },
     );
   } else {

@@ -5,6 +5,9 @@
  * loaded from SQLite on init) behind a stable interface. The factory always
  * returns the legacy adapter today; Phase 6 swaps in a richer v1 store.
  */
+import { createLogger } from '../logger.js';
+
+const log = createLogger('providers');
 export interface VectorMetadata {
   /** Source URL (used as primary identity by the legacy index). */
   url: string;
@@ -42,7 +45,10 @@ let cached: Promise<VectorStore> | null = null;
 export function getVectorStore(): Promise<VectorStore> {
   if (cached) return cached;
   cached = import('../cache/legacy-vector-store.js').then(
-    m => new m.LegacyVectorStore(),
+    m => {
+      log.info('vector store ready', { provider: 'vector-store', impl: 'legacy' });
+      return new m.LegacyVectorStore();
+    },
     err => { cached = null; throw err; },
   );
   return cached;

@@ -4,6 +4,7 @@ import {
   _resetEmbedProviderForTest,
 } from '../../../src/providers/embed-provider.js';
 import { LegacyEmbedProvider } from '../../../src/embedding/legacy-provider.js';
+import { EmbeddingSubprocess } from '../../../src/embedding/subprocess.js';
 
 vi.mock('../../../src/embedding/subprocess.js', () => {
   const EmbeddingSubprocess = vi.fn(function (this: Record<string, unknown>) {
@@ -34,5 +35,21 @@ describe('getEmbedProvider', () => {
     const p = await getEmbedProvider();
     expect(typeof p.dim).toBe('number');
     expect(p.dim).toBe(384);
+  });
+
+  it('recovers cache after warmup failure', async () => {
+    // First call: subprocess warmup throws so the factory rejects.
+    vi.mocked(EmbeddingSubprocess).mockImplementationOnce(function (this: Record<string, unknown>) {
+      this.getDims = vi.fn().mockReturnValue(null);
+      this.getModel = vi.fn().mockReturnValue(null);
+      this.embed = vi.fn().mockRejectedValue(new Error('warmup failed'));
+      this.isAvailable = vi.fn().mockReturnValue(false);
+      this.shutdown = vi.fn();
+    });
+    await expect(getEmbedProvider()).rejects.toThrow('warmup failed');
+
+    // Second call: cache must have been cleared; file-level default mock takes
+    // over and the factory succeeds.
+    expect(await getEmbedProvider()).toBeInstanceOf(LegacyEmbedProvider);
   });
 });

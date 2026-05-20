@@ -5,6 +5,9 @@
  * consensus boosts) behind a stable interface. The factory always returns
  * the legacy adapter today; Phase 4 swaps in the v1 implementation.
  */
+import { createLogger } from '../logger.js';
+
+const log = createLogger('providers');
 export interface RerankCandidate {
   id: string;
   text: string;
@@ -30,7 +33,11 @@ let cached: Promise<RerankProvider> | null = null;
 export function getRerankProvider(): Promise<RerankProvider> {
   if (cached) return cached;
   cached = import('../search/reranker/legacy-provider.js').then(
-    m => new m.LegacyRerankProvider(),
+    m => {
+      const p = new m.LegacyRerankProvider();
+      log.info('rerank provider ready', { provider: 'rerank', impl: 'legacy', modelId: p.modelId });
+      return p;
+    },
     err => { cached = null; throw err; },
   );
   return cached;
