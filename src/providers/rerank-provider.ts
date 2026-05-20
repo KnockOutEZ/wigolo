@@ -1,9 +1,10 @@
 /**
  * Rerank provider interface — Phase 1 Task 1.3 of v1 engine overhaul.
  *
- * Wraps the existing ONNX-via-subprocess reranker (with recency/authority/
- * consensus boosts) behind a stable interface. The factory always returns
- * the legacy adapter today; Phase 4 swaps in the v1 implementation.
+ * Phase 4 Part A switches the default factory to TransformersRerankProvider
+ * (Transformers.js cross-encoder, in-process ONNX runtime). The legacy
+ * Python FlashRank adapter still exists in `search/reranker/legacy-provider.ts`
+ * pending Phase 4 Part B deletions, but it is no longer wired in.
  */
 import { createLogger } from '../logger.js';
 
@@ -32,14 +33,21 @@ let cached: Promise<RerankProvider> | null = null;
 
 export function getRerankProvider(): Promise<RerankProvider> {
   if (cached) return cached;
-  cached = import('../search/reranker/legacy-provider.js').then(
-    m => {
-      const p = new m.LegacyRerankProvider();
-      log.info('rerank provider ready', { provider: 'rerank', impl: 'legacy', modelId: p.modelId });
+  cached = import('../search/reranker/transformers-rerank-provider.js')
+    .then(async (m) => {
+      const p = new m.TransformersRerankProvider();
+      await p.warmup();
+      log.info('rerank provider ready', {
+        provider: 'rerank',
+        impl: 'transformers',
+        modelId: p.modelId,
+      });
       return p;
-    },
-    err => { cached = null; throw err; },
-  );
+    })
+    .catch((err) => {
+      cached = null;
+      throw err;
+    });
   return cached;
 }
 
