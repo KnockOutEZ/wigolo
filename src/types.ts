@@ -419,7 +419,7 @@ export interface CrawlInput {
   url: string;
   max_depth?: number;
   max_pages?: number;
-  strategy?: 'bfs' | 'dfs' | 'sitemap' | 'map';
+  strategy?: 'bfs' | 'dfs' | 'sitemap' | 'map' | 'auto';
   include_patterns?: string[];
   exclude_patterns?: string[];
   use_auth?: boolean;

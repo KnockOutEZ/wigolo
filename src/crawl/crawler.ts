@@ -3,6 +3,8 @@ import { matchesPatterns, canonicalForCrawl } from './url-utils.js';
 import { RateLimiter } from './rate-limiter.js';
 import { RobotsParser } from './robots.js';
 import { parseSitemap, parseSitemapIndex, extractSitemapUrlFromRobots } from './sitemap.js';
+import { probeSitemap } from './sitemap-first.js';
+import { isIndexingEnabled, indexCrawlResult } from './index-to-vec.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 
@@ -33,6 +35,16 @@ export class Crawler {
     let robotsParser: RobotsParser | null = null;
     if (config.respectRobotsTxt) {
       robotsParser = await this.fetchRobots(seedOrigin);
+    }
+
+    if (strategy === 'auto') {
+      const sitemapUrls = await probeSitemap(seedOrigin, this.rawFetchFn);
+      if (sitemapUrls && sitemapUrls.length > 0) {
+        log.info('auto strategy: using sitemap', { origin: seedOrigin, urls: sitemapUrls.length });
+        return this.crawlFromExplicitUrls(input, sitemapUrls, maxPages, robotsParser);
+      }
+      log.info('auto strategy: no sitemap found, falling back to BFS', { origin: seedOrigin });
+      return this.crawlTraversal(input, seedOrigin, maxDepth, maxPages, 'bfs', robotsParser);
     }
 
     if (strategy === 'sitemap') {
@@ -75,14 +87,15 @@ export class Crawler {
     const visited = new Set<string>();
     const pages: CrawlResultItem[] = [];
     const allLinks: LinkEdge[] = [];
+    const indexing = isIndexingEnabled();
 
     // Queue: [url, depth]
     const queue: Array<[string, number]> = [[input.url, 0]];
     visited.add(canonicalForCrawl(input.url));
 
     while (queue.length > 0 && pages.length < maxPages) {
-      const item = strategy === 'dfs' ? queue.pop()! : queue.shift()!;
-      const [url, depth] = item;
+      const next = strategy === 'dfs' ? queue.pop()! : queue.shift()!;
+      const [url, depth] = next;
 
       // Check robots.txt
       if (robotsParser && !robotsParser.isAllowed(new URL(url).pathname)) {
@@ -109,12 +122,15 @@ export class Crawler {
         continue;
       }
 
-      pages.push({
+      const item: CrawlResultItem = {
         url: fetchResult.url,
         title: fetchResult.title,
         markdown: fetchResult.markdown,
         depth,
-      });
+      };
+      pages.push(item);
+
+      if (indexing) await indexCrawlResult(item);
 
       // Discover links for traversal
       if (depth < maxDepth) {
@@ -178,22 +194,36 @@ export class Crawler {
     robotsParser: RobotsParser | null,
   ): Promise<CrawlOutput> {
     // Discover sitemap URLs (pass already-fetched robots.txt content)
-    let sitemapUrls = await this.discoverSitemapUrls(seedOrigin, this.robotsTxtContent);
+    const sitemapUrls = await this.discoverSitemapUrls(seedOrigin, this.robotsTxtContent);
 
     if (sitemapUrls.length === 0) {
       log.info('No sitemap found, falling back to BFS');
       return this.crawlTraversal(input, seedOrigin, input.max_depth ?? 2, maxPages, 'bfs', robotsParser);
     }
 
-    // Filter by patterns
-    sitemapUrls = sitemapUrls.filter((url) =>
+    return this.crawlFromExplicitUrls(input, sitemapUrls, maxPages, robotsParser);
+  }
+
+  /**
+   * Crawl an explicit list of URLs (e.g. from a sitemap probe). Applies
+   * include/exclude patterns, robots.txt, max_pages, and rate limits the
+   * same way as crawlSitemap.
+   */
+  private async crawlFromExplicitUrls(
+    input: CrawlInput,
+    urls: string[],
+    maxPages: number,
+    robotsParser: RobotsParser | null,
+  ): Promise<CrawlOutput> {
+    const filtered = urls.filter((url) =>
       matchesPatterns(url, input.include_patterns, input.exclude_patterns),
     );
 
-    const totalFound = sitemapUrls.length;
-    const toFetch = sitemapUrls.slice(0, maxPages);
+    const totalFound = filtered.length;
+    const toFetch = filtered.slice(0, maxPages);
     const pages: CrawlResultItem[] = [];
     const allLinks: LinkEdge[] = [];
+    const indexing = isIndexingEnabled();
 
     for (const url of toFetch) {
       if (pages.length >= maxPages) break;
@@ -207,7 +237,10 @@ export class Crawler {
         release();
 
         if (!result.error) {
-          pages.push({ url: result.url, title: result.title, markdown: result.markdown, depth: 0 });
+          const item: CrawlResultItem = { url: result.url, title: result.title, markdown: result.markdown, depth: 0 };
+          pages.push(item);
+
+          if (indexing) await indexCrawlResult(item);
 
           if (input.extract_links) {
             for (const link of result.links) {

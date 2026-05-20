@@ -78,9 +78,22 @@ CREATE TRIGGER IF NOT EXISTS feed_items_au AFTER UPDATE ON feed_items BEGIN
 END;
 `;
 
+const MIGRATION_003_CRAWL_ETAGS = `
+CREATE TABLE IF NOT EXISTS crawl_etags (
+  url TEXT PRIMARY KEY,
+  origin TEXT NOT NULL,
+  etag TEXT,
+  last_modified TEXT,
+  fetched_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_crawl_etags_origin ON crawl_etags(origin);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
+  { name: '003-crawl-etags', sql: MIGRATION_003_CRAWL_ETAGS },
 ];
 
 /**
