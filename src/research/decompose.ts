@@ -170,6 +170,34 @@ export function detectQueryType(question: string): QueryType {
   return 'general';
 }
 
+// Generic category nouns that often pad onto a proper entity name when the
+// user phrases a question like "differences between Bun and Deno runtimes".
+// We strip them as a trailing token so entities resolve to "Bun"/"Deno".
+const TRAILING_CATEGORY_NOUNS = new Set([
+  'runtime', 'runtimes',
+  'framework', 'frameworks',
+  'library', 'libraries',
+  'tool', 'tools',
+  'language', 'languages',
+  'database', 'databases', 'db', 'dbs',
+  'platform', 'platforms',
+  'service', 'services',
+  'engine', 'engines',
+  'editor', 'editors',
+  'ide', 'ides',
+  'package', 'packages',
+]);
+
+function trimCategorySuffix(entity: string): string {
+  const tokens = entity.trim().split(/\s+/);
+  while (tokens.length > 1) {
+    const last = tokens[tokens.length - 1].toLowerCase();
+    if (!TRAILING_CATEGORY_NOUNS.has(last)) break;
+    tokens.pop();
+  }
+  return tokens.join(' ');
+}
+
 export function extractComparisonEntities(question: string): { entities: string[]; context: string } {
   // Strip common question prefixes so "how does X vs Y" still matches
   const cleaned = question
@@ -180,7 +208,9 @@ export function extractComparisonEntities(question: string): { entities: string[
   // "X vs Y vs Z for/in/with context"
   const vsMatch = cleaned.match(/^(.+?)\s+(?:vs\.?|versus)\s+(.+?)(?:\s+(?:vs\.?|versus)\s+(.+?))?(?:\s+(?:for|in|with|when)\s+(.+))?$/i);
   if (vsMatch) {
-    const entities = [vsMatch[1], vsMatch[2], vsMatch[3]].filter(Boolean).map(e => e.trim());
+    const entities = [vsMatch[1], vsMatch[2], vsMatch[3]]
+      .filter(Boolean)
+      .map(e => trimCategorySuffix(e!.trim()));
     return { entities, context: vsMatch[4]?.trim() || '' };
   }
 
@@ -188,14 +218,20 @@ export function extractComparisonEntities(question: string): { entities: string[
   const compareMatch = cleaned.match(/^compare\s+(.+?)(?:\s+(?:for|in|with|when)\s+(.+))?$/i);
   if (compareMatch) {
     const entityPart = compareMatch[1];
-    const entities = entityPart.split(/(?:,\s*|\s+and\s+)/).map(e => e.trim()).filter(Boolean);
+    const entities = entityPart
+      .split(/(?:,\s*|\s+and\s+)/)
+      .map(e => trimCategorySuffix(e.trim()))
+      .filter(Boolean);
     return { entities, context: compareMatch[2]?.trim() || '' };
   }
 
   // "differences between X and Y"
   const diffMatch = cleaned.match(/differences?\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+(?:for|in|with)\s+(.+))?$/i);
   if (diffMatch) {
-    return { entities: [diffMatch[1].trim(), diffMatch[2].trim()], context: diffMatch[3]?.trim() || '' };
+    return {
+      entities: [trimCategorySuffix(diffMatch[1].trim()), trimCategorySuffix(diffMatch[2].trim())],
+      context: diffMatch[3]?.trim() || '',
+    };
   }
 
   return { entities: [], context: '' };

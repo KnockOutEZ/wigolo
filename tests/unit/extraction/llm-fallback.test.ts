@@ -2,22 +2,22 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { initDatabase, closeDatabase } from '../../../src/cache/db.js';
 import { resetConfig } from '../../../src/config.js';
 
-vi.mock('../../../src/extraction/llm/anthropic.js', () => ({
+vi.mock('../../../src/integrations/cloud/llm/anthropic.js', () => ({
   callAnthropic: vi.fn(),
 }));
-vi.mock('../../../src/extraction/llm/openai.js', () => ({
+vi.mock('../../../src/integrations/cloud/llm/openai.js', () => ({
   callOpenAI: vi.fn(),
 }));
-vi.mock('../../../src/extraction/llm/gemini.js', () => ({
+vi.mock('../../../src/integrations/cloud/llm/gemini.js', () => ({
   callGemini: vi.fn(),
 }));
-vi.mock('../../../src/extraction/llm/groq.js', () => ({
+vi.mock('../../../src/integrations/cloud/llm/groq.js', () => ({
   callGroq: vi.fn(),
 }));
 
 import { extractWithLLM } from '../../../src/extraction/llm-fallback.js';
-import { callAnthropic } from '../../../src/extraction/llm/anthropic.js';
-import { callOpenAI } from '../../../src/extraction/llm/openai.js';
+import { callAnthropic } from '../../../src/integrations/cloud/llm/anthropic.js';
+import { callOpenAI } from '../../../src/integrations/cloud/llm/openai.js';
 
 const schema = {
   type: 'object',

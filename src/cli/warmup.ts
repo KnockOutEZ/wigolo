@@ -78,12 +78,26 @@ async function installTrafilatura(dataDir: string, reporter: WarmupReporter): Pr
   return 'failed';
 }
 
-async function downloadOnnxReranker(
+async function installRerankerPython(
   dataDir: string,
   reporter: WarmupReporter,
+  installEmbeddings: boolean,
 ): Promise<Pick<WarmupResult, 'reranker' | 'rerankerError'>> {
+  reporter.start('reranker', 'Installing ML reranker (tokenizers + onnxruntime)');
+  const py = getPythonBin(dataDir);
+  const pkgs = ['tokenizers', 'onnxruntime'];
+  if (installEmbeddings) pkgs.unshift('sentence-transformers');
+  const r = await runCommand(
+    py,
+    ['-m', 'pip', 'install', '--quiet', '--upgrade-strategy', 'only-if-needed', ...pkgs],
+    { timeout: 300_000 },
+  );
+  if (r.code !== 0) {
+    const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
+    reporter.fail('reranker', message);
+    return { reranker: 'failed', rerankerError: message };
+  }
   const modelId = resolveModelId(getConfig().rerankerModel);
-  reporter.start('reranker', `Installing ML reranker (${modelId})`);
   try {
     await downloadModelAssets(modelId, dataDir, reporter);
     await onnxRerank('warmup', [{ text: 'hello world' }], { modelId });
@@ -121,9 +135,10 @@ async function installWebkit(reporter: WarmupReporter): Promise<Pick<WarmupResul
 }
 
 async function installSentenceTransformers(dataDir: string, reporter: WarmupReporter): Promise<Pick<WarmupResult, 'embeddings' | 'embeddingsError'>> {
-  reporter.start('embeddings', 'Installing semantic embeddings (sentence-transformers)');
   const py = getPythonBin(dataDir);
-  const r = await runCommand(py, ['-m', 'pip', 'install', '--quiet', 'sentence-transformers'], { timeout: 300000 });
+  reporter.start('embeddings', 'Installing semantic embeddings (sentence-transformers)');
+  const r = await runCommand(py, ['-m', 'pip', 'install', '--quiet',
+    '--upgrade-strategy', 'only-if-needed', 'sentence-transformers'], { timeout: 300_000 });
   if (r.code === 0) {
     reporter.success('embeddings', 'installed');
     return { embeddings: 'ok' };
@@ -252,7 +267,8 @@ export async function runWarmup(
 
   let rerankerResult: Pick<WarmupResult, 'reranker' | 'rerankerError'> = {};
   if (flagSet.has('--reranker') || flagSet.has('--all')) {
-    rerankerResult = await downloadOnnxReranker(config.dataDir, reporterImpl);
+    const installEmbeddings = flagSet.has('--embeddings') || flagSet.has('--all');
+    rerankerResult = await installRerankerPython(config.dataDir, reporterImpl, installEmbeddings);
   }
 
   let firefoxResult: Pick<WarmupResult, 'firefox' | 'firefoxError'> = {};
@@ -299,6 +315,16 @@ export async function runWarmup(
 
   if (flagSet.has('--verify') || flagSet.has('--all')) {
     await runVerify(config.dataDir, reporterImpl);
+  }
+
+  // Reset the reranker subprocess registry before exit (legacy no-op shim
+  // retained from the pre-Python-migration shape; subprocess teardown happens
+  // via process.exit(0) in src/index.ts).
+  try {
+    const { disposeOnnxSessions } = await import('../search/reranker/onnx.js');
+    await disposeOnnxSessions();
+  } catch {
+    // best-effort cleanup; never block warmup success on it
   }
 
   reporterImpl.finish();

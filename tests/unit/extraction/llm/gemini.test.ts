@@ -7,7 +7,7 @@ vi.mock('@google/genai', () => ({
   },
 }));
 
-import { callGemini } from '../../../../src/extraction/llm/gemini.js';
+import { callGemini } from '../../../../src/integrations/cloud/llm/gemini.js';
 
 describe('callGemini', () => {
   beforeEach(() => generateContent.mockReset());

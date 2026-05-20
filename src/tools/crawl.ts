@@ -81,17 +81,20 @@ export async function handleCrawl(
       charCount += page.markdown.length;
     }
 
+    const droppedOverBudget = result.crawled - budgetedPages.length;
     log.info('Crawl complete', {
       url: input.url,
       crawled: result.crawled,
       returned: budgetedPages.length,
       totalChars: charCount,
+      droppedOverBudget,
     });
 
     const out: CrawlOutput = {
       pages: budgetedPages,
       total_found: result.total_found,
-      crawled: result.crawled,
+      crawled: budgetedPages.length,
+      ...(droppedOverBudget > 0 ? { dropped_over_budget: droppedOverBudget } : {}),
       ...(result.links ? { links: result.links } : {}),
     };
 

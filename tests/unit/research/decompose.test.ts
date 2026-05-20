@@ -284,6 +284,23 @@ describe('decomposeQuestion', () => {
       const result = extractComparisonEntities('Differences between REST and GraphQL');
       expect(result.entities).toEqual(['REST', 'GraphQL']);
     });
+
+    it('trims trailing category nouns like "runtimes"', () => {
+      const result = extractComparisonEntities('What are the main differences between Bun and Deno runtimes in 2026?');
+      expect(result.entities).toEqual(['Bun', 'Deno']);
+    });
+
+    it('trims trailing category nouns in vs syntax', () => {
+      const result = extractComparisonEntities('Postgres vs MySQL databases');
+      expect(result.entities).toEqual(['Postgres', 'MySQL']);
+    });
+
+    it('preserves entity when it is a single category noun', () => {
+      const result = extractComparisonEntities('Tools vs Frameworks');
+      // A single-token entity that itself matches a category noun is kept;
+      // we only strip *trailing* nouns when the entity has additional words.
+      expect(result.entities).toEqual(['Tools', 'Frameworks']);
+    });
   });
 
   describe('template-based decomposition', () => {

@@ -67,13 +67,18 @@ describe('warmup uses venv python', () => {
     expect(trafCall![1]).toEqual(expect.arrayContaining(['-m', 'pip', 'install']));
   });
 
-  it('--reranker no longer invokes pip (ONNX runs in-process)', async () => {
+  it('--reranker pip-installs tokenizers + onnxruntime via venv python', async () => {
     vi.mocked(existsSync).mockImplementation((p) => String(p) === VENV_PYTHON);
 
     await runWarmup(['--reranker']);
 
+    const tokCall = pipCallFor('tokenizers');
+    const ortCall = pipCallFor('onnxruntime');
+    expect(tokCall).toBeDefined();
+    expect(ortCall).toBeDefined();
+    expect(tokCall![0]).toBe(VENV_PYTHON);
+    expect(tokCall![1]).toEqual(expect.arrayContaining(['-m', 'pip', 'install']));
     expect(pipCallFor('flashrank')).toBeUndefined();
-    expect(pipCallFor('onnx')).toBeUndefined();
   });
 
   it('installs sentence-transformers via venv python when venv exists', async () => {

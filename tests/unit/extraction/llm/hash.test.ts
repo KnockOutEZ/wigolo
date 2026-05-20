@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hashPrompt, hashSchema } from '../../../../src/extraction/llm/hash.js';
+import { hashPrompt, hashSchema } from '../../../../src/integrations/cloud/llm/hash.js';
 
 describe('hashPrompt', () => {
   it('is stable under whitespace variation', () => {

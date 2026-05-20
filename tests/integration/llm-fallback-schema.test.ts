@@ -2,12 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { initDatabase, closeDatabase } from '../../src/cache/db.js';
 import { resetConfig } from '../../src/config.js';
 
-vi.mock('../../src/extraction/llm/anthropic.js', () => ({
+vi.mock('../../src/integrations/cloud/llm/anthropic.js', () => ({
   callAnthropic: vi.fn(),
 }));
 
 import { extractWithSchemaDetailedAsync } from '../../src/extraction/schema.js';
-import { callAnthropic } from '../../src/extraction/llm/anthropic.js';
+import { callAnthropic } from '../../src/integrations/cloud/llm/anthropic.js';
 
 describe('extractWithSchemaDetailedAsync — llm fallback wiring', () => {
   const originalEnv = process.env;

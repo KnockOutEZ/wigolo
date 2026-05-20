@@ -7,7 +7,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
   },
 }));
 
-import { callAnthropic } from '../../../../src/extraction/llm/anthropic.js';
+import { callAnthropic } from '../../../../src/integrations/cloud/llm/anthropic.js';
 
 describe('callAnthropic', () => {
   beforeEach(() => create.mockReset());

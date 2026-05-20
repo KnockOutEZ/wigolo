@@ -6,6 +6,28 @@ import type { RawFetchResult, ExtractionResult, CachedContent, SearchResultItem,
 
 const log = createLogger('cache');
 
+/**
+ * Sanitize a user query for sqlite FTS5 MATCH.
+ *
+ * Why: bare tokens with `.` / `-` / `/` / `:` / digits-with-dot
+ * (e.g. "5.4", "x-y", "https://foo") raise `fts5: syntax error near "."`.
+ * Quoting tokens that aren't pure word-chars lets FTS5 treat them as phrases.
+ * Already-quoted phrases and explicit operators (AND/OR/NOT/parens) pass through.
+ */
+export function sanitizeFtsQuery(q: string): string {
+  const trimmed = q.trim();
+  if (!trimmed) return '';
+  if (/^".*"$/.test(trimmed)) return trimmed;
+  const tokens = trimmed.match(/"[^"]*"|\S+/g) ?? [];
+  const RESERVED = new Set(['AND', 'OR', 'NOT', '(', ')']);
+  return tokens.map(tok => {
+    if (tok.startsWith('"') && tok.endsWith('"')) return tok;
+    if (RESERVED.has(tok)) return tok;
+    if (/^\w+\*?$/.test(tok)) return tok;
+    return `"${tok.replace(/"/g, '""')}"`;
+  }).join(' ');
+}
+
 const TRACKING_PARAMS = new Set([
   'utm_source',
   'utm_medium',
@@ -194,7 +216,7 @@ export function searchCache(query: string): CachedContent[] {
     JOIN url_cache_fts ON url_cache.id = url_cache_fts.rowid
     WHERE url_cache_fts MATCH ?
     ORDER BY rank
-  `).all(query) as DbRow[];
+  `).all(sanitizeFtsQuery(query)) as DbRow[];
 
   return rows.map(rowToCachedContent);
 }
@@ -286,7 +308,7 @@ export function searchCacheFiltered(options: {
   if (options.query) {
     fromClause = 'url_cache JOIN url_cache_fts ON url_cache.id = url_cache_fts.rowid';
     conditions.push('url_cache_fts MATCH ?');
-    params.push(options.query);
+    params.push(sanitizeFtsQuery(options.query));
   }
 
   if (options.urlPattern) {
@@ -320,7 +342,7 @@ export function clearCacheEntries(options: {
     conditions.push(
       'id IN (SELECT url_cache.id FROM url_cache JOIN url_cache_fts ON url_cache.id = url_cache_fts.rowid WHERE url_cache_fts MATCH ?)',
     );
-    params.push(options.query);
+    params.push(sanitizeFtsQuery(options.query));
   }
 
   if (options.urlPattern) {

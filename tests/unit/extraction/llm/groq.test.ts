@@ -7,7 +7,7 @@ vi.mock('groq-sdk', () => ({
   },
 }));
 
-import { callGroq } from '../../../../src/extraction/llm/groq.js';
+import { callGroq } from '../../../../src/integrations/cloud/llm/groq.js';
 
 const schema = {
   type: 'object',

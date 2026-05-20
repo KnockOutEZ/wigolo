@@ -58,7 +58,7 @@ describe('search mode=deep — query expansion', () => {
     fanOutSpy.mockRestore();
   });
 
-  it('fetches full bodies for the top-K=5 results in deep mode', async () => {
+  it('fetches full bodies capped by max_fetches', async () => {
     const router = {
       fetch: vi.fn().mockImplementation((url: string) => Promise.resolve({
         url, finalUrl: url,
@@ -76,15 +76,13 @@ describe('search mode=deep — query expansion', () => {
       ),
     };
     const __r_out = await handleSearch(
-      { query: 'topic', mode: 'deep', max_results: 10, include_full_markdown: true },
+      { query: 'topic', max_results: 10, max_fetches: 5, include_full_markdown: true },
       [engine],
       router,
     );;
     const out = __r_out.ok ? __r_out.data : ({ ...__r_out } as any);
     expect(router.fetch).toHaveBeenCalled();
-    // K cap: at most 5 fetches even though 8 candidates exist (max_results=10)
     expect((router.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(5);
-    // At least one result has markdown_content from the body
     const withContent = out.results.find(r => (r.markdown_content ?? '').length > 0);
     expect(withContent).toBeTruthy();
   });

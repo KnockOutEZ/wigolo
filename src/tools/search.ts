@@ -159,6 +159,7 @@ export async function handleSearch(
         } else {
           output.answer = synth.data.answer;
           output.citations = synth.data.citations;
+          if (input.format === 'stream_answer') output.streaming = true;
           if (synth.data.warning) {
             output.warning = output.warning ? `${output.warning}; ${synth.data.warning}` : synth.data.warning;
           }
@@ -287,6 +288,7 @@ export async function handleSearch(
       } else {
         output.answer = synth.data.answer;
         output.citations = synth.data.citations;
+        if (input.format === 'stream_answer') output.streaming = true;
         if (synth.data.warning) {
           output.warning = output.warning ? `${output.warning}; ${synth.data.warning}` : synth.data.warning;
         }
@@ -340,6 +342,7 @@ export async function handleSearch(
       } else {
         output.answer = synth.data.answer;
         output.citations = synth.data.citations;
+        if (input.format === 'stream_answer') output.streaming = true;
         if (synth.data.warning) {
           output.warning = output.warning ? `${output.warning}; ${synth.data.warning}` : synth.data.warning;
         }
@@ -491,6 +494,7 @@ export async function handleSearch(
     } else {
       output.answer = synth.data.answer;
       output.citations = synth.data.citations;
+      if (input.format === 'stream_answer') output.streaming = true;
       if (synth.data.warning) {
         output.warning = output.warning ? `${output.warning}; ${synth.data.warning}` : synth.data.warning;
       }

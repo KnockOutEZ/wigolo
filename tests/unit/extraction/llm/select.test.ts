@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectProvider } from '../../../../src/extraction/llm/select.js';
+import { selectProvider } from '../../../../src/integrations/cloud/llm/select.js';
 
 describe('selectProvider', () => {
   it('returns null when no keys set', () => {

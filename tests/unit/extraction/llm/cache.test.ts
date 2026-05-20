@@ -4,7 +4,7 @@ import {
   ensureLLMCacheTable,
   lookupLLMCache,
   insertLLMCache,
-} from '../../../../src/extraction/llm/cache.js';
+} from '../../../../src/integrations/cloud/llm/cache.js';
 
 describe('llm cache', () => {
   beforeEach(() => {

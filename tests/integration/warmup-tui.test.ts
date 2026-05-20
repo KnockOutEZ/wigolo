@@ -89,3 +89,26 @@ describe('runWarmup TUI integration', () => {
     ]));
   });
 });
+
+describe.skipIf(!process.env.WIGOLO_RERANKER_TEST)('warmup --all installs SearXNG + reranker in one resolver pass', () => {
+  it('after warmup --all, both embedding and reranker subprocesses spawn cleanly (no numpy ImportError)', async () => {
+    const { spawnSync } = await import('node:child_process');
+    const cliEntry = (await import('node:path')).join(process.cwd(), 'dist', 'index.js');
+    const result = spawnSync('node', [cliEntry, 'warmup', '--all', '--plain'], {
+      encoding: 'utf-8',
+      timeout: 600_000,
+      env: { ...process.env },
+    });
+    expect(result.status, `warmup exit ${result.status}: ${result.stderr.slice(-500)}`).toBe(0);
+    expect(result.stderr).not.toMatch(/ImportError: numpy/);
+    expect(result.stderr).not.toMatch(/Cannot uninstall numpy/);
+    expect(result.stderr).not.toMatch(/numpy.* requires .* but you have/);
+
+    const { onnxRerank } = await import('../../src/search/reranker/onnx.js');
+    const out = await onnxRerank('q', [{ text: 'doc' }]);
+    expect(out).toHaveLength(1);
+
+    const { resetAllRerankSubprocesses } = await import('../../src/python/reranker-subprocess.js');
+    resetAllRerankSubprocesses();
+  }, 720_000);
+});

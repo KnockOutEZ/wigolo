@@ -621,6 +621,11 @@ function fuseResults(
     }
   }
 
+  // Raw RRF scores cap at ~2/60 ≈ 0.033 which reads as "low relevance" to
+  // users. Normalize against the top score so the best match is 1.0 and the
+  // rest are proportional; the absolute RRF value is preserved in
+  // match_signals.fused_score for clients that depend on it.
+  const topScore = sorted.length > 0 ? sorted[0][1] : 0;
   const fused: FindSimilarResult[] = [];
   for (const [nUrl, score] of sorted) {
     if (fused.length >= maxResults) break;
@@ -628,9 +633,10 @@ function fuseResults(
     const result = resultsByNormalizedUrl.get(nUrl);
     if (!result) continue;
 
+    const normalized = topScore > 0 ? score / topScore : 0;
     fused.push({
       ...result,
-      relevance_score: score,
+      relevance_score: normalized,
       match_signals: {
         ...result.match_signals,
         fused_score: score,

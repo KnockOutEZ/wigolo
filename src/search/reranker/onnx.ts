@@ -1,49 +1,16 @@
-import * as ort from 'onnxruntime-node';
 import { downloadModelAssets } from './download.js';
-import { loadTokenizer, tokenizePair } from './tokenizer.js';
+import { resolveModelId } from './models.js';
+import {
+  getRerankSubprocess,
+  resetAllRerankSubprocesses,
+} from '../../python/reranker-subprocess.js';
 import { getConfig } from '../../config.js';
 import { createLogger } from '../../logger.js';
-import { resolveModelId } from './models.js';
 
 const log = createLogger('reranker');
 
-export interface RerankDoc {
-  text: string;
-}
-export interface RerankScore {
-  index: number;
-  score: number;
-}
-
-const sessionCache = new Map<string, Promise<ort.InferenceSession>>();
-
-export function _resetOnnxSessionCache(): void {
-  sessionCache.clear();
-}
-
-async function getSession(modelId: string, modelPath: string): Promise<ort.InferenceSession> {
-  const id = resolveModelId(modelId);
-  const existing = sessionCache.get(id);
-  if (existing) return existing;
-  const p = (async () => {
-    log.debug('creating ONNX session', { id, modelPath });
-    return ort.InferenceSession.create(modelPath, {
-      executionProviders: ['cpu'],
-      graphOptimizationLevel: 'all',
-    });
-  })();
-  sessionCache.set(id, p);
-  try {
-    return await p;
-  } catch (err) {
-    sessionCache.delete(id);
-    throw err;
-  }
-}
-
-function sigmoid(x: number): number {
-  return 1 / (1 + Math.exp(-x));
-}
+export interface RerankDoc { text: string; }
+export interface RerankScore { index: number; score: number; }
 
 export async function onnxRerank(
   query: string,
@@ -52,41 +19,34 @@ export async function onnxRerank(
 ): Promise<RerankScore[]> {
   if (docs.length === 0) return [];
   const cfg = getConfig();
-  const modelId = opts.modelId ?? cfg.rerankerModel ?? 'bge-reranker-v2-m3';
-  const maxLength = opts.maxLength ?? 512;
+  const modelId = resolveModelId(opts.modelId ?? cfg.rerankerModel ?? 'bge-reranker-v2-m3');
+  const maxLength = opts.maxLength
+    ?? envInt('WIGOLO_RERANKER_MAX_LENGTH', 512);
 
-  // Order matters: download assets first (so tokenizer.json is on disk), then
-  // load the tokenizer via @xenova/transformers (which bundles its own ORT
-  // build and initializes shared native state on import), and only then
-  // create the onnxruntime-node session. Creating the ORT session before the
-  // xenova import overwrites our env handle and the next session.run()
-  // segfaults (SIGBUS) on macOS.
-  const { modelPath } = await downloadModelAssets(modelId, cfg.dataDir);
-  const tokenizer = await loadTokenizer(modelId, cfg.dataDir);
-  const session = await getSession(modelId, modelPath);
+  await downloadModelAssets(modelId, cfg.dataDir);
 
-  const scores: RerankScore[] = [];
-  for (let i = 0; i < docs.length; i++) {
-    const { input_ids, attention_mask, token_type_ids, length } = tokenizePair(
-      tokenizer as Parameters<typeof tokenizePair>[0],
-      query,
-      docs[i].text,
-      maxLength,
-    );
-    const dims = [1, length];
-    const feeds: Record<string, ort.Tensor> = {
-      input_ids: new ort.Tensor('int64', input_ids, dims),
-      attention_mask: new ort.Tensor('int64', attention_mask, dims),
-    };
-    if (session.inputNames.includes('token_type_ids')) {
-      feeds.token_type_ids = new ort.Tensor('int64', token_type_ids, dims);
-    }
-    const out = await session.run(feeds);
-    const logitsName = session.outputNames[0];
-    const logit = (out[logitsName].data as Float32Array)[0];
-    scores.push({ index: i, score: sigmoid(logit) });
-  }
+  log.debug('rerank dispatch', { modelId, maxLength, docs: docs.length });
+  const proc = getRerankSubprocess(modelId, maxLength);
+  const scores = await proc.score(query, docs.map((d) => d.text));
 
-  scores.sort((a, b) => b.score - a.score);
-  return scores;
+  return scores
+    .map((score, index) => ({ index, score }))
+    .sort((a, b) => b.score - a.score);
+}
+
+/** Legacy export — no native ORT sessions to dispose post-migration. */
+export async function disposeOnnxSessions(): Promise<void> {
+  // No-op. Retained to preserve warmup.ts import surface.
+}
+
+/** Legacy export — clears the new subprocess registry. */
+export function _resetOnnxSessionCache(): void {
+  resetAllRerankSubprocesses();
+}
+
+function envInt(name: string, defaultValue: number): number {
+  const v = process.env[name];
+  if (!v) return defaultValue;
+  const parsed = parseInt(v, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 }

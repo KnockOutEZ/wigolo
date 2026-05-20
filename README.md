@@ -254,7 +254,7 @@ WIGOLO_AUTH_STATE_PATH=~/.wigolo/auth.json
 WIGOLO_CHROME_PROFILE_PATH=~/.config/google-chrome/Default
 
 # ML reranking (install with: npx @staticn0va/wigolo warmup --reranker)
-WIGOLO_RERANKER=flashrank
+WIGOLO_RERANKER=onnx
 
 # Tune extraction — auto/always/never
 WIGOLO_TRAFILATURA=auto
@@ -274,7 +274,7 @@ Full list of env vars:
 | `WIGOLO_DATA_DIR` | `~/.wigolo` | Data + cache directory |
 | `WIGOLO_AUTH_STATE_PATH` | — | Browser session state JSON |
 | `WIGOLO_CHROME_PROFILE_PATH` | — | Chrome user data directory |
-| `WIGOLO_RERANKER` | `none` | ML reranker: `flashrank` or `none` |
+| `WIGOLO_RERANKER` | `onnx` | ML reranker: `onnx` or `none` (`flashrank` accepted as legacy alias) |
 | `WIGOLO_TRAFILATURA` | `auto` | Content extractor: `auto`, `always`, or `never` |
 | `MAX_BROWSERS` | `3` | Concurrent browser contexts |
 | `FETCH_TIMEOUT_MS` | `10000` | HTTP fetch timeout |
@@ -313,6 +313,8 @@ Search engine bootstrap failures are self-healing: wigolo retries after 30 secon
 3. Content extraction engine — high-precision article extraction (optional, Python)
 4. Fallback extractor — battle-tested browser-compat algorithm
 5. HTML-to-markdown converter — last resort
+
+**ML reranker** — the optional cross-encoder reranker runs as a long-lived Python subprocess (mirroring the embeddings subprocess pattern), keeping the heavy model resident across requests with no per-call cold start.
 
 ## Discovery
 

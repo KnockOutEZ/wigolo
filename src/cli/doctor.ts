@@ -93,6 +93,35 @@ async function checkOnnxReranker(
   }
 }
 
+function checkRerankerPyPackages(pythonBin: string): {
+  ok: boolean;
+  tokenizers?: string;
+  onnxruntime?: string;
+} {
+  const tok = checkPyPackage('tokenizers', pythonBin);
+  const ort = checkPyPackage('onnxruntime', pythonBin);
+  return {
+    ok: tok.ok && ort.ok,
+    tokenizers: tok.version,
+    onnxruntime: ort.version,
+  };
+}
+
+function checkVenvStale(dataDir: string, _pythonBin: string): { stale: boolean; reason?: string } {
+  const cfgPath = join(dataDir, 'searxng', 'venv', 'pyvenv.cfg');
+  if (!existsSync(cfgPath)) return { stale: false };
+  try {
+    const cfg = readFileSync(cfgPath, 'utf-8');
+    const homeMatch = cfg.match(/home\s*=\s*(.+)$/m);
+    if (!homeMatch) return { stale: false };
+    const venvHome = homeMatch[1].trim();
+    if (!existsSync(venvHome)) return { stale: true, reason: `recorded home ${venvHome} does not exist` };
+    return { stale: false };
+  } catch {
+    return { stale: false };
+  }
+}
+
 function humanRetry(nextRetryAt?: string): string {
   if (!nextRetryAt) return 'not scheduled';
   const when = new Date(nextRetryAt);
@@ -145,6 +174,17 @@ export async function runDoctor(dataDir: string): Promise<number> {
     out(`  ML reranker:        installed (onnx ${reranker.modelId})${timing}`);
   } else {
     out(`  ML reranker:        not installed${reranker.reason ? ` (${reranker.reason})` : ''}`);
+  }
+
+  const pyPkgs = checkRerankerPyPackages(pythonBin);
+  const versionPart = pyPkgs.tokenizers && pyPkgs.onnxruntime
+    ? ` (tokenizers=${pyPkgs.tokenizers} onnxruntime=${pyPkgs.onnxruntime})`
+    : '';
+  out(`  Python reranker packages: ${pyPkgs.ok ? 'ok' : 'missing'}${versionPart}`);
+
+  const venvCheck = checkVenvStale(dataDir, pythonBin);
+  if (venvCheck.stale) {
+    out(`  Python reranker venv:    STALE — re-run "wigolo warmup --reranker" (${venvCheck.reason})`);
   }
 
   out('');

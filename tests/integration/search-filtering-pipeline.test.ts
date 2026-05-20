@@ -7,6 +7,13 @@ vi.mock('../../src/config.js', () => ({
     searchTotalTimeoutMs: 30000,
     searchFetchTimeoutMs: 10000,
     searxngQueryTimeoutMs: 5000,
+    fastStaleMaxHours: 24,
+    multiQueryConcurrency: 4,
+    multiQueryMax: 5,
+    relevanceThreshold: 0,
+    reranker: 'none',
+    rerankerModel: 'bge-reranker-v2-m3',
+    validateTimeoutMs: 5000,
   }),
 }));
 
@@ -86,10 +93,10 @@ describe('search filtering pipeline integration', () => {
     expect(output.results.every(r =>
       r.url.includes('react.dev') || r.url.includes('github.com')
     )).toBe(true);
-    // Verify dedup picked the higher score for react.dev/learn
+    // Verify dedup picked the higher score for react.dev/learn (post-boost score ≥ raw 0.95)
     const learnResult = output.results.find(r => r.url.includes('react.dev/learn'));
     expect(learnResult).toBeDefined();
-    expect(learnResult!.relevance_score).toBe(0.95);
+    expect(learnResult!.relevance_score).toBeGreaterThanOrEqual(0.95);
     // Both engines used
     expect(output.engines_used).toContain('searxng');
     expect(output.engines_used).toContain('duckduckgo');

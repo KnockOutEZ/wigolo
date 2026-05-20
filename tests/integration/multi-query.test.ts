@@ -113,8 +113,10 @@ describe('Multi-query integration', () => {
     const __r_output = await handleSearch(input, [engine], mockRouter);;
     const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
 
-    expect(output.queries_executed).toBeUndefined();
+    // Single-string queries are now auto-expanded into variants;
+    // backward compat: output.query keeps the original input string.
     expect(output.query).toBe('simple test');
+    expect(output.queries_executed?.[0]).toBe('simple test');
     expect(output.results.length).toBeGreaterThan(0);
   });
 

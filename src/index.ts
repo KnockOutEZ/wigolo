@@ -20,6 +20,9 @@ const { command, args } = parseCommand(process.argv.slice(2));
 switch (command) {
   case 'warmup':
     await runWarmup(args);
+    // Explicit exit for clean teardown — ensures all child subprocesses
+    // (reranker, embedding) are reaped before Node returns.
+    process.exit(0);
     break;
 
   case 'serve':

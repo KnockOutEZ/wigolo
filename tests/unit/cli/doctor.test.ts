@@ -115,6 +115,82 @@ describe('runDoctor', () => {
     expect(outBuffer).toContain('not bootstrapped');
   });
 
+  describe('Python reranker packages section', () => {
+    it('reports "ok" with versions when tokenizers + onnxruntime importable', async () => {
+      vi.mocked(spawnSync).mockImplementation((cmd, args) => {
+        const joined = [cmd, ...((args ?? []) as string[])].join(' ');
+        if (joined.includes('import tokenizers; print')) return okProc('0.20.3\n');
+        if (joined.includes('import onnxruntime; print')) return okProc('1.20.1\n');
+        if (joined.includes('import tokenizers')) return okProc('');
+        if (joined.includes('import onnxruntime')) return okProc('');
+        return okProc('Python 3.12.4');
+      });
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockImplementation((p) => {
+        const s = String(p);
+        if (s.endsWith('state.json')) return JSON.stringify({ status: 'ready', searxngPath: '/tmp/searxng' });
+        if (s.endsWith('searxng.lock')) return JSON.stringify({ pid: process.pid, port: 8888 });
+        return '';
+      });
+      await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toMatch(/Python reranker packages:\s+ok/);
+      expect(outBuffer).toMatch(/tokenizers=0\.20\.3/);
+      expect(outBuffer).toMatch(/onnxruntime=1\.20\.1/);
+    });
+
+    it('reports "missing" when tokenizers cannot be imported', async () => {
+      vi.mocked(spawnSync).mockImplementation((cmd, args) => {
+        const joined = [cmd, ...((args ?? []) as string[])].join(' ');
+        if (joined.includes('import tokenizers')) return failProc();
+        return okProc('Python 3.12.4');
+      });
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockImplementation((p) => {
+        const s = String(p);
+        if (s.endsWith('state.json')) return JSON.stringify({ status: 'ready', searxngPath: '/tmp/searxng' });
+        if (s.endsWith('searxng.lock')) return JSON.stringify({ pid: process.pid, port: 8888 });
+        return '';
+      });
+      await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toMatch(/Python reranker packages:\s+missing/);
+    });
+
+    it('flags venv as stale when pyvenv.cfg references a missing python home', async () => {
+      vi.mocked(spawnSync).mockImplementation(() => okProc('Python 3.12.4'));
+      vi.mocked(existsSync).mockImplementation((p) => {
+        const s = String(p);
+        if (s.endsWith('pyvenv.cfg')) return true;
+        if (s === '/opt/missing-python/bin') return false;
+        return true;
+      });
+      vi.mocked(readFileSync).mockImplementation((p) => {
+        const s = String(p);
+        if (s.endsWith('pyvenv.cfg')) return 'home = /opt/missing-python/bin\nversion = 3.12.4\n';
+        if (s.endsWith('state.json')) return JSON.stringify({ status: 'ready', searxngPath: '/tmp/searxng' });
+        if (s.endsWith('searxng.lock')) return JSON.stringify({ pid: process.pid, port: 8888 });
+        return '';
+      });
+      await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toMatch(/Python reranker venv:\s+STALE/);
+      expect(outBuffer).toContain('/opt/missing-python/bin');
+      expect(outBuffer).toContain('warmup --reranker');
+    });
+
+    it('does not flag venv as stale when home exists', async () => {
+      vi.mocked(spawnSync).mockImplementation(() => okProc('Python 3.12.4'));
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockImplementation((p) => {
+        const s = String(p);
+        if (s.endsWith('pyvenv.cfg')) return 'home = /usr/local/opt/python/bin\nversion = 3.12.4\n';
+        if (s.endsWith('state.json')) return JSON.stringify({ status: 'ready', searxngPath: '/tmp/searxng' });
+        if (s.endsWith('searxng.lock')) return JSON.stringify({ pid: process.pid, port: 8888 });
+        return '';
+      });
+      await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).not.toMatch(/Python reranker venv:\s+STALE/);
+    });
+  });
+
   describe('LLM fallback section', () => {
     const originalEnv = process.env;
 

@@ -4,7 +4,7 @@ import type {
   LLMExtractResult,
   LLMCallRecord,
   LLMCallOpts,
-} from '../../../../src/extraction/llm/types.js';
+} from '../../../../src/integrations/cloud/llm/types.js';
 
 describe('llm types', () => {
   it('LLMProvider is union of supported providers', () => {

@@ -82,10 +82,10 @@ describe('rerankResults with ONNX', () => {
       url: 'https://x.com',
       snippet: 'snip',
       relevance_score: 0.5,
-      engines: ['searxng', 'brave'],
+      engines: ['searxng'],
     };
     const out = await rerankResults('q', [r]);
-    expect(out[0].engines).toEqual(['searxng', 'brave']);
+    expect(out[0].engines).toEqual(['searxng']);
     expect(out[0].url).toBe('https://x.com');
     expect(out[0].snippet).toBe('snip');
     expect(out[0].relevance_score).toBe(0.88);

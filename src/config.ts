@@ -42,6 +42,10 @@ export interface Config {
   trafilatura: 'auto' | 'always' | 'never';
   reranker: 'onnx' | 'none' | 'custom';
   rerankerModel: string;
+  rerankerMaxLength: number;
+  rerankerReadyTimeoutMs: number;
+  rerankerRequestTimeoutMs: number;
+  rerankerIdleTimeoutMs: number;
   relevanceThreshold: number;
   bootstrapMaxAttempts: number;
   bootstrapBackoffSeconds: number[];
@@ -134,15 +138,19 @@ export function getConfig(): Config {
     reranker: (() => {
       const raw = envStr('WIGOLO_RERANKER') ?? 'onnx';
       if (raw === 'flashrank') {
-        throw new Error(
-          "WIGOLO_RERANKER='flashrank' is retired. Set WIGOLO_RERANKER=onnx (default) — " +
-          'the in-process ONNX reranker replaces the flashrank Python subprocess. ' +
-          'See CHANGELOG.md migration notes.',
+        console.warn(
+          '[wigolo] WIGOLO_RERANKER=flashrank is a legacy alias; treating as onnx. ' +
+          'The reranker runs as a Python subprocess; install via "wigolo warmup --reranker".',
         );
+        return 'onnx';
       }
       return raw as Config['reranker'];
     })(),
     rerankerModel: envStr('WIGOLO_RERANKER_MODEL') ?? 'bge-reranker-v2-m3',
+    rerankerMaxLength: envInt('WIGOLO_RERANKER_MAX_LENGTH', 512),
+    rerankerReadyTimeoutMs: envInt('WIGOLO_RERANKER_READY_TIMEOUT_MS', 60_000),
+    rerankerRequestTimeoutMs: envInt('WIGOLO_RERANKER_REQUEST_TIMEOUT_MS', 30_000),
+    rerankerIdleTimeoutMs: envInt('WIGOLO_RERANKER_IDLE_TIMEOUT_MS', 300_000),
     relevanceThreshold: parseFloat(envStr('WIGOLO_RELEVANCE_THRESHOLD') ?? '0') || 0,
     bootstrapMaxAttempts: envInt('WIGOLO_BOOTSTRAP_MAX_ATTEMPTS', 3),
     bootstrapBackoffSeconds: envIntArray('WIGOLO_BOOTSTRAP_BACKOFF_SECONDS', [30, 3600, 86400]),

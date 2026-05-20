@@ -242,6 +242,8 @@ export async function initSubsystems(): Promise<Subsystems> {
     await browserPool.shutdown();
     await closeDaemonBrowser().catch((e) => log.debug('closeDaemonBrowser failed', { error: e instanceof Error ? e.message : String(e) }));
     resetEmbeddingService();
+    const { resetAllRerankSubprocesses } = await import('./python/reranker-subprocess.js');
+    resetAllRerankSubprocesses();
     closeDatabase();
   }
 

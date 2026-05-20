@@ -40,4 +40,25 @@ describe('sanitizeExtractedMarkdown', () => {
     const input = '```mjs\nfoo()\njavascript\n```';
     expect(sanitizeExtractedMarkdown(sanitizeExtractedMarkdown(input))).toBe(sanitizeExtractedMarkdown(input));
   });
+
+  it('unglues language prefix stuck to first identifier (TS docs pattern)', () => {
+    const input = '```markdown\ntsfunction uppercaseStrings(x: string) {\n    return x.toUpperCase();\n}\n```';
+    const out = sanitizeExtractedMarkdown(input);
+    expect(out).toMatch(/^```ts$/m);
+    expect(out).toContain('function uppercaseStrings(x: string)');
+    expect(out).not.toContain('tsfunction');
+  });
+
+  it('unglues js prefix on a const declaration', () => {
+    const input = '```markdown\njsconst x = 1;\n```';
+    const out = sanitizeExtractedMarkdown(input);
+    expect(out).toMatch(/^```js$/m);
+    expect(out).toContain('const x = 1;');
+  });
+
+  it('leaves real code starting with two-letter identifier alone', () => {
+    const input = '```ts\ntsConfig.target = "es2020";\n```';
+    const out = sanitizeExtractedMarkdown(input);
+    expect(out).toContain('tsConfig.target');
+  });
 });

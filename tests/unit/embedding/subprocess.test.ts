@@ -74,6 +74,12 @@ async function emitResponse(stdout: EventEmitter, response: object): Promise<voi
   await new Promise(r => setTimeout(r, 10));
 }
 
+/** Pull the wire-id from the Nth stdin.write call (matches the request the subprocess actually sent). */
+function wireIdAt(stdin: { write: ReturnType<typeof vi.fn> }, index = 0): string {
+  const written = stdin.write.mock.calls[index]?.[0] as string;
+  return JSON.parse(written).id;
+}
+
 describe('EmbeddingSubprocess', () => {
   let EmbeddingSubprocess: any;
   let instance: any;
@@ -94,14 +100,15 @@ describe('EmbeddingSubprocess', () => {
   });
 
   it('spawns Python process on first embed call', async () => {
-    const { proc, stdout, stderr } = createMockProcess();
+    const { proc, stdin, stdout, stderr } = createMockProcess();
     vi.mocked(spawn).mockReturnValue(proc);
 
     instance = new EmbeddingSubprocess();
     const embedPromise = instance.embed('test-id', 'Hello world');
 
     await emitReady(stderr);
-    await emitResponse(stdout, { id: 'test-id', vector: [0.1, 0.2, 0.3] });
+    const wireId = wireIdAt(stdin);
+    await emitResponse(stdout, { id: wireId, vector: [0.1, 0.2, 0.3] });
 
     const result = await embedPromise;
 
@@ -110,21 +117,21 @@ describe('EmbeddingSubprocess', () => {
   });
 
   it('reuses existing process for subsequent calls', async () => {
-    const { proc, stdout, stderr } = createMockProcess();
+    const { proc, stdin, stdout, stderr } = createMockProcess();
     vi.mocked(spawn).mockReturnValue(proc);
 
     instance = new EmbeddingSubprocess();
 
     const p1 = instance.embed('id-1', 'First');
     await emitReady(stderr);
-    await emitResponse(stdout, { id: 'id-1', vector: [0.1] });
+    await emitResponse(stdout, { id: wireIdAt(stdin, 0), vector: [0.1] });
     await p1;
 
     const p2 = instance.embed('id-2', 'Second');
     // Tick to let embed's `await this.spawnPromise` microtask settle
     // before the pending map entry is created
     await new Promise(r => setTimeout(r, 10));
-    await emitResponse(stdout, { id: 'id-2', vector: [0.2] });
+    await emitResponse(stdout, { id: wireIdAt(stdin, 1), vector: [0.2] });
     await p2;
 
     expect(spawn).toHaveBeenCalledTimes(1);
@@ -143,7 +150,7 @@ describe('EmbeddingSubprocess', () => {
   });
 
   it('handles error response from Python', async () => {
-    const { proc, stdout, stderr } = createMockProcess();
+    const { proc, stdin, stdout, stderr } = createMockProcess();
     vi.mocked(spawn).mockReturnValue(proc);
 
     instance = new EmbeddingSubprocess();
@@ -151,13 +158,13 @@ describe('EmbeddingSubprocess', () => {
     const assertion = expect(instance.embed('err-id', 'Test')).rejects.toThrow('encoding failed');
 
     await emitReady(stderr, 'bge');
-    await emitResponse(stdout, { id: 'err-id', error: 'encoding failed' });
+    await emitResponse(stdout, { id: wireIdAt(stdin), error: 'encoding failed' });
 
     await assertion;
   });
 
   it('matches responses to requests by id', async () => {
-    const { proc, stdout, stderr } = createMockProcess();
+    const { proc, stdin, stdout, stderr } = createMockProcess();
     vi.mocked(spawn).mockReturnValue(proc);
 
     instance = new EmbeddingSubprocess();
@@ -167,9 +174,12 @@ describe('EmbeddingSubprocess', () => {
 
     await emitReady(stderr, 'bge');
 
+    const wire1 = wireIdAt(stdin, 0);
+    const wire2 = wireIdAt(stdin, 1);
+
     // Respond out of order
-    await emitResponse(stdout, { id: 'second', vector: [0.2] });
-    await emitResponse(stdout, { id: 'first', vector: [0.1] });
+    await emitResponse(stdout, { id: wire2, vector: [0.2] });
+    await emitResponse(stdout, { id: wire1, vector: [0.1] });
 
     const r1 = await p1;
     const r2 = await p2;
@@ -193,14 +203,14 @@ describe('EmbeddingSubprocess', () => {
   });
 
   it('reports availability as true after successful spawn', async () => {
-    const { proc, stdout, stderr } = createMockProcess();
+    const { proc, stdin, stdout, stderr } = createMockProcess();
     vi.mocked(spawn).mockReturnValue(proc);
 
     instance = new EmbeddingSubprocess();
     const p = instance.embed('test', 'Text');
 
     await emitReady(stderr, 'bge');
-    await emitResponse(stdout, { id: 'test', vector: [0.1] });
+    await emitResponse(stdout, { id: wireIdAt(stdin), vector: [0.1] });
 
     await p;
 
@@ -208,14 +218,14 @@ describe('EmbeddingSubprocess', () => {
   });
 
   it('returns model dimensions from READY message', async () => {
-    const { proc, stdout, stderr } = createMockProcess();
+    const { proc, stdin, stdout, stderr } = createMockProcess();
     vi.mocked(spawn).mockReturnValue(proc);
 
     instance = new EmbeddingSubprocess();
     const p = instance.embed('test', 'Text');
 
     await emitReady(stderr, 'bge-small-en-v1.5', 384);
-    await emitResponse(stdout, { id: 'test', vector: new Array(384).fill(0.1) });
+    await emitResponse(stdout, { id: wireIdAt(stdin), vector: new Array(384).fill(0.1) });
 
     await p;
 
@@ -224,14 +234,14 @@ describe('EmbeddingSubprocess', () => {
   });
 
   it('kills process on shutdown', async () => {
-    const { proc, stdout, stderr } = createMockProcess();
+    const { proc, stdin, stdout, stderr } = createMockProcess();
     vi.mocked(spawn).mockReturnValue(proc);
 
     instance = new EmbeddingSubprocess();
     const p = instance.embed('test', 'Text');
 
     await emitReady(stderr, 'bge');
-    await emitResponse(stdout, { id: 'test', vector: [0.1] });
+    await emitResponse(stdout, { id: wireIdAt(stdin), vector: [0.1] });
     await p;
 
     instance.shutdown();
@@ -289,12 +299,12 @@ describe('EmbeddingSubprocess', () => {
       expect(parsed.text.length).toBeLessThanOrEqual(10);
     }
 
-    await emitResponse(stdout, { id: 'trunc', vector: [0.1] });
+    await emitResponse(stdout, { id: wireIdAt(stdin), vector: [0.1] });
     await p;
   });
 
   it('handles multiple JSON lines in a single data chunk', async () => {
-    const { proc, stdout, stderr } = createMockProcess();
+    const { proc, stdin, stdout, stderr } = createMockProcess();
     vi.mocked(spawn).mockReturnValue(proc);
 
     instance = new EmbeddingSubprocess();
@@ -303,10 +313,13 @@ describe('EmbeddingSubprocess', () => {
 
     await emitReady(stderr, 'bge');
 
+    const wireA = wireIdAt(stdin, 0);
+    const wireB = wireIdAt(stdin, 1);
+
     // Both responses arrive in one chunk
     const combined =
-      JSON.stringify({ id: 'a', vector: [0.1] }) + '\n' +
-      JSON.stringify({ id: 'b', vector: [0.2] }) + '\n';
+      JSON.stringify({ id: wireA, vector: [0.1] }) + '\n' +
+      JSON.stringify({ id: wireB, vector: [0.2] }) + '\n';
     stdout.emit('data', Buffer.from(combined));
     await new Promise(r => setTimeout(r, 10));
 
@@ -318,7 +331,7 @@ describe('EmbeddingSubprocess', () => {
   });
 
   it('handles partial JSON lines across data chunks', async () => {
-    const { proc, stdout, stderr } = createMockProcess();
+    const { proc, stdin, stdout, stderr } = createMockProcess();
     vi.mocked(spawn).mockReturnValue(proc);
 
     instance = new EmbeddingSubprocess();
@@ -326,7 +339,7 @@ describe('EmbeddingSubprocess', () => {
 
     await emitReady(stderr, 'bge');
 
-    const fullLine = JSON.stringify({ id: 'split', vector: [0.5] }) + '\n';
+    const fullLine = JSON.stringify({ id: wireIdAt(stdin), vector: [0.5] }) + '\n';
     const half1 = fullLine.substring(0, 10);
     const half2 = fullLine.substring(10);
 

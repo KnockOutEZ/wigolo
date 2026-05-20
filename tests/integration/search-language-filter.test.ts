@@ -13,6 +13,7 @@ vi.mock('../../src/search/multi-query.js', async (orig) => {
         { url: 'https://example.com/a', title: 'PostgreSQL replication', snippet: 'WAL streaming guide', engine: 'bing' },
         { url: 'https://baidu.com/x', title: '人工智能教程', snippet: '本文介绍人工智能基础', engine: 'bing' },
         { url: 'https://baidu.com/y', title: '深度学习', snippet: '神经网络的实现细节', engine: 'bing' },
+        { url: 'https://baidu.com/z', title: '机器学习入门', snippet: '基础算法和模型详解', engine: 'bing' },
       ],
       enginesUsed: ['bing'],
       errors: [],

@@ -7,7 +7,7 @@ vi.mock('openai', () => ({
   },
 }));
 
-import { callOpenAI } from '../../../../src/extraction/llm/openai.js';
+import { callOpenAI } from '../../../../src/integrations/cloud/llm/openai.js';
 
 describe('callOpenAI', () => {
   beforeEach(() => create.mockReset());

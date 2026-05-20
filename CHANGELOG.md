@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.2.0] - unreleased
+
+### Changed
+- **reranker:** moved to Python subprocess (`tokenizers` + `onnxruntime`). Drops `@xenova/transformers`, `onnxruntime-node`, and the `protobufjs` `overrides` pin. Install via `wigolo warmup --reranker`. No user-visible API change. xenova-compat tokenizer patching matches the previous JS path on 4/6 corpus buckets; `4_emoji_zwj` and `2_ascii_long_truncating` are accepted-mismatch (xenova bugs that don't generalize cleanly to canonical SentencePiece).
+- `WIGOLO_RERANKER=flashrank` now aliases to `onnx` with a warn log (was a throw).
+
+### Added
+- `WIGOLO_RERANKER_MAX_LENGTH` (default 512).
+- `WIGOLO_RERANKER_READY_TIMEOUT_MS` (default 60000).
+- `WIGOLO_RERANKER_REQUEST_TIMEOUT_MS` (default 30000).
+- `WIGOLO_RERANKER_IDLE_TIMEOUT_MS` (default 300000).
+- `WIGOLO_RERANKER_INHERIT_PYTHON_ENV` (default off — strips `PYTHONHOME/PYTHONPATH/PYTHONSTARTUP` from the subprocess by default).
+- `wigolo doctor` reports `tokenizers`/`onnxruntime` versions and flags stale venvs.
+
+### Removed
+- `@xenova/transformers`, `onnxruntime-node`, `onnxruntime-web`, `onnx-proto` dependencies.
+- `protobufjs` `overrides` pin.
+- `src/search/reranker/tokenizer.ts`.
+
 ## v1.0.2 — 2026-05-01
 
 ### FIX: `fetch` markdown body now bounded by default

@@ -1,27 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('onnxruntime-node', () => {
-  const sessionRun = vi.fn(async () => ({
-    logits: { data: new Float32Array([0.0]) },
-  }));
-  const session = { run: sessionRun, inputNames: ['input_ids', 'attention_mask', 'token_type_ids'], outputNames: ['logits'] };
-  class Tensor {
-    type: string;
-    data: unknown;
-    dims: number[];
-    constructor(type: string, data: unknown, dims: number[]) {
-      this.type = type;
-      this.data = data;
-      this.dims = dims;
-    }
-  }
-  return {
-    InferenceSession: { create: vi.fn(async () => session) },
-    Tensor,
-    __sessionRun: sessionRun,
-  };
-});
-
 vi.mock('../../../../src/search/reranker/download.js', () => ({
   downloadModelAssets: vi.fn(async () => ({
     modelPath: '/tmp/fake/model.onnx',
@@ -30,15 +8,15 @@ vi.mock('../../../../src/search/reranker/download.js', () => ({
   })),
 }));
 
-vi.mock('../../../../src/search/reranker/tokenizer.js', () => ({
-  loadTokenizer: vi.fn(async () => ({ encode: () => ({}) })),
-  tokenizePair: vi.fn(() => ({
-    input_ids: new BigInt64Array(8),
-    attention_mask: new BigInt64Array(8),
-    token_type_ids: new BigInt64Array(8),
-    length: 8,
-  })),
-}));
+vi.mock('../../../../src/python/reranker-subprocess.js', () => {
+  const score = vi.fn();
+  const subproc = { score, isAvailable: () => true, shutdown: vi.fn() };
+  return {
+    getRerankSubprocess: vi.fn(() => subproc),
+    resetAllRerankSubprocesses: vi.fn(),
+    __subproc: subproc,
+  };
+});
 
 vi.mock('../../../../src/config.js', () => ({
   getConfig: () => ({ dataDir: '/tmp/wigolo', rerankerModel: 'bge-reranker-v2-m3' }),
@@ -48,55 +26,46 @@ vi.mock('../../../../src/logger.js', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 
-import { onnxRerank, _resetOnnxSessionCache } from '../../../../src/search/reranker/onnx.js';
-import * as ort from 'onnxruntime-node';
+import {
+  onnxRerank,
+  disposeOnnxSessions,
+  _resetOnnxSessionCache,
+} from '../../../../src/search/reranker/onnx.js';
+import * as sub from '../../../../src/python/reranker-subprocess.js';
 
-describe('onnxRerank', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    _resetOnnxSessionCache();
-  });
+describe('onnxRerank (Python-backed)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
 
-  it('returns docs ordered by score, monotonically non-increasing', async () => {
-    const logits = [-1.0, 2.5, 0.5];
-    let i = 0;
-    (ort as any).__sessionRun.mockImplementation(async () => ({
-      logits: { data: new Float32Array([logits[i++]]) },
-    }));
-
-    const result = await onnxRerank('q', [
-      { text: 'doc A' }, { text: 'doc B' }, { text: 'doc C' },
-    ]);
-
-    expect(result).toHaveLength(3);
-    expect(result[0].index).toBe(1);
-    for (let j = 1; j < result.length; j++) {
-      expect(result[j - 1].score).toBeGreaterThanOrEqual(result[j].score);
+  it('returns docs sorted by score (desc)', async () => {
+    (sub as any).__subproc.score.mockResolvedValue([0.2, 0.9, 0.5]);
+    const out = await onnxRerank('q', [{ text: 'a' }, { text: 'b' }, { text: 'c' }]);
+    expect(out).toHaveLength(3);
+    expect(out[0].index).toBe(1);
+    expect(out[0].score).toBe(0.9);
+    for (let i = 1; i < out.length; i++) {
+      expect(out[i - 1].score).toBeGreaterThanOrEqual(out[i].score);
     }
   });
 
-  it('applies sigmoid to raw logits (scores in [0,1])', async () => {
-    let i = 0;
-    const logits = [0.0, 10.0];
-    (ort as any).__sessionRun.mockImplementation(async () => ({
-      logits: { data: new Float32Array([logits[i++]]) },
-    }));
-    const out = await onnxRerank('q', [{ text: 'a' }, { text: 'b' }]);
-    expect(out.find((r) => r.index === 0)!.score).toBeCloseTo(0.5, 5);
-    expect(out.find((r) => r.index === 1)!.score).toBeGreaterThan(0.99);
-    expect(out.every((r) => r.score >= 0 && r.score <= 1)).toBe(true);
+  it('passes doc.text array to subproc.score', async () => {
+    (sub as any).__subproc.score.mockResolvedValue([0.1]);
+    await onnxRerank('q', [{ text: 'hello' }]);
+    expect((sub as any).__subproc.score).toHaveBeenCalledWith('q', ['hello']);
   });
 
-  it('returns empty for empty input without spawning session', async () => {
+  it('returns [] for empty docs without calling subprocess or download', async () => {
     const out = await onnxRerank('q', []);
     expect(out).toEqual([]);
-    expect(ort.InferenceSession.create).not.toHaveBeenCalled();
+    expect((sub as any).__subproc.score).not.toHaveBeenCalled();
+    expect((sub as any).getRerankSubprocess).not.toHaveBeenCalled();
   });
 
-  it('caches session across calls (single create)', async () => {
-    (ort as any).__sessionRun.mockResolvedValue({ logits: { data: new Float32Array([1.0]) } });
-    await onnxRerank('q', [{ text: 'a' }]);
-    await onnxRerank('q2', [{ text: 'b' }]);
-    expect(ort.InferenceSession.create).toHaveBeenCalledTimes(1);
+  it('disposeOnnxSessions is a no-op that does not throw', async () => {
+    await expect(disposeOnnxSessions()).resolves.toBeUndefined();
+  });
+
+  it('_resetOnnxSessionCache calls resetAllRerankSubprocesses', () => {
+    _resetOnnxSessionCache();
+    expect((sub as any).resetAllRerankSubprocesses).toHaveBeenCalled();
   });
 });

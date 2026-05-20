@@ -372,8 +372,8 @@ describe('config', () => {
       expect(getConfig().embeddingModel).toBe('all-MiniLM-L6-v2');
     });
 
-    it('embeddingIdleTimeoutMs defaults to 120000', () => {
-      expect(getConfig().embeddingIdleTimeoutMs).toBe(120000);
+    it('embeddingIdleTimeoutMs defaults to 1800000', () => {
+      expect(getConfig().embeddingIdleTimeoutMs).toBe(1800000);
     });
 
     it('embeddingIdleTimeoutMs reads from WIGOLO_EMBEDDING_IDLE_TIMEOUT', () => {
@@ -395,7 +395,7 @@ describe('config', () => {
     it('embeddingIdleTimeoutMs falls back to default on non-numeric', () => {
       process.env.WIGOLO_EMBEDDING_IDLE_TIMEOUT = 'invalid';
       resetConfig();
-      expect(getConfig().embeddingIdleTimeoutMs).toBe(120000);
+      expect(getConfig().embeddingIdleTimeoutMs).toBe(1800000);
     });
 
     it('embeddingMaxTextLength falls back to default on non-numeric', () => {
@@ -462,10 +462,10 @@ describe('config', () => {
       expect(getConfig().rerankerModel).toBe('bge-reranker-v2-m3');
     });
 
-    it('retired value "flashrank" rejects with migration message', () => {
+    it('legacy value "flashrank" is aliased to "onnx" (with warn log)', () => {
       process.env.WIGOLO_RERANKER = 'flashrank';
       resetConfig();
-      expect(() => getConfig()).toThrow(/WIGOLO_RERANKER=.flashrank.*retired.*onnx/i);
+      expect(getConfig().reranker).toBe('onnx');
     });
 
     it('"minilm-l12" alias is preserved verbatim (resolution at use-site)', () => {

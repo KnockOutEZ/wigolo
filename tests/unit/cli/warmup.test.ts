@@ -216,9 +216,15 @@ describe('warmup --reranker', () => {
     vi.mocked(onnxRerank).mockResolvedValue([{ index: 0, score: 0.5 }]);
   });
 
-  it('downloads ONNX reranker assets when --reranker passed', async () => {
+  it('pip-installs tokenizers + onnxruntime when --reranker passed', async () => {
     const result = await runWarmup(['--reranker']);
 
+    const calls = vi.mocked(runCommand).mock.calls;
+    const tokCall = calls.find((c) => includesArg(c, 'tokenizers'));
+    const ortCall = calls.find((c) => includesArg(c, 'onnxruntime'));
+    expect(tokCall).toBeDefined();
+    expect(ortCall).toBeDefined();
+    expect(argsOf(tokCall!)).toEqual(expect.arrayContaining(['-m', 'pip', 'install']));
     expect(downloadModelAssets).toHaveBeenCalled();
     expect(onnxRerank).toHaveBeenCalled();
     expect(result.reranker).toBe('ok');
@@ -227,8 +233,39 @@ describe('warmup --reranker', () => {
   it('--all flag includes reranker installation', async () => {
     const result = await runWarmup(['--all']);
 
+    const calls = vi.mocked(runCommand).mock.calls;
+    const tokCall = calls.find((c) => includesArg(c, 'tokenizers'));
+    expect(tokCall).toBeDefined();
     expect(downloadModelAssets).toHaveBeenCalled();
     expect(result.reranker).toBe('ok');
+  });
+
+  it('--all combines sentence-transformers into the reranker pip call (single resolver pass)', async () => {
+    await runWarmup(['--all']);
+
+    const calls = vi.mocked(runCommand).mock.calls;
+    const combinedCall = calls.find(
+      (c) =>
+        includesArg(c, 'tokenizers') &&
+        includesArg(c, 'onnxruntime') &&
+        includesArg(c, 'sentence-transformers'),
+    );
+    expect(combinedCall).toBeDefined();
+  });
+
+  it('reports failure when pip install fails', async () => {
+    vi.mocked(runCommand).mockImplementation(async (_cmd, args) => {
+      if (args.some((a) => String(a).includes('tokenizers'))) {
+        return failWith('pip resolver error');
+      }
+      return ok;
+    });
+
+    const result = await runWarmup(['--reranker']);
+
+    expect(result.reranker).toBe('failed');
+    expect(result.rerankerError).toContain('pip resolver error');
+    expect(downloadModelAssets).not.toHaveBeenCalled();
   });
 
   it('reports failure when download fails', async () => {

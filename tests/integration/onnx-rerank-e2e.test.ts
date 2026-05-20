@@ -1,15 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { spawn } from 'node:child_process';
 import { handleSearch } from '../../src/tools/search.js';
 import { resetConfig } from '../../src/config.js';
 import { initDatabase, closeDatabase } from '../../src/cache/db.js';
 import type { SearchInput, RawSearchResult, SearchEngine } from '../../src/types.js';
 import type { SmartRouter } from '../../src/fetch/router.js';
-
-vi.mock('node:child_process', async (orig) => {
-  const real = (await orig()) as typeof import('node:child_process');
-  return { ...real, spawn: vi.fn(real.spawn) };
-});
 
 vi.mock('../../src/extraction/pipeline.js', () => ({
   extractContent: vi.fn().mockResolvedValue({
@@ -77,19 +71,5 @@ describe('integration: onnx rerank E2E', () => {
     for (let i = 1; i < out.results.length; i++) {
       expect(out.results[i - 1].relevance_score).toBeGreaterThanOrEqual(out.results[i].relevance_score);
     }
-  });
-
-  it('does NOT spawn a python subprocess during rerank', async () => {
-    const engine: SearchEngine = {
-      name: 'mock',
-      search: vi.fn().mockResolvedValue([
-        { title: 'A', url: 'https://a.com', snippet: 'a', relevance_score: 0.5, engine: 'mock' },
-      ] satisfies RawSearchResult[]),
-    };
-    await handleSearch({ query: 'q', include_content: false }, [engine], router);
-    const pythonCalls = vi.mocked(spawn).mock.calls.filter(([cmd]) =>
-      typeof cmd === 'string' && /python/.test(cmd),
-    );
-    expect(pythonCalls).toHaveLength(0);
   });
 });

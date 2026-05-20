@@ -73,6 +73,19 @@ describe('buildResearchBrief', () => {
     expect(brief.key_findings[0].length).toBeLessThanOrEqual(280);
   });
 
+  it('skips image-only leading paragraphs and surfaces real prose', async () => {
+    const md = [
+      '![hero image with very long alt text describing the visual content of this page topic comparison chart deluxe edition](https://cdn.example.com/hero.webp)',
+      '',
+      'Real substantive prose about JavaScript runtimes that should appear in key_findings because it has actual content meaningful to the reader and not just marketing imagery.',
+    ].join('\n');
+    const sources = [mkSource({ markdown_content: md })];
+    const brief = await buildResearchBrief('q', sources, [], 3000, 40000);
+    expect(brief.key_findings.length).toBe(1);
+    expect(brief.key_findings[0]).not.toContain('![');
+    expect(brief.key_findings[0]).toContain('Real substantive prose');
+  });
+
   it('echoes char caps for host LLM awareness', async () => {
     const brief = await buildResearchBrief('q', [mkSource()], [], 3000, 40000);
     expect(brief.per_source_char_cap).toBe(3000);
