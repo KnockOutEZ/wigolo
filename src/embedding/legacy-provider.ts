@@ -20,8 +20,15 @@ export class LegacyEmbedProvider implements EmbedProvider {
     return this.subprocess.getModel() ?? getConfig().embeddingModel;
   }
 
-  get dim(): number | null {
-    return this.subprocess.getDims();
+  get dim(): number {
+    const d = this.subprocess.getDims();
+    if (d === null) throw new Error('LegacyEmbedProvider: dim accessed before warmup completed');
+    return d;
+  }
+
+  /** Force subprocess READY handshake so getDims() returns a real number. */
+  async warmup(): Promise<void> {
+    await this.subprocess.embed(randomUUID(), 'warmup');
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {

@@ -9,8 +9,8 @@
 export interface EmbedProvider {
   /** Embed a batch of strings; returns one Float32Array per input. */
   embed(texts: string[]): Promise<Float32Array[]>;
-  /** Dimensionality of embeddings produced (null until subprocess is warm). */
-  readonly dim: number | null;
+  /** Dimensionality of embeddings produced by this provider. */
+  readonly dim: number;
   /** Model identifier (for cache invalidation / provenance). */
   readonly modelId: string;
 }
@@ -20,7 +20,11 @@ let cached: Promise<EmbedProvider> | null = null;
 export function getEmbedProvider(): Promise<EmbedProvider> {
   if (cached) return cached;
   cached = import('../embedding/legacy-provider.js').then(
-    m => new m.LegacyEmbedProvider(),
+    async m => {
+      const p = new m.LegacyEmbedProvider();
+      await p.warmup();
+      return p;
+    },
     err => { cached = null; throw err; },
   );
   return cached;

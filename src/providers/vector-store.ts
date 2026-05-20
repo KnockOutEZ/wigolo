@@ -8,8 +8,8 @@
 export interface VectorMetadata {
   /** Source URL (used as primary identity by the legacy index). */
   url: string;
-  contentHash?: string;
-  modelId?: string;
+  contentHash: string;
+  modelId: string;
   extra?: Record<string, unknown>;
 }
 

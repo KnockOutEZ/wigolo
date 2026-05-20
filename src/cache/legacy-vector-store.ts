@@ -43,7 +43,12 @@ export class LegacyVectorStore implements VectorStore {
     const raw = this.index.findSimilar(queryVector, filter ? this.index.size() : limit);
     const results: VectorSearchResult[] = [];
     for (const hit of raw) {
-      const meta = this.metadata.get(hit.url) ?? { url: hit.url };
+      const meta = this.metadata.get(hit.url);
+      if (!meta) {
+        // Invariant: upsert always writes both maps atomically. Metadata missing
+        // here means the adapter's internal state is corrupted.
+        throw new Error(`LegacyVectorStore: metadata missing for ${hit.url} (internal invariant violated)`);
+      }
       if (filter && !matchesFilter(meta, filter)) continue;
       results.push({ id: hit.url, score: hit.score, metadata: meta });
       if (results.length >= limit) break;
