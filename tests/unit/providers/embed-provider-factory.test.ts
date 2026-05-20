@@ -3,26 +3,24 @@ import {
   getEmbedProvider,
   _resetEmbedProviderForTest,
 } from '../../../src/providers/embed-provider.js';
-import { LegacyEmbedProvider } from '../../../src/embedding/legacy-provider.js';
-import { EmbeddingSubprocess } from '../../../src/embedding/subprocess.js';
+import { FastembedEmbedProvider } from '../../../src/embedding/fastembed-provider.js';
 
-vi.mock('../../../src/embedding/subprocess.js', () => {
-  const EmbeddingSubprocess = vi.fn(function (this: Record<string, unknown>) {
-    this.getDims = vi.fn().mockReturnValue(384);
-    this.getModel = vi.fn().mockReturnValue('test-model');
-    this.embed = vi.fn().mockResolvedValue({ id: 'warmup', vector: new Array(384).fill(0) });
-    this.isAvailable = vi.fn().mockReturnValue(true);
-    this.shutdown = vi.fn();
+vi.mock('../../../src/embedding/fastembed-provider.js', () => {
+  const FastembedEmbedProvider = vi.fn(function (this: Record<string, unknown>) {
+    this.modelId = 'BGE-small-en-v1.5';
+    this.dim = 384;
+    this.warmup = vi.fn().mockResolvedValue(undefined);
+    this.embed = vi.fn().mockResolvedValue([]);
   });
-  return { EmbeddingSubprocess };
+  return { FastembedEmbedProvider };
 });
 
 describe('getEmbedProvider', () => {
   beforeEach(() => { _resetEmbedProviderForTest(); });
   afterEach(() => { _resetEmbedProviderForTest(); });
 
-  it('returns LegacyEmbedProvider', async () => {
-    expect(await getEmbedProvider()).toBeInstanceOf(LegacyEmbedProvider);
+  it('returns FastembedEmbedProvider', async () => {
+    expect(await getEmbedProvider()).toBeInstanceOf(FastembedEmbedProvider);
   });
 
   it('memoizes the resolved provider', async () => {
@@ -38,18 +36,17 @@ describe('getEmbedProvider', () => {
   });
 
   it('recovers cache after warmup failure', async () => {
-    // First call: subprocess warmup throws so the factory rejects.
-    vi.mocked(EmbeddingSubprocess).mockImplementationOnce(function (this: Record<string, unknown>) {
-      this.getDims = vi.fn().mockReturnValue(null);
-      this.getModel = vi.fn().mockReturnValue(null);
-      this.embed = vi.fn().mockRejectedValue(new Error('warmup failed'));
-      this.isAvailable = vi.fn().mockReturnValue(false);
-      this.shutdown = vi.fn();
+    // First call: warmup throws so the factory rejects.
+    vi.mocked(FastembedEmbedProvider).mockImplementationOnce(function (this: Record<string, unknown>) {
+      this.modelId = 'BGE-small-en-v1.5';
+      this.dim = 384;
+      this.warmup = vi.fn().mockRejectedValue(new Error('warmup failed'));
+      this.embed = vi.fn().mockResolvedValue([]);
     });
     await expect(getEmbedProvider()).rejects.toThrow('warmup failed');
 
     // Second call: cache must have been cleared; file-level default mock takes
     // over and the factory succeeds.
-    expect(await getEmbedProvider()).toBeInstanceOf(LegacyEmbedProvider);
+    expect(await getEmbedProvider()).toBeInstanceOf(FastembedEmbedProvider);
   });
 });

@@ -445,7 +445,7 @@ export interface EmbeddingData {
   dims: number;
 }
 
-export function getEmbeddingForUrl(url: string): EmbeddingData | null {
+export function getEmbeddingForUrl(url: string, modelId?: string): EmbeddingData | null {
   try {
     const db = getDatabase();
     let normalized: string;
@@ -463,6 +463,9 @@ export function getEmbeddingForUrl(url: string): EmbeddingData | null {
     `).get(url, normalized) as { embedding: Buffer; embedding_model: string; embedding_dims: number } | undefined;
 
     if (!row) return null;
+    // Filter by modelId when caller wants only embeddings from the current
+    // model; mismatched entries return null so they are treated as cache miss.
+    if (modelId !== undefined && row.embedding_model !== modelId) return null;
 
     return {
       embedding: row.embedding,
@@ -481,19 +484,33 @@ export interface StoredEmbedding {
   dims: number;
 }
 
-export function getAllEmbeddings(): StoredEmbedding[] {
+export function getAllEmbeddings(modelId?: string): StoredEmbedding[] {
   try {
     const db = getDatabase();
-    const rows = db.prepare(`
-      SELECT normalized_url, embedding, embedding_model, embedding_dims
-      FROM url_cache
-      WHERE embedding IS NOT NULL
-    `).all() as Array<{
-      normalized_url: string;
-      embedding: Buffer;
-      embedding_model: string;
-      embedding_dims: number;
-    }>;
+    // Filter by modelId when provided so stale entries from a previous model
+    // (different dim / vector space) are skipped — the in-memory vector index
+    // requires matching dimensionality across all entries.
+    const rows = modelId !== undefined
+      ? db.prepare(`
+          SELECT normalized_url, embedding, embedding_model, embedding_dims
+          FROM url_cache
+          WHERE embedding IS NOT NULL AND embedding_model = ?
+        `).all(modelId) as Array<{
+          normalized_url: string;
+          embedding: Buffer;
+          embedding_model: string;
+          embedding_dims: number;
+        }>
+      : db.prepare(`
+          SELECT normalized_url, embedding, embedding_model, embedding_dims
+          FROM url_cache
+          WHERE embedding IS NOT NULL
+        `).all() as Array<{
+          normalized_url: string;
+          embedding: Buffer;
+          embedding_model: string;
+          embedding_dims: number;
+        }>;
 
     return rows.map(r => ({
       normalizedUrl: r.normalized_url,

@@ -1,10 +1,9 @@
 /**
  * Embed provider interface — Phase 1 Task 1.3 of v1 engine overhaul.
  *
- * Wraps the existing sentence-transformers subprocess pipeline behind a
- * stable interface so Phase 3 can swap in a native v1 implementation
- * without touching call sites. Today the factory always returns the
- * legacy adapter.
+ * Stable interface for embedding implementations. Phase 3 swapped the
+ * sentence-transformers Python subprocess for fastembed (Rust ONNX via
+ * Node bindings); the factory now returns FastembedEmbedProvider.
  */
 import { createLogger } from '../logger.js';
 
@@ -23,11 +22,11 @@ let cached: Promise<EmbedProvider> | null = null;
 
 export function getEmbedProvider(): Promise<EmbedProvider> {
   if (cached) return cached;
-  cached = import('../embedding/legacy-provider.js')
+  cached = import('../embedding/fastembed-provider.js')
     .then(async m => {
-      const p = new m.LegacyEmbedProvider();
+      const p = new m.FastembedEmbedProvider();
       await p.warmup();
-      log.info('embed provider ready', { provider: 'embed', impl: 'legacy', modelId: p.modelId, dim: p.dim });
+      log.info('embed provider ready', { provider: 'embed', impl: 'fastembed', modelId: p.modelId, dim: p.dim });
       return p;
     })
     .catch(err => {
