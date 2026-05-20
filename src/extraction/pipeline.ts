@@ -13,10 +13,10 @@ import { extractMetadata } from './extract.js';
 import { stripBoilerplateDom, stripBoilerplateMarkdown } from './boilerplate.js';
 import { sanitizeExtractedMarkdown } from './markdown-sanitize.js';
 import type { ExtractionResult, Extractor } from '../types.js';
-import { githubExtractor } from './site-extractors/github.js';
-import { stackoverflowExtractor } from './site-extractors/stackoverflow.js';
-import { mdnExtractor } from './site-extractors/mdn.js';
-import { docsGenericExtractor } from './site-extractors/docs-generic.js';
+import {
+  getSiteExtractors,
+  registerSiteExtractor,
+} from './v1/site-extractors.js';
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
 
@@ -30,15 +30,11 @@ export interface ExtractionOptions {
   pdfBuffer?: Buffer;
 }
 
-const siteExtractors: Extractor[] = [
-  githubExtractor,
-  stackoverflowExtractor,
-  mdnExtractor,
-  docsGenericExtractor,
-];
-
+// Plugin entry point — back-compat alias. `src/server.ts` imports
+// `registerExtractor` from here. The registry lives in v1/site-extractors.ts
+// so both pipelines see the same plugin-registered extractors.
 export function registerExtractor(extractor: Extractor): void {
-  siteExtractors.push(extractor);
+  registerSiteExtractor(extractor);
 }
 
 export async function extractContent(
@@ -79,7 +75,7 @@ export async function extractContent(
     log.warn('boilerplate DOM pre-pass failed', { url, error: String(err) });
   }
 
-  const siteExtractor = siteExtractors.find((e) => e.canHandle(url, html));
+  const siteExtractor = getSiteExtractors().find((e) => e.canHandle(url, html));
   if (siteExtractor) {
     const extracted = siteExtractor.extract(cleanedHtml, url);
     if (extracted) {
@@ -123,7 +119,7 @@ export async function extractContent(
   return applyPostProcessing(result, url, html, options);
 }
 
-function mergeMetadata(
+export function mergeMetadata(
   base: ExtractionResult['metadata'],
   html: string,
 ): ExtractionResult['metadata'] {
@@ -146,7 +142,7 @@ function mergeMetadata(
   }
 }
 
-function applyPostProcessing(
+export function applyPostProcessing(
   result: ExtractionResult,
   url: string,
   html: string,

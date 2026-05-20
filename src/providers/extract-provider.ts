@@ -35,10 +35,10 @@ let cached: Promise<ExtractProvider> | null = null;
 
 export function getExtractProvider(): Promise<ExtractProvider> {
   if (cached) return cached;
-  cached = import('../extraction/legacy-provider.js').then(
+  cached = import('../extraction/v1/extract-provider.js').then(
     m => {
-      log.info('extract provider ready', { provider: 'extract', impl: 'legacy' });
-      return new m.LegacyExtractProvider();
+      log.info('extract provider ready', { provider: 'extract', impl: 'v1' });
+      return new m.V1Extractor();
     },
     err => { cached = null; throw err; },
   );

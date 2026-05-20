@@ -3,14 +3,14 @@ import {
   getExtractProvider,
   _resetExtractProviderForTest,
 } from '../../../src/providers/extract-provider.js';
-import { LegacyExtractProvider } from '../../../src/extraction/legacy-provider.js';
+import { V1Extractor } from '../../../src/extraction/v1/extract-provider.js';
 
 describe('getExtractProvider', () => {
   beforeEach(() => { _resetExtractProviderForTest(); });
   afterEach(() => { _resetExtractProviderForTest(); });
 
-  it('returns LegacyExtractProvider', async () => {
-    expect(await getExtractProvider()).toBeInstanceOf(LegacyExtractProvider);
+  it('returns V1Extractor', async () => {
+    expect(await getExtractProvider()).toBeInstanceOf(V1Extractor);
   });
 
   it('memoizes the resolved provider', async () => {
@@ -19,8 +19,8 @@ describe('getExtractProvider', () => {
     expect(a).toBe(b);
   });
 
-  it('exposes legacy name', async () => {
+  it('exposes v1 name', async () => {
     const p = await getExtractProvider();
-    expect(p.name).toBe('legacy');
+    expect(p.name).toBe('v1');
   });
 });
