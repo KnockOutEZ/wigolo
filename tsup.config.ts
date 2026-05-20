@@ -1,5 +1,4 @@
 import { defineConfig } from 'tsup';
-import { cpSync, existsSync } from 'node:fs';
 
 export default defineConfig({
   entry: ['src/**/*.ts', 'src/**/*.tsx'],
@@ -12,9 +11,4 @@ export default defineConfig({
   clean: true,
   dts: false,
   shims: false,
-  onSuccess: async () => {
-    if (existsSync('src/scripts')) {
-      cpSync('src/scripts', 'dist/scripts', { recursive: true });
-    }
-  },
 });

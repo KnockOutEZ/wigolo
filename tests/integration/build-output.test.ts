@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 describe('build output (tsup)', () => {
   beforeAll(() => {
@@ -16,10 +16,11 @@ describe('build output (tsup)', () => {
     expect(existsSync('dist/types.d.ts')).toBe(true);
   });
 
-  it('copies Python scripts', () => {
-    expect(existsSync('dist/scripts')).toBe(true);
-    const pyFiles = readdirSync('dist/scripts').filter((f) => f.endsWith('.py'));
-    expect(pyFiles.length).toBeGreaterThan(0);
+  it('ships zero Python (no dist/scripts or dist/python)', () => {
+    // Phase 4 removed the Python reranker subprocess. The build no longer
+    // copies any Python assets — its absence is the contract we assert.
+    expect(existsSync('dist/scripts')).toBe(false);
+    expect(existsSync('dist/python')).toBe(false);
   });
 
   it('produces sourcemaps', () => {
