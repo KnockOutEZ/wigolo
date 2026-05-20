@@ -114,7 +114,7 @@ export interface ExtractionResult {
   extractor: ExtractorType;
 }
 
-export type ExtractorType = 'defuddle' | 'readability' | 'turndown' | 'site-specific' | 'trafilatura';
+export type ExtractorType = 'defuddle' | 'readability' | 'turndown' | 'site-specific';
 
 export type BrowserType = 'chromium' | 'firefox' | 'webkit' | 'lightpanda';
 

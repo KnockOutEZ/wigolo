@@ -1,26 +1,15 @@
-import { parseHTML } from 'linkedom';
-import { defuddleExtract } from './defuddle.js';
-import { readabilityExtract } from './readability.js';
-import { trafilaturaExtract, isTrafilaturaAvailable } from './trafilatura.js';
 import {
-  htmlToMarkdown,
   extractSection,
   extractLinksAndImages,
   filterDecorativeImages,
   resolveRelativeUrls,
 } from './markdown.js';
 import { extractMetadata } from './extract.js';
-import { stripBoilerplateDom, stripBoilerplateMarkdown } from './boilerplate.js';
+import { stripBoilerplateMarkdown } from './boilerplate.js';
 import { sanitizeExtractedMarkdown } from './markdown-sanitize.js';
 import type { ExtractionResult, Extractor } from '../types.js';
-import {
-  getSiteExtractors,
-  registerSiteExtractor,
-} from './v1/site-extractors.js';
-import { createLogger } from '../logger.js';
-import { getConfig } from '../config.js';
-
-const log = createLogger('extract');
+import { registerSiteExtractor } from './v1/site-extractors.js';
+import { getExtractProvider } from '../providers/extract-provider.js';
 
 export interface ExtractionOptions {
   maxChars?: number;
@@ -32,91 +21,24 @@ export interface ExtractionOptions {
 
 // Plugin entry point — back-compat alias. `src/server.ts` imports
 // `registerExtractor` from here. The registry lives in v1/site-extractors.ts
-// so both pipelines see the same plugin-registered extractors.
+// so both the facade and the v1 router see the same plugin-registered extractors.
 export function registerExtractor(extractor: Extractor): void {
   registerSiteExtractor(extractor);
 }
 
+/**
+ * @deprecated Use `getExtractProvider().extract(...)` from
+ * `src/providers/extract-provider.ts`. This facade remains for backwards
+ * compatibility with existing test mocks and benchmark runners that import
+ * `extractContent` directly. Will be removed after the test-mock migration.
+ */
 export async function extractContent(
   html: string,
   url: string,
   options: ExtractionOptions = {},
 ): Promise<ExtractionResult> {
-  let result: ExtractionResult | null = null;
-
-  if (options.contentType === 'application/pdf') {
-    let pdfText = '';
-    if (options.pdfBuffer) {
-      try {
-        const pdfParse = (await import('pdf-parse')).default;
-        const parsed = await pdfParse(options.pdfBuffer);
-        pdfText = parsed.text ?? '';
-      } catch (err) {
-        log.warn('pdf-parse failed', { url, error: String(err) });
-      }
-    }
-    result = {
-      title: '',
-      markdown: pdfText,
-      metadata: {},
-      links: [],
-      images: [],
-      extractor: 'turndown',
-    };
-    return applyPostProcessing(result, url, html, options);
-  }
-
-  let cleanedHtml = html;
-  try {
-    const { document } = parseHTML(html);
-    stripBoilerplateDom(document);
-    cleanedHtml = document.toString();
-  } catch (err) {
-    log.warn('boilerplate DOM pre-pass failed', { url, error: String(err) });
-  }
-
-  const siteExtractor = getSiteExtractors().find((e) => e.canHandle(url, html));
-  if (siteExtractor) {
-    const extracted = siteExtractor.extract(cleanedHtml, url);
-    if (extracted) {
-      result = extracted;
-      return applyPostProcessing(result, url, html, options);
-    }
-  }
-
-  result = await defuddleExtract(cleanedHtml, url);
-
-  if (!result) {
-    const config = getConfig();
-    if (config.trafilatura !== 'never') {
-      const trafAvailable = await isTrafilaturaAvailable();
-      if (trafAvailable) {
-        result = await trafilaturaExtract(cleanedHtml, url);
-        if (result) {
-          log.info('Trafilatura extraction succeeded', { url, chars: result.markdown.length });
-          return applyPostProcessing(result, url, html, options);
-        }
-      }
-    }
-  }
-
-  if (!result) {
-    result = readabilityExtract(cleanedHtml, url);
-  }
-
-  if (!result) {
-    const markdown = htmlToMarkdown(cleanedHtml);
-    result = {
-      title: '',
-      markdown,
-      metadata: {},
-      links: [],
-      images: [],
-      extractor: 'turndown',
-    };
-  }
-
-  return applyPostProcessing(result, url, html, options);
+  const provider = await getExtractProvider();
+  return provider.extract(html, url, options);
 }
 
 export function mergeMetadata(
