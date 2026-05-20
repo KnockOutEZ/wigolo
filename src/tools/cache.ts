@@ -6,7 +6,7 @@ import {
   getCachedContentByNormalizedUrl,
 } from '../cache/store.js';
 import { detectChange } from '../cache/change-detector.js';
-import { extractContent } from '../extraction/pipeline.js';
+import { getExtractProvider } from '../providers/extract-provider.js';
 import { reciprocalRankFusion, sortByRRFScore, buildRankMap } from '../search/rrf.js';
 import { getEmbedProvider } from '../providers/embed-provider.js';
 import { getVectorStore } from '../providers/vector-store.js';
@@ -48,7 +48,8 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
             continue;
           }
           const raw = await router.fetch(entry.url, { renderJs: 'auto' });
-          const extraction = await extractContent(raw.html, raw.finalUrl, {
+          const extractor = await getExtractProvider();
+          const extraction = await extractor.extract(raw.html, raw.finalUrl, {
             contentType: raw.contentType,
           });
           const changeResult = detectChange(entry.url, extraction.markdown);

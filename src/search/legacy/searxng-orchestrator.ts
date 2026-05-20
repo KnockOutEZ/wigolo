@@ -17,7 +17,7 @@ import { applyEvidenceDefault } from '../evidence.js';
 import { normalizeQueries, fanOutSearch, synthesizeIntent, expandIfSingle } from '../multi-query.js';
 import { filterByLanguage } from '../language-filter.js';
 import { hasRecencyIntent } from '../reranker/recency.js';
-import { extractContent } from '../../extraction/pipeline.js';
+import { getExtractProvider } from '../../providers/extract-provider.js';
 import { truncateSmartly } from '../truncate.js';
 import { cacheSearchResults, getCachedSearchResults, cacheContent } from '../../cache/store.js';
 import { getEmbeddingService } from '../../embedding/embed.js';
@@ -539,7 +539,8 @@ async function fetchContentForResults(
           setTimeout(() => reject(new Error('timeout')), ctx.fetchTimeoutMs),
         ),
       ]);
-      const extraction = await extractContent(raw.html, raw.finalUrl, {
+      const extractor = await getExtractProvider();
+      const extraction = await extractor.extract(raw.html, raw.finalUrl, {
         maxChars: ctx.contentMaxChars,
         contentType: raw.contentType,
       });

@@ -14,6 +14,18 @@ vi.mock('../../src/extraction/pipeline.js', () => ({
     extractor: 'defuddle' as const,
   }),
 }));
+vi.mock('../../src/providers/extract-provider.js', async () => {
+  const pipeline = await import('../../src/extraction/pipeline.js');
+  return {
+    getExtractProvider: vi.fn(async () => ({
+      name: 'v1' as const,
+      extract: (html: string, url: string, opts?: unknown) =>
+        (pipeline as { extractContent: (...a: unknown[]) => unknown }).extractContent(html, url, opts),
+    })),
+    _resetExtractProviderForTest: vi.fn(),
+  };
+});
+
 
 import { handleSearch } from '../../src/tools/search.js';
 import * as multiQueryMod from '../../src/search/multi-query.js';

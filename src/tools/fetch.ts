@@ -1,6 +1,6 @@
 import type { FetchInput, FetchOutput, CachedContent, StageResult } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
-import { extractContent } from '../extraction/pipeline.js';
+import { getExtractProvider } from '../providers/extract-provider.js';
 import { getCachedContent, cacheContent, isCacheUsable } from '../cache/store.js';
 import { getConfig } from '../config.js';
 import { extractSection } from '../extraction/markdown.js';
@@ -132,7 +132,8 @@ export async function handleFetch(
       };
     }
 
-    const extraction = await extractContent(raw.html, raw.finalUrl, {
+    const extractor = await getExtractProvider();
+    const extraction = await extractor.extract(raw.html, raw.finalUrl, {
       maxChars: input.max_chars,
       section: input.section,
       sectionIndex: input.section_index,

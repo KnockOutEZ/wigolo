@@ -12,7 +12,7 @@ import { reciprocalRankFusion, sortByRRFScore } from './rrf.js';
 import { searchCache, getCachedContent, normalizeUrl, getCacheStats } from '../cache/store.js';
 import { filterByDomains } from './filters.js';
 import { handleSearch } from '../tools/search.js';
-import { extractContent } from '../extraction/pipeline.js';
+import { getExtractProvider } from '../providers/extract-provider.js';
 import { getEmbeddingService } from '../embedding/embed.js';
 import { createLogger } from '../logger.js';
 
@@ -344,7 +344,8 @@ async function prepareSignalFromUrl(
   try {
     log.info('fetching URL for signal extraction', { url });
     const raw = await router.fetch(url, { renderJs: 'auto' });
-    const extraction = await extractContent(raw.html, raw.finalUrl, {
+    const extractor = await getExtractProvider();
+    const extraction = await extractor.extract(raw.html, raw.finalUrl, {
       contentType: raw.contentType,
     });
     const terms = extractKeyTerms(extraction.markdown, extraction.title);

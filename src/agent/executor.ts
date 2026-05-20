@@ -1,6 +1,6 @@
 import { createLogger } from '../logger.js';
 import { deduplicateResults, type MergedSearchResult } from '../search/dedup.js';
-import { extractContent } from '../extraction/pipeline.js';
+import { getExtractProvider } from '../providers/extract-provider.js';
 import { cacheContent } from '../cache/store.js';
 import { rerankResults } from '../search/rerank.js';
 import { getConfig } from '../config.js';
@@ -290,7 +290,8 @@ async function fetchPages(
         ),
       ]);
 
-      const extraction = await extractContent(raw.html, raw.finalUrl, {
+      const extractor = await getExtractProvider();
+      const extraction = await extractor.extract(raw.html, raw.finalUrl, {
         maxChars: 30000,
         contentType: raw.contentType,
       });

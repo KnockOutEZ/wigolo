@@ -6,7 +6,7 @@ import { deduplicateResults } from '../search/dedup.js';
 import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
 import { fanOutSearch } from '../search/multi-query.js';
-import { extractContent } from '../extraction/pipeline.js';
+import { getExtractProvider } from '../providers/extract-provider.js';
 import { truncateSmartly } from '../search/truncate.js';
 import { cacheContent } from '../cache/store.js';
 import { getEmbeddingService } from '../embedding/embed.js';
@@ -179,7 +179,8 @@ async function fetchSources(
         ),
       ]);
 
-      const extraction = await extractContent(raw.html, raw.finalUrl, {
+      const extractor = await getExtractProvider();
+      const extraction = await extractor.extract(raw.html, raw.finalUrl, {
         maxChars: 30000,
         contentType: raw.contentType,
       });
