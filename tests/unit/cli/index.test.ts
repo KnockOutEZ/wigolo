@@ -6,6 +6,10 @@ describe('parseCommand', () => {
     expect(parseCommand([])).toEqual({ command: 'mcp', args: [] });
   });
 
+  it('returns "mcp" for explicit "mcp" subcommand', () => {
+    expect(parseCommand(['mcp'])).toEqual({ command: 'mcp', args: [] });
+  });
+
   it('returns "warmup" for warmup argument', () => {
     expect(parseCommand(['warmup'])).toEqual({ command: 'warmup', args: [] });
   });

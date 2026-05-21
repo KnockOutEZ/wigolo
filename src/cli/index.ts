@@ -22,6 +22,7 @@ export interface ParsedCommand {
 }
 
 const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
+  'mcp',
   'warmup',
   'serve',
   'health',
