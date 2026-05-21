@@ -60,6 +60,19 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+// Best-effort unlink. Surfacing EPERM/EACCES every boot in a read-only or
+// permission-restricted data dir was noisy — log once at debug and continue.
+function tryUnlink(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code !== 'ENOENT') {
+      log.debug('unable to remove file', { path, code: code ?? 'unknown' });
+    }
+  }
+}
+
 export function acquireLock(dataDir: string): LockResult {
   const lockFile = join(dataDir, 'searxng.lock');
 
@@ -70,9 +83,9 @@ export function acquireLock(dataDir: string): LockResult {
         return { acquired: false, existingPid: data.pid, existingPort: data.port };
       }
       log.info('cleaning stale lock file', { stalePid: data.pid });
-      unlinkSync(lockFile);
+      tryUnlink(lockFile);
     } catch {
-      unlinkSync(lockFile);
+      tryUnlink(lockFile);
     }
   }
 
@@ -83,13 +96,9 @@ export function acquireLock(dataDir: string): LockResult {
 
 export function releaseLock(dataDir: string): void {
   const lockFile = join(dataDir, 'searxng.lock');
-  if (existsSync(lockFile)) {
-    try { unlinkSync(lockFile); } catch {}
-  }
+  if (existsSync(lockFile)) tryUnlink(lockFile);
   const portFile = join(dataDir, 'searxng.port');
-  if (existsSync(portFile)) {
-    try { unlinkSync(portFile); } catch {}
-  }
+  if (existsSync(portFile)) tryUnlink(portFile);
 }
 
 async function waitForHealth(url: string, timeoutMs: number): Promise<boolean> {
