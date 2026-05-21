@@ -4,6 +4,10 @@ import { createLogger } from '../logger.js';
 export interface HttpFetchOptions {
   headers?: Record<string, string>;
   timeoutMs?: number;
+  conditionalHeaders?: {
+    ifNoneMatch?: string;
+    ifModifiedSince?: string;
+  };
 }
 
 export interface HttpFetchResult {
@@ -123,7 +127,17 @@ async function fetchWithRedirects(
     let response: Response;
     try {
       const ua = getRotatingUserAgent(getConfig());
-      const mergedHeaders = { 'User-Agent': ua, ...options.headers };
+      const mergedHeaders: Record<string, string> = { 'User-Agent': ua, ...options.headers };
+      // Conditional GET: inject If-None-Match / If-Modified-Since so the
+      // server can return 304 + no body when the resource hasn't changed.
+      // Callers (eg. etag-incremental crawl) wire these from the persisted
+      // crawl_etags row for the URL.
+      if (options.conditionalHeaders?.ifNoneMatch) {
+        mergedHeaders['If-None-Match'] = options.conditionalHeaders.ifNoneMatch;
+      }
+      if (options.conditionalHeaders?.ifModifiedSince) {
+        mergedHeaders['If-Modified-Since'] = options.conditionalHeaders.ifModifiedSince;
+      }
       response = await fetch(currentUrl, {
         headers: mergedHeaders,
         redirect: 'manual',
@@ -134,6 +148,23 @@ async function fetchWithRedirects(
       const isConnErr = err instanceof Error && RETRYABLE_ERROR_CODES.has((err as NodeJS.ErrnoException).code ?? '');
       const retryable = isTimeout || isConnErr;
       throw Object.assign(err instanceof Error ? err : new Error(String(err)), { retryable });
+    }
+
+    if (response.status === 304) {
+      const headers: Record<string, string> = {};
+      response.headers.forEach((value, key) => {
+        headers[key] = value;
+      });
+      // Drain so the connection can be released; ignore the (empty) body.
+      try { await response.arrayBuffer(); } catch { /* */ }
+      return {
+        url: originalUrl,
+        finalUrl: currentUrl,
+        html: '',
+        contentType: response.headers.get('content-type') ?? '',
+        statusCode: 304,
+        headers,
+      };
     }
 
     if (REDIRECT_STATUSES.has(response.status)) {

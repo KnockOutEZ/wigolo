@@ -72,30 +72,50 @@ export function markFetchedNotModified(url: string): void {
   }
 }
 
+export interface ConditionalFetchOptions {
+  conditionalHeaders?: {
+    ifNoneMatch?: string;
+    ifModifiedSince?: string;
+  };
+}
+
 /**
- * Conditional-fetch wrapper. SmartRouter's RawFetchFn signature is
- * `(url) => Promise<RawFetchResult>` and we deliberately do not extend it
- * here (Phase 11 contract). Because we cannot inject If-None-Match, this
- * wrapper does a full GET every time but compares the response's ETag /
- * Last-Modified against the cached values. When unchanged we surface
- * `notModified: true` so the caller can skip downstream work (dedup,
- * embedding, etc).
- *
- * Network is NOT saved — true 304 handling requires a SmartRouter change
- * tracked in DEFERRED.md.
+ * Conditional-fetch wrapper. The wrapped `rawFetchFn` accepts an options
+ * object so this layer can inject `If-None-Match` / `If-Modified-Since` from
+ * the cached crawl_etags row. When the server replies 304 the network
+ * payload is empty and the caller gets `notModified: true` for free; when
+ * the server returns 200 + the same ETag/Last-Modified (legacy fallback)
+ * the wrapper still detects the no-change case.
  */
 export async function conditionalFetch(
   url: string,
-  rawFetchFn: (url: string) => Promise<RawFetchResult>,
+  rawFetchFn: (url: string, opts?: ConditionalFetchOptions) => Promise<RawFetchResult>,
 ): Promise<RawFetchResult & { notModified?: boolean }> {
   const cached = getCachedHeaders(url);
-  const result = await rawFetchFn(url);
+
+  const conditionalHeaders: ConditionalFetchOptions['conditionalHeaders'] = {};
+  if (cached?.etag) conditionalHeaders.ifNoneMatch = cached.etag;
+  if (cached?.lastModified) conditionalHeaders.ifModifiedSince = cached.lastModified;
+
+  const opts: ConditionalFetchOptions | undefined =
+    conditionalHeaders.ifNoneMatch || conditionalHeaders.ifModifiedSince
+      ? { conditionalHeaders }
+      : undefined;
+
+  const result = await rawFetchFn(url, opts);
+
+  // Server honoured the conditional GET — true short-circuit.
+  if (result.statusCode === 304) {
+    markFetchedNotModified(url);
+    return { ...result, notModified: true };
+  }
 
   const respHeaders: Record<string, string> = {};
   for (const [k, v] of Object.entries(result.headers ?? {})) respHeaders[k.toLowerCase()] = v;
   const respEtag = respHeaders['etag'];
   const respLastModified = respHeaders['last-modified'];
 
+  // 200 + unchanged validators (server didn't honour If-None-Match).
   let notModified = false;
   if (cached) {
     if (cached.etag && respEtag && cached.etag === respEtag) notModified = true;
@@ -112,8 +132,6 @@ export async function conditionalFetch(
   } else if (cached) {
     markFetchedNotModified(url);
   } else {
-    // No cached row + no etag headers; still record fetched_at so the
-    // origin index gets populated for future probes.
     saveFetchHeaders(url, result.headers ?? {});
   }
 

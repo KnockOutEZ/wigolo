@@ -123,5 +123,45 @@ describe('etag-incremental', () => {
       expect(after.etag).toBe('"prev"'); // preserved
       expect(after.fetchedAt >= before).toBe(true); // updated
     });
+
+    it('injects If-None-Match / If-Modified-Since from the cached row', async () => {
+      saveFetchHeaders('https://example.com/page', {
+        etag: '"v9"',
+        'last-modified': 'Wed, 01 Jan 2025 00:00:00 GMT',
+      });
+      const fetchFn = vi.fn(async (_url: string, _opts?: { conditionalHeaders?: { ifNoneMatch?: string; ifModifiedSince?: string } }) =>
+        makeResult({ etag: '"v9"' }),
+      );
+      await conditionalFetch('https://example.com/page', fetchFn);
+
+      const call = fetchFn.mock.calls[0];
+      expect(call[1]).toBeDefined();
+      expect(call[1]!.conditionalHeaders!.ifNoneMatch).toBe('"v9"');
+      expect(call[1]!.conditionalHeaders!.ifModifiedSince).toBe('Wed, 01 Jan 2025 00:00:00 GMT');
+    });
+
+    it('no cached headers → no conditionalHeaders passed to rawFetchFn', async () => {
+      const fetchFn = vi.fn(async (_url: string, _opts?: unknown) => makeResult({ etag: '"new"' }));
+      await conditionalFetch('https://example.com/page', fetchFn);
+      const call = fetchFn.mock.calls[0];
+      expect(call[1]).toBeUndefined();
+    });
+
+    it('statusCode 304 short-circuits to notModified=true', async () => {
+      saveFetchHeaders('https://example.com/page', { etag: '"v1"' });
+      const fetchFn = vi.fn(async () => ({
+        url: 'https://example.com/page',
+        finalUrl: 'https://example.com/page',
+        html: '',
+        contentType: '',
+        statusCode: 304,
+        method: 'http' as const,
+        headers: {},
+      }));
+      const result = await conditionalFetch('https://example.com/page', fetchFn);
+      expect(result.notModified).toBe(true);
+      expect(result.statusCode).toBe(304);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -13,12 +13,29 @@ export interface RouterFetchOptions {
   actions?: BrowserAction[];
   force_refresh?: boolean;
   mode?: Mode;
+  /**
+   * Conditional-GET headers. When set, the HTTP path sends them with the
+   * request and a 304 response is returned as RawFetchResult with
+   * statusCode=304 + html=''. Routes that always escalate to Playwright
+   * (renderJs=always, useAuth, actions) ignore these headers.
+   */
+  conditionalHeaders?: {
+    ifNoneMatch?: string;
+    ifModifiedSince?: string;
+  };
 }
 
 export interface HttpClient {
   fetch(
     url: string,
-    options?: { headers?: Record<string, string>; timeoutMs?: number },
+    options?: {
+      headers?: Record<string, string>;
+      timeoutMs?: number;
+      conditionalHeaders?: {
+        ifNoneMatch?: string;
+        ifModifiedSince?: string;
+      };
+    },
   ): Promise<{
     url: string;
     finalUrl: string;
@@ -116,7 +133,7 @@ export class SmartRouter {
     url: string,
     options: RouterFetchOptions = {},
   ): Promise<RawFetchResult | StageError> {
-    const { renderJs = 'auto', useAuth = false, headers, screenshot, actions, mode } = options;
+    const { renderJs = 'auto', useAuth = false, headers, screenshot, actions, mode, conditionalHeaders } = options;
     const config = getConfig();
     const logger = createLogger('fetch');
     const threshold = config.browserFallbackThreshold;
@@ -182,10 +199,12 @@ export class SmartRouter {
       const result = await this.httpClient.fetch(url, {
         headers,
         timeoutMs: config.fastTimeoutMs,
+        conditionalHeaders,
       });
       this.ensureStats(domain);
       const raw = this.toRawFetchResult(result);
-      raw.jsRequired = contentAppearsEmpty(result.html);
+      // Don't probe content of a 304 — body is empty by spec, not a SPA shell.
+      raw.jsRequired = result.statusCode === 304 ? false : contentAppearsEmpty(result.html);
       return raw;
     }
 
@@ -209,7 +228,7 @@ export class SmartRouter {
     if (renderJs === 'never') {
       if (!this.httpClient) throw new Error('SmartRouter: httpClient not configured');
       logger.debug('routing to http (never)', { url });
-      const result = await this.httpClient.fetch(url, { headers });
+      const result = await this.httpClient.fetch(url, { headers, conditionalHeaders });
       this.ensureStats(domain);
       return this.toRawFetchResult(result);
     }
@@ -226,7 +245,12 @@ export class SmartRouter {
     // Try HTTP first
     try {
       if (!this.httpClient) throw new Error('SmartRouter: httpClient not configured');
-      const result = await this.httpClient.fetch(url, { headers });
+      const result = await this.httpClient.fetch(url, { headers, conditionalHeaders });
+
+      // 304 = unchanged: pass through; never escalate to a browser.
+      if (result.statusCode === 304) {
+        return this.toRawFetchResult(result);
+      }
 
       // Check for SPA shell / empty content
       if (contentAppearsEmpty(result.html)) {
