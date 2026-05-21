@@ -7,9 +7,26 @@ const log = createLogger('cache');
 
 let instance: Database.Database | null = null;
 let vecLoaded = false;
+let exitHookRegistered = false;
 
 export function isVecExtensionLoaded(): boolean {
   return vecLoaded;
+}
+
+// Register a process-exit guard so any CLI command that opens the DB
+// closes it before native teardown — prevents the better-sqlite3 +
+// sqlite-vec destructor race that surfaces as
+// `mutex lock failed: Invalid argument` on doctor/warmup exit.
+function ensureExitHookRegistered(): void {
+  if (exitHookRegistered) return;
+  exitHookRegistered = true;
+  process.on('exit', () => {
+    try {
+      closeDatabase();
+    } catch {
+      // swallow — process is exiting, nothing useful to do
+    }
+  });
 }
 
 export function initDatabase(dbPath: string): Database.Database {
@@ -156,6 +173,7 @@ export function initDatabase(dbPath: string): Database.Database {
   }
 
   instance = db;
+  ensureExitHookRegistered();
   return db;
 }
 

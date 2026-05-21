@@ -287,37 +287,39 @@ function checkRssFeeds(dataDir: string): void {
       // feed_items table missing — treat every feed as never polled.
     }
 
-    const now = Date.now();
-    for (const feed of feeds) {
-      let line: string;
-      if (!stmt) {
-        line = `  ${feed.url}  0 items [never polled]`;
-      } else {
-        try {
-          const row = stmt.get(feed.url) as { n?: number; last_at?: string | null } | undefined;
-          const n = row?.n ?? 0;
-          const lastAt = row?.last_at ?? null;
-          if (!lastAt) {
-            line = `  ${feed.url}  ${n} items [never polled]`;
-          } else {
-            const ageMs = now - new Date(lastAt).getTime();
-            const ageHr = ageMs / 3_600_000;
-            const fresh = ageHr <= 24 ? 'fresh' : 'stale';
-            const ageLabel = ageHr < 1
-              ? `${Math.max(0, Math.round(ageMs / 60_000))}m ago`
-              : `${Math.round(ageHr)}h ago`;
-            const day = lastAt.slice(0, 10);
-            line = `  ${feed.url}  ${n} items, last fetched ${day} (${ageLabel}) [${fresh}]`;
+    try {
+      const now = Date.now();
+      for (const feed of feeds) {
+        let line: string;
+        if (!stmt) {
+          line = `  ${feed.url}  0 items [never polled]`;
+        } else {
+          try {
+            const row = stmt.get(feed.url) as { n?: number; last_at?: string | null } | undefined;
+            const n = row?.n ?? 0;
+            const lastAt = row?.last_at ?? null;
+            if (!lastAt) {
+              line = `  ${feed.url}  ${n} items [never polled]`;
+            } else {
+              const ageMs = now - new Date(lastAt).getTime();
+              const ageHr = ageMs / 3_600_000;
+              const fresh = ageHr <= 24 ? 'fresh' : 'stale';
+              const ageLabel = ageHr < 1
+                ? `${Math.max(0, Math.round(ageMs / 60_000))}m ago`
+                : `${Math.round(ageHr)}h ago`;
+              const day = lastAt.slice(0, 10);
+              line = `  ${feed.url}  ${n} items, last fetched ${day} (${ageLabel}) [${fresh}]`;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            line = `  ${feed.url}  (check failed: ${msg.slice(0, 60)})`;
           }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          line = `  ${feed.url}  (check failed: ${msg.slice(0, 60)})`;
         }
+        out(line);
       }
-      out(line);
+    } finally {
+      try { closeDatabase(); } catch { /* ignore */ }
     }
-
-    try { closeDatabase(); } catch { /* ignore */ }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     out(`  (check failed: ${msg.slice(0, 80)})`);
