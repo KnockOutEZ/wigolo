@@ -1,394 +1,191 @@
-<div align="center">
-
 # wigolo
 
-**Local-first web intelligence for AI coding agents.**
+Local-first web intelligence MCP server. 8 tools: `search`, `fetch`, `crawl`, `cache`, `extract`, `find_similar`, `research`, `agent`. Runs on Node 20+. No API keys required for the core path.
 
-Search, fetch, crawl, cache, and extract — ML reranking, semantic embeddings, persistent local cache. Zero API keys, zero cloud, zero cost.
+> **Status:** `v0.1.1` — early release. The v1 retrieval engine has shipped but is still **opt-in** (`WIGOLO_SEARCH=v1`); default uses the legacy SearXNG backend. Full v1.0 will land after the cross-tool benchmark + default flip.
 
-[![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-blue.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue)](https://www.typescriptlang.org/)
-
-[Quick Start](#quick-start) · [Features](#features) · [Why wigolo?](#why-wigolo)
-
-</div>
-
-```
-$ npx @staticn0va/wigolo init
-```
-
-One command. Interactive TUI walks you through everything: system check, browser selection, dependency installation, verification, agent detection, MCP configuration, and skill installation. Done in under two minutes.
-
-</div>
-
-## What is this?
-
-wigolo gives AI coding agents (Claude Code, Cursor, Gemini CLI, Codex, Windsurf, Zed, OpenCode) web search, page fetching, site crawling, content extraction, and a local knowledge cache. It runs entirely on your machine. No API keys, no cloud, no cost — works out of the box with `npx`.
-
-## Quick Start
-
-### Option A: Interactive setup (recommended)
+## Install
 
 ```bash
 npx @staticn0va/wigolo init
 ```
 
-The TUI handles everything:
-1. **System check** — verifies Node.js, Python, Docker, disk space
-2. **Browser selection** — Lightpanda (fast headless), Chromium, or Firefox
-3. **Install** — search engine, browser, content extractor, ML reranker, embeddings
-4. **Verify** — starts search engine, checks all components
-5. **Agent config** — detects and configures MCP for your AI tools
-6. **Skill install** — writes tool documentation to each agent's instruction system
+The init flow runs a system check, downloads the embedding + reranker models, bootstraps SearXNG, detects installed AI coding agents (Claude Code, Cursor, Gemini CLI, Codex, Windsurf, Zed, OpenCode), and writes MCP config + skill docs for each one.
 
-For ongoing use, install globally:
-```bash
-npm i -g @staticn0va/wigolo
-wigolo init      # re-run setup
-wigolo doctor    # system diagnostics
-wigolo status    # quick health check
-wigolo shell     # interactive REPL
-```
+Or wire it yourself in any MCP client:
 
-### Option B: Manual setup
-
-**1. Warm up:**
-
-```bash
-npx @staticn0va/wigolo warmup --all
-```
-
-Flag menu:
-
-```bash
-npx @staticn0va/wigolo warmup                # browser engine + search engine only
-npx @staticn0va/wigolo warmup --all          # + reranker + trafilatura + embeddings + lightpanda + verify
-npx @staticn0va/wigolo warmup --reranker     # Install ML reranker
-npx @staticn0va/wigolo warmup --trafilatura  # Install content extractor
-npx @staticn0va/wigolo warmup --embeddings   # Install semantic embeddings
-npx @staticn0va/wigolo warmup --verify       # Start search engine, test all components
-npx @staticn0va/wigolo warmup --force        # Wipe search engine state/install/locks and re-bootstrap
-```
-
-**2. Connect your agent:**
-
-**Claude Code:**
-```bash
-claude mcp add wigolo -- npx @staticn0va/wigolo
-```
-
-**Cursor / VS Code / any MCP client:**
 ```json
 {
   "mcpServers": {
     "wigolo": {
       "command": "npx",
-      "args": ["@staticn0va/wigolo"]
+      "args": ["-y", "@staticn0va/wigolo"]
     }
   }
 }
 ```
 
-> Skipping setup still works — wigolo bootstraps in the background on first tool call — but early searches will be lower quality until the install finishes.
-
-## Diagnostics
+Global install for repeated CLI use:
 
 ```bash
-wigolo doctor    # full component health check
-wigolo status    # quick overview
+npm i -g @staticn0va/wigolo
+wigolo --help
 ```
 
-Or via npx: `npx @staticn0va/wigolo doctor`. Reports the state of every component. Exits 0 when healthy, 1 when degraded. Usable in scripts: `wigolo doctor && my-agent`.
+## CLI
 
-## Daemon Mode
+| Command | What it does |
+|---|---|
+| `wigolo` (no args) | Boot MCP server on stdio (used by MCP clients) |
+| `wigolo init` | Interactive onboarding (browser pick, agent detect, MCP config) |
+| `wigolo warmup [--all] [--embeddings] [--reranker]` | Pre-fetch models + bootstrap SearXNG |
+| `wigolo doctor` | Diagnostic: Python, browsers, models, SearXNG, RSS feeds, telemetry |
+| `wigolo health` | Quick OK/degraded exit code |
+| `wigolo serve [--port N]` | Run as HTTP daemon |
+| `wigolo shell` | Interactive REPL against the 8 tools |
+| `wigolo backfill [--dry-run] [--limit N]` | Embed cached pages missing vectors |
+| `wigolo setup mcp` | Wire MCP config into installed agents |
+| `wigolo status` | Show running daemon status |
+| `wigolo plugin <subcommand>` | Manage plugins |
+| `wigolo uninstall` | Remove wigolo install |
+| `wigolo --help` / `wigolo --version` | Help + version |
 
-Run wigolo as a persistent HTTP server for lower latency and shared infrastructure:
+## The 8 MCP tools
 
-### Start the daemon
+| Tool | Use when |
+|---|---|
+| `search` | Need info on a topic, no URL yet. Pass query string or array of 3-5 keyword variants for breadth. |
+| `fetch` | Have a specific URL. Returns clean markdown + metadata. JS rendering auto-detected. |
+| `crawl` | Need many pages from one site. Strategies: `bfs`, `dfs`, `sitemap`, `map`. |
+| `cache` | Check the local store before going to the network. FTS5 + optional vec hybrid. |
+| `extract` | Specific data points (tables, metadata, schema-shaped fields). Modes: `selector`, `tables`, `metadata`, `schema`, `structured`. |
+| `find_similar` | "More like this" given a URL or concept. Hybrid FTS + embeddings + web expansion. |
+| `research` | Multi-step investigation: decomposition → parallel search → synthesis with citations. |
+| `agent` | Natural-language data gathering across multiple sources with optional JSON schema. |
+
+Each tool surfaces a per-session instruction block (~2 KB) plus a `wigolo://docs/usage` resource with the full routing guide.
+
+## Engine selection
+
+Two retrieval paths today; toggled by env var:
 
 ```bash
-npx @staticn0va/wigolo serve
-npx @staticn0va/wigolo serve --port 4444 --host 0.0.0.0
+WIGOLO_SEARCH=v1       # new path: 11 direct engines, intent-routed verticals, RRF, RSS, recency boost
+WIGOLO_SEARCH=searxng  # current default: SearXNG aggregator (legacy)
 ```
 
-The daemon exposes:
-- `POST /mcp` -- StreamableHTTP MCP transport (preferred)
-- `GET /sse` -- SSE MCP transport (legacy compatibility)
-- `GET /health` -- Health check endpoint
+The v1 engine ships:
+- Direct engines per vertical — general (HN Algolia, lobste.rs, DuckDuckGo, Bing, Startpage), news (HN Algolia, lobste.rs, Bing News), code (GitHub Code, StackOverflow), docs (MDN, DevDocs), papers (arXiv, Semantic Scholar)
+- Intent router + weighted RRF orchestrator
+- Date-range intent classifier + recency boost
+- Opt-in RSS feed engine (`WIGOLO_RSS_FEEDS=url1,url2`)
+- `agent_context.recent_urls` dedup with case-insensitive path matching for IIS / archive.org / Microsoft docs
 
-### Check health
+Default stays on SearXNG until the cross-tool benchmark gate clears (Phase 16). Flip with `WIGOLO_SEARCH=v1` to try the new path now.
+
+## Local stack
+
+- **Search aggregator (legacy path):** SearXNG — bootstrapped to `~/.wigolo/searxng/` on first run (native venv preferred, Docker fallback)
+- **Browser:** Playwright Chromium / Firefox / WebKit; Lightpanda available as a fast JS-renderer alternative
+- **Content extraction:** Defuddle with content-type routing for news / recipe / product / paper / event JSON-LD, plus a Mozilla Readability fallback
+- **Embeddings:** `fastembed` running ONNX `BGE-small-en-v1.5` (384-dim) — cached under `~/.wigolo/fastembed/`
+- **Reranker:** `@huggingface/transformers` cross-encoder `Xenova/ms-marco-MiniLM-L-6-v2` — cached under `~/.wigolo/transformers/`
+- **Cache:** SQLite WAL + FTS5; optional vector hybrid via `sqlite-vec` when the extension is loadable on your platform
+- **Process model:** stdio MCP server by default; HTTP daemon (`wigolo serve`) and REPL (`wigolo shell`) also available
+
+## LLM extraction fallback (optional)
+
+`extract` with `mode: "schema"` falls back to an LLM when heuristics miss. Set one of:
 
 ```bash
-npx @staticn0va/wigolo health
-# or
-curl http://127.0.0.1:3333/health
+export ANTHROPIC_API_KEY=...
+export OPENAI_API_KEY=...
+export GOOGLE_API_KEY=...
+export GROQ_API_KEY=...
+# optional: pin which provider
+export WIGOLO_LLM_PROVIDER=anthropic|openai|gemini|groq
 ```
 
-Returns:
-```json
-{
-  "status": "healthy",
-  "searxng": "active",
-  "browsers": "ready",
-  "cache": "active",
-  "uptime_seconds": 3600
-}
-```
+If no key is set the fallback is skipped — `extract` still works through the heuristic path. Calls are cached (default 7 days) and rate-limited per request.
 
-### Auto-connect
+## Local LLM fallback (research synthesis)
 
-When starting in stdio mode, wigolo checks if a daemon is already running on `WIGOLO_DAEMON_PORT`. If detected, a notice is printed to stderr. Full stdio-to-daemon proxy is planned for v2.1.
+Set `WIGOLO_LLM_PROVIDER=openai-compatible` plus `WIGOLO_LLM_ENDPOINT=http://localhost:11434/v1` to let `research` use a local model (e.g. Ollama) when the host MCP client doesn't support sampling.
 
-## Prerequisites
+## Config flags worth knowing
 
-- **Node.js 20+** — [Download](https://nodejs.org/) or `brew install node` (macOS) / `winget install OpenJS.NodeJS` (Windows) / `sudo apt install nodejs` (Ubuntu/Debian)
-- **Python 3.8+** *(recommended)* — [Download](https://python.org/) or `brew install python3` (macOS) / `winget install Python.Python.3` (Windows) / `sudo apt install python3` (Ubuntu/Debian)
-- **Docker** *(optional)* — Alternative for running the search engine container.
-
-Everything else (browser, search engine) is downloaded automatically on first use or via `npx @staticn0va/wigolo warmup`.
-
-### What works without Python?
-
-Everything except the embedded search engine. Without Python, search falls back to direct scraping of Bing, DuckDuckGo, and Startpage — functional but less reliable. All other tools (fetch, crawl, cache, extract) work fully with just Node.js.
-
-## Features
-
-### search
-
-Search the web and get full markdown content in one call — not snippets.
-
-```
-search("React Server Components best practices", { max_results: 5 })
-→ titles, URLs, relevance scores, and full extracted markdown per result
-```
-
-- Domain filtering: `include_domains: ["react.dev"]`, `exclude_domains: ["medium.com"]`
-- Date filtering: `from_date: "2024-01-01"`, `to_date: "2025-01-01"`
-- Category search: `general`, `news`, `code`, `docs`, `papers`
-- ML reranking when installed
-- Falls back to direct engine scraping when search engine is unavailable
-
-### fetch
-
-Fetch any URL and get clean markdown. The page-fetching engine behind `search`.
-
-```
-fetch("https://docs.react.dev/reference/react/useState")
-→ clean markdown, links, images, metadata, cached for future use
-```
-
-- Smart routing: HTTP first, browser engine fallback for JS-rendered pages (auto-detected)
-- Section targeting: `section: "Parameters"` extracts content under that heading
-- Authenticated browsing: `use_auth: true` with stored session or Chrome profile
-- PDF support: text extraction via pdf-parse
-
-### crawl
-
-Crawl a site from a seed URL — documentation sites, wikis, anything.
-
-```
-crawl("https://docs.example.com", { strategy: "sitemap", max_pages: 50 })
-→ array of pages with titles, markdown, depth
-```
-
-- Strategies: `bfs`, `dfs`, `sitemap`, `map` (URL discovery only — no content, faster)
-- URL filtering with include/exclude patterns (regex)
-- robots.txt compliance
-- Cross-page content deduplication (strips repeated nav/header/footer)
-- Total character budget to prevent context overflow
-
-### cache
-
-Query previously fetched content without hitting the network.
-
-```
-cache({ query: "React hooks", url_pattern: "*react.dev*" })
-→ matching cached pages with full markdown
-```
-
-- Full-text search over all cached content
-- Combined filters: text query + URL pattern + date range
-- Cache stats and selective clearing
-
-### extract
-
-Structured data extraction from any URL or HTML.
-
-```
-extract("https://example.com/product", { mode: "schema", schema: { price: "string", name: "string" } })
-→ { price: "$29.99", name: "Widget Pro" }
-```
-
-Modes:
-- `selector` — CSS selector → text content
-- `tables` — HTML tables → structured row objects
-- `metadata` — title, description, author, date, JSON-LD
-- `schema` — JSON Schema → heuristic field matching from page content
-
-## Why wigolo?
-
-| | wigolo | Tavily | Firecrawl | Exa |
-|---|---|---|---|---|
-| Cost | Free | $30–500/mo | $16–500/mo | $7/1K queries |
-| API key required | None | Yes | Yes | Yes |
-| Authenticated browsing | Yes | No | No | No |
-| Localhost access | Yes | No | No | No |
-| Local cache + FTS | Yes | No | No | No |
-| Search + extract unified | Yes | Yes | Partial | Partial |
-| ML reranking | Local | Proprietary | No | Neural index |
-| Rate limits | None | Tiered | Tiered | Tiered |
-
-## Configuration
-
-wigolo works with zero configuration. For advanced use:
-
-```bash
-# Use an existing search engine instance instead of the embedded one
-SEARXNG_URL=http://localhost:8888
-
-# Authenticated browsing — export browser session state
-WIGOLO_AUTH_STATE_PATH=~/.wigolo/auth.json
-
-# Or use your Chrome profile directly (close Chrome first)
-WIGOLO_CHROME_PROFILE_PATH=~/.config/google-chrome/Default
-
-# ML reranking (install with: npx @staticn0va/wigolo warmup --reranker)
-WIGOLO_RERANKER=onnx
-
-# Tune extraction — auto/always/never
-WIGOLO_TRAFILATURA=auto
-
-# Logging
-LOG_LEVEL=info          # debug, info, warn, error
-LOG_FORMAT=json         # json, text
-```
-
-Full list of env vars:
-
-| Variable | Default | Description |
+| Env var | Default | What it does |
 |---|---|---|
-| `SEARXNG_URL` | *(auto)* | External search engine URL |
-| `SEARXNG_MODE` | `native` | `native` or `docker` |
-| `SEARXNG_PORT` | `8888` | Port for embedded search engine |
-| `WIGOLO_DATA_DIR` | `~/.wigolo` | Data + cache directory |
-| `WIGOLO_AUTH_STATE_PATH` | — | Browser session state JSON |
-| `WIGOLO_CHROME_PROFILE_PATH` | — | Chrome user data directory |
-| `WIGOLO_RERANKER` | `onnx` | ML reranker: `onnx` or `none` (`flashrank` accepted as legacy alias) |
-| `WIGOLO_TRAFILATURA` | `auto` | Content extractor: `auto`, `always`, or `never` |
-| `MAX_BROWSERS` | `3` | Concurrent browser contexts |
-| `FETCH_TIMEOUT_MS` | `10000` | HTTP fetch timeout |
-| `CRAWL_CONCURRENCY` | `2` | Concurrent crawl requests |
-| `RESPECT_ROBOTS_TXT` | `true` | Honor robots.txt |
-| `WIGOLO_BOOTSTRAP_MAX_ATTEMPTS` | `3` | Cap on search engine bootstrap auto-retries |
-| `WIGOLO_BOOTSTRAP_BACKOFF_SECONDS` | `30,3600,86400` | Backoff seconds for retry attempts 1, 2, 3 |
-| `WIGOLO_HEALTH_PROBE_INTERVAL_MS` | `30000` | Interval between search engine health probes |
-| `WIGOLO_DAEMON_PORT` | `3333` | HTTP server port for daemon mode |
-| `WIGOLO_DAEMON_HOST` | `127.0.0.1` | HTTP server bind address for daemon mode |
+| `WIGOLO_SEARCH` | `searxng` | `v1` to use the new direct-engine path |
+| `WIGOLO_RSS_FEEDS` | unset | Comma-separated feed URLs; v1 news vertical picks them up |
+| `WIGOLO_DEDUP_CASE_INSENSITIVE_HOSTS` | unset | Comma-separated hostnames where `/A` == `/a` for dedup |
+| `WIGOLO_CRAWL_INDEX` | `0` | `1` to fire-and-forget upsert crawled pages into the vector store |
+| `WIGOLO_EAGER_WARMUP` | `0` | `1` warms embed + rerank at MCP server start (non-blocking) |
+| `WIGOLO_TELEMETRY` | `0` | `1` enables opt-in NDJSON telemetry; off by default |
+| `WIGOLO_DATA_DIR` | `~/.wigolo` | Override data dir for cache, models, SearXNG state |
+| `WIGOLO_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `WIGOLO_LOG_FORMAT` | `json` | `json` or `text`; both write to stderr |
 
-## How it works
+## What's known to work
+
+- 8 MCP tools, full test suite passing (3500+ unit + integration tests on macOS arm64)
+- `init` flow on macOS for Claude Code, Cursor, Gemini CLI, Codex, Windsurf, Zed, OpenCode
+- `WIGOLO_SEARCH=v1` runs end-to-end: intent routing, direct engines, RRF, recency boost, agent_context
+- SQLite + sqlite-vec hybrid on macOS arm64; FTS5-only graceful degradation on alpine/musl (sqlite-vec extension absent)
+- Defuddle extraction with content-type routing (news/recipe/product/paper/event JSON-LD)
+- Conditional GET with true 304 short-circuit through SmartRouter (saves bandwidth on revisits)
+- Doctor + warmup + backfill CLIs
+- Opt-in eager warmup, telemetry, RSS feeds
+
+## What's still gated / not done
+
+- **Phase 16** — 5-way blind bench (wigolo-v1 vs wigolo-legacy vs Tavily vs Exa vs Firecrawl) not yet captured at the current SHA. Smoke `--subset 2` on this build: `wigolo-v1=10, wigolo-legacy=9.5, exa=10, firecrawl=10, tavily=8`. Full run needed before flipping the default.
+- **Phase 17 default flip** — `WIGOLO_SEARCH` will stay `searxng` until Phase 16 passes. Set `WIGOLO_SEARCH=v1` to opt in now.
+- **Phase 18 v1.0 release** — pinned to bench-gated default flip. This `0.1.1` build is the engine-overhaul snapshot.
+- **Onboarding for engine/RSS/LLM in Ink TUI** — plain `init` asks the new prompts; the Ink TUI phase machine still needs a matching screen.
+- **Bench numbers** — Phase 6/7/8/11/12/13/15 perf + extraction benches are scaffolded but their numbers haven't been captured to `benchmarks/*/output/`.
+
+## Architecture in one glance
 
 ```
-search query
-    → search engine (70+ engines) or fallback engines (Bing/DDG/Startpage)
-    → deduplicate by URL
-    → domain/date/category filters
-    → ML reranking (optional)
-    → link validation
-    → fetch + extract top N results in parallel
-    → return markdown
-
-Each step degrades gracefully:
-  Search engine down?  → fallback engine scraping
-  Page needs JS?       → auto-detected, browser rendering used transparently
-  Extractor fails?     → ensemble pipeline (site-specific → primary → content → fallback → converter)
-  Already fetched?     → served from local cache
+src/
+  index.ts          CLI router
+  server.ts         MCP server (8 tools + 1 resource)
+  config.ts         52+ env vars
+  cli/              warmup, doctor, health, auth, plugin, shell, init, status, backfill, setup-mcp
+  tools/            thin MCP handlers (one per tool, delegate to domain)
+  fetch/            SmartRouter (HTTP-first → Playwright), browser pool, auth, Lightpanda
+  extraction/       Defuddle + content-type routing + named schemas + LLM fallback
+  search/           SearXNG client + direct engines + dedup + rerank + RRF + multi-query + answer synth
+  search/v1/        v1 engine: intent router + verticals + orchestrator + RSS + recency + context-rank
+  crawl/            BFS/DFS/sitemap/map + robots.txt + ETag-incremental
+  cache/            SQLite FTS5 + sqlite-vec hybrid + migrations + backfill
+  embedding/        fastembed (BGE-small-en-v1.5)
+  research/         decomposition → parallel search → synthesis + citation graph
+  agent/            plan → execute → synthesize
+  searxng/          process + Docker management + bootstrap retry
+  providers/        embed, rerank, extract, vector-store, search interfaces
 ```
 
-Search engine bootstrap failures are self-healing: wigolo retries after 30 seconds, 1 hour, and 24 hours on successive server restarts. Once attempts are exhausted, fallback scraping stays active until the user runs `warmup --force`. Tool responses include a one-time fallback warning so agents can surface the recovery command. See `doctor` for the full state.
+## Common pitfalls
 
-**Extraction pipeline** — every page runs through multiple extractors in order, falling back if content is below threshold:
-1. Site-specific extractors (GitHub, Stack Overflow, MDN, docs frameworks)
-2. Primary extractor — markdown-aware, site-adaptive
-3. Content extraction engine — high-precision article extraction (optional, Python)
-4. Fallback extractor — battle-tested browser-compat algorithm
-5. HTML-to-markdown converter — last resort
+- **First run is slow** — model downloads (~250 MB combined) + SearXNG bootstrap (~30 s). `wigolo warmup --all` upfront avoids it during first MCP request.
+- **`wigolo doctor` shows `ML reranker: not installed`** — run `wigolo warmup --reranker` to fetch the cross-encoder model (~22 MB).
+- **`category: 'images'` rejected on `WIGOLO_SEARCH=v1`** — v1 has no images vertical (yet). Use the legacy path (`WIGOLO_SEARCH=searxng`) or omit `category`.
+- **`sqlite-vec extension failed to load`** — your platform (alpine/musl) doesn't have prebuilt binaries. The cache still works via FTS5; vector search is disabled.
 
-**ML reranker** — the optional cross-encoder reranker runs as a long-lived Python subprocess (mirroring the embeddings subprocess pattern), keeping the heavy model resident across requests with no per-call cold start.
-
-## Discovery
-
-wigolo is listed on MCP server registries for agent discovery:
-
-- **SKILL.md** — machine-readable tool description at repo root, auto-installed to each agent's instruction system by `wigolo init`
-- **npm** — `npm info @staticn0va/wigolo` or search for `mcp-server` keyword
-
-The `init` TUI automatically configures MCP and installs SKILL.md for all selected agents. Manual setup:
-```bash
-claude mcp add wigolo -- npx @staticn0va/wigolo
-```
-
-## Troubleshooting
-
-Start with `npx @staticn0va/wigolo doctor` — it reports the state of every component and is the fastest way to find the cause.
-
-**First search is slow or returns odd results**
-Search engine is still bootstrapping in the background. Either wait a minute, or (recommended) run `npx @staticn0va/wigolo warmup --all` before connecting your agent.
-
-**ML reranker / content extractor / embeddings "not installed"**
-These are optional Python extras. Install them with `npx @staticn0va/wigolo warmup --all` (or per-component: `--reranker`, `--trafilatura`, `--embeddings`). wigolo uses a private venv under `~/.wigolo/searxng/venv` so your system Python stays untouched.
-
-**Search engine won't start**
-Make sure `python3` is on your PATH and version 3.8+. Check with `python3 --version`. If bootstrap got interrupted, `npx @staticn0va/wigolo warmup --force` wipes the state and reinstalls. Alternatively, set `SEARXNG_MODE=docker` if Docker is available.
-
-**Doctor reports search engine "not running"**
-That's expected when you haven't made a search yet — the process starts on-demand when the MCP server needs it. Doctor only marks it degraded if the install is broken.
-
-**Browser engine not found**
-Run `npx @staticn0va/wigolo warmup` to download Chromium. This is done automatically on first use but can fail behind corporate proxies.
-
-**Search returns no results**
-If all search engines fail, check your network connection. Behind a proxy? Set `PROXY_URL=http://your-proxy:port`.
-
-**Permission errors on `~/.wigolo/`**
-wigolo stores its cache and search engine state in `~/.wigolo/`. Ensure your user has write access. Override with `WIGOLO_DATA_DIR=/your/path`.
-
-**Start fresh**
-```bash
-rm -rf ~/.wigolo
-npx @staticn0va/wigolo init    # or: warmup --all
-```
-
-## Contributing
-
-PRs welcome. Open an issue first to discuss what you'd like to change.
+## Development
 
 ```bash
 git clone https://github.com/KnockOutEZ/wigolo
 cd wigolo
 npm install
-npm test
+npm run build         # tsup → dist/, then tsc → dist/*.d.ts
+npm test              # full vitest suite
+npm run lint          # tsc --noEmit
+npm run dev           # tsx src/index.ts
 ```
-
-## Releasing
-
-Releases are triggered by pushing a version tag. CI handles the rest.
-
-```bash
-# on main, all changes committed and pushed
-make release-patch   # or: release-minor / release-major
-```
-
-Run `make help` for all targets, or `make release-dry-run` to preview the npm tarball.
-
-The `release` workflow will:
-1. Build a clean `dist/`
-2. Verify the tag matches `package.json` version
-3. Publish to npm with provenance
-4. Create a GitHub Release with auto-generated notes
-
-Requires the `NPM_TOKEN` repository secret (npm automation token with publish scope).
 
 ## License
 
-[BSL 1.1](LICENSE) — free for individuals, small teams (under $1M revenue), education, and open source. Converts to AGPL-3.0 on 2029-04-12.
+BUSL-1.1 — see `LICENSE`.
