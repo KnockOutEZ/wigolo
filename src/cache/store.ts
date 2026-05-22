@@ -303,10 +303,13 @@ export function getCachedSearchResults(
   };
 }
 
+const DEFAULT_FILTERED_LIMIT = 100;
+
 export function searchCacheFiltered(options: {
   query?: string;
   urlPattern?: string;
   since?: string;
+  limit?: number;
 }): CachedContent[] {
   const db = getDatabase();
   const conditions: string[] = [];
@@ -331,9 +334,10 @@ export function searchCacheFiltered(options: {
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const orderClause = options.query ? 'ORDER BY rank' : 'ORDER BY url_cache.fetched_at DESC';
+  const limit = Math.max(1, Math.floor(options.limit ?? DEFAULT_FILTERED_LIMIT));
 
-  const sql = `SELECT url_cache.* FROM ${fromClause} ${whereClause} ${orderClause} LIMIT 100`;
-  const rows = db.prepare(sql).all(...params) as DbRow[];
+  const sql = `SELECT url_cache.* FROM ${fromClause} ${whereClause} ${orderClause} LIMIT ?`;
+  const rows = db.prepare(sql).all(...params, limit) as DbRow[];
   return rows.map(rowToCachedContent);
 }
 

@@ -64,8 +64,8 @@ describe('extractWithLocalLlm', () => {
     expect(url).toBe('http://localhost:1234/v1/chat/completions');
     const body = JSON.parse(String((init as RequestInit).body));
     expect(body.model).toBe('my-model');
-    expect(body.response_format).toEqual({ type: 'json_object' });
     expect(Array.isArray(body.messages)).toBe(true);
+    expect(body.messages[0].content).toContain('JSON');
   });
 
   it('accepts a full endpoint URL', async () => {

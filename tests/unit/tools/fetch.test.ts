@@ -280,6 +280,61 @@ describe('handleFetch', () => {
 
     expect(vi.mocked(cacheContent)).toHaveBeenCalledOnce();
   });
+
+  it('caps links and images when max_content_chars is tight', async () => {
+    const manyLinks = Array.from({ length: 500 }, (_, i) => `https://example.com/link-${i}`);
+    const manyImages = Array.from({ length: 500 }, (_, i) => `https://example.com/img-${i}.png`);
+    extractMock.mockResolvedValue(makeExtraction({
+      links: manyLinks,
+      images: manyImages,
+      markdown: 'long markdown body '.repeat(2000),
+    }));
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com', max_content_chars: 1500 };
+
+    const __r_result = await handleFetch(input, router);
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(result.links.length).toBeLessThanOrEqual(50);
+    expect(result.images.length).toBeLessThanOrEqual(50);
+  });
+
+  it('also caps links/images on cached path when max_content_chars is set', async () => {
+    const manyLinks = Array.from({ length: 500 }, (_, i) => `https://example.com/link-${i}`);
+    const cached = makeCached({
+      links: JSON.stringify(manyLinks),
+      images: JSON.stringify(manyLinks),
+    });
+    vi.mocked(getCachedContent).mockReturnValue(cached);
+    vi.mocked(isCacheUsable).mockReturnValue({ usable: true, stale: false });
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com', max_content_chars: 1500 };
+
+    const __r_result = await handleFetch(input, router);
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(result.links.length).toBeLessThanOrEqual(50);
+    expect(result.images.length).toBeLessThanOrEqual(50);
+  });
+
+  it('leaves links/images alone when max_content_chars is not set', async () => {
+    const manyLinks = Array.from({ length: 200 }, (_, i) => `https://example.com/link-${i}`);
+    extractMock.mockResolvedValue(makeExtraction({
+      links: manyLinks,
+      images: manyLinks,
+    }));
+
+    const router = mockRouter();
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const __r_result = await handleFetch(input, router);
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(result.links.length).toBe(200);
+    expect(result.images.length).toBe(200);
+  });
 });
 
 describe('handleFetch --- force_refresh', () => {

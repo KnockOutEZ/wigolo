@@ -116,11 +116,13 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
       urlPattern: input.url_pattern,
       since: input.since,
       mode: input.mode,
+      limit: input.limit,
     });
     const results = searchCacheFiltered({
       query: input.query,
       urlPattern: input.url_pattern,
       since: input.since,
+      limit: input.limit,
     });
 
     return {

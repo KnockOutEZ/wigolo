@@ -54,3 +54,18 @@ export function getRerankProvider(): Promise<RerankProvider> {
 export function _resetRerankProviderForTest(): void {
   cached = null;
 }
+
+// Best-effort disposal of the cached rerank provider's native resources.
+// Called from CLI shutdown to release the ONNX session before process exit.
+export async function disposeRerankProvider(): Promise<void> {
+  if (!cached) return;
+  try {
+    const provider = await cached;
+    const disposable = provider as unknown as { dispose?: () => Promise<void> };
+    if (typeof disposable.dispose === 'function') await disposable.dispose();
+  } catch (err) {
+    log.debug('rerank dispose failed', { error: err instanceof Error ? err.message : String(err) });
+  } finally {
+    cached = null;
+  }
+}

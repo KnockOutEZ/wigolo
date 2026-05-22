@@ -10,6 +10,11 @@ vi.mock('node:fs', async () => {
     readFileSync: vi.fn(),
   };
 });
+vi.mock('playwright', () => ({
+  chromium: { executablePath: vi.fn(() => '/fake/playwright/chromium/chrome') },
+  firefox: { executablePath: vi.fn(() => '/fake/playwright/firefox/firefox') },
+  webkit: { executablePath: vi.fn(() => '/fake/playwright/webkit/webkit') },
+}));
 vi.mock('../../../src/providers/rerank-provider.js', () => ({
   getRerankProvider: vi.fn(async () => ({
     modelId: 'Xenova/ms-marco-MiniLM-L-6-v2',
@@ -104,11 +109,14 @@ describe('runDoctor', () => {
     vi.mocked(spawnSync).mockImplementation((cmd, args) => {
       const joined = [cmd, ...((args ?? []) as string[])].join(' ');
       if (joined.includes('--version')) return okProc('1.50.0');
-      if (joined.includes('--dry-run') && joined.includes('chromium'))
-        return okProc('chromium is not installed');
       return okProc();
     });
-    vi.mocked(existsSync).mockReturnValue(true);
+    // chromium binary path resolves but the file is not on disk
+    vi.mocked(existsSync).mockImplementation((p) => {
+      const s = String(p);
+      if (s.includes('/fake/playwright/chromium/')) return false;
+      return true;
+    });
     vi.mocked(readFileSync).mockImplementation((p) => {
       const s = String(p);
       if (s.endsWith('state.json')) return JSON.stringify({ status: 'ready', searxngPath: '/tmp/searxng' });
@@ -118,6 +126,7 @@ describe('runDoctor', () => {
     const code = await runDoctor('/tmp/.wigolo');
     expect(code).toBe(1);
     expect(outBuffer).toContain('chromium missing');
+    expect(outBuffer).toContain('npx playwright install chromium');
   });
 
   it('exits 1 when no state file exists', async () => {
@@ -156,11 +165,40 @@ describe('runDoctor', () => {
 
     it('lists all four providers and marks unset ones', async () => {
       await runDoctor('/tmp/.wigolo');
-      expect(outBuffer).toMatch(/LLM fallback/);
+      expect(outBuffer).toMatch(/LLM \(extract \/ research \/ agent\)/);
       expect(outBuffer).toMatch(/anthropic\s+no key/);
       expect(outBuffer).toMatch(/openai\s+no key/);
       expect(outBuffer).toMatch(/gemini\s+no key/);
       expect(outBuffer).toMatch(/groq\s+no key/);
+    });
+
+    it('shows resolved model when a provider is configured', async () => {
+      process.env.GOOGLE_API_KEY = 'k';
+      await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toMatch(/gemini\s+configured.*<- active/);
+      expect(outBuffer).toMatch(/model:\s+gemini-2\.5-flash-lite \(default\)/);
+    });
+
+    it('shows custom model when WIGOLO_LLM_MODEL set', async () => {
+      process.env.GOOGLE_API_KEY = 'k';
+      process.env.WIGOLO_LLM_MODEL = 'gemini-2.5-pro';
+      try {
+        await runDoctor('/tmp/.wigolo');
+        expect(outBuffer).toMatch(/model:\s+gemini-2\.5-pro/);
+        expect(outBuffer).toMatch(/WIGOLO_LLM_MODEL: gemini-2\.5-pro/);
+      } finally {
+        delete process.env.WIGOLO_LLM_MODEL;
+      }
+    });
+
+    it('shows custom URL when WIGOLO_LLM_PROVIDER is URL', async () => {
+      process.env.WIGOLO_LLM_PROVIDER = 'http://localhost:11434';
+      try {
+        await runDoctor('/tmp/.wigolo');
+        expect(outBuffer).toMatch(/custom URL.*http:\/\/localhost:11434/);
+      } finally {
+        delete process.env.WIGOLO_LLM_PROVIDER;
+      }
     });
 
     it('marks providers with their key set as configured', async () => {

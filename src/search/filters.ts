@@ -54,10 +54,23 @@ export function filterByDateRange<T>(
 
   if (fromDate && toDate && new Date(fromDate) > new Date(toDate)) return results;
 
-  // Date filtering is best-effort on direct scraping engines.
-  // SearXNG handles dates natively via time_range. For fallback engines,
-  // snippet text doesn't reliably contain dates, so we keep all results.
-  return results;
+  const fromMs = fromDate ? new Date(fromDate).getTime() : null;
+  // toDate inclusive: treat as end-of-day so 'to=2026-01-31' keeps anything stamped Jan 31.
+  const toMs = toDate ? new Date(toDate).getTime() + 24 * 3600 * 1000 - 1 : null;
+
+  // Drop results with a published_date outside the window. Results without a
+  // published_date pass through — SearXNG and most fallback engines do not
+  // expose reliable dates per result, and the user's request for recency is
+  // already biased via time_range on the upstream call.
+  return results.filter((r) => {
+    const published = (r as { published_date?: unknown }).published_date;
+    if (typeof published !== 'string' || !published) return true;
+    const t = Date.parse(published);
+    if (isNaN(t)) return true;
+    if (fromMs !== null && t < fromMs) return false;
+    if (toMs !== null && t > toMs) return false;
+    return true;
+  });
 }
 
 export function filterByCategory<T>(

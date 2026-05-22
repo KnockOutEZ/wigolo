@@ -156,6 +156,32 @@ describe('filterByDateRange', () => {
   it('returns empty array for empty input', () => {
     expect(filterByDateRange([], '2026-01-01', '2026-12-31')).toEqual([]);
   });
+
+  it('drops results with published_date older than from_date', () => {
+    const dated = [
+      makeResult('https://new.com', { published_date: '2026-04-15T00:00:00Z' }),
+      makeResult('https://old.com', { published_date: '2024-02-01T00:00:00Z' }),
+      makeResult('https://nodate.com'),
+    ];
+    const filtered = filterByDateRange(dated, '2026-01-01');
+    expect(filtered.map(r => r.url)).toEqual(['https://new.com', 'https://nodate.com']);
+  });
+
+  it('drops results with published_date newer than to_date', () => {
+    const dated = [
+      makeResult('https://new.com', { published_date: '2026-12-31T00:00:00Z' }),
+      makeResult('https://ok.com', { published_date: '2026-01-15T00:00:00Z' }),
+    ];
+    const filtered = filterByDateRange(dated, undefined, '2026-06-30');
+    expect(filtered.map(r => r.url)).toEqual(['https://ok.com']);
+  });
+
+  it('keeps results when published_date is unparseable', () => {
+    const dated = [
+      makeResult('https://garbled.com', { published_date: 'not-a-real-date' }),
+    ];
+    expect(filterByDateRange(dated, '2026-01-01')).toEqual(dated);
+  });
 });
 
 // --- Category Filtering ---

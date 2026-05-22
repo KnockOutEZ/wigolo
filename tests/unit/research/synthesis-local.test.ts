@@ -25,7 +25,7 @@ describe('synthesizeLocal', () => {
   it('throws when local LLM not configured', async () => {
     await expect(
       synthesizeLocal('q', [{ url: 'u', title: 't', markdown: 'm' }]),
-    ).rejects.toThrow(/Local LLM not configured/);
+    ).rejects.toThrow(/LLM not configured/);
   });
 
   it('POSTs to {provider}/v1/chat/completions with prompt + sources', async () => {

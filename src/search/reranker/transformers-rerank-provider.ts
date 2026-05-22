@@ -125,4 +125,21 @@ export class TransformersRerankProvider implements RerankProvider {
 
     return scored.sort((a, b) => b.score - a.score).slice(0, topK);
   }
+
+  // Release the underlying ONNX session before process exit. Without this,
+  // the runtime's worker threads race during C++ destructor teardown and
+  // surface as `mutex lock failed: Invalid argument` on macOS.
+  async dispose(): Promise<void> {
+    const model = this.model;
+    this.model = null;
+    this.tokenizer = null;
+    this.loadPromise = null;
+    if (!model) return;
+    try {
+      const m = model as unknown as { dispose?: () => Promise<unknown> };
+      if (typeof m.dispose === 'function') await m.dispose();
+    } catch (err) {
+      log.debug('reranker dispose failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
 }

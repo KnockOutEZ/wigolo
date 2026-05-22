@@ -16,15 +16,19 @@ import { runBackfill } from './cli/backfill.js';
 import { printHelp, printVersion, printUnknownCommand } from './cli/help.js';
 import { getConfig } from './config.js';
 import { startServer } from './server.js';
+import { shutdownCli } from './cli/shutdown.js';
+
+async function exitCli(code: number): Promise<never> {
+  await shutdownCli();
+  process.exit(code);
+}
 
 const { command, args } = parseCommand(process.argv.slice(2));
 
 switch (command) {
   case 'warmup':
     await runWarmup(args);
-    // Explicit exit for clean teardown — ensures all child subprocesses
-    // (reranker, embedding) are reaped before Node returns.
-    process.exit(0);
+    await exitCli(0);
     break;
 
   case 'serve':
@@ -33,19 +37,19 @@ switch (command) {
 
   case 'health': {
     const exitCode = await runHealthCheck();
-    process.exit(exitCode);
+    await exitCli(exitCode);
     break;
   }
 
   case 'doctor': {
     const code = await runDoctor(getConfig().dataDir);
-    process.exit(code);
+    await exitCli(code);
     break;
   }
 
   case 'auth': {
     const authCode = await runAuth(args);
-    process.exit(authCode);
+    await exitCli(authCode);
     break;
   }
 
@@ -59,47 +63,47 @@ switch (command) {
 
   case 'init': {
     const initCode = await runInit(args);
-    process.exit(initCode);
+    await exitCli(initCode);
     break;
   }
 
   case 'uninstall': {
     const uninstallCode = await runUninstall(args);
-    process.exit(uninstallCode);
+    await exitCli(uninstallCode);
     break;
   }
 
   case 'setup': {
     const code = await runSetupMcp(args);
-    process.exit(code);
+    await exitCli(code);
     break;
   }
 
   case 'status': {
     const code = await runStatus(args);
-    process.exit(code);
+    await exitCli(code);
     break;
   }
 
   case 'backfill': {
     const code = await runBackfill(args);
-    process.exit(code);
+    await exitCli(code);
     break;
   }
 
   case 'help':
     printHelp();
-    process.exit(0);
+    await exitCli(0);
     break;
 
   case 'version':
     printVersion();
-    process.exit(0);
+    await exitCli(0);
     break;
 
   case 'unknown':
     printUnknownCommand(args[0] ?? '');
-    process.exit(1);
+    await exitCli(1);
     break;
 
   case 'mcp': {

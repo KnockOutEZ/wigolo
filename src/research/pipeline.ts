@@ -13,7 +13,7 @@ import { truncateSmartly } from '../search/truncate.js';
 import { cacheContent } from '../cache/store.js';
 import { getEmbeddingService } from '../embedding/embed.js';
 import { checkSamplingSupport, type SamplingCapableServer } from '../search/sampling.js';
-import { isLocalLlmEnabled } from '../extraction/v1/local-llm.js';
+import { isLlmConfigured as isLocalLlmEnabled } from '../integrations/cloud/llm/run.js';
 import type {
   ResearchInput,
   ResearchOutput,

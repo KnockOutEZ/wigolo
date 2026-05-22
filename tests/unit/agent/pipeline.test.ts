@@ -196,6 +196,34 @@ describe('runAgentPipeline', () => {
     expect(result.sampling_supported).toBe(false);
   });
 
+  it('synthesize step never claims "via sampling" without server', async () => {
+    const engine = createStubEngine(defaultResults);
+    const router = createStubRouter();
+    const input: AgentInput = { prompt: 'Test sampling label' };
+
+    const result = await runAgentPipeline(input, [engine], router);
+    const synthStep = result.steps.find((s) => s.action === 'synthesize');
+    expect(synthStep).toBeDefined();
+    expect(synthStep!.detail).not.toContain('via sampling');
+    expect(synthStep!.detail).toContain('evidence fallback');
+  });
+
+  it('synthesize step does not claim "via sampling" when sampling unsupported', async () => {
+    const engine = createStubEngine(defaultResults);
+    const router = createStubRouter();
+    const input: AgentInput = { prompt: 'Test sampling fallback' };
+    const fakeServer = {
+      getClientCapabilities: () => ({}),
+    } as unknown as Parameters<typeof runAgentPipeline>[3];
+
+    const result = await runAgentPipeline(input, [engine], router, fakeServer);
+    const synthStep = result.steps.find((s) => s.action === 'synthesize');
+    expect(synthStep).toBeDefined();
+    expect(synthStep!.detail).not.toContain('via sampling');
+    expect(synthStep!.detail).toContain('evidence fallback');
+    expect(result.sampling_supported).toBe(false);
+  });
+
   it('steps have valid action types', async () => {
     const engine = createStubEngine(defaultResults);
     const router = createStubRouter();

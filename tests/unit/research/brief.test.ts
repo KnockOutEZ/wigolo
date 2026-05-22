@@ -76,6 +76,24 @@ describe('buildResearchBrief', () => {
     expect(brief.key_findings[0].length).toBeLessThanOrEqual(280);
   });
 
+  it('flattens inline markdown links so truncation cannot chop mid-link', async () => {
+    const md = [
+      'Body text describing how the linked author [Pavlo Stetsiuk](https://medium.com/?source=post_page-----abc123--------------------------------) wrote about Postgres 18 release notes covering wal segment rotation and pg_dump improvements that arrived in May 2026 with the latest cumulative update.',
+    ].join('\n');
+    const sources = [mkSource({ markdown_content: md })];
+    const brief = await buildResearchBrief('q', sources, [], 3000, 40000);
+    expect(brief.key_findings[0]).not.toContain('](');
+    expect(brief.key_findings[0]).not.toContain('?source=post_page');
+    expect(brief.key_findings[0]).toContain('Pavlo Stetsiuk');
+  });
+
+  it('drops bare angle-bracket urls from key_findings', async () => {
+    const md = 'Long paragraph that includes a reference <https://example.com/long-tracking-url-that-otherwise-leaks-into-output-and-pollutes-key-findings-with-noise-bytes> mid-text and then continues with more substantive prose to push past the eighty-character minimum threshold for a finding.';
+    const sources = [mkSource({ markdown_content: md })];
+    const brief = await buildResearchBrief('q', sources, [], 3000, 40000);
+    expect(brief.key_findings[0]).not.toContain('https://');
+  });
+
   it('skips image-only leading paragraphs and surfaces real prose', async () => {
     const md = [
       '![hero image with very long alt text describing the visual content of this page topic comparison chart deluxe edition](https://cdn.example.com/hero.webp)',

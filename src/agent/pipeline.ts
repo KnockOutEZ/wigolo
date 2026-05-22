@@ -7,6 +7,7 @@ import {
   requestSampling,
   checkSamplingSupport,
 } from '../search/sampling.js';
+import { isLlmConfigured, runLlmText } from '../integrations/cloud/llm/run.js';
 import type {
   AgentInput,
   AgentOutput,
@@ -85,11 +86,17 @@ export async function runAgentPipeline(
     }
 
     const synthStart = Date.now();
-    const result = await synthesizeResult(input.prompt, sources, server);
+    const { result, samplingUsed, llmUsed } = await synthesizeResult(input.prompt, sources, server);
 
+    const resultLen = typeof result === 'string' ? result.length : JSON.stringify(result).length;
+    const synthPath = samplingUsed
+      ? ' (via sampling)'
+      : llmUsed
+        ? ' (via configured LLM)'
+        : ' (evidence fallback)';
     steps.push({
       action: 'synthesize',
-      detail: `Produced ${typeof result === 'string' ? result.length : JSON.stringify(result).length} char result${server ? ' (via sampling)' : ''}`,
+      detail: `Produced ${resultLen} char result${synthPath}`,
       time_ms: Date.now() - synthStart,
     });
 
@@ -161,17 +168,17 @@ async function synthesizeResult(
   prompt: string,
   sources: AgentSource[],
   server?: SamplingCapableServer,
-): Promise<string> {
+): Promise<{ result: string; samplingUsed: boolean; llmUsed?: boolean }> {
   const fetchedSources = sources.filter((s) => s.fetched && s.markdown_content.length > 0);
 
   if (fetchedSources.length === 0) {
-    return 'No data could be gathered for this request.';
+    return { result: 'No data could be gathered for this request.', samplingUsed: false };
   }
 
   if (server) {
     try {
       const result = await synthesizeWithSampling(prompt, fetchedSources, server);
-      if (result) return result;
+      if (result) return { result, samplingUsed: true };
     } catch (err) {
       log.warn('sampling synthesis failed, using fallback', {
         error: err instanceof Error ? err.message : String(err),
@@ -179,7 +186,40 @@ async function synthesizeResult(
     }
   }
 
-  return buildFallbackSynthesis(prompt, fetchedSources);
+  // Second fallback: configured WIGOLO_LLM_PROVIDER drives synthesis when the
+  // host MCP did not provide sampling. Only the evidence-dump path remains
+  // when nothing is configured.
+  if (isLlmConfigured()) {
+    try {
+      const result = await synthesizeViaLlmRunner(prompt, fetchedSources);
+      if (result) return { result, samplingUsed: false, llmUsed: true };
+    } catch (err) {
+      log.warn('llm runner synthesis failed, using evidence fallback', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return { result: buildFallbackSynthesis(prompt, fetchedSources), samplingUsed: false };
+}
+
+async function synthesizeViaLlmRunner(
+  prompt: string,
+  sources: AgentSource[],
+): Promise<string | null> {
+  const maxCharsPerSource = 3000;
+  const sourceBlocks = sources.map((s, i) => {
+    const content = s.markdown_content.slice(0, maxCharsPerSource);
+    return `[${i + 1}] ${s.title} (${s.url})\n${content}`;
+  });
+  const truncated = sourceBlocks.join('\n\n').slice(0, 40000);
+  const fullPrompt =
+    'You are a data gathering assistant. Based on the user request and the gathered sources, ' +
+    'synthesize a clear, well-organized response. Cite sources as [1], [2], etc.\n\n' +
+    `User request: ${prompt}\n\n` +
+    `Sources:\n${truncated}`;
+  const r = await runLlmText({ prompt: fullPrompt, maxTokens: 2000 });
+  return r.text && r.text.trim().length > 0 ? r.text.trim() : null;
 }
 
 async function synthesizeWithSampling(

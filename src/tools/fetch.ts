@@ -1,4 +1,5 @@
 import type { FetchInput, FetchOutput, CachedContent, StageResult } from '../types.js';
+import { describeFetchError } from '../fetch/error-describe.js';
 import type { SmartRouter } from '../fetch/router.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { getCachedContent, cacheContent, isCacheUsable } from '../cache/store.js';
@@ -18,6 +19,18 @@ const DEFAULT_MAX_TOKENS_OUT = 4000;
 // that fits typical MCP tool-result limits (~25k tokens) but prevents huge
 // pages (full doc sites) from blowing the cap. Override via max_tokens_out.
 const DEFAULT_FETCH_BODY_TOKENS = 16000;
+// When the caller asks for a tight markdown budget, also clip the
+// auxiliary arrays — large doc pages emit thousands of links/images that
+// otherwise blow the user-requested response size.
+const AUX_FIELD_CAP_WHEN_CHARS_BOUNDED = 50;
+const AUX_FIELD_CAP_WHEN_TIGHT = 20;
+
+function capAuxFields(out: FetchOutput, maxContentChars?: number): void {
+  if (maxContentChars === undefined) return;
+  const cap = maxContentChars <= 4000 ? AUX_FIELD_CAP_WHEN_TIGHT : AUX_FIELD_CAP_WHEN_CHARS_BOUNDED;
+  if (out.links && out.links.length > cap) out.links = out.links.slice(0, cap);
+  if (out.images && out.images.length > cap) out.images = out.images.slice(0, cap);
+}
 
 async function attachEvidence(
   output: FetchOutput,
@@ -63,7 +76,7 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     markdown = truncateSmartly(markdown, input.max_content_chars);
   }
 
-  return {
+  const out: FetchOutput = {
     url: cached.url,
     title: cached.title,
     markdown,
@@ -76,6 +89,8 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     cached: true,
     cached_at: cached.fetchedAt,
   };
+  capAuxFields(out, input.max_content_chars);
+  return out;
 }
 
 export async function handleFetch(
@@ -185,16 +200,18 @@ export async function handleFetch(
       } : {}),
     };
 
+    capAuxFields(out, input.max_content_chars);
     await attachEvidence(out, input, finalMarkdown);
     return { ok: true, data: out };
   } catch (err) {
     log.error('Fetch failed', { url: input.url, error: String(err) });
-    const msg = err instanceof Error ? err.message : String(err);
+    const described = describeFetchError(err);
     return {
       ok: false,
       error: 'fetch_failed',
-      error_reason: msg,
+      error_reason: described.reason,
       stage: 'fetch',
+      ...(described.hint ? { hint: described.hint } : {}),
     };
   }
 }

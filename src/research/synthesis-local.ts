@@ -1,16 +1,19 @@
 import { createLogger } from '../logger.js';
-import { isLocalLlmEnabled } from '../extraction/v1/local-llm.js';
+import { isLlmConfigured, runLlmText } from '../integrations/cloud/llm/run.js';
 
 const log = createLogger('research');
 
 const DEFAULT_MAX_SOURCES = 8;
 const DEFAULT_MAX_CHARS_PER_SOURCE = 4000;
 const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_MAX_TOKENS = 3000;
 
 export interface LocalSynthesisOptions {
   maxSources?: number;
   maxCharsPerSource?: number;
   timeoutMs?: number;
+  maxTokens?: number;
+  modelOverride?: string;
 }
 
 export interface LocalSynthesisSource {
@@ -29,19 +32,12 @@ export async function synthesizeLocal(
   sources: LocalSynthesisSource[],
   opts: LocalSynthesisOptions = {},
 ): Promise<LocalSynthesisResult> {
-  if (!isLocalLlmEnabled()) {
-    throw new Error('Local LLM not configured. Set WIGOLO_LLM_PROVIDER.');
+  if (!isLlmConfigured()) {
+    throw new Error('LLM not configured. Set WIGOLO_LLM_PROVIDER or a provider API key.');
   }
 
   const maxSources = opts.maxSources ?? DEFAULT_MAX_SOURCES;
   const maxCharsPerSource = opts.maxCharsPerSource ?? DEFAULT_MAX_CHARS_PER_SOURCE;
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-
-  const provider = process.env['WIGOLO_LLM_PROVIDER']!;
-  const endpoint = provider.includes('/chat/completions')
-    ? provider
-    : provider.replace(/\/+$/, '') + '/v1/chat/completions';
-  const model = process.env['WIGOLO_LLM_MODEL'] ?? 'local';
 
   const sliced = sources.slice(0, maxSources);
   const sourceBlocks = sliced.map((s, i) => {
@@ -56,37 +52,25 @@ export async function synthesizeLocal(
     `Question: ${question}\n\n` +
     `Sources:\n${sourceBlocks.join('\n\n')}`;
 
-  const body = {
-    model,
-    messages: [{ role: 'user', content: prompt }],
-  };
-
-  let response: Response;
   try {
-    response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
+    const result = await runLlmText({
+      prompt,
+      maxTokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+      modelOverride: opts.modelOverride,
+      timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
+    log.info('local synthesis ok', { provider: result.provider, model: result.model, latencyMs: result.latencyMs });
+    return { text: result.text, citations: extractCitations(result.text) };
   } catch (err) {
-    log.error('local synthesis request failed', { error: String(err) });
+    log.error('local synthesis request failed', { error: err instanceof Error ? err.message : String(err) });
     throw err;
   }
+}
 
-  if (!response.ok) {
-    throw new Error(`Local LLM endpoint returned ${response.status}`);
-  }
-
-  const payload = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const content = payload.choices?.[0]?.message?.content;
-  if (typeof content !== 'string') {
-    throw new Error('Local LLM response missing message content');
-  }
-
-  return { text: content, citations: extractCitations(content) };
+// Backwards-compat shim — callers (research/pipeline.ts) used isLocalLlmEnabled()
+// to gate this fallback. Keep the same gate name pointing at the unified runner.
+export function isLocalLlmEnabled(): boolean {
+  return isLlmConfigured();
 }
 
 function extractCitations(text: string): number[] {

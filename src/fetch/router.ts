@@ -3,6 +3,7 @@ import { createLogger } from '../logger.js';
 import { contentAppearsEmpty } from './content-check.js';
 import { getAuthOptions } from './auth.js';
 import { fetchWithPlaywright, shouldEscalate } from './playwright-tier.js';
+import { describeFetchError } from './error-describe.js';
 import type { RawFetchResult, BrowserAction, Mode, StageError } from '../types.js';
 
 export interface RouterFetchOptions {
@@ -177,11 +178,12 @@ export class SmartRouter {
             hint,
           };
         }
+        const described = describeFetchError(err);
         return {
           error: 'playwright_fetch_failed',
-          error_reason: err instanceof Error ? err.message : String(err),
+          error_reason: described.reason,
           stage: 'fetch',
-          hint: 'Stealth fetch failed; check network or retry',
+          hint: described.hint ?? 'Stealth fetch failed; check network or retry',
         };
       }
     }

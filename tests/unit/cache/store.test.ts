@@ -441,6 +441,18 @@ describe('searchCacheFiltered', () => {
     expect(results).toHaveLength(1);
     expect(results[0].title).toBe('TypeScript Guide');
   });
+
+  it('honors limit param', () => {
+    const r1 = searchCacheFiltered({ limit: 1 });
+    expect(r1).toHaveLength(1);
+    const r2 = searchCacheFiltered({ limit: 2 });
+    expect(r2).toHaveLength(2);
+  });
+
+  it('honors limit combined with query', () => {
+    const results = searchCacheFiltered({ query: 'Learn', limit: 1 });
+    expect(results).toHaveLength(1);
+  });
 });
 
 describe('clearCacheEntries', () => {

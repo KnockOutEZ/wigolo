@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { chromium, firefox, webkit } from 'playwright';
 import { getBootstrapState, type BootstrapState } from '../searxng/bootstrap.js';
 import { isProcessAlive } from '../searxng/process.js';
 import { getConfig } from '../config.js';
@@ -9,7 +10,8 @@ import { getEmbedProvider } from '../providers/embed-provider.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
 import { loadFeedConfig } from '../search/v1/rss/feed-config.js';
 import { isTelemetryEnabled } from './telemetry.js';
-import { allProviders, providerEnvVar } from '../integrations/cloud/llm/select.js';
+import { allProviders, providerEnvVar, selectProvider } from '../integrations/cloud/llm/select.js';
+import { resolveModel, providerDefaultModel, providerModelEnvVar } from '../integrations/cloud/llm/model-select.js';
 import { setLogSuppression } from '../logger.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
@@ -27,7 +29,7 @@ function checkDocker(): { ok: boolean; version?: string } {
   return { ok: true, version: (r.stdout || '').trim() };
 }
 
-function checkPlaywright(): { installed: boolean; version?: string; browsers: { chromium: boolean; chromiumHeadlessShell: boolean; firefox: boolean; webkit: boolean } } {
+function checkPlaywright(): { installed: boolean; version?: string; browsers: { chromium: boolean; chromiumHeadlessShell: boolean; firefox: boolean; webkit: boolean }; chromiumPath?: string } {
   let installed = false;
   let version: string | undefined;
   try {
@@ -38,20 +40,36 @@ function checkPlaywright(): { installed: boolean; version?: string; browsers: { 
       version = m?.[1];
     }
   } catch { /* ignore */ }
-  // Browser detection — light check
-  const probe = (browser: string): boolean => {
-    const r = spawnSync('npx', ['playwright', 'install', '--dry-run', browser], { encoding: 'utf-8', timeout: 5000 });
-    return r.status === 0 && !/is not installed/i.test(r.stdout + r.stderr);
+
+  // Probe browser readiness by resolving the bundled Playwright's actual
+  // executable path and checking the file on disk. This matches what fetch
+  // uses via chromium.launch(), so doctor cannot lie about parity.
+  const probeBrowser = (api: { executablePath(): string }): { ok: boolean; path?: string } => {
+    try {
+      const exec = api.executablePath();
+      return { ok: !!exec && existsSync(exec), path: exec };
+    } catch {
+      return { ok: false };
+    }
   };
+
+  const chromiumProbe = probeBrowser(chromium);
+  const firefoxProbe = probeBrowser(firefox);
+  const webkitProbe = probeBrowser(webkit);
+
+  // headless-shell uses chromium binary or a sibling; presence implied when
+  // chromium ok. If a user explicitly needs the shell, fetch will surface
+  // playwright_not_installed regardless.
   return {
     installed,
     version,
     browsers: {
-      chromium: probe('chromium'),
-      chromiumHeadlessShell: probe('chromium-headless-shell'),
-      firefox: probe('firefox'),
-      webkit: probe('webkit'),
+      chromium: chromiumProbe.ok,
+      chromiumHeadlessShell: chromiumProbe.ok,
+      firefox: firefoxProbe.ok,
+      webkit: webkitProbe.ok,
     },
+    chromiumPath: chromiumProbe.path,
   };
 }
 
@@ -138,11 +156,12 @@ async function runDoctorInner(dataDir: string): Promise<number> {
   const pw = checkPlaywright();
   out('[wigolo doctor] Browser engine:');
   out(`  Installation:  ${pw.installed ? `installed${pw.version ? ` (v${pw.version})` : ''}` : 'not installed'}`);
-  out(`  Browsers:      chromium ${pw.browsers.chromium ? 'OK' : 'missing'}  headless-shell ${pw.browsers.chromiumHeadlessShell ? 'OK' : 'missing'}  firefox ${pw.browsers.firefox ? 'OK' : 'missing'}  webkit ${pw.browsers.webkit ? 'OK' : 'missing'}`);
-  if (!pw.installed || !pw.browsers.chromium || !pw.browsers.chromiumHeadlessShell) {
-    if (!pw.browsers.chromiumHeadlessShell && pw.installed) {
-      out("  Hint:          run 'npx playwright install chromium-headless-shell' — JS-rendered pages will fail without it");
-    }
+  out(`  Browsers:      chromium ${pw.browsers.chromium ? 'OK' : 'missing'}  firefox ${pw.browsers.firefox ? 'OK' : 'missing'}  webkit ${pw.browsers.webkit ? 'OK' : 'missing'}`);
+  if (pw.chromiumPath) {
+    out(`  Chromium path: ${pw.chromiumPath}${pw.browsers.chromium ? '' : ' (missing on disk)'}`);
+  }
+  if (!pw.browsers.chromium) {
+    out("  Hint:          run 'npx playwright install chromium' — JS-rendered pages will fail without it");
     degraded = true;
   }
 
@@ -163,17 +182,32 @@ async function runDoctorInner(dataDir: string): Promise<number> {
   }
 
   out('');
-  out('[wigolo doctor] LLM fallback (extract):');
+  out('[wigolo doctor] LLM (extract / research / agent):');
   const cfg = getConfig();
+  const active = selectProvider(process.env);
   for (const p of allProviders()) {
     const envVar = providerEnvVar(p);
     const set = !!process.env[envVar];
+    const activeMark = p === active ? ' <- active' : '';
     out(
-      `  ${p.padEnd(10)} ${set ? 'configured' : 'no key'} (${envVar}${set ? '' : ' unset'})`,
+      `  ${p.padEnd(10)} ${set ? 'configured' : 'no key'} (${envVar}${set ? '' : ' unset'})${activeMark}`,
     );
+    if (set) {
+      const model = resolveModel(p, undefined, process.env);
+      const modelEnv = providerModelEnvVar(p);
+      const usingDefault = model === providerDefaultModel(p) && !process.env[modelEnv] && !process.env.WIGOLO_LLM_MODEL;
+      out(`    model:     ${model}${usingDefault ? ' (default)' : ''}`);
+    }
   }
   if (cfg.llmProvider) {
-    out(`  override:    WIGOLO_LLM_PROVIDER=${cfg.llmProvider}`);
+    if (cfg.llmProvider.startsWith('http://') || cfg.llmProvider.startsWith('https://')) {
+      out(`  override:    custom URL (${cfg.llmProvider})`);
+    } else {
+      out(`  override:    WIGOLO_LLM_PROVIDER=${cfg.llmProvider}`);
+    }
+  }
+  if (process.env.WIGOLO_LLM_MODEL) {
+    out(`  WIGOLO_LLM_MODEL: ${process.env.WIGOLO_LLM_MODEL} (universal override)`);
   }
   out(`  cache TTL:   ${cfg.llmCacheTtlDays} days`);
   out(`  per-request: ${cfg.llmMaxCallsPerRequest} call(s) max`);

@@ -221,16 +221,22 @@ function firstSubstantiveParagraph(markdown: string): string | null {
   for (const p of paragraphs) {
     if (p.length < 80) continue;
     if (p.startsWith('#') || p.startsWith('|') || p.startsWith('```')) continue;
-    // Strip leading images / links-around-images that pad alt text into the
-    // paragraph; if nothing of substance remains, skip.
-    const stripped = p
-      .replace(/^!\[[^\]]*\]\([^)]*\)\s*/g, '')
-      .replace(/^\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)\s*/g, '')
-      .trim();
-    if (stripped.length < 80) continue;
-    return stripped.replace(/\s+/g, ' ');
+    const cleaned = stripMarkdownLinks(p);
+    if (cleaned.length < 80) continue;
+    return cleaned.replace(/\s+/g, ' ');
   }
   return null;
+}
+
+// Flatten markdown link/image syntax to plain text so a downstream char-slice
+// can't chop mid-link and leak `](/?source=post_page...` into key_findings.
+export function stripMarkdownLinks(text: string): string {
+  return text
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/<https?:\/\/[^>]+>/g, '')
+    .trim();
 }
 
 function dedupe(list: string[]): string[] {
