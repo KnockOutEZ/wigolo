@@ -19,8 +19,12 @@ import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
 import { runSynthesis } from '../answer-synthesis.js';
 import { applyEvidenceDefault, renderCitationsXml } from '../evidence.js';
 import { fetchContentForResults } from '../content-fetch.js';
+import { cacheSearchResults, getCachedSearchResults } from '../../cache/store.js';
 import { getConfig } from '../../config.js';
+import { createLogger } from '../../logger.js';
 import type { Citation } from '../../types.js';
+
+const log = createLogger('search');
 
 const DEFAULT_CONTENT_MAX_CHARS = 30000;
 const DEFAULT_MAX_TOTAL_CHARS = 50000;
@@ -98,78 +102,112 @@ export class V1SearchProvider implements SearchProvider {
     const category = input.category;
 
     const start = Date.now();
-    const dispatches = await Promise.all(
-      queries.map((q) =>
-        runV1Search({
-          query: q,
-          category,
-          fromDate: input.from_date,
-          toDate: input.to_date,
-          maxResults: input.max_results,
-          language: input.language,
-          includeDomains: input.include_domains,
-          excludeDomains: input.exclude_domains,
-        }),
-      ),
-    );
-
-    const fused =
-      dispatches.length === 1
-        ? dispatches[0].results
-        : fuseRankedLists(dispatches.map((d) => d.results));
-
-    const enginesUsedSet = new Set<string>();
-    for (const d of dispatches) {
-      for (const e of d.enginesUsed) enginesUsedSet.add(e);
-    }
-    const enginesUsed = [...enginesUsedSet];
-
-    const allDegraded = dispatches.every((d) => d.degraded);
 
     // Display query is the first input string (back-compat) so consumers can
     // still echo what was asked; arrays just join with " | " for clarity.
     const displayQuery = isArray ? (input.query as string[]).filter(Boolean).join(' | ') : queries[0];
+    const cacheKey = queries.join(' | ');
 
-    let processed = fused;
-
-    if (input.agent_context?.text || input.agent_context?.intent) {
-      const contextText = input.agent_context.text ?? input.agent_context.intent;
-      processed = await applyContextRank(processed, queries[0], contextText);
-    }
-
-    if (input.agent_context?.recent_urls?.length) {
-      processed = dedupAgainstRecentUrls(processed, input.agent_context.recent_urls);
-    }
-
-    const maxResults = input.max_results ?? processed.length;
-    const items: SearchResultItem[] = processed.slice(0, maxResults).map((r) => ({
-      title: r.title,
-      url: r.url,
-      snippet: r.snippet,
-      relevance_score: r.relevance_score,
-      ...(r.published_date ? { published_date: r.published_date } : {}),
-    }));
-
-    const searchElapsed = Date.now() - start;
+    let items: SearchResultItem[] = [];
+    let enginesUsed: string[] = [];
+    let allDegraded = false;
+    let searchElapsed = 0;
     let fetchElapsed = 0;
     let contentFetched = false;
+    let servedFromCache = false;
+    let cachedAt: string | undefined;
 
-    const includeContent = input.include_content !== false;
-    if (includeContent && ctx.router && items.length > 0) {
-      const config = getConfig();
-      const fetchStart = Date.now();
-      await fetchContentForResults(items, ctx.router, {
-        contentMaxChars: input.content_max_chars ?? DEFAULT_CONTENT_MAX_CHARS,
-        maxContentChars: input.max_content_chars,
-        maxTotalChars: input.max_total_chars ?? DEFAULT_MAX_TOTAL_CHARS,
-        fetchTimeoutMs: config.searchFetchTimeoutMs,
-        totalDeadline: start + config.searchTotalTimeoutMs,
-        forceRefresh: input.force_refresh ?? false,
-        maxFetches: input.max_fetches,
-      });
-      fetchElapsed = Date.now() - fetchStart;
-      contentFetched = true;
+    if (!input.force_refresh) {
+      try {
+        const cached = getCachedSearchResults(cacheKey);
+        if (cached && !cached.stale) {
+          items = cached.results.map((r) => ({ ...r, cached: true, cached_at: cached.searched_at }));
+          enginesUsed = cached.engines_used;
+          servedFromCache = true;
+          cachedAt = cached.searched_at;
+          contentFetched = items.some((i) => typeof i.markdown_content === 'string' && i.markdown_content.length > 0);
+        }
+      } catch (err) {
+        log.debug('cache lookup failed', { error: String(err) });
+      }
     }
+
+    if (!servedFromCache) {
+      const dispatches = await Promise.all(
+        queries.map((q) =>
+          runV1Search({
+            query: q,
+            category,
+            fromDate: input.from_date,
+            toDate: input.to_date,
+            maxResults: input.max_results,
+            language: input.language,
+            includeDomains: input.include_domains,
+            excludeDomains: input.exclude_domains,
+          }),
+        ),
+      );
+
+      const fused =
+        dispatches.length === 1
+          ? dispatches[0].results
+          : fuseRankedLists(dispatches.map((d) => d.results));
+
+      const enginesUsedSet = new Set<string>();
+      for (const d of dispatches) {
+        for (const e of d.enginesUsed) enginesUsedSet.add(e);
+      }
+      enginesUsed = [...enginesUsedSet];
+      allDegraded = dispatches.every((d) => d.degraded);
+
+      let processed = fused;
+
+      if (input.agent_context?.text || input.agent_context?.intent) {
+        const contextText = input.agent_context.text ?? input.agent_context.intent;
+        processed = await applyContextRank(processed, queries[0], contextText);
+      }
+
+      if (input.agent_context?.recent_urls?.length) {
+        processed = dedupAgainstRecentUrls(processed, input.agent_context.recent_urls);
+      }
+
+      const maxResults = input.max_results ?? processed.length;
+      items = processed.slice(0, maxResults).map((r) => ({
+        title: r.title,
+        url: r.url,
+        snippet: r.snippet,
+        relevance_score: r.relevance_score,
+        ...(r.published_date ? { published_date: r.published_date } : {}),
+      }));
+
+      searchElapsed = Date.now() - start;
+
+      const includeContent = input.include_content !== false;
+      if (includeContent && ctx.router && items.length > 0) {
+        const config = getConfig();
+        const fetchStart = Date.now();
+        await fetchContentForResults(items, ctx.router, {
+          contentMaxChars: input.content_max_chars ?? DEFAULT_CONTENT_MAX_CHARS,
+          maxContentChars: input.max_content_chars,
+          maxTotalChars: input.max_total_chars ?? DEFAULT_MAX_TOTAL_CHARS,
+          fetchTimeoutMs: config.searchFetchTimeoutMs,
+          totalDeadline: start + config.searchTotalTimeoutMs,
+          forceRefresh: input.force_refresh ?? false,
+          maxFetches: input.max_fetches,
+        });
+        fetchElapsed = Date.now() - fetchStart;
+        contentFetched = true;
+      }
+
+      if (items.length > 0) {
+        try {
+          cacheSearchResults(cacheKey, items, enginesUsed);
+        } catch (err) {
+          log.debug('search cache write failed', { error: String(err) });
+        }
+      }
+    }
+    void cachedAt;
 
     const data: SearchOutput = {
       results: items,

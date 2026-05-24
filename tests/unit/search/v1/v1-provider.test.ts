@@ -23,6 +23,11 @@ vi.mock('../../../../src/search/content-fetch.js', () => ({
   fetchContentForResults: vi.fn(async () => undefined),
 }));
 
+vi.mock('../../../../src/cache/store.js', () => ({
+  getCachedSearchResults: vi.fn(() => null),
+  cacheSearchResults: vi.fn(),
+}));
+
 vi.mock('../../../../src/search/evidence.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../../src/search/evidence.js')>();
   return {
@@ -36,11 +41,14 @@ import { runV1Search } from '../../../../src/search/v1/orchestrator.js';
 import { runSynthesis } from '../../../../src/search/answer-synthesis.js';
 import { fetchContentForResults } from '../../../../src/search/content-fetch.js';
 import { applyEvidenceDefault } from '../../../../src/search/evidence.js';
+import { getCachedSearchResults, cacheSearchResults } from '../../../../src/cache/store.js';
 
 const runV1SearchMock = vi.mocked(runV1Search);
 const runSynthesisMock = vi.mocked(runSynthesis);
 const fetchContentMock = vi.mocked(fetchContentForResults);
 const applyEvidenceDefaultMock = vi.mocked(applyEvidenceDefault);
+const getCachedSearchResultsMock = vi.mocked(getCachedSearchResults);
+const cacheSearchResultsMock = vi.mocked(cacheSearchResults);
 
 const ctx = { router: undefined } as never;
 
@@ -220,6 +228,152 @@ describe('V1SearchProvider', () => {
       if (result.ok) {
         expect(result.data.warning).toBeUndefined();
       }
+    });
+  });
+
+  describe('cache layer', () => {
+    it('stores items after dispatch when cache miss', async () => {
+      runV1SearchMock.mockClear();
+      cacheSearchResultsMock.mockClear();
+      getCachedSearchResultsMock.mockClear();
+      getCachedSearchResultsMock.mockReturnValue(null);
+      runV1SearchMock.mockResolvedValue({
+        results: [{ title: 'A', url: 'https://a.example', snippet: 'sa', relevance_score: 1, engine: 'b' }],
+        enginesUsed: ['b'],
+        degraded: false,
+      });
+
+      const provider = new V1SearchProvider();
+      await provider.search({ query: 'rust async runtime', max_results: 5 }, ctx);
+
+      expect(runV1SearchMock).toHaveBeenCalledOnce();
+      expect(cacheSearchResultsMock).toHaveBeenCalledOnce();
+      const [cachedKey, cachedItems, cachedEngines] = cacheSearchResultsMock.mock.calls[0];
+      expect(cachedKey).toBe('rust async runtime');
+      expect(cachedItems.map((i: { url: string }) => i.url)).toEqual(['https://a.example']);
+      expect(cachedEngines).toEqual(['b']);
+    });
+
+    it('serves from cache and skips dispatch + fetch when fresh entry exists', async () => {
+      runV1SearchMock.mockClear();
+      fetchContentMock.mockClear();
+      getCachedSearchResultsMock.mockClear();
+      cacheSearchResultsMock.mockClear();
+      getCachedSearchResultsMock.mockReturnValue({
+        query: 'rust async runtime',
+        results: [
+          { title: 'Cached', url: 'https://cached.example', snippet: 'sc', relevance_score: 1 },
+        ],
+        engines_used: ['bing', 'duckduckgo'],
+        searched_at: '2026-05-23T10:00:00Z',
+      });
+
+      const provider = new V1SearchProvider();
+      const result = await provider.search({ query: 'rust async runtime', max_results: 5 }, ctx);
+
+      expect(runV1SearchMock).not.toHaveBeenCalled();
+      expect(fetchContentMock).not.toHaveBeenCalled();
+      expect(cacheSearchResultsMock).not.toHaveBeenCalled();
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.results).toHaveLength(1);
+        expect(result.data.results[0].url).toBe('https://cached.example');
+        expect(result.data.results[0].cached).toBe(true);
+        expect(result.data.results[0].cached_at).toBe('2026-05-23T10:00:00Z');
+        expect(result.data.engines_used).toEqual(['bing', 'duckduckgo']);
+      }
+    });
+
+    it('bypasses cache when force_refresh is true', async () => {
+      runV1SearchMock.mockClear();
+      getCachedSearchResultsMock.mockClear();
+      cacheSearchResultsMock.mockClear();
+      getCachedSearchResultsMock.mockReturnValue({
+        query: 'q',
+        results: [{ title: 'stale', url: 'https://stale.example', snippet: '', relevance_score: 1 }],
+        engines_used: ['x'],
+        searched_at: '2026-05-23T10:00:00Z',
+      });
+      runV1SearchMock.mockResolvedValue({
+        results: [{ title: 'fresh', url: 'https://fresh.example', snippet: '', relevance_score: 1, engine: 'b' }],
+        enginesUsed: ['b'],
+        degraded: false,
+      });
+
+      const provider = new V1SearchProvider();
+      const result = await provider.search(
+        { query: 'q', force_refresh: true, max_results: 5 },
+        ctx,
+      );
+
+      expect(getCachedSearchResultsMock).not.toHaveBeenCalled();
+      expect(runV1SearchMock).toHaveBeenCalledOnce();
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.results[0].url).toBe('https://fresh.example');
+      }
+    });
+
+    it('treats stale cache entries as a miss', async () => {
+      runV1SearchMock.mockClear();
+      getCachedSearchResultsMock.mockClear();
+      cacheSearchResultsMock.mockClear();
+      getCachedSearchResultsMock.mockReturnValue({
+        query: 'q',
+        results: [{ title: 'old', url: 'https://old.example', snippet: '', relevance_score: 1 }],
+        engines_used: ['x'],
+        searched_at: '2026-05-23T10:00:00Z',
+        stale: true,
+      });
+      runV1SearchMock.mockResolvedValue({
+        results: [{ title: 'fresh', url: 'https://fresh.example', snippet: '', relevance_score: 1, engine: 'b' }],
+        enginesUsed: ['b'],
+        degraded: false,
+      });
+
+      const provider = new V1SearchProvider();
+      const result = await provider.search({ query: 'q', max_results: 5 }, ctx);
+
+      expect(runV1SearchMock).toHaveBeenCalledOnce();
+      if (result.ok) {
+        expect(result.data.results[0].url).toBe('https://fresh.example');
+      }
+    });
+
+    it('uses joined array query as the cache key', async () => {
+      runV1SearchMock.mockClear();
+      cacheSearchResultsMock.mockClear();
+      getCachedSearchResultsMock.mockClear();
+      getCachedSearchResultsMock.mockReturnValue(null);
+      runV1SearchMock.mockResolvedValue({
+        results: [{ title: 't', url: 'https://x', snippet: '', relevance_score: 1, engine: 'b' }],
+        enginesUsed: ['b'],
+        degraded: false,
+      });
+
+      const provider = new V1SearchProvider();
+      await provider.search({ query: ['hnsw tuning', 'ef_construction'], max_results: 5 }, ctx);
+
+      const lookupKey = getCachedSearchResultsMock.mock.calls[0][0];
+      expect(lookupKey).toBe('hnsw tuning | ef_construction');
+      const storedKey = cacheSearchResultsMock.mock.calls[0][0];
+      expect(storedKey).toBe('hnsw tuning | ef_construction');
+    });
+
+    it('does not store cache when fused result list is empty', async () => {
+      runV1SearchMock.mockClear();
+      cacheSearchResultsMock.mockClear();
+      getCachedSearchResultsMock.mockReturnValue(null);
+      runV1SearchMock.mockResolvedValue({
+        results: [],
+        enginesUsed: [],
+        degraded: true,
+      });
+
+      const provider = new V1SearchProvider();
+      await provider.search({ query: 'q', max_results: 5 }, ctx);
+
+      expect(cacheSearchResultsMock).not.toHaveBeenCalled();
     });
   });
 

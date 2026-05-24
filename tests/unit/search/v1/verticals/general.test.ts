@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   getGeneralEngines,
   _resetGeneralEnginesForTest,
@@ -6,18 +6,39 @@ import {
 import { _resetBreakersForTest } from '../../../../../src/search/v1/engine-base.js';
 
 describe('getGeneralEngines', () => {
+  const originalBraveKey = process.env.BRAVE_API_KEY;
+
   beforeEach(() => {
+    delete process.env.BRAVE_API_KEY;
     _resetGeneralEnginesForTest();
     _resetBreakersForTest();
   });
 
-  it('returns three entries', () => {
-    expect(getGeneralEngines()).toHaveLength(3);
+  afterEach(() => {
+    if (originalBraveKey === undefined) {
+      delete process.env.BRAVE_API_KEY;
+    } else {
+      process.env.BRAVE_API_KEY = originalBraveKey;
+    }
+    _resetGeneralEnginesForTest();
   });
 
-  it('wraps bing, duckduckgo, and startpage engines (preserving names)', () => {
-    const names = getGeneralEngines().map((e) => e.engine.name);
-    expect(names).toEqual(['bing', 'duckduckgo', 'startpage']);
+  it('returns four entries by default (bing, duckduckgo, startpage, wikipedia)', () => {
+    expect(getGeneralEngines()).toHaveLength(4);
+  });
+
+  it('wraps bing, duckduckgo, startpage, wikipedia (preserving names)', () => {
+    const names = getGeneralEngines().map((e) => e.engine.name).sort();
+    expect(names).toEqual(['bing', 'duckduckgo', 'startpage', 'wikipedia']);
+  });
+
+  it('adds brave when BRAVE_API_KEY is set', async () => {
+    process.env.BRAVE_API_KEY = 'test-key';
+    const { resetConfig } = await import('../../../../../src/config.js');
+    resetConfig();
+    _resetGeneralEnginesForTest();
+    const names = getGeneralEngines().map((e) => e.engine.name).sort();
+    expect(names).toContain('brave');
   });
 
   it('memoizes — two calls return the same array reference', () => {
@@ -33,10 +54,18 @@ describe('getGeneralEngines', () => {
     expect(a).not.toBe(b);
   });
 
-  it('sets weight=1 and supportsDateFilter=false on each entry', () => {
+  it('sets supportsDateFilter=false on every entry', () => {
     for (const entry of getGeneralEngines()) {
-      expect(entry.weight).toBe(1);
       expect(entry.supportsDateFilter).toBe(false);
     }
+  });
+
+  it('weights main scrapers at 1 and wikipedia lower', () => {
+    const entries = getGeneralEngines();
+    const w = (name: string) => entries.find((e) => e.engine.name === name)?.weight ?? 0;
+    expect(w('bing')).toBe(1);
+    expect(w('duckduckgo')).toBe(1);
+    expect(w('startpage')).toBe(1);
+    expect(w('wikipedia')).toBeLessThan(1);
   });
 });
