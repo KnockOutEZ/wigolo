@@ -116,7 +116,9 @@ Set `WIGOLO_LLM_PROVIDER=openai-compatible` plus `WIGOLO_LLM_ENDPOINT=http://loc
 
 | Env var | Default | What it does |
 |---|---|---|
-| `WIGOLO_SEARCH` | `searxng` | `v1` to use the new direct-engine path |
+| `WIGOLO_SEARCH` | `core` | Backend selector. `core` = direct-engine path (default). `searxng` = legacy SearXNG aggregator (opt-in). `hybrid` = core with smart SearXNG fallback (Phase 1; currently runs core). [^wigolo-search-alias] |
+
+[^wigolo-search-alias]: `v1` is accepted as a deprecated alias for `core` for one release and emits a stderr warning.
 | `WIGOLO_RSS_FEEDS` | unset | Comma-separated feed URLs; v1 news vertical picks them up |
 | `WIGOLO_DEDUP_CASE_INSENSITIVE_HOSTS` | unset | Comma-separated hostnames where `/A` == `/a` for dedup |
 | `WIGOLO_CRAWL_INDEX` | `0` | `1` to fire-and-forget upsert crawled pages into the vector store |
