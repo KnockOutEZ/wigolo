@@ -45,14 +45,15 @@ describe('claudeCodeHandler.detect', () => {
 });
 
 describe('claudeCodeHandler.installMcp', () => {
-  it('calls claude mcp add with the provided command', async () => {
+  it('calls claude mcp add with --scope user so the entry lives once in ~/.claude.json', async () => {
     vi.mocked(execSync).mockReturnValue(Buffer.from(''));
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
     await claudeCodeHandler.installMcp({ command: 'wigolo', args: [] });
-    expect(execSync).toHaveBeenCalledWith(
-      expect.stringContaining('claude mcp add wigolo -- wigolo'),
-      expect.any(Object),
-    );
+    const cmd = vi.mocked(execSync).mock.calls[0][0] as string;
+    expect(cmd).toContain('claude mcp add wigolo');
+    expect(cmd).toContain('--scope user');
+    // The -- separator before the executable must still be present.
+    expect(cmd).toMatch(/--scope user .*-- wigolo/);
   });
 
   it('tolerates "already exists" errors', async () => {
@@ -122,6 +123,17 @@ describe('claudeCodeHandler.uninstall', () => {
     const content = existsSync(claudeMd) ? readFileSync(claudeMd, 'utf-8') : '';
     expect(content).not.toContain('<!-- wigolo:start');
     expect(result.removed.length).toBeGreaterThan(0);
+  });
+
+  it('calls claude mcp remove with --scope user matching the install path', async () => {
+    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
+    await claudeCodeHandler.uninstall();
+    const mcpRemoveCall = vi.mocked(execSync).mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('mcp remove'),
+    );
+    expect(mcpRemoveCall).toBeDefined();
+    expect(mcpRemoveCall![0] as string).toContain('--scope user');
   });
 
   it('removes skill directories', async () => {

@@ -18,7 +18,10 @@ function detect(): boolean {
 }
 
 function buildMcpArgs(cmd: { command: string; args: string[] }): string[] {
-  return ['mcp', 'add', 'wigolo', '--', cmd.command, ...cmd.args];
+  // --scope user installs into ~/.claude.json once. Without it, claude defaults
+  // to project scope and a fresh entry gets written for every cwd you run
+  // `wigolo install` from, which stacks up stale rows.
+  return ['mcp', 'add', 'wigolo', '--scope', 'user', '--', cmd.command, ...cmd.args];
 }
 
 async function installMcp(cmd: { command: string; args: string[] }): Promise<void> {
@@ -82,9 +85,9 @@ async function installCommand(): Promise<void> {
 async function uninstall(): Promise<{ removed: string[] }> {
   const removed: string[] = [];
 
-  // Remove MCP
+  // Remove MCP — match the scope used at install time (--scope user).
   try {
-    execSync('claude mcp remove wigolo', { stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 });
+    execSync('claude mcp remove wigolo --scope user', { stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 });
     removed.push('MCP server (claude mcp remove)');
   } catch {
     // already gone or claude not found
