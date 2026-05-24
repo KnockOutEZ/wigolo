@@ -233,6 +233,8 @@ export interface SearchResultItem {
   cached?: boolean;
   cached_at?: string;
   stale?: boolean;
+  /** Debug-only — emitted when input.include_engine_outcomes is true. */
+  _score_breakdown?: ScoreBreakdown;
 }
 
 export interface SearchOutput {
@@ -410,6 +412,13 @@ export interface AgentOutput {
   warning?: string;
 }
 
+export interface ScoreBreakdown {
+  base: number;
+  domain_quality: number;
+  lexical_alignment: number;
+  final: number;
+}
+
 export interface RawSearchResult {
   title: string;
   url: string;
@@ -417,6 +426,9 @@ export interface RawSearchResult {
   relevance_score: number;
   engine: string;
   published_date?: string; // ISO date string, when engine provides it
+  /** Debug-only — present when the core orchestrator was asked to emit
+   * score breakdowns (via include_engine_outcomes on the public surface). */
+  _score_breakdown?: ScoreBreakdown;
 }
 
 export interface SearchEngineOptions {
