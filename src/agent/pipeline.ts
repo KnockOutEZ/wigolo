@@ -175,26 +175,26 @@ async function synthesizeResult(
     return { result: 'No data could be gathered for this request.', samplingUsed: false };
   }
 
-  if (server) {
-    try {
-      const result = await synthesizeWithSampling(prompt, fetchedSources, server);
-      if (result) return { result, samplingUsed: true };
-    } catch (err) {
-      log.warn('sampling synthesis failed, using fallback', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  // Second fallback: configured WIGOLO_LLM_PROVIDER drives synthesis when the
-  // host MCP did not provide sampling. Only the evidence-dump path remains
-  // when nothing is configured.
+  // Prefer the operator's explicit LLM provider over host-provided sampling so
+  // agent matches the research + search/format=answer contract — one wired
+  // backend drives synthesis across every Gemini-capable tool.
   if (isLlmConfigured()) {
     try {
       const result = await synthesizeViaLlmRunner(prompt, fetchedSources);
       if (result) return { result, samplingUsed: false, llmUsed: true };
     } catch (err) {
-      log.warn('llm runner synthesis failed, using evidence fallback', {
+      log.warn('llm runner synthesis failed, falling through to sampling', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (server) {
+    try {
+      const result = await synthesizeWithSampling(prompt, fetchedSources, server);
+      if (result) return { result, samplingUsed: true };
+    } catch (err) {
+      log.warn('sampling synthesis failed, using evidence fallback', {
         error: err instanceof Error ? err.message : String(err),
       });
     }
