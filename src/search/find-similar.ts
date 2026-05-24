@@ -607,21 +607,37 @@ async function runWebSearchFallback(
   }
 }
 
-function generateSearchQueries(terms: string[], title: string): string[] {
-  if (terms.length === 0 && !title) return [];
+const QUERY_STOPWORDS = new Set([
+  'the', 'a', 'an', 'is', 'are', 'be', 'in', 'of', 'to', 'and', 'or', 'for',
+  'on', 'at', 'with', 'by', 'as', 'it', 'this', 'that', 'these', 'those',
+  'how', 'what', 'why', 'when', 'where', 'do', 'does', 'will', 'can',
+]);
+
+export function generateSearchQueries(terms: string[], title: string): string[] {
+  const meaningful = terms
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 3 && !QUERY_STOPWORDS.has(t.toLowerCase()));
+
+  // Refuse to issue web searches with too little signal — that's how cold-cache
+  // fallback ended up returning generic React docs in the May-24 bench. A
+  // single token rarely disambiguates between unrelated domains; without a
+  // title to anchor intent, we bail and let the caller surface cold_start.
+  const haveTitleSignal = !!title && title.length > 3;
+  if (meaningful.length < 2 && !haveTitleSignal) return [];
 
   const queries: string[] = [];
 
-  if (title && title.length > 3) {
+  if (haveTitleSignal) {
     queries.push(title.slice(0, 150));
   }
-
-  if (terms.length >= 3) {
-    queries.push(terms.slice(0, 5).join(' '));
+  if (meaningful.length >= 2) {
+    queries.push(meaningful.slice(0, 5).join(' '));
   }
-
-  if (terms.length >= 2) {
-    queries.push(`${terms.slice(0, 3).join(' ')} tutorial guide`);
+  if (meaningful.length >= 3) {
+    // Topic-focused suffix replaces the old "tutorial guide" — that suffix
+    // biased toward beginner blogs and let irrelevant tutorial pages crowd
+    // out authoritative sources for technical concepts.
+    queries.push(`${meaningful.slice(0, 3).join(' ')} overview`);
   }
 
   const unique = [...new Set(queries)];
