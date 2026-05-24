@@ -63,25 +63,37 @@ export async function runAgentPipeline(
     const sources = execResult.sources;
     const pagesFetched = sources.filter((s) => s.fetched).length;
 
-    if (input.schema && sources.some((s) => s.fetched)) {
-      const extractStart = Date.now();
-      const schemaResult = applySchemaExtraction(sources, input.schema as JsonSchema);
+    // When the caller passes a schema, attempt structured extraction even if
+    // no sources fetched — emit an explicit warning when we can't honor it
+    // instead of silently falling through to free-text synthesis (the bench
+    // called this "agent.schema silently ignored").
+    let schemaWarning: string | undefined;
+    if (input.schema) {
+      const fetchedCount = sources.filter((s) => s.fetched).length;
+      if (fetchedCount === 0) {
+        schemaWarning = `schema requested but no sources could be fetched — returning free-text result instead of structured data`;
+      } else {
+        const extractStart = Date.now();
+        const schemaResult = applySchemaExtraction(sources, input.schema as JsonSchema);
 
-      steps.push({
-        action: 'extract',
-        detail: `Applied schema extraction to ${sources.filter((s) => s.fetched).length} sources`,
-        time_ms: Date.now() - extractStart,
-      });
+        steps.push({
+          action: 'extract',
+          detail: `Applied schema extraction to ${fetchedCount} sources`,
+          time_ms: Date.now() - extractStart,
+        });
 
-      if (schemaResult) {
-        return {
-          result: schemaResult,
-          sources,
-          pages_fetched: pagesFetched,
-          steps,
-          total_time_ms: Date.now() - start,
-          sampling_supported: !!server && checkSamplingSupport(server),
-        };
+        if (schemaResult) {
+          return {
+            result: schemaResult,
+            sources,
+            pages_fetched: pagesFetched,
+            steps,
+            total_time_ms: Date.now() - start,
+            sampling_supported: !!server && checkSamplingSupport(server),
+          };
+        }
+
+        schemaWarning = `schema extraction returned no matching fields from ${fetchedCount} fetched sources — falling back to free-text synthesis`;
       }
     }
 
@@ -107,6 +119,7 @@ export async function runAgentPipeline(
       steps,
       total_time_ms: Date.now() - start,
       sampling_supported: !!server && checkSamplingSupport(server),
+      ...(schemaWarning ? { warning: schemaWarning } : {}),
     };
   } catch (err) {
     log.error('agent pipeline failed', {

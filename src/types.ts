@@ -392,6 +392,7 @@ export interface AgentOutput {
   sampling_supported: boolean;
   error?: string;
   evidence?: EvidenceItem[];
+  warning?: string;
 }
 
 export interface RawSearchResult {

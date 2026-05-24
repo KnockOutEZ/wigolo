@@ -106,6 +106,57 @@ describe('runAgentPipeline', () => {
     expect(result.sources.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('emits a warning when schema is requested but no sources can be fetched', async () => {
+    // Bench complaint: agent.schema silently ignored without sampling. The
+    // pipeline now surfaces an explicit warning so callers know structured
+    // output was downgraded to free-text.
+    const engine = createStubEngine(defaultResults);
+    const brokenRouter = {
+      fetch: vi.fn().mockRejectedValue(new Error('network down')),
+    } as unknown as SmartRouter;
+    const input: AgentInput = {
+      prompt: 'Extract product info',
+      schema: {
+        type: 'object',
+        properties: { price: { type: 'string' } },
+      },
+    };
+
+    const result = await runAgentPipeline(input, [engine], brokenRouter);
+
+    expect(result.warning).toBeDefined();
+    expect(result.warning).toMatch(/schema/i);
+  });
+
+  it('does not emit a schema warning when extraction succeeds', async () => {
+    const router = {
+      fetch: vi.fn().mockResolvedValue({
+        url: 'https://example.com',
+        finalUrl: 'https://example.com',
+        html: '<html><body><span class="price">$49.99</span></body></html>',
+        contentType: 'text/html',
+        statusCode: 200,
+        method: 'http' as const,
+        headers: {},
+      }),
+    } as unknown as SmartRouter;
+    const engine = createStubEngine(defaultResults);
+    const input: AgentInput = {
+      prompt: 'Extract price',
+      schema: {
+        type: 'object',
+        properties: { price: { type: 'string' } },
+      },
+    };
+
+    const result = await runAgentPipeline(input, [engine], router);
+
+    // Successful structured extraction returns the result object — no warning.
+    if (typeof result.result !== 'string') {
+      expect(result.warning).toBeUndefined();
+    }
+  });
+
   it('applies schema extraction when schema is provided', async () => {
     const router = {
       fetch: vi.fn().mockResolvedValue({
