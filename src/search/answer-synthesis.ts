@@ -245,7 +245,9 @@ export async function runSynthesis(
   // Same prompt as MCP sampling — research and agent already use this path,
   // and routing search format=answer through the same backend keeps synthesis
   // consistent across tools when the host client doesn't expose sampling.
-  if (isLlmConfigured()) {
+  const llmConfigured = isLlmConfigured();
+  let llmFailureReason: string | undefined;
+  if (llmConfigured) {
     try {
       const sourcesText = buildSourcesText(results);
       if (sourcesText) {
@@ -263,20 +265,27 @@ export async function runSynthesis(
             },
           };
         }
+        llmFailureReason = 'LLM returned empty text';
+      } else {
+        llmFailureReason = 'no source content for synthesis prompt';
       }
     } catch (err) {
-      log.warn('synthesis level-1 LLM provider failed, falling through to heuristic', { error: String(err) });
+      llmFailureReason = err instanceof Error ? err.message : String(err);
+      log.warn('synthesis level-1 LLM provider failed, falling through to heuristic', { error: llmFailureReason });
     }
   }
 
   const fb = buildStructuredFallback(results, query);
   if (fb.answer && fb.answer.length > 0) {
+    const diag = llmConfigured
+      ? `WIGOLO_LLM_PROVIDER configured but call failed (${llmFailureReason ?? 'unknown'})`
+      : 'WIGOLO_LLM_PROVIDER not set and no provider API key detected (ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / GROQ_API_KEY)';
     return {
       ok: true,
       data: {
         answer: fb.answer,
         citations: fb.citations,
-        warning: fb.warning,
+        warning: `${fb.warning} | ${diag}`,
         fallback_level: 2,
       },
     };
