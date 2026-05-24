@@ -14,17 +14,21 @@ export function canonicalForCrawl(url: string): string {
 }
 
 // Display-friendly canonicalization for emitted page URLs. Strips a trailing
-// slash on non-root paths without round-tripping through `new URL().toString()`
-// — that round-trip otherwise injects a root slash onto origin-only URLs
-// (`https://x.com` → `https://x.com/`) which surprises callers.
+// slash on ALL paths (including root) so `https://x.com` and `https://x.com/`
+// collapse to a single canonical form. Avoids round-tripping through
+// `new URL().toString()` because that re-introduces a root slash that
+// surprises callers and breaks dedup against origin-only seed URLs.
 export function canonicalForOutput(url: string): string {
   try {
     const u = new URL(url);
-    if (u.pathname.length > 1 && u.pathname.endsWith('/')) {
-      const trimmed = u.pathname.slice(0, -1);
-      return `${u.origin}${trimmed}${u.search}${u.hash}`;
+    let path = u.pathname;
+    if (path === '/') {
+      // Root path: drop the slash entirely so origin-only URLs match.
+      path = '';
+    } else if (path.length > 1 && path.endsWith('/')) {
+      path = path.slice(0, -1);
     }
-    return url;
+    return `${u.origin}${path}${u.search}${u.hash}`;
   } catch {
     return url;
   }

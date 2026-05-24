@@ -19,7 +19,7 @@ describe('config', () => {
     expect(config.fetchMaxRetries).toBe(2);
     expect(config.maxRedirects).toBe(5);
     expect(config.playwrightLoadTimeoutMs).toBe(15000);
-    expect(config.playwrightNavTimeoutMs).toBe(10000);
+    expect(config.playwrightNavTimeoutMs).toBe(30000);
     expect(config.maxBrowsers).toBe(3);
     expect(config.browserIdleTimeoutMs).toBe(60000);
     expect(config.browserFallbackThreshold).toBe(3);

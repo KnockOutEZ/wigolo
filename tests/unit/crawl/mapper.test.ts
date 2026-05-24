@@ -793,4 +793,27 @@ describe('mapUrls', () => {
     expect(result.urls.some((u) => u.endsWith('/docs/'))).toBe(false);
     expect(result.urls.some((u) => u.endsWith('/api/'))).toBe(false);
   });
+
+  it('collapses seed-root and slashed-root variants', async () => {
+    // Mirrors the docs.pgedge.com bench failure: seed URL without trailing
+    // slash AND a self-link with trailing slash should canonicalize to ONE
+    // entry, not two.
+    const fetchFn = createMockFetch({
+      'https://example.com': htmlPage([
+        'https://example.com/',
+        'https://example.com',
+        'https://example.com/page',
+      ]),
+      'https://example.com/page': htmlPage([]),
+    });
+
+    const result = await mapUrls(
+      { url: 'https://example.com', max_depth: 1, max_pages: 100 },
+      fetchFn,
+    );
+
+    const rootMatches = result.urls.filter((u) => u === 'https://example.com' || u === 'https://example.com/');
+    expect(rootMatches).toHaveLength(1);
+    expect(result.urls).toContain('https://example.com/page');
+  });
 });
