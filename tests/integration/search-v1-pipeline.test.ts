@@ -182,7 +182,10 @@ describe('search v1 pipeline — factory + provider integration', () => {
     expect(hitSo).toBe(true);
     expect(hitBing).toBe(false);
 
-    expect(result.data.engines_used.sort()).toEqual(['github-code', 'stackoverflow']);
+    const used = result.data.engines_used.sort();
+    expect(used).toContain('github-code');
+    expect(used).toContain('stackoverflow');
+    expect(used).not.toContain('bing');
   });
 
   it('returns ok:false invalid_input for an empty query', async () => {

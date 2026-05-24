@@ -230,6 +230,10 @@ export async function runV1Search(
   // Per-engine dedup, then RRF with per-entry weights and optional recency boost.
   const fused = new Map<string, number>();
   const urlToResult = new Map<string, RawSearchResult>();
+  // Track per-URL contributor counts so we can flag results that came only
+  // from secondary engines (see sub-ticket 2.2).
+  const urlPrimaryCount = new Map<string, number>();
+  const urlSecondaryCount = new Map<string, number>();
 
   for (let i = 0; i < outcomes.length; i++) {
     const outcome = outcomes[i];
@@ -239,6 +243,7 @@ export async function runV1Search(
     outcome.results = dedupedResults;
 
     const weight = entries[i].weight ?? 1;
+    const isSecondary = entries[i].secondary === true;
     for (let j = 0; j < dedupedResults.length; j++) {
       const r = dedupedResults[j];
       const rank = j + 1;
@@ -247,6 +252,11 @@ export async function runV1Search(
       fused.set(r.url, (fused.get(r.url) ?? 0) + base * recMul);
       if (!urlToResult.has(r.url)) {
         urlToResult.set(r.url, r);
+      }
+      if (isSecondary) {
+        urlSecondaryCount.set(r.url, (urlSecondaryCount.get(r.url) ?? 0) + 1);
+      } else {
+        urlPrimaryCount.set(r.url, (urlPrimaryCount.get(r.url) ?? 0) + 1);
       }
     }
   }
@@ -276,7 +286,14 @@ export async function runV1Search(
     const base = r.relevance_score;
     const dq = domainQualityScore(r.url, vertical, query);
     const la = lexicalAlignment(query, r.title, r.snippet);
-    const final = base * dq * (0.5 + 0.5 * la);
+    // Sub-ticket 2.2: a URL contributed only by secondary engines gets an
+    // extra demotion when lexical alignment is weak. Primary contributors
+    // shield a URL from this penalty.
+    const primaryCount = urlPrimaryCount.get(r.url) ?? 0;
+    const secondaryCount = urlSecondaryCount.get(r.url) ?? 0;
+    const isSecondaryOnly = primaryCount === 0 && secondaryCount > 0;
+    const secondaryPenalty = isSecondaryOnly && la < 0.5 ? 0.3 : 1.0;
+    const final = base * dq * (0.5 + 0.5 * la) * secondaryPenalty;
     if (breakdowns) {
       breakdowns.set(r.url, {
         base,

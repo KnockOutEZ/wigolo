@@ -13,6 +13,11 @@ export interface EngineEntry {
   weight?: number;
   /** Whether this engine accepts date filters in options.fromDate/toDate. */
   supportsDateFilter?: boolean;
+  /** Marks an engine as a low-priority secondary signal. Results that
+   * were contributed only by secondary engines are demoted when their
+   * lexical alignment with the query is low. Used by the code vertical
+   * to admit MDN without letting it dominate database/library queries. */
+  secondary?: boolean;
 }
 
 export interface EngineOutcome {
