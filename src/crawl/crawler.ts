@@ -4,7 +4,7 @@ import { RateLimiter } from './rate-limiter.js';
 import { RobotsParser } from './robots.js';
 import { parseSitemap, parseSitemapIndex, extractSitemapUrlFromRobots } from './sitemap.js';
 import { probeSitemap } from './sitemap-first.js';
-import { isIndexingEnabled, indexCrawlResult } from './index-to-vec.js';
+import { isIndexingEnabled, enqueueIndexCrawl } from './index-to-vec.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 
@@ -130,7 +130,7 @@ export class Crawler {
       };
       pages.push(item);
 
-      if (indexing) await indexCrawlResult(item);
+      if (indexing) await enqueueIndexCrawl(item);
 
       // Discover links for traversal
       if (depth < maxDepth) {
@@ -259,7 +259,7 @@ export class Crawler {
           const item: CrawlResultItem = { url: canonicalForOutput(result.url), title: result.title, markdown: result.markdown, depth: 0 };
           pages.push(item);
 
-          if (indexing) await indexCrawlResult(item);
+          if (indexing) await enqueueIndexCrawl(item);
 
           if (input.extract_links) {
             for (const link of result.links) {

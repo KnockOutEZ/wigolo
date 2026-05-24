@@ -34,7 +34,11 @@ async function exitCli(code: number): Promise<never> {
 // fire — the signal handler simply forces an exit with the recorded code.
 process.on('SIGABRT', () => process.exit(process.exitCode ?? 0));
 
-const { command, args } = parseCommand(process.argv.slice(2));
+const rawArgs = process.argv.slice(2);
+if (rawArgs.includes('--wait-for-index')) {
+  process.env.WIGOLO_WAIT_FOR_INDEX = '1';
+}
+const { command, args } = parseCommand(rawArgs.filter((a) => a !== '--wait-for-index'));
 
 switch (command) {
   case 'warmup':
