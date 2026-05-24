@@ -17,6 +17,8 @@ import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
 import { runSynthesis } from '../answer-synthesis.js';
+import { renderCitationsXml } from '../evidence.js';
+import type { Citation } from '../../types.js';
 
 const RRF_K = 60;
 
@@ -178,6 +180,21 @@ export class V1SearchProvider implements SearchProvider {
 
       if (input.format === 'stream_answer') {
         data.streaming = true;
+      }
+    }
+
+    if (input.citation_format) {
+      if (!data.citations || data.citations.length === 0) {
+        const built: Citation[] = items.map((r, i) => ({
+          index: i + 1,
+          url: r.url,
+          title: r.title,
+          snippet: r.snippet,
+        }));
+        if (built.length > 0) data.citations = built;
+      }
+      if (input.citation_format === 'anthropic_tags' && data.citations && data.citations.length > 0) {
+        data.citations_xml = renderCitationsXml(data.citations);
       }
     }
 

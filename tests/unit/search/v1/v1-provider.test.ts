@@ -207,6 +207,129 @@ describe('V1SearchProvider', () => {
     });
   });
 
+  describe('citation_format wiring', () => {
+    it('does not emit citations when citation_format is unset', async () => {
+      runV1SearchMock.mockClear();
+      runV1SearchMock.mockResolvedValue({
+        results: [
+          { title: 'A', url: 'https://a.example', snippet: 'first', relevance_score: 1, engine: 'b' },
+        ],
+        enginesUsed: ['b'],
+        degraded: false,
+      });
+
+      const provider = new V1SearchProvider();
+      const result = await provider.search({ query: 'q', max_results: 5 }, ctx);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.citations).toBeUndefined();
+        expect(result.data.citations_xml).toBeUndefined();
+      }
+    });
+
+    it('emits citations array for citation_format="numbered"', async () => {
+      runV1SearchMock.mockClear();
+      runV1SearchMock.mockResolvedValue({
+        results: [
+          { title: 'A', url: 'https://a.example', snippet: 'sa', relevance_score: 1, engine: 'b' },
+          { title: 'B', url: 'https://b.example', snippet: 'sb', relevance_score: 0.5, engine: 'b' },
+        ],
+        enginesUsed: ['b'],
+        degraded: false,
+      });
+
+      const provider = new V1SearchProvider();
+      const result = await provider.search(
+        { query: 'q', citation_format: 'numbered', max_results: 5 },
+        ctx,
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.citations).toEqual([
+          { index: 1, url: 'https://a.example', title: 'A', snippet: 'sa' },
+          { index: 2, url: 'https://b.example', title: 'B', snippet: 'sb' },
+        ]);
+        expect(result.data.citations_xml).toBeUndefined();
+      }
+    });
+
+    it('emits citations + citations_xml for citation_format="anthropic_tags"', async () => {
+      runV1SearchMock.mockClear();
+      runV1SearchMock.mockResolvedValue({
+        results: [
+          { title: 'A', url: 'https://a.example', snippet: 'sa', relevance_score: 1, engine: 'b' },
+        ],
+        enginesUsed: ['b'],
+        degraded: false,
+      });
+
+      const provider = new V1SearchProvider();
+      const result = await provider.search(
+        { query: 'q', citation_format: 'anthropic_tags', max_results: 5 },
+        ctx,
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.citations).toHaveLength(1);
+        expect(result.data.citations_xml).toContain('<source');
+        expect(result.data.citations_xml).toContain('https://a.example');
+      }
+    });
+
+    it('emits citations array unchanged for citation_format="json"', async () => {
+      runV1SearchMock.mockClear();
+      runV1SearchMock.mockResolvedValue({
+        results: [
+          { title: 'A', url: 'https://a.example', snippet: 'sa', relevance_score: 1, engine: 'b' },
+        ],
+        enginesUsed: ['b'],
+        degraded: false,
+      });
+
+      const provider = new V1SearchProvider();
+      const result = await provider.search(
+        { query: 'q', citation_format: 'json', max_results: 5 },
+        ctx,
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(Array.isArray(result.data.citations)).toBe(true);
+        expect(result.data.citations_xml).toBeUndefined();
+      }
+    });
+
+    it('renders citations_xml from synth citations when format=answer + citation_format=anthropic_tags', async () => {
+      runV1SearchMock.mockClear();
+      runSynthesisMock.mockClear();
+      runV1SearchMock.mockResolvedValue({
+        results: [
+          { title: 'A', url: 'https://a.example', snippet: 'sa', relevance_score: 1, engine: 'b' },
+        ],
+        enginesUsed: ['b'],
+        degraded: false,
+      });
+      runSynthesisMock.mockResolvedValue({
+        ok: true,
+        data: {
+          answer: 'A says X [1].',
+          citations: [{ index: 1, url: 'https://a.example', title: 'A', snippet: 'sa' }],
+          fallback_level: 1,
+        },
+      });
+
+      const provider = new V1SearchProvider();
+      const result = await provider.search(
+        { query: 'q', format: 'answer', citation_format: 'anthropic_tags', max_results: 5 },
+        ctx,
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.citations).toHaveLength(1);
+        expect(result.data.citations_xml).toContain('<source');
+      }
+    });
+  });
+
   describe('format=answer wiring', () => {
     it('calls runSynthesis when format is "answer" and populates answer + citations', async () => {
       runV1SearchMock.mockClear();
