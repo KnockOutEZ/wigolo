@@ -210,11 +210,37 @@ const STOP_PHRASES = new Set([
 
 function splitListEntities(segment: string): string[] {
   const cleaned = segment.replace(/^\s*(?:between|of|the|a|an)\s+/i, '').trim();
-  const parts = cleaned
+  const rawParts = cleaned
     .split(/,\s*(?:and\s+)?|\s+and\s+|\s+vs\.?\s+|\s+versus\s+/i)
     .map((s) => s.trim())
     .filter((s) => s.length >= 2 && s.length <= 120 && !STOP_PHRASES.has(s.toLowerCase()));
-  return [...new Set(parts)];
+
+  if (rawParts.length < 2) return [...new Set(rawParts)];
+
+  // When one side of a comparison carries the shared topic ("X vs Y postgres
+  // replication"), the split strips that trailing context off the other side.
+  // Fan-out then issues a bare query ("X") that retrieves unrelated content.
+  // Reattach the trailing 1-3 tokens of the longest part to any sibling that
+  // is bare (single whitespace-delimited token) so each query keeps its topic.
+  const tokenCounts = rawParts.map((p) => p.split(/\s+/).length);
+  const maxTokens = Math.max(...tokenCounts);
+  if (maxTokens <= 1) return [...new Set(rawParts)];
+
+  const longestIdx = tokenCounts.indexOf(maxTokens);
+  const longestTokens = rawParts[longestIdx].split(/\s+/);
+  const tailLen = Math.min(3, maxTokens - 1);
+  const tail = longestTokens.slice(maxTokens - tailLen).join(' ');
+  if (!tail) return [...new Set(rawParts)];
+
+  const merged = rawParts.map((part, i) => {
+    if (i === longestIdx) return part;
+    const tokens = part.split(/\s+/);
+    if (tokens.length > 1) return part;
+    if (part.toLowerCase().endsWith(tail.toLowerCase())) return part;
+    return `${part} ${tail}`;
+  });
+
+  return [...new Set(merged)];
 }
 
 export function decomposeMultiHop(query: string): string[] | null {
