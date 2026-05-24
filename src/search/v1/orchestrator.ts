@@ -69,22 +69,53 @@ function matchesDomain(host: string, domain: string): boolean {
   return host === needle || host.endsWith(`.${needle}`);
 }
 
+// Surviving include_domains matches below this floor trigger a backfill from
+// the filtered-out pool so callers never get a single-result (or empty)
+// response when the request has results outside the include set. Tavily-equivalent.
+const SOFT_INCLUDE_FLOOR = 3;
+
 function applyDomainFilters(
   results: RawSearchResult[],
   includeDomains?: string[],
   excludeDomains?: string[],
 ): RawSearchResult[] {
-  if (!includeDomains?.length && !excludeDomains?.length) return results;
-  return results.filter((r) => {
+  let filtered = results;
+
+  if (excludeDomains?.length) {
+    filtered = filtered.filter((r) => {
+      const host = hostnameOf(r.url);
+      return !excludeDomains.some((d) => matchesDomain(host, d));
+    });
+  }
+
+  if (!includeDomains?.length) return filtered;
+
+  const matching: RawSearchResult[] = [];
+  const nonMatching: RawSearchResult[] = [];
+  for (const r of filtered) {
     const host = hostnameOf(r.url);
-    if (includeDomains?.length && !includeDomains.some((d) => matchesDomain(host, d))) {
-      return false;
+    if (includeDomains.some((d) => matchesDomain(host, d))) {
+      matching.push(r);
+    } else {
+      nonMatching.push(r);
     }
-    if (excludeDomains?.length && excludeDomains.some((d) => matchesDomain(host, d))) {
-      return false;
-    }
-    return true;
-  });
+  }
+
+  if (matching.length >= SOFT_INCLUDE_FLOOR || nonMatching.length === 0) {
+    return matching;
+  }
+
+  // Demote non-matches so they always sort below the lowest-scored match.
+  const minMatchScore = matching.length > 0
+    ? Math.min(...matching.map((r) => r.relevance_score))
+    : 1;
+  const demoteCap = minMatchScore > 0 ? minMatchScore * 0.5 : 0.001;
+  const demoted = nonMatching.map((r) => ({
+    ...r,
+    relevance_score: Math.min(r.relevance_score, demoteCap),
+  }));
+
+  return [...matching, ...demoted];
 }
 
 // Defensive per-engine dedup: keep first occurrence by URL.
@@ -99,8 +130,13 @@ function dedupWithinEngine(results: RawSearchResult[]): RawSearchResult[] {
   return out;
 }
 
+interface RunV1SearchOptions {
+  _isFallback?: boolean;
+}
+
 export async function runV1Search(
   input: OrchestratorInput,
+  opts: RunV1SearchOptions = {},
 ): Promise<OrchestratorOutput> {
   const query = typeof input.query === 'string' ? input.query.trim() : '';
   if (query.length === 0) {
@@ -222,6 +258,16 @@ export async function runV1Search(
       ok: outcomes.filter((o) => o.ok).length,
       resultCount: results.length,
     });
+  }
+
+  // Fallback: any non-general vertical that came back degraded gets one
+  // automatic retry as general. Code in particular is prone to empty results
+  // (GH code search returns nothing + SO times out → empty), but this is
+  // generic safety net for every vertical except general (which has nowhere
+  // to fall back to).
+  if (degraded && vertical !== 'general' && !opts._isFallback) {
+    log.info('vertical degraded, falling back to general', { from: vertical });
+    return runV1Search({ ...input, category: 'general' }, { _isFallback: true });
   }
 
   return {

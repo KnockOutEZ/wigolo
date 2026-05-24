@@ -333,7 +333,10 @@ describe('runV1Search — RRF fusion', () => {
 });
 
 describe('runV1Search — domain filters', () => {
-  it('keeps only URLs matching includeDomains', async () => {
+  it('returns includeDomains matches first and backfills below when matches are sparse', async () => {
+    // Soft include semantics: surviving matches sit at the top; if fewer than
+    // the floor survive we backfill non-matches below so callers never get an
+    // empty result set when results exist outside the include set.
     const { entry } = makeEntry({
       name: 'bing',
       results: [
@@ -349,9 +352,68 @@ describe('runV1Search — domain filters', () => {
       includeDomains: ['allowed.com'],
     });
     const hosts = out.results.map((r) => new URL(r.url).hostname);
+    // Matches are present and ranked above any backfill.
+    expect(hosts.slice(0, 2).sort()).toEqual(['allowed.com', 'sub.allowed.com']);
+    // Non-matching domain backfills only when matches < floor.
+    expect(hosts).toContain('denied.com');
+  });
+
+  it('does not backfill when matches already exceed the soft floor', async () => {
+    const { entry } = makeEntry({
+      name: 'bing',
+      results: [
+        makeResult('bing', 'https://allowed.com/a'),
+        makeResult('bing', 'https://allowed.com/b'),
+        makeResult('bing', 'https://allowed.com/c'),
+        makeResult('bing', 'https://denied.com/a'),
+      ],
+    });
+    verticalState.general = [entry];
+
+    const out = await runV1Search({
+      query: 'general query',
+      includeDomains: ['allowed.com'],
+    });
+    const hosts = out.results.map((r) => new URL(r.url).hostname);
+    expect(hosts.every((h) => h === 'allowed.com')).toBe(true);
+  });
+
+  it('returns includeDomains backfill even when zero results match', async () => {
+    const { entry } = makeEntry({
+      name: 'bing',
+      results: [
+        makeResult('bing', 'https://other.example/a'),
+        makeResult('bing', 'https://elsewhere.example/b'),
+      ],
+    });
+    verticalState.general = [entry];
+
+    const out = await runV1Search({
+      query: 'general query',
+      includeDomains: ['noresults.example'],
+    });
+    expect(out.results.length).toBe(2);
+    expect(out.degraded).toBe(false);
+  });
+
+  it('still hard-strips URLs matching excludeDomains regardless of include soft mode', async () => {
+    const { entry } = makeEntry({
+      name: 'bing',
+      results: [
+        makeResult('bing', 'https://allowed.com/a'),
+        makeResult('bing', 'https://block.com/a'),
+      ],
+    });
+    verticalState.general = [entry];
+
+    const out = await runV1Search({
+      query: 'general query',
+      includeDomains: ['allowed.com'],
+      excludeDomains: ['block.com'],
+    });
+    const hosts = out.results.map((r) => new URL(r.url).hostname);
     expect(hosts).toContain('allowed.com');
-    expect(hosts).toContain('sub.allowed.com');
-    expect(hosts).not.toContain('denied.com');
+    expect(hosts).not.toContain('block.com');
   });
 
   it('strips URLs matching excludeDomains', async () => {
@@ -589,6 +651,63 @@ describe('runV1Search — output shape & misc', () => {
     expect(out.degraded).toBe(true);
     // The engine did succeed — surfaced in outcomes.
     expect(out.outcomes[0].ok).toBe(true);
+  });
+});
+
+describe('runV1Search — degraded fallback to general', () => {
+  it('retries as general when the routed code vertical degrades', async () => {
+    // Code engines all fail. General has a working engine — orchestrator
+    // should fall back so the caller gets results instead of an empty list.
+    const codeBad = makeEntry({ name: 'github-code', shouldFail: true });
+    verticalState.code = [codeBad.entry];
+
+    const generalOk = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://example.com/hnsw')],
+    });
+    verticalState.general = [generalOk.entry];
+
+    const out = await runV1Search({ query: 'fix typescript HNSW tuning' });
+    expect(out.degraded).toBe(false);
+    expect(out.vertical).toBe('general');
+    expect(out.results.map((r) => r.url)).toEqual(['https://example.com/hnsw']);
+  });
+
+  it('does not fall back when the original vertical succeeds', async () => {
+    const codeOk = makeEntry({
+      name: 'github-code',
+      results: [makeResult('github-code', 'https://gh.test/code')],
+    });
+    verticalState.code = [codeOk.entry];
+
+    const generalSpy = makeEntry({ name: 'bing', results: [] });
+    verticalState.general = [generalSpy.entry];
+
+    const out = await runV1Search({ query: 'fix typescript error' });
+    expect(out.vertical).toBe('code');
+    expect(generalSpy.spy).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back from general (no infinite recursion)', async () => {
+    const bad = makeEntry({ name: 'bing', shouldFail: true });
+    verticalState.general = [bad.entry];
+
+    const out = await runV1Search({ query: 'arbitrary phrase' });
+    expect(out.vertical).toBe('general');
+    expect(out.degraded).toBe(true);
+  });
+
+  it('reports the fallback vertical (general) in the returned output', async () => {
+    const codeBad = makeEntry({ name: 'github-code', shouldFail: true });
+    verticalState.code = [codeBad.entry];
+    const generalOk = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://example.com/hit')],
+    });
+    verticalState.general = [generalOk.entry];
+
+    const out = await runV1Search({ query: 'fix python regex' });
+    expect(out.vertical).toBe('general');
   });
 });
 

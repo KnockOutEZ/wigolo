@@ -16,6 +16,9 @@ import type {
 import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
+import { runSynthesis } from '../answer-synthesis.js';
+import { renderCitationsXml } from '../evidence.js';
+import type { Citation } from '../../types.js';
 
 const RRF_K = 60;
 
@@ -62,7 +65,7 @@ function fuseRankedLists(lists: RawSearchResult[][]): RawSearchResult[] {
 export class V1SearchProvider implements SearchProvider {
   readonly name = 'v1' as const;
 
-  async search(input: SearchInput, _ctx: SearchContext): Promise<StageResult<SearchOutput>> {
+  async search(input: SearchInput, ctx: SearchContext): Promise<StageResult<SearchOutput>> {
     const isArray = Array.isArray(input.query);
     const queries = isArray
       ? normalizeArrayQueries(input.query as string[])
@@ -153,6 +156,46 @@ export class V1SearchProvider implements SearchProvider {
 
     if (allDegraded) {
       data.warning = 'all engines failed or no results';
+    }
+
+    if (input.format === 'answer' || input.format === 'stream_answer') {
+      const synthResult = await runSynthesis({
+        query: displayQuery,
+        results: items,
+        samplingServer: ctx.samplingServer,
+        maxTotalChars: 0,
+      });
+
+      if (synthResult.ok) {
+        data.answer = synthResult.data.answer;
+        if (synthResult.data.citations.length > 0) {
+          data.citations = synthResult.data.citations;
+        }
+        if (synthResult.data.warning) {
+          data.warning = synthResult.data.warning;
+        }
+      } else {
+        data.warning = `synthesis failed: ${synthResult.error_reason}`;
+      }
+
+      if (input.format === 'stream_answer') {
+        data.streaming = true;
+      }
+    }
+
+    if (input.citation_format) {
+      if (!data.citations || data.citations.length === 0) {
+        const built: Citation[] = items.map((r, i) => ({
+          index: i + 1,
+          url: r.url,
+          title: r.title,
+          snippet: r.snippet,
+        }));
+        if (built.length > 0) data.citations = built;
+      }
+      if (input.citation_format === 'anthropic_tags' && data.citations && data.citations.length > 0) {
+        data.citations_xml = renderCitationsXml(data.citations);
+      }
     }
 
     return { ok: true, data };
