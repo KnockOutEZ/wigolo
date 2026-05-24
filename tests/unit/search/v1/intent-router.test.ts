@@ -128,8 +128,17 @@ describe('classifyIntent', () => {
       expect(classifyIntent('breaking story on tech layoffs')).toBe('news');
     });
 
-    it('matches a recent year token', () => {
-      expect(classifyIntent('AI conference 2025 highlights')).toBe('news');
+    it('does not promote a bare year token to news (no news keyword)', () => {
+      // "vector database choice 2026" used to land in news → bing_news → BEST
+      // Express Vietnam logistics noise. Years alone are not news intent.
+      expect(classifyIntent('AI conference 2025 highlights')).toBe('general');
+      expect(classifyIntent('vector database choice 2026')).toBe('general');
+    });
+
+    it('still classifies year + explicit news keyword as news', () => {
+      expect(classifyIntent('AI news 2026')).toBe('news');
+      expect(classifyIntent('breaking story 2025')).toBe('news');
+      expect(classifyIntent('latest 2024 conference recap')).toBe('news');
     });
 
     it('hasDateBound: true forces news', () => {

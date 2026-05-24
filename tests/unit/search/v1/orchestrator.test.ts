@@ -592,6 +592,77 @@ describe('runV1Search — output shape & misc', () => {
   });
 });
 
+describe('runV1Search — authority boost', () => {
+  it('promotes a known authoritative domain above a higher-ranked brand collision', async () => {
+    // Bing top-ranks a random retail domain ahead of the authoritative redis.io docs page.
+    // Authority boost should flip the order for a query whose subject token maps to a
+    // KNOWN_SUBJECT_DOMAIN entry.
+    const { entry } = makeEntry({
+      name: 'bing',
+      results: [
+        makeResult('bing', 'https://random-retailer.com/redis-tshirt'),
+        makeResult('bing', 'https://redis.io/docs/cache'),
+      ],
+    });
+    verticalState.general = [entry];
+
+    const out = await runV1Search({ query: 'redis cache' });
+    expect(out.results[0].url).toBe('https://redis.io/docs/cache');
+    expect(out.results[1].url).toBe('https://random-retailer.com/redis-tshirt');
+  });
+
+  it('promotes a known docs host (kubernetes.io) for a kubernetes query', async () => {
+    const { entry } = makeEntry({
+      name: 'bing',
+      results: [
+        makeResult('bing', 'https://blog.unrelated.example/k8s-rant'),
+        makeResult('bing', 'https://kubernetes.io/docs/concepts/'),
+      ],
+    });
+    verticalState.general = [entry];
+
+    const out = await runV1Search({ query: 'kubernetes pod lifecycle' });
+    expect(out.results[0].url).toBe('https://kubernetes.io/docs/concepts/');
+  });
+
+  it('does not reorder results for queries with no recognized subject', async () => {
+    // Query has no subject in KNOWN_SUBJECT_DOMAIN and no docs.* / authoritative TLD hit.
+    const { entry } = makeEntry({
+      name: 'bing',
+      results: [
+        makeResult('bing', 'https://example-a.example/post'),
+        makeResult('bing', 'https://example-b.example/post'),
+      ],
+    });
+    verticalState.general = [entry];
+
+    const out = await runV1Search({ query: 'blue elephant garden party' });
+    expect(out.results.map((r) => r.url)).toEqual([
+      'https://example-a.example/post',
+      'https://example-b.example/post',
+    ]);
+  });
+
+  it('still applies domain filters after authority boost', async () => {
+    const { entry } = makeEntry({
+      name: 'bing',
+      results: [
+        makeResult('bing', 'https://redis.io/docs/cache'),
+        makeResult('bing', 'https://otherdomain.example/redis'),
+      ],
+    });
+    verticalState.general = [entry];
+
+    const out = await runV1Search({
+      query: 'redis cache',
+      excludeDomains: ['redis.io'],
+    });
+    const urls = out.results.map((r) => r.url);
+    expect(urls).not.toContain('https://redis.io/docs/cache');
+    expect(urls).toContain('https://otherdomain.example/redis');
+  });
+});
+
 describe('runV1Search — recency boost', () => {
   function withDate(
     engineName: string,
@@ -635,19 +706,22 @@ describe('runV1Search — recency boost', () => {
 
   it('does not apply recency boost for a query without temporal intent', async () => {
     // Without temporal intent ordering follows engine rank regardless of published_date.
+    // Use neutral hosts so authority boost doesn't enter the picture — the query
+    // "best pizza in new york" contains 'new' which would otherwise match a
+    // host like 'new.test' via authority-boost's startsWith fallback.
     const { entry } = makeEntry({
       name: 'bing',
       results: [
-        withDate('bing', 'https://old.test/a', twoYearsAgo),
-        withDate('bing', 'https://new.test/b', today),
+        withDate('bing', 'https://example.com/old-page', twoYearsAgo),
+        withDate('bing', 'https://example.com/recent-page', today),
       ],
     });
     verticalState.general = [entry];
 
     const out = await runV1Search({ query: 'best pizza in new york' });
     expect(out.vertical).toBe('general');
-    expect(out.results[0].url).toBe('https://old.test/a');
-    expect(out.results[1].url).toBe('https://new.test/b');
+    expect(out.results[0].url).toBe('https://example.com/old-page');
+    expect(out.results[1].url).toBe('https://example.com/recent-page');
   });
 
   it('applies recency boost when vertical is news even without keywords', async () => {

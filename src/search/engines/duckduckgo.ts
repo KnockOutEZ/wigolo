@@ -1,6 +1,7 @@
 import { parseHTML } from 'linkedom';
 import type { SearchEngine, SearchEngineOptions, RawSearchResult } from '../../types.js';
 import { createLogger } from '../../logger.js';
+import { normalizeResultUrl } from '../url-unwrap.js';
 
 const log = createLogger('search');
 
@@ -64,7 +65,7 @@ export class DuckDuckGoEngine implements SearchEngine {
 
         results.push({
           title,
-          url: href,
+          url: normalizeResultUrl(href),
           snippet: snippetText,
           relevance_score: 1 - i / Math.max(links.length, 1),
           engine: 'duckduckgo',

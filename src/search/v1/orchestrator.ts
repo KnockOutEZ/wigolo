@@ -7,6 +7,7 @@ import {
   type EngineOutcome,
 } from './engine-base.js';
 import { recencyMultiplier, hasTemporalIntent } from './recency-boost.js';
+import { applyAuthorityBoost } from '../reranker/authority-boost.js';
 import { getGeneralEngines, _resetGeneralEnginesForTest } from './verticals/general.js';
 import { getNewsEngines, _resetNewsEnginesForTest } from './verticals/news.js';
 import { getCodeEngines, _resetCodeEnginesForTest } from './verticals/code.js';
@@ -182,18 +183,31 @@ export async function runV1Search(
     }
   }
 
-  const sortedUrls = [...fused.entries()]
+  // Write the raw RRF score (small, ~0.016 range) into relevance_score so
+  // downstream additive boosters (authority) dominate engine arrival order.
+  // Final score is renormalized to [0,1] after boosting + sort.
+  let merged: RawSearchResult[] = [...fused.entries()]
     .sort((a, b) => b[1] - a[1])
-    .map(([url]) => url);
-
-  let merged: RawSearchResult[] = sortedUrls
-    .map((url) => urlToResult.get(url))
+    .map(([url, score]) => {
+      const base = urlToResult.get(url);
+      return base ? { ...base, relevance_score: score } : undefined;
+    })
     .filter((r): r is RawSearchResult => r !== undefined);
+
+  merged = applyAuthorityBoost(query, merged);
+  merged.sort((a, b) => b.relevance_score - a.relevance_score);
 
   merged = applyDomainFilters(merged, input.includeDomains, input.excludeDomains);
 
   const maxResults = input.maxResults ?? DEFAULT_MAX_RESULTS;
-  const results = merged.slice(0, maxResults);
+  let results = merged.slice(0, maxResults);
+
+  if (results.length > 0) {
+    const maxFinal = Math.max(...results.map((r) => r.relevance_score));
+    if (maxFinal > 0) {
+      results = results.map((r) => ({ ...r, relevance_score: r.relevance_score / maxFinal }));
+    }
+  }
 
   const enginesUsed = outcomes
     .filter((o) => o.ok && o.results.length > 0)

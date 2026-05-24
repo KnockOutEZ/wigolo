@@ -1,4 +1,7 @@
-import type { MergedSearchResult } from '../dedup.js';
+export interface AuthorityBoostable {
+  url: string;
+  relevance_score: number;
+}
 
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'what', 'is', 'are', 'was', 'were', 'how', 'why', 'when', 'where', 'who',
@@ -84,10 +87,10 @@ function hostOf(url: string): string | null {
   }
 }
 
-export function applyAuthorityBoost(
+export function applyAuthorityBoost<T extends AuthorityBoostable>(
   query: string,
-  results: MergedSearchResult[],
-): MergedSearchResult[] {
+  results: T[],
+): T[] {
   if (results.length === 0) return results;
   const subjects = extractSubjects(query);
   const knownDomains = new Set<string>();

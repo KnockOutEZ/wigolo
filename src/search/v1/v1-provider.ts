@@ -2,12 +2,12 @@
 //
 // Delegates to the v1 orchestrator (intent routing + per-vertical engines +
 // RRF fusion) and maps RawSearchResult to SearchResultItem for the MCP
-// `search` tool surface. Intentional omissions for Phase 7: no content
-// fetch/extraction, no rerank, no multi-query expansion, no caching, no
-// answer synthesis, no evidence extraction. Those land in later phases.
+// `search` tool surface. Array queries dispatch in parallel and are RRF-fused
+// across dispatches so callers can hedge phrasings without paying serial cost.
 
 import type { SearchProvider, SearchContext } from '../../providers/search-provider.js';
 import type {
+  RawSearchResult,
   SearchInput,
   SearchOutput,
   SearchResultItem,
@@ -17,12 +17,60 @@ import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
 
+const RRF_K = 60;
+
+function normalizeArrayQueries(queries: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of queries) {
+    if (typeof raw !== 'string') continue;
+    const q = raw.trim();
+    if (q.length === 0) continue;
+    const key = q.toLowerCase().replace(/\s+/g, ' ');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(q);
+  }
+  return out;
+}
+
+function fuseRankedLists(lists: RawSearchResult[][]): RawSearchResult[] {
+  const scores = new Map<string, number>();
+  const firstSeen = new Map<string, RawSearchResult>();
+  for (const list of lists) {
+    for (let rank = 0; rank < list.length; rank++) {
+      const r = list[rank];
+      const prev = scores.get(r.url) ?? 0;
+      scores.set(r.url, prev + 1 / (RRF_K + rank + 1));
+      if (!firstSeen.has(r.url)) firstSeen.set(r.url, r);
+    }
+  }
+  const maxScore = Math.max(0, ...scores.values());
+  return [...scores.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([url, score]) => {
+      const base = firstSeen.get(url);
+      if (!base) return undefined;
+      return {
+        ...base,
+        relevance_score: maxScore > 0 ? score / maxScore : 0,
+      };
+    })
+    .filter((r): r is RawSearchResult => r !== undefined);
+}
+
 export class V1SearchProvider implements SearchProvider {
   readonly name = 'v1' as const;
 
   async search(input: SearchInput, _ctx: SearchContext): Promise<StageResult<SearchOutput>> {
-    const rawQuery = Array.isArray(input.query) ? input.query.join(' ') : input.query;
-    if (typeof rawQuery !== 'string' || rawQuery.trim() === '') {
+    const isArray = Array.isArray(input.query);
+    const queries = isArray
+      ? normalizeArrayQueries(input.query as string[])
+      : typeof input.query === 'string' && input.query.trim() !== ''
+        ? [input.query.trim()]
+        : [];
+
+    if (queries.length === 0) {
       return {
         ok: false,
         error: 'invalid_input',
@@ -30,12 +78,7 @@ export class V1SearchProvider implements SearchProvider {
         stage: 'search',
       };
     }
-    const query = rawQuery.trim();
 
-    // v1 has no images vertical. Silently coercing to general was misleading —
-    // callers got general results back labelled as if they'd asked for images.
-    // Surface this explicitly so the host LLM can pick another tool (or fall
-    // back to legacy SearXNG via WIGOLO_SEARCH=searxng).
     if (input.category === 'images') {
       return {
         ok: false,
@@ -44,31 +87,54 @@ export class V1SearchProvider implements SearchProvider {
         stage: 'search',
       };
     }
+    const category = input.category;
 
     const start = Date.now();
-    const result = await runV1Search({
-      query,
-      category: input.category,
-      fromDate: input.from_date,
-      toDate: input.to_date,
-      maxResults: input.max_results,
-      language: input.language,
-      includeDomains: input.include_domains,
-      excludeDomains: input.exclude_domains,
-    });
+    const dispatches = await Promise.all(
+      queries.map((q) =>
+        runV1Search({
+          query: q,
+          category,
+          fromDate: input.from_date,
+          toDate: input.to_date,
+          maxResults: input.max_results,
+          language: input.language,
+          includeDomains: input.include_domains,
+          excludeDomains: input.exclude_domains,
+        }),
+      ),
+    );
 
-    let processed = result.results;
+    const fused =
+      dispatches.length === 1
+        ? dispatches[0].results
+        : fuseRankedLists(dispatches.map((d) => d.results));
+
+    const enginesUsedSet = new Set<string>();
+    for (const d of dispatches) {
+      for (const e of d.enginesUsed) enginesUsedSet.add(e);
+    }
+    const enginesUsed = [...enginesUsedSet];
+
+    const allDegraded = dispatches.every((d) => d.degraded);
+
+    // Display query is the first input string (back-compat) so consumers can
+    // still echo what was asked; arrays just join with " | " for clarity.
+    const displayQuery = isArray ? (input.query as string[]).filter(Boolean).join(' | ') : queries[0];
+
+    let processed = fused;
 
     if (input.agent_context?.text || input.agent_context?.intent) {
       const contextText = input.agent_context.text ?? input.agent_context.intent;
-      processed = await applyContextRank(processed, query, contextText);
+      processed = await applyContextRank(processed, queries[0], contextText);
     }
 
     if (input.agent_context?.recent_urls?.length) {
       processed = dedupAgainstRecentUrls(processed, input.agent_context.recent_urls);
     }
 
-    const items: SearchResultItem[] = processed.map((r) => ({
+    const maxResults = input.max_results ?? processed.length;
+    const items: SearchResultItem[] = processed.slice(0, maxResults).map((r) => ({
       title: r.title,
       url: r.url,
       snippet: r.snippet,
@@ -79,13 +145,13 @@ export class V1SearchProvider implements SearchProvider {
     const elapsed = Date.now() - start;
     const data: SearchOutput = {
       results: items,
-      query,
-      engines_used: result.enginesUsed,
+      query: displayQuery,
+      engines_used: enginesUsed,
       total_time_ms: elapsed,
       search_time_ms: elapsed,
     };
 
-    if (result.degraded) {
+    if (allDegraded) {
       data.warning = 'all engines failed or no results';
     }
 

@@ -35,4 +35,31 @@ describe('DuckDuckGoEngine', () => {
     const results = engine.parseResults('<html><body></body></html>', 10);
     expect(results).toEqual([]);
   });
+
+  it('unwraps DDG redirect URLs to the canonical target', () => {
+    const wrapped = [
+      '<html><body><table>',
+      '<tr><td><a class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Freact.dev%2Flearn&rut=abc">React</a></td></tr>',
+      '<tr><td class="result-snippet">official React</td></tr>',
+      '<tr><td><a class="result-link" href="https://lite.duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.python.org%2F3%2F">Python docs</a></td></tr>',
+      '<tr><td class="result-snippet">Python documentation</td></tr>',
+      '</table></body></html>',
+    ].join('');
+    const results = engine.parseResults(wrapped, 10);
+    expect(results).toHaveLength(2);
+    expect(results[0].url).toBe('https://react.dev/learn');
+    expect(results[1].url).toBe('https://docs.python.org/3/');
+  });
+
+  it('leaves non-redirect URLs untouched', () => {
+    const html = [
+      '<html><body><table>',
+      '<tr><td><a class="result-link" href="https://example.com/page">Example</a></td></tr>',
+      '<tr><td class="result-snippet">Plain link</td></tr>',
+      '</table></body></html>',
+    ].join('');
+    const results = engine.parseResults(html, 10);
+    expect(results).toHaveLength(1);
+    expect(results[0].url).toBe('https://example.com/page');
+  });
 });

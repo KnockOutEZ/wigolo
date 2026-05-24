@@ -36,7 +36,11 @@ const HOWTO_VERB_RE = /\b(error|fix|debug|compile)\b/i;
 
 const DOCS_PHRASE_RE = /(\bhow to\b|\btutorial\b|\breference\b|\bapi\b|\bdocumentation\b|\bdocs for\b|\bmdn\b|\bdevdocs\b|\bguide\b|\bgetting started\b)/i;
 
-const NEWS_RE = /\b(latest|today|yesterday|this week|news|breaking|2024|2025|2026|recent|update|announcement)\b/i;
+// Year tokens were previously in this regex (2024|2025|2026), but bare years
+// drive far too many false-positive news routings ("vector database choice
+// 2026" → bing_news → BEST Express Vietnam logistics). Years now only count
+// as news when an explicit news keyword is present elsewhere in the query.
+const NEWS_RE = /\b(latest|today|yesterday|this week|news|breaking|recent|update|announcement)\b/i;
 
 const MIN_YEAR = 1990;
 const MAX_YEAR = 2099;

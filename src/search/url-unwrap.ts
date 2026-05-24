@@ -5,6 +5,8 @@
 const REDIRECT_HOSTS: Record<string, string> = {
   'duckduckgo.com': 'uddg',
   'www.duckduckgo.com': 'uddg',
+  'lite.duckduckgo.com': 'uddg',
+  'html.duckduckgo.com': 'uddg',
   'google.com': 'q',
   'www.google.com': 'q',
 };
