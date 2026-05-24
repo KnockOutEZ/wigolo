@@ -435,4 +435,28 @@ describe('findSimilar', () => {
       expect(typeof result.cold_start).toBe('string');
     }
   });
+
+  it('sets cold_start when cache has many pages but none match this query and results come from web search', async () => {
+    // Bench: cache had 39 pages but the find_similar query returned 0 cache
+    // hits and the result was silently web-only — cold_start was documented
+    // but never emitted. Now it fires whenever cacheHits === 0 && searchHits > 0
+    // so the host LLM can tell the user the cache wasn't helpful for THIS topic.
+    for (let i = 0; i < 25; i++) {
+      seedCache(
+        `https://unrelated-${i}.example`,
+        `Unrelated ${i}`,
+        `# Unrelated topic ${i}\n\nSome content that has nothing to do with the query.`,
+      );
+    }
+    const result = await findSimilar(
+      { concept: 'quantum entanglement Bell inequality', include_cache: true, include_web: true },
+      [mockSearchEngine],
+      mockRouter,
+    );
+    expect(result.cache_hits).toBe(0);
+    if (result.search_hits > 0) {
+      expect(result.cold_start).toBeDefined();
+      expect(result.cold_start).toMatch(/no cache matches/i);
+    }
+  });
 });

@@ -97,7 +97,9 @@ describe('research tool integration', () => {
 
     expect(result.error).toBeUndefined();
     expect(result.report.length).toBeGreaterThan(0);
-    expect(result.sub_queries.length).toBe(2);
+    // Original question prepended to the 2 synthetic sub-queries from quick depth.
+    expect(result.sub_queries.length).toBeGreaterThanOrEqual(2);
+    expect(result.sub_queries.length).toBeLessThanOrEqual(3);
     expect(result.sources.length).toBeGreaterThan(0);
     expect(result.citations.length).toBeGreaterThan(0);
     expect(result.depth).toBe('quick');

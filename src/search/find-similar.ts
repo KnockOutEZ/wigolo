@@ -214,6 +214,7 @@ export async function findSimilar(
 
     const coldStart = buildColdStartNote(
       cacheHits,
+      searchHits,
       embeddingAvailable,
       initialCacheSize,
       initialEmbedIndexSize,
@@ -275,12 +276,20 @@ function safeEmbedIndexSize(): number {
 // explain to users why results are search-heavy. Avoids silent fallbacks.
 function buildColdStartNote(
   cacheHits: number,
+  searchHits: number,
   embeddingAvailable: boolean,
   initialCacheSize: number,
   initialEmbedIndexSize: number,
 ): string | undefined {
   if (initialCacheSize === 0) {
     return 'Cache is empty. Results come from live web search only. Use wigolo_fetch / wigolo_crawl to warm the cache, then re-run find_similar for hybrid local+web ranking.';
+  }
+  // Most specific signal: cache was populated but didn't match THIS query,
+  // and web search did — tells the host LLM the cache wasn't useful for the
+  // topic and where to focus warming. Wins over the generic
+  // embedding-unavailable hint because it's actionable per-query.
+  if (cacheHits === 0 && searchHits > 0) {
+    return `No cache matches for this query (cache has ${initialCacheSize} pages overall). Results come from live web search. Use wigolo_fetch on relevant sources before re-running for hybrid ranking.`;
   }
   if (!embeddingAvailable && initialCacheSize > 0) {
     return 'Embeddings unavailable or index empty (cached pages have not been embedded yet). Falling back to FTS5 keyword ranking. Set up sentence-transformers to enable semantic matching.';
