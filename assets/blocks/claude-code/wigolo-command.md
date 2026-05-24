@@ -1,3 +1,7 @@
+---
+description: Quick reference for wigolo web intelligence tools (search, fetch, crawl, cache, extract, find_similar, research, agent).
+---
+
 # wigolo
 
 Quick reference for wigolo web intelligence tools. Wigolo provides 8 MCP tools for local-first web access.

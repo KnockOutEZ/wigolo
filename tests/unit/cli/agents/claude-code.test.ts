@@ -148,6 +148,21 @@ describe('claudeCodeHandler.installCommand', () => {
     const content = readFileSync(cmdFile, 'utf-8');
     expect(content).toContain('wigolo');
   });
+
+  it('installs a slash command with YAML frontmatter so the command listing renders the description (not "wigolo: wigolo")', async () => {
+    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
+    await claudeCodeHandler.installCommand();
+    const cmdFile = join(tmpHome, '.claude', 'commands', 'wigolo.md');
+    const content = readFileSync(cmdFile, 'utf-8');
+    // Frontmatter must be the literal first bytes for Claude Code's parser.
+    expect(content.startsWith('---\n')).toBe(true);
+    // Description field is required for the slash-command listing UI.
+    expect(content).toMatch(/^description:\s+.+/m);
+    // Frontmatter must close before the body starts.
+    const closing = content.indexOf('\n---\n', 4);
+    expect(closing).toBeGreaterThan(0);
+  });
 });
 
 describe('claudeCodeHandler.uninstall', () => {
