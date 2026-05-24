@@ -66,30 +66,15 @@ export async function fetchWithPlaywright(url: string, opts: { timeoutMs?: numbe
   try {
     const overall = opts.timeoutMs ?? 30000;
     await page.goto(url, { waitUntil: 'load', timeout: overall });
-    // SPAs (React/Next.js/etc.) populate the article body after `load` fires.
-    // Wait for either semantic content (a `<main>`/`<article>` containing
-    // substantial text) or for the network to go idle — whichever wins
-    // first. Plain body innerText > N isn't enough because nav-shell sites
-    // (react.dev, nextjs.org) ship a header + sidebar that already exceeds
-    // any reasonable text threshold before the article mounts.
-    const hydrationBudget = Math.min(5000, Math.max(800, Math.floor(overall / 6)));
+    // SPAs (React/Next.js/etc.) populate the DOM after `load` fires.
+    // Wait for either substantial body text or for the network to go idle —
+    // whichever wins first — then bail out so we never block longer than the
+    // hydration budget. Both branches swallow timeout errors because the
+    // page may legitimately be static.
+    const hydrationBudget = Math.min(3000, Math.max(500, Math.floor(overall / 10)));
     await Promise.race([
       page.waitForFunction(
-        () => {
-          const main = document.querySelector('main, article');
-          if (main) {
-            const text = (main as HTMLElement).innerText ?? '';
-            return text.trim().length > 300;
-          }
-          // Fallback for sites that don't use semantic landmarks — count
-          // visible paragraphs as a hydration signal.
-          const paragraphs = document.querySelectorAll('p');
-          let pText = 0;
-          for (const p of Array.from(paragraphs).slice(0, 10)) {
-            pText += ((p as HTMLElement).innerText ?? '').length;
-          }
-          return pText > 600;
-        },
+        () => (document.body?.innerText ?? '').length > 500,
         undefined,
         { timeout: hydrationBudget },
       ).catch(() => undefined),

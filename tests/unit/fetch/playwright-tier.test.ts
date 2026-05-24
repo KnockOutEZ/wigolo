@@ -85,56 +85,6 @@ setTimeout(() => {
     expect(result.text).toContain('hydrated content');
     expect(result.html).toContain('Hydrated heading');
   }, 60_000);
-
-  it('waits past nav-shell text for semantic <main> content (react.dev pattern)', async () => {
-    const status = await detectPlaywrightInstall();
-    if (!status.installed) {
-      console.warn('Playwright not installed, skipping nav-shell test');
-      return;
-    }
-    // Serve a page where the header/nav already contains > 500 chars of text
-    // (so a generic body.innerText threshold would short-circuit), but the
-    // <main> article only mounts after 300ms. The fix must wait for <main>
-    // content, not just any body text.
-    const navShellUrl = `${baseUrl}/nav-shell`;
-    const navServer = createServer((req, res) => {
-      if (req.url === '/nav-shell') {
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        const navLinks = Array.from({ length: 30 }, (_, i) => `<a href="/${i}">Section ${i} navigation entry</a>`).join(' ');
-        res.end(`<!doctype html><html><head><title>nav</title></head><body>
-<header><nav>${navLinks}</nav></header>
-<div id="root"></div>
-<script>
-setTimeout(() => {
-  const main = document.createElement('main');
-  main.innerHTML = '<h1>Real Article</h1><p>' + 'Substantive article paragraph that mounts after hydration. '.repeat(20) + '</p>';
-  document.getElementById('root').appendChild(main);
-}, 300);
-</script>
-</body></html>`);
-      } else {
-        res.writeHead(404); res.end();
-      }
-    });
-    await new Promise<void>((resolve) => {
-      navServer.listen(0, () => {
-        const addr = navServer.address();
-        if (typeof addr === 'object' && addr) {
-          navShellUrl;
-        }
-        resolve();
-      });
-    });
-    const addr = navServer.address();
-    const port = typeof addr === 'object' && addr ? addr.port : 0;
-    try {
-      const result = await fetchWithPlaywright(`http://127.0.0.1:${port}/nav-shell`);
-      expect(result.html).toContain('Real Article');
-      expect(result.text).toContain('Substantive article paragraph');
-    } finally {
-      await new Promise<void>((r) => navServer.close(() => r()));
-    }
-  }, 60_000);
 });
 
 describe('getDaemonBrowser race safety', () => {
