@@ -341,24 +341,49 @@ export class MultiBrowserPool {
 
       // SPAs (React/Next/etc.) ship a populated nav-shell that already clears
       // networkidle even though the article body is empty. Wait briefly for
-      // a `<main>`/`<article>` to gain real text, or for several `<p>` blocks
-      // to render. Mirrors the playwright-tier hydration probe so search +
-      // crawl + find_similar fetches don't leak nav-only shells.
+      // semantic content (`<article>`/`<main>`) or an SPA hydration marker
+      // (`#__next`/`#root` with substantial inner text) to appear. Mirrors
+      // the playwright-tier probe so search + crawl + find_similar fetches
+      // don't leak nav-only shells.
       if (typeof page.waitForFunction === 'function') {
-        const hydrationBudget = Math.min(5000, Math.max(800, Math.floor(navTimeoutMs / 6)));
+        const hydrationBudget = Math.min(8000, Math.max(1500, Math.floor(navTimeoutMs / 4)));
         await page.waitForFunction(
           () => {
-            const main = document.querySelector('main, article');
-            if (main) {
-              const text = (main as HTMLElement).innerText ?? '';
-              if (text.trim().length > 300) return true;
+            const measure = (el: Element | null): number => {
+              if (!el) return 0;
+              const text = (el as HTMLElement).innerText ?? '';
+              return text.trim().length;
+            };
+
+            // Prefer real article containers: an `<article>` or `<main>` with
+            // > 600 chars AND at least 3 paragraphs (avoids matching when
+            // nav/sidebar text alone clears the threshold).
+            const article = document.querySelector('article');
+            if (measure(article) > 600 && (article?.querySelectorAll('p').length ?? 0) >= 3) {
+              return true;
             }
+            const main = document.querySelector('main');
+            if (measure(main) > 600 && (main?.querySelectorAll('p').length ?? 0) >= 3) {
+              return true;
+            }
+
+            // SPA hydration markers: Next.js `#__next` and React `#root`
+            // typically host the full app tree once hydrated. Use a higher
+            // text threshold to make sure the article (not just header) has
+            // mounted.
+            const spaRoot = document.querySelector('#__next, #root, [data-reactroot]');
+            if (measure(spaRoot) > 1200 && (spaRoot?.querySelectorAll('p').length ?? 0) >= 4) {
+              return true;
+            }
+
+            // Fallback: many paragraphs of total visible text (catches blogs
+            // and docs sites without semantic landmarks).
             const paragraphs = document.querySelectorAll('p');
             let pText = 0;
-            for (const p of Array.from(paragraphs).slice(0, 10)) {
+            for (const p of Array.from(paragraphs).slice(0, 12)) {
               pText += ((p as HTMLElement).innerText ?? '').length;
             }
-            return pText > 600;
+            return pText > 800;
           },
           undefined,
           { timeout: hydrationBudget },
