@@ -130,8 +130,13 @@ function dedupWithinEngine(results: RawSearchResult[]): RawSearchResult[] {
   return out;
 }
 
+interface RunV1SearchOptions {
+  _isFallback?: boolean;
+}
+
 export async function runV1Search(
   input: OrchestratorInput,
+  opts: RunV1SearchOptions = {},
 ): Promise<OrchestratorOutput> {
   const query = typeof input.query === 'string' ? input.query.trim() : '';
   if (query.length === 0) {
@@ -253,6 +258,16 @@ export async function runV1Search(
       ok: outcomes.filter((o) => o.ok).length,
       resultCount: results.length,
     });
+  }
+
+  // Fallback: any non-general vertical that came back degraded gets one
+  // automatic retry as general. Code in particular is prone to empty results
+  // (GH code search returns nothing + SO times out → empty), but this is
+  // generic safety net for every vertical except general (which has nowhere
+  // to fall back to).
+  if (degraded && vertical !== 'general' && !opts._isFallback) {
+    log.info('vertical degraded, falling back to general', { from: vertical });
+    return runV1Search({ ...input, category: 'general' }, { _isFallback: true });
   }
 
   return {

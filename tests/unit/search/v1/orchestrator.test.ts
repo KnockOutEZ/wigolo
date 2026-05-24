@@ -654,6 +654,63 @@ describe('runV1Search — output shape & misc', () => {
   });
 });
 
+describe('runV1Search — degraded fallback to general', () => {
+  it('retries as general when the routed code vertical degrades', async () => {
+    // Code engines all fail. General has a working engine — orchestrator
+    // should fall back so the caller gets results instead of an empty list.
+    const codeBad = makeEntry({ name: 'github-code', shouldFail: true });
+    verticalState.code = [codeBad.entry];
+
+    const generalOk = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://example.com/hnsw')],
+    });
+    verticalState.general = [generalOk.entry];
+
+    const out = await runV1Search({ query: 'fix typescript HNSW tuning' });
+    expect(out.degraded).toBe(false);
+    expect(out.vertical).toBe('general');
+    expect(out.results.map((r) => r.url)).toEqual(['https://example.com/hnsw']);
+  });
+
+  it('does not fall back when the original vertical succeeds', async () => {
+    const codeOk = makeEntry({
+      name: 'github-code',
+      results: [makeResult('github-code', 'https://gh.test/code')],
+    });
+    verticalState.code = [codeOk.entry];
+
+    const generalSpy = makeEntry({ name: 'bing', results: [] });
+    verticalState.general = [generalSpy.entry];
+
+    const out = await runV1Search({ query: 'fix typescript error' });
+    expect(out.vertical).toBe('code');
+    expect(generalSpy.spy).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back from general (no infinite recursion)', async () => {
+    const bad = makeEntry({ name: 'bing', shouldFail: true });
+    verticalState.general = [bad.entry];
+
+    const out = await runV1Search({ query: 'arbitrary phrase' });
+    expect(out.vertical).toBe('general');
+    expect(out.degraded).toBe(true);
+  });
+
+  it('reports the fallback vertical (general) in the returned output', async () => {
+    const codeBad = makeEntry({ name: 'github-code', shouldFail: true });
+    verticalState.code = [codeBad.entry];
+    const generalOk = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://example.com/hit')],
+    });
+    verticalState.general = [generalOk.entry];
+
+    const out = await runV1Search({ query: 'fix python regex' });
+    expect(out.vertical).toBe('general');
+  });
+});
+
 describe('runV1Search — authority boost', () => {
   it('promotes a known authoritative domain above a higher-ranked brand collision', async () => {
     // Bing top-ranks a random retail domain ahead of the authoritative redis.io docs page.

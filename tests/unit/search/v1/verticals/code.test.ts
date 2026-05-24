@@ -11,13 +11,13 @@ describe('getCodeEngines', () => {
     _resetBreakersForTest();
   });
 
-  it('returns two entries', () => {
-    expect(getCodeEngines()).toHaveLength(2);
+  it('returns four entries (github-code + stackoverflow + mdn + devdocs)', () => {
+    expect(getCodeEngines()).toHaveLength(4);
   });
 
-  it('wraps github-code and stackoverflow engines (preserving names)', () => {
-    const names = getCodeEngines().map((e) => e.engine.name);
-    expect(names).toEqual(['github-code', 'stackoverflow']);
+  it('wraps github-code, stackoverflow, mdn, devdocs (preserving names)', () => {
+    const names = getCodeEngines().map((e) => e.engine.name).sort();
+    expect(names).toEqual(['devdocs', 'github-code', 'mdn', 'stackoverflow']);
   });
 
   it('memoizes — two calls return the same array reference', () => {
@@ -33,18 +33,20 @@ describe('getCodeEngines', () => {
     expect(a).not.toBe(b);
   });
 
-  it('weights github-code higher than stackoverflow', () => {
+  it('weights primary code engines higher than the docs-backed fallbacks', () => {
     const entries = getCodeEngines();
-    const gh = entries.find((e) => e.engine.name === 'github-code');
-    const so = entries.find((e) => e.engine.name === 'stackoverflow');
-    expect(gh?.weight).toBeGreaterThan(so?.weight ?? 0);
+    const w = (name: string) => entries.find((e) => e.engine.name === name)?.weight ?? 0;
+    expect(w('github-code')).toBeGreaterThan(w('stackoverflow'));
+    expect(w('stackoverflow')).toBeGreaterThan(w('mdn'));
+    expect(w('mdn')).toBeGreaterThanOrEqual(w('devdocs'));
   });
 
-  it('marks supportsDateFilter false for github-code and true for stackoverflow', () => {
+  it('marks supportsDateFilter correctly per engine', () => {
     const entries = getCodeEngines();
-    const gh = entries.find((e) => e.engine.name === 'github-code');
-    const so = entries.find((e) => e.engine.name === 'stackoverflow');
-    expect(gh?.supportsDateFilter).toBe(false);
-    expect(so?.supportsDateFilter).toBe(true);
+    const f = (name: string) => entries.find((e) => e.engine.name === name)?.supportsDateFilter;
+    expect(f('github-code')).toBe(false);
+    expect(f('stackoverflow')).toBe(true);
+    expect(f('mdn')).toBe(false);
+    expect(f('devdocs')).toBe(false);
   });
 });
