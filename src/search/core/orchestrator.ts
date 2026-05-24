@@ -1,4 +1,4 @@
-import type { RawSearchResult, SearchEngineOptions } from '../../types.js';
+import type { RawSearchResult, ScoreBreakdown, SearchEngineOptions } from '../../types.js';
 import { createLogger } from '../../logger.js';
 import { classifyIntentDetailed, type Vertical } from './intent-router.js';
 import {
@@ -8,6 +8,9 @@ import {
 } from './engine-base.js';
 import { recencyMultiplier, hasTemporalIntent } from './recency-boost.js';
 import { applyAuthorityBoost } from '../reranker/authority-boost.js';
+import { domainQualityScore } from './domain-quality.js';
+import { lexicalAlignment } from './lexical-alignment.js';
+import { getConfig } from '../../config.js';
 
 // Hosts matching this regex are demoted when the query is ≤2 tokens — short
 // brand-name queries like "next" tend to surface retail collisions
@@ -56,6 +59,9 @@ export interface OrchestratorInput {
   language?: string;
   includeDomains?: string[];
   excludeDomains?: string[];
+  /** When true, each returned result carries a `_score_breakdown` field.
+   * Wired from SearchInput.include_engine_outcomes at the provider layer. */
+  includeScoreBreakdown?: boolean;
 }
 
 export interface OrchestratorOutput {
@@ -258,6 +264,30 @@ export async function runV1Search(
 
   merged = applyAuthorityBoost(query, merged);
   merged = applyBrandCollisionGuard(query, merged);
+
+  // Brand-collision rank (sub-ticket 2.1): damp brand-domain matches and
+  // results whose surface text has near-zero overlap with the query before
+  // the threshold cut. Without this, `next.co.uk` for a `next.js` query
+  // pre-normalises higher than `nextjs.org` and post-normalises to 1.0.
+  const breakdowns = input.includeScoreBreakdown
+    ? new Map<string, ScoreBreakdown>()
+    : undefined;
+  merged = merged.map((r) => {
+    const base = r.relevance_score;
+    const dq = domainQualityScore(r.url, vertical, query);
+    const la = lexicalAlignment(query, r.title, r.snippet);
+    const final = base * dq * (0.5 + 0.5 * la);
+    if (breakdowns) {
+      breakdowns.set(r.url, {
+        base,
+        domain_quality: dq,
+        lexical_alignment: la,
+        final,
+      });
+    }
+    return { ...r, relevance_score: final };
+  });
+
   merged.sort((a, b) => b.relevance_score - a.relevance_score);
 
   merged = applyDomainFilters(merged, input.includeDomains, input.excludeDomains);
@@ -270,6 +300,18 @@ export async function runV1Search(
     if (maxFinal > 0) {
       results = results.map((r) => ({ ...r, relevance_score: r.relevance_score / maxFinal }));
     }
+  }
+
+  const threshold = getConfig().relevanceThreshold;
+  if (threshold > 0) {
+    results = results.filter((r) => r.relevance_score >= threshold);
+  }
+
+  if (breakdowns) {
+    results = results.map((r) => {
+      const bd = breakdowns.get(r.url);
+      return bd ? { ...r, _score_breakdown: bd } : r;
+    });
   }
 
   const enginesUsed = outcomes

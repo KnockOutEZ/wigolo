@@ -146,6 +146,7 @@ export class CoreSearchProvider implements SearchProvider {
             language: input.language,
             includeDomains: input.include_domains,
             excludeDomains: input.exclude_domains,
+            includeScoreBreakdown: input.include_engine_outcomes,
           }),
         ),
       );
@@ -198,6 +199,7 @@ export class CoreSearchProvider implements SearchProvider {
         snippet: r.snippet,
         relevance_score: r.relevance_score,
         ...(r.published_date ? { published_date: r.published_date } : {}),
+        ...(r._score_breakdown ? { _score_breakdown: r._score_breakdown } : {}),
       }));
 
       searchElapsed = Date.now() - start;
