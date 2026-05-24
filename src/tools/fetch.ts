@@ -147,6 +147,27 @@ export async function handleFetch(
       };
     }
 
+    // Plain-text endpoints (raw.githubusercontent.com, gist raw, /robots.txt,
+    // etc.) return HTTP 4xx/5xx with a short error body. We must not pass that
+    // body to the extractor as if it were article content — surface the HTTP
+    // failure so callers can react. HTML pages with 4xx status often still
+    // render a useful error landing page (404 docs), so only escalate plain
+    // text/markdown/JSON status codes here.
+    const ct = raw.contentType?.toLowerCase() ?? '';
+    const isMachineBody = !ct || /^(text\/plain|text\/markdown|application\/(json|xml|x-yaml))/i.test(ct);
+    if (raw.statusCode >= 400 && isMachineBody) {
+      const snippet = (raw.html ?? '').slice(0, 200).trim();
+      return {
+        ok: false,
+        error: `http_${raw.statusCode}`,
+        error_reason: `Upstream returned HTTP ${raw.statusCode}${snippet ? `: ${snippet}` : ''}`,
+        stage: 'fetch',
+        hint: raw.statusCode === 404
+          ? 'Check the URL — file/branch may have been removed or renamed'
+          : 'Retry later or check upstream status',
+      };
+    }
+
     const extractor = await getExtractProvider();
     const extraction = await extractor.extract(raw.html, raw.finalUrl, {
       maxChars: input.max_chars,
