@@ -63,6 +63,41 @@ describe('mergeBlock', () => {
     expect(content).toContain('# Header');
     expect(content).toContain('# Footer');
   });
+
+  it('does not silently append when only the start marker is present', () => {
+    // Mismatched markers come from a previous install whose write was
+    // interrupted. Silent-append produces two start markers and on the next
+    // merge-replace the content between marker #1 and end #2 gets eaten.
+    const filePath = join(tmpDir, 'mismatched.md');
+    const original = '# Header\n\n<!-- wigolo:start v0 -->\n## Old\n\n# Footer\n';
+    writeFileSync(filePath, original, 'utf-8');
+    mergeBlock(filePath, BLOCK);
+
+    const content = readFileSync(filePath, 'utf-8');
+    const startCount = (content.match(/<!-- wigolo:start/g) ?? []).length;
+    const endCount = (content.match(/<!-- wigolo:end -->/g) ?? []).length;
+    expect(startCount).toBe(1);
+    expect(endCount).toBe(1);
+    // Original content outside the recovered block must survive.
+    expect(content).toContain('# Header');
+    expect(content).toContain('# Footer');
+    // A backup of the broken state must exist so user content is recoverable.
+    expect(existsSync(filePath + '.wigolo-bak')).toBe(true);
+  });
+
+  it('does not silently append when only the end marker is present', () => {
+    const filePath = join(tmpDir, 'mismatched-end.md');
+    const original = '# Header\n\n## Old\n<!-- wigolo:end -->\n\n# Footer\n';
+    writeFileSync(filePath, original, 'utf-8');
+    mergeBlock(filePath, BLOCK);
+
+    const content = readFileSync(filePath, 'utf-8');
+    const startCount = (content.match(/<!-- wigolo:start/g) ?? []).length;
+    const endCount = (content.match(/<!-- wigolo:end -->/g) ?? []).length;
+    expect(startCount).toBe(1);
+    expect(endCount).toBe(1);
+    expect(existsSync(filePath + '.wigolo-bak')).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

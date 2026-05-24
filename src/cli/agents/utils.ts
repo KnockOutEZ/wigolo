@@ -50,6 +50,12 @@ export function readSkillDir(name: string): Record<string, string> {
  * Merge a block (delimited by wigolo:start/wigolo:end markers) into a file.
  * Creates the file if it doesn't exist.
  * Replaces an existing block, or appends if no block present.
+ *
+ * Mismatched markers (one present, not both) are treated as corruption from a
+ * previously interrupted write — the file is backed up to <path>.wigolo-bak
+ * and the mismatched marker is stripped before the new block is appended.
+ * Without this guard the next merge would eat user content between the
+ * orphan marker and the freshly-written end marker.
  */
 export function mergeBlock(filePath: string, block: string): void {
   mkdirSync(dirname(filePath), { recursive: true });
@@ -65,16 +71,44 @@ export function mergeBlock(filePath: string, block: string): void {
   const content = readFileSync(filePath, 'utf-8');
   const startIdx = content.indexOf(START);
   const endIdx = content.indexOf(END);
+  const hasStart = startIdx !== -1;
+  const hasEnd = endIdx !== -1;
 
-  if (startIdx !== -1 && endIdx !== -1) {
+  if (hasStart && hasEnd) {
     const before = content.slice(0, startIdx).trimEnd();
     const after = content.slice(endIdx + END.length).trimStart();
     const parts = [before, block.trimEnd(), after].filter(Boolean);
     writeFileSync(filePath, parts.join('\n\n') + '\n', 'utf-8');
-  } else {
-    const trimmed = content.trimEnd();
-    writeFileSync(filePath, trimmed + '\n\n' + block.trimEnd() + '\n', 'utf-8');
+    return;
   }
+
+  if (hasStart !== hasEnd) {
+    writeFileSync(filePath + '.wigolo-bak', content, 'utf-8');
+
+    let salvaged = content;
+    if (hasStart) {
+      // Drop everything from the orphan start marker to end-of-line.
+      const lineEnd = content.indexOf('\n', startIdx);
+      salvaged = (content.slice(0, startIdx).trimEnd()
+        + (lineEnd === -1 ? '' : '\n' + content.slice(lineEnd + 1))).trimEnd();
+    } else {
+      // Drop the orphan end marker line.
+      const lineStart = content.lastIndexOf('\n', endIdx);
+      const lineEnd = content.indexOf('\n', endIdx);
+      const head = lineStart === -1 ? '' : content.slice(0, lineStart);
+      const tail = lineEnd === -1 ? '' : content.slice(lineEnd + 1);
+      salvaged = (head + (head && tail ? '\n' : '') + tail).trimEnd();
+    }
+
+    const out = salvaged
+      ? salvaged + '\n\n' + block.trimEnd() + '\n'
+      : block.trimEnd() + '\n';
+    writeFileSync(filePath, out, 'utf-8');
+    return;
+  }
+
+  const trimmed = content.trimEnd();
+  writeFileSync(filePath, trimmed + '\n\n' + block.trimEnd() + '\n', 'utf-8');
 }
 
 /** Remove the wigolo block from a file. Returns true if a block was removed. */
