@@ -325,5 +325,53 @@ describe('handleAgent', () => {
       expect(result.evidence).toBeUndefined();
     });
   });
+
+  describe('aggregate token envelope', () => {
+    it('caps total response (result + sources + evidence) within max_tokens_out', async () => {
+      // Spin up 40 source URLs so sources[] metadata alone would otherwise
+      // bust a small budget. The result string is also long enough that the
+      // pre-fix code (which only capped `result`) would still emit a bloated
+      // sources array.
+      const urls = Array.from({ length: 40 }, (_, i) => `https://example.com/page-${i}`);
+      const longMarkdown = '# Heading\n\n' + 'Lorem ipsum dolor sit amet. '.repeat(80);
+      extractMock.mockResolvedValue({
+        title: 'Some long-title source for the budget envelope test',
+        markdown: longMarkdown,
+        metadata: {},
+        links: [],
+        images: [],
+        extractor: 'defuddle' as const,
+      });
+
+      const richRouter2 = {
+        fetch: vi.fn().mockImplementation(async (url: string) => ({
+          url,
+          finalUrl: url,
+          html: '<html><body><h1>Test</h1></body></html>',
+          contentType: 'text/html',
+          statusCode: 200,
+          method: 'http' as const,
+          headers: {},
+        })),
+      } as unknown as SmartRouter;
+
+      const input: AgentInput = {
+        prompt: 'Summarize topic X',
+        urls,
+        max_pages: 40,
+        max_tokens_out: 500,
+      };
+      const __r = await handleAgent(input, [stubEngine], richRouter2);
+      expect(__r.ok).toBe(true);
+      if (!__r.ok) return;
+      const result = __r.data;
+
+      const { countTokens } = await import('../../../src/search/tokens.js');
+      const total = countTokens(JSON.stringify(result));
+      // Allow a small overhead for the structural skeleton (steps, timings)
+      // that cannot be trimmed without dropping observability fields.
+      expect(total).toBeLessThanOrEqual(2000);
+    });
+  });
 });
 

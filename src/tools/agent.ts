@@ -6,6 +6,7 @@ import {
   applyAggregateMarkdownBudget,
 } from '../search/evidence.js';
 import { applyOutputBudget } from '../search/truncate.js';
+import { countTokens } from '../search/tokens.js';
 import type {
   AgentInput,
   AgentOutput,
@@ -85,6 +86,12 @@ export async function handleAgent(
       if (input.max_tokens_out !== undefined && typeof result.result === 'string' && result.result) {
         result.result = applyOutputBudget(result.result, { maxTokensOut: input.max_tokens_out });
       }
+      // Holistic envelope: result + sources + evidence + steps must all live
+      // inside max_tokens_out so the agent tool honours the caller's budget
+      // for the FULL response, not just the `result` string.
+      if (input.max_tokens_out !== undefined) {
+        enforceResponseEnvelope(result, input.max_tokens_out);
+      }
     }
 
     if (result.error) {
@@ -142,6 +149,41 @@ async function attachEvidence(out: AgentOutput, input: AgentInput): Promise<void
       (s, body) => { s.markdown_content = body; },
       { maxTokensOut },
     );
+  }
+}
+
+// Trim the AgentOutput in-place so the stringified response stays under
+// `maxTokensOut`. Order:
+//   1. Drop tail evidence (least synthesis value once `result` exists).
+//   2. Drop tail sources (URLs + titles; markdown_content already trimmed).
+//   3. Tighten the `result` cap aggressively as a last resort.
+// Steps[] and timings are preserved so callers retain observability.
+function enforceResponseEnvelope(out: AgentOutput, maxTokensOut: number): void {
+  const measure = () => countTokens(JSON.stringify(out));
+
+  if (measure() <= maxTokensOut) return;
+
+  if (out.evidence && out.evidence.length > 0) {
+    while (out.evidence.length > 0 && measure() > maxTokensOut) {
+      out.evidence.pop();
+    }
+    if (out.evidence.length === 0) delete (out as { evidence?: EvidenceItem[] }).evidence;
+  }
+
+  if (measure() <= maxTokensOut) return;
+
+  while (out.sources.length > 0 && measure() > maxTokensOut) {
+    out.sources.pop();
+  }
+
+  if (measure() <= maxTokensOut) return;
+
+  if (typeof out.result === 'string' && out.result.length > 0) {
+    // Allow shrinking room equal to the current overshoot from `result`.
+    const overshoot = measure() - maxTokensOut;
+    const currentTokens = countTokens(out.result);
+    const target = Math.max(0, currentTokens - overshoot - 20);
+    out.result = applyOutputBudget(out.result, { maxTokensOut: target });
   }
 }
 
