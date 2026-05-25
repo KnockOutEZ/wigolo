@@ -23,6 +23,8 @@ import { handleExtract } from './tools/extract.js';
 import { handleFindSimilar } from './tools/find-similar.js';
 import { handleResearch } from './tools/research.js';
 import { handleAgent } from './tools/agent.js';
+import { handleDiff } from './tools/diff.js';
+import { handleWatch } from './tools/watch.js';
 import type { SamplingCapableServer } from './search/sampling.js';
 import { SearxngClient } from './search/searxng.js';
 import { DuckDuckGoEngine } from './search/engines/duckduckgo.js';
@@ -51,11 +53,13 @@ import {
   FIND_SIMILAR_TOOL_SCHEMA,
   RESEARCH_TOOL_SCHEMA,
   AGENT_TOOL_SCHEMA,
+  DIFF_TOOL_SCHEMA,
+  WATCH_TOOL_SCHEMA,
 } from './server/tool-schemas.js';
 import { loadPlugins } from './plugins/loader.js';
 import { PluginRegistry } from './plugins/registry.js';
 import { registerExtractor } from './extraction/pipeline.js';
-import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput, AgentInput, ProgressCallback } from './types.js';
+import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput, AgentInput, ProgressCallback, WatchJobInput } from './types.js';
 
 const log = createLogger('server');
 
@@ -347,6 +351,16 @@ export function createMcpServer(subsystems: Subsystems): Server {
         description: TOOL_DESCRIPTIONS.agent,
         inputSchema: AGENT_TOOL_SCHEMA,
       },
+      {
+        name: 'diff',
+        description: TOOL_DESCRIPTIONS.diff,
+        inputSchema: DIFF_TOOL_SCHEMA,
+      },
+      {
+        name: 'watch',
+        description: TOOL_DESCRIPTIONS.watch,
+        inputSchema: WATCH_TOOL_SCHEMA,
+      },
     ],
   }));
 
@@ -486,6 +500,29 @@ export function createMcpServer(subsystems: Subsystems): Server {
       return {
         content: [{ type: 'text', text: JSON.stringify(r.data, null, 2) }],
         isError: false,
+      };
+    }
+
+    // Slice A1 stubs — registration-only. Real diff implementation lands in
+    // slice B1; real watch implementation lands in slice B3. Both return a
+    // structured `{ notice: 'not_implemented_yet', slice }` payload so
+    // dependent slices can detect successful wiring before they ship the
+    // real handlers.
+    if (name === 'diff') {
+      const input = (args ?? {}) as Record<string, unknown>;
+      const r = await handleDiff(input);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(r.ok ? r.data : { error: r.error, error_reason: r.error_reason, stage: r.stage }, null, 2) }],
+        isError: !r.ok,
+      };
+    }
+
+    if (name === 'watch') {
+      const input = (args ?? {}) as unknown as WatchJobInput;
+      const r = await handleWatch(input);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(r.ok ? r.data : { error: r.error, error_reason: r.error_reason, stage: r.stage }, null, 2) }],
+        isError: !r.ok,
       };
     }
 

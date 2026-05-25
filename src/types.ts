@@ -718,7 +718,7 @@ export type NamedSchemaType =
 export interface ExtractInput {
   url?: string;
   html?: string;
-  mode?: 'selector' | 'tables' | 'metadata' | 'schema' | 'structured';
+  mode?: 'selector' | 'tables' | 'metadata' | 'schema' | 'structured' | 'brand';
   css_selector?: string;
   multiple?: boolean;
   schema?: JsonSchema;
@@ -774,11 +774,125 @@ export interface StructuredData {
 export interface ExtractOutput {
   data: string | string[] | TableData[] | MetadataData | StructuredData | Record<string, unknown>;
   source_url?: string;
-  mode: 'selector' | 'tables' | 'metadata' | 'schema' | 'structured';
+  mode: 'selector' | 'tables' | 'metadata' | 'schema' | 'structured' | 'brand';
   error?: string;
   warnings?: string[];
   /** Tavily-canonical alias of how long the request took, ms. */
   response_time_ms?: number;
+  /** Stub-only marker — present while a mode (currently `'brand'`) is still
+   * a slice A1 placeholder and the real extractor hasn't landed yet. */
+  notice?: string;
+  /** Stub-only marker — names the slice that will complete the surface. */
+  slice?: string;
+}
+
+// --- Brand extraction (slice A1 placeholder, full shape lands in B2a) ---
+
+/**
+ * Structural placeholder for the `extract mode: 'brand'` payload. Slice A1
+ * registers the surface; slice B2a fills DOM/meta sources, slice B2b adds
+ * palette extraction. All fields are optional until the real extractor lands.
+ */
+export interface BrandExtractionOutput {
+  name?: string;
+  tagline?: string;
+  description?: string;
+  /** URL only — never re-hosted. */
+  logo_url?: string;
+  favicon_url?: string;
+  og_image_url?: string;
+  /** Hex codes from CSS vars (B2a) or palette extraction (B2b). */
+  primary_colors?: string[];
+  fonts?: {
+    headings?: string[];
+    body?: string[];
+  };
+  social_links?: {
+    twitter?: string;
+    github?: string;
+    linkedin?: string;
+    [platform: string]: string | undefined;
+  };
+  provenance?: {
+    logo?: 'json-ld' | 'og:logo' | 'link[rel=icon]' | 'heuristic' | 'unknown';
+    colors?: 'css-vars' | 'palette-extraction' | 'unknown';
+    fonts?: 'css-vars' | 'inline-style' | 'unknown';
+  };
+}
+
+// --- Diff tool (slice A1 placeholder, full impl lands in B1) ---
+
+export type DiffOutputShape = 'unified' | 'hunks' | 'summary';
+export type DiffGranularity = 'line' | 'word' | 'section';
+
+export interface DiffHunk {
+  section_title?: string;
+  before: string;
+  after: string;
+  change_type: 'added' | 'removed' | 'modified';
+}
+
+export interface DiffSummary {
+  added_lines: number;
+  removed_lines: number;
+  modified_lines: number;
+  total_changed_chars: number;
+}
+
+/**
+ * Structural placeholder for the `diff` tool output. Slice A1 registers the
+ * surface; slice B1 wires the real implementation against the existing LCS in
+ * `src/cache/diff-summary.ts`. When the input exceeds the LCS size cap, B1
+ * will set `truncated: true` and fall back to the existing diff-summary shape.
+ */
+export interface DiffOutput {
+  changed: boolean;
+  unified_diff?: string;
+  hunks?: DiffHunk[];
+  summary?: DiffSummary;
+  truncated?: boolean;
+  /** Stub-only marker — present while the slice is still a placeholder. */
+  notice?: string;
+  /** Stub-only marker — names the slice that will complete this surface. */
+  slice?: string;
+}
+
+// --- Watch tool (slice A1 placeholder, full impl lands in B3) ---
+
+export type WatchAction = 'create' | 'list' | 'check' | 'pause' | 'resume' | 'delete';
+export type WatchJobStatus = 'active' | 'paused' | 'errored';
+
+export interface WatchJobInput {
+  action: WatchAction;
+  url?: string;
+  interval_seconds?: number;
+  selector?: string;
+  /** 'inline' (return on next check) or a webhook URL. */
+  notification?: string;
+  job_id?: string;
+}
+
+export interface WatchJob {
+  id: string;
+  url: string;
+  interval_seconds: number;
+  selector?: string;
+  last_check_at?: number;
+  last_content_hash?: string;
+  status: WatchJobStatus;
+  notification: string;
+  created_at: number;
+  /** How overdue the next check is, computed at read time. */
+  staleness_seconds?: number;
+}
+
+export interface WatchJobOutput {
+  jobs: WatchJob[];
+  changes_since_last?: DiffOutput[];
+  /** Stub-only marker — present while the slice is still a placeholder. */
+  notice?: string;
+  /** Stub-only marker — names the slice that will complete this surface. */
+  slice?: string;
 }
 
 // --- Find Similar tool types (v3, Slice 23) ---

@@ -97,7 +97,7 @@ describe('WIGOLO_INSTRUCTIONS_FULL v3 routing patterns (resource)', () => {
 });
 
 describe('TOOL_DESCRIPTIONS v3 entries', () => {
-  it('has all 8 tool descriptions', () => {
+  it('has all tool descriptions (8 v3 tools + slice A1 stubs)', () => {
     const keys = Object.keys(TOOL_DESCRIPTIONS);
     expect(keys).toContain('fetch');
     expect(keys).toContain('search');
@@ -107,7 +107,11 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(keys).toContain('find_similar');
     expect(keys).toContain('research');
     expect(keys).toContain('agent');
-    expect(keys.length).toBe(8);
+    // Slice A1 (2026-05-26): registration-only stubs for `diff` (slice B1)
+    // and `watch` (slice B3). Real implementations land in those slices.
+    expect(keys).toContain('diff');
+    expect(keys).toContain('watch');
+    expect(keys.length).toBe(10);
   });
 
   it('find_similar description mentions url and concept inputs', () => {
@@ -194,11 +198,15 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
 });
 
 describe('ToolName type', () => {
-  it('includes all v3 tool names', () => {
+  it('includes all tool names (v3 plus slice A1 stubs)', () => {
+    // Slice A1 (2026-05-26): the ToolName union expanded to include `diff`
+    // (slice B1) and `watch` (slice B3). The TS compiler will reject this
+    // literal if either name is missing from the union — that is the
+    // contract this test locks in.
     const validNames: ToolName[] = [
       'fetch', 'search', 'crawl', 'cache', 'extract',
-      'find_similar', 'research', 'agent',
+      'find_similar', 'research', 'agent', 'diff', 'watch',
     ];
-    expect(validNames.length).toBe(8);
+    expect(validNames.length).toBe(10);
   });
 });

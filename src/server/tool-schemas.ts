@@ -324,8 +324,8 @@ export const EXTRACT_TOOL_SCHEMA = {
     html: { type: 'string', description: 'Raw HTML to extract from (url takes priority if both provided)' },
     mode: {
       type: 'string',
-      enum: ['selector', 'tables', 'metadata', 'schema', 'structured'],
-      description: 'Extraction mode: selector (CSS), tables (HTML tables), metadata (meta tags + JSON-LD), schema (fields matching a JSON Schema), structured (tables + definition lists + JSON-LD + chart hints + key/value pairs — one-shot structured brief)',
+      enum: ['selector', 'tables', 'metadata', 'schema', 'structured', 'brand'],
+      description: 'Extraction mode: selector (CSS), tables (HTML tables), metadata (meta tags + JSON-LD), schema (fields matching a JSON Schema), structured (tables + definition lists + JSON-LD + chart hints + key/value pairs — one-shot structured brief), brand (logo / favicon / colors / fonts / social links — stubbed until slice B2a lands)',
     },
     css_selector: {
       type: 'string',
@@ -499,6 +499,72 @@ export const AGENT_TOOL_SCHEMA = {
   required: ['prompt'],
 };
 
+// Slice A1: registration-only stub. The real implementation lands in slice B1
+// (see docs/superpowers/specs/2026-05-26-webclaw-gap-closure-design.md §5).
+// `old` / `new` are unconstrained objects here so the wire shape can evolve in
+// B1 without re-rolling the schema; the stub handler does not consume them.
+export const DIFF_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    old: {
+      type: 'object',
+      description: 'Left-hand side of the diff. One of { url, markdown, content_hash } will be required in slice B1.',
+      additionalProperties: true,
+    },
+    new: {
+      type: 'object',
+      description: 'Right-hand side of the diff. One of { url, markdown } will be required in slice B1.',
+      additionalProperties: true,
+    },
+    output: {
+      type: 'string',
+      enum: ['unified', 'hunks', 'summary'],
+      description: 'Diff output shape. unified=git-style patch, hunks=structured per-section, summary=line counts only. Default: unified.',
+    },
+    granularity: {
+      type: 'string',
+      enum: ['line', 'word', 'section'],
+      description: 'Diff granularity. section walks H1/H2/H3 boundaries. Default: line.',
+    },
+  },
+};
+
+// Slice A1: registration-only stub. Real implementation lands in slice B3
+// (see docs/superpowers/specs/2026-05-26-webclaw-gap-closure-design.md §5).
+// Lazy-execution model — there is no background daemon; checks happen when
+// the tool is called or when another tool runs and the job is overdue.
+export const WATCH_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    action: {
+      type: 'string',
+      enum: ['create', 'list', 'check', 'pause', 'resume', 'delete'],
+      description: 'Watch-job action.',
+    },
+    url: {
+      type: 'string',
+      description: 'Required for action=create. The URL to watch.',
+    },
+    interval_seconds: {
+      type: 'number',
+      description: 'Required for action=create. Minimum check interval (min 60).',
+    },
+    selector: {
+      type: 'string',
+      description: 'Optional CSS selector to scope the diff to a subtree (create-only).',
+    },
+    notification: {
+      type: 'string',
+      description: '"inline" (return on next check) or a webhook URL. Default: inline.',
+    },
+    job_id: {
+      type: 'string',
+      description: 'Required for action=check|pause|resume|delete.',
+    },
+  },
+  required: ['action'],
+};
+
 export const TOOL_SCHEMAS: Record<ToolName, ToolSchema> = {
   fetch: FETCH_TOOL_SCHEMA,
   search: SEARCH_TOOL_SCHEMA,
@@ -508,4 +574,6 @@ export const TOOL_SCHEMAS: Record<ToolName, ToolSchema> = {
   find_similar: FIND_SIMILAR_TOOL_SCHEMA,
   research: RESEARCH_TOOL_SCHEMA,
   agent: AGENT_TOOL_SCHEMA,
+  diff: DIFF_TOOL_SCHEMA,
+  watch: WATCH_TOOL_SCHEMA,
 };

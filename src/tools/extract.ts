@@ -156,6 +156,25 @@ export async function handleExtract(
   const mode = input.mode ?? 'metadata';
   const _start = Date.now();
 
+  // Slice A1 stub — `mode: 'brand'` is registered here so callers receive a
+  // structured not-implemented notice instead of falling through to metadata.
+  // Slice B2a wires the real extractor at src/extraction/brand.ts. The notice
+  // is emitted at the top level (alongside `mode`/`source_url`) for parity
+  // with the diff/watch stub envelopes — callers detect the placeholder via
+  // `notice === 'not_implemented_yet'` without having to peek into `data`.
+  if (mode === 'brand') {
+    return {
+      ok: true,
+      data: {
+        data: {},
+        source_url: input.url,
+        mode: 'brand',
+        notice: 'not_implemented_yet',
+        slice: 'B2a',
+      },
+    };
+  }
+
   if (!input.url && !input.html) {
     return {
       ok: false,
