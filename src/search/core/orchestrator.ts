@@ -10,6 +10,7 @@ import { recencyMultiplier, hasTemporalIntent } from './recency-boost.js';
 import { applyAuthorityBoost } from '../reranker/authority-boost.js';
 import { domainQualityScore } from './domain-quality.js';
 import { lexicalAlignment } from './lexical-alignment.js';
+import { resolveTimeRange, type TimeRange } from './time-range.js';
 import { getConfig } from '../../config.js';
 
 // Hosts matching this regex are demoted when the query is ≤2 tokens — short
@@ -62,6 +63,11 @@ export interface OrchestratorInput {
   /** When true, each returned result carries a `_score_breakdown` field.
    * Wired from SearchInput.include_engine_outcomes at the provider layer. */
   includeScoreBreakdown?: boolean;
+  /** Caller-supplied freshness window. Overrides any date hint inferred
+   * from the query text. Resolved to a `fromDate` relative to now and
+   * passed to engines; results older than the window are post-filtered
+   * out (unless they have no published_date — kept conservatively). */
+  timeRange?: TimeRange;
   /** When true, the query is wrapped in double quotes before dispatch
    * (engines that honour `"..."` treat it as a phrase match) and any
    * result whose title+snippet does not contain the unquoted query as a
@@ -196,13 +202,15 @@ export async function runV1Search(
     ? query.replace(/^"|"$/g, '').toLowerCase()
     : '';
 
-  const callerHasDateBound = !!(input.fromDate || input.toDate);
+  const timeRangeHint = resolveTimeRange(input.timeRange);
+  const callerHasDateBound = !!(input.fromDate || input.toDate || timeRangeHint);
   const classification = classifyIntentDetailed(query, {
     hint: input.category,
     hasDateBound: callerHasDateBound,
   });
   const vertical = classification.vertical;
-  const dateHint = classification.dateHint;
+  // time_range > from/to_date > inferred-from-query hint.
+  const dateHint = timeRangeHint ?? classification.dateHint;
 
   const effectiveFromDate = input.fromDate ?? dateHint?.fromDate;
   const effectiveToDate = input.toDate ?? dateHint?.toDate;
@@ -227,6 +235,7 @@ export async function runV1Search(
     excludeDomains: input.excludeDomains,
     fromDate: effectiveFromDate,
     toDate: effectiveToDate,
+    timeRange: input.timeRange,
     category: vertical === 'general' ? undefined : vertical,
   };
 
@@ -323,6 +332,18 @@ export async function runV1Search(
 
   merged = applyDomainFilters(merged, input.includeDomains, input.excludeDomains);
 
+  if (effectiveFromDate) {
+    merged = merged.filter((r) => {
+      if (!r.published_date) return true;
+      return r.published_date >= effectiveFromDate;
+    });
+  }
+  if (effectiveToDate) {
+    merged = merged.filter((r) => {
+      if (!r.published_date) return true;
+      return r.published_date <= effectiveToDate;
+    });
+  }
   if (exactPhrase) {
     merged = merged.filter((r) => {
       const hay = `${r.title} ${r.snippet}`.toLowerCase();

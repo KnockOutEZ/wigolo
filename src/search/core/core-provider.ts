@@ -140,6 +140,7 @@ export class CoreSearchProvider implements SearchProvider {
       from_date: input.from_date,
       to_date: input.to_date,
       language: input.language,
+      time_range: input.time_range,
       exact_match: input.exact_match,
     });
 
@@ -194,6 +195,7 @@ export class CoreSearchProvider implements SearchProvider {
             includeDomains: input.include_domains,
             excludeDomains: input.exclude_domains,
             includeScoreBreakdown: input.include_engine_outcomes,
+            timeRange: input.time_range,
             exactMatch: input.exact_match,
           }),
         ),
