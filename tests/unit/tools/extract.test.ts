@@ -499,3 +499,50 @@ describe('handleExtract mode=metadata with JSON-LD', () => {
     }
   });
 });
+
+// Slice B2b: brand mode is dispatched via extractBrandAsync, which fetches
+// images for palette extraction. The MCP wiring change went from sync
+// extractBrand to async extractBrandAsync. This block ensures the
+// dispatch in handleExtract still produces a brand envelope and surfaces
+// `provenance` (the contract downstream agents depend on).
+describe('handleExtract mode=brand', () => {
+  it('returns a brand envelope with provenance keys', async () => {
+    // CSS-vars-only HTML: synchronous extractor returns colors, palette
+    // path stays inert (no fetch). This is the most common live path
+    // so we pin it as the canonical mode=brand assertion.
+    const html = `<!doctype html><html><head>
+      <title>Acme</title>
+      <meta property="og:site_name" content="Acme">
+      <style>:root { --brand-primary: #635bff; --color-accent: #00d4ff; }</style>
+    </head><body></body></html>`;
+
+    const __r = await handleExtract({ html, mode: 'brand' }, mockRouter());
+    expect(__r.ok).toBe(true);
+    if (!__r.ok) return;
+    const data = __r.data.data as Record<string, unknown>;
+
+    expect(__r.data.mode).toBe('brand');
+    expect(data.name).toBe('Acme');
+    expect(data.primary_colors).toBeDefined();
+    expect((data.primary_colors as string[]).length).toBeGreaterThan(0);
+    // Provenance object MUST be present — agents key on it.
+    const provenance = data.provenance as { colors?: string };
+    expect(provenance).toBeDefined();
+    expect(provenance.colors).toBe('css-vars');
+  });
+
+  it('does not crash when html has no brand signals', async () => {
+    // Defensive: an extract call against a bare page should still emit
+    // the envelope with `provenance.colors === 'unknown'` and not throw.
+    // This is the regression net for the async path failing closed.
+    const __r = await handleExtract(
+      { html: '<html><body>nothing here</body></html>', mode: 'brand' },
+      mockRouter(),
+    );
+    expect(__r.ok).toBe(true);
+    if (!__r.ok) return;
+    const data = __r.data.data as Record<string, unknown>;
+    const provenance = data.provenance as { colors?: string };
+    expect(provenance.colors).toBe('unknown');
+  });
+});

@@ -17,7 +17,7 @@ import {
   NAMED_SCHEMAS,
 } from '../extraction/v1/schemas/index.js';
 import { isLocalLlmEnabled, extractWithLocalLlm } from '../extraction/v1/local-llm.js';
-import { extractBrand } from '../extraction/brand.js';
+import { extractBrandAsync } from '../extraction/brand.js';
 
 const log = createLogger('extract');
 
@@ -257,12 +257,16 @@ export async function handleExtract(
         data = extractStructured(html);
         break;
       case 'brand': {
-        // B2a: DOM/meta sources only (JSON-LD, OG, favicon, CSS vars,
-        // heuristic DOM). Palette extraction lands in B2b. Pass the
-        // resolved source URL as the base so relative logo/favicon hrefs
-        // resolve correctly; falls back to the user-supplied url when
-        // resolveHtml didn't surface a final URL (raw-html path).
-        data = extractBrand(html, { baseUrl: sourceUrl ?? input.url }) as Record<string, unknown>;
+        // B2a + B2b: DOM/meta sources (JSON-LD, OG, favicon, CSS vars,
+        // heuristic DOM) plus image-based palette extraction when CSS
+        // vars don't surface ≥2 brand colors. The async variant fetches
+        // the logo / og:image via a small hook and runs k-means. Pass
+        // the resolved source URL as the base so relative logo/favicon
+        // hrefs resolve correctly; falls back to the user-supplied url
+        // when resolveHtml didn't surface a final URL (raw-html path).
+        data = (await extractBrandAsync(html, {
+          baseUrl: sourceUrl ?? input.url,
+        })) as Record<string, unknown>;
         break;
       }
       case 'schema': {
