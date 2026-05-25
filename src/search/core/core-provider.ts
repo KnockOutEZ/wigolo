@@ -17,6 +17,7 @@ import type {
 import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
+import { buildQueryUnderstanding } from './query-understanding.js';
 import { runSynthesis } from '../answer-synthesis.js';
 import { applyEvidenceDefault, renderCitationsXml } from '../evidence.js';
 import { fetchContentForResults } from '../content-fetch.js';
@@ -277,6 +278,14 @@ export class CoreSearchProvider implements SearchProvider {
     }
     void cachedAt;
 
+    // category 'images' is rejected above, so by this point `category` is
+    // either undefined or a vertical the orchestrator accepts.
+    const queryUnderstanding = buildQueryUnderstanding(displayQuery, {
+      category,
+      language: input.language,
+      rewrites: isArray ? (input.query as string[]).slice(1) : [],
+    });
+
     const data: SearchOutput = {
       results: items,
       query: displayQuery,
@@ -284,6 +293,7 @@ export class CoreSearchProvider implements SearchProvider {
       total_time_ms: Date.now() - start,
       search_time_ms: searchElapsed,
       fetch_time_ms: fetchElapsed,
+      query_understanding: queryUnderstanding,
       ...(engineOutcomes ? { engine_outcomes: engineOutcomes } : {}),
     };
 

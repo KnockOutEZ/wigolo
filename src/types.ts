@@ -269,6 +269,18 @@ export interface SearchOutput {
    * `"include_domains_over_filter+top1_high_score_low_overlap"`); the
    * result merges core + searxng via RRF. Absent on `core`/`searxng` paths. */
   fallback_signal?: string | null;
+  /** Classifier view of the query — intent, extracted entities, inferred
+   * date hint, language, brand-collision risk, and considered rewrites. */
+  query_understanding?: QueryUnderstanding;
+}
+
+export interface QueryUnderstanding {
+  intent: 'general' | 'news' | 'code' | 'docs' | 'papers';
+  entities: string[];
+  date_hint: { fromDate?: string; toDate?: string } | null;
+  language: string;
+  is_brand_collision_prone: boolean;
+  rewrites: string[];
 }
 
 // Wire shape for format=stream_answer (sub-ticket 2.12). The MCP content
