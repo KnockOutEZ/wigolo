@@ -248,6 +248,8 @@ export interface SearchCacheFilters {
   from_date?: string | null;
   to_date?: string | null;
   language?: string | null;
+  time_range?: string | null;
+  exact_match?: boolean | null;
 }
 
 function normaliseDomainList(list?: string[] | null): string[] | null {
@@ -266,7 +268,9 @@ function hasAnyFilter(filters?: SearchCacheFilters): boolean {
     filters.max_results != null ||
     filters.from_date != null ||
     filters.to_date != null ||
-    filters.language != null
+    filters.language != null ||
+    filters.time_range != null ||
+    filters.exact_match != null
   );
 }
 
@@ -287,6 +291,8 @@ export function buildSearchCacheKey(
     from_date: filters!.from_date ?? null,
     to_date: filters!.to_date ?? null,
     language: filters!.language ?? null,
+    time_range: filters!.time_range ?? null,
+    exact_match: filters!.exact_match ?? null,
   };
   return `${query} ${JSON.stringify(fingerprint)}`;
 }

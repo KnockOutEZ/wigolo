@@ -132,9 +132,21 @@ export const SEARCH_TOOL_SCHEMA = {
     content_max_chars: { type: 'number', description: 'Max chars per result content at extraction (default 30000)' },
     max_content_chars: { type: 'number', description: 'Smart-truncate each result markdown at paragraph boundary with marker (e.g. 3000 for compact context)' },
     max_total_chars: { type: 'number', description: 'Max total chars across all results (default 50000)' },
-    time_range: { type: 'string', enum: ['day', 'week', 'month', 'year'], description: 'Time range filter' },
+    time_range: {
+      type: 'string',
+      enum: ['day', 'week', 'month', 'year'],
+      description: 'Freshness filter relative to now (day=last 24h, week=last 7d, month=last 30d, year=last 365d). Overrides any inferred date hint in the query text; engines that support date filtering receive the resolved range, and results older than the window are dropped post-rerank (results with no published_date are kept conservatively).',
+    },
+    exact_match: {
+      type: 'boolean',
+      description: 'Treat the query as a quoted phrase. Engines that honour `"..."` filter to phrase matches, and results without the exact phrase in title or snippet are dropped.',
+    },
     search_engines: { type: 'array', items: { type: 'string' }, description: 'Override engine selection' },
     language: { type: 'string', description: 'Language preference' },
+    country: {
+      type: 'string',
+      description: 'ISO 3166-1 alpha-2 country code (e.g. "us", "gb", "de"). Hint passed to engines that support a geographic boost (Bing cc=, DDG kl=, Brave country=); advisory, not a strict filter.',
+    },
     include_domains: {
       type: 'array',
       items: { type: 'string' },
@@ -171,6 +183,14 @@ export const SEARCH_TOOL_SCHEMA = {
     force_refresh: {
       type: 'boolean',
       description: 'Bypass all caches (search results and page content). Use when you need the most current information.',
+    },
+    include_favicon: {
+      type: 'boolean',
+      description: 'Attach a per-result `favicon` URL derived from the result host. Cached per-domain across the call.',
+    },
+    include_images: {
+      type: 'boolean',
+      description: 'Aggregate engine-provided thumbnail/image hints into a top-level `images` array of `{url, alt?, source_url}`. Empty array if no engine surfaced one.',
     },
     max_tokens_out: {
       type: 'number',

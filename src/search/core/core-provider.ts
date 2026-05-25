@@ -8,6 +8,7 @@
 import type { SearchProvider, SearchContext } from '../../providers/search-provider.js';
 import type {
   EngineOutcomeSummary,
+  EngineTelemetry,
   RawSearchResult,
   SearchInput,
   SearchOutput,
@@ -17,6 +18,10 @@ import type {
 import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
+import { detectBrandCollision } from './brand-collision.js';
+import { computeFreshnessSignal } from './freshness.js';
+import { buildQueryUnderstanding } from './query-understanding.js';
+import { faviconUrlFor } from './favicon.js';
 import { runSynthesis } from '../answer-synthesis.js';
 import { applyEvidenceDefault, renderCitationsXml } from '../evidence.js';
 import { fetchContentForResults } from '../content-fetch.js';
@@ -141,6 +146,8 @@ export class CoreSearchProvider implements SearchProvider {
       from_date: input.from_date,
       to_date: input.to_date,
       language: input.language,
+      time_range: input.time_range,
+      exact_match: input.exact_match,
     });
 
     let items: SearchResultItem[] = [];
@@ -152,6 +159,7 @@ export class CoreSearchProvider implements SearchProvider {
     let servedFromCache = false;
     let cachedAt: string | undefined;
     let engineOutcomes: EngineOutcomeSummary[] | undefined;
+    let engineTelemetry: EngineTelemetry[] | undefined;
 
     if (!input.force_refresh) {
       try {
@@ -199,6 +207,9 @@ export class CoreSearchProvider implements SearchProvider {
             includeDomains: input.include_domains,
             excludeDomains: input.exclude_domains,
             includeScoreBreakdown: input.include_engine_outcomes,
+            country: input.country,
+            timeRange: input.time_range,
+            exactMatch: input.exact_match,
           }),
         ),
       );
@@ -233,6 +244,42 @@ export class CoreSearchProvider implements SearchProvider {
         }
       }
 
+      // Always emit richer engine_telemetry. Aggregate by engine name across
+      // dispatches (multi-query): sum latency, result_count, dedup_kept.
+      const telemetryByEngine = new Map<string, EngineTelemetry>();
+      const fusedUrlSet = new Set(fused.map((r) => r.url));
+      for (const d of dispatches) {
+        for (const o of d.outcomes ?? []) {
+          const existing = telemetryByEngine.get(o.engine);
+          const outcome: EngineTelemetry['outcome'] = o.skipped
+            ? 'skipped'
+            : o.ok
+              ? 'ok'
+              : 'error';
+          const kept = o.results.reduce(
+            (acc, r) => (fusedUrlSet.has(r.url) ? acc + 1 : acc),
+            0,
+          );
+          if (existing) {
+            existing.latency_ms += o.latencyMs;
+            existing.result_count += o.results.length;
+            existing.dedup_kept += kept;
+            if (outcome !== 'ok' && existing.outcome === 'ok') existing.outcome = outcome;
+            if (o.error && !existing.error) existing.error = o.error;
+          } else {
+            telemetryByEngine.set(o.engine, {
+              name: o.engine,
+              latency_ms: o.latencyMs,
+              result_count: o.results.length,
+              outcome,
+              dedup_kept: kept,
+              ...(o.error ? { error: o.error } : {}),
+            });
+          }
+        }
+      }
+      engineTelemetry = [...telemetryByEngine.values()];
+
       let processed = fused;
 
       // fast tier skips embedding rerank + agent_context rerank for latency.
@@ -252,6 +299,10 @@ export class CoreSearchProvider implements SearchProvider {
         snippet: r.snippet,
         relevance_score: r.relevance_score,
         ...(r.published_date ? { published_date: r.published_date } : {}),
+        freshness_signal: computeFreshnessSignal(r.url, r.published_date),
+        ...(r.evidence_score ? { evidence_score: r.evidence_score } : {}),
+        ...(r.image_url ? { image_url: r.image_url } : {}),
+        ...(r.image_alt ? { image_alt: r.image_alt } : {}),
         ...(r._score_breakdown ? { _score_breakdown: r._score_breakdown } : {}),
       }));
 
@@ -286,15 +337,50 @@ export class CoreSearchProvider implements SearchProvider {
     }
     void cachedAt;
 
+    // category 'images' is rejected above, so by this point `category` is
+    // either undefined or a vertical the orchestrator accepts.
+    const queryUnderstanding = buildQueryUnderstanding(displayQuery, {
+      category,
+      language: input.language,
+      rewrites: isArray ? (input.query as string[]).slice(1) : [],
+    });
+
+    if (input.include_favicon) {
+      for (const it of items) {
+        const fav = faviconUrlFor(it.url);
+        if (fav) it.favicon = fav;
+      }
+    }
+
+    const totalTimeMs = Date.now() - start;
     const data: SearchOutput = {
       results: items,
       query: displayQuery,
       engines_used: enginesUsed,
-      total_time_ms: Date.now() - start,
+      total_time_ms: totalTimeMs,
+      response_time_ms: totalTimeMs,
       search_time_ms: searchElapsed,
       fetch_time_ms: fetchElapsed,
+      query_understanding: queryUnderstanding,
       ...(engineOutcomes ? { engine_outcomes: engineOutcomes } : {}),
+      ...(engineTelemetry ? { engine_telemetry: engineTelemetry } : {}),
     };
+
+    const collisionWarning = detectBrandCollision(
+      displayQuery,
+      items.map((i) => i.url),
+    );
+    if (collisionWarning) data.brand_collision_warning = collisionWarning;
+
+    if (input.include_images) {
+      data.images = items
+        .filter((it) => typeof it.image_url === 'string' && it.image_url.length > 0)
+        .map((it) => ({
+          url: it.image_url!,
+          ...(it.image_alt ? { alt: it.image_alt } : {}),
+          source_url: it.url,
+        }));
+    }
 
     if (allDegraded) {
       data.warning = 'all engines failed or no results';

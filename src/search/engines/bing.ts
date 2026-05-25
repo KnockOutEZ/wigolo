@@ -68,6 +68,7 @@ export class BingEngine implements SearchEngine {
     const maxResults = options.maxResults ?? 10;
 
     const params = new URLSearchParams({ q: query });
+    if (options.country) params.set('cc', options.country.toLowerCase());
     const url = `https://www.bing.com/search?${params}`;
 
     log.debug('scraping bing', { query });
