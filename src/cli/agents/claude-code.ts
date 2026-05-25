@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, writeFileSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { mergeBlock, removeBlock, readAsset, readSkillDir } from './utils.js';
+import { mergeBlock, removeBlock, readAsset, readSkillDir, mergeMcpJson } from './utils.js';
 
 function claudeDir(): string {
   return join(homedir(), '.claude');
@@ -24,6 +24,21 @@ function buildMcpArgs(cmd: { command: string; args: string[] }): string[] {
   return ['mcp', 'add', 'wigolo', '--scope', 'user', '--', cmd.command, ...cmd.args];
 }
 
+function isClaudeCliMissing(err: NodeJS.ErrnoException): boolean {
+  if (err.code === 'ENOENT') return true;
+  const msg = err.message ?? '';
+  return /claude: not found|claude: command not found|spawn claude ENOENT/i.test(msg);
+}
+
+function fallbackToClaudeJson(cmd: { command: string; args: string[] }): string {
+  // Host `claude` CLI not on PATH. The user-scope MCP store the CLI would
+  // normally maintain lives at ~/.claude.json (a sibling of ~/.claude/, not
+  // inside it). Write the entry directly so the user is still wired up.
+  const configPath = join(homedir(), '.claude.json');
+  mergeMcpJson(configPath, { command: cmd.command, args: cmd.args }, ['mcpServers', 'wigolo']);
+  return configPath;
+}
+
 async function installMcp(cmd: { command: string; args: string[] }): Promise<void> {
   const args = buildMcpArgs(cmd);
   try {
@@ -31,13 +46,18 @@ async function installMcp(cmd: { command: string; args: string[] }): Promise<voi
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 15000,
     });
+    return;
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     const msg = e.message ?? '';
-    // "already exists" is fine
-    if (!msg.includes('already exists') && !msg.includes('already registered')) {
-      throw err;
+    if (msg.includes('already exists') || msg.includes('already registered')) {
+      return;
     }
+    if (isClaudeCliMissing(e)) {
+      fallbackToClaudeJson(cmd);
+      return;
+    }
+    throw err;
   }
 }
 

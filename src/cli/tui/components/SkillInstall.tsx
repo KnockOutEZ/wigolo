@@ -40,31 +40,48 @@ async function installForAgent(agentId: AgentId): Promise<SkillResult> {
     return { id: agentId, status: 'not_supported', detail: 'MCP only' };
   }
 
-  try {
-    const parts: string[] = [];
+  const parts: string[] = [];
+  const failures: string[] = [];
+  const recordFail = (label: string, err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    failures.push(`${label}: ${msg}`);
+  };
 
+  try {
     await handler.installInstructions();
     parts.push('instructions');
+  } catch (err) {
+    recordFail('instructions', err);
+  }
 
-    if (handler.supportsSkills && handler.installSkills) {
+  if (handler.supportsSkills && handler.installSkills) {
+    try {
       await handler.installSkills();
       parts.push('8 skills');
+    } catch (err) {
+      recordFail('skills', err);
     }
+  }
 
-    if (handler.supportsCommands && handler.installCommand) {
+  if (handler.supportsCommands && handler.installCommand) {
+    try {
       await handler.installCommand();
       parts.push('command');
+    } catch (err) {
+      recordFail('command', err);
     }
-
-    if (parts.length === 0) {
-      return { id: agentId, status: 'not_supported', detail: 'MCP only' };
-    }
-
-    return { id: agentId, status: 'installed', detail: parts.join(' + ') };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { id: agentId, status: 'failed', detail: message };
   }
+
+  if (parts.length === 0 && failures.length === 0) {
+    return { id: agentId, status: 'not_supported', detail: 'MCP only' };
+  }
+  if (parts.length === 0) {
+    return { id: agentId, status: 'failed', detail: failures.join('; ') };
+  }
+  if (failures.length > 0) {
+    return { id: agentId, status: 'installed', detail: `${parts.join(' + ')} (some steps failed: ${failures.join('; ')})` };
+  }
+  return { id: agentId, status: 'installed', detail: parts.join(' + ') };
 }
 
 export function SkillInstall({ agents, onComplete }: SkillInstallProps) {

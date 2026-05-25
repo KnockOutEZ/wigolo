@@ -170,27 +170,42 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
     return 1;
   }
 
-  // Install instructions, skills, and commands for agents that support them
+  // Install instructions, skills, and commands for agents that support them.
+  // Each step has its own try/catch so a failure in one step does not cause
+  // the others to be reported as "skipped".
   {
     const { getAgentHandler } = await import('./agents/registry.js');
     for (const id of selected) {
       const handler = getAgentHandler(id);
       if (!handler) continue;
+      out(`  Configuring ${handler.displayName}...`);
+
       try {
-        out(`  Configuring ${handler.displayName}...`);
         await handler.installInstructions();
         out(`  ${ok('Global instructions updated')}`);
-        if (handler.supportsSkills && handler.installSkills) {
-          await handler.installSkills();
-          out(`  ${ok('8 skills installed')}`);
-        }
-        if (handler.supportsCommands && handler.installCommand) {
-          await handler.installCommand();
-          out(`  ${ok('Command installed')}`);
-        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        out(`  ${warn(`Skills/instructions skipped: ${message}`)}`);
+        out(`  ${warn(`Instructions skipped: ${message}`)}`);
+      }
+
+      if (handler.supportsSkills && handler.installSkills) {
+        try {
+          await handler.installSkills();
+          out(`  ${ok('8 skills installed')}`);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          out(`  ${warn(`Skills skipped: ${message}`)}`);
+        }
+      }
+
+      if (handler.supportsCommands && handler.installCommand) {
+        try {
+          await handler.installCommand();
+          out(`  ${ok('Command installed')}`);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          out(`  ${warn(`Command skipped: ${message}`)}`);
+        }
       }
     }
   }

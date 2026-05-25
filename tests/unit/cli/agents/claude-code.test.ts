@@ -61,6 +61,38 @@ describe('claudeCodeHandler.installMcp', () => {
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
     await expect(claudeCodeHandler.installMcp({ command: 'wigolo', args: [] })).resolves.not.toThrow();
   });
+
+  it('falls back to writing ~/.claude.json directly when the claude CLI is absent (ENOENT)', async () => {
+    // execSync('which claude') throws → detect returns false; execSync('claude mcp add ...')
+    // would also throw ENOENT. We expect the handler to NOT propagate the error and
+    // to instead drop the MCP entry into ~/.claude.json so the user is still wired up.
+    vi.mocked(execSync).mockImplementation((cmd: string) => {
+      const err = Object.assign(new Error(`spawn claude ENOENT`), { code: 'ENOENT' });
+      throw err;
+    });
+    const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
+    await expect(
+      claudeCodeHandler.installMcp({ command: 'npx', args: ['-y', '@staticn0va/wigolo'] }),
+    ).resolves.not.toThrow();
+
+    const claudeJson = join(tmpHome, '.claude.json');
+    expect(existsSync(claudeJson)).toBe(true);
+    const parsed = JSON.parse(readFileSync(claudeJson, 'utf-8'));
+    expect(parsed.mcpServers.wigolo.command).toBe('npx');
+    expect(parsed.mcpServers.wigolo.args).toEqual(['-y', '@staticn0va/wigolo']);
+  });
+
+  it('falls back when execSync reports "command not found" (shell stderr) instead of ENOENT', async () => {
+    vi.mocked(execSync).mockImplementation(() => {
+      throw new Error('/bin/sh: claude: command not found');
+    });
+    const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
+    await expect(
+      claudeCodeHandler.installMcp({ command: 'wigolo', args: [] }),
+    ).resolves.not.toThrow();
+
+    expect(existsSync(join(tmpHome, '.claude.json'))).toBe(true);
+  });
 });
 
 describe('claudeCodeHandler.installInstructions', () => {

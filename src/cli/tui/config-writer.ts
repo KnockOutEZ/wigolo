@@ -115,6 +115,9 @@ function mapCliResult(base: ResultBase, r: InstallViaClaudeCliResult): ConfigApp
     message: r.message,
     alreadyInstalled: r.alreadyInstalled,
     dryRun: r.dryRun,
+    // Surface the fallback path so the install summary can show it instead of
+    // the (null) cli-command configPath when host `claude` was absent.
+    configPath: r.fallbackPath ?? base.configPath,
   };
 }
 
