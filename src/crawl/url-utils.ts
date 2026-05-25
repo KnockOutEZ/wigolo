@@ -1,3 +1,16 @@
+// Drop the `#fragment` portion of a URL. Anchors are intra-page navigation,
+// not page identity; the crawler's dedup key and emitted page URLs both key
+// off the fragment-stripped form (bench C3, verdict §5 #11).
+export function stripFragment(url: string): string {
+  try {
+    const u = new URL(url);
+    u.hash = '';
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 // Canonical form for visited-set comparison — drops fragments and the
 // trailing slash so /docs, /docs/, and /docs#anchor are treated as one page.
 export function canonicalForCrawl(url: string): string {
@@ -15,9 +28,11 @@ export function canonicalForCrawl(url: string): string {
 
 // Display-friendly canonicalization for emitted page URLs. Strips a trailing
 // slash on ALL paths (including root) so `https://x.com` and `https://x.com/`
-// collapse to a single canonical form. Avoids round-tripping through
-// `new URL().toString()` because that re-introduces a root slash that
-// surprises callers and breaks dedup against origin-only seed URLs.
+// collapse to a single canonical form, and drops anchor fragments because
+// those are intra-page navigation rather than page identity. Avoids
+// round-tripping through `new URL().toString()` because that re-introduces
+// a root slash that surprises callers and breaks dedup against origin-only
+// seed URLs.
 export function canonicalForOutput(url: string): string {
   try {
     const u = new URL(url);
@@ -28,7 +43,7 @@ export function canonicalForOutput(url: string): string {
     } else if (path.length > 1 && path.endsWith('/')) {
       path = path.slice(0, -1);
     }
-    return `${u.origin}${path}${u.search}${u.hash}`;
+    return `${u.origin}${path}${u.search}`;
   } catch {
     return url;
   }
