@@ -52,6 +52,8 @@ export interface FetchInput {
 }
 
 export interface FetchOutput {
+  /** Tavily-canonical alias of how long the request took, ms. */
+  response_time_ms?: number;
   url: string;
   title: string;
   markdown: string;
@@ -242,6 +244,8 @@ export interface SearchOutput {
   query: string;
   engines_used: string[];
   total_time_ms: number;
+  /** Tavily-canonical alias of total_time_ms. Always emitted. */
+  response_time_ms?: number;
   search_time_ms?: number;
   fetch_time_ms?: number;
   error?: string;
@@ -356,6 +360,7 @@ export interface ResearchOutput {
   sub_queries: string[];
   depth: string;
   total_time_ms: number;
+  response_time_ms?: number;
   sampling_supported: boolean;
   brief?: ResearchBrief;
   error?: string;
@@ -429,6 +434,7 @@ export interface AgentOutput {
   pages_fetched: number;
   steps: AgentStep[];
   total_time_ms: number;
+  response_time_ms?: number;
   sampling_supported: boolean;
   error?: string;
   evidence?: EvidenceItem[];
@@ -504,6 +510,8 @@ export interface LinkEdge {
 }
 
 export interface CrawlOutput {
+  /** Tavily-canonical alias of how long the request took, ms. */
+  response_time_ms?: number;
   pages: CrawlResultItem[];
   total_found: number;
   crawled: number;
@@ -644,6 +652,8 @@ export interface ExtractOutput {
   mode: 'selector' | 'tables' | 'metadata' | 'schema' | 'structured';
   error?: string;
   warnings?: string[];
+  /** Tavily-canonical alias of how long the request took, ms. */
+  response_time_ms?: number;
 }
 
 // --- Find Similar tool types (v3, Slice 23) ---
@@ -687,5 +697,6 @@ export interface FindSimilarOutput {
   cache_seeded?: boolean;
   error?: string;
   total_time_ms: number;
+  response_time_ms?: number;
   evidence?: EvidenceItem[];
 }

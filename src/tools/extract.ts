@@ -114,10 +114,12 @@ function buildSuccessOutput(
   mode: ExtractOutput['mode'],
   maxTokens: number | undefined,
   warnings?: string[],
+  startMs?: number,
 ): StageResult<ExtractOutput> {
   const finalData = maxTokens !== undefined ? clampExtractData(data, maxTokens) : data;
   const out: ExtractOutput = { data: finalData, source_url: sourceUrl, mode };
   if (warnings && warnings.length > 0) out.warnings = warnings;
+  if (typeof startMs === 'number') out.response_time_ms = Date.now() - startMs;
   return { ok: true, data: out };
 }
 
@@ -152,6 +154,7 @@ export async function handleExtract(
   router: SmartRouter,
 ): Promise<StageResult<ExtractOutput>> {
   const mode = input.mode ?? 'metadata';
+  const _start = Date.now();
 
   if (!input.url && !input.html) {
     return {
@@ -219,6 +222,8 @@ export async function handleExtract(
         sourceUrl,
         'schema',
         input.max_tokens_out,
+        undefined,
+        _start,
       );
     }
 
@@ -233,6 +238,8 @@ export async function handleExtract(
         sourceUrl,
         'schema',
         input.max_tokens_out,
+        undefined,
+        _start,
       );
     }
 
@@ -254,7 +261,7 @@ export async function handleExtract(
           const detailed = await extractWithSchemaDetailedAsync(html, schema);
           data = detailed.values;
           if (detailed.warnings.length > 0) {
-            return buildSuccessOutput(data, sourceUrl, mode, input.max_tokens_out, detailed.warnings);
+            return buildSuccessOutput(data, sourceUrl, mode, input.max_tokens_out, detailed.warnings, _start);
           }
         } else {
           data = extractWithSchema(html, schema);
@@ -287,7 +294,7 @@ export async function handleExtract(
       };
     }
 
-    return buildSuccessOutput(data, sourceUrl, mode, input.max_tokens_out);
+    return buildSuccessOutput(data, sourceUrl, mode, input.max_tokens_out, undefined, _start);
   } catch (err) {
     log.error('Extract failed', { url: input.url, error: String(err) });
     return {

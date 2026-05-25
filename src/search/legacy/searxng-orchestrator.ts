@@ -134,11 +134,13 @@ export async function runSearxngSearch(
         cached_at: cached.searched_at,
         ...(cached.stale ? { stale: true } : {}),
       }));
+      const _elapsedMq1 = Date.now() - start;
       const output: SearchOutput = {
         results: stamped,
         query: displayQuery,
         engines_used: cached.engines_used,
-        total_time_ms: Date.now() - start,
+        total_time_ms: _elapsedMq1,
+        response_time_ms: _elapsedMq1,
         queries_executed: normalizedQueries,
       };
       const warning = backendStatus?.consumeWarning();
@@ -261,11 +263,13 @@ export async function runSearxngSearch(
       log.warn('failed to cache multi-query search results', { error: String(err) });
     }
 
+    const _elapsedMq2 = Date.now() - start;
     const output: SearchOutput = {
       results,
       query: displayQuery,
       engines_used: enginesUsed,
-      total_time_ms: Date.now() - start,
+      total_time_ms: _elapsedMq2,
+      response_time_ms: _elapsedMq2,
       search_time_ms: searchElapsed,
       fetch_time_ms: fetchElapsed,
       queries_executed: normalizedQueries,
@@ -318,11 +322,13 @@ export async function runSearxngSearch(
       cached_at: cached.searched_at,
       ...(cached.stale ? { stale: true } : {}),
     }));
+    const _elapsedSq1 = Date.now() - start;
     const output: SearchOutput = {
       results: stamped,
       query: queryStr,
       engines_used: cached.engines_used,
-      total_time_ms: Date.now() - start,
+      total_time_ms: _elapsedSq1,
+      response_time_ms: _elapsedSq1,
     };
     const warning = backendStatus?.consumeWarning();
     if (warning) output.warning = warning;
@@ -468,11 +474,13 @@ export async function runSearxngSearch(
     log.warn('failed to cache search results', { error: String(err) });
   }
 
+  const _elapsedSq2 = Date.now() - start;
   const output: SearchOutput = {
     results,
     query: queryStr,
     engines_used: [...enginesUsed],
-    total_time_ms: Date.now() - start,
+    total_time_ms: _elapsedSq2,
+    response_time_ms: _elapsedSq2,
     search_time_ms: searchElapsed,
     fetch_time_ms: fetchElapsed,
   };

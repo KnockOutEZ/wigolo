@@ -277,11 +277,13 @@ export class CoreSearchProvider implements SearchProvider {
     }
     void cachedAt;
 
+    const totalTimeMs = Date.now() - start;
     const data: SearchOutput = {
       results: items,
       query: displayQuery,
       engines_used: enginesUsed,
-      total_time_ms: Date.now() - start,
+      total_time_ms: totalTimeMs,
+      response_time_ms: totalTimeMs,
       search_time_ms: searchElapsed,
       fetch_time_ms: fetchElapsed,
       ...(engineOutcomes ? { engine_outcomes: engineOutcomes } : {}),
