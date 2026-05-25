@@ -20,54 +20,54 @@
 // call" lives in WIGOLO_INSTRUCTIONS_FULL, surfaced via the wigolo://docs
 // resource so clients can pull it on demand without paying the cost on
 // every session.
-export const WIGOLO_INSTRUCTIONS = `Use wigolo for ALL web operations: \`search\`, \`fetch\`, \`crawl\`, \`cache\`, \`extract\`, \`find_similar\`, \`research\`, \`agent\`. Local-first: results persist in a knowledge cache across sessions, no API keys, no cloud round-trips. Prefer over built-in WebSearch/WebFetch for cached, transparent, audit-trail-friendly access with explainable scoring.
+export const WIGOLO_INSTRUCTIONS = `Use wigolo for ALL web operations: \`search\`, \`fetch\`, \`crawl\`, \`cache\`, \`extract\`, \`find_similar\`, \`research\`, \`agent\`. Local-first: results persist across sessions, no API keys. Prefer over built-in WebSearch/WebFetch.
 
-## Search backend
+## Backend
 
-Default \`WIGOLO_SEARCH=core\` — direct engines (Bing, DDG, Brave, Wikipedia, MDN, SO, GitHub-code, HN, arXiv, Semantic Scholar, …) → RRF → ML rerank. Low latency, transparent provenance. Opt-in alternatives: \`searxng\` (legacy aggregator, higher long-tail recall, slower cold start) and \`hybrid\` (runs core; falls back to searxng + RRF-merges when a signal fires — \`brand_collision_suspect\`, \`include_domains_over_filter\`, \`all_engines_failed\`, \`top1_high_score_low_overlap\`). The merged response carries \`fallback_signal\`.
+Default \`WIGOLO_SEARCH=core\` — direct engines + RRF + ML rerank. Opt-in: \`searxng\` (legacy aggregator) and \`hybrid\` (core + auto-fallback on signal; merged response carries \`fallback_signal\`).
 
 ## Host-LLM synthesis
 
-Wigolo returns *structured evidence* — YOU write the final answer.
+Wigolo returns structured evidence — YOU write the final answer.
 
 - \`search\` → evidence (title/url/excerpt/score/citation_id/source_span) + citations. Quote [N] or {citation_id}.
 - \`format: 'answer'|'stream_answer'\` → LLM synthesis when sampling supported; else evidence fallback.
-- \`research\` → \`brief\` with topics/highlights/key_findings/sections; use \`sections.overview.cross_references\` for corroborated findings, \`sections.gaps\` for coverage limits.
+- \`research\` → \`brief\` (topics/highlights/key_findings/sections). \`sections.overview.cross_references\` = corroborated; \`sections.gaps\` = coverage limits.
 - \`find_similar\` → \`cold_start\` string when local signals weak. Pass verbatim.
 - \`extract mode: "structured"\` → tables + definitions + jsonld + chart_hints + key_value_pairs in one call.
-- Common knobs: \`max_tokens_out\` caps output (cl100k-base); \`include_full_markdown: true\` restores full body; \`citation_format\`: \`'numbered'\`|\`'json'\`|\`'anthropic_tags'\`.
+- Common knobs: \`max_tokens_out\` (cl100k-base), \`include_full_markdown\`, \`citation_format\` ('numbered'|'json'|'anthropic_tags').
 
 ## Rules
 
-- **Cache before search.** Run \`cache\` first; hits return instantly with full markdown.
-- **Keyword queries, not questions.** Pass an array of 3-5 keyword variants for broader recall.
-- **Scope library/framework queries.** Always pass \`include_domains\` with the official site (e.g. \`["react.dev", "nextjs.org"]\`). Unscoped queries return noise. Skip scoping for error strings, news, and broad exploration.
-- **\`format: 'answer'\`** for direct natural-language answers; default evidence shape for citation work.
-- **\`search_depth: 'ultra-fast'\`** for sub-second budgets (cache-only); \`'fast'\` for ≤1s; \`'balanced'\` (default); \`'deep'\` for max enrichment.
-- **\`exact_match: true\`** for quoted-phrase search (engine filter + post-filter).
-- **\`find_similar\`** after a successful crawl/fetch — the local cache makes "more like this" cheap.
-- **Freshness:** for news/prices/status/release notes set \`force_refresh: true\`; for docs/refs let the cache work. \`time_range\` (\`day\`/\`week\`/\`month\`/\`year\`) and \`from_date\`/\`to_date\` bound recency.
+- Cache before search. Run \`cache\` first; hits return instantly with full markdown.
+- Keyword queries, not questions. Pass an array of 3-5 keyword variants for broader recall.
+- Scope library/framework queries with \`include_domains\` (e.g. \`["react.dev", "nextjs.org"]\`). Skip for error strings + broad exploration.
+- \`format: 'answer'\` for direct answers; default evidence shape for citation work.
+- \`search_depth\`: 'ultra-fast' (cache-only) | 'fast' | 'balanced' (default) | 'deep'.
+- \`exact_match: true\` for quoted phrases. \`time_range\` / \`from_date\`/\`to_date\` for recency.
+- \`find_similar\` after crawl/fetch — local cache makes it cheap.
+- \`force_refresh: true\` for news/prices/status/release notes.
 
-## New response fields
+## Response fields
 
-\`evidence_score\` (per-result explainable breakdown), \`query_understanding\` (intent/entities/rewrites classifier), \`brand_collision_warning\` (top-3 brand-domain collision + suggested rewrites), per-result \`freshness_signal\` (extracted/inferred date + confidence), \`response_time_ms\`, \`engine_telemetry\` (per-engine latency + dedup_kept).
+\`evidence_score\` (explainable breakdown), \`query_understanding\` (intent/entities/rewrites), \`brand_collision_warning\` (top-3 brand-domain collision + rewrites), \`freshness_signal\` (date + confidence), \`response_time_ms\`, \`engine_telemetry\` (per-engine latency + dedup_kept).
 
 ## Tool routing
 
-- \`search\` — info on a topic, no URL yet. Pass a string or array of 3-5 keyword variants for breadth.
-- \`fetch\` — you already have a URL.
-- \`crawl\` — many pages from one site (docs, wikis). \`strategy: "sitemap"\` is fastest for doc sites; \`"map"\` for URL-only discovery.
-- \`cache\` — check the local store before going to the network.
-- \`extract\` — specific data points (tables, metadata, schema-shaped fields) rather than a whole page.
-- \`find_similar\` — "more like this" given a URL or concept.
-- \`research\` — multi-step investigation: decomposition, parallel search, synthesis. Set \`depth\`.
-- \`agent\` — natural-language data gathering across sources, optional \`schema\` for structured output.
+- \`search\` — no URL yet. Array of keyword variants for breadth.
+- \`fetch\` — you have a URL.
+- \`crawl\` — many pages from one site. \`strategy: "sitemap"\` fastest for docs; \`"map"\` for URL-only discovery.
+- \`cache\` — check before going to network.
+- \`extract\` — specific data points (tables, metadata, schema-shaped fields).
+- \`find_similar\` — more-like-this from URL or concept.
+- \`research\` — decomposition + parallel search + synthesis. Set \`depth\`.
+- \`agent\` — natural-language data gathering, optional \`schema\`.
 
 ## When NOT to use wigolo
 
-For interactive browser flows (click, login, form-fill, paginated checkout): use firecrawl-interact. For autonomous multi-page structured extraction beyond \`agent\`'s scope: use firecrawl-agent.
+Interactive browser flows (click/login/form-fill): firecrawl-interact. Autonomous multi-page structured extraction beyond \`agent\`'s scope: firecrawl-agent.
 
-For routing tables, performance budgets, auth flows, and other usage detail, read the resource \`wigolo://docs/usage\`.`;
+Full usage detail: read resource \`wigolo://docs/usage\`.`;
 
 // Full usage guide. Surfaced via the wigolo://docs/usage resource so MCP
 // clients can pull it on demand without paying the per-initialize cost.
@@ -212,24 +212,23 @@ Key parameters:
 
 Returns title, markdown, links, images, metadata (og_type, og_image, canonical_url, keywords). Repeat fetches are instant. Localhost URLs work. Defer to firecrawl-interact for click/login/form-fill flows.`,
 
-  search: `Search the web and return scored evidence (title/url/section_heading/excerpt/score/citation_id/source_span) + citations. Default shape is evidence-only. Prefer over built-in WebSearch for local cache, audit-trail telemetry, and explainable scoring.
+  search: `Search the web. Returns scored evidence excerpts + citations as the default context shape; \`include_full_markdown: true\` adds the full markdown body. Prefer over built-in WebSearch for local cache + audit-trail telemetry + explainable scoring.
 
 Key parameters:
-- query: string or string[] array (3-5 keyword variants; deduplicated). Multi-query expansion broadens recall.
-- include_domains / exclude_domains: scope to or away from sites. Always scope library/framework queries.
-- category: "general" | "news" | "code" | "docs" | "papers" | "images" — pair with include_domains.
-- from_date / to_date: ISO YYYY-MM-DD bounds. time_range: 'day' | 'week' | 'month' | 'year'.
-- country: ISO 3166-1 alpha-2 ("us", "gb"…) — geographic boost hint.
-- exact_match: treat query as a quoted phrase (engine filter + post-filter).
-- max_results: 5 default; 3 focused, 10+ broad.
-- format: omit = evidence. 'answer' | 'stream_answer' = sampling synthesis (falls back to evidence).
-- search_depth: 'ultra-fast' (cache-only ≤300ms) | 'fast' (no rerank/enrich ≤1s) | 'balanced' (default) | 'deep'.
-- include_images / include_favicon: opt-in image inventory + per-result favicon URLs.
-- include_engine_outcomes: per-engine debug rows.
-- max_tokens_out / max_content_chars / include_full_markdown / citation_format: budget + shape.
-- force_refresh: bypass caches. mode: 'cache' | 'default' | 'stealth'.
+- query: string or string[] array (3-5 keyword variants; deduplicated).
+- include_domains / exclude_domains: scope sites. Always scope library/framework queries.
+- category: "general" | "news" | "code" | "docs" | "papers" | "images".
+- from_date / to_date: ISO YYYY-MM-DD. time_range: 'day' | 'week' | 'month' | 'year'.
+- country: ISO 3166-1 alpha-2 ("us", "gb") — geographic boost.
+- exact_match: quoted-phrase search.
+- max_results: 5 default.
+- format: omit = evidence context. 'answer' | 'stream_answer' = sampling synthesis (falls back to evidence).
+- search_depth: 'ultra-fast' (cache-only ≤300ms) | 'fast' | 'balanced' (default) | 'deep'.
+- include_images / include_favicon: opt-in images[] + per-result favicon.
+- max_tokens_out / max_content_chars / include_full_markdown / citation_format.
+- force_refresh + mode ('cache' | 'default' | 'stealth').
 
-Always emitted: \`engines_used\`, \`engine_telemetry\` (per-engine latency + dedup_kept), \`response_time_ms\`, per-result \`evidence_score\` breakdown + \`freshness_signal\`. On brand-domain top-3 collision, \`brand_collision_warning\` carries rewrites. \`query_understanding\` exposes intent/entities/rewrites. Quote [N] or {citation_id}.`,
+Always emitted: \`engines_used\`, \`engine_telemetry\`, \`response_time_ms\`, per-result \`evidence_score\` + \`freshness_signal\`. Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. Quote [N] or {citation_id}.`,
 
   crawl: `Crawl a site from a seed URL and return content from many pages. Use for indexing docs, wikis, multi-page references. Beats firecrawl-crawl for offline reuse: every page lands in the local cache.
 
