@@ -197,6 +197,9 @@ async function runDoctorInner(dataDir: string): Promise<number> {
       const modelEnv = providerModelEnvVar(p);
       const usingDefault = model === providerDefaultModel(p) && !process.env[modelEnv] && !process.env.WIGOLO_LLM_MODEL;
       out(`    model:     ${model}${usingDefault ? ' (default)' : ''}`);
+      if (p === 'gemini' && /pro/i.test(model)) {
+        out(`    warning:   gemini pro models hit the free-tier 0/day quota — switch WIGOLO_LLM_MODEL_GEMINI to gemini-2.5-flash or gemini-2.5-flash-lite`);
+      }
     }
   }
   if (cfg.llmProvider) {

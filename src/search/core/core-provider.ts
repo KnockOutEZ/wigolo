@@ -309,6 +309,12 @@ export class CoreSearchProvider implements SearchProvider {
             ? (data.warning ? `${data.warning}; ${synthResult.data.warning}` : synthResult.data.warning)
             : data.warning;
         }
+        if (synthResult.data.synthesis_status) {
+          data.synthesis_status = synthResult.data.synthesis_status;
+          data.synthesis_provider = synthResult.data.synthesis_provider;
+          data.synthesis_model = synthResult.data.synthesis_model;
+          data.synthesis_advice = synthResult.data.synthesis_advice;
+        }
       } else {
         data.warning = `synthesis failed: ${synthResult.error_reason}`;
       }

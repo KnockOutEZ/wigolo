@@ -6,6 +6,8 @@ import {
   extractTextFromSamplingResponse,
 } from './sampling.js';
 import { isLlmConfigured, runLlmText } from '../integrations/cloud/llm/run.js';
+import { selectProvider } from '../integrations/cloud/llm/select.js';
+import { resolveModel } from '../integrations/cloud/llm/model-select.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('search');
@@ -200,11 +202,41 @@ export interface SynthesisInput {
   maxTotalChars: number;
 }
 
+export type SynthesisStatus = 'quota_exceeded';
+
 export interface SynthesizedAnswer {
   answer: string;
   citations: Citation[];
   warning?: string;
   fallback_level: 1 | 2 | 3;
+  synthesis_status?: SynthesisStatus;
+  synthesis_provider?: string;
+  synthesis_model?: string;
+  synthesis_advice?: string;
+}
+
+const QUOTA_PATTERN = /quota.*exceed|exceed.*quota|RESOURCE_EXHAUSTED|free_tier|free.?tier.*(quota|limit|requests)/i;
+
+function isQuotaError(err: unknown): boolean {
+  if (!err) return false;
+  const status = (err as { status?: unknown }).status;
+  const msg = err instanceof Error ? err.message : String(err);
+  if (status === 429 && /quota|RESOURCE_EXHAUSTED|free.?tier/i.test(msg)) return true;
+  return QUOTA_PATTERN.test(msg);
+}
+
+function buildQuotaDetails(
+  reason: string,
+): { provider: string; model: string; advice: string } | null {
+  const provider = selectProvider(process.env);
+  if (!provider) return null;
+  const model = resolveModel(provider);
+  const isProGemini = provider === 'gemini' && /pro/i.test(model);
+  const advice = isProGemini
+    ? `Switch WIGOLO_LLM_MODEL_GEMINI to gemini-2.5-flash or gemini-2.5-flash-lite; gemini-2.5-pro has a 0/day free-tier quota.`
+    : `Reduce request volume or switch provider (WIGOLO_LLM_PROVIDER=anthropic/openai/groq).`;
+  log.warn('synthesis quota exceeded', { provider, model, reason, advice });
+  return { provider, model, advice };
 }
 
 export async function runSynthesis(
@@ -229,6 +261,7 @@ export async function runSynthesis(
   // for every tool — host-provided sampling is a fallback, not an override.
   const llmConfigured = isLlmConfigured();
   let llmFailureReason: string | undefined;
+  let quotaDetails: { provider: string; model: string; advice: string } | undefined;
   if (llmConfigured) {
     try {
       const sourcesText = buildSourcesText(results);
@@ -254,6 +287,10 @@ export async function runSynthesis(
     } catch (err) {
       llmFailureReason = err instanceof Error ? err.message : String(err);
       log.warn('synthesis level-1a LLM provider failed, falling through to sampling', { error: llmFailureReason });
+      if (isQuotaError(err)) {
+        const d = buildQuotaDetails(llmFailureReason);
+        if (d) quotaDetails = d;
+      }
     }
   }
 
@@ -280,6 +317,9 @@ export async function runSynthesis(
 
   const fb = buildStructuredFallback(results, query);
   if (fb.answer && fb.answer.length > 0) {
+    const quotaNote = quotaDetails
+      ? ` | quota exceeded for ${quotaDetails.provider}:${quotaDetails.model} — ${quotaDetails.advice}`
+      : '';
     const diag = llmConfigured
       ? `WIGOLO_LLM_PROVIDER configured but call failed (${llmFailureReason ?? 'unknown'})`
       : 'WIGOLO_LLM_PROVIDER not set and no provider API key detected (ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / GROQ_API_KEY)';
@@ -288,8 +328,16 @@ export async function runSynthesis(
       data: {
         answer: fb.answer,
         citations: fb.citations,
-        warning: `${fb.warning} | ${diag}`,
+        warning: `${fb.warning} | ${diag}${quotaNote}`,
         fallback_level: 2,
+        ...(quotaDetails
+          ? {
+              synthesis_status: 'quota_exceeded' as const,
+              synthesis_provider: quotaDetails.provider,
+              synthesis_model: quotaDetails.model,
+              synthesis_advice: quotaDetails.advice,
+            }
+          : {}),
       },
     };
   }

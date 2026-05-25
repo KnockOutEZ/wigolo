@@ -257,6 +257,12 @@ export interface SearchOutput {
   /** Present only when input.include_engine_outcomes is true and the call
    * went to the engine pool (cache hits don't populate it). */
   engine_outcomes?: EngineOutcomeSummary[];
+  /** Set to `quota_exceeded` when format=answer hit a provider quota wall
+   * (e.g. gemini free-tier 429) and the result is a heuristic fallback. */
+  synthesis_status?: 'quota_exceeded';
+  synthesis_provider?: string;
+  synthesis_model?: string;
+  synthesis_advice?: string;
 }
 
 export interface SourceSpan {
