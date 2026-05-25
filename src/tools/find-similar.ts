@@ -94,9 +94,11 @@ export async function handleFindSimilar(
       }
     }
 
+    const _start = Date.now();
     const out = await findSimilar(sanitizedInput, engines, router, backendStatus);
     await attachEvidence(out, input);
     if (cacheSeeded) out.cache_seeded = true;
+    out.response_time_ms = Date.now() - _start;
     if (out.error) {
       return {
         ok: false,

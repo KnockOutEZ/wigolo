@@ -10,6 +10,7 @@ import { recencyMultiplier, hasTemporalIntent } from './recency-boost.js';
 import { applyAuthorityBoost } from '../reranker/authority-boost.js';
 import { domainQualityScore } from './domain-quality.js';
 import { lexicalAlignment } from './lexical-alignment.js';
+import { resolveTimeRange, type TimeRange } from './time-range.js';
 import { getConfig } from '../../config.js';
 
 // Hosts matching this regex are demoted when the query is ≤2 tokens — short
@@ -62,6 +63,19 @@ export interface OrchestratorInput {
   /** When true, each returned result carries a `_score_breakdown` field.
    * Wired from SearchInput.include_engine_outcomes at the provider layer. */
   includeScoreBreakdown?: boolean;
+  /** ISO 3166-1 alpha-2 country code. Threaded to engines that support a
+   * geographic boost; advisory, not a strict filter. */
+  country?: string;
+  /** Caller-supplied freshness window. Overrides any date hint inferred
+   * from the query text. Resolved to a `fromDate` relative to now and
+   * passed to engines; results older than the window are post-filtered
+   * out (unless they have no published_date — kept conservatively). */
+  timeRange?: TimeRange;
+  /** When true, the query is wrapped in double quotes before dispatch
+   * (engines that honour `"..."` treat it as a phrase match) and any
+   * result whose title+snippet does not contain the unquoted query as a
+   * case-insensitive substring is dropped post-rerank. */
+  exactMatch?: boolean;
 }
 
 export interface OrchestratorOutput {
@@ -182,13 +196,24 @@ export async function runV1Search(
     };
   }
 
-  const callerHasDateBound = !!(input.fromDate || input.toDate);
+  // exact_match: quote the query for engines that honour `"..."`. Strip any
+  // existing surrounding quotes so we don't double-wrap.
+  const engineQuery = input.exactMatch
+    ? `"${query.replace(/^"|"$/g, '')}"`
+    : query;
+  const exactPhrase = input.exactMatch
+    ? query.replace(/^"|"$/g, '').toLowerCase()
+    : '';
+
+  const timeRangeHint = resolveTimeRange(input.timeRange);
+  const callerHasDateBound = !!(input.fromDate || input.toDate || timeRangeHint);
   const classification = classifyIntentDetailed(query, {
     hint: input.category,
     hasDateBound: callerHasDateBound,
   });
   const vertical = classification.vertical;
-  const dateHint = classification.dateHint;
+  // time_range > from/to_date > inferred-from-query hint.
+  const dateHint = timeRangeHint ?? classification.dateHint;
 
   const effectiveFromDate = input.fromDate ?? dateHint?.fromDate;
   const effectiveToDate = input.toDate ?? dateHint?.toDate;
@@ -213,6 +238,8 @@ export async function runV1Search(
     excludeDomains: input.excludeDomains,
     fromDate: effectiveFromDate,
     toDate: effectiveToDate,
+    country: input.country,
+    timeRange: input.timeRange,
     category: vertical === 'general' ? undefined : vertical,
   };
 
@@ -222,7 +249,7 @@ export async function runV1Search(
     hasDateBound,
   });
 
-  const outcomes = await runEnginesParallel(entries, query, options);
+  const outcomes = await runEnginesParallel(entries, engineQuery, options);
 
   const wantsRecency =
     vertical === 'news' || hasDateBound || hasTemporalIntent(query);
@@ -308,6 +335,25 @@ export async function runV1Search(
   merged.sort((a, b) => b.relevance_score - a.relevance_score);
 
   merged = applyDomainFilters(merged, input.includeDomains, input.excludeDomains);
+
+  if (effectiveFromDate) {
+    merged = merged.filter((r) => {
+      if (!r.published_date) return true;
+      return r.published_date >= effectiveFromDate;
+    });
+  }
+  if (effectiveToDate) {
+    merged = merged.filter((r) => {
+      if (!r.published_date) return true;
+      return r.published_date <= effectiveToDate;
+    });
+  }
+  if (exactPhrase) {
+    merged = merged.filter((r) => {
+      const hay = `${r.title} ${r.snippet}`.toLowerCase();
+      return hay.includes(exactPhrase);
+    });
+  }
 
   const maxResults = input.maxResults ?? DEFAULT_MAX_RESULTS;
   let results = merged.slice(0, maxResults);
