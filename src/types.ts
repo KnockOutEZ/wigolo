@@ -210,6 +210,11 @@ export interface SearchInput {
   /** When true, the response carries per-engine timing + result counts under
    * engine_outcomes. Opt-in because the field is debug-shaped and noisy. */
   include_engine_outcomes?: boolean;
+  /** When true, the query is treated as a quoted phrase. Engines that
+   * honour `"..."` filter to results containing the exact phrase, and
+   * the orchestrator post-filters out any result whose title+snippet
+   * does not contain the phrase as a case-insensitive substring. */
+  exact_match?: boolean;
 }
 
 export interface EngineOutcomeSummary {

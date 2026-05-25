@@ -62,6 +62,11 @@ export interface OrchestratorInput {
   /** When true, each returned result carries a `_score_breakdown` field.
    * Wired from SearchInput.include_engine_outcomes at the provider layer. */
   includeScoreBreakdown?: boolean;
+  /** When true, the query is wrapped in double quotes before dispatch
+   * (engines that honour `"..."` treat it as a phrase match) and any
+   * result whose title+snippet does not contain the unquoted query as a
+   * case-insensitive substring is dropped post-rerank. */
+  exactMatch?: boolean;
 }
 
 export interface OrchestratorOutput {
@@ -182,6 +187,15 @@ export async function runV1Search(
     };
   }
 
+  // exact_match: quote the query for engines that honour `"..."`. Strip any
+  // existing surrounding quotes so we don't double-wrap.
+  const engineQuery = input.exactMatch
+    ? `"${query.replace(/^"|"$/g, '')}"`
+    : query;
+  const exactPhrase = input.exactMatch
+    ? query.replace(/^"|"$/g, '').toLowerCase()
+    : '';
+
   const callerHasDateBound = !!(input.fromDate || input.toDate);
   const classification = classifyIntentDetailed(query, {
     hint: input.category,
@@ -222,7 +236,7 @@ export async function runV1Search(
     hasDateBound,
   });
 
-  const outcomes = await runEnginesParallel(entries, query, options);
+  const outcomes = await runEnginesParallel(entries, engineQuery, options);
 
   const wantsRecency =
     vertical === 'news' || hasDateBound || hasTemporalIntent(query);
@@ -308,6 +322,13 @@ export async function runV1Search(
   merged.sort((a, b) => b.relevance_score - a.relevance_score);
 
   merged = applyDomainFilters(merged, input.includeDomains, input.excludeDomains);
+
+  if (exactPhrase) {
+    merged = merged.filter((r) => {
+      const hay = `${r.title} ${r.snippet}`.toLowerCase();
+      return hay.includes(exactPhrase);
+    });
+  }
 
   const maxResults = input.maxResults ?? DEFAULT_MAX_RESULTS;
   let results = merged.slice(0, maxResults);

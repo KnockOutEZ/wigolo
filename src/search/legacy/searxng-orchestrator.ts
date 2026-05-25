@@ -30,6 +30,17 @@ const MAX_RESULTS_CAP = 20;
 const DEFAULT_CONTENT_MAX_CHARS = 30000;
 const DEFAULT_MAX_TOTAL_CHARS = 50000;
 
+function filterByExactPhrases<T extends { title: string; snippet: string }>(
+  results: T[],
+  phrases: string[],
+): T[] {
+  if (phrases.length === 0) return results;
+  return results.filter((r) => {
+    const hay = `${r.title} ${r.snippet}`.toLowerCase();
+    return phrases.some((p) => hay.includes(p));
+  });
+}
+
 export async function runSearxngSearch(
   input: SearchInput,
   ctx: SearchContext,
@@ -91,6 +102,30 @@ export async function runSearxngSearch(
       log.debug('progress notification failed', { error: String(err) });
     }
   };
+
+  // exact_match: wrap each query string in double quotes so engines that
+  // honour `"..."` filter to phrase matches. Post-filter below drops any
+  // result whose title+snippet lacks the unquoted phrase.
+  const exactPhrases: string[] = [];
+  if (input.exact_match) {
+    if (typeof input.query === 'string') {
+      const trimmed = input.query.trim().replace(/^"|"$/g, '');
+      if (trimmed) exactPhrases.push(trimmed.toLowerCase());
+      input.query = trimmed ? `"${trimmed}"` : input.query;
+    } else if (Array.isArray(input.query)) {
+      const quoted: string[] = [];
+      for (const q of input.query) {
+        if (typeof q !== 'string') {
+          quoted.push(q as unknown as string);
+          continue;
+        }
+        const trimmed = q.trim().replace(/^"|"$/g, '');
+        if (trimmed) exactPhrases.push(trimmed.toLowerCase());
+        quoted.push(trimmed ? `"${trimmed}"` : q);
+      }
+      input.query = quoted;
+    }
+  }
 
   let normalizedQuery: string | string[] = input.query;
   let autoExpanded = false;
@@ -223,6 +258,8 @@ export async function runSearxngSearch(
       toDate: input.to_date,
       category: input.category,
     });
+
+    merged = filterByExactPhrases(merged, exactPhrases);
 
     const intentString = synthesizeIntent(normalizedQueries);
     merged = await rerankResults(intentString, merged, { skip: mode === 'cache' });
@@ -430,6 +467,8 @@ export async function runSearxngSearch(
     toDate: input.to_date,
     category: input.category,
   });
+
+  merged = filterByExactPhrases(merged, exactPhrases);
 
   merged = await rerankResults(queryStr, merged, { skip: mode === 'cache' });
   if (mode !== 'cache') merged = await validateLinks(merged);
