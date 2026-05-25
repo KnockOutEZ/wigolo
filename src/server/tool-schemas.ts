@@ -172,6 +172,10 @@ export const SEARCH_TOOL_SCHEMA = {
       type: 'boolean',
       description: 'Bypass all caches (search results and page content). Use when you need the most current information.',
     },
+    include_favicon: {
+      type: 'boolean',
+      description: 'Attach a per-result `favicon` URL derived from the result host. Cached per-domain across the call.',
+    },
     max_tokens_out: {
       type: 'number',
       description: "Token-budget cap on total output. Uses cl100k-base BPE; non-OpenAI tokenizer counts may drift ~5-15%. When both max_tokens_out and max_chars are set, max_tokens_out wins.",

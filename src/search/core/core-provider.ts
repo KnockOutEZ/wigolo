@@ -17,6 +17,7 @@ import type {
 import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
+import { faviconUrlFor } from './favicon.js';
 import { runSynthesis } from '../answer-synthesis.js';
 import { applyEvidenceDefault, renderCitationsXml } from '../evidence.js';
 import { fetchContentForResults } from '../content-fetch.js';
@@ -276,6 +277,13 @@ export class CoreSearchProvider implements SearchProvider {
       }
     }
     void cachedAt;
+
+    if (input.include_favicon) {
+      for (const it of items) {
+        const fav = faviconUrlFor(it.url);
+        if (fav) it.favicon = fav;
+      }
+    }
 
     const data: SearchOutput = {
       results: items,

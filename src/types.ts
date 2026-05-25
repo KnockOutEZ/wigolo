@@ -210,6 +210,8 @@ export interface SearchInput {
   /** When true, the response carries per-engine timing + result counts under
    * engine_outcomes. Opt-in because the field is debug-shaped and noisy. */
   include_engine_outcomes?: boolean;
+  /** When true, each result carries a `favicon` URL derived from its host. */
+  include_favicon?: boolean;
 }
 
 export interface EngineOutcomeSummary {
@@ -233,6 +235,8 @@ export interface SearchResultItem {
   cached?: boolean;
   cached_at?: string;
   stale?: boolean;
+  /** Per-host favicon URL, emitted when input.include_favicon is true. */
+  favicon?: string;
   /** Debug-only — emitted when input.include_engine_outcomes is true. */
   _score_breakdown?: ScoreBreakdown;
 }
