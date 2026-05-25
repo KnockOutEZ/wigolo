@@ -30,6 +30,17 @@ const MAX_RESULTS_CAP = 20;
 const DEFAULT_CONTENT_MAX_CHARS = 30000;
 const DEFAULT_MAX_TOTAL_CHARS = 50000;
 
+function filterByExactPhrases<T extends { title: string; snippet: string }>(
+  results: T[],
+  phrases: string[],
+): T[] {
+  if (phrases.length === 0) return results;
+  return results.filter((r) => {
+    const hay = `${r.title} ${r.snippet}`.toLowerCase();
+    return phrases.some((p) => hay.includes(p));
+  });
+}
+
 export async function runSearxngSearch(
   input: SearchInput,
   ctx: SearchContext,
@@ -92,6 +103,30 @@ export async function runSearxngSearch(
     }
   };
 
+  // exact_match: wrap each query string in double quotes so engines that
+  // honour `"..."` filter to phrase matches. Post-filter below drops any
+  // result whose title+snippet lacks the unquoted phrase.
+  const exactPhrases: string[] = [];
+  if (input.exact_match) {
+    if (typeof input.query === 'string') {
+      const trimmed = input.query.trim().replace(/^"|"$/g, '');
+      if (trimmed) exactPhrases.push(trimmed.toLowerCase());
+      input.query = trimmed ? `"${trimmed}"` : input.query;
+    } else if (Array.isArray(input.query)) {
+      const quoted: string[] = [];
+      for (const q of input.query) {
+        if (typeof q !== 'string') {
+          quoted.push(q as unknown as string);
+          continue;
+        }
+        const trimmed = q.trim().replace(/^"|"$/g, '');
+        if (trimmed) exactPhrases.push(trimmed.toLowerCase());
+        quoted.push(trimmed ? `"${trimmed}"` : q);
+      }
+      input.query = quoted;
+    }
+  }
+
   let normalizedQuery: string | string[] = input.query;
   let autoExpanded = false;
   if (mode !== 'cache' && typeof normalizedQuery === 'string') {
@@ -134,11 +169,13 @@ export async function runSearxngSearch(
         cached_at: cached.searched_at,
         ...(cached.stale ? { stale: true } : {}),
       }));
+      const _elapsedMq1 = Date.now() - start;
       const output: SearchOutput = {
         results: stamped,
         query: displayQuery,
         engines_used: cached.engines_used,
-        total_time_ms: Date.now() - start,
+        total_time_ms: _elapsedMq1,
+        response_time_ms: _elapsedMq1,
         queries_executed: normalizedQueries,
       };
       const warning = backendStatus?.consumeWarning();
@@ -224,6 +261,8 @@ export async function runSearxngSearch(
       category: input.category,
     });
 
+    merged = filterByExactPhrases(merged, exactPhrases);
+
     const intentString = synthesizeIntent(normalizedQueries);
     merged = await rerankResults(intentString, merged, { skip: mode === 'cache' });
     if (mode !== 'cache') merged = await validateLinks(merged);
@@ -261,11 +300,13 @@ export async function runSearxngSearch(
       log.warn('failed to cache multi-query search results', { error: String(err) });
     }
 
+    const _elapsedMq2 = Date.now() - start;
     const output: SearchOutput = {
       results,
       query: displayQuery,
       engines_used: enginesUsed,
-      total_time_ms: Date.now() - start,
+      total_time_ms: _elapsedMq2,
+      response_time_ms: _elapsedMq2,
       search_time_ms: searchElapsed,
       fetch_time_ms: fetchElapsed,
       queries_executed: normalizedQueries,
@@ -318,11 +359,13 @@ export async function runSearxngSearch(
       cached_at: cached.searched_at,
       ...(cached.stale ? { stale: true } : {}),
     }));
+    const _elapsedSq1 = Date.now() - start;
     const output: SearchOutput = {
       results: stamped,
       query: queryStr,
       engines_used: cached.engines_used,
-      total_time_ms: Date.now() - start,
+      total_time_ms: _elapsedSq1,
+      response_time_ms: _elapsedSq1,
     };
     const warning = backendStatus?.consumeWarning();
     if (warning) output.warning = warning;
@@ -431,6 +474,8 @@ export async function runSearxngSearch(
     category: input.category,
   });
 
+  merged = filterByExactPhrases(merged, exactPhrases);
+
   merged = await rerankResults(queryStr, merged, { skip: mode === 'cache' });
   if (mode !== 'cache') merged = await validateLinks(merged);
 
@@ -468,11 +513,13 @@ export async function runSearxngSearch(
     log.warn('failed to cache search results', { error: String(err) });
   }
 
+  const _elapsedSq2 = Date.now() - start;
   const output: SearchOutput = {
     results,
     query: queryStr,
     engines_used: [...enginesUsed],
-    total_time_ms: Date.now() - start,
+    total_time_ms: _elapsedSq2,
+    response_time_ms: _elapsedSq2,
     search_time_ms: searchElapsed,
     fetch_time_ms: fetchElapsed,
   };

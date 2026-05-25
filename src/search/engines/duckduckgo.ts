@@ -29,6 +29,10 @@ export class DuckDuckGoEngine implements SearchEngine {
     const maxResults = options.maxResults ?? 10;
 
     const params = new URLSearchParams({ q: query });
+    if (options.country) {
+      const lang = (options.language ?? 'en').slice(0, 2).toLowerCase();
+      params.set('kl', `${options.country.toLowerCase()}-${lang}`);
+    }
     const url = `https://lite.duckduckgo.com/lite/?${params}`;
 
     log.debug('scraping duckduckgo', { query });

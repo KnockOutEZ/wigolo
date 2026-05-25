@@ -55,8 +55,10 @@ export async function handleResearch(
       max_sources: input.max_sources,
     });
 
+    const _start = Date.now();
     const out = await runResearchPipeline(input, engines, router, server);
     await attachEvidence(out, input);
+    out.response_time_ms = Date.now() - _start;
     if (out.error) {
       return {
         ok: false,

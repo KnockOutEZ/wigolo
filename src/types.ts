@@ -52,6 +52,8 @@ export interface FetchInput {
 }
 
 export interface FetchOutput {
+  /** Tavily-canonical alias of how long the request took, ms. */
+  response_time_ms?: number;
   url: string;
   title: string;
   markdown: string;
@@ -210,6 +212,26 @@ export interface SearchInput {
   /** When true, the response carries per-engine timing + result counts under
    * engine_outcomes. Opt-in because the field is debug-shaped and noisy. */
   include_engine_outcomes?: boolean;
+  /** ISO 3166-1 alpha-2 country code (e.g. "us", "gb", "de"). Hint passed to
+   * engines that support a geographic boost; not a strict filter. */
+  country?: string;
+  /** When true, the query is treated as a quoted phrase. Engines that
+   * honour `"..."` filter to results containing the exact phrase, and
+   * the orchestrator post-filters out any result whose title+snippet
+   * does not contain the phrase as a case-insensitive substring. */
+  exact_match?: boolean;
+  /** When true, the response carries a top-level `images` array aggregated
+   * from per-result image hints emitted by engines that expose them. */
+  include_images?: boolean;
+  /** When true, each result carries a `favicon` URL derived from its host. */
+  include_favicon?: boolean;
+}
+
+export interface ImageItem {
+  url: string;
+  alt?: string;
+  /** URL of the result the image came from. */
+  source_url: string;
 }
 
 export interface EngineOutcomeSummary {
@@ -219,6 +241,17 @@ export interface EngineOutcomeSummary {
   result_count: number;
   error?: string;
   skipped?: boolean;
+}
+
+export interface EngineTelemetry {
+  name: string;
+  latency_ms: number;
+  result_count: number;
+  outcome: 'ok' | 'error' | 'skipped';
+  /** Number of this engine's results that survived dedup + filters and
+   * landed in the final fused list. */
+  dedup_kept: number;
+  error?: string;
 }
 
 export interface SearchResultItem {
@@ -235,6 +268,12 @@ export interface SearchResultItem {
   stale?: boolean;
   /** Always emitted by the core path: explainable score breakdown. */
   evidence_score?: EvidenceScore;
+  /** Per-host favicon URL, emitted when input.include_favicon is true. */
+  favicon?: string;
+  /** Carried through from RawSearchResult.image_url so the orchestrator
+   * can aggregate top-level images when input.include_images is true. */
+  image_url?: string;
+  image_alt?: string;
   /** Debug-only — emitted when input.include_engine_outcomes is true. */
   _score_breakdown?: ScoreBreakdown;
 }
@@ -244,6 +283,8 @@ export interface SearchOutput {
   query: string;
   engines_used: string[];
   total_time_ms: number;
+  /** Tavily-canonical alias of total_time_ms. Always emitted. */
+  response_time_ms?: number;
   search_time_ms?: number;
   fetch_time_ms?: number;
   error?: string;
@@ -259,6 +300,10 @@ export interface SearchOutput {
   /** Present only when input.include_engine_outcomes is true and the call
    * went to the engine pool (cache hits don't populate it). */
   engine_outcomes?: EngineOutcomeSummary[];
+  /** Always emitted on the engine-pool path. Richer view of `engines_used`:
+   * per-engine name, latency, result count, outcome, and how many of that
+   * engine's results survived dedup into the final fused list. */
+  engine_telemetry?: EngineTelemetry[];
   /** Set to `quota_exceeded` when format=answer hit a provider quota wall
    * (e.g. gemini free-tier 429) and the result is a heuristic fallback. */
   synthesis_status?: 'quota_exceeded';
@@ -271,6 +316,10 @@ export interface SearchOutput {
    * `"include_domains_over_filter+top1_high_score_low_overlap"`); the
    * result merges core + searxng via RRF. Absent on `core`/`searxng` paths. */
   fallback_signal?: string | null;
+  /** Top-level image inventory aggregated from per-result image hints when
+   * input.include_images is true. Empty array means the request asked for
+   * images but no engine surfaced any. */
+  images?: ImageItem[];
 }
 
 // Wire shape for format=stream_answer (sub-ticket 2.12). The MCP content
@@ -358,6 +407,7 @@ export interface ResearchOutput {
   sub_queries: string[];
   depth: string;
   total_time_ms: number;
+  response_time_ms?: number;
   sampling_supported: boolean;
   brief?: ResearchBrief;
   error?: string;
@@ -431,6 +481,7 @@ export interface AgentOutput {
   pages_fetched: number;
   steps: AgentStep[];
   total_time_ms: number;
+  response_time_ms?: number;
   sampling_supported: boolean;
   error?: string;
   evidence?: EvidenceItem[];
@@ -475,6 +526,11 @@ export interface RawSearchResult {
   /** Always populated by the core orchestrator post-rank: explainable
    * per-result evidence score with components + one-line explanation. */
   evidence_score?: EvidenceScore;
+  /** Thumbnail/preview image URL surfaced by engines that expose one
+   * (e.g. Brave API thumbnail). Aggregated into SearchOutput.images when
+   * the caller sets include_images=true. */
+  image_url?: string;
+  image_alt?: string;
   /** Debug-only — present when the core orchestrator was asked to emit
    * score breakdowns (via include_engine_outcomes on the public surface). */
   _score_breakdown?: ScoreBreakdown;
@@ -491,6 +547,9 @@ export interface SearchEngineOptions {
   fromDate?: string;
   toDate?: string;
   category?: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
+  /** ISO 3166-1 alpha-2 country code. Passed to engines that support a
+   * geographic boost (Bing `cc=`, DDG `kl=`, Brave `country=`). Lower-case. */
+  country?: string;
 }
 
 export interface SearchEngine {
@@ -530,6 +589,8 @@ export interface LinkEdge {
 }
 
 export interface CrawlOutput {
+  /** Tavily-canonical alias of how long the request took, ms. */
+  response_time_ms?: number;
   pages: CrawlResultItem[];
   total_found: number;
   crawled: number;
@@ -670,6 +731,8 @@ export interface ExtractOutput {
   mode: 'selector' | 'tables' | 'metadata' | 'schema' | 'structured';
   error?: string;
   warnings?: string[];
+  /** Tavily-canonical alias of how long the request took, ms. */
+  response_time_ms?: number;
 }
 
 // --- Find Similar tool types (v3, Slice 23) ---
@@ -713,5 +776,6 @@ export interface FindSimilarOutput {
   cache_seeded?: boolean;
   error?: string;
   total_time_ms: number;
+  response_time_ms?: number;
   evidence?: EvidenceItem[];
 }
