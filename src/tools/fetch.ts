@@ -98,6 +98,11 @@ export async function handleFetch(
   router: SmartRouter,
 ): Promise<StageResult<FetchOutput>> {
   const mode = resolveMode(input.mode);
+  const _fetchStart = Date.now();
+  const stampTime = (out: FetchOutput): FetchOutput => {
+    out.response_time_ms = Date.now() - _fetchStart;
+    return out;
+  };
   try {
     if (!input.force_refresh) {
       const cached = getCachedContent(input.url);
@@ -110,7 +115,7 @@ export async function handleFetch(
           if (stale) out.stale = true;
           const fullMarkdown = out.markdown;
           await attachEvidence(out, input, fullMarkdown);
-          return { ok: true, data: out };
+          return { ok: true, data: stampTime(out) };
         }
       }
     }
@@ -223,7 +228,7 @@ export async function handleFetch(
 
     capAuxFields(out, input.max_content_chars);
     await attachEvidence(out, input, finalMarkdown);
-    return { ok: true, data: out };
+    return { ok: true, data: stampTime(out) };
   } catch (err) {
     log.error('Fetch failed', { url: input.url, error: String(err) });
     const described = describeFetchError(err);

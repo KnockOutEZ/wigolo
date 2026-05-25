@@ -24,6 +24,7 @@ export async function handleCrawl(
   input: CrawlInput,
   router: SmartRouter,
 ): Promise<CrawlOutput | (MapOutput & { crawled: number })> {
+  const _start = Date.now();
   try {
     // Map strategy: lightweight URL-only discovery, skip full crawl pipeline
     if (input.strategy === 'map') {
@@ -99,6 +100,7 @@ export async function handleCrawl(
     };
 
     await attachEvidence(out, input);
+    out.response_time_ms = Date.now() - _start;
     return out;
   } catch (err) {
     log.error('Crawl failed', { url: input.url, error: String(err) });
@@ -106,6 +108,7 @@ export async function handleCrawl(
       pages: [],
       total_found: 0,
       crawled: 0,
+      response_time_ms: Date.now() - _start,
       error: err instanceof Error ? err.message : String(err),
     };
   }

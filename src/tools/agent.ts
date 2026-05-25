@@ -71,12 +71,14 @@ export async function handleAgent(
       hasSchema: !!input.schema,
     });
 
+    const _start = Date.now();
     const result = await runAgentPipeline(
       input,
       engines,
       router,
       server,
     );
+    result.response_time_ms = Date.now() - _start;
 
     // Only populate evidence on the no-schema path; schema callers want the
     // structured object intact and not buried under prose excerpts.
