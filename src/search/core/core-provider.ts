@@ -8,6 +8,7 @@
 import type { SearchProvider, SearchContext } from '../../providers/search-provider.js';
 import type {
   EngineOutcomeSummary,
+  EngineTelemetry,
   RawSearchResult,
   SearchInput,
   SearchOutput,
@@ -154,6 +155,7 @@ export class CoreSearchProvider implements SearchProvider {
     let servedFromCache = false;
     let cachedAt: string | undefined;
     let engineOutcomes: EngineOutcomeSummary[] | undefined;
+    let engineTelemetry: EngineTelemetry[] | undefined;
 
     if (!input.force_refresh) {
       try {
@@ -233,6 +235,42 @@ export class CoreSearchProvider implements SearchProvider {
         }
       }
 
+      // Always emit richer engine_telemetry. Aggregate by engine name across
+      // dispatches (multi-query): sum latency, result_count, dedup_kept.
+      const telemetryByEngine = new Map<string, EngineTelemetry>();
+      const fusedUrlSet = new Set(fused.map((r) => r.url));
+      for (const d of dispatches) {
+        for (const o of d.outcomes ?? []) {
+          const existing = telemetryByEngine.get(o.engine);
+          const outcome: EngineTelemetry['outcome'] = o.skipped
+            ? 'skipped'
+            : o.ok
+              ? 'ok'
+              : 'error';
+          const kept = o.results.reduce(
+            (acc, r) => (fusedUrlSet.has(r.url) ? acc + 1 : acc),
+            0,
+          );
+          if (existing) {
+            existing.latency_ms += o.latencyMs;
+            existing.result_count += o.results.length;
+            existing.dedup_kept += kept;
+            if (outcome !== 'ok' && existing.outcome === 'ok') existing.outcome = outcome;
+            if (o.error && !existing.error) existing.error = o.error;
+          } else {
+            telemetryByEngine.set(o.engine, {
+              name: o.engine,
+              latency_ms: o.latencyMs,
+              result_count: o.results.length,
+              outcome,
+              dedup_kept: kept,
+              ...(o.error ? { error: o.error } : {}),
+            });
+          }
+        }
+      }
+      engineTelemetry = [...telemetryByEngine.values()];
+
       let processed = fused;
 
       if (input.agent_context?.text || input.agent_context?.intent) {
@@ -302,6 +340,7 @@ export class CoreSearchProvider implements SearchProvider {
       search_time_ms: searchElapsed,
       fetch_time_ms: fetchElapsed,
       ...(engineOutcomes ? { engine_outcomes: engineOutcomes } : {}),
+      ...(engineTelemetry ? { engine_telemetry: engineTelemetry } : {}),
     };
 
     if (input.include_images) {

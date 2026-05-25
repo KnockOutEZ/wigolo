@@ -243,6 +243,17 @@ export interface EngineOutcomeSummary {
   skipped?: boolean;
 }
 
+export interface EngineTelemetry {
+  name: string;
+  latency_ms: number;
+  result_count: number;
+  outcome: 'ok' | 'error' | 'skipped';
+  /** Number of this engine's results that survived dedup + filters and
+   * landed in the final fused list. */
+  dedup_kept: number;
+  error?: string;
+}
+
 export interface SearchResultItem {
   title: string;
   url: string;
@@ -287,6 +298,10 @@ export interface SearchOutput {
   /** Present only when input.include_engine_outcomes is true and the call
    * went to the engine pool (cache hits don't populate it). */
   engine_outcomes?: EngineOutcomeSummary[];
+  /** Always emitted on the engine-pool path. Richer view of `engines_used`:
+   * per-engine name, latency, result count, outcome, and how many of that
+   * engine's results survived dedup into the final fused list. */
+  engine_telemetry?: EngineTelemetry[];
   /** Set to `quota_exceeded` when format=answer hit a provider quota wall
    * (e.g. gemini free-tier 429) and the result is a heuristic fallback. */
   synthesis_status?: 'quota_exceeded';
