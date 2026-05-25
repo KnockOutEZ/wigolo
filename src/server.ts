@@ -16,6 +16,7 @@ import { httpFetch } from './fetch/http-client.js';
 import { initDatabase, closeDatabase } from './cache/db.js';
 import { handleFetch } from './tools/fetch.js';
 import { handleSearch } from './tools/search.js';
+import { buildSearchContentBlocks } from './server/search-response.js';
 import { handleCrawl } from './tools/crawl.js';
 import { handleCache } from './tools/cache.js';
 import { handleExtract } from './tools/extract.js';
@@ -401,11 +402,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
           isError: true,
         };
       }
-      const blocks: { type: 'text'; text: string }[] = [];
-      if (r.data.warning) {
-        blocks.push({ type: 'text', text: `[wigolo notice] ${r.data.warning}` });
-      }
-      blocks.push({ type: 'text', text: JSON.stringify(r.data, null, 2) });
+      const blocks = buildSearchContentBlocks(input, r.data);
       return {
         content: blocks,
         isError: !!r.data.error,

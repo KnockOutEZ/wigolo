@@ -265,6 +265,17 @@ export interface SearchOutput {
   synthesis_advice?: string;
 }
 
+// Wire shape for format=stream_answer (sub-ticket 2.12). The MCP content
+// block stays a single JSON text block, but the inner payload is reshaped
+// so callers can pattern-match `stream` (the synthesized or heuristic
+// answer text) and an optional `notice` (the synthesis warning that used to
+// leak as a separate raw text block). All other SearchOutput fields are
+// preserved verbatim.
+export interface StreamAnswerEnvelope extends Omit<SearchOutput, 'answer' | 'warning'> {
+  stream: string;
+  notice?: string;
+}
+
 export interface SourceSpan {
   start: number;
   end: number;
