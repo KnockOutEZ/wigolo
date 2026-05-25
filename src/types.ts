@@ -269,6 +269,15 @@ export interface SearchOutput {
    * `"include_domains_over_filter+top1_high_score_low_overlap"`); the
    * result merges core + searxng via RRF. Absent on `core`/`searxng` paths. */
   fallback_signal?: string | null;
+  /** Emitted only when the query collides with a brand domain in the
+   * top-3 results. Carries reason + disambiguation suggestions so callers
+   * can pivot to a clearer phrasing. */
+  brand_collision_warning?: {
+    detected: true;
+    reason: string;
+    brand_domains_in_top_3: string[];
+    suggested_rewrites: string[];
+  };
 }
 
 // Wire shape for format=stream_answer (sub-ticket 2.12). The MCP content

@@ -17,6 +17,7 @@ import type {
 import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
+import { detectBrandCollision } from './brand-collision.js';
 import { runSynthesis } from '../answer-synthesis.js';
 import { applyEvidenceDefault, renderCitationsXml } from '../evidence.js';
 import { fetchContentForResults } from '../content-fetch.js';
@@ -286,6 +287,12 @@ export class CoreSearchProvider implements SearchProvider {
       fetch_time_ms: fetchElapsed,
       ...(engineOutcomes ? { engine_outcomes: engineOutcomes } : {}),
     };
+
+    const collisionWarning = detectBrandCollision(
+      displayQuery,
+      items.map((i) => i.url),
+    );
+    if (collisionWarning) data.brand_collision_warning = collisionWarning;
 
     if (allDegraded) {
       data.warning = 'all engines failed or no results';
