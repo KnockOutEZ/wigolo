@@ -210,6 +210,11 @@ export const SEARCH_TOOL_SCHEMA = {
       enum: ['cache', 'default', 'stealth'],
       description: "cache=single-engine, no rerank, stale cache ok. default=standard multi-engine search. stealth=full browser for JS-heavy result pages.",
     },
+    search_depth: {
+      type: 'string',
+      enum: ['ultra-fast', 'fast', 'balanced', 'deep'],
+      description: 'Depth tier. ultra-fast=cache-only (≤300ms); on miss emits notice and empty results. fast=engines only, no content fetch / rerank (≤1s). balanced (default)=full pipeline. deep=balanced + full enrichment.',
+    },
     agent_context: {
       type: 'object',
       description:

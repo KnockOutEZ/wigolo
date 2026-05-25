@@ -128,6 +128,7 @@ export class CoreSearchProvider implements SearchProvider {
       };
     }
     const category = input.category;
+    const depth = input.search_depth ?? 'balanced';
 
     const start = Date.now();
 
@@ -188,7 +189,12 @@ export class CoreSearchProvider implements SearchProvider {
       }
     }
 
-    if (!servedFromCache) {
+    let ultraFastMiss = false;
+    if (!servedFromCache && depth === 'ultra-fast') {
+      ultraFastMiss = true;
+    }
+
+    if (!servedFromCache && !ultraFastMiss) {
       const dispatches = await Promise.all(
         queries.map((q) =>
           runV1Search({
@@ -276,7 +282,8 @@ export class CoreSearchProvider implements SearchProvider {
 
       let processed = fused;
 
-      if (input.agent_context?.text || input.agent_context?.intent) {
+      // fast tier skips embedding rerank + agent_context rerank for latency.
+      if (depth !== 'fast' && (input.agent_context?.text || input.agent_context?.intent)) {
         const contextText = input.agent_context.text ?? input.agent_context.intent;
         processed = await applyContextRank(processed, queries[0], contextText);
       }
@@ -301,7 +308,9 @@ export class CoreSearchProvider implements SearchProvider {
 
       searchElapsed = Date.now() - start;
 
-      const includeContent = input.include_content !== false;
+      // fast tier short-circuits content fetch; ultra-fast already returned
+      // before reaching this block.
+      const includeContent = input.include_content !== false && depth !== 'fast';
       if (includeContent && ctx.router && items.length > 0) {
         const config = getConfig();
         const fetchStart = Date.now();
@@ -375,6 +384,10 @@ export class CoreSearchProvider implements SearchProvider {
 
     if (allDegraded) {
       data.warning = 'all engines failed or no results';
+    }
+
+    if (ultraFastMiss) {
+      data.notice = 'cache miss, retry with search_depth=fast or higher';
     }
 
     if (input.format === 'answer' || input.format === 'stream_answer') {

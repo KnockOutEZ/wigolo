@@ -225,6 +225,12 @@ export interface SearchInput {
   include_images?: boolean;
   /** When true, each result carries a `favicon` URL derived from its host. */
   include_favicon?: boolean;
+  /** Depth tier:
+   *  - 'ultra-fast': cache-only, no engine dispatch (targets ≤ 300ms)
+   *  - 'fast': direct engines, no fetch / no rerank / no enrichment (≤ 1s)
+   *  - 'balanced' (default): current core behaviour
+   *  - 'deep': balanced + full enrichment (slower, more accurate) */
+  search_depth?: 'ultra-fast' | 'fast' | 'balanced' | 'deep';
 }
 
 export interface ImageItem {
@@ -332,6 +338,9 @@ export interface SearchOutput {
    * `"include_domains_over_filter+top1_high_score_low_overlap"`); the
    * result merges core + searxng via RRF. Absent on `core`/`searxng` paths. */
   fallback_signal?: string | null;
+  /** Set by search_depth=ultra-fast on a cache miss; tells the caller to
+   * retry with a higher depth. */
+  notice?: string;
   /** Emitted only when the query collides with a brand domain in the
    * top-3 results. Carries reason + disambiguation suggestions so callers
    * can pivot to a clearer phrasing. */
