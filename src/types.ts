@@ -263,6 +263,7 @@ export interface SearchOutput {
   synthesis_provider?: string;
   synthesis_model?: string;
   synthesis_advice?: string;
+  fallback_signal?: string | null;
 }
 
 // Wire shape for format=stream_answer (sub-ticket 2.12). The MCP content
