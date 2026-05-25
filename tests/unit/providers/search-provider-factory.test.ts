@@ -3,6 +3,7 @@ import { getSearchProvider, _resetSearchProviderForTest } from '../../../src/pro
 import { resetConfig } from '../../../src/config.js';
 import { LegacySearxngProvider } from '../../../src/search/legacy/searxng-provider.js';
 import { CoreSearchProvider } from '../../../src/search/core/core-provider.js';
+import { HybridSearchProvider } from '../../../src/search/hybrid/router.js';
 
 describe('getSearchProvider', () => {
   let originalEnv: string | undefined;
@@ -49,13 +50,12 @@ describe('getSearchProvider', () => {
     expect(provider.name).toBe('searxng');
   });
 
-  it('returns CoreSearchProvider when WIGOLO_SEARCH=hybrid and warns about Phase 1 stub', async () => {
+  it('returns HybridSearchProvider when WIGOLO_SEARCH=hybrid', async () => {
     process.env.WIGOLO_SEARCH = 'hybrid';
     const provider = await getSearchProvider();
-    expect(provider).toBeInstanceOf(CoreSearchProvider);
-    expect(provider.name).toBe('core');
-    expect(stderrOutput).toMatch(/Phase 1/);
-    expect(stderrOutput).toMatch(/not yet implemented/);
+    expect(provider).toBeInstanceOf(HybridSearchProvider);
+    expect(provider.name).toBe('hybrid');
+    expect(stderrOutput).not.toMatch(/not yet implemented/);
   });
 
   it('accepts deprecated WIGOLO_SEARCH=v1 as alias for core and warns', async () => {

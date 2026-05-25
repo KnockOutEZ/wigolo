@@ -54,14 +54,23 @@ export function getSearchProvider(): Promise<SearchProvider> {
       err => { cached = null; throw err; },
     );
   } else if (which === 'hybrid') {
-    log.warn('WIGOLO_SEARCH=hybrid: smart fallback not yet implemented (Phase 1), running core');
-    cached = import('../search/core/core-provider.js').then(
-      m => {
-        log.info('search provider selected', { provider: 'hybrid', impl: 'core' });
-        return new m.CoreSearchProvider();
-      },
-      err => { cached = null; throw err; },
-    );
+    cached = (async () => {
+      try {
+        const [coreMod, sxMod, hybridMod] = await Promise.all([
+          import('../search/core/core-provider.js'),
+          import('../search/legacy/searxng-provider.js'),
+          import('../search/hybrid/router.js'),
+        ]);
+        log.info('search provider selected', { provider: 'hybrid' });
+        return new hybridMod.HybridSearchProvider(
+          new coreMod.CoreSearchProvider(),
+          new sxMod.LegacySearxngProvider(),
+        );
+      } catch (err) {
+        cached = null;
+        throw err;
+      }
+    })();
   } else {
     return Promise.reject(new Error(
       `Unknown WIGOLO_SEARCH value: ${which}. Use 'core' (default), 'searxng', or 'hybrid'.`,
