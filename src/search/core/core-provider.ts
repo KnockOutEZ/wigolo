@@ -18,6 +18,7 @@ import type {
 import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
+import { detectBrandCollision } from './brand-collision.js';
 import { computeFreshnessSignal } from './freshness.js';
 import { buildQueryUnderstanding } from './query-understanding.js';
 import { faviconUrlFor } from './favicon.js';
@@ -355,6 +356,12 @@ export class CoreSearchProvider implements SearchProvider {
       ...(engineOutcomes ? { engine_outcomes: engineOutcomes } : {}),
       ...(engineTelemetry ? { engine_telemetry: engineTelemetry } : {}),
     };
+
+    const collisionWarning = detectBrandCollision(
+      displayQuery,
+      items.map((i) => i.url),
+    );
+    if (collisionWarning) data.brand_collision_warning = collisionWarning;
 
     if (input.include_images) {
       data.images = items
