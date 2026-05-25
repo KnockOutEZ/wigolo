@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isPrivateUrl, matchesPatterns, canonicalForCrawl } from '../../../src/crawl/url-utils.js';
+import { isPrivateUrl, matchesPatterns, canonicalForCrawl, stripFragment, canonicalForOutput } from '../../../src/crawl/url-utils.js';
 
 describe('canonicalForCrawl', () => {
   it('strips fragment', () => {
@@ -13,6 +13,37 @@ describe('canonicalForCrawl', () => {
   });
   it('returns input on bad URL', () => {
     expect(canonicalForCrawl('not a url')).toBe('not a url');
+  });
+});
+
+describe('stripFragment', () => {
+  it('removes the hash fragment', () => {
+    expect(stripFragment('https://x.com/intro#section-a')).toBe('https://x.com/intro');
+  });
+  it('removes an empty hash', () => {
+    expect(stripFragment('https://x.com/intro#')).toBe('https://x.com/intro');
+  });
+  it('leaves URLs without a fragment unchanged', () => {
+    expect(stripFragment('https://x.com/intro')).toBe('https://x.com/intro');
+  });
+  it('preserves query parameters', () => {
+    expect(stripFragment('https://x.com/intro?q=1#a')).toBe('https://x.com/intro?q=1');
+  });
+  it('returns input on bad URL', () => {
+    expect(stripFragment('not a url')).toBe('not a url');
+  });
+});
+
+describe('canonicalForOutput strips fragments', () => {
+  // Bench C3 (verdict §5 #11): BFS pages[] contained two `/intro` entries
+  // because the emitted URL kept anchor fragments. Anchors are intra-page
+  // navigation, not page identity — strip them on emission so the result
+  // shape matches what callers expect.
+  it('drops anchor fragments', () => {
+    expect(canonicalForOutput('https://x.com/intro#welcome')).toBe('https://x.com/intro');
+  });
+  it('drops fragment together with trailing slash', () => {
+    expect(canonicalForOutput('https://x.com/intro/#section')).toBe('https://x.com/intro');
   });
 });
 

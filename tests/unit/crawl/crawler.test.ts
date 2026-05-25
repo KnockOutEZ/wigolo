@@ -475,6 +475,39 @@ describe('Crawler — canonical output URLs', () => {
     expect((fetchSpy as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(2);
   });
 
+  it('strips anchor fragments from emitted page URLs', async () => {
+    // Bench C3 (verdict §5 #11): pages[] held two `/intro` entries because
+    // fetchResult.url carried different anchor fragments (e.g. `#welcome`,
+    // `#getting-started`). Anchors are intra-page navigation, not page
+    // identity — emit should strip them so dedup is visible in the output.
+    const fetch: FetchFn = vi.fn(async (url) => {
+      if (url === 'https://docs.example.com') {
+        return makeFetchOutput(url, 'Home', '# Home', [
+          'https://docs.example.com/intro#welcome',
+          'https://docs.example.com/intro#getting-started',
+        ]);
+      }
+      // The page may include a fragment in its self-reported URL (e.g. a
+      // server-side normalization step or a redirect to the first anchor).
+      return makeFetchOutput('https://docs.example.com/intro#welcome', 'Intro', '# Intro', []);
+    });
+    const rawFetch: RawFetchFn = vi.fn(async () => ({
+      url: '', finalUrl: '', html: '', contentType: 'text/plain', statusCode: 200, method: 'http' as const, headers: {},
+    }));
+
+    const crawler = new Crawler(fetch, rawFetch);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'bfs',
+      max_depth: 1,
+      max_pages: 5,
+    });
+
+    const introHits = result.pages.filter(p => p.url.startsWith('https://docs.example.com/intro'));
+    expect(introHits).toHaveLength(1);
+    expect(introHits[0].url).toBe('https://docs.example.com/intro');
+  });
+
   it('strips trailing slash on emitted non-root paths', async () => {
     const fetch: FetchFn = vi.fn(async (url) => {
       if (url === 'https://docs.example.com/intro') {
