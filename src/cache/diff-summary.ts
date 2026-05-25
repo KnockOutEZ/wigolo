@@ -1,4 +1,5 @@
 import { createLogger } from '../logger.js';
+import { computeLcsTable } from './lcs.js';
 
 const log = createLogger('cache');
 
@@ -16,25 +17,6 @@ function splitLines(text: string): string[] {
   return lines;
 }
 
-function computeLCS(oldLines: string[], newLines: string[]): number[][] {
-  const m = oldLines.length;
-  const n = newLines.length;
-
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (oldLines[i - 1] === newLines[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1] + 1;
-      } else {
-        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
-      }
-    }
-  }
-
-  return dp;
-}
-
 interface DiffCounts {
   added: number;
   removed: number;
@@ -49,8 +31,9 @@ function computeDiffCounts(oldLines: string[], newLines: string[]): DiffCounts {
   if (m === 0) return { added: n, removed: 0, modified: 0 };
   if (n === 0) return { added: 0, removed: m, modified: 0 };
 
-  const dp = computeLCS(oldLines, newLines);
-  const lcsLength = dp[m][n];
+  const dp = computeLcsTable(oldLines, newLines);
+  const stride = n + 1;
+  const lcsLength = dp[m * stride + n];
 
   const removed = m - lcsLength;
   const added = n - lcsLength;
@@ -72,7 +55,12 @@ function pluralize(count: number, singular: string): string {
   return count === 1 ? `${count} ${singular}` : `${count} ${singular}s`;
 }
 
-const MAX_DIFF_LINES = 5000;
+/**
+ * Line cap above which LCS is skipped. Must stay equal to `DIFF_LINE_CAP`
+ * in `diff-engine.ts` — both modules share `lcs.ts` and degrade in
+ * lock-step. A unit test pins these equal.
+ */
+export const MAX_DIFF_LINES = 5000;
 
 export function computeDiffSummary(oldMarkdown: string, newMarkdown: string): string {
   try {

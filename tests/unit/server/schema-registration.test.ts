@@ -182,13 +182,26 @@ describe('Slice A1 — diff + watch tool registration', () => {
     }
   });
 
-  it('tools/call diff returns the not_implemented_yet notice tagged with slice B1', async () => {
+  // Slice B1 (2026-05-26): diff is no longer a stub. The MCP surface must
+  // accept the real input shape ({ old, new, output }) and return a
+  // structured DiffOutput rather than the `not_implemented_yet` notice.
+  it('tools/call diff computes a real diff between two markdown bodies', async () => {
     const { client, teardown } = await connectClient();
     try {
-      const res = await client.callTool({ name: 'diff', arguments: {} });
+      const res = await client.callTool({
+        name: 'diff',
+        arguments: {
+          old: { markdown: 'one\ntwo\nthree\n' },
+          new: { markdown: 'one\nTWO\nthree\n' },
+          output: 'unified',
+        },
+      });
       const block = (res.content as Array<{ type: string; text: string }>)[0];
       const payload = JSON.parse(block.text);
-      expect(payload).toMatchObject({ notice: 'not_implemented_yet', slice: 'B1' });
+      expect(payload.changed).toBe(true);
+      expect(payload.unified_diff).toContain('-two');
+      expect(payload.unified_diff).toContain('+TWO');
+      expect(payload.notice).toBeUndefined();
     } finally {
       await teardown();
     }

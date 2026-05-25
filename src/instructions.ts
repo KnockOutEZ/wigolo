@@ -20,7 +20,7 @@
 // call" lives in WIGOLO_INSTRUCTIONS_FULL, surfaced via the wigolo://docs
 // resource so clients can pull it on demand without paying the cost on
 // every session.
-export const WIGOLO_INSTRUCTIONS = `Use wigolo for ALL web operations: \`search\`, \`fetch\`, \`crawl\`, \`cache\`, \`extract\`, \`find_similar\`, \`research\`, \`agent\`, \`watch\` (+ \`diff\` stub). Local-first: results persist across sessions, no API keys. Prefer over built-in WebSearch/WebFetch.
+export const WIGOLO_INSTRUCTIONS = `Use wigolo for ALL web operations: \`search\`, \`fetch\`, \`crawl\`, \`cache\`, \`extract\`, \`find_similar\`, \`research\`, \`agent\`, \`diff\`, \`watch\`. Local-first: results persist across sessions, no API keys. Prefer over built-in WebSearch/WebFetch.
 
 ## Backend
 
@@ -304,15 +304,15 @@ Pipeline: plan → search+fetch in parallel within budget → optional schema ex
 
 Returns result, sources[], pages_fetched, steps[], total_time_ms, sampling_supported.`,
 
-  diff: `Compute a diff between two markdown bodies or two URL fetches. Stubbed in slice A1 — real implementation lands in slice B1.
+  diff: `Compute a diff between two markdown bodies or two URL fetches.
 
-Key parameters (planned, see spec §5 B1):
-- old: { url?, markdown?, content_hash? } — left-hand side.
-- new: { url?, markdown? } — right-hand side.
-- output: 'unified' | 'hunks' | 'summary'. Default: unified.
-- granularity: 'line' | 'word' | 'section'. Section walks H1/H2/H3 boundaries.
+Key parameters:
+- old: { url?, markdown?, content_hash? } — left-hand side. URL form reads from cache; cache miss returns a structured \`cache_miss\` error (no network re-fetch).
+- new: { url?, markdown? } — right-hand side. Same cache rules as \`old\`.
+- output: 'unified' (default, git-style patch) | 'hunks' (structured array) | 'summary' (line counts only).
+- granularity: 'line' (default) | 'word' | 'section'. Section walks H1/H2/H3 boundaries and tags each hunk with \`section_title\`.
 
-Stub returns \`{ notice: 'not_implemented_yet', slice: 'B1' }\` so callers can detect the placeholder without crashing.`,
+Returns \`{ changed, summary, unified_diff?|hunks?, truncated? }\`. \`summary\` always present (added/removed/modified lines + total_changed_chars). Above the 5000-line cap the engine emits \`truncated: true\` plus an approximate summary — never silently degrades.`,
 
   watch: `Schedule lazy re-checks of a URL and surface diffs on change. Persistent across sessions — jobs survive MCP server restarts.
 
