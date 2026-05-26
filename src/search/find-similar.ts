@@ -207,6 +207,18 @@ export async function findSimilar(
         .slice(0, maxResults);
     }
 
+    // H8: hard post-filter on raw fused_score. Empty result is the correct
+    // answer when nothing meets the threshold — do not silently relax.
+    // Filters on the raw RRF signal because that's the field the audit case
+    // reports against (`threshold: 0.95` vs `fused_score: 0.029`); the
+    // normalized relevance_score top-scales to 1.0 and would always pass.
+    const threshold = input.threshold ?? 0;
+    if (threshold > 0) {
+      finalResults = finalResults.filter(
+        (r) => r.match_signals.fused_score >= threshold,
+      );
+    }
+
     const method = determineMethod(
       cacheResults.length > 0,
       embeddingResults.length > 0,

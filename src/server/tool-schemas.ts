@@ -403,6 +403,10 @@ export const FIND_SIMILAR_TOOL_SCHEMA = {
       enum: ['numbered', 'anthropic_tags', 'json'],
       description: "Citation rendering style. 'numbered' (default) inline [N] markers; 'json' returns a citations[] array; 'anthropic_tags' wraps sources in <source id='...'> tags.",
     },
+    threshold: {
+      type: 'number',
+      description: 'Hard post-filter on match_signals.fused_score. Results below this raw fused score are dropped (empty array is correct when nothing qualifies). Default 0 (no filtering). Note: filters on the raw RRF/embedding score, not the normalized relevance_score.',
+    },
   },
 };
 

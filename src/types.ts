@@ -965,6 +965,17 @@ export interface FindSimilarInput {
   max_tokens_out?: number;
   include_full_markdown?: boolean;
   citation_format?: CitationFormat;
+  /**
+   * Hard post-filter on `match_signals.fused_score`. Results with a raw fused
+   * score strictly less than `threshold` are dropped. Empty array is the
+   * correct answer when nothing meets the threshold. `0` (default) keeps all
+   * results.
+   *
+   * Note: this filters on the raw RRF/embedding fused score, NOT the
+   * (normalized) `relevance_score` shown to callers — the raw signal is the
+   * one the audit's H8 case reports (`threshold: 0.95` vs `fused_score: 0.029`).
+   */
+  threshold?: number;
 }
 
 export interface FindSimilarOutput {
