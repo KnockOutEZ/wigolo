@@ -46,11 +46,19 @@ async function handlePdf(
   url: string,
   options: ExtractProviderOptions,
 ): Promise<ExtractionResult> {
+  // C6 (bench audit): arxiv / generic PDF fetch returned an empty body
+  // because the code called `(await import('pdf-parse')).default(...)`,
+  // which throws "pdfParse is not a function" against pdf-parse@2.x.
+  // The v2 API exposes a `PDFParse` class with `.getText({})`. Wire the
+  // class form so arxiv (and every other PDF source) returns the actual
+  // extracted text.
   let pdfText = '';
   if (options.pdfBuffer) {
     try {
-      const pdfParse = (await import('pdf-parse')).default;
-      const parsed = await pdfParse(options.pdfBuffer);
+      const mod = await import('pdf-parse');
+      const Ctor = mod.PDFParse;
+      const parser = new Ctor({ data: options.pdfBuffer });
+      const parsed = await parser.getText({});
       pdfText = parsed.text ?? '';
     } catch (err) {
       log.warn('pdf-parse failed', { url, error: String(err) });
