@@ -41,6 +41,19 @@ function filterByExactPhrases<T extends { title: string; snippet: string }>(
   });
 }
 
+// H2: when format=answer/stream_answer, the synthesized answer + citations are
+// the contract. Per-result markdown_content is pure overhead (~3× cost in the
+// bench) — drop it unless the caller explicitly asked for include_full_markdown.
+function stripMarkdownBodiesForAnswerMode(
+  input: SearchInput,
+  results: SearchResultItem[],
+): void {
+  if (input.include_full_markdown) return;
+  for (const r of results) {
+    if (r.markdown_content !== undefined) r.markdown_content = undefined;
+  }
+}
+
 export async function runSearxngSearch(
   input: SearchInput,
   ctx: SearchContext,
@@ -200,6 +213,7 @@ export async function runSearxngSearch(
             output.warning = output.warning ? `${output.warning}; ${synth.data.warning}` : synth.data.warning;
           }
         }
+        stripMarkdownBodiesForAnswerMode(input, output.results);
       } else if (output.results.length > 0 && mode !== 'cache') {
         await applyEvidenceDefault(input, output, output.results, displayQuery);
       }
@@ -333,6 +347,7 @@ export async function runSearxngSearch(
           output.warning = output.warning ? `${output.warning}; ${synth.data.warning}` : synth.data.warning;
         }
       }
+      stripMarkdownBodiesForAnswerMode(input, results);
     } else if (results.length > 0 && mode !== 'cache') {
       await applyEvidenceDefault(input, output, results, displayQuery);
     }
@@ -389,6 +404,7 @@ export async function runSearxngSearch(
           output.warning = output.warning ? `${output.warning}; ${synth.data.warning}` : synth.data.warning;
         }
       }
+      stripMarkdownBodiesForAnswerMode(input, output.results);
     } else if (output.results.length > 0 && mode !== 'cache') {
       await applyEvidenceDefault(input, output, output.results, queryStr);
     }
@@ -545,6 +561,7 @@ export async function runSearxngSearch(
         output.warning = output.warning ? `${output.warning}; ${synth.data.warning}` : synth.data.warning;
       }
     }
+    stripMarkdownBodiesForAnswerMode(input, results);
   } else if (results.length > 0 && mode !== 'cache') {
     await applyEvidenceDefault(input, output, results, queryStr);
   }
