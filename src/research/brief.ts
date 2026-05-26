@@ -49,12 +49,25 @@ export async function buildResearchBrief(
     ? buildComparisonSection(comparisonEntities, fetched)
     : undefined;
 
-  const citationGraph = synthesisText && synthesisText.trim().length > 0 && fetched.length > 0
-    ? buildCitationGraph(
-        synthesisText,
-        fetched.map((s) => ({ url: s.url, title: s.title, markdown: s.markdown_content })),
-      )
-    : undefined;
+  // Slice 8 / M5: citation_graph source_indices must align with the output
+  // `sources` array (0-based, full list including unfetched rows). We build
+  // the graph against the `fetched` view (only documents we have content
+  // for), then remap each index back into the original `sources` array so
+  // a caller can index `sources[entry.source_indices[i]]` directly.
+  let citationGraph: ReturnType<typeof buildCitationGraph> | undefined;
+  if (synthesisText && synthesisText.trim().length > 0 && fetched.length > 0) {
+    const rawGraph = buildCitationGraph(
+      synthesisText,
+      fetched.map((s) => ({ url: s.url, title: s.title, markdown: s.markdown_content })),
+    );
+    const fetchedToFullIndex = fetched.map((s) => sources.indexOf(s));
+    citationGraph = rawGraph.map((entry) => ({
+      ...entry,
+      source_indices: entry.source_indices
+        .map((idx) => fetchedToFullIndex[idx])
+        .filter((idx) => idx >= 0),
+    }));
+  }
 
   return {
     topics,

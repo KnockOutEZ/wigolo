@@ -223,6 +223,40 @@ describe('buildResearchBrief', () => {
     expect(brief.citation_graph).toBeUndefined();
   });
 
+  // Slice 8 / M5: citation_graph source_indices must align with the output
+  // `sources` array (0-based, full list — including unfetched). Pre-fix the
+  // graph was indexed against the `fetched` subset, so when the first source
+  // failed to fetch, source_indices=[0] silently pointed to the wrong row.
+  // WHY: a caller who reads `sources[graph[0].source_indices[0]]` should get
+  // the document that the claim actually came from.
+  it('citation_graph source_indices align with the full sources array (M5)', async () => {
+    const sources = [
+      // index 0 — UNfetched. Pre-fix the graph treated index 0 as the next
+      // fetched source, hiding the misalignment.
+      mkSource({ url: 'https://failed.com', markdown_content: '', fetched: false }),
+      // index 1 — fetched, this is what synthesis citation [1] refers to.
+      mkSource({ url: 'https://a.com', markdown_content: 'server components render efficiently on server' }),
+      mkSource({ url: 'https://b.com', markdown_content: 'streaming SSR flushes chunks progressively' }),
+    ];
+    const brief = await buildResearchBrief(
+      'q',
+      sources,
+      [],
+      3000,
+      40000,
+      'general',
+      [],
+      'Server components are fast [1]. Streaming is great [2].',
+    );
+    expect(brief.citation_graph).toBeDefined();
+    expect(brief.citation_graph!.length).toBeGreaterThan(0);
+    // Synthesis marker [1] maps to citation index 0 within the synthesizer's
+    // fetched-only view (synthesize.ts emits 1-based markers over fetched
+    // sources). When remapped to the output `sources` array, that's index 1
+    // (since sources[0] failed). The graph must report 1, not 0.
+    expect(brief.citation_graph![0].source_indices).toEqual([1]);
+  });
+
   it('detects gaps when sub-queries have no source coverage', async () => {
     const sources = [
       mkSource({ markdown_content: 'This source talks about Python and Django web development exclusively.' }),
