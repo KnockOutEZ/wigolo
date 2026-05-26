@@ -159,7 +159,10 @@ describe('handleCrawl', () => {
       } as unknown as typeof Crawler);
     });
 
-    it('default emits per-page evidence and strips page markdown', async () => {
+    it('H10: default keeps page markdown populated (extraction pipeline output survives)', async () => {
+      // Audit H10: every strategy returned `markdown: ""` on every page even
+      // though the extraction pipeline had already run. Default behavior must
+      // now surface the extracted body so callers see the actual page content.
       const router = mockRouter();
       const input: CrawlInput = { url: 'https://docs.example.com' };
 
@@ -176,12 +179,14 @@ describe('handleCrawl', () => {
         expect(ev.citation_id).toMatch(/^[a-f0-9]{12}$/);
         expect(ev.source_span.end).toBeGreaterThan(ev.source_span.start);
       }
+      // H10 fix: every page carries its extracted markdown body by default.
       for (const p of result.pages) {
-        expect(p.markdown).toBe('');
+        expect(p.markdown.length).toBeGreaterThan(0);
+        expect(p.markdown).toContain('TypeScript');
       }
     });
 
-    it('include_full_markdown=true keeps page markdown', async () => {
+    it('include_full_markdown=true (explicit) keeps page markdown', async () => {
       const router = mockRouter();
       const input: CrawlInput = {
         url: 'https://docs.example.com',
@@ -193,6 +198,21 @@ describe('handleCrawl', () => {
       const pagesWithEvidence = result.pages.filter((p) => p.evidence && p.evidence.length > 0);
       expect(pagesWithEvidence.length).toBeGreaterThan(0);
       expect(result.pages.every((p) => p.markdown.length > 0)).toBe(true);
+    });
+
+    it('include_full_markdown=false drops markdown but surfaces excerpt', async () => {
+      // Explicit opt-out for callers that only want the evidence + excerpt
+      // envelope. Mirrors handleFetch's include_full_markdown contract.
+      const router = mockRouter();
+      const input: CrawlInput = {
+        url: 'https://docs.example.com',
+        include_full_markdown: false,
+      };
+
+      const result = await handleCrawl(input, router as unknown as SmartRouter) as CrawlOutput;
+      for (const p of result.pages) {
+        expect(p.markdown).toBe('');
+      }
     });
   });
 

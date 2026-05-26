@@ -131,7 +131,15 @@ function buildPageExcerpt(markdown: string, maxChars = 600): string {
 
 async function attachEvidence(out: CrawlOutput, input: CrawlInput): Promise<void> {
   if (out.pages.length === 0) return;
-  const includeFull = input.include_full_markdown ?? false;
+  // H10 (bench audit): the crawl tool previously stripped `markdown` to ''
+  // on every page when `include_full_markdown` was unset, even though the
+  // crawler had already run the full extraction pipeline per page. That
+  // forced callers to opt-in just to see the bodies the crawl had already
+  // produced. Flip the default so the extracted markdown survives —
+  // `max_tokens_out` / `max_total_chars` still bound the response — and
+  // honour an explicit `include_full_markdown: false` for callers that
+  // really only want the per-page evidence + excerpt envelope.
+  const includeFull = input.include_full_markdown ?? true;
   const maxTokensOut = input.max_tokens_out ?? DEFAULT_MAX_TOKENS_OUT;
 
   let used = 0;
@@ -153,8 +161,9 @@ async function attachEvidence(out: CrawlOutput, input: CrawlInput): Promise<void
   }
 
   if (!includeFull) {
-    // No full markdown: still surface a short excerpt per page so the
-    // result is useful when evidence couldn't be built (no query to highlight).
+    // Explicit opt-out: surface a short excerpt per page so the response is
+    // still useful when no evidence could be built (no query to highlight),
+    // then drop the full body to keep the envelope tight.
     for (const page of out.pages) {
       if (!page.evidence || page.evidence.length === 0) {
         const excerpt = buildPageExcerpt(page.markdown);

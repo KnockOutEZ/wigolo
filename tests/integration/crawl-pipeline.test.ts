@@ -219,4 +219,159 @@ describe('Crawl Pipeline Integration', () => {
     const urls = result.pages.map((p) => p.url);
     expect(urls).not.toContain('https://docs.test.com/changelog');
   });
+
+  // H10 (audit): every crawl strategy returned `markdown: ""` on every page
+  // by default even though the extraction pipeline had already produced a
+  // body. The tool boundary must surface the extracted markdown by default
+  // across strategies (BFS, sitemap, map and include_patterns variants).
+  it('H10: BFS default keeps non-empty markdown on every page (no opt-in needed)', async () => {
+    const router = mockRouter();
+    const result = await handleCrawl(
+      { url: 'https://docs.test.com', max_depth: 1, max_pages: 10 },
+      router as any,
+    );
+
+    expect(result.crawled).toBeGreaterThanOrEqual(3);
+    expect(result.error).toBeUndefined();
+    // Every page that returned a body must carry that body in `markdown`,
+    // not an empty string. This is the H10 regression guard.
+    for (const page of result.pages) {
+      expect(page.markdown.length).toBeGreaterThan(0);
+    }
+    // Spot-check: home page body survives.
+    const home = result.pages.find((p) => p.url === 'https://docs.test.com');
+    expect(home?.markdown).toContain('Welcome to the docs');
+  });
+
+  it('H10: include_patterns variant also keeps markdown populated by default', async () => {
+    const router = mockRouter();
+    const result = await handleCrawl(
+      {
+        url: 'https://docs.test.com',
+        max_depth: 1,
+        max_pages: 10,
+        include_patterns: ['/getting-started', '^https://docs\\.test\\.com$'],
+      },
+      router as any,
+    );
+    for (const page of result.pages) {
+      expect(page.markdown.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('H10: sitemap strategy also keeps markdown populated by default', async () => {
+    // The bench audit specifically called out sitemap as one of the
+    // strategies returning `markdown: ""`. Provide a sitemap response from
+    // the router and confirm the crawl tool emits non-empty markdown.
+    const sitemapXml = `<?xml version="1.0"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://docs.test.com/getting-started</loc></url>
+  <url><loc>https://docs.test.com/api-reference</loc></url>
+</urlset>`;
+    const router = {
+      fetch: vi.fn(async (url: string) => {
+        if (url.endsWith('/sitemap.xml')) {
+          return {
+            url,
+            finalUrl: url,
+            html: sitemapXml,
+            contentType: 'application/xml',
+            statusCode: 200,
+            method: 'http' as const,
+            headers: {},
+          } as RawFetchResult;
+        }
+        if (url.endsWith('/robots.txt')) {
+          return {
+            url,
+            finalUrl: url,
+            html: 'User-agent: *\nAllow: /',
+            contentType: 'text/plain',
+            statusCode: 200,
+            method: 'http' as const,
+            headers: {},
+          } as RawFetchResult;
+        }
+        return {
+          url,
+          finalUrl: url,
+          html: '',
+          contentType: 'text/plain',
+          statusCode: 404,
+          method: 'http' as const,
+          headers: {},
+        } as RawFetchResult;
+      }),
+      getDomainStats: vi.fn(),
+    };
+    const result = await handleCrawl(
+      { url: 'https://docs.test.com', strategy: 'sitemap', max_pages: 10 },
+      router as any,
+    );
+    expect(result.crawled).toBeGreaterThanOrEqual(2);
+    for (const page of result.pages) {
+      expect(page.markdown.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('H10: a 404/error page co-existing with a 200 page emits markdown only on the 200', async () => {
+    // Boundary case from the slice brief: when one URL fails (404 / network
+    // error), the OTHER URLs must still surface their markdown. The failing
+    // page returns from the mock with `ok:false` so its slot is dropped
+    // entirely — the remaining pages must still have populated markdown.
+    vi.mocked(handleFetch).mockReset();
+    vi.mocked(handleFetch).mockImplementation(async (input) => {
+      const url = input.url;
+      if (url === 'https://docs.test.com') {
+        return {
+          ok: true,
+          data: {
+            url,
+            title: 'Home',
+            markdown: '# Home\n\nReal content here.',
+            metadata: {},
+            links: ['https://docs.test.com/missing', 'https://docs.test.com/api-reference'],
+            images: [],
+            cached: false,
+          } as FetchOutput,
+        };
+      }
+      if (url === 'https://docs.test.com/api-reference') {
+        return {
+          ok: true,
+          data: {
+            url,
+            title: 'API',
+            markdown: '# API\n\nEndpoint details.',
+            metadata: {},
+            links: [],
+            images: [],
+            cached: false,
+          } as FetchOutput,
+        };
+      }
+      return {
+        ok: false,
+        error: 'http_404',
+        error_reason: 'Not found',
+        stage: 'fetch',
+      };
+    });
+
+    const router = mockRouter();
+    const result = await handleCrawl(
+      { url: 'https://docs.test.com', max_depth: 1, max_pages: 10 },
+      router as any,
+    );
+
+    const urls = result.pages.map((p) => p.url);
+    expect(urls).toContain('https://docs.test.com');
+    expect(urls).toContain('https://docs.test.com/api-reference');
+    // The 404 page is dropped from the result set entirely (per crawler
+    // contract). The surviving pages must still carry their markdown bodies.
+    expect(urls).not.toContain('https://docs.test.com/missing');
+    for (const page of result.pages) {
+      expect(page.markdown.length).toBeGreaterThan(0);
+    }
+  });
 });
