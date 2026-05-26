@@ -94,6 +94,37 @@ describe('buildResearchBrief', () => {
     expect(brief.key_findings[0]).not.toContain('https://');
   });
 
+  // Slice 8 / M4: the audit observed `](http://...)` artifacts leaking into
+  // key_findings text even after the existing inline-link strip. Reference-
+  // style links (`[label][1]`), bare URLs, and HTML anchors are additional
+  // hyperlink shapes that must be flattened to plain text before the finding
+  // is sliced. WHY: a finding is meant to be prose evidence, not a link
+  // pointer.
+  it('flattens reference-style markdown links so [label][1] becomes label', async () => {
+    const md = 'A substantial paragraph that talks about how the documentation [Postgres replication guide][1] describes streaming and logical replication choices, with notes on backpressure and lag handling in production deployments today.\n\n[1]: https://example.com/repl';
+    const sources = [mkSource({ markdown_content: md })];
+    const brief = await buildResearchBrief('q', sources, [], 3000, 40000);
+    expect(brief.key_findings[0]).not.toMatch(/\]\[\d+\]/);
+    expect(brief.key_findings[0]).toContain('Postgres replication guide');
+  });
+
+  it('drops bare http/https URLs from key_findings text', async () => {
+    const md = 'A long paragraph documenting how the SDK https://example.com/sdk/install?utm_source=blog&utm_medium=referral&utm_campaign=launch handles retries with exponential backoff plus jitter and reports outcomes to a metrics endpoint that scrapes counters once per minute.';
+    const sources = [mkSource({ markdown_content: md })];
+    const brief = await buildResearchBrief('q', sources, [], 3000, 40000);
+    expect(brief.key_findings[0]).not.toContain('https://');
+    expect(brief.key_findings[0]).not.toContain('utm_');
+  });
+
+  it('strips HTML anchor tags from key_findings', async () => {
+    const md = 'Some prose describing how the runtime handles errors and surfaces them through the <a href="https://example.com/errors">error reporting dashboard</a> with stable identifiers and source-map resolution that points back to the original line numbers.';
+    const sources = [mkSource({ markdown_content: md })];
+    const brief = await buildResearchBrief('q', sources, [], 3000, 40000);
+    expect(brief.key_findings[0]).not.toContain('<a ');
+    expect(brief.key_findings[0]).not.toContain('</a>');
+    expect(brief.key_findings[0]).toContain('error reporting dashboard');
+  });
+
   it('skips image-only leading paragraphs and surfaces real prose', async () => {
     const md = [
       '![hero image with very long alt text describing the visual content of this page topic comparison chart deluxe edition](https://cdn.example.com/hero.webp)',
