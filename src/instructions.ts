@@ -192,7 +192,7 @@ Use \`search_depth\` to trade latency for thoroughness:
 
 ## Extras
 
-- Localhost URLs (\`localhost:3000\`, \`127.0.0.1:8080\`) work for local dev servers.
+- Localhost URLs (\`localhost:3000\`, \`127.0.0.1:8080\`) work for local dev servers on \`fetch\` / \`crawl\` provided the port is a valid integer in 1–65535. Invalid ports (\`localhost:99999\`, \`localhost:abc\`) are rejected with an \`invalid_url\` error that names the port. The \`watch\` tool blocks all localhost / private IPs by design (SSRF guard) and surfaces a \`loopback/private\` reason.
 - \`use_auth: true\` on \`fetch\`/\`crawl\` reuses browser session for logged-in pages.
 - \`cache\` supports full-text search syntax (\`AND\`, \`OR\`, \`NOT\`, \`"phrase"\`).
 - \`research\`/\`agent\` use MCP sampling when supported; fall back to structured data for host-LLM synthesis.`;

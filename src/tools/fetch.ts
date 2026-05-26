@@ -25,6 +25,47 @@ const DEFAULT_FETCH_BODY_TOKENS = 16000;
 const AUX_FIELD_CAP_WHEN_CHARS_BOUNDED = 50;
 const AUX_FIELD_CAP_WHEN_TIGHT = 20;
 
+/**
+ * Slice 8 / L1: precise URL validation for the fetch tool. The audit
+ * observed callers passing a localhost URL with an out-of-range port
+ * (e.g. localhost:99999) and getting a vague TypeError / cache-miss
+ * surface instead of a clear "invalid port" message. This validator
+ * runs BEFORE any cache/router code, identifies the failure shape, and
+ * returns a structured envelope the handler turns into a stage error.
+ *
+ * Localhost URLs with a VALID port are accepted (the docs promise local
+ * dev servers work).
+ */
+function validateFetchUrl(raw: unknown): { ok: true } | { ok: false; reason: string; hint?: string } {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    return { ok: false, reason: 'url is required and must be a non-empty string' };
+  }
+  // Detect localhost-with-bad-port BEFORE the URL constructor, since the
+  // constructor's TypeError message reads "Invalid URL" without saying
+  // what's actually wrong. Scope to the loopback hostnames so a real bad
+  // URL still gets the generic message.
+  const portMatch = raw.match(/^https?:\/\/(localhost|127\.0\.0\.1|\[?::1\]?)(?::([^\/?#]*))?/i);
+  if (portMatch && portMatch[2] !== undefined) {
+    const portStr = portMatch[2];
+    const portNum = Number(portStr);
+    if (!/^\d+$/.test(portStr) || !Number.isFinite(portNum) || portNum < 1 || portNum > 65535) {
+      return {
+        ok: false,
+        reason: `invalid port "${portStr}" — localhost URLs require a valid port in 1-65535`,
+        hint: 'Use a port in 1-65535 (e.g. localhost:3000). Localhost itself is allowed for fetch/crawl; only the port is rejected.',
+      };
+    }
+  }
+  if (!URL.canParse(raw)) {
+    return {
+      ok: false,
+      reason: `url is not a valid absolute URL: ${JSON.stringify(raw)}`,
+      hint: 'Pass a fully qualified http(s) URL (e.g. "https://example.com/path").',
+    };
+  }
+  return { ok: true };
+}
+
 function capAuxFields(out: FetchOutput, maxContentChars?: number): void {
   if (maxContentChars === undefined) return;
   const cap = maxContentChars <= 4000 ? AUX_FIELD_CAP_WHEN_TIGHT : AUX_FIELD_CAP_WHEN_CHARS_BOUNDED;
@@ -115,6 +156,22 @@ export async function handleFetch(
     out.response_time_ms = Date.now() - _fetchStart;
     return out;
   };
+
+  // Slice 8 / L1: pre-validate the URL so an invalid-port error reads as
+  // "invalid port" rather than the downstream "URL not in cache" / generic
+  // TypeError surface. Localhost URLs (localhost:3000) are explicitly
+  // accepted — the docs promise they work — provided the port is parseable.
+  const urlValidation = validateFetchUrl(input.url);
+  if (!urlValidation.ok) {
+    return {
+      ok: false,
+      error: 'invalid_url',
+      error_reason: urlValidation.reason,
+      stage: 'fetch',
+      hint: urlValidation.hint,
+    };
+  }
+
   try {
     if (!input.force_refresh) {
       const cached = getCachedContent(input.url);

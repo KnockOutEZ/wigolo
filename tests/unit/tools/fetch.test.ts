@@ -93,6 +93,47 @@ function makeExtraction(overrides: Partial<ExtractionResult> = {}): ExtractionRe
   };
 }
 
+// Slice 8 / L1: precise URL validation for fetch. Localhost URLs with a
+// VALID port are accepted (docs promise local dev servers work); invalid
+// ports get a clear "invalid port" message instead of a vague TypeError.
+describe('handleFetch URL validation (Slice 8 / L1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getCachedContent).mockReturnValue(null);
+    vi.mocked(isCacheUsable).mockReturnValue({ usable: true, stale: false });
+  });
+
+  it('rejects localhost URL with out-of-range port with an "invalid port" message', async () => {
+    const router = mockRouter();
+    const r = await handleFetch({ url: 'http://localhost:99999/x' }, router);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toBe('invalid_url');
+    expect(r.error_reason).toMatch(/invalid port/i);
+    expect(r.error_reason).not.toMatch(/localhost not supported/i);
+  });
+
+  it('rejects localhost URL with non-numeric port with an "invalid port" message', async () => {
+    const router = mockRouter();
+    const r = await handleFetch({ url: 'http://localhost:abc/x' }, router);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toBe('invalid_url');
+    expect(r.error_reason).toMatch(/invalid port/i);
+  });
+
+  it('accepts localhost URL with a valid port (the docs promise this works)', async () => {
+    const extraction = makeExtraction();
+    extractMock.mockResolvedValue(extraction);
+    const router = mockRouter({ url: 'http://localhost:3000', finalUrl: 'http://localhost:3000' });
+
+    const r = await handleFetch({ url: 'http://localhost:3000/x' }, router);
+    // The router is invoked — the validator did not pre-reject.
+    expect(router.fetch).toHaveBeenCalled();
+    expect(r.ok).toBe(true);
+  });
+});
+
 describe('handleFetch', () => {
   beforeEach(() => {
     vi.clearAllMocks();
