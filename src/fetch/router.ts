@@ -7,6 +7,9 @@ import { describeFetchError } from './error-describe.js';
 import {
   tlsFetch,
   isAntiBotSignal,
+  isAntiBotStatus,
+  isRateLimit,
+  hasChallengeBody,
   looksJsRequired,
   describeAntiBot,
   TlsTierUnavailableError,
@@ -299,7 +302,19 @@ export class SmartRouter {
       if (!this.httpClient) throw new Error('SmartRouter: httpClient not configured');
       logger.debug('routing to http (never)', { url });
       const result = await this.httpClient.fetch(url, { headers, conditionalHeaders });
-      this.ensureStats(domain);
+      const neverStats = this.ensureStats(domain);
+      // Slice 5 (audit H4): a known-SPA domain that returns substantive
+      // HTTP content on a render_js: never call proves the domain is
+      // reachable without a browser. Reset the sticky pre-mark so a
+      // subsequent default-mode fetch on the same domain skips Playwright.
+      // Guarded to known-SPA pre-marks only — see the equivalent block in
+      // the auto-mode path below for the rationale.
+      const neverStatus = result.statusCode;
+      const neverOk = neverStatus >= 200 && neverStatus < 300;
+      if (neverOk && neverStats.preferPlaywright && isKnownSpaDomain(domain) && !contentAppearsEmpty(result.html)) {
+        logger.info('known-SPA domain served substantive HTTP via render_js:never — downgrading prefer-chromium', { url, domain });
+        neverStats.preferPlaywright = false;
+      }
       return this.toRawFetchResult(result);
     }
 
@@ -341,9 +356,19 @@ export class SmartRouter {
         return this.toRawFetchResult(result);
       }
 
-      // Slice D2: anti-bot signal (403/429/503 or challenge body) escalates
-      // to the TLS tier first when WIGOLO_TLS_TIER is auto/on; if the TLS
-      // tier also fails or isn't installed, fall through to Playwright.
+      // Slice 5 (audit H4): a 429 without a challenge body is a rate-limit,
+      // not an anti-bot wall. Playwright cannot bypass a rate limit, so
+      // escalation just pays the browser cold-start cost. Surface the 429
+      // directly so callers (tools/fetch.ts) can map it to a stage error.
+      if (isRateLimit(result.statusCode, result.html)) {
+        logger.debug('rate-limit (429) without challenge body — passing through, NOT escalating', { url, domain });
+        return this.toRawFetchResult(result);
+      }
+
+      // Slice D2: anti-bot signal (403/503 or challenge body, plus 429 with
+      // a challenge body) escalates to the TLS tier first when
+      // WIGOLO_TLS_TIER is auto/on; if the TLS tier also fails or isn't
+      // installed, fall through to Playwright.
       if (tlsTierEnabled && !tryTlsFirst && isAntiBotSignal(result.statusCode, result.html)) {
         const tlsTry = await this.tryTlsTier(url, domain, headers);
         if (tlsTry.ok) {
@@ -360,12 +385,52 @@ export class SmartRouter {
         return this.browserPool.fetchWithBrowser(url, { headers, screenshot });
       }
 
-      // Check for SPA shell / empty content
-      if (contentAppearsEmpty(result.html)) {
+      // Slice 5 (audit H4): with TLS tier disabled, escalate to Playwright
+      // only when we have a STRONG anti-bot signal — a Cloudflare/DataDome
+      // challenge body. A bare 403 (or any anti-bot status code without a
+      // challenge marker) is NOT enough on its own: an admin endpoint
+      // returning a substantive 403 HTML page should pass through as-is.
+      // Previously this case was handled implicitly by SPA-shell detection
+      // on small challenge bodies, but we now gate that on 2xx-only — so
+      // the bot-wall escalation must be made explicit, and the same body-
+      // marker check we use elsewhere keeps it from over-firing.
+      if (!tlsTierEnabled && hasChallengeBody(result.html) && isAntiBotStatus(result.statusCode)) {
+        if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
+        logger.info('anti-bot challenge body: escalating to playwright (tls tier disabled)', {
+          url,
+          domain,
+          httpStatus: result.statusCode,
+          signal: describeAntiBot(result.statusCode, result.html),
+        });
+        stats.preferPlaywright = true;
+        return this.browserPool.fetchWithBrowser(url, { headers, screenshot });
+      }
+
+      // Slice 5 (audit H4): SPA-shell detection is only meaningful for 2xx
+      // responses. A 4xx/5xx body is an error page, not a hydration shell —
+      // escalating to Playwright won't recover content the server refuses
+      // to ship. Pass non-2xx through; tools/fetch.ts surfaces them as
+      // stage errors.
+      const status = result.statusCode;
+      const isSuccessful = status >= 200 && status < 300;
+      if (isSuccessful && contentAppearsEmpty(result.html)) {
         if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
         logger.info('SPA shell detected, marking domain for playwright', { url, domain });
         stats.preferPlaywright = true;
         return this.browserPool.fetchWithBrowser(url, { headers, screenshot });
+      }
+
+      // Slice 5 (audit H4): a known-SPA domain (pre-marked preferPlaywright
+      // via KNOWN_SPA_DOMAINS) that returns a substantive HTTP response
+      // demonstrates the domain is reachable without a browser. Reset the
+      // sticky pre-mark so subsequent requests skip the Playwright cold
+      // start. This only resets pre-marks — domains that became
+      // preferPlaywright via genuine failure (failureCount threshold OR
+      // anti-bot escalation OR SPA-shell detection) are not affected
+      // because those code paths return early above without reaching here.
+      if (isSuccessful && stats.preferPlaywright && isKnownSpaDomain(domain)) {
+        logger.info('known-SPA domain returned substantive HTTP — downgrading prefer-chromium flag', { url, domain });
+        stats.preferPlaywright = false;
       }
 
       return this.toRawFetchResult(result);

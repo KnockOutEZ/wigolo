@@ -213,7 +213,27 @@ export function hasChallengeBody(html: string | null | undefined): boolean {
   return false;
 }
 
+/**
+ * Slice 5 (audit H4): a 429 without an anti-bot challenge body is a plain
+ * rate-limit, not an anti-bot wall. Playwright will hit the same rate
+ * limit, so escalation just pays the browser cold-start cost for no gain.
+ *
+ * We treat the response as rate-limited (NOT anti-bot) when:
+ *   (a) statusCode === 429, AND
+ *   (b) the body does NOT carry a Cloudflare/DataDome challenge marker.
+ *
+ * Callers (router) check this first and surface the 429 up the stack
+ * instead of escalating. A Retry-After header strengthens the signal but
+ * isn't required — many CDNs return 429 without one.
+ */
+export function isRateLimit(statusCode: number, html: string | null | undefined): boolean {
+  if (statusCode !== 429) return false;
+  return !hasChallengeBody(html);
+}
+
 export function isAntiBotSignal(statusCode: number, html: string | null | undefined): boolean {
+  // Rate-limits are not anti-bot signals — see `isRateLimit`.
+  if (isRateLimit(statusCode, html)) return false;
   return isAntiBotStatus(statusCode) || hasChallengeBody(html);
 }
 

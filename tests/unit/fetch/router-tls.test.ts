@@ -174,7 +174,12 @@ describe('SmartRouter — TLS tier (Slice D2)', () => {
       resetConfig();
 
       const { router, httpClient, tlsFetcher, browserPool, recordedDomains } = build();
-      vi.mocked(httpClient.fetch).mockResolvedValue(makeHttpResult({ statusCode: 429, html: 'too many' }));
+      // Slice 5 (audit H4): use 403 + Cloudflare challenge body to trigger
+      // anti-bot escalation. A bare 429 is now treated as a rate-limit and
+      // does NOT escalate to Playwright — see router-escalation-tuning.test.ts.
+      vi.mocked(httpClient.fetch).mockResolvedValue(
+        makeHttpResult({ statusCode: 403, html: '<html><body>cf-browser-verification</body></html>' }),
+      );
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult({ statusCode: 403, html: 'still blocked' }));
       vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(makeBrowserResult('https://hard.com/page'));
 

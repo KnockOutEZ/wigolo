@@ -71,6 +71,22 @@ describe('tls-tier: anti-bot detectors', () => {
     expect(isAntiBotSignal(200, 'cf-browser-verification')).toBe(true);
   });
 
+  it('isAntiBotSignal treats a bare 429 (no challenge body) as a rate-limit, NOT anti-bot', async () => {
+    // Slice 5 (audit H4): bare 429s are rate-limits. Playwright cannot
+    // bypass a rate limit, so escalation just pays the browser cold-start
+    // cost. Only escalate when 429 carries a challenge body.
+    const { isAntiBotSignal: isAntiBot, isRateLimit } = await import('../../../src/fetch/tls-tier.js');
+    expect(isAntiBot(429, '<html><body>Too Many Requests</body></html>')).toBe(false);
+    expect(isAntiBot(429, '')).toBe(false);
+    expect(isRateLimit(429, '')).toBe(true);
+    // 429 with a Cloudflare challenge body is still anti-bot.
+    expect(isAntiBot(429, '<html><body>cf-browser-verification</body></html>')).toBe(true);
+    expect(isRateLimit(429, '<html><body>cf-browser-verification</body></html>')).toBe(false);
+    // Non-429 codes are never rate-limits.
+    expect(isRateLimit(403, '')).toBe(false);
+    expect(isRateLimit(503, '')).toBe(false);
+  });
+
   it('looksJsRequired matches "enable javascript"', () => {
     expect(looksJsRequired('<noscript>Please enable JavaScript</noscript>')).toBe(true);
     expect(looksJsRequired('<noscript>please enable javascript to continue</noscript>')).toBe(true);
