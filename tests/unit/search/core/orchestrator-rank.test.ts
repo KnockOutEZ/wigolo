@@ -242,6 +242,102 @@ describe('runV1Search — brand-collision rank (sub-ticket 2.1)', () => {
     expect(out.results[0].url).toBe('https://b.test/top');
   });
 
+  // S11c sub-area 2 — cross-engine canonical URL dedup. The merge step must
+  // canonicalize URLs BEFORE RRF fusion, so two engines emitting different
+  // variants of the same page (utm, AMP, mobile, trailing slash, protocol)
+  // contribute to a single RRF row rather than splitting the signal.
+  describe('canonical URL dedup at merge time', () => {
+    it('merges utm-tagged and untagged variants into one result', async () => {
+      const engineA = makeEntry('a', [
+        makeResult('a', 'https://foo.com/x?utm_source=newsletter', 'page x', 'body of x'),
+      ]);
+      const engineB = makeEntry('b', [
+        makeResult('b', 'https://foo.com/x', 'page x', 'body of x'),
+      ]);
+      verticalState.general = [engineA, engineB];
+
+      const out = await runV1Search({ query: 'foo bar baz some content' });
+      const matches = out.results.filter((r) => r.url.includes('foo.com/x'));
+      expect(matches.length).toBe(1);
+    });
+
+    it('merges AMP and non-AMP variants', async () => {
+      const engineA = makeEntry('a', [
+        makeResult('a', 'https://foo.com/amp/x', 'page x', 'body'),
+      ]);
+      const engineB = makeEntry('b', [
+        makeResult('b', 'https://foo.com/x', 'page x', 'body'),
+      ]);
+      verticalState.general = [engineA, engineB];
+
+      const out = await runV1Search({ query: 'foo bar baz some content' });
+      const matches = out.results.filter((r) => /foo\.com\/(amp\/)?x$/.test(r.url));
+      expect(matches.length).toBe(1);
+    });
+
+    it('merges mobile-subdomain and root variants', async () => {
+      const engineA = makeEntry('a', [
+        makeResult('a', 'https://m.foo.com/x', 'page x', 'body'),
+      ]);
+      const engineB = makeEntry('b', [
+        makeResult('b', 'https://foo.com/x', 'page x', 'body'),
+      ]);
+      verticalState.general = [engineA, engineB];
+
+      const out = await runV1Search({ query: 'foo bar baz some content' });
+      const matches = out.results.filter((r) => /foo\.com\/x/.test(r.url));
+      expect(matches.length).toBe(1);
+    });
+
+    it('merges http-trailing-slash and https variants', async () => {
+      const engineA = makeEntry('a', [
+        makeResult('a', 'http://foo.com/x', 'page x', 'body'),
+      ]);
+      const engineB = makeEntry('b', [
+        makeResult('b', 'https://foo.com/x/', 'page x', 'body'),
+      ]);
+      verticalState.general = [engineA, engineB];
+
+      const out = await runV1Search({ query: 'foo bar baz some content' });
+      const matches = out.results.filter((r) => /foo\.com\/x/.test(r.url));
+      expect(matches.length).toBe(1);
+    });
+
+    it('does NOT merge different paths under the same host', async () => {
+      const engineA = makeEntry('a', [
+        makeResult('a', 'https://foo.com/x', 'page x', 'body'),
+      ]);
+      const engineB = makeEntry('b', [
+        makeResult('b', 'https://foo.com/y', 'page y', 'body'),
+      ]);
+      verticalState.general = [engineA, engineB];
+
+      const out = await runV1Search({ query: 'foo bar baz some content' });
+      const x = out.results.filter((r) => r.url.endsWith('/x'));
+      const y = out.results.filter((r) => r.url.endsWith('/y'));
+      expect(x.length).toBe(1);
+      expect(y.length).toBe(1);
+    });
+
+    it('canonical dedup increases engine_consensus for the merged URL', async () => {
+      // Two engines, two URL variants that canonicalize to the same form.
+      // The merged result's evidence_score.components.engine_consensus must
+      // reflect both engines contributing, not split across two rows.
+      const engineA = makeEntry('a', [
+        makeResult('a', 'https://foo.com/x?utm_source=a', 'page', 'body'),
+      ]);
+      const engineB = makeEntry('b', [
+        makeResult('b', 'https://www.foo.com/x', 'page', 'body'),
+      ]);
+      verticalState.general = [engineA, engineB];
+
+      const out = await runV1Search({ query: 'foo bar baz some content' });
+      const merged = out.results.find((r) => /foo\.com\/x/.test(r.url));
+      expect(merged).toBeDefined();
+      expect(merged!.evidence_score?.components.engine_consensus).toBe(2);
+    });
+  });
+
   it('emits _score_breakdown only when include_engine_outcomes is true', async () => {
     const engine = makeEntry('bing', [
       makeResult(
