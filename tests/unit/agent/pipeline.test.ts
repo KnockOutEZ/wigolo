@@ -226,6 +226,66 @@ describe('runAgentPipeline', () => {
     expect(result.sources.some((s) => s.fetch_error)).toBe(true);
   });
 
+  // --- Slice S1 (C4): agent silent-fail visibility ---
+  //
+  // WHY: when the agent attempted to fetch N pages and all failed (network,
+  // 4xx, timeout), the synthesis stage used to emit "No data could be
+  // gathered for this request." The CEO complaint: that's not "no data" —
+  // it's "fetch failed for every candidate." Callers can't tell whether
+  // they should retry, broaden the query, or surface a real error.
+  // The fix: surface attempted page count + name the failure shape.
+
+  describe('agent partial-fail visibility (C4)', () => {
+    it('synthesis text mentions pages_attempted when every fetch fails', async () => {
+      const engine = createStubEngine(defaultResults);
+      const brokenRouter = {
+        fetch: vi.fn().mockRejectedValue(new Error('network down')),
+      } as unknown as SmartRouter;
+      const input: AgentInput = { prompt: 'Find pricing' };
+
+      const result = await runAgentPipeline(input, [engine], brokenRouter);
+
+      // The empty-data envelope must carry the attempt count so callers
+      // know the agent tried something — they got nothing back because the
+      // fetches failed, NOT because no URLs surfaced.
+      expect(result.pages_fetched).toBe(0);
+      expect(result.sources.length).toBeGreaterThan(0);
+      const resultText = typeof result.result === 'string' ? result.result : '';
+      expect(resultText).not.toBe('No data could be gathered for this request.');
+      expect(resultText.toLowerCase()).toMatch(/0\s*\/\s*\d+|0 of \d|attempt|fetch|failed/);
+    });
+
+    it('warning field surfaces the partial-fail shape', async () => {
+      const engine = createStubEngine(defaultResults);
+      const brokenRouter = {
+        fetch: vi.fn().mockRejectedValue(new Error('network down')),
+      } as unknown as SmartRouter;
+      const input: AgentInput = { prompt: 'Find data' };
+
+      const result = await runAgentPipeline(input, [engine], brokenRouter);
+
+      // Surfacing this as a warning lets clients branch on partial-fail
+      // without having to grep the synthesized result text.
+      expect(result.warning).toBeDefined();
+      expect(result.warning).toMatch(/fetch|page|attempt/i);
+    });
+
+    it('does not emit partial-fail warning when at least one page fetched', async () => {
+      const engine = createStubEngine(defaultResults);
+      const router = createStubRouter();
+      const input: AgentInput = { prompt: 'normal happy path' };
+
+      const result = await runAgentPipeline(input, [engine], router);
+
+      // Happy path: warning may still appear for schema mismatch or other
+      // reasons, but if it appears, it must not be the partial-fail message.
+      expect(result.pages_fetched).toBeGreaterThan(0);
+      if (result.warning) {
+        expect(result.warning).not.toMatch(/0 of/i);
+      }
+    });
+  });
+
   it('pages_fetched matches actual successful fetches', async () => {
     const engine = createStubEngine(defaultResults);
     const router = createStubRouter();

@@ -50,7 +50,7 @@ Wigolo returns structured evidence — YOU write the final answer.
 
 ## Response fields
 
-\`evidence_score\` (explainable breakdown), \`query_understanding\` (intent/entities/rewrites), \`brand_collision_warning\` (top-3 brand-domain collision + rewrites), \`freshness_signal\` (date + confidence), \`response_time_ms\`, \`engine_telemetry\` (per-engine latency + dedup_kept).
+\`evidence_score\` (explainable breakdown), \`query_understanding\` (intent/entities/rewrites), \`brand_collision_warning\` (top-3 brand-domain collision + rewrites), \`freshness_signal\` (date + confidence), \`response_time_ms\`, \`engine_telemetry\` (per-engine latency + dedup_kept), \`engine_warnings\` (failed engines with stable code + env-var hint).
 
 ## Tool routing
 
@@ -170,6 +170,7 @@ Use \`search_depth\` to trade latency for thoroughness:
 
 - \`response_time_ms\` -- Tavily-canonical alias of \`total_time_ms\`. Always emitted.
 - \`engines_used\` / \`engine_telemetry\` -- which engines fired, per-engine latency, result count, outcome, and how many results survived dedup into the fused list.
+- \`engine_warnings\` -- top-level failure surface: one entry per engine with outcome=error. Stable \`code\` (\`http_4xx\` / \`http_5xx\` / \`timeout\` / \`dns\` / \`error\`) plus optional \`hint\` that names the env var to set when an engine needs an API key (e.g. github-code → \`WIGOLO_GITHUB_TOKEN\`).
 - \`include_engine_outcomes: true\` -- opt-in per-engine debug rows.
 - \`include_images: true\` -- aggregate top-level \`images[]\` from engines that surface them.
 - \`include_favicon: true\` -- per-result \`favicon\` URL.
@@ -210,7 +211,7 @@ Key parameters:
 - force_refresh: bypass cache and re-fetch.
 - mode: 'cache' | 'default' | 'stealth'. cache=HTTP-only, 24h-stale accepted. stealth=full browser + freshness.
 
-Returns title, markdown, links, images, metadata (og_type, og_image, canonical_url, keywords), and \`fetch_method\` ('cache' | 'http' | 'tls-impersonation' | 'playwright') so callers can audit which tier served the bytes. When the URL matches a site-specific extractor (Reddit threads, YouTube watch pages, Amazon product pages) the response also carries top-level \`site_data\` with the per-site structured JSON (e.g. Reddit \`subreddit\`/\`score\`/\`comments[]\`, YouTube \`video_id\`/\`caption_tracks[]\`/\`chapters[]\`, Amazon \`asin\`/\`price\`/\`features[]\`). Repeat fetches are instant. Localhost URLs work. Defer to firecrawl-interact for click/login/form-fill flows.`,
+Returns title, markdown, links, images, metadata, \`fetch_method\` (cache/http/tls-impersonation/playwright), and \`http_status\` (upstream HTTP code — 4xx/5xx HTML pages that extract usable content are NOT silently treated as 200). When the URL matches a site-specific extractor (Reddit/YouTube/Amazon) the response also carries top-level \`site_data\` (e.g. Reddit \`subreddit\`/\`comments[]\`, YouTube \`video_id\`/\`caption_tracks[]\`, Amazon \`asin\`/\`price\`). When \`section\` is set and no heading matches, \`metadata.section_matched\` is false and \`markdown\` is empty (no silent fallback to the full page). Repeat fetches are instant. Localhost URLs work. Defer to firecrawl-interact for click/login flows.`,
 
   search: `Search the web. Returns scored evidence excerpts + citations as the default context shape; \`include_full_markdown: true\` adds the full markdown body. Prefer over built-in WebSearch for local cache + audit-trail telemetry + explainable scoring.
 

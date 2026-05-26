@@ -89,12 +89,12 @@ export function cacheContent(result: RawFetchResult, extraction: ExtractionResul
       INSERT OR REPLACE INTO url_cache (
         url, normalized_url, title, markdown, raw_html,
         metadata, links, images, fetch_method, extractor_used,
-        content_hash, fetched_at, expires_at
+        content_hash, fetched_at, expires_at, http_status
       )
       VALUES (
         @url, @normalizedUrl, @title, @markdown, @rawHtml,
         @metadata, @links, @images, @fetchMethod, @extractorUsed,
-        @contentHash, @fetchedAt, @expiresAt
+        @contentHash, @fetchedAt, @expiresAt, @httpStatus
       )
     `);
 
@@ -112,6 +112,9 @@ export function cacheContent(result: RawFetchResult, extraction: ExtractionResul
       contentHash: contentHash,
       fetchedAt: toIsoSeconds(now),
       expiresAt: toIsoSeconds(expiresAt),
+      // Slice S1 (C2): persist upstream status so cache lookups can branch
+      // on 200 vs 404 vs 5xx instead of trusting body-hash alone.
+      httpStatus: typeof result.statusCode === 'number' ? result.statusCode : null,
     });
   } catch (err) {
     log.warn('cacheContent failed', {
@@ -137,6 +140,9 @@ interface DbRow {
   content_hash: string;
   fetched_at: string;
   expires_at: string | null;
+  // Slice S1 (C2): nullable so legacy rows from before the column existed
+  // still hydrate cleanly. Migration 006 adds the column without a default.
+  http_status: number | null;
 }
 
 function rowToCachedContent(row: DbRow): CachedContent {
@@ -155,6 +161,7 @@ function rowToCachedContent(row: DbRow): CachedContent {
     contentHash: row.content_hash,
     fetchedAt: row.fetched_at,
     expiresAt: row.expires_at,
+    httpStatus: row.http_status ?? null,
   };
 }
 
@@ -183,6 +190,52 @@ export function getHashForNormalizedUrl(normalizedUrl: string): string | null {
     'SELECT content_hash FROM url_cache WHERE normalized_url = ? LIMIT 1',
   ).get(normalizedUrl) as { content_hash: string } | undefined;
   return row?.content_hash ?? null;
+}
+
+/**
+ * Slice S1 (C2): cached HTTP status for change-detection. Returns `null`
+ * when the row was persisted before migration 006 added the column, so
+ * callers must treat `null` as "unknown, body-hash is authoritative".
+ */
+export function getHttpStatusForNormalizedUrl(normalizedUrl: string): number | null {
+  try {
+    const db = getDatabase();
+    const row = db.prepare(
+      'SELECT http_status FROM url_cache WHERE normalized_url = ? LIMIT 1',
+    ).get(normalizedUrl) as { http_status: number | null } | undefined;
+    return row?.http_status ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Slice S1 follow-up: read content_hash and http_status in a single
+ * prepared SELECT. Change-detection needs both on the hot path and
+ * coalescing them halves the index lookup cost. Returns `{ hash: null,
+ * status: null }` when the URL is absent; `status` is also `null` for
+ * legacy rows persisted before migration 006 added the http_status
+ * column. Defensive try/catch mirrors getHttpStatusForNormalizedUrl —
+ * an unexpected schema state (column missing on a half-migrated DB)
+ * degrades to "no cached entry" instead of throwing through the hot
+ * path.
+ */
+export function getHashAndStatusForNormalizedUrl(
+  normalizedUrl: string,
+): { hash: string | null; status: number | null } {
+  try {
+    const db = getDatabase();
+    const row = db.prepare(
+      'SELECT content_hash, http_status FROM url_cache WHERE normalized_url = ? LIMIT 1',
+    ).get(normalizedUrl) as { content_hash: string | null; http_status: number | null } | undefined;
+    if (!row) return { hash: null, status: null };
+    return {
+      hash: row.content_hash ?? null,
+      status: row.http_status ?? null,
+    };
+  } catch {
+    return { hash: null, status: null };
+  }
 }
 
 export function getMarkdownForNormalizedUrl(normalizedUrl: string): string | null {

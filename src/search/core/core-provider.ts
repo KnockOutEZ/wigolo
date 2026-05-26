@@ -21,6 +21,7 @@ import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
 import { detectBrandCollision } from './brand-collision.js';
 import { computeFreshnessSignal } from './freshness.js';
 import { buildQueryUnderstanding } from './query-understanding.js';
+import { buildEngineWarnings } from './engine-warnings.js';
 import { faviconUrlFor } from './favicon.js';
 import { runSynthesis } from '../answer-synthesis.js';
 import { applyEvidenceDefault, renderCitationsXml } from '../evidence.js';
@@ -353,6 +354,10 @@ export class CoreSearchProvider implements SearchProvider {
     }
 
     const totalTimeMs = Date.now() - start;
+    // Slice S1 (M2): promote per-engine errors out of debug-only telemetry
+    // into a top-level array so every caller sees broken engines. Empty
+    // array on cache hits or all-ok runs (cleaner than `undefined?.length`).
+    const engineWarnings = buildEngineWarnings(engineTelemetry);
     const data: SearchOutput = {
       results: items,
       query: displayQuery,
@@ -364,6 +369,9 @@ export class CoreSearchProvider implements SearchProvider {
       query_understanding: queryUnderstanding,
       ...(engineOutcomes ? { engine_outcomes: engineOutcomes } : {}),
       ...(engineTelemetry ? { engine_telemetry: engineTelemetry } : {}),
+      // Always emit on engine-pool path (telemetry present); cache hits
+      // intentionally omit since there's no telemetry to source from.
+      ...(engineTelemetry ? { engine_warnings: engineWarnings } : {}),
     };
 
     const collisionWarning = detectBrandCollision(

@@ -119,3 +119,73 @@ describe('engine_telemetry (sub-ticket 3.13)', () => {
     expect(ddg!.result_count).toBe(0);
   });
 });
+
+// --- Slice S1 (M2): engine_warnings top-level surface ---
+//
+// WHY: integration test at the search-provider boundary, per memory
+// `feedback_slice_brief_integration_surface`. Module-level unit tests live
+// in tests/unit/search/engine-warnings.test.ts; this asserts the wiring.
+
+function makeHttpStatusFailingEntry(name: string, status: number): EngineEntry {
+  const engine: SearchEngine = {
+    name,
+    search: vi.fn(async () => {
+      throw new Error(`${name} returned ${status}`);
+    }),
+  };
+  return { engine };
+}
+
+describe('engine_warnings (M2) — top-level search response surface', () => {
+  it('emits empty engine_warnings when no engine errored', async () => {
+    verticalState.general = [
+      makeEntry('bing', [makeResult('bing', 'https://a.com/x')]),
+    ];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: 'q', include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(Array.isArray(out.data.engine_warnings)).toBe(true);
+    expect(out.data.engine_warnings).toEqual([]);
+  });
+
+  it('promotes a 400 engine failure into engine_warnings with http_400 code', async () => {
+    verticalState.general = [
+      makeEntry('bing', [makeResult('bing', 'https://a.com/x')]),
+      makeHttpStatusFailingEntry('lobsters', 400),
+    ];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: 'q', include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const warn = out.data.engine_warnings!.find((w) => w.engine === 'lobsters');
+    expect(warn).toBeDefined();
+    expect(warn!.code).toBe('http_400');
+    expect(warn!.hint).toBeUndefined();
+  });
+
+  it('promotes a github-code 401 with the WIGOLO_GITHUB_TOKEN env hint', async () => {
+    verticalState.general = [
+      makeEntry('bing', [makeResult('bing', 'https://a.com/x')]),
+      makeHttpStatusFailingEntry('github-code', 401),
+    ];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: 'q', include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const warn = out.data.engine_warnings!.find((w) => w.engine === 'github-code');
+    expect(warn).toBeDefined();
+    expect(warn!.code).toBe('http_401');
+    // env-var hint must mention the token name so users can act on it.
+    expect(warn!.hint).toMatch(/WIGOLO_GITHUB_TOKEN/);
+  });
+});

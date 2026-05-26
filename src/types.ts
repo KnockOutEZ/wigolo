@@ -103,6 +103,14 @@ export interface FetchOutput {
   /** Which tier produced the bytes — see FetchMethod. Always emitted on
    * successful responses; absent only on StageError replies. */
   fetch_method?: FetchMethod;
+  /**
+   * Upstream HTTP status code. Surfaced so callers can branch on 404 / 403 /
+   * 5xx pages that still render usable HTML (a missing-docs landing page is
+   * legitimately fetchable but should not be confused with a successful 200
+   * by the cache or change-detection layers). Absent on cache hits when the
+   * cached row predates the column being persisted.
+   */
+  http_status?: number;
 }
 
 export interface RawFetchResult {
@@ -183,6 +191,14 @@ export interface CachedContent {
   contentHash: string;
   fetchedAt: string;
   expiresAt: string | null;
+  /**
+   * Upstream HTTP status code captured at fetch time. `null` on rows
+   * persisted before the column existed; treated as "unknown" by callers.
+   * Cache + change-detection compare status alongside content hash so a
+   * 200→404 transition counts as a change even when the body bytes happen
+   * to hash identically.
+   */
+  httpStatus?: number | null;
 }
 
 export interface Extractor {
@@ -298,6 +314,26 @@ export interface EngineTelemetry {
   error?: string;
 }
 
+/**
+ * Slice S1 (M2): top-level engine failure surface. Engine errors used to
+ * be visible only when callers opted into `include_engine_outcomes` — that
+ * meant a 401 (missing token) or 400 (engine outage) only showed up in
+ * debug-shaped telemetry. `engine_warnings` promotes the same information
+ * to the default response so every caller sees broken engines without
+ * extra flags. For 401s on engines that document an API-key env var, the
+ * `hint` field names the var so users can fix the gap quickly.
+ */
+export interface EngineWarning {
+  engine: string;
+  /** Stable failure code: 'http_4xx' / 'http_5xx' / 'http_<code>' / generic
+   * 'error' for non-HTTP failures (DNS, abort, timeout). */
+  code: string;
+  /** One-line human-readable explanation drawn from the engine's error. */
+  message?: string;
+  /** Actionable next step, e.g. "set WIGOLO_GITHUB_TOKEN to lift the 401". */
+  hint?: string;
+}
+
 export type FreshnessConfidence =
   | 'extracted'
   | 'inferred-url'
@@ -364,6 +400,12 @@ export interface SearchOutput {
    * per-engine name, latency, result count, outcome, and how many of that
    * engine's results survived dedup into the final fused list. */
   engine_telemetry?: EngineTelemetry[];
+  /** Slice S1 (M2): top-level failure surface, always emitted on the
+   * engine-pool path (empty array when no engine errored). Promotes
+   * `engine_telemetry.outcome === 'error'` entries into a flat list with a
+   * stable failure code + optional env-var hint so callers branch on
+   * engine health without parsing telemetry. */
+  engine_warnings?: EngineWarning[];
   /** Set to `quota_exceeded` when format=answer hit a provider quota wall
    * (e.g. gemini free-tier 429) and the result is a heuristic fallback. */
   synthesis_status?: 'quota_exceeded';

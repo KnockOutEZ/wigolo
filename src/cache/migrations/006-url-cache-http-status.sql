@@ -1,0 +1,8 @@
+-- Slice S1 (C2): persist upstream http_status on every cached fetch so
+-- cache + change-detection can distinguish 200/404/5xx pages that may hash
+-- identically (e.g. empty bodies). The column is nullable so legacy rows
+-- stay readable; callers branch on `null` as "unknown".
+--
+-- The ALTER is gated in the JS postStep below because SQLite has no
+-- `ADD COLUMN IF NOT EXISTS` and migrations must be idempotent against
+-- existing installs that may have been hand-patched.

@@ -13,6 +13,7 @@ import {
   clearCacheEntries,
   getHashForNormalizedUrl,
   getMarkdownForNormalizedUrl,
+  getHashAndStatusForNormalizedUrl,
 } from '../../../src/cache/store.js';
 import type { RawFetchResult, ExtractionResult, CachedContent } from '../../../src/types.js';
 import type { SearchResultItem } from '../../../src/types.js';
@@ -605,5 +606,72 @@ describe('getMarkdownForNormalizedUrl', () => {
 
     const md = getMarkdownForNormalizedUrl(normalizeUrl('https://example.com/long'));
     expect(md).toBe(longContent);
+  });
+});
+
+// --- Slice S1 follow-up: coalesce hash + http_status into a single SELECT.
+//
+// WHY: change-detector previously did two indexed SELECTs against the same
+// normalized_url to read content_hash and http_status separately. Combining
+// them into one SELECT halves the index lookup cost on the hot path that
+// gates "is this content actually new?" decisions across crawls and
+// re-fetches.
+
+describe('getHashAndStatusForNormalizedUrl', () => {
+  beforeEach(() => {
+    initDatabase(':memory:');
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  it('returns both hash and status for a cached URL with status persisted', () => {
+    const raw = makeRaw('https://example.com/page');
+    const extraction = makeExtraction({ markdown: 'body' });
+    cacheContent(raw, extraction);
+
+    const out = getHashAndStatusForNormalizedUrl(normalizeUrl('https://example.com/page'));
+    expect(out.hash).toBeDefined();
+    expect(out.hash).not.toBeNull();
+    expect(typeof out.hash).toBe('string');
+    expect(out.hash!.length).toBe(64);
+    expect(out.status).toBe(200);
+  });
+
+  it('returns status=null when the row has a hash but no http_status (legacy / pre-migration)', () => {
+    const raw: RawFetchResult = {
+      url: 'https://example.com/legacy',
+      finalUrl: 'https://example.com/legacy',
+      html: '<html><body>x</body></html>',
+      contentType: 'text/html',
+      // No statusCode at all — simulates a legacy persisted row.
+      method: 'http',
+      headers: {},
+    } as unknown as RawFetchResult;
+    cacheContent(raw, makeExtraction({ markdown: 'legacy' }));
+
+    const out = getHashAndStatusForNormalizedUrl(normalizeUrl('https://example.com/legacy'));
+    expect(out.hash).not.toBeNull();
+    expect(out.hash!.length).toBe(64);
+    expect(out.status).toBeNull();
+  });
+
+  it('returns hash=null and status=null when the URL is absent from cache', () => {
+    const out = getHashAndStatusForNormalizedUrl('https://uncached.example.com/missing');
+    expect(out.hash).toBeNull();
+    expect(out.status).toBeNull();
+  });
+
+  it('agrees with the single-column helpers for a populated row', () => {
+    const raw = makeRaw('https://example.com/agree');
+    cacheContent(raw, makeExtraction({ markdown: 'agree-body' }));
+    const norm = normalizeUrl('https://example.com/agree');
+
+    const combined = getHashAndStatusForNormalizedUrl(norm);
+    const standaloneHash = getHashForNormalizedUrl(norm);
+    expect(combined.hash).toBe(standaloneHash);
+    // status should match what was persisted (200 from makeRaw).
+    expect(combined.status).toBe(200);
   });
 });

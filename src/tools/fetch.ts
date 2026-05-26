@@ -76,6 +76,14 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     markdown = truncateSmartly(markdown, input.max_content_chars);
   }
 
+  // Slice S1 (C3): section_matched=false must NOT serve the full body —
+  // returning the whole page when the caller explicitly asked for a section
+  // is the audit's classic "silent-failure" mode. Empty the body and leave
+  // section_matched=false visible so the caller can branch.
+  if (sectionMatched === false) {
+    markdown = '';
+  }
+
   const out: FetchOutput = {
     url: cached.url,
     title: cached.title,
@@ -89,6 +97,9 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     cached: true,
     cached_at: cached.fetchedAt,
     fetch_method: 'cache',
+    // Slice S1 (C2): surface the recorded HTTP status when available. Null
+    // means the row predates the column; we simply omit the field.
+    ...(typeof cached.httpStatus === 'number' ? { http_status: cached.httpStatus } : {}),
   };
   capAuxFields(out, input.max_content_chars);
   return out;
@@ -185,7 +196,10 @@ export async function handleFetch(
 
     let changeResult: { changed: boolean; previousHash?: string; diffSummary?: string } | undefined;
     try {
-      changeResult = detectChange(raw.finalUrl, extraction.markdown);
+      // Slice S1 (C2): pass the upstream status code so a 200→404 transition
+      // (or vice-versa) is reported as changed even when the body hash
+      // happens to match — the previous implementation was status-blind.
+      changeResult = detectChange(raw.finalUrl, extraction.markdown, raw.statusCode);
     } catch (err) {
       log.warn('change detection failed', { url: raw.finalUrl, error: String(err) });
     }
@@ -205,15 +219,43 @@ export async function handleFetch(
       log.debug('embedding hook skipped', { error: String(err) });
     }
 
-    const finalMarkdown = input.max_content_chars !== undefined
+    // Slice S1 (C3): when the caller asked for a section, detect whether
+    // the extractor's pipeline actually matched a heading. The v1 pipeline
+    // currently slices to the section internally but does not signal a
+    // miss — we re-run extractSection on the cleaned markdown to determine
+    // match success at the tool layer so we can guard the body the same way
+    // the cached path does. This double-call is cheap (linear in markdown
+    // length) and only fires when `input.section` is set. The probe is
+    // wrapped in a defensive try-catch so a mocked / replaced extractSection
+    // (test environment) never breaks the production code path.
+    let freshSectionMatched: boolean | undefined;
+    if (input.section) {
+      try {
+        const probe = extractSection(extraction.markdown, input.section, input.section_index);
+        if (probe && typeof probe.matched === 'boolean') {
+          freshSectionMatched = probe.matched;
+        }
+      } catch (err) {
+        log.debug('section match probe failed', { url: raw.finalUrl, error: String(err) });
+      }
+    }
+
+    let finalMarkdown = input.max_content_chars !== undefined
       ? truncateSmartly(extraction.markdown, input.max_content_chars)
       : extraction.markdown;
+
+    if (freshSectionMatched === false) {
+      finalMarkdown = '';
+    }
 
     const out: FetchOutput = {
       url: raw.finalUrl,
       title: extraction.title,
       markdown: finalMarkdown,
-      metadata: extraction.metadata,
+      metadata: {
+        ...extraction.metadata,
+        ...(freshSectionMatched !== undefined ? { section_matched: freshSectionMatched } : {}),
+      },
       links: extraction.links,
       images: extraction.images,
       screenshot: raw.screenshot,
@@ -222,6 +264,10 @@ export async function handleFetch(
       // Propagate the router-chosen tier name onto the public response so
       // callers can audit which path served the bytes (P2 visibility).
       fetch_method: raw.method,
+      // Slice S1 (C2): always surface the upstream status code on fresh
+      // fetches so callers / cache consumers can distinguish 200 / 404 /
+      // 5xx pages that may extract to a usable HTML body.
+      ...(typeof raw.statusCode === 'number' ? { http_status: raw.statusCode } : {}),
       ...(raw.jsRequired ? { js_required: true } : {}),
       ...(changeResult?.changed ? {
         changed: true,

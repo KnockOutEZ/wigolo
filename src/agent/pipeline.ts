@@ -107,7 +107,11 @@ export async function runAgentPipeline(
     }
 
     const synthStart = Date.now();
-    const { result, samplingUsed, llmUsed } = await synthesizeResult(input.prompt, sources, server);
+    const { result, samplingUsed, llmUsed } = await synthesizeResult(
+      input.prompt,
+      sources,
+      server,
+    );
 
     const resultLen = typeof result === 'string' ? result.length : JSON.stringify(result).length;
     const synthPath = samplingUsed
@@ -121,6 +125,16 @@ export async function runAgentPipeline(
       time_ms: Date.now() - synthStart,
     });
 
+    // Slice S1 (C4): when every fetch failed but the planner produced URLs,
+    // surface that as a partial-fail warning so callers don't see "No data
+    // could be gathered" with zero context. The synthesis text already
+    // mentions the attempt count; the warning gives clients a structured
+    // pivot point for retry / broadening logic.
+    const partialFailWarning =
+      sources.length > 0 && pagesFetched === 0
+        ? `fetch failed for all ${sources.length} candidate page(s); no content available for synthesis`
+        : undefined;
+
     return {
       result,
       sources,
@@ -128,7 +142,7 @@ export async function runAgentPipeline(
       steps,
       total_time_ms: Date.now() - start,
       sampling_supported: !!server && checkSamplingSupport(server),
-      ...(schemaWarning ? { warning: schemaWarning } : {}),
+      ...(schemaWarning ? { warning: schemaWarning } : partialFailWarning ? { warning: partialFailWarning } : {}),
     };
   } catch (err) {
     log.error('agent pipeline failed', {
@@ -194,6 +208,24 @@ async function synthesizeResult(
   const fetchedSources = sources.filter((s) => s.fetched && s.markdown_content.length > 0);
 
   if (fetchedSources.length === 0) {
+    // Slice S1 (C4): never claim "no data" when the planner did surface
+    // candidate URLs. Name the attempt count so callers can tell apart
+    // "fetches all failed" from "search returned nothing" — both shapes
+    // used to collapse to the same blank message.
+    if (sources.length > 0) {
+      const failed = sources.filter((s) => !s.fetched).length;
+      const reasonSnippets = sources
+        .map((s) => s.fetch_error)
+        .filter((e): e is string => typeof e === 'string' && e.length > 0)
+        .slice(0, 3);
+      const reasonClause = reasonSnippets.length > 0
+        ? ` (e.g. ${reasonSnippets.join('; ')})`
+        : '';
+      return {
+        result: `Attempted ${sources.length} page(s) but ${failed} fetch(es) failed${reasonClause}. 0 of ${sources.length} pages yielded content — try again with a broader query, different URLs, or check upstream availability.`,
+        samplingUsed: false,
+      };
+    }
     return { result: 'No data could be gathered for this request.', samplingUsed: false };
   }
 
