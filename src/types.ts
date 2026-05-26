@@ -870,12 +870,28 @@ export interface ExtractOutput {
   truncated?: boolean;
 }
 
-// --- Brand extraction (slice A1 placeholder, full shape lands in B2a) ---
+// --- Brand extraction ---
+
+import type {
+  LogoProvenance,
+  ColorsProvenance,
+  FontsProvenance,
+} from './extraction/brand-provenance.js';
 
 /**
- * Structural placeholder for the `extract mode: 'brand'` payload. Slice A1
- * registers the surface; slice B2a fills DOM/meta sources, slice B2b adds
- * palette extraction. All fields are optional until the real extractor lands.
+ * Output shape for `extract mode: 'brand'`.
+ *
+ * Honesty contract (slice 4 / flaw M3):
+ *   - `name` is set ONLY when an explicit source emits it (JSON-LD,
+ *     og:site_name, heuristic <img alt>). The page <title> tail is NEVER
+ *     a name source — it's typically a tagline.
+ *   - `logo_url` is set ONLY when a real logo source emits it (JSON-LD
+ *     logo, og:logo, heuristic DOM logo). Favicons NEVER promote to
+ *     logo_url. The `favicon_url` and `logo_url` fields are independent.
+ *
+ * Provenance enums (slice 4 / flaw L3): the value space is single-sourced
+ * from `src/extraction/brand-provenance.ts`. Add new values THERE first;
+ * this type derives from those arrays.
  */
 export interface BrandExtractionOutput {
   name?: string;
@@ -885,7 +901,7 @@ export interface BrandExtractionOutput {
   logo_url?: string;
   favicon_url?: string;
   og_image_url?: string;
-  /** Hex codes from CSS vars (B2a) or palette extraction (B2b). */
+  /** Hex codes from CSS vars or palette extraction. */
   primary_colors?: string[];
   fonts?: {
     headings?: string[];
@@ -898,9 +914,9 @@ export interface BrandExtractionOutput {
     [platform: string]: string | undefined;
   };
   provenance?: {
-    logo?: 'json-ld' | 'og:logo' | 'link[rel=icon]' | 'heuristic' | 'unknown';
-    colors?: 'css-vars' | 'palette-extraction' | 'unknown';
-    fonts?: 'css-vars' | 'inline-style' | 'css-rule' | 'google-fonts-link' | 'unknown';
+    logo?: LogoProvenance;
+    colors?: ColorsProvenance;
+    fonts?: FontsProvenance;
   };
 }
 

@@ -1100,10 +1100,10 @@ export function extractBrand(
   // 4. Heuristic DOM logo.
   const heuristicLogo = extractHeuristicLogo(doc, baseUrl);
 
-  // Logo precedence: JSON-LD > og:logo > og:image (only when no other logo
-  // candidate beats it) > heuristic > favicon.
-  // og:image is a poor logo substitute because it's usually a hero image —
-  // we record it separately and only promote to logo if nothing else exists.
+  // Logo precedence: JSON-LD > og:logo > heuristic DOM.
+  // Honesty contract (M3): favicons NEVER promote to logo. A favicon is a
+  // 16x16 / 32x32 browser tab icon — surfacing it as `logo_url` makes
+  // brand cards look like pixel soup. The favicon stays in `favicon_url`.
   let logoUrl: string | undefined;
   let logoProvenance: ProvenanceLogo = 'unknown';
 
@@ -1120,24 +1120,25 @@ export function extractBrand(
   } else if (heuristicLogoUrl) {
     logoUrl = heuristicLogoUrl;
     logoProvenance = 'heuristic';
-  } else if (favicon) {
-    logoUrl = favicon.url;
-    logoProvenance = 'link[rel=icon]';
   }
+  // No fallback to favicon — that's a different field with its own provenance.
 
-  // Name precedence: JSON-LD > og:site_name > heuristic alt text > <title>.
+  // Name precedence: JSON-LD > og:site_name > heuristic alt text.
+  // Honesty contract (M3): the page <title> is NOT a name source. A title
+  // like "Home \\ Anthropic" or "Build software faster | Acme" carries
+  // the tagline first; splitting on " | " and using the prefix as `name`
+  // gave us tagline-as-name on Anthropic.com (the audit M3 case). When
+  // no explicit name source exists, `name` stays undefined and the caller
+  // can decide whether to render a placeholder.
   const titleRaw = doc.querySelector('title')?.textContent?.trim();
   const title = titleRaw && titleRaw.length > 0 ? titleRaw : undefined;
 
-  const name = firstNonEmpty(
-    jsonld.name,
-    og.name,
-    heuristicLogo.alt,
-    // Title is the noisiest fallback — strip common suffixes.
-    title?.split(/\s+[|·—–-]\s+/)[0],
-  );
+  const name = firstNonEmpty(jsonld.name, og.name, heuristicLogo.alt);
 
-  // Tagline: og:title (when distinct from name) > <title> tail.
+  // Tagline: og:title (when distinct from name) > <title> tail (only when
+  // name is known and the title contains it — otherwise we can't isolate
+  // the tail from the brand portion). Without a known name, we don't try
+  // to split a title into "tail" — it could be the brand itself.
   let tagline: string | undefined = og.tagline;
   if (!tagline && title && name && title.includes(name)) {
     const parts = title.split(/\s+[|·—–-]\s+/);

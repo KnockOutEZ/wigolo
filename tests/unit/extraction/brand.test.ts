@@ -186,14 +186,19 @@ describe('extractBrand — heuristic DOM logo', () => {
     expect(out.provenance?.logo).toBe('json-ld');
   });
 
-  it('falls back to favicon only when JSON-LD, og:logo, and DOM heuristics all miss', () => {
+  it('does NOT promote favicon to logo_url when no real logo source exists (M3 honesty)', () => {
+    // Slice 4 / M3: favicons never promote to `logo_url`. A favicon is a
+    // 16x16/32x32 browser tab icon — surfacing it as a logo gives callers
+    // pixelated brand cards. The favicon stays in its own field; logo_url
+    // is undefined and provenance is 'unknown'.
     const html = wrap(`
       <link rel="icon" type="image/svg+xml" href="/favicon.svg">
       <title>FaviconOnly</title>
     `);
     const out = extractBrand(html, { baseUrl: 'https://x.example/' });
-    expect(out.logo_url).toBe('https://x.example/favicon.svg');
-    expect(out.provenance?.logo).toBe('link[rel=icon]');
+    expect(out.logo_url).toBeUndefined();
+    expect(out.favicon_url).toBe('https://x.example/favicon.svg');
+    expect(out.provenance?.logo).toBe('unknown');
   });
 });
 
@@ -497,16 +502,20 @@ describe('extractBrand — font hints', () => {
 describe('extractBrand — URL safety', () => {
   it('drops javascript: / mailto: / data: schemes from logo_url and favicon_url', () => {
     // A malformed page must never produce a logo_url that, when followed,
-    // would execute JavaScript. This is a safety contract.
+    // would execute JavaScript. This is a safety contract. After slice-4 /
+    // M3 dropped the favicon→logo fallback, logo_url may be undefined here
+    // (the only "logo" candidate is a javascript: URL that gets rejected,
+    // and we no longer fall back to favicon). Honest undefined is fine;
+    // a javascript: URL would NOT be.
     const html = `<!doctype html><html><head>
       <link rel="icon" href="javascript:alert(1)">
     </head><body>
       <header><a href="/"><img src="javascript:alert(2)" alt="X"></a></header>
     </body></html>`;
     const out = extractBrand(html, { baseUrl: 'https://x.example/' });
-    expect(out.logo_url).not.toMatch(/^javascript:/);
-    expect(out.favicon_url).not.toMatch(/^javascript:/);
-    expect(out.logo_url).not.toMatch(/^mailto:/);
+    expect(out.logo_url ?? '').not.toMatch(/^javascript:/);
+    expect(out.favicon_url ?? '').not.toMatch(/^javascript:/);
+    expect(out.logo_url ?? '').not.toMatch(/^mailto:/);
   });
 
   it('drops file: scheme from logo_url, favicon_url, og_image_url', () => {
