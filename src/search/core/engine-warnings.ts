@@ -35,13 +35,32 @@ const ENGINE_AUTH_HINTS: Record<string, string> = {
   // search limit. The token is read by the existing adapter; the hint names
   // the env var so users can set it in their MCP host config.
   'github-code': 'set WIGOLO_GITHUB_TOKEN to lift GitHub API rate limits',
+  // Slice S11a: Brave Image is gated behind the same key as the Brave web
+  // engine. When the orchestrator dispatches the adapter and the key is
+  // missing, the adapter raises `BRAVE_API_KEY not set ...` which we
+  // detect below and convert to a `needs_key` warning code.
+  'brave-image': 'set BRAVE_API_KEY to enable Brave image search',
+  brave: 'set BRAVE_API_KEY to enable the Brave web engine',
 };
+
+/**
+ * Pattern that flags an engine error as a "missing API key" failure. The
+ * legacy 401/403 path catches token-rejected calls; this catches the case
+ * where the adapter refuses to dispatch at all because no key is configured
+ * (a more honest signal than letting the call leave the box with no token).
+ */
+const MISSING_KEY_PATTERN = /\b([A-Z][A-Z0-9_]+_API_KEY|GITHUB_TOKEN|BRAVE_API_KEY)\b.*not set\b|\bnot set\b.*\b([A-Z][A-Z0-9_]+_API_KEY|GITHUB_TOKEN|BRAVE_API_KEY)\b|set\s+([A-Z][A-Z0-9_]+_API_KEY|GITHUB_TOKEN|BRAVE_API_KEY)/;
 
 /**
  * Extract a stable failure code from an engine's error message. Engines
  * raise strings like "GitHub code returned 401" or "Lobsters returned 400"
  * — we pull the numeric status out so callers can match on it. Falls back
  * to `'error'` when no HTTP-status pattern is found (DNS, timeout, abort).
+ *
+ * Slice S11a: adds `needs_key` for messages naming a missing API-key env
+ * var (e.g. `"BRAVE_API_KEY not set"`). HTTP status detection takes
+ * precedence so a 401 from a configured-but-rejected key still surfaces
+ * as `http_401` and the env-hint comes from the auth-hint table.
  */
 function classifyError(message: string | undefined): { code: string; httpStatus: number | null } {
   if (typeof message !== 'string' || message.length === 0) {
@@ -53,6 +72,13 @@ function classifyError(message: string | undefined): { code: string; httpStatus:
     if (status >= 400 && status < 600) {
       return { code: `http_${status}`, httpStatus: status };
     }
+  }
+  // Missing API key — the adapter refused to dispatch because the env var
+  // was unset. Distinct from a 401 (key present but rejected) so callers
+  // can branch on the remediation: a 401 means rotate / re-issue the key,
+  // a `needs_key` means set it.
+  if (MISSING_KEY_PATTERN.test(message)) {
+    return { code: 'needs_key', httpStatus: null };
   }
   // Common non-HTTP shapes the adapters surface.
   if (/timeout|aborted|abort/i.test(message)) {
@@ -91,9 +117,14 @@ export function buildEngineWarnings(
       ...(t.error ? { message: t.error } : {}),
     };
     // Auth-shaped failures get the documented env-var hint when the engine
-    // appears in the registry. Stick to 401/403 — other 4xx codes are
-    // usually engine-side bugs we can't help with.
+    // appears in the registry. Stick to 401/403 for HTTP outcomes — other
+    // 4xx codes are usually engine-side bugs we can't help with.
     if ((httpStatus === 401 || httpStatus === 403) && ENGINE_AUTH_HINTS[t.name]) {
+      warning.hint = ENGINE_AUTH_HINTS[t.name];
+    }
+    // `needs_key` failures always attach the hint (when registered) — the
+    // whole point of the code is to name the missing env var.
+    if (code === 'needs_key' && ENGINE_AUTH_HINTS[t.name]) {
       warning.hint = ENGINE_AUTH_HINTS[t.name];
     }
     warnings.push(warning);

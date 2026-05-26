@@ -220,8 +220,15 @@ describe('classifyIntent', () => {
   });
 
   describe('VERTICALS export', () => {
-    it('exports all five verticals', () => {
-      expect(VERTICALS).toEqual(['general', 'news', 'code', 'docs', 'papers']);
+    it('exports all six verticals (images added in S11a to close audit H7)', () => {
+      expect(VERTICALS).toEqual([
+        'general',
+        'news',
+        'code',
+        'docs',
+        'papers',
+        'images',
+      ]);
     });
   });
 });

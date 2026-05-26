@@ -13,6 +13,7 @@ import { initDatabase, closeDatabase } from '../cache/db.js';
 import { getCacheStats } from '../cache/store.js';
 import { getBackgroundIndexQueue } from '../embedding/background-queue.js';
 import { loadFeedConfig } from '../search/core/rss/feed-config.js';
+import { getEngineHealthSummary, type EngineHealthEntry } from '../search/core/engine-health.js';
 import { isTelemetryEnabled } from './telemetry.js';
 import { allProviders, providerEnvVar, selectProvider } from '../integrations/cloud/llm/select.js';
 import { resolveModel, providerDefaultModel, providerModelEnvVar } from '../integrations/cloud/llm/model-select.js';
@@ -129,6 +130,37 @@ function probeWreqJsAvailable(): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Format the engine-health summary for doctor output. Pure so the lines can
+ * be asserted from tests without spinning up the whole CLI. Returns one
+ * string per line (no trailing newlines). Slice S11a — adds per-engine
+ * status visibility for the cold-start health check.
+ *
+ *   ok        → "  bing            general    ok"
+ *   needs-key → "  github-code     code       needs-key (set WIGOLO_GITHUB_TOKEN ...)"
+ *   disabled  → "  brave           general    disabled (set BRAVE_API_KEY ...)"
+ *
+ * Sorted by vertical then engine name so the same registry produces the
+ * same output every run.
+ */
+export function formatEngineHealthLines(entries: EngineHealthEntry[]): string[] {
+  if (entries.length === 0) {
+    return ['  (no engines configured)'];
+  }
+  const sorted = [...entries].sort((a, b) => {
+    if (a.vertical !== b.vertical) return a.vertical.localeCompare(b.vertical);
+    return a.name.localeCompare(b.name);
+  });
+  const lines: string[] = [];
+  for (const e of sorted) {
+    const name = e.name.padEnd(15);
+    const vertical = e.vertical.padEnd(10);
+    const suffix: string = e.status !== 'ok' && e.hint ? `${e.status} (${e.hint})` : e.status;
+    lines.push(`  ${name} ${vertical} ${suffix}`);
+  }
+  return lines;
 }
 
 /**
@@ -275,6 +307,23 @@ async function runDoctorInner(dataDir: string): Promise<number> {
     const { SIGNAL_NAMES } = await import('../search/hybrid/signals.js');
     out(`  hybrid mode:   core runs first; falls back to searxng + RRF merge when any signal fires`);
     out(`  signals:       ${SIGNAL_NAMES.join(', ')}`);
+  }
+
+  // Slice S11a: cold-start engine health summary. Registry-level — we don't
+  // dispatch a live query; we just inspect the pools + the env-var contract.
+  // Broken engines surface visibly without blocking startup or doctor exit.
+  out('');
+  out('[wigolo doctor] Search engines:');
+  try {
+    const engineHealth = getEngineHealthSummary();
+    for (const line of formatEngineHealthLines(engineHealth)) {
+      out(line);
+    }
+  } catch (err) {
+    // Engine pool construction should never throw, but degrade gracefully if
+    // a vertical fails to load — doctor must keep going.
+    const msg = err instanceof Error ? err.message : String(err);
+    out(`  (engine health summary failed: ${msg.slice(0, 80)})`);
   }
 
   out('');

@@ -120,16 +120,16 @@ export class CoreSearchProvider implements SearchProvider {
       };
     }
 
-    if (input.category === 'images') {
-      return {
-        ok: false,
-        error: 'unsupported_category',
-        error_reason: 'images vertical not supported in core — set WIGOLO_SEARCH=searxng for legacy image search, or omit category for a general search',
-        stage: 'search',
-      };
-    }
+    // Slice S11a (H7): the images vertical is now first-class on core via
+    // the DDG Image (zero-key) + Brave Image (key-gated) adapters. Earlier
+    // releases returned `unsupported_category` here; that branch is gone.
     const category = input.category;
     const depth = input.search_depth ?? 'balanced';
+    // For image search the per-result `url` is the SOURCE page, not the
+    // asset — fetching it would extract HTML the caller didn't ask for and
+    // waste budget. We short-circuit include_content so the orchestrator
+    // never spins up the router pool for an images call.
+    const isImagesCategory = category === 'images';
 
     const start = Date.now();
 
@@ -327,6 +327,13 @@ export class CoreSearchProvider implements SearchProvider {
           ...(r.evidence_score ? { evidence_score: r.evidence_score } : {}),
           ...(r.image_url ? { image_url: r.image_url } : {}),
           ...(r.image_alt ? { image_alt: r.image_alt } : {}),
+          // Image-search fields (Slice S11a): only set when the engine carried
+          // them — non-image engines leave these undefined so the response
+          // shape stays slim for general/code/docs/papers verticals.
+          ...(r.thumbnail_url ? { thumbnail_url: r.thumbnail_url } : {}),
+          ...(typeof r.width === 'number' && typeof r.height === 'number'
+            ? { width: r.width, height: r.height }
+            : {}),
           ...(r._score_breakdown ? { _score_breakdown: r._score_breakdown } : {}),
         };
       });
@@ -334,8 +341,10 @@ export class CoreSearchProvider implements SearchProvider {
       searchElapsed = Date.now() - start;
 
       // fast tier short-circuits content fetch; ultra-fast already returned
-      // before reaching this block.
-      const includeContent = input.include_content !== false && depth !== 'fast';
+      // before reaching this block. Image search also skips fetch — the
+      // per-result `url` is the source page, not the asset, and callers who
+      // asked for image search don't want HTML extracted into markdown_content.
+      const includeContent = input.include_content !== false && depth !== 'fast' && !isImagesCategory;
       if (includeContent && ctx.router && items.length > 0) {
         const config = getConfig();
         const fetchStart = Date.now();
@@ -412,13 +421,22 @@ export class CoreSearchProvider implements SearchProvider {
       detectLexicalCollision(displayQuery);
     if (collisionWarning) data.brand_collision_warning = collisionWarning;
 
-    if (input.include_images) {
+    if (input.include_images || isImagesCategory) {
+      // S11a: when the caller asked for the images category explicitly, we
+      // ALWAYS aggregate the top-level `images[]` array (even without
+      // include_images=true) — the contract of `category: 'images'` is that
+      // image data is the primary payload, not an opt-in extra.
       data.images = items
         .filter((it) => typeof it.image_url === 'string' && it.image_url.length > 0)
         .map((it) => ({
           url: it.image_url!,
           ...(it.image_alt ? { alt: it.image_alt } : {}),
           source_url: it.url,
+          ...(it.thumbnail_url ? { thumbnail_url: it.thumbnail_url } : {}),
+          ...(typeof it.width === 'number' && typeof it.height === 'number'
+            ? { width: it.width, height: it.height }
+            : {}),
+          ...(it.title ? { title: it.title } : {}),
         }));
     }
 

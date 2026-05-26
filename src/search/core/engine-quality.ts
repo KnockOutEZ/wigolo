@@ -62,6 +62,19 @@ const ENGINE_QUALITY: Record<string, EngineQualityTier> = {
   // RSS feed engine (news vertical, conditional on config). Curated by the
   // user — treat the per-item content as medium quality by default.
   'rss-feed': 'medium',
+  // Slice S11a long-tail web engines: both run independent indexes and are
+  // tagged `secondary` in the general vertical so they cannot dominate
+  // consensus. Snippets tend to be sparse (Mojeek title+brief; Marginalia
+  // small-web descriptions), so `low` matches the S11b convention used for
+  // lobsters/devdocs.
+  mojeek: 'low',
+  marginalia: 'low',
+  // Slice S11a image engines: image-search results carry source-page +
+  // thumbnail/url + alt text rather than evidence-quality snippets. Tag as
+  // `medium` so S11c's RRF tuning treats them like the general medium pool
+  // (DDG image is the zero-key floor, Brave image is a key-gated peer).
+  'ddg-image': 'medium',
+  'brave-image': 'medium',
 };
 
 /**

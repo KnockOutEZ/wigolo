@@ -23,13 +23,33 @@ describe('getGeneralEngines', () => {
     _resetGeneralEnginesForTest();
   });
 
-  it('returns four entries by default (bing, duckduckgo, startpage, wikipedia)', () => {
-    expect(getGeneralEngines()).toHaveLength(4);
+  // Slice S11a (long-tail engine breadth): mojeek + marginalia added to the
+  // general pool for the broader-lexical signal goal. WHY they're at this
+  // layer rather than a separate vertical: they're plain web engines, just
+  // with thinner indexes — fusing them via RRF in the general pool is what
+  // S11a is designed to do.
+  it('returns six entries by default (bing, duckduckgo, startpage, wikipedia, mojeek, marginalia)', () => {
+    expect(getGeneralEngines()).toHaveLength(6);
   });
 
-  it('wraps bing, duckduckgo, startpage, wikipedia (preserving names)', () => {
+  it('wraps bing, duckduckgo, startpage, wikipedia, mojeek, marginalia (preserving names)', () => {
     const names = getGeneralEngines().map((e) => e.engine.name).sort();
-    expect(names).toEqual(['bing', 'duckduckgo', 'startpage', 'wikipedia']);
+    expect(names).toEqual([
+      'bing',
+      'duckduckgo',
+      'marginalia',
+      'mojeek',
+      'startpage',
+      'wikipedia',
+    ]);
+  });
+
+  it('marks mojeek + marginalia as secondary so they cannot dominate when their lexical alignment is low', () => {
+    const entries = getGeneralEngines();
+    const mojeek = entries.find((e) => e.engine.name === 'mojeek');
+    const marginalia = entries.find((e) => e.engine.name === 'marginalia');
+    expect(mojeek?.secondary).toBe(true);
+    expect(marginalia?.secondary).toBe(true);
   });
 
   it('adds brave when BRAVE_API_KEY is set', async () => {

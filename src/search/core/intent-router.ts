@@ -1,4 +1,4 @@
-export type Vertical = 'general' | 'news' | 'code' | 'docs' | 'papers';
+export type Vertical = 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
 
 export const VERTICALS: readonly Vertical[] = [
   'general',
@@ -6,6 +6,7 @@ export const VERTICALS: readonly Vertical[] = [
   'code',
   'docs',
   'papers',
+  'images',
 ] as const;
 
 export interface ClassifyOptions {

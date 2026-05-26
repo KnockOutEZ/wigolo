@@ -64,6 +64,7 @@ import { getNewsEngines, _resetNewsEnginesForTest } from './verticals/news.js';
 import { getCodeEngines, _resetCodeEnginesForTest } from './verticals/code.js';
 import { getDocsEngines, _resetDocsEnginesForTest } from './verticals/docs.js';
 import { getPapersEngines, _resetPapersEnginesForTest } from './verticals/papers.js';
+import { getImageEngines, _resetImageEnginesForTest } from './verticals/images.js';
 
 const log = createLogger('search');
 
@@ -119,6 +120,8 @@ function getEntriesForVertical(vertical: Vertical): EngineEntry[] {
       return getDocsEngines();
     case 'papers':
       return getPapersEngines();
+    case 'images':
+      return getImageEngines();
   }
 }
 
@@ -440,8 +443,11 @@ export async function runV1Search(
   // automatic retry as general. Code in particular is prone to empty results
   // (GH code search returns nothing + SO times out → empty), but this is
   // generic safety net for every vertical except general (which has nowhere
-  // to fall back to).
-  if (degraded && vertical !== 'general' && !opts._isFallback) {
+  // to fall back to). Images explicitly opt out: callers who asked for image
+  // search would be confused to receive HTML-page results, so a degraded
+  // image vertical surfaces empty + engine_warnings rather than silently
+  // morphing into a general search.
+  if (degraded && vertical !== 'general' && vertical !== 'images' && !opts._isFallback) {
     log.info('vertical degraded, falling back to general', { from: vertical });
     return runV1Search({ ...input, category: 'general' }, { _isFallback: true });
   }
@@ -461,4 +467,5 @@ export function _resetOrchestratorVerticalsForTest(): void {
   _resetCodeEnginesForTest();
   _resetDocsEnginesForTest();
   _resetPapersEnginesForTest();
+  _resetImageEnginesForTest();
 }

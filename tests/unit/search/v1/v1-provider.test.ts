@@ -54,19 +54,32 @@ const cacheSearchResultsMock = vi.mocked(cacheSearchResults);
 const ctx = { router: undefined } as never;
 
 describe('CoreSearchProvider', () => {
-  it('rejects category=images with explicit unsupported_category error', async () => {
+  // Slice S11a (H7): pre-existing behavior was that the provider rejected
+  // category=images with `unsupported_category`. The images vertical is now
+  // a first-class core vertical (DDG Image + Brave Image). The legacy
+  // assertion is gone; this replaces it by pinning that the provider DOES
+  // dispatch the orchestrator (no early-return) and the response shape is
+  // `ok: true`. Detailed image-shaped contracts live in
+  // tests/unit/tools/search.images.test.ts (integration boundary) and the
+  // adapter tests under tests/unit/search/engines/.
+  it('dispatches category=images to the orchestrator (no longer unsupported_category — audit H7)', async () => {
+    runV1SearchMock.mockClear();
+    runV1SearchMock.mockResolvedValueOnce({
+      results: [
+        { title: 'A cat', url: 'https://example.com/cats', snippet: 'src', relevance_score: 1, engine: 'ddg-image', image_url: 'https://cdn/cat.jpg' },
+      ],
+      enginesUsed: ['ddg-image'],
+      degraded: false,
+    });
+
     const provider = new CoreSearchProvider();
     const result = await provider.search(
       { query: 'cats', category: 'images', max_results: 5 },
       ctx,
     );
-    expect(result.ok).toBe(false);
-    if (result.ok === false) {
-      expect(result.error).toBe('unsupported_category');
-      expect(result.error_reason).toMatch(/images vertical not supported in core/);
-      expect(result.stage).toBe('search');
-    }
-    expect(runV1SearchMock).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    expect(runV1SearchMock).toHaveBeenCalledOnce();
+    expect(runV1SearchMock.mock.calls[0][0].category).toBe('images');
   });
 
   it('passes other categories straight through to the orchestrator', async () => {
