@@ -358,10 +358,15 @@ export class CoreSearchProvider implements SearchProvider {
 
     // category 'images' is rejected above, so by this point `category` is
     // either undefined or a vertical the orchestrator accepts.
+    // Slice 8 / M7: `rewrites` reports LLM-/heuristic-generated query
+    // expansions. When the caller hands us an array, they ARE the rewriter
+    // — echoing their own input back as "rewrites" is misleading. Leave
+    // it empty in that case. (queries_executed already surfaces what was
+    // actually dispatched.)
     const queryUnderstanding = buildQueryUnderstanding(displayQuery, {
       category,
       language: input.language,
-      rewrites: isArray ? (input.query as string[]).slice(1) : [],
+      rewrites: [],
     });
 
     if (input.include_favicon) {
