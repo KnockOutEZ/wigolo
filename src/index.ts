@@ -4,7 +4,7 @@ import { parseCommand } from './cli/index.js';
 import { runWarmup } from './cli/warmup.js';
 import { runDaemon } from './cli/daemon.js';
 import { runHealthCheck } from './cli/health.js';
-import { runDoctor } from './cli/doctor.js';
+import { runDoctorIsolated } from './cli/doctor.js';
 import { runShell } from './cli/shell.js';
 import { runAuth } from './cli/auth.js';
 import { runPluginCommand } from './cli/plugin.js';
@@ -57,7 +57,7 @@ switch (command) {
   }
 
   case 'doctor': {
-    const code = await runDoctor(getConfig().dataDir);
+    const code = await runDoctorIsolated(getConfig().dataDir);
     await exitCli(code);
     break;
   }

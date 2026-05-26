@@ -1,5 +1,6 @@
-import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { spawnSync, spawn } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdtempSync, rmdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium, firefox, webkit } from 'playwright';
 import { getBootstrapState, type BootstrapState } from '../searxng/bootstrap.js';
@@ -462,4 +463,139 @@ function checkTelemetryStatus(): void {
   out('');
   const state = isTelemetryEnabled() ? 'enabled' : 'disabled';
   out(`[wigolo doctor] Telemetry: opt-in ${state} (WIGOLO_TELEMETRY=1 to opt in)`);
+}
+
+const DOCTOR_CHILD_ENV = 'WIGOLO_DOCTOR_CHILD';
+
+// Cosmetic libc++ abort messages emitted AFTER the child's diagnostic is
+// already complete. The onnxruntime global thread pool races libc++ during
+// static destructor teardown on macOS; we strip these lines from inherited
+// child stderr so users do not see a fake-looking crash trailer.
+function isPostExitNativeNoise(line: string): boolean {
+  return (
+    line.startsWith('libc++abi:') ||
+    line.includes('mutex lock failed: Invalid argument') ||
+    line.includes('terminating due to uncaught exception')
+  );
+}
+
+/**
+ * Doctor isolation wrapper.
+ *
+ * `runDoctor` loads the embedding model (onnxruntime-node) to verify it
+ * works. Onnxruntime owns a global thread pool that races libc++ during
+ * static-destructor teardown on macOS, surfacing as
+ * `mutex lock failed: Invalid argument` and a SIGABRT (exit 134) AFTER the
+ * diagnostic output has already been written. The crash is unrecoverable
+ * from JS — `session.release()`, `process.reallyExit`, and the SIGABRT
+ * handler all run too early; the abort fires during C++ global dtors when
+ * the JS VM is gone.
+ *
+ * Fix: run doctor in a child process. The child inherits stdio so the user
+ * sees identical output, runs the diagnostic, writes its intended exit code
+ * to a sentinel file, then exits. The parent never loads onnxruntime so its
+ * own exit is clean. If the child crashes with SIGABRT (134) after the
+ * sentinel was written, we know the diagnostic completed and we use the
+ * sentinel code. Any other crash propagates as a real failure.
+ */
+export async function runDoctorIsolated(dataDir: string): Promise<number> {
+  // Child mode: run doctor in-process, write intended exit code to sentinel.
+  const sentinel = process.env[DOCTOR_CHILD_ENV];
+  if (sentinel) {
+    const code = await runDoctor(dataDir);
+    try {
+      writeFileSync(sentinel, String(code), 'utf-8');
+    } catch {
+      // sentinel write failure means the parent can't see our code — fall
+      // through to direct exit, parent will treat 134 as a real crash.
+    }
+    return code;
+  }
+
+  // Parent mode: spawn child, wait, read sentinel.
+  return runDoctorAsChild(dataDir);
+}
+
+async function runDoctorAsChild(dataDir: string): Promise<number> {
+  // Allow opt-out for environments where spawning is undesirable (tests,
+  // sandboxed CI). The fallback runs doctor in-process — the libc++ abort
+  // is still possible but the exit code from runDoctor itself is returned.
+  if (process.env.WIGOLO_DOCTOR_INPROC === '1') {
+    return runDoctor(dataDir);
+  }
+
+  const sentinelDir = mkdtempSync(join(tmpdir(), 'wigolo-doctor-'));
+  const sentinelPath = join(sentinelDir, 'exit-code');
+  const env = { ...process.env, [DOCTOR_CHILD_ENV]: sentinelPath };
+
+  // Re-invoke the same entrypoint. process.argv[1] is the wigolo dist entry
+  // (or the bin shim) — passing it back gives us argv[0]=node, argv[1]=entry,
+  // argv[2]=doctor.
+  const entry = process.argv[1];
+  if (!entry) {
+    // Defensive: no entry to re-invoke. Fall back to in-process.
+    return runDoctor(dataDir);
+  }
+
+  // Inherit stdout, but pipe stderr so we can strip the cosmetic libc++ abort
+  // message that fires after the child's diagnostic has completed.
+  const code: number = await new Promise((resolve) => {
+    const child = spawn(process.execPath, [entry, 'doctor'], {
+      stdio: ['inherit', 'inherit', 'pipe'],
+      env,
+    });
+
+    if (child.stderr) {
+      let buf = '';
+      child.stderr.setEncoding('utf-8');
+      child.stderr.on('data', (chunk: string) => {
+        buf += chunk;
+        let nl: number;
+        while ((nl = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          if (!isPostExitNativeNoise(line)) {
+            process.stderr.write(`${line}\n`);
+          }
+        }
+      });
+      child.stderr.on('end', () => {
+        if (buf && !isPostExitNativeNoise(buf)) {
+          process.stderr.write(buf);
+        }
+      });
+    }
+
+    child.on('exit', (exitCode, signal) => {
+      // Prefer the sentinel value when present — it reflects the diagnostic
+      // result regardless of post-exit native crashes.
+      try {
+        if (existsSync(sentinelPath)) {
+          const raw = readFileSync(sentinelPath, 'utf-8').trim();
+          const n = Number(raw);
+          if (Number.isInteger(n) && n >= 0 && n <= 255) {
+            resolve(n);
+            return;
+          }
+        }
+      } catch {
+        // fall through to native exit code
+      }
+      if (typeof exitCode === 'number') {
+        resolve(exitCode);
+        return;
+      }
+      if (signal) {
+        // Signal-terminated with no sentinel → treat as crash.
+        resolve(1);
+        return;
+      }
+      resolve(1);
+    });
+    child.on('error', () => resolve(1));
+  });
+
+  try { unlinkSync(sentinelPath); } catch { /* ignore */ }
+  try { rmdirSync(sentinelDir); } catch { /* ignore */ }
+  return code;
 }
