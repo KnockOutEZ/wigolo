@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { chromium, firefox, webkit } from 'playwright';
 import { getBootstrapState, type BootstrapState } from '../searxng/bootstrap.js';
@@ -113,6 +114,40 @@ function checkFastembedCache(dataDir: string): { installed: boolean; reason?: st
   }
 }
 
+/**
+ * Probe whether the optional `wreq-js` napi backend can be resolved without
+ * triggering the full ~654ms cold-start load. Uses `require.resolve` so a
+ * missing prebuilt binary for the host platform returns `false` instead of
+ * throwing at lazy-import time.
+ */
+function probeWreqJsAvailable(): boolean {
+  try {
+    const req = createRequire(import.meta.url);
+    req.resolve('wreq-js');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build the `tls_tier` doctor line. Pure so it stays unit-testable.
+ *
+ *   WIGOLO_TLS_TIER=off  → `off (default)`
+ *   WIGOLO_TLS_TIER=auto → `auto (chrome_142, wreq-js ✓)` when wreq-js loaded
+ *                          `auto (wreq-js missing — fallback only)` when not
+ *   WIGOLO_TLS_TIER=on   → `on (chrome_142, wreq-js ✓)` etc.
+ */
+export function formatTlsTierLine(
+  mode: 'off' | 'auto' | 'on',
+  browser: string,
+  wreqAvailable: boolean,
+): string {
+  if (mode === 'off') return 'off (default)';
+  if (!wreqAvailable) return `${mode} (wreq-js missing — fallback only)`;
+  return `${mode} (${browser}, wreq-js ✓)`;
+}
+
 function humanRetry(nextRetryAt?: string): string {
   if (!nextRetryAt) return 'not scheduled';
   const when = new Date(nextRetryAt);
@@ -166,6 +201,12 @@ async function runDoctorInner(dataDir: string): Promise<number> {
     out("  Hint:          run 'npx playwright install chromium' — JS-rendered pages will fail without it");
     degraded = true;
   }
+
+  out('');
+  out('[wigolo doctor] Fetch tiers:');
+  const tlsCfg = getConfig();
+  const wreqAvailable = probeWreqJsAvailable();
+  out(`  tls_tier:      ${formatTlsTierLine(tlsCfg.tlsTier, tlsCfg.tlsBrowser, wreqAvailable)}`);
 
   out('');
   const reranker = await checkReranker();

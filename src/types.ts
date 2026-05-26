@@ -51,6 +51,16 @@ export interface FetchInput {
   mode?: Mode;
 }
 
+/**
+ * Which fetch tier produced the response. Tagged on every successful fetch so
+ * callers can audit and reason about which path served the bytes:
+ *   - 'cache'             : served from the local cache (no tier touched)
+ *   - 'http'              : vanilla HTTP tier
+ *   - 'tls-impersonation' : Slice D2 TLS-fingerprinted HTTP tier (opt-in)
+ *   - 'playwright'        : full browser tier
+ */
+export type FetchMethod = 'cache' | 'http' | 'tls-impersonation' | 'playwright';
+
 export interface FetchOutput {
   /** Tavily-canonical alias of how long the request took, ms. */
   response_time_ms?: number;
@@ -81,6 +91,9 @@ export interface FetchOutput {
   previous_hash?: string;
   diff_summary?: string;
   evidence?: EvidenceItem[];
+  /** Which tier produced the bytes — see FetchMethod. Always emitted on
+   * successful responses; absent only on StageError replies. */
+  fetch_method?: FetchMethod;
 }
 
 export interface RawFetchResult {

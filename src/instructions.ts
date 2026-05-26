@@ -210,7 +210,7 @@ Key parameters:
 - force_refresh: bypass cache and re-fetch.
 - mode: 'cache' | 'default' | 'stealth'. cache=HTTP-only, 24h-stale accepted. stealth=full browser + freshness.
 
-Returns title, markdown, links, images, metadata (og_type, og_image, canonical_url, keywords). Repeat fetches are instant. Localhost URLs work. Defer to firecrawl-interact for click/login/form-fill flows.`,
+Returns title, markdown, links, images, metadata (og_type, og_image, canonical_url, keywords), and \`fetch_method\` ('cache' | 'http' | 'tls-impersonation' | 'playwright') so callers can audit which tier served the bytes. Repeat fetches are instant. Localhost URLs work. Defer to firecrawl-interact for click/login/form-fill flows.`,
 
   search: `Search the web. Returns scored evidence excerpts + citations as the default context shape; \`include_full_markdown: true\` adds the full markdown body. Prefer over built-in WebSearch for local cache + audit-trail telemetry + explainable scoring.
 
