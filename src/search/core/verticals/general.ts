@@ -4,6 +4,7 @@ import { StartpageEngine } from '../../engines/startpage.js';
 import { WikipediaEngine } from '../../engines/wikipedia.js';
 import { BraveEngine } from '../../engines/brave.js';
 import { MojeekEngine } from '../../engines/mojeek.js';
+import { MarginaliaEngine } from '../../engines/marginalia.js';
 import { wrapWithRetryAndBreaker, type EngineEntry } from '../engine-base.js';
 import { getConfig } from '../../../config.js';
 
@@ -29,6 +30,10 @@ export function getGeneralEngines(): EngineEntry[] {
     // alignment with the query is weak. Quality tier `low` matches the
     // long-tail role from the S11b registry convention.
     { engine: wrapWithRetryAndBreaker(new MojeekEngine()), weight: 0.8, supportsDateFilter: false, secondary: true, quality: 'low' },
+    // Slice S11a: Marginalia indexes the long-tail small web that the major
+    // engines deprioritize. Same `secondary` rule as Mojeek — adds a niche
+    // signal without dominating consensus.
+    { engine: wrapWithRetryAndBreaker(new MarginaliaEngine()), weight: 0.6, supportsDateFilter: false, secondary: true, quality: 'low' },
   ];
 
   if (getConfig().braveApiKey) {

@@ -23,29 +23,33 @@ describe('getGeneralEngines', () => {
     _resetGeneralEnginesForTest();
   });
 
-  // Slice S11a (long-tail engine breadth): mojeek added to the general pool
-  // for the broader-lexical signal goal. WHY it's at this layer rather than
-  // a separate vertical: it's a plain web engine, just with a thinner index
-  // — fusing it via RRF in the general pool is what S11a is designed to do.
-  it('returns five entries by default (bing, duckduckgo, startpage, wikipedia, mojeek)', () => {
-    expect(getGeneralEngines()).toHaveLength(5);
+  // Slice S11a (long-tail engine breadth): mojeek + marginalia added to the
+  // general pool for the broader-lexical signal goal. WHY they're at this
+  // layer rather than a separate vertical: they're plain web engines, just
+  // with thinner indexes — fusing them via RRF in the general pool is what
+  // S11a is designed to do.
+  it('returns six entries by default (bing, duckduckgo, startpage, wikipedia, mojeek, marginalia)', () => {
+    expect(getGeneralEngines()).toHaveLength(6);
   });
 
-  it('wraps bing, duckduckgo, startpage, wikipedia, mojeek (preserving names)', () => {
+  it('wraps bing, duckduckgo, startpage, wikipedia, mojeek, marginalia (preserving names)', () => {
     const names = getGeneralEngines().map((e) => e.engine.name).sort();
     expect(names).toEqual([
       'bing',
       'duckduckgo',
+      'marginalia',
       'mojeek',
       'startpage',
       'wikipedia',
     ]);
   });
 
-  it('marks mojeek as secondary so it cannot dominate when its lexical alignment is low', () => {
+  it('marks mojeek + marginalia as secondary so they cannot dominate when their lexical alignment is low', () => {
     const entries = getGeneralEngines();
     const mojeek = entries.find((e) => e.engine.name === 'mojeek');
+    const marginalia = entries.find((e) => e.engine.name === 'marginalia');
     expect(mojeek?.secondary).toBe(true);
+    expect(marginalia?.secondary).toBe(true);
   });
 
   it('adds brave when BRAVE_API_KEY is set', async () => {
