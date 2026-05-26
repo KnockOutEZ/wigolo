@@ -59,7 +59,19 @@ export async function handleWatch(
   }
 
   if (action === 'create') {
-    if (!input.url) return missing('url', 'create');
+    // Slice 8 / M17: accept `url` (single) OR `urls` (batch). Mutually
+    // exclusive — passing both is ambiguous about intent. Single-URL path
+    // returns `{ job }` (singular) so callers reading one-shot creates
+    // don't have to index into a length-1 array. Batch returns `{ jobs }`.
+    const hasUrl = typeof input.url === 'string' && input.url.length > 0;
+    const hasUrls = Array.isArray(input.urls) && input.urls.length > 0;
+    if (hasUrl && hasUrls) {
+      return badInput(
+        'watch create accepts either "url" (single) or "urls" (batch), not both',
+        'Drop one of the fields — single URL → use "url" and read `{ job }` from the response; multiple → use "urls" and read `{ jobs }`.',
+      );
+    }
+    if (!hasUrl && !hasUrls) return missing('url', 'create');
     if (typeof input.interval_seconds !== 'number' || !Number.isFinite(input.interval_seconds)) {
       return missing('interval_seconds', 'create');
     }
@@ -70,11 +82,6 @@ export async function handleWatch(
       );
     }
 
-    const urlCheck = guardUrl(input.url, 'url');
-    if (!urlCheck.ok) {
-      return badInput(urlCheck.reason, urlCheck.hint);
-    }
-
     const notification = input.notification ?? 'inline';
     if (notification !== 'inline') {
       const webhookCheck = guardUrl(notification, 'notification');
@@ -83,13 +90,43 @@ export async function handleWatch(
       }
     }
 
-    const job = createJob({
-      url: urlCheck.url.toString(),
-      intervalSeconds: input.interval_seconds,
-      selector: input.selector,
-      notification,
+    if (hasUrl) {
+      const urlCheck = guardUrl(input.url!, 'url');
+      if (!urlCheck.ok) {
+        return badInput(urlCheck.reason, urlCheck.hint);
+      }
+      const job = createJob({
+        url: urlCheck.url.toString(),
+        intervalSeconds: input.interval_seconds,
+        selector: input.selector,
+        notification,
+      });
+      // Single-URL: emit both `job` (new singular surface) and `jobs[]`
+      // (legacy back-compat — existing callers index into jobs[0]).
+      return { ok: true, data: { job, jobs: [job] } };
+    }
+
+    // Batch path: guard every URL up front so a single bad entry doesn't
+    // leave half the batch persisted. Fail closed.
+    const urls = input.urls!;
+    const guarded: ReturnType<typeof guardUrl>[] = [];
+    for (const u of urls) {
+      const g = guardUrl(u, 'url');
+      if (!g.ok) {
+        return badInput(g.reason, g.hint);
+      }
+      guarded.push(g);
+    }
+    const created = guarded.map((g) => {
+      if (!g.ok) throw new Error('unreachable — pre-validated above');
+      return createJob({
+        url: g.url.toString(),
+        intervalSeconds: input.interval_seconds!,
+        selector: input.selector,
+        notification,
+      });
     });
-    return { ok: true, data: { jobs: [job] } };
+    return { ok: true, data: { jobs: created } };
   }
 
   if (action === 'check') {

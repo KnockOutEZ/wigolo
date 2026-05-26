@@ -73,6 +73,57 @@ describe('watch handler', () => {
       expect(r.jobs[0].status).toBe('active');
     });
 
+    // Slice 8 / M17: single-URL create returns `{ job }` (singular) alongside
+    // the legacy `{ jobs[0] }` shape. Batch (urls[]) returns `{ jobs }`
+    // without a `job` field. The audit observed the singular path always
+    // emitted `jobs[]` which read as "this MAY be plural" to callers.
+    it('returns a singular `job` field when one URL is passed (M17)', async () => {
+      const router = mockRouter('hello');
+      const r = mustOk(await handleWatch(
+        { action: 'create', url: 'https://example.com/m17-single', interval_seconds: 60 },
+        router,
+      ));
+      expect(r.job).toBeDefined();
+      expect(r.job!.url).toBe('https://example.com/m17-single');
+      // Legacy `jobs[]` is still emitted for back-compat.
+      expect(r.jobs).toHaveLength(1);
+      expect(r.jobs[0].id).toBe(r.job!.id);
+    });
+
+    it('returns `jobs[]` without a `job` field when batch urls[] are passed (M17)', async () => {
+      const router = mockRouter('hello');
+      const r = mustOk(await handleWatch(
+        {
+          action: 'create',
+          urls: ['https://example.com/m17-batch-a', 'https://example.com/m17-batch-b'],
+          interval_seconds: 60,
+        },
+        router,
+      ));
+      expect(r.jobs).toHaveLength(2);
+      expect(r.job).toBeUndefined();
+      const urls = r.jobs.map((j) => j.url).sort();
+      expect(urls).toEqual([
+        'https://example.com/m17-batch-a',
+        'https://example.com/m17-batch-b',
+      ]);
+    });
+
+    it('rejects passing both url and urls (ambiguous intent)', async () => {
+      const router = mockRouter('hello');
+      const r = await handleWatch(
+        {
+          action: 'create',
+          url: 'https://example.com/x',
+          urls: ['https://example.com/y'],
+          interval_seconds: 60,
+        },
+        router,
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error_reason).toMatch(/url.*urls|urls.*url/i);
+    });
+
     it('rejects interval_seconds below 60', async () => {
       const router = mockRouter('');
       const r = await handleWatch(

@@ -548,7 +548,12 @@ export const WATCH_TOOL_SCHEMA = {
     },
     url: {
       type: 'string',
-      description: 'Required for action=create. The URL to watch.',
+      description: 'Single-URL create: the URL to watch. Response carries `job` (singular) and `jobs:[job]` (legacy). Mutually exclusive with `urls`.',
+    },
+    urls: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Batch create: register multiple jobs in one call. Response carries `jobs[]` only (no `job`). Mutually exclusive with `url`.',
     },
     interval_seconds: {
       type: 'number',

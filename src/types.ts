@@ -997,7 +997,12 @@ export type WatchJobStatus = 'active' | 'paused' | 'errored';
 
 export interface WatchJobInput {
   action: WatchAction;
+  /** Single-URL create: use `url`. The handler returns `{ job }` (singular). */
   url?: string;
+  /** Slice 8 / M17: batch-create. Pass an array of URLs to register multiple
+   * jobs in a single call. The handler returns `{ jobs[] }`. Mutually
+   * exclusive with `url` — passing both is rejected. */
+  urls?: string[];
   interval_seconds?: number;
   selector?: string;
   /** 'inline' (return on next check) or a webhook URL. */
@@ -1020,6 +1025,13 @@ export interface WatchJob {
 }
 
 export interface WatchJobOutput {
+  /** Slice 8 / M17: emitted by `action:'create'` when exactly one URL was
+   * passed (the single-URL path). The handler also keeps `jobs[]` for
+   * back-compat; new callers should prefer `job`. */
+  job?: WatchJob;
+  /** Always emitted: list/check/pause/resume/delete operate on a job set
+   * (even when size=1). create-batch (input.urls[]) emits jobs[] without
+   * a `job` field. */
   jobs: WatchJob[];
   /** Per-job change report emitted by `action: 'check'`. The shape mirrors
    * the existing fetch/cache change-detector envelope so consumers can read
