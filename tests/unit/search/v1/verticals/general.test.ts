@@ -23,13 +23,29 @@ describe('getGeneralEngines', () => {
     _resetGeneralEnginesForTest();
   });
 
-  it('returns four entries by default (bing, duckduckgo, startpage, wikipedia)', () => {
-    expect(getGeneralEngines()).toHaveLength(4);
+  // Slice S11a (long-tail engine breadth): mojeek added to the general pool
+  // for the broader-lexical signal goal. WHY it's at this layer rather than
+  // a separate vertical: it's a plain web engine, just with a thinner index
+  // — fusing it via RRF in the general pool is what S11a is designed to do.
+  it('returns five entries by default (bing, duckduckgo, startpage, wikipedia, mojeek)', () => {
+    expect(getGeneralEngines()).toHaveLength(5);
   });
 
-  it('wraps bing, duckduckgo, startpage, wikipedia (preserving names)', () => {
+  it('wraps bing, duckduckgo, startpage, wikipedia, mojeek (preserving names)', () => {
     const names = getGeneralEngines().map((e) => e.engine.name).sort();
-    expect(names).toEqual(['bing', 'duckduckgo', 'startpage', 'wikipedia']);
+    expect(names).toEqual([
+      'bing',
+      'duckduckgo',
+      'mojeek',
+      'startpage',
+      'wikipedia',
+    ]);
+  });
+
+  it('marks mojeek as secondary so it cannot dominate when its lexical alignment is low', () => {
+    const entries = getGeneralEngines();
+    const mojeek = entries.find((e) => e.engine.name === 'mojeek');
+    expect(mojeek?.secondary).toBe(true);
   });
 
   it('adds brave when BRAVE_API_KEY is set', async () => {

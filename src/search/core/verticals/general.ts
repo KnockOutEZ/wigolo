@@ -3,6 +3,7 @@ import { DuckDuckGoEngine } from '../../engines/duckduckgo.js';
 import { StartpageEngine } from '../../engines/startpage.js';
 import { WikipediaEngine } from '../../engines/wikipedia.js';
 import { BraveEngine } from '../../engines/brave.js';
+import { MojeekEngine } from '../../engines/mojeek.js';
 import { wrapWithRetryAndBreaker, type EngineEntry } from '../engine-base.js';
 import { getConfig } from '../../../config.js';
 
@@ -21,6 +22,13 @@ export function getGeneralEngines(): EngineEntry[] {
     { engine: wrapWithRetryAndBreaker(new DuckDuckGoEngine()), weight: 1, supportsDateFilter: false, quality: 'medium' },
     { engine: wrapWithRetryAndBreaker(new StartpageEngine()), weight: 1, supportsDateFilter: false, quality: 'medium' },
     { engine: wrapWithRetryAndBreaker(new WikipediaEngine()), weight: 0.6, supportsDateFilter: false, quality: 'high' },
+    // Slice S11a: Mojeek runs its own independent web index (no Bing/Google
+    // reliance), adding a real lexical signal that dilutes brand-collision
+    // outcomes from the existing major-engine pool. Weight stays low and the
+    // engine is marked `secondary` so it cannot dominate consensus when its
+    // alignment with the query is weak. Quality tier `low` matches the
+    // long-tail role from the S11b registry convention.
+    { engine: wrapWithRetryAndBreaker(new MojeekEngine()), weight: 0.8, supportsDateFilter: false, secondary: true, quality: 'low' },
   ];
 
   if (getConfig().braveApiKey) {
