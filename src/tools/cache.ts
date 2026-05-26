@@ -17,7 +17,11 @@ import type { SmartRouter } from '../fetch/router.js';
 
 const log = createLogger('cache');
 
-const DEFAULT_HYBRID_LIMIT = 20;
+// H3: cache.query default limit. The cache table can hold thousands of rows;
+// without a tight default the response easily blows token budgets. Callers who
+// genuinely need more results still get them by passing `limit` explicitly.
+const DEFAULT_CACHE_QUERY_LIMIT = 5;
+const DEFAULT_HYBRID_LIMIT = 5;
 const HYBRID_CANDIDATE_FLOOR = 50;
 const HYBRID_CANDIDATE_FACTOR = 5;
 
@@ -123,7 +127,7 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
       query: input.query,
       urlPattern: input.url_pattern,
       since: input.since,
-      limit: input.limit,
+      limit: input.limit ?? DEFAULT_CACHE_QUERY_LIMIT,
     });
 
     const mapped: CacheResultItem[] = results.map((r) => ({

@@ -822,6 +822,10 @@ export interface ExtractOutput {
   notice?: string;
   /** Stub-only marker — names the slice that will complete the surface. */
   slice?: string;
+  /** H3: present (true) when the payload was clipped to fit a default cap
+   * (e.g. mode='tables' default 30000-char ceiling). Callers can re-issue
+   * the call with an explicit max_tokens_out to widen or narrow the cap. */
+  truncated?: boolean;
 }
 
 // --- Brand extraction (slice A1 placeholder, full shape lands in B2a) ---

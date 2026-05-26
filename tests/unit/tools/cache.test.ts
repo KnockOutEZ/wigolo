@@ -114,10 +114,12 @@ describe('handleCache', () => {
     expect(result.results![0].title).toBe('Example');
     expect(result.results![0].markdown).toBe('# Example\n\nContent here.');
     expect(result.results![0].fetched_at).toBe('2026-04-12 10:00:00');
+    // H3: cache.query default limit is 5 to keep response token-bounded
     expect(searchCacheFiltered).toHaveBeenCalledWith({
       query: 'example',
       urlPattern: undefined,
       since: undefined,
+      limit: 5,
     });
   });
 
@@ -126,10 +128,12 @@ describe('handleCache', () => {
 
     await handleCache({ query: 'test', url_pattern: '*docs*', since: '2026-04-01' });
 
+    // H3: cache.query default limit is 5 to keep response token-bounded
     expect(searchCacheFiltered).toHaveBeenCalledWith({
       query: 'test',
       urlPattern: '*docs*',
       since: '2026-04-01',
+      limit: 5,
     });
   });
 

@@ -421,6 +421,16 @@ export class CoreSearchProvider implements SearchProvider {
       if (input.format === 'stream_answer') {
         data.streaming = true;
       }
+
+      // H2: slim payload. The synthesized answer + citations are the contract
+      // when format=answer; per-result markdown_content is pure overhead
+      // (~3× cost in the bench). Drop bodies unless the caller explicitly
+      // asked for include_full_markdown.
+      if (!input.include_full_markdown) {
+        for (const r of items) {
+          if (r.markdown_content !== undefined) r.markdown_content = undefined;
+        }
+      }
     } else if (items.length > 0 && contentFetched) {
       // Evidence + citations defaults require fetched content to be useful;
       // skip when content fetch was disabled or no router was available.

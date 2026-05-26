@@ -20,8 +20,17 @@ import type { JsonSchema } from '../extraction/schema.js';
 
 const log = createLogger('agent');
 
-const DEFAULT_MAX_PAGES = 10;
+// H3: tight default to keep agent responses under token caps. 10 pages was
+// blowing budgets on long runs; 3 reads enough for synthesis on most prompts
+// while letting callers opt in to more via input.max_pages.
+const DEFAULT_MAX_PAGES = 3;
 const DEFAULT_MAX_TIME_MS = 60000;
+
+// Test-only accessor — keeps the constant out of the public surface while
+// letting unit tests pin the value.
+export function getAgentDefaultMaxPages(): number {
+  return DEFAULT_MAX_PAGES;
+}
 
 export async function runAgentPipeline(
   input: AgentInput,

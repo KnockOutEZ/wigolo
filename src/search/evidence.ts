@@ -19,6 +19,25 @@ const DEFAULT_MAX_TOKENS_OUT = 4000;
 const MAX_EVIDENCE_PASSAGES = 20;
 const TRUNCATION_MARKER = '[... content truncated]';
 
+// M18: drop passages that are too short to be useful evidence.
+const MIN_EVIDENCE_EXCERPT_CHARS = 40;
+// M18: drop passages where markdown-link markup dominates the body.
+const MAX_LINK_MARKUP_RATIO = 0.5;
+
+// Returns true when the excerpt is genuine prose worth surfacing as evidence.
+// Filters out (a) too-short snippets and (b) chunks that are mostly markdown
+// link markup `[text](url)` — both common when extraction lands on
+// nav/footer/sidebar blocks instead of real content.
+function isUsefulEvidenceExcerpt(excerpt: string): boolean {
+  const trimmed = excerpt.trim();
+  if (trimmed.length < MIN_EVIDENCE_EXCERPT_CHARS) return false;
+  // Match both markdown links `[text](url)` and bare URLs.
+  const linkChars = (trimmed.match(/\[[^\]]*\]\([^)]*\)|https?:\/\/\S+/g) ?? [])
+    .reduce((acc, match) => acc + match.length, 0);
+  if (linkChars / trimmed.length > MAX_LINK_MARKUP_RATIO) return false;
+  return true;
+}
+
 export interface BuildEvidenceOptions {
   maxTokensOut?: number;
   maxItems?: number;
@@ -196,13 +215,22 @@ export async function applyEvidenceDefault(
     evidenceBudget = Math.max(0, maxTokensOut - overhead);
   }
 
+  // H1: when the caller passes max_results, cap evidence at that count so the
+  // response shape mirrors what they asked for. M18: drop short / link-heavy
+  // excerpts BEFORE the cap so the budget reserves slots for genuine prose.
+  const maxEvidence = input.max_results !== undefined
+    ? Math.max(0, Math.floor(input.max_results))
+    : Infinity;
+
   const evidence: EvidenceItem[] = [];
   let usedTokens = 0;
   for (const h of ranked) {
+    if (evidence.length >= maxEvidence) break;
     if (usedTokens >= evidenceBudget) break;
     const remaining = evidenceBudget - usedTokens;
     const excerpt = truncateByTokens(h.text, remaining);
     if (!excerpt) continue;
+    if (!isUsefulEvidenceExcerpt(excerpt)) continue;
     const span = h.source_span ?? { start: 0, end: excerpt.length };
     const item = buildEvidenceItem({
       title: h.source_title,

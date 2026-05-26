@@ -498,6 +498,61 @@ describe('handleExtract mode=metadata with JSON-LD', () => {
       expect(tokensUsed).toBeLessThanOrEqual(1800);
     }
   });
+
+  // Perf encoding: clampTablesToChars used to re-serialize the entire tables
+  // payload on every pop iteration (O(N²)). With ~150 rows popped that is
+  // ~150 full JSON.stringify(tables) calls — easily seconds on real payloads.
+  // The fix tracks a running serialized length and only stringifies the
+  // single popped element each iteration. We assert call-count is bounded
+  // by N + small constant (instead of growing quadratically) by spying on
+  // JSON.stringify.
+  it('clampTablesToChars: serialized-length tracking keeps stringify O(N)', async () => {
+    const { clampTablesToChars } = await import('../../../src/tools/extract.js');
+    // Build one table with 200 rows of moderate width so we need many pops
+    // to fit a tight cap.
+    const cell = 'x'.repeat(50);
+    const rows = Array.from({ length: 200 }, (_, i) => ({ a: `${cell}-${i}`, b: cell }));
+    const tables = [{ caption: 'big', headers: ['a', 'b'], rows }];
+
+    // Sanity: full payload is well above cap, and ~3/4 of the rows must pop.
+    const fullSize = JSON.stringify(tables).length;
+    // Cap chosen so roughly ~150 rows get popped.
+    const cap = Math.floor(fullSize / 4);
+
+    const originalStringify = JSON.stringify;
+    let totalBytesSerialized = 0;
+    JSON.stringify = ((value: unknown, ...rest: unknown[]) => {
+      const out = (originalStringify as (...a: unknown[]) => string)(value, ...rest);
+      totalBytesSerialized += out.length;
+      return out;
+    }) as typeof JSON.stringify;
+    let result: ReturnType<typeof clampTablesToChars>;
+    try {
+      result = clampTablesToChars(tables, cap);
+    } finally {
+      JSON.stringify = originalStringify;
+    }
+
+    expect(result.truncated).toBe(true);
+    const remainingRows = (result.data as Array<{ rows: unknown[] }>)[0].rows.length;
+    const poppedRows = 200 - remainingRows;
+    expect(poppedRows).toBeGreaterThan(50); // confirm the test actually exercises the trim loop
+
+    // Pre-fix: every loop iteration calls JSON.stringify(tables) on the WHOLE
+    //   payload — so total bytes serialized grows as O(N²) (roughly
+    //   poppedRows * average_payload_size_during_loop ≈ fullSize * poppedRows / 2).
+    // Post-fix: stringify is called once on the full payload up front, then
+    //   only on each popped row — total bytes ≈ fullSize + poppedRows * row_size,
+    //   which is linear in N.
+    // The bound below is set to 3 * fullSize (linear regime + slack); the
+    // O(N²) regime explodes well past it for our 200-row payload.
+    expect(totalBytesSerialized).toBeLessThanOrEqual(fullSize * 3);
+
+    // Final payload should still be at or below the cap (soft target — the
+    // running-size accounting is approximate, so accept small overshoot).
+    const finalSize = originalStringify(result.data).length;
+    expect(finalSize).toBeLessThanOrEqual(cap + 32);
+  });
 });
 
 // Slice B2b: brand mode is dispatched via extractBrandAsync, which fetches
