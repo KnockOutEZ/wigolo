@@ -38,7 +38,10 @@ describe('extractWithSchemaDetailedAsync — llm fallback wiring', () => {
       cached: false,
       latencyMs: 1,
     });
-    const html = '<html><body><h1>Widget</h1></body></html>';
+    // Source contains the literal `$1` so the C1 evidence-only filter
+    // accepts the LLM-extracted value. (A bare "Widget" page would null
+    // the field — that's the C1 contract; see schema-evidence-only.test.ts.)
+    const html = '<html><body><h1>Widget</h1><p>price: $1</p></body></html>';
     const schema = {
       type: 'object',
       required: ['price'],
@@ -82,7 +85,12 @@ describe('extractWithSchemaDetailedAsync — llm fallback wiring', () => {
       cached: false,
       latencyMs: 1,
     });
-    const html = '<span itemprop="name">heuristic-name</span>';
+    // The LLM-PRICE literal is embedded in source so the C1 evidence-only
+    // filter accepts the LLM-extracted price. `heuristic-name` is sourced
+    // from the heuristic path and is never re-verified.
+    const html =
+      '<html><body><span itemprop="name">heuristic-name</span>' +
+      '<p>LLM-PRICE</p></body></html>';
     const schema = {
       type: 'object',
       required: ['price', 'name'],

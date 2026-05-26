@@ -1,6 +1,7 @@
 import { parseHTML } from 'linkedom';
 import { extractStructuredData } from './structured-data.js';
 import { extractWithLLM, type LLMFallbackBudget } from './llm-fallback.js';
+import { applyEvidenceFilter, getSourceText } from './schema-truth.js';
 import type {
   FieldProvenance,
   SchemaExtractionResult,
@@ -85,15 +86,14 @@ export async function extractWithSchemaDetailedAsync(
   opts: SchemaExtractionOpts = {},
 ): Promise<SchemaExtractionAsyncResult> {
   const det = extractWithSchemaDetailed(html, schema);
-  const warnings: string[] = [];
 
   if (!schema.required || schema.required.length === 0) {
-    return { ...det, warnings };
+    return { ...det, warnings: [] };
   }
 
   const missing = schema.required.filter((k) => det.values[k] === undefined);
   if (missing.length === 0) {
-    return { ...det, warnings };
+    return { ...det, warnings: [] };
   }
 
   const llm = await extractWithLLM({
@@ -107,13 +107,39 @@ export async function extractWithSchemaDetailedAsync(
 
   const values = { ...det.values };
   const provenance: Record<string, FieldProvenance> = { ...det.provenance };
+  const llmFilledFields: string[] = [];
   for (const key of missing) {
     if (llm.values[key] !== undefined && values[key] === undefined) {
       values[key] = llm.values[key];
       provenance[key] = 'llm';
+      llmFilledFields.push(key);
     }
   }
-  return { values, provenance, warnings: llm.warnings };
+
+  // Evidence-only constraint (C1): every LLM-sourced field must have its
+  // value present in the source text (or be a trivial derivative). The LLM
+  // can free-form-complete a confidently-wrong answer; the verifier nulls
+  // those out so callers never see hallucinated facts.
+  const warnings = [...llm.warnings];
+  if (llmFilledFields.length > 0) {
+    const sourceText = getSourceText(html);
+    const filtered = applyEvidenceFilter({
+      values,
+      provenance,
+      sourceText,
+      fields: llmFilledFields,
+    });
+    if (filtered.rejectedFields.length > 0) {
+      warnings.push(
+        `evidence-only filter: nulled ${filtered.rejectedFields.length} ` +
+          `field(s) the LLM proposed but were not present in source text ` +
+          `(${filtered.rejectedFields.join(', ')}).`,
+      );
+    }
+    return { values: filtered.values, provenance, warnings };
+  }
+
+  return { values, provenance, warnings };
 }
 
 function pickField(fields: Record<string, unknown>, name: string): unknown {
