@@ -88,6 +88,7 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     images: JSON.parse(cached.images || '[]'),
     cached: true,
     cached_at: cached.fetchedAt,
+    fetch_method: 'cache',
   };
   capAuxFields(out, input.max_content_chars);
   return out;
@@ -218,6 +219,9 @@ export async function handleFetch(
       screenshot: raw.screenshot,
       cached: false,
       action_results: raw.actionResults,
+      // Propagate the router-chosen tier name onto the public response so
+      // callers can audit which path served the bytes (P2 visibility).
+      fetch_method: raw.method,
       ...(raw.jsRequired ? { js_required: true } : {}),
       ...(changeResult?.changed ? {
         changed: true,

@@ -210,7 +210,7 @@ Key parameters:
 - force_refresh: bypass cache and re-fetch.
 - mode: 'cache' | 'default' | 'stealth'. cache=HTTP-only, 24h-stale accepted. stealth=full browser + freshness.
 
-Returns title, markdown, links, images, metadata (og_type, og_image, canonical_url, keywords). When the URL matches a site-specific extractor (Reddit threads, YouTube watch pages, Amazon product pages) the response also carries top-level \`site_data\` with the per-site structured JSON (e.g. Reddit \`subreddit\`/\`score\`/\`comments[]\`, YouTube \`video_id\`/\`caption_tracks[]\`/\`chapters[]\`, Amazon \`asin\`/\`price\`/\`features[]\`). Repeat fetches are instant. Localhost URLs work. Defer to firecrawl-interact for click/login/form-fill flows.`,
+Returns title, markdown, links, images, metadata (og_type, og_image, canonical_url, keywords), and \`fetch_method\` ('cache' | 'http' | 'tls-impersonation' | 'playwright') so callers can audit which tier served the bytes. When the URL matches a site-specific extractor (Reddit threads, YouTube watch pages, Amazon product pages) the response also carries top-level \`site_data\` with the per-site structured JSON (e.g. Reddit \`subreddit\`/\`score\`/\`comments[]\`, YouTube \`video_id\`/\`caption_tracks[]\`/\`chapters[]\`, Amazon \`asin\`/\`price\`/\`features[]\`). Repeat fetches are instant. Localhost URLs work. Defer to firecrawl-interact for click/login/form-fill flows.`,
 
   search: `Search the web. Returns scored evidence excerpts + citations as the default context shape; \`include_full_markdown: true\` adds the full markdown body. Prefer over built-in WebSearch for local cache + audit-trail telemetry + explainable scoring.
 
