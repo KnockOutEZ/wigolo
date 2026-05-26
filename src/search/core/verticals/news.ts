@@ -34,14 +34,16 @@ function hasRssConfigured(): boolean {
 export function getNewsEngines(): EngineEntry[] {
   if (cached) return cached;
   const entries: EngineEntry[] = [
-    { engine: wrapWithRetryAndBreaker(new HnAlgoliaEngine()), weight: 1.2, supportsDateFilter: true },
+    { engine: wrapWithRetryAndBreaker(new HnAlgoliaEngine()), weight: 1.2, supportsDateFilter: true, quality: 'medium' },
     // Lobsters /search.json has no native date filter; engine applies client-side
     // filtering. Mark false so the orchestrator treats it as date-naive.
-    { engine: wrapWithRetryAndBreaker(new LobstersEngine()), weight: 1.0, supportsDateFilter: false },
+    // Quality tier 'low': frequently falls back to "N score · N comments" when
+    // description is missing — see engine-quality.ts.
+    { engine: wrapWithRetryAndBreaker(new LobstersEngine()), weight: 1.0, supportsDateFilter: false, quality: 'low' },
     // Bing News widens reach beyond HN/Lobsters' tech-only feed. The engine
     // scrapes /search?filters=tnews and surfaces .news_dt → published_date so
     // the recency layer can rank it like the other date-aware engines.
-    { engine: wrapWithRetryAndBreaker(new BingNewsEngine()), weight: 0.9, supportsDateFilter: false },
+    { engine: wrapWithRetryAndBreaker(new BingNewsEngine()), weight: 0.9, supportsDateFilter: false, quality: 'medium' },
   ];
 
   if (hasRssConfigured()) {
@@ -49,6 +51,7 @@ export function getNewsEngines(): EngineEntry[] {
       engine: wrapWithRetryAndBreaker(new RssFeedEngine()),
       weight: 1.5,
       supportsDateFilter: true,
+      quality: 'medium',
     });
     log.info('news vertical: rss-feed engine attached');
   }

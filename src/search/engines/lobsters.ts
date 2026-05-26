@@ -46,9 +46,17 @@ export class LobstersEngine implements SearchEngine {
     const url = `https://lobste.rs/search.json?${params}`;
     log.debug('lobsters search', { query });
 
+    // Lobste.rs's Rack middleware treats UA-less requests as bot traffic and
+    // returns 400 — the audit's "lobsters 400 on multi-word queries" was
+    // really "lobsters 400 on every request, more visible on multi-word
+    // queries that exercise the engine more often". A stable identifier
+    // restores 200s.
     const response = await fetch(url, {
       signal: AbortSignal.timeout(timeoutMs),
-      headers: { Accept: 'application/json' },
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'wigolo/0.1 (https://github.com/staticn0va/wigolo)',
+      },
     });
     if (!response.ok) throw new Error(`Lobsters returned ${response.status}`);
 

@@ -1,5 +1,6 @@
 import type { SearchEngine, SearchEngineOptions, RawSearchResult } from '../../types.js';
 import { createLogger } from '../../logger.js';
+import { getConfig } from '../../config.js';
 
 const log = createLogger('search');
 
@@ -37,9 +38,22 @@ export class GithubCodeEngine implements SearchEngine {
     const url = `https://api.github.com/search/code?${params}`;
     log.debug('github code search', { query });
 
+    // Slice S11b: wire WIGOLO_GITHUB_TOKEN into the request. The audit found
+    // the engine_warnings hint already names the env var, but the adapter
+    // wasn't actually reading it — so users who set the var still hit 401.
+    // When present, the token is sent as a Bearer credential and the
+    // recommended `X-GitHub-Api-Version` header is added for stability.
+    // Unauthed mode is still supported (no header fabricated).
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+    const token = getConfig().githubToken;
+    if (token) headers.Authorization = `Bearer ${token}`;
+
     const response = await fetch(url, {
       signal: AbortSignal.timeout(timeoutMs),
-      headers: { Accept: 'application/vnd.github+json' },
+      headers,
     });
 
     if (response.status === 403) {
@@ -65,7 +79,12 @@ export class GithubCodeEngine implements SearchEngine {
       if (!repoName || !path || !htmlUrl) continue;
 
       const description = asString(item.repository?.description);
-      const snippet = description ?? path;
+      // S11b: include both repo description and path in the snippet when
+      // both are present. Lexical alignment scoring downstream uses snippet
+      // tokens; pre-S11b we lost ~half the queryable surface by emitting
+      // only one or the other. When description is missing, fall back to
+      // path alone so we don't pad noise.
+      const snippet = description ? `${description} — ${path}` : path;
 
       results.push({
         title: `${repoName} — ${path}`,

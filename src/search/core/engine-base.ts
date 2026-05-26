@@ -7,6 +7,28 @@ import { createLogger } from '../../logger.js';
 
 const log = createLogger('search');
 
+/**
+ * Quality tier for an engine adapter. Reflects observed snippet quality +
+ * stability of the upstream source. Slice S11b adds these as metadata only;
+ * S11c will consume the tier to weight RRF fusion. Until S11c lands the tier
+ * is informational and does NOT affect ranking.
+ *
+ * Tier semantics (see also docs in src/search/core/engine-quality.ts):
+ *   - 'high'   : authoritative source with structured payload (JSON/API),
+ *                stable schema, rich snippets. Example: StackOverflow API,
+ *                Wikipedia OpenSearch, MDN docs API.
+ *   - 'medium' : scraped HTML or a structured feed where snippets are
+ *                useful but can be thin or noisy. Example: Bing, DDG Lite,
+ *                Brave web (description short), HN Algolia (points/comments
+ *                fallback snippet), arXiv, Semantic Scholar (abstract may
+ *                be missing).
+ *   - 'low'    : sparse / boilerplate snippets, or a curated lookup that
+ *                returns mostly metadata rather than evidence text. Example:
+ *                devdocs (static slug table, no body content), lobsters
+ *                (often returns "N score / N comments" rather than evidence).
+ */
+export type EngineQualityTier = 'high' | 'medium' | 'low';
+
 export interface EngineEntry {
   engine: SearchEngine;
   /** Optional weight for downstream RRF/scoring. Default 1. */
@@ -18,6 +40,15 @@ export interface EngineEntry {
    * lexical alignment with the query is low. Used by the code vertical
    * to admit MDN without letting it dominate database/library queries. */
   secondary?: boolean;
+  /** Snippet / source-quality tier (Slice S11b). Metadata only — S11c will
+   * consume this to weight RRF fusion. Every registered entry MUST set a
+   * tier; a registered-engines test enforces that the field is present. */
+  quality?: EngineQualityTier;
+  /** When true, the engine is registered but the orchestrator must skip
+   * dispatch. Used when an upstream endpoint is gone or the adapter is
+   * intentionally parked pending a rewrite — the slice spec calls this
+   * out as a soft-disable so the adapter file isn't deleted (CEO call). */
+  disabled?: boolean;
 }
 
 export interface EngineOutcome {

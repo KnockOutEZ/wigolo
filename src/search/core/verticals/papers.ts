@@ -10,8 +10,8 @@ export function getPapersEngines(): EngineEntry[] {
     // arXiv's API doesn't accept a date range natively; the engine filters
     // client-side. We still flag supportsDateFilter: true so the orchestrator
     // can treat date-aware queries uniformly.
-    { engine: wrapWithRetryAndBreaker(new ArxivEngine()), weight: 1.1, supportsDateFilter: true },
-    { engine: wrapWithRetryAndBreaker(new SemanticScholarEngine()), weight: 1.0, supportsDateFilter: true },
+    { engine: wrapWithRetryAndBreaker(new ArxivEngine()), weight: 1.1, supportsDateFilter: true, quality: 'medium' },
+    { engine: wrapWithRetryAndBreaker(new SemanticScholarEngine()), weight: 1.0, supportsDateFilter: true, quality: 'medium' },
   ];
   return cached;
 }

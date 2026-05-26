@@ -1,8 +1,21 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { LobstersEngine } from '../../../../src/search/engines/lobsters.js';
 
-function captureFetch(body: unknown, ok = true, status = 200): void {
-  vi.spyOn(global, 'fetch').mockImplementation(async () => {
+interface FetchCall {
+  url: string;
+  init?: RequestInit;
+}
+
+function captureFetch(body: unknown, ok = true, status = 200): { calls: FetchCall[] } {
+  const calls: FetchCall[] = [];
+  vi.spyOn(global, 'fetch').mockImplementation(async (input, init) => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    calls.push({ url, init });
     return {
       ok,
       status,
@@ -10,6 +23,7 @@ function captureFetch(body: unknown, ok = true, status = 200): void {
       text: async () => JSON.stringify(body),
     } as Response;
   });
+  return { calls };
 }
 
 describe('LobstersEngine', () => {
@@ -165,6 +179,27 @@ describe('LobstersEngine', () => {
   it('returns empty array on empty results', async () => {
     captureFetch([]);
     expect(await new LobstersEngine().search('q')).toEqual([]);
+  });
+
+  // Slice S11b: audit found lobsters returning 400 on multi-word queries.
+  // The most common cause for community-site 400s is a missing User-Agent —
+  // lobste.rs's Rack middleware treats requests with no UA as bot traffic
+  // and rejects them. Adding a stable wigolo UA fixes the 400 path.
+  it('audit: lobsters 400 — sends a stable User-Agent header so multi-word queries do not 400', async () => {
+    const { calls } = captureFetch([]);
+    await new LobstersEngine().search('postgres index tuning');
+    expect(calls).toHaveLength(1);
+    const ua = (calls[0].init?.headers as Record<string, string> | undefined)?.['User-Agent'];
+    expect(ua).toBeDefined();
+    expect(ua).toMatch(/wigolo/i);
+  });
+
+  it('audit: multi-word query is URL-encoded (no raw spaces in the request URL)', async () => {
+    const { calls } = captureFetch([]);
+    await new LobstersEngine().search('rust async lifetimes');
+    expect(calls[0].url).not.toContain(' ');
+    // URLSearchParams encodes ' ' to '+'; either '+' or '%20' is acceptable.
+    expect(calls[0].url).toMatch(/q=rust(\+|%20)async(\+|%20)lifetimes/);
   });
 
   it('respects maxResults', async () => {

@@ -27,21 +27,25 @@ export function getCodeEngines(): EngineEntry[] {
       engine: wrapWithRetryAndBreaker(new GithubCodeEngine()),
       weight: 1.2,
       supportsDateFilter: false,
+      quality: 'medium',
     },
     {
       engine: wrapWithRetryAndBreaker(new StackOverflowEngine()),
       weight: 1.0,
       supportsDateFilter: true,
+      quality: 'high',
     },
     {
       engine: wrapWithRetryAndBreaker(new DevDocsEngine()),
       weight: 0.6,
       supportsDateFilter: false,
+      quality: 'low',
     },
     {
       engine: wrapWithRetryAndBreaker(new DuckDuckGoEngine()),
       weight: 0.8,
       supportsDateFilter: false,
+      quality: 'medium',
     },
   ];
 
@@ -50,6 +54,7 @@ export function getCodeEngines(): EngineEntry[] {
       engine: wrapWithRetryAndBreaker(new BraveEngine()),
       weight: 1.0,
       supportsDateFilter: false,
+      quality: 'medium',
     });
   }
 
@@ -58,6 +63,7 @@ export function getCodeEngines(): EngineEntry[] {
     weight: 0.3,
     supportsDateFilter: false,
     secondary: true,
+    quality: 'high',
   });
 
   cached = entries;

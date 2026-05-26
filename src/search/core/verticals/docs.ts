@@ -10,8 +10,8 @@ let cached: EngineEntry[] | null = null;
 export function getDocsEngines(): EngineEntry[] {
   if (cached) return cached;
   cached = [
-    { engine: wrapWithRetryAndBreaker(new MdnEngine()), weight: 1.2, supportsDateFilter: false },
-    { engine: wrapWithRetryAndBreaker(new DevDocsEngine()), weight: 0.8, supportsDateFilter: false },
+    { engine: wrapWithRetryAndBreaker(new MdnEngine()), weight: 1.2, supportsDateFilter: false, quality: 'high' },
+    { engine: wrapWithRetryAndBreaker(new DevDocsEngine()), weight: 0.8, supportsDateFilter: false, quality: 'low' },
   ];
   return cached;
 }

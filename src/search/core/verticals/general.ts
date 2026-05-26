@@ -17,14 +17,14 @@ export function getGeneralEngines(): EngineEntry[] {
   if (cached) return cached;
 
   const entries: EngineEntry[] = [
-    { engine: wrapWithRetryAndBreaker(new BingEngine()), weight: 1, supportsDateFilter: false },
-    { engine: wrapWithRetryAndBreaker(new DuckDuckGoEngine()), weight: 1, supportsDateFilter: false },
-    { engine: wrapWithRetryAndBreaker(new StartpageEngine()), weight: 1, supportsDateFilter: false },
-    { engine: wrapWithRetryAndBreaker(new WikipediaEngine()), weight: 0.6, supportsDateFilter: false },
+    { engine: wrapWithRetryAndBreaker(new BingEngine()), weight: 1, supportsDateFilter: false, quality: 'medium' },
+    { engine: wrapWithRetryAndBreaker(new DuckDuckGoEngine()), weight: 1, supportsDateFilter: false, quality: 'medium' },
+    { engine: wrapWithRetryAndBreaker(new StartpageEngine()), weight: 1, supportsDateFilter: false, quality: 'medium' },
+    { engine: wrapWithRetryAndBreaker(new WikipediaEngine()), weight: 0.6, supportsDateFilter: false, quality: 'high' },
   ];
 
   if (getConfig().braveApiKey) {
-    entries.push({ engine: wrapWithRetryAndBreaker(new BraveEngine()), weight: 1.1, supportsDateFilter: false });
+    entries.push({ engine: wrapWithRetryAndBreaker(new BraveEngine()), weight: 1.1, supportsDateFilter: false, quality: 'medium' });
   }
 
   cached = entries;

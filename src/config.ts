@@ -37,6 +37,12 @@ export interface Config {
   validateLinks: boolean;
   respectRobotsTxt: boolean;
   braveApiKey: string | null;
+  /** GitHub API personal access token. When set, the github-code adapter
+   * passes it as a Bearer token so search calls run authenticated. Lifts
+   * the 10 req/min unauthed cap to 30 req/min, eliminates the most common
+   * 401 path for org-private result hydration, and is the env var named
+   * in engine_warnings hints. Optional — the adapter still runs unauthed. */
+  githubToken: string | null;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   logFormat: 'json' | 'text';
   reranker: 'onnx' | 'none' | 'custom';
@@ -167,6 +173,7 @@ export function getConfig(): Config {
     validateLinks: envBool('VALIDATE_LINKS', true),
     respectRobotsTxt: envBool('RESPECT_ROBOTS_TXT', true),
     braveApiKey: envStr('BRAVE_API_KEY'),
+    githubToken: envStr('WIGOLO_GITHUB_TOKEN'),
     logLevel: (envStr('LOG_LEVEL', 'info') as Config['logLevel']),
     logFormat: (envStr('LOG_FORMAT', 'json') as Config['logFormat']),
     reranker: (() => {
