@@ -311,6 +311,33 @@ export interface ImageItem {
   alt?: string;
   /** URL of the result the image came from. */
   source_url: string;
+  /** Optional smaller preview URL when the engine surfaces a separate thumb. */
+  thumbnail_url?: string;
+  /** Pixel dimensions when the engine reports them. Both must be present
+   * together or both absent — partial dimensions are dropped at parse time. */
+  width?: number;
+  height?: number;
+  /** Short engine identifier (e.g. "ddg-image", "brave-image") so callers can
+   * surface provenance and de-duplicate across engines. */
+  engine?: string;
+  /** Original page title hosting the image, when available. */
+  title?: string;
+}
+
+/**
+ * Slice S11a: shape for results returned by image-search engines (DDG Image,
+ * Brave Image). Mirrors RawSearchResult on the orchestration plumbing but the
+ * `url` field is the SOURCE page (caller can navigate); the `image_url` /
+ * `thumbnail_url` fields carry the binary asset URLs.
+ */
+export interface ImageSearchResult extends RawSearchResult {
+  /** Required for image results — the binary image URL. */
+  image_url: string;
+  /** Smaller preview asset when the engine emits one. */
+  thumbnail_url?: string;
+  /** Pixel dimensions when the engine reports them. */
+  width?: number;
+  height?: number;
 }
 
 export interface EngineOutcomeSummary {
@@ -401,6 +428,13 @@ export interface SearchResultItem {
    * can aggregate top-level images when input.include_images is true. */
   image_url?: string;
   image_alt?: string;
+  /** Image-search-only: smaller preview URL when an image-search engine
+   * surfaces one separately from the full-resolution `image_url`. */
+  thumbnail_url?: string;
+  /** Image-search-only: pixel width / height when an image-search engine
+   * reports them. Both are set together by the orchestrator. */
+  width?: number;
+  height?: number;
   /** Debug-only — emitted when input.include_engine_outcomes is true. */
   _score_breakdown?: ScoreBreakdown;
 }
@@ -701,6 +735,14 @@ export interface RawSearchResult {
    * the caller sets include_images=true. */
   image_url?: string;
   image_alt?: string;
+  /** Image-search-only: a smaller preview URL (typically engine-hosted
+   * thumbnail). Distinct from `image_url`, which is the full-resolution
+   * source. Only set by image-search engines (DDG Image / Brave Image). */
+  thumbnail_url?: string;
+  /** Image-search-only: pixel width when the engine reports it. */
+  width?: number;
+  /** Image-search-only: pixel height when the engine reports it. */
+  height?: number;
   /** Debug-only — present when the core orchestrator was asked to emit
    * score breakdowns (via include_engine_outcomes on the public surface). */
   _score_breakdown?: ScoreBreakdown;
