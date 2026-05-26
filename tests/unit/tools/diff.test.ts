@@ -127,6 +127,35 @@ describe('handleDiff', () => {
       }
     });
 
+    // Slice 8 / M11: tool-boundary regression — granularity='word' returns
+    // word-scoped hunks (not line-grouped). Mirrors the engine-level word
+    // test so the dispatch at the handler stays honest.
+    it('returns word-scoped hunks when granularity=word', async () => {
+      const oldMd = 'The quick brown fox jumps over the lazy dog.';
+      const newMd = 'The quick brown CAT jumps over the lazy dog.';
+
+      const wordR = await handleDiff({
+        old: { markdown: oldMd },
+        new: { markdown: newMd },
+        output: 'hunks',
+        granularity: 'word',
+      });
+      const lineR = await handleDiff({
+        old: { markdown: oldMd },
+        new: { markdown: newMd },
+        output: 'hunks',
+        granularity: 'line',
+      });
+      expect(wordR.ok).toBe(true);
+      expect(lineR.ok).toBe(true);
+      if (!wordR.ok || !lineR.ok) return;
+
+      const wordChars = wordR.data.hunks!.reduce((acc, h) => acc + h.before.length, 0);
+      const lineChars = lineR.data.hunks!.reduce((acc, h) => acc + h.before.length, 0);
+      // Word granularity must produce strictly tighter hunks than line.
+      expect(wordChars).toBeLessThan(lineChars);
+    });
+
     it('walks H1/H2/H3 section boundaries when granularity=section', async () => {
       const oldMd = [
         '# Top',

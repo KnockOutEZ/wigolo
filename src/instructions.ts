@@ -175,7 +175,7 @@ Use \`search_depth\` to trade latency for thoroughness:
 - \`include_engine_outcomes: true\` -- opt-in per-engine debug rows.
 - \`include_images: true\` -- aggregate top-level \`images[]\` from engines that surface them.
 - \`include_favicon: true\` -- per-result \`favicon\` URL.
-- Per-result \`evidence_score\` -- explainable breakdown: relevance + domain quality + lexical alignment + freshness.
+- Per-result \`relevance_score\` (legacy flat aggregate) and \`evidence_score.final\` (same number alongside the explainable per-signal breakdown). Both fields coexist — read \`relevance_score\` for ranking, \`evidence_score.components.*\` to explain why.
 - Per-result \`freshness_signal\` -- \`published_date\` + \`inferred\` flag + \`confidence\` tag.
 - \`brand_collision_warning\` -- emitted when a brand domain dominates the top-3 of a generic query; carries reason + suggested rewrites.
 - \`query_understanding\` -- classifier view: intent, entities, date hint, language, \`is_brand_collision_prone\`, considered rewrites.

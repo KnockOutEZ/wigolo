@@ -159,6 +159,49 @@ describe('computeHunks', () => {
     expect(result.truncated).toBe(true);
     expect(result.hunks).toEqual([]);
   });
+
+  // Slice 8 / M11: granularity:'word' must walk tokens, not lines. Pre-fix
+  // the dispatch fell back to line-LCS regardless of granularity, so word
+  // and line produced identical hunks for any single-line edit. WHY: the
+  // tool's API surface promises 'word' as a real granularity; a reviewer
+  // staring at a paragraph wants to see "this word changed", not "this
+  // whole paragraph changed".
+  describe('word granularity (Slice 8, M11)', () => {
+    it('emits word-scoped hunks for an intra-line change instead of line hunks', () => {
+      const oldText = 'the quick brown fox jumps over the lazy dog';
+      const newText = 'the quick brown CAT jumps over the lazy dog';
+
+      const wordResult = computeHunks(oldText, newText, 'word');
+      const lineResult = computeHunks(oldText, newText, 'line');
+
+      // line-granularity will return one hunk whose before/after contain
+      // the entire line. word-granularity must produce a tighter hunk —
+      // either the changed word alone or a small token run — strictly
+      // shorter than the full-line hunk.
+      expect(wordResult.hunks.length).toBeGreaterThan(0);
+      const wordBeforeChars = wordResult.hunks.reduce((acc, h) => acc + h.before.length, 0);
+      const lineBeforeChars = lineResult.hunks.reduce((acc, h) => acc + h.before.length, 0);
+      expect(wordBeforeChars).toBeLessThan(lineBeforeChars);
+
+      // The changed word itself must appear in the hunks (in some hunk's
+      // before/after — the LCS may emit it as a modified pair or as
+      // separate remove+add).
+      const allBefore = wordResult.hunks.map((h) => h.before).join(' ');
+      const allAfter = wordResult.hunks.map((h) => h.after).join(' ');
+      expect(allBefore).toContain('fox');
+      expect(allAfter).toContain('CAT');
+    });
+
+    it('preserves the equal-token majority (unchanged words are NOT in any hunk)', () => {
+      const oldText = 'alpha beta gamma delta epsilon zeta';
+      const newText = 'alpha beta GAMMA delta epsilon zeta';
+      const result = computeHunks(oldText, newText, 'word');
+      const allHunkText = result.hunks.map((h) => `${h.before} ${h.after}`).join(' ');
+      // Words far from the change must not appear in hunks.
+      expect(allHunkText).not.toContain('alpha');
+      expect(allHunkText).not.toContain('zeta');
+    });
+  });
 });
 
 describe('computeDiffEnvelope', () => {

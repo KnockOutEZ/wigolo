@@ -355,10 +355,16 @@ export function computeHunks(
     return computeSectionHunks(oldText, newText);
   }
 
-  // line + word granularities share the LCS walk; word currently produces
-  // line-grouped hunks because the spec only requires it to land in the API
-  // surface — finer-grained per-word diff is a future enhancement once the
-  // section walker lands.
+  // Slice 8 / M11: dispatch word granularity to a token-level LCS. Pre-fix
+  // word fell through to line-LCS, so a single intra-line edit produced a
+  // hunk containing the entire line. The word path tokenises both sides
+  // on whitespace + punctuation, runs LCS over tokens, and emits per-run
+  // hunks containing only the changed tokens — what callers asking for
+  // "word granularity" actually expect.
+  if (granularity === 'word') {
+    return computeWordHunks(oldText, newText);
+  }
+
   const ops = buildEditScript(oldLines, newLines);
   const hunks: DiffHunk[] = [];
   let i = 0;
@@ -391,6 +397,73 @@ export function computeHunks(
     removed_lines: counts.removed,
     modified_lines: counts.modified,
     total_changed_chars: changedCharsFromOps(ops),
+  };
+  return { hunks, truncated: false, summary };
+}
+
+// Slice 8 / M11: word-granularity hunks. Splits on whitespace/punctuation
+// boundaries — emits whitespace and word tokens separately so we can
+// reconstruct readable hunk text without inventing spaces. Empty tokens
+// are dropped; the result is the same sequence a human would read.
+function tokenizeWords(text: string): string[] {
+  if (!text) return [];
+  // Group runs of whitespace + runs of non-whitespace separately. Keeps
+  // intra-line spacing intact and produces sensible LCS alignments.
+  return text.match(/\s+|[^\s]+/g) ?? [];
+}
+
+function computeWordHunks(oldText: string, newText: string): HunksResult {
+  const oldTokens = tokenizeWords(oldText);
+  const newTokens = tokenizeWords(newText);
+  const ops = buildEditScript(oldTokens, newTokens);
+
+  // Group consecutive non-equal ops into a single hunk. Each hunk's
+  // before/after concatenates the changed tokens — no padding context, to
+  // contrast with line-granularity which carries the full line for any
+  // intra-line change.
+  const hunks: DiffHunk[] = [];
+  let i = 0;
+  while (i < ops.length) {
+    if (ops[i].type === 'equal') {
+      i++;
+      continue;
+    }
+    const removes: string[] = [];
+    const adds: string[] = [];
+    while (i < ops.length && ops[i].type !== 'equal') {
+      const op = ops[i];
+      if (op.type === 'delete') removes.push(op.oldLine);
+      else if (op.type === 'insert') adds.push(op.newLine);
+      i++;
+    }
+    // Skip pure-whitespace flips (only whitespace-token runs changed) — these
+    // are usually re-flow noise the caller doesn't want as a hunk.
+    const beforeStr = removes.join('');
+    const afterStr = adds.join('');
+    if (beforeStr.trim().length === 0 && afterStr.trim().length === 0) continue;
+    if (removes.length > 0 && adds.length > 0) {
+      hunks.push({ before: beforeStr, after: afterStr, change_type: 'modified' });
+    } else if (removes.length > 0) {
+      hunks.push({ before: beforeStr, after: '', change_type: 'removed' });
+    } else if (adds.length > 0) {
+      hunks.push({ before: '', after: afterStr, change_type: 'added' });
+    }
+  }
+
+  // Reuse the existing line-granularity summary so total_changed_chars
+  // semantics remain consistent across granularities (sum of changed
+  // characters in delete + insert ops). Computed on the line edit-script
+  // — the word path's character cost equals the line path's for the
+  // changed lines, so the field stays comparable across runs.
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(newText);
+  const lineOps = buildEditScript(oldLines, newLines);
+  const counts = countsFromOps(lineOps);
+  const summary: DiffSummary = {
+    added_lines: counts.added,
+    removed_lines: counts.removed,
+    modified_lines: counts.modified,
+    total_changed_chars: changedCharsFromOps(lineOps),
   };
   return { hunks, truncated: false, summary };
 }

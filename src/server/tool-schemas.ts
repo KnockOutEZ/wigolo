@@ -524,12 +524,12 @@ export const DIFF_TOOL_SCHEMA = {
     output: {
       type: 'string',
       enum: ['unified', 'hunks', 'summary'],
-      description: 'Diff output shape. unified=git-style patch, hunks=structured per-section, summary=line counts only. Default: unified.',
+      description: 'Diff output shape. unified=git-style patch, hunks=structured per-section, summary=counts only (added_lines / removed_lines / modified_lines / total_changed_chars where total_changed_chars = sum of added_line_chars + removed_line_chars across the LCS edit script). Default: unified.',
     },
     granularity: {
       type: 'string',
       enum: ['line', 'word', 'section'],
-      description: 'Diff granularity. section walks H1/H2/H3 boundaries. Default: line.',
+      description: 'Diff granularity. line=per-line LCS (default). word=token-level LCS — hunks contain only the changed tokens, tighter than line for intra-line edits. section walks H1/H2/H3 boundaries.',
     },
   },
 };

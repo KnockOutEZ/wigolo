@@ -354,6 +354,15 @@ export interface SearchResultItem {
   markdown_content?: string;
   fetch_failed?: string;
   content_truncated?: boolean;
+  /** Legacy aggregate score in [0, 1]. Equals `evidence_score.final` when
+   * the core path emits both; coexists for back-compat with callers that
+   * read this field directly. Slice 8 / M13: `relevance_score` and
+   * `evidence_score.final` are intentionally NOT unified — `relevance_score`
+   * is the flat field every caller has consumed since v0.0.x, while
+   * `evidence_score` carries the explainable component breakdown (RRF
+   * base + domain quality + lexical alignment + recency + engine consensus
+   * + context-cosine). Read `relevance_score` for ranking, read
+   * `evidence_score.components.*` to explain WHY a result ranked. */
   relevance_score: number;
   published_date?: string; // ISO date string, when engine provides it
   cached?: boolean;
@@ -362,7 +371,10 @@ export interface SearchResultItem {
   /** Per-result freshness signal: extracted date or inferred from URL/HTML
    * patterns, with a confidence tag callers can pivot on. */
   freshness_signal?: FreshnessSignal;
-  /** Always emitted by the core path: explainable score breakdown. */
+  /** Always emitted by the core path: explainable score breakdown. Slice
+   * 8 / M13: `.final` mirrors the flat `relevance_score` for back-compat;
+   * `.components.*` carries the per-signal breakdown that powers the
+   * explanation. Both fields coexist — see `relevance_score` JSDoc. */
   evidence_score?: EvidenceScore;
   /** Per-host favicon URL, emitted when input.include_favicon is true. */
   favicon?: string;
@@ -631,7 +643,11 @@ export interface ScoreBreakdown {
 }
 
 export interface EvidenceScore {
-  /** 0..1, what callers usually consume. Matches `relevance_score`. */
+  /** [0, 1] aggregate. Mirrors `SearchResultItem.relevance_score` so a
+   * caller can read either field for ranking. Slice 8 / M13: the two
+   * fields coexist (relevance_score = legacy flat aggregate;
+   * evidence_score.final = same number alongside the component breakdown).
+   * Do not unify — both surfaces are still on the API contract. */
   final: number;
   components: {
     /** RRF score before any boost (small, ~0.016 range raw). */
@@ -942,9 +958,17 @@ export interface DiffHunk {
 }
 
 export interface DiffSummary {
+  /** Number of pure-addition lines (no paired removal). */
   added_lines: number;
+  /** Number of pure-removal lines (no paired addition). */
   removed_lines: number;
+  /** Number of paired delete+insert lines (git's "modified" semantics). */
   modified_lines: number;
+  /** Slice 8 / M12: sum of `added_line_chars + removed_line_chars` across
+   * the LCS edit script (i.e. total character cost of the change before
+   * pairing modified runs). Stays comparable across line / word / section
+   * granularities so callers can rank diffs by size without re-parsing
+   * the hunks. */
   total_changed_chars: number;
 }
 
