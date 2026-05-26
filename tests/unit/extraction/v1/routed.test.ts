@@ -202,3 +202,79 @@ describe('routedExtract — site-specific extractors run first', () => {
     expect(result).toBeDefined();
   });
 });
+
+describe('routedExtract — site_data passthrough (P1 regression guard)', () => {
+  // Why these tests exist: slice unit tests passed at the extractor boundary
+  // but the structured `SiteExtractionResult` was getting flattened into
+  // markdown by the routed wiring. These tests pin the passthrough at the
+  // routed-extract layer — one level below the integration test in
+  // tests/integration/fetch-site-data.test.ts.
+  it('omits site_data for URLs that no site extractor handles', async () => {
+    mockClassify.mockReturnValue('generic');
+    mockDefuddle.mockResolvedValue(res({ extractor: 'defuddle' }));
+
+    const result = await routedExtract({
+      html: HTML,
+      url: 'https://example.com/some/random/page',
+    });
+
+    expect(result.site_data).toBeUndefined();
+  });
+
+  it('attaches site_data when the reddit extractor matches', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const fx = readFileSync(
+      join(import.meta.dirname, '../../../fixtures/site-extractors/reddit-thread.html'),
+      'utf-8',
+    );
+    const result = await routedExtract({
+      html: fx,
+      url: 'https://old.reddit.com/r/programming/comments/abc123/whats_your_favorite_typescript_trick/',
+    });
+
+    expect(result.site_data).toBeDefined();
+    const site = result.site_data as Record<string, unknown>;
+    expect(site.subreddit).toBe('programming');
+    expect(typeof site.score).toBe('number');
+    expect(Array.isArray(site.comments)).toBe(true);
+  });
+
+  it('attaches site_data when the youtube extractor matches', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const fx = readFileSync(
+      join(import.meta.dirname, '../../../fixtures/site-extractors/youtube-watch-with-captions.html'),
+      'utf-8',
+    );
+    const result = await routedExtract({
+      html: fx,
+      url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    });
+
+    expect(result.site_data).toBeDefined();
+    const site = result.site_data as Record<string, unknown>;
+    expect(site.video_id).toBe('dQw4w9WgXcQ');
+    expect(Array.isArray(site.caption_tracks)).toBe(true);
+    expect(Array.isArray(site.chapters)).toBe(true);
+  });
+
+  it('attaches site_data when the amazon extractor matches', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const fx = readFileSync(
+      join(import.meta.dirname, '../../../fixtures/amazon/electronics.html'),
+      'utf-8',
+    );
+    const result = await routedExtract({
+      html: fx,
+      url: 'https://www.amazon.com/dp/B08N5WRWNW/',
+    });
+
+    expect(result.site_data).toBeDefined();
+    const site = result.site_data as Record<string, unknown>;
+    expect(site.asin).toBe('B08N5WRWNW');
+    expect(typeof site.price).toBe('number');
+    expect(Array.isArray(site.features)).toBe(true);
+  });
+});

@@ -224,6 +224,12 @@ export async function handleFetch(
         previous_hash: changeResult.previousHash,
         diff_summary: changeResult.diffSummary,
       } : {}),
+      // Per-site structured JSON (e.g. Reddit `comments[]`, YouTube
+      // `caption_tracks[]`, Amazon `asin`/`price`). Populated by the routed
+      // extractor for sites with a site-specific extractor; absent otherwise.
+      // Surfacing at top level (rather than nesting under `extra`) matches
+      // the existing house style for `evidence` / `screenshot`.
+      ...(extraction.site_data ? { site_data: extraction.site_data } : {}),
     };
 
     capAuxFields(out, input.max_content_chars);

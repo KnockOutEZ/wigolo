@@ -81,6 +81,15 @@ export interface FetchOutput {
   previous_hash?: string;
   diff_summary?: string;
   evidence?: EvidenceItem[];
+  /**
+   * Per-site structured JSON, present only when a site extractor matched the
+   * URL (e.g. Reddit threads, YouTube watch pages, Amazon product pages).
+   * Shape is site-specific — see the corresponding site extractor for the
+   * field contract. Sits at top level alongside `evidence` for easy
+   * introspection; matches the existing house style (no nested `extra` slot).
+   * Absent on generic / non-matched pages so callers can branch on presence.
+   */
+  site_data?: Record<string, unknown>;
 }
 
 export interface RawFetchResult {
@@ -121,6 +130,16 @@ export interface ExtractionResult {
   links: string[];
   images: string[];
   extractor: ExtractorType;
+  /**
+   * Structured per-site JSON shape, populated by the v1 routed extractor when
+   * a site extractor matches (Reddit / YouTube / Amazon, plus future sites).
+   * Survives through `applyPostProcessing` and is surfaced on `FetchOutput.site_data`
+   * so callers consume the per-site contract (subreddit/score/comments,
+   * video_id/caption_tracks/chapters, asin/price/features) without having to
+   * scrape it back out of the markdown body. Shape is per-site — see the
+   * extractor source for the field contract.
+   */
+  site_data?: Record<string, unknown>;
 }
 
 export type ExtractorType = 'defuddle' | 'readability' | 'turndown' | 'site-specific';
