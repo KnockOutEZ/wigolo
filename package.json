@@ -1,6 +1,6 @@
 {
   "name": "@staticn0va/wigolo",
-  "version": "0.2.0",
+  "version": "0.1.20",
   "description": "Local-first web intelligence MCP server for AI coding agents",
   "type": "module",
   "main": "dist/index.js",
