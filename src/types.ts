@@ -103,6 +103,14 @@ export interface FetchOutput {
   /** Which tier produced the bytes — see FetchMethod. Always emitted on
    * successful responses; absent only on StageError replies. */
   fetch_method?: FetchMethod;
+  /**
+   * Upstream HTTP status code. Surfaced so callers can branch on 404 / 403 /
+   * 5xx pages that still render usable HTML (a missing-docs landing page is
+   * legitimately fetchable but should not be confused with a successful 200
+   * by the cache or change-detection layers). Absent on cache hits when the
+   * cached row predates the column being persisted.
+   */
+  http_status?: number;
 }
 
 export interface RawFetchResult {
@@ -183,6 +191,14 @@ export interface CachedContent {
   contentHash: string;
   fetchedAt: string;
   expiresAt: string | null;
+  /**
+   * Upstream HTTP status code captured at fetch time. `null` on rows
+   * persisted before the column existed; treated as "unknown" by callers.
+   * Cache + change-detection compare status alongside content hash so a
+   * 200→404 transition counts as a change even when the body bytes happen
+   * to hash identically.
+   */
+  httpStatus?: number | null;
 }
 
 export interface Extractor {

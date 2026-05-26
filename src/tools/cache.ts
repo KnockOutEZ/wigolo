@@ -53,7 +53,11 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
           const extraction = await extractor.extract(raw.html, raw.finalUrl, {
             contentType: raw.contentType,
           });
-          const changeResult = detectChange(entry.url, extraction.markdown);
+          // Slice S1 (C2): pass the upstream status code so cache check_changes
+          // surfaces 200→404 transitions as changes even when the body hash
+          // matches — silent equality on missing pages was the audit's
+          // "cache treats 404 as identical content" failure mode.
+          const changeResult = detectChange(entry.url, extraction.markdown, raw.statusCode);
           changes.push({
             url: entry.url,
             changed: changeResult.changed,

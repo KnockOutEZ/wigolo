@@ -5,13 +5,13 @@ import { cacheContent, normalizeUrl } from '../../../src/cache/store.js';
 import { detectChange } from '../../../src/cache/change-detector.js';
 import type { RawFetchResult, ExtractionResult } from '../../../src/types.js';
 
-function makeRaw(url: string): RawFetchResult {
+function makeRaw(url: string, statusCode = 200): RawFetchResult {
   return {
     url,
     finalUrl: url,
     html: '<html><body>hello</body></html>',
     contentType: 'text/html',
-    statusCode: 200,
+    statusCode,
     method: 'http',
     headers: {},
   };
@@ -174,6 +174,55 @@ describe('detectChange', () => {
       const r2 = detectChange('https://example.com/idem', 'new');
       expect(r1.changed).toBe(r2.changed);
       expect(r1.previousHash).toBe(r2.previousHash);
+    });
+  });
+
+  // --- Slice S1 (C2): HTTP status transitions count as changes ---
+  //
+  // WHY: a cached 200 page that flips to a 404 (or vice-versa) is a
+  // change even when the body bytes hash identically — silently treating
+  // them as the same is the failure mode the audit flagged. Status-aware
+  // change detection lets cache check_changes report status flips
+  // distinct from body edits.
+
+  describe('http_status transitions (C2)', () => {
+    it('reports changed=true when status flips 200 → 404 with identical body', () => {
+      const sameBody = '# Same body\n\nIdentical text either way.';
+      cacheContent(makeRaw('https://example.com/flip', 200), makeExtraction({ markdown: sameBody }));
+
+      const result = detectChange('https://example.com/flip', sameBody, 404);
+
+      expect(result.changed).toBe(true);
+      expect(result.previousHttpStatus).toBe(200);
+    });
+
+    it('reports changed=true when status flips 404 → 200 with identical body', () => {
+      const sameBody = 'identical';
+      cacheContent(makeRaw('https://example.com/recovered', 404), makeExtraction({ markdown: sameBody }));
+
+      const result = detectChange('https://example.com/recovered', sameBody, 200);
+
+      expect(result.changed).toBe(true);
+      expect(result.previousHttpStatus).toBe(404);
+    });
+
+    it('reports changed=false when both body hash and status code match', () => {
+      const body = '# body';
+      cacheContent(makeRaw('https://example.com/steady', 200), makeExtraction({ markdown: body }));
+
+      const result = detectChange('https://example.com/steady', body, 200);
+
+      expect(result.changed).toBe(false);
+      expect(result.previousHttpStatus).toBeUndefined();
+    });
+
+    it('falls back to body-hash-only when newHttpStatus is omitted (callers that don\'t track status)', () => {
+      const sameBody = 'same';
+      cacheContent(makeRaw('https://example.com/legacy', 200), makeExtraction({ markdown: sameBody }));
+
+      const result = detectChange('https://example.com/legacy', sameBody);
+
+      expect(result.changed).toBe(false);
     });
   });
 });

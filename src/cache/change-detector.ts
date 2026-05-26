@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 import { createLogger } from '../logger.js';
-import { normalizeUrl, getHashForNormalizedUrl, getMarkdownForNormalizedUrl } from './store.js';
+import {
+  normalizeUrl,
+  getHashForNormalizedUrl,
+  getMarkdownForNormalizedUrl,
+  getHttpStatusForNormalizedUrl,
+} from './store.js';
 import { computeDiffSummary } from './diff-summary.js';
 
 const log = createLogger('cache');
@@ -9,9 +14,20 @@ export interface ChangeResult {
   changed: boolean;
   previousHash?: string;
   diffSummary?: string;
+  /** Slice S1 (C2): when the upstream status code transitioned (e.g.
+   *  200 → 404), report the previous one so callers can distinguish a
+   *  status flip from a content edit. Absent when the previous status was
+   *  null/unknown or did not change. */
+  previousHttpStatus?: number;
 }
 
-export function detectChange(url: string, newMarkdown: string): ChangeResult {
+/**
+ * Slice S1 (C2): change detection now compares HTTP status alongside the
+ * body hash. A 200 page that becomes a 404 with an identical-looking body
+ * (or vice-versa) IS a change — pretending otherwise is the silent-failure
+ * mode the audit flagged.
+ */
+export function detectChange(url: string, newMarkdown: string, newHttpStatus?: number): ChangeResult {
   try {
     const normalizedUrl = normalizeUrl(url);
     const previousHash = getHashForNormalizedUrl(normalizedUrl);
@@ -22,8 +38,13 @@ export function detectChange(url: string, newMarkdown: string): ChangeResult {
     }
 
     const newHash = createHash('sha256').update(newMarkdown).digest('hex');
+    const previousStatus = getHttpStatusForNormalizedUrl(normalizedUrl);
+    const statusChanged =
+      previousStatus !== null &&
+      typeof newHttpStatus === 'number' &&
+      previousStatus !== newHttpStatus;
 
-    if (newHash === previousHash) {
+    if (newHash === previousHash && !statusChanged) {
       log.debug('content unchanged', { url: normalizedUrl, hash: newHash });
       return { changed: false };
     }
@@ -37,6 +58,9 @@ export function detectChange(url: string, newMarkdown: string): ChangeResult {
       url: normalizedUrl,
       previousHash,
       newHash,
+      previousStatus,
+      newHttpStatus,
+      statusChanged,
       diffSummary,
     });
 
@@ -44,6 +68,7 @@ export function detectChange(url: string, newMarkdown: string): ChangeResult {
       changed: true,
       previousHash,
       diffSummary,
+      ...(statusChanged ? { previousHttpStatus: previousStatus } : {}),
     };
   } catch (err) {
     log.error('change detection failed', {

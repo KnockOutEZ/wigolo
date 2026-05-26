@@ -439,6 +439,12 @@ describe('handleCache --- check_changes mode', () => {
 
     const result = await handleCache({ check_changes: true }, mockRouter());
 
-    expect(vi.mocked(detectChange)).toHaveBeenCalledWith('https://example.com', 'freshly fetched content');
+    // Slice S1 (C2): cache check_changes now forwards the upstream status
+    // code so detectChange can flag 200→404 status flips as changes.
+    expect(vi.mocked(detectChange)).toHaveBeenCalledWith(
+      'https://example.com',
+      'freshly fetched content',
+      expect.any(Number),
+    );
   });
 });

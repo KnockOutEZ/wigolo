@@ -542,6 +542,9 @@ describe('handleFetch --- change detection', () => {
     expect(vi.mocked(detectChange)).toHaveBeenCalledWith(
       expect.any(String),
       '# New Content',
+      // Slice S1 (C2): detectChange now receives upstream status code so it
+      // can flag 200→404 status flips as changes alongside body-hash diffs.
+      expect.any(Number),
     );
   });
 

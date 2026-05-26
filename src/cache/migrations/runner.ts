@@ -127,6 +127,12 @@ CREATE TABLE IF NOT EXISTS domain_routing (
 );
 `;
 
+// Slice S1 (C2): add nullable http_status column so cache + change-detection
+// can distinguish status-code transitions from body changes. SQL is empty
+// because the entire effect is in the postStep — `ADD COLUMN IF NOT EXISTS`
+// doesn't exist in SQLite, and an unguarded `ALTER` blows up on re-runs.
+const MIGRATION_006_URL_CACHE_HTTP_STATUS = '';
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -149,6 +155,22 @@ export const MIGRATIONS: Migration[] = [
       }
       if (!names.has('tls_success_count')) {
         db.exec('ALTER TABLE domain_routing ADD COLUMN tls_success_count INTEGER DEFAULT 0');
+      }
+    },
+  },
+  {
+    name: '006-url-cache-http-status',
+    sql: MIGRATION_006_URL_CACHE_HTTP_STATUS,
+    postStep: (db) => {
+      // url_cache is created inline by initDatabase() in src/cache/db.ts; the
+      // runner-only test harness skips that inline schema. Guard the ALTER so
+      // the migration is harmless on bare in-memory DBs (the column will be
+      // present whenever the table is, via the next initDatabase call).
+      const cols = db.pragma('table_info(url_cache)') as Array<{ name: string }>;
+      if (cols.length === 0) return;
+      const names = new Set(cols.map((c) => c.name));
+      if (!names.has('http_status')) {
+        db.exec('ALTER TABLE url_cache ADD COLUMN http_status INTEGER');
       }
     },
   },
