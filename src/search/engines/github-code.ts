@@ -79,7 +79,12 @@ export class GithubCodeEngine implements SearchEngine {
       if (!repoName || !path || !htmlUrl) continue;
 
       const description = asString(item.repository?.description);
-      const snippet = description ?? path;
+      // S11b: include both repo description and path in the snippet when
+      // both are present. Lexical alignment scoring downstream uses snippet
+      // tokens; pre-S11b we lost ~half the queryable surface by emitting
+      // only one or the other. When description is missing, fall back to
+      // path alone so we don't pad noise.
+      const snippet = description ? `${description} — ${path}` : path;
 
       results.push({
         title: `${repoName} — ${path}`,
