@@ -15,8 +15,7 @@ import type { SearchContext } from '../../src/providers/search-provider.js';
 //
 //   1. tier-based RRF weighting is observable in the final search response,
 //   2. cross-engine canonical URL dedup is observable in the final response,
-//   3. low-recall query expansion is observable in `query_understanding.rewrites`
-//      (covered in a later slice).
+//   3. low-recall query expansion is observable in `query_understanding.rewrites`.
 //
 // Mocks live at the vertical-engine layer so we exercise the full orchestrator
 // pipeline (intent → engines → RRF → dedup → rerank → response shape) without
