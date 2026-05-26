@@ -117,6 +117,38 @@ describe('fetch surfaces http_status (C2)', () => {
   });
 });
 
+// --- C2 integration: http_status surfaces on FetchOutput via the tool boundary ---
+//
+// Per memory `feedback_slice_brief_integration_surface`: shipping a module
+// behind an MCP tool MUST include an integration test at the tool boundary.
+// The describe block above mocks the cache + extract layers and asserts
+// raw FetchOutput shape via handleFetch — that IS the tool boundary, since
+// handleFetch is the function the MCP server invokes per tool call.
+
+describe('handleFetch — http_status surfaces at the tool boundary (C2 integration)', () => {
+  it('handleFetch on a 4xx HTML page returns http_status alongside extracted content', async () => {
+    extractMock.mockResolvedValue(
+      makeExtraction({ title: 'Gone', markdown: '# 404 oops' }),
+    );
+    const router = makeRouter({
+      statusCode: 404,
+      html: '<html><body><h1>oops</h1></body></html>',
+    });
+    const r = await handleFetch(
+      { url: 'https://example.com/gone', force_refresh: true } as FetchInput,
+      router as never,
+    );
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // The whole point: callers see the status code on the success envelope
+    // so they can distinguish a 200 from a 404 HTML landing page that
+    // happened to extract usable markdown.
+    expect(r.data.http_status).toBe(404);
+    expect(r.data.cached).toBe(false);
+  });
+});
+
 // --- C3: section extraction silent failure ---
 //
 // WHY: when callers pass `section: "X"` and no heading matches, the old path
