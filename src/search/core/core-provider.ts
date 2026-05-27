@@ -17,6 +17,7 @@ import type {
 } from '../../types.js';
 import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
+import { expandQuery, LOW_RECALL_THRESHOLD } from './query-expansion.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
 import { detectBrandCollision, detectLexicalCollision } from './brand-collision.js';
 import { computeFreshnessSignal } from './freshness.js';
@@ -195,6 +196,15 @@ export class CoreSearchProvider implements SearchProvider {
       ultraFastMiss = true;
     }
 
+    // S11c sub-area 3: when the initial dispatch produces few results, fire
+    // ONE auto-rewrite from the static synonym map (acronyms, multi-word
+    // identifier joins, last-resort pluralization). The rewrite is reported
+    // back to the caller via query_understanding.rewrites so the auto-fired
+    // variant is not mistaken for user-supplied input. Only fires on a
+    // single-query call (multi-query callers already supplied their own
+    // variants — we trust them).
+    const autoRewrites: string[] = [];
+
     if (!servedFromCache && !ultraFastMiss) {
       const dispatches = await Promise.all(
         queries.map((q) =>
@@ -215,11 +225,57 @@ export class CoreSearchProvider implements SearchProvider {
         ),
       );
 
-      const fused =
+      let fused =
         dispatches.length === 1
           ? dispatches[0].results
           : fuseRankedLists(dispatches.map((d) => d.results));
 
+      // Low-recall expansion (S11c): only fire when single-query, result
+      // count is at or below threshold, and category is not 'images'. Image
+      // search uses entirely different snippets so the static synonym map
+      // would mostly noise. expandQuery returns null when no synonym
+      // applies, so the rewrite is silent on terminal stop-word queries.
+      if (
+        category !== 'images' &&
+        queries.length === 1 &&
+        fused.length <= LOW_RECALL_THRESHOLD
+      ) {
+        const rewrite = expandQuery(queries[0]);
+        if (rewrite && rewrite.trim() !== queries[0].trim()) {
+          log.debug('low-recall expansion firing', {
+            original: queries[0],
+            rewrite,
+            initialResultCount: fused.length,
+          });
+          const retry = await runV1Search({
+            query: rewrite,
+            category,
+            fromDate: input.from_date,
+            toDate: input.to_date,
+            maxResults: input.max_results,
+            language: input.language,
+            includeDomains: input.include_domains,
+            excludeDomains: input.exclude_domains,
+            includeScoreBreakdown: input.include_engine_outcomes,
+            country: input.country,
+            timeRange: input.time_range,
+            exactMatch: input.exact_match,
+          });
+          // RRF-merge the retry results on top of the initial dispatch so
+          // we keep ranking signal from both passes.
+          fused = fuseRankedLists([fused, retry.results]);
+          autoRewrites.push(rewrite);
+          // Merge enginesUsed + outcomes from the retry into the in-scope
+          // accumulators so the response telemetry reflects the full work.
+          dispatches.push(retry);
+        }
+      }
+
+      const enginesUsedSet = new Set<string>();
+      for (const d of dispatches) {
+        for (const e of d.enginesUsed) enginesUsedSet.add(e);
+      }
+      enginesUsed = [...enginesUsedSet];
       allDegraded = dispatches.every((d) => d.degraded);
 
       if (input.include_engine_outcomes) {
@@ -373,15 +429,16 @@ export class CoreSearchProvider implements SearchProvider {
 
     // category 'images' is rejected above, so by this point `category` is
     // either undefined or a vertical the orchestrator accepts.
-    // Slice 8 / M7: `rewrites` reports LLM-/heuristic-generated query
-    // expansions. When the caller hands us an array, they ARE the rewriter
-    // — echoing their own input back as "rewrites" is misleading. Leave
-    // it empty in that case. (queries_executed already surfaces what was
-    // actually dispatched.)
+    // Slice 8 / M7 + S11c: `rewrites` reports query expansions. When the
+    // caller hands us an array, they ARE the rewriter so echoing their own
+    // input back is misleading — we omit caller-supplied alternates. We DO
+    // surface S11c auto-rewrites (low-recall expansion fired by us) so
+    // callers can audit what wigolo actually searched for. queries_executed
+    // still carries the full dispatched-query list.
     const queryUnderstanding = buildQueryUnderstanding(displayQuery, {
       category,
       language: input.language,
-      rewrites: [],
+      rewrites: [...autoRewrites],
     });
 
     if (input.include_favicon) {

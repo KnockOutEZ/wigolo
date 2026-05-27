@@ -59,6 +59,8 @@ function applyBrandCollisionGuard(query: string, results: RawSearchResult[]): Ra
     return r;
   });
 }
+import { resolveEngineWeight } from './engine-quality.js';
+import { canonicalizeUrl } from './canonical-url.js';
 import { getGeneralEngines, _resetGeneralEnginesForTest } from './verticals/general.js';
 import { getNewsEngines, _resetNewsEnginesForTest } from './verticals/news.js';
 import { getCodeEngines, _resetCodeEnginesForTest } from './verticals/code.js';
@@ -260,17 +262,30 @@ export async function runV1Search(
     vertical === 'news' || hasDateBound || hasTemporalIntent(query);
 
   // Per-engine dedup, then RRF with per-entry weights and optional recency boost.
+  //
+  // S11c sub-area 2: keys are CANONICAL urls (canonicalizeUrl strips utm,
+  // AMP, mobile subdomain, trailing slash, http vs https) so two engines
+  // emitting different variants of the same underlying page fuse into a
+  // single RRF entry instead of splitting consensus across rows. The
+  // original first-seen url is preserved on the result object so downstream
+  // formatting, citations, and links keep the human-friendly form.
   const fused = new Map<string, number>();
   const urlToResult = new Map<string, RawSearchResult>();
-  // Track per-URL contributor counts so we can flag results that came only
-  // from secondary engines (see sub-ticket 2.2).
+  // Track per-canonical-key contributor counts so we can flag results that
+  // came only from secondary engines (see sub-ticket 2.2).
   const urlPrimaryCount = new Map<string, number>();
   const urlSecondaryCount = new Map<string, number>();
-  // exact_match phrase awareness (audit C7): record every URL where at least
-  // one contributing engine's title+snippet contained the exact phrase. Used
-  // post-merge to filter without dropping URLs that another engine matched
-  // but whose first-seen variant (kept by urlToResult) happens not to match.
+  // exact_match phrase awareness (audit C7): record every canonical key
+  // where at least one contributing engine's title+snippet contained the
+  // exact phrase.
   const urlExactMatchHit = new Set<string>();
+  function canonKey(url: string): string {
+    try {
+      return canonicalizeUrl(url);
+    } catch {
+      return url;
+    }
+  }
 
   for (let i = 0; i < outcomes.length; i++) {
     const outcome = outcomes[i];
@@ -279,25 +294,34 @@ export async function runV1Search(
     // Replace results in outcome to keep telemetry consistent with what we fused.
     outcome.results = dedupedResults;
 
-    const weight = entries[i].weight ?? 1;
+    // S11c: tier-based weights take precedence over the legacy numeric
+    // `weight`. Falls back to the per-vertical numeric weight when no
+    // quality tier is set, preserving existing behaviour for engines that
+    // haven't been classified by S11b yet.
+    const weight = resolveEngineWeight(
+      entries[i].engine.name,
+      entries[i].weight,
+      entries[i].quality,
+    );
     const isSecondary = entries[i].secondary === true;
     for (let j = 0; j < dedupedResults.length; j++) {
       const r = dedupedResults[j];
       const rank = j + 1;
       const base = weight / (RRF_K + rank);
       const recMul = wantsRecency ? recencyMultiplier(r.published_date) : 1.0;
-      fused.set(r.url, (fused.get(r.url) ?? 0) + base * recMul);
-      if (!urlToResult.has(r.url)) {
-        urlToResult.set(r.url, r);
+      const key = canonKey(r.url);
+      fused.set(key, (fused.get(key) ?? 0) + base * recMul);
+      if (!urlToResult.has(key)) {
+        urlToResult.set(key, r);
       }
       if (isSecondary) {
-        urlSecondaryCount.set(r.url, (urlSecondaryCount.get(r.url) ?? 0) + 1);
+        urlSecondaryCount.set(key, (urlSecondaryCount.get(key) ?? 0) + 1);
       } else {
-        urlPrimaryCount.set(r.url, (urlPrimaryCount.get(r.url) ?? 0) + 1);
+        urlPrimaryCount.set(key, (urlPrimaryCount.get(key) ?? 0) + 1);
       }
       if (exactPhrase) {
         const hay = `${r.title} ${r.snippet}`.toLowerCase();
-        if (hay.includes(exactPhrase)) urlExactMatchHit.add(r.url);
+        if (hay.includes(exactPhrase)) urlExactMatchHit.add(key);
       }
     }
   }
@@ -307,8 +331,8 @@ export async function runV1Search(
   // Final score is renormalized to [0,1] after boosting + sort.
   let merged: RawSearchResult[] = [...fused.entries()]
     .sort((a, b) => b[1] - a[1])
-    .map(([url, score]) => {
-      const base = urlToResult.get(url);
+    .map(([key, score]) => {
+      const base = urlToResult.get(key);
       return base ? { ...base, relevance_score: score } : undefined;
     })
     .filter((r): r is RawSearchResult => r !== undefined);
@@ -326,11 +350,15 @@ export async function runV1Search(
   // Sub-ticket 3.8: explainable per-result score breakdown, always emitted.
   const evidenceScores = new Map<string, EvidenceScore>();
   merged = merged.map((r) => {
+    // S11c: per-URL maps are keyed by canonical url. Re-derive the key from
+    // the result's first-seen url so the count lookups hit the same bucket
+    // that the ingest loop wrote.
+    const key = canonKey(r.url);
     const base = r.relevance_score;
     const dq = domainQualityScore(r.url, vertical, query);
     const la = lexicalAlignment(query, r.title, r.snippet);
-    const primaryCount = urlPrimaryCount.get(r.url) ?? 0;
-    const secondaryCount = urlSecondaryCount.get(r.url) ?? 0;
+    const primaryCount = urlPrimaryCount.get(key) ?? 0;
+    const secondaryCount = urlSecondaryCount.get(key) ?? 0;
     const isSecondaryOnly = primaryCount === 0 && secondaryCount > 0;
     const secondaryPenalty = isSecondaryOnly && la < 0.5 ? 0.3 : 1.0;
     const recencyMul = wantsRecency ? recencyMultiplier(r.published_date) : 1.0;
@@ -388,7 +416,7 @@ export async function runV1Search(
     // (kept by urlToResult, first-seen wins) didn't have the phrase but
     // another engine's variant did.
     merged = merged.filter((r) => {
-      if (urlExactMatchHit.has(r.url)) return true;
+      if (urlExactMatchHit.has(canonKey(r.url))) return true;
       const hay = `${r.title} ${r.snippet}`.toLowerCase();
       return hay.includes(exactPhrase);
     });

@@ -1,22 +1,24 @@
 // Slice S11b: per-engine snippet/source quality registry.
+// Slice S11c: tier-to-weight mapping consumed by RRF fusion.
 //
 // WHY: the audit found that some engines (devdocs, lobsters) produce thin
 // snippets ("Title — type", "12 score / 4 comments") while others
 // (StackOverflow, Wikipedia, MDN) return rich evidence text. RRF currently
-// treats them all uniformly via the static per-engine `weight`. S11c will
-// consume the tier here to weight fusion by evidence quality, not just
-// engine identity.
-//
-// THIS SLICE (S11b) only ships the metadata. S11c will:
-//   1. Read `qualityRrfMultiplier(tier)` and multiply each engine's RRF
-//      contribution by it before fusing.
-//   2. Treat `weight` as engine confidence and `quality` as evidence quality;
-//      the two are independent and multiply.
-//
-// We deliberately keep the multiplier inert (returns 1) until S11c flips it
-// so tier tagging cannot regress current behavior.
+// treats them all uniformly via the static per-engine `weight`. S11c flips
+// `qualityRrfMultiplier` to use the tier weights below so fusion is keyed
+// by evidence quality, not just engine identity.
 //
 // Tier semantics: see EngineQualityTier doc in engine-base.ts.
+//
+// Three tiers (high / medium / low) instead of arbitrary floats:
+//   - The audit's complaint was that every engine contributed equal RRF
+//     weight, so a noisy low-recall adapter (Lobsters when it 400s, MDN on
+//     a non-JS query) ranked alongside a high-recall first-party docs API.
+//   - Three discrete tiers give an unambiguous knob to label engines
+//     without bike-shedding decimal weights per-engine.
+//   - The mapping is monotonic: high > medium > low, so a high-tier engine's
+//     rank-1 result outranks a low-tier engine's rank-1 result even with a
+//     small RRF window (k=60).
 
 import type { EngineQualityTier } from './engine-base.js';
 
@@ -88,17 +90,66 @@ export function engineQualityTier(name: string): EngineQualityTier {
 }
 
 /**
- * RRF weight multiplier for a quality tier. Slice S11b ships this returning
- * 1.0 for every tier so the metadata cannot regress current behavior. S11c
- * will replace the body with real multipliers (e.g. high=1.15, medium=1.0,
- * low=0.85). Keeping the function shape here means S11c is a one-file edit.
+ * Slice S11c: tier → RRF weight mapping. High-tier engines (structured
+ * first-party APIs) contribute full weight; low-tier engines (sparse
+ * snippets, fallback-only payloads) contribute half. Medium sits between
+ * so most scraped HTML engines stay close to today's behavior.
  *
- * Documented mapping (S11c WILL implement):
- *   high   → 1.15
- *   medium → 1.00
- *   low    → 0.85
+ *   high   → 1.0
+ *   medium → 0.7
+ *   low    → 0.5
  */
-export function qualityRrfMultiplier(_tier: EngineQualityTier): number {
+export const QUALITY_WEIGHTS: Record<EngineQualityTier, number> = {
+  high: 1.0,
+  medium: 0.7,
+  low: 0.5,
+};
+
+/**
+ * RRF weight multiplier for a quality tier. S11c flips this from inert (1.0
+ * for every tier) to the per-tier weights above so the orchestrator can
+ * weight engine contributions by evidence quality.
+ */
+export function qualityRrfMultiplier(tier: EngineQualityTier): number {
+  return QUALITY_WEIGHTS[tier];
+}
+
+/**
+ * Resolve the effective RRF weight for an engine. Precedence:
+ *   1. caller-supplied tier (e.g. EngineEntry.quality from S11b) — wins
+ *      because the per-vertical entry is the most specific source of truth.
+ *   2. quality tier (via the static registry above) — for engines that
+ *      haven't been classified by a vertical-level entry yet.
+ *   3. legacyWeight (per-vertical numeric override) — preserves existing
+ *      behaviour for plugin engines that ship a custom weight.
+ *   4. 1.0 default.
+ *
+ * This is what the orchestrator should call before fusing engine outcomes
+ * — it keeps the tier lookup centralized so callers don't sprinkle
+ * engineQualityTier() / qualityRrfMultiplier() throughout the pipeline.
+ *
+ * Forward-compat: an unknown tier string is treated as the safe default
+ * (legacyWeight or 1.0) so a future extension to additional tiers
+ * (e.g. 'premium') won't crash older orchestrator code in the field.
+ */
+export function resolveEngineWeight(
+  name: string,
+  legacyWeight?: number,
+  callerTier?: EngineQualityTier | string,
+): number {
+  if (
+    typeof callerTier === 'string' &&
+    (callerTier === 'high' || callerTier === 'medium' || callerTier === 'low')
+  ) {
+    return QUALITY_WEIGHTS[callerTier];
+  }
+  const tier = ENGINE_QUALITY[name];
+  if (tier !== undefined && tier in QUALITY_WEIGHTS) {
+    return QUALITY_WEIGHTS[tier];
+  }
+  if (typeof legacyWeight === 'number' && Number.isFinite(legacyWeight)) {
+    return legacyWeight;
+  }
   return 1.0;
 }
 

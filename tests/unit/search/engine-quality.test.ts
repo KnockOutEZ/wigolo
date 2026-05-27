@@ -76,14 +76,16 @@ describe('engine quality tiers (S11b)', () => {
     expect(engineQualityTier('engine-that-does-not-exist')).toBe('medium');
   });
 
-  it('qualityRrfMultiplier returns 1.0 for every tier in S11b (S11c flips this)', () => {
-    // CRITICAL: S11b ships the metadata only. Changing the multipliers here
-    // would silently change ranking — that work is S11c's lane. This test
-    // documents the slice boundary; if it fails because S11c landed, update
-    // both this assertion and the doc-comment on qualityRrfMultiplier.
-    expect(qualityRrfMultiplier('high')).toBe(1);
-    expect(qualityRrfMultiplier('medium')).toBe(1);
-    expect(qualityRrfMultiplier('low')).toBe(1);
+  it('qualityRrfMultiplier returns tier-weighted values after S11c', () => {
+    // S11c flipped this from the inert 1.0-for-every-tier shape to the
+    // tier-weighted mapping. Keeping the assertion here as a slice boundary:
+    // any future regression that resets the tiers back to 1.0 should fail
+    // loud at the registry boundary, not silently flatten ranking.
+    expect(qualityRrfMultiplier('high')).toBeCloseTo(1.0, 5);
+    expect(qualityRrfMultiplier('medium')).toBeCloseTo(0.7, 5);
+    expect(qualityRrfMultiplier('low')).toBeCloseTo(0.5, 5);
+    expect(qualityRrfMultiplier('high')).toBeGreaterThan(qualityRrfMultiplier('medium'));
+    expect(qualityRrfMultiplier('medium')).toBeGreaterThan(qualityRrfMultiplier('low'));
   });
 
   it('vertical tier assignment is consistent with the central quality registry', () => {

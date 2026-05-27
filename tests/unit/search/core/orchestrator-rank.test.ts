@@ -56,12 +56,22 @@ function makeResult(
   return { title, url, snippet, relevance_score: 1, engine: engineName };
 }
 
-function makeEntry(name: string, results: RawSearchResult[]): EngineEntry {
+type EngineQualityTier = 'high' | 'medium' | 'low';
+
+function makeEntry(
+  name: string,
+  results: RawSearchResult[],
+  extra: { weight?: number; quality?: EngineQualityTier } = {},
+): EngineEntry & { quality?: EngineQualityTier } {
   const engine: SearchEngine = {
     name,
     search: vi.fn(async (_q: string, _opts?: SearchEngineOptions) => results),
   };
-  return { engine };
+  return {
+    engine,
+    ...(extra.weight !== undefined ? { weight: extra.weight } : {}),
+    ...(extra.quality !== undefined ? { quality: extra.quality } : {}),
+  };
 }
 
 beforeEach(() => {
@@ -154,6 +164,178 @@ describe('runV1Search — brand-collision rank (sub-ticket 2.1)', () => {
     const pgvectorIdx = out.results.findIndex((r) => r.url.includes('jkatz.github.io'));
     expect(pgvectorIdx).toBeGreaterThanOrEqual(0);
     expect(mdnIdx === -1 || pgvectorIdx < mdnIdx).toBe(true);
+  });
+
+  // S11c sub-area 1 — tier-based RRF weighting. The audit's "5.4 vs Tavily 8.0"
+  // gap is partly that every engine contributed equal RRF weight. With tier
+  // metadata, a high-tier engine's top hit should outrank a low-tier engine's
+  // top hit even when they're at the same rank position.
+  it('tier-based RRF: high-tier rank-1 outranks low-tier rank-1 on disjoint URLs', async () => {
+    // Both engines emit exactly one result at rank 1 with disjoint URLs.
+    // With tier weights high=1.0, low=0.5:
+    //   high: 1.0 / (60+1) ≈ 0.01639
+    //   low:  0.5 / (60+1) ≈ 0.00820
+    // So the high-tier URL must come first regardless of arrival order.
+    const lowEngine = makeEntry(
+      'low-quality',
+      [makeResult('low-quality', 'https://low.test/top', 'low result', 'unrelated body')],
+      { quality: 'low' },
+    );
+    const highEngine = makeEntry(
+      'high-quality',
+      [makeResult('high-quality', 'https://high.test/top', 'high result', 'unrelated body')],
+      { quality: 'high' },
+    );
+    // Arrival order: low first, then high. Without tier weighting the low-tier
+    // URL would tie or win on engine-arrival order.
+    verticalState.general = [lowEngine, highEngine];
+
+    const out = await runV1Search({ query: 'opaque query without lexical signal' });
+    expect(out.results.length).toBeGreaterThanOrEqual(2);
+    const highIdx = out.results.findIndex((r) => r.url === 'https://high.test/top');
+    const lowIdx = out.results.findIndex((r) => r.url === 'https://low.test/top');
+    expect(highIdx).toBeGreaterThanOrEqual(0);
+    expect(lowIdx).toBeGreaterThanOrEqual(0);
+    expect(highIdx).toBeLessThan(lowIdx);
+  });
+
+  it('tier-based RRF: same URL from two tiers does NOT alter dedup, only ranking', async () => {
+    // When both engines emit the same URL, the URL should appear exactly once
+    // (dedup unaffected) and the merged score should reflect both engines'
+    // tier-weighted contributions.
+    const sharedUrl = 'https://shared.test/x';
+    const highEngine = makeEntry(
+      'a',
+      [makeResult('a', sharedUrl, 'shared title', 'shared snippet')],
+      { quality: 'high' },
+    );
+    const lowEngine = makeEntry(
+      'b',
+      [makeResult('b', sharedUrl, 'shared title', 'shared snippet')],
+      { quality: 'low' },
+    );
+    verticalState.general = [highEngine, lowEngine];
+
+    const out = await runV1Search({ query: 'shared exact phrase' });
+    const occurrences = out.results.filter((r) => r.url === sharedUrl);
+    expect(occurrences.length).toBe(1);
+  });
+
+  it('tier-based RRF: explicit weight overrides numeric weight when quality is present', async () => {
+    // Legacy entries use `weight`. New entries from S11b will use `quality`.
+    // When BOTH are present, `quality` wins (forward-compat with S11b).
+    const heavyButLowTier = makeEntry(
+      'a',
+      [makeResult('a', 'https://a.test/top', 'a title', 'unrelated snippet body')],
+      { weight: 5.0, quality: 'low' },
+    );
+    const lightButHighTier = makeEntry(
+      'b',
+      [makeResult('b', 'https://b.test/top', 'b title', 'unrelated snippet body')],
+      { weight: 0.1, quality: 'high' },
+    );
+    verticalState.general = [heavyButLowTier, lightButHighTier];
+
+    const out = await runV1Search({ query: 'totally generic query no signal' });
+    // The high-tier engine wins despite the lower numeric weight because the
+    // tier metadata takes precedence over `weight`.
+    expect(out.results[0].url).toBe('https://b.test/top');
+  });
+
+  // S11c sub-area 2 — cross-engine canonical URL dedup. The merge step must
+  // canonicalize URLs BEFORE RRF fusion, so two engines emitting different
+  // variants of the same page (utm, AMP, mobile, trailing slash, protocol)
+  // contribute to a single RRF row rather than splitting the signal.
+  describe('canonical URL dedup at merge time', () => {
+    it('merges utm-tagged and untagged variants into one result', async () => {
+      const engineA = makeEntry('a', [
+        makeResult('a', 'https://foo.com/x?utm_source=newsletter', 'page x', 'body of x'),
+      ]);
+      const engineB = makeEntry('b', [
+        makeResult('b', 'https://foo.com/x', 'page x', 'body of x'),
+      ]);
+      verticalState.general = [engineA, engineB];
+
+      const out = await runV1Search({ query: 'foo bar baz some content' });
+      const matches = out.results.filter((r) => r.url.includes('foo.com/x'));
+      expect(matches.length).toBe(1);
+    });
+
+    it('merges AMP and non-AMP variants', async () => {
+      const engineA = makeEntry('a', [
+        makeResult('a', 'https://foo.com/amp/x', 'page x', 'body'),
+      ]);
+      const engineB = makeEntry('b', [
+        makeResult('b', 'https://foo.com/x', 'page x', 'body'),
+      ]);
+      verticalState.general = [engineA, engineB];
+
+      const out = await runV1Search({ query: 'foo bar baz some content' });
+      const matches = out.results.filter((r) => /foo\.com\/(amp\/)?x$/.test(r.url));
+      expect(matches.length).toBe(1);
+    });
+
+    it('merges mobile-subdomain and root variants', async () => {
+      const engineA = makeEntry('a', [
+        makeResult('a', 'https://m.foo.com/x', 'page x', 'body'),
+      ]);
+      const engineB = makeEntry('b', [
+        makeResult('b', 'https://foo.com/x', 'page x', 'body'),
+      ]);
+      verticalState.general = [engineA, engineB];
+
+      const out = await runV1Search({ query: 'foo bar baz some content' });
+      const matches = out.results.filter((r) => /foo\.com\/x/.test(r.url));
+      expect(matches.length).toBe(1);
+    });
+
+    it('merges http-trailing-slash and https variants', async () => {
+      const engineA = makeEntry('a', [
+        makeResult('a', 'http://foo.com/x', 'page x', 'body'),
+      ]);
+      const engineB = makeEntry('b', [
+        makeResult('b', 'https://foo.com/x/', 'page x', 'body'),
+      ]);
+      verticalState.general = [engineA, engineB];
+
+      const out = await runV1Search({ query: 'foo bar baz some content' });
+      const matches = out.results.filter((r) => /foo\.com\/x/.test(r.url));
+      expect(matches.length).toBe(1);
+    });
+
+    it('does NOT merge different paths under the same host', async () => {
+      const engineA = makeEntry('a', [
+        makeResult('a', 'https://foo.com/x', 'page x', 'body'),
+      ]);
+      const engineB = makeEntry('b', [
+        makeResult('b', 'https://foo.com/y', 'page y', 'body'),
+      ]);
+      verticalState.general = [engineA, engineB];
+
+      const out = await runV1Search({ query: 'foo bar baz some content' });
+      const x = out.results.filter((r) => r.url.endsWith('/x'));
+      const y = out.results.filter((r) => r.url.endsWith('/y'));
+      expect(x.length).toBe(1);
+      expect(y.length).toBe(1);
+    });
+
+    it('canonical dedup increases engine_consensus for the merged URL', async () => {
+      // Two engines, two URL variants that canonicalize to the same form.
+      // The merged result's evidence_score.components.engine_consensus must
+      // reflect both engines contributing, not split across two rows.
+      const engineA = makeEntry('a', [
+        makeResult('a', 'https://foo.com/x?utm_source=a', 'page', 'body'),
+      ]);
+      const engineB = makeEntry('b', [
+        makeResult('b', 'https://www.foo.com/x', 'page', 'body'),
+      ]);
+      verticalState.general = [engineA, engineB];
+
+      const out = await runV1Search({ query: 'foo bar baz some content' });
+      const merged = out.results.find((r) => /foo\.com\/x/.test(r.url));
+      expect(merged).toBeDefined();
+      expect(merged!.evidence_score?.components.engine_consensus).toBe(2);
+    });
   });
 
   it('emits _score_breakdown only when include_engine_outcomes is true', async () => {
