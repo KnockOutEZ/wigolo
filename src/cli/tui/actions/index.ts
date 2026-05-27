@@ -17,6 +17,7 @@
  *   listConfiguredProviders — SP4: list providers with stored keys
  *   maskValue          — SP4: mask a key value for display
  *   PICKER_PROVIDERS   — SP4: ordered provider list for TUI picker
+ *   verifyEndToEnd     — SP6: end-to-end capability smoke + MCP-wiring check
  *
  * Exported types and metadata:
  *   COMPONENT_REGISTRY — ordered list of components with name/purpose/cost
@@ -27,7 +28,6 @@
  *
  * Wave C integration notes:
  *   SP5 (dashboard): add computeStorage/cleanup/exportConfig/importConfig here
- *   SP6 (verification): add verifyEndToEnd here
  */
 
 export { detectSystem } from './detect-system.js';
@@ -79,3 +79,15 @@ export type {
   PickableProvider,
   SaveProviderResult,
 } from './provider-keys.js';
+
+// SP6: end-to-end verification
+export { verifyEndToEnd, buildDefaultDeps, formatVerifyResultPlain, checkMcpWiringForAgent } from './verify-e2e.js';
+export type {
+  CapabilityName,
+  CapabilityStatus,
+  CapabilityResult,
+  McpWiringResult,
+  VerifyEndToEndResult,
+  VerifyEndToEndDeps,
+  McpWiringCheckInput,
+} from './verify-e2e.js';

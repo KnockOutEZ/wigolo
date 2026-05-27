@@ -14,6 +14,7 @@ export type Command =
   | 'setup'
   | 'status'
   | 'backfill'
+  | 'verify'
   | 'help'
   | 'version'
   | 'unknown';
@@ -39,6 +40,7 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'setup',
   'status',
   'backfill',
+  'verify',
 ]);
 
 const HELP_ALIASES: ReadonlySet<string> = new Set(['--help', '-h', 'help']);

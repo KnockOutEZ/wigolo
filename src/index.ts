@@ -15,6 +15,7 @@ import { runUninstall } from './cli/uninstall.js';
 import { runSetupMcp } from './cli/setup-mcp.js';
 import { runStatus } from './cli/status.js';
 import { runBackfill } from './cli/backfill.js';
+import { runVerifyE2E } from './cli/verify.js';
 import { printHelp, printVersion, printUnknownCommand } from './cli/help.js';
 import { getConfig } from './config.js';
 import { shutdownCli } from './cli/shutdown.js';
@@ -112,6 +113,12 @@ switch (command) {
 
   case 'backfill': {
     const code = await runBackfill(args);
+    await exitCli(code);
+    break;
+  }
+
+  case 'verify': {
+    const code = await runVerifyE2E(args);
     await exitCli(code);
     break;
   }
