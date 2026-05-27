@@ -59,12 +59,12 @@ describe('MCP stdio path does not mount Ink', () => {
     expect(command).toBe('init');
   });
 
-  it('config command routes to unknown (not yet wired) — init guards Ink mounting', () => {
-    // 'config' is not in KNOWN_COMMANDS yet — the test documents the expected state
-    // before the routing wire-up in init.ts. After wiring, update this test.
-    const { command } = parseCommand(['config']);
-    // Either 'unknown' (pre-wiring) or 'config' (post-wiring) — both are valid.
+  it('config command routes to config, not mcp', () => {
+    // 'config' is in KNOWN_COMMANDS — SP3 wired it.
     // The critical invariant is: mcp never mounts Ink.
-    expect(['unknown', 'config']).toContain(command);
+    const { command } = parseCommand(['config']);
+    expect(command).toBe('config');
+    // And critically — config command does NOT trigger MCP mode
+    expect(command).not.toBe('mcp');
   });
 });
