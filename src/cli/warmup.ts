@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, mkdirSync, createWriteStream, chmodSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { getConfig } from '../config.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../searxng/bootstrap.js';
@@ -22,8 +22,6 @@ export interface WarmupResult {
   webkitError?: string;
   embeddings?: 'ok' | 'failed';
   embeddingsError?: string;
-  lightpanda?: 'ok' | 'failed';
-  lightpandaError?: string;
 }
 
 function wipeSearxngState(dataDir: string, reporter: WarmupReporter): void {
@@ -128,64 +126,6 @@ async function installEmbeddings(reporter: WarmupReporter): Promise<Pick<WarmupR
   }
 }
 
-function getLightpandaUrl(): string {
-  const platform = process.platform;
-  const arch = process.arch;
-  const base = 'https://github.com/lightpanda-io/browser/releases/download/nightly';
-  if (platform === 'darwin' && arch === 'arm64') return `${base}/lightpanda-aarch64-macos`;
-  if (platform === 'linux' && arch === 'x64') return `${base}/lightpanda-x86_64-linux`;
-  throw new Error(`Lightpanda not available for ${platform}/${arch}`);
-}
-
-async function installLightpanda(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'lightpanda' | 'lightpandaError'>> {
-  try {
-    const config = getConfig();
-    const binDir = join(config.dataDir, 'bin');
-    const binPath = join(binDir, 'lightpanda');
-    if (existsSync(binPath)) {
-      reporter.start('lightpanda', 'Installing Lightpanda');
-      reporter.success('lightpanda', 'already installed');
-      return { lightpanda: 'ok' };
-    }
-    const url = getLightpandaUrl();
-    mkdirSync(binDir, { recursive: true });
-
-    const head = await fetch(url, { method: 'HEAD' });
-    const totalBytes = Number(head.headers.get('content-length') ?? 0);
-
-    reporter.start('lightpanda', 'Downloading Lightpanda', { totalBytes: totalBytes || undefined });
-
-    const resp = await fetch(url);
-    if (!resp.ok || !resp.body) {
-      throw new Error(`HTTP ${resp.status}`);
-    }
-
-    let downloaded = 0;
-    const reader = resp.body.getReader();
-    const ws = createWriteStream(binPath);
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!ws.write(value)) await new Promise<void>((resolve) => ws.once('drain', resolve));
-        downloaded += value.byteLength;
-        if (totalBytes > 0) reporter.progress('lightpanda', downloaded / totalBytes);
-      }
-    } finally {
-      ws.end();
-      await new Promise<void>((resolve) => ws.once('finish', () => resolve()));
-    }
-
-    chmodSync(binPath, 0o755);
-    reporter.success('lightpanda', 'installed');
-    return { lightpanda: 'ok' };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    reporter.fail('lightpanda', message);
-    return { lightpanda: 'failed', lightpandaError: message };
-  }
-}
-
 async function runSearxngPhase(dataDir: string, reporter: WarmupReporter): Promise<Pick<WarmupResult, 'searxng' | 'searxngError'>> {
   const state = getBootstrapState(dataDir);
   if (state?.status === 'ready') {
@@ -260,11 +200,6 @@ export async function runWarmup(
     embeddingsResult = await installEmbeddings(reporterImpl);
   }
 
-  let lightpandaResult: Pick<WarmupResult, 'lightpanda' | 'lightpandaError'> = {};
-  if (flagSet.has('--lightpanda') || flagSet.has('--all')) {
-    lightpandaResult = await installLightpanda(reporterImpl);
-  }
-
   const result: WarmupResult = {
     ...pwResult,
     ...searxngResult,
@@ -272,7 +207,6 @@ export async function runWarmup(
     ...firefoxResult,
     ...webkitResult,
     ...embeddingsResult,
-    ...lightpandaResult,
   };
 
   reporterImpl.note('');
@@ -283,7 +217,6 @@ export async function runWarmup(
   if (result.firefox) reporterImpl.note(`  Firefox:       ${result.firefox}${result.firefoxError ? ` (${result.firefoxError})` : ''}`);
   if (result.webkit) reporterImpl.note(`  WebKit:        ${result.webkit}${result.webkitError ? ` (${result.webkitError})` : ''}`);
   if (result.embeddings) reporterImpl.note(`  Embeddings:    ${result.embeddings}${result.embeddingsError ? ` (${result.embeddingsError})` : ''}`);
-  if (result.lightpanda) reporterImpl.note(`  Lightpanda:    ${result.lightpanda}${result.lightpandaError ? ` (${result.lightpandaError})` : ''}`);
 
   if (flagSet.has('--verify') || flagSet.has('--all')) {
     await runVerify(config.dataDir, reporterImpl);

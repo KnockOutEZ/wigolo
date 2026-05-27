@@ -2,15 +2,14 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import { Select } from '@inkjs/ui';
 
-export type BrowserChoice = 'lightpanda' | 'chromium' | 'firefox';
+export type BrowserChoice = 'chromium' | 'firefox';
 
 interface BrowserSelectProps {
   onComplete: (browser: BrowserChoice) => void;
 }
 
 const OPTIONS = [
-  { label: 'Lightpanda — 11x less RAM (recommended)', value: 'lightpanda' as const },
-  { label: 'Chromium — most compatible', value: 'chromium' as const },
+  { label: 'Chromium — most compatible (recommended)', value: 'chromium' as const },
   { label: 'Firefox — privacy-focused', value: 'firefox' as const },
 ];
 

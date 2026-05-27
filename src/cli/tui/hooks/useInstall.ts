@@ -23,9 +23,6 @@ function buildItems(browser: BrowserChoice): InstallItem[] {
     { id: 'reranker', name: 'ML reranker', status: 'waiting' },
     { id: 'embeddings', name: 'Embeddings', status: 'waiting' },
   );
-  if (browser === 'lightpanda') {
-    items.push({ id: 'lightpanda', name: 'Lightpanda', status: 'waiting' });
-  }
   return items;
 }
 
@@ -92,7 +89,6 @@ export function useInstall(browser: BrowserChoice): {
         '--reranker',
         '--embeddings',
       ];
-      if (browser === 'lightpanda') flags.push('--lightpanda');
       if (browser === 'firefox') flags.push('--firefox');
 
       await runWarmup(flags, reporter);

@@ -41,7 +41,7 @@ function CompactSysCheck({ checks }: { checks: CheckItem[] }) {
 }
 
 function CompactBrowser({ browser }: { browser: BrowserChoice }) {
-  const names: Record<BrowserChoice, string> = { lightpanda: 'Lightpanda', chromium: 'Chromium', firefox: 'Firefox' };
+  const names: Record<BrowserChoice, string> = { chromium: 'Chromium', firefox: 'Firefox' };
   return (
     <Box paddingX={2}>
       <Text>
@@ -149,7 +149,7 @@ interface CompletedItem {
 function WigoloInit() {
   const [phase, setPhase] = useState<Phase>('banner');
   const [completed, setCompleted] = useState<CompletedItem[]>([]);
-  const [browser, setBrowser] = useState<BrowserChoice>('lightpanda');
+  const [browser, setBrowser] = useState<BrowserChoice>('chromium');
   const [agents, setAgents] = useState<AgentId[]>([]);
 
   // Results that components report back
