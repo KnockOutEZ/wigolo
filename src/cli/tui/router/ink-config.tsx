@@ -19,6 +19,7 @@ import { InstallProgress } from '../components/InstallProgress.js';
 import { Verification } from '../components/Verification.js';
 import { AgentSelect } from '../components/AgentSelect.js';
 import { EnvEditor } from '../components/EnvEditor.js';
+import { ProviderSetup } from '../components/ProviderSetup.js';
 import { getConfig } from '../../../config.js';
 import type { ScreenId } from '../actions/index.js';
 import type { BrowserChoice } from '../components/BrowserSelect.js';
@@ -127,6 +128,13 @@ function WigoloConfig() {
 
       {screen === 'env-editor' && (
         <EnvEditor
+          onComplete={() => goBack()}
+          onSkip={() => goBack()}
+        />
+      )}
+
+      {screen === 'provider' && (
+        <ProviderSetup
           onComplete={() => goBack()}
           onSkip={() => goBack()}
         />

@@ -26,6 +26,11 @@ const MENU_ITEMS: MenuItem[] = [
     screen: 'browser',
   },
   {
+    label: 'Configure LLM provider',
+    description: 'Set provider (Anthropic, OpenAI, Gemini, Local) and store API key securely',
+    screen: 'provider',
+  },
+  {
     label: 'Install / update components',
     description: 'Re-install or update ML models, search engine, browser',
     screen: 'install',
