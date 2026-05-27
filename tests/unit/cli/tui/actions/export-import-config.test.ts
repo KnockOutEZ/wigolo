@@ -10,6 +10,7 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
+  readdirSync,
   existsSync,
   mkdtempSync,
   rmSync,
@@ -187,6 +188,54 @@ describe('importConfig — round-trip', () => {
     expect(loaded.settings['braveApiKey']).toBeUndefined();
     expect(loaded.settings['githubToken']).toBeUndefined();
     expect(loaded.settings['WIGOLO_SEARCH']).toBe('core');
+  });
+});
+
+describe('importConfig — size cap (DoS / accidental-blob guard)', () => {
+  it('rejects an import file larger than 1 MB before reading it', async () => {
+    // Write a >1 MB file. Valid JSON shape, but oversized — must be refused
+    // on the statSync size check, never parsed.
+    const bigSettings: Record<string, string> = {};
+    // ~1.2 MB of JSON: 20000 keys with 60-char values.
+    for (let i = 0; i < 20000; i++) {
+      bigSettings[`k${i}`] = 'v'.repeat(60);
+    }
+    writeFileSync(
+      exportPath,
+      JSON.stringify({ version: 1, settings: bigSettings }),
+      'utf-8',
+    );
+    const result = await importConfig(exportPath, configPath);
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/exceeds|bytes/i);
+  });
+
+  it('accepts a normal-sized import file', async () => {
+    writeFileSync(
+      exportPath,
+      JSON.stringify({ version: 1, settings: { WIGOLO_SEARCH: 'core' } }),
+      'utf-8',
+    );
+    const result = await importConfig(exportPath, configPath);
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe('exportConfig — temp file cleanup on failure', () => {
+  it('does not leave an orphaned .tmp file when rename fails', async () => {
+    // Point exportPath at a directory; renameSync(tmp, dir) fails with EISDIR/
+    // ENOTEMPTY, exercising the catch + rmSync(tmp) cleanup path.
+    const dirAsTarget = join(tmpDir, 'export-as-dir');
+    mkdirSync(dirAsTarget, { recursive: true });
+    // Put a file inside so rename-over-dir definitely fails.
+    writeFileSync(join(dirAsTarget, 'keep.txt'), 'x', 'utf-8');
+
+    const result = await exportConfig(dirAsTarget, configPath);
+    expect(result.ok).toBe(false);
+
+    // No leftover .export-*.tmp in tmpDir.
+    const leftovers = readdirSync(tmpDir).filter((f) => f.startsWith('.export-') && f.endsWith('.tmp'));
+    expect(leftovers).toEqual([]);
   });
 });
 

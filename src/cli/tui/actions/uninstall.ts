@@ -11,6 +11,8 @@
  *   - Removing a non-existent data dir is safe (idempotent).
  */
 import { existsSync, rmSync } from 'node:fs';
+import { resolve, parse as parsePath } from 'node:path';
+import { homedir } from 'node:os';
 import { detectInstalledHandlers } from '../../../cli/agents/registry.js';
 
 export interface AgentUninstallResult {
@@ -18,6 +20,41 @@ export interface AgentUninstallResult {
   displayName: string;
   removed: string[];
   error?: string;
+}
+
+/**
+ * Reject a data dir that would be dangerous to recursively delete. Guards
+ * against a misconfigured WIGOLO_DATA_DIR (e.g. `/` or `$HOME`) turning the
+ * uninstall into an `rm -rf` of a system path.
+ *
+ * Rejects:
+ *   - the filesystem root (`/`, or a Windows drive root like `C:\`)
+ *   - the user's home directory itself
+ *   - well-known system roots
+ * A normal data dir (`~/.wigolo`, or a deep tmp fixture dir under the OS temp
+ * tree used in tests) passes.
+ */
+function isUnsafeDataDir(dataDir: string): boolean {
+  const resolved = resolve(dataDir);
+  const root = parsePath(resolved).root;
+
+  // Filesystem root (POSIX `/` or Windows `C:\`).
+  if (resolved === root || resolved === '/') return true;
+
+  // The home directory itself (a parent of the real ~/.wigolo).
+  if (resolved === resolve(homedir())) return true;
+
+  // Obvious system roots that must never be wiped.
+  const SYSTEM_ROOTS = [
+    '/usr', '/bin', '/sbin', '/etc', '/var', '/lib', '/opt', '/boot',
+    '/System', '/Library', '/Applications', '/private',
+    'C:\\Windows', 'C:\\Program Files', 'C:\\Program Files (x86)',
+  ];
+  for (const sys of SYSTEM_ROOTS) {
+    if (resolved === sys) return true;
+  }
+
+  return false;
 }
 
 export interface UninstallOptions {
@@ -42,6 +79,16 @@ export async function uninstall(opts: UninstallOptions): Promise<UninstallResult
       dataDirRemoved: false,
       agentResults: [],
       error: 'Uninstall requires confirmation. Pass confirmed: true or use --yes flag.',
+    };
+  }
+
+  // Path-safety guard: refuse to recursively delete a dangerous root.
+  if (isUnsafeDataDir(dataDir)) {
+    return {
+      ok: false,
+      dataDirRemoved: false,
+      agentResults: [],
+      error: `Refusing to uninstall: data dir "${dataDir}" resolves to a system or home root and is unsafe to delete.`,
     };
   }
 

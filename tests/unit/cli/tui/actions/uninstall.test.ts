@@ -133,6 +133,47 @@ describe('uninstall — idempotent', () => {
   });
 });
 
+describe('uninstall — path-safety guard (rm -rf footgun prevention)', () => {
+  it('refuses to delete the filesystem root', async () => {
+    const result = await uninstall({ dataDir: '/', confirmed: true });
+    expect(result.ok).toBe(false);
+    expect(result.dataDirRemoved).toBe(false);
+    expect(result.error).toMatch(/unsafe|refus/i);
+  });
+
+  it('refuses to delete the home directory itself', async () => {
+    const { homedir } = await import('node:os');
+    const result = await uninstall({ dataDir: homedir(), confirmed: true });
+    expect(result.ok).toBe(false);
+    expect(result.dataDirRemoved).toBe(false);
+    expect(result.error).toMatch(/unsafe|refus/i);
+  });
+
+  it('refuses to delete an obvious system root (/usr)', async () => {
+    const result = await uninstall({ dataDir: '/usr', confirmed: true });
+    expect(result.ok).toBe(false);
+    expect(result.dataDirRemoved).toBe(false);
+  });
+
+  it('does NOT call agent handlers when the data dir is unsafe', async () => {
+    const handlerUninstall = vi.fn().mockResolvedValue({ removed: [] });
+    vi.mocked(detectInstalledHandlers).mockReturnValueOnce([
+      { id: 'a', displayName: 'A', supportsSkills: false, supportsCommands: false,
+        detect: () => true, installMcp: vi.fn(), installInstructions: vi.fn(),
+        uninstall: handlerUninstall },
+    ]);
+    const result = await uninstall({ dataDir: '/', confirmed: true });
+    expect(result.ok).toBe(false);
+    expect(handlerUninstall).not.toHaveBeenCalled();
+  });
+
+  it('allows a normal deep data dir (tmp fixture)', async () => {
+    populateDataDir();
+    const result = await uninstall({ dataDir: tmpDir, confirmed: true });
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe('UninstallResult shape', () => {
   it('result has ok, dataDirRemoved, agentResults, and optional error', async () => {
     populateDataDir();
