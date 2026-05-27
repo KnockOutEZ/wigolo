@@ -250,6 +250,7 @@ export type ScreenId =
   | 'skills'
   | 'env-editor'
   | 'summary'
-  | 'main-menu';
+  | 'main-menu'
+  | 'provider';
 
 export type EntryMode = 'init' | 'config' | 'dashboard';
