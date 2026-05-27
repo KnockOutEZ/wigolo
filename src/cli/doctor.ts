@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdte
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { resolvePythonExe } from '../python-env.js';
 import { chromium, firefox, webkit } from 'playwright';
 import { getBootstrapState, type BootstrapState } from '../searxng/bootstrap.js';
 import { isProcessAlive } from '../searxng/process.js';
@@ -22,7 +23,8 @@ import { setLogSuppression } from '../logger.js';
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
 
 function checkPython(): { ok: boolean; version?: string } {
-  const r = spawnSync('python3', ['--version'], { encoding: 'utf-8' });
+  const python = resolvePythonExe();
+  const r = spawnSync(python, ['--version'], { encoding: 'utf-8' });
   if (r.status !== 0 || r.error) return { ok: false };
   const match = (r.stdout || r.stderr || '').match(/Python (\d+\.\d+\.\d+)/);
   return { ok: true, version: match?.[1] };
