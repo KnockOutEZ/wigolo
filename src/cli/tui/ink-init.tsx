@@ -4,6 +4,7 @@ import { enableTuiMode } from './utils/suppress-logs.js';
 import { Banner } from './components/Banner.js';
 import { SystemCheck } from './components/SystemCheck.js';
 import { BrowserSelect, type BrowserChoice } from './components/BrowserSelect.js';
+import { ReviewToggles } from './components/ReviewToggles.js';
 import { InstallProgress } from './components/InstallProgress.js';
 import { Verification } from './components/Verification.js';
 import { AgentSelect, type AgentResult } from './components/AgentSelect.js';
@@ -15,8 +16,9 @@ import type { AgentId } from './agents.js';
 import type { CheckItem } from './hooks/useSystemCheck.js';
 import type { InstallItem } from './hooks/useInstall.js';
 import type { VerifyItem } from './hooks/useVerify.js';
+import type { ToggleMap } from './actions/index.js';
 
-type Phase = 'banner' | 'syscheck' | 'browser' | 'install' | 'verify' | 'agents' | 'skills' | 'done';
+type Phase = 'banner' | 'syscheck' | 'browser' | 'review' | 'install' | 'verify' | 'agents' | 'skills' | 'done';
 
 // --- Compact summaries for completed phases ---
 
@@ -48,6 +50,22 @@ function CompactBrowser({ browser }: { browser: BrowserChoice }) {
         <Text color="green" bold>{'✓'}</Text>
         <Text bold> Browser </Text>
         <Text dimColor>{names[browser]} selected</Text>
+      </Text>
+    </Box>
+  );
+}
+
+function CompactReview({ toggles }: { toggles: ToggleMap }) {
+  const on = Object.values(toggles).filter(Boolean).length;
+  const off = Object.values(toggles).filter((v) => !v).length;
+  return (
+    <Box paddingX={2}>
+      <Text>
+        <Text color="green" bold>{'✓'}</Text>
+        <Text bold> Plan </Text>
+        <Text dimColor>
+          {on} components enabled{off > 0 ? `, ${off} skipped` : ''}
+        </Text>
       </Text>
     </Box>
   );
@@ -150,6 +168,7 @@ function WigoloInit() {
   const [phase, setPhase] = useState<Phase>('banner');
   const [completed, setCompleted] = useState<CompletedItem[]>([]);
   const [browser, setBrowser] = useState<BrowserChoice>('chromium');
+  const [toggles, setToggles] = useState<ToggleMap | null>(null);
   const [agents, setAgents] = useState<AgentId[]>([]);
 
   // Results that components report back
@@ -188,8 +207,14 @@ function WigoloInit() {
     setBrowser(b);
     saveInitConfig(config.dataDir, { defaultBrowser: b });
     addCompleted('browser', <CompactBrowser browser={b} />);
-    setPhase('install');
+    setPhase('review');
   }, [config.dataDir, addCompleted]);
+
+  const handleReviewDone = useCallback((t: ToggleMap) => {
+    setToggles(t);
+    addCompleted('review', <CompactReview toggles={t} />);
+    setPhase('install');
+  }, [addCompleted]);
 
   const handleInstallDone = useCallback((items: InstallItem[]) => {
     setInstallItems(items);
@@ -248,8 +273,11 @@ function WigoloInit() {
       {phase === 'browser' && (
         <BrowserSelect onComplete={handleBrowserDone} />
       )}
+      {phase === 'review' && (
+        <ReviewToggles browser={browser} onComplete={handleReviewDone} />
+      )}
       {phase === 'install' && (
-        <InstallProgress browser={browser} onComplete={handleInstallDone} />
+        <InstallProgress browser={browser} onComplete={handleInstallDone} toggles={toggles ?? undefined} />
       )}
       {phase === 'verify' && (
         <Verification dataDir={config.dataDir} onComplete={handleVerifyDone} />

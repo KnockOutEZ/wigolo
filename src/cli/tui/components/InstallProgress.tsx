@@ -3,10 +3,12 @@ import { Box, Text } from 'ink';
 import { Spinner } from '@inkjs/ui';
 import { useInstall, type InstallItem } from '../hooks/useInstall.js';
 import type { BrowserChoice } from './BrowserSelect.js';
+import type { ToggleMap } from '../actions/index.js';
 
 interface InstallProgressProps {
   browser: BrowserChoice;
   onComplete: (items: InstallItem[]) => void;
+  toggles?: ToggleMap;
 }
 
 function formatTime(ms: number): string {
@@ -45,8 +47,8 @@ function ItemLine({ item }: { item: InstallItem }) {
   }
 }
 
-export function InstallProgress({ browser, onComplete }: InstallProgressProps) {
-  const { items, done } = useInstall(browser);
+export function InstallProgress({ browser, onComplete, toggles }: InstallProgressProps) {
+  const { items, done } = useInstall(browser, toggles);
 
   useEffect(() => {
     if (done) {

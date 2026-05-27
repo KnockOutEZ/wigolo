@@ -9,6 +9,7 @@ import { runShell } from './cli/shell.js';
 import { runAuth } from './cli/auth.js';
 import { runPluginCommand } from './cli/plugin.js';
 import { runInit } from './cli/init.js';
+import { runConfig } from './cli/config.js';
 import { runUninstall } from './cli/uninstall.js';
 import { runSetupMcp } from './cli/setup-mcp.js';
 import { runStatus } from './cli/status.js';
@@ -81,6 +82,13 @@ switch (command) {
   case 'init': {
     const initCode = await runInit(args);
     await exitCli(initCode);
+    break;
+  }
+
+  case 'config':
+  case 'dashboard': {
+    const configCode = await runConfig(args);
+    await exitCli(configCode);
     break;
   }
 

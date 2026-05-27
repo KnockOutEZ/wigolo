@@ -8,6 +8,8 @@ export type Command =
   | 'plugin'
   | 'shell'
   | 'init'
+  | 'config'
+  | 'dashboard'
   | 'uninstall'
   | 'setup'
   | 'status'
@@ -31,6 +33,8 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'plugin',
   'shell',
   'init',
+  'config',
+  'dashboard',
   'uninstall',
   'setup',
   'status',

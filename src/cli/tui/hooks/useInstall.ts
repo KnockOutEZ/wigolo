@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import type { WarmupReporter } from '../reporter.js';
 import type { BrowserChoice } from '../components/BrowserSelect.js';
+import type { ToggleMap } from '../actions/index.js';
 
 export interface InstallItem {
   id: string;
@@ -11,17 +12,21 @@ export interface InstallItem {
   progress?: number;
 }
 
-function buildItems(browser: BrowserChoice): InstallItem[] {
+function buildItems(browser: BrowserChoice, toggles?: ToggleMap): InstallItem[] {
+  const toggled = (id: string): boolean => {
+    if (!toggles) return true;
+    return (toggles as Record<string, boolean>)[id] ?? true;
+  };
   const items: InstallItem[] = [
-    { id: 'searxng', name: 'Search engine', status: 'waiting' },
-    { id: 'playwright', name: 'Chromium', status: 'waiting' },
+    { id: 'searxng', name: 'Search engine', status: toggled('searxng') ? 'waiting' : 'skipped' },
+    { id: 'playwright', name: 'Chromium', status: toggled('chromium') ? 'waiting' : 'skipped' },
   ];
   if (browser === 'firefox') {
-    items.push({ id: 'firefox', name: 'Firefox', status: 'waiting' });
+    items.push({ id: 'firefox', name: 'Firefox', status: toggled('firefox') ? 'waiting' : 'skipped' });
   }
   items.push(
-    { id: 'reranker', name: 'ML reranker', status: 'waiting' },
-    { id: 'embeddings', name: 'Embeddings', status: 'waiting' },
+    { id: 'reranker', name: 'ML reranker', status: toggled('reranker') ? 'waiting' : 'skipped' },
+    { id: 'embeddings', name: 'Embeddings', status: toggled('embeddings') ? 'waiting' : 'skipped' },
   );
   return items;
 }
@@ -68,11 +73,11 @@ function createTuiReporter(
   };
 }
 
-export function useInstall(browser: BrowserChoice): {
+export function useInstall(browser: BrowserChoice, toggles?: ToggleMap): {
   items: InstallItem[];
   done: boolean;
 } {
-  const [items, setItems] = useState<InstallItem[]>(() => buildItems(browser));
+  const [items, setItems] = useState<InstallItem[]>(() => buildItems(browser, toggles));
   const [done, setDone] = useState(false);
 
   useEffect(() => {
@@ -80,18 +85,25 @@ export function useInstall(browser: BrowserChoice): {
     const starts = new Map<string, number>();
     const reporter = createTuiReporter(setItems, starts);
 
+    const toggled = (id: string): boolean => {
+      if (!toggles) return true;
+      return (toggles as Record<string, boolean>)[id] ?? true;
+    };
+
     async function run() {
       const { runWarmup } = await import('../../warmup.js');
 
       // Pass individual flags instead of --all to avoid triggering
-      // warmup's built-in --verify (the TUI has its own Verification screen)
-      const flags = [
-        '--reranker',
-        '--embeddings',
-      ];
-      if (browser === 'firefox') flags.push('--firefox');
+      // warmup's built-in --verify (the TUI has its own Verification screen).
+      // Respect toggles: skip items the user opted out of.
+      const flags: string[] = [];
+      if (toggled('reranker')) flags.push('--reranker');
+      if (toggled('embeddings')) flags.push('--embeddings');
+      if (browser === 'firefox' && toggled('firefox')) flags.push('--firefox');
 
-      await runWarmup(flags, reporter);
+      if (flags.length > 0) {
+        await runWarmup(flags, reporter);
+      }
       if (!cancelled) setDone(true);
     }
 
@@ -100,7 +112,7 @@ export function useInstall(browser: BrowserChoice): {
     });
 
     return () => { cancelled = true; };
-  }, [browser]);
+  }, [browser, toggles]);
 
   return { items, done };
 }
