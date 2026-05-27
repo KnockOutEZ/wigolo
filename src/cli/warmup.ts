@@ -12,7 +12,7 @@ import { runVerify as runVerifyTui } from './tui/verify.js';
 export interface WarmupResult {
   playwright: 'ok' | 'failed';
   playwrightError?: string;
-  searxng: 'ready' | 'bootstrapped' | 'failed' | 'no_python';
+  searxng: 'ready' | 'bootstrapped' | 'failed' | 'no_python' | 'skipped';
   searxngError?: string;
   reranker?: 'ok' | 'failed';
   rerankerError?: string;
@@ -178,7 +178,18 @@ export async function runWarmup(
   reporterImpl.note('Starting wigolo warmup');
 
   const pwResult = await installPlaywright(reporterImpl);
-  const searxngResult = await runSearxngPhase(config.dataDir, reporterImpl);
+
+  // The search engine (searxng) is an optional backend — `core` is the default
+  // search path and needs no native bootstrap. `--no-searxng` lets the
+  // Review/Toggles screen genuinely skip the searxng phase rather than only
+  // relabeling its status.
+  let searxngResult: Pick<WarmupResult, 'searxng' | 'searxngError'>;
+  if (flagSet.has('--no-searxng')) {
+    searxngResult = { searxng: 'skipped' };
+    reporterImpl.note('Search engine (searxng): skipped — using core backend');
+  } else {
+    searxngResult = await runSearxngPhase(config.dataDir, reporterImpl);
+  }
 
   let rerankerResult: Pick<WarmupResult, 'reranker' | 'rerankerError'> = {};
   if (flagSet.has('--reranker') || flagSet.has('--all')) {

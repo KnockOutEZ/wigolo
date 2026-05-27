@@ -124,6 +124,28 @@ describe('runWarmup', () => {
 
     expect(result.searxng).toBe('no_python');
   });
+
+  it('--no-searxng skips the searxng phase entirely (real toggle teeth)', async () => {
+    vi.mocked(getBootstrapState).mockReturnValue(null);
+    vi.mocked(checkPythonAvailable).mockReturnValue(true);
+
+    const result = await runWarmup(['--no-searxng']);
+
+    // Bootstrap must NOT run, and chromium (required) still installs.
+    expect(bootstrapNativeSearxng).not.toHaveBeenCalled();
+    expect(result.searxng).toBe('skipped');
+    expect(result.playwright).toBe('ok');
+  });
+
+  it('--no-searxng does not even probe getBootstrapState or python', async () => {
+    vi.mocked(getBootstrapState).mockReturnValue(null);
+    vi.mocked(checkPythonAvailable).mockReturnValue(true);
+
+    await runWarmup(['--no-searxng']);
+
+    expect(getBootstrapState).not.toHaveBeenCalled();
+    expect(checkPythonAvailable).not.toHaveBeenCalled();
+  });
 });
 
 const mockFetchNoop = () => {

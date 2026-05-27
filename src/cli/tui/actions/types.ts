@@ -24,22 +24,29 @@ export interface ComponentMeta {
   cost: string;
   /** Whether this component is enabled by default */
   defaultEnabled: boolean;
+  /**
+   * Required components cannot be toggled off — they are always installed and
+   * rendered non-interactively in the Review screen. Chromium is the only
+   * JS-render engine post-SP1, so the product cannot function without it.
+   */
+  required?: boolean;
 }
 
 /** Ordered list used for both Review screen and toggle state initialisation. */
 export const COMPONENT_REGISTRY: ComponentMeta[] = [
   {
-    id: 'searxng',
-    name: 'Search engine',
-    purpose: 'Local search backend for web queries',
-    cost: '~50 MB, ~30s',
-    defaultEnabled: true,
-  },
-  {
     id: 'chromium',
     name: 'Chromium browser',
-    purpose: 'Renders JS-heavy pages for fetch/crawl',
+    purpose: 'Renders JS-heavy pages for fetch/crawl (required)',
     cost: '~400 MB, ~2min',
+    defaultEnabled: true,
+    required: true,
+  },
+  {
+    id: 'searxng',
+    name: 'Search engine',
+    purpose: 'Optional local search backend (core is default)',
+    cost: '~50 MB, ~30s',
     defaultEnabled: true,
   },
   {

@@ -38,31 +38,41 @@ export function ReviewToggles({ browser, onComplete }: ReviewTogglesProps) {
     } else if (key.downArrow) {
       setCursor((c) => (c < components.length - 1 ? c + 1 : 0));
     } else if (input === ' ') {
-      const id = components[cursor]!.id;
+      const comp = components[cursor]!;
+      // Required components (chromium) cannot be toggled off.
+      if (comp.required) return;
+      const id = comp.id;
       setToggles((prev) => ({ ...prev, [id]: !prev[id] }));
     } else if (key.return) {
-      onComplete(toggles);
+      // Force required components on regardless of stored toggle state.
+      const finalToggles: ToggleMap = { ...toggles };
+      for (const c of COMPONENT_REGISTRY) {
+        if (c.required) finalToggles[c.id] = true;
+      }
+      onComplete(finalToggles);
     }
   });
 
   return (
     <Box flexDirection="column" paddingX={2}>
       <Text bold>Review installation plan</Text>
-      <Text dimColor>Toggle components off to skip · ↑/↓ navigate · space toggle · enter confirm</Text>
+      <Text dimColor>Toggle optional components off to skip · ↑/↓ navigate · space toggle · enter confirm</Text>
       <Box flexDirection="column" marginTop={1}>
         {components.map((c, i) => {
           const isFocused = i === cursor;
-          const isOn = toggles[c.id] ?? c.defaultEnabled;
+          const isOn = c.required ? true : (toggles[c.id] ?? c.defaultEnabled);
           return (
             <Box key={c.id} flexDirection="row">
               <Text>
                 {isFocused ? <Text color="cyan">{'❯ '}</Text> : '  '}
-                {isOn
-                  ? <Text color="green">{'[on]  '}</Text>
-                  : <Text dimColor>{'[off] '}</Text>
+                {c.required
+                  ? <Text color="cyan">{'[req] '}</Text>
+                  : isOn
+                    ? <Text color="green">{'[on]  '}</Text>
+                    : <Text dimColor>{'[off] '}</Text>
                 }
                 <Text bold={isFocused}>{c.name.padEnd(22)}</Text>
-                <Text dimColor>{c.purpose.padEnd(40)}</Text>
+                <Text dimColor>{c.purpose.padEnd(44)}</Text>
                 <Text color="yellow">{c.cost}</Text>
               </Text>
             </Box>
@@ -71,7 +81,7 @@ export function ReviewToggles({ browser, onComplete }: ReviewTogglesProps) {
       </Box>
       <Box marginTop={1}>
         <Text dimColor>
-          {Object.values(toggles).filter(Boolean).length} of {components.length} components enabled
+          {components.filter((c) => c.required || (toggles[c.id] ?? c.defaultEnabled)).length} of {components.length} components enabled
         </Text>
       </Box>
     </Box>

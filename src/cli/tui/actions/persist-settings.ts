@@ -33,6 +33,15 @@ export function readEnvSettings(configPath?: string): Record<string, string> {
  * Only saves keys that are in CURATED_ENV_VARS (by settingsKey).
  * Ignores unknown keys silently.
  */
+/**
+ * Strip control characters (CR/LF/NUL) from a persisted value so a pasted
+ * multi-line value cannot smuggle a newline into a persisted env var (which
+ * later flows into process env / logs / child processes).
+ */
+function sanitizeValue(v: string): string {
+  return v.replace(/[\r\n\0]/g, ' ');
+}
+
 export function writeEnvSettings(
   updates: Record<string, string>,
   configPath?: string,
@@ -42,7 +51,7 @@ export function writeEnvSettings(
   const filtered: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(updates)) {
     if (allowedKeys.has(k)) {
-      filtered[k] = v;
+      filtered[k] = typeof v === 'string' ? sanitizeValue(v) : v;
     }
   }
   writePersistedConfig(path, { settings: filtered });

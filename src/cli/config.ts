@@ -8,7 +8,6 @@
  * HARD invariant: NEVER called from the MCP stdio path. Only mounted here,
  * from `init`, and from `doctor --interactive`.
  */
-import { readEnvSettings, CURATED_ENV_VARS, ENV_GROUP_LABELS } from './tui/actions/index.js';
 import { getConfig } from '../config.js';
 
 const CONFIG_USAGE = [
@@ -58,7 +57,11 @@ export async function runConfig(args: string[]): Promise<number> {
     return 0;
   }
 
-  // Plain / non-interactive: print current settings
+  // Plain / non-interactive: print current settings.
+  // The actions layer is imported lazily here (not at module top) so the MCP
+  // stdio startup graph (src/index.ts → cli/config.ts is eager) stays lean and
+  // does not transitively pull system-check / agents / config-writer.
+  const { readEnvSettings, CURATED_ENV_VARS, ENV_GROUP_LABELS } = await import('./tui/actions/index.js');
   const config = getConfig();
   const settings = readEnvSettings();
 

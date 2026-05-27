@@ -10,13 +10,13 @@ import { runAuth } from './cli/auth.js';
 import { runPluginCommand } from './cli/plugin.js';
 import { runInit } from './cli/init.js';
 import { runConfig } from './cli/config.js';
+import { runMcp } from './cli/mcp.js';
 import { runUninstall } from './cli/uninstall.js';
 import { runSetupMcp } from './cli/setup-mcp.js';
 import { runStatus } from './cli/status.js';
 import { runBackfill } from './cli/backfill.js';
 import { printHelp, printVersion, printUnknownCommand } from './cli/help.js';
 import { getConfig } from './config.js';
-import { startServer } from './server.js';
 import { shutdownCli } from './cli/shutdown.js';
 
 async function exitCli(code: number): Promise<never> {
@@ -132,22 +132,7 @@ switch (command) {
     break;
 
   case 'mcp': {
-    const config = getConfig();
-
-    try {
-      const { tryConnectDaemon } = await import('./daemon/proxy.js');
-      const report = await tryConnectDaemon(config.daemonPort, config.daemonHost);
-      if (report) {
-        process.stderr.write(
-          `[wigolo] Daemon detected at ${config.daemonHost}:${config.daemonPort} ` +
-          `(status: ${report.status}). Full proxy deferred to v2.1; starting local server.\n`,
-        );
-      }
-    } catch {
-      // Daemon proxy module may not be available -- fall through to local server
-    }
-
-    await startServer();
+    await runMcp();
     break;
   }
 }

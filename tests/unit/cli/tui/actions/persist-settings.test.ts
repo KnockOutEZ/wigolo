@@ -90,3 +90,30 @@ describe('write safety: secrets never persisted', () => {
     cleanup();
   });
 });
+
+describe('write safety: control characters stripped (no newline injection)', () => {
+  it('strips \\r \\n \\0 from a pasted multi-line value before persisting', () => {
+    writeEnvSettings(
+      { WIGOLO_EMBEDDING_MODEL: 'model\nWIGOLO_LOG_LEVEL=debug\r\nx\0y' },
+      configPath,
+    );
+    resetPersistedConfig();
+    const settings = readEnvSettings(configPath);
+    const val = settings['WIGOLO_EMBEDDING_MODEL'];
+    expect(val).not.toContain('\n');
+    expect(val).not.toContain('\r');
+    expect(val).not.toContain('\0');
+    // The smuggled second line is neutralised into spaces, not a separate var.
+    // Each control char (\n, \r\n = 2 chars, \0) maps to one space.
+    expect(val).toBe('model WIGOLO_LOG_LEVEL=debug  x y');
+    cleanup();
+  });
+
+  it('leaves a clean value unchanged', () => {
+    writeEnvSettings({ WIGOLO_SEARCH: 'hybrid' }, configPath);
+    resetPersistedConfig();
+    const settings = readEnvSettings(configPath);
+    expect(settings['WIGOLO_SEARCH']).toBe('hybrid');
+    cleanup();
+  });
+});

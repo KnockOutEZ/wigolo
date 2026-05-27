@@ -34,6 +34,21 @@ describe('COMPONENT_REGISTRY', () => {
     const ids = COMPONENT_REGISTRY.map((c) => c.id);
     expect(ids).not.toContain('firefox');
   });
+
+  it('marks chromium as required (cannot be toggled off post-SP1)', () => {
+    const chromium = COMPONENT_REGISTRY.find((c) => c.id === 'chromium');
+    expect(chromium?.required).toBe(true);
+  });
+
+  it('searxng is NOT required (optional — core is the default backend)', () => {
+    const searxng = COMPONENT_REGISTRY.find((c) => c.id === 'searxng');
+    expect(searxng?.required).toBeFalsy();
+  });
+
+  it('only chromium is required', () => {
+    const required = COMPONENT_REGISTRY.filter((c) => c.required).map((c) => c.id);
+    expect(required).toEqual(['chromium']);
+  });
 });
 
 describe('FIREFOX_COMPONENT', () => {

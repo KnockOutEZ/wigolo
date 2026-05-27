@@ -12,21 +12,45 @@ export interface InstallItem {
   progress?: number;
 }
 
+/**
+ * Resolve a toggle's effective state. Chromium is REQUIRED — it is the only
+ * JS-render engine post-SP1, so it is always installed regardless of toggle.
+ */
+function isEnabled(id: string, toggles?: ToggleMap): boolean {
+  if (id === 'chromium' || id === 'playwright') return true; // required
+  if (!toggles) return true;
+  return (toggles as Record<string, boolean>)[id] ?? true;
+}
+
+/**
+ * Build the install flags from toggle state. This is the single source of
+ * truth consumed by both the install effect and tests — toggling a component
+ * off genuinely changes which warmup work runs:
+ *   - chromium: always installed (required) → runWarmup always runs
+ *   - searxng OFF → `--no-searxng` skips the bootstrap phase
+ *   - reranker/embeddings/firefox ON → their individual flags
+ */
+export function buildInstallFlags(browser: BrowserChoice, toggles?: ToggleMap): string[] {
+  const flags: string[] = [];
+  if (!isEnabled('searxng', toggles)) flags.push('--no-searxng');
+  if (isEnabled('reranker', toggles)) flags.push('--reranker');
+  if (isEnabled('embeddings', toggles)) flags.push('--embeddings');
+  if (browser === 'firefox' && isEnabled('firefox', toggles)) flags.push('--firefox');
+  return flags;
+}
+
 function buildItems(browser: BrowserChoice, toggles?: ToggleMap): InstallItem[] {
-  const toggled = (id: string): boolean => {
-    if (!toggles) return true;
-    return (toggles as Record<string, boolean>)[id] ?? true;
-  };
   const items: InstallItem[] = [
-    { id: 'searxng', name: 'Search engine', status: toggled('searxng') ? 'waiting' : 'skipped' },
-    { id: 'playwright', name: 'Chromium', status: toggled('chromium') ? 'waiting' : 'skipped' },
+    // Chromium is required and always installed.
+    { id: 'playwright', name: 'Chromium', status: 'waiting' },
+    { id: 'searxng', name: 'Search engine', status: isEnabled('searxng', toggles) ? 'waiting' : 'skipped' },
   ];
   if (browser === 'firefox') {
-    items.push({ id: 'firefox', name: 'Firefox', status: toggled('firefox') ? 'waiting' : 'skipped' });
+    items.push({ id: 'firefox', name: 'Firefox', status: isEnabled('firefox', toggles) ? 'waiting' : 'skipped' });
   }
   items.push(
-    { id: 'reranker', name: 'ML reranker', status: toggled('reranker') ? 'waiting' : 'skipped' },
-    { id: 'embeddings', name: 'Embeddings', status: toggled('embeddings') ? 'waiting' : 'skipped' },
+    { id: 'reranker', name: 'ML reranker', status: isEnabled('reranker', toggles) ? 'waiting' : 'skipped' },
+    { id: 'embeddings', name: 'Embeddings', status: isEnabled('embeddings', toggles) ? 'waiting' : 'skipped' },
   );
   return items;
 }
@@ -85,25 +109,15 @@ export function useInstall(browser: BrowserChoice, toggles?: ToggleMap): {
     const starts = new Map<string, number>();
     const reporter = createTuiReporter(setItems, starts);
 
-    const toggled = (id: string): boolean => {
-      if (!toggles) return true;
-      return (toggles as Record<string, boolean>)[id] ?? true;
-    };
-
     async function run() {
       const { runWarmup } = await import('../../warmup.js');
 
       // Pass individual flags instead of --all to avoid triggering
       // warmup's built-in --verify (the TUI has its own Verification screen).
-      // Respect toggles: skip items the user opted out of.
-      const flags: string[] = [];
-      if (toggled('reranker')) flags.push('--reranker');
-      if (toggled('embeddings')) flags.push('--embeddings');
-      if (browser === 'firefox' && toggled('firefox')) flags.push('--firefox');
-
-      if (flags.length > 0) {
-        await runWarmup(flags, reporter);
-      }
+      // Chromium is required, so runWarmup always runs; toggle state controls
+      // the rest via buildInstallFlags (--no-searxng / --reranker / etc.).
+      const flags = buildInstallFlags(browser, toggles);
+      await runWarmup(flags, reporter);
       if (!cancelled) setDone(true);
     }
 
