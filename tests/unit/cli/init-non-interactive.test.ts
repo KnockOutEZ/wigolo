@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const { runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, runVerifyMock, systemCheckMock, getAgentHandlerMock } = vi.hoisted(() => ({
+const { runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, runVerifyMock, systemCheckMock, getAgentHandlerMock, configState } = vi.hoisted(() => ({
   runWarmupMock: vi.fn(),
   detectAgentsMock: vi.fn(),
   selectAgentsMock: vi.fn(),
@@ -11,6 +11,7 @@ const { runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, run
   runVerifyMock: vi.fn(),
   systemCheckMock: vi.fn(),
   getAgentHandlerMock: vi.fn(),
+  configState: { dataDir: '/tmp/data' },
 }));
 
 vi.mock('../../../src/cli/warmup.js', () => ({
@@ -35,7 +36,7 @@ vi.mock('../../../src/cli/tui/system-check.js', () => ({
   runSystemCheck: systemCheckMock,
 }));
 vi.mock('../../../src/config.js', () => ({
-  getConfig: () => ({ dataDir: '/tmp/data' }),
+  getConfig: () => ({ dataDir: configState.dataDir }),
 }));
 vi.mock('../../../src/cli/agents/registry.js', () => ({
   getAgentHandler: getAgentHandlerMock,
@@ -112,6 +113,50 @@ describe('runInit --non-interactive', () => {
     writeMock.mockRestore();
     expect(code).toBe(0);
     expect(runWarmupMock).not.toHaveBeenCalled();
+  });
+
+  it('reports a per-agent outcome for a newly-supported handler (Zed) — no silent skip', async () => {
+    // Spec: install summary must report each configured agent + how (no silent
+    // skips). Verify the new Zed handler surfaces "Configuring Zed..." and the
+    // instructions-installed line in stdout when selected non-interactively.
+    const dataDir = join(tmpdir(), `wigolo-init-zed-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dataDir, { recursive: true });
+    configState.dataDir = dataDir;
+
+    detectAgentsMock.mockReturnValue([
+      { id: 'zed', displayName: 'Zed', detected: true, installType: 'config-file', configPath: '/h/.config/zed/settings.json' },
+    ]);
+    applyConfigsMock.mockResolvedValue([
+      { id: 'zed', displayName: 'Zed', ok: true, code: 'OK', configPath: '/h/.config/zed/settings.json' },
+    ]);
+    const installInstructions = vi.fn().mockResolvedValue(undefined);
+    getAgentHandlerMock.mockReturnValue({
+      id: 'zed',
+      displayName: 'Zed',
+      supportsSkills: false,
+      supportsCommands: false,
+      installInstructions,
+    });
+
+    const stdoutWrites: string[] = [];
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: any) => {
+      stdoutWrites.push(String(chunk));
+      return true;
+    });
+
+    try {
+      const code = await runInit(['--non-interactive', '--agents=zed', '--skip-verify']);
+      expect(code).toBe(0);
+    } finally {
+      writeSpy.mockRestore();
+      configState.dataDir = '/tmp/data';
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+
+    expect(installInstructions).toHaveBeenCalledTimes(1);
+    const out = stdoutWrites.join('');
+    expect(out).toMatch(/Configuring Zed\.\.\./);
+    expect(out).toMatch(/Global instructions updated/);
   });
 });
 

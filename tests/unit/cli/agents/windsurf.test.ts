@@ -114,8 +114,9 @@ describe('windsurfHandler.uninstall', () => {
     await windsurfHandler.installInstructions();
     const target = join(tmpHome, '.codeium', 'windsurf', 'wigolo-instructions.md');
     expect(existsSync(target)).toBe(true);
-    await windsurfHandler.uninstall();
+    const result = await windsurfHandler.uninstall();
     expect(existsSync(target)).toBe(false);
+    expect(result.removed.some((r) => r.includes('wigolo-instructions.md'))).toBe(true);
   });
 });
 

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { parse as parseToml } from '@iarna/toml';
 
 vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:os')>();
@@ -15,7 +16,6 @@ vi.mock('node:child_process', () => ({
 // Mock process.cwd to return a temp dir so installInstructions
 // doesn't write to the actual project root during tests.
 let tmpCwd: string;
-const originalCwd = process.cwd;
 
 import { execSync } from 'node:child_process';
 import { homedir } from 'node:os';
@@ -68,6 +68,39 @@ describe('codexHandler.installMcp', () => {
     const content = readFileSync(cfgPath, 'utf-8');
     expect(content).toContain('[mcp_servers.wigolo]');
     expect(content).toContain('npx');
+  });
+
+  it('preserves other tables in an existing config.toml', async () => {
+    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    const codexDir = join(tmpHome, '.codex');
+    mkdirSync(codexDir, { recursive: true });
+    const cfgPath = join(codexDir, 'config.toml');
+    writeFileSync(cfgPath, '[mcp_servers.other]\ncommand = "other-cmd"\n');
+    const { codexHandler } = await import('../../../../src/cli/agents/codex.js');
+    await codexHandler.installMcp({ command: 'npx', args: ['-y', '@staticn0va/wigolo'] });
+    const content = readFileSync(cfgPath, 'utf-8');
+    expect(content).toContain('[mcp_servers.other]');
+    expect(content).toContain('other-cmd');
+    expect(content).toContain('[mcp_servers.wigolo]');
+  });
+
+  it('updates the wigolo entry in place on a second install — no duplicate/corruption', async () => {
+    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    const { codexHandler } = await import('../../../../src/cli/agents/codex.js');
+    const cfgPath = join(tmpHome, '.codex', 'config.toml');
+
+    // First install: npx form.
+    await codexHandler.installMcp({ command: 'npx', args: ['-y', '@staticn0va/wigolo'] });
+    // Second install over the existing file with a different command (e.g. global bin).
+    await codexHandler.installMcp({ command: 'wigolo', args: [] });
+
+    const content = readFileSync(cfgPath, 'utf-8');
+    // The section must appear exactly once — re-install updates in place.
+    const occurrences = content.split('[mcp_servers.wigolo]').length - 1;
+    expect(occurrences).toBe(1);
+    // And it must hold the second install's command, not a stale/duplicated value.
+    const parsed = parseToml(content) as { mcp_servers?: { wigolo?: { command?: string } } };
+    expect(parsed.mcp_servers?.wigolo?.command).toBe('wigolo');
   });
 });
 
