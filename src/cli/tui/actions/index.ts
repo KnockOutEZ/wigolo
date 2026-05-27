@@ -11,6 +11,12 @@
  *   writeEnvSettings   — persist curated env/flag values to config.json
  *   readEnvSettings    — read curated env/flag values from config.json
  *   installBrowser     — run warmup for browser + ML models
+ *   storeProviderKey   — SP4: store a provider API key securely
+ *   readProviderKey    — SP4: read masked provider key + location
+ *   deleteProviderKey  — SP4: delete a stored provider key
+ *   listConfiguredProviders — SP4: list providers with stored keys
+ *   maskValue          — SP4: mask a key value for display
+ *   PICKER_PROVIDERS   — SP4: ordered provider list for TUI picker
  *
  * Exported types and metadata:
  *   COMPONENT_REGISTRY — ordered list of components with name/purpose/cost
@@ -20,7 +26,6 @@
  *   buildDefaultToggles — build initial ToggleMap from COMPONENT_REGISTRY defaults
  *
  * Wave C integration notes:
- *   SP4 (provider/keys): add storeKey/readKey/deleteKey/listProviders here
  *   SP5 (dashboard): add computeStorage/cleanup/exportConfig/importConfig here
  *   SP6 (verification): add verifyEndToEnd here
  */
@@ -54,3 +59,23 @@ export type {
   ScreenId,
   EntryMode,
 } from './types.js';
+
+// SP4: provider key management
+export {
+  storeProviderKey,
+  readProviderKey,
+  deleteProviderKey,
+  listConfiguredProviders,
+  saveProviderSelection,
+  maskValue,
+  PICKER_PROVIDERS,
+} from './provider-keys.js';
+export type {
+  StoreKeyResult,
+  ReadKeyResult as ProviderKeyReadResult,
+  DeleteKeyResult,
+  ProviderListEntry,
+  ProviderKeyOpts,
+  PickableProvider,
+  SaveProviderResult,
+} from './provider-keys.js';

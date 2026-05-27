@@ -1,16 +1,21 @@
 // Unified entry point for LLM calls across wigolo. Selects a backend from
-// env and delegates:
+// env (or keystore) and delegates:
 //   - cloud provider name (anthropic/openai/gemini/groq) → SDK adapter
 //   - OpenAI-compatible URL (http://...)               → POST /v1/chat/completions
+//
+// SP4: keys are resolved via resolveProviderKey (keychain → file → env) and
+// passed explicitly to adapters. process.env is never hydrated from keystore.
 //
 // Used by research synthesis, agent synthesis, and v1 extract LLM fallback
 // so a single WIGOLO_LLM_PROVIDER configuration drives every code path.
 
 import { TEXT_ADAPTERS, type TextCallResult } from './text-adapters.js';
-import { selectProvider, providerEnvVar } from './select.js';
+import { selectProvider, selectProviderWithKeyStore, providerEnvVar } from './select.js';
 import { resolveModel } from './model-select.js';
 import type { LLMProvider } from './types.js';
 import { createLogger } from '../../../logger.js';
+import { resolveProviderKey } from '../../../security/key-store.js';
+import { getConfig } from '../../../config.js';
 
 const log = createLogger('providers');
 
@@ -48,13 +53,25 @@ export function isLlmConfigured(env: Record<string, string | undefined> = proces
   return selectProvider(env) !== null;
 }
 
-function pickBackend(env: Record<string, string | undefined>): { type: 'cloud'; provider: LLMProvider } | { type: 'custom'; url: string } | null {
+/**
+ * Async variant of isLlmConfigured that also checks the keystore.
+ * Use this when you have access to the data dir.
+ */
+export async function isLlmConfiguredWithKeyStore(
+  env: Record<string, string | undefined> = process.env,
+): Promise<boolean> {
+  const raw = env.WIGOLO_LLM_PROVIDER;
+  if (raw && (raw.startsWith('http://') || raw.startsWith('https://'))) return true;
+  const cfg = getConfig();
+  const result = await selectProviderWithKeyStore(env, { dataDir: cfg.dataDir });
+  return result !== null;
+}
+
+function pickCustomBackend(env: Record<string, string | undefined>): { type: 'custom'; url: string } | null {
   const raw = env.WIGOLO_LLM_PROVIDER;
   if (raw && (raw.startsWith('http://') || raw.startsWith('https://'))) {
     return { type: 'custom', url: raw };
   }
-  const provider = selectProvider(env);
-  if (provider) return { type: 'cloud', provider };
   return null;
 }
 
@@ -103,54 +120,59 @@ async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
 }
 
 export async function runLlmText(opts: RunLlmTextOpts): Promise<RunLlmTextResult> {
-  const backend = pickBackend(process.env);
-  if (!backend) {
-    throw new Error('No LLM configured — set WIGOLO_LLM_PROVIDER or a provider API key');
-  }
+  const cfg = getConfig();
+  const ksOpts = { dataDir: cfg.dataDir };
   const signal = buildSignal(opts);
 
-  if (backend.type === 'cloud') {
-    const apiKey = process.env[providerEnvVar(backend.provider)] as string;
-    const model = resolveModel(backend.provider, opts.modelOverride);
-    log.debug('runLlmText cloud', { provider: backend.provider, model });
-    return withRetry(`${backend.provider}:${model}`, async () => {
-      const r: TextCallResult = await TEXT_ADAPTERS[backend.provider](
-        { prompt: opts.prompt, model, maxTokens: opts.maxTokens, signal },
-        apiKey,
-      );
-      return { text: r.text, provider: r.provider, model: r.model, latencyMs: r.latencyMs };
+  // Custom URL backend (Ollama, vLLM, LM Studio) — no key needed
+  const custom = pickCustomBackend(process.env);
+  if (custom) {
+    const endpoint = custom.url.includes('/chat/completions')
+      ? custom.url
+      : custom.url.replace(/\/+$/, '') + '/v1/chat/completions';
+    const model = opts.modelOverride ?? process.env.WIGOLO_LLM_MODEL ?? 'local';
+    log.debug('runLlmText custom', { url: endpoint, model });
+    return withRetry(`custom:${model}`, async () => {
+      const start = Date.now();
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: opts.prompt }],
+          max_tokens: opts.maxTokens,
+        }),
+        signal,
+      });
+      if (!response.ok) {
+        const err = new Error(`Local LLM endpoint returned ${response.status}`) as Error & { status?: number };
+        err.status = response.status;
+        throw err;
+      }
+      const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      const text = payload.choices?.[0]?.message?.content;
+      if (typeof text !== 'string' || text.trim().length === 0) {
+        throw new Error('Local LLM response missing message content');
+      }
+      return { text, provider: 'custom' as const, model, latencyMs: Date.now() - start };
     });
   }
 
-  // Custom OpenAI-compatible URL backend (e.g. Ollama, vLLM, LM Studio).
-  const endpoint = backend.url.includes('/chat/completions')
-    ? backend.url
-    : backend.url.replace(/\/+$/, '') + '/v1/chat/completions';
-  const model = opts.modelOverride ?? process.env.WIGOLO_LLM_MODEL ?? 'local';
-  log.debug('runLlmText custom', { url: endpoint, model });
-  return withRetry(`custom:${model}`, async () => {
-    const start = Date.now();
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: opts.prompt }],
-        max_tokens: opts.maxTokens,
-      }),
-      signal,
-    });
-    if (!response.ok) {
-      const err = new Error(`Local LLM endpoint returned ${response.status}`) as Error & { status?: number };
-      err.status = response.status;
-      throw err;
-    }
-    const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-    const text = payload.choices?.[0]?.message?.content;
-    if (typeof text !== 'string' || text.trim().length === 0) {
-      throw new Error('Local LLM response missing message content');
-    }
-    return { text, provider: 'custom' as const, model, latencyMs: Date.now() - start };
+  // Cloud provider — resolve key through keystore seam
+  const resolved = await selectProviderWithKeyStore(process.env, ksOpts);
+  if (!resolved) {
+    throw new Error('No LLM configured — set WIGOLO_LLM_PROVIDER or a provider API key');
+  }
+
+  const { provider, key: apiKey } = resolved;
+  const model = resolveModel(provider, opts.modelOverride);
+  log.debug('runLlmText cloud', { provider, model });
+  return withRetry(`${provider}:${model}`, async () => {
+    const r: TextCallResult = await TEXT_ADAPTERS[provider](
+      { prompt: opts.prompt, model, maxTokens: opts.maxTokens, signal },
+      apiKey,
+    );
+    return { text: r.text, provider: r.provider, model: r.model, latencyMs: r.latencyMs };
   });
 }
 
@@ -181,3 +203,18 @@ function stripJsonFences(text: string): string {
   if (fenced) return fenced[1];
   return trimmed;
 }
+
+/**
+ * Resolve the API key for the currently configured provider through the
+ * full keystore chain (keychain → file → env). Returns undefined when no
+ * provider is configured.
+ *
+ * Used by llm-fallback.ts which needs the key + provider separately.
+ */
+export async function resolveActiveProviderKey(): Promise<{ provider: LLMProvider; key: string } | null> {
+  const cfg = getConfig();
+  return selectProviderWithKeyStore(process.env, { dataDir: cfg.dataDir });
+}
+
+// Re-export resolveProviderKey for direct use by llm-fallback
+export { resolveProviderKey } from '../../../security/key-store.js';

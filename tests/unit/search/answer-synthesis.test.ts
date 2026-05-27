@@ -478,6 +478,7 @@ describe('runSynthesis level 1 (WIGOLO_LLM_PROVIDER path)', () => {
   it('uses runLlmText when sampling server absent but provider configured', async () => {
     vi.doMock('../../../src/integrations/cloud/llm/run.js', () => ({
       isLlmConfigured: vi.fn().mockReturnValue(true),
+      isLlmConfiguredWithKeyStore: vi.fn().mockResolvedValue(true),
       runLlmText: vi.fn().mockResolvedValue({
         text: 'Synthesized via provider [1].',
         provider: 'gemini',
@@ -514,6 +515,7 @@ describe('runSynthesis level 1 (WIGOLO_LLM_PROVIDER path)', () => {
   it('falls through to heuristic bullets when provider call throws', async () => {
     vi.doMock('../../../src/integrations/cloud/llm/run.js', () => ({
       isLlmConfigured: vi.fn().mockReturnValue(true),
+      isLlmConfiguredWithKeyStore: vi.fn().mockResolvedValue(true),
       runLlmText: vi.fn().mockRejectedValue(new Error('timeout')),
     }));
     const mod = await import('../../../src/search/answer-synthesis.js');
@@ -552,6 +554,12 @@ describe('runSynthesis level 1 (sampling success)', () => {
       extractTextFromSamplingResponse: vi.fn().mockReturnValue(
         'Postgres replication uses WAL streaming [1]. Logical replication is also supported [2].',
       ),
+    }));
+    // SP4: isLlmConfiguredWithKeyStore returns false → falls through to sampling path
+    vi.doMock('../../../src/integrations/cloud/llm/run.js', () => ({
+      isLlmConfigured: vi.fn().mockReturnValue(false),
+      isLlmConfiguredWithKeyStore: vi.fn().mockResolvedValue(false),
+      runLlmText: vi.fn(),
     }));
 
     const mod = await import('../../../src/search/answer-synthesis.js');

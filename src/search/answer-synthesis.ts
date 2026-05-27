@@ -5,9 +5,10 @@ import {
   requestSampling,
   extractTextFromSamplingResponse,
 } from './sampling.js';
-import { isLlmConfigured, runLlmText } from '../integrations/cloud/llm/run.js';
-import { selectProvider } from '../integrations/cloud/llm/select.js';
+import { isLlmConfiguredWithKeyStore, runLlmText } from '../integrations/cloud/llm/run.js';
+import { selectProvider, selectProviderWithKeyStore } from '../integrations/cloud/llm/select.js';
 import { resolveModel } from '../integrations/cloud/llm/model-select.js';
+import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('search');
@@ -225,10 +226,14 @@ function isQuotaError(err: unknown): boolean {
   return QUOTA_PATTERN.test(msg);
 }
 
-function buildQuotaDetails(
+async function buildQuotaDetails(
   reason: string,
-): { provider: string; model: string; advice: string } | null {
-  const provider = selectProvider(process.env);
+): Promise<{ provider: string; model: string; advice: string } | null> {
+  const cfg = getConfig();
+  // Try keystore-aware provider resolution first; fall back to env-only
+  const resolved = await selectProviderWithKeyStore(process.env, { dataDir: cfg.dataDir })
+    .catch(() => null);
+  const provider = resolved?.provider ?? selectProvider(process.env);
   if (!provider) return null;
   const model = resolveModel(provider);
   const isProGemini = provider === 'gemini' && /pro/i.test(model);
@@ -259,7 +264,8 @@ export async function runSynthesis(
   // contract that research + agent already use (they call runLlmText directly).
   // When the operator wires WIGOLO_LLM_PROVIDER, that's the synthesis backend
   // for every tool — host-provided sampling is a fallback, not an override.
-  const llmConfigured = isLlmConfigured();
+  // SP4: uses keystore-aware check so keychain/file keys are visible here.
+  const llmConfigured = await isLlmConfiguredWithKeyStore();
   let llmFailureReason: string | undefined;
   let quotaDetails: { provider: string; model: string; advice: string } | undefined;
   if (llmConfigured) {
@@ -288,7 +294,7 @@ export async function runSynthesis(
       llmFailureReason = err instanceof Error ? err.message : String(err);
       log.warn('synthesis level-1a LLM provider failed, falling through to sampling', { error: llmFailureReason });
       if (isQuotaError(err)) {
-        const d = buildQuotaDetails(llmFailureReason);
+        const d = await buildQuotaDetails(llmFailureReason);
         if (d) quotaDetails = d;
       }
     }

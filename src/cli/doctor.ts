@@ -18,9 +18,38 @@ import { getEngineHealthSummary, type EngineHealthEntry } from '../search/core/e
 import { isTelemetryEnabled } from './telemetry.js';
 import { allProviders, providerEnvVar, selectProvider } from '../integrations/cloud/llm/select.js';
 import { resolveModel, providerDefaultModel, providerModelEnvVar } from '../integrations/cloud/llm/model-select.js';
+import { readKey } from '../security/key-store.js';
 import { setLogSuppression } from '../logger.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
+
+/**
+ * Mask an API key for display in doctor output.
+ * Shows at most 8 characters (or 25% of the key length) then asterisks.
+ * Never returns the full key value.
+ */
+export function maskApiKey(value: string): string {
+  if (!value) return '';
+  if (value.length <= 4) return '*'.repeat(value.length);
+  const show = Math.min(8, Math.ceil(value.length * 0.25));
+  return value.slice(0, show) + '*'.repeat(Math.max(4, value.length - show));
+}
+
+/**
+ * Format provider/key-location/masked-value lines for doctor output.
+ * Returns one or more display lines. Key value is ALWAYS masked.
+ */
+export function formatProviderDoctorLines(
+  provider: string,
+  location: 'keychain' | 'file' | 'env',
+  keyValue: string,
+): string[] {
+  const masked = maskApiKey(keyValue);
+  return [
+    `  provider:    ${provider} (key in ${location})`,
+    `  key (masked): ${masked}`,
+  ];
+}
 
 function checkPython(): { ok: boolean; version?: string } {
   const python = resolvePythonExe();
@@ -265,12 +294,35 @@ async function runDoctorInner(dataDir: string): Promise<number> {
   const active = selectProvider(process.env);
   for (const p of allProviders()) {
     const envVar = providerEnvVar(p);
-    const set = !!process.env[envVar];
+    const envSet = !!process.env[envVar];
+    // Check keystore for this provider (async — use readKey)
+    let keyLocation: 'keychain' | 'file' | 'env' | 'none' = 'none';
+    let maskedKey: string | undefined;
+    try {
+      const ksResult = await readKey(p, { dataDir: cfg.dataDir });
+      if (ksResult) {
+        keyLocation = ksResult.location;
+        maskedKey = maskApiKey(ksResult.value);
+      } else if (envSet) {
+        keyLocation = 'env';
+        maskedKey = maskApiKey(process.env[envVar] ?? '');
+      }
+    } catch {
+      // keystore read failure — fall back to env-only display
+      if (envSet) {
+        keyLocation = 'env';
+        maskedKey = maskApiKey(process.env[envVar] ?? '');
+      }
+    }
+    const configured = keyLocation !== 'none';
     const activeMark = p === active ? ' <- active' : '';
     out(
-      `  ${p.padEnd(10)} ${set ? 'configured' : 'no key'} (${envVar}${set ? '' : ' unset'})${activeMark}`,
+      `  ${p.padEnd(10)} ${configured ? `configured (${keyLocation})` : 'no key'} (${envVar}${envSet ? '' : ' unset'})${activeMark}`,
     );
-    if (set) {
+    if (configured && maskedKey) {
+      out(`    key (masked): ${maskedKey}`);
+    }
+    if (configured) {
       const model = resolveModel(p, undefined, process.env);
       const modelEnv = providerModelEnvVar(p);
       const usingDefault = model === providerDefaultModel(p) && !process.env[modelEnv] && !process.env.WIGOLO_LLM_MODEL;

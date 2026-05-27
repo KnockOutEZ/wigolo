@@ -9,7 +9,7 @@ import {
   lookupLLMCache,
 } from '../integrations/cloud/llm/cache.js';
 import { hashPrompt, hashSchema } from '../integrations/cloud/llm/hash.js';
-import { allProviders, providerEnvVar, selectProvider } from '../integrations/cloud/llm/select.js';
+import { allProviders, providerEnvVar, selectProviderWithKeyStore } from '../integrations/cloud/llm/select.js';
 import type { LLMExtractResult, LLMProvider } from '../integrations/cloud/llm/types.js';
 import { validateAgainstSchema } from '../integrations/cloud/llm/validate.js';
 
@@ -60,8 +60,9 @@ export async function extractWithLLM(
     ]);
   }
 
-  const provider = selectProvider(process.env);
-  if (!provider) {
+  // Resolve provider + key through the full keystore chain (keychain → file → env)
+  const resolved = await selectProviderWithKeyStore(process.env, { dataDir: cfg.dataDir });
+  if (!resolved) {
     const envList = allProviders()
       .map((p) => providerEnvVar(p))
       .join(', ');
@@ -71,7 +72,7 @@ export async function extractWithLLM(
     ]);
   }
 
-  const apiKey = process.env[providerEnvVar(provider)] as string;
+  const { provider, key: apiKey } = resolved;
   const prompt = buildPrompt(input);
   const promptHash = hashPrompt(prompt);
   const schemaHash = hashSchema(input.jsonSchema);
