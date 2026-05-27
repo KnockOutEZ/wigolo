@@ -149,7 +149,12 @@ describe('resolveSearchBackend — retry-aware failed state', () => {
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
       status: 'failed', attempts: 1, nextRetryAt: pastIso,
     }));
-    vi.mocked(execSync).mockReturnValue(Buffer.from('Python 3.12.0')); // python available
+    // checkPythonAvailable() now uses spawnSync (SP2 security fix); mock it to
+    // simulate python3 present. The mock covers both the `which python3` probe
+    // from resolvePythonExe() and the `python3 --version` check.
+    vi.mocked(spawnSync).mockReturnValue({
+      status: 0, stdout: 'python3', stderr: '', signal: null, pid: 1, output: [], error: undefined,
+    } as ReturnType<typeof spawnSync>);
     const r = await resolveSearchBackend();
     expect(r.type).toBe('native');
   });
@@ -179,7 +184,10 @@ describe('resolveSearchBackend — retry-aware failed state', () => {
   it('retries immediately for legacy state (no attempts/nextRetryAt)', async () => {
     vi.mocked(existsSync).mockReturnValue(true);
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ status: 'failed', error: 'legacy' }));
-    vi.mocked(execSync).mockReturnValue(Buffer.from('Python 3.12.0'));
+    // checkPythonAvailable() uses spawnSync (SP2 security fix).
+    vi.mocked(spawnSync).mockReturnValue({
+      status: 0, stdout: 'python3', stderr: '', signal: null, pid: 1, output: [], error: undefined,
+    } as ReturnType<typeof spawnSync>);
     const r = await resolveSearchBackend();
     expect(r.type).toBe('native');
   });
