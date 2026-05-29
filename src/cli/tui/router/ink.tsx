@@ -12,6 +12,7 @@ import { useInput } from 'ink';
 import type { CategoryDef, CategoryId } from '../schema/types.js';
 import type { SettingsStore } from '../state/settings-store.js';
 import type { ToastStore } from '../state/toast-store.js';
+import { activityStore as defaultActivityStore } from '../state/activity-store-instance.js';
 import { SettingsHome, type SettingsHomeAction } from '../components/SettingsHome.js';
 import { CategoryScreen } from '../components/CategoryScreen.js';
 import { VerifyScreen } from '../components/VerifyScreen.js';
@@ -348,6 +349,7 @@ export function InkRoot(props: InkRootProps): React.ReactElement {
       onPaletteClose={handlePaletteClose}
       helpOpen={helpOpen}
       onHelpClose={handleHelpClose}
+      activityStore={defaultActivityStore}
     >
       {currentScreen}
     </App>

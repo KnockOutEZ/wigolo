@@ -12,6 +12,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { getConfig } from '../../../config.js';
 import { semantic } from '../theme/palette.js';
+import { activityStore } from '../state/activity-store-instance.js';
 
 type Phase = 'running' | 'done' | 'error';
 
@@ -28,6 +29,7 @@ export function DoctorScreen({ onBack }: DoctorScreenProps): React.ReactElement 
     let cancelled = false;
 
     async function run(): Promise<void> {
+      const end = activityStore.begin('doctor');
       try {
         const { runDoctor } = await import('../../doctor.js');
         const code = await runDoctor(getConfig().dataDir);
@@ -38,6 +40,8 @@ export function DoctorScreen({ onBack }: DoctorScreenProps): React.ReactElement 
         if (cancelled) return;
         setErrorMsg(err instanceof Error ? err.message : String(err));
         setPhase('error');
+      } finally {
+        end();
       }
     }
 

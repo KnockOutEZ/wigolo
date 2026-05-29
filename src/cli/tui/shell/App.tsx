@@ -7,6 +7,7 @@ import { Footer, FooterProvider } from './Footer.js';
 import { CommandPalette } from './CommandPalette.js';
 import { HelpOverlay } from './HelpOverlay.js';
 import type { PaletteEntry } from './palette-index.js';
+import type { ActivityStore } from '../state/activity-store.js';
 
 export const DEFAULT_ROUTES: readonly SidebarRoute[] = [
   { id: 'browser',   label: 'Browser',       group: 'settings' },
@@ -39,6 +40,7 @@ interface AppProps {
   onPaletteClose?: () => void;
   helpOpen?: boolean;
   onHelpClose?: () => void;
+  activityStore?: ActivityStore;
 }
 
 export function App(props: AppProps): JSX.Element {
@@ -46,7 +48,7 @@ export function App(props: AppProps): JSX.Element {
   return (
     <FooterProvider>
       <Box flexDirection="column" height="100%">
-        <Header status={props.status} pending={props.pending} toast={props.toast} />
+        <Header status={props.status} pending={props.pending} toast={props.toast} activityStore={props.activityStore} />
         <Box flexGrow={1}>
           <Sidebar
             routes={routes}
@@ -55,7 +57,7 @@ export function App(props: AppProps): JSX.Element {
             onSelect={props.onSelectRoute}
             focused={props.focusedPane === 'sidebar'}
           />
-          <MainPane title={props.paneTitle} focused={props.focusedPane === 'main'}>
+          <MainPane title={props.paneTitle} focused={props.focusedPane === 'main'} routeId={props.activeRoute}>
             {props.children}
           </MainPane>
         </Box>
