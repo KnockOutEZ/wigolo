@@ -1,21 +1,24 @@
 /**
- * InkRouter — top-level shell for the new schema-driven settings TUI.
+ * InkRouter — top-level shell for the schema-driven settings TUI.
  *
- * Drives a simple state machine between SettingsHome and the per-category
- * CategoryScreen. Action-row buttons (Verify · Doctor · Export · Import ·
- * Uninstall) render placeholder screens this slice; real wiring lands in
- * slice 11.
+ * Drives a simple state machine between SettingsHome, the per-category
+ * CategoryScreen, and the action-row screens (Verify · Doctor · Export ·
+ * Import · Uninstall). Each action mounts the relevant component from
+ * components/ — no business logic lives in this router.
  *
  * Hosted by `entry.ts` (slice 10) which selects between this router and the
- * 4-step Wizard, depending on first-run state. The legacy `ink-init.tsx` /
- * `ink-config.tsx` routers were removed in slice 10.
+ * 4-step Wizard, depending on first-run state.
  */
 import React, { useCallback, useState } from 'react';
-import { Box, Text, useInput } from 'ink';
 import type { CategoryDef, CategoryId } from '../schema/types.js';
 import type { SettingsStore } from '../state/settings-store.js';
 import { SettingsHome, type SettingsHomeAction } from '../components/SettingsHome.js';
 import { CategoryScreen } from '../components/CategoryScreen.js';
+import { VerifyScreen } from '../components/VerifyScreen.js';
+import { DoctorScreen } from '../components/DoctorScreen.js';
+import { DashboardExport } from '../components/DashboardExport.js';
+import { ImportScreen } from '../components/ImportScreen.js';
+import { DashboardUninstall } from '../components/DashboardUninstall.js';
 
 type ScreenView =
   | { kind: 'home' }
@@ -28,34 +31,6 @@ export interface InkRouterProps {
   onExit: () => void;
   version?: string;
   productName?: string;
-}
-
-const ACTION_LABELS: Record<SettingsHomeAction, string> = {
-  verify: 'Verify',
-  doctor: 'Doctor',
-  export: 'Export',
-  import: 'Import',
-  uninstall: 'Uninstall',
-};
-
-interface ActionPlaceholderProps {
-  action: SettingsHomeAction;
-  onBack: () => void;
-}
-
-function ActionPlaceholder(props: ActionPlaceholderProps): React.ReactElement {
-  const { action, onBack } = props;
-  useInput((_input, key) => {
-    if (key.escape) onBack();
-  });
-  return (
-    <Box flexDirection="column">
-      <Text>{`${ACTION_LABELS[action]} (coming in slice 11)`}</Text>
-      <Box marginTop={1}>
-        <Text dimColor>Press esc to return</Text>
-      </Box>
-    </Box>
-  );
 }
 
 export default function InkRouter(props: InkRouterProps): React.ReactElement {
@@ -96,7 +71,18 @@ export default function InkRouter(props: InkRouterProps): React.ReactElement {
   }
 
   if (view.kind === 'action') {
-    return <ActionPlaceholder action={view.id} onBack={goHome} />;
+    switch (view.id) {
+      case 'verify':
+        return <VerifyScreen onBack={goHome} />;
+      case 'doctor':
+        return <DoctorScreen onBack={goHome} />;
+      case 'export':
+        return <DashboardExport onBack={goHome} />;
+      case 'import':
+        return <ImportScreen store={store} catalog={catalog} onBack={goHome} />;
+      case 'uninstall':
+        return <DashboardUninstall onBack={goHome} />;
+    }
   }
 
   return (
