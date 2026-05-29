@@ -8,6 +8,7 @@
 import React, { useState, useCallback } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
 import { getConfig } from '../../../config.js';
+import { semantic } from '../theme/palette.js';
 
 type Phase = 'confirm' | 'running' | 'done';
 
@@ -77,7 +78,7 @@ export function DashboardUninstall({ onBack }: DashboardUninstallProps) {
   if (phase === 'running') {
     return (
       <Box paddingX={2}>
-        <Text color="yellow">Uninstalling wigolo…</Text>
+        <Text color={semantic.warn}>Uninstalling wigolo…</Text>
       </Box>
     );
   }
@@ -85,12 +86,12 @@ export function DashboardUninstall({ onBack }: DashboardUninstallProps) {
   if (phase === 'done') {
     return (
       <Box flexDirection="column" paddingX={2}>
-        <Text bold color={resultOk ? 'green' : 'red'}>
+        <Text bold color={resultOk ? semantic.ok : semantic.err}>
           {resultOk ? 'Wigolo uninstalled' : 'Uninstall encountered errors'}
         </Text>
         {resultLines.map((line, i) => (
           <Box key={i} paddingLeft={2}>
-            <Text color={line.startsWith('Error') ? 'red' : undefined}>{line}</Text>
+            <Text color={line.startsWith('Error') ? semantic.err : undefined}>{line}</Text>
           </Box>
         ))}
         <Box marginTop={1}>
@@ -103,7 +104,7 @@ export function DashboardUninstall({ onBack }: DashboardUninstallProps) {
   // confirm phase
   return (
     <Box flexDirection="column" paddingX={2}>
-      <Text bold color="red">Uninstall wigolo</Text>
+      <Text bold color={semantic.err}>Uninstall wigolo</Text>
       <Box marginTop={1} flexDirection="column">
         <Text>This will permanently remove:</Text>
         <Box paddingLeft={2} flexDirection="column">
@@ -113,8 +114,8 @@ export function DashboardUninstall({ onBack }: DashboardUninstallProps) {
         </Box>
       </Box>
       <Box marginTop={1}>
-        <Text color="yellow">Type y to confirm or n/esc to cancel: </Text>
-        {confirmed && <Text color="green">y</Text>}
+        <Text color={semantic.warn}>Type y to confirm or n/esc to cancel: </Text>
+        {confirmed && <Text color={semantic.ok}>y</Text>}
       </Box>
     </Box>
   );

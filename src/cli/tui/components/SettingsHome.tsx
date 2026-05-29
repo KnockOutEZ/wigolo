@@ -18,6 +18,7 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { semantic } from '../theme/palette.js';
 import type { CategoryDef, CategoryId } from '../schema/types.js';
 import type { SettingsStore } from '../state/settings-store.js';
 
@@ -206,7 +207,7 @@ export function SettingsHome(props: SettingsHomeProps): React.ReactElement {
           return (
             <Box key={row.id} flexDirection="row">
               <Text>
-                {focused ? <Text color="cyan">{'❯ '}</Text> : '  '}
+                {focused ? <Text color={semantic.accent}>{'❯ '}</Text> : '  '}
                 <Text bold={focused} inverse={focused}>
                   {row.label}
                 </Text>
@@ -224,7 +225,7 @@ export function SettingsHome(props: SettingsHomeProps): React.ReactElement {
           return (
             <Box key={action.id} flexDirection="row" marginRight={2}>
               <Text>
-                {focused ? <Text color="cyan">{'❯ '}</Text> : '  '}
+                {focused ? <Text color={semantic.accent}>{'❯ '}</Text> : '  '}
                 <Text bold={focused} inverse={focused}>
                   {action.label}
                 </Text>
@@ -252,7 +253,7 @@ export function SettingsHome(props: SettingsHomeProps): React.ReactElement {
 
       {confirmQuit ? (
         <Box marginTop={1}>
-          <Text color="yellow">
+          <Text color={semantic.warn}>
             {`Discard ${pendingCount} pending change${pendingCount === 1 ? '' : 's'}? (y/N)`}
           </Text>
         </Box>

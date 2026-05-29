@@ -9,6 +9,7 @@ import React, { useState, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { semantic } from '../theme/palette.js';
 
 type MenuAction = 'export' | 'import';
 type PhaseState = 'menu' | 'running' | 'done';
@@ -87,7 +88,7 @@ export function DashboardExport({ onBack }: DashboardExportProps) {
   if (phase === 'running') {
     return (
       <Box paddingX={2}>
-        <Text color="yellow">Running…</Text>
+        <Text color={semantic.warn}>Running…</Text>
       </Box>
     );
   }
@@ -95,7 +96,7 @@ export function DashboardExport({ onBack }: DashboardExportProps) {
   if (phase === 'done') {
     return (
       <Box flexDirection="column" paddingX={2}>
-        <Text color={resultOk ? 'green' : 'red'}>{resultMsg}</Text>
+        <Text color={resultOk ? semantic.ok : semantic.err}>{resultMsg}</Text>
         <Box marginTop={1}>
           <Text dimColor>Press enter or q/esc to return</Text>
         </Box>
@@ -113,7 +114,7 @@ export function DashboardExport({ onBack }: DashboardExportProps) {
           return (
             <Box key={item.id} flexDirection="column">
               <Text>
-                {isFocused ? <Text color="cyan">{'❯ '}</Text> : '  '}
+                {isFocused ? <Text color={semantic.accent}>{'❯ '}</Text> : '  '}
                 <Text bold={isFocused}>{item.label}</Text>
               </Text>
               {isFocused && (

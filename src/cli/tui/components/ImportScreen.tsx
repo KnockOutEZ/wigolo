@@ -21,6 +21,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import type { CategoryDef } from '../schema/types.js';
 import type { SettingsStore } from '../state/settings-store.js';
+import { semantic } from '../theme/palette.js';
 
 type Phase = 'prompt' | 'review' | 'done' | 'error';
 
@@ -193,7 +194,7 @@ export function ImportScreen({
         <Box marginTop={1}>
           <Text>Path: </Text>
           <Text>{buffer}</Text>
-          <Text color="cyan">_</Text>
+          <Text color={semantic.accent}>_</Text>
         </Box>
         <Box marginTop={1}>
           <Text dimColor>
@@ -210,9 +211,9 @@ export function ImportScreen({
   if (phase === 'error') {
     return (
       <Box flexDirection="column" paddingX={2}>
-        <Text bold color="red">Import error</Text>
+        <Text bold color={semantic.err}>Import error</Text>
         <Box marginTop={1}>
-          <Text color="red">{errorMsg}</Text>
+          <Text color={semantic.err}>{errorMsg}</Text>
         </Box>
         <Box marginTop={1}>
           <Text dimColor>enter retry · q/esc back</Text>
@@ -227,12 +228,12 @@ export function ImportScreen({
         <Text bold>Import: review</Text>
         <Box marginTop={1} flexDirection="column">
           <Text>
-            <Text color="green">{parsed.known.length}</Text> known key
+            <Text color={semantic.ok}>{parsed.known.length}</Text> known key
             {parsed.known.length === 1 ? '' : 's'} will be staged into pending.
           </Text>
           {parsed.unknown.length > 0 ? (
             <Box flexDirection="column" marginTop={1}>
-              <Text color="yellow">
+              <Text color={semantic.warn}>
                 {parsed.unknown.length} unknown key
                 {parsed.unknown.length === 1 ? '' : 's'} ignored:
               </Text>
@@ -250,7 +251,7 @@ export function ImportScreen({
           ) : null}
         </Box>
         <Box marginTop={1}>
-          <Text color="yellow">
+          <Text color={semantic.warn}>
             Stage {parsed.known.length} change
             {parsed.known.length === 1 ? '' : 's'} into pending? (y/N)
           </Text>
@@ -268,7 +269,7 @@ export function ImportScreen({
   // done
   return (
     <Box flexDirection="column" paddingX={2}>
-      <Text bold color="green">
+      <Text bold color={semantic.ok}>
         Staged {stagedCount} pending change{stagedCount === 1 ? '' : 's'}
       </Text>
       <Box marginTop={1}>

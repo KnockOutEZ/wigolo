@@ -16,6 +16,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { semantic } from '../theme/palette.js';
 import type { CategoryDef } from '../schema/types.js';
 import type { SettingsStore } from '../state/settings-store.js';
 import type { AgentTarget } from '../state/agent-targets.js';
@@ -134,7 +135,7 @@ function SystemStep(props: SystemStepProps): React.ReactElement {
         <Text dimColor>Checking your system…</Text>
       ) : null}
       {error !== null ? (
-        <Text color="yellow">{`System check error: ${error}`}</Text>
+        <Text color={semantic.warn}>{`System check error: ${error}`}</Text>
       ) : null}
       {result !== null ? (
         <Box flexDirection="column">
@@ -154,7 +155,7 @@ function SystemStep(props: SystemStepProps): React.ReactElement {
           </Text>
           {result.hardFailure ? (
             <Box marginTop={1}>
-              <Text color="yellow">
+              <Text color={semantic.warn}>
                 One or more required tools are missing. You can continue and fix later.
               </Text>
             </Box>
@@ -375,7 +376,7 @@ export function WizardSteps(props: WizardStepsProps): React.ReactElement {
       ) : null}
       {saveError !== null ? (
         <Box marginTop={1}>
-          <Text color="yellow">{saveError}</Text>
+          <Text color={semantic.warn}>{saveError}</Text>
         </Box>
       ) : null}
       <Box marginTop={1}>

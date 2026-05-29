@@ -11,6 +11,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { getConfig } from '../../../config.js';
+import { semantic } from '../theme/palette.js';
 
 type Phase = 'running' | 'done' | 'error';
 
@@ -65,9 +66,9 @@ export function DoctorScreen({ onBack }: DoctorScreenProps): React.ReactElement 
   if (phase === 'error') {
     return (
       <Box flexDirection="column" paddingX={2}>
-        <Text color="red" bold>Doctor failed to run</Text>
+        <Text color={semantic.err} bold>Doctor failed to run</Text>
         <Box marginTop={1}>
-          <Text color="red">{errorMsg}</Text>
+          <Text color={semantic.err}>{errorMsg}</Text>
         </Box>
         <Box marginTop={1}>
           <Text dimColor>Press enter or q/esc to return</Text>
@@ -79,7 +80,7 @@ export function DoctorScreen({ onBack }: DoctorScreenProps): React.ReactElement 
   const ok = exitCode === 0;
   return (
     <Box flexDirection="column" paddingX={2}>
-      <Text bold color={ok ? 'green' : 'yellow'}>
+      <Text bold color={ok ? semantic.ok : semantic.warn}>
         {ok ? 'Doctor: all required components OK' : 'Doctor: degraded (see output above)'}
       </Text>
       <Box marginTop={1}>
