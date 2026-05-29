@@ -6,6 +6,11 @@ import { createSettingsStore } from '../../../../../src/cli/tui/state/settings-s
 import { browserCategory } from '../../../../../src/cli/tui/schema/browser.js';
 import type { CategoryDef } from '../../../../../src/cli/tui/schema/types.js';
 
+vi.mock('../../../../../src/cli/tui/actions/write-config.js', () => ({
+  persistKey: vi.fn().mockResolvedValue(undefined),
+  writeMcpConfig: vi.fn().mockResolvedValue({ results: [], anyFailed: false }),
+}));
+
 afterEach(() => {
   cleanup();
 });
@@ -41,7 +46,7 @@ describe('CategoryScreen', () => {
     expect(frame).toContain('Idle timeout');
   });
 
-  it('shows ActionBar with `save 0 pending` initially', async () => {
+  it('shows ActionBar with autosave hint', async () => {
     const store = createSettingsStore({
       browserTypes: 'chromium',
       maxBrowsers: 3,
@@ -55,15 +60,18 @@ describe('CategoryScreen', () => {
       />,
     );
     await wait(20);
-    expect(lastFrame()).toContain('save 0 pending');
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('autosave');
+    expect(frame).toContain('⏎');
   });
 
-  it('ActionBar pending count reflects store dirty state', async () => {
+  it('ActionBar pending count removed — autosave fires on field blur', async () => {
     const store = createSettingsStore({
       browserTypes: 'chromium',
       maxBrowsers: 3,
       browserIdleTimeoutMs: 30000,
     });
+    const blurSpy = vi.spyOn(store, 'blur');
     const { lastFrame } = render(
       <CategoryScreen
         category={browserCategory}
@@ -72,10 +80,12 @@ describe('CategoryScreen', () => {
       />,
     );
     await wait(20);
-    store.set('maxBrowsers', 5);
-    store.set('browserIdleTimeoutMs', 45000);
-    await wait(30);
-    expect(lastFrame()).toContain('save 2 pending');
+    // The ActionBar no longer shows a pending count badge.
+    const frame = lastFrame() ?? '';
+    expect(frame).not.toContain('save 0 pending');
+    expect(frame).not.toContain('save 2 pending');
+    // blur spy starts clean.
+    expect(blurSpy).not.toHaveBeenCalled();
   });
 
   it('down-arrow moves focus to the next field', async () => {
@@ -234,24 +244,5 @@ describe('CategoryScreen', () => {
     expect(lastFrame() ?? '').toContain('Engine');
   });
 
-  it('s key invokes onSave (no-op default does not crash)', async () => {
-    const store = createSettingsStore({
-      browserTypes: 'chromium',
-      maxBrowsers: 3,
-      browserIdleTimeoutMs: 30000,
-    });
-    const onSave = vi.fn();
-    const { stdin } = render(
-      <CategoryScreen
-        category={browserCategory}
-        store={store}
-        onBack={() => {}}
-        onSave={onSave}
-      />,
-    );
-    await wait(20);
-    stdin.write('s');
-    await wait(30);
-    expect(onSave).toHaveBeenCalledTimes(1);
-  });
 });
+

@@ -8,14 +8,9 @@
  *
  * Key routing:
  *   - ↑ / ↓        → move focus through visible fields (no wrap)
- *   - enter        → start editing the focused field (FieldRenderer drives
- *                    actual value change for selects/toggles)
+ *   - enter        → start editing the focused field; on edit-done, blur()
+ *                    is called which autosaves the field to disk.
  *   - esc          → cancel current edit, OR call `onBack()` when idle
- *   - s            → reserved for save; this slice fires `onSave` (no-op by
- *                    default). Real propagation lands in slice 6.
- *
- * Save is intentionally out of scope here — the ActionBar still surfaces the
- * pending count so users see their dirty state grow as they edit.
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
@@ -28,11 +23,12 @@ export interface CategoryScreenProps {
   category: CategoryDef;
   store: SettingsStore;
   onBack: () => void;
+  /** Called when the user advances past this screen (e.g. in the Wizard). */
   onSave?: () => void;
 }
 
 export function CategoryScreen(props: CategoryScreenProps): React.ReactElement {
-  const { category, store, onBack, onSave } = props;
+  const { category, store, onBack } = props;
 
   // Force a re-render whenever the store mutates so pending markers + the
   // ActionBar count stay in sync with edits.
@@ -96,16 +92,11 @@ export function CategoryScreen(props: CategoryScreenProps): React.ReactElement {
       onBack();
       return;
     }
-    if (input === 's') {
-      if (onSave) onSave();
-      return;
-    }
   });
 
   const hotkeys: ReadonlyArray<ActionBarHotkey> = [
     { key: '↑↓', label: 'field' },
-    { key: 'enter', label: 'edit' },
-    { key: 's', label: `save ${pendingCount} pending` },
+    { key: '⏎', label: 'edit · autosave' },
     { key: 'esc', label: 'back' },
     { key: 'q', label: 'quit' },
   ];
@@ -144,7 +135,10 @@ export function CategoryScreen(props: CategoryScreenProps): React.ReactElement {
                 store.set(settingsPath, next);
               }}
               onEditStart={() => setEditing(true)}
-              onEditDone={() => setEditing(false)}
+              onEditDone={() => {
+                setEditing(false);
+                void store.blur(settingsPath);
+              }}
               onEditCancel={() => setEditing(false)}
             />
           );
