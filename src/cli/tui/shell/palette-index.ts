@@ -51,7 +51,10 @@ export function buildPaletteIndex({ catalog, actionLabels }: BuildPaletteIndexIn
 export function fuzzyScore(query: string, candidate: string): number {
   if (!query) return 1;
   const q = query.toLowerCase().replace(/\s+/g, '');
-  const c = candidate.toLowerCase();
+  const cRaw = candidate.toLowerCase();
+  // Strip spaces from both sides of the substring check so multi-word queries
+  // like "llm key" (→ "llmkey") match "LLM provider › API key" (→ "llmprovider›apikey").
+  const c = cRaw.replace(/\s+/g, '');
 
   let i = 0;
   for (const ch of c) {

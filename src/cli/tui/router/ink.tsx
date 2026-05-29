@@ -24,8 +24,10 @@ import { buildPaletteIndex, type PaletteEntry } from '../shell/palette-index.js'
 
 type ScreenView =
   | { kind: 'home' }
-  | { kind: 'category'; id: CategoryId }
+  | { kind: 'category'; id: CategoryId; initialFocusKey?: string }
   | { kind: 'action'; id: SettingsHomeAction };
+
+const ACTION_LABELS = ['Verify', 'Doctor', 'Export', 'Import', 'Uninstall'];
 
 export interface InkRouterProps {
   store: SettingsStore;
@@ -197,10 +199,8 @@ export function InkRoot(props: InkRootProps): React.ReactElement {
   }, [toastStore]);
 
   // Build palette index once per catalog change
-  const ACTION_LABELS = ['Verify', 'Doctor', 'Export', 'Import', 'Uninstall'];
   const paletteEntries = useMemo(
     () => buildPaletteIndex({ catalog: [...catalog], actionLabels: ACTION_LABELS }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [catalog],
   );
 
@@ -224,7 +224,9 @@ export function InkRoot(props: InkRootProps): React.ReactElement {
       setView({ kind: 'category', id: entry.id as CategoryId });
       setFocusedPane('main');
     } else if (entry.kind === 'field' && entry.path) {
-      setView({ kind: 'category', id: entry.path as CategoryId });
+      // entry.id is the field key; entry.path is the category id.
+      // Thread initialFocusKey so CategoryScreen pre-positions the cursor.
+      setView({ kind: 'category', id: entry.path as CategoryId, initialFocusKey: entry.id });
       setFocusedPane('main');
     } else if (entry.kind === 'action') {
       setView({ kind: 'action', id: entry.id as SettingsHomeAction });
@@ -288,6 +290,7 @@ export function InkRoot(props: InkRootProps): React.ReactElement {
           store={store}
           onBack={goHome}
           onEditBufferChange={setInEditBuffer}
+          initialFocusKey={view.initialFocusKey}
         />
       );
     }

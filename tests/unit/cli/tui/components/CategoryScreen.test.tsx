@@ -212,6 +212,54 @@ describe('CategoryScreen', () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 
+  it('resets edit-buffer state on unmount', async () => {
+    const onEditBufferChange = vi.fn();
+    const store = createSettingsStore({
+      browserTypes: 'chromium',
+      maxBrowsers: 3,
+      browserIdleTimeoutMs: 30000,
+    });
+    const { unmount } = render(
+      <CategoryScreen
+        category={browserCategory}
+        store={store}
+        onBack={() => {}}
+        onEditBufferChange={onEditBufferChange}
+      />,
+    );
+    await wait(20);
+    unmount();
+    // Allow React's cleanup effects to flush after unmount.
+    await wait(20);
+    // The teardown effect must reset the flag to false so InkRoot doesn't get
+    // stuck with inEditBuffer=true when the screen navigates away.
+    expect(onEditBufferChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('initialFocusKey positions cursor on the specified field', async () => {
+    const store = createSettingsStore({
+      browserTypes: 'chromium',
+      maxBrowsers: 3,
+      browserIdleTimeoutMs: 30000,
+    });
+    // The second field in browserCategory is "Max concurrent" (key: WIGOLO_MAX_BROWSERS).
+    const secondField = browserCategory.fields[1];
+    if (!secondField) throw new Error('test assumption: browserCategory must have at least 2 fields');
+    const { lastFrame } = render(
+      <CategoryScreen
+        category={browserCategory}
+        store={store}
+        onBack={() => {}}
+        initialFocusKey={secondField.key}
+      />,
+    );
+    await wait(20);
+    const frame = lastFrame() ?? '';
+    // The focus glyph "❯ " should be on the second field row, not the first.
+    const focusLine = frame.split('\n').find((l) => l.includes('❯ ')) ?? '';
+    expect(focusLine).toContain('Max concurrent');
+  });
+
   it('hidden fields are skipped (visible: () => false)', async () => {
     const hiddenCategory: CategoryDef = {
       id: 'browser',

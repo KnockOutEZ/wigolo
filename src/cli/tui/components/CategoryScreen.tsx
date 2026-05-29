@@ -27,10 +27,12 @@ export interface CategoryScreenProps {
   store: SettingsStore;
   onBack: () => void;
   onEditBufferChange?: (editing: boolean) => void;
+  /** If set, CategoryScreen initialises focus on the field with this key. */
+  initialFocusKey?: string;
 }
 
 export function CategoryScreen(props: CategoryScreenProps): React.ReactElement {
-  const { category, store, onBack, onEditBufferChange } = props;
+  const { category, store, onBack, onEditBufferChange, initialFocusKey } = props;
 
   // Force a re-render whenever the store mutates so pending markers + the
   // ActionBar count stay in sync with edits.
@@ -51,13 +53,25 @@ export function CategoryScreen(props: CategoryScreenProps): React.ReactElement {
     [category, JSON.stringify(current), JSON.stringify(pending)],
   );
 
-  const [focusedIndex, setFocusedIndex] = useState(0);
+  const [focusedIndex, setFocusedIndex] = useState(() => {
+    if (!initialFocusKey) return 0;
+    const idx = category.fields.findIndex((f) => f.key === initialFocusKey);
+    return idx >= 0 ? idx : 0;
+  });
   const [editing, setEditing] = useState(false);
 
   const applyEditing = useCallback((next: boolean) => {
     setEditing(next);
     onEditBufferChange?.(next);
   }, [onEditBufferChange]);
+
+  // On unmount, reset the edit-buffer flag so InkRoot doesn't get stuck with
+  // inEditBuffer=true if the user navigates away while a field is active.
+  useEffect(() => {
+    return () => {
+      onEditBufferChange?.(false);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Clamp focus if the visible-field list shrinks (e.g. a conditional flipped).
   useEffect(() => {

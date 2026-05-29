@@ -18,6 +18,17 @@ describe('palette-index', () => {
     expect(fuzzyScore('xyz', 'LLM provider › API key')).toBe(0);
   });
 
+  it('fuzzyScore multi-word query gets same substring bonus as collapsed form', () => {
+    // "llm key" → stripped to "llmkey"; "llmkey" directly.
+    // Both should produce the same score since the substring "llmkey" exists
+    // in the space-stripped candidate.
+    const multiWord = fuzzyScore('llm key', 'LLM provider › API key');
+    const collapsed = fuzzyScore('llmkey', 'LLM provider › API key');
+    expect(multiWord).toBe(collapsed);
+    // And both should outscore a scattered non-substring query.
+    expect(multiWord).toBeGreaterThan(fuzzyScore('xyz', 'LLM provider API key'));
+  });
+
   it('fuzzyScore returns 1 for empty query', () => {
     expect(fuzzyScore('', 'anything')).toBe(1);
   });
