@@ -8,6 +8,7 @@
  */
 import React from 'react';
 import { Box, Text } from 'ink';
+import { semantic } from '../theme/palette.js';
 
 export interface ActionBarHotkey {
   key: string;
@@ -27,7 +28,7 @@ export function ActionBar(props: ActionBarProps): React.ReactElement {
     <Box flexDirection="row" marginTop={1}>
       {hotkeys.map((hk, idx) => (
         <Box key={hk.key} flexDirection="row" marginRight={2}>
-          <Text bold={!dim} dimColor={dim} color={dim ? undefined : 'cyan'}>
+          <Text bold={!dim} dimColor={dim} color={dim ? undefined : semantic.accent}>
             {hk.key}
           </Text>
           <Text> </Text>
