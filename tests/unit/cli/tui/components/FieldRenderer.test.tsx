@@ -67,6 +67,14 @@ const readonlyField: FieldDef = {
   default: '0.1.23',
 };
 
+const maskedField: FieldDef = {
+  key: 'K',
+  settingsPath: 'k',
+  label: 'API key',
+  kind: 'masked',
+  secret: true,
+};
+
 describe('FieldRenderer', () => {
   it('renders select with current value and label', () => {
     const { lastFrame } = render(
@@ -455,6 +463,221 @@ describe('FieldRenderer', () => {
     stdin.write('\r');
     await new Promise((r) => setTimeout(r, 30));
     expect(onEditStart).toHaveBeenCalled();
+  });
+
+  it('masked: empty value renders [type to enter] placeholder', () => {
+    const { lastFrame } = render(
+      <FieldRenderer
+        field={maskedField}
+        value=""
+        focused={false}
+        editing={false}
+        onChange={noop}
+        onEditStart={noop}
+        onEditDone={noop}
+        onEditCancel={noop}
+      />,
+    );
+    expect(lastFrame()).toContain('[type to enter]');
+  });
+
+  it('masked: set value renders ****<last4> + replace/remove hint when focused', () => {
+    // Contract: display is the literal `****` followed by the last 4 chars
+    // of the stored value. Anything earlier in the secret must NOT appear.
+    const { lastFrame } = render(
+      <FieldRenderer
+        field={maskedField}
+        value="sk-ant-supersecret-1234ds4F"
+        focused={true}
+        editing={false}
+        onChange={noop}
+        onEditStart={noop}
+        onEditDone={noop}
+        onEditCancel={noop}
+      />,
+    );
+    const frame = lastFrame() ?? '';
+    // Last 4 chars of value are `ds4F`.
+    expect(frame).toContain('****ds4F');
+    expect(frame).not.toContain('supersecret');
+    expect(frame).not.toContain('sk-ant');
+    expect(frame).toMatch(/\[r\] Replace/);
+    expect(frame).toMatch(/\[x\] Remove/);
+  });
+
+  it('masked: pressing r when set enters replace/edit mode', async () => {
+    const onEditStart = vi.fn();
+    const { stdin } = render(
+      <FieldRenderer
+        field={maskedField}
+        value="sk-existing-key-1234"
+        focused={true}
+        editing={false}
+        onChange={noop}
+        onEditStart={onEditStart}
+        onEditDone={noop}
+        onEditCancel={noop}
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('r');
+    await new Promise((r) => setTimeout(r, 30));
+    expect(onEditStart).toHaveBeenCalled();
+  });
+
+  it('masked: pressing x when set calls onChange(null) + onEditDone', async () => {
+    const onChange = vi.fn();
+    const onEditDone = vi.fn();
+    const { stdin } = render(
+      <FieldRenderer
+        field={maskedField}
+        value="sk-existing-key-1234"
+        focused={true}
+        editing={false}
+        onChange={onChange}
+        onEditStart={noop}
+        onEditDone={onEditDone}
+        onEditCancel={noop}
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('x');
+    await new Promise((r) => setTimeout(r, 30));
+    expect(onChange).toHaveBeenCalledWith(null);
+    expect(onEditDone).toHaveBeenCalled();
+  });
+
+  it('masked: empty + enter starts edit (onEditStart fired)', async () => {
+    const onEditStart = vi.fn();
+    const { stdin } = render(
+      <FieldRenderer
+        field={maskedField}
+        value=""
+        focused={true}
+        editing={false}
+        onChange={noop}
+        onEditStart={onEditStart}
+        onEditDone={noop}
+        onEditCancel={noop}
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('\r');
+    await new Promise((r) => setTimeout(r, 30));
+    expect(onEditStart).toHaveBeenCalled();
+  });
+
+  it('masked: enter commits typed buffer via onChange(value) + onEditDone', async () => {
+    const onChange = vi.fn();
+    const onEditDone = vi.fn();
+    const { stdin, rerender } = render(
+      <FieldRenderer
+        field={maskedField}
+        value=""
+        focused={true}
+        editing={false}
+        onChange={onChange}
+        onEditStart={noop}
+        onEditDone={onEditDone}
+        onEditCancel={noop}
+      />,
+    );
+    rerender(
+      <FieldRenderer
+        field={maskedField}
+        value=""
+        focused={true}
+        editing={true}
+        onChange={onChange}
+        onEditStart={noop}
+        onEditDone={onEditDone}
+        onEditCancel={noop}
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('s');
+    stdin.write('k');
+    stdin.write('-');
+    stdin.write('a');
+    stdin.write('b');
+    await new Promise((r) => setTimeout(r, 30));
+    stdin.write('\r');
+    await new Promise((r) => setTimeout(r, 30));
+    expect(onChange).toHaveBeenCalledWith('sk-ab');
+    expect(onEditDone).toHaveBeenCalled();
+  });
+
+  it('masked: editing display echoes asterisks, never the typed plaintext', async () => {
+    const { stdin, rerender, lastFrame } = render(
+      <FieldRenderer
+        field={maskedField}
+        value=""
+        focused={true}
+        editing={false}
+        onChange={noop}
+        onEditStart={noop}
+        onEditDone={noop}
+        onEditCancel={noop}
+      />,
+    );
+    rerender(
+      <FieldRenderer
+        field={maskedField}
+        value=""
+        focused={true}
+        editing={true}
+        onChange={noop}
+        onEditStart={noop}
+        onEditDone={noop}
+        onEditCancel={noop}
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('a');
+    stdin.write('b');
+    stdin.write('c');
+    await new Promise((r) => setTimeout(r, 30));
+    const frame = lastFrame() ?? '';
+    expect(frame).not.toContain('abc');
+    expect(frame).toContain('***');
+  });
+
+  it('masked: esc cancels edit without firing onChange', async () => {
+    const onChange = vi.fn();
+    const onEditCancel = vi.fn();
+    const onEditDone = vi.fn();
+    const { stdin, rerender } = render(
+      <FieldRenderer
+        field={maskedField}
+        value=""
+        focused={true}
+        editing={false}
+        onChange={onChange}
+        onEditStart={noop}
+        onEditDone={onEditDone}
+        onEditCancel={onEditCancel}
+      />,
+    );
+    rerender(
+      <FieldRenderer
+        field={maskedField}
+        value=""
+        focused={true}
+        editing={true}
+        onChange={onChange}
+        onEditStart={noop}
+        onEditDone={onEditDone}
+        onEditCancel={onEditCancel}
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('s');
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write(''); // escape
+    await new Promise((r) => setTimeout(r, 30));
+    expect(onEditCancel).toHaveBeenCalled();
+    expect(onEditDone).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('does not fire input handlers when not focused', async () => {

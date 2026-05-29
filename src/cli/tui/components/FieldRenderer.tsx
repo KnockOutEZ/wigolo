@@ -12,8 +12,11 @@
  *   - number   — typed input; enter commits if in [min,max]; esc cancels
  *   - path     — same as text, with display-only ~/  for homedir prefix
  *   - readonly — never focusable, never fires onChange
+ *   - masked   — secret display (`****<last4>`); `r` replace / `x` remove;
+ *                edit mode buffer never round-trips through props (typed
+ *                value flows out via onChange on enter).
  *
- * Deferred (later slices): masked (slice 8), multiselect (slice 9).
+ * Deferred (later slices): multiselect (slice 9).
  */
 import React, { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
@@ -45,6 +48,12 @@ function valuesEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+function maskedSummary(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0) return '';
+  const tail = value.slice(-4);
+  return `****${tail}`;
+}
+
 function renderValue(field: FieldDef, value: unknown): string {
   switch (field.kind) {
     case 'toggle':
@@ -58,6 +67,8 @@ function renderValue(field: FieldDef, value: unknown): string {
       // help text / options panel when editing.
       return value === undefined || value === null ? '' : String(value);
     }
+    case 'masked':
+      return maskedSummary(value);
     case 'readonly':
     case 'text':
     default:
@@ -78,9 +89,11 @@ export function FieldRenderer(props: FieldRendererProps): React.ReactElement {
     onEditCancel,
   } = props;
 
-  // Ephemeral buffer used only for text/number/path while editing.
+  // Ephemeral buffer used only for text/number/path/masked while editing.
   const [buffer, setBuffer] = useState<string>(() => {
     if (field.kind === 'path') return displayPath(value);
+    // Masked never pre-fills the buffer — secrets are write-once from the user.
+    if (field.kind === 'masked') return '';
     return value === undefined || value === null ? '' : String(value);
   });
 
@@ -90,6 +103,11 @@ export function FieldRenderer(props: FieldRendererProps): React.ReactElement {
     if (editing && (field.kind === 'text' || field.kind === 'number' || field.kind === 'path')) {
       if (field.kind === 'path') setBuffer(displayPath(value));
       else setBuffer(value === undefined || value === null ? '' : String(value));
+    }
+    // Masked entry starts with a clean buffer every time we enter edit mode —
+    // the prior secret never leaks back into the typed display.
+    if (editing && field.kind === 'masked') {
+      setBuffer('');
     }
   }, [editing, field.kind, value]);
 
@@ -133,6 +151,60 @@ export function FieldRenderer(props: FieldRendererProps): React.ReactElement {
         if (key.return) {
           onChange(!value);
           onEditDone();
+        }
+        return;
+      }
+
+      // MASKED — secret input. When idle:
+      //   - empty value → enter starts replace/edit mode.
+      //   - set value   → `r` replaces, `x` removes.
+      // When editing: typed buffer, enter commits via onChange(value), esc cancels.
+      if (field.kind === 'masked') {
+        if (!editing) {
+          if (key.return) {
+            onEditStart();
+            return;
+          }
+          // Has-value branch: r=replace, x=remove. We treat absence of value
+          // (empty string/null/undefined) as "no key set" — only `enter` works
+          // there to avoid grabbing 'r'/'x' keystrokes the user might want
+          // routed elsewhere when the field is intentionally empty.
+          const hasValue = typeof value === 'string' && value.length > 0;
+          if (!hasValue) return;
+          if (input === 'r' || input === 'R') {
+            onEditStart();
+            return;
+          }
+          if (input === 'x' || input === 'X') {
+            onChange(null);
+            onEditDone();
+            return;
+          }
+          return;
+        }
+
+        // editing === true
+        if (key.escape) {
+          onEditCancel();
+          return;
+        }
+        if (key.return) {
+          // Empty commit cancels rather than storing an empty secret.
+          if (buffer.length === 0) {
+            onEditCancel();
+            return;
+          }
+          onChange(buffer);
+          onEditDone();
+          return;
+        }
+        if (key.backspace || key.delete) {
+          setBuffer((b) => b.slice(0, -1));
+          return;
+        }
+        if (input && !key.ctrl && !key.meta) {
+          setBuffer((b) => b + input);
+          return;
         }
         return;
       }
@@ -214,12 +286,24 @@ export function FieldRenderer(props: FieldRendererProps): React.ReactElement {
     ) {
       return buffer;
     }
+    if (editing && field.kind === 'masked') {
+      // Echo asterisks, never the typed characters.
+      return '*'.repeat(buffer.length);
+    }
+    if (field.kind === 'masked') {
+      const hasValue = typeof value === 'string' && value.length > 0;
+      if (!hasValue) return '[type to enter]';
+      return renderValue(field, value);
+    }
     return renderValue(field, value);
   })();
 
   const labelText = field.label;
   const valueColor = isPending ? 'yellow' : undefined;
   const pendingMarker = isPending ? ' *' : '';
+  const maskedHasValue =
+    field.kind === 'masked' && typeof value === 'string' && value.length > 0;
+  const showMaskedHotkeys = field.kind === 'masked' && !editing && maskedHasValue && focused;
 
   return (
     <Box flexDirection="column">
@@ -230,7 +314,7 @@ export function FieldRenderer(props: FieldRendererProps): React.ReactElement {
             {labelText}
           </Text>
           <Text>{'  '}</Text>
-          {editing && (field.kind === 'text' || field.kind === 'number' || field.kind === 'path') ? (
+          {editing && (field.kind === 'text' || field.kind === 'number' || field.kind === 'path' || field.kind === 'masked') ? (
             <Text color="cyan">
               {display}
               <Text color="cyan" inverse>
@@ -242,6 +326,9 @@ export function FieldRenderer(props: FieldRendererProps): React.ReactElement {
               {display}
               {pendingMarker}
             </Text>
+          )}
+          {showMaskedHotkeys && (
+            <Text dimColor>{'   [r] Replace [x] Remove'}</Text>
           )}
         </Text>
       </Box>
