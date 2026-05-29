@@ -275,4 +275,52 @@ describe('Sidebar', () => {
     const browserLine = lines.find((l) => l.includes('Browser'));
     expect(browserLine ?? '').not.toContain('●');
   });
+
+  it('Enter does not throw and does not call onSelect when cursor is out of bounds after routes shrink', async () => {
+    // Start with 11 routes (cursor can reach index 10), then shrink to 5.
+    // Pressing Enter must NOT throw and must NOT call onSelect since the route
+    // at the stale cursor index no longer exists. The guard `if (route)` gates
+    // the call — no call is the documented choice for this guard.
+    //
+    // activeRoute is set to a nonexistent id ('__none__') on rerender so the
+    // cursor-sync effect (which resets cursor when activeRoute is found) does
+    // not reset the stale cursor to a valid index.
+    const onSelect = vi.fn();
+    const SMALL_ROUTES: readonly SidebarRoute[] = TEST_ROUTES.slice(0, 5);
+
+    const { stdin, rerender } = render(
+      <Sidebar
+        routes={TEST_ROUTES}
+        activeRoute="browser"
+        dirtyByCategory={{}}
+        onSelect={onSelect}
+        focused={true}
+      />,
+    );
+    await wait(20);
+    // Move cursor to index 10 (last row in the full 11-route list).
+    for (let i = 0; i < 10; i++) {
+      stdin.write(ARROW_DOWN);
+      await wait(15);
+    }
+
+    // Shrink routes to only 5 — cursor (10) is now past the end.
+    // Use activeRoute='__none__' so the cursor-sync effect finds no match and
+    // leaves cursor at the stale value (10), which is out of bounds for 5 routes.
+    rerender(
+      <Sidebar
+        routes={SMALL_ROUTES}
+        activeRoute="__none__"
+        dirtyByCategory={{}}
+        onSelect={onSelect}
+        focused={true}
+      />,
+    );
+    await wait(20);
+
+    // Press Enter — must not throw, must not call onSelect for an out-of-bounds index.
+    expect(() => stdin.write(ENTER)).not.toThrow();
+    await wait(20);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
 });

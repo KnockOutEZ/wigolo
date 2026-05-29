@@ -31,7 +31,8 @@ export function Sidebar({ routes, activeRoute, dirtyByCategory, onSelect, focuse
     } else if (key.downArrow) {
       setCursor(c => Math.min(routes.length - 1, c + 1));
     } else if (key.return) {
-      onSelect(routes[cursor]!.id);
+      const route = routes[cursor];
+      if (route) onSelect(route.id);
     }
   }, { isActive: focused });
 

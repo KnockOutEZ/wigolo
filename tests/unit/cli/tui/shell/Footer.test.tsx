@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { Text } from 'ink';
 import {
@@ -8,7 +8,19 @@ import {
   useFooterHints,
 } from '../../../../../src/cli/tui/shell/Footer.js';
 
+let stderrOutput: string[] = [];
+let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+  stderrOutput = [];
+  stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+    stderrOutput.push(String(chunk));
+    return true;
+  });
+});
+
 afterEach(() => {
+  stderrSpy.mockRestore();
   cleanup();
 });
 
@@ -101,5 +113,43 @@ describe('Footer', () => {
     expect(frame).toContain('↑↓ nav');
     expect(frame).toContain('q quit');
     expect(frame).not.toContain('⏎ save');
+  });
+
+  it('useFooterHints outside FooterProvider writes warning to stderr in non-production', async () => {
+    // NODE_ENV is 'test' in vitest — non-production — so the warning must fire.
+    function Orphan() {
+      useFooterHints(['tab switch', 'q quit']);
+      return <Text>orphan</Text>;
+    }
+    render(<Orphan />);
+    await wait(20);
+    const combined = stderrOutput.join('');
+    expect(combined).toContain('useFooterHints called outside FooterProvider');
+    expect(combined).toContain('tab switch');
+    expect(combined).toContain('q quit');
+  });
+
+  it('useFooterHints inside FooterProvider does NOT write to stderr', async () => {
+    render(
+      <FooterProvider>
+        <HintsHarness hints={['↑↓ nav', 'q quit']} />
+        <Footer />
+      </FooterProvider>,
+    );
+    await wait(20);
+    const combined = stderrOutput.join('');
+    expect(combined).not.toContain('useFooterHints called outside FooterProvider');
+  });
+
+  it('useFooterHints outside FooterProvider with empty hints does NOT warn', async () => {
+    // Empty hints array: no meaningful registration to drop, so no noise.
+    function Silent() {
+      useFooterHints([]);
+      return <Text>silent</Text>;
+    }
+    render(<Silent />);
+    await wait(20);
+    const combined = stderrOutput.join('');
+    expect(combined).not.toContain('useFooterHints called outside FooterProvider');
   });
 });

@@ -6,6 +6,10 @@ import type { ReactNode } from 'react';
 
 type Status = 'ok' | 'warn' | 'err';
 
+export function toastColor(sev: Status): string {
+  return sev === 'ok' ? semantic.ok : sev === 'warn' ? semantic.warn : semantic.err;
+}
+
 export function Header(props: {
   status: Status;
   pending: number;
@@ -33,7 +37,7 @@ export function Header(props: {
           <Text color={semantic.accent}>{props.pending} pending</Text>
         )}
         {props.toast && (
-          <Text color={semantic.accent}>{props.toast.message}</Text>
+          <Text color={toastColor(props.toast.severity)}>{props.toast.message}</Text>
         )}
       </Box>
     </Box>

@@ -45,7 +45,14 @@ export function useFooterHints(hints: Hints): void {
   const hintsKey = hints.join('|');
 
   useEffect(() => {
-    if (!ctx) return;
+    if (!ctx) {
+      if (process.env.NODE_ENV !== 'production' && hints.length > 0) {
+        process.stderr.write(
+          `useFooterHints called outside FooterProvider; hints dropped: ${hints.join(' · ')}\n`
+        );
+      }
+      return;
+    }
     ctx.register(id, hints);
     return () => {
       ctx.unregister(id);

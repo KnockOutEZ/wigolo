@@ -1,7 +1,8 @@
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
-import { Header } from '../../../../../src/cli/tui/shell/Header.js';
+import { Header, toastColor } from '../../../../../src/cli/tui/shell/Header.js';
+import { semantic } from '../../../../../src/cli/tui/theme/palette.js';
 
 beforeEach(() => {
   process.env.WIGOLO_TUI_REDUCED_MOTION = '1';
@@ -67,5 +68,30 @@ describe('Header', () => {
       <Header status="ok" pending={0} toast={null} />,
     );
     expect(lastFrame() ?? '').not.toContain('Saved!');
+  });
+
+  it('toast severity drives color: toastColor maps ok→green, warn→yellow, err→red', () => {
+    // ink-testing-library strips ANSI in test environments, so we test the
+    // color mapping via the exported toastColor helper directly. This asserts
+    // that the severity field is wired to the correct semantic token — not the
+    // old hard-coded semantic.accent path.
+    expect(toastColor('ok')).toBe(semantic.ok);
+    expect(toastColor('warn')).toBe(semantic.warn);
+    expect(toastColor('err')).toBe(semantic.err);
+    // Confirm none of the severity colors are accent (the old bug).
+    expect(toastColor('ok')).not.toBe(semantic.accent);
+    expect(toastColor('warn')).not.toBe(semantic.accent);
+    expect(toastColor('err')).not.toBe(semantic.accent);
+  });
+
+  it('toast message is rendered for all severity values', () => {
+    const severities = ['ok', 'warn', 'err'] as const;
+    for (const severity of severities) {
+      const { lastFrame } = render(
+        <Header status="ok" pending={0} toast={{ message: `msg-${severity}`, severity }} />,
+      );
+      expect(lastFrame()).toContain(`msg-${severity}`);
+      cleanup();
+    }
   });
 });
