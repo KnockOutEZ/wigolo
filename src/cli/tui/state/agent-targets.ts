@@ -13,7 +13,7 @@
  * side would leave stale env blocks behind.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { readFile as nodeReadFile } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 
@@ -52,12 +52,23 @@ function isObject(v: unknown): v is Record<string, unknown> {
 /**
  * Returns true if the JSON file at `configPath` contains a value at the
  * specified `serverPath`. Returns false on parse errors or missing files.
+ *
+ * Fully async — uses fs.promises.readFile and treats ENOENT as a miss. The
+ * 5-agent fan-out runs through Promise.all, so the per-agent probe must not
+ * block the event loop.
  */
 async function detectAtPath(configPath: string, serverPath: ReadonlyArray<string>): Promise<boolean> {
-  if (!existsSync(configPath)) return false;
+  let raw: string;
+  try {
+    raw = await nodeReadFile(configPath, 'utf-8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EACCES') return false;
+    return false;
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
+    parsed = JSON.parse(raw);
   } catch {
     return false;
   }

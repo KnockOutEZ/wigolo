@@ -30,6 +30,7 @@ import {
   readdir as nodeReaddir,
   unlink as nodeUnlink,
   stat as nodeStat,
+  lstat as nodeLstat,
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createLogger } from '../../../logger.js';
@@ -40,6 +41,7 @@ import type { AgentTarget } from './agent-targets.js';
 const log = createLogger('cli');
 
 const CONFIG_FILE_MODE = 0o600;
+const BACKUP_DIR_MODE = 0o700;
 const BACKUP_RETENTION = 5;
 
 export interface SaveOpts {
@@ -73,14 +75,22 @@ export interface SecretStore {
   remove(key: string): Promise<void>;
 }
 
+export interface FsStat {
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+}
+
 export interface WritableFs {
   readFile(path: string): Promise<string>;
   writeFile(path: string, data: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
-  mkdir(path: string, opts?: { recursive?: boolean }): Promise<void>;
+  mkdir(path: string, opts?: { recursive?: boolean; mode?: number }): Promise<void>;
   readdir(path: string): Promise<string[]>;
   unlink(path: string): Promise<void>;
-  stat(path: string): Promise<{ isFile(): boolean; isDirectory(): boolean }>;
+  stat(path: string): Promise<FsStat>;
+  /** Like stat, but does not follow symlinks. Used to refuse symlinked configs. */
+  lstat(path: string): Promise<FsStat>;
 }
 
 export function defaultWritableFs(): WritableFs {
@@ -95,7 +105,7 @@ export function defaultWritableFs(): WritableFs {
       await nodeRename(from, to);
     },
     async mkdir(p, opts) {
-      await nodeMkdir(p, { recursive: opts?.recursive ?? true });
+      await nodeMkdir(p, { recursive: opts?.recursive ?? true, mode: opts?.mode });
     },
     async readdir(p) {
       return nodeReaddir(p);
@@ -108,6 +118,15 @@ export function defaultWritableFs(): WritableFs {
       return {
         isFile: () => s.isFile(),
         isDirectory: () => s.isDirectory(),
+        isSymbolicLink: () => s.isSymbolicLink(),
+      };
+    },
+    async lstat(p) {
+      const s = await nodeLstat(p);
+      return {
+        isFile: () => s.isFile(),
+        isDirectory: () => s.isDirectory(),
+        isSymbolicLink: () => s.isSymbolicLink(),
       };
     },
   };
@@ -160,15 +179,6 @@ function navigateParent(root: JsonObject, path: ReadonlyArray<string>): JsonObje
   return cur;
 }
 
-function navigate(root: JsonObject, path: ReadonlyArray<string>): unknown {
-  let cur: unknown = root;
-  for (const key of path) {
-    if (!isJsonObject(cur)) return undefined;
-    cur = cur[key];
-  }
-  return cur;
-}
-
 // ---------------------------------------------------------------------------
 // Atomic JSON writer
 // ---------------------------------------------------------------------------
@@ -211,6 +221,26 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
+/**
+ * Throws if `path` exists and is a symbolic link. Missing path is fine —
+ * the file may not exist yet (first run). Used as a TOCTOU-resistant guard
+ * before any read+write cycle so we never follow a link planted by another
+ * user into a sensitive file (e.g. ~/.ssh/authorized_keys).
+ */
+async function refuseSymlink(fs: WritableFs, path: string): Promise<void> {
+  let s: FsStat;
+  try {
+    s = await fs.lstat(path);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return;
+    throw err;
+  }
+  if (s.isSymbolicLink()) {
+    throw new Error(`refused: symlink at ${path}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Backup
 // ---------------------------------------------------------------------------
@@ -226,7 +256,10 @@ async function writeAgentBackup(
   rawConfig: string,
 ): Promise<void> {
   const dir = target.backupDir();
-  await fs.mkdir(dir, { recursive: true });
+  // 0o700 — the backup dir contains copies of the user's MCP configs, which
+  // can include arbitrary env values. World/group readability would silently
+  // leak whatever the source files contained.
+  await fs.mkdir(dir, { recursive: true, mode: BACKUP_DIR_MODE });
   const file = join(dir, backupFilename(target.id));
   // Backup writes are non-atomic by design — they're write-only artifacts and
   // the propagation logic only succeeds if both backup + agent-write succeed.
@@ -330,7 +363,20 @@ export async function save(opts: SaveOpts): Promise<SaveResult> {
     }
   }
 
-  // 4. Atomic-write config.json. Read existing, merge, rewrite.
+  // 4. Atomic-write config.json. Refuse to follow a symlink at this path
+  //    (prevents another user from redirecting our writes into a sensitive
+  //    file), then read existing, merge, rewrite.
+  try {
+    await refuseSymlink(fs, opts.configPath);
+  } catch (err) {
+    return {
+      saved: [],
+      propagated: [],
+      failed: [{ agentId: '__config__', reason: errorMessage(err) }],
+      errors: [{ key: '__config__', reason: errorMessage(err) }],
+    };
+  }
+
   let existingCfg: JsonObject = {};
   try {
     const raw = await fs.readFile(opts.configPath);
@@ -383,7 +429,7 @@ export async function save(opts: SaveOpts): Promise<SaveResult> {
   const propagated: string[] = [];
   const failed: Array<{ agentId: string; reason: string }> = [];
 
-  if (Object.keys(propagationSet).length > 0 || pending) {
+  if (Object.keys(propagationSet).length > 0) {
     const results = await Promise.all(
       opts.agents.map(async (target) => {
         try {
@@ -419,6 +465,11 @@ async function applyPropagationToAgent(
   target: AgentTarget,
   propagationSet: Record<string, string>,
 ): Promise<void> {
+  // Refuse to follow a symlink at the agent's config path. Some agent
+  // installers may legitimately use symlinks (e.g. dotfile managers), but
+  // silently writing through one risks clobbering an unrelated target. Force
+  // the user to resolve it explicitly.
+  await refuseSymlink(fs, target.configPath);
   // Read current agent config.
   const raw = await fs.readFile(target.configPath);
   // Back it up BEFORE we mutate — gives us a known-good restore point.
@@ -454,6 +505,11 @@ export interface UninstallResult {
 
 export async function uninstallAgent(opts: UninstallOpts): Promise<UninstallResult> {
   const fs = opts.fs ?? defaultWritableFs();
+  try {
+    await refuseSymlink(fs, opts.target.configPath);
+  } catch (err) {
+    return { ok: false, reason: errorMessage(err) };
+  }
   let raw: string;
   try {
     raw = await fs.readFile(opts.target.configPath);
@@ -487,6 +543,5 @@ export async function uninstallAgent(opts: UninstallOpts): Promise<UninstallResu
 
   await pruneBackups(fs, opts.target);
 
-  void navigate; // suppress unused-export warning; helper retained for future readers
   return { ok: true };
 }

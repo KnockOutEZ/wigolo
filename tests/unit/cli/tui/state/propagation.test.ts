@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, symlinkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   save,
   uninstallAgent,
-  type SaveOpts,
   type AgentTarget,
   type SecretStore,
   type WritableFs,
@@ -431,5 +430,86 @@ describe('propagation.save', () => {
 
     const backups = readdirSync(backupDir).filter((b) => b.startsWith('claude-code-'));
     expect(backups.length).toBe(5);
+  });
+
+  it('refuses to follow a symlinked agent config — surfaces failed[] with "refused: symlink"', async () => {
+    // Real target file we don't want clobbered.
+    const innocentBystander = join(tmp, 'bystander.json');
+    writeFileSync(innocentBystander, JSON.stringify({ sensitive: 'data' }));
+    // Symlink the agent config to it.
+    symlinkSync(innocentBystander, agentAPath);
+
+    const agents: AgentTarget[] = [
+      makeAgent('claude-code', agentAPath, backupDir, ['mcpServers', 'wigolo']),
+    ];
+
+    const store = createSettingsStore({});
+    store.set('browserTypes', 'chromium');
+
+    const result = await save({
+      store,
+      catalog: testCatalog,
+      configPath,
+      agents,
+      secretStore: makeSecretStore(),
+    });
+
+    expect(result.propagated).toEqual([]);
+    expect(result.failed.map((f) => f.agentId)).toEqual(['claude-code']);
+    expect(result.failed[0].reason).toMatch(/refused: symlink/);
+
+    // Bystander file untouched.
+    const bystander = JSON.parse(readFileSync(innocentBystander, 'utf-8'));
+    expect(bystander).toEqual({ sensitive: 'data' });
+  });
+
+  it('refuses to follow a symlinked config.json — original symlink target untouched', async () => {
+    const innocentBystander = join(tmp, 'bystander-config.json');
+    const original = { sensitive: 'do not clobber' };
+    writeFileSync(innocentBystander, JSON.stringify(original));
+    symlinkSync(innocentBystander, configPath);
+
+    const store = createSettingsStore({});
+    store.set('browserTypes', 'chromium');
+
+    const result = await save({
+      store,
+      catalog: testCatalog,
+      configPath,
+      agents: [],
+      secretStore: makeSecretStore(),
+    });
+
+    expect(result.saved).toEqual([]);
+    expect(result.errors?.some((e) => /refused: symlink/.test(e.reason))).toBe(true);
+
+    // Symlink target unchanged.
+    const after = JSON.parse(readFileSync(innocentBystander, 'utf-8'));
+    expect(after).toEqual(original);
+  });
+
+  it('creates backup directory with 0o700 mode (owner-only)', async () => {
+    if (process.platform === 'win32') return; // mode bits meaningless on Windows
+    writeAgentConfig(agentAPath, ['mcpServers', 'wigolo'], { command: 'npx', args: ['wigolo'], env: {} });
+
+    const agents: AgentTarget[] = [
+      makeAgent('claude-code', agentAPath, backupDir, ['mcpServers', 'wigolo']),
+    ];
+
+    const store = createSettingsStore({});
+    store.set('browserTypes', 'chromium');
+
+    const result = await save({
+      store,
+      catalog: testCatalog,
+      configPath,
+      agents,
+      secretStore: makeSecretStore(),
+    });
+
+    expect(result.propagated).toEqual(['claude-code']);
+    expect(existsSync(backupDir)).toBe(true);
+    const mode = statSync(backupDir).mode & 0o777;
+    expect(mode).toBe(0o700);
   });
 });
