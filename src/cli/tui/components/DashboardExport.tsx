@@ -9,6 +9,8 @@ import React, { useState, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { semantic } from '../theme/palette.js';
+import { activityStore } from '../state/activity-store-instance.js';
 
 type MenuAction = 'export' | 'import';
 type PhaseState = 'menu' | 'running' | 'done';
@@ -40,7 +42,7 @@ export function DashboardExport({ onBack }: DashboardExportProps) {
 
   const runAction = useCallback(async (action: MenuAction) => {
     setPhase('running');
-
+    const end = activityStore.begin(action);
     try {
       const { exportConfig, importConfig } = await import('../actions/index.js');
       const configPath = process.env.WIGOLO_CONFIG_PATH ?? join(homedir(), '.wigolo', 'config.json');
@@ -65,6 +67,8 @@ export function DashboardExport({ onBack }: DashboardExportProps) {
     } catch (err) {
       setResultOk(false);
       setResultMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      end();
     }
 
     setPhase('done');
@@ -87,7 +91,7 @@ export function DashboardExport({ onBack }: DashboardExportProps) {
   if (phase === 'running') {
     return (
       <Box paddingX={2}>
-        <Text color="yellow">Running…</Text>
+        <Text color={semantic.warn}>Running…</Text>
       </Box>
     );
   }
@@ -95,7 +99,7 @@ export function DashboardExport({ onBack }: DashboardExportProps) {
   if (phase === 'done') {
     return (
       <Box flexDirection="column" paddingX={2}>
-        <Text color={resultOk ? 'green' : 'red'}>{resultMsg}</Text>
+        <Text color={resultOk ? semantic.ok : semantic.err}>{resultMsg}</Text>
         <Box marginTop={1}>
           <Text dimColor>Press enter or q/esc to return</Text>
         </Box>
@@ -113,7 +117,7 @@ export function DashboardExport({ onBack }: DashboardExportProps) {
           return (
             <Box key={item.id} flexDirection="column">
               <Text>
-                {isFocused ? <Text color="cyan">{'❯ '}</Text> : '  '}
+                {isFocused ? <Text color={semantic.accent}>{'❯ '}</Text> : '  '}
                 <Text bold={isFocused}>{item.label}</Text>
               </Text>
               {isFocused && (

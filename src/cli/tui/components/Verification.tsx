@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { Box, Text } from 'ink';
 import { Spinner } from '@inkjs/ui';
 import { useVerify, type VerifyItem } from '../hooks/useVerify.js';
+import { semantic } from '../theme/palette.js';
 import type { CapabilityResult, McpWiringResult, VerifyEndToEndResult } from '../actions/verify-e2e.js';
 
 interface VerificationProps {
@@ -27,21 +28,21 @@ function VerifyLine({ item }: { item: VerifyItem }) {
     case 'pass':
       return (
         <Text>
-          {'  '}<Text color="green">{'✓'}</Text> {name}
+          {'  '}<Text color={semantic.ok}>{'✓'}</Text> {name}
           <Text dimColor>{item.detail}</Text>
         </Text>
       );
     case 'fail':
       return (
         <Text>
-          {'  '}<Text color="yellow">{'!'}</Text> {name}
-          <Text color="yellow">{item.detail}</Text>
+          {'  '}<Text color={semantic.warn}>{'!'}</Text> {name}
+          <Text color={semantic.warn}>{item.detail}</Text>
         </Text>
       );
     case 'warn':
       return (
         <Text>
-          {'  '}<Text color="yellow">{'~'}</Text> {name}
+          {'  '}<Text color={semantic.warn}>{'~'}</Text> {name}
           <Text dimColor>{item.detail}</Text>
         </Text>
       );
@@ -58,15 +59,15 @@ function CapabilityLine({ cap }: { cap: CapabilityResult }) {
     case 'pass':
       return (
         <Text>
-          {'  '}<Text color="green">{'✓'}</Text> {label}
+          {'  '}<Text color={semantic.ok}>{'✓'}</Text> {label}
           <Text dimColor> {cap.detail}</Text>
         </Text>
       );
     case 'fail':
       return (
         <Text>
-          {'  '}<Text color="red">{'✗'}</Text> {label}
-          <Text color="red"> {cap.detail}</Text>
+          {'  '}<Text color={semantic.err}>{'✗'}</Text> {label}
+          <Text color={semantic.err}> {cap.detail}</Text>
         </Text>
       );
     case 'skipped':
@@ -84,7 +85,7 @@ function McpWiringLine({ w }: { w: McpWiringResult }) {
   if (w.status === 'pass') {
     return (
       <Text>
-        {'    '}<Text color="green">{'✓'}</Text> {label}
+        {'    '}<Text color={semantic.ok}>{'✓'}</Text> {label}
         <Text dimColor> {w.detail}</Text>
       </Text>
     );
@@ -99,8 +100,8 @@ function McpWiringLine({ w }: { w: McpWiringResult }) {
   }
   return (
     <Text>
-      {'    '}<Text color="yellow">{'!'}</Text> {label}
-      <Text color="yellow"> {w.detail}</Text>
+      {'    '}<Text color={semantic.warn}>{'!'}</Text> {label}
+      <Text color={semantic.warn}> {w.detail}</Text>
     </Text>
   );
 }
@@ -124,9 +125,9 @@ function E2EReport({ result }: { result: VerifyEndToEndResult }) {
       )}
       <Box marginTop={1}>
         {result.allPassed ? (
-          <Text color="green" bold>  ✓ All capabilities confirmed</Text>
+          <Text color={semantic.ok} bold>  ✓ All capabilities confirmed</Text>
         ) : (
-          <Text color="yellow" bold>
+          <Text color={semantic.warn} bold>
             {'  ! '}{result.hardFailureCount} capability failure(s) — see details above
           </Text>
         )}

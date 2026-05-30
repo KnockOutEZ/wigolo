@@ -5,8 +5,8 @@
  * we drive the keyboard through ink-testing-library and assert:
  *   - all 4 step headers appear in sequence
  *   - Esc from any step lands on home (onSkip fires)
- *   - On step 4 commit (`s`) we call propagation.save() once and
- *     installAgent() per selected agent.
+ *   - On step 4 commit (Enter / ⏎ Finish) we call propagation.save() once
+ *     and installAgent() per selected agent.
  */
 import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -17,13 +17,17 @@ import { CATALOG } from '../../../../../src/cli/tui/schema/catalog.js';
 import type { AgentTarget } from '../../../../../src/cli/tui/state/agent-targets.js';
 import type { SecretStore } from '../../../../../src/cli/tui/state/propagation.js';
 
+vi.mock('../../../../../src/cli/tui/actions/write-config.js', () => ({
+  persistKey: vi.fn().mockResolvedValue(undefined),
+  writeMcpConfig: vi.fn().mockResolvedValue({ results: [], anyFailed: false }),
+}));
+
 afterEach(() => {
   cleanup();
 });
 
 const ENTER = '\r';
 const ESC = '\x1b';
-const S_KEY = 's';
 
 const wait = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -106,10 +110,14 @@ describe('WizardSteps', () => {
     await wait(40);
     expect(lastFrame() ?? '').toContain('Step 3 / 4');
 
-    // Step 3 (LLM) → press `s` to advance to step 4.
-    stdin.write(S_KEY);
-    await wait(40);
+    // Step 3 (LLM) — visible hint changed from 's continue' to '⏎ continue'.
+    expect(lastFrame() ?? '').toContain('⏎ continue');
+
+    // Press Enter to advance to step 4.
+    stdin.write(ENTER);
+    await wait(60);
     expect(lastFrame() ?? '').toContain('Step 4 / 4');
+    expect(lastFrame() ?? '').toContain('⏎ Finish');
   });
 
   it('Esc on the Welcome step skips to home (onSkip fires)', async () => {
@@ -194,11 +202,11 @@ describe('WizardSteps', () => {
     await wait(60);
     stdin.write(ENTER);
     await wait(40);
-    // LLM → Agents
-    stdin.write(S_KEY);
-    await wait(40);
-    // Agents → save
-    stdin.write(S_KEY);
+    // LLM → Agents (Enter advances per new ⏎ continue hint)
+    stdin.write(ENTER);
+    await wait(60);
+    // Agents → save (Enter triggers ⏎ Finish)
+    stdin.write(ENTER);
     await wait(80);
 
     expect(saveImpl).toHaveBeenCalledTimes(1);

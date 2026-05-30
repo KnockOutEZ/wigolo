@@ -5,10 +5,11 @@
  * esc/q hotkey to return to SettingsHome. No verify logic lives here — all of
  * that is delegated to the SP6 Verification + useVerify hook stack.
  */
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { getConfig } from '../../../config.js';
 import { Verification, type VerifyItem } from './Verification.js';
+import { activityStore } from '../state/activity-store-instance.js';
 
 interface VerifyScreenProps {
   onBack: () => void;
@@ -16,9 +17,21 @@ interface VerifyScreenProps {
 
 export function VerifyScreen({ onBack }: VerifyScreenProps): React.ReactElement {
   const [done, setDone] = useState(false);
+  const endRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    const end = activityStore.begin('verify');
+    endRef.current = end;
+    return () => {
+      end();
+      endRef.current = null;
+    };
+  }, []);
 
   const handleComplete = useCallback((_items: VerifyItem[]) => {
     setDone(true);
+    endRef.current?.();
+    endRef.current = null;
   }, []);
 
   useInput((input, key) => {

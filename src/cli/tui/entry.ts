@@ -7,7 +7,7 @@
  * picks one of two mountable modes plus a `firstRun` and `headless` flag.
  *
  * `runEntry()` is the side-effecting twin: calls `resolveEntry()` then
- * either mounts the new Ink shell (slice 5's `InkRouter`) with the proper
+ * either mounts the new Ink shell (`InkRoot`) with the proper
  * initial view (SettingsHome or 4-step Wizard) or returns a headless code
  * path so the caller can fall back to its own plain renderer.
  *
@@ -117,7 +117,7 @@ export interface RunEntryResult {
   mounted: boolean;
 }
 
-interface InkRootProps {
+interface MountRootProps {
   store: SettingsStore;
   catalog: ReadonlyArray<CategoryDef>;
   initialView: 'wizard' | 'home';
@@ -134,12 +134,12 @@ interface InkRootProps {
  * and pass a noop `onExit`; centralising the unmount here keeps the router
  * agnostic of how it is hosted.
  */
-function InkRoot(props: InkRootProps): React.ReactElement {
+function MountRoot(props: MountRootProps): React.ReactElement {
   const { exit } = useApp();
-  const [InkRouter, setInkRouter] = React.useState<React.ComponentType<{
+  const [ShellRoot, setShellRoot] = React.useState<React.ComponentType<{
     store: SettingsStore;
     catalog: ReadonlyArray<CategoryDef>;
-    onExit: () => void;
+    onExit?: () => void;
     version?: string;
     productName?: string;
   }> | null>(null);
@@ -163,7 +163,7 @@ function InkRoot(props: InkRootProps): React.ReactElement {
         import('./components/WizardSteps.js'),
       ]);
       if (cancelled) return;
-      setInkRouter(() => routerMod.default);
+      setShellRoot(() => routerMod.InkRoot);
       setWizardSteps(() => wizardMod.WizardSteps);
     })();
     return () => {
@@ -171,7 +171,7 @@ function InkRoot(props: InkRootProps): React.ReactElement {
     };
   }, []);
 
-  if (!InkRouter || !WizardSteps) {
+  if (!ShellRoot || !WizardSteps) {
     // Brief loading frame before the lazy import resolves.
     return React.createElement(React.Fragment, null);
   }
@@ -188,7 +188,7 @@ function InkRoot(props: InkRootProps): React.ReactElement {
     });
   }
 
-  return React.createElement(InkRouter, {
+  return React.createElement(ShellRoot, {
     store: props.store,
     catalog: props.catalog,
     onExit: () => exit(),
@@ -213,7 +213,7 @@ export async function runEntry(opts: RunEntryOpts): Promise<RunEntryResult> {
   }
 
   const { waitUntilExit } = render(
-    React.createElement(InkRoot, {
+    React.createElement(MountRoot, {
       store: opts.store,
       catalog: opts.catalog,
       initialView: resolution.mode,

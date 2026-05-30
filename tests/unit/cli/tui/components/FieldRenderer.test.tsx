@@ -610,15 +610,15 @@ describe('FieldRenderer', () => {
       />,
     );
     await new Promise((r) => setTimeout(r, 20));
-    stdin.write('s');
+    stdin.write('a');
     stdin.write('k');
     stdin.write('-');
-    stdin.write('a');
     stdin.write('b');
+    stdin.write('c');
     await new Promise((r) => setTimeout(r, 30));
     stdin.write('\r');
     await new Promise((r) => setTimeout(r, 30));
-    expect(onChange).toHaveBeenCalledWith('sk-ab');
+    expect(onChange).toHaveBeenCalledWith('ak-bc');
     expect(onEditDone).toHaveBeenCalled();
   });
 
@@ -686,7 +686,7 @@ describe('FieldRenderer', () => {
       />,
     );
     await new Promise((r) => setTimeout(r, 20));
-    stdin.write('s');
+    stdin.write('a');
     await new Promise((r) => setTimeout(r, 20));
     stdin.write(''); // escape
     await new Promise((r) => setTimeout(r, 30));

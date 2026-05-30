@@ -23,6 +23,10 @@ vi.mock('../../../../src/cli/tui/select-agents.js', () => ({
 vi.mock('../../../../src/cli/tui/config-writer.js', () => ({
   applyConfigs: vi.fn().mockResolvedValue([]),
 }));
+vi.mock('../../../../src/cli/tui/utils/config-writer.js', () => ({
+  saveInitConfig: vi.fn(),
+  readInitConfig: vi.fn(() => ({})),
+}));
 vi.mock('../../../../src/cli/tui/verify.js', () => ({
   runVerify: vi.fn().mockResolvedValue({ allPassed: true }),
 }));

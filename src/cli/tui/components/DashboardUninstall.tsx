@@ -8,6 +8,8 @@
 import React, { useState, useCallback } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
 import { getConfig } from '../../../config.js';
+import { semantic } from '../theme/palette.js';
+import { activityStore } from '../state/activity-store-instance.js';
 
 type Phase = 'confirm' | 'running' | 'done';
 
@@ -24,34 +26,38 @@ export function DashboardUninstall({ onBack }: DashboardUninstallProps) {
 
   const runUninstall = useCallback(async () => {
     setPhase('running');
+    const end = activityStore.begin('uninstall');
+    try {
+      const config = getConfig();
+      const { uninstall } = await import('../actions/index.js');
+      const result = await uninstall({ dataDir: config.dataDir, confirmed: true });
 
-    const config = getConfig();
-    const { uninstall } = await import('../actions/index.js');
-    const result = await uninstall({ dataDir: config.dataDir, confirmed: true });
-
-    const lines: string[] = [];
-    if (result.dataDirRemoved) {
-      lines.push(`Removed data directory: ${config.dataDir}`);
-    }
-    for (const ar of result.agentResults) {
-      if (ar.error) {
-        lines.push(`${ar.displayName}: error — ${ar.error}`);
-      } else if (ar.removed.length > 0) {
-        lines.push(`${ar.displayName}: removed ${ar.removed.join(', ')}`);
-      } else {
-        lines.push(`${ar.displayName}: nothing to remove`);
+      const lines: string[] = [];
+      if (result.dataDirRemoved) {
+        lines.push(`Removed data directory: ${config.dataDir}`);
       }
-    }
-    if (lines.length === 0) {
-      lines.push('Nothing found to remove.');
-    }
-    if (result.error) {
-      lines.push(`Error: ${result.error}`);
-    }
+      for (const ar of result.agentResults) {
+        if (ar.error) {
+          lines.push(`${ar.displayName}: error — ${ar.error}`);
+        } else if (ar.removed.length > 0) {
+          lines.push(`${ar.displayName}: removed ${ar.removed.join(', ')}`);
+        } else {
+          lines.push(`${ar.displayName}: nothing to remove`);
+        }
+      }
+      if (lines.length === 0) {
+        lines.push('Nothing found to remove.');
+      }
+      if (result.error) {
+        lines.push(`Error: ${result.error}`);
+      }
 
-    setResultLines(lines);
-    setResultOk(result.ok);
-    setPhase('done');
+      setResultLines(lines);
+      setResultOk(result.ok);
+      setPhase('done');
+    } finally {
+      end();
+    }
   }, []);
 
   useInput(useCallback((input, key) => {
@@ -77,7 +83,7 @@ export function DashboardUninstall({ onBack }: DashboardUninstallProps) {
   if (phase === 'running') {
     return (
       <Box paddingX={2}>
-        <Text color="yellow">Uninstalling wigolo…</Text>
+        <Text color={semantic.warn}>Uninstalling wigolo…</Text>
       </Box>
     );
   }
@@ -85,12 +91,12 @@ export function DashboardUninstall({ onBack }: DashboardUninstallProps) {
   if (phase === 'done') {
     return (
       <Box flexDirection="column" paddingX={2}>
-        <Text bold color={resultOk ? 'green' : 'red'}>
+        <Text bold color={resultOk ? semantic.ok : semantic.err}>
           {resultOk ? 'Wigolo uninstalled' : 'Uninstall encountered errors'}
         </Text>
         {resultLines.map((line, i) => (
           <Box key={i} paddingLeft={2}>
-            <Text color={line.startsWith('Error') ? 'red' : undefined}>{line}</Text>
+            <Text color={line.startsWith('Error') ? semantic.err : undefined}>{line}</Text>
           </Box>
         ))}
         <Box marginTop={1}>
@@ -103,7 +109,7 @@ export function DashboardUninstall({ onBack }: DashboardUninstallProps) {
   // confirm phase
   return (
     <Box flexDirection="column" paddingX={2}>
-      <Text bold color="red">Uninstall wigolo</Text>
+      <Text bold color={semantic.err}>Uninstall wigolo</Text>
       <Box marginTop={1} flexDirection="column">
         <Text>This will permanently remove:</Text>
         <Box paddingLeft={2} flexDirection="column">
@@ -113,8 +119,8 @@ export function DashboardUninstall({ onBack }: DashboardUninstallProps) {
         </Box>
       </Box>
       <Box marginTop={1}>
-        <Text color="yellow">Type y to confirm or n/esc to cancel: </Text>
-        {confirmed && <Text color="green">y</Text>}
+        <Text color={semantic.warn}>Type y to confirm or n/esc to cancel: </Text>
+        {confirmed && <Text color={semantic.ok}>y</Text>}
       </Box>
     </Box>
   );

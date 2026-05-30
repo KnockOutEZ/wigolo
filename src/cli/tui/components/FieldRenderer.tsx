@@ -23,6 +23,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import os from 'node:os';
+import { semantic } from '../theme/palette.js';
 import type { FieldDef } from '../schema/types.js';
 
 export interface FieldRendererProps {
@@ -380,7 +381,7 @@ export function FieldRenderer(props: FieldRendererProps): React.ReactElement {
   })();
 
   const labelText = field.label;
-  const valueColor = isPending ? 'yellow' : undefined;
+  const valueColor = isPending ? semantic.warn : undefined;
   const pendingMarker = isPending ? ' *' : '';
   const maskedHasValue =
     field.kind === 'masked' && typeof value === 'string' && value.length > 0;
@@ -390,15 +391,15 @@ export function FieldRenderer(props: FieldRendererProps): React.ReactElement {
     <Box flexDirection="column">
       <Box flexDirection="row">
         <Text>
-          {focused ? <Text color="cyan">{'❯ '}</Text> : '  '}
+          {focused ? <Text color={semantic.accent}>{'❯ '}</Text> : '  '}
           <Text bold={focused} inverse={focused && !editing}>
             {labelText}
           </Text>
           <Text>{'  '}</Text>
           {editing && (field.kind === 'text' || field.kind === 'number' || field.kind === 'path' || field.kind === 'masked') ? (
-            <Text color="cyan">
+            <Text color={semantic.accent}>
               {display}
-              <Text color="cyan" inverse>
+              <Text color={semantic.accent} inverse>
                 {' '}
               </Text>
             </Text>
@@ -421,9 +422,9 @@ export function FieldRenderer(props: FieldRendererProps): React.ReactElement {
             return (
               <Box key={opt.value} flexDirection="row">
                 <Text>
-                  {rowFocused ? <Text color="cyan">{'❯ '}</Text> : '  '}
+                  {rowFocused ? <Text color={semantic.accent}>{'❯ '}</Text> : '  '}
                   {checked
-                    ? <Text color="green">{'[x] '}</Text>
+                    ? <Text color={semantic.ok}>{'[x] '}</Text>
                     : <Text dimColor>{'[ ] '}</Text>}
                   <Text bold={rowFocused}>{opt.label}</Text>
                   {opt.hint ? <Text dimColor>{'   '}{opt.hint}</Text> : null}

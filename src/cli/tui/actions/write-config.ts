@@ -8,6 +8,7 @@
 import { applyConfigs, type ConfigApplyResult } from '../config-writer.js';
 import type { AgentId, DetectedAgent } from '../agents.js';
 import type { WriteResult } from './types.js';
+import { writePersistedConfig, defaultConfigPath } from '../../../persisted-config.js';
 
 export interface WriteMcpConfigOptions {
   dryRun?: boolean;
@@ -48,3 +49,13 @@ export async function writeMcpConfig(
 }
 
 export type { WriteResult };
+
+/**
+ * Persist a single settings key to ~/.wigolo/config.json (or WIGOLO_CONFIG_PATH).
+ * Read-modify-write via writePersistedConfig so other settings are preserved.
+ * Called by settings-store.commitOne on every blur event.
+ */
+export async function persistKey(path: string, value: unknown): Promise<void> {
+  const configPath = defaultConfigPath();
+  return await Promise.resolve(writePersistedConfig(configPath, { settings: { [path]: value } }));
+}

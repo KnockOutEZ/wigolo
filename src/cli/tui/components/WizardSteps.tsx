@@ -14,8 +14,9 @@
  * blocks on completion: on save failure the wizard surfaces a one-line
  * error and still proceeds to home so the user can recover.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { semantic } from '../theme/palette.js';
 import type { CategoryDef } from '../schema/types.js';
 import type { SettingsStore } from '../state/settings-store.js';
 import type { AgentTarget } from '../state/agent-targets.js';
@@ -25,6 +26,9 @@ import {
   runSystemCheck,
   type SystemCheckResult,
 } from '../system-check.js';
+
+/** One Ink render cycle plus margin — prevents double-advance on rapid Enter. */
+const ADVANCE_GUARD_MS = 50;
 
 type StepIndex = 1 | 2 | 3 | 4;
 
@@ -134,7 +138,7 @@ function SystemStep(props: SystemStepProps): React.ReactElement {
         <Text dimColor>Checking your system…</Text>
       ) : null}
       {error !== null ? (
-        <Text color="yellow">{`System check error: ${error}`}</Text>
+        <Text color={semantic.warn}>{`System check error: ${error}`}</Text>
       ) : null}
       {result !== null ? (
         <Box flexDirection="column">
@@ -154,7 +158,7 @@ function SystemStep(props: SystemStepProps): React.ReactElement {
           </Text>
           {result.hardFailure ? (
             <Box marginTop={1}>
-              <Text color="yellow">
+              <Text color={semantic.warn}>
                 One or more required tools are missing. You can continue and fix later.
               </Text>
             </Box>
@@ -297,16 +301,12 @@ export function WizardSteps(props: WizardStepsProps): React.ReactElement {
     onDone,
   ]);
 
-  // Step-1 / step-2 handle their own input. For steps 3 + 4 we let
-  // CategoryScreen drive most input, but a global Esc must still skip out
-  // of the wizard. CategoryScreen ALREADY routes Esc → its `onBack` prop;
-  // we pass `onSkip` as that prop so Esc on category steps skips the
-  // wizard. For "advance to next step" we use a dedicated key handler
-  // wrapper that overrides CategoryScreen's onBack call to our advance.
-  //
-  // Concretely: the user finishes step 3 by pressing `s` (CategoryScreen's
-  // save hotkey) — we wire that through `onSave` to move to step 4. For
-  // step 4 the same `s` triggers the final save + onDone.
+  // Steps 3 + 4 render a CategoryScreen. Esc from CategoryScreen calls
+  // `onBack` which we wire to `onSkip` so Esc skips remaining steps.
+  // Advance / finish is triggered by Enter — a dedicated useInput here
+  // catches Enter when on steps 3/4. CategoryScreen also handles Enter
+  // for field navigation; both run, which is acceptable since the user
+  // leaving a step via Enter is intentional.
   const advanceFromCategory = useCallback(() => {
     if (step === 3) {
       setStep(4);
@@ -317,8 +317,23 @@ export function WizardSteps(props: WizardStepsProps): React.ReactElement {
     }
   }, [step, runFinish]);
 
-  // CategoryScreen's onBack triggers a skip. Step screens own their own
-  // navigation otherwise.
+  // Guard against re-entrancy: if Enter fires twice quickly, only the
+  // first invocation should advance.
+  const advancingRef = useRef(false);
+
+  useInput(
+    (_input, key) => {
+      if (key.return && !advancingRef.current) {
+        advancingRef.current = true;
+        advanceFromCategory();
+        // Reset after a tick so subsequent Enter presses on the next step work.
+        setTimeout(() => {
+          advancingRef.current = false;
+        }, ADVANCE_GUARD_MS);
+      }
+    },
+    { isActive: step === 3 || step === 4 },
+  );
 
   if (step === 1) {
     return <WelcomeStep onNext={() => setStep(2)} onSkip={onSkip} />;
@@ -346,10 +361,9 @@ export function WizardSteps(props: WizardStepsProps): React.ReactElement {
           category={llmCategory}
           store={store}
           onBack={onSkip}
-          onSave={advanceFromCategory}
         />
         <Box marginTop={1}>
-          <Text dimColor>Press s to continue · Esc to skip remaining steps</Text>
+          <Text dimColor>⏎ continue · Esc to skip remaining steps</Text>
         </Box>
       </Box>
     );
@@ -366,7 +380,6 @@ export function WizardSteps(props: WizardStepsProps): React.ReactElement {
         category={agentsCategory}
         store={store}
         onBack={onSkip}
-        onSave={advanceFromCategory}
       />
       {saving ? (
         <Box marginTop={1}>
@@ -375,11 +388,11 @@ export function WizardSteps(props: WizardStepsProps): React.ReactElement {
       ) : null}
       {saveError !== null ? (
         <Box marginTop={1}>
-          <Text color="yellow">{saveError}</Text>
+          <Text color={semantic.warn}>{saveError}</Text>
         </Box>
       ) : null}
       <Box marginTop={1}>
-        <Text dimColor>Press s to finish · Esc to skip and use defaults</Text>
+        <Text dimColor>⏎ Finish · Esc to skip and use defaults</Text>
       </Box>
     </Box>
   );

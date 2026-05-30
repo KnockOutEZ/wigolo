@@ -434,6 +434,7 @@ async function runDoctorInner(dataDir: string): Promise<number> {
   checkBackgroundQueue(dataDir);
   checkRssFeeds(dataDir);
   checkTelemetryStatus();
+  checkTuiEnv();
 
   if (normalized === 'searxng' || normalized === 'hybrid') {
     out('');
@@ -607,6 +608,22 @@ function checkTelemetryStatus(): void {
   out('');
   const state = isTelemetryEnabled() ? 'enabled' : 'disabled';
   out(`[wigolo doctor] Telemetry: opt-in ${state} (WIGOLO_TELEMETRY=1 to opt in)`);
+}
+
+function checkTuiEnv(): void {
+  out('');
+  out('[wigolo doctor] TUI env:');
+  const reducedMotion = process.env.WIGOLO_TUI_REDUCED_MOTION;
+  const reducedMotionActive =
+    reducedMotion === '1' ||
+    process.env.CI === 'true' ||
+    process.env.CI === '1' ||
+    process.stdout.isTTY === false;
+  out(
+    `  WIGOLO_TUI_REDUCED_MOTION: ${reducedMotion ?? '(unset)'}` +
+      ` — ${reducedMotionActive ? 'reduced motion active' : 'animations enabled'}` +
+      ` (set to 1 to disable spinners/gradient/transitions in the settings TUI)`,
+  );
 }
 
 const DOCTOR_CHILD_ENV = 'WIGOLO_DOCTOR_CHILD';
