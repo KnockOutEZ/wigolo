@@ -113,7 +113,7 @@ describe('Zed descriptor', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('detects when ~/.config/zed dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.config/zed');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.config', 'zed'));
     expect(getDescriptor('zed').detect(ENV)).toBe(true);
   });
 
@@ -130,7 +130,7 @@ describe('Zed descriptor', () => {
   });
 
   it('configPath returns ~/.config/zed/settings.json', () => {
-    expect(getDescriptor('zed').configPath(ENV)).toBe('/home/test/.config/zed/settings.json');
+    expect(getDescriptor('zed').configPath(ENV)).toBe(join('/home/test', '.config', 'zed', 'settings.json'));
   });
 });
 
