@@ -18,6 +18,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { join } from 'node:path';
 import { resetConfig } from '../../../src/config.js';
 
 vi.mock('node:child_process', () => ({
@@ -287,7 +288,7 @@ describe('runDoctorIsolated — child mode (WIGOLO_DOCTOR_CHILD set)', () => {
 
 describe('runDoctorIsolated — parent mode sentinel parsing', () => {
   const SENTINEL_DIR = '/tmp/wigolo-doctor-fake';
-  const SENTINEL_PATH = `${SENTINEL_DIR}/exit-code`;
+  const SENTINEL_PATH = join(SENTINEL_DIR, 'exit-code');
   const originalEnv = process.env;
   const originalArgv = process.argv;
 
