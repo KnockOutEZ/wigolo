@@ -196,12 +196,12 @@ describe('Codex descriptor', () => {
   });
 
   it('detects when ~/.codex dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.codex');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.codex'));
     expect(getDescriptor('codex').detect(ENV)).toBe(true);
   });
 
   it('configPath returns ~/.codex/config.toml', () => {
-    expect(getDescriptor('codex').configPath(ENV)).toBe('/home/test/.codex/config.toml');
+    expect(getDescriptor('codex').configPath(ENV)).toBe(join('/home/test', '.codex', 'config.toml'));
   });
 
   it('installType is config-toml', () => {
