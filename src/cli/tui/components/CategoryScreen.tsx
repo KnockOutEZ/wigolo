@@ -12,7 +12,7 @@
  *                    is called which autosaves the field to disk.
  *   - esc          → cancel current edit, OR call `onBack()` when idle
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import type { CategoryDef, FieldDef, Ctx } from '../schema/types.js';
 import type { SettingsStore } from '../state/settings-store.js';
@@ -59,6 +59,11 @@ export function CategoryScreen(props: CategoryScreenProps): React.ReactElement {
     return idx >= 0 ? idx : 0;
   });
   const [editing, setEditing] = useState(false);
+
+  // Per-field savedAt timestamps — keyed by settingsPath.
+  // Set to Date.now() on successful blur; the FieldRenderer clears its own
+  // timer; we only need to propagate the timestamp, not reset it ourselves.
+  const [savedAtByPath, setSavedAtByPath] = useState<Record<string, number | null>>({});
 
   const applyEditing = useCallback((next: boolean) => {
     setEditing(next);
@@ -158,11 +163,14 @@ export function CategoryScreen(props: CategoryScreenProps): React.ReactElement {
               onEditStart={() => applyEditing(true)}
               onEditDone={() => {
                 applyEditing(false);
-                void store.blur(settingsPath).catch((err) => {
+                void store.blur(settingsPath).then(() => {
+                  setSavedAtByPath((prev) => ({ ...prev, [settingsPath]: Date.now() }));
+                }).catch((err) => {
                   logger.error('blur failed', { path: settingsPath, err: String(err) });
                 });
               }}
               onEditCancel={() => applyEditing(false)}
+              savedAt={savedAtByPath[settingsPath] ?? null}
             />
           );
         })}

@@ -20,11 +20,14 @@
  *                   edit mode buffer never round-trips through props (typed
  *                   value flows out via onChange on enter).
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import os from 'node:os';
 import { semantic } from '../theme/palette.js';
+import { reducedMotion } from '../theme/motion-guard.js';
 import type { FieldDef } from '../schema/types.js';
+
+const SAVED_CHECK_TTL = 1500;
 
 export interface FieldRendererProps {
   field: FieldDef;
@@ -36,6 +39,12 @@ export interface FieldRendererProps {
   onEditStart: () => void;
   onEditDone: () => void;
   onEditCancel: () => void;
+  /**
+   * When non-null, the field shows a transient ✓ for SAVED_CHECK_TTL ms.
+   * Parent sets this to Date.now() on each successful save; null clears it.
+   * Ignored when reducedMotion() returns true.
+   */
+  savedAt?: number | null;
 }
 
 function displayPath(v: unknown): string {
@@ -90,7 +99,28 @@ export function FieldRenderer(props: FieldRendererProps): React.ReactElement {
     onEditStart,
     onEditDone,
     onEditCancel,
+    savedAt = null,
   } = props;
+
+  // Transient ✓ checkmark — visible for SAVED_CHECK_TTL ms after a successful save.
+  const [showCheck, setShowCheck] = useState(false);
+  const checkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (savedAt === null || reducedMotion()) return;
+    setShowCheck(true);
+    if (checkTimerRef.current !== null) clearTimeout(checkTimerRef.current);
+    checkTimerRef.current = setTimeout(() => {
+      setShowCheck(false);
+      checkTimerRef.current = null;
+    }, SAVED_CHECK_TTL);
+    return () => {
+      if (checkTimerRef.current !== null) {
+        clearTimeout(checkTimerRef.current);
+        checkTimerRef.current = null;
+      }
+    };
+  }, [savedAt]);
 
   // Ephemeral buffer used only for text/number/path/masked while editing.
   const [buffer, setBuffer] = useState<string>(() => {
@@ -411,6 +441,9 @@ export function FieldRenderer(props: FieldRendererProps): React.ReactElement {
           )}
           {showMaskedHotkeys && (
             <Text dimColor>{'   [r] Replace [x] Remove'}</Text>
+          )}
+          {showCheck && (
+            <Text color={semantic.accent}>{'  ✓'}</Text>
           )}
         </Text>
       </Box>
