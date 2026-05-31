@@ -51,7 +51,11 @@ function displayPath(v: unknown): string {
   if (typeof v !== 'string' || v.length === 0) return '';
   const home = os.homedir();
   if (v === home) return '~';
-  if (v.startsWith(home + '/')) return '~/' + v.slice(home.length + 1);
+  // Match either separator so Windows paths (C:\Users\x\...) display as ~/...
+  // and always emit forward slashes in the rendered tail for consistent UX.
+  if (v.startsWith(home + '/') || v.startsWith(home + '\\')) {
+    return '~/' + v.slice(home.length + 1).replace(/\\/g, '/');
+  }
   return v;
 }
 
