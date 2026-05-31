@@ -163,12 +163,24 @@ describe('runInit --non-interactive', () => {
 describe('runInit --non-interactive firecrawl-collision notice', () => {
   let tmpHome: string;
   let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
+  let originalHomeDrive: string | undefined;
+  let originalHomePath: string | undefined;
 
   beforeEach(() => {
     tmpHome = join(tmpdir(), `wigolo-init-fc-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tmpHome, { recursive: true });
+    // os.homedir() reads HOME on POSIX and USERPROFILE (or HOMEDRIVE+HOMEPATH)
+    // on Windows. Override all of them so the test points at tmpHome on every
+    // platform.
     originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
+    originalHomeDrive = process.env.HOMEDRIVE;
+    originalHomePath = process.env.HOMEPATH;
     process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    delete process.env.HOMEDRIVE;
+    delete process.env.HOMEPATH;
     detectAgentsMock.mockReturnValue([
       { id: 'claude-code', displayName: 'Claude Code', detected: true, installType: 'cli-command', configPath: null },
     ]);
@@ -181,6 +193,12 @@ describe('runInit --non-interactive firecrawl-collision notice', () => {
     rmSync(tmpHome, { recursive: true, force: true });
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
+    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = originalUserProfile;
+    if (originalHomeDrive === undefined) delete process.env.HOMEDRIVE;
+    else process.env.HOMEDRIVE = originalHomeDrive;
+    if (originalHomePath === undefined) delete process.env.HOMEPATH;
+    else process.env.HOMEPATH = originalHomePath;
   });
 
   it('prints a notice when firecrawl skills are present in the host skills dir', async () => {
