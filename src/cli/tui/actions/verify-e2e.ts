@@ -23,7 +23,7 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { resolveProviderKey } from '../../../security/key-store.js';
 import type { AgentId, InstallType } from '../agents.js';
 
@@ -214,12 +214,20 @@ export async function checkMcpWiringForAgent(
  * the current working directory. Symlink-resolution is intentionally NOT done
  * (we only readFileSync afterwards, and the existsSync gate covers missing
  * files); this is a coarse bound on the input, not a full sandbox.
+ *
+ * Uses `relative(root, abs)` rather than `startsWith(root + '/')` so the
+ * containment check is correct on Windows (where `path.resolve` returns
+ * backslash-separated paths) and rejects confused-prefix inputs (e.g.
+ * `/home/foo` must not accept `/home/foobar/x`).
  */
 function isPathWithinAllowedRoots(configPath: string, allowedRoots?: string[]): boolean {
   const abs = resolve(configPath);
   const roots = (allowedRoots && allowedRoots.length > 0 ? allowedRoots : [homedir(), process.cwd()])
     .map((r) => resolve(r));
-  return roots.some((root) => abs === root || abs.startsWith(root + '/'));
+  return roots.some((root) => {
+    const rel = relative(root, abs);
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  });
 }
 
 function checkJsonWiring(
