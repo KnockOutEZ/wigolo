@@ -46,12 +46,18 @@ describe('encryptToFile / decryptFromFile', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('writes file with 0o600 permissions', async () => {
-    const filePath = join(tmpDir, 'key.enc');
-    await encryptToFile('my-api-key', 'machine-id', filePath);
-    const mode = statSync(filePath).mode & 0o777;
-    expect(mode).toBe(0o600);
-  });
+  // POSIX-only: Windows file ACLs don't map to POSIX mode bits, so fs.statSync
+  // reports 0o666 regardless of the mode passed to writeFileSync. The production
+  // encryptToFile call still passes mode: 0o600 (harmless no-op on Windows).
+  it.skipIf(process.platform === 'win32')(
+    'writes file with 0o600 permissions',
+    async () => {
+      const filePath = join(tmpDir, 'key.enc');
+      await encryptToFile('my-api-key', 'machine-id', filePath);
+      const mode = statSync(filePath).mode & 0o777;
+      expect(mode).toBe(0o600);
+    },
+  );
 
   it('round-trips through file', async () => {
     const filePath = join(tmpDir, 'key.enc');
