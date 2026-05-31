@@ -6,7 +6,7 @@ vi.mock('../../../../../src/cli/tui/config-writer.js', () => ({
   applyConfigs: applyConfigsMock,
 }));
 
-import { writeMcpConfig } from '../../../../../src/cli/tui/actions/write-config.js';
+import { writeMcpConfig, unflattenDottedKey } from '../../../../../src/cli/tui/actions/write-config.js';
 import type { DetectedAgent } from '../../../../../src/cli/tui/agents.js';
 
 const mockDetected: DetectedAgent[] = [
@@ -76,5 +76,23 @@ describe('writeMcpConfig', () => {
       ['cursor'],
       expect.objectContaining({ dryRun: true }),
     );
+  });
+});
+
+describe('unflattenDottedKey', () => {
+  it('single-segment path wraps value under one key', () => {
+    expect(unflattenDottedKey('foo', 1)).toEqual({ foo: 1 });
+  });
+
+  it('two-segment path produces nested object', () => {
+    expect(unflattenDottedKey('llm.apiKey', 'x')).toEqual({ llm: { apiKey: 'x' } });
+  });
+
+  it('three-segment path produces doubly-nested object', () => {
+    expect(unflattenDottedKey('a.b.c', true)).toEqual({ a: { b: { c: true } } });
+  });
+
+  it('empty path returns empty object without crashing', () => {
+    expect(unflattenDottedKey('', 42)).toEqual({});
   });
 });
