@@ -162,12 +162,12 @@ describe('Windsurf descriptor', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('detects when ~/.codeium/windsurf dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.codeium/windsurf');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.codeium', 'windsurf'));
     expect(getDescriptor('windsurf').detect(ENV)).toBe(true);
   });
 
   it('detects when ~/.windsurf legacy dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.windsurf');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.windsurf'));
     expect(getDescriptor('windsurf').detect(ENV)).toBe(true);
   });
 
@@ -177,13 +177,13 @@ describe('Windsurf descriptor', () => {
   });
 
   it('configPath prefers ~/.codeium/windsurf/mcp_config.json', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.codeium/windsurf');
-    expect(getDescriptor('windsurf').configPath(ENV)).toBe('/home/test/.codeium/windsurf/mcp_config.json');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.codeium', 'windsurf'));
+    expect(getDescriptor('windsurf').configPath(ENV)).toBe(join('/home/test', '.codeium', 'windsurf', 'mcp_config.json'));
   });
 
   it('configPath falls back to ~/.codeium/windsurf/mcp_config.json', () => {
     vi.mocked(dirExists).mockReturnValue(false);
-    expect(getDescriptor('windsurf').configPath(ENV)).toBe('/home/test/.codeium/windsurf/mcp_config.json');
+    expect(getDescriptor('windsurf').configPath(ENV)).toBe(join('/home/test', '.codeium', 'windsurf', 'mcp_config.json'));
   });
 });
 
