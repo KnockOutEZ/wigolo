@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { join } from 'node:path';
 
 vi.mock('../../../../src/cli/tui/detect-helpers.js', () => ({
   binaryInPath: vi.fn(),
@@ -45,12 +46,12 @@ describe('Cursor descriptor', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('detects when project .cursor dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/proj/.cursor');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/proj', '.cursor'));
     expect(getDescriptor('cursor').detect(ENV)).toBe(true);
   });
 
   it('detects when global ~/.cursor dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.cursor');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.cursor'));
     expect(getDescriptor('cursor').detect(ENV)).toBe(true);
   });
 
@@ -67,13 +68,13 @@ describe('Cursor descriptor', () => {
   });
 
   it('configPath prefers project .cursor/mcp.json when project dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/proj/.cursor');
-    expect(getDescriptor('cursor').configPath(ENV)).toBe('/proj/.cursor/mcp.json');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/proj', '.cursor'));
+    expect(getDescriptor('cursor').configPath(ENV)).toBe(join('/proj', '.cursor', 'mcp.json'));
   });
 
   it('configPath falls back to global when project dir missing', () => {
     vi.mocked(dirExists).mockReturnValue(false);
-    expect(getDescriptor('cursor').configPath(ENV)).toBe('/home/test/.cursor/mcp.json');
+    expect(getDescriptor('cursor').configPath(ENV)).toBe(join('/home/test', '.cursor', 'mcp.json'));
   });
 });
 
@@ -81,7 +82,7 @@ describe('VS Code descriptor', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('detects when project .vscode dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/proj/.vscode');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/proj', '.vscode'));
     expect(getDescriptor('vscode').detect(ENV)).toBe(true);
   });
 
@@ -98,13 +99,13 @@ describe('VS Code descriptor', () => {
   });
 
   it('configPath prefers project .vscode/mcp.json', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/proj/.vscode');
-    expect(getDescriptor('vscode').configPath(ENV)).toBe('/proj/.vscode/mcp.json');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/proj', '.vscode'));
+    expect(getDescriptor('vscode').configPath(ENV)).toBe(join('/proj', '.vscode', 'mcp.json'));
   });
 
   it('configPath falls back to ~/.vscode/mcp.json', () => {
     vi.mocked(dirExists).mockReturnValue(false);
-    expect(getDescriptor('vscode').configPath(ENV)).toBe('/home/test/.vscode/mcp.json');
+    expect(getDescriptor('vscode').configPath(ENV)).toBe(join('/home/test', '.vscode', 'mcp.json'));
   });
 });
 
@@ -112,7 +113,7 @@ describe('Zed descriptor', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('detects when ~/.config/zed dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.config/zed');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.config', 'zed'));
     expect(getDescriptor('zed').detect(ENV)).toBe(true);
   });
 
@@ -129,7 +130,7 @@ describe('Zed descriptor', () => {
   });
 
   it('configPath returns ~/.config/zed/settings.json', () => {
-    expect(getDescriptor('zed').configPath(ENV)).toBe('/home/test/.config/zed/settings.json');
+    expect(getDescriptor('zed').configPath(ENV)).toBe(join('/home/test', '.config', 'zed', 'settings.json'));
   });
 });
 
@@ -142,7 +143,7 @@ describe('Gemini CLI descriptor', () => {
   });
 
   it('detects when ~/.gemini dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.gemini');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.gemini'));
     expect(getDescriptor('gemini-cli').detect(ENV)).toBe(true);
   });
 
@@ -153,7 +154,7 @@ describe('Gemini CLI descriptor', () => {
   });
 
   it('configPath returns ~/.gemini/settings.json', () => {
-    expect(getDescriptor('gemini-cli').configPath(ENV)).toBe('/home/test/.gemini/settings.json');
+    expect(getDescriptor('gemini-cli').configPath(ENV)).toBe(join('/home/test', '.gemini', 'settings.json'));
   });
 });
 
@@ -161,12 +162,12 @@ describe('Windsurf descriptor', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('detects when ~/.codeium/windsurf dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.codeium/windsurf');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.codeium', 'windsurf'));
     expect(getDescriptor('windsurf').detect(ENV)).toBe(true);
   });
 
   it('detects when ~/.windsurf legacy dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.windsurf');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.windsurf'));
     expect(getDescriptor('windsurf').detect(ENV)).toBe(true);
   });
 
@@ -176,13 +177,13 @@ describe('Windsurf descriptor', () => {
   });
 
   it('configPath prefers ~/.codeium/windsurf/mcp_config.json', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.codeium/windsurf');
-    expect(getDescriptor('windsurf').configPath(ENV)).toBe('/home/test/.codeium/windsurf/mcp_config.json');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.codeium', 'windsurf'));
+    expect(getDescriptor('windsurf').configPath(ENV)).toBe(join('/home/test', '.codeium', 'windsurf', 'mcp_config.json'));
   });
 
   it('configPath falls back to ~/.codeium/windsurf/mcp_config.json', () => {
     vi.mocked(dirExists).mockReturnValue(false);
-    expect(getDescriptor('windsurf').configPath(ENV)).toBe('/home/test/.codeium/windsurf/mcp_config.json');
+    expect(getDescriptor('windsurf').configPath(ENV)).toBe(join('/home/test', '.codeium', 'windsurf', 'mcp_config.json'));
   });
 });
 
@@ -195,12 +196,12 @@ describe('Codex descriptor', () => {
   });
 
   it('detects when ~/.codex dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.codex');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.codex'));
     expect(getDescriptor('codex').detect(ENV)).toBe(true);
   });
 
   it('configPath returns ~/.codex/config.toml', () => {
-    expect(getDescriptor('codex').configPath(ENV)).toBe('/home/test/.codex/config.toml');
+    expect(getDescriptor('codex').configPath(ENV)).toBe(join('/home/test', '.codex', 'config.toml'));
   });
 
   it('installType is config-toml', () => {
@@ -217,12 +218,12 @@ describe('OpenCode descriptor', () => {
   });
 
   it('detects when ~/.config/opencode dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/home/test/.config/opencode');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.config', 'opencode'));
     expect(getDescriptor('opencode').detect(ENV)).toBe(true);
   });
 
   it('configPath returns ~/.config/opencode/config.json', () => {
-    expect(getDescriptor('opencode').configPath(ENV)).toBe('/home/test/.config/opencode/config.json');
+    expect(getDescriptor('opencode').configPath(ENV)).toBe(join('/home/test', '.config', 'opencode', 'config.json'));
   });
 });
 
@@ -262,11 +263,11 @@ describe('detectAgents()', () => {
   });
 
   it('honors cwd and home overrides', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === '/custom/cwd/.cursor');
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/custom/cwd', '.cursor'));
     vi.mocked(binaryInPath).mockReturnValue(null);
     const agents = detectAgents({ cwd: '/custom/cwd', home: '/custom/home' });
     const cursorAgent = agents.find((a) => a.id === 'cursor');
-    expect(cursorAgent?.configPath).toBe('/custom/cwd/.cursor/mcp.json');
+    expect(cursorAgent?.configPath).toBe(join('/custom/cwd', '.cursor', 'mcp.json'));
   });
 
   it('preserves AGENTS registration order in the returned array', () => {
