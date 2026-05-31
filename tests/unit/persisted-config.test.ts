@@ -138,12 +138,18 @@ describe('writePersistedConfig', () => {
     expect(raw.provider?.name).toBe('anthropic');
   });
 
-  it('writes config.json with 0o600 permissions (owner-only)', () => {
-    const path = join(dir, 'config.json');
-    writePersistedConfig(path, { settings: { defaultBrowser: 'chromium' } });
-    const mode = statSync(path).mode & 0o777;
-    expect(mode).toBe(0o600);
-  });
+  // POSIX-only: Windows file ACLs don't map to POSIX mode bits, so fs.statSync
+  // reports 0o666 regardless of the mode passed to chmod/writeFileSync. The
+  // production write call still passes mode: 0o600 (harmless no-op on Windows).
+  it.skipIf(process.platform === 'win32')(
+    'writes config.json with 0o600 permissions (owner-only)',
+    () => {
+      const path = join(dir, 'config.json');
+      writePersistedConfig(path, { settings: { defaultBrowser: 'chromium' } });
+      const mode = statSync(path).mode & 0o777;
+      expect(mode).toBe(0o600);
+    },
+  );
 
   it('strips denylisted secret settings keys (braveApiKey / githubToken)', () => {
     const path = join(dir, 'config.json');
