@@ -12,34 +12,50 @@ import { computeLcsTable } from '../../../src/cache/lcs.js';
  * path can blow past 65535 tokens. Switching to `Uint32Array` removes the
  * footgun outright.
  *
- * The test pins the contract: when LCS length is provably >= 65536, the
- * DP table's final cell must reflect that length exactly. A `Uint16Array`
- * implementation cannot pass this test (it would mask to <= 65535).
+ * NOTE on testing strategy (option B): a direct end-to-end overflow proof
+ * is mathematically infeasible. LCS length is bounded by `min(m, n)`, so a
+ * cell value > 65535 requires BOTH sides longer than 65535. That makes the
+ * DP table `>= 65536 * 65536 ≈ 4.3e9` cells, which exceeds `Uint32Array`'s
+ * max length (`2^32 - 1`) and would need ~17 GB of memory. The original
+ * test that allocated a 66001-by-66001 table is infeasible on every CI
+ * runner (Linux/macOS/Windows) regardless of how much memory the host has.
+ *
+ * Instead, this suite pins the contract two ways — each test on its own
+ * would let a `Uint16Array` regression through, but together they form a
+ * tight ratchet:
+ *
+ *   1. STRUCTURAL: the returned table is a `Uint32Array` (4-byte elements,
+ *      32-bit max range). A drop-in `Uint16Array` substitution fails this
+ *      immediately because `Uint16Array.BYTES_PER_ELEMENT === 2`.
+ *   2. BEHAVIOURAL: the table records LCS counts correctly on a feasible
+ *      input — guards against a separate regression where the type is
+ *      right but the DP recurrence is wrong (e.g. someone swaps `+ 1` for
+ *      `+ 0` or breaks the max(up, left) tie).
  */
 describe('computeLcsTable — Uint32Array bound (PR #89 sec+perf)', () => {
-  it('returns the correct LCS length for matching sequences longer than 65535 tokens', () => {
-    // Asymmetric inputs: a small "needle" sequence repeated as a haystack
-    // so the LCS length crosses 65535 without paying for a 70k × 70k table.
-    // LCS("xy" × N, "xy" × N) = 2*N. Picking N=33_000 gives LCS=66_000
-    // (>65535). With Uint16Array the cell would mask to 66000 % 65536 = 464.
-    const N = 33_000;
-    const needle = ['x', 'y'];
-    const a: string[] = new Array(N * 2);
-    const b: string[] = new Array(N * 2);
-    for (let i = 0; i < N; i++) {
-      a[i * 2] = needle[0];
-      a[i * 2 + 1] = needle[1];
-      b[i * 2] = needle[0];
-      b[i * 2 + 1] = needle[1];
-    }
-    const dp = computeLcsTable(a, b);
-    const stride = b.length + 1;
-    const lcsLen = dp[a.length * stride + b.length];
-    expect(lcsLen).toBe(2 * N);
-    expect(lcsLen).toBeGreaterThan(65535);
-    // Also assert the typed-array element size is at least 4 bytes — the
-    // structural invariant that rules out Uint16Array entirely.
-    expect(dp.BYTES_PER_ELEMENT).toBeGreaterThanOrEqual(4);
+  it('returns a Uint32Array (structural proof the table can hold values > 65535)', () => {
+    // A `Uint16Array` substitution in `lcs.ts` makes this assertion fail
+    // outright (`BYTES_PER_ELEMENT === 2`, and it is not an instance of
+    // Uint32Array). The check is intentionally narrow: pin Uint32Array so
+    // any narrower replacement is caught, but don't over-specify (e.g.
+    // BigUint64Array would also be safe and shouldn't fail this test).
+    const dp = computeLcsTable(['a'], ['a']);
+    expect(dp).toBeInstanceOf(Uint32Array);
+    expect(dp.BYTES_PER_ELEMENT).toBe(4);
+  });
+
+  it('records LCS counts correctly on a feasible mid-sized matching input', () => {
+    // Two identical sequences of 1024 tokens → LCS = 1024. This exercises
+    // the DP recurrence end-to-end with a real table (1025*1025 = ~1M cells
+    // = ~4 MB) — well within the < 100 MB / < 2s budget. The point is to
+    // catch arithmetic regressions independently of the type-level proof.
+    const SIZE = 1024;
+    const seq = new Array(SIZE);
+    for (let i = 0; i < SIZE; i++) seq[i] = `t${i % 7}`; // 7-symbol alphabet
+    const dp = computeLcsTable(seq, seq);
+    const stride = seq.length + 1;
+    const finalCell = dp[seq.length * stride + seq.length];
+    expect(finalCell).toBe(SIZE);
   });
 
   it('still returns correct LCS length for short sequences (regression coverage)', () => {
