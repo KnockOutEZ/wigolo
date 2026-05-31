@@ -138,6 +138,28 @@ interface MountRootProps {
   configPath: string;
   agents?: ReadonlyArray<AgentTarget>;
   secretStore?: SecretStore;
+  /**
+   * Test seam — inject pre-loaded components to bypass the lazy dynamic import.
+   * Production callers never pass these; tests pass stubs to avoid I/O.
+   */
+  _inkRoot?: React.ComponentType<{
+    store: SettingsStore;
+    catalog: ReadonlyArray<CategoryDef>;
+    onExit?: () => void;
+    version?: string;
+    productName?: string;
+    toastStore?: ToastStore;
+    activityStore?: ActivityStore;
+  }>;
+  _wizardSteps?: React.ComponentType<{
+    store: SettingsStore;
+    catalog: ReadonlyArray<CategoryDef>;
+    configPath: string;
+    agents?: ReadonlyArray<AgentTarget>;
+    secretStore?: SecretStore;
+    onDone: () => void;
+    onSkip: () => void;
+  }>;
 }
 
 /**
@@ -146,7 +168,7 @@ interface MountRootProps {
  * and pass a noop `onExit`; centralising the unmount here keeps the router
  * agnostic of how it is hosted.
  */
-function MountRoot(props: MountRootProps): React.ReactElement {
+export function MountRoot(props: MountRootProps): React.ReactElement {
   const { exit } = useApp();
   const [ShellRoot, setShellRoot] = React.useState<React.ComponentType<{
     store: SettingsStore;
@@ -156,7 +178,7 @@ function MountRoot(props: MountRootProps): React.ReactElement {
     productName?: string;
     toastStore?: ToastStore;
     activityStore?: ActivityStore;
-  }> | null>(null);
+  }> | null>(() => props._inkRoot ?? null);
   const [WizardSteps, setWizardSteps] = React.useState<React.ComponentType<{
     store: SettingsStore;
     catalog: ReadonlyArray<CategoryDef>;
@@ -165,7 +187,7 @@ function MountRoot(props: MountRootProps): React.ReactElement {
     secretStore?: SecretStore;
     onDone: () => void;
     onSkip: () => void;
-  }> | null>(null);
+  }> | null>(() => props._wizardSteps ?? null);
   const [phase, setPhase] = React.useState<'wizard' | 'home'>(props.initialView);
 
   // Sync phase when the parent passes a new initialView (e.g. init → force-wizard
@@ -175,6 +197,8 @@ function MountRoot(props: MountRootProps): React.ReactElement {
   }, [props.initialView]);
 
   React.useEffect(() => {
+    // When stubs are injected (test seam), skip the lazy dynamic import entirely.
+    if (props._inkRoot && props._wizardSteps) return;
     let cancelled = false;
     // Lazy-load both components so we don't pay their cost in headless mode.
     void (async () => {

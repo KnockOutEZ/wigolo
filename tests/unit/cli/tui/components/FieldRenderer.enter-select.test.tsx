@@ -110,3 +110,45 @@ describe('FieldRenderer select — Enter key is a no-op (Fix B)', () => {
     expect(onChange).toHaveBeenCalledWith('anthropic');
   });
 });
+
+describe('FieldRenderer toggle — Enter flips value (intentional asymmetry with select)', () => {
+  it('Enter on toggle flips the value (intentional — unlike select)', async () => {
+    const onChange = vi.fn();
+    const { stdin } = render(
+      <FieldRenderer
+        field={{ key: 'headless', settingsPath: 'headless', label: 'Headless', kind: 'toggle', default: false }}
+        value={false}
+        focused={true}
+        editing={false}
+        onChange={onChange}
+        onEditStart={noop}
+        onEditDone={noop}
+        onEditCancel={noop}
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('\r'); // Enter
+    await new Promise((r) => setTimeout(r, 30));
+    expect(onChange).toHaveBeenCalledWith(true);
+  });
+
+  it('Enter on toggle flips from true to false', async () => {
+    const onChange = vi.fn();
+    const { stdin } = render(
+      <FieldRenderer
+        field={{ key: 'headless', settingsPath: 'headless', label: 'Headless', kind: 'toggle', default: true }}
+        value={true}
+        focused={true}
+        editing={false}
+        onChange={onChange}
+        onEditStart={noop}
+        onEditDone={noop}
+        onEditCancel={noop}
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('\r'); // Enter
+    await new Promise((r) => setTimeout(r, 30));
+    expect(onChange).toHaveBeenCalledWith(false);
+  });
+});

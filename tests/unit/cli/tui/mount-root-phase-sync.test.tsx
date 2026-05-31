@@ -4,13 +4,13 @@
  * guard, a parent that passes `'home'` first (or a prop that arrives late) will
  * never show the wizard even if `initialView` is later updated to `'wizard'`.
  *
- * We exercise this via a thin wrapper that captures the rendered phase from
- * MountRoot's output. Because MountRoot does lazy async imports for ShellRoot /
- * WizardSteps, we inject synchronous stubs via a vitest mock so the render is
- * deterministic.
+ * We render the real MountRoot from entry.ts. The lazy-loaded InkRoot and
+ * WizardSteps components are injected via the `_inkRoot` / `_wizardSteps` test
+ * seam props so the render is synchronous and deterministic — no dynamic import
+ * mocking required.
  */
 import React from 'react';
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup } from 'ink-testing-library';
 import { Text } from 'ink';
 
@@ -18,28 +18,6 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
-
-/**
- * We need to test MountRoot's phase-sync behaviour. Since MountRoot dynamically
- * imports './router/ink.js' and './components/WizardSteps.js', and those do
- * heavy I/O, we test the phase logic in isolation by extracting it into the
- * same pattern: a component that has `useState(props.initialView)` and a
- * `useEffect` that syncs it.
- *
- * The test drives the REAL entry.ts MountRoot by mocking the lazy imports so
- * they resolve synchronously with stub components whose output identifies which
- * view is active.
- */
-
-// --- Stub components ----------------------------------------------------------
-
-// Stub InkRoot — renders a sentinel so tests can detect "home" is showing.
-const StubInkRoot = (_props: object): React.ReactElement =>
-  React.createElement(Text, null, 'STUB_HOME');
-
-// Stub WizardSteps — renders a sentinel so tests can detect "wizard" is showing.
-const StubWizardSteps = (_props: object): React.ReactElement =>
-  React.createElement(Text, null, 'STUB_WIZARD');
 
 // Stub useApp — returns a noop `exit` so MountRoot doesn't throw outside Ink.
 vi.mock('ink', async (importOriginal) => {
@@ -50,99 +28,62 @@ vi.mock('ink', async (importOriginal) => {
   };
 });
 
-// Mock the lazy-loaded modules so useEffect resolves them synchronously.
-vi.mock('../../../../../src/cli/tui/router/ink.js', () => ({
-  InkRoot: StubInkRoot,
-}));
-
-vi.mock('../../../../../src/cli/tui/components/WizardSteps.js', () => ({
-  WizardSteps: StubWizardSteps,
-}));
-
-// We also need to mock the store instances used inside MountRoot for the home view.
-vi.mock('../../../../../src/cli/tui/state/toast-store-instance.js', () => ({
-  toastStore: {},
-}));
-vi.mock('../../../../../src/cli/tui/state/activity-store-instance.js', () => ({
-  activityStore: {},
-}));
-
 // ---------------------------------------------------------------------------
 
+import { MountRoot } from '../../../../src/cli/tui/entry.js';
 import { createSettingsStore } from '../../../../src/cli/tui/state/settings-store.js';
 import { CATALOG } from '../../../../src/cli/tui/schema/catalog.js';
 
-// We render MountRoot directly. It is not exported from entry.ts, so we test
-// the phase-sync contract via the exported runEntry / resolveEntry indirectly,
-// but for the prop-change scenario we need the component itself. To keep the
-// test minimal, we define an equivalent local component that mirrors the exact
-// useState + useEffect pattern that Fix A introduces, then confirm the contract.
+// Stub components injected via the _inkRoot / _wizardSteps test seam.
+// They emit a deterministic sentinel string so tests can assert which view is active.
+const StubInkRoot = (_props: object): React.ReactElement =>
+  React.createElement(Text, null, 'STUB_HOME');
 
-/**
- * Local replica that mirrors what entry.ts MountRoot SHOULD do after Fix A.
- * This drives the behavioral contract: the phase MUST update when initialView changes.
- */
-function PhaseSyncComponent(props: {
-  initialView: 'wizard' | 'home';
-}): React.ReactElement {
-  const [phase, setPhase] = React.useState<'wizard' | 'home'>(props.initialView);
+const StubWizardSteps = (_props: object): React.ReactElement =>
+  React.createElement(Text, null, 'STUB_WIZARD');
 
-  // This is the fix — without this, re-renders with a new initialView are ignored.
-  React.useEffect(() => {
-    setPhase(props.initialView);
-  }, [props.initialView]);
-
-  return React.createElement(Text, null, phase === 'wizard' ? 'PHASE_WIZARD' : 'PHASE_HOME');
-}
-
-/**
- * Buggy replica that mirrors what entry.ts MountRoot does BEFORE Fix A.
- * Only has useState, no useEffect — the prop change is ignored.
- */
-function PhaseSyncBuggy(props: {
-  initialView: 'wizard' | 'home';
-}): React.ReactElement {
-  const [phase] = React.useState<'wizard' | 'home'>(props.initialView);
-  return React.createElement(Text, null, phase === 'wizard' ? 'PHASE_WIZARD' : 'PHASE_HOME');
-}
+// Minimal props for MountRoot — store and catalog are required.
+const store = createSettingsStore(CATALOG);
+const mountProps = {
+  store,
+  catalog: CATALOG,
+  configPath: '/tmp/test-wigolo.json',
+  // Inject stubs so the component skips the lazy dynamic import and renders immediately.
+  _inkRoot: StubInkRoot,
+  _wizardSteps: StubWizardSteps,
+};
 
 describe('MountRoot phase sync (Fix A)', () => {
-  it('phase updates to wizard when initialView prop changes from home to wizard', async () => {
-    const { lastFrame, rerender } = render(
-      React.createElement(PhaseSyncComponent, { initialView: 'home' }),
+  it('renders the home view (StubInkRoot) when initialView is home', async () => {
+    const { lastFrame } = render(
+      React.createElement(MountRoot, { ...mountProps, initialView: 'home' }),
     );
     await new Promise((r) => setTimeout(r, 20));
-    expect(lastFrame()).toContain('PHASE_HOME');
+    expect(lastFrame()).toContain('STUB_HOME');
+  });
 
-    rerender(React.createElement(PhaseSyncComponent, { initialView: 'wizard' }));
+  it('phase updates to wizard when initialView prop changes from home to wizard', async () => {
+    const { lastFrame, rerender } = render(
+      React.createElement(MountRoot, { ...mountProps, initialView: 'home' }),
+    );
     await new Promise((r) => setTimeout(r, 20));
-    // With Fix A (useEffect), the phase syncs to wizard.
-    expect(lastFrame()).toContain('PHASE_WIZARD');
+    expect(lastFrame()).toContain('STUB_HOME');
+
+    rerender(React.createElement(MountRoot, { ...mountProps, initialView: 'wizard' }));
+    await new Promise((r) => setTimeout(r, 20));
+    // With Fix A (useEffect), the phase syncs to wizard — StubWizardSteps renders.
+    expect(lastFrame()).toContain('STUB_WIZARD');
   });
 
   it('phase updates to home when initialView prop changes from wizard to home', async () => {
     const { lastFrame, rerender } = render(
-      React.createElement(PhaseSyncComponent, { initialView: 'wizard' }),
+      React.createElement(MountRoot, { ...mountProps, initialView: 'wizard' }),
     );
     await new Promise((r) => setTimeout(r, 20));
-    expect(lastFrame()).toContain('PHASE_WIZARD');
+    expect(lastFrame()).toContain('STUB_WIZARD');
 
-    rerender(React.createElement(PhaseSyncComponent, { initialView: 'home' }));
+    rerender(React.createElement(MountRoot, { ...mountProps, initialView: 'home' }));
     await new Promise((r) => setTimeout(r, 20));
-    expect(lastFrame()).toContain('PHASE_HOME');
-  });
-
-  it('documents the BUG: without useEffect, prop change from home to wizard is silently ignored', async () => {
-    const { lastFrame, rerender } = render(
-      React.createElement(PhaseSyncBuggy, { initialView: 'home' }),
-    );
-    await new Promise((r) => setTimeout(r, 20));
-    expect(lastFrame()).toContain('PHASE_HOME');
-
-    rerender(React.createElement(PhaseSyncBuggy, { initialView: 'wizard' }));
-    await new Promise((r) => setTimeout(r, 20));
-    // Buggy component: stuck at 'home' even though prop is now 'wizard'.
-    expect(lastFrame()).toContain('PHASE_HOME');
-    expect(lastFrame()).not.toContain('PHASE_WIZARD');
+    expect(lastFrame()).toContain('STUB_HOME');
   });
 });
