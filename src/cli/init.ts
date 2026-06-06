@@ -265,7 +265,7 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
   // Persist provider/search selections and the LLM API key when supplied.
   // Provider/search are non-secret selects → applyHeadlessSet handles validation + fan-out.
   // The API key is a masked/secret field → applyHeadlessSet refuses it; use save() directly.
-  if (flags.provider ?? flags.search ?? process.env.WIGOLO_LLM_API_KEY) {
+  if (flags.provider || flags.search || process.env.WIGOLO_LLM_API_KEY) {
     const { CATALOG } = await import('./tui/schema/catalog.js');
     const { defaultAgentTargets } = await import('./tui/state/agent-targets.js');
     const { defaultSecretStore } = await import('./tui/state/secret-store.js');
