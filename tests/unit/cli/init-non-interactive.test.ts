@@ -105,6 +105,22 @@ describe('runInit --non-interactive', () => {
     );
   });
 
+  it('returns the honest non-zero exit code when a required component failed', async () => {
+    // Honest-setup contract: when summarizeSetup reports a required component
+    // failed (exitCode 1), runInitPlain must propagate that out of runInit —
+    // it cannot silently return 0. Guards the failure path, not just success.
+    summarizeSetupMock.mockReturnValueOnce({
+      lines: ['Setup: 5/6 ready', '  ✗ browser — install failed'],
+      readyCount: 5,
+      total: 6,
+      requiredFailed: true,
+      exitCode: 1,
+    });
+
+    const code = await runInit(['--non-interactive', '--agents=cursor', '--skip-verify']);
+    expect(code).toBe(1);
+  });
+
   it('skips runVerify when --skip-verify is set', async () => {
     await runInit(['--non-interactive', '--agents=cursor', '--skip-verify']);
     expect(runVerifyMock).not.toHaveBeenCalled();

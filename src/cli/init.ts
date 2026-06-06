@@ -126,9 +126,8 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
 
   const reporter = autoReporter({ plain: flags.plain, command: 'init' });
 
-  let warmup;
   try {
-    warmup = await runWarmup(['--all'], reporter);
+    await runWarmup(['--all'], reporter);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`Warmup failed: ${message}\n`);
