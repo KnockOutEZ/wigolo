@@ -1,4 +1,7 @@
 import { parseInitFlags, FlagParseError } from './tui/flags.js';
+import type { LLMProvider } from '../integrations/cloud/llm/types.js';
+
+const KEYSTORE_PROVIDERS: readonly LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq'];
 
 const INIT_USAGE = [
   'Usage: wigolo init [options]',
@@ -296,10 +299,28 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
       const { createSettingsStore } = await import('./tui/state/settings-store.js');
       const { readPersistedConfig } = await import('../persisted-config.js');
       const { save: runSave } = await import('./tui/state/propagation.js');
-      const store = createSettingsStore(readPersistedConfig(configPath).settings);
+      const persistedSettings = readPersistedConfig(configPath).settings;
+      const store = createSettingsStore(persistedSettings);
       store.set('llmApiKey', apiKey);
       const saveRes = await runSave({ store, catalog: CATALOG, configPath, agents: agentTargets, secretStore });
       if (saveRes.errors?.length) process.stderr.write(`LLM key save failed: ${saveRes.errors.map(e => e.reason).join('; ')}\n`);
+
+      // The save() above persists the key in the TUI secret-store namespace,
+      // which the runtime resolver (resolveProviderKey) never consults — it
+      // reads the provider keystore (keychain `wigolo-<provider>` / encrypted
+      // file). Without also writing there, a cold headless install leaves
+      // research/agent disabled until the key is re-entered with the env var
+      // present. Persist under the named provider so the key is usable at runtime.
+      const providerName = flags.provider ?? persistedSettings['llmProvider'];
+      if (typeof providerName === 'string' && (KEYSTORE_PROVIDERS as readonly string[]).includes(providerName)) {
+        const { storeKey } = await import('../security/key-store.js');
+        try {
+          await storeKey(providerName as LLMProvider, apiKey, { dataDir: config.dataDir });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`LLM key keystore persist failed: ${message}\n`);
+        }
+      }
     }
   }
 

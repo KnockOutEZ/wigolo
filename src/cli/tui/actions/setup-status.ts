@@ -51,6 +51,26 @@ export function summarizeSetup(components: ComponentStatus[]): SetupSummary {
   return { lines, readyCount, total, requiredFailed, exitCode: requiredFailed ? 1 : 0 };
 }
 
+/**
+ * True when the persisted config references a stored LLM key — WITHOUT reading
+ * the secret itself. A key is referenced by a `<field>KeyLocation` pointer (see
+ * propagation.ts); the raw value is never written to config. Recognizing that
+ * pointer is what keeps the honest summary from falsely reporting "LLM key
+ * absent" on every env-less probe after a key was persisted on a prior run.
+ */
+export function configReferencesLlmKey(cfg: {
+  provider?: { keyLocation?: unknown };
+  settings: Record<string, unknown>;
+}): boolean {
+  if (cfg.provider?.keyLocation) return true;
+  const keyLocation = cfg.settings['llmApiKeyKeyLocation'];
+  if (typeof keyLocation === 'string' && keyLocation.length > 0) return true;
+  // Legacy/alt: a non-empty llmApiKey reference stored directly under settings.
+  const llmApiKey = cfg.settings['llmApiKey'];
+  if (typeof llmApiKey === 'string' && llmApiKey.length > 0) return true;
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // probeSetupStatus — injectable deps for unit-testability
 // ---------------------------------------------------------------------------
@@ -208,19 +228,13 @@ export function defaultProbeDeps(): ProbeDeps {
 
     llmKeyPresent(): boolean {
       if (process.env.WIGOLO_LLM_API_KEY) return true;
-      // Check if a keychain/file reference is stored in config (without reading the secret itself).
+      // Check the persisted config for a key reference (without reading the secret).
       try {
         const { readPersistedConfig, defaultConfigPath } = require('../../../persisted-config.js') as typeof import('../../../persisted-config.js');
-        const cfg = readPersistedConfig(defaultConfigPath());
-        // provider?.keyLocation presence means a key reference is stored
-        if (cfg.provider?.keyLocation) return true;
-        // Also check settings.llmApiKey reference (TUI stores it under settings)
-        const llmApiKey = cfg.settings['llmApiKey'];
-        if (typeof llmApiKey === 'string' && llmApiKey.length > 0) return true;
+        return configReferencesLlmKey(readPersistedConfig(defaultConfigPath()));
       } catch {
-        // fall through
+        return false;
       }
-      return false;
     },
   };
 }
