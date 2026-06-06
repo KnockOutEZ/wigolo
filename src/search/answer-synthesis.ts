@@ -328,7 +328,7 @@ export async function runSynthesis(
       : '';
     const diag = llmConfigured
       ? `WIGOLO_LLM_PROVIDER configured but call failed (${llmFailureReason ?? 'unknown'})`
-      : 'WIGOLO_LLM_PROVIDER not set and no provider API key detected (ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / GROQ_API_KEY)';
+      : 'WIGOLO_LLM_PROVIDER not set and no provider API key detected (ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / GROQ_API_KEY, or WIGOLO_LLM_API_KEY with WIGOLO_LLM_PROVIDER set)';
     return {
       ok: true,
       data: {

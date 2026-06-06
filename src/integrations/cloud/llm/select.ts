@@ -16,8 +16,12 @@ export function selectProvider(
   const override = env.WIGOLO_LLM_PROVIDER;
   if (override && (PROVIDER_ORDER as string[]).includes(override)) {
     const p = override as LLMProvider;
-    if (env[PROVIDER_ENV[p]]) return p;
+    // Provider-specific var wins; WIGOLO_LLM_API_KEY is the last-resort fallback
+    // and is only honored here because the provider is explicitly named (#102).
+    if (env[PROVIDER_ENV[p]] || env.WIGOLO_LLM_API_KEY) return p;
   }
+  // Auto-detect: WIGOLO_LLM_API_KEY is ambiguous without an explicit provider,
+  // so it is intentionally NOT consulted in this loop.
   for (const p of PROVIDER_ORDER) {
     if (env[PROVIDER_ENV[p]]) return p;
   }

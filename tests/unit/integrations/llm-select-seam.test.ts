@@ -39,6 +39,7 @@ describe('selectProviderWithKeyStore', () => {
     delete process.env.GOOGLE_API_KEY;
     delete process.env.GROQ_API_KEY;
     delete process.env.WIGOLO_LLM_PROVIDER;
+    delete process.env.WIGOLO_LLM_API_KEY;
   });
 
   afterEach(() => {
@@ -69,6 +70,29 @@ describe('selectProviderWithKeyStore', () => {
   });
 
   it('returns null when neither keystore nor env has a key', async () => {
+    const result = await selectProviderWithKeyStore(process.env, { dataDir: tmpDir });
+    expect(result).toBeNull();
+  });
+
+  it('resolves explicit provider via WIGOLO_LLM_API_KEY when no provider-specific var (#102)', async () => {
+    process.env.WIGOLO_LLM_PROVIDER = 'gemini';
+    process.env.WIGOLO_LLM_API_KEY = 'AIza-llm-key';
+    const result = await selectProviderWithKeyStore(process.env, { dataDir: tmpDir });
+    expect(result?.provider).toBe('gemini');
+    expect(result?.key).toBe('AIza-llm-key');
+  });
+
+  it('provider-specific var wins over WIGOLO_LLM_API_KEY for explicit provider', async () => {
+    process.env.WIGOLO_LLM_PROVIDER = 'gemini';
+    process.env.GOOGLE_API_KEY = 'google-specific';
+    process.env.WIGOLO_LLM_API_KEY = 'generic-llm';
+    const result = await selectProviderWithKeyStore(process.env, { dataDir: tmpDir });
+    expect(result?.provider).toBe('gemini');
+    expect(result?.key).toBe('google-specific');
+  });
+
+  it('ignores WIGOLO_LLM_API_KEY during auto-detect (no explicit provider)', async () => {
+    process.env.WIGOLO_LLM_API_KEY = 'AIza-llm-key';
     const result = await selectProviderWithKeyStore(process.env, { dataDir: tmpDir });
     expect(result).toBeNull();
   });

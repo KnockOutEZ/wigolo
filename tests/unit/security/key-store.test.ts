@@ -155,6 +155,73 @@ describe('listProviders', () => {
   });
 });
 
+describe('WIGOLO_LLM_API_KEY fallback (issue #102)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    _store.clear();
+    clearKeyStoreMemo();
+    vi.mocked(keychainAvailable).mockReturnValue(true);
+    tmpDir = mkdtempSync(join(tmpdir(), 'wigolo-llmkey-test-'));
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
+    delete process.env.GROQ_API_KEY;
+    delete process.env.WIGOLO_LLM_PROVIDER;
+    delete process.env.WIGOLO_LLM_API_KEY;
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    vi.clearAllMocks();
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
+    delete process.env.GROQ_API_KEY;
+    delete process.env.WIGOLO_LLM_PROVIDER;
+    delete process.env.WIGOLO_LLM_API_KEY;
+  });
+
+  it('resolves WIGOLO_LLM_API_KEY when WIGOLO_LLM_PROVIDER names the provider (#102)', async () => {
+    process.env.WIGOLO_LLM_PROVIDER = 'gemini';
+    process.env.WIGOLO_LLM_API_KEY = 'AIza-llm-key';
+    // No GOOGLE_API_KEY and nothing in the keystore
+    const resolved = await resolveProviderKey('gemini', { dataDir: tmpDir });
+    expect(resolved).toBe('AIza-llm-key');
+  });
+
+  it('provider-specific env var wins over WIGOLO_LLM_API_KEY', async () => {
+    process.env.WIGOLO_LLM_PROVIDER = 'gemini';
+    process.env.GOOGLE_API_KEY = 'google-specific';
+    process.env.WIGOLO_LLM_API_KEY = 'generic-llm';
+    const resolved = await resolveProviderKey('gemini', { dataDir: tmpDir });
+    expect(resolved).toBe('google-specific');
+  });
+
+  it('does NOT use WIGOLO_LLM_API_KEY for a provider other than the one named', async () => {
+    process.env.WIGOLO_LLM_PROVIDER = 'gemini';
+    process.env.WIGOLO_LLM_API_KEY = 'AIza-llm-key';
+    // Asking for anthropic — the named provider is gemini, so no fallback
+    const resolved = await resolveProviderKey('anthropic', { dataDir: tmpDir });
+    expect(resolved).toBeUndefined();
+  });
+
+  it('does NOT use WIGOLO_LLM_API_KEY when WIGOLO_LLM_PROVIDER is unset (ambiguity guard)', async () => {
+    process.env.WIGOLO_LLM_API_KEY = 'AIza-llm-key';
+    // No explicit provider → ambiguous → no fallback
+    const resolved = await resolveProviderKey('gemini', { dataDir: tmpDir });
+    expect(resolved).toBeUndefined();
+  });
+
+  it('keystore wins over WIGOLO_LLM_API_KEY', async () => {
+    await storeKey('gemini', 'keystore-key', { dataDir: tmpDir });
+    process.env.WIGOLO_LLM_PROVIDER = 'gemini';
+    process.env.WIGOLO_LLM_API_KEY = 'generic-llm';
+    const resolved = await resolveProviderKey('gemini', { dataDir: tmpDir });
+    expect(resolved).toBe('keystore-key');
+  });
+});
+
 describe('resolveProviderKey memo invalidation', () => {
   let tmpDir: string;
 

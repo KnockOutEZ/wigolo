@@ -198,11 +198,23 @@ export async function resolveProviderKey(
   }
   if (storedValue !== null) return storedValue;
 
-  // 3: env var (read-only, ALWAYS live — never memoized so env changes and
-  // per-test env teardown are respected).
+  // 3: provider-specific env var (read-only, ALWAYS live — never memoized so
+  // env changes and per-test env teardown are respected).
   const envVar = providerEnvVar(provider);
   const envValue = process.env[envVar];
-  return envValue || undefined;
+  if (envValue) return envValue;
+
+  // 4: WIGOLO_LLM_API_KEY last-resort fallback (issue #102). The TUI writes
+  // this generic var; honor it ONLY when WIGOLO_LLM_PROVIDER explicitly names
+  // THIS provider. During auto-detect (no explicit provider) the var is
+  // ambiguous, so it is never used here — selectProvider's auto-detect loop
+  // calls this with each provider in turn, none of which will match.
+  if (process.env.WIGOLO_LLM_PROVIDER === provider) {
+    const generic = process.env.WIGOLO_LLM_API_KEY;
+    if (generic) return generic;
+  }
+
+  return undefined;
 }
 
 /**
