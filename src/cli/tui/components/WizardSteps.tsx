@@ -30,8 +30,8 @@ import { defaultConfigPath } from '../../../persisted-config.js';
 import {
   probeSetupStatus,
   defaultProbeDeps,
+  glyph,
   type ComponentStatus,
-  type ComponentState,
 } from '../actions/setup-status.js';
 
 type StepIndex = 1 | 2 | 3 | 4 | 5;
@@ -262,12 +262,6 @@ interface SetupCompleteProps {
   onDone: () => void;
 }
 
-function statusGlyph(s: ComponentState): string {
-  if (s === 'ok') return '✓';
-  if (s === 'absent' || s === 'degraded') return '⚠';
-  return '✗';
-}
-
 export function SetupComplete({ statuses, onDone }: SetupCompleteProps): React.ReactElement {
   useEffect(() => {
     const t = setTimeout(onDone, CEREMONY_DELAY_MS);
@@ -285,9 +279,11 @@ export function SetupComplete({ statuses, onDone }: SetupCompleteProps): React.R
       <Text color={semantic.ok} bold>✓ Setup complete</Text>
       <Text dimColor>{'─'.repeat(24)}</Text>
       {statuses.map((c) => {
-        let line = `${statusGlyph(c.status)} ${c.label}`;
+        // Match summarizeSetup's per-component line format character-for-character
+        // (setup-status.ts) so the CLI summary and TUI ceremony render identically.
+        let line = `${glyph(c.status)} ${c.label}`;
         if (c.detail && c.status !== 'ok') line += ` — ${c.detail}`;
-        if (c.disables && c.status !== 'ok') line += `  → ${c.disables} disabled`;
+        if (c.disables && c.status !== 'ok') line += `   → ${c.disables} disabled`;
         if (c.status === 'absent' && !c.required) line += ' (optional)';
         const color =
           c.status === 'ok'

@@ -34,9 +34,10 @@ describe('SetupComplete', () => {
     expect(frame).toContain('browser');
     // Assert the full disabled-capability suffix, not just the bare label.
     // This is the behavior Task 6 adds: a non-ok component with `disables`
-    // must render `→ <capability> disabled`. A bare-label assertion would
-    // still pass if that suffix regressed, so match the rendered text exactly.
-    expect(frame).toContain('→ find_similar disabled');
+    // must render `   → <capability> disabled` (the shared format from
+    // summarizeSetup — 3 spaces before the arrow). A bare-label assertion
+    // would still pass if that suffix regressed, so match it exactly.
+    expect(frame).toContain('   → find_similar disabled');
   });
 
   it('shows checkmark for ok component and cross for failed component', () => {

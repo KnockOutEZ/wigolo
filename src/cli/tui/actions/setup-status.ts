@@ -26,7 +26,7 @@ export interface SetupSummary {
   exitCode: 0 | 1;
 }
 
-function glyph(s: ComponentState): string {
+export function glyph(s: ComponentState): string {
   if (s === 'ok') return '✓';
   if (s === 'absent') return '⚠';
   if (s === 'degraded') return '⚠';
