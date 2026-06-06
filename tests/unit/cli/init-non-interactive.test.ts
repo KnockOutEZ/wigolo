@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const { runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, runVerifyMock, systemCheckMock, getAgentHandlerMock, configState } = vi.hoisted(() => ({
+const { runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, runVerifyMock, systemCheckMock, getAgentHandlerMock, probeSetupStatusMock, summarizeSetupMock, configState } = vi.hoisted(() => ({
   runWarmupMock: vi.fn(),
   detectAgentsMock: vi.fn(),
   selectAgentsMock: vi.fn(),
@@ -11,6 +11,8 @@ const { runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, run
   runVerifyMock: vi.fn(),
   systemCheckMock: vi.fn(),
   getAgentHandlerMock: vi.fn(),
+  probeSetupStatusMock: vi.fn(),
+  summarizeSetupMock: vi.fn(),
   configState: { dataDir: '/tmp/data' },
 }));
 
@@ -41,6 +43,15 @@ vi.mock('../../../src/config.js', () => ({
 vi.mock('../../../src/cli/agents/registry.js', () => ({
   getAgentHandler: getAgentHandlerMock,
 }));
+vi.mock('../../../src/cli/tui/utils/config-writer.js', () => ({
+  saveInitConfig: vi.fn(),
+  readInitConfig: vi.fn(() => ({})),
+}));
+vi.mock('../../../src/cli/tui/actions/setup-status.js', () => ({
+  probeSetupStatus: probeSetupStatusMock,
+  defaultProbeDeps: () => ({}),
+  summarizeSetup: summarizeSetupMock,
+}));
 
 import { runInit } from '../../../src/cli/init.js';
 
@@ -70,6 +81,14 @@ beforeEach(() => {
     installInstructions: vi.fn().mockResolvedValue(undefined),
     installSkills: vi.fn().mockResolvedValue(undefined),
     installCommand: vi.fn().mockResolvedValue(undefined),
+  });
+  probeSetupStatusMock.mockReset().mockResolvedValue([]);
+  summarizeSetupMock.mockReset().mockReturnValue({
+    lines: ['Setup: 6/6 ready'],
+    readyCount: 6,
+    total: 6,
+    requiredFailed: false,
+    exitCode: 0,
   });
 });
 

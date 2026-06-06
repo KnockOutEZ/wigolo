@@ -126,8 +126,9 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
 
   const reporter = autoReporter({ plain: flags.plain, command: 'init' });
 
+  let warmup;
   try {
-    await runWarmup(['--all'], reporter);
+    warmup = await runWarmup(['--all'], reporter);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`Warmup failed: ${message}\n`);
@@ -260,6 +261,11 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
     }
   }
 
-  return 0;
+  const { probeSetupStatus, defaultProbeDeps, summarizeSetup } = await import('./tui/actions/setup-status.js');
+  const statuses = await probeSetupStatus(defaultProbeDeps());
+  const summary = summarizeSetup(statuses);
+  out();
+  for (const line of summary.lines) out(`  ${line}`);
+  return summary.exitCode;
 }
 

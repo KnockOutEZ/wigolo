@@ -9,6 +9,8 @@ const {
   selectAgentsMock,
   applyConfigsMock,
   runVerifyMock,
+  probeSetupStatusMock,
+  summarizeSetupMock,
 } = vi.hoisted(() => ({
   runSystemCheckMock: vi.fn(),
   renderBannerMock: vi.fn(() => 'BANNER\n'),
@@ -18,6 +20,8 @@ const {
   selectAgentsMock: vi.fn(),
   applyConfigsMock: vi.fn(),
   runVerifyMock: vi.fn(),
+  probeSetupStatusMock: vi.fn(),
+  summarizeSetupMock: vi.fn(),
 }));
 
 vi.mock('../../../src/cli/tui/system-check.js', () => ({
@@ -50,6 +54,15 @@ vi.mock('../../../src/cli/tui/verify.js', () => ({
 }));
 vi.mock('../../../src/config.js', () => ({
   getConfig: () => ({ dataDir: '/tmp/data' }),
+}));
+vi.mock('../../../src/cli/tui/utils/config-writer.js', () => ({
+  saveInitConfig: vi.fn(),
+  readInitConfig: vi.fn(() => ({})),
+}));
+vi.mock('../../../src/cli/tui/actions/setup-status.js', () => ({
+  probeSetupStatus: probeSetupStatusMock,
+  defaultProbeDeps: () => ({}),
+  summarizeSetup: summarizeSetupMock,
 }));
 
 import { runInit } from '../../../src/cli/init.js';
@@ -86,6 +99,14 @@ function primeHappyPath(): void {
   selectAgentsMock.mockResolvedValue([]);
   applyConfigsMock.mockResolvedValue([]);
   runVerifyMock.mockResolvedValue({ allPassed: true });
+  probeSetupStatusMock.mockResolvedValue([]);
+  summarizeSetupMock.mockReturnValue({
+    lines: ['Setup: 6/6 ready'],
+    readyCount: 6,
+    total: 6,
+    requiredFailed: false,
+    exitCode: 0,
+  });
 }
 
 describe('runInit', () => {
@@ -93,6 +114,14 @@ describe('runInit', () => {
     vi.clearAllMocks();
     renderBannerMock.mockReturnValue('BANNER\n');
     getPackageVersionMock.mockReturnValue('0.6.3');
+    probeSetupStatusMock.mockResolvedValue([]);
+    summarizeSetupMock.mockReturnValue({
+      lines: ['Setup: 6/6 ready'],
+      readyCount: 6,
+      total: 6,
+      requiredFailed: false,
+      exitCode: 0,
+    });
   });
 
   it('exits 0 on all-ok system (non-interactive path)', async () => {
