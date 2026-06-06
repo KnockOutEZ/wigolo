@@ -11,7 +11,12 @@ const INIT_USAGE = [
   '  --agents=<csv>          Comma-separated agent ids (required with --non-interactive)',
   '  --skip-verify           Skip the post-install verify step',
   '  --plain                 Force plain (non-TUI) output',
+  '  --provider=<name>       LLM provider for research/agent: anthropic|openai|gemini',
+  '  --search=<backend>      Search backend: core|searxng|hybrid',
   '  --help, -h              Show this message',
+  '',
+  'Environment:',
+  '  WIGOLO_LLM_API_KEY      LLM API key (never passed as a flag; read from env only)',
   '',
 ].join('\n');
 
@@ -65,6 +70,8 @@ interface InitFlagsResolved {
   skipVerify: boolean;
   plain: boolean;
   help: boolean;
+  provider?: string;
+  search?: string;
 }
 
 async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
@@ -260,6 +267,52 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
     }
   }
 
-  return 0;
+  // Persist provider/search selections and the LLM API key when supplied.
+  // Provider/search are non-secret selects → applyHeadlessSet handles validation + fan-out.
+  // The API key is a masked/secret field → applyHeadlessSet refuses it; use save() directly.
+  if (flags.provider || flags.search || process.env.WIGOLO_LLM_API_KEY) {
+    const { CATALOG } = await import('./tui/schema/catalog.js');
+    const { defaultAgentTargets } = await import('./tui/state/agent-targets.js');
+    const { defaultSecretStore } = await import('./tui/state/secret-store.js');
+    const { defaultConfigPath } = await import('../persisted-config.js');
+    const configPath = defaultConfigPath();
+    const agentTargets = defaultAgentTargets({ dataDir: config.dataDir });
+    const secretStore = defaultSecretStore({ dataDir: config.dataDir });
+
+    if (flags.provider) {
+      const { applyHeadlessSet } = await import('./tui/actions/index.js');
+      const r = await applyHeadlessSet({ key: 'WIGOLO_LLM_PROVIDER', value: flags.provider, configPath, catalog: CATALOG, agents: agentTargets, secretStore });
+      if (r.status !== 'ok') process.stderr.write(`Provider not set: ${r.message}\n`);
+    }
+
+    if (flags.search) {
+      const { applyHeadlessSet } = await import('./tui/actions/index.js');
+      const r = await applyHeadlessSet({ key: 'WIGOLO_SEARCH', value: flags.search, configPath, catalog: CATALOG, agents: agentTargets, secretStore });
+      if (r.status !== 'ok') process.stderr.write(`Search backend not set: ${r.message}\n`);
+    }
+
+    const apiKey = process.env.WIGOLO_LLM_API_KEY;
+    if (apiKey) {
+      const { createSettingsStore } = await import('./tui/state/settings-store.js');
+      const { readPersistedConfig } = await import('../persisted-config.js');
+      const { save: runSave } = await import('./tui/state/propagation.js');
+      const store = createSettingsStore(readPersistedConfig(configPath).settings);
+      store.set('llmApiKey', apiKey);
+      const saveRes = await runSave({ store, catalog: CATALOG, configPath, agents: agentTargets, secretStore });
+      if (saveRes.errors?.length) process.stderr.write(`LLM key save failed: ${saveRes.errors.map(e => e.reason).join('; ')}\n`);
+    }
+  }
+
+  const { probeSetupStatus, defaultProbeDeps, summarizeSetup } = await import('./tui/actions/setup-status.js');
+  // Bust the in-process cache so the probe reads fresh from disk. Without this,
+  // applyHeadlessSet / save() writes bypass the cache (atomicWriteJson direct fs
+  // write), and the probe can return the stale backend written before this run.
+  const { resetPersistedConfig } = await import('../persisted-config.js');
+  resetPersistedConfig();
+  const statuses = await probeSetupStatus(defaultProbeDeps());
+  const summary = summarizeSetup(statuses);
+  out();
+  for (const line of summary.lines) out(`  ${line}`);
+  return summary.exitCode;
 }
 

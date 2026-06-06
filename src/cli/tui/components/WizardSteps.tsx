@@ -27,6 +27,12 @@ import {
   type SystemCheckResult,
 } from '../system-check.js';
 import { defaultConfigPath } from '../../../persisted-config.js';
+import {
+  probeSetupStatus,
+  defaultProbeDeps,
+  glyph,
+  type ComponentStatus,
+} from '../actions/setup-status.js';
 
 type StepIndex = 1 | 2 | 3 | 4 | 5;
 
@@ -252,10 +258,11 @@ function SystemStep(props: SystemStepProps): React.ReactElement {
 const CEREMONY_DELAY_MS = 1500;
 
 interface SetupCompleteProps {
+  statuses: ComponentStatus[];
   onDone: () => void;
 }
 
-function SetupComplete({ onDone }: SetupCompleteProps): React.ReactElement {
+export function SetupComplete({ statuses, onDone }: SetupCompleteProps): React.ReactElement {
   useEffect(() => {
     const t = setTimeout(onDone, CEREMONY_DELAY_MS);
     return () => clearTimeout(t);
@@ -270,6 +277,26 @@ function SetupComplete({ onDone }: SetupCompleteProps): React.ReactElement {
   return (
     <Box flexDirection="column">
       <Text color={semantic.ok} bold>✓ Setup complete</Text>
+      <Text dimColor>{'─'.repeat(24)}</Text>
+      {statuses.map((c) => {
+        // Same per-component content as the CLI summary (minus the summary-level indent)
+        // produced by summarizeSetup in setup-status.ts.
+        let line = `${glyph(c.status)} ${c.label}`;
+        if (c.detail && c.status !== 'ok') line += ` — ${c.detail}`;
+        if (c.disables && c.status !== 'ok') line += `   → ${c.disables} disabled`;
+        if (c.status === 'absent' && !c.required) line += ' (optional)';
+        const color =
+          c.status === 'ok'
+            ? semantic.ok
+            : c.status === 'degraded' || c.status === 'absent'
+              ? semantic.warn
+              : semantic.err;
+        return (
+          <Text key={c.id} color={color}>
+            {line}
+          </Text>
+        );
+      })}
       <Text dimColor>{'─'.repeat(24)}</Text>
       <Text dimColor>Saved to {defaultConfigPath()}</Text>
       <Box marginTop={1}>
@@ -304,6 +331,7 @@ export function WizardSteps(props: WizardStepsProps): React.ReactElement {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [setupComplete, setSetupComplete] = useState(false);
+  const [setupStatuses, setSetupStatuses] = useState<ComponentStatus[]>([]);
 
   const llmCategory = useMemo(() => findCategory(catalog, 'llm'), [catalog]);
   const agentsCategory = useMemo(() => findCategory(catalog, 'agents'), [catalog]);
@@ -401,9 +429,16 @@ export function WizardSteps(props: WizardStepsProps): React.ReactElement {
     } finally {
       setSaving(false);
     }
-    // On clean success, show the ceremony screen.
+    // On clean success, probe component status and show the ceremony screen.
     // On error, call onDone immediately (no ceremony).
     if (!hadError) {
+      try {
+        const probed = await probeSetupStatus(defaultProbeDeps());
+        setSetupStatuses(probed);
+      } catch {
+        // probe failed — show ceremony with empty list rather than crashing
+        setSetupStatuses([]);
+      }
       setSetupComplete(true);
     } else {
       onDone();
@@ -432,7 +467,7 @@ export function WizardSteps(props: WizardStepsProps): React.ReactElement {
 
   // Ceremony screen shown after a successful finish.
   if (setupComplete) {
-    return <SetupComplete onDone={onDone} />;
+    return <SetupComplete statuses={setupStatuses} onDone={onDone} />;
   }
 
   if (step === 1) {

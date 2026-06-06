@@ -25,18 +25,21 @@ Usage:
   wigolo <command>        Run a subcommand
 
 Subcommands:
-  warmup                  Pre-fetch models + run setup checks
+  init                    Set up wigolo: install components, wire into agents
+  doctor                  Diagnose installation
+  config                  Manage settings (TUI or --set K=V headless)
+  setup mcp               Wire wigolo into MCP clients
+  shell                   Interactive REPL
   serve                   Start HTTP daemon
   health                  Health check (exit code = status)
-  doctor                  Diagnose installation
   auth                    Manage site auth
   plugin                  Manage plugins
-  shell                   Interactive REPL
-  init                    Initialize project config
   uninstall               Remove wigolo install
-  setup mcp               Wire wigolo into MCP clients
   status                  Show running daemon status
   backfill                Backfill embeddings for cached pages without them
+
+Advanced:
+  warmup [--all]          Re-run component downloads (CI / repair)
 
 Options:
   -h, --help              Print this help

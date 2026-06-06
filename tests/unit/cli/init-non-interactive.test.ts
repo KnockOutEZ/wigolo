@@ -3,16 +3,44 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const { runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, runVerifyMock, systemCheckMock, getAgentHandlerMock, configState } = vi.hoisted(() => ({
-  runWarmupMock: vi.fn(),
-  detectAgentsMock: vi.fn(),
-  selectAgentsMock: vi.fn(),
-  applyConfigsMock: vi.fn(),
-  runVerifyMock: vi.fn(),
-  systemCheckMock: vi.fn(),
-  getAgentHandlerMock: vi.fn(),
-  configState: { dataDir: '/tmp/data' },
-}));
+const {
+  runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, runVerifyMock,
+  systemCheckMock, getAgentHandlerMock, probeSetupStatusMock, summarizeSetupMock,
+  applyHeadlessSetMock, saveMock, createSettingsStoreMock, fakeStoreSetMock, configState,
+} = vi.hoisted(() => {
+  const fakeStoreSetMock = vi.fn();
+  const fakeStore = {
+    set: fakeStoreSetMock,
+    getPending: vi.fn(() => ({})),
+    isDirty: vi.fn(() => true),
+    commit: vi.fn(),
+    discard: vi.fn(),
+    subscribe: vi.fn(() => () => {}),
+    commitOne: vi.fn().mockResolvedValue(undefined),
+    blur: vi.fn().mockResolvedValue(undefined),
+    getCurrent: vi.fn(() => ({})),
+    dirtyKeys: vi.fn(() => []),
+  };
+
+  const createSettingsStoreMock = vi.fn(() => fakeStore);
+
+  return {
+    runWarmupMock: vi.fn(),
+    detectAgentsMock: vi.fn(),
+    selectAgentsMock: vi.fn(),
+    applyConfigsMock: vi.fn(),
+    runVerifyMock: vi.fn(),
+    systemCheckMock: vi.fn(),
+    getAgentHandlerMock: vi.fn(),
+    probeSetupStatusMock: vi.fn(),
+    summarizeSetupMock: vi.fn(),
+    applyHeadlessSetMock: vi.fn(),
+    saveMock: vi.fn(),
+    createSettingsStoreMock,
+    fakeStoreSetMock,
+    configState: { dataDir: '/tmp/data' },
+  };
+});
 
 vi.mock('../../../src/cli/warmup.js', () => ({
   runWarmup: runWarmupMock,
@@ -40,6 +68,45 @@ vi.mock('../../../src/config.js', () => ({
 }));
 vi.mock('../../../src/cli/agents/registry.js', () => ({
   getAgentHandler: getAgentHandlerMock,
+}));
+vi.mock('../../../src/cli/tui/utils/config-writer.js', () => ({
+  saveInitConfig: vi.fn(),
+  readInitConfig: vi.fn(() => ({})),
+}));
+vi.mock('../../../src/cli/tui/actions/setup-status.js', () => ({
+  probeSetupStatus: probeSetupStatusMock,
+  defaultProbeDeps: () => ({}),
+  summarizeSetup: summarizeSetupMock,
+}));
+
+vi.mock('../../../src/cli/tui/actions/index.js', () => ({
+  applyHeadlessSet: applyHeadlessSetMock,
+}));
+
+vi.mock('../../../src/cli/tui/state/propagation.js', () => ({
+  save: saveMock,
+}));
+
+vi.mock('../../../src/cli/tui/schema/catalog.js', () => ({
+  CATALOG: [],
+}));
+
+vi.mock('../../../src/cli/tui/state/agent-targets.js', () => ({
+  defaultAgentTargets: vi.fn(() => []),
+}));
+
+vi.mock('../../../src/cli/tui/state/secret-store.js', () => ({
+  defaultSecretStore: vi.fn(() => ({})),
+}));
+
+vi.mock('../../../src/persisted-config.js', () => ({
+  defaultConfigPath: vi.fn(() => '/tmp/test-config.json'),
+  readPersistedConfig: vi.fn(() => ({ version: 1, settings: {} })),
+  resetPersistedConfig: vi.fn(),
+}));
+
+vi.mock('../../../src/cli/tui/state/settings-store.js', () => ({
+  createSettingsStore: createSettingsStoreMock,
 }));
 
 import { runInit } from '../../../src/cli/init.js';
@@ -71,6 +138,20 @@ beforeEach(() => {
     installSkills: vi.fn().mockResolvedValue(undefined),
     installCommand: vi.fn().mockResolvedValue(undefined),
   });
+  probeSetupStatusMock.mockReset().mockResolvedValue([]);
+  summarizeSetupMock.mockReset().mockReturnValue({
+    lines: ['Setup: 6/6 ready'],
+    readyCount: 6,
+    total: 6,
+    requiredFailed: false,
+    exitCode: 0,
+  });
+  applyHeadlessSetMock.mockReset().mockResolvedValue({ status: 'ok', message: 'Set.', saved: [], propagated: [], failed: [] });
+  saveMock.mockReset().mockResolvedValue({ saved: ['llmApiKey'], propagated: [], failed: [] });
+  createSettingsStoreMock.mockClear();
+  fakeStoreSetMock.mockClear();
+  // Ensure WIGOLO_LLM_API_KEY is unset by default so tests are isolated
+  delete process.env.WIGOLO_LLM_API_KEY;
 });
 
 describe('runInit --non-interactive', () => {
@@ -84,6 +165,22 @@ describe('runInit --non-interactive', () => {
       ['cursor'],
       expect.any(Object),
     );
+  });
+
+  it('returns the honest non-zero exit code when a required component failed', async () => {
+    // Honest-setup contract: when summarizeSetup reports a required component
+    // failed (exitCode 1), runInitPlain must propagate that out of runInit —
+    // it cannot silently return 0. Guards the failure path, not just success.
+    summarizeSetupMock.mockReturnValueOnce({
+      lines: ['Setup: 5/6 ready', '  ✗ browser — install failed'],
+      readyCount: 5,
+      total: 6,
+      requiredFailed: true,
+      exitCode: 1,
+    });
+
+    const code = await runInit(['--non-interactive', '--agents=cursor', '--skip-verify']);
+    expect(code).toBe(1);
   });
 
   it('skips runVerify when --skip-verify is set', async () => {
@@ -239,5 +336,52 @@ describe('runInit --non-interactive firecrawl-collision notice', () => {
 
     const out = stdoutWrites.join('');
     expect(out).not.toMatch(/Detected firecrawl skills/);
+  });
+});
+
+describe('runInit --non-interactive provider/search/key persistence', () => {
+  it('--provider=anthropic triggers applyHeadlessSet with WIGOLO_LLM_PROVIDER', async () => {
+    await runInit(['--non-interactive', '--agents=cursor', '--skip-verify', '--provider=anthropic']);
+    expect(applyHeadlessSetMock).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'WIGOLO_LLM_PROVIDER', value: 'anthropic' }),
+    );
+  });
+
+  it('--search=hybrid triggers applyHeadlessSet with WIGOLO_SEARCH', async () => {
+    await runInit(['--non-interactive', '--agents=cursor', '--skip-verify', '--search=hybrid']);
+    expect(applyHeadlessSetMock).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'WIGOLO_SEARCH', value: 'hybrid' }),
+    );
+  });
+
+  it('WIGOLO_LLM_API_KEY set triggers save() with llmApiKey staged in the store', async () => {
+    process.env.WIGOLO_LLM_API_KEY = 'sk-test-persist-key';
+    try {
+      await runInit(['--non-interactive', '--agents=cursor', '--skip-verify', '--provider=anthropic']);
+    } finally {
+      delete process.env.WIGOLO_LLM_API_KEY;
+    }
+    // createSettingsStore must have been called to build the store for the key save
+    expect(createSettingsStoreMock).toHaveBeenCalled();
+    // store.set must stage 'llmApiKey' with the env value (settingsPath from schema/llm.ts)
+    expect(fakeStoreSetMock).toHaveBeenCalledWith('llmApiKey', 'sk-test-persist-key');
+    // save() must have been called (the secret-capable propagation path)
+    expect(saveMock).toHaveBeenCalled();
+  });
+
+  it('--provider without WIGOLO_LLM_API_KEY does NOT call save()', async () => {
+    // Env key is absent (deleted in beforeEach); provider is set
+    await runInit(['--non-interactive', '--agents=cursor', '--skip-verify', '--provider=openai']);
+    expect(applyHeadlessSetMock).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'WIGOLO_LLM_PROVIDER', value: 'openai' }),
+    );
+    // save() should not be called because WIGOLO_LLM_API_KEY is absent
+    expect(saveMock).not.toHaveBeenCalled();
+  });
+
+  it('neither provider nor search nor env key → applyHeadlessSet and save not called', async () => {
+    await runInit(['--non-interactive', '--agents=cursor', '--skip-verify']);
+    expect(applyHeadlessSetMock).not.toHaveBeenCalled();
+    expect(saveMock).not.toHaveBeenCalled();
   });
 });

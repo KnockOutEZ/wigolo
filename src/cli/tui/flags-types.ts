@@ -15,6 +15,8 @@ export interface InitFlags {
   skipVerify: boolean;
   plain: boolean;
   help: boolean;
+  provider?: string;
+  search?: string;
 }
 
 export interface SetupMcpFlags {

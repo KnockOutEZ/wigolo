@@ -24,8 +24,7 @@ wigolo runs on your machine as an MCP server and hands an AI coding agent one du
 The goal of the project is plain: web search and research for agents should be as good as the paid services — and stay open, local, and free — instead of being a meter you feed every time your agent gets curious. That's the bar it's held to.
 
 ```bash
-npx @staticn0va/wigolo init --agents=claude-code   # wire it into your agent
-npx @staticn0va/wigolo warmup --all                # so the first call isn't cold
+npx @staticn0va/wigolo init --agents=claude-code   # set up everything in one step
 ```
 
 ---
@@ -35,15 +34,19 @@ npx @staticn0va/wigolo warmup --all                # so the first call isn't col
 You need **Node ≥ 20** and ~**1.5 GB** of free disk (headless browser, the reranker, the embedding model, and a cache that grows with use). macOS, Linux, Windows all work. Python is only needed if you opt into the legacy SearXNG backend.
 
 ```bash
-# 1. install + wire into one or more agents (idempotent — safe to re-run)
+# 1. set up everything: install components, wire into your agent (idempotent — safe to re-run)
 npx @staticn0va/wigolo init --agents=claude-code
 
-# 2. pre-download models so first calls are fast
-npx @staticn0va/wigolo warmup --all
-
-# 3. confirm everything's healthy (no network fetches)
+# 2. confirm everything's healthy (no network fetches)
 npx @staticn0va/wigolo doctor
 ```
+
+**Headless / CI setup** (one command, no prompts):
+```bash
+WIGOLO_LLM_API_KEY=sk-... npx @staticn0va/wigolo init --non-interactive --agents=claude-code,cursor --provider=anthropic --search=core
+```
+
+> The LLM provider key is **optional** — wigolo's core tools (search, fetch, crawl, extract, cache) work without one. Only the `research` and `agent` tools use an LLM to synthesize results. The key is read from the `WIGOLO_LLM_API_KEY` env var; it is never passed as a CLI flag.
 
 Or add it to any MCP client by hand:
 
@@ -193,9 +196,8 @@ Everything you can set, with a one-line description each. Collapsed to keep this
 | Command | What it does |
 |---------|--------------|
 | `wigolo` / `wigolo mcp` | Start the MCP stdio server (the default command). |
-| `wigolo init` | First-run wizard — wires wigolo into your detected agents. `--non-interactive --agents=<csv>` for CI. |
+| `wigolo init` | Set up wigolo: install components, wire into your detected agents. `--non-interactive --agents=<csv> --provider=<name> --search=<backend>` for CI. |
 | `wigolo setup mcp` | Re-write just the MCP server entries, without the full wizard. |
-| `wigolo warmup [--all]` | Pre-download browser / reranker / embeddings; `--verify` runs a smoke test. |
 | `wigolo doctor` | Cold-start health check — no network fetches. |
 | `wigolo verify` | End-to-end smoke test (fetch, crawl, extract, search, rerank, embed). |
 | `wigolo serve` | HTTP daemon — keeps subsystems warm across multiple clients. |
