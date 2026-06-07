@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 const {
   runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, runVerifyMock,
   systemCheckMock, getAgentHandlerMock, probeSetupStatusMock, summarizeSetupMock,
-  applyHeadlessSetMock, saveMock, createSettingsStoreMock, fakeStoreSetMock, configState,
+  applyHeadlessSetMock, saveMock, createSettingsStoreMock, fakeStoreSetMock, storeKeyMock, configState,
 } = vi.hoisted(() => {
   const fakeStoreSetMock = vi.fn();
   const fakeStore = {
@@ -38,6 +38,7 @@ const {
     saveMock: vi.fn(),
     createSettingsStoreMock,
     fakeStoreSetMock,
+    storeKeyMock: vi.fn(),
     configState: { dataDir: '/tmp/data' },
   };
 });
@@ -109,6 +110,10 @@ vi.mock('../../../src/cli/tui/state/settings-store.js', () => ({
   createSettingsStore: createSettingsStoreMock,
 }));
 
+vi.mock('../../../src/security/key-store.js', () => ({
+  storeKey: storeKeyMock,
+}));
+
 import { runInit } from '../../../src/cli/init.js';
 
 beforeEach(() => {
@@ -150,6 +155,7 @@ beforeEach(() => {
   saveMock.mockReset().mockResolvedValue({ saved: ['llmApiKey'], propagated: [], failed: [] });
   createSettingsStoreMock.mockClear();
   fakeStoreSetMock.mockClear();
+  storeKeyMock.mockReset().mockResolvedValue({ location: 'keychain' });
   // Ensure WIGOLO_LLM_API_KEY is unset by default so tests are isolated
   delete process.env.WIGOLO_LLM_API_KEY;
 });
@@ -367,6 +373,29 @@ describe('runInit --non-interactive provider/search/key persistence', () => {
     expect(fakeStoreSetMock).toHaveBeenCalledWith('llmApiKey', 'sk-test-persist-key');
     // save() must have been called (the secret-capable propagation path)
     expect(saveMock).toHaveBeenCalled();
+  });
+
+  it('persists the key under the provider keystore so the runtime resolver can read it', async () => {
+    // Fix B: the TUI secret store (save()) writes to a namespace resolveProviderKey
+    // never consults. The key must ALSO land in the provider keystore
+    // (keychain `wigolo-<provider>` / encrypted file) keyed by the named provider,
+    // or research/agent stays disabled after a cold headless install.
+    process.env.WIGOLO_LLM_API_KEY = 'sk-runtime-key';
+    try {
+      await runInit(['--non-interactive', '--agents=cursor', '--skip-verify', '--provider=anthropic']);
+    } finally {
+      delete process.env.WIGOLO_LLM_API_KEY;
+    }
+    expect(storeKeyMock).toHaveBeenCalledWith(
+      'anthropic',
+      'sk-runtime-key',
+      expect.objectContaining({ dataDir: configState.dataDir }),
+    );
+  });
+
+  it('does NOT call the provider keystore when no env key is supplied', async () => {
+    await runInit(['--non-interactive', '--agents=cursor', '--skip-verify', '--provider=anthropic']);
+    expect(storeKeyMock).not.toHaveBeenCalled();
   });
 
   it('--provider without WIGOLO_LLM_API_KEY does NOT call save()', async () => {

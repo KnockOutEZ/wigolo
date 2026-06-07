@@ -130,6 +130,14 @@ describe('fresh-machine setup round-trip', () => {
     expect(JSON.stringify(cfgRaw)).not.toContain('sk-roundtrip-123');
     expect(cfgRaw.settings.llmApiKeyKeyLocation).toBeDefined();
 
+    // Honest-summary guard: the setup probe must recognize this persisted key
+    // reference on a later env-less run. Without it the summary would falsely
+    // report "LLM key absent" despite the key being stored.
+    delete process.env.WIGOLO_LLM_API_KEY;
+    const { configReferencesLlmKey } = await import('../../src/cli/tui/actions/setup-status.js');
+    resetPersistedConfig();
+    expect(configReferencesLlmKey(readPersistedConfig(defaultConfigPath()))).toBe(true);
+
     // POSIX mode-bit assert (0o600) — skip on win32 to match existing test patterns
     if (process.platform !== 'win32') {
       expect(statSync(agentFile).mode & 0o777).toBe(0o600);

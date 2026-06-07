@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { summarizeSetup, probeSetupStatus, defaultProbeDeps, type ComponentStatus } from '../../src/cli/tui/actions/setup-status.js';
+import { summarizeSetup, probeSetupStatus, defaultProbeDeps, configReferencesLlmKey, type ComponentStatus } from '../../src/cli/tui/actions/setup-status.js';
 
 const base: ComponentStatus[] = [
   { id: 'browser', label: 'browser', required: true, status: 'ok' },
@@ -137,5 +137,31 @@ describe('defaultProbeDeps', () => {
       expect(typeof deps[m]).toBe('function');
       expect(() => deps[m]()).not.toThrow();
     }
+  });
+
+});
+
+// Honest-summary regression: a key persisted on a prior run is referenced by a
+// `<field>KeyLocation` pointer in config (propagation.ts), never by the raw
+// value. The probe must recognize that pointer or it falsely reports "LLM key
+// absent" on every env-less re-run after a headless install stored the key.
+describe('configReferencesLlmKey', () => {
+  it('recognizes a persisted llmApiKeyKeyLocation pointer', () => {
+    expect(configReferencesLlmKey({ settings: { llmApiKeyKeyLocation: 'keychain' } })).toBe(true);
+    expect(configReferencesLlmKey({ settings: { llmApiKeyKeyLocation: 'file' } })).toBe(true);
+  });
+
+  it('recognizes a legacy provider.keyLocation reference', () => {
+    expect(configReferencesLlmKey({ provider: { keyLocation: 'keychain' }, settings: {} })).toBe(true);
+  });
+
+  it('recognizes a direct llmApiKey settings reference', () => {
+    expect(configReferencesLlmKey({ settings: { llmApiKey: 'ref' } })).toBe(true);
+  });
+
+  it('returns false when no key, pointer, or reference is present', () => {
+    expect(configReferencesLlmKey({ settings: {} })).toBe(false);
+    expect(configReferencesLlmKey({ settings: { llmApiKeyKeyLocation: '' } })).toBe(false);
+    expect(configReferencesLlmKey({ provider: {}, settings: {} })).toBe(false);
   });
 });
