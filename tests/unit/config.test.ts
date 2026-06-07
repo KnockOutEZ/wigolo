@@ -1,16 +1,33 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { getConfig, resetConfig } from '../../src/config.js';
+import { resetPersistedConfig } from '../../src/persisted-config.js';
 
 describe('config', () => {
   const originalEnv = process.env;
+  let tmpConfigDir: string;
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    // Hermetic isolation: point the persisted-config path at an empty temp dir.
+    // config reads several fields (e.g. llmProvider) from persisted settings as
+    // a fallback when the env var is unset. Without isolation these tests pick
+    // up whatever is in the real ~/.wigolo/config.json or a sibling test's
+    // leaked WIGOLO_CONFIG_PATH/cache, which made "defaults to null" flaky.
+    tmpConfigDir = mkdtempSync(join(tmpdir(), 'wigolo-config-test-'));
+    process.env.WIGOLO_CONFIG_PATH = join(tmpConfigDir, 'config.json');
+    resetPersistedConfig();
     resetConfig();
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    rmSync(tmpConfigDir, { recursive: true, force: true });
+    // Drop our temp-path cache entry so later test files start clean.
+    resetPersistedConfig();
+    resetConfig();
   });
 
   it('returns defaults when no env vars set', () => {
