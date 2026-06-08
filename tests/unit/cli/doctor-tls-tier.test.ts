@@ -10,11 +10,14 @@ vi.mock('node:fs', async () => {
     readFileSync: vi.fn(),
   };
 });
-vi.mock('playwright', () => ({
-  chromium: { executablePath: vi.fn(() => '/fake/playwright/chromium/chrome') },
-  firefox: { executablePath: vi.fn(() => '/fake/playwright/firefox/firefox') },
-  webkit: { executablePath: vi.fn(() => '/fake/playwright/webkit/webkit') },
-}));
+vi.mock('playwright', () => {
+  const okLaunch = () => Promise.resolve({ close: () => Promise.resolve() });
+  return {
+    chromium: { executablePath: vi.fn(() => '/fake/playwright/chromium/chrome'), launch: vi.fn(okLaunch) },
+    firefox: { executablePath: vi.fn(() => '/fake/playwright/firefox/firefox'), launch: vi.fn(okLaunch) },
+    webkit: { executablePath: vi.fn(() => '/fake/playwright/webkit/webkit'), launch: vi.fn(okLaunch) },
+  };
+});
 vi.mock('../../../src/providers/rerank-provider.js', () => ({
   getRerankProvider: vi.fn(async () => ({
     modelId: 'Xenova/ms-marco-MiniLM-L-6-v2',

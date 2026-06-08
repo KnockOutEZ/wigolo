@@ -10,6 +10,17 @@ vi.mock('node:fs', async () => {
     readFileSync: vi.fn(),
   };
 });
+// doctor probes browser health via a real headless launch (shared with
+// warmup, GH #116). Mock playwright so the probe never launches a real browser
+// — without this the probe would try to spawn Chromium and hit the test timeout.
+vi.mock('playwright', () => {
+  const okLaunch = () => Promise.resolve({ close: () => Promise.resolve() });
+  return {
+    chromium: { executablePath: vi.fn(() => '/fake/playwright/chromium/chrome'), launch: vi.fn(okLaunch) },
+    firefox: { executablePath: vi.fn(() => '/fake/playwright/firefox/firefox'), launch: vi.fn(okLaunch) },
+    webkit: { executablePath: vi.fn(() => '/fake/playwright/webkit/webkit'), launch: vi.fn(okLaunch) },
+  };
+});
 vi.mock('../../../src/providers/rerank-provider.js', () => ({
   getRerankProvider: vi.fn(async () => ({
     modelId: 'Xenova/ms-marco-MiniLM-L-6-v2',

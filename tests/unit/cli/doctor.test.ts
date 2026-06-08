@@ -10,11 +10,17 @@ vi.mock('node:fs', async () => {
     readFileSync: vi.fn(),
   };
 });
-vi.mock('playwright', () => ({
-  chromium: { executablePath: vi.fn(() => '/fake/playwright/chromium/chrome') },
-  firefox: { executablePath: vi.fn(() => '/fake/playwright/firefox/firefox') },
-  webkit: { executablePath: vi.fn(() => '/fake/playwright/webkit/webkit') },
-}));
+// doctor now probes browser health via a real headless launch (shared with
+// warmup, GH #116). launch() defaults to a clean-closing browser; tests that
+// need a launch failure override it.
+vi.mock('playwright', () => {
+  const okLaunch = () => Promise.resolve({ close: () => Promise.resolve() });
+  return {
+    chromium: { executablePath: vi.fn(() => '/fake/playwright/chromium/chrome'), launch: vi.fn(okLaunch) },
+    firefox: { executablePath: vi.fn(() => '/fake/playwright/firefox/firefox'), launch: vi.fn(okLaunch) },
+    webkit: { executablePath: vi.fn(() => '/fake/playwright/webkit/webkit'), launch: vi.fn(okLaunch) },
+  };
+});
 vi.mock('../../../src/providers/rerank-provider.js', () => ({
   getRerankProvider: vi.fn(async () => ({
     modelId: 'Xenova/ms-marco-MiniLM-L-6-v2',
@@ -127,6 +133,43 @@ describe('runDoctor', () => {
     expect(code).toBe(1);
     expect(outBuffer).toContain('chromium missing');
     expect(outBuffer).toContain('npx playwright install chromium');
+  });
+
+  it('exits 1 with the install-deps hint when chromium is on disk but will not launch on Linux (GH #116)', async () => {
+    // WHY: on bare Linux the binary lands on disk (existsSync true) yet
+    // launch() fails for missing OS shared libs. existsSync alone lied; the
+    // shared probe's launch smoke-test catches this and doctor must point the
+    // user at the EXACT remediation: install-deps, not re-install.
+    const realPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    try {
+      vi.mocked(spawnSync).mockImplementation((cmd, args) => {
+        const joined = [cmd, ...((args ?? []) as string[])].join(' ');
+        if (joined.includes('--version')) return okProc('1.50.0');
+        return okProc();
+      });
+      // Binary present on disk for every path.
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockImplementation((p) => {
+        const s = String(p);
+        if (s.endsWith('state.json')) return JSON.stringify({ status: 'ready', searxngPath: '/tmp/searxng' });
+        if (s.endsWith('searxng.lock')) return JSON.stringify({ pid: process.pid, port: 8888 });
+        return '';
+      });
+      // chromium launch throws → not launchable despite being on disk.
+      const { chromium } = await import('playwright');
+      vi.mocked(chromium.launch).mockRejectedValueOnce(
+        new Error('libnss3.so: cannot open shared object file') as never,
+      );
+
+      const code = await runDoctor('/tmp/.wigolo');
+      expect(code).toBe(1);
+      expect(outBuffer).toContain('chromium missing');
+      expect(outBuffer).toContain('on disk but will not launch');
+      expect(outBuffer).toContain('sudo npx playwright install-deps chromium');
+    } finally {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    }
   });
 
   it('exits 1 when no state file exists', async () => {

@@ -22,13 +22,17 @@ vi.mock('node:fs', async () => {
   };
 });
 
-// Mock the bundled Playwright module so the post-install disk verify can call
-// executablePath() without launching real browsers.
-vi.mock('playwright', () => ({
-  chromium: { executablePath: vi.fn(() => '/fake/playwright/chromium/chrome') },
-  firefox: { executablePath: vi.fn(() => '/fake/playwright/firefox/firefox') },
-  webkit: { executablePath: vi.fn(() => '/fake/playwright/webkit/webkit') },
-}));
+// Mock the bundled Playwright module so the post-install probe can call
+// executablePath() + launch() without launching real browsers. launch()
+// resolves to a browser that closes cleanly — the smoke-test passes by default.
+vi.mock('playwright', () => {
+  const okLaunch = () => Promise.resolve({ close: () => Promise.resolve() });
+  return {
+    chromium: { executablePath: vi.fn(() => '/fake/playwright/chromium/chrome'), launch: vi.fn(okLaunch) },
+    firefox: { executablePath: vi.fn(() => '/fake/playwright/firefox/firefox'), launch: vi.fn(okLaunch) },
+    webkit: { executablePath: vi.fn(() => '/fake/playwright/webkit/webkit'), launch: vi.fn(okLaunch) },
+  };
+});
 
 vi.mock('../../../src/searxng/bootstrap.js', () => ({
   checkPythonAvailable: vi.fn().mockReturnValue(false),

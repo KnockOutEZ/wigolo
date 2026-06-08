@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolvePythonExe } from '../python-env.js';
-import { chromium, firefox, webkit } from 'playwright';
+import { probeBrowser } from '../fetch/browser-probe.js';
 import { getBootstrapState, type BootstrapState } from '../searxng/bootstrap.js';
 import { isProcessAlive } from '../searxng/process.js';
 import { getConfig } from '../config.js';
@@ -65,7 +65,7 @@ function checkDocker(): { ok: boolean; version?: string } {
   return { ok: true, version: (r.stdout || '').trim() };
 }
 
-function checkPlaywright(): { installed: boolean; version?: string; browsers: { chromium: boolean; chromiumHeadlessShell: boolean; firefox: boolean; webkit: boolean }; chromiumPath?: string } {
+async function checkPlaywright(): Promise<{ installed: boolean; version?: string; browsers: { chromium: boolean; chromiumHeadlessShell: boolean; firefox: boolean; webkit: boolean }; chromiumPath?: string; chromiumOnDisk: boolean; chromiumError?: string }> {
   let installed = false;
   let version: string | undefined;
   try {
@@ -77,21 +77,15 @@ function checkPlaywright(): { installed: boolean; version?: string; browsers: { 
     }
   } catch { /* ignore */ }
 
-  // Probe browser readiness by resolving the bundled Playwright's actual
-  // executable path and checking the file on disk. This matches what fetch
-  // uses via chromium.launch(), so doctor cannot lie about parity.
-  const probeBrowser = (api: { executablePath(): string }): { ok: boolean; path?: string } => {
-    try {
-      const exec = api.executablePath();
-      return { ok: !!exec && existsSync(exec), path: exec };
-    } catch {
-      return { ok: false };
-    }
-  };
-
-  const chromiumProbe = probeBrowser(chromium);
-  const firefoxProbe = probeBrowser(firefox);
-  const webkitProbe = probeBrowser(webkit);
+  // Use the SAME shared probe warmup uses (GH #116) so doctor cannot disagree
+  // with warmup about browser health. The verdict is launchable — a real
+  // headless launch — not just existsSync, which on bare Linux passes while
+  // launch() fails for missing OS libs.
+  const [chromiumProbe, firefoxProbe, webkitProbe] = await Promise.all([
+    probeBrowser('chromium'),
+    probeBrowser('firefox'),
+    probeBrowser('webkit'),
+  ]);
 
   // headless-shell uses chromium binary or a sibling; presence implied when
   // chromium ok. If a user explicitly needs the shell, fetch will surface
@@ -100,12 +94,14 @@ function checkPlaywright(): { installed: boolean; version?: string; browsers: { 
     installed,
     version,
     browsers: {
-      chromium: chromiumProbe.ok,
-      chromiumHeadlessShell: chromiumProbe.ok,
-      firefox: firefoxProbe.ok,
-      webkit: webkitProbe.ok,
+      chromium: chromiumProbe.launchable,
+      chromiumHeadlessShell: chromiumProbe.launchable,
+      firefox: firefoxProbe.launchable,
+      webkit: webkitProbe.launchable,
     },
-    chromiumPath: chromiumProbe.path,
+    chromiumPath: chromiumProbe.execPath || undefined,
+    chromiumOnDisk: chromiumProbe.onDisk,
+    chromiumError: chromiumProbe.error,
   };
 }
 
@@ -254,15 +250,26 @@ async function runDoctorInner(dataDir: string): Promise<number> {
   if (!py.ok && !dk.ok) degraded = true;
 
   out('');
-  const pw = checkPlaywright();
+  const pw = await checkPlaywright();
   out('[wigolo doctor] Browser engine:');
   out(`  Installation:  ${pw.installed ? `installed${pw.version ? ` (v${pw.version})` : ''}` : 'not installed'}`);
   out(`  Browsers:      chromium ${pw.browsers.chromium ? 'OK' : 'missing'}  firefox ${pw.browsers.firefox ? 'OK' : 'missing'}  webkit ${pw.browsers.webkit ? 'OK' : 'missing'}`);
   if (pw.chromiumPath) {
-    out(`  Chromium path: ${pw.chromiumPath}${pw.browsers.chromium ? '' : ' (missing on disk)'}`);
+    const onDiskNote = pw.browsers.chromium
+      ? ''
+      : pw.chromiumOnDisk
+        ? ' (on disk but will not launch)'
+        : ' (missing on disk)';
+    out(`  Chromium path: ${pw.chromiumPath}${onDiskNote}`);
   }
   if (!pw.browsers.chromium) {
-    out("  Hint:          run 'npx playwright install chromium' — JS-rendered pages will fail without it");
+    if (pw.chromiumOnDisk && process.platform === 'linux') {
+      // Binary present but launch failed — on Linux this is almost always
+      // missing OS shared libs. Give the exact remediation command.
+      out('  Hint:          system libraries missing — run: sudo npx playwright install-deps chromium');
+    } else {
+      out("  Hint:          run 'npx playwright install chromium' — JS-rendered pages will fail without it");
+    }
     degraded = true;
   }
 

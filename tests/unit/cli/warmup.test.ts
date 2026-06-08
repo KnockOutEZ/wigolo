@@ -18,12 +18,17 @@ vi.mock('node:fs', async () => {
 });
 
 // Mock the bundled Playwright module the same way doctor.test.ts does, so the
-// post-install disk verify can be driven via executablePath() + existsSync.
-vi.mock('playwright', () => ({
-  chromium: { executablePath: vi.fn(() => '/fake/playwright/chromium/chrome') },
-  firefox: { executablePath: vi.fn(() => '/fake/playwright/firefox/firefox') },
-  webkit: { executablePath: vi.fn(() => '/fake/playwright/webkit/webkit') },
-}));
+// post-install probe can be driven via executablePath() + existsSync + launch.
+// launch() defaults to a successful headless browser that closes cleanly; the
+// shared browser-probe runs this smoke-test as the real health verdict.
+vi.mock('playwright', () => {
+  const okLaunch = () => Promise.resolve({ close: () => Promise.resolve() });
+  return {
+    chromium: { executablePath: vi.fn(() => '/fake/playwright/chromium/chrome'), launch: vi.fn(okLaunch) },
+    firefox: { executablePath: vi.fn(() => '/fake/playwright/firefox/firefox'), launch: vi.fn(okLaunch) },
+    webkit: { executablePath: vi.fn(() => '/fake/playwright/webkit/webkit'), launch: vi.fn(okLaunch) },
+  };
+});
 
 vi.mock('../../../src/searxng/bootstrap.js', () => ({
   checkPythonAvailable: vi.fn(),

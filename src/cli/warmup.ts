@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { chromium, firefox, webkit } from 'playwright';
 import { getConfig } from '../config.js';
+import { probeBrowser, type BrowserName } from '../fetch/browser-probe.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../searxng/bootstrap.js';
 import { checkVenvModule, venvInstallHint } from '../python-env.js';
 import { isProcessAlive } from '../searxng/process.js';
@@ -11,14 +11,6 @@ import { runCommand } from './tui/run-command.js';
 import type { WarmupReporter } from './tui/reporter.js';
 import { autoReporter } from './tui/reporter-auto.js';
 import { runVerify as runVerifyTui } from './tui/verify.js';
-
-type BrowserName = 'chromium' | 'firefox' | 'webkit';
-
-const BROWSER_API: Record<BrowserName, { executablePath(): string }> = {
-  chromium,
-  firefox,
-  webkit,
-};
 
 /**
  * Resolve the CLI entrypoint of the *bundled* Playwright module — the same
@@ -41,13 +33,69 @@ function resolveBundledPlaywrightCli(): string {
 }
 
 /**
+ * Whether the current process can install OS system libraries without blocking
+ * on an interactive password prompt:
+ *  - root  → run `install-deps` directly (no sudo).
+ *  - else, if `sudo -n true` exits 0 → passwordless sudo is configured.
+ *  - else  → no (must SKIP; never invoke sudo, it could hang the TUI / CI).
+ *
+ * Returns the strategy so the caller can build the exact command.
+ */
+async function detectDepsStrategy(): Promise<'root' | 'sudo' | 'skip'> {
+  if (process.getuid?.() === 0) return 'root';
+  // `sudo -n true` never prompts: -n makes sudo fail immediately (non-zero)
+  // rather than ask for a password when credentials aren't cached.
+  const probe = await runCommand('sudo', ['-n', 'true'], { timeout: 5000 });
+  return probe.code === 0 ? 'sudo' : 'skip';
+}
+
+/**
+ * Linux-only: install the OS shared libs Chromium/Firefox/WebKit need at
+ * runtime (libnss3, libatk, libgbm, ...). The browser binary install puts the
+ * executable on disk, but on bare Linux `launch()` still fails without these
+ * libs. macOS/Windows bundle them, so this is skipped off Linux.
+ *
+ * Returns whether deps were installed; `skipped` means we deliberately did NOT
+ * run sudo (non-root, no passwordless sudo) so the launch smoke-test can emit
+ * an actionable remediation hint instead of hanging on a password prompt.
+ */
+async function installLinuxDeps(
+  browser: BrowserName,
+  cli: string,
+): Promise<{ installed: boolean; skipped: boolean; error?: string }> {
+  if (process.platform !== 'linux') return { installed: false, skipped: false };
+
+  const strategy = await detectDepsStrategy();
+  if (strategy === 'skip') return { installed: false, skipped: true };
+
+  const cmd = strategy === 'sudo' ? 'sudo' : process.execPath;
+  const args =
+    strategy === 'sudo'
+      ? ['-n', process.execPath, cli, 'install-deps', browser]
+      : [cli, 'install-deps', browser];
+
+  const r = await runCommand(cmd, args, { timeout: 180000 });
+  if (r.code !== 0) {
+    const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
+    return { installed: false, skipped: false, error: message };
+  }
+  return { installed: true, skipped: false };
+}
+
+/**
  * Install a browser via the bundled Playwright CLI: spawn node against the
  * resolved cli.js so the install uses the SAME Playwright revision the rest of
- * the code resolves. After the install command exits, verify the binary
- * actually landed on disk using the same mechanism doctor uses
- * (`<browser>.executablePath()` + `existsSync`) — a zero exit code is not
- * trusted on its own, because warmup historically reported "ok" while doctor
- * found the binary missing (revision drift, GH #116).
+ * the code resolves.
+ *
+ * Three steps, in order:
+ *   1. Install the browser binary as the CURRENT user (binaries land in the
+ *      user's cache, never root's).
+ *   2. (Linux only) Install OS system libs via `install-deps` — as root if we
+ *      are root, via passwordless `sudo -n` if available, else SKIP.
+ *   3. Smoke-test by actually launching the browser headless (via the shared
+ *      probe doctor also uses). A clean install exit is NOT trusted on its own
+ *      (GH #116): the binary can be on disk yet fail to launch when system libs
+ *      are missing. Only a successful launch reports `ok`.
  */
 async function installBrowser(
   browser: BrowserName,
@@ -59,21 +107,32 @@ async function installBrowser(
     return { ok: false, error: message };
   }
 
-  // Post-install disk verify — match doctor's probe so warmup cannot lie.
-  let onDisk = false;
-  try {
-    const exec = BROWSER_API[browser].executablePath();
-    onDisk = !!exec && existsSync(exec);
-  } catch {
-    onDisk = false;
-  }
-  if (!onDisk) {
+  // A deps failure (root / passwordless sudo path) is not a hard error on its
+  // own — the launch smoke-test below is the real check. deps.error only
+  // surfaces if launch also fails.
+  const deps = await installLinuxDeps(browser, cli);
+
+  // Launch smoke-test via the shared probe — same verdict doctor reports.
+  const probe = await probeBrowser(browser);
+  if (probe.launchable) return { ok: true };
+
+  if (!probe.onDisk) {
     return {
       ok: false,
       error: 'install exited 0 but browser binary missing on disk (revision mismatch?)',
     };
   }
-  return { ok: true };
+
+  // Binary present but launch failed. On Linux with deps skipped, this is
+  // almost always missing OS libs — give the EXACT remediation command.
+  if (process.platform === 'linux' && deps.skipped) {
+    return {
+      ok: false,
+      error: `system libraries missing — run: sudo npx playwright install-deps ${browser}`,
+    };
+  }
+  const detail = probe.error ?? deps.error ?? 'browser failed to launch';
+  return { ok: false, error: `browser failed to launch: ${detail}` };
 }
 
 export interface WarmupResult {
