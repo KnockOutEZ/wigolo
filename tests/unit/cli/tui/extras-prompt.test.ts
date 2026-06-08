@@ -6,13 +6,20 @@ import { join } from 'node:path';
 vi.mock('@inquirer/prompts', () => ({
   select: vi.fn(),
   input: vi.fn(),
+  password: vi.fn(),
 }));
 
-import { select, input } from '@inquirer/prompts';
+const storeKeyMock = vi.fn();
+vi.mock('../../../../src/security/key-store.js', () => ({
+  storeKey: storeKeyMock,
+}));
+
+import { select, input, password } from '@inquirer/prompts';
 import { promptExtras } from '../../../../src/cli/tui/extras-prompt.js';
 
 const selectMock = vi.mocked(select);
 const inputMock = vi.mocked(input);
+const passwordMock = vi.mocked(password);
 
 describe('promptExtras', () => {
   let dir: string;
@@ -20,6 +27,8 @@ describe('promptExtras', () => {
   beforeEach(() => {
     selectMock.mockReset();
     inputMock.mockReset();
+    passwordMock.mockReset();
+    storeKeyMock.mockReset().mockResolvedValue({ location: 'keychain' });
     dir = mkdtempSync(join(tmpdir(), 'wigolo-extras-'));
   });
 
@@ -27,20 +36,31 @@ describe('promptExtras', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // Default happy-path mocks: skip engine, blank rss, blank llm endpoint,
+  // skip provider (the new B4 prompt). Tests that exercise the provider prompt
+  // override the relevant mock(s).
+  function mockSkipAll(): void {
+    selectMock.mockResolvedValueOnce('skip'); // engine
+    inputMock.mockResolvedValueOnce(''); // rss
+    inputMock.mockResolvedValueOnce(''); // llm endpoint
+    selectMock.mockResolvedValueOnce('skip'); // provider
+  }
+
   it('returns empty + writes nothing when user picks skip + blanks', async () => {
-    selectMock.mockResolvedValueOnce('skip');
-    inputMock.mockResolvedValueOnce('');
-    inputMock.mockResolvedValueOnce('');
+    mockSkipAll();
 
     const result = await promptExtras(dir);
     expect(result).toEqual({});
     expect(existsSync(join(dir, 'config.json'))).toBe(false);
+    expect(passwordMock).not.toHaveBeenCalled();
+    expect(storeKeyMock).not.toHaveBeenCalled();
   });
 
   it('persists engine selection only when not skip', async () => {
     selectMock.mockResolvedValueOnce('v1');
     inputMock.mockResolvedValueOnce('');
     inputMock.mockResolvedValueOnce('');
+    selectMock.mockResolvedValueOnce('skip'); // provider
 
     const result = await promptExtras(dir);
     expect(result.engine).toBe('v1');
@@ -54,6 +74,7 @@ describe('promptExtras', () => {
     selectMock.mockResolvedValueOnce('skip');
     inputMock.mockResolvedValueOnce(' https://a.example/feed , https://b.example/feed ,');
     inputMock.mockResolvedValueOnce('');
+    selectMock.mockResolvedValueOnce('skip'); // provider
 
     const result = await promptExtras(dir);
     expect(result.rssFeeds).toEqual([
@@ -69,6 +90,7 @@ describe('promptExtras', () => {
     selectMock.mockResolvedValueOnce('skip');
     inputMock.mockResolvedValueOnce('');
     inputMock.mockResolvedValueOnce('http://localhost:11434/v1');
+    selectMock.mockResolvedValueOnce('skip'); // provider
 
     const result = await promptExtras(dir);
     expect(result.llmEndpoint).toBe('http://localhost:11434/v1');
@@ -91,6 +113,7 @@ describe('promptExtras', () => {
     selectMock.mockResolvedValueOnce('v1');
     inputMock.mockResolvedValueOnce('');
     inputMock.mockResolvedValueOnce('');
+    selectMock.mockResolvedValueOnce('skip'); // provider
 
     await promptExtras(dir);
     // SP0: the versioned envelope nests everything under settings.  The migration
@@ -99,5 +122,70 @@ describe('promptExtras', () => {
     const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
     expect(cfg.settings.configuredAgents).toEqual(['claude-code']);
     expect(cfg.settings.engine).toBe('v1');
+  });
+
+  describe('interactive LLM provider + key prompt (B4)', () => {
+    it('persists chosen provider to config.json and stores key in keychain', async () => {
+      selectMock.mockResolvedValueOnce('skip'); // engine
+      inputMock.mockResolvedValueOnce(''); // rss
+      inputMock.mockResolvedValueOnce(''); // llm endpoint
+      selectMock.mockResolvedValueOnce('anthropic'); // provider
+      passwordMock.mockResolvedValueOnce('sk-interactive-key'); // key
+
+      const result = await promptExtras(dir);
+
+      expect(result.llmProvider).toBe('anthropic');
+      const cfg = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8'));
+      expect(cfg.settings.llmProvider).toBe('anthropic');
+      expect(storeKeyMock).toHaveBeenCalledWith(
+        'anthropic',
+        'sk-interactive-key',
+        expect.objectContaining({ dataDir: dir }),
+      );
+    });
+
+    it('NEVER writes the API key value to config.json', async () => {
+      selectMock.mockResolvedValueOnce('skip');
+      inputMock.mockResolvedValueOnce('');
+      inputMock.mockResolvedValueOnce('');
+      selectMock.mockResolvedValueOnce('openai');
+      passwordMock.mockResolvedValueOnce('sk-secret-should-not-leak');
+
+      await promptExtras(dir);
+
+      const raw = readFileSync(join(dir, 'config.json'), 'utf-8');
+      expect(raw).not.toContain('sk-secret-should-not-leak');
+      const cfg = JSON.parse(raw);
+      expect(cfg.settings.llmApiKey).toBeUndefined();
+      expect(cfg.settings.llmProvider).toBe('openai');
+    });
+
+    it('skips provider prompt entirely → no key prompt, no storeKey, no provider in config', async () => {
+      selectMock.mockResolvedValueOnce('skip'); // engine
+      inputMock.mockResolvedValueOnce(''); // rss
+      inputMock.mockResolvedValueOnce(''); // llm endpoint
+      selectMock.mockResolvedValueOnce('skip'); // provider skip
+
+      const result = await promptExtras(dir);
+
+      expect(result.llmProvider).toBeUndefined();
+      expect(passwordMock).not.toHaveBeenCalled();
+      expect(storeKeyMock).not.toHaveBeenCalled();
+    });
+
+    it('provider chosen but blank key → persists provider, does not call storeKey', async () => {
+      selectMock.mockResolvedValueOnce('skip');
+      inputMock.mockResolvedValueOnce('');
+      inputMock.mockResolvedValueOnce('');
+      selectMock.mockResolvedValueOnce('gemini'); // provider
+      passwordMock.mockResolvedValueOnce(''); // blank key
+
+      const result = await promptExtras(dir);
+
+      expect(result.llmProvider).toBe('gemini');
+      const cfg = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8'));
+      expect(cfg.settings.llmProvider).toBe('gemini');
+      expect(storeKeyMock).not.toHaveBeenCalled();
+    });
   });
 });
