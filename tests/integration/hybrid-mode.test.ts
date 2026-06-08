@@ -9,6 +9,7 @@ import {
   getSearchProvider,
   _resetSearchProviderForTest,
 } from '../../src/providers/search-provider.js';
+import { resetConfig } from '../../src/config.js';
 
 // Mutable impls shared between the test module and the mock factories.
 // Hoisting keeps the references stable across vi.mock setup.
@@ -70,6 +71,9 @@ describe('hybrid mode via provider factory', () => {
   beforeEach(() => {
     originalEnv = process.env.WIGOLO_SEARCH;
     process.env.WIGOLO_SEARCH = 'hybrid';
+    // The provider factory now resolves the backend through getConfig(), which
+    // memoizes. Reset the config cache so the mutated env is re-read here.
+    resetConfig();
     _resetSearchProviderForTest();
     impls.searxngCalls = 0;
   });
@@ -77,6 +81,7 @@ describe('hybrid mode via provider factory', () => {
   afterEach(() => {
     if (originalEnv === undefined) delete process.env.WIGOLO_SEARCH;
     else process.env.WIGOLO_SEARCH = originalEnv;
+    resetConfig();
     _resetSearchProviderForTest();
   });
 
