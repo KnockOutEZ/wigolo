@@ -1,14 +1,54 @@
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, platform } from 'node:os';
 import { execSync } from 'node:child_process';
 import { mergeMcpJson, removeMcpJson, mergeBlock, removeBlock, readAsset } from './utils.js';
 
 const MCP_KEY_PATH = ['servers', 'wigolo'];
 const INSTRUCTIONS_FILE = '.github/copilot-instructions.md';
 
+/**
+ * Resolve VS Code's global user-config directory per platform.
+ *
+ * VS Code reads globally-installed MCP servers from the `mcp.json` in its user
+ * config dir — NOT from `~/.vscode/mcp.json` (issue #106). Writing to the wrong
+ * dir means wigolo never appears under Extensions > MCP Servers.
+ *
+ * On Linux we honour the XDG Base Directory spec ($XDG_CONFIG_HOME, falling back
+ * to ~/.config when empty/unset), and prefer an already-present Flatpak/Snap
+ * config dir when one exists so sandboxed installs land where VS Code reads.
+ */
+function vscodeUserDir(): string {
+  const home = homedir();
+  const os = platform();
+
+  if (os === 'darwin') {
+    return join(home, 'Library', 'Application Support', 'Code', 'User');
+  }
+
+  if (os === 'win32') {
+    const appData = process.env.APPDATA;
+    const base = appData && appData.length > 0
+      ? appData
+      : join(home, 'AppData', 'Roaming');
+    return join(base, 'Code', 'User');
+  }
+
+  // Linux (and other POSIX): prefer an existing Flatpak/Snap config dir, else
+  // the XDG standard path.
+  const flatpak = join(home, '.var', 'app', 'com.visualstudio.code', 'config', 'Code', 'User');
+  if (existsSync(flatpak)) return flatpak;
+
+  const snap = join(home, 'snap', 'code', 'current', '.config', 'Code', 'User');
+  if (existsSync(snap)) return snap;
+
+  const xdg = process.env.XDG_CONFIG_HOME;
+  const configBase = xdg && xdg.length > 0 ? xdg : join(home, '.config');
+  return join(configBase, 'Code', 'User');
+}
+
 function vscodeConfigPath(): string {
-  return join(homedir(), '.vscode', 'mcp.json');
+  return join(vscodeUserDir(), 'mcp.json');
 }
 
 function detect(): boolean {
@@ -24,7 +64,7 @@ function detect(): boolean {
 
 async function installMcp(cmd: { command: string; args: string[] }): Promise<void> {
   const configPath = vscodeConfigPath();
-  mkdirSync(join(homedir(), '.vscode'), { recursive: true });
+  mkdirSync(vscodeUserDir(), { recursive: true });
   mergeMcpJson(
     configPath,
     { command: cmd.command, args: cmd.args, type: 'stdio' },
@@ -46,7 +86,7 @@ async function uninstall(): Promise<{ removed: string[] }> {
   const configPath = vscodeConfigPath();
   if (existsSync(configPath)) {
     removeMcpJson(configPath, MCP_KEY_PATH);
-    removed.push('~/.vscode/mcp.json (wigolo entry)');
+    removed.push(`${configPath} (wigolo entry)`);
   }
 
   const instructionsFile = join(process.cwd(), INSTRUCTIONS_FILE);
