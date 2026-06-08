@@ -1,5 +1,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { chromium, firefox, webkit } from 'playwright';
 import { getConfig } from '../config.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../searxng/bootstrap.js';
 import { checkVenvModule, venvInstallHint } from '../python-env.js';
@@ -9,6 +11,70 @@ import { runCommand } from './tui/run-command.js';
 import type { WarmupReporter } from './tui/reporter.js';
 import { autoReporter } from './tui/reporter-auto.js';
 import { runVerify as runVerifyTui } from './tui/verify.js';
+
+type BrowserName = 'chromium' | 'firefox' | 'webkit';
+
+const BROWSER_API: Record<BrowserName, { executablePath(): string }> = {
+  chromium,
+  firefox,
+  webkit,
+};
+
+/**
+ * Resolve the CLI entrypoint of the *bundled* Playwright module — the same
+ * `playwright` the rest of wigolo imports for `chromium.launch()` and the
+ * doctor parity probe. Installing via this path (instead of `npx playwright`,
+ * which resolves Playwright independently and may pick a different version)
+ * guarantees the install revision matches the revision doctor/runtime resolve.
+ *
+ * The `playwright` package declares `bin.playwright = "cli.js"` but does not
+ * export `./cli.js` via the `exports` map, so we resolve `package.json` and
+ * join the bin path rather than `require.resolve('playwright/cli.js')`.
+ */
+function resolveBundledPlaywrightCli(): string {
+  const req = createRequire(import.meta.url);
+  const pkgPath = req.resolve('playwright/package.json');
+  const pkg = req('playwright/package.json') as { bin?: string | Record<string, string> };
+  const binRel =
+    typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.playwright ?? 'cli.js';
+  return join(dirname(pkgPath), binRel);
+}
+
+/**
+ * Install a browser via the bundled Playwright CLI: spawn node against the
+ * resolved cli.js so the install uses the SAME Playwright revision the rest of
+ * the code resolves. After the install command exits, verify the binary
+ * actually landed on disk using the same mechanism doctor uses
+ * (`<browser>.executablePath()` + `existsSync`) — a zero exit code is not
+ * trusted on its own, because warmup historically reported "ok" while doctor
+ * found the binary missing (revision drift, GH #116).
+ */
+async function installBrowser(
+  browser: BrowserName,
+): Promise<{ ok: boolean; error?: string }> {
+  const cli = resolveBundledPlaywrightCli();
+  const r = await runCommand(process.execPath, [cli, 'install', browser], { timeout: 180000 });
+  if (r.code !== 0) {
+    const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
+    return { ok: false, error: message };
+  }
+
+  // Post-install disk verify — match doctor's probe so warmup cannot lie.
+  let onDisk = false;
+  try {
+    const exec = BROWSER_API[browser].executablePath();
+    onDisk = !!exec && existsSync(exec);
+  } catch {
+    onDisk = false;
+  }
+  if (!onDisk) {
+    return {
+      ok: false,
+      error: 'install exited 0 but browser binary missing on disk (revision mismatch?)',
+    };
+  }
+  return { ok: true };
+}
 
 export interface WarmupResult {
   playwright: 'ok' | 'failed';
@@ -50,12 +116,12 @@ function wipeSearxngState(dataDir: string, reporter: WarmupReporter): void {
 
 async function installPlaywright(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'playwright' | 'playwrightError'>> {
   reporter.start('playwright', 'Installing browser engine (chromium)');
-  const r = await runCommand('npx', ['playwright', 'install', 'chromium'], { timeout: 180000 });
-  if (r.code === 0) {
+  const r = await installBrowser('chromium');
+  if (r.ok) {
     reporter.success('playwright', 'installed');
     return { playwright: 'ok' };
   }
-  const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
+  const message = r.error ?? 'install failed';
   reporter.fail('playwright', message);
   return { playwright: 'failed', playwrightError: message };
 }
@@ -85,24 +151,24 @@ async function installReranker(
 
 async function installFirefox(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'firefox' | 'firefoxError'>> {
   reporter.start('firefox', 'Installing browser engine (firefox)');
-  const r = await runCommand('npx', ['playwright', 'install', 'firefox'], { timeout: 180000 });
-  if (r.code === 0) {
+  const r = await installBrowser('firefox');
+  if (r.ok) {
     reporter.success('firefox', 'installed');
     return { firefox: 'ok' };
   }
-  const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
+  const message = r.error ?? 'install failed';
   reporter.fail('firefox', message);
   return { firefox: 'failed', firefoxError: message };
 }
 
 async function installWebkit(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'webkit' | 'webkitError'>> {
   reporter.start('webkit', 'Installing browser engine (webkit)');
-  const r = await runCommand('npx', ['playwright', 'install', 'webkit'], { timeout: 180000 });
-  if (r.code === 0) {
+  const r = await installBrowser('webkit');
+  if (r.ok) {
     reporter.success('webkit', 'installed');
     return { webkit: 'ok' };
   }
-  const message = (r.stderr || r.stdout || `exit ${r.code}`).trim();
+  const message = r.error ?? 'install failed';
   reporter.fail('webkit', message);
   return { webkit: 'failed', webkitError: message };
 }
