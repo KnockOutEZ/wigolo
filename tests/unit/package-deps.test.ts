@@ -37,32 +37,49 @@ describe('package.json: forbidden deps after Python-rerank migration', () => {
   });
 });
 
-// Regression guard for GitHub issue #101 — Linux warmup --all crash.
+// Regression guard for GitHub issues #114 / #101 — Linux reranker symbol clash.
 //
-// Two mandatory production deps pin INCOMPATIBLE EXACT native ONNX runtimes:
+// Two mandatory production deps each pin an EXACT native ONNX runtime:
 //   - fastembed@2.1.0 (sole embedding backend) hard-pins onnxruntime-node@1.21.0
 //     (built against napi-v3).
-//   - @huggingface/transformers@4.2.0 (hard-wired reranker, no Python fallback)
-//     requires onnxruntime-node@1.24.3 (built against napi-v6).
-// On Linux x64 both .so files install, but the dynamic linker reuses the cached
-// 1.21.0 library, so transformers' VERS_1.24.3 symbol-version lookup fails and
-// `warmup --all` crashes. Because both deps pin EXACT versions, npm can't dedupe
-// them on its own — bumping the direct dep alone does nothing.
+//   - @huggingface/transformers (cross-encoder reranker backend) pins an exact
+//     onnxruntime-node too. At v4.2.0 that was 1.24.3 (napi-v6), which requires
+//     the `VERS_1.24.3` symbol-version in libonnxruntime.so.1.
+// Both native libs load in ONE process during warmup (warmEmbed + warmRerank).
+// On Linux the dynamic linker reuses whichever libonnxruntime.so.1 got loaded
+// first, so the mismatched consumer fails its symbol-version lookup:
+//   `libonnxruntime.so.1: version 'VERS_1.24.3' not found`.
 //
-// The fix: an npm `overrides` block forcing a SINGLE version (1.24.3) across the
-// whole tree, so only one onnxruntime-node .so ever installs. If a future dev
-// removes the override or lets the versions split again, this test must fail so
-// the Linux symbol clash can't silently return.
-describe('package.json: onnxruntime-node unified to one version (issue #101)', () => {
-  it('overrides forces onnxruntime-node to 1.24.3', () => {
-    expect(pkg.overrides?.['onnxruntime-node']).toBe('1.24.3');
+// The #101 attempt used an npm `overrides` block forcing a single 1.24.3 across
+// the tree. THAT WAS WRONG for shipped consumers: npm only honors `overrides`
+// from the install ROOT. When wigolo is installed as a *dependency* (exactly
+// what `npx @staticn0va/wigolo` does), npm IGNORES wigolo's own `overrides`, so
+// the two consumers split again and end users hit the clash anyway (#114).
+//
+// The correct fix is NATURAL CONVERGENCE: pin @huggingface/transformers to a
+// version whose exact onnxruntime-node pin EQUALS fastembed's (1.21.0).
+// transformers@3.5.0 pins onnxruntime-node@1.21.0 — the same version fastembed
+// wants — so npm dedupes to a SINGLE 1.21.0 copy on its own, no root-only
+// override required, and the fix actually reaches npx/Linux consumers.
+//
+// If a future dev re-splits the versions, bumps transformers back to a 4.x that
+// re-introduces 1.24.3, re-adds a direct onnxruntime-node dep, or reintroduces
+// the root-only override as the "fix", these tests MUST fail — that is the #114
+// recurrence path.
+describe('package.json: onnxruntime-node converges via natural alignment (issues #114/#101)', () => {
+  it('has NO root-only onnxruntime-node override (npm ignores it under npx)', () => {
+    expect(pkg.overrides?.['onnxruntime-node']).toBeUndefined();
   });
 
-  it('direct onnxruntime-node dependency matches the override (1.24.3)', () => {
-    expect(pkg.dependencies?.['onnxruntime-node']).toBe('1.24.3');
+  it('declares NO direct onnxruntime-node dependency (it must come transitively)', () => {
+    expect(pkg.dependencies?.['onnxruntime-node']).toBeUndefined();
   });
 
-  it('exactly one onnxruntime-node version resolves in package-lock.json', () => {
+  it('pins @huggingface/transformers to 3.5.0 so its onnxruntime-node matches fastembed (1.21.0)', () => {
+    expect(pkg.dependencies?.['@huggingface/transformers']).toBe('3.5.0');
+  });
+
+  it('exactly one onnxruntime-node version resolves in package-lock.json, and it is 1.21.0', () => {
     const lock = JSON.parse(
       readFileSync(join(__dirname, '..', '..', 'package-lock.json'), 'utf-8'),
     ) as { packages?: Record<string, { version?: string }> };
@@ -74,6 +91,6 @@ describe('package.json: onnxruntime-node unified to one version (issue #101)', (
       }
     }
 
-    expect([...versions]).toEqual(['1.24.3']);
+    expect([...versions]).toEqual(['1.21.0']);
   });
 });
