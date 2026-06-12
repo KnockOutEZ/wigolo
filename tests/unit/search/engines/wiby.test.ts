@@ -62,6 +62,30 @@ describe('WibyEngine', () => {
     expect(engine.parseResults(SAMPLE, 1)).toHaveLength(1);
   });
 
+  it('skips entries whose URL is not http(s)', () => {
+    // WHY: Wiby payloads are untrusted — a javascript:/data: URL passed
+    // through would land in agent-facing results as a clickable link.
+    const hostile = [
+      { URL: 'javascript:alert(1)', Title: 'XSS', Snippet: '' },
+      { URL: 'data:text/html,<script>1</script>', Title: 'Data', Snippet: '' },
+      { URL: 'ftp://old.example.com/file', Title: 'FTP', Snippet: '' },
+      { URL: '//protocol-relative.example.com', Title: 'Rel', Snippet: '' },
+      { URL: 'HTTPS://example.com/ok', Title: 'CaseOk', Snippet: '' },
+      { URL: 'https://example.com/fine', Title: 'Fine', Snippet: '' },
+    ];
+    const results = engine.parseResults(hostile, 10);
+    expect(results.map((r) => r.title)).toEqual(['CaseOk', 'Fine']);
+  });
+
+  it('throws on non-2xx response so the breaker counts the failure', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('service unavailable', { status: 503 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(new WibyEngine().search('q')).rejects.toThrow(/Wiby returned 503/);
+  });
+
   it('returns empty array on non-array body', () => {
     expect(engine.parseResults(null, 10)).toEqual([]);
     expect(engine.parseResults({}, 10)).toEqual([]);

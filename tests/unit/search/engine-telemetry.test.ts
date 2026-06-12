@@ -132,6 +132,67 @@ describe('engine_telemetry (sub-ticket 3.13)', () => {
     expect(ent!.cooldown_remaining_ms).toBe(42_000);
   });
 
+  it('merges a breaker_open skip into an existing engine entry on multi-query', async () => {
+    // WHY: multi-query aggregates per-dispatch outcomes by engine name. When
+    // the same engine succeeds on one query and is breaker-skipped on the
+    // next, the merge branch must mark the merged entry skipped and attach
+    // reason/cooldown — otherwise the skip is invisible behind the ok row.
+    const { BreakerOpenError } = await import('../../../src/search/core/engine-base.js');
+    const flaky: SearchEngine = {
+      name: 'mojeek',
+      search: vi.fn(async (q: string) => {
+        if (q === 'q1') return [makeResult('mojeek', 'https://m.com/x')];
+        throw new BreakerOpenError('mojeek', 42_000);
+      }),
+    };
+    verticalState.general = [
+      makeEntry('bing', [makeResult('bing', 'https://a.com/x')]),
+      { engine: flaky },
+    ];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: ['q1', 'q2'], include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const rows = out.data.engine_telemetry!.filter((e) => e.name === 'mojeek');
+    expect(rows).toHaveLength(1); // aggregated, not one row per dispatch
+    expect(rows[0].outcome).toBe('skipped');
+    expect(rows[0].reason).toBe('breaker_open');
+    expect(rows[0].cooldown_remaining_ms).toBe(42_000);
+    expect(rows[0].result_count).toBe(1); // q1 results still counted
+  });
+
+  it('keeps the first-seen reason and cooldown when both dispatches are breaker-skipped', async () => {
+    // First-seen-wins, mirroring how `error` merges: the earliest dispatch's
+    // cooldown is the one callers saw first and the one closest to reality.
+    const { BreakerOpenError } = await import('../../../src/search/core/engine-base.js');
+    const cooldowns: Record<string, number> = { q1: 42_000, q2: 17_000 };
+    const dark: SearchEngine = {
+      name: 'mojeek',
+      search: vi.fn(async (q: string) => {
+        throw new BreakerOpenError('mojeek', cooldowns[q] ?? 0);
+      }),
+    };
+    verticalState.general = [
+      makeEntry('bing', [makeResult('bing', 'https://a.com/x')]),
+      { engine: dark },
+    ];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: ['q1', 'q2'], include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const ent = out.data.engine_telemetry!.find((e) => e.name === 'mojeek');
+    expect(ent).toBeDefined();
+    expect(ent!.outcome).toBe('skipped');
+    expect(ent!.reason).toBe('breaker_open');
+    expect(ent!.cooldown_remaining_ms).toBe(42_000);
+  });
+
   it('marks failing engine outcome=error', async () => {
     verticalState.general = [
       makeEntry('bing', [makeResult('bing', 'https://a.com/x')]),
