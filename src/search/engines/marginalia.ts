@@ -21,7 +21,10 @@ interface MarginaliaBody {
 // Adding it to the general vertical broadens recall for niche / legacy
 // queries that S11a is designed to surface. Free JSON API, no key.
 //
-// Endpoint shape: `https://api.marginalia-search.com/search/<query>?count=N`
+// Endpoint shape: `https://api2.marginalia-search.com/search?query=<q>&count=N&dc=N`
+// with header `API-Key: public` (the legacy api.marginalia-search.com
+// path-segment API now 404s). 503 means rate-limited — let it throw so the
+// breaker counts it.
 // Returns `{ results: [{ url, title, description, quality, rankingScore }] }`.
 // We normalize to RawSearchResult, preserving the engine's own ordering as
 // the relevance signal (a `rankingScore` fallback is used when present).
@@ -32,8 +35,8 @@ export class MarginaliaEngine implements SearchEngine {
     const timeoutMs = options.timeoutMs ?? 10000;
     const maxResults = options.maxResults ?? 10;
 
-    const encoded = encodeURIComponent(query);
-    const url = `https://api.marginalia-search.com/search/${encoded}?count=${maxResults}`;
+    const params = new URLSearchParams({ query, count: String(maxResults), dc: '3' });
+    const url = `https://api2.marginalia-search.com/search?${params}`;
 
     log.debug('querying marginalia', { query });
 
@@ -42,6 +45,7 @@ export class MarginaliaEngine implements SearchEngine {
       headers: {
         'User-Agent': 'wigolo/0.1 (https://github.com/staticn0va/wigolo)',
         Accept: 'application/json',
+        'API-Key': 'public',
       },
     });
     if (!response.ok) throw new Error(`Marginalia returned ${response.status}`);
