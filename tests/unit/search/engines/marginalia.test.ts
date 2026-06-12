@@ -5,14 +5,36 @@
 // entirely. Adding it to the general vertical pulls niche/legacy results
 // the existing 14 adapters miss. Free JSON API, no key required.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { MarginaliaEngine } from '../../../../src/search/engines/marginalia.js';
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('MarginaliaEngine', () => {
   const engine = new MarginaliaEngine();
 
   it('has name set to marginalia', () => {
     expect(engine.name).toBe('marginalia');
+  });
+
+  // WHY: the legacy api.marginalia-search.com path-segment API now 404s on
+  // every call — the public API moved to api2 with query-string params and
+  // a mandatory `API-Key: public` header. This pins the new request shape.
+  it('queries the api2 endpoint with query param and public API key header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ results: [] }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new MarginaliaEngine().search('sqlite-vec knn', { maxResults: 5 });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    const parsed = new URL(String(url));
+    expect(parsed.host).toBe('api2.marginalia-search.com');
+    expect(parsed.pathname).toBe('/search');
+    expect(parsed.searchParams.get('query')).toBe('sqlite-vec knn');
+    expect(parsed.searchParams.get('count')).toBe('5');
+    expect((init.headers as Record<string, string>)['API-Key']).toBe('public');
   });
 
   it('parses the documented Marginalia JSON shape into normalized RawSearchResult', () => {
