@@ -43,7 +43,9 @@ export class WibyEngine implements SearchEngine {
       const item = body[i] as { URL?: unknown; Title?: unknown; Snippet?: unknown };
       const url = typeof item?.URL === 'string' ? item.URL : '';
       const title = typeof item?.Title === 'string' ? item.Title : '';
-      if (!url || !title) continue;
+      // Untrusted payload — only pass through http(s) URLs (no javascript:,
+      // data:, ftp:, or protocol-relative entries).
+      if (!/^https?:\/\//i.test(url) || !title) continue;
       results.push({
         title,
         url,
