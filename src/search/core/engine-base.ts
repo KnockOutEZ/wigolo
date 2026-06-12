@@ -76,6 +76,8 @@ interface BreakerState {
   tripUntil: number;
   /** Half-open probe in flight — concurrent callers are rejected as open. */
   probing: boolean;
+  /** Epoch ms when the in-flight probe started — drives stuck-probe reclaim. */
+  probeStartedAt: number;
   /** Consecutive opens without an intervening success — drives backoff. */
   trips: number;
   /** Last engine error, surfaced via getBreakerSnapshot() for doctor. */
@@ -92,7 +94,7 @@ const breakers = new Map<string, BreakerState>();
 function getState(name: string): BreakerState {
   let s = breakers.get(name);
   if (!s) {
-    s = { failures: 0, tripUntil: 0, probing: false, trips: 0 };
+    s = { failures: 0, tripUntil: 0, probing: false, probeStartedAt: 0, trips: 0 };
     breakers.set(name, s);
   }
   return s;
@@ -110,6 +112,15 @@ function recordFailure(name: string, threshold: number, cooldownMs: number): voi
       cooldownMs,
     });
   }
+}
+
+/** Reopen after a failed (or stuck) probe: exponential backoff, capped. */
+function reopenWithBackoff(state: BreakerState, cooldownMs: number): number {
+  state.trips += 1;
+  const backoffMs = Math.min(cooldownMs * 2 ** (state.trips - 1), MAX_COOLDOWN_MS);
+  state.tripUntil = Date.now() + backoffMs;
+  state.probing = false;
+  return backoffMs;
 }
 
 function recordSuccess(name: string): void {
@@ -183,12 +194,26 @@ export function wrapWithRetryAndBreaker(
           throw new BreakerOpenError(engine.name, state.tripUntil - now);
         }
         if (state.probing) {
+          if (now - state.probeStartedAt >= cooldownMs) {
+            // Stuck probe: in flight longer than a full cooldown window —
+            // treat it as failed so a never-settling engine can't hold the
+            // breaker half-open forever. Reopen with backoff; a later
+            // caller re-probes once the new cooldown elapses.
+            const backoffMs = reopenWithBackoff(state, cooldownMs);
+            log.warn('breaker reclaimed stuck probe', {
+              engine: engine.name,
+              trips: state.trips,
+              cooldownMs: backoffMs,
+            });
+            throw new BreakerOpenError(engine.name, backoffMs);
+          }
           // Half-open admits exactly ONE probe — everyone else stays skipped
           // until the in-flight probe settles.
           throw new BreakerOpenError(engine.name, 0);
         }
         probe = true;
         state.probing = true;
+        state.probeStartedAt = now;
         log.info('breaker half-open probe', { engine: engine.name });
       }
 
@@ -209,10 +234,7 @@ export function wrapWithRetryAndBreaker(
       state.lastError = lastErr instanceof Error ? lastErr.message : String(lastErr);
       if (probe) {
         // Failed probe — reopen with exponential backoff, capped at 10 min.
-        state.trips += 1;
-        const backoffMs = Math.min(cooldownMs * 2 ** (state.trips - 1), MAX_COOLDOWN_MS);
-        state.tripUntil = Date.now() + backoffMs;
-        state.probing = false;
+        const backoffMs = reopenWithBackoff(state, cooldownMs);
         log.warn('breaker reopened after failed probe', {
           engine: engine.name,
           trips: state.trips,

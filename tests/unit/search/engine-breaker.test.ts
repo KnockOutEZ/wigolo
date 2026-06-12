@@ -211,6 +211,49 @@ describe('breaker half-open state machine', () => {
     expect(snap!.cooldownRemainingMs).toBeGreaterThan(400_000);
   });
 
+  it('reclaims a stuck probe after the cooldown deadline so the engine is not dark forever', async () => {
+    // WHY: a plugin engine whose search() never settles would otherwise hold
+    // the breaker half-open permanently — `probing` stays true and every
+    // later caller is rejected with no path back to a working engine.
+    let calls = 0;
+    const spy = vi.fn((): Promise<RawSearchResult[]> => {
+      calls++;
+      if (calls <= 2) return Promise.reject(new Error('boom'));
+      if (calls === 3) return new Promise(() => {}); // probe hangs forever
+      return Promise.resolve([makeResult('recovered')]);
+    });
+    const wrapped = wrapWithRetryAndBreaker(makeEngine('hf8', spy), {
+      failureThreshold: 1,
+      cooldownMs: 60_000,
+    });
+
+    await settleCall(wrapped); // trip (calls 1-2)
+    vi.advanceTimersByTime(60_000);
+
+    // Probe admitted, hangs on the never-settling engine promise.
+    void wrapped.search('q').catch(() => {});
+    expect(spy).toHaveBeenCalledTimes(3);
+
+    // Probe has been in flight for a full cooldown window — next caller
+    // reclaims: stuck probe counts as failed, breaker reopens with backoff.
+    vi.advanceTimersByTime(60_000);
+    await expect(wrapped.search('q')).rejects.toBeInstanceOf(BreakerOpenError);
+    expect(spy).toHaveBeenCalledTimes(3);
+
+    const snap = getBreakerSnapshot().find((s) => s.engine === 'hf8');
+    expect(snap).toBeDefined();
+    expect(snap!.state).toBe('open');
+    expect(snap!.cooldownRemainingMs).toBeGreaterThan(60_000); // backed off
+
+    // After the reopened cooldown elapses the engine is recoverable: a new
+    // probe is admitted and a now-healthy engine closes the breaker.
+    vi.advanceTimersByTime(120_000);
+    const results = await settleCall(wrapped);
+    expect(results).toEqual([makeResult('recovered')]);
+    const closed = getBreakerSnapshot().find((s) => s.engine === 'hf8');
+    expect(closed!.state).toBe('closed');
+  });
+
   it('captures lastError in the snapshot', async () => {
     const spy = vi.fn(async () => {
       throw new Error('upstream 403 forbidden');
