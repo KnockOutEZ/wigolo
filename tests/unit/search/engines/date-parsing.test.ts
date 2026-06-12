@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { BingEngine } from '../../../../src/search/engines/bing.js';
 import { DuckDuckGoEngine } from '../../../../src/search/engines/duckduckgo.js';
-import { StartpageEngine } from '../../../../src/search/engines/startpage.js';
 
 describe('date parsing from search engine results', () => {
   describe('BingEngine date extraction', () => {
@@ -92,30 +91,4 @@ describe('date parsing from search engine results', () => {
     });
   });
 
-  describe('StartpageEngine date extraction', () => {
-    const engine = new StartpageEngine();
-
-    it('extracts date from snippet prefix', () => {
-      const html = `<html><body>
-        <div class="w-gl__result">
-          <a class="w-gl__result-title" href="https://example.com/news">News</a>
-          <p class="w-gl__description">Mar 5, 2025 - Latest update on the topic.</p>
-        </div>
-      </body></html>`;
-      const results = engine.parseResults(html, 10);
-      expect(results[0].published_date).toBeDefined();
-      expect(new Date(results[0].published_date!).getFullYear()).toBe(2025);
-    });
-
-    it('returns undefined for snippets without dates', () => {
-      const html = `<html><body>
-        <div class="w-gl__result">
-          <a class="w-gl__result-title" href="https://example.com/page">Page</a>
-          <p class="w-gl__description">No date here, just content.</p>
-        </div>
-      </body></html>`;
-      const results = engine.parseResults(html, 10);
-      expect(results[0].published_date).toBeUndefined();
-    });
-  });
 });

@@ -1,6 +1,6 @@
 import { BingEngine } from '../../engines/bing.js';
 import { DuckDuckGoEngine } from '../../engines/duckduckgo.js';
-import { StartpageEngine } from '../../engines/startpage.js';
+import { WibyEngine } from '../../engines/wiby.js';
 import { WikipediaEngine } from '../../engines/wikipedia.js';
 import { BraveEngine } from '../../engines/brave.js';
 import { MojeekEngine } from '../../engines/mojeek.js';
@@ -21,7 +21,6 @@ export function getGeneralEngines(): EngineEntry[] {
   const entries: EngineEntry[] = [
     { engine: wrapWithRetryAndBreaker(new BingEngine()), weight: 1, supportsDateFilter: false, quality: 'medium' },
     { engine: wrapWithRetryAndBreaker(new DuckDuckGoEngine()), weight: 1, supportsDateFilter: false, quality: 'medium' },
-    { engine: wrapWithRetryAndBreaker(new StartpageEngine()), weight: 1, supportsDateFilter: false, quality: 'medium' },
     { engine: wrapWithRetryAndBreaker(new WikipediaEngine()), weight: 0.6, supportsDateFilter: false, quality: 'high' },
     // Slice S11a: Mojeek runs its own independent web index (no Bing/Google
     // reliance), adding a real lexical signal that dilutes brand-collision
@@ -34,6 +33,12 @@ export function getGeneralEngines(): EngineEntry[] {
     // engines deprioritize. Same `secondary` rule as Mojeek — adds a niche
     // signal without dominating consensus.
     { engine: wrapWithRetryAndBreaker(new MarginaliaEngine()), weight: 0.6, supportsDateFilter: false, secondary: true, quality: 'low' },
+    // Slice 3 (pool reshape): Wiby indexes the retro/personal small web —
+    // long-tail recall the major engines miss. Lowest weight + `secondary`
+    // so it adds coverage without ever dominating consensus. It replaces a
+    // former scraper that required a stateful anti-bot token dance and never
+    // contributed results.
+    { engine: wrapWithRetryAndBreaker(new WibyEngine()), weight: 0.5, supportsDateFilter: false, secondary: true, quality: 'low' },
   ];
 
   if (getConfig().braveApiKey) {

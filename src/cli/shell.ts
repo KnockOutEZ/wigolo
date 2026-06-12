@@ -7,7 +7,7 @@ import { initDatabase, closeDatabase } from '../cache/db.js';
 import { SearxngClient } from '../search/searxng.js';
 import { DuckDuckGoEngine } from '../search/engines/duckduckgo.js';
 import { BingEngine } from '../search/engines/bing.js';
-import { StartpageEngine } from '../search/engines/startpage.js';
+import { WibyEngine } from '../search/engines/wiby.js';
 import { resolveSearchBackend, getBootstrapState } from '../searxng/bootstrap.js';
 import { SearxngProcess } from '../searxng/process.js';
 import { BackendStatus } from '../server/backend-status.js';
@@ -35,7 +35,7 @@ export async function runShell(args: string[]): Promise<void> {
   const searchEngines: SearchEngine[] = [
     new BingEngine(),
     new DuckDuckGoEngine(),
-    new StartpageEngine(),
+    new WibyEngine(),
   ];
 
   let searxngProcess: SearxngProcess | null = null;

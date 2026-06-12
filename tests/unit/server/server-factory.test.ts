@@ -90,9 +90,9 @@ describe('initSubsystems', () => {
 
     expect(subs.searchEngines.length).toBeGreaterThanOrEqual(3);
     const names = subs.searchEngines.map((e) => e.name);
-    expect(names).toContain('bing');
-    expect(names).toContain('duckduckgo');
-    expect(names).toContain('startpage');
+    // Exact prefix assertion: the static direct-engine list is precisely
+    // these three — it enforces that dropped engines stay out of the pool.
+    expect(names.slice(0, 3)).toEqual(['bing', 'duckduckgo', 'wiby']);
   });
 
   it('shutdown function closes browser pool and database', async () => {
