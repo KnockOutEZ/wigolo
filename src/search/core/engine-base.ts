@@ -59,6 +59,8 @@ export interface EngineOutcome {
   latencyMs: number;
   /** True when the breaker tripped and we skipped the call. */
   skipped?: boolean;
+  /** Remaining breaker cooldown in ms, set only when skipped. */
+  cooldownRemainingMs?: number;
 }
 
 export interface BreakerConfig {
@@ -70,11 +72,19 @@ export interface BreakerConfig {
 
 interface BreakerState {
   failures: number;
+  /** Epoch ms until which the breaker is open. 0 = closed. */
   tripUntil: number;
+  /** Half-open probe in flight — concurrent callers are rejected as open. */
+  probing: boolean;
+  /** Consecutive opens without an intervening success — drives backoff. */
+  trips: number;
+  /** Last engine error, surfaced via getBreakerSnapshot() for doctor. */
+  lastError?: string;
 }
 
 const DEFAULT_THRESHOLD = 3;
 const DEFAULT_COOLDOWN_MS = 60_000;
+const MAX_COOLDOWN_MS = 600_000;
 const RETRY_BACKOFF_MS = 100;
 
 const breakers = new Map<string, BreakerState>();
@@ -82,21 +92,10 @@ const breakers = new Map<string, BreakerState>();
 function getState(name: string): BreakerState {
   let s = breakers.get(name);
   if (!s) {
-    s = { failures: 0, tripUntil: 0 };
+    s = { failures: 0, tripUntil: 0, probing: false, trips: 0 };
     breakers.set(name, s);
   }
   return s;
-}
-
-function isTripped(state: BreakerState): boolean {
-  if (state.tripUntil === 0) return false;
-  if (Date.now() >= state.tripUntil) {
-    log.info('breaker auto-reset', { });
-    state.tripUntil = 0;
-    state.failures = 0;
-    return false;
-  }
-  return true;
 }
 
 function recordFailure(name: string, threshold: number, cooldownMs: number): void {
@@ -104,6 +103,7 @@ function recordFailure(name: string, threshold: number, cooldownMs: number): voi
   state.failures += 1;
   if (state.failures >= threshold && state.tripUntil === 0) {
     state.tripUntil = Date.now() + cooldownMs;
+    state.trips = 1;
     log.warn('breaker tripped', {
       engine: name,
       failures: state.failures,
@@ -116,16 +116,52 @@ function recordSuccess(name: string): void {
   const state = getState(name);
   state.failures = 0;
   state.tripUntil = 0;
+  state.probing = false;
+  state.trips = 0;
+  delete state.lastError;
 }
 
 export function _resetBreakersForTest(): void {
   breakers.clear();
 }
 
-class BreakerOpenError extends Error {
-  constructor(name: string) {
+export type BreakerSnapshotState = 'closed' | 'open' | 'half-open';
+
+export interface BreakerSnapshotEntry {
+  engine: string;
+  state: BreakerSnapshotState;
+  failures: number;
+  cooldownRemainingMs: number;
+  lastError?: string;
+}
+
+/**
+ * Point-in-time view of every breaker that has seen at least one call.
+ * `half-open` = cooldown elapsed but the breaker has not closed yet (probe
+ * pending or in flight). Pure read — never mutates breaker state.
+ */
+export function getBreakerSnapshot(): BreakerSnapshotEntry[] {
+  const now = Date.now();
+  return [...breakers.entries()].map(([engine, s]) => {
+    const state: BreakerSnapshotState =
+      s.tripUntil === 0 ? 'closed' : now < s.tripUntil ? 'open' : 'half-open';
+    return {
+      engine,
+      state,
+      failures: s.failures,
+      cooldownRemainingMs: state === 'open' ? s.tripUntil - now : 0,
+      ...(s.lastError ? { lastError: s.lastError } : {}),
+    };
+  });
+}
+
+export class BreakerOpenError extends Error {
+  readonly cooldownRemainingMs: number;
+
+  constructor(name: string, cooldownRemainingMs: number) {
     super(`breaker open for engine ${name}`);
     this.name = 'BreakerOpenError';
+    this.cooldownRemainingMs = cooldownRemainingMs;
   }
 }
 
@@ -140,8 +176,20 @@ export function wrapWithRetryAndBreaker(
     name: engine.name,
     async search(query: string, options?: SearchEngineOptions): Promise<RawSearchResult[]> {
       const state = getState(engine.name);
-      if (isTripped(state)) {
-        throw new BreakerOpenError(engine.name);
+      let probe = false;
+      if (state.tripUntil > 0) {
+        const now = Date.now();
+        if (now < state.tripUntil) {
+          throw new BreakerOpenError(engine.name, state.tripUntil - now);
+        }
+        if (state.probing) {
+          // Half-open admits exactly ONE probe — everyone else stays skipped
+          // until the in-flight probe settles.
+          throw new BreakerOpenError(engine.name, 0);
+        }
+        probe = true;
+        state.probing = true;
+        log.info('breaker half-open probe', { engine: engine.name });
       }
 
       let lastErr: unknown;
@@ -158,7 +206,21 @@ export function wrapWithRetryAndBreaker(
         }
       }
 
-      recordFailure(engine.name, threshold, cooldownMs);
+      state.lastError = lastErr instanceof Error ? lastErr.message : String(lastErr);
+      if (probe) {
+        // Failed probe — reopen with exponential backoff, capped at 10 min.
+        state.trips += 1;
+        const backoffMs = Math.min(cooldownMs * 2 ** (state.trips - 1), MAX_COOLDOWN_MS);
+        state.tripUntil = Date.now() + backoffMs;
+        state.probing = false;
+        log.warn('breaker reopened after failed probe', {
+          engine: engine.name,
+          trips: state.trips,
+          cooldownMs: backoffMs,
+        });
+      } else {
+        recordFailure(engine.name, threshold, cooldownMs);
+      }
       throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
     },
   };
@@ -181,14 +243,15 @@ export async function runEnginesParallel(
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const skipped = err instanceof BreakerOpenError;
       return {
         engine: entry.engine.name,
         ok: false,
         results: [],
         error: message,
         latencyMs: Date.now() - start,
-        ...(skipped ? { skipped: true } : {}),
+        ...(err instanceof BreakerOpenError
+          ? { skipped: true, cooldownRemainingMs: err.cooldownRemainingMs }
+          : {}),
       };
     }
   });

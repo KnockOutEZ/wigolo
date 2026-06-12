@@ -6,7 +6,14 @@
 // shape and the key-availability branching.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { getEngineHealthSummary } from '../../../src/search/core/engine-health.js';
+import {
+  getEngineHealthSummary,
+  getRegisteredEngineEntries,
+} from '../../../src/search/core/engine-health.js';
+import {
+  wrapWithRetryAndBreaker,
+  _resetBreakersForTest,
+} from '../../../src/search/core/engine-base.js';
 import { _resetGeneralEnginesForTest } from '../../../src/search/core/verticals/general.js';
 import { _resetImageEnginesForTest } from '../../../src/search/core/verticals/images.js';
 import { _resetCodeEnginesForTest } from '../../../src/search/core/verticals/code.js';
@@ -98,5 +105,58 @@ describe('getEngineHealthSummary', () => {
     const summary = getEngineHealthSummary();
     const gh = summary.find((e) => e.name === 'github-code');
     expect(gh?.status).toBe('ok');
+  });
+
+  // Slice 4 (engine-pool recovery): per-engine breaker state in doctor.
+  // WHY: during the 2026-06-12 benchmark two engines sat behind open
+  // breakers for the whole run with zero user visibility — doctor must
+  // surface breaker state + the last upstream error.
+  describe('breaker state join (Slice 4)', () => {
+    beforeEach(() => {
+      _resetBreakersForTest();
+    });
+
+    afterEach(() => {
+      _resetBreakersForTest();
+    });
+
+    it('joins open breaker state + lastError onto the matching engine entry', async () => {
+      // Trip the shared breaker keyed by the pool engine's name. Breaker
+      // state is name-keyed, so a wrapper around a stub engine with the
+      // same name shares state with the real pool entry.
+      const failing = wrapWithRetryAndBreaker(
+        {
+          name: 'duckduckgo',
+          search: async () => {
+            throw new Error('upstream 403 forbidden');
+          },
+        },
+        { failureThreshold: 1, cooldownMs: 60_000 },
+      );
+      await expect(failing.search('q')).rejects.toThrow('upstream 403 forbidden');
+
+      const summary = getEngineHealthSummary();
+      const ddg = summary.find((e) => e.name === 'duckduckgo');
+      expect(ddg).toBeDefined();
+      expect(ddg!.breaker).toBe('open');
+      expect(ddg!.lastError).toContain('upstream 403 forbidden');
+    });
+
+    it('omits breaker fields for engines that never dispatched', () => {
+      const summary = getEngineHealthSummary();
+      const ddg = summary.find((e) => e.name === 'duckduckgo');
+      expect(ddg).toBeDefined();
+      expect(ddg!.breaker).toBeUndefined();
+      expect(ddg!.lastError).toBeUndefined();
+    });
+  });
+});
+
+describe('getRegisteredEngineEntries (Slice 4 — doctor --probe-engines source)', () => {
+  it('returns the flattened engine entries across all verticals', () => {
+    const entries = getRegisteredEngineEntries();
+    expect(entries.length).toBeGreaterThan(0);
+    const names = new Set(entries.map((e) => e.engine.name));
+    expect(names.has('duckduckgo')).toBe(true);
   });
 });

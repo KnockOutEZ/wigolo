@@ -11,6 +11,7 @@
 // whether each engine is ready".
 
 import { getConfig } from '../../config.js';
+import { getBreakerSnapshot, type BreakerSnapshotState, type EngineEntry } from './engine-base.js';
 import { getGeneralEngines } from './verticals/general.js';
 import { getNewsEngines } from './verticals/news.js';
 import { getCodeEngines } from './verticals/code.js';
@@ -29,6 +30,11 @@ export interface EngineHealthEntry {
   hint?: string;
   /** Optional engine weight (for visibility — informational only). */
   weight?: number;
+  /** Circuit-breaker state, joined from getBreakerSnapshot(). Omitted for
+   * engines that never dispatched in this process (Slice 4). */
+  breaker?: BreakerSnapshotState;
+  /** Last upstream error the breaker recorded for this engine. */
+  lastError?: string;
 }
 
 interface KeyRequirement {
@@ -61,14 +67,8 @@ function hintFor(engineName: string): string | undefined {
   return `set ${req.envVar} to enable this engine`;
 }
 
-/**
- * Inspect the configured engine pool across every vertical and return a
- * flat list of (engine, vertical, status) entries. Pure — no network, no
- * side effects. Re-entry-safe and cheap enough to call on every doctor
- * invocation. Used by `doctor` for the engine health summary block.
- */
-export function getEngineHealthSummary(): EngineHealthEntry[] {
-  const verticals: Array<[Vertical, ReturnType<typeof getGeneralEngines>]> = [
+function verticalPools(): Array<[Vertical, EngineEntry[]]> {
+  return [
     ['general', getGeneralEngines()],
     ['news', getNewsEngines()],
     ['code', getCodeEngines()],
@@ -76,6 +76,29 @@ export function getEngineHealthSummary(): EngineHealthEntry[] {
     ['papers', getPapersEngines()],
     ['images', getImageEngines()],
   ];
+}
+
+/**
+ * Flattened engine entries across every vertical pool. Used by doctor's
+ * `--probe-engines` flag as the live-probe target list (Slice 4). May
+ * contain the same engine name more than once when an engine is registered
+ * in multiple verticals — callers dedupe by name.
+ */
+export function getRegisteredEngineEntries(): EngineEntry[] {
+  return verticalPools().flatMap(([, entries]) => entries);
+}
+
+/**
+ * Inspect the configured engine pool across every vertical and return a
+ * flat list of (engine, vertical, status) entries. Pure — no network, no
+ * side effects. Re-entry-safe and cheap enough to call on every doctor
+ * invocation. Used by `doctor` for the engine health summary block.
+ */
+export function getEngineHealthSummary(): EngineHealthEntry[] {
+  const verticals = verticalPools();
+  // Slice 4: join live breaker state by engine name so doctor can show
+  // which engines are dark right now and why.
+  const breakerByEngine = new Map(getBreakerSnapshot().map((s) => [s.engine, s]));
 
   const out: EngineHealthEntry[] = [];
   // Track which key-required engines we observed in any pool so we can
@@ -96,12 +119,15 @@ export function getEngineHealthSummary(): EngineHealthEntry[] {
         status = 'needs-key';
         hint = hintFor(name);
       }
+      const breaker = breakerByEngine.get(name);
       out.push({
         name,
         vertical,
         status,
         ...(hint ? { hint } : {}),
         ...(entry.weight !== undefined ? { weight: entry.weight } : {}),
+        ...(breaker ? { breaker: breaker.state } : {}),
+        ...(breaker?.lastError ? { lastError: breaker.lastError } : {}),
       });
     }
   }
