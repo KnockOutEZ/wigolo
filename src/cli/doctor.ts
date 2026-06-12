@@ -14,7 +14,12 @@ import { initDatabase, closeDatabase } from '../cache/db.js';
 import { getCacheStats } from '../cache/store.js';
 import { getBackgroundIndexQueue } from '../embedding/background-queue.js';
 import { loadFeedConfig } from '../search/core/rss/feed-config.js';
-import { getEngineHealthSummary, type EngineHealthEntry } from '../search/core/engine-health.js';
+import {
+  getEngineHealthSummary,
+  getRegisteredEngineEntries,
+  type EngineHealthEntry,
+} from '../search/core/engine-health.js';
+import type { EngineEntry } from '../search/core/engine-base.js';
 import { isTelemetryEnabled } from './telemetry.js';
 import { allProviders, providerEnvVar, selectProvider } from '../integrations/cloud/llm/select.js';
 import { resolveModel, providerDefaultModel, providerModelEnvVar } from '../integrations/cloud/llm/model-select.js';
@@ -185,9 +190,50 @@ export function formatEngineHealthLines(entries: EngineHealthEntry[]): string[] 
     const name = e.name.padEnd(15);
     const vertical = e.vertical.padEnd(10);
     const suffix: string = e.status !== 'ok' && e.hint ? `${e.status} (${e.hint})` : e.status;
-    lines.push(`  ${name} ${vertical} ${suffix}`);
+    // Slice 4: an open/half-open breaker means the engine will not dispatch
+    // even though its config status says "ok" — render it with the last
+    // upstream error so users see WHY the engine is dark.
+    const breakerNote =
+      e.breaker && e.breaker !== 'closed'
+        ? ` [breaker ${e.breaker}${e.lastError ? ` — ${e.lastError.slice(0, 60)}` : ''}]`
+        : '';
+    lines.push(`  ${name} ${vertical} ${suffix}${breakerNote}`);
   }
   return lines;
+}
+
+/**
+ * Live per-engine probe behind `doctor --probe-engines` (Slice 4). Dedupes
+ * the registered entries by engine name, skips parked (disabled) adapters,
+ * and runs one bounded query per engine SEQUENTIALLY — politeness beats
+ * speed for a diagnostic that hits 15+ third-party services. No-op when
+ * the flag is off so the default doctor stays network-free.
+ */
+export async function runEngineProbeSection(
+  probeEngines: boolean,
+  entries: EngineEntry[],
+  print: (line: string) => void = out,
+): Promise<void> {
+  if (!probeEngines) return;
+  print('');
+  print('[wigolo doctor] Engine probes (live):');
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const name = entry.engine.name;
+    if (entry.disabled || seen.has(name)) continue;
+    seen.add(name);
+    const t0 = Date.now();
+    try {
+      const results = await entry.engine.search('wigolo health probe', {
+        maxResults: 3,
+        timeoutMs: 5000,
+      });
+      print(`  ${name.padEnd(15)} ok (${Date.now() - t0}ms, ${results.length} results)`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      print(`  ${name.padEnd(15)} error (${msg.slice(0, 80)})`);
+    }
+  }
 }
 
 /**
@@ -224,19 +270,24 @@ function humanRetry(nextRetryAt?: string): string {
  * - 1 when any required component is degraded: Python missing, browser missing,
  *   search engine bootstrap failed/no_runtime, or search engine process supposed to be up but isn't.
  */
-export async function runDoctor(dataDir: string): Promise<number> {
+export interface DoctorOptions {
+  /** Run a live search probe against every registered engine (Slice 4). */
+  probeEngines?: boolean;
+}
+
+export async function runDoctor(dataDir: string, opts?: DoctorOptions): Promise<number> {
   // Doctor produces its own human-readable diagnostic — suppress info/debug
   // logger noise from the modules it touches so the output stays clean.
   // Warnings and errors still come through.
   setLogSuppression('warn');
   try {
-    return await runDoctorInner(dataDir);
+    return await runDoctorInner(dataDir, opts);
   } finally {
     setLogSuppression(null);
   }
 }
 
-async function runDoctorInner(dataDir: string): Promise<number> {
+async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<number> {
   let degraded = false;
 
   out(`[wigolo doctor] Data dir:        ${dataDir}`);
@@ -385,6 +436,15 @@ async function runDoctorInner(dataDir: string): Promise<number> {
     // a vertical fails to load — doctor must keep going.
     const msg = err instanceof Error ? err.message : String(err);
     out(`  (engine health summary failed: ${msg.slice(0, 80)})`);
+  }
+
+  // Slice 4: opt-in live probe of every registered engine. Off by default —
+  // doctor stays network-free unless the user explicitly asks.
+  try {
+    await runEngineProbeSection(opts?.probeEngines ?? false, getRegisteredEngineEntries());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    out(`  (engine probes failed: ${msg.slice(0, 80)})`);
   }
 
   out('');
@@ -666,11 +726,11 @@ export function isPostExitNativeNoise(line: string): boolean {
  * sentinel was written, we know the diagnostic completed and we use the
  * sentinel code. Any other crash propagates as a real failure.
  */
-export async function runDoctorIsolated(dataDir: string): Promise<number> {
+export async function runDoctorIsolated(dataDir: string, opts?: DoctorOptions): Promise<number> {
   // Child mode: run doctor in-process, write intended exit code to sentinel.
   const sentinel = process.env[DOCTOR_CHILD_ENV];
   if (sentinel) {
-    const code = await runDoctor(dataDir);
+    const code = await runDoctor(dataDir, opts);
     try {
       writeFileSync(sentinel, String(code), 'utf-8');
     } catch {
@@ -681,15 +741,15 @@ export async function runDoctorIsolated(dataDir: string): Promise<number> {
   }
 
   // Parent mode: spawn child, wait, read sentinel.
-  return runDoctorAsChild(dataDir);
+  return runDoctorAsChild(dataDir, opts);
 }
 
-export async function runDoctorAsChild(dataDir: string): Promise<number> {
+export async function runDoctorAsChild(dataDir: string, opts?: DoctorOptions): Promise<number> {
   // Allow opt-out for environments where spawning is undesirable (tests,
   // sandboxed CI). The fallback runs doctor in-process — the libc++ abort
   // is still possible but the exit code from runDoctor itself is returned.
   if (process.env.WIGOLO_DOCTOR_INPROC === '1') {
-    return runDoctor(dataDir);
+    return runDoctor(dataDir, opts);
   }
 
   const sentinelDir = mkdtempSync(join(tmpdir(), 'wigolo-doctor-'));
@@ -702,13 +762,14 @@ export async function runDoctorAsChild(dataDir: string): Promise<number> {
   const entry = process.argv[1];
   if (!entry) {
     // Defensive: no entry to re-invoke. Fall back to in-process.
-    return runDoctor(dataDir);
+    return runDoctor(dataDir, opts);
   }
 
   // Inherit stdout, but pipe stderr so we can strip the cosmetic libc++ abort
   // message that fires after the child's diagnostic has completed.
+  const childArgs = [entry, 'doctor', ...(opts?.probeEngines ? ['--probe-engines'] : [])];
   const code: number = await new Promise((resolve) => {
-    const child = spawn(process.execPath, [entry, 'doctor'], {
+    const child = spawn(process.execPath, childArgs, {
       stdio: ['inherit', 'inherit', 'pipe'],
       env,
     });

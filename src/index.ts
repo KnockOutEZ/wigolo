@@ -59,7 +59,9 @@ switch (command) {
   }
 
   case 'doctor': {
-    const code = await runDoctorIsolated(getConfig().dataDir);
+    const code = await runDoctorIsolated(getConfig().dataDir, {
+      probeEngines: args.includes('--probe-engines'),
+    });
     await exitCli(code);
     break;
   }
