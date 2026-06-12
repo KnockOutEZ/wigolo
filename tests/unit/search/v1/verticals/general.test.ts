@@ -28,20 +28,32 @@ describe('getGeneralEngines', () => {
   // layer rather than a separate vertical: they're plain web engines, just
   // with thinner indexes — fusing them via RRF in the general pool is what
   // S11a is designed to do.
-  it('returns six entries by default (bing, duckduckgo, startpage, wikipedia, mojeek, marginalia)', () => {
+  // Slice 3 (pool reshape): the anti-bot-walled scraper was dropped (stateful
+  // token dance, never contributed results); wiby joins as a low-weight
+  // long-tail engine. The exact-set assertion below is what enforces the
+  // removal — nothing outside this list can be registered.
+  it('returns six entries by default (bing, duckduckgo, wikipedia, mojeek, marginalia, wiby)', () => {
     expect(getGeneralEngines()).toHaveLength(6);
   });
 
-  it('wraps bing, duckduckgo, startpage, wikipedia, mojeek, marginalia (preserving names)', () => {
+  it('wraps exactly bing, duckduckgo, wikipedia, mojeek, marginalia, wiby — no dropped engines', () => {
     const names = getGeneralEngines().map((e) => e.engine.name).sort();
     expect(names).toEqual([
       'bing',
       'duckduckgo',
       'marginalia',
       'mojeek',
-      'startpage',
+      'wiby',
       'wikipedia',
     ]);
+  });
+
+  it('registers wiby at low weight, secondary, low quality so it adds long-tail recall without dominating', () => {
+    const wiby = getGeneralEngines().find((e) => e.engine.name === 'wiby');
+    expect(wiby).toBeDefined();
+    expect(wiby?.weight).toBe(0.5);
+    expect(wiby?.secondary).toBe(true);
+    expect(wiby?.quality).toBe('low');
   });
 
   it('marks mojeek + marginalia as secondary so they cannot dominate when their lexical alignment is low', () => {
@@ -85,7 +97,6 @@ describe('getGeneralEngines', () => {
     const w = (name: string) => entries.find((e) => e.engine.name === name)?.weight ?? 0;
     expect(w('bing')).toBe(1);
     expect(w('duckduckgo')).toBe(1);
-    expect(w('startpage')).toBe(1);
     expect(w('wikipedia')).toBeLessThan(1);
   });
 });

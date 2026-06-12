@@ -16,8 +16,8 @@ describe('applyConsensusBoost', () => {
     const out = applyConsensusBoost([
       mk('https://one.test', ['bing']),
       mk('https://two.test', ['bing', 'ddg']),
-      mk('https://three.test', ['bing', 'ddg', 'startpage']),
-      mk('https://four.test', ['bing', 'ddg', 'startpage', 'searxng']),
+      mk('https://three.test', ['bing', 'ddg', 'wikipedia']),
+      mk('https://four.test', ['bing', 'ddg', 'wikipedia', 'searxng']),
     ]);
     expect(out[0].relevance_score).toBeCloseTo(0.5);
     expect(out[1].relevance_score).toBeCloseTo(0.55);

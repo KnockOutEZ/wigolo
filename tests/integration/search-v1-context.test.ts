@@ -76,7 +76,9 @@ const DDG_HTML = `<html><body>
   <a class="result-link" href="https://example-b.test/page">Vue Composition API</a>
   <div class="result-snippet">Reference for the Vue composition API.</div>
 </body></html>`;
-const STARTPAGE_HTML = `<html><body></body></html>`;
+// Wiby returns a JSON array of { URL, Title, Snippet } objects; empty array =
+// no results from the long-tail engine.
+const WIBY_JSON: unknown[] = [];
 
 function makeBiasedProvider(targetUrl: string): EmbedProvider {
   // Target vector aligns with query [1,0,0]; non-target is anti-aligned [-1,0,0]
@@ -133,7 +135,7 @@ describe('search v1 — agent_context integration', () => {
     installFetchRoutes([
       { match: (u) => u.includes('bing.com/search'), text: BING_HTML },
       { match: (u) => u.includes('lite.duckduckgo.com'), text: DDG_HTML },
-      { match: (u) => u.includes('startpage.com'), text: STARTPAGE_HTML },
+      { match: (u) => u.includes('wiby.me'), body: WIBY_JSON },
     ]);
     // Bias toward example-b (Vue) — would normally lose to example-a (first in HTML).
     embedState.provider = makeBiasedProvider('https://example-b.test/page');
@@ -156,7 +158,7 @@ describe('search v1 — agent_context integration', () => {
     installFetchRoutes([
       { match: (u) => u.includes('bing.com/search'), text: BING_HTML },
       { match: (u) => u.includes('lite.duckduckgo.com'), text: DDG_HTML },
-      { match: (u) => u.includes('startpage.com'), text: STARTPAGE_HTML },
+      { match: (u) => u.includes('wiby.me'), body: WIBY_JSON },
     ]);
 
     const provider = await getSearchProvider();
@@ -178,7 +180,7 @@ describe('search v1 — agent_context integration', () => {
     installFetchRoutes([
       { match: (u) => u.includes('bing.com/search'), text: BING_HTML },
       { match: (u) => u.includes('lite.duckduckgo.com'), text: DDG_HTML },
-      { match: (u) => u.includes('startpage.com'), text: STARTPAGE_HTML },
+      { match: (u) => u.includes('wiby.me'), body: WIBY_JSON },
     ]);
     // Bias toward example-a (React) — but recent_urls will drop it,
     // leaving example-b as the sole result.
@@ -206,7 +208,7 @@ describe('search v1 — agent_context integration', () => {
     installFetchRoutes([
       { match: (u) => u.includes('bing.com/search'), text: BING_HTML },
       { match: (u) => u.includes('lite.duckduckgo.com'), text: DDG_HTML },
-      { match: (u) => u.includes('startpage.com'), text: STARTPAGE_HTML },
+      { match: (u) => u.includes('wiby.me'), body: WIBY_JSON },
     ]);
     // Embed provider intentionally unavailable — should never be hit.
     embedState.error = new Error('should not be called');
@@ -224,7 +226,7 @@ describe('search v1 — agent_context integration', () => {
     installFetchRoutes([
       { match: (u) => u.includes('bing.com/search'), text: BING_HTML },
       { match: (u) => u.includes('lite.duckduckgo.com'), text: DDG_HTML },
-      { match: (u) => u.includes('startpage.com'), text: STARTPAGE_HTML },
+      { match: (u) => u.includes('wiby.me'), body: WIBY_JSON },
     ]);
     embedState.error = new Error('embed offline');
 
@@ -245,7 +247,7 @@ describe('search v1 — agent_context integration', () => {
     installFetchRoutes([
       { match: (u) => u.includes('bing.com/search'), text: BING_HTML },
       { match: (u) => u.includes('lite.duckduckgo.com'), text: DDG_HTML },
-      { match: (u) => u.includes('startpage.com'), text: STARTPAGE_HTML },
+      { match: (u) => u.includes('wiby.me'), body: WIBY_JSON },
     ]);
     embedState.provider = makeBiasedProvider('https://example-b.test/page');
 

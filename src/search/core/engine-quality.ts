@@ -31,7 +31,7 @@ import type { EngineQualityTier } from './engine-base.js';
  * Notes on individual tiers:
  *  - wikipedia / mdn / stackoverflow: structured JSON APIs with reliable
  *    summary/body fields → high.
- *  - bing / duckduckgo / startpage / bing_news: HTML scrapers, snippets are
+ *  - bing / duckduckgo / bing_news: HTML scrapers, snippets are
  *    usable but vary (sometimes only a date prefix) → medium.
  *  - brave: API JSON with `description`, but the description is often a
  *    one-liner and the source list is narrower → medium.
@@ -53,7 +53,6 @@ const ENGINE_QUALITY: Record<string, EngineQualityTier> = {
   bing: 'medium',
   bing_news: 'medium',
   duckduckgo: 'medium',
-  startpage: 'medium',
   brave: 'medium',
   'hn-algolia': 'medium',
   'github-code': 'medium',
@@ -71,6 +70,10 @@ const ENGINE_QUALITY: Record<string, EngineQualityTier> = {
   // lobsters/devdocs.
   mojeek: 'low',
   marginalia: 'low',
+  // Slice 3 (pool reshape): Wiby is a tiny retro/personal-web index —
+  // long-tail recall only, sparse snippets, so `low` like the other
+  // secondary engines.
+  wiby: 'low',
   // Slice S11a image engines: image-search results carry source-page +
   // thumbnail/url + alt text rather than evidence-quality snippets. Tag as
   // `medium` so S11c's RRF tuning treats them like the general medium pool
