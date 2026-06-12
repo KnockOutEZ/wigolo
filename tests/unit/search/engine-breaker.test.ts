@@ -269,4 +269,26 @@ describe('breaker half-open state machine', () => {
     expect(snap).toBeDefined();
     expect(snap!.lastError).toContain('upstream 403 forbidden');
   });
+
+  it('sanitizes control characters and caps length in lastError', async () => {
+    // WHY: lastError flows into doctor output and telemetry — a hostile
+    // upstream body echoed into an error message must not be able to emit
+    // terminal escape sequences or unbounded text at the user's terminal.
+    const spy = vi.fn(async () => {
+      throw new Error(`\x1b[31mhostile\x1b[0m body ${'x'.repeat(2000)}`);
+    });
+    const wrapped = wrapWithRetryAndBreaker(makeEngine('hf9', spy), {
+      failureThreshold: 1,
+      cooldownMs: 60_000,
+    });
+
+    await settleCall(wrapped);
+
+    const snap = getBreakerSnapshot().find((s) => s.engine === 'hf9');
+    expect(snap).toBeDefined();
+    expect(snap!.lastError).toBeDefined();
+    expect(snap!.lastError).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(snap!.lastError).toContain('hostile');
+    expect(snap!.lastError!.length).toBeLessThanOrEqual(300);
+  });
 });

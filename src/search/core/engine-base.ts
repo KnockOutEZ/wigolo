@@ -88,6 +88,14 @@ const DEFAULT_THRESHOLD = 3;
 const DEFAULT_COOLDOWN_MS = 60_000;
 const MAX_COOLDOWN_MS = 600_000;
 const RETRY_BACKOFF_MS = 100;
+const MAX_LAST_ERROR_LEN = 300;
+
+/** Upstream error bodies can echo hostile content into Error.message —
+ * strip control chars (terminal escapes) and cap length before the string
+ * reaches doctor output / telemetry. */
+function sanitizeErrorMessage(message: string): string {
+  return message.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, MAX_LAST_ERROR_LEN);
+}
 
 const breakers = new Map<string, BreakerState>();
 
@@ -231,7 +239,9 @@ export function wrapWithRetryAndBreaker(
         }
       }
 
-      state.lastError = lastErr instanceof Error ? lastErr.message : String(lastErr);
+      state.lastError = sanitizeErrorMessage(
+        lastErr instanceof Error ? lastErr.message : String(lastErr),
+      );
       if (probe) {
         // Failed probe — reopen with exponential backoff, capped at 10 min.
         const backoffMs = reopenWithBackoff(state, cooldownMs);
