@@ -101,6 +101,37 @@ describe('engine_telemetry (sub-ticket 3.13)', () => {
     expect(typeof ent!.dedup_kept).toBe('number');
   });
 
+  it('marks breaker-skipped engine with reason=breaker_open and remaining cooldown', async () => {
+    // WHY (Slice 4, engine-pool recovery): during the 2026-06-12 benchmark
+    // two engines sat behind open breakers for the whole run with zero
+    // caller-visible signal. `reason` + `cooldown_remaining_ms` make the
+    // skip distinguishable from a plain error and tell callers when the
+    // engine will be retried.
+    const { BreakerOpenError } = await import('../../../src/search/core/engine-base.js');
+    const breakerEngine: SearchEngine = {
+      name: 'mojeek',
+      search: vi.fn(async () => {
+        throw new BreakerOpenError('mojeek', 42_000);
+      }),
+    };
+    verticalState.general = [
+      makeEntry('bing', [makeResult('bing', 'https://a.com/x')]),
+      { engine: breakerEngine },
+    ];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: 'q', include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const ent = out.data.engine_telemetry!.find((e) => e.name === 'mojeek');
+    expect(ent).toBeDefined();
+    expect(ent!.outcome).toBe('skipped');
+    expect(ent!.reason).toBe('breaker_open');
+    expect(ent!.cooldown_remaining_ms).toBe(42_000);
+  });
+
   it('marks failing engine outcome=error', async () => {
     verticalState.general = [
       makeEntry('bing', [makeResult('bing', 'https://a.com/x')]),

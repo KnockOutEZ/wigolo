@@ -358,6 +358,11 @@ export interface EngineTelemetry {
    * landed in the final fused list. */
   dedup_kept: number;
   error?: string;
+  /** Why the engine was skipped. Only emitted when the circuit breaker
+   * rejected dispatch (Slice 4, engine-pool recovery). */
+  reason?: 'breaker_open';
+  /** Remaining breaker cooldown in ms when reason === 'breaker_open'. */
+  cooldown_remaining_ms?: number;
 }
 
 /**

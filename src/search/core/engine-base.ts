@@ -59,6 +59,8 @@ export interface EngineOutcome {
   latencyMs: number;
   /** True when the breaker tripped and we skipped the call. */
   skipped?: boolean;
+  /** Remaining breaker cooldown in ms, set only when skipped. */
+  cooldownRemainingMs?: number;
 }
 
 export interface BreakerConfig {
@@ -241,14 +243,15 @@ export async function runEnginesParallel(
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const skipped = err instanceof BreakerOpenError;
       return {
         engine: entry.engine.name,
         ok: false,
         results: [],
         error: message,
         latencyMs: Date.now() - start,
-        ...(skipped ? { skipped: true } : {}),
+        ...(err instanceof BreakerOpenError
+          ? { skipped: true, cooldownRemainingMs: err.cooldownRemainingMs }
+          : {}),
       };
     }
   });

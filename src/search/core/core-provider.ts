@@ -318,6 +318,10 @@ export class CoreSearchProvider implements SearchProvider {
             existing.dedup_kept += kept;
             if (outcome !== 'ok' && existing.outcome === 'ok') existing.outcome = outcome;
             if (o.error && !existing.error) existing.error = o.error;
+            if (o.skipped && !existing.reason) existing.reason = 'breaker_open';
+            if (o.cooldownRemainingMs !== undefined && existing.cooldown_remaining_ms === undefined) {
+              existing.cooldown_remaining_ms = o.cooldownRemainingMs;
+            }
           } else {
             telemetryByEngine.set(o.engine, {
               name: o.engine,
@@ -326,6 +330,10 @@ export class CoreSearchProvider implements SearchProvider {
               outcome,
               dedup_kept: kept,
               ...(o.error ? { error: o.error } : {}),
+              ...(o.skipped ? { reason: 'breaker_open' as const } : {}),
+              ...(o.cooldownRemainingMs !== undefined
+                ? { cooldown_remaining_ms: o.cooldownRemainingMs }
+                : {}),
             });
           }
         }
