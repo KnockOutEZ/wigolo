@@ -5,7 +5,7 @@
 // outcomes from the major engines and catches long-tail queries the other
 // 14 adapters miss. Free, no API key required for basic HTML search.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { MojeekEngine } from '../../../../src/search/engines/mojeek.js';
 
 const SAMPLE_HTML = `
@@ -61,5 +61,31 @@ describe('MojeekEngine', () => {
   it('returns empty array on empty / unparseable HTML', () => {
     expect(engine.parseResults('<html></html>', 10)).toEqual([]);
     expect(engine.parseResults('', 10)).toEqual([]);
+  });
+
+  // Mojeek 403s are IP-reputation/rate-limit driven; the SearXNG-proven
+  // request shape (no fmt param, safe=0, no explicit s on page 1, browser-like
+  // headers) is what keeps the adapter off the block list. A regression here
+  // takes the engine out of the pool for entire benchmark runs.
+  describe('request shape', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('sends SearXNG-proven param shape (no fmt, safe=0, no s on page 1)', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response('<html></html>', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await new MojeekEngine().search('test query');
+
+      const [url, init] = fetchMock.mock.calls[0];
+      const parsed = new URL(String(url));
+      expect(parsed.searchParams.get('fmt')).toBeNull();
+      expect(parsed.searchParams.get('safe')).toBe('0');
+      expect(parsed.searchParams.get('s')).toBeNull();
+      const headers = init.headers as Record<string, string>;
+      expect(headers['Accept-Language']).toBeTruthy();
+      expect(headers['User-Agent']).toMatch(/Mozilla/);
+    });
   });
 });

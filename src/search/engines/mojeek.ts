@@ -11,6 +11,13 @@ const USER_AGENT =
 // it to the general vertical adds an independent lexical signal that dilutes
 // brand-collision outcomes from the major engines (a long-tail goal of
 // S11a). Free HTML search; no API key required for basic queries.
+//
+// Request shape mirrors SearXNG's proven mojeek adapter: no `fmt` param
+// (never sent for web search), `safe=0`, and no explicit `s` offset on page 1
+// (sending `s=0` triggers rate-limiting). Mojeek 403s are IP-reputation /
+// rate-limit driven, not UA-driven, so a browser-like header set
+// (Accept + Accept-Language) keeps the request indistinguishable from a
+// normal page load.
 export class MojeekEngine implements SearchEngine {
   name = 'mojeek';
 
@@ -18,14 +25,18 @@ export class MojeekEngine implements SearchEngine {
     const timeoutMs = options.timeoutMs ?? 10000;
     const maxResults = options.maxResults ?? 10;
 
-    const params = new URLSearchParams({ q: query, fmt: 'html' });
+    const params = new URLSearchParams({ q: query, safe: '0' });
     const url = `https://www.mojeek.com/search?${params}`;
 
     log.debug('scraping mojeek', { query });
 
     const response = await fetch(url, {
       signal: AbortSignal.timeout(timeoutMs),
-      headers: { 'User-Agent': USER_AGENT, Accept: 'text/html' },
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
     });
 
     if (!response.ok) throw new Error(`Mojeek returned ${response.status}`);
