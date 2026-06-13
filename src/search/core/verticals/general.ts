@@ -1,6 +1,5 @@
 import { BingEngine } from '../../engines/bing.js';
 import { DuckDuckGoEngine } from '../../engines/duckduckgo.js';
-import { WibyEngine } from '../../engines/wiby.js';
 import { WikipediaEngine } from '../../engines/wikipedia.js';
 import { BraveEngine } from '../../engines/brave.js';
 import { MojeekEngine } from '../../engines/mojeek.js';
@@ -33,12 +32,10 @@ export function getGeneralEngines(): EngineEntry[] {
     // engines deprioritize. Same `secondary` rule as Mojeek — adds a niche
     // signal without dominating consensus.
     { engine: wrapWithRetryAndBreaker(new MarginaliaEngine()), weight: 0.6, supportsDateFilter: false, secondary: true, quality: 'low' },
-    // Slice 3 (pool reshape): Wiby indexes the retro/personal small web —
-    // long-tail recall the major engines miss. Lowest weight + `secondary`
-    // so it adds coverage without ever dominating consensus. It replaces a
-    // former scraper that required a stateful anti-bot token dance and never
-    // contributed results.
-    { engine: wrapWithRetryAndBreaker(new WibyEngine()), weight: 0.5, supportsDateFilter: false, secondary: true, quality: 'low' },
+    // Wave-2 W3 (engine cleanup): Wiby was removed here. The 2026-06-14 parity
+    // benchmark showed it errored / opened its circuit breaker on every run —
+    // a pure latency tax that contributed no results. Its long-tail role is
+    // covered by Mojeek + Marginalia, which respond.
   ];
 
   if (getConfig().braveApiKey) {

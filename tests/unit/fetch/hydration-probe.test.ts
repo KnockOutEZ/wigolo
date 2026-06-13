@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseHTML } from 'linkedom';
-import { isHydrated, HYDRATION_PROBE_SOURCE } from '../../../src/fetch/hydration-probe.js';
+import { isHydrated, isAppShellOnly, HYDRATION_PROBE_SOURCE, APP_SHELL_ONLY_SOURCE } from '../../../src/fetch/hydration-probe.js';
 
 // linkedom doesn't implement innerText, so we patch HTMLElement.prototype
 // before running predicates that depend on text length.
@@ -94,6 +94,55 @@ describe('isHydrated', () => {
     withInnerText(html, (doc) => {
       expect(isHydrated(doc as never)).toBe(false);
     });
+  });
+});
+
+describe('isAppShellOnly', () => {
+  it('returns true for an SPA app-root that has not mounted its body', () => {
+    // react.dev pattern: #root exists, only the nav-shell rendered, no article.
+    const nav = '<nav>' + 'nav link '.repeat(30) + '</nav>';
+    withInnerText(
+      `<html><body>${nav}<div id="root"><header>shell</header></div></body></html>`,
+      (doc) => {
+        expect(isAppShellOnly(doc as never)).toBe(true);
+      },
+    );
+  });
+
+  it('returns false once the app-root has mounted a hydrated article (escalation should stop)', () => {
+    const para = '<p>' + 'word '.repeat(40) + '</p>';
+    withInnerText(
+      `<html><body><div id="root"><main>${para}${para}${para}</main></div></body></html>`,
+      (doc) => {
+        expect(isAppShellOnly(doc as never)).toBe(false);
+      },
+    );
+  });
+
+  it('returns false for a plain non-SPA doc with no app-root (no escalation)', () => {
+    // No #root/#__next/[data-reactroot]/[data-v-app] — a static page that
+    // simply has no semantic body should NOT trigger a longer re-poll.
+    withInnerText(
+      '<html><body><nav>nav</nav><div class="sidebar">links only</div></body></html>',
+      (doc) => {
+        expect(isAppShellOnly(doc as never)).toBe(false);
+      },
+    );
+  });
+});
+
+describe('APP_SHELL_ONLY_SOURCE', () => {
+  it('is a self-contained expression with no module references', () => {
+    expect(APP_SHELL_ONLY_SOURCE.startsWith('(() => {')).toBe(true);
+    expect(APP_SHELL_ONLY_SOURCE.endsWith('})()')).toBe(true);
+    expect(APP_SHELL_ONLY_SOURCE).not.toMatch(/import\s/);
+    expect(APP_SHELL_ONLY_SOURCE).not.toMatch(/require\(/);
+  });
+
+  it('references the SPA app-root selectors it gates escalation on', () => {
+    for (const sel of ['#__next', '#root', '[data-reactroot]', '[data-v-app]']) {
+      expect(APP_SHELL_ONLY_SOURCE).toContain(sel);
+    }
   });
 });
 

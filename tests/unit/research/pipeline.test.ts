@@ -292,6 +292,54 @@ describe('runResearchPipeline', () => {
     expect(typeof result.total_time_ms).toBe('number');
   });
 
+  // Parity attack 7 / slice 1: in keyless template mode (no sampling server,
+  // no local LLM), the returned `report` must be the rendered brief — the
+  // organized "— Research Brief" document — NOT the flat buildFallbackReport
+  // per-source dump. WHY: this is the parity lever vs an LLM essay; a flat
+  // source dump was the C1 benchmark gap.
+  it('template mode renders the brief into the report (not the flat dump)', async () => {
+    const engine = createStubEngine(defaultResults);
+    const router = createStubRouter();
+    const input: ResearchInput = {
+      question: 'Compare frontend state management approaches',
+      depth: 'standard',
+    };
+
+    const result = await runResearchPipeline(input, [engine], router);
+
+    // The rendered-brief title is the signature of the new renderer.
+    expect(result.report).toContain('— Research Brief');
+    expect(result.report).toContain('### Sources');
+    // The old flat-dump header must NOT be what we returned.
+    expect(result.report).not.toMatch(/^## Research: /);
+    // The brief is still attached for host-LLM consumers.
+    expect(result.brief).toBeDefined();
+  });
+
+  // WHY: when the brief is unavailable the renderer can't run, so the ultimate
+  // safety net (buildFallbackReport via synthesizeReport) must still produce a
+  // report. Sampling mode sets brief=undefined; the report must be untouched
+  // by the renderer.
+  it('does not render a brief when sampling produced the report', async () => {
+    const engine = createStubEngine(defaultResults);
+    const router = createStubRouter();
+    const input: ResearchInput = { question: 'Sampling report test', depth: 'quick' };
+
+    const samplingServer = {
+      getClientCapabilities: () => ({ sampling: {} }),
+      createMessage: vi.fn().mockResolvedValue({
+        content: { type: 'text', text: 'An LLM-authored synthesis report [1].' },
+      }),
+    } as any;
+
+    const result = await runResearchPipeline(input, [engine], router, samplingServer);
+
+    // Sampling path keeps its own report and attaches no brief.
+    expect(result.report).toContain('LLM-authored synthesis report');
+    expect(result.report).not.toContain('— Research Brief');
+    expect(result.brief).toBeUndefined();
+  });
+
   it('total_time_ms reflects actual execution time', async () => {
     const engine = createStubEngine(defaultResults);
     const router = createStubRouter();

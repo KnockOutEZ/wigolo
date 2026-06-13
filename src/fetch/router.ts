@@ -39,6 +39,24 @@ const KNOWN_SPA_DOMAINS = new Set<string>([
   'nuxt.com',
 ]);
 
+// Wave-2 W4: known anti-bot, connection-timeout-prone CONTENT domains. These
+// close the connection / time out BEFORE returning a 4xx/5xx, so the
+// signal-based HTTP→TLS escalation never sees a response to react to — the
+// plain-HTTP fetch just burns the whole per-fetch budget on a doomed call and
+// falls back to snippet-only. Routing them through the TLS-impersonation tier
+// FIRST (even when the global tier is off) lets high-value pages (e.g. Stack
+// Overflow accepted answers) hydrate instead of returning snippets. Stack
+// Exchange runs the entire network on the same anti-bot stack, so the core SE
+// Q&A sites are included. Extend at runtime via WIGOLO_TLS_DOMAINS.
+const ANTI_BOT_TLS_DOMAINS = new Set<string>([
+  'stackoverflow.com',
+  'serverfault.com',
+  'superuser.com',
+  'askubuntu.com',
+  'stackexchange.com',
+  'mathoverflow.net',
+]);
+
 export interface RouterFetchOptions {
   renderJs?: 'auto' | 'always' | 'never';
   useAuth?: boolean;
@@ -143,6 +161,36 @@ function isKnownSpaDomain(host: string): boolean {
     if (lower.endsWith(`.${d}`)) return true;
   }
   return false;
+}
+
+function matchesDomainSet(host: string, set: Set<string> | readonly string[]): boolean {
+  const lower = host.toLowerCase();
+  for (const d of set) {
+    if (lower === d || lower.endsWith(`.${d}`)) return true;
+  }
+  return false;
+}
+
+/**
+ * Wave-2 W4: a domain is in the anti-bot TLS-first set when it is in the
+ * built-in {@link ANTI_BOT_TLS_DOMAINS} list OR the operator-supplied
+ * WIGOLO_TLS_DOMAINS list. Both match the host exactly or as a subdomain.
+ */
+function isAntiBotTlsDomain(host: string, extra: readonly string[]): boolean {
+  return matchesDomainSet(host, ANTI_BOT_TLS_DOMAINS) || matchesDomainSet(host, extra);
+}
+
+// Wave-2 W4: connection-level timeout / reset errors that surface as a THROW
+// (no HTTP status) rather than a response. Mirrors the retryable set the HTTP
+// client uses; the AbortSignal.timeout path throws TimeoutError, while raw
+// socket failures carry a Node error `code`.
+const TIMEOUT_ERROR_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT']);
+
+function isConnectionTimeout(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'TimeoutError' || err.name === 'AbortError') return true;
+  const code = (err as Error & { code?: string }).code;
+  return code !== undefined && TIMEOUT_ERROR_CODES.has(code);
 }
 
 export class SmartRouter {
@@ -333,15 +381,25 @@ export class SmartRouter {
       return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
     }
 
-    // Slice D2: when the TLS tier is enabled, decide whether to try TLS
+    // Slice D2 + Wave-2 W4: decide whether to try the TLS-impersonation tier
     // before HTTP. We try TLS-first when:
     //   - WIGOLO_TLS_TIER=on, or
-    //   - WIGOLO_TLS_TIER=auto AND the domain has been promoted via
-    //     repeated success (prefer_tls_impersonation=1 in domain_routing)
+    //   - WIGOLO_TLS_TIER=auto AND the domain has been promoted via repeated
+    //     success (prefer_tls_impersonation=1 in domain_routing), or
+    //   - the domain is in the curated anti-bot/timeout-prone allowlist
+    //     (ANTI_BOT_TLS_DOMAINS or WIGOLO_TLS_DOMAINS) — these time out at the
+    //     connection level before returning a status code, so a plain-HTTP
+    //     attempt just burns the per-fetch budget. This case applies EVEN when
+    //     the global tier is 'off', so the curated set opts in without forcing
+    //     TLS-first for everything.
     const tlsMode = config.tlsTier;
     const tlsTierEnabled = tlsMode !== 'off';
     const tlsDomainPreferred = tlsTierEnabled && this.tlsPersistence.getPreferTls(domain);
-    const tryTlsFirst = tlsMode === 'on' || tlsDomainPreferred;
+    const isAntiBotDomain = isAntiBotTlsDomain(domain, config.tlsDomains);
+    const tryTlsFirst = tlsMode === 'on' || tlsDomainPreferred || isAntiBotDomain;
+    // Whether a TLS retry is permitted at all (TLS-first OR escalation). The
+    // anti-bot allowlist enables the tier locally even with the global flag off.
+    const tlsUsable = tlsTierEnabled || isAntiBotDomain;
 
     if (tryTlsFirst) {
       const tlsTry = await this.tryTlsTier(url, domain, headers, signal);
@@ -375,7 +433,7 @@ export class SmartRouter {
       // a challenge body) escalates to the TLS tier first when
       // WIGOLO_TLS_TIER is auto/on; if the TLS tier also fails or isn't
       // installed, fall through to Playwright.
-      if (tlsTierEnabled && !tryTlsFirst && isAntiBotSignal(result.statusCode, result.html)) {
+      if (tlsUsable && !tryTlsFirst && isAntiBotSignal(result.statusCode, result.html)) {
         const tlsTry = await this.tryTlsTier(url, domain, headers, signal);
         if (tlsTry.ok) {
           return tlsTry.result;
@@ -448,6 +506,23 @@ export class SmartRouter {
         failureCount: stats.failureCount,
         error: err instanceof Error ? err.message : String(err),
       });
+
+      // Wave-2 W4: timeout-as-escalation-signal. Anti-bot content domains (and
+      // any domain when the global tier is on) close the connection / time out
+      // BEFORE returning a status code, so the response-based escalation above
+      // never fires. When the HTTP attempt throws a timeout/connection error
+      // AND the TLS tier is usable here AND we have not already tried it first,
+      // retry via the TLS tier before giving up. The retry reuses the caller's
+      // `signal`, so it draws from the SAME per-fetch deadline rather than
+      // adding to it.
+      if (tlsUsable && !tryTlsFirst && isConnectionTimeout(err)) {
+        const tlsTry = await this.tryTlsTier(url, domain, headers, signal);
+        if (tlsTry.ok) {
+          logger.info('http timeout escalated to tls tier', { url, domain });
+          return tlsTry.result;
+        }
+        logger.debug('timeout tls escalation miss', { url, domain, reason: tlsTry.reason });
+      }
 
       if (stats.failureCount >= threshold) {
         if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');

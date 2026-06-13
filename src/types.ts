@@ -607,6 +607,12 @@ export interface ResearchSource {
   fetch_error?: string;
 }
 
+export interface RejectedSource {
+  url: string;
+  reason: 'homepage' | 'serp' | 'low-content' | 'low-overlap' | 'negative-score';
+  stage: 'url-shape' | 'content-gate' | 'score-floor';
+}
+
 export interface ResearchOutput {
   report: string;
   citations: Citation[];
@@ -619,12 +625,26 @@ export interface ResearchOutput {
   brief?: ResearchBrief;
   error?: string;
   evidence?: EvidenceItem[];
+  /** Candidates dropped by source validation (homepage/SERP shape or empty
+   * content shell), surfaced so drops are auditable, not silently swallowed. */
+  rejected_sources?: RejectedSource[];
 }
 
 export interface CrossReference {
   finding: string;
   source_indices: number[];
   confidence: 'high' | 'medium';
+}
+
+/** A source-quoted comparison tradeoff: the actual sentence from a source that
+ * pairs a compared entity with a comparison term, plus the index of the source
+ * it came from (0-based into the brief's `fetched` view). Captured instead of a
+ * bare keyword so the template renderer can quote a real, cited tradeoff rather
+ * than fabricate directionality. */
+export interface ComparisonTradeoff {
+  text: string;
+  source_index: number;
+  term: string;
 }
 
 export interface CitationGraphEntry {
@@ -647,6 +667,10 @@ export interface ResearchBrief {
     comparison?: {
       entities: string[];
       comparison_points: string[];
+      /** Source-quoted tradeoff sentences (entity + comparison term in context)
+       * with the index of the source they came from, so a renderer can cite a
+       * real tradeoff `[n]` instead of inventing a verdict from bare keywords. */
+      tradeoffs: ComparisonTradeoff[];
     };
     gaps: Array<string | { entity: string; reason: string }>;
   };

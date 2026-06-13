@@ -78,6 +78,12 @@ export interface Config {
    */
   searchBackend: string | null;
   llmProvider: string | null;
+  /**
+   * Base URL for a custom OpenAI-compatible LLM backend. Only consulted when
+   * `llmProvider` is the `ollama` alias; overrides the default
+   * http://localhost:11434. `null` means "use the default local Ollama base".
+   */
+  llmBaseUrl: string | null;
   llmCacheTtlDays: number;
   llmMaxCallsPerRequest: number;
   /**
@@ -91,6 +97,14 @@ export interface Config {
   tlsBrowser: string;
   /** Successes required before a domain is auto-promoted to TLS-first routing. */
   tlsSuccessThreshold: number;
+  /**
+   * Extra domains (beyond the built-in anti-bot allowlist) that should try the
+   * TLS-impersonation tier FIRST during a content fetch — even when `tlsTier`
+   * is 'off'. Curated for known anti-bot, connection-timeout-prone content
+   * domains (e.g. stackoverflow.com) whose plain-HTTP fetch times out before
+   * returning a response, so the signal-based escalation never fires.
+   */
+  tlsDomains: string[];
 }
 
 /**
@@ -300,6 +314,7 @@ export function getConfig(): Config {
     embeddingMaxTextLength: envInt('WIGOLO_EMBEDDING_MAX_TEXT_LENGTH', 8000, settings, 'embeddingMaxTextLength'),
     searchBackend: envStr('WIGOLO_SEARCH', null, settings, 'searchBackend'),
     llmProvider: envStr('WIGOLO_LLM_PROVIDER', null, settings, 'llmProvider'),
+    llmBaseUrl: envStr('WIGOLO_LLM_BASE_URL', null, settings, 'llmBaseUrl'),
     llmCacheTtlDays: envInt('WIGOLO_LLM_CACHE_TTL_DAYS', 7, settings, 'llmCacheTtlDays'),
     llmMaxCallsPerRequest: envInt('WIGOLO_LLM_MAX_CALLS_PER_REQUEST', 1, settings, 'llmMaxCallsPerRequest'),
     tlsTier: (() => {
@@ -314,6 +329,14 @@ export function getConfig(): Config {
     // fall back to the safe default.
     tlsBrowser: validateTlsBrowser(envStr('WIGOLO_TLS_BROWSER', null, settings, 'tlsBrowser'), 'chrome_142'),
     tlsSuccessThreshold: envInt('WIGOLO_TLS_SUCCESS_THRESHOLD', 3, settings, 'tlsSuccessThreshold'),
+    tlsDomains: (() => {
+      const raw = envStr('WIGOLO_TLS_DOMAINS', null, settings, 'tlsDomains');
+      if (!raw) return [];
+      return raw
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s.length > 0);
+    })(),
   };
 
   return cachedConfig;

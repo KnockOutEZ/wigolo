@@ -109,6 +109,107 @@ describe('runLlmText', () => {
     process.env.WIGOLO_LLM_PROVIDER = 'http://localhost:11434';
     expect(isLlmConfigured(process.env)).toBe(true);
   });
+
+  it('isLlmConfigured returns true for the ollama alias (keyless)', () => {
+    // WHY: the local-synthesis path is only attempted when ollama counts as
+    // configured; otherwise research silently never tries the local server.
+    process.env.WIGOLO_LLM_PROVIDER = 'ollama';
+    expect(isLlmConfigured(process.env)).toBe(true);
+  });
+});
+
+describe('runLlmText — ollama alias', () => {
+  const originalEnv = process.env;
+  const originalFetch = globalThis.fetch;
+  beforeEach(() => {
+    mockCalls.length = 0;
+    process.env = { ...originalEnv };
+    delete process.env.WIGOLO_LLM_PROVIDER;
+    delete process.env.WIGOLO_LLM_MODEL;
+    delete process.env.WIGOLO_LLM_BASE_URL;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
+    delete process.env.GROQ_API_KEY;
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+    globalThis.fetch = originalFetch;
+  });
+
+  it('auto-picks an installed priority model from /api/tags', async () => {
+    // WHY: zero-config local synthesis — the user sets `ollama` and we must
+    // target an actually-installed, prose-capable model, not a guessed name.
+    process.env.WIGOLO_LLM_PROVIDER = 'ollama';
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      calls.push(u);
+      if (u.endsWith('/api/tags')) {
+        return new Response(JSON.stringify({ models: [{ name: 'mistral:latest' }, { name: 'llama3.1:8b' }] }), { status: 200 });
+      }
+      // chat completion
+      void init;
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'essay' } }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const r = await runLlmText({ prompt: 'hi' });
+    expect(r.provider).toBe('custom');
+    expect(r.model).toBe('llama3.1:8b');
+    expect(r.text).toBe('essay');
+    // Hit the local OpenAI-compat endpoint derived from the base URL.
+    expect(calls.some((c) => c === 'http://localhost:11434/v1/chat/completions')).toBe(true);
+    expect(calls.some((c) => c === 'http://localhost:11434/api/tags')).toBe(true);
+  });
+
+  it('explicit WIGOLO_LLM_MODEL wins and skips the /api/tags probe', async () => {
+    process.env.WIGOLO_LLM_PROVIDER = 'ollama';
+    process.env.WIGOLO_LLM_MODEL = 'my-pinned-model';
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const r = await runLlmText({ prompt: 'hi' });
+    expect(r.model).toBe('my-pinned-model');
+    expect(calls.some((c) => c.endsWith('/api/tags'))).toBe(false);
+  });
+
+  it('honors WIGOLO_LLM_BASE_URL for the endpoint and tags probe', async () => {
+    process.env.WIGOLO_LLM_PROVIDER = 'ollama';
+    process.env.WIGOLO_LLM_BASE_URL = 'http://box:11434';
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      calls.push(u);
+      if (u.endsWith('/api/tags')) {
+        return new Response(JSON.stringify({ models: [{ name: 'qwen2.5:7b' }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const r = await runLlmText({ prompt: 'hi' });
+    expect(r.model).toBe('qwen2.5:7b');
+    expect(calls).toContain('http://box:11434/api/tags');
+    expect(calls).toContain('http://box:11434/v1/chat/completions');
+  });
+
+  it('surfaces failure when the ollama server is unreachable mid-call (same contract as http custom)', async () => {
+    // WHY: graceful mid-run fallback in the research pipeline depends on
+    // runLlmText THROWING (not silently succeeding) so the caller falls back
+    // to the template report. A pinned model avoids the /api/tags branch so
+    // the failure is unambiguously the chat call, mirroring the http path.
+    process.env.WIGOLO_LLM_PROVIDER = 'ollama';
+    process.env.WIGOLO_LLM_MODEL = 'llama3.1';
+    globalThis.fetch = (async () => {
+      const err = new Error('connect ECONNREFUSED 127.0.0.1:11434') as Error & { code?: string };
+      err.code = 'ECONNREFUSED';
+      throw err;
+    }) as unknown as typeof fetch;
+
+    await expect(runLlmText({ prompt: 'hi', timeoutMs: 50 })).rejects.toThrow(/ECONNREFUSED/);
+  });
 });
 
 describe('runLlmJson', () => {

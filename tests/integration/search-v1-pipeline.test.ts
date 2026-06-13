@@ -63,9 +63,14 @@ const DDG_HTML = `<html><body>
   <div class="result-snippet">ddg snippet A</div>
 </body></html>`;
 
-// Wiby returns a JSON array of { URL, Title, Snippet } objects; empty array =
-// no results from the long-tail engine.
-const WIBY_JSON: unknown[] = [];
+// Wikipedia opensearch shape: [query, titles[], snippets[], urls[]]. A real
+// general-pool engine standing in for the removed wiby long-tail signal.
+const WIKI_JSON: unknown[] = [
+  'cute cats',
+  ['Cat'],
+  ['The cat is a domestic species.'],
+  ['https://en.wikipedia.org/wiki/Cat'],
+];
 
 interface RouteSpec {
   // substring match against the request URL
@@ -137,7 +142,7 @@ describe('search v1 pipeline — factory + provider integration', () => {
     installFetchRoutes([
       { match: (u) => u.includes('bing.com/search'), text: BING_HTML },
       { match: (u) => u.includes('lite.duckduckgo.com'), text: DDG_HTML },
-      { match: (u) => u.includes('wiby.me'), body: WIBY_JSON },
+      { match: (u) => u.includes('wikipedia.org'), body: WIKI_JSON },
     ]);
 
     const provider = await getSearchProvider();
@@ -149,9 +154,11 @@ describe('search v1 pipeline — factory + provider integration', () => {
     expect(result.data.query).toBe('cute cats');
     expect(result.data.results.length).toBeGreaterThan(0);
     expect(result.data.engines_used.length).toBeGreaterThan(0);
-    // engines_used should be a subset of {bing, duckduckgo, wiby}
+    // engines_used should be a subset of the general pool's mocked engines.
+    // Wave-2 W3 removed wiby; the unmocked pool members (mojeek/marginalia)
+    // simply fail their fetch and never enter engines_used.
     for (const name of result.data.engines_used) {
-      expect(['bing', 'duckduckgo', 'wiby']).toContain(name);
+      expect(['bing', 'duckduckgo', 'wikipedia']).toContain(name);
     }
     expect(typeof result.data.total_time_ms).toBe('number');
   });
@@ -163,7 +170,7 @@ describe('search v1 pipeline — factory + provider integration', () => {
       // Defensive: if any general-vertical engine slips through, fail loudly.
       { match: (u) => u.includes('bing.com'), text: BING_HTML },
       { match: (u) => u.includes('duckduckgo.com'), text: DDG_HTML },
-      { match: (u) => u.includes('wiby.me'), body: WIBY_JSON },
+      { match: (u) => u.includes('wikipedia.org'), body: [] },
     ]);
 
     const provider = await getSearchProvider();
@@ -245,7 +252,7 @@ describe('search v1 pipeline — factory + provider integration', () => {
     installFetchRoutes([
       { match: (u) => u.includes('bing.com'), text: `<html><body>${many}</body></html>` },
       { match: (u) => u.includes('duckduckgo.com'), text: '<html></html>' },
-      { match: (u) => u.includes('wiby.me'), body: [] },
+      { match: (u) => u.includes('wikipedia.org'), body: [] },
     ]);
 
     const provider = await getSearchProvider();

@@ -70,10 +70,6 @@ const ENGINE_QUALITY: Record<string, EngineQualityTier> = {
   // lobsters/devdocs.
   mojeek: 'low',
   marginalia: 'low',
-  // Slice 3 (pool reshape): Wiby is a tiny retro/personal-web index —
-  // long-tail recall only, sparse snippets, so `low` like the other
-  // secondary engines.
-  wiby: 'low',
   // Slice S11a image engines: image-search results carry source-page +
   // thumbnail/url + alt text rather than evidence-quality snippets. Tag as
   // `medium` so S11c's RRF tuning treats them like the general medium pool

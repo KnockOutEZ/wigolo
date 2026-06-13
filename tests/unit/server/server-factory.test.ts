@@ -88,11 +88,12 @@ describe('initSubsystems', () => {
     const { initSubsystems } = await import('../../../src/server.js');
     const subs = await initSubsystems();
 
-    expect(subs.searchEngines.length).toBeGreaterThanOrEqual(3);
+    expect(subs.searchEngines.length).toBeGreaterThanOrEqual(2);
     const names = subs.searchEngines.map((e) => e.name);
     // Exact prefix assertion: the static direct-engine list is precisely
-    // these three — it enforces that dropped engines stay out of the pool.
-    expect(names.slice(0, 3)).toEqual(['bing', 'duckduckgo', 'wiby']);
+    // these two — it enforces that dropped engines (incl. the removed wiby)
+    // stay out of the pool.
+    expect(names.slice(0, 2)).toEqual(['bing', 'duckduckgo']);
   });
 
   it('shutdown function closes browser pool and database', async () => {

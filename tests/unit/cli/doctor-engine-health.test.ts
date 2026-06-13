@@ -63,14 +63,28 @@ describe('formatEngineHealthLines', () => {
     const longError = 'x'.repeat(200);
     const entries: EngineHealthEntry[] = [
       { name: 'mojeek', vertical: 'general', status: 'ok', breaker: 'open', lastError: longError },
-      { name: 'wiby', vertical: 'general', status: 'ok', breaker: 'half-open' },
+      { name: 'marginalia', vertical: 'general', status: 'ok', breaker: 'half-open' },
     ];
     const lines = formatEngineHealthLines(entries);
     const mojeek = lines.find((l) => l.includes('mojeek'))!;
     expect(mojeek).toMatch(/breaker open/);
     expect(mojeek).toContain('x'.repeat(10));
     expect(mojeek).not.toContain(longError); // truncated
-    expect(lines.find((l) => l.includes('wiby'))).toMatch(/breaker half-open/);
+    expect(lines.find((l) => l.includes('marginalia'))).toMatch(/breaker half-open/);
+  });
+
+  // Wave-2 W3 (honest engine-pool health): an informational note (e.g.
+  // mojeek's IP-reputation limitation) renders even when the engine is "ok"
+  // and the breaker is closed, so the doctor output is honest about why an
+  // engine may intermittently go dark.
+  it('renders an informational note for ok engines that carry one', () => {
+    const entries: EngineHealthEntry[] = [
+      { name: 'mojeek', vertical: 'general', status: 'ok', note: 'intermittent 403s (IP reputation)' },
+    ];
+    const lines = formatEngineHealthLines(entries);
+    const mojeek = lines.find((l) => l.includes('mojeek'))!;
+    expect(mojeek).toMatch(/ok/);
+    expect(mojeek).toContain('intermittent 403s (IP reputation)');
   });
 
   it('does not render breaker info for closed or never-tripped breakers', () => {

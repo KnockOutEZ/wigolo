@@ -30,7 +30,6 @@ import type { SamplingCapableServer } from './search/sampling.js';
 import { SearxngClient } from './search/searxng.js';
 import { DuckDuckGoEngine } from './search/engines/duckduckgo.js';
 import { BingEngine } from './search/engines/bing.js';
-import { WibyEngine } from './search/engines/wiby.js';
 import { resolveSearchBackend, bootstrapNativeSearxng, getBootstrapState } from './searxng/bootstrap.js';
 import { SearxngProcess } from './searxng/process.js';
 import { DockerSearxng } from './searxng/docker.js';
@@ -119,7 +118,6 @@ export async function initSubsystems(): Promise<Subsystems> {
   const searchEngines: SearchEngine[] = [
     new BingEngine(),
     new DuckDuckGoEngine(),
-    new WibyEngine(),
   ];
   // Load plugins from ~/.wigolo/plugins/
   const pluginRegistry = new PluginRegistry();

@@ -1,4 +1,4 @@
-import type { ResearchBrief, ResearchSource, SearchResultItem, CrossReference } from '../types.js';
+import type { ResearchBrief, ResearchSource, SearchResultItem, CrossReference, ComparisonTradeoff } from '../types.js';
 import type { QueryType } from './decompose.js';
 import { extractHighlights } from '../search/highlights.js';
 import { buildCitationGraph } from './citation-graph.js';
@@ -200,37 +200,82 @@ function detectGaps(subQueries: string[], sources: ResearchSource[]): string[] {
   return gaps;
 }
 
+const COMPARISON_TERMS = ['faster', 'slower', 'better', 'worse', 'more', 'less',
+  'easier', 'harder', 'simpler', 'complex', 'lightweight', 'heavy',
+  'performance', 'scalability', 'ecosystem', 'community', 'support'];
+
+// Pre-compile the word-boundary matchers once. buildComparisonSection scans
+// every sentence of every source against every term, so compiling these in the
+// inner loop meant ~8500 RegExp constructions per call.
+const COMPARISON_TERM_MATCHERS: Array<{ term: string; re: RegExp }> =
+  COMPARISON_TERMS.map((term) => ({ term, re: new RegExp(`\\b${term}\\b`) }));
+
+const MAX_TRADEOFFS = 8;
+const MAX_TRADEOFF_LEN = 280;
+
+// Scan each source for sentences that pair a compared entity with a comparison
+// term. We keep BOTH the bare-keyword `comparison_points` (the host-LLM shape)
+// AND the source-quoted `tradeoffs` (the template renderer's evidence). The
+// tradeoff carries the sentence verbatim plus the index of the source it came
+// from, so the renderer can quote a real, cited tradeoff without inventing
+// directionality from a keyword alone.
 function buildComparisonSection(
   entities: string[],
   sources: ResearchSource[],
-): { entities: string[]; comparison_points: string[] } {
-  const comparisonPoints: string[] = [];
-  const contentLower = sources.map((s) => s.markdown_content.toLowerCase()).join('\n');
+): { entities: string[]; comparison_points: string[]; tradeoffs: ComparisonTradeoff[] } {
+  const comparisonPoints = new Set<string>();
+  const tradeoffs: ComparisonTradeoff[] = [];
+  const seenSentences = new Set<string>();
+  const entitiesLower = entities.map((e) => e.toLowerCase());
 
-  // Look for comparison keywords near entity mentions
-  const comparisonTerms = ['faster', 'slower', 'better', 'worse', 'more', 'less',
-    'easier', 'harder', 'simpler', 'complex', 'lightweight', 'heavy',
-    'performance', 'scalability', 'ecosystem', 'community', 'support'];
+  for (let idx = 0; idx < sources.length; idx++) {
+    const cleaned = stripMarkdownLinks(sources[idx].markdown_content);
+    const sentences = splitSentences(cleaned);
 
-  for (const term of comparisonTerms) {
-    if (!contentLower.includes(term)) continue;
+    for (const sentence of sentences) {
+      const sentenceLower = sentence.toLowerCase();
+      const hasEntity = entitiesLower.some((e) => sentenceLower.includes(e));
+      if (!hasEntity) continue;
 
-    // Check if term appears near any entity
-    const nearEntity = entities.some((e) => {
-      const entityLower = e.toLowerCase();
-      const idx = contentLower.indexOf(entityLower);
-      if (idx === -1) return false;
-      // Check within 200 chars of entity mention
-      const neighborhood = contentLower.slice(Math.max(0, idx - 200), idx + e.length + 200);
-      return neighborhood.includes(term);
-    });
+      // The comparison term must appear in the same sentence as an entity —
+      // that co-location is what makes the keyword a directional signal we can
+      // honestly quote.
+      const matchedTerms = COMPARISON_TERM_MATCHERS
+        .filter((m) => m.re.test(sentenceLower))
+        .map((m) => m.term);
+      if (matchedTerms.length === 0) continue;
 
-    if (nearEntity) {
-      comparisonPoints.push(term);
+      for (const t of matchedTerms) comparisonPoints.add(t);
+
+      const dedupeKey = sentenceLower.slice(0, 120);
+      if (seenSentences.has(dedupeKey)) continue;
+      seenSentences.add(dedupeKey);
+
+      if (tradeoffs.length < MAX_TRADEOFFS) {
+        const text = sentence.length > MAX_TRADEOFF_LEN
+          ? sentence.slice(0, MAX_TRADEOFF_LEN - 1).trimEnd() + '…'
+          : sentence;
+        tradeoffs.push({ text, source_index: idx, term: matchedTerms[0] });
+      }
     }
   }
 
-  return { entities, comparison_points: [...new Set(comparisonPoints)] };
+  return {
+    entities,
+    comparison_points: [...comparisonPoints],
+    tradeoffs,
+  };
+}
+
+// Split prose into sentences on terminal punctuation. Keeps it simple — the
+// goal is a quotable unit, not linguistic perfection. Collapses whitespace so
+// a quoted tradeoff reads cleanly.
+function splitSentences(text: string): string[] {
+  return text
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 20);
 }
 
 function firstSubstantiveParagraph(markdown: string): string | null {

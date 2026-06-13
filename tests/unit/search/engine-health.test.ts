@@ -62,6 +62,27 @@ describe('getEngineHealthSummary', () => {
     expect(mojeek?.status).toBe('ok');
   });
 
+  // Wave-2 W3 (honest engine-pool health): mojeek's 403s are IP-reputation
+  // driven (confirmed in src/search/engines/mojeek.ts), NOT UA-fixable. A
+  // user seeing mojeek "ok" but absent from telemetry deserves to know WHY.
+  // The note is informational — it does not change status or block dispatch.
+  it('attaches an IP-reputation note to mojeek so its intermittent absence is honest', () => {
+    const summary = getEngineHealthSummary();
+    const mojeek = summary.find((e) => e.name === 'mojeek');
+    expect(mojeek?.note).toMatch(/IP reputation/i);
+  });
+
+  it('does not attach a note to engines without a known limitation', () => {
+    const summary = getEngineHealthSummary();
+    const ddg = summary.find((e) => e.name === 'duckduckgo');
+    expect(ddg?.note).toBeUndefined();
+  });
+
+  it('does not register wiby in any vertical (removed in Wave-2 W3)', () => {
+    const summary = getEngineHealthSummary();
+    expect(summary.find((e) => e.name === 'wiby')).toBeUndefined();
+  });
+
   it('flags brave as disabled when BRAVE_API_KEY is missing (gated OUT of pool)', () => {
     const summary = getEngineHealthSummary();
     const brave = summary.find((e) => e.name === 'brave');

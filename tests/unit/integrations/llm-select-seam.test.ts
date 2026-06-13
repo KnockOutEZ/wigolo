@@ -99,6 +99,16 @@ describe('selectProviderWithKeyStore', () => {
     expect(result).toBeNull();
   });
 
+  it('returns null for the ollama alias (keyless custom backend, handled in run.ts)', async () => {
+    // WHY: ollama has no API key. If select returned a cloud provider here, a
+    // user with ollama configured but a stray cloud key would be silently
+    // routed to the cloud instead of their local server.
+    await storeKey('anthropic', 'an-key', { dataDir: tmpDir });
+    process.env.WIGOLO_LLM_PROVIDER = 'ollama';
+    const result = await selectProviderWithKeyStore(process.env, { dataDir: tmpDir });
+    expect(result).toBeNull();
+  });
+
   it('does not mutate process.env', async () => {
     await storeKey('anthropic', 'kc-key', { dataDir: tmpDir });
     const envSnapshot = JSON.stringify(process.env);
