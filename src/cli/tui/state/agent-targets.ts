@@ -16,6 +16,7 @@
 import { readFile as nodeReadFile } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
+import { vscodeUserDir } from '../../agents/vscode.js';
 
 export type AgentId = 'claude-code' | 'vscode' | 'zed' | 'windsurf' | 'cursor';
 
@@ -82,17 +83,10 @@ async function detectAtPath(configPath: string, serverPath: ReadonlyArray<string
 }
 
 function resolveVscodeMcpPath(home: string, plat: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
-  // SP7's vscode handler writes to ~/.vscode/mcp.json. Keep parity so the TUI
-  // mutates the same file that install created. If users use the per-user
-  // Code/User/mcp.json instead, they can override via WIGOLO_VSCODE_MCP_PATH.
   const override = env.WIGOLO_VSCODE_MCP_PATH;
   if (override) return override;
-  // Honour per-OS Code/User/mcp.json as documented in the plan when present,
-  // otherwise fall back to SP7's ~/.vscode/mcp.json. We check existence in
-  // detect() — for the configPath we prefer the SP7 path because that's where
-  // install lands, but allow the platform-canonical path as override.
   void plat; // platform branch reserved for future Code/User layout
-  return join(home, '.vscode', 'mcp.json');
+  return join(vscodeUserDir(home), 'mcp.json');
 }
 
 export function defaultAgentTargets(opts: DefaultAgentTargetsOpts): AgentTarget[] {
