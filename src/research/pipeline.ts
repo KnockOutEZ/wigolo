@@ -3,6 +3,7 @@ import { decomposeQuestion, detectQueryType, extractComparisonEntities, type Que
 import { synthesizeReport } from './synthesize.js';
 import { synthesizeLocal } from './synthesis-local.js';
 import { buildResearchBrief } from './brief.js';
+import { renderBriefReport } from './render-brief.js';
 import { deduplicateResults } from '../search/dedup.js';
 import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
@@ -242,6 +243,7 @@ export async function runResearchPipeline(
     let finalReport = synthesisResult.report;
     let finalCitations: Citation[] = synthesisResult.citations;
     let localSynthesisText: string | undefined;
+    let localSynthesisSucceeded = false;
     if (!synthesisResult.samplingUsed && await isLlmConfiguredWithKeyStore()) {
       try {
         const localSources = sources
@@ -251,6 +253,7 @@ export async function runResearchPipeline(
           const local = await synthesizeLocal(input.question, localSources);
           finalReport = local.text;
           localSynthesisText = local.text;
+          localSynthesisSucceeded = true;
           finalCitations = local.citations
             .filter((idx) => idx >= 0 && idx < localSources.length)
             .map((idx) => {
@@ -289,6 +292,15 @@ export async function runResearchPipeline(
           localSynthesisText,
         )
       : undefined;
+
+    // Keyless template mode: when neither host-LLM sampling nor a local LLM
+    // produced the report, weave the structured brief into an organized,
+    // source-cited document instead of returning the flat per-source dump.
+    // The sampling path and the successful-local-LLM path keep their own
+    // report; buildFallbackReport remains the safety net when no brief exists.
+    if (!synthesisResult.samplingUsed && !localSynthesisSucceeded && brief) {
+      finalReport = renderBriefReport(input.question, brief, sources);
+    }
 
     return {
       report: finalReport,
