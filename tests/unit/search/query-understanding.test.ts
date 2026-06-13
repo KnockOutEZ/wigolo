@@ -175,3 +175,13 @@ describe('query_understanding.rewrites in multi-query (Slice 8 / M7)', () => {
     expect(out.data.query_understanding?.rewrites ?? []).toEqual([]);
   });
 });
+
+describe('buildQueryUnderstanding compound_terms (parity attack 3)', () => {
+  it('surfaces detected compound tokens', () => {
+    const qu = buildQueryUnderstanding('sqlite-vec vec0 knn query');
+    expect(qu.compound_terms).toEqual(expect.arrayContaining(['sqlite-vec', 'vec0']));
+  });
+  it('is empty for plain queries', () => {
+    expect(buildQueryUnderstanding('best coffee maker').compound_terms).toEqual([]);
+  });
+});

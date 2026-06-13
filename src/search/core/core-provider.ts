@@ -23,6 +23,7 @@ import { foldRerankIntoOrdering } from './rerank-fold.js';
 import { detectBrandCollision, detectLexicalCollision } from './brand-collision.js';
 import { computeFreshnessSignal } from './freshness.js';
 import { buildQueryUnderstanding } from './query-understanding.js';
+import { detectRareTerms } from './rare-terms.js';
 import { buildEngineWarnings } from './engine-warnings.js';
 import { faviconUrlFor } from './favicon.js';
 import { runSynthesis } from '../answer-synthesis.js';
@@ -100,6 +101,25 @@ function fuseRankedLists(lists: RawSearchResult[][]): RawSearchResult[] {
       };
     })
     .filter((r): r is RawSearchResult => r !== undefined);
+}
+
+// Build at most ONE quoted-phrase variant for a COMPOUND-term query. Quoting
+// the compound token coaxes exact-match pages out of engines that support
+// phrase queries — engines otherwise drop hyphens and search the dominant
+// single term. Compound-only by design: a concept phrase fires for nearly every
+// multi-word query, so quoting it would spend an extra engine sweep on almost
+// every call; concept-phrase queries are handled purely rank-side. Returns null
+// when no compound token is present.
+function buildRareTermVariant(query: string): string | null {
+  const rare = detectRareTerms(query);
+  if (rare.compoundTokens.length === 0) return null;
+  let v = query;
+  for (const t of rare.compoundTokens) {
+    // quote the first occurrence of each compound token, case-insensitively
+    const re = new RegExp(`(^|\\s)(${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?=\\s|$)`, 'i');
+    v = v.replace(re, (_m, pre, tok) => `${pre}"${tok}"`);
+  }
+  return v !== query ? v : null;
 }
 
 export class CoreSearchProvider implements SearchProvider {
@@ -209,8 +229,28 @@ export class CoreSearchProvider implements SearchProvider {
     const autoRewrites: string[] = [];
 
     if (!servedFromCache && !ultraFastMiss) {
+      // Parity attack 3: for a single-query call carrying a compound token
+      // (sqlite-vec, vec0, snake_case), add ONE quoted-phrase variant to the
+      // initial fan-out so engines that honour phrase quotes surface exact-match
+      // pages they'd otherwise drop by stripping the hyphen. The variant is
+      // dispatched CONCURRENTLY in the same Promise.all (not a serial second
+      // sweep), so it adds engine load but no extra wall-clock latency. Bounded
+      // to one extra concurrent dispatch; `queries` stays the user-supplied list
+      // (the low-recall block below still keys its single-query gate off it).
+      const rareVariant =
+        category !== 'images' && queries.length === 1
+          ? buildRareTermVariant(queries[0])
+          : null;
+      const dispatchQueries =
+        rareVariant && rareVariant.trim() !== queries[0].trim()
+          ? [...queries, rareVariant]
+          : queries;
+      if (dispatchQueries.length > queries.length) {
+        log.debug('rare-term variant firing', { original: queries[0], variant: rareVariant });
+      }
+
       const dispatches = await Promise.all(
-        queries.map((q) =>
+        dispatchQueries.map((q) =>
           runV1Search({
             query: q,
             category,
@@ -227,6 +267,10 @@ export class CoreSearchProvider implements SearchProvider {
           }),
         ),
       );
+
+      if (rareVariant && dispatchQueries.length > queries.length) {
+        autoRewrites.push(rareVariant);
+      }
 
       let fused =
         dispatches.length === 1

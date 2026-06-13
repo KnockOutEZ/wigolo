@@ -3,6 +3,24 @@ export interface AuthorityBoostable {
   relevance_score: number;
 }
 
+export interface AuthorityBoostOptions {
+  /** URLs that are rare-term MISSES for the current query (contain none of the
+   * query's compound tokens, or have phrase run < 2). Generic (non-known-
+   * subject) authority for these is multiplicatively reduced so an off-topic
+   * high-authority page can't outrank an exact-match page. Per-result, not
+   * query-wide: a high-authority page that DOES contain the rare terms (a hit)
+   * keeps its full authority. */
+  capUrls?: ReadonlySet<string>;
+}
+
+// Generic (non-known-subject) authority is REDUCED by this factor for rare-term
+// miss results. Must be multiplicative, not a Math.min ceiling: the additive
+// boosts (down to +0.04 for an authoritative TLD) sit on a tiny ~0.016 RRF base,
+// so a clamp ceiling above 0.04 would be a no-op and an off-topic .org/.io page
+// would still win. Multiplicative reduction shrinks every generic boost
+// proportionally.
+const GENERIC_AUTHORITY_RARE_FACTOR = 0.25;
+
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'what', 'is', 'are', 'was', 'were', 'how', 'why', 'when', 'where', 'who',
   'do', 'does', 'did', 'for', 'of', 'to', 'in', 'on', 'with', 'and', 'or', 'but', 'as', 'at',
@@ -90,6 +108,7 @@ function hostOf(url: string): string | null {
 export function applyAuthorityBoost<T extends AuthorityBoostable>(
   query: string,
   results: T[],
+  opts: AuthorityBoostOptions = {},
 ): T[] {
   if (results.length === 0) return results;
   const subjects = extractSubjects(query);
@@ -104,10 +123,11 @@ export function applyAuthorityBoost<T extends AuthorityBoostable>(
     if (!host) return r;
 
     let boost = 0;
+    let fromKnownSubject = false;
 
-    if (knownDomains.has(host)) boost += 0.20;
+    if (knownDomains.has(host)) { boost += 0.20; fromKnownSubject = true; }
     else for (const dom of knownDomains) {
-      if (host.endsWith(`.${dom}`)) { boost += 0.18; break; }
+      if (host.endsWith(`.${dom}`)) { boost += 0.18; fromKnownSubject = true; break; }
     }
 
     if (boost === 0) {
@@ -127,6 +147,10 @@ export function applyAuthorityBoost<T extends AuthorityBoostable>(
     else if (host.startsWith('docs.')) boost += 0.08;
 
     if (boost === 0 && AUTHORITATIVE_TLD.test(host)) boost += 0.04;
+
+    if (opts.capUrls?.has(r.url) && !fromKnownSubject) {
+      boost *= GENERIC_AUTHORITY_RARE_FACTOR;
+    }
 
     if (boost === 0) return r;
 

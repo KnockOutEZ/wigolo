@@ -15,6 +15,7 @@ import { recencyMultiplier, hasTemporalIntent } from './recency-boost.js';
 import { applyAuthorityBoost } from '../reranker/authority-boost.js';
 import { domainQualityScore } from './domain-quality.js';
 import { lexicalAlignment } from './lexical-alignment.js';
+import { detectRareTerms, rareTermFactor, isRareTermMiss } from './rare-terms.js';
 import { resolveTimeRange, type TimeRange } from './time-range.js';
 import { getConfig } from '../../config.js';
 
@@ -337,7 +338,15 @@ export async function runV1Search(
     })
     .filter((r): r is RawSearchResult => r !== undefined);
 
-  merged = applyAuthorityBoost(query, merged);
+  const rare = detectRareTerms(query);
+  const hasRareTerms = rare.compoundTokens.length > 0 || rare.conceptPhrase !== null;
+  // Cap generic authority per-result for rare-term MISSES only (results that
+  // don't contain the query's compounds / phrase). Hits keep full authority, so
+  // a legitimately on-topic high-authority page is never demoted.
+  const capUrls = hasRareTerms
+    ? new Set(merged.filter((r) => isRareTermMiss(r, rare)).map((r) => r.url))
+    : undefined;
+  merged = applyAuthorityBoost(query, merged, { capUrls });
   merged = applyBrandCollisionGuard(query, merged);
 
   // Brand-collision rank (sub-ticket 2.1): damp brand-domain matches and
@@ -362,7 +371,8 @@ export async function runV1Search(
     const isSecondaryOnly = primaryCount === 0 && secondaryCount > 0;
     const secondaryPenalty = isSecondaryOnly && la < 0.5 ? 0.3 : 1.0;
     const recencyMul = wantsRecency ? recencyMultiplier(r.published_date) : 1.0;
-    const final = base * dq * (0.5 + 0.5 * la) * secondaryPenalty;
+    const rtf = rareTermFactor({ title: r.title, url: r.url, snippet: r.snippet }, rare);
+    const final = base * dq * (0.5 + 0.5 * la) * secondaryPenalty * rtf;
     if (breakdowns) {
       breakdowns.set(r.url, {
         base,
@@ -380,6 +390,7 @@ export async function runV1Search(
         lexical_alignment: la,
         recency_boost: recencyMul,
         engine_consensus: primaryCount + secondaryCount,
+        rare_terms: rtf,
       },
       explanation: explainEvidence({
         base,

@@ -4,6 +4,7 @@ import {
   type Vertical,
 } from './intent-router.js';
 import { COMMON_NOUNS } from '../hybrid/common-nouns.js';
+import { detectRareTerms } from './rare-terms.js';
 
 export interface QueryUnderstanding {
   intent: Vertical;
@@ -12,6 +13,7 @@ export interface QueryUnderstanding {
   language: string;
   is_brand_collision_prone: boolean;
   rewrites: string[];
+  compound_terms: string[];
 }
 
 export interface BuildQUOptions {
@@ -109,5 +111,6 @@ export function buildQueryUnderstanding(
     language: opts.language ?? 'en',
     is_brand_collision_prone: isBrandCollisionProne(query),
     rewrites: opts.rewrites ?? [],
+    compound_terms: detectRareTerms(query).compoundTokens,
   };
 }

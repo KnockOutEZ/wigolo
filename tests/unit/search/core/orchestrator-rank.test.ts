@@ -365,3 +365,35 @@ describe('runV1Search — brand-collision rank (sub-ticket 2.1)', () => {
     expect(withoutFlag.results[0]._score_breakdown).toBeUndefined();
   });
 });
+
+describe('rare-term ranking (parity attack 3)', () => {
+  it('A4: ranks the exact sqlite-vec doc above the generic sqlite.org homepage', async () => {
+    verticalState.general = [
+      makeEntry('e1', [
+        makeResult('e1', 'https://sqlite.org/', 'SQLite Home Page', 'small fast self-contained database'),
+        makeResult('e1', 'https://sqlite.org/download.html', 'SQLite Download', 'precompiled binaries'),
+        makeResult('e1', 'https://alexgarcia.xyz/sqlite-vec/', 'sqlite-vec: vec0 virtual tables', 'knn query syntax for vec0 virtual tables'),
+      ], { quality: 'high' }),
+    ];
+    const out = await runV1Search({ query: 'sqlite-vec vec0 virtual table knn query syntax', category: 'general' });
+    const urls = out.results.map((r) => r.url);
+    const docIdx = urls.indexOf('https://alexgarcia.xyz/sqlite-vec/');
+    const homeIdx = urls.indexOf('https://sqlite.org/');
+    // Encodes WHY: an exact compound-token match must outrank the generic
+    // high-authority homepage that merely shares the "sqlite" prefix.
+    expect(docIdx).toBeGreaterThanOrEqual(0);
+    expect(docIdx).toBeLessThan(homeIdx);
+    expect(out.results.slice(0, 2).map((r) => r.url)).toContain('https://alexgarcia.xyz/sqlite-vec/');
+  });
+
+  it('A1: ranks the RRF concept page above the "reciprocal" dictionary page', async () => {
+    verticalState.general = [
+      makeEntry('e1', [
+        makeResult('e1', 'https://en.wikipedia.org/wiki/Multiplicative_inverse', 'Reciprocal (mathematics)', 'the reciprocal of a number x is 1/x'),
+        makeResult('e1', 'https://example.com/rrf', 'Reciprocal Rank Fusion explained', 'how reciprocal rank fusion combines result rankings'),
+      ], { quality: 'high' }),
+    ];
+    const out = await runV1Search({ query: 'reciprocal rank fusion explained', category: 'general' });
+    expect(out.results[0].url).toBe('https://example.com/rrf');
+  });
+});
