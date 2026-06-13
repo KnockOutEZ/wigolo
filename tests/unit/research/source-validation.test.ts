@@ -61,6 +61,23 @@ describe('classifyUrlShape', () => {
       reject: false,
     });
   });
+
+  it('does not misclassify hosts that merely contain an engine token as a substring', () => {
+    // WHY: substring host-matching ("ask." inside "task.", "flask.") would
+    // silently drop legitimate research sources. Engine detection must match on
+    // domain-label boundaries, not substrings.
+    expect(classifyUrlShape('https://task.evil.com/search?q=x')).toEqual({ reject: false });
+    expect(classifyUrlShape('https://flask.palletsprojects.com/search?q=x')).toEqual({
+      reject: false,
+    });
+    expect(classifyUrlShape('https://notgoogle.com/search?q=x')).toEqual({ reject: false });
+  });
+
+  it('rejects a malformed URL rather than throwing', () => {
+    // WHY: classifyUrlShape must never throw on bad input — an unparseable URL
+    // is not a usable source.
+    expect(classifyUrlShape('not a url').reject).toBe(true);
+  });
 });
 
 describe('queryContentTerms', () => {
@@ -109,6 +126,17 @@ describe('gateContent', () => {
     // A substantial page is real content and must not be dropped here.
     const longOffTopic = Array.from({ length: 120 }, () => 'lorem ipsum dolor sit amet').join(' ');
     expect(gateContent(longOffTopic, terms)).toEqual({ reject: false });
+  });
+
+  it('pins the low-content / low-overlap reason boundary at the word threshold', () => {
+    // WHY: the reason reported depends on NEAR_EMPTY_WORDS (10) — a 10-word
+    // off-topic page is a shell (low-content), an 11-word one is short prose
+    // that simply missed the query (low-overlap). Lock the boundary so a
+    // mutation of the constant is caught.
+    const tenWords = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet';
+    const elevenWords = `${tenWords} kilo`;
+    expect(gateContent(tenWords, terms)).toEqual({ reject: true, reason: 'low-content' });
+    expect(gateContent(elevenWords, terms)).toEqual({ reject: true, reason: 'low-overlap' });
   });
 
   it('keeps everything when there are no query terms', () => {

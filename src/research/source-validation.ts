@@ -28,26 +28,28 @@ const NEAR_EMPTY_WORDS = 10;
 // Fraction of distinct query terms that must appear for a thin page to survive.
 const OVERLAP_FLOOR = 0.1;
 
-// Mainstream search-engine hosts whose /search path is a results page.
-const SEARCH_ENGINE_HOSTS = [
-  'google.',
-  'bing.',
-  'duckduckgo.',
-  'yahoo.',
-  'baidu.',
-  'yandex.',
-  'ecosia.',
-  'startpage.',
-  'brave.',
-  'ask.',
-  'aol.',
-  'mojeek.',
-];
+// Mainstream search-engine domain labels whose /search path is a results page.
+// Matched on label boundaries (not substrings) so "task.evil.com" or
+// "flask.palletsprojects.com" are never mistaken for "ask." engines.
+const SEARCH_ENGINE_LABELS = new Set([
+  'google',
+  'bing',
+  'duckduckgo',
+  'yahoo',
+  'baidu',
+  'yandex',
+  'ecosia',
+  'startpage',
+  'brave',
+  'ask',
+  'aol',
+  'mojeek',
+]);
 
 const SERP_QUERY_PARAMS = ['q', 'p', 'query', 'search_query'];
 
-function hostMatchesAny(host: string, needles: string[]): boolean {
-  return needles.some((n) => host === n.replace(/\.$/, '') || host.includes(n));
+function isSearchEngineHost(host: string): boolean {
+  return host.split('.').some((label) => SEARCH_ENGINE_LABELS.has(label));
 }
 
 /**
@@ -76,7 +78,7 @@ export function classifyUrlShape(url: string, includeDomains?: string[]): UrlSha
   }
 
   // SERP: a mainstream engine's /search results path or q-style query param.
-  if (hostMatchesAny(host, SEARCH_ENGINE_HOSTS)) {
+  if (isSearchEngineHost(host)) {
     const isSearchPath = lowerPath === '/search' || lowerPath.startsWith('/search/');
     const hasSearchParam = SERP_QUERY_PARAMS.some((p) => parsed.searchParams.has(p));
     if (isSearchPath || hasSearchParam) {

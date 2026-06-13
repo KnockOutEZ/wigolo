@@ -168,4 +168,42 @@ describe('research pipeline source validation', () => {
     const contentGateRejects = (result.rejected_sources ?? []).filter((r) => r.stage === 'content-gate');
     expect(contentGateRejects).toHaveLength(0);
   });
+
+  it('keeps an include_domains root through the pipeline filter', async () => {
+    // WHY: the url-shape filter threads input.include_domains — a homepage on a
+    // domain the caller explicitly scoped to is an intentional target and must
+    // survive the pipeline, not just the unit classifier.
+    const results: RawSearchResult[] = [
+      { title: 'Docs root', url: 'https://docs.example.com/', snippet: 'x', relevance_score: 0.95, engine: 'stub' },
+      ...Array.from({ length: 3 }, (_, i) => goodResult(i, 0.9 - i * 0.01)),
+    ];
+    const input: ResearchInput = {
+      question: QUESTION,
+      depth: 'quick',
+      include_domains: ['docs.example.com'],
+    };
+
+    const result = await runResearchPipeline(input, [createStubEngine(results)], createStubRouter());
+
+    const homepageRejects = (result.rejected_sources ?? []).filter((r) => r.reason === 'homepage');
+    expect(homepageRejects).toHaveLength(0);
+    expect(result.sources.map((s) => s.url)).toContain('https://docs.example.com/');
+  });
+
+  it('returns the no-sources report when every candidate is url-shape junk', async () => {
+    // WHY: the all-junk early-return is a distinct branch from content-gate
+    // fail-open — when nothing survives the url-shape filter there is nothing
+    // to fetch, and the rejected_sources must still surface why.
+    const results: RawSearchResult[] = [
+      { title: 'Google', url: 'https://www.google.com/', snippet: '', relevance_score: 0.99, engine: 'stub' },
+      { title: 'Bing search', url: 'https://www.bing.com/search?q=x', snippet: '', relevance_score: 0.98, engine: 'stub' },
+    ];
+    const input: ResearchInput = { question: QUESTION, depth: 'quick' };
+
+    const result = await runResearchPipeline(input, [createStubEngine(results)], createStubRouter());
+
+    expect(result.sources).toHaveLength(0);
+    expect(result.report).toContain('No sources could be found');
+    expect((result.rejected_sources ?? []).length).toBeGreaterThanOrEqual(2);
+  });
 });
