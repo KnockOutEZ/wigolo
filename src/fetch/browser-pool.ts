@@ -4,6 +4,7 @@ import { createLogger } from '../logger.js';
 import { BrowserSelector, type SelectionStrategy } from './browser-selector.js';
 import { executeActions } from './action-executor.js';
 import { HYDRATION_PROBE_SOURCE } from './hydration-probe.js';
+import { abortRejection } from '../util/abort.js';
 import type { RawFetchResult, BrowserType, ActionResult, BrowserAction } from '../types.js';
 
 export interface BrowserFetchOptions {
@@ -15,6 +16,7 @@ export interface BrowserFetchOptions {
   actions?: BrowserAction[];
   cdpUrl?: string;
   browserType?: BrowserType;
+  signal?: AbortSignal;
 }
 
 export interface BrowserPoolOptions {
@@ -202,6 +204,9 @@ export class MultiBrowserPool {
   }
 
   async fetchWithBrowser(url: string, options: BrowserFetchOptions = {}): Promise<RawFetchResult> {
+    // Bail out immediately if the caller's budget is already exhausted.
+    if (options.signal?.aborted) throw options.signal.reason;
+
     const config = getConfig();
     const navTimeoutMs = options.timeoutMs ?? config.playwrightNavTimeoutMs;
     const loadTimeoutMs = config.playwrightLoadTimeoutMs;
@@ -233,6 +238,12 @@ export class MultiBrowserPool {
 
     const page = await ctx.newPage();
 
+    // When the caller's signal fires, close THIS page (the private one we
+    // just opened) so the in-flight navigation is cancelled and the slot is
+    // returned quickly. We never close the shared pooled context.
+    const onAbort = () => { page.close().catch(() => {}); };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+
     if (options.headers) {
       await page.setExtraHTTPHeaders(options.headers);
     }
@@ -245,10 +256,17 @@ export class MultiBrowserPool {
 
     try {
       try {
-        const response = await page.goto(url, {
-          timeout: navTimeoutMs,
-          waitUntil: 'domcontentloaded',
-        });
+        // Race the navigation against the caller's abort signal so the fetch
+        // rejects promptly instead of waiting for the full nav timeout.
+        // abortRejection never settles when no signal is given, so it is a
+        // safe loser in the race when signal is undefined.
+        const response = await Promise.race([
+          page.goto(url, {
+            timeout: navTimeoutMs,
+            waitUntil: 'domcontentloaded',
+          }),
+          abortRejection(options.signal),
+        ]);
 
         if (response) {
           statusCode = response.status();
@@ -261,6 +279,9 @@ export class MultiBrowserPool {
         // SPAs may hydrate past the nav timeout. Rather than failing the whole
         // fetch, capture whatever HTML the page already rendered and tag a
         // warning so callers (and host LLMs) know the content is partial.
+        // AbortError (from abortRejection) has name 'AbortError', NOT
+        // 'TimeoutError', so isTimeout is false and the error is rethrown —
+        // no new branch is needed here.
         const msg = err instanceof Error ? err.message : String(err);
         const isTimeout =
           (err instanceof Error && err.name === 'TimeoutError') ||
@@ -324,10 +345,15 @@ export class MultiBrowserPool {
         ...(gotoTimedOut ? { warning: 'goto_timeout_partial_content' } : {}),
       };
     } finally {
-      await page.close();
+      // Detach the abort listener before closing so we don't trigger a
+      // redundant close call if abort fires after we're already in finally.
+      options.signal?.removeEventListener('abort', onAbort);
+      // Close the page; tolerate already-closed (double-close is safe).
+      await page.close().catch(() => {});
       if (cdpBrowser) {
         await cdpBrowser.close().catch(() => {});
       } else {
+        // Always release the slot — even on abort — so the pool is not leaked.
         this.releaseForType(resolvedType, ctx);
       }
     }

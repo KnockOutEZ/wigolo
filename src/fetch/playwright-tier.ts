@@ -2,6 +2,7 @@ import { chromium, type Browser, type BrowserContext } from 'playwright';
 import { existsSync } from 'node:fs';
 import { createLogger } from '../logger.js';
 import { HYDRATION_PROBE_SOURCE } from './hydration-probe.js';
+import { abortRejection } from '../util/abort.js';
 
 const log = createLogger('playwright-tier');
 
@@ -61,12 +62,26 @@ export async function closeDaemonBrowser(): Promise<void> {
   if (_browser) { await _browser.close(); _browser = null; }
 }
 
-export async function fetchWithPlaywright(url: string, opts: { timeoutMs?: number } = {}): Promise<{ html: string; text: string }> {
+export async function fetchWithPlaywright(url: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<{ html: string; text: string }> {
+  // Bail out immediately if the caller's budget is already exhausted.
+  if (opts.signal?.aborted) throw opts.signal.reason;
+
   const { context } = await getDaemonBrowser();
   const page = await context.newPage();
+
+  // When the caller's signal fires, close THIS page so the in-flight
+  // navigation is cancelled. The shared daemon context is never closed here.
+  const onAbort = () => { page.close().catch(() => {}); };
+  opts.signal?.addEventListener('abort', onAbort, { once: true });
+
   try {
     const overall = opts.timeoutMs ?? 30000;
-    await page.goto(url, { waitUntil: 'load', timeout: overall });
+    // Race the navigation against the caller's abort signal.
+    // abortRejection never settles when no signal is given (safe loser in race).
+    await Promise.race([
+      page.goto(url, { waitUntil: 'load', timeout: overall }),
+      abortRejection(opts.signal),
+    ]);
     // SPAs (React/Next.js/etc.) populate the article body after `load` fires.
     // Wait for either semantic content (a `<main>`/`<article>` containing
     // substantial text) or for the network to go idle — whichever wins
@@ -82,6 +97,8 @@ export async function fetchWithPlaywright(url: string, opts: { timeoutMs?: numbe
     const text = await page.evaluate(() => document.body?.innerText ?? '');
     return { html, text };
   } finally {
-    await page.close();
+    opts.signal?.removeEventListener('abort', onAbort);
+    // Close the page; tolerate already-closed (double-close is safe).
+    await page.close().catch(() => {});
   }
 }
