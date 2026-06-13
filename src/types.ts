@@ -720,6 +720,9 @@ export interface EvidenceScore {
     recency_boost: number;
     /** Number of engines that surfaced this URL. */
     engine_consensus: number;
+    /** Cross-encoder relevance (normalised 0-1 over the rerank window).
+     * Present only on balanced/deep tiers when the reranker is active. */
+    cross_encoder?: number;
   };
   /** One-line human-readable explanation summarizing the breakdown. */
   explanation: string;

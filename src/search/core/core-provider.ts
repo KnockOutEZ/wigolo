@@ -19,6 +19,7 @@ import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
 import { expandQuery, LOW_RECALL_THRESHOLD } from './query-expansion.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
+import { foldRerankIntoOrdering } from './rerank-fold.js';
 import { detectBrandCollision, detectLexicalCollision } from './brand-collision.js';
 import { computeFreshnessSignal } from './freshness.js';
 import { buildQueryUnderstanding } from './query-understanding.js';
@@ -150,6 +151,8 @@ export class CoreSearchProvider implements SearchProvider {
       language: input.language,
       time_range: input.time_range,
       exact_match: input.exact_match,
+      search_depth: depth,
+      reranker: getConfig().reranker,
     });
 
     let items: SearchResultItem[] = [];
@@ -373,6 +376,22 @@ export class CoreSearchProvider implements SearchProvider {
 
       if (input.agent_context?.recent_urls?.length) {
         processed = dedupAgainstRecentUrls(processed, input.agent_context.recent_urls);
+      }
+
+      // Cross-encoder rerank-fold (parity attack 2): the LAST reorder, after
+      // all cross-query merges + context-rank. Balanced/deep only; images skip
+      // (snippet rerank on image results is noise); gated on the same onnx
+      // reranker config the evidence path uses. The helper is failure-safe.
+      if (
+        (depth === 'balanced' || depth === 'deep') &&
+        !isImagesCategory &&
+        getConfig().reranker === 'onnx'
+      ) {
+        processed = await foldRerankIntoOrdering(processed, {
+          queries,
+          deep: depth === 'deep',
+          maxResults: input.max_results,
+        });
       }
 
       const maxResults = input.max_results ?? processed.length;

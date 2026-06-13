@@ -9,6 +9,7 @@ import type {
   SearchResultItem,
 } from '../../../../src/types.js';
 import type { SearchContext } from '../../../../src/providers/search-provider.js';
+import { getConfig } from '../../../../src/config.js';
 
 vi.mock('../../../../src/search/core/orchestrator.js', () => ({
   runV1Search: vi.fn().mockResolvedValue({
@@ -69,7 +70,7 @@ describe('CoreSearchProvider — cache key + post-lookup re-filter (sub-ticket 2
       r.url.includes('nextjs.org'),
     );
     cacheSearchResults(
-      buildSearchCacheKey('next.js', { include_domains: ['nextjs.org'] }),
+      buildSearchCacheKey('next.js', { include_domains: ['nextjs.org'], search_depth: 'balanced', reranker: getConfig().reranker }),
       filteredItems,
       ['bing'],
     );
@@ -113,7 +114,7 @@ describe('CoreSearchProvider — cache key + post-lookup re-filter (sub-ticket 2
     // payload includes off-domain results (e.g. older code wrote the row
     // before the filter was added). Post-lookup re-filter must still apply.
     cacheSearchResults(
-      buildSearchCacheKey('next.js', { include_domains: ['nextjs.org'] }),
+      buildSearchCacheKey('next.js', { include_domains: ['nextjs.org'], search_depth: 'balanced', reranker: getConfig().reranker }),
       cachedItems,
       ['bing'],
     );
@@ -134,7 +135,7 @@ describe('CoreSearchProvider — cache key + post-lookup re-filter (sub-ticket 2
 
   it('cache hit re-applies max_results as defence-in-depth when payload is longer', async () => {
     cacheSearchResults(
-      buildSearchCacheKey('next.js', { max_results: 2 }),
+      buildSearchCacheKey('next.js', { max_results: 2, search_depth: 'balanced', reranker: getConfig().reranker }),
       cachedItems,
       ['bing'],
     );

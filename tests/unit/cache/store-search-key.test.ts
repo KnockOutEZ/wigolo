@@ -53,6 +53,15 @@ describe('buildSearchCacheKey', () => {
     const b = buildSearchCacheKey('react tutorial');
     expect(a).toBe(b);
   });
+
+  it('search_depth and reranker change the cache key (no cross-tier bleed)', () => {
+    const balanced = buildSearchCacheKey('q', { search_depth: 'balanced', reranker: 'onnx' });
+    const fast = buildSearchCacheKey('q', { search_depth: 'fast', reranker: 'onnx' });
+    const noRerank = buildSearchCacheKey('q', { search_depth: 'balanced', reranker: 'none' });
+    expect(balanced).not.toBe(fast);
+    expect(balanced).not.toBe(noRerank);
+    expect(balanced).not.toBe('q'); // depth always present -> always fingerprinted
+  });
 });
 
 describe('cache miss on filter mismatch', () => {
