@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SearchResultItem, RawFetchResult, ExtractionResult } from '../../../src/types.js';
 import type { SmartRouter } from '../../../src/fetch/router.js';
 
@@ -325,5 +325,121 @@ describe('fetchContentForResults — M16 backup behavior', () => {
     const filled = results.filter((r) => r.markdown_content !== undefined).length;
     // Exactly cap successful pages — no more, no less.
     expect(filled).toBe(cap);
+  });
+});
+
+// --- Task 6: Hedged stage return + abort orchestration ---
+//
+// WHY: content-fetch is the latency bottleneck in search. Without a stage budget,
+// one slow target page stalls the entire search response. The stage AbortController
+// fires at stageBudgetMs, signals all in-flight fetches, and the results are
+// returned immediately with fast ones hydrated and slow ones flagged snippet-only.
+
+describe('fetchContentForResults — stage budget abort orchestration', () => {
+  afterEach(() => vi.useRealTimers());
+
+  function mockRouter(impl: (url: string, opts: { signal?: AbortSignal; [k: string]: unknown }) => Promise<unknown>) {
+    return { fetch: vi.fn(impl) } as unknown as SmartRouter;
+  }
+
+  const item = (url: string): SearchResultItem => ({ title: url, url, snippet: 's', relevance_score: 1 });
+
+  // fetchTimeoutMs must be > stageBudgetMs so that the stage timer fires first
+  // when testing stage_timeout (per-URL timeout would win otherwise).
+  const baseCtx = (over: Partial<Parameters<typeof fetchContentForResults>[2]> = {}): Parameters<typeof fetchContentForResults>[2] => ({
+    contentMaxChars: 30000,
+    maxTotalChars: 50000,
+    fetchTimeoutMs: 5000,
+    totalDeadline: Date.now() + 30000,
+    forceRefresh: false,
+    stageBudgetMs: 4000,
+    ...over,
+  });
+
+  it('returns hydrated fast results and flags the slow one stage_timeout at the budget', async () => {
+    vi.useFakeTimers();
+    const results = [item('a'), item('b'), item('slow')];
+    const router = mockRouter((url, opts) => {
+      if (url === 'slow') {
+        return new Promise((_, rej) =>
+          opts.signal?.addEventListener('abort', () => rej(opts.signal!.reason)),
+        );
+      }
+      return Promise.resolve({ html: `<html><body>${url}</body></html>`, finalUrl: url, contentType: 'text/html', statusCode: 200, method: 'http', headers: {} });
+    });
+    const p = fetchContentForResults(results, router, baseCtx());
+    await vi.advanceTimersByTimeAsync(4000);
+    await p;
+    expect(results[0].markdown_content).toBeDefined();
+    expect(results[1].markdown_content).toBeDefined();
+    expect(results[2].fetch_failed).toBe('stage_timeout');
+    expect(results[2].markdown_content).toBeUndefined();
+  });
+
+  it('the aborted fetch actually receives an aborted signal (no dangling work)', async () => {
+    vi.useFakeTimers();
+    let captured: AbortSignal | undefined;
+    const router = mockRouter((url, opts) => {
+      captured = opts.signal;
+      return new Promise((_, rej) =>
+        opts.signal?.addEventListener('abort', () => rej(opts.signal!.reason)),
+      );
+    });
+    const p = fetchContentForResults([item('slow')], router, baseCtx());
+    await vi.advanceTimersByTimeAsync(4000);
+    await p;
+    expect(captured?.aborted).toBe(true);
+  });
+
+  it('per-URL timeout flags timeout (distinct from stage_timeout)', async () => {
+    vi.useFakeTimers();
+    // perUrl 3000 < stage 10000: a single slow URL trips the per-URL leg first
+    const router = mockRouter((_url, opts) =>
+      new Promise((_, rej) =>
+        opts.signal?.addEventListener('abort', () => rej(opts.signal!.reason)),
+      ),
+    );
+    const results = [item('slow')];
+    const p = fetchContentForResults(results, router, baseCtx({ fetchTimeoutMs: 3000, stageBudgetMs: 10000 }));
+    await vi.advanceTimersByTimeAsync(3000);
+    await p;
+    expect(results[0].fetch_failed).toBe('timeout');
+  });
+
+  it('does not emit an unhandled rejection when work rejects after abort', async () => {
+    vi.useFakeTimers();
+    const onUnhandled = vi.fn();
+    process.on('unhandledRejection', onUnhandled);
+    const router = mockRouter((_url, opts) =>
+      new Promise((_, rej) => {
+        opts.signal?.addEventListener('abort', () =>
+          setTimeout(() => rej(new Error('late socket error')), 5),
+        );
+      }),
+    );
+    const p = fetchContentForResults([item('slow')], router, baseCtx());
+    await vi.advanceTimersByTimeAsync(4100);
+    await p;
+    await vi.advanceTimersByTimeAsync(50);
+    process.off('unhandledRejection', onUnhandled);
+    expect(onUnhandled).not.toHaveBeenCalled();
+  });
+
+  it('back-compat: no stageBudgetMs => per-URL casualty still flagged "timeout"', async () => {
+    vi.useFakeTimers();
+    const router = mockRouter((_url, opts) =>
+      new Promise((_, rej) =>
+        opts.signal?.addEventListener('abort', () => rej(opts.signal!.reason)),
+      ),
+    );
+    const results = [item('slow')];
+    const p = fetchContentForResults(
+      results,
+      router,
+      baseCtx({ stageBudgetMs: undefined, fetchTimeoutMs: 15000, totalDeadline: Date.now() + 30000 }),
+    );
+    await vi.advanceTimersByTimeAsync(15000);
+    await p;
+    expect(results[0].fetch_failed).toBe('timeout');
   });
 });
