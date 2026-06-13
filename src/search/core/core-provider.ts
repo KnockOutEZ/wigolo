@@ -23,6 +23,7 @@ import { foldRerankIntoOrdering } from './rerank-fold.js';
 import { detectBrandCollision, detectLexicalCollision } from './brand-collision.js';
 import { computeFreshnessSignal } from './freshness.js';
 import { buildQueryUnderstanding } from './query-understanding.js';
+import { detectRareTerms } from './rare-terms.js';
 import { buildEngineWarnings } from './engine-warnings.js';
 import { faviconUrlFor } from './favicon.js';
 import { runSynthesis } from '../answer-synthesis.js';
@@ -100,6 +101,25 @@ function fuseRankedLists(lists: RawSearchResult[][]): RawSearchResult[] {
       };
     })
     .filter((r): r is RawSearchResult => r !== undefined);
+}
+
+// Build at most ONE quoted-phrase variant for a COMPOUND-term query. Quoting
+// the compound token coaxes exact-match pages out of engines that support
+// phrase queries — engines otherwise drop hyphens and search the dominant
+// single term. Compound-only by design: a concept phrase fires for nearly every
+// multi-word query, so quoting it would spend an extra engine sweep on almost
+// every call; concept-phrase queries are handled purely rank-side. Returns null
+// when no compound token is present.
+function buildRareTermVariant(query: string): string | null {
+  const rare = detectRareTerms(query);
+  if (rare.compoundTokens.length === 0) return null;
+  let v = query;
+  for (const t of rare.compoundTokens) {
+    // quote the first occurrence of each compound token, case-insensitively
+    const re = new RegExp(`(^|\\s)(${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?=\\s|$)`, 'i');
+    v = v.replace(re, (_m, pre, tok) => `${pre}"${tok}"`);
+  }
+  return v !== query ? v : null;
 }
 
 export class CoreSearchProvider implements SearchProvider {
@@ -232,6 +252,35 @@ export class CoreSearchProvider implements SearchProvider {
         dispatches.length === 1
           ? dispatches[0].results
           : fuseRankedLists(dispatches.map((d) => d.results));
+
+      // Parity attack 3: for a single-query call carrying a compound token
+      // (sqlite-vec, vec0, snake_case), fire ONE extra quoted-phrase variant so
+      // engines that support phrase queries surface exact-match pages they'd
+      // otherwise drop by stripping the hyphen. Bounded to one extra dispatch;
+      // separate from (and additive to) the low-recall expansion below.
+      if (category !== 'images' && queries.length === 1) {
+        const variant = buildRareTermVariant(queries[0]);
+        if (variant && variant.trim() !== queries[0].trim()) {
+          log.debug('rare-term variant firing', { original: queries[0], variant });
+          const variantDispatch = await runV1Search({
+            query: variant,
+            category,
+            fromDate: input.from_date,
+            toDate: input.to_date,
+            maxResults: input.max_results,
+            language: input.language,
+            includeDomains: input.include_domains,
+            excludeDomains: input.exclude_domains,
+            includeScoreBreakdown: input.include_engine_outcomes,
+            country: input.country,
+            timeRange: input.time_range,
+            exactMatch: input.exact_match,
+          });
+          fused = fuseRankedLists([fused, variantDispatch.results]);
+          autoRewrites.push(variant);
+          dispatches.push(variantDispatch);
+        }
+      }
 
       // Low-recall expansion (S11c): only fire when single-query, result
       // count is at or below threshold, and category is not 'images'. Image
