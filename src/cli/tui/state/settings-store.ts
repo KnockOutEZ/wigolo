@@ -50,6 +50,7 @@ export function createSettingsStore(
       try {
         await persistKey(path, value);
         if (pending.get(path) === value) {
+          current[path] = value;
           pending.delete(path);
         }
         notify();
