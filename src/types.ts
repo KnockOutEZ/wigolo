@@ -525,6 +525,8 @@ export interface QueryUnderstanding {
   language: string;
   is_brand_collision_prone: boolean;
   rewrites: string[];
+  /** Structurally-detected rare/compound tokens (sqlite-vec, vec0, snake_case). */
+  compound_terms: string[];
 }
 
 // Wire shape for format=stream_answer (sub-ticket 2.12). The MCP content
@@ -723,6 +725,9 @@ export interface EvidenceScore {
     /** Cross-encoder relevance (normalised 0-1 over the rerank window).
      * Present only on balanced/deep tiers when the reranker is active. */
     cross_encoder?: number;
+    /** Rare/compound-term rank factor applied in the core final-score map.
+     * >1 boosts exact-token/phrase matches; <1 damps generic filler. */
+    rare_terms?: number;
   };
   /** One-line human-readable explanation summarizing the breakdown. */
   explanation: string;
