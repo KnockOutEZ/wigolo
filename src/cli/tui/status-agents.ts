@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import TOML from '@iarna/toml';
+import { vscodeUserDir } from '../agents/vscode.js';
 
 export interface ConnectedAgent {
   id: string;
@@ -43,7 +44,9 @@ export function readConnectedAgents(opts: ReadConnectedAgentsOptions = {}): Conn
       continue;
     }
 
-    const abs = join(home, spec.relPath);
+    const abs = spec.id === 'vscode'
+      ? join(vscodeUserDir(home), 'mcp.json')
+      : join(home, spec.relPath);
     if (!existsSync(abs)) {
       out.push({ id: spec.id, displayName: spec.displayName, configured: false, path: abs });
       continue;

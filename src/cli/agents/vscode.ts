@@ -18,32 +18,32 @@ const INSTRUCTIONS_FILE = '.github/copilot-instructions.md';
  * to ~/.config when empty/unset), and prefer an already-present Flatpak/Snap
  * config dir when one exists so sandboxed installs land where VS Code reads.
  */
-function vscodeUserDir(): string {
-  const home = homedir();
+export function vscodeUserDir(home?: string): string {
+  const resolvedHome = home ?? homedir();
   const os = platform();
 
   if (os === 'darwin') {
-    return join(home, 'Library', 'Application Support', 'Code', 'User');
+    return join(resolvedHome, 'Library', 'Application Support', 'Code', 'User');
   }
 
   if (os === 'win32') {
     const appData = process.env.APPDATA;
     const base = appData && appData.length > 0
       ? appData
-      : join(home, 'AppData', 'Roaming');
+      : join(resolvedHome, 'AppData', 'Roaming');
     return join(base, 'Code', 'User');
   }
 
   // Linux (and other POSIX): prefer an existing Flatpak/Snap config dir, else
   // the XDG standard path.
-  const flatpak = join(home, '.var', 'app', 'com.visualstudio.code', 'config', 'Code', 'User');
+  const flatpak = join(resolvedHome, '.var', 'app', 'com.visualstudio.code', 'config', 'Code', 'User');
   if (existsSync(flatpak)) return flatpak;
 
-  const snap = join(home, 'snap', 'code', 'current', '.config', 'Code', 'User');
+  const snap = join(resolvedHome, 'snap', 'code', 'current', '.config', 'Code', 'User');
   if (existsSync(snap)) return snap;
 
   const xdg = process.env.XDG_CONFIG_HOME;
-  const configBase = xdg && xdg.length > 0 ? xdg : join(home, '.config');
+  const configBase = xdg && xdg.length > 0 ? xdg : join(resolvedHome, '.config');
   return join(configBase, 'Code', 'User');
 }
 

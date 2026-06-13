@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import type { AgentDescriptor, DetectedAgent } from './agents-types.js';
 import { binaryInPath, dirExists, fileExists, getHome, getCwd } from './detect-helpers.js';
+import { vscodeUserDir } from '../agents/vscode.js';
 
 export type { AgentId, AgentDescriptor, DetectedAgent, InstallType } from './agents-types.js';
 
@@ -34,10 +35,7 @@ const vscode: AgentDescriptor = {
     dirExists(join(cwd, '.vscode')) ||
     dirExists(join(home, '.vscode')) ||
     binaryInPath('code') !== null,
-  configPath: ({ cwd, home }) => {
-    if (dirExists(join(cwd, '.vscode'))) return join(cwd, '.vscode', 'mcp.json');
-    return join(home, '.vscode', 'mcp.json');
-  },
+  configPath: ({ home }) => join(vscodeUserDir(home), 'mcp.json'),
 };
 
 const zed: AgentDescriptor = {
