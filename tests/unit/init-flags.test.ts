@@ -49,6 +49,13 @@ describe('parseInitFlags provider/search', () => {
     expect(parseInitFlags(['--provider=gemini']).provider).toBe('gemini');
   });
 
+  it('accepts the keyless ollama provider', () => {
+    // WHY: ollama is a first-class keyless lever surfaced in the TUI — the
+    // non-interactive `--provider=ollama` flag must NOT be rejected as unknown,
+    // or scripted setups can't select the local LLM server.
+    expect(parseInitFlags(['--provider=ollama']).provider).toBe('ollama');
+  });
+
   it('valid search values are accepted', () => {
     expect(parseInitFlags(['--search=core']).search).toBe('core');
     expect(parseInitFlags(['--search=searxng']).search).toBe('searxng');

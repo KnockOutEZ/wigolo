@@ -1,5 +1,27 @@
 import { parseInitFlags, FlagParseError } from './tui/flags.js';
 import type { LLMProvider } from '../integrations/cloud/llm/types.js';
+import { probeOllama, resolveProbeBaseUrl, maybeOllamaHint } from './ollama-probe.js';
+
+/**
+ * Probe for a local Ollama server and, when one is reachable AND no LLM is
+ * configured, print a one-line discoverability hint. Fail-safe: a down/slow/
+ * absent server never errors, stalls, or changes the exit code — covered by
+ * probeOllama's bounded AbortSignal. NEVER auto-enables; hint only.
+ *
+ * `print` is injected so each init path routes through its own stdout/stderr
+ * writer (no raw console.log). Used by BOTH the Ink and non-interactive paths.
+ */
+export async function maybePrintOllamaHint(print: (line: string) => void): Promise<void> {
+  try {
+    const { isLlmConfigured } = await import('../integrations/cloud/llm/run.js');
+    const baseUrl = resolveProbeBaseUrl(process.env);
+    const { reachable } = await probeOllama(baseUrl);
+    const hint = maybeOllamaHint({ reachable, llmConfigured: isLlmConfigured(process.env), baseUrl });
+    if (hint) print(hint);
+  } catch {
+    // Detection is best-effort — never let a hint failure affect init.
+  }
+}
 
 const KEYSTORE_PROVIDERS: readonly LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq'];
 
@@ -14,7 +36,7 @@ const INIT_USAGE = [
   '  --agents=<csv>          Comma-separated agent ids (required with --non-interactive)',
   '  --skip-verify           Skip the post-install verify step',
   '  --plain                 Force plain (non-TUI) output',
-  '  --provider=<name>       LLM provider for research/agent: anthropic|openai|gemini',
+  '  --provider=<name>       LLM provider for research/agent: anthropic|openai|gemini|ollama',
   '  --search=<backend>      Search backend: core|searxng|hybrid',
   '  --help, -h              Show this message',
   '',
@@ -55,6 +77,11 @@ export async function runInit(args: string[]): Promise<number> {
   const useInk = !flags.plain && !flags.nonInteractive && isTTY && !isCI;
 
   if (useInk) {
+    // Surface the keyless local-LLM lever before the wizard takes over the
+    // terminal, so a user with a running Ollama server learns they can pick it
+    // in the upcoming LLM step. Hint only — never auto-enabled.
+    await maybePrintOllamaHint((line) => process.stderr.write(`${line}\n`));
+
     // Delegate to runConfig with --force-wizard: same code path, no divergent logic.
     // Don't forward --plain: this code path is reached only when useInk is true,
     // which already requires !flags.plain.
@@ -341,6 +368,11 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
       }
     }
   }
+
+  // Autodetect a local LLM server and hint at the keyless lever. Runs after the
+  // provider-persist block so an LLM just configured via --provider suppresses
+  // the hint (no nag). Hint only — never auto-enabled; fail-safe if absent.
+  await maybePrintOllamaHint((line) => out(`  ${line}`));
 
   const { probeSetupStatus, defaultProbeDeps, summarizeSetup } = await import('./tui/actions/setup-status.js');
   // Bust the in-process cache so the probe reads fresh from disk. Without this,

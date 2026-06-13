@@ -49,6 +49,21 @@ describe('hasRequiredFields', () => {
     }
   });
 
+  it('ollama provider with NO key → true (keyless local LLM server)', () => {
+    // WHY: ollama needs no credential — requiring an api key would re-route a
+    // near-zero-friction ollama user back into the wizard, defeating the lever.
+    expect(hasRequiredFields(cfg({ llmProvider: 'ollama' }))).toBe(true);
+    expect(hasRequiredFields(cfg({ llmProvider: 'ollama', llmApiKey: '' }))).toBe(true);
+  });
+
+  it('cloud provider with no key still → false (key requirement preserved)', () => {
+    // WHY: exempting ollama must NOT loosen the key requirement for keyed cloud
+    // providers — those are still incomplete without a key.
+    expect(hasRequiredFields(cfg({ llmProvider: 'anthropic' }))).toBe(false);
+    expect(hasRequiredFields(cfg({ llmProvider: 'openai', llmApiKey: '' }))).toBe(false);
+    expect(hasRequiredFields(cfg({ llmProvider: 'gemini' }))).toBe(false);
+  });
+
   it('provider is non-string (number) → false', () => {
     expect(hasRequiredFields(cfg({ llmProvider: 42, llmApiKey: 'sk-xxx' }))).toBe(false);
   });
