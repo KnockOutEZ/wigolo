@@ -57,6 +57,10 @@ export interface RouterFetchOptions {
     ifNoneMatch?: string;
     ifModifiedSince?: string;
   };
+  /** Optional abort signal. When provided, in-flight HTTP or browser fetches
+   *  will be cancelled when the signal fires. No behavior change — signal is
+   *  only plumbed here; enforcement lives in the HTTP client and browser pool. */
+  signal?: AbortSignal;
 }
 
 export interface HttpClient {
@@ -69,6 +73,7 @@ export interface HttpClient {
         ifNoneMatch?: string;
         ifModifiedSince?: string;
       };
+      signal?: AbortSignal;
     },
   ): Promise<{
     url: string;
@@ -84,18 +89,18 @@ export interface HttpClient {
 export interface BrowserPoolInterface {
   fetchWithBrowser(
     url: string,
-    options?: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string; screenshot?: boolean; actions?: BrowserAction[]; cdpUrl?: string },
+    options?: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string; screenshot?: boolean; actions?: BrowserAction[]; cdpUrl?: string; signal?: AbortSignal },
   ): Promise<RawFetchResult>;
 }
 
 export type HttpFetcher = (
   url: string,
-  options?: { headers?: Record<string, string>; timeoutMs?: number },
+  options?: { headers?: Record<string, string>; timeoutMs?: number; signal?: AbortSignal },
 ) => Promise<{ url: string; html: string; text: string }>;
 
 export type PlaywrightFetcher = (
   url: string,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; signal?: AbortSignal },
 ) => Promise<{ html: string; text: string }>;
 
 /**
@@ -105,7 +110,7 @@ export type PlaywrightFetcher = (
  */
 export type TlsFetcher = (
   url: string,
-  options?: { headers?: Record<string, string>; timeoutMs?: number },
+  options?: { headers?: Record<string, string>; timeoutMs?: number; signal?: AbortSignal },
 ) => Promise<TlsFetchResult>;
 
 /** Pluggable hooks to learning/persistence layer so router tests don't need a DB. */
@@ -205,7 +210,7 @@ export class SmartRouter {
     url: string,
     options: RouterFetchOptions = {},
   ): Promise<RawFetchResult | StageError> {
-    const { renderJs = 'auto', useAuth = false, headers, screenshot, actions, mode, conditionalHeaders } = options;
+    const { renderJs = 'auto', useAuth = false, headers, screenshot, actions, mode, conditionalHeaders, signal } = options;
     const config = getConfig();
     const logger = createLogger('fetch');
     const threshold = config.browserFallbackThreshold;
@@ -214,7 +219,7 @@ export class SmartRouter {
     // Stealth mode: static fetch first, escalate to Playwright when content is thin.
     if (mode === 'stealth') {
       logger.debug('routing to stealth (static then escalate)', { url });
-      const staticResult = await this.httpFetcher(url, { headers });
+      const staticResult = await this.httpFetcher(url, { headers, signal });
       this.ensureStats(domain);
       if (!shouldEscalate(staticResult.text)) {
         return {
@@ -228,7 +233,7 @@ export class SmartRouter {
         };
       }
       try {
-        const pw = await this.playwrightFetcher(url);
+        const pw = await this.playwrightFetcher(url, { signal });
         return {
           url: staticResult.url,
           finalUrl: staticResult.url,
@@ -273,6 +278,7 @@ export class SmartRouter {
         headers,
         timeoutMs: config.fastTimeoutMs,
         conditionalHeaders,
+        signal,
       });
       this.ensureStats(domain);
       const raw = this.toRawFetchResult(result);
@@ -286,7 +292,7 @@ export class SmartRouter {
       if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
       const authOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
       logger.debug('routing to playwright', { url, reason: 'actions present' });
-      return this.browserPool.fetchWithBrowser(url, { headers, screenshot, actions, ...authOptions });
+      return this.browserPool.fetchWithBrowser(url, { headers, screenshot, actions, ...authOptions, signal });
     }
 
     // Always Playwright for auth or explicit override
@@ -294,14 +300,14 @@ export class SmartRouter {
       if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
       const authOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
       logger.debug('routing to playwright', { url, reason: useAuth ? 'auth' : 'render_js=always' });
-      return this.browserPool.fetchWithBrowser(url, { headers, screenshot, ...authOptions });
+      return this.browserPool.fetchWithBrowser(url, { headers, screenshot, ...authOptions, signal });
     }
 
     // HTTP only, no fallback
     if (renderJs === 'never') {
       if (!this.httpClient) throw new Error('SmartRouter: httpClient not configured');
       logger.debug('routing to http (never)', { url });
-      const result = await this.httpClient.fetch(url, { headers, conditionalHeaders });
+      const result = await this.httpClient.fetch(url, { headers, conditionalHeaders, signal });
       const neverStats = this.ensureStats(domain);
       // Slice 5 (audit H4): a known-SPA domain that returns substantive
       // HTTP content on a render_js: never call proves the domain is
@@ -324,7 +330,7 @@ export class SmartRouter {
     if (stats.preferPlaywright) {
       if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
       logger.debug('routing to playwright (domain marked)', { url, domain });
-      return this.browserPool.fetchWithBrowser(url, { headers, screenshot });
+      return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
     }
 
     // Slice D2: when the TLS tier is enabled, decide whether to try TLS
@@ -338,7 +344,7 @@ export class SmartRouter {
     const tryTlsFirst = tlsMode === 'on' || tlsDomainPreferred;
 
     if (tryTlsFirst) {
-      const tlsTry = await this.tryTlsTier(url, domain, headers);
+      const tlsTry = await this.tryTlsTier(url, domain, headers, signal);
       if (tlsTry.ok) {
         return tlsTry.result;
       }
@@ -349,7 +355,7 @@ export class SmartRouter {
     // Try HTTP first
     try {
       if (!this.httpClient) throw new Error('SmartRouter: httpClient not configured');
-      const result = await this.httpClient.fetch(url, { headers, conditionalHeaders });
+      const result = await this.httpClient.fetch(url, { headers, conditionalHeaders, signal });
 
       // 304 = unchanged: pass through; never escalate to a browser.
       if (result.statusCode === 304) {
@@ -370,7 +376,7 @@ export class SmartRouter {
       // WIGOLO_TLS_TIER is auto/on; if the TLS tier also fails or isn't
       // installed, fall through to Playwright.
       if (tlsTierEnabled && !tryTlsFirst && isAntiBotSignal(result.statusCode, result.html)) {
-        const tlsTry = await this.tryTlsTier(url, domain, headers);
+        const tlsTry = await this.tryTlsTier(url, domain, headers, signal);
         if (tlsTry.ok) {
           return tlsTry.result;
         }
@@ -382,7 +388,7 @@ export class SmartRouter {
           tlsReason: tlsTry.reason,
         });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers, screenshot });
+        return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
       }
 
       // Slice 5 (audit H4): with TLS tier disabled, escalate to Playwright
@@ -403,7 +409,7 @@ export class SmartRouter {
           signal: describeAntiBot(result.statusCode, result.html),
         });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers, screenshot });
+        return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
       }
 
       // Slice 5 (audit H4): SPA-shell detection is only meaningful for 2xx
@@ -417,7 +423,7 @@ export class SmartRouter {
         if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
         logger.info('SPA shell detected, marking domain for playwright', { url, domain });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers, screenshot });
+        return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
       }
 
       // Slice 5 (audit H4): a known-SPA domain (pre-marked preferPlaywright
@@ -447,7 +453,7 @@ export class SmartRouter {
         if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
         logger.info('failure threshold reached, marking domain for playwright', { url, domain, threshold });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers, screenshot });
+        return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
       }
 
       throw err;
@@ -511,12 +517,13 @@ export class SmartRouter {
     url: string,
     domain: string,
     headers?: Record<string, string>,
+    signal?: AbortSignal,
   ): Promise<{ ok: true; result: RawFetchResult } | { ok: false; reason: 'unavailable' | 'still_blocked' | 'js_required' | 'error'; error?: unknown }>
   {
     const logger = createLogger('fetch');
     let r: TlsFetchResult;
     try {
-      r = await this.tlsFetcher(url, { headers });
+      r = await this.tlsFetcher(url, { headers, signal });
     } catch (err) {
       if (err instanceof TlsTierUnavailableError) {
         logger.debug('tls tier unavailable, escalating', { url, domain });

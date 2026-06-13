@@ -8,7 +8,7 @@ vi.mock('../../../src/fetch/auth.js', () => ({
 }));
 
 import { SmartRouter } from '../../../src/fetch/router.js';
-import type { HttpClient, BrowserPoolInterface } from '../../../src/fetch/router.js';
+import type { HttpClient, BrowserPoolInterface, TlsFetcher } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 import { getAuthOptions } from '../../../src/fetch/auth.js';
 
@@ -319,5 +319,49 @@ describe('SmartRouter --- actions routing', () => {
     const result = await router.fetch('https://example.com/page');
     expect(httpClient.fetch).toHaveBeenCalledOnce();
     expect(result.method).toBe('http');
+  });
+});
+
+describe('SmartRouter --- signal forwarding', () => {
+  it('forwards signal to the HTTP client', async () => {
+    const sig = new AbortController().signal;
+    const httpClient: HttpClient = { fetch: vi.fn(async () => makeHttpResult()) };
+    const browserPool: BrowserPoolInterface = { fetchWithBrowser: vi.fn() };
+    const router = new SmartRouter(httpClient, browserPool);
+    await router.fetch('https://example.com', { renderJs: 'never', signal: sig });
+    expect(httpClient.fetch).toHaveBeenCalledWith('https://example.com', expect.objectContaining({ signal: sig }));
+  });
+
+  it('forwards signal to the browser pool', async () => {
+    const sig = new AbortController().signal;
+    const httpClient: HttpClient = { fetch: vi.fn() };
+    const browserPool: BrowserPoolInterface = { fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)) };
+    const router = new SmartRouter(httpClient, browserPool);
+    await router.fetch('https://example.com', { renderJs: 'always', signal: sig });
+    expect(browserPool.fetchWithBrowser).toHaveBeenCalledWith('https://example.com', expect.objectContaining({ signal: sig }));
+  });
+
+  it('forwards signal to the TLS-impersonation tier (tls-first path)', async () => {
+    // WIGOLO_TLS_TIER=on makes the auto path try the TLS tier before HTTP,
+    // so the injected tlsFetcher receives the request directly. Asserting the
+    // signal reaches it closes the abandoned-socket leak on the TLS tier.
+    const originalTlsTier = process.env.WIGOLO_TLS_TIER;
+    process.env.WIGOLO_TLS_TIER = 'on';
+    resetConfig();
+    try {
+      const sig = new AbortController().signal;
+      const tlsFetcher: TlsFetcher = vi.fn(async (url: string) => ({
+        url, finalUrl: url, html: '<html></html>', contentType: 'text/html', statusCode: 200, headers: {},
+      }));
+      const httpClient: HttpClient = { fetch: vi.fn() };
+      const browserPool: BrowserPoolInterface = { fetchWithBrowser: vi.fn() };
+      const router = new SmartRouter({ httpClient, browserPool, tlsFetcher });
+      await router.fetch('https://example.com', { signal: sig });
+      expect(tlsFetcher).toHaveBeenCalledWith('https://example.com', expect.objectContaining({ signal: sig }));
+    } finally {
+      if (originalTlsTier === undefined) delete process.env.WIGOLO_TLS_TIER;
+      else process.env.WIGOLO_TLS_TIER = originalTlsTier;
+      resetConfig();
+    }
   });
 });
