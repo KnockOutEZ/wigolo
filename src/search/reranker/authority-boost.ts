@@ -3,6 +3,19 @@ export interface AuthorityBoostable {
   relevance_score: number;
 }
 
+export interface AuthorityBoostOptions {
+  capWhenRare?: boolean;
+}
+
+// Generic (non-known-subject) authority is REDUCED by this factor when the
+// query carries rare/compound terms, so exact-token pages aren't buried by
+// topic-adjacent high-authority domains. Must be multiplicative, not a Math.min
+// ceiling: the additive boosts (down to +0.04 for an authoritative TLD) sit on
+// a tiny ~0.016 RRF base, so a clamp ceiling above 0.04 would be a no-op and an
+// off-topic .org/.io page would still win. Multiplicative reduction shrinks
+// every generic boost proportionally.
+const GENERIC_AUTHORITY_RARE_FACTOR = 0.25;
+
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'what', 'is', 'are', 'was', 'were', 'how', 'why', 'when', 'where', 'who',
   'do', 'does', 'did', 'for', 'of', 'to', 'in', 'on', 'with', 'and', 'or', 'but', 'as', 'at',
@@ -90,6 +103,7 @@ function hostOf(url: string): string | null {
 export function applyAuthorityBoost<T extends AuthorityBoostable>(
   query: string,
   results: T[],
+  opts: AuthorityBoostOptions = {},
 ): T[] {
   if (results.length === 0) return results;
   const subjects = extractSubjects(query);
@@ -104,10 +118,11 @@ export function applyAuthorityBoost<T extends AuthorityBoostable>(
     if (!host) return r;
 
     let boost = 0;
+    let fromKnownSubject = false;
 
-    if (knownDomains.has(host)) boost += 0.20;
+    if (knownDomains.has(host)) { boost += 0.20; fromKnownSubject = true; }
     else for (const dom of knownDomains) {
-      if (host.endsWith(`.${dom}`)) { boost += 0.18; break; }
+      if (host.endsWith(`.${dom}`)) { boost += 0.18; fromKnownSubject = true; break; }
     }
 
     if (boost === 0) {
@@ -127,6 +142,10 @@ export function applyAuthorityBoost<T extends AuthorityBoostable>(
     else if (host.startsWith('docs.')) boost += 0.08;
 
     if (boost === 0 && AUTHORITATIVE_TLD.test(host)) boost += 0.04;
+
+    if (opts.capWhenRare && !fromKnownSubject) {
+      boost *= GENERIC_AUTHORITY_RARE_FACTOR;
+    }
 
     if (boost === 0) return r;
 
