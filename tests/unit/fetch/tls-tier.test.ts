@@ -178,6 +178,109 @@ describe('tls-tier: lazy load + module cache safety', () => {
   });
 });
 
+describe('tls-tier: caller signal shares the per-fetch budget (attack-4 regression guard)', () => {
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    resetConfig();
+    _setTlsBackendForTests(null);
+    _resetTlsBackend();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    resetConfig();
+    _setTlsBackendForTests(null);
+    _resetTlsBackend();
+  });
+
+  function makeOkResponse(url: string) {
+    return {
+      status: 200,
+      url,
+      headers: {
+        entries: function* () {
+          yield ['content-type', 'text/html'];
+        },
+      },
+      text: async () => '<html><body>ok</body></html>',
+    };
+  }
+
+  it('forwards a signal to the backend that aborts when the CALLER deadline fires (not a fresh full timeout)', async () => {
+    // WHY: the timeout-escalation path hands tlsFetch the per-fetch deadline.
+    // If tlsFetch drops it and mints a fresh AbortSignal.timeout, the caller's
+    // already-spent budget is ignored and the TLS attempt stacks a second full
+    // timeout — the attack-4 latency blowup. This test fails against the
+    // dropped-signal code because the backend would receive an un-aborted fresh
+    // timeout signal instead of the caller's already-aborted one.
+    let seenSignal: AbortSignal | undefined;
+    _setTlsBackendForTests({
+      fetch: async (url, init) => {
+        seenSignal = init?.signal;
+        return makeOkResponse(url);
+      },
+    });
+
+    // Caller deadline that is ALREADY exhausted (the HTTP timeout burned it).
+    const controller = new AbortController();
+    controller.abort(new DOMException('caller deadline', 'TimeoutError'));
+
+    // A long internal timeout so that, if the signal were dropped, the backend
+    // would see a NON-aborted fresh signal — distinguishing the two paths.
+    await tlsFetch('https://example.com/page', { signal: controller.signal, timeoutMs: 30000 });
+
+    expect(seenSignal).toBeDefined();
+    // Combined signal must already be aborted because the caller's deadline is.
+    expect(seenSignal?.aborted).toBe(true);
+  });
+
+  it('still bounds the in-flight request by the INTERNAL timeout when the caller signal stays live', async () => {
+    // The caller signal never aborts; a slow backend must still be cut off by
+    // the internal timeoutMs. We observe the abort from INSIDE the backend
+    // call (before tlsFetch returns and its cleanup detaches the combiner),
+    // proving the internal budget survives alongside the caller's signal.
+    let abortedDuringFetch = false;
+    let callerAbortedDuringFetch = false;
+    _setTlsBackendForTests({
+      fetch: async (url, init) => {
+        const sig = init?.signal;
+        await new Promise<void>((resolve) => {
+          if (!sig) return resolve();
+          sig.addEventListener('abort', () => resolve(), { once: true });
+        });
+        abortedDuringFetch = sig?.aborted ?? false;
+        return makeOkResponse(url);
+      },
+    });
+
+    const controller = new AbortController();
+    controller.signal.addEventListener('abort', () => {
+      callerAbortedDuringFetch = true;
+    });
+
+    await tlsFetch('https://example.com/page', { signal: controller.signal, timeoutMs: 10 });
+
+    // The combined signal fired (from the internal 10ms timeout), unblocking the
+    // backend — even though the caller's own signal never aborted.
+    expect(abortedDuringFetch).toBe(true);
+    expect(callerAbortedDuringFetch).toBe(false);
+  });
+
+  it('uses only the internal timeout when no caller signal is supplied', async () => {
+    let seenSignal: AbortSignal | undefined;
+    _setTlsBackendForTests({
+      fetch: async (url, init) => {
+        seenSignal = init?.signal;
+        return makeOkResponse(url);
+      },
+    });
+
+    await tlsFetch('https://example.com/page', { timeoutMs: 5000 });
+    expect(seenSignal).toBeDefined();
+    expect(seenSignal?.aborted).toBe(false);
+  });
+});
+
 describe('tls-tier: MCP-stdio safety', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };

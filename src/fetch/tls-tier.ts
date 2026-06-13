@@ -16,12 +16,22 @@
 
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
+import { anySignal } from '../util/abort.js';
 
 const log = createLogger('fetch');
 
 export interface TlsFetchOptions {
   headers?: Record<string, string>;
   timeoutMs?: number;
+  /**
+   * Caller-supplied abort signal (e.g. the per-fetch deadline assembled by the
+   * search content-fetch stage / router). When provided it is COMBINED with the
+   * internal `timeoutMs` budget — whichever fires first wins — so the TLS tier
+   * never mints a fresh full timeout on top of an already-spent per-fetch
+   * deadline. Dropping it would let a timeout-escalation path stack
+   * HTTP-timeout + a fresh TLS-timeout (the attack-4 latency blowup).
+   */
+  signal?: AbortSignal;
 }
 
 export interface TlsFetchResult {
@@ -150,40 +160,59 @@ export async function tlsFetch(url: string, options: TlsFetchOptions = {}): Prom
   const config = getConfig();
   const timeoutMs = options.timeoutMs ?? config.fetchTimeoutMs;
 
+  // Combine the internal timeout budget with the caller's deadline (if any) so
+  // the TLS attempt shares the same per-fetch budget rather than stacking a
+  // fresh full timeout on top of an already-spent one. `anySignal` is the
+  // hand-rolled combiner the HTTP tier uses (Node 20.0–20.2 lack
+  // AbortSignal.any; floor is >=20).
   let signal: AbortSignal | undefined;
+  let cleanup: (() => void) | undefined;
   try {
-    signal = AbortSignal.timeout(timeoutMs);
+    const timeout = AbortSignal.timeout(timeoutMs);
+    if (options.signal) {
+      const combined = anySignal([options.signal, timeout]);
+      signal = combined.signal;
+      cleanup = combined.cleanup;
+    } else {
+      signal = timeout;
+    }
   } catch {
-    signal = undefined;
+    signal = options.signal;
   }
 
-  const response = await backend.fetch(url, {
-    headers: options.headers,
-    browser: config.tlsBrowser,
-    signal,
-  });
+  try {
+    const response = await backend.fetch(url, {
+      headers: options.headers,
+      browser: config.tlsBrowser,
+      signal,
+    });
 
-  const headers = headersToRecord(response.headers);
-  const contentType = headers['content-type'] ?? '';
-  const isPdf = contentType.includes('application/pdf');
-  let html = '';
-  let rawBuffer: Buffer | undefined;
-  if (isPdf && typeof response.arrayBuffer === 'function') {
-    const ab = await response.arrayBuffer();
-    rawBuffer = Buffer.from(ab);
-  } else {
-    html = await response.text();
+    const headers = headersToRecord(response.headers);
+    const contentType = headers['content-type'] ?? '';
+    const isPdf = contentType.includes('application/pdf');
+    let html = '';
+    let rawBuffer: Buffer | undefined;
+    if (isPdf && typeof response.arrayBuffer === 'function') {
+      const ab = await response.arrayBuffer();
+      rawBuffer = Buffer.from(ab);
+    } else {
+      html = await response.text();
+    }
+
+    return {
+      url,
+      finalUrl: response.url ?? url,
+      html,
+      contentType,
+      statusCode: response.status,
+      headers,
+      rawBuffer,
+    };
+  } finally {
+    // Detach the combiner's listeners from the (long-lived) caller signal so a
+    // shared per-fetch deadline doesn't accumulate one listener per TLS attempt.
+    cleanup?.();
   }
-
-  return {
-    url,
-    finalUrl: response.url ?? url,
-    html,
-    contentType,
-    statusCode: response.status,
-    headers,
-    rawBuffer,
-  };
 }
 
 const ANTI_BOT_STATUS = new Set([403, 429, 503]);
