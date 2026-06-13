@@ -6,6 +6,7 @@ import { buildResearchBrief } from './brief.js';
 import { deduplicateResults } from '../search/dedup.js';
 import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
+import { classifyUrlShape, queryContentTerms, gateContent } from './source-validation.js';
 import { exploreInParallel } from './branch-exploration.js';
 import type { RawSearchResult, SearchEngineOptions } from '../types.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
@@ -18,6 +19,7 @@ import type {
   ResearchInput,
   ResearchOutput,
   ResearchSource,
+  RejectedSource,
   SearchEngine,
   Citation,
 } from '../types.js';
@@ -154,9 +156,22 @@ export async function runResearchPipeline(
     });
 
     merged = await rerankResults(input.question, merged);
-    merged = merged.slice(0, maxSources);
 
-    if (merged.length === 0) {
+    // Source validation (url-shape) — drop homepage/SERP candidates BEFORE the
+    // slice so the next-ranked legitimate candidate back-fills the freed slot.
+    // Rejected URLs are surfaced in rejected_sources, never silently swallowed.
+    const rejected_sources: RejectedSource[] = [];
+    const urlKept: MergedResult[] = [];
+    for (const m of merged) {
+      const verdict = classifyUrlShape(m.url, input.include_domains);
+      if (verdict.reject && verdict.reason) {
+        rejected_sources.push({ url: m.url, reason: verdict.reason, stage: 'url-shape' });
+      } else {
+        urlKept.push(m);
+      }
+    }
+
+    if (urlKept.length === 0) {
       return {
         report: `## Research: ${input.question}\n\nNo sources could be found for this query.`,
         citations: [],
@@ -165,11 +180,47 @@ export async function runResearchPipeline(
         depth,
         total_time_ms: Date.now() - start,
         sampling_supported: !!server && checkSamplingSupport(server),
+        ...(rejected_sources.length > 0 ? { rejected_sources } : {}),
       };
     }
 
-    // Phase 4: Fetch top sources in parallel
-    const sources: ResearchSource[] = await fetchSources(merged, router, maxSources);
+    // Over-fetch a small buffer beyond maxSources so the post-fetch content
+    // gate can drop empty shells and still back-fill to maxSources.
+    const buffer = Math.min(
+      Math.max(urlKept.length - maxSources, 0),
+      Math.ceil(maxSources * 0.4),
+    );
+    const toFetch = urlKept.slice(0, maxSources + buffer);
+
+    // Phase 4: Fetch the buffered candidate set in parallel
+    const fetched: ResearchSource[] = await fetchSources(router, toFetch);
+
+    // Content gate — drop empty/off-topic shells (thin AND off-topic). Only
+    // successfully-fetched content is gated: a fetch failure keeps the search
+    // snippet as a deliberate fallback (not the gate's target — empty shells
+    // are pages that fetched but returned nothing).
+    const queryTerms = queryContentTerms(input.question);
+    const gated: ResearchSource[] = [];
+    const contentRejects: RejectedSource[] = [];
+    for (const s of fetched) {
+      if (s.fetched) {
+        const verdict = gateContent(s.markdown_content, queryTerms);
+        if (verdict.reject && verdict.reason) {
+          contentRejects.push({ url: s.url, reason: verdict.reason, stage: 'content-gate' });
+          continue;
+        }
+      }
+      gated.push(s);
+    }
+    // Fail open — never let the content gate empty the result; mediocre
+    // sources beat no sources (rerank already ordered them).
+    let sources: ResearchSource[];
+    if (gated.length > 0) {
+      sources = gated.slice(0, maxSources);
+      rejected_sources.push(...contentRejects);
+    } else {
+      sources = fetched.slice(0, maxSources);
+    }
     applySourceBudget(sources, PER_SOURCE_CHAR_CAP, TOTAL_SOURCES_CHAR_CAP);
     log.info('fetch phase complete', {
       fetched: sources.filter((s) => s.fetched).length,
@@ -248,6 +299,7 @@ export async function runResearchPipeline(
       total_time_ms: Date.now() - start,
       sampling_supported: !!server && checkSamplingSupport(server),
       ...(brief ? { brief } : {}),
+      ...(rejected_sources.length > 0 ? { rejected_sources } : {}),
     };
   } catch (err) {
     log.error('research pipeline failed', {
@@ -276,11 +328,10 @@ interface MergedResult {
 }
 
 async function fetchSources(
-  merged: MergedResult[],
   router: SmartRouter,
-  maxSources: number,
+  merged: MergedResult[],
 ): Promise<ResearchSource[]> {
-  const fetchPromises = merged.slice(0, maxSources).map(async (result): Promise<ResearchSource> => {
+  const fetchPromises = merged.map(async (result): Promise<ResearchSource> => {
     try {
       const raw = await Promise.race([
         router.fetch(result.url, { renderJs: 'auto' }),

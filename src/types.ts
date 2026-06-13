@@ -607,6 +607,12 @@ export interface ResearchSource {
   fetch_error?: string;
 }
 
+export interface RejectedSource {
+  url: string;
+  reason: 'homepage' | 'serp' | 'low-content' | 'low-overlap';
+  stage: 'url-shape' | 'content-gate';
+}
+
 export interface ResearchOutput {
   report: string;
   citations: Citation[];
@@ -619,6 +625,9 @@ export interface ResearchOutput {
   brief?: ResearchBrief;
   error?: string;
   evidence?: EvidenceItem[];
+  /** Candidates dropped by source validation (homepage/SERP shape or empty
+   * content shell), surfaced so drops are auditable, not silently swallowed. */
+  rejected_sources?: RejectedSource[];
 }
 
 export interface CrossReference {
