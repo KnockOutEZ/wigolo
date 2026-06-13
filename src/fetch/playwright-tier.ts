@@ -82,17 +82,26 @@ export async function fetchWithPlaywright(url: string, opts: { timeoutMs?: numbe
       page.goto(url, { waitUntil: 'load', timeout: overall }),
       abortRejection(opts.signal),
     ]);
+    // A fast load can win its race while the budget is already exhausted —
+    // bail before entering the post-goto waits so a never-idling SPA can't
+    // hold the slot past the budget.
+    if (opts.signal?.aborted) throw opts.signal.reason;
     // SPAs (React/Next.js/etc.) populate the article body after `load` fires.
     // Wait for either semantic content (a `<main>`/`<article>` containing
     // substantial text) or for the network to go idle — whichever wins
     // first. Plain body innerText > N isn't enough because nav-shell sites
     // (react.dev, nextjs.org) ship a header + sidebar that already exceeds
     // any reasonable text threshold before the article mounts.
+    // Race against abort too, so an abort DURING the wait rejects promptly;
+    // the normal timeouts are swallowed, only the abort reason propagates.
     const hydrationBudget = Math.min(5000, Math.max(800, Math.floor(overall / 6)));
     await Promise.race([
       page.waitForFunction(HYDRATION_PROBE_SOURCE, undefined, { timeout: hydrationBudget }).catch(() => undefined),
       page.waitForLoadState('networkidle', { timeout: hydrationBudget }).catch(() => undefined),
-    ]);
+      abortRejection(opts.signal),
+    ]).catch((err) => {
+      if (opts.signal?.aborted) throw err;
+    });
     const html = await page.content();
     const text = await page.evaluate(() => document.body?.innerText ?? '');
     return { html, text };

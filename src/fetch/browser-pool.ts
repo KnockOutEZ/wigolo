@@ -291,9 +291,22 @@ export class MultiBrowserPool {
         log.warn('page.goto timed out, returning partial content', { url, navTimeoutMs });
       }
 
+      // A fast goto can win its race while the budget is already exhausted —
+      // bail before entering the post-goto waits so a never-networkidle SPA
+      // can't hold the slot past the stage budget.
+      if (options.signal?.aborted) throw options.signal.reason;
+
       try {
-        await page.waitForLoadState('networkidle', { timeout: loadTimeoutMs });
-      } catch {
+        // Race the networkidle wait against abort so an abort DURING the wait
+        // is honored deterministically (not via page.close-propagation timing).
+        // The normal timeout still resolves through waitForLoadState; only the
+        // abort reason propagates out (rethrown below).
+        await Promise.race([
+          page.waitForLoadState('networkidle', { timeout: loadTimeoutMs }),
+          abortRejection(options.signal),
+        ]);
+      } catch (err) {
+        if (options.signal?.aborted) throw err;
         log.debug('networkidle timeout, using page content as-is', { url, type: resolvedType });
       }
 
@@ -304,9 +317,17 @@ export class MultiBrowserPool {
       // src/fetch/hydration-probe.ts for the predicate + selector set.
       if (typeof page.waitForFunction === 'function') {
         const hydrationBudget = Math.min(8000, Math.max(1500, Math.floor(navTimeoutMs / 4)));
-        await page.waitForFunction(HYDRATION_PROBE_SOURCE, undefined, {
-          timeout: hydrationBudget,
-        }).catch(() => undefined);
+        // Swallow the normal hydration-probe timeout (best-effort wait), but
+        // race against abort so an abort here rejects promptly. Re-throw only
+        // when the signal aborted.
+        await Promise.race([
+          page.waitForFunction(HYDRATION_PROBE_SOURCE, undefined, {
+            timeout: hydrationBudget,
+          }).catch(() => undefined),
+          abortRejection(options.signal),
+        ]).catch((err) => {
+          if (options.signal?.aborted) throw err;
+        });
       }
 
       let actionResults: ActionResult[] | undefined;

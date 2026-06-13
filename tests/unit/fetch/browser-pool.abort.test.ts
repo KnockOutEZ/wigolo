@@ -6,6 +6,10 @@ import { resetConfig } from '../../../src/config.js';
 // that should be cancelled by an AbortSignal).
 const state = {
   mode: 'hang' as 'hang' | 'ok',
+  // When true, page.goto resolves fast but the post-goto networkidle wait
+  // hangs forever — simulating an SPA that never reaches networkidle. Used to
+  // pin that an abort DURING the post-goto waits is honored deterministically.
+  loadHang: false,
   pageCloseCalls: 0,
   ctxCloseCalls: 0,
 };
@@ -28,7 +32,10 @@ vi.mock('playwright', () => {
             headers: () => ({ 'content-type': 'text/html' }),
           });
         }),
-        waitForLoadState: vi.fn().mockResolvedValue(undefined),
+        waitForLoadState: vi.fn().mockImplementation(() => {
+          if (state.loadHang) return new Promise<never>(() => {});
+          return Promise.resolve(undefined);
+        }),
         waitForFunction: vi.fn().mockResolvedValue(undefined),
         content: vi.fn().mockResolvedValue('<html><body>ok</body></html>'),
         screenshot: vi.fn().mockResolvedValue(Buffer.from('x')),
@@ -62,6 +69,7 @@ describe('browser-pool abort signal handling', () => {
   beforeEach(() => {
     resetConfig();
     state.mode = 'hang';
+    state.loadHang = false;
     state.pageCloseCalls = 0;
     state.ctxCloseCalls = 0;
     _pageRef = null;
@@ -100,6 +108,40 @@ describe('browser-pool abort signal handling', () => {
     // The shared CONTEXT was never closed (pooled, not owned per-fetch)
     expect(state.ctxCloseCalls).toBe(0);
     // The slot was returned to the pool — the core "freed immediately" guarantee
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+
+    releaseSpy.mockRestore();
+    await pool.shutdown();
+  });
+
+  it('honors abort during the post-goto hydration waits, freeing the slot', async () => {
+    // goto resolves fast, but networkidle never settles (SPA that never idles).
+    // An abort fired during that window must reject promptly and free the slot,
+    // not depend on page.close-propagation timing.
+    state.mode = 'ok';
+    state.loadHang = true;
+
+    const pool = new MultiBrowserPool();
+    const ac = new AbortController();
+
+    const proto = Object.getPrototypeOf(pool) as {
+      releaseForType: (...args: unknown[]) => void;
+    };
+    const releaseSpy = vi.spyOn(proto, 'releaseForType');
+
+    const p = pool.fetchWithBrowser('https://spa.example.com', { signal: ac.signal });
+
+    // Let goto resolve and the flow reach the hanging waitForLoadState.
+    await new Promise<void>((r) => setTimeout(r, 10));
+
+    // Abort during the post-goto wait.
+    ac.abort(new DOMException('stage_timeout', 'AbortError'));
+
+    // Must reject promptly rather than hang on the never-idling wait.
+    await expect(p).rejects.toBeTruthy();
+
+    expect(state.pageCloseCalls).toBeGreaterThanOrEqual(1);
+    expect(state.ctxCloseCalls).toBe(0);
     expect(releaseSpy).toHaveBeenCalledTimes(1);
 
     releaseSpy.mockRestore();
