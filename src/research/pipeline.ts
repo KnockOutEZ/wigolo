@@ -7,7 +7,7 @@ import { renderBriefReport } from './render-brief.js';
 import { deduplicateResults } from '../search/dedup.js';
 import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
-import { classifyUrlShape, queryContentTerms, gateContent } from './source-validation.js';
+import { classifyUrlShape, classifyScoreFloor, queryContentTerms, gateContent } from './source-validation.js';
 import { exploreInParallel } from './branch-exploration.js';
 import type { RawSearchResult, SearchEngineOptions } from '../types.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
@@ -158,12 +158,31 @@ export async function runResearchPipeline(
 
     merged = await rerankResults(input.question, merged);
 
+    const rejected_sources: RejectedSource[] = [];
+
+    // Score floor — the cheap pre-filter that runs BEFORE the url-shape loop.
+    // The cross-encoder scores off-topic real-content domains (benchmark C1:
+    // YouTube / Google Play / Zhihu / MyBroadband) below zero; url-shape and
+    // the content gate both pass them because they ARE real, on-domain pages.
+    // Dropping negatives here closes that gap. merged is sorted desc by score,
+    // so merged[0] is the top — always keep it so the pool is never emptied
+    // when the reranker damped everything below zero.
+    const scoreKept: MergedResult[] = [];
+    for (let i = 0; i < merged.length; i++) {
+      const m = merged[i];
+      const verdict = i === 0 ? { reject: false } : classifyScoreFloor(m.relevance_score);
+      if (verdict.reject && verdict.reason) {
+        rejected_sources.push({ url: m.url, reason: verdict.reason, stage: 'score-floor' });
+      } else {
+        scoreKept.push(m);
+      }
+    }
+
     // Source validation (url-shape) — drop homepage/SERP candidates BEFORE the
     // slice so the next-ranked legitimate candidate back-fills the freed slot.
     // Rejected URLs are surfaced in rejected_sources, never silently swallowed.
-    const rejected_sources: RejectedSource[] = [];
     const urlKept: MergedResult[] = [];
-    for (const m of merged) {
+    for (const m of scoreKept) {
       const verdict = classifyUrlShape(m.url, input.include_domains);
       if (verdict.reject && verdict.reason) {
         rejected_sources.push({ url: m.url, reason: verdict.reason, stage: 'url-shape' });

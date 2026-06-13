@@ -609,8 +609,8 @@ export interface ResearchSource {
 
 export interface RejectedSource {
   url: string;
-  reason: 'homepage' | 'serp' | 'low-content' | 'low-overlap';
-  stage: 'url-shape' | 'content-gate';
+  reason: 'homepage' | 'serp' | 'low-content' | 'low-overlap' | 'negative-score';
+  stage: 'url-shape' | 'content-gate' | 'score-floor';
 }
 
 export interface ResearchOutput {

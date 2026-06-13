@@ -7,6 +7,7 @@
 
 export type UrlShapeReason = 'homepage' | 'serp';
 export type ContentGateReason = 'low-content' | 'low-overlap';
+export type ScoreFloorReason = 'negative-score';
 
 export interface UrlShapeVerdict {
   reject: boolean;
@@ -16,6 +17,33 @@ export interface UrlShapeVerdict {
 export interface ContentGateVerdict {
   reject: boolean;
   reason?: ContentGateReason;
+}
+
+export interface ScoreFloorVerdict {
+  reject: boolean;
+  reason?: ScoreFloorReason;
+}
+
+// Reranker relevance threshold. A cross-encoder logit below this means the
+// model judged the source NOT relevant — the same boundary the search
+// rerank-fold uses for its tier-0 split. Off-topic real-content domains
+// (benchmark 2026-06-14 C1: YouTube / Google Play / Zhihu / MyBroadband)
+// land below zero here even though they pass the url-shape + content gates.
+const SCORE_FLOOR = 0;
+
+/**
+ * Classify a candidate research source by its (post-rerank) relevance score.
+ * Rejects strictly-negative scores — the cross-encoder's "not relevant"
+ * verdict. Positive scores (the keyless passthrough path's engine/RRF values,
+ * or a relevant cross-encoder logit) always survive, so this is a no-op when
+ * no cross-encoder ran. The caller is responsible for never emptying the pool
+ * (it keeps the single best source as a floor of last resort).
+ */
+export function classifyScoreFloor(relevanceScore: number): ScoreFloorVerdict {
+  if (Number.isFinite(relevanceScore) && relevanceScore < SCORE_FLOOR) {
+    return { reject: true, reason: 'negative-score' };
+  }
+  return { reject: false };
 }
 
 // Below this word count a page is too thin to synthesize from (when it is also
