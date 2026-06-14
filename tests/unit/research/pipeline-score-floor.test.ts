@@ -160,4 +160,66 @@ describe('research pipeline relevance-score floor', () => {
     expect(urls).not.toContain('https://www.youtube.com/watch?v=junk1');
     expect(urls).not.toContain('https://www.youtube.com/watch?v=junk2');
   });
+
+  it('standard depth keeps >=6 canonical sources even when the reranker damps the whole pool BELOW -0.35', async () => {
+    // WHY (C1 LIVE failure, the regression PR #123's -0.35 floor did NOT fix):
+    // on the niche query "tradeoffs between SQLite FTS5 and a dedicated vector
+    // database for local semantic search" LIVE runs returned only 1 and 5
+    // sources. The rejected breakdown showed CANONICAL, on-topic pages
+    // (sqlite.org/fts5.html, the sqlite-vec author's observablehq post,
+    // dev.to/deepwiki/kentcdodds explainers) all rejected as `negative-score`
+    // — i.e. the cross-encoder damped the WHOLE pool below the -0.35
+    // HARD_JUNK_FLOOR, not merely below 0. The reranker's ABSOLUTE logits are
+    // miscalibrated for this niche query; its RELATIVE ordering is still good.
+    // So any fixed absolute floor (0 or -0.35) collapses breadth.
+    //
+    // These 12 candidates ALL pass url-shape + the content gate and ALL score
+    // in the -0.1 .. -0.6 band (below -0.35), mirroring the live data. Inside
+    // the top-minSources (standard=10) rank window the fix trusts the
+    // reranker's relative order + the upstream gates and keeps by rank
+    // regardless of the negative score, so standard reliably back-fills to >=6.
+    // On current main HARD_JUNK_FLOOR=-0.35 rejects every candidate below -0.35
+    // (only merged[0] survives via i===0), collapsing to ~1 — this asserts >=6.
+    const results: RawSearchResult[] = Array.from(
+      { length: 12 },
+      (_, i) => goodResult(i, -0.4 - i * 0.05), // -0.4, -0.45, ... -0.95 — ALL below -0.35
+    );
+    const input: ResearchInput = { question: QUESTION, depth: 'standard' };
+
+    const result = await runResearchPipeline(input, [createStubEngine(results)], createStubRouter());
+
+    expect(result.sources.length).toBeGreaterThanOrEqual(6);
+    // No score-floor reject inside the top-minSources window: the canonical
+    // pool is kept by rank, not by an absolute cutoff.
+    const floorRejects = (result.rejected_sources ?? []).filter((r) => r.stage === 'score-floor');
+    const keptUrls = new Set(result.sources.map((s) => s.url));
+    for (let i = 0; i < 6; i++) {
+      expect(keptUrls).toContain(`https://content${i}.example.com/articles/fts5-vs-vector-${i}`);
+    }
+    // Whatever the floor rejected (the long tail beyond the window) must NOT be
+    // among the kept sources — rank-keep widens breadth without re-admitting it.
+    for (const r of floorRejects) expect(keptUrls.has(r.url)).toBe(false);
+  });
+
+  it('still drops a negative-scored off-topic source that ranks OUTSIDE the breadth window', async () => {
+    // WHY: rank-keep applies ONLY inside the top-minSources window. A genuine
+    // off-topic page (negative score) that ranks past the window must still hit
+    // the strict `< 0` floor — that is what keeps junk out of the long tail
+    // while the window stays wide. minSources for standard is 10, so an
+    // off-topic candidate at rank 11+ (with a clearly-negative score, lower than
+    // the on-topic tail) is dropped even though the on-topic pool above it is
+    // also slightly negative.
+    const results: RawSearchResult[] = [
+      ...Array.from({ length: 10 }, (_, i) => goodResult(i, -0.4 - i * 0.02)), // ranks 0..9, inside window, all < -0.35
+      { title: 'Off-topic forum', url: 'https://www.zhihu.com/question/99', snippet: 'unrelated', relevance_score: -0.8, engine: 'stub' }, // rank 10, outside window
+    ];
+    const input: ResearchInput = { question: QUESTION, depth: 'standard' };
+
+    const result = await runResearchPipeline(input, [createStubEngine(results)], createStubRouter());
+
+    const urls = result.sources.map((s) => s.url);
+    expect(urls).not.toContain('https://www.zhihu.com/question/99');
+    const floorRejects = (result.rejected_sources ?? []).filter((r) => r.stage === 'score-floor');
+    expect(floorRejects.map((r) => r.url)).toContain('https://www.zhihu.com/question/99');
+  });
 });
