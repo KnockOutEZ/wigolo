@@ -20,11 +20,12 @@ export const BOILERPLATE_SELECTORS: ReadonlyArray<string> = [
   '[class*="sticky-cta"]',
   'main [role="banner"]',
   '[role="navigation"]',
-  // Match genuine sidebars (sidebar, docs-sidebar, sidebar-nav) but exclude CSS
-  // grid layout wrappers whose grid-template class merely contains the substring
-  // (e.g. react.dev's `grid-cols-sidebar-content` wrapping <main>+<aside>) — a
-  // bare [class*="sidebar"] there deletes the whole article body.
-  '[class*="sidebar"]:not([class*="grid"])',
+  // Match genuine sidebars (sidebar, docs-sidebar, sidebar-nav) and the layout
+  // wrappers whose state/grid class merely contains the substring (react.dev's
+  // `grid-cols-sidebar-content`, VitePress's `has-sidebar`). The main-landmark
+  // guard in stripBoilerplateDom keeps any matched element that WRAPS the page's
+  // single <main>, so this stays broad without deleting the article body.
+  '[class*="sidebar"]',
   '[data-collection="docs"]',
 ];
 
@@ -34,6 +35,7 @@ export interface BoilerplateDocument {
 
 interface BoilerplateElement {
   parentNode: { removeChild(child: BoilerplateElement): void } | null;
+  querySelector(selector: string): unknown;
 }
 
 export function stripBoilerplateMarkdown(md: string): string {
@@ -54,6 +56,13 @@ export function stripBoilerplateDom(document: BoilerplateDocument): void {
     const list: BoilerplateElement[] = [];
     for (let i = 0; i < nodes.length; i++) list.push(nodes[i]);
     for (const el of list) {
+      // Never remove a wrapper that contains the page's primary content
+      // landmark. Boilerplate (nav/sidebar/footer/feedback) never wraps the
+      // single <main>; a layout/state class that merely contains "sidebar"
+      // (react.dev's grid-cols-sidebar-content, VitePress's has-sidebar) does.
+      // Guarding on <main> keeps the article body while still removing genuine
+      // sidebars and chrome (which sit beside <main>, not around it).
+      if (el.querySelector('main')) continue;
       el.parentNode?.removeChild(el);
     }
   }

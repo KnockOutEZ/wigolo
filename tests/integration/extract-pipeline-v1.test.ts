@@ -29,6 +29,20 @@ const reactReferenceReal = readFileSync(
   'utf-8',
 );
 
+// Real served HTML for https://vuejs.org/guide/introduction (captured live, body
+// trimmed). VitePress nests the page as
+//   <div class="VPContent has-sidebar">
+//     <aside class="VPSidebar">…</aside>
+//     <div class="VPContentDoc has-aside has-sidebar"><main>…guide body…</main></div>
+// Both layout wrappers carry the substring "sidebar" in a state class (has-sidebar)
+// yet each CONTAINS the page's single <main>. The boilerplate pre-pass matched and
+// removed the whole VPContent wrapper, deleting <main> before content-root isolation
+// could find it — leaving only the VitePress navbar cluster (~nav-only markdown).
+const vitepressGuide = readFileSync(
+  join(import.meta.dirname, '../fixtures/extraction/vitepress-guide.html'),
+  'utf-8',
+);
+
 function recipeFixture(): string {
   const recipe = {
     '@context': 'https://schema.org',
@@ -189,6 +203,25 @@ describe('extract pipeline v1 — integration via factory', () => {
     expect(result.markdown.length).toBeGreaterThan(500);
     const head = result.markdown.slice(0, 300);
     expect(head).not.toMatch(/React.*v19.*Learn.*Reference.*Community.*Blog/s);
+  });
+
+  it('REAL vuejs.org/guide/introduction → VitePress guide body, not navbar-only', async () => {
+    const provider = await getExtractProvider();
+    const result = await provider.extract(
+      vitepressGuide,
+      'https://vuejs.org/guide/introduction',
+    );
+    // The guide body inside <main> must survive the boilerplate pre-pass.
+    expect(result.markdown).toMatch(/Single-File/);
+    expect(result.markdown).toMatch(/declarative/i);
+    expect(result.markdown).toMatch(/reactiv/i);
+    expect(result.markdown).toMatch(/Progressive Framework/);
+    expect(result.markdown.length).toBeGreaterThan(500);
+    // Navbar-only failure mode must be gone: the VitePress top-nav cluster
+    // ("Main Navigation … Quick Start … Tutorial … Examples … API") must not
+    // lead the output.
+    const head = result.markdown.slice(0, 300);
+    expect(head).not.toMatch(/Main Navigation.*Quick Start.*Tutorial.*Examples.*API/s);
   });
 });
 

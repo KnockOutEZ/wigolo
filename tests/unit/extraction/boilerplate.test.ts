@@ -39,7 +39,7 @@ describe('boilerplate constants', () => {
       '[class*="sticky-cta"]',
       'main [role="banner"]',
       '[role="navigation"]',
-      '[class*="sidebar"]:not([class*="grid"])',
+      '[class*="sidebar"]',
       '[data-collection="docs"]',
     ];
     for (const sel of expected) {
@@ -152,5 +152,58 @@ describe('stripBoilerplateDom', () => {
     expect(out).toContain('React Reference Overview');
     // The genuine sidebar/nav inside it is still removed.
     expect(out).not.toContain('role="navigation"');
+  });
+
+  it('does NOT remove a VitePress-style layout wrapper (has-sidebar) that contains <main>, but still removes a sibling sidebar', () => {
+    // VitePress nests <main> inside <div class="VPContent has-sidebar"> /
+    // <div class="VPContentDoc has-aside has-sidebar">. Both layout/state classes
+    // contain the substring "sidebar" yet wrap the page body — the guard must keep
+    // them. A genuine sibling sidebar that does not wrap <main> stays removable.
+    const html = `
+      <html><body>
+        <header class="VPNav"><nav aria-label="Main Navigation">nav cluster</nav></header>
+        <div class="VPContent has-sidebar">
+          <aside class="docs-sidebar"><nav>Sidebar Navigation links</nav></aside>
+          <div class="VPContentDoc has-aside has-sidebar">
+            <main><h1>Introduction</h1>
+              <p>Vue provides a declarative, component-based programming model.</p>
+              <p>Single-File Components keep logic, template and styles together.</p>
+            </main>
+          </div>
+        </div>
+      </body></html>
+    `;
+    const { document } = parseHTML(html);
+    stripBoilerplateDom(document);
+    const out = document.body.innerHTML;
+    // The main-containing wrappers and their body survive.
+    expect(out).toContain('Single-File Components');
+    expect(out).toContain('declarative, component-based');
+    expect(out).toContain('<main>');
+    // The genuine sibling sidebar (no <main>) is still stripped.
+    expect(out).not.toContain('Sidebar Navigation links');
+    expect(out).not.toContain('docs-sidebar');
+  });
+
+  it('still removes a sidebar that wraps <article> cards (guard is on <main>, not <article>)', () => {
+    // Related-content / "more like this" rails are real sidebars that legitimately
+    // wrap <article> cards. The guard keys on the single <main> landmark, so these
+    // asides stay removable even though they contain <article>.
+    const html = `
+      <html><body>
+        <main><p>Primary article body that should be kept intact for the reader.</p></main>
+        <aside class="related-sidebar">
+          <article class="card"><a href="/x">Related one</a></article>
+          <article class="card"><a href="/y">Related two</a></article>
+        </aside>
+      </body></html>
+    `;
+    const { document } = parseHTML(html);
+    stripBoilerplateDom(document);
+    const out = document.body.innerHTML;
+    expect(out).toContain('Primary article body');
+    expect(out).not.toContain('related-sidebar');
+    expect(out).not.toContain('Related one');
+    expect(out).not.toContain('Related two');
   });
 });
