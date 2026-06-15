@@ -23,6 +23,8 @@ export interface Config {
   validateTimeoutMs: number;
   maxBrowsers: number;
   browserIdleTimeoutMs: number;
+  browserAcquireTimeoutMs: number;
+  browserAcquireQueueMax: number;
   browserFallbackThreshold: number;
   authStatePath: string | null;
   chromeProfilePath: string | null;
@@ -64,6 +66,7 @@ export interface Config {
   daemonPort: number;
   daemonHost: string;
   studioRequestTimeoutMs: number;
+  studioBusyTimeoutMs: number;
   pluginsDir: string;
   browserTypes: BrowserType[];
   shellHistoryPath: string;
@@ -240,6 +243,8 @@ export function getConfig(): Config {
     validateTimeoutMs: envInt('VALIDATE_TIMEOUT_MS', 5000, settings, 'validateTimeoutMs'),
     maxBrowsers: envInt('MAX_BROWSERS', 3, settings, 'maxBrowsers'),
     browserIdleTimeoutMs: envInt('BROWSER_IDLE_TIMEOUT', 60000, settings, 'browserIdleTimeoutMs'),
+    browserAcquireTimeoutMs: envInt('BROWSER_ACQUIRE_TIMEOUT_MS', 30000, settings, 'browserAcquireTimeoutMs'),
+    browserAcquireQueueMax: envInt('BROWSER_ACQUIRE_QUEUE_MAX', 100, settings, 'browserAcquireQueueMax'),
     browserFallbackThreshold: envInt('BROWSER_FALLBACK_THRESHOLD', 3, settings, 'browserFallbackThreshold'),
     authStatePath: envStr('WIGOLO_AUTH_STATE_PATH', null, settings, 'authStatePath'),
     chromeProfilePath: envStr('WIGOLO_CHROME_PROFILE_PATH', null, settings, 'chromeProfilePath'),
@@ -299,6 +304,7 @@ export function getConfig(): Config {
       return raw?.trim() || '127.0.0.1';
     })(),
     studioRequestTimeoutMs: envInt('WIGOLO_STUDIO_REQUEST_TIMEOUT_MS', 120000, settings, 'studioRequestTimeoutMs'),
+    studioBusyTimeoutMs: envInt('WIGOLO_SQLITE_BUSY_TIMEOUT_MS', 5000, settings, 'studioBusyTimeoutMs'),
     pluginsDir: (() => {
       const raw = envStr('WIGOLO_PLUGINS_DIR', null, settings, 'pluginsDir');
       if (raw) {

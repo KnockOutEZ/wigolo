@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import * as sv from 'sqlite-vec';
 import { createLogger } from '../logger.js';
+import { getConfig } from '../config.js';
 import { applyMigrations } from './migrations/runner.js';
 
 const log = createLogger('cache');
@@ -40,6 +41,10 @@ export function initDatabase(dbPath: string): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
+  // Cross-process write contention (the stdio CLI and the Studio host can both
+  // open wigolo.db): wait up to busy_timeout ms for the lock instead of throwing
+  // SQLITE_BUSY immediately. WAL already lets readers proceed during a write.
+  db.pragma(`busy_timeout = ${getConfig().studioBusyTimeoutMs}`);
 
   // sqlite-vec extension. Required for vector search; soft-fails on
   // unsupported platforms (musl/alpine) so cache.db init still works for

@@ -64,11 +64,17 @@ function getLauncher(type: BrowserType) {
   }
 }
 
+interface AcquireWaiter {
+  resolve: (ctx: BrowserContext) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 interface TypePool {
   browser: Browser | null;
   pool: BrowserContext[];
   activeCount: number;
-  waitQueue: Array<(ctx: BrowserContext) => void>;
+  waitQueue: AcquireWaiter[];
   idleTimers: Map<BrowserContext, ReturnType<typeof setTimeout>>;
 }
 
@@ -172,8 +178,28 @@ export class MultiBrowserPool {
       return browser.newContext();
     }
 
-    return new Promise<BrowserContext>((resolve) => {
-      typePool.waitQueue.push(resolve);
+    // Pool saturated. Bound the wait queue (backpressure) and the wait itself
+    // (timeout) so a caller can't hang forever on a load-bearing fetch path.
+    if (typePool.waitQueue.length >= config.browserAcquireQueueMax) {
+      return Promise.reject(
+        new Error(
+          `browser_acquire_queue_full: ${typePool.waitQueue.length} callers already waiting for a ${type} browser (max ${config.browserAcquireQueueMax})`,
+        ),
+      );
+    }
+    return new Promise<BrowserContext>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const idx = typePool.waitQueue.findIndex((w) => w.timer === timer);
+        if (idx !== -1) typePool.waitQueue.splice(idx, 1);
+        reject(
+          new Error(
+            `browser_acquire_timeout: waited ${config.browserAcquireTimeoutMs}ms for a ${type} browser (pool saturated)`,
+          ),
+        );
+      }, config.browserAcquireTimeoutMs);
+      // Don't keep the event loop alive solely for a pending acquire timer.
+      if (typeof timer.unref === 'function') timer.unref();
+      typePool.waitQueue.push({ resolve, reject, timer });
     });
   }
 
@@ -183,8 +209,9 @@ export class MultiBrowserPool {
     const typePool = this.pools.get(type)!;
 
     if (typePool.waitQueue.length > 0) {
-      const resolve = typePool.waitQueue.shift()!;
-      resolve(ctx);
+      const waiter = typePool.waitQueue.shift()!;
+      clearTimeout(waiter.timer);
+      waiter.resolve(ctx);
       return;
     }
 
@@ -385,6 +412,14 @@ export class MultiBrowserPool {
     this.shutdownCalled = true;
 
     for (const [type, typePool] of this.pools) {
+      // Reject any callers still waiting for a slot so they fail fast instead of
+      // hanging forever once the pool is gone (audit S8).
+      for (const waiter of typePool.waitQueue) {
+        clearTimeout(waiter.timer);
+        waiter.reject(new Error(`browser_pool_shutdown: ${type} pool is shutting down`));
+      }
+      typePool.waitQueue = [];
+
       for (const [, timer] of typePool.idleTimers) {
         clearTimeout(timer);
       }
