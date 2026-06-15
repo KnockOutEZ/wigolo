@@ -28,6 +28,9 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
 }
 
 export function checkAuth(req: AuthRequestLike, expectedToken: string): AuthCheck {
+  // An empty expected token must never authenticate — a misconfiguration here
+  // would otherwise let `Bearer ` (empty provided) pass timingSafeEqual.
+  if (expectedToken.length === 0) return { ok: false, reason: 'no_expected_token' };
   const raw = firstHeader(req.headers.authorization);
   if (!raw) return { ok: false, reason: 'missing_bearer' };
   if (!raw.startsWith(BEARER_PREFIX)) return { ok: false, reason: 'not_bearer' };
@@ -62,7 +65,7 @@ function isAllowedHost(hostname: string | null, expectedHost: string): boolean {
  * other than loopback or the bound host. Origin absent is allowed — non-browser
  * clients (the stdio proxy) do not send it.
  */
-export function checkOriginHost(req: AuthRequestLike, expected: { host: string; port: number }): AuthCheck {
+export function checkOriginHost(req: AuthRequestLike, expected: { host: string }): AuthCheck {
   const origin = firstHeader(req.headers.origin);
   if (origin && !isAllowedHost(hostnameOf(origin), expected.host)) {
     return { ok: false, reason: 'bad_origin' };

@@ -36,6 +36,12 @@ describe('studio/auth', () => {
     it('accepts a matching bearer token', () => {
       expect(checkAuth({ headers: { authorization: `Bearer ${token}` } }, token)).toEqual({ ok: true });
     });
+
+    it('rejects when the expected token is empty (misconfiguration self-defense)', () => {
+      // An empty expected token must never authenticate, even with `Bearer ` (empty provided).
+      expect(checkAuth({ headers: { authorization: 'Bearer ' } }, '')).toMatchObject({ ok: false });
+      expect(checkAuth({ headers: { authorization: 'Bearer anything' } }, '')).toMatchObject({ ok: false });
+    });
   });
 
   describe('checkOriginHost', () => {

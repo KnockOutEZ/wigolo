@@ -14,7 +14,6 @@ const log = createLogger('server');
 export interface DaemonAuthConfig {
   token: string;
   host: string;
-  port: number;
 }
 
 export interface DaemonOptions {
@@ -103,7 +102,7 @@ export class DaemonHttpServer {
     // Auth + Origin/Host guard for the MCP surface. Host path only: the stdio
     // server never reaches this code, so stdio behavior is unchanged.
     if (this.auth) {
-      const origin = checkOriginHost(req, { host: this.auth.host, port: this.auth.port });
+      const origin = checkOriginHost(req, { host: this.auth.host });
       if (!origin.ok) return this.writeRequestError(res, 403, 'forbidden', origin.reason);
       const auth = checkAuth(req, this.auth.token);
       if (!auth.ok) return this.writeRequestError(res, 401, 'unauthorized', auth.reason);
