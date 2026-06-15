@@ -145,13 +145,15 @@ export function classifyUrlShape(url: string, includeDomains?: string[]): UrlSha
     }
   }
 
-  // Social-promo: a bare LinkedIn activity post (/posts/...activity-<digits>)
-  // is a sentence of self-promotion plus a link, not article text — junk for
-  // synthesis. Keyed on the unmistakable `activity-<digits>` post signature
-  // under /posts/ so long-form articles (/pulse/...) and other hosts' /posts/
-  // article paths are never caught. include_domains is honored: if the caller
-  // scoped research to linkedin.com the post is an intentional target.
-  if (isLinkedInHost(host) && /(^|\/)posts\/[^/]*activity-\d+/.test(lowerPath)) {
+  // Social-promo: LinkedIn is policy-junk for research synthesis on EVERY path,
+  // not just activity posts. /posts/...activity-<digits> are bare promo posts;
+  // /pulse/ articles are gated, login-walled, SEO-spun reposts; /in/ and
+  // /company/ are profile/marketing pages. None is a citable canonical source.
+  // A live COLD research call leaked a /pulse/ article that the old
+  // /posts/...activity-<digits> rule missed, so the gate is host-level: reject
+  // any linkedin.com URL. include_domains is honored — if the caller explicitly
+  // scoped research to linkedin.com the page is an intentional target.
+  if (isLinkedInHost(host)) {
     const exempt = (includeDomains ?? []).some((d) => {
       const dn = d.replace(/^www\./, '').toLowerCase();
       return host === dn || host.endsWith(`.${dn}`);
