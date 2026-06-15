@@ -28,11 +28,17 @@ import type { SmartRouter } from '../fetch/router.js';
 
 const log = createLogger('research');
 
-const DEPTH_CONFIG: Record<string, { subQueries: number; minSources: number; maxSources: number }> = {
+export const DEPTH_CONFIG: Record<string, { subQueries: number; minSources: number; maxSources: number }> = {
   quick: { subQueries: 2, minSources: 5, maxSources: 8 },
-  standard: { subQueries: 4, minSources: 10, maxSources: 15 },
+  standard: { subQueries: 4, minSources: 15, maxSources: 20 },
   comprehensive: { subQueries: 7, minSources: 20, maxSources: 25 },
 };
+
+// Over-fetch a buffer beyond maxSources so the post-fetch content gate can drop
+// empty shells and still back-fill to maxSources. 0.6 (up from 0.4) keeps the
+// rank-based in-window keep fed on niche queries where the cross-encoder damps
+// the whole pool negative and the gates eat a larger share of the candidates.
+export const OVER_FETCH_BUFFER_FACTOR = 0.6;
 
 // Per-depth budgets for the sub-query fan-out. exploreInParallel guarantees
 // a single slow sub-query can't burn the whole research budget — comprehensive
@@ -216,11 +222,12 @@ export async function runResearchPipeline(
       };
     }
 
-    // Over-fetch a small buffer beyond maxSources so the post-fetch content
-    // gate can drop empty shells and still back-fill to maxSources.
+    // Over-fetch a buffer beyond maxSources (OVER_FETCH_BUFFER_FACTOR) so the
+    // post-fetch content gate can drop empty shells and still back-fill to
+    // maxSources.
     const buffer = Math.min(
       Math.max(urlKept.length - maxSources, 0),
-      Math.ceil(maxSources * 0.4),
+      Math.ceil(maxSources * OVER_FETCH_BUFFER_FACTOR),
     );
     const toFetch = urlKept.slice(0, maxSources + buffer);
 

@@ -144,12 +144,14 @@ describe('research pipeline relevance-score floor', () => {
     // floor was built to drop. The old floor kept only merged[0] and dropped the
     // rest, collapsing standard depth to ~1-5 sources. The fix keeps the top
     // minSources candidates by rank so standard reliably back-fills to >=6.
-    // Mirroring the live runs (56-61 candidates, far more than minSources=10),
+    // Mirroring the live runs (56-61 candidates, far more than minSources=15),
     // the genuine on-topic pool FILLS the keep window and the two off-topic
     // videos (clearly more negative) sort BELOW it, outside the window, where
-    // the strict `< 0` floor still drops them.
+    // the strict `< 0` floor still drops them. The on-topic pool is sized past
+    // the standard breadth window (minSources=15) so the videos land at rank
+    // 15+ — genuinely outside the window — not merely past the old size of 10.
     const results: RawSearchResult[] = [
-      ...Array.from({ length: 12 }, (_, i) => goodResult(i, -0.05 - i * 0.02)),
+      ...Array.from({ length: 18 }, (_, i) => goodResult(i, -0.05 - i * 0.02)),
       { title: 'Unrelated video', url: 'https://www.youtube.com/watch?v=junk1', snippet: 'unrelated', relevance_score: -0.95, engine: 'stub' },
       { title: 'Unrelated video 2', url: 'https://www.youtube.com/watch?v=junk2', snippet: 'unrelated', relevance_score: -0.99, engine: 'stub' },
     ];
@@ -210,13 +212,13 @@ describe('research pipeline relevance-score floor', () => {
     // WHY: rank-keep applies ONLY inside the top-minSources window. A genuine
     // off-topic page (negative score) that ranks past the window must still hit
     // the strict `< 0` floor — that is what keeps junk out of the long tail
-    // while the window stays wide. minSources for standard is 10, so an
-    // off-topic candidate at rank 11+ (with a clearly-negative score, lower than
+    // while the window stays wide. minSources for standard is 15, so an
+    // off-topic candidate at rank 16+ (with a clearly-negative score, lower than
     // the on-topic tail) is dropped even though the on-topic pool above it is
     // also slightly negative.
     const results: RawSearchResult[] = [
-      ...Array.from({ length: 10 }, (_, i) => goodResult(i, -0.4 - i * 0.02)), // ranks 0..9, inside window, all < -0.35
-      { title: 'Off-topic forum', url: 'https://www.zhihu.com/question/99', snippet: 'unrelated', relevance_score: -0.8, engine: 'stub' }, // rank 10, outside window
+      ...Array.from({ length: 15 }, (_, i) => goodResult(i, -0.4 - i * 0.02)), // ranks 0..14, inside window, all < -0.35
+      { title: 'Off-topic forum', url: 'https://www.zhihu.com/question/99', snippet: 'unrelated', relevance_score: -0.8, engine: 'stub' }, // rank 15, outside window
     ];
     const input: ResearchInput = { question: QUESTION, depth: 'standard' };
 
