@@ -3,6 +3,7 @@
 import { parseCommand } from './cli/index.js';
 import { runWarmup } from './cli/warmup.js';
 import { runDaemon } from './cli/daemon.js';
+import { runStudio } from './cli/studio.js';
 import { runHealthCheck } from './cli/health.js';
 import { runDoctorIsolated } from './cli/doctor.js';
 import { runShell } from './cli/shell.js';
@@ -50,6 +51,12 @@ switch (command) {
 
   case 'serve':
     runDaemon(args);
+    break;
+
+  // Internal/unadvertised (Phase 0): boots the Studio session host. Intentionally
+  // absent from `help` until the full UX lands so it isn't mistaken for complete.
+  case 'studio':
+    runStudio(args);
     break;
 
   case 'health': {

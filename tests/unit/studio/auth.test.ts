@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mintHostToken, checkAuth, checkOriginHost } from '../../../src/studio/auth.js';
+import { mintHostToken, checkAuth, checkOriginHost, resolveHostToken } from '../../../src/studio/auth.js';
 
 describe('studio/auth', () => {
   describe('mintHostToken', () => {
@@ -41,6 +41,24 @@ describe('studio/auth', () => {
       // An empty expected token must never authenticate, even with `Bearer ` (empty provided).
       expect(checkAuth({ headers: { authorization: 'Bearer ' } }, '')).toMatchObject({ ok: false });
       expect(checkAuth({ headers: { authorization: 'Bearer anything' } }, '')).toMatchObject({ ok: false });
+    });
+  });
+
+  describe('resolveHostToken', () => {
+    it('uses an operator-supplied token verbatim (stable across restarts), minted=false', () => {
+      expect(resolveHostToken('operator-pinned-token')).toEqual({ token: 'operator-pinned-token', minted: false });
+    });
+
+    it('trims surrounding whitespace on a supplied token', () => {
+      expect(resolveHostToken('  pinned  ')).toEqual({ token: 'pinned', minted: false });
+    });
+
+    it('mints a fresh token when none is supplied (null/empty/whitespace), minted=true', () => {
+      for (const supplied of [null, undefined, '', '   ']) {
+        const r = resolveHostToken(supplied);
+        expect(r.minted).toBe(true);
+        expect(r.token).toHaveLength(43);
+      }
     });
   });
 

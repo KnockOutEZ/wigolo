@@ -67,6 +67,7 @@ export interface Config {
   daemonHost: string;
   studioRequestTimeoutMs: number;
   studioBusyTimeoutMs: number;
+  studioAuthToken: string | null;
   pluginsDir: string;
   browserTypes: BrowserType[];
   shellHistoryPath: string;
@@ -305,6 +306,7 @@ export function getConfig(): Config {
     })(),
     studioRequestTimeoutMs: envInt('WIGOLO_STUDIO_REQUEST_TIMEOUT_MS', 120000, settings, 'studioRequestTimeoutMs'),
     studioBusyTimeoutMs: envInt('WIGOLO_SQLITE_BUSY_TIMEOUT_MS', 5000, settings, 'studioBusyTimeoutMs'),
+    studioAuthToken: envStr('WIGOLO_STUDIO_TOKEN', null, settings, 'studioAuthToken'),
     pluginsDir: (() => {
       const raw = envStr('WIGOLO_PLUGINS_DIR', null, settings, 'pluginsDir');
       if (raw) {

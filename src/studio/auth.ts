@@ -23,6 +23,24 @@ export function mintHostToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
+export interface HostTokenResolution {
+  token: string;
+  /** True when no operator token was supplied and a per-launch token was minted. */
+  minted: boolean;
+}
+
+/**
+ * Resolve the host's bearer token. An operator-supplied token (config/env) is
+ * preferred — it is stable across restarts and composes with secret managers.
+ * Only when none is set do we mint a per-launch token (callers should then warn
+ * that restarting invalidates existing remote clients).
+ */
+export function resolveHostToken(configured: string | null | undefined): HostTokenResolution {
+  const trimmed = configured?.trim();
+  if (trimmed) return { token: trimmed, minted: false };
+  return { token: mintHostToken(), minted: true };
+}
+
 function firstHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }

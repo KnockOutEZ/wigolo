@@ -2,6 +2,7 @@ export type Command =
   | 'mcp'
   | 'warmup'
   | 'serve'
+  | 'studio'
   | 'health'
   | 'doctor'
   | 'auth'
@@ -28,6 +29,7 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'mcp',
   'warmup',
   'serve',
+  'studio',
   'health',
   'doctor',
   'auth',

@@ -509,4 +509,28 @@ describe('DaemonHttpServer auth + request timeout', () => {
       await daemon.stop();
     }
   });
+
+  it('S3: a non-loopback serve forces auth on, so a tokenless request is rejected (401)', async () => {
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const { buildServeAuth } = await import('../../../src/cli/daemon.js');
+    // What `wigolo serve --host 0.0.0.0 --allow-remote` (no operator token) computes:
+    const decision = buildServeAuth({ host: '0.0.0.0', allowRemote: true, configuredToken: null });
+    expect(decision.ok).toBe(true);
+    if (!decision.ok) return;
+    expect(decision.auth).toBeDefined(); // auth is FORCED on for a non-loopback bind
+    // Bind loopback for test safety but enforce that forced auth: a request with
+    // no bearer is rejected → no unauthenticated access on a non-loopback serve.
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', auth: decision.auth });
+    try {
+      const url = await daemon.start();
+      const resp = await fetch(`${url}/mcp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: mcpBody(),
+      });
+      expect(resp.status).toBe(401);
+    } finally {
+      await daemon.stop();
+    }
+  });
 });

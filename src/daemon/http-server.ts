@@ -36,12 +36,18 @@ export class DaemonHttpServer {
   private readonly host: string;
   private readonly auth: DaemonAuthConfig | null;
   private readonly requestTimeoutMs: number;
+  private mcpRequestCount = 0;
 
   constructor(options: DaemonOptions) {
     this.port = options.port;
     this.host = options.host;
     this.auth = options.auth ?? null;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 0;
+  }
+
+  /** Count of MCP (`POST /mcp`) requests handled — observability + round-trip verification. */
+  getMcpRequestCount(): number {
+    return this.mcpRequestCount;
   }
 
   async start(): Promise<string> {
@@ -196,6 +202,7 @@ export class DaemonHttpServer {
   }
 
   private async handleStreamableHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    this.mcpRequestCount++;
     if (!this.subsystems) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Server not ready' }));
