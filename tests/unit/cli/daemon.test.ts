@@ -96,4 +96,57 @@ describe('runDaemon', () => {
     const parsed = parseDaemonArgs(['--unknown', 'value', '--port', '4444']);
     expect(parsed.port).toBe(4444);
   });
+
+  it('defaults allowRemote to false and parses --allow-remote', async () => {
+    const { parseDaemonArgs } = await import('../../../src/cli/daemon.js');
+    expect(parseDaemonArgs([]).allowRemote).toBe(false);
+    expect(parseDaemonArgs(['--allow-remote']).allowRemote).toBe(true);
+  });
+});
+
+describe('buildServeAuth (audit S3 closure)', () => {
+  it('loopback + no token → no auth required (back-compat)', async () => {
+    const { buildServeAuth } = await import('../../../src/cli/daemon.js');
+    expect(buildServeAuth({ host: '127.0.0.1', allowRemote: false, configuredToken: null })).toEqual({
+      ok: true,
+      auth: undefined,
+      minted: false,
+    });
+  });
+
+  it('loopback + operator token → uses the supplied token', async () => {
+    const { buildServeAuth } = await import('../../../src/cli/daemon.js');
+    expect(buildServeAuth({ host: '127.0.0.1', allowRemote: false, configuredToken: 'pinned' })).toEqual({
+      ok: true,
+      auth: { token: 'pinned', host: '127.0.0.1' },
+      minted: false,
+    });
+  });
+
+  it('non-loopback WITHOUT --allow-remote → refused', async () => {
+    const { buildServeAuth } = await import('../../../src/cli/daemon.js');
+    const d = buildServeAuth({ host: '0.0.0.0', allowRemote: false, configuredToken: null });
+    expect(d.ok).toBe(false);
+    if (!d.ok) expect(d.message).toMatch(/allow-remote/i);
+  });
+
+  it('non-loopback + --allow-remote + no token → FORCES auth on (minted) — closes S3', async () => {
+    const { buildServeAuth } = await import('../../../src/cli/daemon.js');
+    const d = buildServeAuth({ host: '0.0.0.0', allowRemote: true, configuredToken: null });
+    expect(d.ok).toBe(true);
+    if (d.ok) {
+      expect(d.minted).toBe(true);
+      expect(d.auth?.token).toHaveLength(43);
+      expect(d.auth?.host).toBe('0.0.0.0');
+    }
+  });
+
+  it('non-loopback + --allow-remote + operator token → forces auth with that (stable) token', async () => {
+    const { buildServeAuth } = await import('../../../src/cli/daemon.js');
+    expect(buildServeAuth({ host: '0.0.0.0', allowRemote: true, configuredToken: 'pinned' })).toEqual({
+      ok: true,
+      auth: { token: 'pinned', host: '0.0.0.0' },
+      minted: false,
+    });
+  });
 });
