@@ -209,9 +209,15 @@ describe('search v1 pipeline — factory + provider integration', () => {
   it('threads from_date through to the HN Algolia engine as numericFilters', async () => {
     const { calls } = installFetchRoutes([
       { match: (u) => u.includes('hn.algolia.com'), body: { hits: [HN_HIT] } },
-      // Lobsters has no date support so it is filtered out — but provide a
-      // fallback route so an unexpected call doesn't blow up the test.
+      // Wave-3 A3 (news-vertical recall): a date bound no longer filters out
+      // the date-naive news engines. They still run and contribute recall —
+      // their results are freshness-filtered client-side. Provide routes so
+      // they don't blow up the test; the assertion below confirms Lobsters is
+      // now dispatched (was previously skipped under a date bound).
       { match: (u) => u.includes('lobste.rs'), body: [] },
+      { match: (u) => u.includes('lite.duckduckgo.com'), text: DDG_HTML },
+      { match: (u) => u.includes('mojeek.com'), text: '<html></html>' },
+      { match: (u) => u.includes('bing.com'), text: BING_HTML },
     ]);
 
     const provider = await getSearchProvider();
@@ -223,12 +229,15 @@ describe('search v1 pipeline — factory + provider integration', () => {
     const result = await provider.search(input, mockCtx());
     expect(result.ok).toBe(true);
 
+    // The date-aware engine still receives the server-side date filter.
     const hnCall = calls.find((c) => c.url.includes('hn.algolia.com'));
     expect(hnCall).toBeDefined();
     expect(hnCall!.url).toContain('numericFilters=');
 
+    // The date-naive engine is now dispatched too (recall fix) rather than
+    // being silently dropped the moment a date-aware engine exists.
     const lobstersCall = calls.find((c) => c.url.includes('lobste.rs'));
-    expect(lobstersCall).toBeUndefined();
+    expect(lobstersCall).toBeDefined();
   });
 
   it('returns degraded warning when every engine fails', async () => {

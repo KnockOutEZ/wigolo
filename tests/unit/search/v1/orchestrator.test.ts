@@ -201,30 +201,44 @@ describe('runV1Search — date-bounded routing', () => {
     expect(out.vertical).toBe('news');
   });
 
-  it('filters out engines lacking date support when date is bound', async () => {
+  // Wave-3 A3 (news-vertical recall): a date bound must NOT silence the
+  // date-naive engines. Server-side date filtering is best-effort — engines
+  // that can't filter server-side still contribute results, which are then
+  // freshness-filtered client-side. Before this fix the orchestrator dropped
+  // every date-naive engine the moment a single date-aware engine existed,
+  // collapsing a news search to one engine / two results.
+  it('still dispatches date-naive engines when a date bound is set', async () => {
     const dateAware = makeEntry({
-      name: 'stackoverflow',
+      name: 'hn-algolia',
       supportsDateFilter: true,
-      results: [makeResult('stackoverflow', 'https://stackoverflow.com/q/1')],
+      results: [makeResult('hn-algolia', 'https://news.test/hn')],
     });
-    const dateNaive = makeEntry({
-      name: 'github-code',
+    const dateNaive1 = makeEntry({
+      name: 'duckduckgo',
       supportsDateFilter: false,
-      results: [makeResult('github-code', 'https://gh.test/y')],
+      results: [makeResult('duckduckgo', 'https://news.test/ddg')],
     });
-    verticalState.code = [dateNaive.entry, dateAware.entry];
+    const dateNaive2 = makeEntry({
+      name: 'mojeek',
+      supportsDateFilter: false,
+      results: [makeResult('mojeek', 'https://news.test/mojeek')],
+    });
+    verticalState.news = [dateAware.entry, dateNaive1.entry, dateNaive2.entry];
 
     const out = await runV1Search({
-      query: 'typescript fix compile error',
-      category: 'code',
-      fromDate: '2025-01-01',
+      query: 'wwdc 2026 announcements',
+      category: 'news',
+      timeRange: 'week',
     });
-    expect(dateNaive.spy).not.toHaveBeenCalled();
+
+    // The non-date-aware engines must run — not just the date-aware one.
+    expect(dateNaive1.spy).toHaveBeenCalledOnce();
+    expect(dateNaive2.spy).toHaveBeenCalledOnce();
     expect(dateAware.spy).toHaveBeenCalledOnce();
-    expect(out.enginesUsed).toEqual(['stackoverflow']);
+    expect(out.enginesUsed.sort()).toEqual(['duckduckgo', 'hn-algolia', 'mojeek']);
   });
 
-  it('falls back to all engines when date filter would remove everything', async () => {
+  it('still runs every engine when no engine supports server-side date filtering', async () => {
     const dateNaive1 = makeEntry({
       name: 'mdn',
       supportsDateFilter: false,
@@ -246,6 +260,43 @@ describe('runV1Search — date-bounded routing', () => {
     expect(dateNaive2.spy).toHaveBeenCalledOnce();
     expect(out.degraded).toBe(false);
     expect(out.enginesUsed.sort()).toEqual(['devdocs', 'mdn']);
+  });
+
+  // Client-side freshness filter (the second half of the recall fix): once
+  // date-naive engines are allowed to run under a date bound, their results
+  // are filtered against the resolved window. Older-than-window results drop;
+  // within-window AND undated results survive (don't nuke recall on results
+  // that simply lack a parseable published_date).
+  it('drops only the older-than-window result; keeps within-window and undated', async () => {
+    const now = Date.now();
+    const DAY = 86_400_000;
+    const inWindow = new Date(now - 2 * DAY).toISOString().slice(0, 10);
+    const older = new Date(now - 120 * DAY).toISOString().slice(0, 10);
+
+    const fresh = makeResult('duckduckgo', 'https://news.test/fresh');
+    fresh.published_date = inWindow;
+    const stale = makeResult('duckduckgo', 'https://news.test/stale');
+    stale.published_date = older;
+    const undated = makeResult('duckduckgo', 'https://news.test/undated');
+
+    const ddg = makeEntry({
+      name: 'duckduckgo',
+      supportsDateFilter: false,
+      results: [fresh, stale, undated],
+    });
+    verticalState.news = [ddg.entry];
+
+    const out = await runV1Search({
+      query: 'wwdc 2026 announcements',
+      category: 'news',
+      timeRange: 'week',
+      maxResults: 10,
+    });
+
+    const urls = out.results.map((r) => r.url);
+    expect(urls).toContain('https://news.test/fresh');
+    expect(urls).toContain('https://news.test/undated');
+    expect(urls).not.toContain('https://news.test/stale');
   });
 });
 
