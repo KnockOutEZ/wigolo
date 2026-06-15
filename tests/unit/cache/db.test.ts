@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { initDatabase, closeDatabase } from '../../../src/cache/db.js';
+import { getConfig } from '../../../src/config.js';
 import Database from 'better-sqlite3';
 
 describe('database', () => {
@@ -43,6 +44,13 @@ describe('database', () => {
   it('is idempotent (can init twice)', () => {
     db = initDatabase(':memory:');
     expect(() => initDatabase(':memory:')).not.toThrow();
+  });
+
+  it('sets busy_timeout from config so concurrent (CLI + host) writers wait instead of throwing SQLITE_BUSY', () => {
+    db = initDatabase(':memory:');
+    const busyTimeout = db.pragma('busy_timeout', { simple: true });
+    expect(busyTimeout).toBe(getConfig().studioBusyTimeoutMs);
+    expect(busyTimeout).toBeGreaterThan(0);
   });
 
   describe('browser routing table removal (SP1)', () => {
