@@ -10,17 +10,17 @@
  *
  * Pipeline under test (one trip):
  *   node dispatches a CDP Input event  (t0)
- *     -> Chrome runs the page handler, which TOGGLES a fixed corner swatch
+ *     -> Chrome runs the page handler, which TOGGLES a fixed corner __spikeSwatch
  *        black<->red(220) and repaints
  *     -> Page.screencastFrame (jpeg, base64) fires to node
  *     -> node forwards the frame as a JSON WS message to a headless viewer page
- *     -> viewer decodes the JPEG, drawImage()s it, samples the swatch pixel,
+ *     -> viewer decodes the JPEG, drawImage()s it, samples the __spikeSwatch pixel,
  *        and acks the red value
  *     -> node receives the ack  (t1)
  *   round-trip = t1 - t0  (~= input-to-paint + a sub-ms loopback ack leg;
  *   slightly conservative, which is what we want for a gate).
  *
- * Robustness: the swatch TOGGLES (220 vs 0) rather than encoding a sequence
+ * Robustness: the __spikeSwatch TOGGLES (220 vs 0) rather than encoding a sequence
  * number, so JPEG quantization can't corrupt the marker; serial dispatch
  * (wait-for-paint-or-timeout before the next input) pairs each input with its
  * painted frame without any counter sync.
@@ -42,6 +42,7 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const SESSION_HEADLESS = process.env.SPIKE_HEADLESS === '1';
+const SPIKE_URL = process.env.SPIKE_URL || null;
 const QUALITY = Number(process.env.SPIKE_QUALITY ?? 60);
 const W = 1280;
 const H = 720;
@@ -53,14 +54,14 @@ const RED_THRESHOLD = 110;
 const TEST_PAGE = `<!doctype html><html><head><meta charset="utf-8"><style>
   html,body{margin:0;padding:0}
   body{height:1200vh;background:repeating-linear-gradient(0deg,#111 0 40px,#333 40px 80px)}
-  #swatch{position:fixed;top:0;left:0;width:60px;height:60px;background:rgb(0,0,0);z-index:10}
+  #__spikeSwatch{position:fixed;top:0;left:0;width:60px;height:60px;background:rgb(0,0,0);z-index:10}
   #inp{position:fixed;top:0;left:80px;z-index:10}
 </style></head><body>
-  <div id="swatch"></div>
+  <div id="__spikeSwatch"></div>
   <input id="inp" autofocus>
   <script>
     window.__on=false;
-    var sw=document.getElementById('swatch');
+    var sw=document.getElementById('__spikeSwatch');
     function bump(){ window.__on=!window.__on; sw.style.background = window.__on ? 'rgb(${RED_ON},0,0)' : 'rgb(0,0,0)'; }
     document.addEventListener('pointerdown',bump,true);
     document.addEventListener('keydown',bump,true);
@@ -109,7 +110,7 @@ async function main() {
     });
   });
 
-  // Resolve when an ack arrives (after t0) whose swatch state matches `on`.
+  // Resolve when an ack arrives (after t0) whose __spikeSwatch state matches `on`.
   async function waitForState(on, t0) {
     const deadline = performance.now() + INPUT_TIMEOUT_MS;
     let idx = acks.length; // only consider acks observed after dispatch
@@ -127,7 +128,35 @@ async function main() {
   const sessionBrowser = await chromium.launch({ headless: SESSION_HEADLESS });
   const sctx = await sessionBrowser.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
   const spage = await sctx.newPage();
-  await spage.setContent(TEST_PAGE);
+  if (SPIKE_URL) {
+    // Real content page: navigate, then inject the toggle __spikeSwatch + input
+    // listeners over the page's own DOM. page.evaluate runs via CDP, so it is
+    // not subject to the page's CSP. The page's real content drives frame size
+    // + repaint cadence; the injected __spikeSwatch is the input marker.
+    await spage.goto(SPIKE_URL, { waitUntil: 'load', timeout: 30000 });
+    await spage.evaluate((RED) => {
+      const root = document.body || document.documentElement;
+      let sw = document.getElementById('__spikeSwatch');
+      if (!sw) {
+        sw = document.createElement('div');
+        sw.id = '__spikeSwatch';
+        root.appendChild(sw);
+      }
+      sw.style.cssText =
+        'position:fixed;top:0;left:0;width:60px;height:60px;background:rgb(0,0,0);z-index:2147483647;pointer-events:none';
+      window.__on = false;
+      const bump = () => {
+        window.__on = !window.__on;
+        const s = document.getElementById('__spikeSwatch');
+        if (s) s.style.background = window.__on ? `rgb(${RED},0,0)` : 'rgb(0,0,0)';
+      };
+      document.addEventListener('pointerdown', bump, true);
+      document.addEventListener('keydown', bump, true);
+      document.addEventListener('wheel', bump, { passive: true, capture: true });
+    }, RED_ON);
+  } else {
+    await spage.setContent(TEST_PAGE);
+  }
 
   const cdp = await sctx.newCDPSession(spage);
   cdp.on('Page.screencastFrame', async (f) => {
@@ -146,9 +175,9 @@ async function main() {
 
   await cdp.send('Page.startScreencast', { format: 'jpeg', quality: QUALITY, maxWidth: W, maxHeight: H, everyNthFrame: 1 });
 
-  // Settle + force a known baseline (swatch off).
+  // Settle + force a known baseline (__spikeSwatch off).
   await sleep(600);
-  await spage.evaluate((off) => { window.__on = false; document.getElementById('swatch').style.background = 'rgb(0,0,0)'; }, 0);
+  await spage.evaluate(() => { window.__on = false; const s = document.getElementById('__spikeSwatch'); if (s) s.style.background = 'rgb(0,0,0)'; });
   await sleep(300);
 
   const cx = Math.floor(W / 2);
@@ -224,6 +253,7 @@ async function main() {
   else verdict = 'GRAY ZONE — report numbers, CEO decides';
 
   console.log('\n================ Studio Phase-1 screencast latency spike ================');
+  console.log(`  page: ${SPIKE_URL ?? 'synthetic striped test page'}`);
   console.log(`  session browser: ${SESSION_HEADLESS ? 'headless' : 'headed'}   viewer: headless   jpeg q=${QUALITY}   ${W}x${H}   N=${N}/type`);
   console.log('  input-to-paint round-trip (lower = better):');
   console.log(line('click'));
