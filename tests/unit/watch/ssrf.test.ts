@@ -198,6 +198,40 @@ describe('guardUrl SSRF', () => {
       const r = guardUrl('http://[::808:808]/', 'url');
       expect(r.ok).toBe(true);
     });
+
+    it('rejects 6to4 loopback embedding [2002:7f00:1::] (127.0.0.1) — Finding B', () => {
+      // 2002::/16 embeds the IPv4 in the two hextets after 2002: (7f00:0001).
+      const r = guardUrl('http://[2002:7f00:1::]/', 'url');
+      expect(r.ok).toBe(false);
+    });
+
+    it('rejects 6to4 metadata embedding [2002:a9fe:a9fe::] (169.254.169.254) — Finding B', () => {
+      const r = guardUrl('http://[2002:a9fe:a9fe::]/', 'url');
+      expect(r.ok).toBe(false);
+    });
+
+    it('rejects NAT64 metadata embedding [64:ff9b::a9fe:a9fe] (169.254.169.254) — Finding B', () => {
+      // 64:ff9b::/96 embeds the IPv4 in the low 32 bits (last two hextets).
+      const r = guardUrl('http://[64:ff9b::a9fe:a9fe]/', 'url');
+      expect(r.ok).toBe(false);
+    });
+
+    it('rejects NAT64 private embedding [64:ff9b::a00:1] (10.0.0.1) — Finding B', () => {
+      const r = guardUrl('http://[64:ff9b::a00:1]/', 'url');
+      expect(r.ok).toBe(false);
+    });
+
+    it('accepts a PUBLIC 6to4/NAT64 embedding (no over-rejection) — Finding B', () => {
+      // 8.8.8.8 embedded — must stay reachable; pins the decode is precise.
+      expect(guardUrl('http://[2002:808:808::]/', 'url').ok).toBe(true);
+      expect(guardUrl('http://[64:ff9b::808:808]/', 'url').ok).toBe(true);
+    });
+
+    it('rejects 6to4 x.y.0.0 metadata-range embedding [2002:a9fe::] (169.254.0.0) — Finding B regression', () => {
+      // The low hextet compresses away here; the metadata RANGE must still be blocked.
+      const r = guardUrl('http://[2002:a9fe::]/', 'url');
+      expect(r.ok).toBe(false);
+    });
   });
 
   describe('rejects malformed inputs', () => {

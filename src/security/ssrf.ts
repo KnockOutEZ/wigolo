@@ -73,6 +73,34 @@ function categorizeIpv6(host: string): HostCategory | null {
     const cat = categorizeIpv4(hexPairToDotted(v4compatHex[1], v4compatHex[2]));
     if (cat) return cat;
   }
+
+  // 6to4 (2002::/16): the gateway IPv4 is embedded in the two hextets right after
+  // `2002:` (e.g. 2002:7f00:1:: -> 7f00:0001 -> 127.0.0.1). ALL of 2002::/16 is
+  // 6to4, so any 2002:-prefixed address decodes; a private/metadata embedding on a
+  // host with 6to4 routing reaches the embedded v4, so block it. The low hextet is
+  // OPTIONAL: when the embedded v4 is x.y.0.0 the trailing zero compresses away
+  // (2002:7f00:0:: normalizes to [2002:7f00::]), so default a missing low hextet to 0.
+  const sixToFour = h.match(/^2002:([0-9a-f]{1,4})(?::([0-9a-f]{1,4}))?/);
+  if (sixToFour) {
+    const cat = categorizeIpv4(hexPairToDotted(sixToFour[1], sixToFour[2] ?? '0'));
+    if (cat) return cat;
+  }
+
+  // NAT64 (64:ff9b::/96): the IPv4 is embedded in the low 32 bits — a trailing
+  // dotted quad or the last two hextets (e.g. 64:ff9b::a9fe:a9fe -> 169.254.169.254).
+  const nat64Dotted = h.match(/^64:ff9b::(?:.*:)?(\d+\.\d+\.\d+\.\d+)$/);
+  if (nat64Dotted) {
+    const cat = categorizeIpv4(nat64Dotted[1]);
+    if (cat) return cat;
+  }
+  const nat64Hex = h.match(/^64:ff9b::(?:[0-9a-f:]*:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (nat64Hex) {
+    const cat = categorizeIpv4(hexPairToDotted(nat64Hex[1], nat64Hex[2]));
+    if (cat) return cat;
+  }
+  // Exotic all-zero-high-hextet forms (2002::1, 64:ff9b::1) embed 0.0.0.x and are
+  // not decoded here — out of scope: no realistic private/metadata target has a
+  // zero high hextet (7f00/0a00/c0a8/a9fe/ac1x are all non-zero).
   return null; // public (or unrecognized) IPv6
 }
 
