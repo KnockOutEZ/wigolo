@@ -64,4 +64,26 @@ describe('SessionController', () => {
     expect(await ctl.handleInput({ party: 'agent', epoch: 1, kind: 'mouse', type: 'mouseMoved', nx: 0, ny: 0 })).toBe(true);
     expect(await ctl.handleInput({ party: 'human', epoch: 1, kind: 'mouse', type: 'mouseMoved', nx: 0, ny: 0 })).toBe(false);
   });
+
+  it('handleWireInput host-stamps party=human — a WS client cannot claim to be the agent (landmine #1)', async () => {
+    const token = new ControlToken();
+    const f = makeFakeInput();
+    const ctl = new SessionController(token, f.input, () => {});
+    // Client lies (party:'agent'); it is treated as human → human holds → dispatched.
+    expect(await ctl.handleWireInput({ party: 'agent', epoch: 0, kind: 'mouse', type: 'mouseMoved', nx: 0.5, ny: 0.5 })).toBe(true);
+    expect(f.calls.mouse).toBe(1);
+    // After granting the agent, that same WS client (forced to 'human') is gated out.
+    ctl.handleControl({ op: 'grant', to: 'agent' });
+    expect(await ctl.handleWireInput({ party: 'agent', epoch: 1, kind: 'mouse', type: 'mouseMoved', nx: 0.5, ny: 0.5 })).toBe(false);
+  });
+
+  it('handleWireControl applies a reclaim parsed from the wire', () => {
+    const token = new ControlToken();
+    const f = makeFakeInput();
+    const ctl = new SessionController(token, f.input, () => {});
+    token.grant('agent'); // epoch 1
+    ctl.handleWireControl({ op: 'reclaim' });
+    expect(token.holder).toBe('human');
+    expect(token.epoch).toBe(2);
+  });
 });

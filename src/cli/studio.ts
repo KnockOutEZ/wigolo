@@ -8,6 +8,9 @@ import { SessionRegistry } from '../studio/registry.js';
 import type { Session } from '../studio/session.js';
 import { SessionBrowser, type SessionBrowserLauncher } from '../studio/session-browser.js';
 import { ScreencastBridge } from '../studio/screencast.js';
+import { ControlToken } from '../studio/control-token.js';
+import { InputForwarder } from '../studio/input.js';
+import { SessionController } from '../studio/session-control.js';
 import { StudioWsHub } from '../studio/ws-hub.js';
 import { writeHandle, removeHandle, studioHandlePath, type SessionHandle } from '../studio/handle.js';
 import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
@@ -61,6 +64,7 @@ export interface StudioHost {
   session: Session;
   sessionBrowser: SessionBrowser;
   bridge: ScreencastBridge;
+  controller: SessionController;
   hub: StudioWsHub;
   handle: SessionHandle;
   endpoint: string;
@@ -86,16 +90,24 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const registry = opts.registry ?? new SessionRegistry();
   // Late-bound: the screencast bridge is created once the session browser is up,
   // but the hub (which routes client frame-acks to it) must exist before the daemon.
+  // Late-bound: bridge + controller are created once the session browser is up,
+  // but the hub (which routes client ack/input/control to them) precedes the daemon.
   let bridge: ScreencastBridge | undefined;
+  let controller: SessionController | undefined;
   // The WS hub fans frames/input over the host's WebSocket; the daemon authorizes
   // each upgrade (Origin/Host + subprotocol bearer) before handing it here. WS
   // clients are session viewers, so onAttach/onDetach keep the Session's client
   // count accurate (it backs idle-eviction) for connect AND every disconnect
-  // (graceful close, error, or heartbeat reap); onAck paces the screencast.
+  // (graceful close, error, or heartbeat reap); onAck paces the screencast;
+  // onInput/onControl drive the token-gated input channel (WS = the human party).
   const hub = new StudioWsHub({
     onAttach: (id) => registry.get(id)?.attach(),
     onDetach: (id) => registry.get(id)?.detach(),
     onAck: () => bridge?.onClientAck(),
+    onInput: (_id, msg) => {
+      void controller?.handleWireInput(msg);
+    },
+    onControl: (_id, msg) => controller?.handleWireControl(msg),
   });
   const daemon = new DaemonHttpServer({
     port: opts.port,
@@ -123,17 +135,33 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   await sessionBrowser.start();
 
   const cfg = getConfig();
+  // Control token + input forwarder + their coordinator. The forwarder maps
+  // normalized client coords to true page CSS px from the latest frame metadata
+  // (so the configured viewport is only the pre-first-frame fallback).
+  const controlToken = new ControlToken();
+  const forwarder = new InputForwarder({
+    cdp: sessionBrowser.cdp,
+    viewport: { width: cfg.studioScreencastMaxWidth, height: cfg.studioScreencastMaxHeight },
+  });
+  controller = new SessionController(controlToken, forwarder, (msg) => hub.broadcast(session.id, msg));
+
   bridge = new ScreencastBridge({
     cdp: sessionBrowser.cdp,
-    sink: (frame) => hub.broadcastFrame(session.id, frame),
+    // Feed the forwarder the live page dimensions for input mapping, then fan the frame out.
+    sink: (frame) => {
+      forwarder.updateViewport(frame.metadata);
+      hub.broadcastFrame(session.id, frame);
+    },
     quality: cfg.studioScreencastQuality,
     maxWidth: cfg.studioScreencastMaxWidth,
     maxHeight: cfg.studioScreencastMaxHeight,
     everyNthFrame: cfg.studioScreencastEveryNthFrame,
     ackTimeoutMs: cfg.studioFrameAckTimeoutMs,
   });
-  // On a browser-crash recovery, rebind the screencast to the FRESH cdp (state reset).
+  // On a browser-crash recovery, rebind BOTH the screencast and the input channel
+  // to the FRESH cdp (each resets its stale state); the control token persists.
   sessionBrowser.onRecovered(() => {
+    forwarder.rebind(sessionBrowser.cdp);
     void bridge!.restart(sessionBrowser.cdp).catch((e) =>
       logger.debug('screencast restart after recovery failed', { error: e instanceof Error ? e.message : String(e) }),
     );
@@ -146,7 +174,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, hub, handle, endpoint };
+  return { daemon, registry, session, sessionBrowser, bridge, controller, hub, handle, endpoint };
 }
 
 export function runStudio(args: string[]): void {

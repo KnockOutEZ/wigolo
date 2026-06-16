@@ -65,4 +65,30 @@ export class SessionController {
     else if (msg.op === 'grant') this.token.grant(msg.to ?? 'agent');
     else if (msg.op === 'release') this.token.release();
   }
+
+  /**
+   * Entry point for an inbound WS input message (untrusted JSON). The party is
+   * HOST-STAMPED to 'human' — the WS is the human channel, so a client can never
+   * claim to be the agent (the agent drives via studio_act in Phase 2). epoch/kind
+   * are coerced; a malformed event that throws on dispatch is swallowed (dropped).
+   */
+  async handleWireInput(raw: Record<string, unknown>): Promise<boolean> {
+    const epoch = typeof raw.epoch === 'number' ? raw.epoch : -1;
+    const kind = raw.kind === 'key' ? 'key' : 'mouse';
+    const msg = { ...raw, party: 'human', epoch, kind } as unknown as InputMessage;
+    try {
+      return await this.handleInput(msg);
+    } catch (err) {
+      log.debug('input dispatch failed', { error: err instanceof Error ? err.message : String(err) });
+      return false;
+    }
+  }
+
+  /** Entry point for an inbound WS control message (untrusted JSON): coerce the op + target, then apply. */
+  handleWireControl(raw: Record<string, unknown>): void {
+    const op = raw.op;
+    if (op !== 'reclaim' && op !== 'grant' && op !== 'release') return;
+    const to = raw.to === 'agent' ? 'agent' : raw.to === 'human' ? 'human' : undefined;
+    this.handleControl({ op, to });
+  }
 }

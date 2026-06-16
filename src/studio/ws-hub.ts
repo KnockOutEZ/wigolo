@@ -47,6 +47,10 @@ export interface StudioWsHubOptions {
   onDetach?: (sessionId: string) => void;
   /** Inbound client frame-ack — host wires this to ScreencastBridge.onClientAck. */
   onAck?: (sessionId: string) => void;
+  /** Inbound human input event — host wires this to SessionController.handleWireInput. */
+  onInput?: (sessionId: string, msg: Record<string, unknown>) => void;
+  /** Inbound control op (reclaim/grant/release) — host wires this to SessionController.handleWireControl. */
+  onControl?: (sessionId: string, msg: Record<string, unknown>) => void;
   /** Skip sending a frame to a client whose send buffer already exceeds this (drop-under-load). */
   frameBackpressureBytes?: number;
 }
@@ -66,6 +70,8 @@ export class StudioWsHub {
   private readonly onAttach?: (sessionId: string) => void;
   private readonly onDetach?: (sessionId: string) => void;
   private readonly onAck?: (sessionId: string) => void;
+  private readonly onInput?: (sessionId: string, msg: Record<string, unknown>) => void;
+  private readonly onControl?: (sessionId: string, msg: Record<string, unknown>) => void;
   private readonly frameBackpressureBytes: number;
   private readonly heartbeat: ReturnType<typeof setInterval>;
 
@@ -73,6 +79,8 @@ export class StudioWsHub {
     this.onAttach = opts.onAttach;
     this.onDetach = opts.onDetach;
     this.onAck = opts.onAck;
+    this.onInput = opts.onInput;
+    this.onControl = opts.onControl;
     this.frameBackpressureBytes = opts.frameBackpressureBytes ?? DEFAULT_FRAME_BACKPRESSURE_BYTES;
     this.heartbeat = setInterval(() => this.heartbeatTick(), opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_MS);
     // Don't let the heartbeat keep the process alive on its own.
@@ -164,15 +172,26 @@ export class StudioWsHub {
     }
   }
 
-  /** Route an inbound client message. Phase 1b: the frame `ack` that paces the screencast; input/control routing is 1c. */
+  /** Route an inbound client message: frame `ack` (paces the screencast), `input` (human input), `control` (token op). */
   private onMessage(sessionId: string, data: RawData): void {
-    let msg: { t?: string };
+    let msg: Record<string, unknown>;
     try {
       msg = JSON.parse(data.toString());
     } catch {
       return; // ignore malformed input — never throw on attacker/garbage data
     }
-    if (msg && msg.t === 'ack') this.onAck?.(sessionId);
+    if (!msg || typeof msg !== 'object') return;
+    switch (msg.t) {
+      case 'ack':
+        this.onAck?.(sessionId);
+        break;
+      case 'input':
+        this.onInput?.(sessionId, msg);
+        break;
+      case 'control':
+        this.onControl?.(sessionId, msg);
+        break;
+    }
   }
 
   private parseSessionId(url: string | undefined): string | null {

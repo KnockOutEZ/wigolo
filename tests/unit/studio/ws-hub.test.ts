@@ -274,4 +274,27 @@ describe('StudioWsHub — frame fan-out + ack routing (1b.3)', () => {
     ws.send('x'.repeat(70 * 1024)); // > 64 KiB cap → server rejects
     expect(await closed).toBe(1009); // 1009 = message too big
   });
+
+  it('routes inbound {t:input} to onInput with the session id and the raw message', async () => {
+    const inputs: Array<{ id: string; msg: Record<string, unknown> }> = [];
+    const h = await startHub({ onInput: (id, msg) => inputs.push({ id, msg }) });
+    const ws = new WebSocket(h.url('/studio/i1/stream'));
+    await nextMessage(ws);
+    ws.send(JSON.stringify({ t: 'input', party: 'human', epoch: 0, kind: 'mouse', type: 'mousePressed', nx: 0.5, ny: 0.5 }));
+    await waitFor(() => inputs.length === 1);
+    expect(inputs[0].id).toBe('i1');
+    expect(inputs[0].msg).toMatchObject({ kind: 'mouse', type: 'mousePressed', nx: 0.5, ny: 0.5 });
+    ws.close();
+  });
+
+  it('routes inbound {t:control} to onControl', async () => {
+    const controls: Array<{ id: string; msg: Record<string, unknown> }> = [];
+    const h = await startHub({ onControl: (id, msg) => controls.push({ id, msg }) });
+    const ws = new WebSocket(h.url('/studio/c1/stream'));
+    await nextMessage(ws);
+    ws.send(JSON.stringify({ t: 'control', op: 'reclaim' }));
+    await waitFor(() => controls.length === 1);
+    expect(controls[0]).toMatchObject({ id: 'c1', msg: { op: 'reclaim' } });
+    ws.close();
+  });
 });

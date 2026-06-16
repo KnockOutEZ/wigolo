@@ -83,4 +83,44 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
       }),
     ).rejects.toBeDefined();
   }, 15_000);
+
+  it('forwards human input to the real page and enforces token semantics (only the holder lands; a flip drops input)', async () => {
+    const html =
+      '<input id="f" autofocus style="position:fixed;inset:0;width:100%;height:100%;font-size:40px" />' +
+      '<script>window.__clicks=0;document.addEventListener("pointerdown",function(){window.__clicks++});</script>';
+    await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(html));
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+    const fieldValue = () => page.evaluate(() => (document.getElementById('f') as HTMLInputElement).value);
+
+    const wsUrl = host.endpoint.replace('http://', 'ws://') + `/studio/${host.session.id}/stream`;
+    const ws = new WebSocket(wsUrl, ['wigolo.stream', `wigolo.bearer.${host.session.token}`]);
+    await new Promise<void>((resolve, reject) => { ws.on('open', () => resolve()); ws.on('error', reject); });
+    const send = (m: Record<string, unknown>) => ws.send(JSON.stringify(m));
+
+    // Human holds at epoch 0. Click to focus the full-screen input (also proves click forwarding), then type "hi".
+    send({ t: 'input', kind: 'mouse', epoch: 0, type: 'mousePressed', nx: 0.5, ny: 0.5, button: 'left' });
+    send({ t: 'input', kind: 'mouse', epoch: 0, type: 'mouseReleased', nx: 0.5, ny: 0.5, button: 'left' });
+    for (const [key, code] of [['h', 'KeyH'], ['i', 'KeyI']]) {
+      send({ t: 'input', kind: 'key', epoch: 0, type: 'keyDown', key, code, text: key });
+      send({ t: 'input', kind: 'key', epoch: 0, type: 'keyUp', key, code });
+    }
+    await expect.poll(fieldValue, { timeout: 5000 }).toBe('hi');
+    expect(await page.evaluate(() => (window as unknown as { __clicks: number }).__clicks)).toBeGreaterThanOrEqual(1);
+
+    // Hand control to the agent → the human (WS) party is no longer the holder, so its input must be dropped.
+    send({ t: 'control', op: 'grant', to: 'agent' });
+    await new Promise((r) => setTimeout(r, 150));
+    send({ t: 'input', kind: 'key', epoch: 1, type: 'keyDown', key: 'X', code: 'KeyX', text: 'X' });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(await fieldValue()).toBe('hi'); // 'X' dropped — agent holds the token
+
+    // Human reclaims (epoch now 2) → input lands again.
+    send({ t: 'control', op: 'reclaim' });
+    await new Promise((r) => setTimeout(r, 150));
+    send({ t: 'input', kind: 'key', epoch: 2, type: 'keyDown', key: 'z', code: 'KeyZ', text: 'z' });
+    send({ t: 'input', kind: 'key', epoch: 2, type: 'keyUp', key: 'z', code: 'KeyZ' });
+    await expect.poll(fieldValue, { timeout: 5000 }).toBe('hiz');
+
+    ws.close();
+  }, 30_000);
 });
