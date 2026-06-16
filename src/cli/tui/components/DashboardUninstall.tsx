@@ -8,6 +8,7 @@
 import React, { useState, useCallback } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
 import { getConfig } from '../../../config.js';
+import { signalUninstall } from '../state/uninstall-signal.js';
 import { semantic } from '../theme/palette.js';
 import { activityStore } from '../state/activity-store-instance.js';
 
@@ -65,7 +66,8 @@ export function DashboardUninstall({ onBack }: DashboardUninstallProps) {
 
     if (phase === 'done') {
       if (key.escape || input === 'q' || key.return) {
-        // After uninstall data is gone — exit the TUI entirely
+        // After uninstall data is gone — signal so callers skip warmup, then exit
+        signalUninstall();
         exit();
       }
       return;

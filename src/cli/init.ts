@@ -63,6 +63,12 @@ export async function runInit(args: string[]): Promise<number> {
     const code = await runConfig(configArgs);
     if (code !== 0) return code;
 
+    // If the user navigated to the uninstall screen and wiped wigolo mid-session,
+    // skip warmup entirely — reinstalling components after an intentional uninstall
+    // would recreate ~/.wigolo against the user's wishes.
+    const { wasUninstalled } = await import('./tui/state/uninstall-signal.js');
+    if (wasUninstalled()) return 0;
+
     // Parity with the non-interactive path: the Ink wizard configures agents and
     // settings but installs no tools. Run the full warmup AFTER the Ink shell has
     // unmounted (runConfig has returned) so warmup's own progress output owns the
