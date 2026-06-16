@@ -142,6 +142,29 @@ describe('cli/studio startStudioHost', () => {
     await host.daemon.stop();
   });
 
+  it('starts the nav interceptor on the session cdp (Fetch.enable) at boot', async () => {
+    const launcher = makeCrashableHostLauncher();
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch });
+    expect(host.navInterceptor).toBeDefined();
+    expect(launcher.state.cdps[0].sends.some((s) => s.method === 'Fetch.enable')).toBe(true);
+    await host.navInterceptor.stop();
+    await host.bridge.stop();
+    await host.daemon.stop();
+  });
+
+  it('host.navigate broadcasts {t:error} on a blocked target and navigates a public one cleanly', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    const broadcastSpy = vi.spyOn(host.hub, 'broadcast');
+    await host.navigate('http://169.254.169.254/'); // cloud-metadata → blocked even for the human
+    expect(broadcastSpy).toHaveBeenCalledWith(host.session.id, { t: 'error', reason: 'navigation_blocked' });
+    broadcastSpy.mockClear();
+    await host.navigate('https://example.com/'); // public → allowed, no error
+    expect(broadcastSpy).not.toHaveBeenCalled();
+    await host.navInterceptor.stop();
+    await host.bridge.stop();
+    await host.daemon.stop();
+  });
+
   it('wires crash recovery: rebinds the screencast to the fresh cdp, and notifies clients on exhaustion', async () => {
     process.env.WIGOLO_STUDIO_BROWSER_CRASH_MAX_RESTARTS = '1';
     resetConfig();
@@ -155,6 +178,7 @@ describe('cli/studio startStudioHost', () => {
     await flush();
     expect(launcher.state.cdps.length).toBe(2); // relaunched
     expect(launcher.state.cdps[1].sends.some((s) => s.method === 'Page.startScreencast')).toBe(true);
+    expect(launcher.state.cdps[1].sends.some((s) => s.method === 'Fetch.enable')).toBe(true); // nav interceptor rebound on the fresh cdp
 
     // ...and the INPUT forwarder rebound too: post-recovery human input dispatches to the FRESH cdp, not the dead one.
     await host.controller.handleWireInput({ kind: 'mouse', epoch: 0, type: 'mouseMoved', nx: 0.5, ny: 0.5 });

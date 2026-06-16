@@ -67,6 +67,8 @@ export interface StudioHost {
   bridge: ScreencastBridge;
   controller: SessionController;
   navInterceptor: NavInterceptor;
+  /** Navigate the session as the human (guarded); broadcasts {t:'error'} to clients on a blocked target. */
+  navigate: (url: string) => Promise<void>;
   hub: StudioWsHub;
   handle: SessionHandle;
   endpoint: string;
@@ -164,11 +166,12 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const navPolicy: NavPolicy = { source: 'human', allowPrivate: cfg.studioNavAllowPrivateForHuman };
   const navInterceptor = new NavInterceptor(navPolicy);
   await navInterceptor.start(sessionBrowser.cdp);
+  const navigate = async (url: string): Promise<void> => {
+    const r = await navigateSession(sessionBrowser, url, navPolicy);
+    if (!r.ok) hub.broadcast(session.id, { t: 'error', reason: r.reason });
+  };
   onNavHandler = (msg) => {
-    const url = typeof msg.url === 'string' ? msg.url : '';
-    void navigateSession(sessionBrowser, url, navPolicy).then((r) => {
-      if (!r.ok) hub.broadcast(session.id, { t: 'error', reason: r.reason });
-    });
+    void navigate(typeof msg.url === 'string' ? msg.url : '');
   };
 
   bridge = new ScreencastBridge({
@@ -203,7 +206,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, hub, handle, endpoint };
+  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, hub, handle, endpoint };
 }
 
 export function runStudio(args: string[]): void {
