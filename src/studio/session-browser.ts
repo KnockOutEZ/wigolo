@@ -27,6 +27,7 @@ export interface SessionPage {
 export interface SessionCdp {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
   on(event: string, cb: (payload: never) => void): void;
+  off(event: string, cb: (payload: never) => void): void;
 }
 
 export interface LaunchedSessionBrowser {

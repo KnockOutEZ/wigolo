@@ -7,6 +7,7 @@ import { resolveHostToken } from '../studio/auth.js';
 import { SessionRegistry } from '../studio/registry.js';
 import type { Session } from '../studio/session.js';
 import { SessionBrowser, type SessionBrowserLauncher } from '../studio/session-browser.js';
+import { ScreencastBridge } from '../studio/screencast.js';
 import { StudioWsHub } from '../studio/ws-hub.js';
 import { writeHandle, removeHandle, studioHandlePath, type SessionHandle } from '../studio/handle.js';
 import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
@@ -59,6 +60,7 @@ export interface StudioHost {
   registry: SessionRegistry;
   session: Session;
   sessionBrowser: SessionBrowser;
+  bridge: ScreencastBridge;
   hub: StudioWsHub;
   handle: SessionHandle;
   endpoint: string;
@@ -82,14 +84,18 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   }
 
   const registry = opts.registry ?? new SessionRegistry();
+  // Late-bound: the screencast bridge is created once the session browser is up,
+  // but the hub (which routes client frame-acks to it) must exist before the daemon.
+  let bridge: ScreencastBridge | undefined;
   // The WS hub fans frames/input over the host's WebSocket; the daemon authorizes
   // each upgrade (Origin/Host + subprotocol bearer) before handing it here. WS
   // clients are session viewers, so onAttach/onDetach keep the Session's client
-  // count accurate (it backs idle-eviction) for connect AND every disconnect —
-  // graceful close, error, or heartbeat reap of a half-open client.
+  // count accurate (it backs idle-eviction) for connect AND every disconnect
+  // (graceful close, error, or heartbeat reap); onAck paces the screencast.
   const hub = new StudioWsHub({
     onAttach: (id) => registry.get(id)?.attach(),
     onDetach: (id) => registry.get(id)?.detach(),
+    onAck: () => bridge?.onClientAck(),
   });
   const daemon = new DaemonHttpServer({
     port: opts.port,
@@ -110,15 +116,35 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
 
   const session = registry.create({ endpoint, token });
 
-  // Bring up the session's dedicated headed browser before publishing the handle,
-  // so the session is fully live (streamable) by the time a client can discover it.
+  // Bring up the session's dedicated headed browser, then the screencast bridge,
+  // before publishing the handle — so the session is fully live (streamable) by
+  // the time a client can discover it.
   const sessionBrowser = new SessionBrowser({ sessionId: session.id, launch: opts.browserLauncher });
   await sessionBrowser.start();
+
+  const cfg = getConfig();
+  bridge = new ScreencastBridge({
+    cdp: sessionBrowser.cdp,
+    sink: (frame) => hub.broadcastFrame(session.id, frame),
+    quality: cfg.studioScreencastQuality,
+    maxWidth: cfg.studioScreencastMaxWidth,
+    maxHeight: cfg.studioScreencastMaxHeight,
+    everyNthFrame: cfg.studioScreencastEveryNthFrame,
+    ackTimeoutMs: cfg.studioFrameAckTimeoutMs,
+  });
+  // On a browser-crash recovery, rebind the screencast to the FRESH cdp (state reset).
+  sessionBrowser.onRecovered(() => {
+    void bridge!.restart(sessionBrowser.cdp);
+  });
+  // If bounded recovery is exhausted, tell connected clients the session died
+  // instead of silently going dark.
+  sessionBrowser.onFailed(() => hub.broadcast(session.id, { t: 'error', reason: 'session_failed' }));
+  await bridge.start();
 
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, hub, handle, endpoint };
+  return { daemon, registry, session, sessionBrowser, bridge, hub, handle, endpoint };
 }
 
 export function runStudio(args: string[]): void {
@@ -135,6 +161,9 @@ export function runStudio(args: string[]): void {
         log('Shutting down studio host…');
         removeHandle();
         host.hub.closeAll();
+        await host.bridge.stop().catch((e) =>
+          logger.debug('screencast stop failed', { error: e instanceof Error ? e.message : String(e) }),
+        );
         await host.sessionBrowser.close().catch((e) =>
           logger.debug('session browser close failed', { error: e instanceof Error ? e.message : String(e) }),
         );

@@ -1,6 +1,7 @@
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
+import type { ScreencastFrame } from './screencast.js';
 import { createLogger } from '../logger.js';
 
 /**
@@ -22,6 +23,16 @@ const log = createLogger('studio');
 
 const STREAM_PATH = /^\/studio\/([^/]+)\/stream\/?$/;
 const DEFAULT_HEARTBEAT_MS = 30_000;
+// The non-secret subprotocol the host negotiates. WS clients connect offering
+// BOTH `wigolo.stream` (negotiated + echoed in the 101 response) and
+// `wigolo.bearer.<token>` (read by the daemon for auth, never echoed back).
+const STREAM_SUBPROTOCOL = 'wigolo.stream';
+// Per-client send-buffer ceiling. Phase 1's screencast is single-viewer + lock-step
+// (one frame in flight, advance on ack/timeout — see ScreencastBridge), so the
+// primary viewer's buffer is bounded by design; this guard makes any EXTRA client
+// shed frames instead of buffering unboundedly. True multi-client shared viewing
+// with independent per-client pacing is Phase 8.
+const DEFAULT_FRAME_BACKPRESSURE_BYTES = 8_000_000;
 
 export interface StudioWsHubOptions {
   /** Ping/pong sweep interval; a client that misses a sweep is terminated. */
@@ -30,22 +41,34 @@ export interface StudioWsHubOptions {
   onAttach?: (sessionId: string) => void;
   /** Called once when a client detaches — graceful close, error, or heartbeat reap. */
   onDetach?: (sessionId: string) => void;
+  /** Inbound client frame-ack — host wires this to ScreencastBridge.onClientAck. */
+  onAck?: (sessionId: string) => void;
+  /** Skip sending a frame to a client whose send buffer already exceeds this (drop-under-load). */
+  frameBackpressureBytes?: number;
 }
 
 export class StudioWsHub {
-  // handleProtocols returns false so the bearer the client offered in
-  // Sec-WebSocket-Protocol is NOT echoed back in the 101 response (keeping the
-  // token off the wire in the response / out of any proxy access log).
-  private readonly wss = new WebSocketServer({ noServer: true, handleProtocols: () => false });
+  // Negotiate the non-secret `wigolo.stream` (when offered) and NEVER the
+  // `wigolo.bearer.<token>` the client also offers — so the token is not echoed
+  // back in the 101 response / into any proxy access log. A client offering no
+  // subprotocol negotiates none (browsers accept that).
+  private readonly wss = new WebSocketServer({
+    noServer: true,
+    handleProtocols: (protocols) => (protocols.has(STREAM_SUBPROTOCOL) ? STREAM_SUBPROTOCOL : false),
+  });
   private readonly clients = new Map<string, Set<WebSocket>>();
   private readonly alive = new WeakMap<WebSocket, boolean>();
   private readonly onAttach?: (sessionId: string) => void;
   private readonly onDetach?: (sessionId: string) => void;
+  private readonly onAck?: (sessionId: string) => void;
+  private readonly frameBackpressureBytes: number;
   private readonly heartbeat: ReturnType<typeof setInterval>;
 
   constructor(opts: StudioWsHubOptions = {}) {
     this.onAttach = opts.onAttach;
     this.onDetach = opts.onDetach;
+    this.onAck = opts.onAck;
+    this.frameBackpressureBytes = opts.frameBackpressureBytes ?? DEFAULT_FRAME_BACKPRESSURE_BYTES;
     this.heartbeat = setInterval(() => this.heartbeatTick(), opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_MS);
     // Don't let the heartbeat keep the process alive on its own.
     if (typeof this.heartbeat.unref === 'function') this.heartbeat.unref();
@@ -65,6 +88,7 @@ export class StudioWsHub {
       this.register(sessionId, ws);
       ws.on('close', () => this.unregister(sessionId, ws));
       ws.on('error', () => this.unregister(sessionId, ws));
+      ws.on('message', (data) => this.onMessage(sessionId, data));
       // Register BEFORE hello so a client that acts on hello sees a live registration.
       this.send(ws, { t: 'hello', sessionId });
     });
@@ -74,7 +98,7 @@ export class StudioWsHub {
     return this.clients.get(sessionId)?.size ?? 0;
   }
 
-  /** Send a message to every open client of a session (server → client). */
+  /** Send a control message to every open client of a session (server → client). */
   broadcast(sessionId: string, message: Record<string, unknown>): void {
     const set = this.clients.get(sessionId);
     if (!set) return;
@@ -82,6 +106,29 @@ export class StudioWsHub {
     for (const ws of set) {
       if (ws.readyState === WebSocket.OPEN) ws.send(data);
     }
+  }
+
+  /**
+   * Forward a screencast frame to a session's clients, shedding any whose send
+   * buffer already exceeds the backpressure ceiling so a lagging client drops
+   * frames rather than buffering unboundedly (and never stalls the source).
+   * Returns the sent/dropped split for observability.
+   */
+  broadcastFrame(sessionId: string, frame: ScreencastFrame): { sent: number; dropped: number } {
+    const set = this.clients.get(sessionId);
+    if (!set) return { sent: 0, dropped: 0 };
+    const data = JSON.stringify({ t: 'frame', data: frame.data, meta: frame.metadata });
+    let sent = 0;
+    let dropped = 0;
+    for (const ws of set) {
+      if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > this.frameBackpressureBytes) {
+        dropped++;
+        continue;
+      }
+      ws.send(data);
+      sent++;
+    }
+    return { sent, dropped };
   }
 
   /** Disconnect every client and stop the heartbeat (host shutdown). */
@@ -110,6 +157,17 @@ export class StudioWsHub {
         }
       }
     }
+  }
+
+  /** Route an inbound client message. Phase 1b: the frame `ack` that paces the screencast; input/control routing is 1c. */
+  private onMessage(sessionId: string, data: RawData): void {
+    let msg: { t?: string };
+    try {
+      msg = JSON.parse(data.toString());
+    } catch {
+      return; // ignore malformed input — never throw on attacker/garbage data
+    }
+    if (msg && msg.t === 'ack') this.onAck?.(sessionId);
   }
 
   private parseSessionId(url: string | undefined): string | null {

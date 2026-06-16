@@ -210,4 +210,59 @@ describe('StudioWsHub — lifecycle / leak prevention', () => {
     expect(res.statusCode).toBe(101); // upgrade still succeeds (browsers accept no negotiated subprotocol)
     expect(res.protocolHeader).toBeUndefined(); // bearer NOT echoed back on the wire
   });
+
+  it('negotiates the non-secret wigolo.stream when offered alongside the bearer (never echoes the bearer)', async () => {
+    const h = await startHub();
+    const res = await rawUpgrade(h.port, '/studio/sp/stream', 'wigolo.stream, wigolo.bearer.super-secret-token');
+    expect(res.statusCode).toBe(101);
+    expect(res.protocolHeader).toBe('wigolo.stream'); // the non-secret one is reflected, not the token
+  });
+});
+
+describe('StudioWsHub — frame fan-out + ack routing (1b.3)', () => {
+  it('broadcastFrame delivers a {t:frame} envelope to a ready client and reports it sent', async () => {
+    const h = await startHub();
+    const ws = new WebSocket(h.url('/studio/f1/stream'));
+    await nextMessage(ws); // hello
+    const result = h.hub.broadcastFrame('f1', { data: 'JPEG==', metadata: { pageScaleFactor: 1 } });
+    expect(result).toEqual({ sent: 1, dropped: 0 });
+    const frame = await nextMessage(ws);
+    expect(frame).toEqual({ t: 'frame', data: 'JPEG==', meta: { pageScaleFactor: 1 } });
+    ws.close();
+  });
+
+  it('drops a frame to a backpressured client (over the buffered-bytes threshold) instead of buffering', async () => {
+    // Threshold -1 makes any client (bufferedAmount >= 0) count as backpressured —
+    // a deterministic exercise of the drop branch without OS-buffer timing games.
+    const h = await startHub({ frameBackpressureBytes: -1 });
+    const ws = new WebSocket(h.url('/studio/f2/stream'));
+    await nextMessage(ws);
+    const result = h.hub.broadcastFrame('f2', { data: 'JPEG==', metadata: {} });
+    expect(result).toEqual({ sent: 0, dropped: 1 });
+    ws.close();
+  });
+
+  it('routes an inbound {t:ack} message to onAck with the session id', async () => {
+    const acks: string[] = [];
+    const h = await startHub({ onAck: (id) => acks.push(id) });
+    const ws = new WebSocket(h.url('/studio/f3/stream'));
+    await nextMessage(ws);
+    ws.send(JSON.stringify({ t: 'ack' }));
+    await waitFor(() => acks.length === 1);
+    expect(acks).toEqual(['f3']);
+    ws.close();
+  });
+
+  it('ignores a malformed inbound message without crashing', async () => {
+    const acks: string[] = [];
+    const h = await startHub({ onAck: (id) => acks.push(id) });
+    const ws = new WebSocket(h.url('/studio/f4/stream'));
+    await nextMessage(ws);
+    ws.send('not json{{');
+    ws.send(JSON.stringify({ t: 'something-else' }));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(acks).toEqual([]); // no ack fired, no throw
+    expect(h.hub.clientCount('f4')).toBe(1); // still connected
+    ws.close();
+  });
 });

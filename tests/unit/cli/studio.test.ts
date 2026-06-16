@@ -45,7 +45,7 @@ const fakeBrowserLauncher = async (): Promise<LaunchedSessionBrowser> =>
     browser: { close: async () => {}, on: () => {} },
     context: { close: async () => {} },
     page: { close: async () => {}, goto: async () => null, on: () => {} },
-    cdp: { send: async () => ({}), on: () => {} },
+    cdp: { send: async () => ({}), on: () => {}, off: () => {} },
   }) as unknown as LaunchedSessionBrowser;
 
 describe('cli/studio parseStudioArgs', () => {
@@ -110,6 +110,8 @@ describe('cli/studio startStudioHost', () => {
     expect(host.hub).toBeDefined();
     expect(host.hub.clientCount(host.session.id)).toBe(0);
     expect(host.sessionBrowser.running).toBe(true); // session browser live before the handle is published
+    expect(host.bridge).toBeDefined(); // screencast bridge constructed + started
+    await host.bridge.stop();
     await host.sessionBrowser.close();
     await host.daemon.stop();
   });
