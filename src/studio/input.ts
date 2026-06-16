@@ -52,7 +52,7 @@ export interface InputForwarderOptions {
 }
 
 export class InputForwarder {
-  private readonly cdp: InputCdp;
+  private cdp: InputCdp; // reassigned on rebind() after a crash recovery
   private readonly viewport: { width: number; height: number };
   private meta: FrameMetadata | null = null;
   private readonly pressedButtons = new Map<MouseButton, { x: number; y: number }>();
@@ -61,6 +61,13 @@ export class InputForwarder {
   constructor(o: InputForwarderOptions) {
     this.cdp = o.cdp;
     this.viewport = o.viewport;
+  }
+
+  /** Point input at a fresh CDP session after a crash recovery; the held-input state is cleared (the dead session's presses are gone). */
+  rebind(cdp: InputCdp): void {
+    this.cdp = cdp;
+    this.pressedButtons.clear();
+    this.pressedKeys.clear();
   }
 
   /** Record the latest frame metadata; mapping then uses its true page CSS dims, not the downscaled frame. */

@@ -48,6 +48,16 @@ describe('InputForwarder — dispatch', () => {
     await fwd.key({ type: 'keyDown', key: 'a', code: 'KeyA', text: 'a' });
     expect(f.sends[0]).toMatchObject({ method: 'Input.dispatchKeyEvent', params: { type: 'keyDown', key: 'a', code: 'KeyA', text: 'a' } });
   });
+
+  it('rebind(cdp) routes subsequent input to the new session (crash recovery)', async () => {
+    const dead = makeFakeInputCdp();
+    const fresh = makeFakeInputCdp();
+    const fwd = new InputForwarder({ cdp: dead.cdp, viewport: { width: 1000, height: 1000 } });
+    fwd.rebind(fresh.cdp);
+    await fwd.mouse({ type: 'mouseMoved', nx: 0.1, ny: 0.1 });
+    expect(dead.sends).toHaveLength(0);
+    expect(fresh.sends).toHaveLength(1);
+  });
 });
 
 describe('InputForwarder — held-input neutralization (landmine #2)', () => {
