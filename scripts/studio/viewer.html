@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>wigolo studio — stream viewer (spike harness)</title>
+  <style>
+    html, body { margin: 0; background: #000; color: #ccc; font: 12px monospace; }
+    #cv { display: block; }
+    #hud { position: fixed; top: 4px; right: 8px; }
+  </style>
+</head>
+<body>
+  <!--
+    Minimal throwaway stream-viewer for the Phase-1 latency spike + manual
+    verification. NOT the Phase-7 web app. Decodes each JPEG frame to a canvas,
+    samples a corner swatch (the input marker), and acks every frame with the
+    sampled red value so the host can pair input -> painted-frame.
+  -->
+  <canvas id="cv" width="1280" height="720"></canvas>
+  <div id="hud">frames: <span id="n">0</span></div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const port = params.get('port');
+    const cv = document.getElementById('cv');
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    const nEl = document.getElementById('n');
+    let n = 0;
+
+    const ws = new WebSocket('ws://127.0.0.1:' + port);
+    ws.onopen = () => ws.send(JSON.stringify({ t: 'hello' }));
+    ws.onmessage = (ev) => {
+      let m;
+      try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.t !== 'frame') return;
+      const img = new Image();
+      img.onload = () => {
+        // Draw the decoded frame, then sample one pixel inside the fixed
+        // corner swatch. The host toggles that swatch black<->red on each
+        // input; reading the red channel back tells the host this frame
+        // reflects the latest input. getImageData() runs after drawImage,
+        // so the timestamp the host stamps on this ack approximates paint.
+        ctx.drawImage(img, 0, 0);
+        let red = 0;
+        try { red = ctx.getImageData(10, 10, 1, 1).data[0]; } catch {}
+        n++; nEl.textContent = n;
+        ws.send(JSON.stringify({ t: 'ack', seq: red }));
+      };
+      img.src = 'data:image/jpeg;base64,' + m.data;
+    };
+  </script>
+</body>
+</html>
