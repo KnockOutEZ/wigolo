@@ -53,6 +53,8 @@ export interface StudioWsHubOptions {
   onControl?: (sessionId: string, msg: Record<string, unknown>) => void;
   /** Skip sending a frame to a client whose send buffer already exceeds this (drop-under-load). */
   frameBackpressureBytes?: number;
+  /** Extra fields merged into the `hello` sent on connect — the host supplies the initial control state {holder, epoch} so a client knows the epoch to stamp on input. */
+  helloExtras?: (sessionId: string) => Record<string, unknown>;
 }
 
 export class StudioWsHub {
@@ -72,6 +74,7 @@ export class StudioWsHub {
   private readonly onAck?: (sessionId: string) => void;
   private readonly onInput?: (sessionId: string, msg: Record<string, unknown>) => void;
   private readonly onControl?: (sessionId: string, msg: Record<string, unknown>) => void;
+  private readonly helloExtras?: (sessionId: string) => Record<string, unknown>;
   private readonly frameBackpressureBytes: number;
   private readonly heartbeat: ReturnType<typeof setInterval>;
 
@@ -81,6 +84,7 @@ export class StudioWsHub {
     this.onAck = opts.onAck;
     this.onInput = opts.onInput;
     this.onControl = opts.onControl;
+    this.helloExtras = opts.helloExtras;
     this.frameBackpressureBytes = opts.frameBackpressureBytes ?? DEFAULT_FRAME_BACKPRESSURE_BYTES;
     this.heartbeat = setInterval(() => this.heartbeatTick(), opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_MS);
     // Don't let the heartbeat keep the process alive on its own.
@@ -103,7 +107,7 @@ export class StudioWsHub {
       ws.on('error', () => this.unregister(sessionId, ws));
       ws.on('message', (data) => this.onMessage(sessionId, data));
       // Register BEFORE hello so a client that acts on hello sees a live registration.
-      this.send(ws, { t: 'hello', sessionId });
+      this.send(ws, { t: 'hello', sessionId, ...(this.helloExtras?.(sessionId) ?? {}) });
     });
   }
 

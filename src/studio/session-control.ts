@@ -48,6 +48,11 @@ export class SessionController {
     });
   }
 
+  /** Current control state — sent to a client on connect (in `hello`) so it knows the epoch to stamp on input. */
+  controlSnapshot(): { holder: ControlParty; epoch: number } {
+    return { holder: this.token.holder, epoch: this.token.epoch };
+  }
+
   /** Gate then dispatch an inbound input event. Returns whether it was applied. */
   async handleInput(msg: InputMessage): Promise<boolean> {
     if (!this.token.canDrive(msg.party, msg.epoch)) {
@@ -62,6 +67,20 @@ export class SessionController {
     if (msg.kind === 'mouse') await this.input.mouse(msg);
     else await this.input.key(msg);
     return true;
+  }
+
+  /**
+   * A client disconnected (graceful close, error, or heartbeat reap). If the
+   * human holds, release whatever they left pressed — a holder dropping mid-drag
+   * must not strand a button/modifier down on the page until the next flip. Only
+   * acts when the human holds: a human viewer leaving must not release the agent's
+   * input (Phase 2). The forwarder only ever tracks human raw input in Phase 1.
+   */
+  onClientGone(): void {
+    if (this.token.holder !== 'human') return;
+    void this.input.neutralizeHeld().catch((err) =>
+      log.debug('neutralizeHeld on client-gone failed', { error: err instanceof Error ? err.message : String(err) }),
+    );
   }
 
   /** Apply a control op. Human `reclaim` is the absolute takeover; `grant`/`release` move the token per the state machine. */

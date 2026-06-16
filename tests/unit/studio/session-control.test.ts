@@ -105,4 +105,22 @@ describe('SessionController', () => {
     expect(await ctl.handleWireInput({ kind: 'mouse', epoch: 'lol', type: 'mouseMoved', nx: 0.5, ny: 0.5 })).toBe(false);
     expect(f.calls.mouse).toBe(0);
   });
+
+  it('onClientGone neutralizes held input when the human holds (a holder dropping mid-drag must not strand a button)', () => {
+    const token = new ControlToken(); // human holds
+    const f = makeFakeInput();
+    const ctl = new SessionController(token, f.input, () => {});
+    ctl.onClientGone();
+    expect(f.calls.neutralize).toBe(1);
+  });
+
+  it('onClientGone does NOT neutralize when the agent holds (a human viewer leaving must not release the agent’s input)', () => {
+    const token = new ControlToken();
+    const f = makeFakeInput();
+    const ctl = new SessionController(token, f.input, () => {});
+    token.grant('agent'); // the flip itself neutralizes once
+    f.calls.neutralize = 0; // isolate onClientGone
+    ctl.onClientGone();
+    expect(f.calls.neutralize).toBe(0);
+  });
 });

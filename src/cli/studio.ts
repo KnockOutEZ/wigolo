@@ -102,12 +102,20 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // onInput/onControl drive the token-gated input channel (WS = the human party).
   const hub = new StudioWsHub({
     onAttach: (id) => registry.get(id)?.attach(),
-    onDetach: (id) => registry.get(id)?.detach(),
+    onDetach: (id) => {
+      registry.get(id)?.detach();
+      // A disconnect (graceful, error, or heartbeat reap of a half-open client)
+      // releases any input the holder left pressed — no stranded drag/modifier.
+      controller?.onClientGone();
+    },
     onAck: () => bridge?.onClientAck(),
     onInput: (_id, msg) => {
       void controller?.handleWireInput(msg);
     },
     onControl: (_id, msg) => controller?.handleWireControl(msg),
+    // Tell a connecting client the current {holder, epoch} so it stamps valid input
+    // even if it joins after a flip (defaults before the controller exists).
+    helloExtras: () => controller?.controlSnapshot() ?? { holder: 'human', epoch: 0 },
   });
   const daemon = new DaemonHttpServer({
     port: opts.port,

@@ -123,4 +123,27 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
 
     ws.close();
   }, 30_000);
+
+  it('releases held input when a client disconnects mid-drag (no stranded button on the page)', async () => {
+    const html =
+      '<body style="margin:0;height:100vh"><script>window.__ups=0;document.addEventListener("mouseup",function(){window.__ups++});</script></body>';
+    await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(html));
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+
+    const wsUrl = host.endpoint.replace('http://', 'ws://') + `/studio/${host.session.id}/stream`;
+    const ws = new WebSocket(wsUrl, ['wigolo.stream', `wigolo.bearer.${host.session.token}`]);
+    // hello carries the current {holder, epoch} so we can stamp valid input.
+    const hello = await new Promise<{ epoch: number }>((resolve, reject) => {
+      ws.on('message', (d: WebSocket.RawData) => resolve(JSON.parse(d.toString())));
+      ws.on('error', reject);
+    });
+
+    // Press a button and DROP the connection WITHOUT releasing it (a mid-drag disconnect).
+    ws.send(JSON.stringify({ t: 'input', kind: 'mouse', epoch: hello.epoch, type: 'mousePressed', nx: 0.5, ny: 0.5, button: 'left' }));
+    await new Promise((r) => setTimeout(r, 150));
+    ws.close();
+
+    // The host reaps the gone client and synthesizes the release → a mouseup fires on the page.
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __ups: number }).__ups), { timeout: 5000 }).toBe(1);
+  }, 30_000);
 });

@@ -88,6 +88,14 @@ describe('StudioWsHub', () => {
     ws.close();
   });
 
+  it('merges helloExtras (initial control state) into the hello message', async () => {
+    const h = await startHub({ helloExtras: () => ({ holder: 'agent', epoch: 3 }) });
+    const ws = new WebSocket(h.url('/studio/he/stream'));
+    const hello = await nextMessage(ws);
+    expect(hello).toEqual({ t: 'hello', sessionId: 'he', holder: 'agent', epoch: 3 });
+    ws.close();
+  });
+
   it('drops the client from the session on close', async () => {
     const h = await startHub();
     const ws = new WebSocket(h.url('/studio/sess-2/stream'));
