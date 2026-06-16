@@ -62,18 +62,36 @@ export interface SessionBrowserOptions {
   sessionId: string;
   /** Injectable for tests; defaults to the real Playwright launcher. */
   launch?: SessionBrowserLauncher;
+  /** Max relaunch attempts before giving up; defaults to config.studioBrowserCrashMaxRestarts. */
+  maxRestarts?: number;
 }
 
 export class SessionBrowser {
   readonly sessionId: string;
   private readonly launcher: SessionBrowserLauncher;
+  private readonly maxRestarts: number;
   private launched: LaunchedSessionBrowser | null = null;
   private _currentUrl = '';
   private closed = false;
+  private recovering = false;
+  private restartCount = 0;
+  private readonly recoveredHandlers: Array<() => void> = [];
+  private readonly failedHandlers: Array<() => void> = [];
 
   constructor(opts: SessionBrowserOptions) {
     this.sessionId = opts.sessionId;
     this.launcher = opts.launch ?? defaultSessionLauncher;
+    this.maxRestarts = opts.maxRestarts ?? getConfig().studioBrowserCrashMaxRestarts;
+  }
+
+  /** Register a callback fired after a successful crash recovery (the screencast bridge restarts here in 1b). */
+  onRecovered(cb: () => void): void {
+    this.recoveredHandlers.push(cb);
+  }
+
+  /** Register a callback fired when recovery is abandoned after maxRestarts (the session is then terminal). */
+  onFailed(cb: () => void): void {
+    this.failedHandlers.push(cb);
   }
 
   get page(): SessionPage {
@@ -102,6 +120,7 @@ export class SessionBrowser {
       headless: cfg.studioBrowserHeadless,
       viewport: { width: cfg.studioScreencastMaxWidth, height: cfg.studioScreencastMaxHeight },
     });
+    this.registerCrashHandlers();
     log.info('studio session browser started', { sessionId: this.sessionId, headless: cfg.studioBrowserHeadless });
   }
 
@@ -122,5 +141,67 @@ export class SessionBrowser {
     await l.context.close().catch(() => {});
     await l.browser.close().catch(() => {});
     log.info('studio session browser closed', { sessionId: this.sessionId });
+  }
+
+  private registerCrashHandlers(): void {
+    if (!this.launched) return;
+    // The handlers never reject (handleCrash catches internally), so an async
+    // listener is safe on Playwright's `(page) => void` / `() => void` signatures.
+    this.launched.browser.on('disconnected', () => this.handleCrash('browser_disconnected'));
+    this.launched.page.on('crash', () => this.handleCrash('page_crash'));
+  }
+
+  /**
+   * A live browser/page died. Relaunch + re-navigate the last URL + restart the
+   * screencast (via onRecovered) rather than hang — bounded by maxRestarts so a
+   * crash-looping session goes terminal instead of relaunching forever. Ignored
+   * during an intentional close (the close path also fires `disconnected`).
+   */
+  private async handleCrash(reason: string): Promise<void> {
+    if (this.closed || this.recovering) return;
+    this.recovering = true;
+    try {
+      if (this.restartCount >= this.maxRestarts) {
+        this.fail(reason);
+        return;
+      }
+      this.restartCount++;
+      log.warn('studio session browser crashed; recovering', {
+        sessionId: this.sessionId,
+        reason,
+        attempt: this.restartCount,
+        maxRestarts: this.maxRestarts,
+      });
+      const cfg = getConfig();
+      this.launched = null; // old handles are dead
+      this.launched = await this.launcher({
+        headless: cfg.studioBrowserHeadless,
+        viewport: { width: cfg.studioScreencastMaxWidth, height: cfg.studioScreencastMaxHeight },
+      });
+      this.registerCrashHandlers();
+      if (this._currentUrl) {
+        await this.launched.page
+          .goto(this._currentUrl, { waitUntil: 'load', timeout: cfg.playwrightNavTimeoutMs })
+          .catch((err) => log.warn('re-navigation after recovery failed', { sessionId: this.sessionId, error: String(err) }));
+      }
+      for (const cb of this.recoveredHandlers) cb();
+      log.info('studio session browser recovered', { sessionId: this.sessionId, attempt: this.restartCount });
+    } catch (err) {
+      log.error('studio session browser recovery failed', { sessionId: this.sessionId, error: String(err) });
+      this.fail(reason);
+    } finally {
+      this.recovering = false;
+    }
+  }
+
+  private fail(reason: string): void {
+    this.closed = true;
+    this.launched = null;
+    log.error('studio session browser gave up after crashes', {
+      sessionId: this.sessionId,
+      reason,
+      restarts: this.restartCount,
+    });
+    for (const cb of this.failedHandlers) cb();
   }
 }

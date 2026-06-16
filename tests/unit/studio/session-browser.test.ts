@@ -88,3 +88,93 @@ describe('SessionBrowser', () => {
     expect(() => sb.page).toThrow(/not_started/);
   });
 });
+
+/**
+ * A fake whose browser/page expose triggerable `disconnected`/`crash` events
+ * and re-register handlers on each (re)launch — so crash recovery is testable
+ * without killing a real browser. `browser.close()` fires `disconnected` to
+ * mirror Playwright, proving an intentional close must NOT trigger recovery.
+ */
+function makeCrashableFake() {
+  const calls = { gotos: [] as string[], launchCount: 0 };
+  let crashCb: (() => void | Promise<void>) | null = null;
+  let disconnectCb: (() => void | Promise<void>) | null = null;
+  const makeHandles = (): LaunchedSessionBrowser => {
+    const page = {
+      close: async () => {},
+      goto: async (url: string) => { calls.gotos.push(url); return null; },
+      on: (e: string, cb: () => void) => { if (e === 'crash') crashCb = cb; },
+    };
+    const cdp = { send: async () => ({}), on: () => {} };
+    const browser = {
+      close: async () => { if (disconnectCb) await disconnectCb(); },
+      on: (e: string, cb: () => void) => { if (e === 'disconnected') disconnectCb = cb; },
+    };
+    const context = { close: async () => {} };
+    return { browser, context, page, cdp } as unknown as LaunchedSessionBrowser;
+  };
+  const launch = async (): Promise<LaunchedSessionBrowser> => { calls.launchCount++; return makeHandles(); };
+  return {
+    calls,
+    launch,
+    fireCrash: async () => { if (crashCb) await crashCb(); },
+  };
+}
+
+describe('SessionBrowser — crash recovery', () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'wigolo-sbc-'));
+    process.env.WIGOLO_CONFIG_PATH = join(tmp, 'config.json');
+    resetPersistedConfig();
+    resetConfig();
+  });
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+    resetPersistedConfig();
+    resetConfig();
+  });
+
+  it('recovers from a page crash: relaunches, re-navigates currentUrl, emits recovered', async () => {
+    const fake = makeCrashableFake();
+    const sb = new SessionBrowser({ sessionId: 's1', launch: fake.launch, maxRestarts: 2 });
+    await sb.start();
+    await sb.navigate('https://ex.com/');
+    let recovered = 0;
+    sb.onRecovered(() => { recovered++; });
+
+    await fake.fireCrash();
+
+    expect(fake.calls.launchCount).toBe(2); // relaunched once
+    expect(fake.calls.gotos).toEqual(['https://ex.com/', 'https://ex.com/']); // re-navigated
+    expect(recovered).toBe(1);
+    expect(sb.running).toBe(true);
+  });
+
+  it('gives up after maxRestarts crashes: emits failed and goes terminal (no hang, no infinite relaunch)', async () => {
+    const fake = makeCrashableFake();
+    const sb = new SessionBrowser({ sessionId: 's1', launch: fake.launch, maxRestarts: 1 });
+    await sb.start();
+    let failed = 0;
+    sb.onFailed(() => { failed++; });
+
+    await fake.fireCrash(); // restart 1 — recovers
+    await fake.fireCrash(); // exceeds maxRestarts — fail
+
+    expect(failed).toBe(1);
+    expect(sb.running).toBe(false);
+  });
+
+  it('does NOT trigger recovery on an intentional close()', async () => {
+    const fake = makeCrashableFake();
+    const sb = new SessionBrowser({ sessionId: 's1', launch: fake.launch });
+    await sb.start();
+    let recovered = 0;
+    sb.onRecovered(() => { recovered++; });
+
+    await sb.close(); // browser.close() fires 'disconnected'
+
+    expect(recovered).toBe(0);
+    expect(fake.calls.launchCount).toBe(1); // never relaunched
+  });
+});
