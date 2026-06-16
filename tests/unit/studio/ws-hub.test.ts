@@ -305,4 +305,15 @@ describe('StudioWsHub — frame fan-out + ack routing (1b.3)', () => {
     expect(controls[0]).toMatchObject({ id: 'c1', msg: { op: 'reclaim' } });
     ws.close();
   });
+
+  it('routes inbound {t:nav} to onNav', async () => {
+    const navs: Array<{ id: string; msg: Record<string, unknown> }> = [];
+    const h = await startHub({ onNav: (id, msg) => navs.push({ id, msg }) });
+    const ws = new WebSocket(h.url('/studio/n1/stream'));
+    await nextMessage(ws);
+    ws.send(JSON.stringify({ t: 'nav', url: 'https://example.com/' }));
+    await waitFor(() => navs.length === 1);
+    expect(navs[0]).toMatchObject({ id: 'n1', msg: { url: 'https://example.com/' } });
+    ws.close();
+  });
 });

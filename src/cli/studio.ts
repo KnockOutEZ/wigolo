@@ -11,6 +11,7 @@ import { ScreencastBridge } from '../studio/screencast.js';
 import { ControlToken } from '../studio/control-token.js';
 import { InputForwarder } from '../studio/input.js';
 import { SessionController } from '../studio/session-control.js';
+import { NavInterceptor, navigateSession, type NavPolicy } from '../studio/nav.js';
 import { StudioWsHub } from '../studio/ws-hub.js';
 import { writeHandle, removeHandle, studioHandlePath, type SessionHandle } from '../studio/handle.js';
 import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
@@ -65,6 +66,9 @@ export interface StudioHost {
   sessionBrowser: SessionBrowser;
   bridge: ScreencastBridge;
   controller: SessionController;
+  navInterceptor: NavInterceptor;
+  /** Navigate the session as the human (guarded); broadcasts {t:'error'} to clients on a blocked target. */
+  navigate: (url: string) => Promise<void>;
   hub: StudioWsHub;
   handle: SessionHandle;
   endpoint: string;
@@ -94,6 +98,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // but the hub (which routes client ack/input/control to them) precedes the daemon.
   let bridge: ScreencastBridge | undefined;
   let controller: SessionController | undefined;
+  let onNavHandler: ((msg: Record<string, unknown>) => void) | undefined;
   // The WS hub fans frames/input over the host's WebSocket; the daemon authorizes
   // each upgrade (Origin/Host + subprotocol bearer) before handing it here. WS
   // clients are session viewers, so onAttach/onDetach keep the Session's client
@@ -113,6 +118,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       void controller?.handleWireInput(msg);
     },
     onControl: (_id, msg) => controller?.handleWireControl(msg),
+    onNav: (_id, msg) => onNavHandler?.(msg),
     // Tell a connecting client the current {holder, epoch} so it stamps valid input
     // even if it joins after a flip (defaults before the controller exists).
     helloExtras: () => controller?.controlSnapshot() ?? { holder: 'human', epoch: 0 },
@@ -153,6 +159,21 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   });
   controller = new SessionController(controlToken, forwarder, (msg) => hub.broadcast(session.id, msg));
 
+  // Navigation guard. Phase 1 wires the HUMAN path (may reach localhost/RFC1918);
+  // the agent path (blocked-by-default) is built and reachable in Phase 2. The
+  // interceptor re-validates every redirect hop on the session's CDP layer (the
+  // fetch/crawl path through http-client.ts is untouched).
+  const navPolicy: NavPolicy = { source: 'human', allowPrivate: cfg.studioNavAllowPrivateForHuman };
+  const navInterceptor = new NavInterceptor(navPolicy);
+  await navInterceptor.start(sessionBrowser.cdp);
+  const navigate = async (url: string): Promise<void> => {
+    const r = await navigateSession(sessionBrowser, url, navPolicy);
+    if (!r.ok) hub.broadcast(session.id, { t: 'error', reason: r.reason });
+  };
+  onNavHandler = (msg) => {
+    void navigate(typeof msg.url === 'string' ? msg.url : '');
+  };
+
   bridge = new ScreencastBridge({
     cdp: sessionBrowser.cdp,
     // Feed the forwarder the live page dimensions for input mapping, then fan the frame out.
@@ -170,6 +191,9 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // to the FRESH cdp (each resets its stale state); the control token persists.
   sessionBrowser.onRecovered(() => {
     forwarder.rebind(sessionBrowser.cdp);
+    void navInterceptor.rebind(sessionBrowser.cdp).catch((e) =>
+      logger.debug('nav interceptor rebind after recovery failed', { error: e instanceof Error ? e.message : String(e) }),
+    );
     void bridge!.restart(sessionBrowser.cdp).catch((e) =>
       logger.debug('screencast restart after recovery failed', { error: e instanceof Error ? e.message : String(e) }),
     );
@@ -182,7 +206,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, controller, hub, handle, endpoint };
+  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, hub, handle, endpoint };
 }
 
 export function runStudio(args: string[]): void {
@@ -201,6 +225,9 @@ export function runStudio(args: string[]): void {
         host.hub.closeAll();
         await host.bridge.stop().catch((e) =>
           logger.debug('screencast stop failed', { error: e instanceof Error ? e.message : String(e) }),
+        );
+        await host.navInterceptor.stop().catch((e) =>
+          logger.debug('nav interceptor stop failed', { error: e instanceof Error ? e.message : String(e) }),
         );
         await host.sessionBrowser.close().catch((e) =>
           logger.debug('session browser close failed', { error: e instanceof Error ? e.message : String(e) }),

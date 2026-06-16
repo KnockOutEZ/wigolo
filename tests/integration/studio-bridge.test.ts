@@ -2,8 +2,11 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
 import { resetConfig } from '../../src/config.js';
+import { navigateSession } from '../../src/studio/nav.js';
 import type { startStudioHost as StartStudioHost } from '../../src/cli/studio.js';
 
 /**
@@ -145,5 +148,50 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
 
     // The host reaps the gone client and synthesizes the release → a mouseup fires on the page.
     await expect.poll(() => page.evaluate(() => (window as unknown as { __ups: number }).__ups), { timeout: 5000 }).toBe(1);
+  }, 30_000);
+
+  it('source-aware SSRF nav over a real browser: human reaches localhost (incl. via a redirect hop), agent is blocked, metadata is blocked for both', async () => {
+    // Local redirect server. (A real public→metadata redirect can't be hermetic;
+    // the per-hop re-validation of a blocked redirect target is proven deterministically
+    // in tests/unit/studio/nav.test.ts. Here we prove redirect targets are re-paused +
+    // continued when allowed, and the source asymmetry, against a real browser.)
+    const server = createServer((req, res) => {
+      if (req.url === '/dest') {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<body>DEST</body>');
+      } else if (req.url === '/redir') {
+        res.writeHead(302, { location: `http://127.0.0.1:${port}/dest` });
+        res.end();
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    const port = await new Promise<number>((resolve) =>
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port)),
+    );
+    const base = `http://127.0.0.1:${port}`;
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+    const human = { source: 'human' as const, allowPrivate: true };
+    const agent = { source: 'agent' as const, allowPrivate: false };
+
+    try {
+      // 1. human → 302 → localhost ALLOWED: the redirect target is re-paused AND continued.
+      host.navInterceptor.setPolicy(human);
+      const r1 = await navigateSession(host.sessionBrowser, `${base}/redir`, human);
+      expect(r1.ok).toBe(true);
+      expect(await page.evaluate(() => document.body.textContent)).toContain('DEST');
+
+      // 2. agent → localhost BLOCKED (source asymmetry; the localhost hop is guarded for the agent).
+      host.navInterceptor.setPolicy(agent);
+      expect((await navigateSession(host.sessionBrowser, `${base}/redir`, agent)).ok).toBe(false);
+
+      // 3. metadata blocked for BOTH parties (always; link-local).
+      expect((await navigateSession(host.sessionBrowser, 'http://169.254.169.254/', human)).ok).toBe(false);
+      expect((await navigateSession(host.sessionBrowser, 'http://169.254.169.254/', agent)).ok).toBe(false);
+    } finally {
+      host.navInterceptor.setPolicy(human);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   }, 30_000);
 });
