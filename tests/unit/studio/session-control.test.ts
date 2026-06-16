@@ -86,4 +86,23 @@ describe('SessionController', () => {
     expect(token.holder).toBe('human');
     expect(token.epoch).toBe(2);
   });
+
+  it('handleWireControl ignores an unknown op and parses grant-to-human', () => {
+    const token = new ControlToken();
+    const ctl = new SessionController(token, makeFakeInput().input, () => {});
+    ctl.handleWireControl({ op: 'bogus' }); // ignored — no change
+    expect(token.epoch).toBe(0);
+    token.grant('agent'); // epoch 1
+    ctl.handleWireControl({ op: 'grant', to: 'human' }); // epoch 2, human
+    expect(token.holder).toBe('human');
+    expect(token.epoch).toBe(2);
+  });
+
+  it('handleWireInput drops input with a non-numeric epoch (coerced to a value that never matches)', async () => {
+    const token = new ControlToken();
+    const f = makeFakeInput();
+    const ctl = new SessionController(token, f.input, () => {});
+    expect(await ctl.handleWireInput({ kind: 'mouse', epoch: 'lol', type: 'mouseMoved', nx: 0.5, ny: 0.5 })).toBe(false);
+    expect(f.calls.mouse).toBe(0);
+  });
 });

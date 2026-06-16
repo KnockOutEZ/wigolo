@@ -58,6 +58,21 @@ describe('InputForwarder — dispatch', () => {
     expect(dead.sends).toHaveLength(0);
     expect(fresh.sends).toHaveLength(1);
   });
+
+  it('drops a mouse event with non-finite coords instead of dispatching NaN/Infinity', async () => {
+    const f = makeFakeInputCdp();
+    const fwd = new InputForwarder({ cdp: f.cdp, viewport: { width: 1000, height: 1000 } });
+    await fwd.mouse({ type: 'mouseMoved', nx: Number.POSITIVE_INFINITY, ny: 0.5 });
+    await fwd.mouse({ type: 'mousePressed', nx: Number.NaN, ny: 0.5, button: 'left' });
+    expect(f.sends).toHaveLength(0);
+  });
+
+  it('clamps out-of-range normalized coords into the viewport', async () => {
+    const f = makeFakeInputCdp();
+    const fwd = new InputForwarder({ cdp: f.cdp, viewport: { width: 1000, height: 1000 } });
+    await fwd.mouse({ type: 'mouseMoved', nx: 1.5, ny: -0.2 });
+    expect(f.sends[0]?.params).toMatchObject({ x: 1000, y: 0 }); // clamped to [0,1] → edges
+  });
 });
 
 describe('InputForwarder — held-input neutralization (landmine #2)', () => {

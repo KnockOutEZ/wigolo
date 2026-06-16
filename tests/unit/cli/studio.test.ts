@@ -156,6 +156,11 @@ describe('cli/studio startStudioHost', () => {
     expect(launcher.state.cdps.length).toBe(2); // relaunched
     expect(launcher.state.cdps[1].sends.some((s) => s.method === 'Page.startScreencast')).toBe(true);
 
+    // ...and the INPUT forwarder rebound too: post-recovery human input dispatches to the FRESH cdp, not the dead one.
+    await host.controller.handleWireInput({ kind: 'mouse', epoch: 0, type: 'mouseMoved', nx: 0.5, ny: 0.5 });
+    expect(launcher.state.cdps[1].sends.some((s) => s.method === 'Input.dispatchMouseEvent')).toBe(true);
+    expect(launcher.state.cdps[0].sends.some((s) => s.method === 'Input.dispatchMouseEvent')).toBe(false);
+
     // crash 2 → exceeds maxRestarts(1) → onFailed → clients told the session died (not silent)
     await launcher.fireCrash();
     await flush();

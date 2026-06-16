@@ -35,10 +35,15 @@ export class SessionController {
     private readonly input: InputSink,
     private readonly broadcast: (msg: Record<string, unknown>) => void,
   ) {
-    // Every flip: release the outgoing holder's held buttons/keys, then push the
-    // authoritative {holder, epoch} so clients drop stale input without a round trip.
+    // Every flip: release the outgoing holder's held buttons/keys and push the
+    // authoritative {holder, epoch} so clients drop stale input. The neutralize
+    // is best-effort/async (a failed release is logged, not fatal); correctness
+    // does not depend on its completion ordering vs the broadcast — the epoch
+    // gate already rejects any input that races the flip.
     this.token.onChange((s) => {
-      void this.input.neutralizeHeld();
+      void this.input.neutralizeHeld().catch((err) =>
+        log.debug('neutralizeHeld failed on flip', { error: err instanceof Error ? err.message : String(err) }),
+      );
       this.broadcast({ t: 'control', holder: s.holder, epoch: s.epoch });
     });
   }

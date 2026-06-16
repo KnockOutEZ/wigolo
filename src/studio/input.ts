@@ -75,14 +75,21 @@ export class InputForwarder {
     this.meta = meta;
   }
 
-  /** normalized [0,1] (relative to the displayed frame) → page CSS px — independent of frame downscale / DPR. */
+  /** normalized [0,1] (relative to the displayed frame) → page CSS px — independent of frame downscale / DPR. Out-of-range is clamped into the viewport. */
   mapToPage(nx: number, ny: number): { x: number; y: number } {
     const width = this.meta?.deviceWidth ?? this.viewport.width;
     const height = this.meta?.deviceHeight ?? this.viewport.height;
-    return { x: nx * width, y: ny * height };
+    const clamp = (v: number) => Math.min(1, Math.max(0, v));
+    return { x: clamp(nx) * width, y: clamp(ny) * height };
   }
 
   async mouse(ev: MouseInput): Promise<void> {
+    // Drop non-finite coords at the input side rather than dispatch NaN/Infinity
+    // into CDP (defense in depth — don't rely on the downstream rejecting them).
+    if (!Number.isFinite(ev.nx) || !Number.isFinite(ev.ny)) {
+      log.debug('dropping mouse input with non-finite coords', { nx: ev.nx, ny: ev.ny });
+      return;
+    }
     const { x, y } = this.mapToPage(ev.nx, ev.ny);
     await this.cdp.send('Input.dispatchMouseEvent', {
       type: ev.type,
