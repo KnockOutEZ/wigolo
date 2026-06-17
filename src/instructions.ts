@@ -62,7 +62,7 @@ Wigolo returns structured evidence — YOU write the final answer.
 - \`find_similar\` — more-like-this from URL or concept.
 - \`research\` — decomposition + parallel search + synthesis. Set \`depth\`.
 - \`agent\` — natural-language data gathering, optional \`schema\`.
-- \`studio_observe\` — see the shared browser session (page structure + human events) before acting. Needs \`wigolo studio\` running.
+- \`studio_observe\` — the shared browser session: page structure + human events (needs \`wigolo studio\`).
 
 ## When NOT to use wigolo
 
