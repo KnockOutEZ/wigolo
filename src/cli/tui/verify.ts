@@ -1,6 +1,6 @@
-import { execSync } from 'node:child_process';
+import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { SearxngProcess } from '../../searxng/process.js';
-import { getPythonBin } from '../../python-env.js';
 import { getRerankProvider } from '../../providers/rerank-provider.js';
 import type { WarmupReporter } from './reporter.js';
 import { suggestionsFromResult } from './verify-suggestions.js';
@@ -59,13 +59,11 @@ export async function runVerify(
   result.searxngUrl = url;
   reporter.success('searxng', url);
 
-  const py = getPythonBin(dataDir);
-
   const rerankerProbe = await runRerankerProbe(reporter);
   result.reranker = rerankerProbe.state;
   if (rerankerProbe.error) result.rerankerError = rerankerProbe.error;
 
-  const { state: embeddingsState, error: embeddingsError, dim } = runEmbeddingsProbe(py, reporter);
+  const { state: embeddingsState, error: embeddingsError, dim } = runEmbeddingsProbe(dataDir, reporter);
   result.embeddings = embeddingsState;
   if (embeddingsError) result.embeddingsError = embeddingsError;
   if (typeof dim === 'number') result.embeddingsDim = dim;
@@ -91,21 +89,18 @@ async function runRerankerProbe(
 }
 
 function runEmbeddingsProbe(
-  py: string,
+  dataDir: string,
   reporter: WarmupReporter,
 ): { state: 'ok' | 'missing'; error?: string; dim?: number } {
   reporter.start('embeddings', EMBEDDINGS_LABEL);
+  const fastembedDir = join(dataDir, 'fastembed');
   try {
-    const script = 'import sentence_transformers, sys; m = sentence_transformers.SentenceTransformer.load if False else None; print(384)';
-    const out = execSync(`${py} -c "${script}"`, { stdio: 'pipe', timeout: 30000 });
-    const text = (out instanceof Buffer ? out.toString('utf-8') : String(out)).trim();
-    const parsed = Number.parseInt(text, 10);
-    if (!Number.isFinite(parsed)) {
-      reporter.fail('embeddings', 'could not parse dim');
-      return { state: 'missing', error: 'could not parse embeddings dim' };
+    if (!existsSync(fastembedDir) || readdirSync(fastembedDir).length === 0) {
+      reporter.fail('embeddings', 'not installed');
+      return { state: 'missing', error: 'fastembed model directory is empty or missing' };
     }
-    reporter.success('embeddings', `${parsed}-dim`);
-    return { state: 'ok', dim: parsed };
+    reporter.success('embeddings', 'installed');
+    return { state: 'ok' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     reporter.fail('embeddings', 'not installed');
