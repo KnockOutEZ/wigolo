@@ -13,7 +13,7 @@ describe('llmCategory', () => {
     expect(keys).toEqual(['llmProvider', 'llmApiKey']);
   });
 
-  it('provider is a select with exactly three options: anthropic, openai, gemini', () => {
+  it('provider is a select offering anthropic, openai, gemini, and the keyless ollama lever', () => {
     const provider = llmCategory.fields.find((f) => f.settingsPath === 'llmProvider');
     expect(provider).toBeDefined();
     expect(provider?.kind).toBe('select');
@@ -21,9 +21,28 @@ describe('llmCategory', () => {
       'anthropic',
       'openai',
       'gemini',
+      'ollama',
     ]);
     expect(provider?.options?.map((o) => o.value)).not.toContain('custom');
     expect(provider?.default).toBe('anthropic');
+  });
+
+  it('exposes ollama as a keyless local-LLM choice (no api-key field shown when selected)', () => {
+    // WHY: ollama needs no credential — surfacing it as a provider WITHOUT an
+    // api-key prompt is the whole point of the lever; a key field would imply
+    // a credential the local server ignores and confuse the user.
+    const provider = llmCategory.fields.find((f) => f.settingsPath === 'llmProvider');
+    const ollama = provider?.options?.find((o) => o.value === 'ollama');
+    expect(ollama).toBeDefined();
+    expect(ollama?.label).toMatch(/local/i);
+
+    const key = llmCategory.fields.find((f) => f.settingsPath === 'llmApiKey');
+    expect(typeof key?.visible).toBe('function');
+    // Hidden when ollama is chosen (pending), visible for keyed providers.
+    expect(key?.visible?.({ current: {}, pending: { llmProvider: 'ollama' } })).toBe(false);
+    expect(key?.visible?.({ current: {}, pending: { llmProvider: 'anthropic' } })).toBe(true);
+    // current-layer selection (already persisted) also hides the key field.
+    expect(key?.visible?.({ current: { llmProvider: 'ollama' }, pending: {} })).toBe(false);
   });
 
   it('api key is masked + secret + propagates to agents', () => {

@@ -12,6 +12,7 @@
 import { TEXT_ADAPTERS, type TextCallResult } from './text-adapters.js';
 import { selectProvider, selectProviderWithKeyStore, providerEnvVar } from './select.js';
 import { resolveModel } from './model-select.js';
+import { resolveCustomBackend, pickOllamaModel } from './custom-backend.js';
 import type { LLMProvider } from './types.js';
 import { createLogger } from '../../../logger.js';
 import { resolveProviderKey } from '../../../security/key-store.js';
@@ -48,8 +49,7 @@ export interface RunLlmJsonResult {
 }
 
 export function isLlmConfigured(env: Record<string, string | undefined> = process.env): boolean {
-  const raw = env.WIGOLO_LLM_PROVIDER;
-  if (raw && (raw.startsWith('http://') || raw.startsWith('https://'))) return true;
+  if (resolveCustomBackend(env) !== null) return true;
   return selectProvider(env) !== null;
 }
 
@@ -60,19 +60,10 @@ export function isLlmConfigured(env: Record<string, string | undefined> = proces
 export async function isLlmConfiguredWithKeyStore(
   env: Record<string, string | undefined> = process.env,
 ): Promise<boolean> {
-  const raw = env.WIGOLO_LLM_PROVIDER;
-  if (raw && (raw.startsWith('http://') || raw.startsWith('https://'))) return true;
+  if (resolveCustomBackend(env) !== null) return true;
   const cfg = getConfig();
   const result = await selectProviderWithKeyStore(env, { dataDir: cfg.dataDir });
   return result !== null;
-}
-
-function pickCustomBackend(env: Record<string, string | undefined>): { type: 'custom'; url: string } | null {
-  const raw = env.WIGOLO_LLM_PROVIDER;
-  if (raw && (raw.startsWith('http://') || raw.startsWith('https://'))) {
-    return { type: 'custom', url: raw };
-  }
-  return null;
 }
 
 function buildSignal(opts: { timeoutMs?: number; signal?: AbortSignal }): AbortSignal | undefined {
@@ -125,12 +116,18 @@ export async function runLlmText(opts: RunLlmTextOpts): Promise<RunLlmTextResult
   const signal = buildSignal(opts);
 
   // Custom URL backend (Ollama, vLLM, LM Studio) — no key needed
-  const custom = pickCustomBackend(process.env);
+  const custom = resolveCustomBackend(process.env);
   if (custom) {
     const endpoint = custom.url.includes('/chat/completions')
       ? custom.url
       : custom.url.replace(/\/+$/, '') + '/v1/chat/completions';
-    const model = opts.modelOverride ?? process.env.WIGOLO_LLM_MODEL ?? 'local';
+    // Model precedence: caller override > WIGOLO_LLM_MODEL > (ollama only)
+    // auto-pick from /api/tags > 'local'. Auto-pick resolves once per request.
+    let model = opts.modelOverride ?? process.env.WIGOLO_LLM_MODEL;
+    if (!model && custom.isOllama) {
+      model = await pickOllamaModel(custom.url, fetch, signal);
+    }
+    model = model ?? 'local';
     log.debug('runLlmText custom', { url: endpoint, model });
     return withRetry(`custom:${model}`, async () => {
       const start = Date.now();

@@ -1,6 +1,7 @@
 import type { LLMProvider } from './types.js';
 import type { KeyStoreOpts } from '../../../security/key-store.js';
 import { readPersistedConfig, defaultConfigPath } from '../../../persisted-config.js';
+import { resolveCustomBackend } from './custom-backend.js';
 
 const PROVIDER_ORDER: LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq'];
 
@@ -48,11 +49,12 @@ export async function selectProviderWithKeyStore(
   // Lazy import to avoid circular dep at module load time
   const { resolveProviderKey } = await import('../../../security/key-store.js');
 
-  // Check custom URL first (no key needed). Only the env var can name a custom
-  // URL backend; config.json holds a provider id, handled by the chain below.
+  // Check custom backend first (no key needed): an http(s) URL OR the `ollama`
+  // alias (from env or config.json) is keyless and handled separately in run.ts.
+  // Returning null here keeps a configured-but-keyless ollama from accidentally
+  // resolving to an unrelated cloud key during auto-detect.
   const envRaw = env.WIGOLO_LLM_PROVIDER;
-  if (envRaw && (envRaw.startsWith('http://') || envRaw.startsWith('https://'))) {
-    // Custom URL — not a cloud provider, handled separately in run.ts
+  if (resolveCustomBackend(env) !== null) {
     return null;
   }
 

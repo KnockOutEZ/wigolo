@@ -28,6 +28,12 @@ export interface EngineHealthEntry {
   status: EngineHealthStatus;
   /** Optional one-line remediation hint when status !== 'ok'. */
   hint?: string;
+  /** Informational note about a KNOWN engine limitation that is NOT a
+   * misconfiguration — e.g. an engine that intermittently rate-limits/403s by
+   * IP reputation rather than anything the user can fix. Surfaced even when
+   * status is 'ok' so the doctor output is honest about why an engine may go
+   * dark, without implying the user did something wrong. */
+  note?: string;
   /** Optional engine weight (for visibility — informational only). */
   weight?: number;
   /** Circuit-breaker state, joined from getBreakerSnapshot(). Omitted for
@@ -51,6 +57,21 @@ const KEY_REQUIRED: Record<string, KeyRequirement> = {
   'brave-image': { envVar: 'BRAVE_API_KEY', registeredWithoutKey: false },
   'github-code': { envVar: 'WIGOLO_GITHUB_TOKEN', registeredWithoutKey: true },
 };
+
+// Wave-2 W3 (honest engine-pool health): known per-engine limitations that
+// are NOT misconfigurations and NOT user-fixable. These surface as an
+// informational note in doctor even when the engine is otherwise "ok", so a
+// user who sees an engine intermittently absent from telemetry understands
+// the cause. Mojeek's 403s are IP-reputation / rate-limit driven (see
+// src/search/engines/mojeek.ts) — a real fix needs a proxy pool, which is out
+// of local scope; the engine already degrades gracefully behind its breaker.
+const ENGINE_NOTES: Record<string, string> = {
+  mojeek: 'may intermittently 403 (IP reputation / rate-limit, not UA-fixable); degrades gracefully',
+};
+
+function noteFor(engineName: string): string | undefined {
+  return ENGINE_NOTES[engineName];
+}
 
 function isKeyAvailable(engineName: string): boolean {
   const req = KEY_REQUIRED[engineName];
@@ -120,11 +141,13 @@ export function getEngineHealthSummary(): EngineHealthEntry[] {
         hint = hintFor(name);
       }
       const breaker = breakerByEngine.get(name);
+      const note = noteFor(name);
       out.push({
         name,
         vertical,
         status,
         ...(hint ? { hint } : {}),
+        ...(note ? { note } : {}),
         ...(entry.weight !== undefined ? { weight: entry.weight } : {}),
         ...(breaker ? { breaker: breaker.state } : {}),
         ...(breaker?.lastError ? { lastError: breaker.lastError } : {}),

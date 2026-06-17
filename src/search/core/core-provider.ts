@@ -20,6 +20,7 @@ import { applyContextRank } from './context-rank.js';
 import { expandQuery, LOW_RECALL_THRESHOLD } from './query-expansion.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
 import { foldRerankIntoOrdering } from './rerank-fold.js';
+import { applyScoreFloor, DEFAULT_SEARCH_SCORE_FLOOR } from './score-floor.js';
 import { detectBrandCollision, detectLexicalCollision } from './brand-collision.js';
 import { computeFreshnessSignal } from './freshness.js';
 import { buildQueryUnderstanding } from './query-understanding.js';
@@ -437,6 +438,17 @@ export class CoreSearchProvider implements SearchProvider {
           maxResults: input.max_results,
         });
       }
+
+      // Relevance-score floor (wave2-w2): the LAST trim before the slice, so
+      // an upstream slice cannot bypass it and the near-zero/negative junk the
+      // rerank-fold scored into the tier-0 band never consumes a top-N slot.
+      // The user-settable relevanceThreshold raises the floor; it never lowers
+      // the default below DEFAULT_SEARCH_SCORE_FLOOR. applyScoreFloor always
+      // keeps the single best result so the set is never emptied.
+      const configuredThreshold = getConfig().relevanceThreshold;
+      const floor = Math.max(DEFAULT_SEARCH_SCORE_FLOOR, configuredThreshold);
+      const floored = applyScoreFloor(processed, floor);
+      processed = floored.kept;
 
       const maxResults = input.max_results ?? processed.length;
       items = processed.slice(0, maxResults).map((r) => {

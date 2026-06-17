@@ -25,6 +25,9 @@ import { allProviders, providerEnvVar, selectProvider } from '../integrations/cl
 import { resolveModel, providerDefaultModel, providerModelEnvVar } from '../integrations/cloud/llm/model-select.js';
 import { readKey } from '../security/key-store.js';
 import { setLogSuppression } from '../logger.js';
+import { isLlmConfigured } from '../integrations/cloud/llm/run.js';
+import { resolveCustomBackend, pickOllamaModel } from '../integrations/cloud/llm/custom-backend.js';
+import { probeOllama, resolveProbeBaseUrl, maybeOllamaHint, DEFAULT_PROBE_TIMEOUT_MS } from './ollama-probe.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
 
@@ -197,7 +200,11 @@ export function formatEngineHealthLines(entries: EngineHealthEntry[]): string[] 
       e.breaker && e.breaker !== 'closed'
         ? ` [breaker ${e.breaker}${e.lastError ? ` — ${e.lastError.slice(0, 60)}` : ''}]`
         : '';
-    lines.push(`  ${name} ${vertical} ${suffix}${breakerNote}`);
+    // Wave-2 W3: an informational note about a KNOWN, non-user-fixable
+    // limitation (e.g. mojeek IP-reputation 403s). Rendered even for "ok"
+    // engines so doctor is honest about why an engine may go dark.
+    const limitationNote = e.note ? ` — note: ${e.note}` : '';
+    lines.push(`  ${name} ${vertical} ${suffix}${breakerNote}${limitationNote}`);
   }
   return lines;
 }
@@ -252,6 +259,74 @@ export function formatTlsTierLine(
   if (mode === 'off') return 'off (default)';
   if (!wreqAvailable) return `${mode} (wreq-js missing — fallback only)`;
   return `${mode} (${browser}, wreq-js ✓)`;
+}
+
+/**
+ * Build the Ollama (local LLM server) diagnostic lines for doctor. Pure so the
+ * branching can be asserted without a live server.
+ *
+ *   - ollama is the active provider → show resolved base URL + model (always,
+ *     even when the server is mid-run unreachable — runtime falls back
+ *     gracefully, doctor should still report what's configured).
+ *   - no LLM configured AND a local server is reachable → emit an enable-hint.
+ *   - otherwise → no lines (don't nag a user who already configured an LLM, and
+ *     stay silent when no local server is present).
+ *
+ * The hint NEVER auto-enables anything; it only tells the user the lever exists.
+ */
+/**
+ * Strip control / ANSI bytes from an untrusted string before printing it to the
+ * terminal. A compromised localhost server could return an ANSI-laden model
+ * name; rendering it verbatim is a terminal-injection vector. Security LOW.
+ */
+export function sanitizeForTerminal(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\x00-\x1f\x7f]/g, '');
+}
+
+/**
+ * Resolve the active-ollama model for display, bounded by a short timeout so a
+ * stalled (connection-accepted-then-silent) server can never hang doctor. When
+ * the pick times out / fails, returns undefined and doctor degrades gracefully
+ * (the active section still prints the base URL). `pick` is injected for tests.
+ */
+export async function resolveOllamaModelBounded(
+  baseUrl: string,
+  pick: (url: string, fetchImpl: typeof fetch, signal: AbortSignal) => Promise<string> = pickOllamaModel,
+  timeoutMs: number = DEFAULT_PROBE_TIMEOUT_MS,
+): Promise<string | undefined> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await pick(baseUrl, fetch, controller.signal);
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function buildOllamaDoctorLines(state: {
+  llmConfigured: boolean;
+  ollamaActive: boolean;
+  reachable: boolean;
+  baseUrl: string;
+  model?: string;
+}): string[] {
+  if (state.ollamaActive) {
+    const lines = [`  local LLM (ollama): ${sanitizeForTerminal(state.baseUrl)}`];
+    if (state.model) lines.push(`    model:     ${sanitizeForTerminal(state.model)}`);
+    if (!state.reachable) {
+      lines.push('    note:      server not reachable now — research falls back to keyless synthesis');
+    }
+    return lines;
+  }
+  const hint = maybeOllamaHint({
+    reachable: state.reachable,
+    llmConfigured: state.llmConfigured,
+    baseUrl: state.baseUrl,
+  });
+  return hint ? [`  ${hint}`] : [];
 }
 
 function humanRetry(nextRetryAt?: string): string {
@@ -402,6 +477,39 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   }
   out(`  cache TTL:   ${cfg.llmCacheTtlDays} days`);
   out(`  per-request: ${cfg.llmMaxCallsPerRequest} call(s) max`);
+
+  // Local LLM server (Ollama) autodetect. Never auto-enables — when ollama is
+  // active we report the resolved base/model; otherwise, when no LLM is
+  // configured and a local server answers, we hint at the keyless lever. The
+  // probe is fail-safe: a down/slow/absent server never errors or stalls.
+  {
+    const ollamaBackend = resolveCustomBackend(process.env);
+    const ollamaActive = ollamaBackend?.isOllama ?? false;
+    const llmConfigured = isLlmConfigured(process.env);
+    const baseUrl = ollamaBackend?.isOllama ? ollamaBackend.url : resolveProbeBaseUrl(process.env);
+    // Skip the network probe when ollama isn't active and an LLM is already
+    // configured — there's nothing to hint at, so don't spend the round-trip.
+    const needProbe = ollamaActive || !llmConfigured;
+    const probe = needProbe ? await probeOllama(baseUrl) : { reachable: false };
+    let model: string | undefined;
+    if (ollamaActive && probe.reachable && !process.env.WIGOLO_LLM_MODEL) {
+      // Bounded — a server that accepts the connection then stalls must never
+      // hang doctor (the unbounded fetch this replaces could). Times out into
+      // a graceful "no model" rather than blocking.
+      model = await resolveOllamaModelBounded(baseUrl);
+    } else if (ollamaActive) {
+      model = process.env.WIGOLO_LLM_MODEL;
+    }
+    for (const line of buildOllamaDoctorLines({
+      llmConfigured,
+      ollamaActive,
+      reachable: probe.reachable,
+      baseUrl,
+      model,
+    })) {
+      out(line);
+    }
+  }
 
   out('');
   out('[wigolo doctor] Search backend:');

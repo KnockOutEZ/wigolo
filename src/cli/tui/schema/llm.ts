@@ -14,6 +14,11 @@ export const llmCategory: CategoryDef = {
         { value: 'anthropic', label: 'Anthropic (Claude)' },
         { value: 'openai', label: 'OpenAI (GPT)' },
         { value: 'gemini', label: 'Google Gemini' },
+        {
+          value: 'ollama',
+          label: 'Ollama (local LLM server)',
+          hint: 'Keyless — runs against a local Ollama server, no API key needed',
+        },
       ],
       default: 'anthropic',
     },
@@ -25,6 +30,9 @@ export const llmCategory: CategoryDef = {
       secret: true,
       propagateToAgents: true,
       help: 'Stored in OS keychain when available; never written to config.json.',
+      // Ollama is keyless — hide the API-key field when it's the chosen provider
+      // so the wizard never prompts for a credential the local server ignores.
+      visible: (ctx) => (ctx.pending.llmProvider ?? ctx.current.llmProvider) !== 'ollama',
     },
   ],
 };

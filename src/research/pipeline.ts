@@ -3,9 +3,11 @@ import { decomposeQuestion, detectQueryType, extractComparisonEntities, type Que
 import { synthesizeReport } from './synthesize.js';
 import { synthesizeLocal } from './synthesis-local.js';
 import { buildResearchBrief } from './brief.js';
+import { renderBriefReport } from './render-brief.js';
 import { deduplicateResults } from '../search/dedup.js';
 import { rerankResults } from '../search/rerank.js';
 import { applyAllFilters } from '../search/filters.js';
+import { classifyUrlShape, classifyScoreFloor, queryContentTerms, gateContent } from './source-validation.js';
 import { exploreInParallel } from './branch-exploration.js';
 import type { RawSearchResult, SearchEngineOptions } from '../types.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
@@ -18,6 +20,7 @@ import type {
   ResearchInput,
   ResearchOutput,
   ResearchSource,
+  RejectedSource,
   SearchEngine,
   Citation,
 } from '../types.js';
@@ -154,9 +157,41 @@ export async function runResearchPipeline(
     });
 
     merged = await rerankResults(input.question, merged);
-    merged = merged.slice(0, maxSources);
 
-    if (merged.length === 0) {
+    const rejected_sources: RejectedSource[] = [];
+
+    // Score floor — the cheap pre-filter that runs BEFORE the url-shape loop.
+    // The cross-encoder scores off-topic real-content domains (benchmark C1:
+    // YouTube / Google Play / Zhihu / MyBroadband) below zero; url-shape and
+    // the content gate both pass them because they ARE real, on-domain pages.
+    // Dropping negatives here closes that gap. merged is sorted desc by score,
+    // so merged[0] is the top — always keep it so the pool is never emptied
+    // when the reranker damped everything below zero.
+    const scoreKept: MergedResult[] = [];
+    for (let i = 0; i < merged.length; i++) {
+      const m = merged[i];
+      const verdict = i === 0 ? { reject: false } : classifyScoreFloor(m.relevance_score);
+      if (verdict.reject && verdict.reason) {
+        rejected_sources.push({ url: m.url, reason: verdict.reason, stage: 'score-floor' });
+      } else {
+        scoreKept.push(m);
+      }
+    }
+
+    // Source validation (url-shape) — drop homepage/SERP candidates BEFORE the
+    // slice so the next-ranked legitimate candidate back-fills the freed slot.
+    // Rejected URLs are surfaced in rejected_sources, never silently swallowed.
+    const urlKept: MergedResult[] = [];
+    for (const m of scoreKept) {
+      const verdict = classifyUrlShape(m.url, input.include_domains);
+      if (verdict.reject && verdict.reason) {
+        rejected_sources.push({ url: m.url, reason: verdict.reason, stage: 'url-shape' });
+      } else {
+        urlKept.push(m);
+      }
+    }
+
+    if (urlKept.length === 0) {
       return {
         report: `## Research: ${input.question}\n\nNo sources could be found for this query.`,
         citations: [],
@@ -165,11 +200,47 @@ export async function runResearchPipeline(
         depth,
         total_time_ms: Date.now() - start,
         sampling_supported: !!server && checkSamplingSupport(server),
+        ...(rejected_sources.length > 0 ? { rejected_sources } : {}),
       };
     }
 
-    // Phase 4: Fetch top sources in parallel
-    const sources: ResearchSource[] = await fetchSources(merged, router, maxSources);
+    // Over-fetch a small buffer beyond maxSources so the post-fetch content
+    // gate can drop empty shells and still back-fill to maxSources.
+    const buffer = Math.min(
+      Math.max(urlKept.length - maxSources, 0),
+      Math.ceil(maxSources * 0.4),
+    );
+    const toFetch = urlKept.slice(0, maxSources + buffer);
+
+    // Phase 4: Fetch the buffered candidate set in parallel
+    const fetched: ResearchSource[] = await fetchSources(router, toFetch);
+
+    // Content gate — drop empty/off-topic shells (thin AND off-topic). Only
+    // successfully-fetched content is gated: a fetch failure keeps the search
+    // snippet as a deliberate fallback (not the gate's target — empty shells
+    // are pages that fetched but returned nothing).
+    const queryTerms = queryContentTerms(input.question);
+    const gated: ResearchSource[] = [];
+    const contentRejects: RejectedSource[] = [];
+    for (const s of fetched) {
+      if (s.fetched) {
+        const verdict = gateContent(s.markdown_content, queryTerms);
+        if (verdict.reject && verdict.reason) {
+          contentRejects.push({ url: s.url, reason: verdict.reason, stage: 'content-gate' });
+          continue;
+        }
+      }
+      gated.push(s);
+    }
+    // Fail open — never let the content gate empty the result; mediocre
+    // sources beat no sources (rerank already ordered them).
+    let sources: ResearchSource[];
+    if (gated.length > 0) {
+      sources = gated.slice(0, maxSources);
+      rejected_sources.push(...contentRejects);
+    } else {
+      sources = fetched.slice(0, maxSources);
+    }
     applySourceBudget(sources, PER_SOURCE_CHAR_CAP, TOTAL_SOURCES_CHAR_CAP);
     log.info('fetch phase complete', {
       fetched: sources.filter((s) => s.fetched).length,
@@ -191,6 +262,7 @@ export async function runResearchPipeline(
     let finalReport = synthesisResult.report;
     let finalCitations: Citation[] = synthesisResult.citations;
     let localSynthesisText: string | undefined;
+    let localSynthesisSucceeded = false;
     if (!synthesisResult.samplingUsed && await isLlmConfiguredWithKeyStore()) {
       try {
         const localSources = sources
@@ -200,6 +272,7 @@ export async function runResearchPipeline(
           const local = await synthesizeLocal(input.question, localSources);
           finalReport = local.text;
           localSynthesisText = local.text;
+          localSynthesisSucceeded = true;
           finalCitations = local.citations
             .filter((idx) => idx >= 0 && idx < localSources.length)
             .map((idx) => {
@@ -239,6 +312,15 @@ export async function runResearchPipeline(
         )
       : undefined;
 
+    // Keyless template mode: when neither host-LLM sampling nor a local LLM
+    // produced the report, weave the structured brief into an organized,
+    // source-cited document instead of returning the flat per-source dump.
+    // The sampling path and the successful-local-LLM path keep their own
+    // report; buildFallbackReport remains the safety net when no brief exists.
+    if (!synthesisResult.samplingUsed && !localSynthesisSucceeded && brief) {
+      finalReport = renderBriefReport(input.question, brief, sources);
+    }
+
     return {
       report: finalReport,
       citations: finalCitations,
@@ -248,6 +330,7 @@ export async function runResearchPipeline(
       total_time_ms: Date.now() - start,
       sampling_supported: !!server && checkSamplingSupport(server),
       ...(brief ? { brief } : {}),
+      ...(rejected_sources.length > 0 ? { rejected_sources } : {}),
     };
   } catch (err) {
     log.error('research pipeline failed', {
@@ -276,11 +359,10 @@ interface MergedResult {
 }
 
 async function fetchSources(
-  merged: MergedResult[],
   router: SmartRouter,
-  maxSources: number,
+  merged: MergedResult[],
 ): Promise<ResearchSource[]> {
-  const fetchPromises = merged.slice(0, maxSources).map(async (result): Promise<ResearchSource> => {
+  const fetchPromises = merged.map(async (result): Promise<ResearchSource> => {
     try {
       const raw = await Promise.race([
         router.fetch(result.url, { renderJs: 'auto' }),

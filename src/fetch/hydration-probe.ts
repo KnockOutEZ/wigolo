@@ -100,9 +100,22 @@ export function isHydrated(doc: ProbeDocument): boolean {
   return pText > 700;
 }
 
-// Source string for injection into Playwright's page.waitForFunction. We
-// inline the constants so the browser context doesn't need our module graph.
-export const HYDRATION_PROBE_SOURCE = `(() => {
+// Is this DOM an SPA app-shell that has NOT yet mounted its article body?
+// True when a known SPA app-root exists (so the page IS a client-rendered
+// app) but the hydration probe is not satisfied (body still absent). Used to
+// decide whether a probe timeout warrants a longer-budget re-poll vs. the page
+// genuinely having no semantic body (a plain doc that simply isn't an SPA).
+export function isAppShellOnly(doc: ProbeDocument): boolean {
+  if (isHydrated(doc)) return false;
+  return doc.querySelector(SPA_APP_ROOT_SELECTORS) !== null;
+}
+
+// Shared browser-side predicate body. Returns true when the article body is
+// present. Inlined as a string so the browser context needs no module graph;
+// kept in lockstep with isHydrated() above. Both injectable sources below wrap
+// this same expression so the render-tier wait and the app-shell re-poll
+// agree on "is the body present?".
+const HYDRATED_PREDICATE_BODY = `
   const SPA_APP_ROOT_SELECTORS = ${JSON.stringify(SPA_APP_ROOT_SELECTORS)};
   const SPA_CONTENT_SELECTORS = ${JSON.stringify(SPA_CONTENT_SELECTORS)};
   const measure = (el) => el ? ((el.innerText || '').trim().length) : 0;
@@ -146,4 +159,25 @@ export const HYDRATION_PROBE_SOURCE = `(() => {
     pText += ((paragraphs[i].innerText || '')).length;
   }
   return pText > 700;
+`;
+
+// Source string for injection into Playwright's page.waitForFunction. We
+// inline the constants so the browser context doesn't need our module graph.
+export const HYDRATION_PROBE_SOURCE = `(() => {${HYDRATED_PREDICATE_BODY}})()`;
+
+// Source for the app-shell-only re-poll. Resolves true once the body has
+// mounted (so waitForFunction can re-poll for it after a longer budget). We
+// reuse the hydrated predicate directly — "wait until hydrated" is the gate
+// regardless of whether the first wait timed out. Kept separate from
+// HYDRATION_PROBE_SOURCE only for call-site clarity.
+export const HYDRATED_WAIT_SOURCE = HYDRATION_PROBE_SOURCE;
+
+// Source that reports whether the current DOM is an app-shell with no body
+// yet — an SPA root exists but the hydrated predicate is unsatisfied. Used
+// (via page.evaluate) to decide whether a probe timeout warrants escalation.
+export const APP_SHELL_ONLY_SOURCE = `(() => {
+  const hydrated = (() => {${HYDRATED_PREDICATE_BODY}})();
+  if (hydrated) return false;
+  const SPA_APP_ROOT_SELECTORS = ${JSON.stringify(SPA_APP_ROOT_SELECTORS)};
+  return document.querySelector(SPA_APP_ROOT_SELECTORS) !== null;
 })()`;

@@ -197,6 +197,41 @@ describe('buildResearchBrief', () => {
     expect(brief.sections.comparison).toBeUndefined();
   });
 
+  // Parity attack 7 / slice 1: the comparison section must capture the actual
+  // source SENTENCE that pairs an entity with a comparison term, plus the
+  // index of the source it came from — not just a bare keyword. WHY: the
+  // template renderer quotes these as cited tradeoffs ("[1] React is faster
+  // than Vue …"). A bare keyword like "faster" has no directionality, so a
+  // verdict built from it would be a fabricated claim, not evidence.
+  it('captures source-sentence + source-index tradeoffs for the verdict', async () => {
+    const sources = [
+      mkSource({ url: 'https://a.com', markdown_content: 'React is faster than Vue for large applications because its reconciler batches updates.' }),
+      mkSource({ url: 'https://b.com', markdown_content: 'Vue has a simpler API than React and is easier to learn for beginners.' }),
+    ];
+    const brief = await buildResearchBrief('React vs Vue', sources, [], 3000, 40000, 'comparison', ['React', 'Vue']);
+    const tradeoffs = brief.sections.comparison!.tradeoffs;
+    expect(tradeoffs.length).toBeGreaterThan(0);
+    // Each tradeoff quotes a real sentence containing an entity, with a source index.
+    const fasterTradeoff = tradeoffs.find((t) => t.term === 'faster');
+    expect(fasterTradeoff).toBeDefined();
+    expect(fasterTradeoff!.text).toContain('React is faster than Vue');
+    expect(fasterTradeoff!.source_index).toBe(0);
+    // A tradeoff from the second source must carry its own index, not source 0's.
+    const vueTradeoff = tradeoffs.find((t) => t.text.includes('simpler API'));
+    expect(vueTradeoff).toBeDefined();
+    expect(vueTradeoff!.source_index).toBe(1);
+  });
+
+  it('keeps comparison_points keywords alongside the enriched tradeoffs', async () => {
+    const sources = [
+      mkSource({ url: 'https://a.com', markdown_content: 'React is faster than Vue for large applications and has better performance characteristics overall.' }),
+      mkSource({ url: 'https://b.com', markdown_content: 'Vue has a simpler API than React and is easier to learn for beginners.' }),
+    ];
+    const brief = await buildResearchBrief('React vs Vue', sources, [], 3000, 40000, 'comparison', ['React', 'Vue']);
+    expect(brief.sections.comparison!.comparison_points.length).toBeGreaterThan(0);
+    expect(brief.sections.comparison!.comparison_points).toContain('faster');
+  });
+
   it('populates citation_graph when synthesisText is provided', async () => {
     const sources = [
       mkSource({ url: 'https://a.com', markdown_content: 'server components render efficiently on server' }),
