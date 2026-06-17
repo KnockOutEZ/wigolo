@@ -67,6 +67,11 @@ export function createActHandler(
     }
     const gateEpoch = controlToken.epoch;
 
+    // INVARIANT: this gate→navigate path MUST stay synchronous up to navigateSession —
+    // there is no await between assertCanDrive above and the CDP nav command, so on the
+    // single-threaded host a reclaim cannot interleave into the gate→start window. The
+    // beforeNavigate epoch fence below is the BACKSTOP: if a future edit introduces an
+    // await here, the fence still refuses a nav whose grant was revoked mid-window.
     const r = await navigateSession(browser, url, policyForHolder('agent', grant), {
       beforeNavigate: () => controlToken.holder === 'agent' && controlToken.epoch === gateEpoch,
     });
