@@ -11,7 +11,8 @@ import { ScreencastBridge } from '../studio/screencast.js';
 import { ControlToken } from '../studio/control-token.js';
 import { InputForwarder } from '../studio/input.js';
 import { SessionController } from '../studio/session-control.js';
-import { NavInterceptor, navigateSession, type NavPolicy } from '../studio/nav.js';
+import { NavInterceptor, navigateSession } from '../studio/nav.js';
+import { policyForHolder, type NavGrant } from '../studio/nav-policy.js';
 import { StudioWsHub } from '../studio/ws-hub.js';
 import { writeHandle, removeHandle, studioHandlePath, setMyInstanceId, type SessionHandle } from '../studio/handle.js';
 import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
@@ -76,8 +77,10 @@ export interface StudioHost {
   bridge: ScreencastBridge;
   controller: SessionController;
   navInterceptor: NavInterceptor;
-  /** Navigate the session as the human (guarded); broadcasts {t:'error'} to clients on a blocked target. */
+  /** Navigate the session as the human (holder-gated + guarded); broadcasts {t:'error'} on a non-holder or blocked target. */
   navigate: (url: string) => Promise<void>;
+  /** Human-only, per-session, revocable: lift the agent's localhost/RFC1918 nav block (cloud-metadata stays blocked). */
+  grantAgentPrivateNav: (on: boolean) => void;
   hub: StudioWsHub;
   handle: SessionHandle;
   endpoint: string;
@@ -174,12 +177,20 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   });
   controller = new SessionController(controlToken, forwarder, (msg) => hub.broadcast(session.id, msg));
 
-  // Navigation guard. Phase 1 wires the HUMAN path (may reach localhost/RFC1918);
-  // the agent path (blocked-by-default) is built and reachable in Phase 2. The
-  // interceptor re-validates every redirect hop on the session's CDP layer (the
-  // fetch/crawl path through http-client.ts is untouched).
-  const navPolicy: NavPolicy = { source: 'human', allowPrivate: cfg.studioNavAllowPrivateForHuman };
-  const navInterceptor = new NavInterceptor(navPolicy);
+  // Navigation guard. The agent path is fail-closed by default: the agent reaches
+  // localhost/RFC1918 only via an explicit, human-issued, revocable per-session grant
+  // (cloud-metadata stays blocked for either party in guardNavigation regardless of
+  // the grant). The interceptor re-validates every redirect hop on the session's CDP
+  // layer (the fetch/crawl path through http-client.ts is untouched).
+  const grant: NavGrant = {
+    humanAllowPrivate: cfg.studioNavAllowPrivateForHuman,
+    agentAllowPrivate: cfg.studioAgentNavAllowPrivate,
+  };
+  // PULL-AT-EVAL: the interceptor reads the live control-token holder + grant at each
+  // hop-evaluation, so a flip to the agent takes effect on the very NEXT hop (incl. a
+  // redirect hop already mid-chain) with no disarm→re-arm window where a stale, more
+  // permissive policy could leak a hop through.
+  const navInterceptor = new NavInterceptor(() => policyForHolder(controlToken.holder, grant));
   await navInterceptor.start(sessionBrowser.cdp);
   // Finding A: rebind the nav interceptor on the FRESH cdp BEFORE the crash-recovery
   // re-navigation (awaited pre-nav hook), so a redirect hop during recovery is
@@ -188,6 +199,20 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   sessionBrowser.onBeforeReNav(async (cdp) => {
     await navInterceptor.rebind(cdp);
   });
+  // Finding C nav-analog of the in-flight-click abort: a human reclaim (or the agent
+  // releasing control) aborts the agent's in-flight navigation so it cannot complete
+  // under a now-revoked grant — Page.stopLoading, a half-loaded page is fine. A grant
+  // (flip TO the agent) does NOT abort. Crash-recovery re-nav is host-initiated (no
+  // token flip) so it is unaffected by this gate.
+  controlToken.onChange((s) => {
+    if (s.holder === 'human') void navInterceptor.abortInFlight();
+  });
+  // Human-only, per-session, revocable grant. The agent cannot reach this (it drives
+  // via studio_act, not the host API); `grant` is a closure local to this session so
+  // it never leaks to another. pull-at-eval picks the new value up on the next hop.
+  const grantAgentPrivateNav = (on: boolean): void => {
+    grant.agentAllowPrivate = on;
+  };
 
   // Perception + the agent's observe path. The event queue records human navigations
   // (marks/comments are Phase 3) for studio_observe to drain exactly-once.
@@ -195,7 +220,15 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const snapshotter = new PageSnapshotter({ tokenBudget: cfg.studioSnapshotTokenBudget });
 
   const navigate = async (url: string): Promise<void> => {
-    const r = await navigateSession(sessionBrowser, url, navPolicy);
+    // Finding C: navigation is holder-gated. {t:nav} is the host-stamped HUMAN channel,
+    // so refuse it unless the human currently holds the token — a non-holder viewer
+    // cannot steer the shared browser while the agent drives. (Recovery re-nav is
+    // host-initiated and bypasses this closure entirely.)
+    if (controlToken.holder !== 'human') {
+      hub.broadcast(session.id, { t: 'error', reason: 'not_control_holder' });
+      return;
+    }
+    const r = await navigateSession(sessionBrowser, url, policyForHolder('human', grant));
     if (r.ok) eventQueue.enqueue({ type: 'navigation', url }); // human nav → the agent learns of it via studio_observe
     else hub.broadcast(session.id, { t: 'error', reason: r.reason });
   };
@@ -246,7 +279,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, hub, handle, endpoint };
+  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, grantAgentPrivateNav, hub, handle, endpoint };
 }
 
 export function runStudio(args: string[]): void {

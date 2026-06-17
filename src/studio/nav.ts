@@ -43,15 +43,20 @@ const DOCUMENT_PATTERN = { urlPattern: '*', resourceType: 'Document', requestSta
 
 export class NavInterceptor {
   private cdp: NavCdp | null = null;
-  private policy: NavPolicy;
+  private readonly policyProvider: () => NavPolicy;
+  /** Document requestIds currently being evaluated / in flight — the set abortInFlight fails closed on a reclaim. */
+  private readonly inFlight = new Set<string>();
 
-  constructor(policy: NavPolicy) {
-    this.policy = policy;
-  }
-
-  /** Update the policy applied to subsequent hops (e.g. switch to the agent policy in Phase 2). */
-  setPolicy(policy: NavPolicy): void {
-    this.policy = policy;
+  /**
+   * PULL-AT-EVAL: the interceptor reads the LIVE policy from `policyProvider` at the
+   * moment it evaluates each hop, rather than caching a policy that a flip must
+   * re-arm. This removes any disarm→re-arm transition window — the instant the
+   * control token flips to the agent, the next hop (including a redirect hop already
+   * mid-chain) is judged under the agent policy, never the more-permissive policy of
+   * a moment earlier.
+   */
+  constructor(policyProvider: () => NavPolicy) {
+    this.policyProvider = policyProvider;
   }
 
   /** Begin intercepting document navigations on this CDP session. */
@@ -74,6 +79,7 @@ export class NavInterceptor {
   /** Move interception to a fresh CDP session after a crash recovery. */
   async rebind(cdp: NavCdp): Promise<void> {
     if (this.cdp) this.cdp.off('Fetch.requestPaused', this.onPaused);
+    this.inFlight.clear(); // the dead cdp's in-flight requestIds are meaningless on the fresh one
     await this.start(cdp);
   }
 
@@ -82,28 +88,51 @@ export class NavInterceptor {
     if (!this.cdp) return;
     const cdp = this.cdp;
     this.cdp = null;
+    this.inFlight.clear();
     cdp.off('Fetch.requestPaused', this.onPaused);
     await cdp.send('Fetch.disable').catch(() => {});
+  }
+
+  /**
+   * Abort the agent's in-flight navigation on a human reclaim (the nav analog of the
+   * in-flight-click abort): stop the in-flight load and fail any hop still being
+   * evaluated, so a nav started under a now-revoked grant cannot complete. A
+   * half-loaded page is fine — the human is driving now. Page.stopLoading is the
+   * primary cancel; failing the tracked hops closes the micro-window where a paused
+   * hop would otherwise be re-evaluated under the looser human policy.
+   */
+  async abortInFlight(): Promise<void> {
+    const cdp = this.cdp;
+    if (!cdp) return;
+    const pending = [...this.inFlight];
+    this.inFlight.clear();
+    for (const requestId of pending) {
+      await cdp.send('Fetch.failRequest', { requestId, errorReason: 'Aborted' }).catch(() => {});
+    }
+    await cdp.send('Page.stopLoading').catch(() => {});
   }
 
   private onPaused = (event: NavRequestPaused): void => {
     const cdp = this.cdp;
     if (!cdp) return;
-    // FAIL-CLOSED: re-validate, continue only an allowed hop; any error → fail it.
+    const requestId = event.requestId;
+    this.inFlight.add(requestId);
+    // FAIL-CLOSED: re-validate under the LIVE policy, continue only an allowed hop; any error → fail it.
     void (async () => {
       try {
-        const verdict = guardNavigation(event.request?.url ?? '', this.policy);
+        const policy = this.policyProvider();
+        const verdict = guardNavigation(event.request?.url ?? '', policy);
         if (verdict.ok) {
-          await cdp.send('Fetch.continueRequest', { requestId: event.requestId });
+          await cdp.send('Fetch.continueRequest', { requestId });
         } else {
-          log.debug('blocked navigation hop', { url: event.request?.url, source: this.policy.source });
-          await cdp.send('Fetch.failRequest', { requestId: event.requestId, errorReason: 'AccessDenied' });
+          log.debug('blocked navigation hop', { url: event.request?.url, source: policy.source });
+          await cdp.send('Fetch.failRequest', { requestId, errorReason: 'AccessDenied' });
         }
       } catch (err) {
         log.debug('nav interceptor error — failing closed', { error: err instanceof Error ? err.message : String(err) });
-        await cdp
-          .send('Fetch.failRequest', { requestId: event.requestId, errorReason: 'AccessDenied' })
-          .catch(() => {});
+        await cdp.send('Fetch.failRequest', { requestId, errorReason: 'AccessDenied' }).catch(() => {});
+      } finally {
+        this.inFlight.delete(requestId);
       }
     })();
   };
