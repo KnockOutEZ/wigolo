@@ -40,12 +40,15 @@ describe('diffSnapshots — semantic diff, ID-keyed, over the FULL element set',
     expect(d.lowConfidenceChurn.added.map((e) => e.ref).sort()).toEqual(['eC', 'eD']);
   });
 
-  it('is budget-INDEPENDENT: an element in both full sets is never add/remove, even across the 4000 boundary (build-in #3)', () => {
-    const a = sn('s1', [el('keep', 'Stay')], {}, false); // under budget
-    const b = sn('s2', [el('keep', 'Stay'), el('more', 'Extra')], {}, true); // over budget, same 'keep'
+  it('is budget-INDEPENDENT: shared elements never add/remove across the 4000 boundary, while a real remove still surfaces (build-in #3)', () => {
+    const a = sn('s1', [el('keep1', 'Stay 1'), el('keep2', 'Stay 2'), el('gone', 'Removed')], {}, false); // under budget
+    const b = sn('s2', [el('keep1', 'Stay 1'), el('keep2', 'Stay 2'), el('more', 'Extra')], {}, true); // over budget
     const d = diffSnapshots(a, b);
-    expect(d.removed).toEqual([]); // 'keep' is NOT phantom-removed by crossing the budget boundary
+    expect(d.removed.map((e) => e.ref)).toEqual(['gone']); // the GENUINE removal still surfaces (remove path works)
     expect(d.added.map((e) => e.ref)).toEqual(['more']); // only the genuine add
+    // Neither shared element is phantom-churned by next crossing the budget boundary:
+    expect(d.removed.map((e) => e.ref)).not.toContain('keep1');
+    expect(d.removed.map((e) => e.ref)).not.toContain('keep2');
   });
 });
 
