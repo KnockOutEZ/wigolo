@@ -155,15 +155,15 @@ describe('Slice A1 — diff + watch tool registration', () => {
     try { rmSync(tmpDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  it('tools/list exposes 11 tools including diff, watch, and studio_observe', async () => {
+  it('tools/list exposes 12 tools including diff, watch, studio_observe, and studio_act', async () => {
     const { client, teardown } = await connectClient();
     try {
       const res = await client.listTools();
       const names = res.tools.map((t) => t.name).sort();
       expect(names).toEqual(
-        ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'studio_observe', 'watch']
+        ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'studio_act', 'studio_observe', 'watch']
       );
-      expect(res.tools).toHaveLength(11);
+      expect(res.tools).toHaveLength(12);
     } finally {
       await teardown();
     }

@@ -54,18 +54,38 @@ export interface StudioObserveOutput {
   vision?: VisionSubResult;
 }
 
-/** A typed failure from a host handler (e.g. an evicted spill fetch) — surfaced as a tool error, NOT a bare null a caller could read as "no content". */
+export interface StudioActInput {
+  /** Phase 2I implements `navigate` only; click/type/scroll arrive in a later slice. */
+  action: 'navigate' | 'click' | 'type' | 'scroll';
+  /** For navigate: the URL to open in the shared session. */
+  url?: string;
+  ref?: string;
+  text?: string;
+  direction?: 'down' | 'up';
+  amount?: number;
+}
+
+export interface StudioActOutput {
+  ok: true;
+  action: string;
+  url?: string;
+}
+
+/** A typed failure from a host handler (e.g. an evicted spill fetch, a refused action) — surfaced as a tool error, NOT a bare null a caller could read as "no content". */
 export interface StudioToolError {
   error_reason: string;
   hint: string;
+  /** Present on a `not_holder` refusal — the live control epoch, so the agent can resync its view of whose turn it is. */
+  currentEpoch?: number;
 }
 
-export function isStudioToolError(x: StudioObserveOutput | StudioToolError): x is StudioToolError {
+export function isStudioToolError(x: StudioObserveOutput | StudioActOutput | StudioToolError): x is StudioToolError {
   return typeof (x as StudioToolError).error_reason === 'string';
 }
 
 export interface StudioHostHandlers {
   observe(input: StudioObserveInput): Promise<StudioObserveOutput | StudioToolError>;
+  act(input: StudioActInput): Promise<StudioActOutput | StudioToolError>;
 }
 
 export interface McpToolResult {
@@ -94,12 +114,21 @@ export async function dispatchStudioTool(
   dataDir?: string,
   deps?: DispatchDeps,
 ): Promise<McpToolResult> {
-  // EXECUTE — I am the live host.
+  // EXECUTE — I am the live host. AUTHORIZATION IS HOST-SIDE: the control-token gate
+  // for studio_act runs in studioHost.act() here (where the token lives), never on the
+  // stdio proxy side — a stdio caller cannot satisfy or bypass it.
   if (studioHost) {
     if (name === 'studio_observe') {
       const data = await studioHost.observe(args as StudioObserveInput);
       if (isStudioToolError(data)) return refusal(data.error_reason, data.hint); // typed error → tool error, not silent
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
+    }
+    if (name === 'studio_act') {
+      // args is validated structurally inside act() (unknown action → typed refusal).
+      const data = await studioHost.act(args as unknown as StudioActInput);
+      // Serialize the full result both ways — a refusal carries `hint` and (for
+      // not_holder) `currentEpoch`, which the bare refusal() shape would drop.
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: isStudioToolError(data) };
     }
     return refusal('unknown_studio_tool', `No host handler for ${name}.`);
   }

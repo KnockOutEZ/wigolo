@@ -147,6 +147,20 @@ export interface NavigableBrowser {
   navigate(url: string): Promise<void>;
 }
 
+export interface NavigateSessionOptions {
+  /**
+   * Host-authoritative epoch fence. Called SYNCHRONOUSLY immediately before the CDP
+   * nav command goes out; return false to abort. Closes the gate→nav-start TOCTOU: the
+   * control-token gate may have passed, then a human reclaim landed before `goto` —
+   * there is no in-flight nav for the reclaim's abort to cancel yet, so this check is
+   * what stops the agent navigating under a just-revoked grant. There is no `await`
+   * between this call and `browser.navigate`, so on the single-threaded host the check
+   * and the nav-command dispatch are atomic. Downstream hops are re-validated by the
+   * (pull-at-eval) NavInterceptor; an in-flight reclaim is handled by its abort.
+   */
+  beforeNavigate?: () => boolean;
+}
+
 /**
  * Guard the URL a party asks to navigate to, then drive the browser. The
  * per-hop redirect re-validation is handled separately by NavInterceptor; this
@@ -156,10 +170,16 @@ export async function navigateSession(
   browser: NavigableBrowser,
   url: string,
   policy: NavPolicy,
+  opts?: NavigateSessionOptions,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const verdict = guardNavigation(url, policy);
   if (!verdict.ok) {
     return { ok: false, reason: verdict.code === 'blocked' ? 'navigation_blocked' : `navigation_${verdict.code}` };
+  }
+  if (opts?.beforeNavigate && !opts.beforeNavigate()) {
+    // A reclaim fired in the gate→start window — stand down, never navigate under a
+    // revoked grant. Distinct reason so the agent reads "human took over, don't retry".
+    return { ok: false, reason: 'aborted_reclaimed' };
   }
   try {
     await browser.navigate(url);

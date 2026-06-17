@@ -56,6 +56,7 @@ import {
   DIFF_TOOL_SCHEMA,
   WATCH_TOOL_SCHEMA,
   STUDIO_OBSERVE_TOOL_SCHEMA,
+  STUDIO_ACT_TOOL_SCHEMA,
 } from './server/tool-schemas.js';
 import { loadPlugins } from './plugins/loader.js';
 import { PluginRegistry } from './plugins/registry.js';
@@ -365,6 +366,11 @@ export function createMcpServer(subsystems: Subsystems): Server {
         description: TOOL_DESCRIPTIONS.studio_observe,
         inputSchema: STUDIO_OBSERVE_TOOL_SCHEMA,
       },
+      {
+        name: 'studio_act',
+        description: TOOL_DESCRIPTIONS.studio_act,
+        inputSchema: STUDIO_ACT_TOOL_SCHEMA,
+      },
     ],
   }));
 
@@ -537,8 +543,9 @@ export function createMcpServer(subsystems: Subsystems): Server {
       };
     }
 
-    if (name === 'studio_observe') {
+    if (name === 'studio_observe' || name === 'studio_act') {
       // Route through the shared seam: execute-on-host (studioHost set) or proxy/refuse on stdio.
+      // studio_act's control-token gate runs inside the host handler — host-authoritative.
       const result = await dispatchStudioTool(name, (args ?? {}) as Record<string, unknown>, subsystems.studioHost, getConfig().dataDir);
       return { content: result.content, isError: result.isError };
     }

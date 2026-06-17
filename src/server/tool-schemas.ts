@@ -598,6 +598,22 @@ export const STUDIO_OBSERVE_TOOL_SCHEMA = {
   required: [],
 };
 
+export const STUDIO_ACT_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    action: {
+      type: 'string',
+      enum: ['navigate'],
+      description: 'What to do in the shared browser session. Currently supported: navigate to a URL.',
+    },
+    url: {
+      type: 'string',
+      description: 'For navigate: the URL to open. Must be http(s); cloud-internal addresses are always blocked, and private/local addresses are blocked unless the human has granted it for this session.',
+    },
+  },
+  required: ['action'],
+};
+
 export const TOOL_SCHEMAS: Record<ToolName, ToolSchema> = {
   fetch: FETCH_TOOL_SCHEMA,
   search: SEARCH_TOOL_SCHEMA,
@@ -610,4 +626,5 @@ export const TOOL_SCHEMAS: Record<ToolName, ToolSchema> = {
   diff: DIFF_TOOL_SCHEMA,
   watch: WATCH_TOOL_SCHEMA,
   studio_observe: STUDIO_OBSERVE_TOOL_SCHEMA,
+  studio_act: STUDIO_ACT_TOOL_SCHEMA,
 };
