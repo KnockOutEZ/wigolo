@@ -40,7 +40,7 @@ describe('knowledge layer integration', () => {
       inputSchema: { type: 'object' as const, properties: {} },
     }));
 
-    expect(tools.length).toBe(11);
+    expect(tools.length).toBe(12);
     for (const tool of tools) {
       expect(tool.name).toBeTruthy();
       expect(tool.description).toBeTruthy();

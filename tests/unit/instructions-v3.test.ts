@@ -113,7 +113,17 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(keys).toContain('watch');
     // Phase 2H: the first studio_* tool — the agent's read-only perception of the session.
     expect(keys).toContain('studio_observe');
-    expect(keys.length).toBe(11);
+    // Phase 2I: the agent's acting verb in the session (navigate; click/type/scroll later).
+    expect(keys).toContain('studio_act');
+    expect(keys.length).toBe(12);
+  });
+
+  it('studio_act description covers navigation, the control token, and the private/metadata block', () => {
+    const desc = TOOL_DESCRIPTIONS.studio_act;
+    expect(desc).toMatch(/navigat/i);
+    expect(desc).toMatch(/control|hold|turn|took over/i); // token-gated
+    expect(desc).toMatch(/private|local|internal|blocked/i); // SSRF posture, capability language
+    expect(desc).not.toContain('CDP'); // no implementation names (user-facing)
   });
 
   it('find_similar description mentions url and concept inputs', () => {
@@ -207,8 +217,8 @@ describe('ToolName type', () => {
     // contract this test locks in.
     const validNames: ToolName[] = [
       'fetch', 'search', 'crawl', 'cache', 'extract',
-      'find_similar', 'research', 'agent', 'diff', 'watch', 'studio_observe',
+      'find_similar', 'research', 'agent', 'diff', 'watch', 'studio_observe', 'studio_act',
     ];
-    expect(validNames.length).toBe(11);
+    expect(validNames.length).toBe(12);
   });
 });

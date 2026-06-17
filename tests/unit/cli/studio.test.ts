@@ -223,6 +223,35 @@ describe('cli/studio startStudioHost', () => {
     await host.daemon.stop();
   });
 
+  it('studio_act navigate is gated by the REAL control token + the SAME grant the interceptor reads (single-source)', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    const reason = (r: Awaited<ReturnType<typeof host.act>>) => (r as { error_reason?: string }).error_reason;
+
+    // Human holds by default → the agent's act is refused (gate before acting) with a resync epoch.
+    const refused = await host.act({ action: 'navigate', url: 'https://example.com/' });
+    expect(reason(refused)).toBe('not_holder');
+    expect((refused as { currentEpoch?: number }).currentEpoch).toBe(0);
+
+    // Hand control to the agent.
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+    expect(reason(await host.act({ action: 'navigate', url: 'https://example.com/' }))).toBeUndefined(); // public ok
+
+    // localhost is blocked by default (agent default-deny) — proves the act entry guard
+    // reads the agent policy off the same grant object the interceptor's provider reads.
+    expect(reason(await host.act({ action: 'navigate', url: 'http://localhost:3000/' }))).toBe('navigation_blocked');
+
+    // The human grants private-nav for this session → localhost now reachable by the agent…
+    host.grantAgentPrivateNav(true);
+    expect(reason(await host.act({ action: 'navigate', url: 'http://localhost:3000/' }))).toBeUndefined();
+
+    // …but cloud-metadata stays blocked EVEN under the grant (no SSRF lane).
+    expect(reason(await host.act({ action: 'navigate', url: 'http://169.254.169.254/' }))).toBe('navigation_blocked');
+
+    await host.navInterceptor.stop();
+    await host.bridge.stop();
+    await host.daemon.stop();
+  });
+
   it('exposes a human-only, per-session, revocable agent private-nav grant (default-deny)', async () => {
     const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
     // The grant is a host-side method reachable by the human/UI only — the agent has

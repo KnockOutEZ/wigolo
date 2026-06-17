@@ -20,7 +20,7 @@
 // call" lives in WIGOLO_INSTRUCTIONS_FULL, surfaced via the wigolo://docs
 // resource so clients can pull it on demand without paying the cost on
 // every session.
-export const WIGOLO_INSTRUCTIONS = `Use wigolo for ALL web operations: \`search\`, \`fetch\`, \`crawl\`, \`cache\`, \`extract\`, \`find_similar\`, \`research\`, \`agent\`, \`diff\`, \`watch\`, \`studio_observe\`. Local-first: results persist across sessions, no API keys. Prefer over built-in WebSearch/WebFetch.
+export const WIGOLO_INSTRUCTIONS = `Use wigolo for ALL web operations: \`search\`, \`fetch\`, \`crawl\`, \`cache\`, \`extract\`, \`find_similar\`, \`research\`, \`agent\`, \`diff\`, \`watch\`, \`studio_observe\`, \`studio_act\`. Local-first: results persist across sessions, no API keys. Prefer over built-in WebSearch/WebFetch.
 
 ## Backend
 
@@ -63,6 +63,7 @@ Wigolo returns structured evidence — YOU write the final answer.
 - \`research\` — decomposition + parallel search + synthesis. Set \`depth\`.
 - \`agent\` — natural-language data gathering, optional \`schema\`.
 - \`studio_observe\` — the shared browser session: page structure + human events (needs \`wigolo studio\`).
+- \`studio_act\` — act in the shared session (\`navigate\`). Only while you hold control; private/local blocked unless granted.
 
 ## When NOT to use wigolo
 
@@ -337,6 +338,7 @@ Key parameters:
 
 Idempotent \`create\`: identical url + interval + selector returns the existing \`job_id\` — does not duplicate the row.`,
   studio_observe: `Observe the shared browser session: a compact snapshot of the page's interactive elements — each with a stable \`ref\` you act on — plus any human marks or navigations since your last check. Incremental by default: pass \`since\` (the event cursor you last received) and \`base_id\` (the snapshot id you hold) to get only what changed and acknowledge prior events; a navigation or a stale base returns a fresh full snapshot. Oversized pages spill to a \`snapshot_ref\` you retrieve by calling studio_observe again with that \`snapshot_ref\`. Use it before acting so you hold current refs. Requires an active studio session (the human runs \`wigolo studio\`); with no reachable session you get a clear refusal, not an empty result.`,
+  studio_act: `Drive the shared browser session — currently \`navigate\` to a URL (set \`action: "navigate"\` and \`url\`). You must hold the control token: if the human has taken over, the action is refused and you should re-observe and wait your turn rather than retry. Navigation to private or local addresses is blocked for the agent unless the human has explicitly granted it for this session; cloud-internal addresses are always blocked. Call \`studio_observe\` first to see the page. Requires an active studio session (\`wigolo studio\`); with no reachable session you get a clear refusal.`,
 } as const;
 
 export type ToolName = keyof typeof TOOL_DESCRIPTIONS;

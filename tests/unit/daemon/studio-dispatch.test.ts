@@ -7,6 +7,7 @@ import { writeHandle, setMyInstanceId, type SessionHandle } from '../../../src/s
 
 let dir: string;
 let proxyCalls: Array<{ name: string; args: Record<string, unknown> }>;
+let actCalls: number; // host-side act() invocations — proves authorization runs on the host, never the proxy side
 
 const handle = (over: Partial<SessionHandle> = {}): SessionHandle => ({ id: 's', endpoint: 'http://127.0.0.1:65000', token: 't', pid: process.pid, instanceId: 'host-A', ...over });
 const proxyReturning = (result: unknown) => () => ({
@@ -15,10 +16,11 @@ const proxyReturning = (result: unknown) => () => ({
 const throwingProxy = () => () => ({ callTool: async () => { throw new Error('ECONNREFUSED'); } });
 const hostHandlers = (): StudioHostHandlers => ({
   observe: async () => ({ id: 'snap1', kind: 'full', elements: [], events: [], eventCursor: 0, eventsDropped: 0, domTruncated: false }),
+  act: async (input) => { actCalls++; return { ok: true, action: input.action, url: input.url }; },
 });
 const reason = (r: McpToolResult) => JSON.parse(r.content[0].text).error_reason as string;
 
-beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'wigolo-dispatch-')); proxyCalls = []; setMyInstanceId(null); });
+beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'wigolo-dispatch-')); proxyCalls = []; actCalls = 0; setMyInstanceId(null); });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); setMyInstanceId(null); });
 
 describe('dispatchStudioTool — execute / proxy / refuse trichotomy (the seam 2I+2J inherit)', () => {
@@ -68,5 +70,32 @@ describe('dispatchStudioTool — execute / proxy / refuse trichotomy (the seam 2
     const r = await dispatchStudioTool('studio_observe', {}, undefined, dir, { proxyFactory: throwingProxy() });
     expect(r.isError).toBe(true);
     expect(reason(r)).toBe('studio_host_unreachable');
+  });
+});
+
+describe('dispatchStudioTool — studio_act routing (authorization is HOST-SIDE)', () => {
+  it('EXECUTE studio_act on the host runs the host handler (where the control-token gate lives)', async () => {
+    const r = await dispatchStudioTool('studio_act', { action: 'navigate', url: 'https://example.com/' }, hostHandlers(), dir, { proxyFactory: proxyReturning({}) });
+    expect(actCalls).toBe(1); // the gate ran host-side
+    expect(r.isError).toBe(false);
+    expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, action: 'navigate', url: 'https://example.com/' });
+    expect(proxyCalls).toEqual([]);
+  });
+
+  it('PROXY studio_act from stdio forwards VERBATIM and makes NO authorization decision (dumb passthrough)', async () => {
+    writeHandle(handle({ instanceId: 'host-FOREIGN' }), dir);
+    setMyInstanceId('host-MINE');
+    const hostResult = { content: [{ type: 'text', text: JSON.stringify({ ok: true, action: 'navigate' }) }], isError: false };
+    const r = await dispatchStudioTool('studio_act', { action: 'navigate', url: 'https://x/' }, undefined, dir, { proxyFactory: proxyReturning(hostResult) });
+    expect(proxyCalls).toEqual([{ name: 'studio_act', args: { action: 'navigate', url: 'https://x/' } }]); // forwarded
+    expect(actCalls).toBe(0); // the stdio side ran NO gate — a caller here can't satisfy or bypass it
+    expect(r).toEqual(hostResult); // verbatim
+  });
+
+  it('REFUSE studio_act with no session (no handle) — a clean refusal, not a gate decision', async () => {
+    const r = await dispatchStudioTool('studio_act', { action: 'navigate', url: 'https://x/' }, undefined, dir, { proxyFactory: proxyReturning({}) });
+    expect(r.isError).toBe(true);
+    expect(reason(r)).toBe('no_studio_session');
+    expect(actCalls).toBe(0);
   });
 });

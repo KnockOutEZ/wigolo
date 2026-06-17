@@ -176,21 +176,68 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     const agent = { source: 'agent' as const, allowPrivate: false };
 
     try {
+      // The interceptor now PULLS the live control-token holder per hop (2C), so drive
+      // the policy via the token, not the removed setPolicy: human holds → human policy.
+      host.controller.handleControl({ op: 'reclaim' });
       // 1. human → 302 → localhost ALLOWED: the redirect target is re-paused AND continued.
-      host.navInterceptor.setPolicy(human);
       const r1 = await navigateSession(host.sessionBrowser, `${base}/redir`, human);
       expect(r1.ok).toBe(true);
       expect(await page.evaluate(() => document.body.textContent)).toContain('DEST');
 
       // 2. agent → localhost BLOCKED (source asymmetry; the localhost hop is guarded for the agent).
-      host.navInterceptor.setPolicy(agent);
+      host.controller.handleControl({ op: 'grant', to: 'agent' }); // holder=agent → interceptor uses agent policy
       expect((await navigateSession(host.sessionBrowser, `${base}/redir`, agent)).ok).toBe(false);
 
       // 3. metadata blocked for BOTH parties (always; link-local).
       expect((await navigateSession(host.sessionBrowser, 'http://169.254.169.254/', human)).ok).toBe(false);
       expect((await navigateSession(host.sessionBrowser, 'http://169.254.169.254/', agent)).ok).toBe(false);
     } finally {
-      host.navInterceptor.setPolicy(human);
+      host.controller.handleControl({ op: 'reclaim' });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 30_000);
+
+  it('a human reclaim DURING an agent navigation aborts it — the page does not land on the agent target (in-flight abort)', async () => {
+    // The deferred 2C proof, now that the agent nav path (studio_act) exists. A slow
+    // endpoint keeps the nav genuinely in-flight; the human reclaims mid-load → the
+    // onChange→abortInFlight (Page.stopLoading) cancels it, so the page never reaches
+    // the agent's target. (The gate→start window is closed deterministically by the
+    // epoch fence — proven in the unit suite — so this exercises the in-flight half.)
+    const server = createServer((req, res) => {
+      if (req.url === '/slow') {
+        setTimeout(() => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<body>AGENT_TARGET</body>'); }, 4000);
+      } else {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<body>HUMAN_START</body>');
+      }
+    });
+    const port = await new Promise<number>((resolve) =>
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port)),
+    );
+    const base = `http://127.0.0.1:${port}`;
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+
+    try {
+      // Human lands on a known start page.
+      host.controller.handleControl({ op: 'reclaim' });
+      await navigateSession(host.sessionBrowser, `${base}/start`, { source: 'human', allowPrivate: true });
+      expect(await page.evaluate(() => document.body.textContent)).toContain('HUMAN_START');
+
+      // Hand control to the agent (+grant localhost so the slow nav isn't blocked at entry),
+      // start a slow agent nav, let it get in-flight, then the human reclaims mid-load.
+      host.controller.handleControl({ op: 'grant', to: 'agent' });
+      host.grantAgentPrivateNav(true);
+      const navP = host.act({ action: 'navigate', url: `${base}/slow` });
+      await new Promise((r) => setTimeout(r, 500)); // nav is now in-flight (target is 4s slow)
+      host.controller.handleControl({ op: 'reclaim' }); // human takeover → abortInFlight (Page.stopLoading)
+      await navP.catch(() => {});
+
+      // The agent's nav was aborted — the page never reached the agent's target.
+      await new Promise((r) => setTimeout(r, 500));
+      expect(await page.evaluate(() => document.body.textContent)).not.toContain('AGENT_TARGET');
+    } finally {
+      host.controller.handleControl({ op: 'reclaim' });
+      host.grantAgentPrivateNav(false);
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }, 30_000);

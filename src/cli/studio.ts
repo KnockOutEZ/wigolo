@@ -19,6 +19,8 @@ import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
 import { PageSnapshotter } from '../studio/perception/snapshot.js';
 import { StudioEventQueue } from '../studio/event-queue.js';
 import { createObserver } from '../studio/observe.js';
+import { createActHandler } from '../studio/act.js';
+import type { StudioActInput, StudioActOutput, StudioToolError } from '../daemon/studio-dispatch.js';
 import { randomUUID } from 'node:crypto';
 
 /** Bounded human-event buffer; overflow is fail-loud (drained events surface a dropped count → resync). */
@@ -79,6 +81,8 @@ export interface StudioHost {
   navInterceptor: NavInterceptor;
   /** Navigate the session as the human (holder-gated + guarded); broadcasts {t:'error'} on a non-holder or blocked target. */
   navigate: (url: string) => Promise<void>;
+  /** The agent's acting verb (studio_act) — gate + entry guard, host-authoritative. Exposed for the host-boundary tests. */
+  act: (input: StudioActInput) => Promise<StudioActOutput | StudioToolError>;
   /** Human-only, per-session, revocable: lift the agent's localhost/RFC1918 nav block (cloud-metadata stays blocked). */
   grantAgentPrivateNav: (on: boolean) => void;
   hub: StudioWsHub;
@@ -263,10 +267,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   sessionBrowser.onFailed(() => hub.broadcast(session.id, { t: 'error', reason: 'session_failed' }));
   await bridge.start();
 
-  // Wire studio_observe to the live session and inject it into the daemon's shared
-  // dispatcher BEFORE the handle is published — closing the self-loop window (a
-  // studio_* call can't arrive, find the handle pointing at us, and proxy into a loop
-  // before studioHost is set). snapshot() reads sessionBrowser.cdp live (survives recovery rebind).
+  // Wire studio_observe + studio_act to the live session and inject them into the
+  // daemon's shared dispatcher BEFORE the handle is published — closing the self-loop
+  // window (a studio_* call can't arrive, find the handle pointing at us, and proxy into
+  // a loop before studioHost is set). snapshot() reads sessionBrowser.cdp live (survives recovery rebind).
   const observe = createObserver({
     snapshot: () => snapshotter.snapshot(sessionBrowser.cdp),
     eventQueue,
@@ -274,12 +278,16 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     spillMaxBytes: STUDIO_SPILL_MAX_BYTES,
     dataDir: opts.dataDir,
   });
-  daemon.setStudioHost({ observe });
+  // studio_act's gate + entry guard run HOST-SIDE here. The act handler reads the SAME
+  // `grant` object the nav interceptor's policy provider reads, so the entry-URL verdict
+  // and the per-hop verdict come from one source (agreement by construction).
+  const act = createActHandler({ browser: sessionBrowser, controlToken, grant });
+  daemon.setStudioHost({ observe, act });
 
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, grantAgentPrivateNav, hub, handle, endpoint };
+  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, act, grantAgentPrivateNav, hub, handle, endpoint };
 }
 
 export function runStudio(args: string[]): void {

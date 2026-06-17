@@ -232,4 +232,35 @@ describe('navigateSession', () => {
     const r = await navigateSession(browser, 'https://example.com/', { source: 'human' });
     expect(r.ok).toBe(false);
   });
+
+  it('EPOCH FENCE: beforeNavigate returning false aborts WITHOUT navigating (reclaim in the gate→start window)', async () => {
+    // The gate→nav-start TOCTOU: the control-token gate passed, but a human reclaim
+    // fired before the CDP nav command went out. beforeNavigate (the host-authoritative
+    // epoch re-check) is called synchronously right before browser.navigate; false ⇒
+    // stand down with `aborted_reclaimed`, never navigate under a revoked grant.
+    const b = makeFakeBrowser();
+    const r = await navigateSession(b.browser, 'https://example.com/', { source: 'agent', allowPrivate: true }, { beforeNavigate: () => false });
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.reason).toBe('aborted_reclaimed');
+    expect(b.gotos).toEqual([]); // never navigated
+  });
+
+  it('navigates when beforeNavigate passes (epoch unchanged — no reclaim)', async () => {
+    const b = makeFakeBrowser();
+    const r = await navigateSession(b.browser, 'https://example.com/', { source: 'agent', allowPrivate: true }, { beforeNavigate: () => true });
+    expect(r.ok).toBe(true);
+    expect(b.gotos).toEqual(['https://example.com/']);
+  });
+
+  it('SCHEME ALLOWLIST (regression pin): refuses non-http(s) schemes for the agent — guardNavigation rejects them before classifyHost', async () => {
+    // file:// reads local files, javascript: executes in-page, data:/view-source:/chrome:
+    // are their own vectors — none are IP-range issues. guardNavigation enforces the
+    // protocol allowlist FIRST, so the agent nav path (this entry guard) refuses them.
+    const b = makeFakeBrowser();
+    for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,<b>x</b>', 'view-source:https://example.com', 'chrome://settings']) {
+      const r = await navigateSession(b.browser, url, { source: 'agent', allowPrivate: false });
+      expect(r.ok, url).toBe(false);
+    }
+    expect(b.gotos).toEqual([]); // none reached the browser
+  });
 });
