@@ -81,6 +81,12 @@ export interface Config {
   studioNavAllowPrivateForHuman: boolean;
   /** Token budget for a single perception snapshot; over-budget snapshots are flagged for spill (Phase 2F). Realistic pages fit; heavy pages spill. */
   studioSnapshotTokenBudget: number;
+  /** Vision escalation rate cap per agent turn — keeps the expensive pixel path rare (Phase 2G). */
+  studioVisionMaxCallsPerTurn: number;
+  /** Vision escalation byte budget per agent turn; over it, escalation is refused (fail-loud, no screenshot spam). */
+  studioVisionMaxBytesPerTurn: number;
+  /** A cropped vision PNG larger than this is spilled to a ref instead of returned inline. */
+  studioVisionInlineByteCap: number;
   pluginsDir: string;
   browserTypes: BrowserType[];
   shellHistoryPath: string;
@@ -329,6 +335,9 @@ export function getConfig(): Config {
     studioBrowserCrashMaxRestarts: envInt('WIGOLO_STUDIO_BROWSER_CRASH_MAX_RESTARTS', 2, settings, 'studioBrowserCrashMaxRestarts'),
     studioNavAllowPrivateForHuman: envBool('WIGOLO_STUDIO_NAV_ALLOW_PRIVATE_FOR_HUMAN', true, settings, 'studioNavAllowPrivateForHuman'),
     studioSnapshotTokenBudget: envInt('WIGOLO_STUDIO_SNAPSHOT_TOKEN_BUDGET', 4000, settings, 'studioSnapshotTokenBudget'),
+    studioVisionMaxCallsPerTurn: envInt('WIGOLO_STUDIO_VISION_MAX_CALLS_PER_TURN', 3, settings, 'studioVisionMaxCallsPerTurn'),
+    studioVisionMaxBytesPerTurn: envInt('WIGOLO_STUDIO_VISION_MAX_BYTES_PER_TURN', 4_000_000, settings, 'studioVisionMaxBytesPerTurn'),
+    studioVisionInlineByteCap: envInt('WIGOLO_STUDIO_VISION_INLINE_BYTE_CAP', 262144, settings, 'studioVisionInlineByteCap'),
     pluginsDir: (() => {
       const raw = envStr('WIGOLO_PLUGINS_DIR', null, settings, 'pluginsDir');
       if (raw) {

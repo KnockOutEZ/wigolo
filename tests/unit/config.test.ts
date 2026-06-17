@@ -490,5 +490,16 @@ describe('config', () => {
       resetConfig();
       expect(getConfig().studioSnapshotTokenBudget).toBe(8000);
     });
+
+    it('vision budget caps default and read from env', () => {
+      expect(getConfig().studioVisionMaxCallsPerTurn).toBe(3);
+      expect(getConfig().studioVisionMaxBytesPerTurn).toBe(4_000_000);
+      expect(getConfig().studioVisionInlineByteCap).toBe(262144);
+      process.env.WIGOLO_STUDIO_VISION_MAX_CALLS_PER_TURN = '5';
+      process.env.WIGOLO_STUDIO_VISION_INLINE_BYTE_CAP = '1000';
+      resetConfig();
+      expect(getConfig().studioVisionMaxCallsPerTurn).toBe(5);
+      expect(getConfig().studioVisionInlineByteCap).toBe(1000);
+    });
   });
 });

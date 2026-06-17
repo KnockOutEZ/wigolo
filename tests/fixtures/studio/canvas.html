@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>canvas fixture</title></head>
+<body style="margin:0">
+<!--
+  Perception spike/2G fixture: a GPU/canvas-rendered region — the primary vision
+  trigger AND the content most likely to render blank/different in headless. The
+  headed validation captures #art (varied multi-color drawing) and #blank (solid),
+  and asserts the canvas capture is non-blank (its PNG ≫ the blank region's).
+-->
+<canvas id="art" width="200" height="150"></canvas>
+<div id="blank" style="width:200px;height:150px;background:#fff"></div>
+<script>
+  const c = document.getElementById('art');
+  const g = c.getContext('2d');
+  // A varied, multi-color drawing so the PNG carries real entropy (won't compress to ~blank).
+  const grad = g.createLinearGradient(0, 0, 200, 150);
+  grad.addColorStop(0, '#e11d48');
+  grad.addColorStop(0.5, '#2563eb');
+  grad.addColorStop(1, '#16a34a');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 200, 150);
+  for (let i = 0; i < 12; i++) {
+    g.fillStyle = `hsl(${i * 30},80%,${30 + i * 4}%)`;
+    g.beginPath();
+    g.arc(20 + i * 14, 40 + (i % 5) * 20, 10, 0, Math.PI * 2);
+    g.fill();
+  }
+  g.fillStyle = '#fff';
+  g.font = '20px sans-serif';
+  g.fillText('Chart 42', 30, 120);
+  window.__ready = true;
+</script>
+</body>
+</html>

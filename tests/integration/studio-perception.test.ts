@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { PageSnapshotter, type PageSnapshot } from '../../src/studio/perception/snapshot.js';
 import { diffSnapshots, resolveObserve } from '../../src/studio/perception/diff.js';
 import { fitElementsToBudget, readSpill } from '../../src/studio/perception/spill.js';
+import { escalate, VisionBudget, type Region } from '../../src/studio/perception/vision.js';
 
 /**
  * The regression wall (CEO sign-off #2, item 1): the 2D spike's numbers transfer
@@ -167,6 +168,28 @@ describe.skipIf(!HEADED)('studio perception — production snapshot reproduces t
       expect(full.map((e) => e.ref)).toContain(snap.elements[snap.elements.length - 1].ref); // …incl. the spilled tail (addressable)
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+    await ctx.close();
+  });
+
+  it('vision (headed): a GPU/canvas-rendered region captures NON-BLANK, carries the region, is tagged untrusted (lock #6)', async () => {
+    const { ctx, page, cdp } = await open('canvas.html');
+    const rectOf = (sel: string): Promise<Region> =>
+      page.$eval(sel, (el) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; });
+    const art = await rectOf('#art');
+    const blank = await rectOf('#blank');
+    const budget = new VisionBudget(5, 8_000_000);
+
+    const canvasShot = await escalate(cdp, { trigger: 'canvas', region: art }, budget, { inlineByteCap: 10_000_000 });
+    const blankShot = await escalate(cdp, { trigger: 'canvas', region: blank }, budget, { inlineByteCap: 10_000_000 });
+    expect(canvasShot.ok && blankShot.ok).toBe(true);
+    if (canvasShot.ok && blankShot.ok) {
+      // The drawn canvas PNG must carry real content — NOT a blank/transparent capture
+      // (the headless-canvas false-confidence trap). It must dwarf the same-size solid region.
+      expect(canvasShot.result.bytes).toBeGreaterThan(blankShot.result.bytes * 2);
+      expect(canvasShot.result.region).toEqual(art); // locus for 2J
+      expect(canvasShot.result.trusted).toBe(false); // untrusted channel
+      expect(canvasShot.result.image.base64).toBeTruthy();
     }
     await ctx.close();
   });
