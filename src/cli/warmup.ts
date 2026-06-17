@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { getConfig } from '../config.js';
@@ -41,12 +42,16 @@ function resolveBundledPlaywrightCli(): string {
  *
  * Returns the strategy so the caller can build the exact command.
  */
-async function detectDepsStrategy(): Promise<'root' | 'sudo' | 'skip'> {
+async function detectDepsStrategy(): Promise<'root' | 'sudo' | 'interactive' | 'skip'> {
   if (process.getuid?.() === 0) return 'root';
   // `sudo -n true` never prompts: -n makes sudo fail immediately (non-zero)
   // rather than ask for a password when credentials aren't cached.
   const probe = await runCommand('sudo', ['-n', 'true'], { timeout: 5000 });
-  return probe.code === 0 ? 'sudo' : 'skip';
+  if (probe.code === 0) return 'sudo';
+  // When running in an interactive terminal, fall back to a prompted sudo so
+  // the user can type their password rather than being told to run it manually.
+  if (process.stdin.isTTY && process.stdout.isTTY) return 'interactive';
+  return 'skip';
 }
 
 /**
@@ -56,8 +61,8 @@ async function detectDepsStrategy(): Promise<'root' | 'sudo' | 'skip'> {
  * libs. macOS/Windows bundle them, so this is skipped off Linux.
  *
  * Returns whether deps were installed; `skipped` means we deliberately did NOT
- * run sudo (non-root, no passwordless sudo) so the launch smoke-test can emit
- * an actionable remediation hint instead of hanging on a password prompt.
+ * run sudo (non-root, no passwordless sudo, no TTY) so the launch smoke-test
+ * can emit an actionable remediation hint instead of hanging on a password prompt.
  */
 async function installLinuxDeps(
   browser: BrowserName,
@@ -67,6 +72,23 @@ async function installLinuxDeps(
 
   const strategy = await detectDepsStrategy();
   if (strategy === 'skip') return { installed: false, skipped: true };
+
+  if (strategy === 'interactive') {
+    process.stdout.write(`\nInstalling ${browser} system libraries — sudo password required:\n`);
+    const r = spawnSync('sudo', [process.execPath, cli, 'install-deps', browser], {
+      // inherit stdin so sudo can prompt for a password via /dev/tty;
+      // pipe stdout/stderr to suppress the verbose playwright install logs.
+      stdio: ['inherit', 'pipe', 'pipe'],
+      timeout: 180000,
+    });
+    if (r.error || r.status !== 0) {
+      const message = r.error?.message
+        ?? (r.stderr as Buffer | null)?.toString().trim()
+        ?? `exit ${r.status}`;
+      return { installed: false, skipped: false, error: message };
+    }
+    return { installed: true, skipped: false };
+  }
 
   const cmd = strategy === 'sudo' ? 'sudo' : process.execPath;
   const args =
