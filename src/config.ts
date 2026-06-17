@@ -79,6 +79,8 @@ export interface Config {
   studioBrowserCrashMaxRestarts: number;
   /** Human-initiated Studio navigation may reach localhost/RFC1918 (co-browsing a local dev server). Agent nav is always blocked-by-default (Phase 2). */
   studioNavAllowPrivateForHuman: boolean;
+  /** Agent-initiated nav reaching localhost/RFC1918 — default FALSE (fail-closed). Lifted only by an explicit, human-issued, revocable per-session grant; cloud-metadata stays blocked regardless. */
+  studioAgentNavAllowPrivate: boolean;
   /** Token budget for a single perception snapshot; over-budget snapshots are flagged for spill (Phase 2F). Realistic pages fit; heavy pages spill. */
   studioSnapshotTokenBudget: number;
   /** Vision escalation rate cap per agent turn — keeps the expensive pixel path rare (Phase 2G). */
@@ -334,6 +336,7 @@ export function getConfig(): Config {
     studioFrameAckTimeoutMs: envInt('WIGOLO_STUDIO_FRAME_ACK_TIMEOUT_MS', 1000, settings, 'studioFrameAckTimeoutMs'),
     studioBrowserCrashMaxRestarts: envInt('WIGOLO_STUDIO_BROWSER_CRASH_MAX_RESTARTS', 2, settings, 'studioBrowserCrashMaxRestarts'),
     studioNavAllowPrivateForHuman: envBool('WIGOLO_STUDIO_NAV_ALLOW_PRIVATE_FOR_HUMAN', true, settings, 'studioNavAllowPrivateForHuman'),
+    studioAgentNavAllowPrivate: envBool('WIGOLO_STUDIO_AGENT_NAV_ALLOW_PRIVATE', false, settings, 'studioAgentNavAllowPrivate'),
     studioSnapshotTokenBudget: envInt('WIGOLO_STUDIO_SNAPSHOT_TOKEN_BUDGET', 4000, settings, 'studioSnapshotTokenBudget'),
     studioVisionMaxCallsPerTurn: envInt('WIGOLO_STUDIO_VISION_MAX_CALLS_PER_TURN', 3, settings, 'studioVisionMaxCallsPerTurn'),
     studioVisionMaxBytesPerTurn: envInt('WIGOLO_STUDIO_VISION_MAX_BYTES_PER_TURN', 4_000_000, settings, 'studioVisionMaxBytesPerTurn'),

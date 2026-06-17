@@ -178,6 +178,63 @@ describe('cli/studio startStudioHost', () => {
     await host.daemon.stop();
   });
 
+  it('holder-gates navigation (Finding C): a non-holder {t:nav} is refused, not steered', async () => {
+    const launcher = makeCrashableHostLauncher();
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch });
+    const broadcastSpy = vi.spyOn(host.hub, 'broadcast');
+    const cdp0 = launcher.state.cdps[0];
+
+    // Human holds by default → the human nav steers the shared browser.
+    await host.navigate('https://example.com/');
+    const gotosAfterHuman = cdp0.sends.filter((s) => s.method === 'goto').length;
+    expect(gotosAfterHuman).toBe(1);
+
+    // Hand the token to the agent → a {t:nav} from the (host-stamped human) WS channel is refused.
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+    await host.navigate('https://example.com/elsewhere');
+    expect(broadcastSpy).toHaveBeenCalledWith(host.session.id, { t: 'error', reason: 'not_control_holder' });
+    expect(cdp0.sends.filter((s) => s.method === 'goto').length).toBe(gotosAfterHuman); // no new navigation
+
+    // Human reclaims → can steer again.
+    host.controller.handleControl({ op: 'reclaim' });
+    await host.navigate('https://example.com/back');
+    expect(cdp0.sends.filter((s) => s.method === 'goto').length).toBe(gotosAfterHuman + 1);
+
+    await host.navInterceptor.stop();
+    await host.bridge.stop();
+    await host.daemon.stop();
+  });
+
+  it('reclaim aborts the agent in-flight nav (onChange→abortInFlight→Page.stopLoading); a grant does not', async () => {
+    const launcher = makeCrashableHostLauncher();
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch });
+    const cdp0 = launcher.state.cdps[0];
+
+    host.controller.handleControl({ op: 'grant', to: 'agent' }); // agent holds — a nav could be in flight
+    await flush();
+    expect(cdp0.sends.some((s) => s.method === 'Page.stopLoading')).toBe(false); // granting control must NOT abort
+
+    host.controller.handleControl({ op: 'reclaim' }); // human takes over mid-flight
+    await flush();
+    expect(cdp0.sends.some((s) => s.method === 'Page.stopLoading')).toBe(true); // …stops the agent's in-flight nav
+
+    await host.navInterceptor.stop();
+    await host.bridge.stop();
+    await host.daemon.stop();
+  });
+
+  it('exposes a human-only, per-session, revocable agent private-nav grant (default-deny)', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    // The grant is a host-side method reachable by the human/UI only — the agent has
+    // no path to it (it drives via studio_act, not the host API). Default-deny; flip + revoke.
+    expect(typeof host.grantAgentPrivateNav).toBe('function');
+    expect(() => host.grantAgentPrivateNav(true)).not.toThrow();
+    expect(() => host.grantAgentPrivateNav(false)).not.toThrow();
+    await host.navInterceptor.stop();
+    await host.bridge.stop();
+    await host.daemon.stop();
+  });
+
   it('rebinds the nav interceptor BEFORE the recovery goto on the fresh cdp (Finding A)', async () => {
     const launcher = makeCrashableHostLauncher();
     const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch });
