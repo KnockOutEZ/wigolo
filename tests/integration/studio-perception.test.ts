@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { chromium, type Browser } from 'playwright';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { PageSnapshotter, type PageSnapshot } from '../../src/studio/perception/snapshot.js';
+import { diffSnapshots, resolveObserve } from '../../src/studio/perception/diff.js';
+import { fitElementsToBudget, readSpill } from '../../src/studio/perception/spill.js';
 
 /**
  * The regression wall (CEO sign-off #2, item 1): the 2D spike's numbers transfer
@@ -105,6 +109,64 @@ describe.skipIf(!HEADED)('studio perception — production snapshot reproduces t
     const { byOracle } = await observe(cdp);
     for (const o of ['light-1', 'open-1', 'open-2', 'nested-1', 'closed-1']) {
       expect(byOracle.has(o), `expected to observe ${o}`).toBe(true);
+    }
+    await ctx.close();
+  });
+
+  // ---- 2F: the wall extends to diff correctness + desync + heavy spill (pinned against production) ----
+
+  it('diff: shifting the identical-Delete run → low-confidence CHURN + one real add, never a phantom delta (build-in #1)', async () => {
+    const { ctx, page, cdp } = await open('rerender.html');
+    const snapper = new PageSnapshotter({ tokenBudget: 1_000_000 });
+    const prev = await snapper.snapshot(cdp);
+    await page.evaluate(() => (window as unknown as { __shiftItems: () => void }).__shiftItems());
+    const next = await snapper.snapshot(cdp);
+    const d = diffSnapshots(prev, next);
+
+    // Shifting the run by one position overlaps the path SET, so 4 Delete refs are
+    // reused and only the boundary drifts: 1 ref off the end + 1 new, folded into
+    // churn. The key property: NO phantom structural delta — the drift is churn, the
+    // 4 stable Deletes aren't touched, and only Archive surfaces as a real add.
+    // (The multi-element churn-folding case is pinned in the diff.ts unit tests.)
+    expect(d.added.map((e) => e.name)).toEqual(['Archive']); // ONLY the genuine add surfaces
+    expect(d.removed).toEqual([]); // NO Delete phantom-removed
+    expect(d.lowConfidenceChurn.removed.length).toBe(1); // the single boundary drift, as churn…
+    expect(d.lowConfidenceChurn.added.length).toBe(1);
+    expect([...d.lowConfidenceChurn.removed, ...d.lowConfidenceChurn.added].every((e) => e.name === 'Delete')).toBe(true);
+    await ctx.close();
+  });
+
+  it('desync: a stale held base → full resync; a matching base → diff; navigation → full (build-ins #2/#5)', async () => {
+    const { ctx, page, cdp } = await open('rerender.html');
+    const snapper = new PageSnapshotter({ tokenBudget: 1_000_000 });
+    const prev = await snapper.snapshot(cdp);
+    await page.evaluate(() => (window as unknown as { __rerender: () => void }).__rerender());
+    const next = await snapper.snapshot(cdp);
+
+    expect(resolveObserve(prev, next, { heldBaseId: prev.id }).kind).toBe('diff'); // matching base → delta
+    expect(resolveObserve(prev, next, { heldBaseId: 'stale-base' })).toMatchObject({ kind: 'full', reason: 'base_mismatch' });
+    expect(resolveObserve(prev, next, { heldBaseId: prev.id, navigated: true })).toMatchObject({ kind: 'full', reason: 'navigated' });
+    await ctx.close();
+  });
+
+  it('heavy page: over budget → spill keeps the top-ranked inline and the spilled tail stays addressable (build-ins #3/#4)', async () => {
+    const { ctx, cdp } = await open('heavy.html?n=300');
+    const snap = await new PageSnapshotter({ tokenBudget: 4000 }).snapshot(cdp);
+    expect(snap.tokenCount).toBeGreaterThan(4000); // heavy pages routinely blow the budget
+    expect(snap.overBudget).toBe(true);
+
+    const dir = mkdtempSync(join(tmpdir(), 'wigolo-spill-int-'));
+    try {
+      const fit = fitElementsToBudget(snap.elements, 4000, dir);
+      expect(fit.spillRef).not.toBeNull();
+      expect(fit.spilled).toBeGreaterThan(0);
+      expect(fit.tokenCount).toBeLessThanOrEqual(4000); // inline fits
+      expect(fit.elements[0].ref).toBe(snap.elements[0].ref); // top-ranked kept inline
+      const full = readSpill(fit.spillRef!, dir) as Array<{ ref: string }>;
+      expect(full.length).toBe(snap.elements.length); // every element retrievable…
+      expect(full.map((e) => e.ref)).toContain(snap.elements[snap.elements.length - 1].ref); // …incl. the spilled tail (addressable)
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
     await ctx.close();
   });

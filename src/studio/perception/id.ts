@@ -11,8 +11,8 @@
 
 const STABLE_ATTRS = ['type', 'name', 'placeholder'] as const;
 
-/** Deterministic 32-bit FNV-1a, rendered base36 — a compact opaque ref body. */
-function fnv1a(s: string): string {
+/** Deterministic 32-bit FNV-1a, rendered base36 — a compact opaque ref body. Exported so the snapshot id + churn-group share one stable hash. */
+export function hash(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
@@ -65,7 +65,7 @@ export function assignRefs(nodes: RefInput[]): RefOutput[] {
   for (const n of nodes) counts.set(n.fingerprint, (counts.get(n.fingerprint) ?? 0) + 1);
   return nodes.map((n) =>
     (counts.get(n.fingerprint) ?? 0) > 1
-      ? { ref: 'e' + fnv1a(n.fingerprint + '|' + n.positionPath), confidence: 'low' }
-      : { ref: 'e' + fnv1a(n.fingerprint) },
+      ? { ref: 'e' + hash(n.fingerprint + '|' + n.positionPath), confidence: 'low' }
+      : { ref: 'e' + hash(n.fingerprint) },
   );
 }

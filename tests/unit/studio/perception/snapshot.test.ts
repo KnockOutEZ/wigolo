@@ -99,6 +99,40 @@ describe('buildSnapshot — pure AX ⋈ DOM join', () => {
   });
 });
 
+describe('buildSnapshot — base id, partial signal, churn group (2F support)', () => {
+  it('id is a content hash: stable for equal element sets, different when elements change', () => {
+    const a = snap([{ be: 10, role: 'button', name: 'Open' }]);
+    const b = snap([{ be: 99, role: 'button', name: 'Open' }]); // same elements (different backendId) → same id
+    const c = snap([{ be: 10, role: 'button', name: 'Close' }]); // different content → different id
+    expect(a.id).toBe(b.id);
+    expect(a.id).not.toBe(c.id);
+    expect(a.id).toMatch(/^s[0-9a-z]+$/);
+  });
+
+  it('domTruncated is false normally and TRUE when the depth cap drops content (partial signal, not silent)', () => {
+    expect(snap([{ be: 10, role: 'button', name: 'Open' }]).domTruncated).toBe(false);
+    let node = { backendNodeId: 5000, localName: 'button', attributes: [] };
+    let root = node;
+    for (let d = 0; d < 2100; d++) root = { backendNodeId: 4000 - d, localName: 'div', children: [root] };
+    const ax = [{ ignored: false, role: { value: 'button' }, name: { value: 'Deep' }, backendDOMNodeId: 5000 }];
+    expect(buildSnapshot(ax, root, { tokenBudget: 100000 }).domTruncated).toBe(true);
+  });
+
+  it('groupByRef tags identical-sibling (low-confidence) refs with a shared fingerprint group; unique refs get none', () => {
+    const s = snap([
+      { be: 10, role: 'button', name: 'Delete' },
+      { be: 11, role: 'button', name: 'Delete' },
+      { be: 12, role: 'button', name: 'Open' },
+    ]);
+    const low = s.elements.filter((e) => e.confidence === 'low');
+    const high = s.elements.filter((e) => e.confidence === undefined);
+    expect(low.length).toBe(2);
+    // both "Delete" refs share ONE group (so the diff can fold their positional drift into churn)
+    expect(new Set(low.map((e) => s.groupByRef.get(e.ref))).size).toBe(1);
+    expect(high.every((e) => s.groupByRef.get(e.ref) === undefined)).toBe(true);
+  });
+});
+
 describe('PageSnapshotter.snapshot — async over a CDP session', () => {
   it('queries getFullAXTree + DOM.getDocument(pierce:true) and returns the built snapshot', async () => {
     const { axNodes, root } = build([{ be: 10, role: 'button', name: 'Go' }]);

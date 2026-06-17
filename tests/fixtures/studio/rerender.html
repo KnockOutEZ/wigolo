@@ -23,6 +23,7 @@
   let order = [...distinct];
   let dupOrder = [...dup];
   let prepend = false;
+  let shiftItems = false;
 
   function build() {
     const app = document.getElementById('app');
@@ -54,6 +55,16 @@
 
     const items = document.createElement('section');
     items.setAttribute('aria-label', 'Items');
+    if (shiftItems) {
+      // Prepend a DISTINCT button to the identical-Delete run — shifts every Delete's
+      // position-path down one, so their positional refs drift (churn) while one
+      // genuine element is added. The diff must fold the drift into low-confidence
+      // churn and surface only "Archive" as a real add.
+      const a = document.createElement('button');
+      a.textContent = 'Archive';
+      a.setAttribute('data-oracle', 'archive-0');
+      items.appendChild(a);
+    }
     for (const k of dupOrder) {
       const b = document.createElement('button');
       b.textContent = 'Delete'; // identical name across all five — fingerprint collision
@@ -71,6 +82,8 @@
   window.__reorder = () => { order = [...distinct].reverse(); dupOrder = [...dup].reverse(); build(); };
   // Insert-above: a new item at the top; existing items keep content+oracle, shift down.
   window.__insert = () => { prepend = true; build(); };
+  // Shift the identical-Delete run by prepending a distinct button to its section.
+  window.__shiftItems = () => { shiftItems = true; build(); };
 
   build();
   window.__ready = true;

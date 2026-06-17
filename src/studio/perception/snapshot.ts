@@ -12,7 +12,7 @@
  * screencast/input loop during an observe.
  */
 import { countTokens } from '../../search/tokens.js';
-import { assignRefs, computeFingerprint } from './id.js';
+import { assignRefs, computeFingerprint, hash } from './id.js';
 
 /** Interactive a11y roles — the actionable surface (matches the 2D spike's filter so its numbers transfer). */
 const INTERACTIVE = new Set([
@@ -54,11 +54,18 @@ export interface SnapshotElement {
 }
 
 export interface PageSnapshot {
+  /** Content hash of `elements` — the base id a diff is taken against. Pure (no counter), so cold == warm. */
+  id: string;
   elements: SnapshotElement[];
   tokenCount: number;
+  /** Token budget exceeded → spill at the transport layer (2F). Does NOT affect `elements` (diff stays budget-independent). */
   overBudget: boolean;
+  /** DOM depth cap hit → some deep content omitted. A partial-snapshot signal (fail-loud — never a silent drop), even for the attack guard. */
+  domTruncated: boolean;
   /** ref → current backendDOMNodeId, host-side ONLY (never serialized to the agent). 2J resolves coords through this. */
   refMap: Map<string, number>;
+  /** ref → fingerprint group, host-side ONLY, for low-confidence elements. The diff folds positional drift of an identical-sibling run into low-confidence churn (not phantom add/remove) by matching groups. */
+  groupByRef: Map<string, string>;
 }
 
 export interface PerceptionCdp {
@@ -74,12 +81,13 @@ function attrsToObj(a: string[] = []): Record<string, string> {
 /** Defense-in-depth: bound the recursion so a malformed/hostile tree can't overflow the host. An honest DOM.getDocument tree is a shallow spanning tree, far below this. */
 const MAX_DOM_DEPTH = 2000;
 
-/** Flatten DOM.getDocument(pierce:true) into backendNodeId → DomInfo, crossing shadow roots + same-target frames. */
-function flattenDom(root: DomNode | undefined): Map<number, DomInfo> {
+/** Flatten DOM.getDocument(pierce:true) into backendNodeId → DomInfo, crossing shadow roots + same-target frames. Reports whether the depth cap dropped content (fail-loud — no silent truncation). */
+function flattenDom(root: DomNode | undefined): { map: Map<number, DomInfo>; truncated: boolean } {
   const map = new Map<number, DomInfo>();
-  if (!root) return map;
+  let truncated = false;
+  if (!root) return { map, truncated };
   const walk = (node: DomNode, parent: number | null, index: number, depth: number): void => {
-    if (depth > MAX_DOM_DEPTH) return; // bounded — never recurse unboundedly on attacker-influenced nesting
+    if (depth > MAX_DOM_DEPTH) { truncated = true; return; } // bounded; surface a partial signal, never silently drop
     const be = node.backendNodeId;
     if (be != null) map.set(be, { localName: node.localName || node.nodeName || '#', attrs: attrsToObj(node.attributes), parent, index });
     let i = 0;
@@ -88,7 +96,7 @@ function flattenDom(root: DomNode | undefined): Map<number, DomInfo> {
     if (node.contentDocument) walk(node.contentDocument, be ?? parent, i++, depth + 1);
   };
   walk(root, null, 0, 0);
-  return map;
+  return { map, truncated };
 }
 
 function pathSig(map: Map<number, DomInfo>, be: number): string {
@@ -106,7 +114,7 @@ function pathSig(map: Map<number, DomInfo>, be: number): string {
 
 /** Pure: join the AX tree to the pierced DOM, assign refs, measure tokens. No I/O, no state. */
 export function buildSnapshot(axNodes: AxNode[], domRoot: DomNode | undefined, opts: { tokenBudget: number }): PageSnapshot {
-  const dom = flattenDom(domRoot);
+  const { map: dom, truncated: domTruncated } = flattenDom(domRoot);
   const records: Array<{ role: string; name: string; be: number | undefined; fingerprint: string; positionPath: string }> = [];
   for (const n of axNodes) {
     if (n.ignored) continue;
@@ -126,13 +134,18 @@ export function buildSnapshot(axNodes: AxNode[], domRoot: DomNode | undefined, o
   const refs = assignRefs(records);
   const elements: SnapshotElement[] = [];
   const refMap = new Map<string, number>();
+  const groupByRef = new Map<string, string>();
   records.forEach((r, i) => {
     const { ref, confidence } = refs[i];
     elements.push(confidence ? { ref, role: r.role, name: r.name, confidence } : { ref, role: r.role, name: r.name });
     if (r.be != null) refMap.set(ref, r.be);
+    // Low-confidence (identical-sibling) refs share a fingerprint group, so the diff
+    // can recognize their positional drift as churn rather than phantom add/remove.
+    if (confidence === 'low') groupByRef.set(ref, 'g' + hash(r.fingerprint));
   });
   const tokenCount = countTokens(JSON.stringify(elements));
-  return { elements, tokenCount, overBudget: tokenCount > opts.tokenBudget, refMap };
+  const id = 's' + hash(JSON.stringify(elements));
+  return { id, elements, tokenCount, overBudget: tokenCount > opts.tokenBudget, domTruncated, refMap, groupByRef };
 }
 
 export class PageSnapshotter {
