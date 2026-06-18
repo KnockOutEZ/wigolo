@@ -29,6 +29,8 @@ describe('buildTarget — structured target from a marked node', () => {
     expect(t!.fingerprint).toBe(computeFingerprint({ role: 'button', name: 'Buy', attrs: { type: 'submit', 'data-id': 'x' } }));
     // multi-attr fingerprint keeps the FULL attr set (heal disambiguation), not just the stable subset.
     expect(t!.attrs).toEqual({ type: 'submit', 'data-id': 'x' });
+    // role/name/attrs are PAGE-DERIVED (untrusted) — welded trusted:false from the start, like 2G vision.
+    expect(t!.trusted).toBe(false);
   });
 
   it('ancestorPath is the GENERALIZED tag chain with positional indices dropped (so it matches across list siblings)', () => {

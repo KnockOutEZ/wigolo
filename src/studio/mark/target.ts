@@ -22,6 +22,13 @@ export interface StructuredTarget {
   backendNodeId: number;
   role: string;
   name: string;
+  /**
+   * The descriptive fields (`role`/`name`/`attrs`) are PAGE-DERIVED — an element's accessible
+   * name/attributes are page-controlled and may carry injected instructions. Welded `false`
+   * from construction (like the 2G vision channel) so it crosses the agent surface already on
+   * the data side of the trust boundary; Phase 6 hardens an already-tagged channel.
+   */
+  trusted: false;
   /** role+name+stable-attr subset (id.ts) — the primary locator, shared with the snapshot ref hash. */
   fingerprint: string;
   /** Generalized ancestor tag chain, positional indices dropped — heal tier 3 + the generalization spine. */
@@ -56,6 +63,7 @@ export function buildTarget(axNodes: AxNode[], domRoot: DomNode | undefined, bac
     backendNodeId,
     role,
     name,
+    trusted: false, // page-derived descriptive content — untrusted from the start
     fingerprint: computeFingerprint({ role, name, attrs: info.attrs }),
     ancestorPath: generalizedPath(map, backendNodeId),
     attrs: info.attrs,

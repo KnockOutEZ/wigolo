@@ -467,10 +467,12 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     expect(t.ancestorPath.endsWith('button')).toBe(true); // generalized ancestor path
 
     // …and surfaces to the agent as a studio_observe event.
-    const obs = (await host.observe({})) as { events?: Array<{ type: string; name?: string }> };
+    const obs = (await host.observe({})) as { events?: Array<{ type: string; name?: string; trusted?: boolean }> };
     const markEvent = (obs.events ?? []).find((e) => e.type === 'mark');
     expect(markEvent, 'studio_observe surfaces the mark event').toBeTruthy();
     expect(markEvent!.name).toBe('Buy Now');
+    expect(markEvent!.trusted).toBe(false); // page-derived name carries the untrusted tag (2G precedent)
+    expect(host.marks()[host.marks().length - 1].target.trusted).toBe(false);
   }, 30_000);
 
   it('3a: marking is human-holder-gated — refused while the agent drives (a pick must not hijack the agent’s clicks)', async () => {

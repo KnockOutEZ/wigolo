@@ -275,7 +275,8 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     resolveMark,
     onMark: (target) => {
       const m = markStore.add(target);
-      eventQueue.enqueue({ type: 'mark', markId: m.markId, role: target.role, name: target.name });
+      // trusted:false rides the event: role/name are page-derived (untrusted), like 2G vision.
+      eventQueue.enqueue({ type: 'mark', markId: m.markId, role: target.role, name: target.name, trusted: false });
     },
   });
   const mark = async (): Promise<void> => {

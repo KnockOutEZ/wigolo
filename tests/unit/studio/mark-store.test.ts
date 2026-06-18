@@ -6,6 +6,7 @@ const target = (name: string): StructuredTarget => ({
   backendNodeId: 1,
   role: 'button',
   name,
+  trusted: false,
   fingerprint: 'fp-' + name,
   ancestorPath: 'body/div/button',
   attrs: {},
