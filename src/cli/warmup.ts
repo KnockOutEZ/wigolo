@@ -128,7 +128,7 @@ async function installBrowser(
   if (process.platform === 'linux' && deps.skipped) {
     return {
       ok: false,
-      error: `system libraries missing — run: sudo npx playwright install-deps ${browser}`,
+      error: `system libraries missing — install them with:\n  sudo npx playwright install-deps ${browser}\nThen re-run: wigolo warmup`,
     };
   }
   const detail = probe.error ?? deps.error ?? 'browser failed to launch';
@@ -180,9 +180,10 @@ async function installPlaywright(reporter: WarmupReporter): Promise<Pick<WarmupR
     reporter.success('playwright', 'installed');
     return { playwright: 'ok' };
   }
-  const message = r.error ?? 'install failed';
-  reporter.fail('playwright', message);
-  return { playwright: 'failed', playwrightError: message };
+  const [headline, ...notes] = (r.error ?? 'install failed').split('\n');
+  reporter.fail('playwright', headline);
+  for (const line of notes) reporter.note(line);
+  return { playwright: 'failed', playwrightError: headline };
 }
 
 async function installReranker(
@@ -215,9 +216,10 @@ async function installFirefox(reporter: WarmupReporter): Promise<Pick<WarmupResu
     reporter.success('firefox', 'installed');
     return { firefox: 'ok' };
   }
-  const message = r.error ?? 'install failed';
-  reporter.fail('firefox', message);
-  return { firefox: 'failed', firefoxError: message };
+  const [headline, ...notes] = (r.error ?? 'install failed').split('\n');
+  reporter.fail('firefox', headline);
+  for (const line of notes) reporter.note(line);
+  return { firefox: 'failed', firefoxError: headline };
 }
 
 async function installWebkit(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'webkit' | 'webkitError'>> {
@@ -227,9 +229,10 @@ async function installWebkit(reporter: WarmupReporter): Promise<Pick<WarmupResul
     reporter.success('webkit', 'installed');
     return { webkit: 'ok' };
   }
-  const message = r.error ?? 'install failed';
-  reporter.fail('webkit', message);
-  return { webkit: 'failed', webkitError: message };
+  const [headline, ...notes] = (r.error ?? 'install failed').split('\n');
+  reporter.fail('webkit', headline);
+  for (const line of notes) reporter.note(line);
+  return { webkit: 'failed', webkitError: headline };
 }
 
 async function installEmbeddings(reporter: WarmupReporter): Promise<Pick<WarmupResult, 'embeddings' | 'embeddingsError'>> {
