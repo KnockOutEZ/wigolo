@@ -16,7 +16,7 @@ import { policyForHolder, type NavGrant } from '../studio/nav-policy.js';
 import { StudioWsHub } from '../studio/ws-hub.js';
 import { writeHandle, removeHandle, studioHandlePath, setMyInstanceId, type SessionHandle } from '../studio/handle.js';
 import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
-import { PageSnapshotter, type AxNode, type DomNode } from '../studio/perception/snapshot.js';
+import { PageSnapshotter, buildSnapshot, type AxNode, type DomNode } from '../studio/perception/snapshot.js';
 import { createResolver } from '../studio/perception/resolve.js';
 import { StudioEventQueue } from '../studio/event-queue.js';
 import { createObserver } from '../studio/observe.js';
@@ -24,6 +24,7 @@ import { createActHandler } from '../studio/act.js';
 import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
 import { buildTarget, type StructuredTarget } from '../studio/mark/target.js';
+import { heal, type HealResult } from '../studio/mark/heal.js';
 import type {
   StudioObserveInput,
   StudioObserveOutput,
@@ -95,6 +96,8 @@ export interface StudioHost {
   mark: () => Promise<void>;
   /** The human's marked structured targets (in-memory; Phase-4 persists). Exposed for the host-boundary/headed tests + the Phase-3c studio_marks tool. */
   marks: () => StudioMark[];
+  /** Re-resolve a stored mark against the CURRENT page via the heal cascade (mark→live ref). Exposed for the headed tests + the Phase-3c studio_marks tool. */
+  healMark: (markId: string) => Promise<HealResult | { error: 'no_such_mark' }>;
   /** The agent's observe verb (studio_observe) — host-authoritative snapshot + event drain. Exposed for the host-boundary/headed tests. */
   observe: (input: StudioObserveInput) => Promise<StudioObserveOutput | StudioToolError>;
   /** The agent's acting verb (studio_act) — gate + live ref-resolve + the token-gated input channel, host-authoritative. Exposed for the host-boundary tests. */
@@ -290,6 +293,24 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     void mark().catch((e) => logger.debug('inspect enable failed', { error: e instanceof Error ? e.message : String(e) }));
   };
 
+  // Heal a stored mark against the CURRENT page (3b): re-resolve the structured target through
+  // the cascade to a live snapshot ref — which the existing 2J resolver then takes to coords +
+  // occlusion + dispatch (heal does mark→ref, the resolver does ref→action; no parallel resolver).
+  // One AX⋈DOM fetch: buildSnapshot gives the candidate refs, buildTarget each candidate's locators.
+  const healMark = async (markId: string): Promise<HealResult | { error: 'no_such_mark' }> => {
+    const m = markStore.get(markId);
+    if (!m) return { error: 'no_such_mark' };
+    const ax = (await sessionBrowser.cdp.send('Accessibility.getFullAXTree')) as { nodes?: AxNode[] };
+    const doc = (await sessionBrowser.cdp.send('DOM.getDocument', { depth: -1, pierce: true })) as { root?: DomNode };
+    const snap = buildSnapshot(ax.nodes ?? [], doc.root, { tokenBudget: cfg.studioSnapshotTokenBudget });
+    const candidates: Array<{ ref: string; target: StructuredTarget }> = [];
+    for (const [ref, backendNodeId] of snap.refMap) {
+      const target = buildTarget(ax.nodes ?? [], doc.root, backendNodeId);
+      if (target) candidates.push({ ref, target });
+    }
+    return heal(m.target, candidates);
+  };
+
   bridge = new ScreencastBridge({
     cdp: sessionBrowser.cdp,
     // Feed the forwarder the live page dimensions for input mapping, then fan the frame out.
@@ -348,7 +369,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, marks: () => markStore.list(), observe, act, grantAgentPrivateNav, hub, handle, endpoint };
+  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, marks: () => markStore.list(), healMark, observe, act, grantAgentPrivateNav, hub, handle, endpoint };
 }
 
 export function runStudio(args: string[]): void {

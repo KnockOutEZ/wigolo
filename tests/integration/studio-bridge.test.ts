@@ -475,6 +475,76 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     expect(host.marks()[host.marks().length - 1].target.trusted).toBe(false);
   }, 30_000);
 
+  // ───────────────────────────── Phase 3b: heal cascade ─────────────────────────────
+  const markButton = async (selector: string) => {
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+    const cdp = host.sessionBrowser.cdp;
+    host.controller.handleControl({ op: 'reclaim' }); // human holds — mark is gated
+    const before = host.marks().length;
+    await host.mark();
+    const c = await page.evaluate((sel: string) => {
+      const r = document.querySelector(sel)!.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }, selector);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: c.x, y: c.y });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: c.x, y: c.y, button: 'left', buttons: 1, clickCount: 1 });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: c.x, y: c.y, button: 'left', buttons: 0, clickCount: 1 });
+    await expect.poll(() => host.marks().length, { timeout: 5000 }).toBe(before + 1);
+    return host.marks()[host.marks().length - 1].markId;
+  };
+
+  it('3b: a marked element re-resolves after DOM drift via the heal cascade — fingerprint survives a volatile re-render, and the healed ref drives a real click (mark→heal→ref→2J act)', async () => {
+    // The button's volatile attrs (id/class) will change on re-render; its role+name+stable-attrs
+    // (the fingerprint) stay — so heal tier 1 re-resolves it though its backend node id changed.
+    const html =
+      '<button id="old-1" class="v1" type="submit" style="position:fixed;left:40px;top:40px;width:220px;height:60px">Checkout</button>';
+    await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(html));
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+    const markId = await markButton('#old-1');
+
+    expect(((await host.healMark(markId)) as { confidence: string }).confidence).toBe('high'); // pre-drift sanity
+
+    // DRIFT: replace the button with a fresh node — new id/class (volatile), SAME role+name+type
+    // (fingerprint). The original backend node id is now dead; only the structured target re-finds it.
+    await page.evaluate(() => {
+      (window as unknown as { __hit: number }).__hit = 0;
+      document.body.innerHTML =
+        '<button id="new-9" class="v2-rerendered" type="submit" onclick="window.__hit=1" style="position:fixed;left:40px;top:40px;width:220px;height:60px">Checkout</button>';
+    });
+
+    const r = (await host.healMark(markId)) as { confidence: string; ref?: string; tier?: string };
+    expect(r.confidence).toBe('high'); // re-resolved despite the drift
+    expect(r.tier).toBe('fingerprint'); // via the stable fingerprint, not the dead backend id
+    expect(r.ref).toBeTruthy();
+
+    // The bridge: the healed ref drives a real click through the 2J resolver → the CURRENT node.
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+    const act = (await host.act({ action: 'click', ref: r.ref! })) as { ok?: boolean; error_reason?: string };
+    expect(act.error_reason).toBeUndefined();
+    expect(act.ok).toBe(true);
+    expect(await page.evaluate(() => (window as unknown as { __hit: number }).__hit)).toBe(1); // clicked the re-rendered node
+    host.controller.handleControl({ op: 'reclaim' });
+  }, 30_000);
+
+  it('3b: heal ASKS (low confidence) when drift makes the mark ambiguous — never guesses a sibling', async () => {
+    await host.sessionBrowser.navigate(
+      'data:text/html,' + encodeURIComponent('<button type="submit" style="position:fixed;left:40px;top:40px;width:220px;height:60px">Delete</button>'),
+    );
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+    const markId = await markButton('button');
+
+    // DRIFT: now TWO identical "Delete" buttons (same fingerprint) — the mark is ambiguous.
+    await page.evaluate(() => {
+      document.body.innerHTML = '<button type="submit">Delete</button><button type="submit">Delete</button>';
+    });
+
+    const r = (await host.healMark(markId)) as { confidence: string; ref?: string; candidates?: number };
+    expect(r.confidence).toBe('low'); // ambiguous → ask
+    expect(r.ref).toBeUndefined(); // never picks one of the identical siblings
+    expect(r.candidates).toBe(2);
+    host.controller.handleControl({ op: 'reclaim' });
+  }, 30_000);
+
   it('3a: marking is human-holder-gated — refused while the agent drives (a pick must not hijack the agent’s clicks)', async () => {
     await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent('<button id="b">x</button>'));
     host.controller.handleControl({ op: 'grant', to: 'agent' }); // agent drives
