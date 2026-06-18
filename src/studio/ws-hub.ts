@@ -53,6 +53,8 @@ export interface StudioWsHubOptions {
   onControl?: (sessionId: string, msg: Record<string, unknown>) => void;
   /** Inbound human navigation request ({t:'nav', url}) — host wires this to a guarded navigateSession. */
   onNav?: (sessionId: string, msg: Record<string, unknown>) => void;
+  /** Inbound human mark request ({t:'mark'}) — host wires this to arming inspect mode (human-holder-gated). */
+  onMark?: (sessionId: string, msg: Record<string, unknown>) => void;
   /** Skip sending a frame to a client whose send buffer already exceeds this (drop-under-load). */
   frameBackpressureBytes?: number;
   /** Extra fields merged into the `hello` sent on connect — the host supplies the initial control state {holder, epoch} so a client knows the epoch to stamp on input. */
@@ -77,6 +79,7 @@ export class StudioWsHub {
   private readonly onInput?: (sessionId: string, msg: Record<string, unknown>) => void;
   private readonly onControl?: (sessionId: string, msg: Record<string, unknown>) => void;
   private readonly onNav?: (sessionId: string, msg: Record<string, unknown>) => void;
+  private readonly onMark?: (sessionId: string, msg: Record<string, unknown>) => void;
   private readonly helloExtras?: (sessionId: string) => Record<string, unknown>;
   private readonly frameBackpressureBytes: number;
   private readonly heartbeat: ReturnType<typeof setInterval>;
@@ -88,6 +91,7 @@ export class StudioWsHub {
     this.onInput = opts.onInput;
     this.onControl = opts.onControl;
     this.onNav = opts.onNav;
+    this.onMark = opts.onMark;
     this.helloExtras = opts.helloExtras;
     this.frameBackpressureBytes = opts.frameBackpressureBytes ?? DEFAULT_FRAME_BACKPRESSURE_BYTES;
     this.heartbeat = setInterval(() => this.heartbeatTick(), opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_MS);
@@ -201,6 +205,9 @@ export class StudioWsHub {
         break;
       case 'nav':
         this.onNav?.(sessionId, msg);
+        break;
+      case 'mark':
+        this.onMark?.(sessionId, msg);
         break;
     }
   }

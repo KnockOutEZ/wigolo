@@ -437,4 +437,58 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     expect(r.error_reason).toBe('element_occluded');
     host.controller.handleControl({ op: 'reclaim' });
   }, 30_000);
+
+  // ───────────────────────────── Phase 3a: mark ingestion ─────────────────────────────
+  it('3a: a human mark via inspect mode becomes a structured target — stored and surfaced to the agent', async () => {
+    const html = '<button id="b" style="position:fixed;left:40px;top:40px;width:220px;height:60px">Buy Now</button>';
+    await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(html));
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+    const cdp = host.sessionBrowser.cdp;
+
+    host.controller.handleControl({ op: 'reclaim' }); // human holds — mark is human-holder-gated
+    const before = host.marks().length;
+    await host.mark(); // arm inspect mode (the {t:'mark'} path)
+
+    // The human "clicks" the button while inspect mode is armed → Overlay.inspectNodeRequested
+    // (a synthesized Input click triggers the compositor pick, confirmed against a real browser).
+    const c = await page.evaluate(() => {
+      const r = document.getElementById('b')!.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: c.x, y: c.y });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: c.x, y: c.y, button: 'left', buttons: 1, clickCount: 1 });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: c.x, y: c.y, button: 'left', buttons: 0, clickCount: 1 });
+
+    // The pick resolves to a structured target off the privileged AX⋈DOM, lands in the store…
+    await expect.poll(() => host.marks().length, { timeout: 5000 }).toBe(before + 1);
+    const t = host.marks()[host.marks().length - 1].target;
+    expect(t.role).toBe('button');
+    expect(t.name).toBe('Buy Now');
+    expect(t.ancestorPath.endsWith('button')).toBe(true); // generalized ancestor path
+
+    // …and surfaces to the agent as a studio_observe event.
+    const obs = (await host.observe({})) as { events?: Array<{ type: string; name?: string; trusted?: boolean }> };
+    const markEvent = (obs.events ?? []).find((e) => e.type === 'mark');
+    expect(markEvent, 'studio_observe surfaces the mark event').toBeTruthy();
+    expect(markEvent!.name).toBe('Buy Now');
+    expect(markEvent!.trusted).toBe(false); // page-derived name carries the untrusted tag (2G precedent)
+    expect(host.marks()[host.marks().length - 1].target.trusted).toBe(false);
+  }, 30_000);
+
+  it('3a: marking is human-holder-gated — refused while the agent drives (a pick must not hijack the agent’s clicks)', async () => {
+    await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent('<button id="b">x</button>'));
+    host.controller.handleControl({ op: 'grant', to: 'agent' }); // agent drives
+    const errors: string[] = [];
+    const wsUrl = host.endpoint.replace('http://', 'ws://') + `/studio/${host.session.id}/stream`;
+    const ws = new WebSocket(wsUrl, ['wigolo.stream', `wigolo.bearer.${host.session.token}`]);
+    await new Promise<void>((resolve, reject) => { ws.on('open', () => resolve()); ws.on('error', reject); });
+    ws.on('message', (d: WebSocket.RawData) => { const m = JSON.parse(d.toString()); if (m.t === 'error') errors.push(m.reason); });
+    const before = host.marks().length;
+    ws.send(JSON.stringify({ t: 'mark' })); // human viewer tries to mark while the agent holds
+    await new Promise((r) => setTimeout(r, 300));
+    expect(host.marks().length).toBe(before); // not armed → no mark could land
+    expect(errors).toContain('not_control_holder');
+    ws.close();
+    host.controller.handleControl({ op: 'reclaim' });
+  }, 30_000);
 });

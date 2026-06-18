@@ -13,8 +13,10 @@
  * Safety-critical modules: NavInterceptor/navigateSession (studio/nav), the act
  * handler + resolver (studio/act, studio/perception/resolve), the single input
  * channel (studio/input, studio/session-control), the control token/epoch
- * (studio/control-token), the session handle (studio/handle), and the studio
- * dispatch/auth seam (daemon/studio-dispatch).
+ * (studio/control-token), the session handle (studio/handle), the studio
+ * dispatch/auth seam (daemon/studio-dispatch), and the mark layer (studio/mark/* —
+ * the structured target, inspector, and store the agent acts on; a wrong target is
+ * a wrong action).
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -24,7 +26,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // Longest alternatives first so e.g. `nav-policy` / `session-control` are not
 // shadowed by `nav` / `control-token`.
-const SAFETY = /from\s+['"][^'"]*(?:studio\/perception\/resolve|studio\/nav-policy|studio\/session-control|studio\/control-token|studio\/nav|studio\/act|studio\/input|studio\/handle|daemon\/studio-dispatch)\.js['"]/;
+const SAFETY = /from\s+['"][^'"]*(?:studio\/perception\/resolve|studio\/mark\/target|studio\/mark\/inspect|studio\/mark\/store|studio\/nav-policy|studio\/session-control|studio\/control-token|studio\/nav|studio\/act|studio\/input|studio\/handle|daemon\/studio-dispatch)\.js['"]/;
 
 const cfg = JSON.parse(readFileSync(join(ROOT, 'tsconfig.test.json'), 'utf8'));
 const gated = new Set(cfg.include.filter((p) => p.startsWith('tests/')));

@@ -20,14 +20,14 @@ const INTERACTIVE = new Set([
   'listbox', 'menuitem', 'tab', 'switch', 'slider', 'spinbutton', 'option',
 ]);
 
-interface AxNode {
+export interface AxNode {
   ignored?: boolean;
   role?: { value?: string };
   name?: { value?: string };
   backendDOMNodeId?: number;
 }
 
-interface DomNode {
+export interface DomNode {
   backendNodeId?: number;
   localName?: string;
   nodeName?: string;
@@ -38,7 +38,7 @@ interface DomNode {
   contentDocument?: DomNode;
 }
 
-interface DomInfo {
+export interface DomInfo {
   localName: string;
   attrs: Record<string, string>;
   parent: number | null;
@@ -83,8 +83,8 @@ function attrsToObj(a: string[] = []): Record<string, string> {
 /** Defense-in-depth: bound the recursion so a malformed/hostile tree can't overflow the host. An honest DOM.getDocument tree is a shallow spanning tree, far below this. */
 const MAX_DOM_DEPTH = 2000;
 
-/** Flatten DOM.getDocument(pierce:true) into backendNodeId → DomInfo, crossing shadow roots + same-target frames. Reports whether the depth cap dropped content (fail-loud — no silent truncation). */
-function flattenDom(root: DomNode | undefined): { map: Map<number, DomInfo>; truncated: boolean } {
+/** Flatten DOM.getDocument(pierce:true) into backendNodeId → DomInfo, crossing shadow roots + same-target frames. Reports whether the depth cap dropped content (fail-loud — no silent truncation). Shared with the mark layer (structured-target + heal) so the privileged AX⋈DOM join has ONE implementation. */
+export function flattenDom(root: DomNode | undefined): { map: Map<number, DomInfo>; truncated: boolean } {
   const map = new Map<number, DomInfo>();
   let truncated = false;
   if (!root) return { map, truncated };

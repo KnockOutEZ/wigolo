@@ -16,11 +16,14 @@ import { policyForHolder, type NavGrant } from '../studio/nav-policy.js';
 import { StudioWsHub } from '../studio/ws-hub.js';
 import { writeHandle, removeHandle, studioHandlePath, setMyInstanceId, type SessionHandle } from '../studio/handle.js';
 import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
-import { PageSnapshotter } from '../studio/perception/snapshot.js';
+import { PageSnapshotter, type AxNode, type DomNode } from '../studio/perception/snapshot.js';
 import { createResolver } from '../studio/perception/resolve.js';
 import { StudioEventQueue } from '../studio/event-queue.js';
 import { createObserver } from '../studio/observe.js';
 import { createActHandler } from '../studio/act.js';
+import { createInspector } from '../studio/mark/inspect.js';
+import { MarkStore, type StudioMark } from '../studio/mark/store.js';
+import { buildTarget, type StructuredTarget } from '../studio/mark/target.js';
 import type {
   StudioObserveInput,
   StudioObserveOutput,
@@ -88,6 +91,10 @@ export interface StudioHost {
   navInterceptor: NavInterceptor;
   /** Navigate the session as the human (holder-gated + guarded); broadcasts {t:'error'} on a non-holder or blocked target. */
   navigate: (url: string) => Promise<void>;
+  /** Arm inspect mode for the human to mark an element (holder-gated; mirrors {t:'mark'}). Exposed for the headed tests + Phase-7 UI. */
+  mark: () => Promise<void>;
+  /** The human's marked structured targets (in-memory; Phase-4 persists). Exposed for the host-boundary/headed tests + the Phase-3c studio_marks tool. */
+  marks: () => StudioMark[];
   /** The agent's observe verb (studio_observe) — host-authoritative snapshot + event drain. Exposed for the host-boundary/headed tests. */
   observe: (input: StudioObserveInput) => Promise<StudioObserveOutput | StudioToolError>;
   /** The agent's acting verb (studio_act) — gate + live ref-resolve + the token-gated input channel, host-authoritative. Exposed for the host-boundary tests. */
@@ -130,6 +137,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   let bridge: ScreencastBridge | undefined;
   let controller: SessionController | undefined;
   let onNavHandler: ((msg: Record<string, unknown>) => void) | undefined;
+  let onMarkHandler: ((msg: Record<string, unknown>) => void) | undefined;
   // The WS hub fans frames/input over the host's WebSocket; the daemon authorizes
   // each upgrade (Origin/Host + subprotocol bearer) before handing it here. WS
   // clients are session viewers, so onAttach/onDetach keep the Session's client
@@ -150,6 +158,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     },
     onControl: (_id, msg) => controller?.handleWireControl(msg),
     onNav: (_id, msg) => onNavHandler?.(msg),
+    onMark: (_id, msg) => onMarkHandler?.(msg),
     // Tell a connecting client the current {holder, epoch} so it stamps valid input
     // even if it joins after a flip (defaults before the controller exists).
     helloExtras: () => controller?.controlSnapshot() ?? { holder: 'human', epoch: 0 },
@@ -227,8 +236,8 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     grant.agentAllowPrivate = on;
   };
 
-  // Perception + the agent's observe path. The event queue records human navigations
-  // (marks/comments are Phase 3) for studio_observe to drain exactly-once.
+  // Perception + the agent's observe path. The event queue records human navigations and
+  // marks (3a) for studio_observe to drain exactly-once.
   const eventQueue = new StudioEventQueue(STUDIO_EVENT_QUEUE_MAX);
   const snapshotter = new PageSnapshotter({ tokenBudget: cfg.studioSnapshotTokenBudget });
 
@@ -247,6 +256,38 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   };
   onNavHandler = (msg) => {
     void navigate(typeof msg.url === 'string' ? msg.url : '');
+  };
+
+  // Mark-to-action (Phase 3a). The human arms inspect mode via {t:'mark'} on the WS (the
+  // host-stamped HUMAN channel), holder-gated like {t:'nav'} so a pick cannot hijack the
+  // agent's synthesized clicks while it drives. A picked node resolves to a structured target
+  // off the privileged AX⋈DOM, lands in the in-memory MarkStore (durable cache capture is
+  // Phase 4), and surfaces to the agent as a studio_observe event. The inspector reads
+  // sessionBrowser.cdp live per enable, so it follows a crash-recovery rebind.
+  const markStore = new MarkStore();
+  const resolveMark = async (backendNodeId: number): Promise<StructuredTarget | null> => {
+    const ax = (await sessionBrowser.cdp.send('Accessibility.getFullAXTree')) as { nodes?: AxNode[] };
+    const doc = (await sessionBrowser.cdp.send('DOM.getDocument', { depth: -1, pierce: true })) as { root?: DomNode };
+    return buildTarget(ax.nodes ?? [], doc.root, backendNodeId);
+  };
+  const inspector = createInspector({
+    cdp: () => sessionBrowser.cdp,
+    resolveMark,
+    onMark: (target) => {
+      const m = markStore.add(target);
+      // trusted:false rides the event: role/name are page-derived (untrusted), like 2G vision.
+      eventQueue.enqueue({ type: 'mark', markId: m.markId, role: target.role, name: target.name, trusted: false });
+    },
+  });
+  const mark = async (): Promise<void> => {
+    if (controlToken.holder !== 'human') {
+      hub.broadcast(session.id, { t: 'error', reason: 'not_control_holder' });
+      return;
+    }
+    await inspector.enable();
+  };
+  onMarkHandler = () => {
+    void mark().catch((e) => logger.debug('inspect enable failed', { error: e instanceof Error ? e.message : String(e) }));
   };
 
   bridge = new ScreencastBridge({
@@ -307,7 +348,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, observe, act, grantAgentPrivateNav, hub, handle, endpoint };
+  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, marks: () => markStore.list(), observe, act, grantAgentPrivateNav, hub, handle, endpoint };
 }
 
 export function runStudio(args: string[]): void {
