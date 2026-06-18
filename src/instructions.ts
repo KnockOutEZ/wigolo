@@ -63,7 +63,7 @@ Wigolo returns structured evidence — YOU write the final answer.
 - \`research\` — decomposition + parallel search + synthesis. Set \`depth\`.
 - \`agent\` — natural-language data gathering, optional \`schema\`.
 - \`studio_observe\` — the shared browser session: page structure + human events (needs \`wigolo studio\`).
-- \`studio_act\` — act in the shared session (\`navigate\`). Only while you hold control; private/local blocked unless granted.
+- \`studio_act\` — act in the shared session: \`navigate\`/\`click\`/\`type\`/\`scroll\`. Only while you hold control; refs resolve live; private/local blocked unless granted.
 
 ## When NOT to use wigolo
 
@@ -338,7 +338,7 @@ Key parameters:
 
 Idempotent \`create\`: identical url + interval + selector returns the existing \`job_id\` — does not duplicate the row.`,
   studio_observe: `Observe the shared browser session: a compact snapshot of the page's interactive elements — each with a stable \`ref\` you act on — plus any human marks or navigations since your last check. Incremental by default: pass \`since\` (the event cursor you last received) and \`base_id\` (the snapshot id you hold) to get only what changed and acknowledge prior events; a navigation or a stale base returns a fresh full snapshot. Oversized pages spill to a \`snapshot_ref\` you retrieve by calling studio_observe again with that \`snapshot_ref\`. Use it before acting so you hold current refs. Requires an active studio session (the human runs \`wigolo studio\`); with no reachable session you get a clear refusal, not an empty result.`,
-  studio_act: `Drive the shared browser session — currently \`navigate\` to a URL (set \`action: "navigate"\` and \`url\`). You must hold the control token: if the human has taken over, the action is refused and you should re-observe and wait your turn rather than retry. Navigation to private or local addresses is blocked for the agent unless the human has explicitly granted it for this session; cloud-internal addresses are always blocked. Call \`studio_observe\` first to see the page. Requires an active studio session (\`wigolo studio\`); with no reachable session you get a clear refusal.`,
+  studio_act: `Drive the shared browser session: \`navigate\` to a URL, \`click\` an element, \`type\` text into an element, or \`scroll\`. For click/type pass the element's \`ref\` from \`studio_observe\` (for type also pass \`text\`; for scroll use \`direction\` and optional \`amount\`). Refs are resolved live at action time, so a ref that is gone, ambiguous (identical-looking siblings), or covered by an overlay is refused — re-observe (or ask the human to mark the exact one) rather than acting on the wrong element. You must hold the control token: if the human takes over mid-action the action stands down with \`aborted_reclaimed\` (a partial \`type\` reports how many characters landed) — do not retry, re-observe and wait your turn. Navigation to private or local addresses is blocked for the agent unless the human granted it this session; cloud-internal is always blocked. Call \`studio_observe\` first. Requires an active studio session (\`wigolo studio\`); with no reachable session you get a clear refusal.`,
 } as const;
 
 export type ToolName = keyof typeof TOOL_DESCRIPTIONS;

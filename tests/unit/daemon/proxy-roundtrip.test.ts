@@ -72,7 +72,7 @@ describe('studio proxy ↔ host round-trip', () => {
     const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', auth: { token, host: '127.0.0.1' } });
     const endpoint = await daemon.start();
     try {
-      writeHandle({ id: 'sid', endpoint, token, pid: process.pid }, dataDir);
+      writeHandle({ id: 'sid', endpoint, token, pid: process.pid, instanceId: 'inst-rt' }, dataDir);
       const proxy = studioProxyFromHandle(dataDir);
       expect(proxy).not.toBeNull();
 

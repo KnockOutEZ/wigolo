@@ -51,7 +51,10 @@ export class DaemonHttpServer {
   private mcpRequestCount = 0;
   private studioHost: StudioHostHandlers | null = null;
 
-  constructor(options: DaemonOptions) {
+  // `options` is exposed readonly for observability/wiring assertions (e.g. confirming
+  // the host enforces the same bearer it published to the handle). In-process only; the
+  // token is already in the 0600 handle, so this is no new exposure.
+  constructor(public readonly options: DaemonOptions) {
     this.port = options.port;
     this.host = options.host;
     this.auth = options.auth ?? null;

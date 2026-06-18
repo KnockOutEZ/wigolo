@@ -1,6 +1,6 @@
 import { createLogger } from '../logger.js';
 import type { ControlToken, ControlParty } from './control-token.js';
-import type { MouseInput, KeyInput } from './input.js';
+import type { MouseInput, KeyInput, AgentMouseInput, AgentInputEvent } from './input.js';
 
 /**
  * Couples the control token to the input channel for one session: gates every
@@ -18,6 +18,10 @@ export interface InputSink {
   mouse(ev: MouseInput): Promise<void>;
   key(ev: KeyInput): Promise<void>;
   neutralizeHeld(): Promise<void>;
+  /** Page-px mouse for the agent path (resolver coords, no normalized mapping). */
+  agentMouseAt(ev: AgentMouseInput): Promise<void>;
+  /** Page-CSS-px centre of the live viewport (agent scroll aim). */
+  viewportCenter(): { x: number; y: number };
 }
 
 export type InputMessage =
@@ -51,6 +55,47 @@ export class SessionController {
   /** Current control state — sent to a client on connect (in `hello`) so it knows the epoch to stamp on input. */
   controlSnapshot(): { holder: ControlParty; epoch: number } {
     return { holder: this.token.holder, epoch: this.token.epoch };
+  }
+
+  /**
+   * Dispatch ONE balanced agent input UNIT (click = mouse-down+up, keystroke = an
+   * optional-modifier-wrapped key run, scroll = a single wheel event), stamped
+   * party='agent' at the gate `epoch`.
+   *
+   * THE HARD STOP is the epoch fence here: `canDrive('agent', epoch)` is read
+   * synchronously, and on a stale epoch (a reclaim already flipped it) or the wrong
+   * holder the WHOLE unit is dropped — so a unit that slipped past a caller's
+   * early-exit re-check is still neutralized at dispatch. The gate read and the
+   * sub-event sends sit in ONE synchronous block (no await between `canDrive` and the
+   * sends), so on the single-threaded host a reclaim cannot interleave between the
+   * check and the dispatch (no TOCTOU), and the sub-events of a unit cannot be torn
+   * apart mid-flight — abort happens only BETWEEN complete units. On a reclaim the
+   * token's `onChange` has already fired `neutralizeHeld`, releasing anything held.
+   * Returns whether the unit landed.
+   */
+  async dispatchAgentUnit(epoch: number, events: AgentInputEvent[]): Promise<boolean> {
+    if (!this.token.canDrive('agent', epoch)) {
+      log.debug('agent unit dropped (stale epoch or not holder)', {
+        claimedEpoch: epoch,
+        holder: this.token.holder,
+        hostEpoch: this.token.epoch,
+      });
+      return false;
+    }
+    // Fire every sub-event synchronously (each invokes its CDP send before it suspends),
+    // collecting the promises, then drain — the unit is atomic on the event loop.
+    const pending: Array<Promise<void>> = [];
+    for (const ev of events) {
+      if (ev.kind === 'mouse') pending.push(this.input.agentMouseAt(ev));
+      else pending.push(this.input.key(ev));
+    }
+    await Promise.all(pending);
+    return true;
+  }
+
+  /** The page-CSS-px viewport centre where an agent scroll aims its wheel. */
+  viewportCenter(): { x: number; y: number } {
+    return this.input.viewportCenter();
   }
 
   /** Gate then dispatch an inbound input event. Returns whether it was applied. */

@@ -9,7 +9,7 @@ import type { PageSnapshot, SnapshotElement } from '../../../src/studio/percepti
 import type { StudioObserveOutput, StudioToolError } from '../../../src/daemon/studio-dispatch.js';
 
 const el = (ref: string, name: string): SnapshotElement => ({ ref, role: 'button', name });
-const mkSnap = (id: string, elements: SnapshotElement[]): PageSnapshot => ({ id, elements, tokenCount: 1, overBudget: false, domTruncated: false, refMap: new Map(), groupByRef: new Map() });
+const mkSnap = (id: string, elements: SnapshotElement[]): PageSnapshot => ({ id, elements, tokenCount: 1, overBudget: false, domTruncated: false, refMap: new Map(), groupByRef: new Map(), domParent: new Map() });
 const isErr = (r: StudioObserveOutput | StudioToolError): r is StudioToolError => 'error_reason' in r;
 const ok = (r: StudioObserveOutput | StudioToolError): StudioObserveOutput => { if (isErr(r)) throw new Error('expected ok, got ' + r.error_reason); return r; };
 

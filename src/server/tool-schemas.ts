@@ -603,12 +603,29 @@ export const STUDIO_ACT_TOOL_SCHEMA = {
   properties: {
     action: {
       type: 'string',
-      enum: ['navigate'],
-      description: 'What to do in the shared browser session. Currently supported: navigate to a URL.',
+      enum: ['navigate', 'click', 'type', 'scroll'],
+      description: 'What to do in the shared browser session: navigate to a URL, click an element, type text into an element, or scroll the page.',
     },
     url: {
       type: 'string',
       description: 'For navigate: the URL to open. Must be http(s); cloud-internal addresses are always blocked, and private/local addresses are blocked unless the human has granted it for this session.',
+    },
+    ref: {
+      type: 'string',
+      description: 'For click/type: the stable element ref from studio_observe. Resolved live at action time — a stale, ambiguous, or covered ref is refused (re-observe) rather than acting on the wrong element.',
+    },
+    text: {
+      type: 'string',
+      description: 'For type: the text to type into the element (it is focused first).',
+    },
+    direction: {
+      type: 'string',
+      enum: ['down', 'up'],
+      description: 'For scroll: the direction to scroll (default down).',
+    },
+    amount: {
+      type: 'number',
+      description: 'For scroll: distance in page pixels (default 600).',
     },
   },
   required: ['action'],

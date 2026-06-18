@@ -39,11 +39,37 @@ export interface MouseInput {
 export interface KeyInput {
   type: 'keyDown' | 'keyUp' | 'rawKeyDown' | 'char';
   key: string;
-  code: string;
+  /** Physical key code (e.g. `KeyA`). Absent for a `char` text-insertion event, which carries only `text`. */
+  code?: string;
   text?: string;
   modifiers?: number;
   windowsVirtualKeyCode?: number;
 }
+
+/**
+ * A page-CSS-px mouse event for the AGENT path. The 2J.1 resolver returns page CSS
+ * px (the same coordinate space `Input.dispatchMouseEvent` / `DOM.getBoxModel` /
+ * `DOM.getNodeForLocation` share), so these are dispatched verbatim — NOT through
+ * the normalized→page mapping the human (downscaled-frame) channel uses.
+ */
+export interface AgentMouseInput {
+  type: 'mousePressed' | 'mouseReleased' | 'mouseMoved' | 'mouseWheel';
+  x: number;
+  y: number;
+  button?: MouseButton;
+  buttons?: number;
+  clickCount?: number;
+  deltaX?: number;
+  deltaY?: number;
+  modifiers?: number;
+}
+
+/**
+ * One sub-event of a balanced agent input UNIT (a click = mouse-down+up; a keystroke
+ * = optional modifier-down / keyDown / char / keyUp / modifier-up). The channel fires
+ * all sub-events of a unit atomically in one synchronous block.
+ */
+export type AgentInputEvent = ({ kind: 'mouse' } & AgentMouseInput) | ({ kind: 'key' } & KeyInput);
 
 export interface InputForwarderOptions {
   cdp: InputCdp;
@@ -91,18 +117,53 @@ export class InputForwarder {
       return;
     }
     const { x, y } = this.mapToPage(ev.nx, ev.ny);
-    await this.cdp.send('Input.dispatchMouseEvent', {
+    await this.dispatchMouse({
       type: ev.type,
       x,
       y,
-      button: ev.button ?? 'none',
+      button: ev.button,
       buttons: ev.buttons,
       clickCount: ev.clickCount,
       deltaX: ev.deltaX,
       deltaY: ev.deltaY,
       modifiers: ev.modifiers,
     });
-    this.trackMouse(ev, x, y);
+  }
+
+  /**
+   * Page-px mouse dispatch for the AGENT path (the resolver's coords are already in
+   * the page CSS-px space CDP dispatches into — no normalized mapping). Held buttons
+   * are tracked exactly like the human channel, so a reclaim-time `neutralizeHeld`
+   * releases an agent-held button just the same. Non-finite coords are dropped.
+   */
+  async agentMouseAt(ev: AgentMouseInput): Promise<void> {
+    if (!Number.isFinite(ev.x) || !Number.isFinite(ev.y)) {
+      log.debug('dropping agent mouse input with non-finite coords', { x: ev.x, y: ev.y });
+      return;
+    }
+    await this.dispatchMouse(ev);
+  }
+
+  /** The page-CSS-px centre of the live viewport — where the agent's scroll wheel aims (true page dims, not the downscaled frame). */
+  viewportCenter(): { x: number; y: number } {
+    const width = this.meta?.deviceWidth ?? this.viewport.width;
+    const height = this.meta?.deviceHeight ?? this.viewport.height;
+    return { x: width / 2, y: height / 2 };
+  }
+
+  private async dispatchMouse(p: AgentMouseInput): Promise<void> {
+    await this.cdp.send('Input.dispatchMouseEvent', {
+      type: p.type,
+      x: p.x,
+      y: p.y,
+      button: p.button ?? 'none',
+      buttons: p.buttons,
+      clickCount: p.clickCount,
+      deltaX: p.deltaX,
+      deltaY: p.deltaY,
+      modifiers: p.modifiers,
+    });
+    this.trackMouse(p.type, p.button ?? 'none', p.x, p.y);
   }
 
   async key(ev: KeyInput): Promise<void> {
@@ -140,13 +201,12 @@ export class InputForwarder {
     this.pressedKeys.clear();
   }
 
-  private trackMouse(ev: MouseInput, x: number, y: number): void {
-    const button = ev.button ?? 'none';
-    if (ev.type === 'mousePressed' && button !== 'none') {
+  private trackMouse(type: MouseInput['type'], button: MouseButton, x: number, y: number): void {
+    if (type === 'mousePressed' && button !== 'none') {
       this.pressedButtons.set(button, { x, y });
-    } else if (ev.type === 'mouseReleased' && button !== 'none') {
+    } else if (type === 'mouseReleased' && button !== 'none') {
       this.pressedButtons.delete(button);
-    } else if (ev.type === 'mouseMoved' || ev.type === 'mouseWheel') {
+    } else if (type === 'mouseMoved' || type === 'mouseWheel') {
       // Track the drag so a held button is released where it actually ended up.
       for (const held of this.pressedButtons.values()) {
         held.x = x;
@@ -156,6 +216,7 @@ export class InputForwarder {
   }
 
   private trackKey(ev: KeyInput): void {
+    if (ev.code == null) return; // a `char` text event holds no physical key — nothing to track/release
     if (ev.type === 'keyDown' || ev.type === 'rawKeyDown') {
       this.pressedKeys.set(ev.code, { key: ev.key, code: ev.code });
     } else if (ev.type === 'keyUp') {

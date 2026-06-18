@@ -241,4 +241,138 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }, 30_000);
+
+  // ───────────────────────────── 2J.2 abort-layer safety proofs ─────────────────────────────
+  // The agent's click/type/scroll dispatch through the SAME token-gated CDP input channel the
+  // human uses (SessionController → InputForwarder), stamped party='agent' at the gate epoch.
+  // These five run against a real browser; the safety assertions are hard (no retry masks them —
+  // a poll only waits for an async input/neutralize to land, then the hard assert decides).
+
+  const INPUT_HTML =
+    '<input id="f" autofocus style="position:fixed;inset:0;width:100%;height:100%;font-size:40px" />';
+  const fieldOf = () =>
+    (host.sessionBrowser.page as unknown as import('playwright').Page).evaluate(
+      () => (document.getElementById('f') as HTMLInputElement).value,
+    );
+
+  it('2J.2 (1) the epoch fence DROPS a unit dispatched with a STALE epoch after a reclaim (strong: not merely "skip the next keystroke")', async () => {
+    await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(INPUT_HTML));
+
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+    const staleEpoch = host.controller.controlSnapshot().epoch; // the epoch the agent's units are stamped with
+    host.controller.handleControl({ op: 'reclaim' }); // human takeover → the live epoch advances; staleEpoch is revoked
+
+    // Dispatch a full keystroke unit STAMPED WITH THE STALE EPOCH (the strong version: an actual
+    // dispatch with the old epoch, not a loop that skips). The fence must drop the whole unit.
+    const landed = await host.controller.dispatchAgentUnit(staleEpoch, [
+      { kind: 'key', type: 'keyDown', key: 'Z', code: 'KeyZ' },
+      { kind: 'key', type: 'char', key: 'Z', text: 'Z' },
+      { kind: 'key', type: 'keyUp', key: 'Z', code: 'KeyZ' },
+    ]);
+
+    expect(landed).toBe(false); // dropped by the fence
+    await new Promise((r) => setTimeout(r, 150));
+    expect(await fieldOf()).toBe(''); // and NOT ONE character reached the page
+    host.controller.handleControl({ op: 'reclaim' });
+  }, 30_000);
+
+  it('2J.2 (2) a modifier the agent left held is RELEASED on reclaim — the page receives the synthesized Shift keyup (no stuck modifier)', async () => {
+    // Page counts real Shift down/up events. The agent presses Shift (a sequence interrupted right
+    // after the modifier went down — the danger case the neutralize net exists for); the reclaim's
+    // onChange→neutralizeHeld must synthesize the matching Shift keyUP on the page.
+    const html =
+      '<body><script>window.__sd=0;window.__su=0;' +
+      'addEventListener("keydown",function(e){if(e.key==="Shift")window.__sd++});' +
+      'addEventListener("keyup",function(e){if(e.key==="Shift")window.__su++});</script></body>';
+    await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(html));
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+    const e = host.controller.controlSnapshot().epoch;
+    await host.controller.dispatchAgentUnit(e, [{ kind: 'key', type: 'keyDown', key: 'Shift', code: 'ShiftLeft' }]);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __sd: number }).__sd), { timeout: 5000 }).toBe(1);
+
+    host.controller.handleControl({ op: 'reclaim' }); // flip → neutralizeHeld releases the agent's held Shift on the page
+    // HARD safety claim: the page saw the Shift keyup — the held modifier was released, not stranded.
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __su: number }).__su), { timeout: 5000 }).toBe(1);
+  }, 30_000);
+
+  it('2J.2 (3) ≤1-in-flight: after a reclaim the one already-committed unit has landed and nothing after it does', async () => {
+    await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(INPUT_HTML));
+
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+    const e = host.controller.controlSnapshot().epoch;
+
+    // Commit unit 'a' at the live epoch — it lands.
+    expect(
+      await host.controller.dispatchAgentUnit(e, [
+        { kind: 'key', type: 'keyDown', key: 'a', code: 'KeyA' },
+        { kind: 'key', type: 'char', key: 'a', text: 'a' },
+        { kind: 'key', type: 'keyUp', key: 'a', code: 'KeyA' },
+      ]),
+    ).toBe(true);
+    await expect.poll(fieldOf, { timeout: 5000 }).toBe('a');
+
+    host.controller.handleControl({ op: 'reclaim' }); // epoch advances
+
+    // The NEXT unit (stale epoch) is dropped — nothing lands after the committed one.
+    expect(
+      await host.controller.dispatchAgentUnit(e, [
+        { kind: 'key', type: 'keyDown', key: 'b', code: 'KeyB' },
+        { kind: 'key', type: 'char', key: 'b', text: 'b' },
+        { kind: 'key', type: 'keyUp', key: 'b', code: 'KeyB' },
+      ]),
+    ).toBe(false);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(await fieldOf()).toBe('a'); // exactly the committed unit; 'b' never landed
+    host.controller.handleControl({ op: 'reclaim' });
+  }, 30_000);
+
+  it('2J.2 (4) an overlay that appears BETWEEN observe and act makes the click resolve to element_occluded (vision trigger)', async () => {
+    const html =
+      '<button id="b" style="position:fixed;left:40px;top:40px;width:200px;height:60px">Go</button>' +
+      '<div id="ov" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999"></div>';
+    await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(html));
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+
+    // Observe with no overlay → get the button's live ref.
+    const obs = (await host.observe({})) as { elements?: Array<{ ref: string; role: string; name: string }>; error_reason?: string };
+    expect(obs.error_reason, 'observe should not refuse').toBeUndefined();
+    const btn = (obs.elements ?? []).find((el) => el.role === 'button');
+    expect(btn, 'observe should surface the button').toBeTruthy();
+
+    // The overlay appears AFTER observe, BEFORE the act resolves the ref live.
+    await page.evaluate(() => {
+      (document.getElementById('ov') as HTMLElement).style.display = 'block';
+    });
+
+    const r = (await host.act({ action: 'click', ref: btn!.ref })) as { error_reason?: string };
+    expect(r.error_reason).toBe('element_occluded'); // hit-test caught the overlay on top of the resolved node
+    host.controller.handleControl({ op: 'reclaim' });
+  }, 30_000);
+
+  it('2J.2 (5) a reclaim mid-type aborts with aborted_reclaimed and HONESTLY reports the characters that landed', async () => {
+    await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(INPUT_HTML));
+
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+    const obs = (await host.observe({})) as { elements?: Array<{ ref: string; role: string }> };
+    const tb = (obs.elements ?? []).find((el) => el.role === 'textbox');
+    expect(tb, 'observe should surface the textbox').toBeTruthy();
+
+    // Type a long string; reclaim shortly after so it aborts partway (80 keystroke units cannot
+    // all land in the window → the abort is deterministic; the exact landed count is not asserted).
+    const text = 'a'.repeat(80);
+    const p = host.act({ action: 'type', ref: tb!.ref, text });
+    await new Promise((r) => setTimeout(r, 60));
+    host.controller.handleControl({ op: 'reclaim' });
+    const r = (await p) as { error_reason?: string; charsLanded?: number };
+
+    expect(r.error_reason).toBe('aborted_reclaimed');
+    const landed = await fieldOf();
+    expect(r.charsLanded).toBe(landed.length); // the report MATCHES the page reality (honest partial effect)
+    expect(r.charsLanded!).toBeLessThan(text.length); // it really did abort partway, not finish
+    host.controller.handleControl({ op: 'reclaim' });
+  }, 30_000);
 });

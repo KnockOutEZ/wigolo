@@ -3,12 +3,14 @@ import { ControlToken } from '../../../src/studio/control-token.js';
 import { SessionController } from '../../../src/studio/session-control.js';
 
 function makeFakeInput() {
-  const calls = { mouse: 0, key: 0, neutralize: 0 };
+  const calls = { mouse: 0, key: 0, neutralize: 0, agentMouseAt: 0 };
   return {
     input: {
       mouse: async () => { calls.mouse++; },
       key: async () => { calls.key++; },
       neutralizeHeld: async () => { calls.neutralize++; },
+      agentMouseAt: async () => { calls.agentMouseAt++; },
+      viewportCenter: () => ({ x: 50, y: 60 }),
     },
     calls,
   };
@@ -122,5 +124,68 @@ describe('SessionController', () => {
     f.calls.neutralize = 0; // isolate onClientGone
     ctl.onClientGone();
     expect(f.calls.neutralize).toBe(0);
+  });
+});
+
+describe('SessionController — agent input dispatch (2J.2, the abort layer)', () => {
+  it('dispatchAgentUnit fires the whole unit when the agent holds at the gate epoch', async () => {
+    const token = new ControlToken();
+    token.grant('agent'); // epoch 1, agent holds
+    const f = makeFakeInput();
+    const ctl = new SessionController(token, f.input, () => {});
+    const landed = await ctl.dispatchAgentUnit(1, [
+      { kind: 'mouse', type: 'mousePressed', x: 10, y: 20, button: 'left', buttons: 1, clickCount: 1 },
+      { kind: 'mouse', type: 'mouseReleased', x: 10, y: 20, button: 'left', buttons: 0, clickCount: 1 },
+    ]);
+    expect(landed).toBe(true);
+    expect(f.calls.agentMouseAt).toBe(2); // both sub-events of the click dispatched
+  });
+
+  it('HARD STOP (epoch fence): a unit dispatched with a STALE epoch after a reclaim is dropped — NOT ONE sub-event is sent', async () => {
+    // This is the strong-version safety boundary: even if a unit "raced past" a higher
+    // re-check, the epoch fence inside dispatch drops it because the reclaim flipped the
+    // epoch. We force the stale epoch directly (not via a loop skip).
+    const token = new ControlToken();
+    token.grant('agent'); // epoch 1 — the gate epoch the unit is stamped with
+    const f = makeFakeInput();
+    const ctl = new SessionController(token, f.input, () => {});
+    token.reclaim(); // human takeover → epoch 2
+    const landed = await ctl.dispatchAgentUnit(1, [
+      { kind: 'key', type: 'keyDown', key: 'a', code: 'KeyA' },
+      { kind: 'key', type: 'char', key: 'a', text: 'a' },
+      { kind: 'key', type: 'keyUp', key: 'a', code: 'KeyA' },
+    ]);
+    expect(landed).toBe(false);
+    expect(f.calls.key).toBe(0); // the fence dropped the ENTIRE unit, not just "the next one"
+  });
+
+  it('drops an agent unit while the human holds (party must match too — only agent events are epoch-gated)', async () => {
+    const token = new ControlToken(); // human holds, epoch 0
+    const f = makeFakeInput();
+    const ctl = new SessionController(token, f.input, () => {});
+    const landed = await ctl.dispatchAgentUnit(0, [{ kind: 'key', type: 'keyDown', key: 'a', code: 'KeyA' }]);
+    expect(landed).toBe(false);
+    expect(f.calls.key).toBe(0);
+  });
+
+  it('fires a keystroke unit through the same key channel the human uses (single channel)', async () => {
+    const token = new ControlToken();
+    token.grant('agent');
+    const f = makeFakeInput();
+    const ctl = new SessionController(token, f.input, () => {});
+    const landed = await ctl.dispatchAgentUnit(1, [
+      { kind: 'key', type: 'keyDown', key: 'a', code: 'KeyA' },
+      { kind: 'key', type: 'char', key: 'a', text: 'a' },
+      { kind: 'key', type: 'keyUp', key: 'a', code: 'KeyA' },
+    ]);
+    expect(landed).toBe(true);
+    expect(f.calls.key).toBe(3);
+  });
+
+  it('viewportCenter delegates to the input channel (agent scroll aim)', () => {
+    const token = new ControlToken();
+    const f = makeFakeInput();
+    const ctl = new SessionController(token, f.input, () => {});
+    expect(ctl.viewportCenter()).toEqual({ x: 50, y: 60 });
   });
 });

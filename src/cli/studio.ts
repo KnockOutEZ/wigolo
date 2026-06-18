@@ -17,10 +17,17 @@ import { StudioWsHub } from '../studio/ws-hub.js';
 import { writeHandle, removeHandle, studioHandlePath, setMyInstanceId, type SessionHandle } from '../studio/handle.js';
 import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
 import { PageSnapshotter } from '../studio/perception/snapshot.js';
+import { createResolver } from '../studio/perception/resolve.js';
 import { StudioEventQueue } from '../studio/event-queue.js';
 import { createObserver } from '../studio/observe.js';
 import { createActHandler } from '../studio/act.js';
-import type { StudioActInput, StudioActOutput, StudioToolError } from '../daemon/studio-dispatch.js';
+import type {
+  StudioObserveInput,
+  StudioObserveOutput,
+  StudioActInput,
+  StudioActOutput,
+  StudioToolError,
+} from '../daemon/studio-dispatch.js';
 import { randomUUID } from 'node:crypto';
 
 /** Bounded human-event buffer; overflow is fail-loud (drained events surface a dropped count → resync). */
@@ -81,7 +88,9 @@ export interface StudioHost {
   navInterceptor: NavInterceptor;
   /** Navigate the session as the human (holder-gated + guarded); broadcasts {t:'error'} on a non-holder or blocked target. */
   navigate: (url: string) => Promise<void>;
-  /** The agent's acting verb (studio_act) — gate + entry guard, host-authoritative. Exposed for the host-boundary tests. */
+  /** The agent's observe verb (studio_observe) — host-authoritative snapshot + event drain. Exposed for the host-boundary/headed tests. */
+  observe: (input: StudioObserveInput) => Promise<StudioObserveOutput | StudioToolError>;
+  /** The agent's acting verb (studio_act) — gate + live ref-resolve + the token-gated input channel, host-authoritative. Exposed for the host-boundary tests. */
   act: (input: StudioActInput) => Promise<StudioActOutput | StudioToolError>;
   /** Human-only, per-session, revocable: lift the agent's localhost/RFC1918 nav block (cloud-metadata stays blocked). */
   grantAgentPrivateNav: (on: boolean) => void;
@@ -278,16 +287,27 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     spillMaxBytes: STUDIO_SPILL_MAX_BYTES,
     dataDir: opts.dataDir,
   });
+  // The agent's click/type resolve refs LIVE at action time through the 2J.1 resolver
+  // (fresh snapshot per call + occlusion hit-test, never cached coords). Bind it to the
+  // SESSION cdp via a thin live wrapper so it follows a crash-recovery rebind
+  // (sessionBrowser.cdp is a getter that returns the current launched session's cdp).
+  const resolve = createResolver({
+    snapshot: () => snapshotter.snapshot(sessionBrowser.cdp),
+    cdp: { send: (method, params) => sessionBrowser.cdp.send(method, params) },
+  });
   // studio_act's gate + entry guard run HOST-SIDE here. The act handler reads the SAME
   // `grant` object the nav interceptor's policy provider reads, so the entry-URL verdict
-  // and the per-hop verdict come from one source (agreement by construction).
-  const act = createActHandler({ browser: sessionBrowser, controlToken, grant });
+  // and the per-hop verdict come from one source (agreement by construction). click/type/
+  // scroll dispatch through the ONE token-gated input channel (the SessionController),
+  // never action-executor.page.* or a raw CDP Input side-channel (those bypass the epoch
+  // fence + held-input neutralization).
+  const act = createActHandler({ browser: sessionBrowser, controlToken, grant, resolve, channel: controller });
   daemon.setStudioHost({ observe, act });
 
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, act, grantAgentPrivateNav, hub, handle, endpoint };
+  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, observe, act, grantAgentPrivateNav, hub, handle, endpoint };
 }
 
 export function runStudio(args: string[]): void {

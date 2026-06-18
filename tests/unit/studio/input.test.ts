@@ -111,3 +111,46 @@ describe('InputForwarder — held-input neutralization (landmine #2)', () => {
     expect(f.sends).toHaveLength(0); // nothing left held
   });
 });
+
+describe('InputForwarder — agent page-px dispatch (2J.2)', () => {
+  it('agentMouseAt dispatches at the GIVEN page CSS px (resolver coords) with NO normalized mapping', async () => {
+    const f = makeFakeInputCdp();
+    const fwd = new InputForwarder({ cdp: f.cdp, viewport: { width: 1280, height: 720 } });
+    // Even with frame metadata present, the agent path must NOT route page-px through
+    // the normalized→page mapping: the 2J.1 resolver already returns page CSS px (the
+    // same space getBoxModel/getNodeForLocation/Input.dispatchMouseEvent share).
+    fwd.updateViewport({ deviceWidth: 1920, deviceHeight: 1080, pageScaleFactor: 1 });
+    await fwd.agentMouseAt({ type: 'mousePressed', x: 437, y: 911, button: 'left', buttons: 1, clickCount: 1 });
+    expect(f.sends[0]).toMatchObject({
+      method: 'Input.dispatchMouseEvent',
+      params: { type: 'mousePressed', x: 437, y: 911, button: 'left', clickCount: 1 },
+    });
+  });
+
+  it('agentMouseAt tracks a held button so a reclaim-time neutralize releases the AGENT’s press (no stuck button)', async () => {
+    const f = makeFakeInputCdp();
+    const fwd = new InputForwarder({ cdp: f.cdp, viewport: { width: 1000, height: 1000 } });
+    await fwd.agentMouseAt({ type: 'mousePressed', x: 300, y: 400, button: 'left', buttons: 1, clickCount: 1 });
+    f.sends.length = 0;
+    await fwd.neutralizeHeld();
+    const released = f.sends.filter((s) => s.method === 'Input.dispatchMouseEvent' && s.params.type === 'mouseReleased');
+    expect(released).toHaveLength(1);
+    expect(released[0].params).toMatchObject({ x: 300, y: 400, button: 'left' });
+  });
+
+  it('agentMouseAt drops a non-finite coordinate instead of dispatching NaN/Infinity into CDP', async () => {
+    const f = makeFakeInputCdp();
+    const fwd = new InputForwarder({ cdp: f.cdp, viewport: { width: 1000, height: 1000 } });
+    await fwd.agentMouseAt({ type: 'mousePressed', x: Number.NaN, y: 10, button: 'left' });
+    await fwd.agentMouseAt({ type: 'mouseWheel', x: 10, y: Number.POSITIVE_INFINITY, deltaY: 100 });
+    expect(f.sends).toHaveLength(0);
+  });
+
+  it('viewportCenter uses the TRUE page dims from frame metadata, falling back to the configured viewport', () => {
+    const f = makeFakeInputCdp();
+    const fwd = new InputForwarder({ cdp: f.cdp, viewport: { width: 1280, height: 720 } });
+    expect(fwd.viewportCenter()).toEqual({ x: 640, y: 360 }); // pre-metadata fallback
+    fwd.updateViewport({ deviceWidth: 1920, deviceHeight: 1080, pageScaleFactor: 1 });
+    expect(fwd.viewportCenter()).toEqual({ x: 960, y: 540 }); // true page center
+  });
+});

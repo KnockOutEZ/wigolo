@@ -3,7 +3,7 @@ import { diffSnapshots, resolveObserve } from '../../../../src/studio/perception
 import type { PageSnapshot, SnapshotElement } from '../../../../src/studio/perception/snapshot.js';
 
 function sn(id: string, els: SnapshotElement[], groups: Record<string, string> = {}, over = false): PageSnapshot {
-  return { id, elements: els, tokenCount: 0, overBudget: over, domTruncated: false, refMap: new Map(), groupByRef: new Map(Object.entries(groups)) };
+  return { id, elements: els, tokenCount: 0, overBudget: over, domTruncated: false, refMap: new Map(), groupByRef: new Map(Object.entries(groups)), domParent: new Map() };
 }
 const el = (ref: string, name: string, confidence?: 'low'): SnapshotElement => (confidence ? { ref, role: 'button', name, confidence } : { ref, role: 'button', name });
 

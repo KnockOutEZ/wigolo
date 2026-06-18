@@ -69,6 +69,8 @@ export interface StudioActOutput {
   ok: true;
   action: string;
   url?: string;
+  /** For `type`: how many characters actually landed (full length on success). */
+  charsLanded?: number;
 }
 
 /** A typed failure from a host handler (e.g. an evicted spill fetch, a refused action) — surfaced as a tool error, NOT a bare null a caller could read as "no content". */
@@ -77,6 +79,8 @@ export interface StudioToolError {
   hint: string;
   /** Present on a `not_holder` refusal — the live control epoch, so the agent can resync its view of whose turn it is. */
   currentEpoch?: number;
+  /** Present on an `aborted_reclaimed` from `type` — the partial effect (characters landed before the human reclaimed). */
+  charsLanded?: number;
 }
 
 export function isStudioToolError(x: StudioObserveOutput | StudioActOutput | StudioToolError): x is StudioToolError {
