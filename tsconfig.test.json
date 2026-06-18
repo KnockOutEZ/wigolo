@@ -10,6 +10,7 @@
     "tests/unit/studio/nav.test.ts",
     "tests/unit/studio/nav-policy.test.ts",
     "tests/unit/studio/act.test.ts",
+    "tests/unit/studio/perception/resolve.test.ts",
     "tests/unit/studio/control-token.test.ts",
     "tests/unit/studio/input.test.ts",
     "tests/unit/studio/session-control.test.ts",

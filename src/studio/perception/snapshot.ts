@@ -66,6 +66,8 @@ export interface PageSnapshot {
   refMap: Map<string, number>;
   /** ref → fingerprint group, host-side ONLY, for low-confidence elements. The diff folds positional drift of an identical-sibling run into low-confidence churn (not phantom add/remove) by matching groups. */
   groupByRef: Map<string, string>;
+  /** backendNodeId → parent backendNodeId (null at root), host-side ONLY. 2J's click occlusion hit-test walks UP this from the topmost node to confirm it is the target or a descendant (else element_occluded). Crosses shadow boundaries (a shadow root's parent is its host). */
+  domParent: Map<number, number | null>;
 }
 
 export interface PerceptionCdp {
@@ -145,7 +147,9 @@ export function buildSnapshot(axNodes: AxNode[], domRoot: DomNode | undefined, o
   });
   const tokenCount = countTokens(JSON.stringify(elements));
   const id = 's' + hash(JSON.stringify(elements));
-  return { id, elements, tokenCount, overBudget: tokenCount > opts.tokenBudget, domTruncated, refMap, groupByRef };
+  const domParent = new Map<number, number | null>();
+  for (const [be, info] of dom) domParent.set(be, info.parent);
+  return { id, elements, tokenCount, overBudget: tokenCount > opts.tokenBudget, domTruncated, refMap, groupByRef, domParent };
 }
 
 export class PageSnapshotter {
