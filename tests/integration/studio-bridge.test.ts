@@ -7,6 +7,7 @@ import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
 import { resetConfig } from '../../src/config.js';
 import { navigateSession } from '../../src/studio/nav.js';
+import type { AgentInputEvent } from '../../src/studio/input.js';
 import type { startStudioHost as StartStudioHost } from '../../src/cli/studio.js';
 
 /**
@@ -254,25 +255,33 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     (host.sessionBrowser.page as unknown as import('playwright').Page).evaluate(
       () => (document.getElementById('f') as HTMLInputElement).value,
     );
+  // One balanced keystroke unit (a single character, no modifier).
+  const keyUnit = (ch: string): AgentInputEvent[] => [
+    { kind: 'key', type: 'keyDown', key: ch, code: 'Key' + ch.toUpperCase() },
+    { kind: 'key', type: 'char', key: ch, text: ch },
+    { kind: 'key', type: 'keyUp', key: ch, code: 'Key' + ch.toUpperCase() },
+  ];
 
-  it('2J.2 (1) the epoch fence DROPS a unit dispatched with a STALE epoch after a reclaim (strong: not merely "skip the next keystroke")', async () => {
+  it('2J.2 (1) the epoch fence DROPS a stale-epoch unit after reclaim — with a positive control proving the identical unit DOES land at a fresh epoch', async () => {
     await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(INPUT_HTML));
 
     host.controller.handleControl({ op: 'grant', to: 'agent' });
-    const staleEpoch = host.controller.controlSnapshot().epoch; // the epoch the agent's units are stamped with
-    host.controller.handleControl({ op: 'reclaim' }); // human takeover → the live epoch advances; staleEpoch is revoked
+    const epoch = host.controller.controlSnapshot().epoch; // the epoch the agent's units are stamped with
 
-    // Dispatch a full keystroke unit STAMPED WITH THE STALE EPOCH (the strong version: an actual
-    // dispatch with the old epoch, not a loop that skips). The fence must drop the whole unit.
-    const landed = await host.controller.dispatchAgentUnit(staleEpoch, [
-      { kind: 'key', type: 'keyDown', key: 'Z', code: 'KeyZ' },
-      { kind: 'key', type: 'char', key: 'Z', text: 'Z' },
-      { kind: 'key', type: 'keyUp', key: 'Z', code: 'KeyZ' },
-    ]);
+    // POSITIVE CONTROL: an identical-shape unit at the LIVE epoch DOES mutate the page — so the
+    // stale unit landing "zero chars" below means "the fence dropped it", not "this unit shape is
+    // a no-op for some unrelated reason (focus lost, wrong selector, etc.)".
+    expect(await host.controller.dispatchAgentUnit(epoch, keyUnit('y'))).toBe(true);
+    await expect.poll(fieldOf, { timeout: 5000 }).toBe('y');
 
-    expect(landed).toBe(false); // dropped by the fence
+    host.controller.handleControl({ op: 'reclaim' }); // human takeover → the live epoch advances; `epoch` is now revoked
+
+    // The strong version: an ACTUAL dispatch with the stale epoch (not a loop that skips). Same
+    // unit shape that just landed — the only difference is the revoked epoch. The fence drops it whole.
+    const landed = await host.controller.dispatchAgentUnit(epoch, keyUnit('z'));
+    expect(landed).toBe(false);
     await new Promise((r) => setTimeout(r, 150));
-    expect(await fieldOf()).toBe(''); // and NOT ONE character reached the page
+    expect(await fieldOf()).toBe('y'); // the stale 'z' never reached the page; only the control 'y' is there
     host.controller.handleControl({ op: 'reclaim' });
   }, 30_000);
 
@@ -297,34 +306,25 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     await expect.poll(() => page.evaluate(() => (window as unknown as { __su: number }).__su), { timeout: 5000 }).toBe(1);
   }, 30_000);
 
-  it('2J.2 (3) ≤1-in-flight: after a reclaim the one already-committed unit has landed and nothing after it does', async () => {
+  it('2J.2 (3) ≤1-in-flight under genuine contention: a reclaim WHILE a unit is in-flight lets that committed unit land and drops the next', async () => {
     await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(INPUT_HTML));
 
     host.controller.handleControl({ op: 'grant', to: 'agent' });
     const e = host.controller.controlSnapshot().epoch;
 
-    // Commit unit 'a' at the live epoch — it lands.
-    expect(
-      await host.controller.dispatchAgentUnit(e, [
-        { kind: 'key', type: 'keyDown', key: 'a', code: 'KeyA' },
-        { kind: 'key', type: 'char', key: 'a', text: 'a' },
-        { kind: 'key', type: 'keyUp', key: 'a', code: 'KeyA' },
-      ]),
-    ).toBe(true);
-    await expect.poll(fieldOf, { timeout: 5000 }).toBe('a');
+    // Genuine overlap, not sequential drop-after-commit: fire unit 'a' WITHOUT awaiting — its
+    // sub-events are queued synchronously at the live epoch, so its promise is in-flight. Reclaim
+    // SYNCHRONOUSLY while 'a' is in-flight (epoch advances), then fire unit 'b' at the now-stale
+    // epoch — all before awaiting either. ≤1-in-flight: the committed 'a' lands, 'b' is dropped.
+    const pA = host.controller.dispatchAgentUnit(e, keyUnit('a'));
+    host.controller.handleControl({ op: 'reclaim' }); // reclaim DURING 'a' in-flight
+    const pB = host.controller.dispatchAgentUnit(e, keyUnit('b')); // stale epoch now
+    const [rA, rB] = await Promise.all([pA, pB]);
 
-    host.controller.handleControl({ op: 'reclaim' }); // epoch advances
-
-    // The NEXT unit (stale epoch) is dropped — nothing lands after the committed one.
-    expect(
-      await host.controller.dispatchAgentUnit(e, [
-        { kind: 'key', type: 'keyDown', key: 'b', code: 'KeyB' },
-        { kind: 'key', type: 'char', key: 'b', text: 'b' },
-        { kind: 'key', type: 'keyUp', key: 'b', code: 'KeyB' },
-      ]),
-    ).toBe(false);
+    expect(rA).toBe(true); // 'a' committed at the live epoch before the reclaim → it lands
+    expect(rB).toBe(false); // 'b' at the stale epoch → the fence drops it
     await new Promise((r) => setTimeout(r, 200));
-    expect(await fieldOf()).toBe('a'); // exactly the committed unit; 'b' never landed
+    expect(await fieldOf()).toBe('a'); // exactly the one in-flight unit; nothing after it
     host.controller.handleControl({ op: 'reclaim' });
   }, 30_000);
 
@@ -373,6 +373,68 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     const landed = await fieldOf();
     expect(r.charsLanded).toBe(landed.length); // the report MATCHES the page reality (honest partial effect)
     expect(r.charsLanded!).toBeLessThan(text.length); // it really did abort partway, not finish
+    host.controller.handleControl({ op: 'reclaim' });
+  }, 30_000);
+
+  // ── coordinate-seam lock (pre-Phase-3): resolve+click must be correct on a SCROLLED page ──
+  // The first five proofs ran at scrollY=0, where document==viewport, so the seam was untested.
+  // Diagnosed: getBoxModel + Input.dispatchMouseEvent are viewport-relative (dispatch verbatim
+  // correct); DOM.getNodeForLocation is document-relative (occlusion shifts by the scroll offset).
+
+  const TALL_PAGE = (extra: string) =>
+    'data:text/html,' +
+    encodeURIComponent(
+      '<body style="margin:0;position:relative;height:7000px">' +
+        '<button id="target" style="position:absolute;top:3000px;left:60px;width:240px;height:60px">TARGET</button>' +
+        '<button id="decoy" style="position:absolute;top:3000px;left:360px;width:240px;height:60px">DECOY</button>' +
+        extra +
+        '</body>',
+    );
+  const findButton = async (name: string) => {
+    const obs = (await host.observe({})) as { elements?: Array<{ ref: string; role: string; name: string }> };
+    const el = (obs.elements ?? []).find((e) => e.role === 'button' && e.name === name);
+    expect(el, `observe should surface the below-fold ${name}`).toBeTruthy();
+    return el!.ref;
+  };
+
+  it('2J.2 (6) SCROLLED dispatch: after a multi-thousand-px scroll, the agent clicks the below-fold element AT its element (not the neighbour)', async () => {
+    await host.sessionBrowser.navigate(
+      TALL_PAGE(
+        '<script>window.__c=null;' +
+          'document.getElementById("target").addEventListener("click",function(){window.__c="TARGET"});' +
+          'document.getElementById("decoy").addEventListener("click",function(){window.__c="DECOY"});</script>',
+      ),
+    );
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+    await page.evaluate(() => window.scrollTo(0, 2800)); // target now ~200px down the viewport, page well scrolled
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(2000); // genuinely scrolled
+
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+    const ref = await findButton('TARGET');
+    const r = (await host.act({ action: 'click', ref })) as { error_reason?: string };
+    expect(r.error_reason).toBeUndefined();
+    // GROUND TRUTH: the click landed on the TARGET, not the DECOY beside it nor empty space —
+    // the resolved viewport centre dispatched correctly despite scrollY≈2800.
+    expect(await page.evaluate(() => (window as unknown as { __c: string | null }).__c)).toBe('TARGET');
+    host.controller.handleControl({ op: 'reclaim' });
+  }, 30_000);
+
+  it('2J.2 (7) SCROLLED occlusion: an overlay over a below-the-fold target → element_occluded (the hit-test follows the scroll)', async () => {
+    await host.sessionBrowser.navigate(
+      TALL_PAGE('<div id="ov" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999"></div>'),
+    );
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+    await page.evaluate(() => window.scrollTo(0, 2800));
+
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+    const ref = await findButton('TARGET'); // observed with no overlay
+    await page.evaluate(() => {
+      (document.getElementById('ov') as HTMLElement).style.display = 'block'; // overlay appears AFTER observe, BEFORE act
+    });
+    const r = (await host.act({ action: 'click', ref })) as { error_reason?: string };
+    // Without the scroll-offset shift the hit-test would query the wrong document point (off the
+    // top → "no node") and FALSELY pass; the shift makes it land on the overlay → element_occluded.
+    expect(r.error_reason).toBe('element_occluded');
     host.controller.handleControl({ op: 'reclaim' });
   }, 30_000);
 });

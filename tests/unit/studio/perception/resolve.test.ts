@@ -128,4 +128,61 @@ describe('createResolver — live ref → coordinates', () => {
     });
     expect(asErr(await resolve('e1')).error).toBe('element_not_visible');
   });
+
+  it('occlusion hit-test is in DOCUMENT space (viewport centre + scroll offset) — correct on a SCROLLED page', async () => {
+    // getBoxModel + Input.dispatchMouseEvent are viewport-relative, but DOM.getNodeForLocation
+    // is DOCUMENT-relative. On a scrolled page the hit-test must query (centre + scroll), else
+    // it lands at the wrong document point: here the wrong point hits node 777 (a scrolled-off
+    // sibling) → a FALSE element_occluded. With the scroll-offset shift it hits the real target.
+    const SCROLL_Y = 2800;
+    const gnflCalls: Array<{ x: number; y: number }> = [];
+    const cdp = {
+      send: async (method: string, params?: Record<string, unknown>) => {
+        if (method === 'DOM.getBoxModel') return { model: { content: BOX } }; // viewport box → centre (110,205)
+        if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { pageX: 0, pageY: SCROLL_Y } };
+        if (method === 'DOM.getNodeForLocation') {
+          const x = params?.x as number, y = params?.y as number;
+          gnflCalls.push({ x, y });
+          return x === 110 && y === 205 + SCROLL_Y ? { backendNodeId: 100 } : { backendNodeId: 777 };
+        }
+        return {};
+      },
+    };
+    const resolve = createResolver({
+      snapshot: async () =>
+        makeSnapshot({
+          elements: [{ ref: 'e1', role: 'button', name: 'Go' }],
+          refMap: [['e1', 100]],
+          domParent: [[100, null], [777, 778], [778, null]], // 777's chain does NOT include the target
+        }),
+      cdp,
+    });
+    const r = await resolve('e1');
+    expect(isResolveError(r)).toBe(false); // NOT falsely occluded — the doc-space hit-test finds the target
+    expect((r as { center: { x: number; y: number } }).center).toEqual({ x: 110, y: 205 }); // returned centre stays VIEWPORT (the dispatch space)
+    expect(gnflCalls).toEqual([{ x: 110, y: 205 + SCROLL_Y }]); // queried at the DOCUMENT point, not the viewport point
+  });
+
+  it('still reports element_occluded under scroll when a real overlay covers the target at the document point', async () => {
+    // The fix must not DISABLE occlusion — an overlay genuinely on top at the (correct) doc point still blocks.
+    const SCROLL_Y = 2800;
+    const cdp = {
+      send: async (method: string) => {
+        if (method === 'DOM.getBoxModel') return { model: { content: BOX } };
+        if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { pageX: 0, pageY: SCROLL_Y } };
+        if (method === 'DOM.getNodeForLocation') return { backendNodeId: 999 }; // overlay on top at the doc point
+        return {};
+      },
+    };
+    const resolve = createResolver({
+      snapshot: async () =>
+        makeSnapshot({
+          elements: [{ ref: 'e1', role: 'button', name: 'Go' }],
+          refMap: [['e1', 100]],
+          domParent: [[100, null], [999, 998], [998, null]],
+        }),
+      cdp,
+    });
+    expect(asErr(await resolve('e1')).error).toBe('element_occluded');
+  });
 });

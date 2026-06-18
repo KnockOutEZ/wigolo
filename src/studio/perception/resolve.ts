@@ -11,12 +11,19 @@ import type { PageSnapshot, PerceptionCdp } from './snapshot.js';
  * refused as `element_low_confidence` so 2J asks / re-observes rather than guessing
  * which of N look-alikes to act on.
  *
- * Occlusion: after the box centre is computed, a hit-test (`DOM.getNodeForLocation`,
- * the SAME coordinate space the click dispatches into) confirms the topmost node at
- * that point is the target or a descendant of it; if a different node (overlay /
- * modal / cookie banner that appeared between observe and act) is on top, the click
- * is refused as `element_occluded` — same re-observe path as a stale ref. The
- * descendant walk uses the snapshot's host-side `domParent` map (crosses shadow roots).
+ * Occlusion: after the box centre is computed, a hit-test (`DOM.getNodeForLocation`)
+ * confirms the topmost node at that point is the target or a descendant of it; if a
+ * different node (overlay / modal / cookie banner that appeared between observe and
+ * act) is on top, the click is refused as `element_occluded` — same re-observe path
+ * as a stale ref. The descendant walk uses the snapshot's host-side `domParent` map
+ * (crosses shadow roots).
+ *
+ * COORDINATE SPACES (measured, not assumed — diagnosed before Phase 3): `getBoxModel`
+ * and the `Input.dispatchMouseEvent` the channel dispatches into are VIEWPORT-relative,
+ * but `DOM.getNodeForLocation` is DOCUMENT-relative. So the returned `center` is the
+ * viewport point (dispatch verbatim, correct under scroll), while the hit-test queries
+ * `center + scrollOffset`. Skipping the shift silently breaks occlusion on any scrolled
+ * page — which is exactly the Phase-3 list-scrolling path.
  */
 
 export interface ResolvedTarget {
@@ -49,6 +56,20 @@ function quadCenter(q: number[]): { x: number; y: number } {
   return { x: (q[0] + q[4]) / 2, y: (q[1] + q[5]) / 2 };
 }
 
+/**
+ * The page's current scroll offset in CSS px (DPR-safe — `cssVisualViewport` is the
+ * explicitly-CSS-px field). `DOM.getNodeForLocation` takes DOCUMENT coordinates, so the
+ * viewport-relative click centre is shifted by this for the hit-test. Best-effort: a
+ * failed/empty metrics read falls back to {0,0} (correct at scrollY=0, no worse than the
+ * pre-shift behavior elsewhere).
+ */
+async function scrollOffset(cdp: PerceptionCdp): Promise<{ x: number; y: number }> {
+  const m = (await cdp.send('Page.getLayoutMetrics').catch(() => ({}))) as {
+    cssVisualViewport?: { pageX?: number; pageY?: number };
+  };
+  return { x: m.cssVisualViewport?.pageX ?? 0, y: m.cssVisualViewport?.pageY ?? 0 };
+}
+
 /** Walk UP from `node` via parent links; true if `target` is `node` or one of its ancestors. */
 function isTargetOrDescendant(node: number, target: number, parents: Map<number, number | null>): boolean {
   let cur: number | null = node;
@@ -75,11 +96,14 @@ export function createResolver(deps: ResolveDeps): (ref: string) => Promise<Reso
     if (!content || content.length < 8) return { error: 'element_not_visible' }; // no box → not on-screen / not boxable
     const center = quadCenter(content);
 
-    // Occlusion hit-test in the SAME coordinate space as the dispatch. A topmost node
-    // that is neither the target nor a descendant means something is covering it.
+    // Occlusion hit-test. getNodeForLocation is DOCUMENT-relative (getBoxModel/dispatch are
+    // viewport-relative), so query the click centre shifted by the scroll offset — else the
+    // hit-test lands at the wrong document point on a scrolled page. A topmost node that is
+    // neither the target nor a descendant means something is covering it.
+    const scroll = await scrollOffset(deps.cdp);
     const hit = (await deps.cdp.send('DOM.getNodeForLocation', {
-      x: Math.round(center.x),
-      y: Math.round(center.y),
+      x: Math.round(center.x + scroll.x),
+      y: Math.round(center.y + scroll.y),
       includeUserAgentShadowDOM: false,
     })) as { backendNodeId?: number };
     const top = hit?.backendNodeId;
