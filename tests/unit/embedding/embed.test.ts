@@ -253,10 +253,32 @@ describe('EmbeddingService', () => {
     expect(updateCacheEmbedding).toHaveBeenCalledTimes(3);
   });
 
-  it('isSubprocessReady reflects provider verification state', async () => {
+  it('init() does NOT block on the provider embed probe (a cold model load must not stall MCP initialize)', async () => {
+    // The probe used to be awaited inside init(); on a cold data dir that load/download blocked
+    // `initialize` indefinitely. init() must now return without waiting on the probe — the
+    // provider lazy-loads on first real embed, and the probe just flips providerVerified async.
+    let resolveProbe: (v: Float32Array[]) => void = () => {};
+    const provider = makeMockProvider({
+      embed: vi.fn().mockReturnValue(new Promise<Float32Array[]>((r) => { resolveProbe = r; })),
+    });
+    const service = new EmbeddingService(provider);
+
+    const start = Date.now();
+    await service.init(); // resolves WITHOUT awaiting the gated probe
+    expect(Date.now() - start).toBeLessThan(100);
+    expect(service.isAvailable()).toBe(true); // available immediately
+    expect(service.isSubprocessReady()).toBe(false); // probe still in flight → not yet verified
+
+    resolveProbe([new Float32Array(384).fill(0.1)]); // probe completes…
+    await new Promise((r) => setTimeout(r, 10));
+    expect(service.isSubprocessReady()).toBe(true); // …flips verified asynchronously
+  }, 2000);
+
+  it('isSubprocessReady flips true once the async provider probe lands (not synchronously at init)', async () => {
     const service = new EmbeddingService(makeMockProvider());
     expect(service.isSubprocessReady()).toBe(false);
     await service.init();
+    await new Promise((r) => setTimeout(r, 0)); // the probe verifies asynchronously
     expect(service.isSubprocessReady()).toBe(true);
   });
 });

@@ -74,22 +74,25 @@ export class EmbeddingService {
         });
       }
 
-      // Probe the provider so we know up front whether ONNX init works.
-      try {
-        await this.provider.embed(['embedding service probe']);
-        this.providerVerified = true;
-        log.info('embedding provider verified', {
-          modelId: this.provider.modelId,
-          dim: this.provider.dim,
-        });
-      } catch (err) {
-        log.warn('embedding provider probe failed — embeddings disabled', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        this.providerVerified = false;
-      }
-
+      // Mark available now and probe the provider in the BACKGROUND. The probe loads the ONNX
+      // model (a cold data dir DOWNLOADS it) — awaiting it here blocked the MCP `initialize`
+      // response indefinitely on first run, and this is the SHARED initSubsystems path (stdio
+      // `mcp`, `serve`, and the studio host's daemon.start all await it). The provider lazy-loads
+      // on first real embed regardless; the probe only confirms it works and flips
+      // providerVerified, which gates `find_similar` alone (it returns empty until verified).
       this.available = true;
+      void this.provider
+        .embed(['embedding service probe'])
+        .then(() => {
+          this.providerVerified = true;
+          log.info('embedding provider verified', { modelId: this.provider.modelId, dim: this.provider.dim });
+        })
+        .catch((err) => {
+          this.providerVerified = false;
+          log.warn('embedding provider probe failed — embeddings degraded until the model loads', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
     } catch (err) {
       log.error('EmbeddingService init failed', { error: String(err) });
       this.available = false;
