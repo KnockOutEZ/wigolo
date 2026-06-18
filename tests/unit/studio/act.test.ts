@@ -333,4 +333,20 @@ describe('keystrokeEvents — unit composition (modifier wrap is atomic)', () =>
     expect(inner.every((e) => (e as { modifiers?: number }).modifiers === 8)).toBe(true); // Shift bit on every inner event
     expect(inner.find((e) => e.type === 'char')).toMatchObject({ text: 'B' });
   });
+
+  it('a digit gets its Digit<n> code, no modifier', () => {
+    expect(keystrokeEvents('5')).toEqual([
+      { kind: 'key', type: 'keyDown', key: '5', code: 'Digit5' },
+      { kind: 'key', type: 'char', key: '5', text: '5' },
+      { kind: 'key', type: 'keyUp', key: '5', code: 'Digit5' },
+    ]);
+  });
+
+  it('a non-alphanumeric char (e.g. space) carries NO physical key code (so it is never tracked as a held key)', () => {
+    const evs = keystrokeEvents(' ');
+    // code is omitted (undefined), not the empty string — the trackKey `code == null`
+    // guard then skips it, so a space never lands in the held-key map.
+    expect(evs.map((e) => (e as { code?: string }).code)).toEqual([undefined, undefined, undefined]);
+    expect(evs[1]).toMatchObject({ type: 'char', text: ' ' });
+  });
 });

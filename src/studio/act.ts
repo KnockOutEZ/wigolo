@@ -72,7 +72,9 @@ const STANDDOWN_HINT = 'The human took control — do not retry; observe and wai
 export function keystrokeEvents(ch: string): AgentInputEvent[] {
   const isUpper = /^[A-Z]$/.test(ch);
   const lower = ch.toLowerCase();
-  let code = '';
+  // A physical key code only for letters/digits; left undefined otherwise (a symbol/space
+  // char is text-only), so the `trackKey` `code == null` guard never holds it as a key.
+  let code: string | undefined;
   if (/^[a-z]$/.test(lower)) code = 'Key' + lower.toUpperCase();
   else if (/^[0-9]$/.test(ch)) code = 'Digit' + ch;
   const mod = isUpper ? { modifiers: SHIFT } : {};
