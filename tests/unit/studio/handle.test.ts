@@ -13,7 +13,7 @@ describe('studio/handle', () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  const handle = { id: 'sid', endpoint: 'http://127.0.0.1:7777', token: 'tok-abc', pid: 12345 };
+  const handle = { id: 'sid', endpoint: 'http://127.0.0.1:7777', token: 'tok-abc', pid: 12345, instanceId: 'inst-abc' };
 
   it('writes the handle and reads it back', () => {
     writeHandle(handle, dataDir);

@@ -1,0 +1,10 @@
+{
+  "//": "Debt-ratchet config: strict type-check of src + ALL tests. scripts/typecheck-debt-ratchet.mjs counts the errors and FAILS if the count rises above the frozen baseline, so legacy loosely-typed tests can stay (a separate hygiene cleanup) while NEW debt — a loosely-typed or dangling-ref test — is blocked. Lower the baseline as the debt is paid down. The Studio safety surface is held at ZERO separately by tsconfig.test.json.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src", "tests"],
+  "exclude": ["node_modules", "dist"]
+}
