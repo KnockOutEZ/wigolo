@@ -174,14 +174,17 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     onUpgrade: (req, socket, head) => hub.handleUpgrade(req, socket, head),
   });
 
-  // Warm the embedding model BEFORE the host accepts connections.
-  // getEmbedProvider() constructs AND warms the provider (one-time ONNX/tokenizer
-  // load) before it resolves, so awaiting it here pays that cost up front — never
-  // lazily mid-session where it would stall a live screencast.
-  log('warming embedding model…');
-  await getEmbedProvider();
-
   const endpoint = await daemon.start();
+
+  // Warm the embedding model in the BACKGROUND now that the host endpoint is reachable. This was
+  // previously awaited here (warm-before-live), which blocked the host on a cold model load/DOWNLOAD
+  // — the Phase-0 model-init risk, the same one that blocked MCP `initialize` on the shared path.
+  // Backgrounding it binds the endpoint first and warms behind it; a session that beats the warm
+  // lazy-loads on first real use. (The pre-warm still avoids the common mid-session stall.)
+  log('warming embedding model in the background…');
+  void getEmbedProvider().catch((e) =>
+    logger.debug('embedding warm failed', { error: e instanceof Error ? e.message : String(e) }),
+  );
 
   const session = registry.create({ endpoint, token });
 

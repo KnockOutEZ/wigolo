@@ -37,6 +37,7 @@ vi.mock('../../../src/studio/handle.js', async (importOriginal) => {
 });
 
 import { parseStudioArgs, startStudioHost } from '../../../src/cli/studio.js';
+import { getEmbedProvider } from '../../../src/providers/embed-provider.js';
 import { writeHandle } from '../../../src/studio/handle.js';
 import type { LaunchedSessionBrowser } from '../../../src/studio/session-browser.js';
 
@@ -102,12 +103,21 @@ describe('cli/studio startStudioHost', () => {
   });
   afterEach(() => resetConfig());
 
-  it('warms the embedding model BEFORE the session goes live (handle written)', async () => {
+  it('does NOT block startup on the embedding warm — endpoint + handle come up even if warming HANGS (model load is backgrounded)', async () => {
+    // Warm-before-live used to block the host on a cold model load/download (the Phase-0 model-init
+    // risk). The warm is now backgrounded so the host endpoint is reachable first; a hanging warm
+    // must not stall startup. (A cold model load thus warms behind a live endpoint, not in front of it.)
+    vi.mocked(getEmbedProvider).mockImplementationOnce(() => new Promise(() => {})); // never resolves
     const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    expect(events).toContain('warmup');
-    // Warmup must complete before the host listens and before the handle is published.
-    expect(events.indexOf('warmup')).toBeLessThan(events.indexOf('start'));
-    expect(events.indexOf('warmup')).toBeLessThan(events.indexOf('handle'));
+    expect(events).toContain('start'); // endpoint bound…
+    expect(events).toContain('handle'); // …and handle published — startup completed despite the hanging warm
+    await host.daemon.stop();
+  }, 5000);
+
+  it('still kicks off the embedding warm in the background (after the endpoint is live, not before)', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    expect(events).toContain('warmup'); // the warm is still triggered (not dropped)
+    expect(events.indexOf('warmup')).toBeGreaterThan(events.indexOf('start')); // …but AFTER the endpoint is live
     await host.daemon.stop();
   });
 
