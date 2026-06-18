@@ -11,7 +11,7 @@
  */
 import { execSync } from 'node:child_process';
 
-const BASELINE = 294;
+const BASELINE = 280;
 
 let count = 0;
 try {

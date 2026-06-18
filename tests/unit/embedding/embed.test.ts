@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import type { EmbedProvider } from '../../../src/providers/embed-provider.js';
 import type { VectorStore } from '../../../src/providers/vector-store.js';
 
@@ -66,8 +66,11 @@ vi.mock('../../../src/logger.js', () => ({
 
 import { updateCacheEmbedding, getAllEmbeddings } from '../../../src/cache/store.js';
 
-interface MockProvider extends EmbedProvider {
-  embed: ReturnType<typeof vi.fn>;
+// embed is a mock typed to the REAL embed() signature, so MockProvider stays assignable to
+// EmbedProvider (a bare `ReturnType<typeof vi.fn>` is not — it produced TS2430 + per-instantiation
+// TS2345 across this file).
+interface MockProvider extends Omit<EmbedProvider, 'embed'> {
+  embed: Mock<EmbedProvider['embed']>;
 }
 
 function makeMockProvider(overrides: Partial<MockProvider> = {}): MockProvider {
@@ -75,7 +78,7 @@ function makeMockProvider(overrides: Partial<MockProvider> = {}): MockProvider {
   return {
     modelId: 'BGE-small-en-v1.5',
     dim: 384,
-    embed: vi.fn().mockResolvedValue([defaultVector]),
+    embed: vi.fn<EmbedProvider['embed']>().mockResolvedValue([defaultVector]),
     ...overrides,
   };
 }
