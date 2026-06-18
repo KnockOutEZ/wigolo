@@ -163,6 +163,36 @@ describe('createResolver — live ref → coordinates', () => {
     expect(gnflCalls).toEqual([{ x: 110, y: 205 + SCROLL_Y }]); // queried at the DOCUMENT point, not the viewport point
   });
 
+  it('DPR REGRESSION GUARD: the scroll shift reads the CSS-px cssVisualViewport, never the device-px visualViewport', async () => {
+    // Page.getLayoutMetrics exposes BOTH cssVisualViewport (CSS px, DPR-safe) and the
+    // deprecated visualViewport (DEVICE px — 2x at DPR=2). The occlusion hit-test must shift
+    // by the CSS-px field; reading visualViewport would re-break occlusion at DPR != 1. The
+    // two fields carry DISTINCT values here so the assertion pins which one is used — flip
+    // scrollOffset to read visualViewport and this reddens.
+    const CSS_SCROLL = 2800; // cssVisualViewport.pageY (CSS px) — the correct shift
+    const DEVICE_SCROLL = 5600; // visualViewport.pageY (device px, 2x) — the wrong one
+    const gnflY: number[] = [];
+    const cdp = {
+      send: async (method: string, params?: Record<string, unknown>) => {
+        if (method === 'DOM.getBoxModel') return { model: { content: BOX } }; // centre (110,205)
+        if (method === 'Page.getLayoutMetrics') {
+          return { visualViewport: { pageX: 0, pageY: DEVICE_SCROLL }, cssVisualViewport: { pageX: 0, pageY: CSS_SCROLL } };
+        }
+        if (method === 'DOM.getNodeForLocation') {
+          gnflY.push(params?.y as number);
+          return { backendNodeId: 100 };
+        }
+        return {};
+      },
+    };
+    const resolve = createResolver({
+      snapshot: async () => makeSnapshot({ elements: [{ ref: 'e1', role: 'button', name: 'Go' }], refMap: [['e1', 100]], domParent: [[100, null]] }),
+      cdp,
+    });
+    await resolve('e1');
+    expect(gnflY).toEqual([205 + CSS_SCROLL]); // 3005 (CSS-px shift) — NOT 205 + 5600 (device-px)
+  });
+
   it('fails CLOSED (element_occluded) when the scroll offset cannot be read — never hit-tests blind at viewport coords on a possibly-scrolled page', async () => {
     // If the scroll offset is unavailable we cannot place the document-space hit-test, so we
     // must refuse rather than silently query the viewport point (which would falsely PASS an
