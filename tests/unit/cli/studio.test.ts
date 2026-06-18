@@ -111,6 +111,12 @@ describe('cli/studio startStudioHost', () => {
     await host.daemon.stop();
   });
 
+  it('healMark on an unknown markId returns the no_such_mark error (the contract studio_marks will surface)', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    expect(await host.healMark('does-not-exist')).toEqual({ error: 'no_such_mark' });
+    await host.daemon.stop();
+  });
+
   it('wires setStudioHost BEFORE publishing the handle (closes the self-loop window in the real boot sequence)', async () => {
     const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
     expect(events).toContain('setStudioHost');

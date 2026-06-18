@@ -19,6 +19,7 @@
     "tests/unit/studio/perception/target.test.ts",
     "tests/unit/studio/mark-store.test.ts",
     "tests/unit/studio/inspect.test.ts",
+    "tests/unit/studio/heal.test.ts",
     "tests/unit/cli/studio.test.ts",
     "tests/unit/daemon/studio-dispatch.test.ts",
     "tests/unit/daemon/proxy-roundtrip.test.ts",

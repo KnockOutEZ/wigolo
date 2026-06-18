@@ -51,14 +51,31 @@ function generalizedPath(map: Map<number, DomInfo>, be: number): string {
   return seg.join('/');
 }
 
-/** Build a structured target for `backendNodeId` from the privileged AX⋈DOM data. Null if the node is absent (never a wrong target). */
-export function buildTarget(axNodes: AxNode[], domRoot: DomNode | undefined, backendNodeId: number): StructuredTarget | null {
-  const { map } = flattenDom(domRoot);
+/** AX backendDOMNodeId → {role, name}, first occurrence wins (matches the prior per-node `find`). */
+export function indexAxByBackendNode(axNodes: AxNode[]): Map<number, { role: string; name: string }> {
+  const m = new Map<number, { role: string; name: string }>();
+  for (const n of axNodes) {
+    if (n.ignored || n.backendDOMNodeId == null || m.has(n.backendDOMNodeId)) continue;
+    m.set(n.backendDOMNodeId, { role: n.role?.value ?? '', name: n.name?.value ?? '' });
+  }
+  return m;
+}
+
+/**
+ * Build a target from a PRE-FLATTENED DOM map + AX index. A batch (e.g. the heal candidate set)
+ * flattens the DOM + indexes the AX tree ONCE and calls this per node — O(N) total instead of the
+ * O(K·N) that calling `buildTarget` K times would cost (it re-flattens the whole DOM each call).
+ */
+export function buildTargetFromFlat(
+  map: Map<number, DomInfo>,
+  axByBe: Map<number, { role: string; name: string }>,
+  backendNodeId: number,
+): StructuredTarget | null {
   const info = map.get(backendNodeId);
-  if (!info) return null; // marked node not in the live DOM → no target, never a guess
-  const ax = axNodes.find((n) => !n.ignored && n.backendDOMNodeId === backendNodeId);
-  const role = ax?.role?.value ?? '';
-  const name = ax?.name?.value ?? '';
+  if (!info) return null; // node not in the live DOM → no target, never a guess
+  const ax = axByBe.get(backendNodeId);
+  const role = ax?.role ?? '';
+  const name = ax?.name ?? '';
   return {
     backendNodeId,
     role,
@@ -68,4 +85,9 @@ export function buildTarget(axNodes: AxNode[], domRoot: DomNode | undefined, bac
     ancestorPath: generalizedPath(map, backendNodeId),
     attrs: info.attrs,
   };
+}
+
+/** Build a structured target for `backendNodeId` from the privileged AX⋈DOM data. Null if the node is absent (never a wrong target). */
+export function buildTarget(axNodes: AxNode[], domRoot: DomNode | undefined, backendNodeId: number): StructuredTarget | null {
+  return buildTargetFromFlat(flattenDom(domRoot).map, indexAxByBackendNode(axNodes), backendNodeId);
 }
