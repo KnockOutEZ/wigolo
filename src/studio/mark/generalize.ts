@@ -17,6 +17,12 @@
 import type { StructuredTarget } from './target.js';
 import type { HealCandidate, HealConfidence } from './heal.js';
 
+/**
+ * Reuses heal's 4-tier union. The minimal structural+geometry version emits only `none`
+ * (no repeating pattern), `medium` (a set with loosened spines or a pruned geometric outlier),
+ * and `high` (an exact-spine, geometrically-regular set). `low` is RESERVED for the deferred
+ * rich (DEPTA) version — do not add a test for it or remove it from the union.
+ */
 export type GeneralizeConfidence = HealConfidence;
 
 export interface GeneralizeMatch {

@@ -109,17 +109,23 @@ describe('applyGeometry — minimal geometric tiebreaker over the structural set
   });
   const box = (x: number, y: number) => ({ x, y, width: 100, height: 40 });
 
-  it('prunes a gross visual outlier and sorts the kept refs top-to-bottom; the irregularity downgrades high → medium', () => {
-    const boxes = new Map([
+  const outlierBoxes = () =>
+    new Map([
       ['e3', box(0, 200)],
       ['e1', box(0, 0)],
       ['e2', box(0, 100)],
       ['eOut', box(0, 9000)], // a same-structured button 9000px away — not part of this visual list
     ]);
-    const r = applyGeometry(structural(['e3', 'e1', 'e2', 'eOut'], 'high'), boxes);
-    expect(r.refs).toEqual(['e1', 'e2', 'e3']); // outlier pruned, rest sorted by y
-    expect(r.confidence).toBe('medium'); // pruning a structural match lowers certainty
+
+  it('prunes a gross visual outlier and sorts the kept refs top-to-bottom', () => {
+    const r = applyGeometry(structural(['e3', 'e1', 'e2', 'eOut'], 'high'), outlierBoxes());
+    expect(r.refs).toEqual(['e1', 'e2', 'e3']); // outlier dropped, rest sorted by y
     expect(r.requires_confirmation).toBe(true);
+  });
+
+  it('pruning a structural match downgrades the confidence high → medium', () => {
+    const r = applyGeometry(structural(['e3', 'e1', 'e2', 'eOut'], 'high'), outlierBoxes());
+    expect(r.confidence).toBe('medium'); // the visual irregularity lowers certainty
   });
 
   it('with NO boxes it cannot refine — keeps the structural order + confidence (not rendered ≠ off-pattern; the human confirms)', () => {

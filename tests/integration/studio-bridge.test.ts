@@ -634,4 +634,71 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     expect(g.refs.length).toBe(3); // the three exact-spine list buttons; the nested "Sponsored" row is gated out
     expect(g.confidence).toBe('high'); // an exact-spine repeating set
   }, 30_000);
+
+  // ───────────────────────────── Phase 3e: act across the confirmed set ─────────────────────────────
+  const LIST = (n: number, h: number, lastLiStyle = '') =>
+    'data:text/html,' +
+    encodeURIComponent(
+      '<ul style="margin:0;padding:0;list-style:none">' +
+        Array.from({ length: n }, (_, i) =>
+          `<li${i === n - 1 && lastLiStyle ? ` style="${lastLiStyle}"` : ''}><button class="it" data-i="${i}" onclick="this.setAttribute('data-hit','1')" style="display:block;width:240px;height:${h}px">Add ${i}</button></li>`,
+        ).join('') +
+        '</ul>',
+    );
+  const hits = (page: import('playwright').Page) =>
+    page.evaluate(() => Array.from(document.querySelectorAll('button.it')).map((b) => b.getAttribute('data-hit')));
+
+  it('3e: the agent acts ACROSS the confirmed set — looping studio_act click per generalized ref clicks EVERY item, including ones below the fold (each ref live-resolved + scrolled into view at dispatch)', async () => {
+    // 5 items × 240px = 1200px — the later items are below the fold, so reaching them exercises
+    // the resolver's per-ref scrollIntoViewIfNeeded. The previewed refs ARE the dispatched refs.
+    await host.sessionBrowser.navigate(LIST(5, 240));
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+    const markId = await markButton('button[data-i="0"]'); // the human marks ONE example
+
+    const g = (await host.generalizeMark(markId)) as { refs: string[]; requires_confirmation: boolean };
+    expect(g.requires_confirmation).toBe(true); // a preview — the agent acts only after the human confirms
+    expect(g.refs.length).toBe(5);
+
+    // Human confirms → hands the wheel to the agent, which loops studio_act click per ref.
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+    for (const ref of g.refs) {
+      const r = (await host.act({ action: 'click', ref })) as { error_reason?: string };
+      expect(r.error_reason, `click ${ref} should land`).toBeUndefined();
+    }
+    host.controller.handleControl({ op: 'reclaim' });
+
+    // GROUND TRUTH: every button in the set registered a real click — including the below-fold ones.
+    expect(await hits(page)).toEqual(['1', '1', '1', '1', '1']);
+  }, 30_000);
+
+  it('3e: a human reclaim MID-loop stops the across-set action — the agent cannot finish clicking the set once the human takes the wheel', async () => {
+    await host.sessionBrowser.navigate(LIST(3, 60));
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+    const markId = await markButton('button[data-i="0"]');
+    const { refs } = (await host.generalizeMark(markId)) as { refs: string[] };
+    expect(refs.length).toBe(3);
+
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+    expect(((await host.act({ action: 'click', ref: refs[0] })) as { error_reason?: string }).error_reason).toBeUndefined(); // first lands
+
+    host.controller.handleControl({ op: 'reclaim' }); // the human takes the wheel mid-loop
+
+    for (const ref of refs.slice(1)) {
+      const r = (await host.act({ action: 'click', ref })) as { error_reason?: string };
+      expect(r.error_reason, 'a non-holder agent act must be refused').toBe('not_holder');
+    }
+    // GROUND TRUTH: only the first item was clicked; the reclaim stopped the rest.
+    expect(await hits(page)).toEqual(['1', null, null]);
+  }, 30_000);
+
+  it('3e: the geometric tiebreaker excludes a same-spine button parked far OFF the visual list — the agent never acts on it (folds the deferred off-list geometry proof)', async () => {
+    // Four buttons share the EXACT spine (distance 0 — the structural gate keeps all four), but the
+    // fourth is pushed 5000px below the list: a same-structured element that is NOT part of the
+    // visual list. The minimal geometric tiebreaker prunes the outlier, so it is not in the set.
+    await host.sessionBrowser.navigate(LIST(4, 60, 'margin-top:5000px'));
+    const markId = await markButton('button[data-i="0"]');
+    const g = (await host.generalizeMark(markId)) as { refs: string[]; confidence: string };
+    expect(g.refs.length).toBe(3); // the far button is geometrically pruned (NOT by the structural gate — all four share the spine)
+    expect(g.confidence).toBe('medium'); // pruning a structural match lowers high → medium
+  }, 30_000);
 });
