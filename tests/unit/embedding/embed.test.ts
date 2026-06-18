@@ -274,6 +274,29 @@ describe('EmbeddingService', () => {
     expect(service.isSubprocessReady()).toBe(true); // …flips verified asynchronously
   }, 2000);
 
+  it('a FAILED probe degrades but does not disable: service stays available, embedAndStore still works and self-heals providerVerified', async () => {
+    // The background probe rejects (e.g. a transient cold-load error). init() must still complete
+    // (handled — no unhandled rejection), the service stays available, and a later real embed both
+    // works (indexing not gated on the probe) AND self-heals providerVerified so find_similar
+    // doesn't stay dark for the process lifetime if only the probe lost the race.
+    const provider = makeMockProvider({
+      embed: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('probe load failed'))
+        .mockResolvedValue([new Float32Array(384).fill(0.1)]),
+    });
+    const service = new EmbeddingService(provider);
+    await service.init();
+    await new Promise((r) => setTimeout(r, 10)); // let the failing probe settle
+
+    expect(service.isAvailable()).toBe(true); // a failed probe does NOT disable the service
+    expect(service.isSubprocessReady()).toBe(false); // …but it's not yet verified
+
+    await service.embedAndStore('https://x.com', 'content'); // a real embed succeeds
+    expect(service.getIndex().has('https://x.com')).toBe(true); // indexing works despite the failed probe
+    expect(service.isSubprocessReady()).toBe(true); // self-healed — a successful embed proves the provider works
+  });
+
   it('isSubprocessReady flips true once the async provider probe lands (not synchronously at init)', async () => {
     const service = new EmbeddingService(makeMockProvider());
     expect(service.isSubprocessReady()).toBe(false);
