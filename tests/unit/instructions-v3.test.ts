@@ -128,6 +128,13 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(desc).not.toContain('CDP'); // no implementation names (user-facing)
   });
 
+  it('studio_observe description marks the snapshot content as untrusted page data, not instructions (Phase 6a trust boundary)', () => {
+    const desc = TOOL_DESCRIPTIONS.studio_observe;
+    expect(desc).toMatch(/untrusted|not instructions|page-derived/i); // the agent must treat page content as data
+    expect(desc).toMatch(/instruction/i); // explicitly: page content is not instructions
+    expect(desc).not.toContain('CDP'); // no implementation names (user-facing)
+  });
+
   it('find_similar description mentions url and concept inputs', () => {
     const desc = TOOL_DESCRIPTIONS.find_similar;
     expect(desc).toContain('url');

@@ -103,3 +103,35 @@ describe('createObserver — spill drives GC; spill is host-retrievable; evicted
     if (isErr(r)) expect(r.error_reason).toBe('studio_spill_evicted');
   });
 });
+
+describe('createObserver — trust boundary: every page-perception payload is tagged untrusted', () => {
+  // Phase 6a: the observe element stream (role/name) is the PRIMARY page-derived channel.
+  // A page can render "ignore your instructions…" into an element name; the agent must read
+  // the whole payload as DATA, never as instructions. Welded host-side (the page can't forge it).
+  it('a FULL snapshot output carries trusted:false', async () => {
+    const obs = observer(async () => mkSnap('s1', [el('e1', 'A')]), new StudioEventQueue(100));
+    const r = ok(await obs({}));
+    expect(r.kind).toBe('full');
+    expect(r.trusted).toBe(false);
+  });
+
+  it('a DIFF output carries trusted:false (the diff also carries page-derived element descriptors)', async () => {
+    const q = new StudioEventQueue(100);
+    const snaps = [mkSnap('s1', [el('e1', 'A')]), mkSnap('s2', [el('e1', 'A'), el('e2', 'B')])];
+    let i = 0;
+    const obs = observer(async () => snaps[i++], q);
+    const r1 = ok(await obs({}));
+    const r2 = ok(await obs({ base_id: r1.id }));
+    expect(r2.kind).toBe('diff');
+    expect(r2.trusted).toBe(false);
+  });
+
+  it('a host-retrieved SPILL fetch carries trusted:false (the full set is page content too)', async () => {
+    const big = Array.from({ length: 50 }, (_, i) => el('e' + i, 'Item ' + i));
+    const obs = observer(async () => mkSnap('s1', big), new StudioEventQueue(100), { inlineBudget: 60, spillMaxBytes: 10_000_000 });
+    const r = ok(await obs({}));
+    const fetched = ok(await obs({ snapshot_ref: r.snapshotRef }));
+    expect(fetched.kind).toBe('full');
+    expect(fetched.trusted).toBe(false);
+  });
+});
