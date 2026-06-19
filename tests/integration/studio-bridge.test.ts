@@ -717,4 +717,30 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     expect(btn, 'observe should surface the button').toBeTruthy();
     expect(btn!.name).toContain(injection); // the injection text survives VERBATIM as inert data — never sanitized/stripped away
   }, 30_000);
+
+  // ───────────────────────────── Phase 6b: audit log ─────────────────────────────
+  it('6b: every agent action lands in the per-session append-only audit log with its REAL outcome (successes + a refusal), replayable in order', async () => {
+    const html = '<button id="b" style="position:fixed;left:40px;top:40px;width:200px;height:60px">Go</button>';
+    await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(html)); // host nav — NOT an agent action, not audited
+    const before = host.audit.size;
+
+    host.controller.handleControl({ op: 'grant', to: 'agent' });
+    const obs = (await host.observe({})) as { elements?: Array<{ ref: string; role: string }> };
+    const btn = (obs.elements ?? []).find((e) => e.role === 'button');
+    expect(btn, 'observe should surface the button').toBeTruthy();
+
+    await host.act({ action: 'click', ref: btn!.ref });      // success
+    await host.act({ action: 'scroll', direction: 'down' }); // success
+    host.controller.handleControl({ op: 'reclaim' });        // the human takes over
+    await host.act({ action: 'click', ref: btn!.ref });      // refused: not_holder
+
+    const entries = host.audit.replay().slice(before);
+    expect(entries.map((e) => e.action)).toEqual(['click', 'scroll', 'click']);
+    expect(entries[0].outcome).toMatchObject({ ok: true });
+    expect(entries[1].outcome).toMatchObject({ ok: true });
+    expect(entries[2].outcome).toMatchObject({ ok: false, error_reason: 'not_holder' }); // refusals are audited too — the full trail
+    expect(entries[2].seq).toBeGreaterThan(entries[0].seq);  // monotonic, append-only
+    expect(Object.isFrozen(entries[2])).toBe(true);          // entries are tamper-proof
+    host.controller.handleControl({ op: 'reclaim' });
+  }, 30_000);
 });

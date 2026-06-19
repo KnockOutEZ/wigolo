@@ -28,6 +28,7 @@ import type { ControlParty } from './control-token.js';
 import type { AgentInputEvent } from './input.js';
 import { isResolveError, type ResolveResult, type ResolveErrorReason } from './perception/resolve.js';
 import type { StudioActInput, StudioActOutput, StudioToolError } from '../daemon/studio-dispatch.js';
+import type { AuditRecordInput, AuditOutcome } from './audit.js';
 
 /** The narrow view of the control token the act handler needs (the real ControlToken satisfies it). */
 export interface ActControlToken {
@@ -53,6 +54,8 @@ export interface ActHandlerDeps {
   resolve: (ref: string) => Promise<ResolveResult>;
   /** The single epoch-gated input channel; click/type/scroll dispatch here — NEVER action-executor.page.* or a raw CDP Input side-channel (those bypass the fence + neutralization). */
   channel: AgentInputChannel;
+  /** Phase 6b: the per-session append-only audit log; every action + outcome is recorded for trust + replay. Optional so the unit tests can omit it. */
+  audit?: { record(input: AuditRecordInput): void };
 }
 
 /** CDP modifier bitmask for Shift. */
@@ -119,10 +122,37 @@ function mapResolveError(reason: ResolveErrorReason): StudioToolError {
   }
 }
 
+/** The action's recorded inputs, by verb. NO raw typed text (privacy) — the type effect rides `outcome.charsLanded`. */
+function auditTarget(input: StudioActInput): AuditRecordInput['target'] {
+  switch (input.action) {
+    case 'navigate':
+      return typeof input.url === 'string' ? { url: input.url } : undefined;
+    case 'click':
+    case 'type':
+      return typeof input.ref === 'string' ? { ref: input.ref } : undefined;
+    case 'scroll': {
+      const t: { direction?: 'up' | 'down'; amount?: number } = {};
+      if (input.direction) t.direction = input.direction;
+      if (typeof input.amount === 'number') t.amount = input.amount;
+      return Object.keys(t).length ? t : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** Map a resolved handler result to the audit outcome (success vs typed refusal/failure; carries charsLanded for type). */
+function auditOutcome(result: StudioActOutput | StudioToolError): AuditOutcome {
+  if ('error_reason' in result) {
+    return { ok: false, error_reason: result.error_reason, ...(result.charsLanded !== undefined ? { charsLanded: result.charsLanded } : {}) };
+  }
+  return { ok: true, ...(result.charsLanded !== undefined ? { charsLanded: result.charsLanded } : {}) };
+}
+
 export function createActHandler(
   deps: ActHandlerDeps,
 ): (input: StudioActInput) => Promise<StudioActOutput | StudioToolError> {
-  const { browser, controlToken, grant, resolve, channel } = deps;
+  const { browser, controlToken, grant, resolve, channel, audit } = deps;
 
   const refused = (currentEpoch: number): StudioToolError => ({ error_reason: 'not_holder', hint: HOLD_HINT, currentEpoch });
   const standDown = (charsLanded?: number): StudioToolError => ({
@@ -228,7 +258,7 @@ export function createActHandler(
     return { ok: true, action: 'scroll' };
   };
 
-  return async (input: StudioActInput): Promise<StudioActOutput | StudioToolError> => {
+  const dispatch = async (input: StudioActInput): Promise<StudioActOutput | StudioToolError> => {
     switch (input.action) {
       case 'navigate':
         return navigate(input);
@@ -245,5 +275,20 @@ export function createActHandler(
           hint: `studio_act supports navigate|click|type|scroll; '${String((input as { action?: unknown }).action)}' is not a known action.`,
         };
     }
+  };
+
+  // Every agent action + its resolved outcome lands in the per-session APPEND-ONLY audit
+  // log (Phase 6b) — successes, refusals, AND unknown verbs alike, never silently dropped —
+  // for trust + the Phase-7 replay timeline. The optional-chain leaves the args unevaluated
+  // when no log is wired (the unit tests that omit it).
+  return async (input: StudioActInput): Promise<StudioActOutput | StudioToolError> => {
+    const result = await dispatch(input);
+    audit?.record({
+      action: typeof input.action === 'string' ? input.action : String((input as { action?: unknown }).action),
+      epoch: controlToken.epoch,
+      target: auditTarget(input),
+      outcome: auditOutcome(result),
+    });
+    return result;
   };
 }

@@ -5,6 +5,7 @@ import type { ControlParty } from '../../../src/studio/control-token.js';
 import type { AgentInputEvent } from '../../../src/studio/input.js';
 import type { ResolveResult } from '../../../src/studio/perception/resolve.js';
 import { isStudioToolError, type StudioActOutput, type StudioToolError } from '../../../src/daemon/studio-dispatch.js';
+import { SessionAuditLog } from '../../../src/studio/audit.js';
 
 function makeFakeBrowser(impl?: (url: string) => Promise<void>) {
   const gotos: string[] = [];
@@ -313,6 +314,80 @@ describe('createActHandler — scroll', () => {
       resolve: noResolve, channel: ch.channel,
     });
     expect(asErr(await act({ action: 'scroll', direction: 'down' })).error_reason).toBe('aborted_reclaimed');
+  });
+});
+
+describe('createActHandler — audit log (Phase 6b: every agent action is recorded with its outcome)', () => {
+  const fixedClock = { now: () => 1000 };
+
+  it('records a successful navigate with the url target and an ok outcome', async () => {
+    const audit = new SessionAuditLog(fixedClock);
+    const act = createActHandler({ ...base, audit, browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [3]), grant: denyGrant });
+    await act({ action: 'navigate', url: 'https://example.com/' });
+    expect(audit.replay()).toEqual([
+      { seq: 1, ts: 1000, action: 'navigate', epoch: 3, target: { url: 'https://example.com/' }, outcome: { ok: true } },
+    ]);
+  });
+
+  it('records a REFUSED action (human holds) with the not_holder outcome — refusals are audited too', async () => {
+    const audit = new SessionAuditLog(fixedClock);
+    const act = createActHandler({ ...base, audit, browser: makeFakeBrowser().browser, controlToken: makeFakeToken('human', [7]), grant: denyGrant });
+    await act({ action: 'navigate', url: 'https://example.com/' });
+    expect(audit.replay()).toEqual([
+      { seq: 1, ts: 1000, action: 'navigate', epoch: 7, target: { url: 'https://example.com/' }, outcome: { ok: false, error_reason: 'not_holder' } },
+    ]);
+  });
+
+  it('records a click that resolved to an occlusion (error outcome, ref target)', async () => {
+    const audit = new SessionAuditLog(fixedClock);
+    const act = createActHandler({
+      browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [2]), grant: allowGrant,
+      resolve: fixedResolve({ error: 'element_occluded' }), channel: recordingChannel().channel, audit,
+    });
+    await act({ action: 'click', ref: 'e9' });
+    expect(audit.replay()).toEqual([
+      { seq: 1, ts: 1000, action: 'click', epoch: 2, target: { ref: 'e9' }, outcome: { ok: false, error_reason: 'element_occluded' } },
+    ]);
+  });
+
+  it('records a partial type with charsLanded on the aborted_reclaimed outcome', async () => {
+    const audit = new SessionAuditLog(fixedClock);
+    const ch = recordingChannel((n) => n < 2); // focus(0) + 'a'(1) land, 'b'(2) dropped
+    const act = createActHandler({
+      browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
+      resolve: fixedResolve({ backendNodeId: 7, center: { x: 0, y: 0 } }), channel: ch.channel, audit,
+    });
+    await act({ action: 'type', ref: 'e1', text: 'ab' });
+    expect(audit.replay()).toEqual([
+      { seq: 1, ts: 1000, action: 'type', epoch: 5, target: { ref: 'e1' }, outcome: { ok: false, error_reason: 'aborted_reclaimed', charsLanded: 1 } },
+    ]);
+  });
+
+  it('records an UNKNOWN action verb (rejected, but never silently dropped from the trail)', async () => {
+    const audit = new SessionAuditLog(fixedClock);
+    const act = createActHandler({ ...base, audit, browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [1]), grant: allowGrant });
+    await act({ action: 'frobnicate' } as unknown as { action: 'navigate' });
+    expect(audit.replay()).toEqual([
+      { seq: 1, ts: 1000, action: 'frobnicate', epoch: 1, outcome: { ok: false, error_reason: 'action_not_supported' } },
+    ]);
+  });
+
+  it('records EVERY action in order across a session — replay is the full ordered sequence', async () => {
+    const audit = new SessionAuditLog(fixedClock);
+    const act = createActHandler({
+      browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [4]), grant: allowGrant,
+      resolve: fixedResolve({ backendNodeId: 1, center: { x: 1, y: 1 } }), channel: recordingChannel().channel, audit,
+    });
+    await act({ action: 'navigate', url: 'https://a/' });
+    await act({ action: 'scroll', direction: 'down', amount: 600 });
+    await act({ action: 'click', ref: 'e1' });
+    await act({ action: 'type', ref: 'e2', text: 'hi' });
+    expect(audit.replay().map((e) => ({ seq: e.seq, action: e.action, outcome: e.outcome }))).toEqual([
+      { seq: 1, action: 'navigate', outcome: { ok: true } },
+      { seq: 2, action: 'scroll', outcome: { ok: true } },
+      { seq: 3, action: 'click', outcome: { ok: true } },
+      { seq: 4, action: 'type', outcome: { ok: true, charsLanded: 2 } }, // success-path charsLanded is audited too
+    ]);
   });
 });
 
