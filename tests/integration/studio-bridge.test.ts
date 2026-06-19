@@ -496,8 +496,11 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
   it('3b: a marked element re-resolves after DOM drift via the heal cascade — fingerprint survives a volatile re-render, and the healed ref drives a real click (mark→heal→ref→2J act)', async () => {
     // The button's volatile attrs (id/class) will change on re-render; its role+name+stable-attrs
     // (the fingerprint) stay — so heal tier 1 re-resolves it though its backend node id changed.
+    // NB: a NEUTRAL name ("Continue") on purpose — this proves heal, and the agent CLICKS it below;
+    // a money/credential/destructive name (e.g. "Checkout") would now be held by the 6c approval
+    // gate, which this heal proof does not answer. The gate's behaviour is proven by the 6c proofs.
     const html =
-      '<button id="old-1" class="v1" type="submit" style="position:fixed;left:40px;top:40px;width:220px;height:60px">Checkout</button>';
+      '<button id="old-1" class="v1" type="submit" style="position:fixed;left:40px;top:40px;width:220px;height:60px">Continue</button>';
     await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(html));
     const page = host.sessionBrowser.page as unknown as import('playwright').Page;
     const markId = await markButton('#old-1');
@@ -509,7 +512,7 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     await page.evaluate(() => {
       (window as unknown as { __hit: number }).__hit = 0;
       document.body.innerHTML =
-        '<button id="new-9" class="v2-rerendered" type="submit" onclick="window.__hit=1" style="position:fixed;left:40px;top:40px;width:220px;height:60px">Checkout</button>';
+        '<button id="new-9" class="v2-rerendered" type="submit" onclick="window.__hit=1" style="position:fixed;left:40px;top:40px;width:220px;height:60px">Continue</button>';
     });
 
     const r = (await host.healMark(markId)) as { confidence: string; ref?: string; tier?: string };
