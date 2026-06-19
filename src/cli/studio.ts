@@ -21,6 +21,7 @@ import { createResolver } from '../studio/perception/resolve.js';
 import { StudioEventQueue } from '../studio/event-queue.js';
 import { createObserver } from '../studio/observe.js';
 import { createActHandler } from '../studio/act.js';
+import { SessionAuditLog } from '../studio/audit.js';
 import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
 import { buildTarget, buildTargetFromFlat, indexAxByBackendNode, type StructuredTarget } from '../studio/mark/target.js';
@@ -113,6 +114,8 @@ export interface StudioHost {
   observe: (input: StudioObserveInput) => Promise<StudioObserveOutput | StudioToolError>;
   /** The agent's acting verb (studio_act) — gate + live ref-resolve + the token-gated input channel, host-authoritative. Exposed for the host-boundary tests. */
   act: (input: StudioActInput) => Promise<StudioActOutput | StudioToolError>;
+  /** Phase 6b: the per-session append-only audit log of every agent action + outcome (for trust + the Phase-7 replay timeline). Exposed for the timeline + headed tests. */
+  audit: SessionAuditLog;
   /** Human-only, per-session, revocable: lift the agent's localhost/RFC1918 nav block (cloud-metadata stays blocked). */
   grantAgentPrivateNav: (on: boolean) => void;
   hub: StudioWsHub;
@@ -445,13 +448,16 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // scroll dispatch through the ONE token-gated input channel (the SessionController),
   // never action-executor.page.* or a raw CDP Input side-channel (those bypass the epoch
   // fence + held-input neutralization).
-  const act = createActHandler({ browser: sessionBrowser, controlToken, grant, resolve, channel: controller });
+  // Phase 6b: the per-session append-only audit log. The act handler records every agent
+  // action + its outcome here; the Phase-7 timeline replays it. In-memory now (Phase 4 owns persistence).
+  const auditLog = new SessionAuditLog();
+  const act = createActHandler({ browser: sessionBrowser, controlToken, grant, resolve, channel: controller, audit: auditLog });
   daemon.setStudioHost({ observe, act, marks: marksTool });
 
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, marks: () => markStore.list(), healMark, marksView, generalizeMark, marksTool, observe, act, grantAgentPrivateNav, hub, handle, endpoint };
+  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, marks: () => markStore.list(), healMark, marksView, generalizeMark, marksTool, observe, act, audit: auditLog, grantAgentPrivateNav, hub, handle, endpoint };
 }
 
 export function runStudio(args: string[]): void {
