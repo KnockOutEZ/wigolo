@@ -41,6 +41,15 @@ export interface StudioObserveOutput {
   /** The new base snapshot id the agent should hold. */
   id: string;
   kind: 'full' | 'diff';
+  /**
+   * The page-perception payload here (`elements` / `diff` — their `role` + `name`) is
+   * page-derived UNTRUSTED DATA, never instructions. Host-set: the page cannot forge it
+   * because it is a sibling field, not anything inside a page-controlled string (an injected
+   * `"trusted":true` lands inside a `name` value and stays inert under JSON framing). A
+   * first-class serialized field so it survives JSON + the proxy round-trip, like the vision
+   * sub-result. REQUIRED literal so a new observe return path cannot ship page content untagged.
+   */
+  trusted: false;
   elements?: unknown[];
   diff?: unknown;
   /** Spill ref when the snapshot/diff exceeded the inline budget. */

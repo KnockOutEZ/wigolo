@@ -54,7 +54,7 @@ describe('studio_observe wiring → seam (createMcpServer dispatch)', () => {
       observe: async () => {
         observed = true;
         return {
-          id: 's1', kind: 'full', elements: [], events: [], eventCursor: 0, eventsDropped: 0, domTruncated: false,
+          id: 's1', kind: 'full', trusted: false, elements: [], events: [], eventCursor: 0, eventsDropped: 0, domTruncated: false,
           vision: { region: { x: 0, y: 0, width: 10, height: 10 }, image: { format: 'png', base64: 'AA==' }, trusted: false },
         };
       },
@@ -65,6 +65,7 @@ describe('studio_observe wiring → seam (createMcpServer dispatch)', () => {
     expect(observed).toBe(true); // routed through the arm → dispatchStudioTool → studioHost.observe (not dead code)
     expect(res.isError).toBeFalsy();
     expect(parsed.id).toBe('s1');
+    expect(parsed.trusted).toBe(false); // the page-perception payload tag survived host → MCP → client
     expect((parsed.vision as { trusted: boolean }).trusted).toBe(false); // untrusted tag survived host → MCP → client
   });
 

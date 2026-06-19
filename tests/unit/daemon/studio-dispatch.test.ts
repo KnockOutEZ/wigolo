@@ -15,7 +15,7 @@ const proxyReturning = (result: unknown) => () => ({
 });
 const throwingProxy = () => () => ({ callTool: async () => { throw new Error('ECONNREFUSED'); } });
 const hostHandlers = (): StudioHostHandlers => ({
-  observe: async () => ({ id: 'snap1', kind: 'full', elements: [], events: [], eventCursor: 0, eventsDropped: 0, domTruncated: false }),
+  observe: async () => ({ id: 'snap1', kind: 'full', trusted: false, elements: [], events: [], eventCursor: 0, eventsDropped: 0, domTruncated: false }),
   act: async (input) => { actCalls++; return { ok: true, action: input.action, url: input.url }; },
   marks: async () => ({ marks: [] }),
 });
@@ -29,6 +29,7 @@ describe('dispatchStudioTool — execute / proxy / refuse trichotomy (the seam 2
     const r = await dispatchStudioTool('studio_observe', { since: 0 }, hostHandlers(), dir, { proxyFactory: proxyReturning({}) });
     expect(r.isError).toBe(false);
     expect(JSON.parse(r.content[0].text).id).toBe('snap1');
+    expect(JSON.parse(r.content[0].text).trusted).toBe(false); // page-perception payload tagged untrusted, serialized host-side
     expect(proxyCalls).toEqual([]);
   });
 

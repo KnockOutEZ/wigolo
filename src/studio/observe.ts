@@ -47,7 +47,7 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
       if (content === null) {
         return { error_reason: 'studio_spill_evicted', hint: 'That spilled snapshot is no longer available — re-observe for a fresh one.' };
       }
-      return { id: input.base_id ?? '', kind: 'full', elements: content as SnapshotElement[], events: [], eventCursor: input.since ?? 0, eventsDropped: 0, domTruncated: false };
+      return { id: input.base_id ?? '', kind: 'full', trusted: false, elements: content as SnapshotElement[], events: [], eventCursor: input.since ?? 0, eventsDropped: 0, domTruncated: false };
     }
 
     // ATOMIC, BOUNDED capture: snapshot + cursor at one instant; give up to a full resync if the page never settles.
@@ -78,6 +78,7 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
 
     const base = {
       id: snap.id,
+      trusted: false as const, // page-perception payload (elements/diff) is untrusted page data — host-set, not page-forgeable
       events: drained.events,
       eventCursor: cursor, // advanced to the captured instant — gap events are acked, never replayed
       eventsDropped: drained.dropped,
