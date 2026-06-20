@@ -180,6 +180,7 @@ export async function crawlRank(
     markdown: page.markdown.slice(0, 5000),
     relevance_score: score,
     source: 'search',
+    trusted: false, // crawled/web page — page-derived, never trusted as instructions
     match_signals: {
       fused_score: score,
     },
@@ -318,6 +319,7 @@ function degradedResults(links: string[], maxResults: number): FindSimilarResult
     markdown: '',
     relevance_score: n > 0 ? 1 - i / n : 0,
     source: 'search',
+    trusted: false, // degraded web links — page-derived, never trusted as instructions
     match_signals: {
       fused_score: n > 0 ? 1 - i / n : 0,
     },

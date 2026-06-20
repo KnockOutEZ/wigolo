@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { SearchEngine, RawSearchResult } from '../../../src/types.js';
+import type { SearchEngine, RawSearchResult, RawFetchResult, ExtractionResult } from '../../../src/types.js';
 import type { SmartRouter } from '../../../src/fetch/router.js';
 import { resetConfig } from '../../../src/config.js';
 import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
-import { captureFromPage } from '../../../src/studio/capture/artifacts.js';
+import { captureFromPage, captureHumanNote, curateArtifact } from '../../../src/studio/capture/artifacts.js';
+import { cacheContent } from '../../../src/cache/store.js';
 
 /**
  * 4d slice-1 — does find_similar surface a captured studio clip through the
@@ -94,6 +95,22 @@ const { handleFindSimilar } = await import('../../../src/tools/find-similar.js')
 
 const CLIP_MARKDOWN = '# Captured Research\n\nThe quarterly figures the human clipped while co-browsing.';
 
+// A non-matching concept: its key terms do not appear in any seeded url_cache
+// page, so the FTS path cannot surface those pages — they can ONLY arrive via the
+// embedding path, which is what these pins exercise.
+const NONMATCHING_CONCEPT = 'xyzabc quantum teleportation manuscript';
+
+function seedUrlCache(url: string, title: string, markdown: string): void {
+  const raw: RawFetchResult = {
+    url, finalUrl: url, html: `<html><body><h1>${title}</h1><p>${markdown}</p></body></html>`,
+    contentType: 'text/html', statusCode: 200, method: 'http', headers: {},
+  };
+  const extraction: ExtractionResult = {
+    title, markdown, metadata: {}, links: [], images: [], extractor: 'defuddle',
+  };
+  cacheContent(raw, extraction);
+}
+
 const mockSearchEngine: SearchEngine = {
   name: 'mock',
   search: vi.fn().mockResolvedValue([] satisfies RawSearchResult[]),
@@ -163,5 +180,158 @@ describe('find_similar — captured studio clip via the embedding path (4d slice
     expect(source, 'a studio-sourced result must be tagged source=studio (C1)').toBe('studio');
 
     expect(hit!.url).toBe(studioKey);
+  });
+
+  it('does NOT abort the batch — a co-resident url_cache hit still surfaces (collateral fix)', async () => {
+    // The headline regression the RED exposed: a studio key in the KNN window
+    // threw in url_cache hydration and the batch catch returned [], silently
+    // dropping the co-resident url_cache hit too. NONMATCHING_CONCEPT keeps the
+    // cached page out of the FTS path, so it can ONLY surface via embedding.
+    seedUrlCache('https://realpage.example.com/revenue', 'Quarterly Revenue', 'Q3 revenue grew on cloud demand.');
+    const capture = captureFromPage(
+      { type: 'clip', sessionId: 'sess-coll', url: 'https://x.example.com/p', title: 'Clip', markdown: CLIP_MARKDOWN },
+      { db: getDatabase(), enqueue: () => undefined },
+    );
+    const studioKey = `studio://clip|${capture.id}`;
+
+    mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
+    mockEmbeddingState.vectors.set(studioKey, 1);
+    mockEmbeddingState.vectors.set('https://realpage.example.com/revenue', 1);
+    // studio key FIRST, so the old loop throws before the url hit is even reached.
+    mockEmbeddingState.findSimilarImpl = async () => [
+      { url: studioKey, score: 0.99 },
+      { url: 'https://realpage.example.com/revenue', score: 0.95 },
+    ];
+
+    const out = await handleFindSimilar(
+      { concept: NONMATCHING_CONCEPT, include_cache: true, include_web: false, include_full_markdown: true },
+      [mockSearchEngine],
+      mockRouter,
+    );
+    expect(out.ok).toBe(true);
+    const urls = (out.ok ? out.data.results : []).map((r) => r.url);
+    expect(urls).toContain('https://realpage.example.com/revenue'); // survived the studio key in the window
+    expect(urls).toContain(studioKey);
+  });
+
+  it('skips an orphan studio key (no row) — absent, never surfaced empty', async () => {
+    const orphanKey = 'studio://clip|99999';
+    mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
+    mockEmbeddingState.vectors.set(orphanKey, 1);
+    mockEmbeddingState.findSimilarImpl = async () => [{ url: orphanKey, score: 0.9 }];
+
+    const out = await handleFindSimilar(
+      { concept: NONMATCHING_CONCEPT, include_cache: true, include_web: false, include_full_markdown: true },
+      [mockSearchEngine],
+      mockRouter,
+    );
+    expect(out.ok).toBe(true);
+    const results = out.ok ? out.data.results : [];
+    expect(results.find((r) => r.url === orphanKey)).toBeUndefined();
+  });
+
+  it('tags studio clip + url_cache results trusted:false (mirrors content_trusted, page-derived)', async () => {
+    seedUrlCache('https://page.example.com/doc', 'Doc', 'A fetched page body.');
+    const capture = captureFromPage(
+      { type: 'clip', sessionId: 'sess-trust', url: 'https://x.example.com/c', title: 'Clip', markdown: CLIP_MARKDOWN },
+      { db: getDatabase(), enqueue: () => undefined },
+    );
+    const studioKey = `studio://clip|${capture.id}`;
+    mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
+    mockEmbeddingState.vectors.set(studioKey, 1);
+    mockEmbeddingState.vectors.set('https://page.example.com/doc', 1);
+    mockEmbeddingState.findSimilarImpl = async () => [
+      { url: studioKey, score: 0.99 },
+      { url: 'https://page.example.com/doc', score: 0.95 },
+    ];
+
+    const out = await handleFindSimilar(
+      { concept: NONMATCHING_CONCEPT, include_cache: true, include_web: false, include_full_markdown: true },
+      [mockSearchEngine],
+      mockRouter,
+    );
+    const results = out.ok ? out.data.results : [];
+    expect(results.find((r) => r.url === studioKey)?.trusted).toBe(false);
+    expect(results.find((r) => r.url === 'https://page.example.com/doc')?.trusted).toBe(false);
+  });
+
+  it('tags a human-authored studio note trusted:true (content_trusted=1)', async () => {
+    const note = captureHumanNote(
+      { sessionId: 'sess-note', text: 'A note the human typed — safe as instructions.' },
+      { db: getDatabase(), enqueue: () => undefined },
+    );
+    const noteKey = `studio://note|${note.id}`;
+    mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
+    mockEmbeddingState.vectors.set(noteKey, 1);
+    mockEmbeddingState.findSimilarImpl = async () => [{ url: noteKey, score: 0.99 }];
+
+    const out = await handleFindSimilar(
+      { concept: NONMATCHING_CONCEPT, include_cache: true, include_web: false, include_full_markdown: true },
+      [mockSearchEngine],
+      mockRouter,
+    );
+    const results = out.ok ? out.data.results : [];
+    const hit = results.find((r) => r.url === noteKey);
+    expect(hit?.source).toBe('studio');
+    expect(hit?.trusted).toBe(true);
+  });
+
+  it('a curated studio clip stays trusted:false (trusted tracks content_trusted, NOT curation)', async () => {
+    const capture = captureFromPage(
+      { type: 'clip', sessionId: 'sess-cur', url: 'https://x.example.com/cur', title: 'Clip', markdown: CLIP_MARKDOWN },
+      { db: getDatabase(), enqueue: () => undefined },
+    );
+    curateArtifact(capture.id, { db: getDatabase() }); // curated_by_human = 1; content_trusted untouched
+    const studioKey = `studio://clip|${capture.id}`;
+    mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
+    mockEmbeddingState.vectors.set(studioKey, 1);
+    mockEmbeddingState.findSimilarImpl = async () => [{ url: studioKey, score: 0.99 }];
+
+    const out = await handleFindSimilar(
+      { concept: NONMATCHING_CONCEPT, include_cache: true, include_web: false, include_full_markdown: true },
+      [mockSearchEngine],
+      mockRouter,
+    );
+    const results = out.ok ? out.data.results : [];
+    expect(results.find((r) => r.url === studioKey)?.trusted).toBe(false);
+  });
+
+  it('keeps studio + cache identities distinct when they share an integer rowid (no merge)', async () => {
+    // First insert into each table => both rowid 1. The raw INTEGER rowid must
+    // NOT be the cross-surface identity — the URI key + source tag keep them apart.
+    seedUrlCache('https://shared-rowid.example.com/p', 'Shared', 'Shares integer rowid with the clip.');
+    const capture = captureFromPage(
+      { type: 'clip', sessionId: 'sess-id', url: 'https://x.example.com/id', title: 'Clip', markdown: CLIP_MARKDOWN },
+      { db: getDatabase(), enqueue: () => undefined },
+    );
+    const cacheRow = getDatabase().prepare('SELECT id FROM url_cache LIMIT 1').get() as { id: number };
+    expect(cacheRow.id).toBe(capture.id); // both share the same integer rowid
+
+    const studioKey = `studio://clip|${capture.id}`;
+    mockEmbeddingState.available = true;
+    mockEmbeddingState.subprocessReady = true;
+    mockEmbeddingState.vectors.set(studioKey, 1);
+    mockEmbeddingState.vectors.set('https://shared-rowid.example.com/p', 1);
+    mockEmbeddingState.findSimilarImpl = async () => [
+      { url: studioKey, score: 0.99 },
+      { url: 'https://shared-rowid.example.com/p', score: 0.9 },
+    ];
+
+    const out = await handleFindSimilar(
+      { concept: NONMATCHING_CONCEPT, include_cache: true, include_web: false, include_full_markdown: true },
+      [mockSearchEngine],
+      mockRouter,
+    );
+    const results = out.ok ? out.data.results : [];
+    const studioHit = results.find((r) => r.source === 'studio');
+    const cacheHit = results.find((r) => r.source === 'cache');
+    expect(studioHit?.url).toBe(studioKey);
+    expect(cacheHit?.url).toBe('https://shared-rowid.example.com/p');
+    expect(studioHit?.url).not.toBe(cacheHit?.url);
   });
 });

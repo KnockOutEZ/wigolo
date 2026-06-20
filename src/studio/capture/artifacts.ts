@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { hashArtifact } from './hash.js';
 import { normalizeUrl } from '../../cache/store.js';
 import { getBackgroundIndexQueue, type IndexJobInput } from '../../embedding/background-queue.js';
+import { getDatabase } from '../../cache/db.js';
 
 /**
  * Phase 4b-3 — the Studio capture pipeline. The host persists a human-marked target,
@@ -256,4 +257,66 @@ export function captureHumanNote(input: NoteCapture, deps: CaptureDeps): Capture
  */
 export function curateArtifact(id: number, deps: { db: Database.Database }): void {
   deps.db.prepare('UPDATE studio_artifacts SET curated_by_human = 1 WHERE id = ?').run(id);
+}
+
+/** The embed/vector key scheme the capture pipeline writes (see insertArtifact:
+ * `studio://<type>|<id>`). Centralized here so the read path parses exactly the
+ * shape the write path constructs. */
+const STUDIO_EMBED_PREFIX = 'studio://';
+
+/** True for a shared-vector-store key that addresses a studio artifact. The `|`
+ * makes it a deliberately NON-url-parseable key (it must never reach new URL() /
+ * normalizeUrl — callers route on this before url hydration). */
+export function isStudioEmbedKey(key: string): boolean {
+  return key.startsWith(STUDIO_EMBED_PREFIX);
+}
+
+/** A studio artifact resolved for retrieval (find_similar / future read surfaces). */
+export interface StudioArtifactRow {
+  id: number;
+  type: string;
+  url: string | null;
+  title: string | null;
+  markdown: string | null;
+  /** content_trusted as a boolean — safe AS INSTRUCTIONS (human note) vs not. */
+  contentTrusted: boolean;
+}
+
+/**
+ * Resolve a `studio://<type>|<id>` embed key to its artifact row, BY ID — never
+ * constructs a URL from the key (the `|` is not URL-safe; that is the whole
+ * reason the embedding hydration path must branch on key shape before url_cache
+ * lookup). Returns null on a malformed key, a non-existent id, or a type/id
+ * mismatch (a stale or forged key) — a clean miss the caller skips, never a
+ * throw and never an empty-content surface.
+ */
+export function getStudioArtifactByEmbedKey(key: string): StudioArtifactRow | null {
+  if (!isStudioEmbedKey(key)) return null;
+  const rest = key.slice(STUDIO_EMBED_PREFIX.length); // <type>|<id>
+  const sep = rest.lastIndexOf('|');
+  if (sep <= 0 || sep >= rest.length - 1) return null;
+  const type = rest.slice(0, sep);
+  const id = Number(rest.slice(sep + 1));
+  if (!Number.isInteger(id) || id <= 0) return null;
+
+  const row = getDatabase()
+    .prepare(
+      'SELECT id, artifact_type, url, title, markdown, content_trusted FROM studio_artifacts WHERE id = ?',
+    )
+    .get(id) as
+    | { id: number; artifact_type: string; url: string | null; title: string | null; markdown: string | null; content_trusted: number }
+    | undefined;
+  if (!row) return null;
+  // The key's type must match the stored row — guards a stale/forged key that
+  // points at a different artifact than its scheme claims.
+  if (row.artifact_type !== type) return null;
+
+  return {
+    id: row.id,
+    type: row.artifact_type,
+    url: row.url,
+    title: row.title,
+    markdown: row.markdown,
+    contentTrusted: row.content_trusted === 1,
+  };
 }

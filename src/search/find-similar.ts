@@ -14,6 +14,7 @@ import { filterByDomains } from './filters.js';
 import { handleSearch } from '../tools/search.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { getEmbeddingService } from '../embedding/embed.js';
+import { isStudioEmbedKey, getStudioArtifactByEmbedKey } from '../studio/capture/artifacts.js';
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
 import { selectMode } from './find-similar/mode.js';
@@ -528,36 +529,82 @@ async function runEmbeddingSearch(
     const similar = await service.findSimilar(queryText, topK, excludeUrls);
     if (similar.length === 0) return [];
 
-    // Hydrate with cached content and apply domain filters on the hydrated pool
-    const hydrated: Array<{ entry: CachedContent | null; url: string; score: number }> = [];
-    for (const { url: nUrl, score } of similar) {
-      const cached = getCachedContent(nUrl);
-      hydrated.push({ entry: cached, url: nUrl, score });
+    // PER-ROW hydration. The shared vector store mixes url_cache pages with studio
+    // capture keys (studio://<type>|<id>), so a single key must never abort the
+    // batch: each candidate is resolved in its own try/catch, and a miss OR a
+    // throw is skipped + logged (never surfaced empty, never dropping the
+    // co-resident rows). studio keys hydrate from studio_artifacts BY ID — they
+    // must never reach getCachedContent/normalizeUrl (the `|` throws new URL()),
+    // which is exactly the latent suppression that returned [] for the whole batch.
+    const hydrated: Array<{ id: string; title: string; markdown: string; score: number; source: 'studio' | 'cache'; trusted: boolean }> = [];
+    for (const { url: key, score } of similar) {
+      try {
+        if (isStudioEmbedKey(key)) {
+          const art = getStudioArtifactByEmbedKey(key);
+          if (!art) {
+            log.debug('embedding hydration skipped — studio artifact missing for key', { key });
+            continue;
+          }
+          hydrated.push({
+            id: key, // C1: the stable cross-surface identity IS the studio URI.
+            title: art.title ?? key,
+            markdown: (art.markdown ?? '').slice(0, 5000),
+            score,
+            source: 'studio',
+            trusted: art.contentTrusted, // mirrors content_trusted (clips/qa => false)
+          });
+        } else {
+          const cached = getCachedContent(key);
+          if (!cached) {
+            log.debug('embedding hydration skipped — url not in cache', { url: key });
+            continue;
+          }
+          hydrated.push({
+            id: cached.url,
+            title: cached.title,
+            markdown: cached.markdown.slice(0, 5000),
+            score,
+            source: 'cache',
+            trusted: false, // a fetched page is page-derived: never trusted as instructions
+          });
+        }
+      } catch (err) {
+        // A genuinely malformed url key still throws inside getCachedContent
+        // (contract unchanged) — absorb it HERE, per row, so one bad key is
+        // loud-in-logs but never silently masks the rest of the batch.
+        log.warn('embedding hydration skipped — error resolving key', {
+          key,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
     }
 
-    const filterableInputs = hydrated.map(h => ({
-      url: h.entry?.url ?? h.url,
-    })) as unknown as CachedContent[];
-    const filtered = filterByDomains(filterableInputs, includeDomains, excludeDomains) as unknown as Array<{
-      url: string;
-    }>;
+    // Domain filter: url-keyed rows carry a real host; studio rows resolve to ''
+    // and pass unless an include filter is set (filters.ts getDomain swallows the
+    // unparseable studio key — no throw).
+    const filtered = filterByDomains(
+      hydrated.map(h => ({ url: h.id })),
+      includeDomains,
+      excludeDomains,
+    );
     const allowedUrls = new Set(filtered.map(f => f.url));
 
     const results: FindSimilarResult[] = [];
     let rank = 0;
     for (const h of hydrated) {
-      const displayUrl = h.entry?.url ?? h.url;
-      if (!allowedUrls.has(displayUrl)) continue;
+      if (!allowedUrls.has(h.id)) continue;
 
       rank++;
-      rankMap.set(safeNormalize(displayUrl), rank);
+      rankMap.set(safeNormalize(h.id), rank);
 
       results.push({
-        url: displayUrl,
-        title: h.entry?.title ?? displayUrl,
-        markdown: (h.entry?.markdown ?? '').slice(0, 5000),
+        url: h.id,
+        title: h.title,
+        markdown: h.markdown,
         relevance_score: h.score,
-        source: 'cache',
+        source: h.source,
+        trusted: h.trusted,
         match_signals: {
           embedding_rank: rank,
           fused_score: 0,
@@ -617,6 +664,7 @@ function runFTS5Search(
         markdown: entry.markdown.slice(0, 5000),
         relevance_score: 0,
         source: 'cache',
+        trusted: false, // url_cache page — page-derived, never trusted as instructions
         match_signals: {
           fts5_rank: i + 1,
           fused_score: 0,
@@ -694,6 +742,7 @@ async function runWebSearchFallback(
             markdown: (item.markdown_content ?? item.snippet).slice(0, 5000),
             relevance_score: item.relevance_score,
             source: 'search',
+            trusted: false, // live web result — page-derived, never trusted as instructions
             match_signals: {
               fused_score: 0,
             },

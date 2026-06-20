@@ -1168,7 +1168,18 @@ export interface FindSimilarResult {
   title: string;
   markdown: string;
   relevance_score: number;
-  source: 'cache' | 'search';
+  /** Provenance: 'studio' = a captured session artifact (URI studio://<type>|<id>),
+   * 'cache' = a fetched url_cache page, 'search' = a live web result. */
+  source: 'cache' | 'search' | 'studio';
+  /**
+   * Whether the body bytes are safe AS INSTRUCTIONS — the at-rest continuation of
+   * the 6a in-flight `trusted` tag (studio-dispatch.ts). Mirrors
+   * studio_artifacts.content_trusted, NOT curated_by_human: page-derived content
+   * (studio clips/qa, url_cache pages, web results) is `false` even once a human
+   * curates it; only a human-authored studio note is `true`. Required on EVERY
+   * result so a caller never receives an untagged row.
+   */
+  trusted: boolean;
   match_signals: MatchSignals;
   /** Slice S7 (M10): opt-in via FindSimilarInput.include_ranking_debug. */
   ranking_debug?: RankingDebug;
