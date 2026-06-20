@@ -117,7 +117,9 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(keys).toContain('studio_act');
     // Phase 3c: the agent reads the human's marks.
     expect(keys).toContain('studio_marks');
-    expect(keys.length).toBe(13);
+    // Phase 4c: the agent persists a capture (clip) to the cache as a session artifact.
+    expect(keys).toContain('studio_capture');
+    expect(keys.length).toBe(14);
   });
 
   it('studio_act description covers navigation, the control token, and the private/metadata block', () => {
@@ -226,8 +228,8 @@ describe('ToolName type', () => {
     // contract this test locks in.
     const validNames: ToolName[] = [
       'fetch', 'search', 'crawl', 'cache', 'extract',
-      'find_similar', 'research', 'agent', 'diff', 'watch', 'studio_observe', 'studio_act', 'studio_marks',
+      'find_similar', 'research', 'agent', 'diff', 'watch', 'studio_observe', 'studio_act', 'studio_marks', 'studio_capture',
     ];
-    expect(validNames.length).toBe(13);
+    expect(validNames.length).toBe(14);
   });
 });
