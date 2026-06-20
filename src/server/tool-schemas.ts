@@ -4,6 +4,9 @@ export type ToolSchema = {
   type: 'object';
   properties: Record<string, unknown>;
   required?: string[];
+  /** Client-side hint that unknown keys are rejected. NOT the boundary control — the host
+   *  handler reads only the fields it needs (studio_capture enforces trust + session there). */
+  additionalProperties?: boolean;
 };
 
 export const FETCH_TOOL_SCHEMA = {
@@ -647,6 +650,28 @@ export const STUDIO_MARKS_TOOL_SCHEMA = {
   required: [],
 };
 
+export const STUDIO_CAPTURE_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    type: {
+      type: 'string',
+      enum: ['clip'],
+      description: "What to capture. 'clip' saves a page region's content as a session artifact.",
+    },
+    content: {
+      type: 'string',
+      description: 'The content to save (the clip text/markdown).',
+    },
+    url: {
+      type: 'string',
+      description: 'The page url the clip was captured from.',
+    },
+  },
+  required: ['type', 'content', 'url'],
+  // Client hint only; the host handler is the control (reads only {type,content,url}).
+  additionalProperties: false,
+};
+
 export const TOOL_SCHEMAS: Record<ToolName, ToolSchema> = {
   fetch: FETCH_TOOL_SCHEMA,
   search: SEARCH_TOOL_SCHEMA,
@@ -661,4 +686,5 @@ export const TOOL_SCHEMAS: Record<ToolName, ToolSchema> = {
   studio_observe: STUDIO_OBSERVE_TOOL_SCHEMA,
   studio_act: STUDIO_ACT_TOOL_SCHEMA,
   studio_marks: STUDIO_MARKS_TOOL_SCHEMA,
+  studio_capture: STUDIO_CAPTURE_TOOL_SCHEMA,
 };

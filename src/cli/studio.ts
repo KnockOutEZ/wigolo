@@ -21,6 +21,8 @@ import { createResolver } from '../studio/perception/resolve.js';
 import { StudioEventQueue } from '../studio/event-queue.js';
 import { createObserver } from '../studio/observe.js';
 import { createActHandler } from '../studio/act.js';
+import { createCaptureHandler } from '../studio/capture/handler.js';
+import { getDatabase } from '../cache/db.js';
 import { SessionAuditLog } from '../studio/audit.js';
 import { SessionApprovals } from '../studio/approvals.js';
 import { createInspector } from '../studio/mark/inspect.js';
@@ -492,7 +494,17 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       }
     },
   });
-  daemon.setStudioHost({ observe, act, marks: marksTool });
+  // Phase 4c: the studio_capture handler — the agent persists a page clip to the cache as a
+  // session artifact. Trusted-0 by construction (routes through captureFromPage); the session
+  // id is bound HERE (server-side), never a caller field. The cache db is resolved LAZILY at
+  // capture time: getDatabase() throws until initDatabase() has run, and a capture only arrives
+  // once the session + cache are live — eager resolution at wiring would break host boot.
+  daemon.setStudioHost({
+    observe,
+    act,
+    marks: marksTool,
+    capture: (input) => createCaptureHandler({ sessionId: session.id, db: getDatabase() })(input),
+  });
 
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);

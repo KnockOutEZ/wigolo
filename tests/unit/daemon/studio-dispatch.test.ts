@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { dispatchStudioTool, type StudioHostHandlers, type McpToolResult, type StudioGeneralizeOutput } from '../../../src/daemon/studio-dispatch.js';
+import { dispatchStudioTool, type StudioHostHandlers, type McpToolResult, type StudioGeneralizeOutput, type StudioCaptureInput } from '../../../src/daemon/studio-dispatch.js';
 import { writeHandle, setMyInstanceId, type SessionHandle } from '../../../src/studio/handle.js';
 
 let dir: string;
@@ -18,6 +18,7 @@ const hostHandlers = (): StudioHostHandlers => ({
   observe: async () => ({ id: 'snap1', kind: 'full', trusted: false, elements: [], events: [], eventCursor: 0, eventsDropped: 0, domTruncated: false }),
   act: async (input) => { actCalls++; return { ok: true, action: input.action, url: input.url }; },
   marks: async () => ({ marks: [] }),
+  capture: async () => ({ artifact_id: 1, inserted: true, content_hash: 'h' }),
 });
 const reason = (r: McpToolResult) => JSON.parse(r.content[0].text).error_reason as string;
 
@@ -145,5 +146,39 @@ describe('dispatchStudioTool — studio_marks routing', () => {
     const r = await dispatchStudioTool('studio_marks', { op: 'generalize', markId: 'm1' }, undefined, dir, { proxyFactory: proxyReturning(hostResult) });
     expect(proxyCalls).toEqual([{ name: 'studio_marks', args: { op: 'generalize', markId: 'm1' } }]);
     expect(r).toEqual(hostResult); // verbatim — requires_confirmation reaches the agent unchanged
+  });
+});
+
+describe('dispatchStudioTool — studio_capture routing', () => {
+  it('EXECUTE studio_capture on the host serializes the capture result (artifact_id + inserted)', async () => {
+    const captured: StudioCaptureInput[] = [];
+    const handlers: StudioHostHandlers = {
+      ...hostHandlers(),
+      capture: async (input) => { captured.push(input); return { artifact_id: 7, inserted: true, content_hash: 'abc' }; },
+    };
+    const r = await dispatchStudioTool('studio_capture', { type: 'clip', content: 'body', url: 'https://x/' }, handlers, dir, { proxyFactory: proxyReturning({}) });
+    expect(r.isError).toBe(false);
+    expect(JSON.parse(r.content[0].text)).toEqual({ artifact_id: 7, inserted: true, content_hash: 'abc' });
+    expect(captured).toEqual([{ type: 'clip', content: 'body', url: 'https://x/' }]); // args reach the host handler intact
+    expect(proxyCalls).toEqual([]);
+  });
+
+  it('EXECUTE studio_capture maps a host StudioToolError to an isError refusal', async () => {
+    const handlers: StudioHostHandlers = {
+      ...hostHandlers(),
+      capture: async () => ({ error_reason: 'unsupported_capture_type', hint: 'clip only' }),
+    };
+    const r = await dispatchStudioTool('studio_capture', { type: 'qa' }, handlers, dir, { proxyFactory: proxyReturning({}) });
+    expect(r.isError).toBe(true);
+    expect(reason(r)).toBe('unsupported_capture_type');
+  });
+
+  it('PROXY studio_capture from stdio forwards VERBATIM', async () => {
+    writeHandle(handle({ instanceId: 'host-FOREIGN' }), dir);
+    setMyInstanceId('host-MINE');
+    const hostResult = { content: [{ type: 'text', text: JSON.stringify({ artifact_id: 3, inserted: false, content_hash: 'h' }) }], isError: false };
+    const r = await dispatchStudioTool('studio_capture', { type: 'clip', content: 'b', url: 'https://x/' }, undefined, dir, { proxyFactory: proxyReturning(hostResult) });
+    expect(proxyCalls).toEqual([{ name: 'studio_capture', args: { type: 'clip', content: 'b', url: 'https://x/' } }]);
+    expect(r).toEqual(hostResult);
   });
 });

@@ -131,8 +131,26 @@ export interface StudioGeneralizeOutput {
   requires_confirmation: true;
 }
 
+export interface StudioCaptureInput {
+  /** Phase 4c handles `clip` only; `qa` arrives at 4d (save-session-as-research). */
+  type: string;
+  /** The captured content — a clip's markdown. */
+  content: string;
+  /** The page url the clip came from (REQUIRED for a clip; url-less is a 4d qa property). */
+  url: string;
+  /** Extra/smuggled fields are ignored by construction — the handler reads only {type,content,url}. */
+  [k: string]: unknown;
+}
+
+export interface StudioCaptureOutput {
+  artifact_id: number;
+  /** False when an existing artifact deduped the capture (no new row, no re-embed). */
+  inserted: boolean;
+  content_hash: string;
+}
+
 export function isStudioToolError(
-  x: StudioObserveOutput | StudioActOutput | StudioMarksOutput | StudioGeneralizeOutput | StudioToolError,
+  x: StudioObserveOutput | StudioActOutput | StudioMarksOutput | StudioGeneralizeOutput | StudioCaptureOutput | StudioToolError,
 ): x is StudioToolError {
   return typeof (x as StudioToolError).error_reason === 'string';
 }
@@ -141,6 +159,7 @@ export interface StudioHostHandlers {
   observe(input: StudioObserveInput): Promise<StudioObserveOutput | StudioToolError>;
   act(input: StudioActInput): Promise<StudioActOutput | StudioToolError>;
   marks(input: StudioMarksInput): Promise<StudioMarksOutput | StudioGeneralizeOutput | StudioToolError>;
+  capture(input: StudioCaptureInput): Promise<StudioCaptureOutput | StudioToolError>;
 }
 
 export interface McpToolResult {
@@ -187,6 +206,11 @@ export async function dispatchStudioTool(
     }
     if (name === 'studio_marks') {
       const data = await studioHost.marks(args as StudioMarksInput);
+      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
+    }
+    if (name === 'studio_capture') {
+      const data = await studioHost.capture(args as StudioCaptureInput);
       if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
     }
