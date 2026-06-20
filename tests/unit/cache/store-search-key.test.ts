@@ -64,6 +64,20 @@ describe('buildSearchCacheKey', () => {
   });
 });
 
+describe('buildSearchCacheKey — separator is the NUL escape, not a raw byte', () => {
+  // WHY: the key joins the raw query and the filter-fingerprint JSON. The
+  // separator MUST be U+0000 — a byte that cannot occur in a query or in JSON
+  // output — so no (query, filters) pair can alias another across the boundary.
+  // It is written as the NUL escape, never a raw NUL byte, so the source stays
+  // grep-visible (see scripts/check-no-nul.mjs). This pin REDs if the separator
+  // silently degrades to a space (char 32) or vanishes (boundary char becomes
+  // the JSON's '{', char 123) — charCodeAt, not toContain, catches both.
+  it('places U+0000 exactly at the query/fingerprint boundary', () => {
+    const key = buildSearchCacheKey('q', { category: 'code' });
+    expect(key.charCodeAt('q'.length)).toBe(0);
+  });
+});
+
 describe('cache miss on filter mismatch', () => {
   beforeEach(() => {
     initDatabase(':memory:');

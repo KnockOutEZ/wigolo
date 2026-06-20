@@ -8,6 +8,7 @@ import {
   setJobStatus,
   recordCheck,
   getOverdueJobs,
+  fingerprintInput,
 } from '../../../src/watch/store.js';
 
 /**
@@ -167,5 +168,23 @@ describe('watch store', () => {
       const overdue = getOverdueJobs();
       expect(overdue.map((o) => o.id)).not.toContain(j.id);
     });
+  });
+});
+
+describe('fingerprintInput — separators are NUL escapes, not raw bytes', () => {
+  // WHY: the watch job id is sha256(url <sep> interval <sep> selector), and the
+  // id is the idempotency key — re-creating the same triple must return the
+  // same job, distinct triples must not collide. Each separator MUST be U+0000
+  // — a byte that cannot occur in any field — so no two distinct triples can
+  // alias by straddling a boundary. Written as the NUL escape, never a raw NUL
+  // byte, so the source stays grep-visible (see scripts/check-no-nul.mjs). This
+  // pin REDs if either separator degrades to a space (char 32) or vanishes;
+  // both occurrences on the join are pinned (charCodeAt, not toContain).
+  it('places U+0000 at both field boundaries', () => {
+    const url = 'https://x.test/p';
+    const interval = 60;
+    const s = fingerprintInput(url, interval, 'sel');
+    expect(s.charCodeAt(url.length)).toBe(0); // url | interval
+    expect(s.charCodeAt(url.length + 1 + String(interval).length)).toBe(0); // interval | selector
   });
 });

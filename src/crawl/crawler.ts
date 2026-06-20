@@ -350,6 +350,15 @@ function isDocPage(url: string): boolean {
   return DOC_PATH_PATTERNS.some(p => path.includes(p));
 }
 
+// The dedup identity for a link edge: source + fragment-stripped target,
+// joined by NUL (\0) — a separator that cannot occur in a URL, so the
+// (from, to) boundary is unambiguous and two distinct pairs cannot alias.
+// Written as the \0 escape, never a raw NUL byte (grep-visibility — see
+// scripts/check-no-nul.mjs).
+export function linkEdgeKey(from: string, canonicalTo: string): string {
+  return `${from}\0${canonicalTo}`;
+}
+
 // M14: emit one LinkEdge per (from, fragment-stripped to). Bench audit:
 // /foo, /foo#section-a, /foo#section-b previously created three distinct
 // edges; collapse to one by keying off the fragment-stripped target.
@@ -361,7 +370,7 @@ function addUniqueEdges(
 ): void {
   for (const link of links) {
     const canonicalTo = stripFragment(link);
-    const key = `${from} ${canonicalTo}`;
+    const key = linkEdgeKey(from, canonicalTo);
     if (seen.has(key)) continue;
     seen.add(key);
     edges.push({ from, to: canonicalTo });

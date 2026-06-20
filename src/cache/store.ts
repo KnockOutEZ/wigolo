@@ -361,7 +361,7 @@ export function buildSearchCacheKey(
     search_depth: filters!.search_depth ?? null,
     reranker: filters!.reranker ?? null,
   };
-  return `${query} ${JSON.stringify(fingerprint)}`;
+  return `${query}\0${JSON.stringify(fingerprint)}`;
 }
 
 export function cacheSearchResults(
