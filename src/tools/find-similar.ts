@@ -133,6 +133,7 @@ async function attachEvidence(
     if (!r.markdown) continue;
     const evs = await buildEvidenceFromMarkdown(query, r.title, r.url, r.markdown, {
       maxItems: 1,
+      trusted: r.trusted, // C4: evidence carries the same trust tag as its source result
     });
     collected.push(...evs);
   }

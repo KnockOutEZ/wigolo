@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import { hashArtifact } from './hash.js';
-import { normalizeUrl } from '../../cache/store.js';
+import { normalizeUrl, sanitizeFtsQuery } from '../../cache/store.js';
 import { getBackgroundIndexQueue, type IndexJobInput } from '../../embedding/background-queue.js';
 import { getDatabase } from '../../cache/db.js';
 
@@ -142,7 +142,7 @@ function insertArtifact(
     // the same page (no find_similar url-facet pollution). The artifact id unifies with
     // the FTS content_rowid.
     if (inserted && embed) {
-      enqueue({ url: `studio://${row.type}|${id}`, text: embed.text, contentHash: row.contentHash });
+      enqueue({ url: studioEmbedKey(row.type, id), text: embed.text, contentHash: row.contentHash });
     }
 
     return { id, inserted, contentHash: row.contentHash };
@@ -264,6 +264,14 @@ export function curateArtifact(id: number, deps: { db: Database.Database }): voi
  * shape the write path constructs. */
 const STUDIO_EMBED_PREFIX = 'studio://';
 
+/** Build the embed/vector-store key for an artifact — the SINGLE source of truth
+ * for the scheme. The write path (insertArtifact's embed enqueue) and the FTS
+ * read path (searchStudioArtifactKeys) must emit the IDENTICAL string so a clip
+ * that matches BOTH the embedding and FTS paths fuses to one result. */
+export function studioEmbedKey(type: string, id: number): string {
+  return `${STUDIO_EMBED_PREFIX}${type}|${id}`;
+}
+
 /** True for a shared-vector-store key that addresses a studio artifact. The `|`
  * makes it a deliberately NON-url-parseable key (it must never reach new URL() /
  * normalizeUrl — callers route on this before url hydration). */
@@ -319,4 +327,25 @@ export function getStudioArtifactByEmbedKey(key: string): StudioArtifactRow | nu
     markdown: row.markdown,
     contentTrusted: row.content_trusted === 1,
   };
+}
+
+/**
+ * FTS5 search over studio_artifacts_fts (title + markdown), returning the embed
+ * keys of matches in BM25 rank order. Mirrors store.ts::searchCache's
+ * sanitize-then-MATCH, on the studio index. The caller hydrates each key via
+ * getStudioArtifactByEmbedKey (the shared SELECT-by-id read — no re-derivation).
+ */
+export function searchStudioArtifactKeys(query: string, limit: number): string[] {
+  if (!query.trim() || limit <= 0) return [];
+  const rows = getDatabase()
+    .prepare(
+      `SELECT studio_artifacts.id AS id, studio_artifacts.artifact_type AS type
+       FROM studio_artifacts
+       JOIN studio_artifacts_fts ON studio_artifacts.id = studio_artifacts_fts.rowid
+       WHERE studio_artifacts_fts MATCH ?
+       ORDER BY studio_artifacts_fts.rank
+       LIMIT ?`,
+    )
+    .all(sanitizeFtsQuery(query), limit) as Array<{ id: number; type: string }>;
+  return rows.map((r) => studioEmbedKey(r.type, r.id));
 }

@@ -41,6 +41,10 @@ function isUsefulEvidenceExcerpt(excerpt: string): boolean {
 export interface BuildEvidenceOptions {
   maxTokensOut?: number;
   maxItems?: number;
+  /** Mirrors the source result's trust onto every produced EvidenceItem (C4).
+   * Defaults false — correct for page/web-derived callers (fetch/crawl/search/
+   * research); find_similar passes the per-result `trusted`. */
+  trusted?: boolean;
 }
 
 // Build evidence items from a single page's markdown. Used by per-page tools
@@ -96,6 +100,7 @@ export async function buildEvidenceFromMarkdown(
       excerpt,
       score: h.relevance_score,
       sourceSpan: span,
+      trusted: opts.trusted ?? false,
     }));
     if (budget !== undefined) used += countTokens(excerpt);
   }
@@ -162,6 +167,7 @@ export function buildEvidenceItem(input: {
   excerpt: string;
   score: number;
   sourceSpan: SourceSpan;
+  trusted?: boolean;
 }): EvidenceItem {
   return {
     title: input.title,
@@ -171,6 +177,7 @@ export function buildEvidenceItem(input: {
     score: input.score,
     citation_id: stableCitationId(input.url, input.sourceSpan.start),
     source_span: input.sourceSpan,
+    trusted: input.trusted ?? false,
   };
 }
 

@@ -14,7 +14,7 @@ import { filterByDomains } from './filters.js';
 import { handleSearch } from '../tools/search.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { getEmbeddingService } from '../embedding/embed.js';
-import { isStudioEmbedKey, getStudioArtifactByEmbedKey } from '../studio/capture/artifacts.js';
+import { isStudioEmbedKey, getStudioArtifactByEmbedKey, searchStudioArtifactKeys } from '../studio/capture/artifacts.js';
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
 import { selectMode } from './find-similar/mode.js';
@@ -115,6 +115,11 @@ export async function findSimilar(
     const fts5RankMap = new Map<string, number>();
     let embeddingResults: FindSimilarResult[] = [];
     const embeddingRankMap = new Map<string, number>();
+    // 4d slice-2: studio_artifacts_fts is a SEPARATE ranked list (like embedding),
+    // so a clip matching both studio-FTS and embedding fuses by URI rather than
+    // double-counting within url_cache's FTS ranking.
+    let studioFtsResults: FindSimilarResult[] = [];
+    const studioFtsRankMap = new Map<string, number>();
 
     await Promise.all([
       (async () => {
@@ -128,6 +133,14 @@ export async function findSimilar(
             fts5RankMap,
           );
           log.debug('FTS5 search complete', { hits: cacheResults.length });
+          studioFtsResults = runStudioFtsSearch(
+            signal.terms,
+            input.include_domains,
+            input.exclude_domains,
+            MAX_FTS5_CANDIDATES,
+            studioFtsRankMap,
+          );
+          log.debug('studio FTS search complete', { hits: studioFtsResults.length });
         }
       })(),
       (async () => {
@@ -151,6 +164,7 @@ export async function findSimilar(
 
     const combinedLocalHits = new Set<string>();
     for (const r of cacheResults) combinedLocalHits.add(safeNormalize(r.url));
+    for (const r of studioFtsResults) combinedLocalHits.add(safeNormalize(r.url));
     for (const r of embeddingResults) combinedLocalHits.add(safeNormalize(r.url));
 
     if (combinedLocalHits.size < maxResults && includeWeb) {
@@ -190,10 +204,15 @@ export async function findSimilar(
     // Phase 3: 3-way RRF fusion
     const rankedLists: Map<string, number>[] = [];
     if (fts5RankMap.size > 0) rankedLists.push(fts5RankMap);
+    if (studioFtsRankMap.size > 0) rankedLists.push(studioFtsRankMap);
     if (embeddingRankMap.size > 0) rankedLists.push(embeddingRankMap);
     if (searchRankMap.size > 0) rankedLists.push(searchRankMap);
 
-    const allResults = mergeResults(cacheResults, embeddingResults, searchResults);
+    // mergeResults dedups by safeNormalize(url): a studio clip surfaced by BOTH
+    // the studio-FTS and embedding paths (identical studio://<type>|<id> URI)
+    // collapses to ONE result here, while its rank in each list above keeps both
+    // signals feeding the fusion.
+    const allResults = mergeResults(cacheResults, studioFtsResults, embeddingResults, searchResults);
 
     let finalResults: FindSimilarResult[];
     let topRawScore = 0;
@@ -221,7 +240,7 @@ export async function findSimilar(
     }
 
     const method = determineMethod(
-      cacheResults.length > 0,
+      cacheResults.length > 0 || studioFtsResults.length > 0,
       embeddingResults.length > 0,
       searchResults.length > 0,
     );
@@ -265,6 +284,10 @@ export async function findSimilar(
         };
         const fts = fts5RankMap.get(key);
         if (fts !== undefined) debug.fts5_rank = fts;
+        // studio-FTS shares the fts5_rank facet (both are keyword-FTS signals);
+        // surface it when url_cache FTS didn't rank this key (e.g. a studio hit).
+        const sfts = studioFtsRankMap.get(key);
+        if (debug.fts5_rank === undefined && sfts !== undefined) debug.fts5_rank = sfts;
         const emb = embeddingRankMap.get(key);
         if (emb !== undefined) debug.embedding_rank = emb;
         const web = searchRankMap.get(key);
@@ -675,6 +698,75 @@ function runFTS5Search(
     return results;
   } catch (err) {
     log.error('FTS5 search failed', { error: String(err) });
+    return [];
+  }
+}
+
+/**
+ * 4d slice-2: the studio side of the FTS path. Matches captured artifacts in
+ * studio_artifacts_fts (sibling to url_cache_fts) and hydrates each via the
+ * shared getStudioArtifactByEmbedKey read. Emits the SAME contract as the
+ * embedding path — studio://<type>|<id> URI identity (C1) + trusted mirrored
+ * from content_trusted (C4) — so a clip matching BOTH paths fuses to one result.
+ * Per-row resilient: a missing/stale key is skipped + logged, never aborting the
+ * batch.
+ */
+function runStudioFtsSearch(
+  terms: string[],
+  includeDomains: string[] | undefined,
+  excludeDomains: string[] | undefined,
+  maxCandidates: number,
+  rankMap: Map<string, number>,
+): FindSimilarResult[] {
+  try {
+    const fts5Query = buildFTS5Query(terms);
+    if (!fts5Query) return [];
+
+    const keys = searchStudioArtifactKeys(fts5Query, maxCandidates);
+    if (keys.length === 0) return [];
+
+    // studio keys have no web domain — getDomain('') keeps them unless an
+    // include filter is set (mirrors the embedding path's domain handling).
+    const allowed = new Set(
+      filterByDomains(keys.map((url) => ({ url })), includeDomains, excludeDomains).map((f) => f.url),
+    );
+
+    const results: FindSimilarResult[] = [];
+    let rank = 0;
+    for (const key of keys) {
+      if (!allowed.has(key)) continue;
+      let art;
+      try {
+        art = getStudioArtifactByEmbedKey(key);
+      } catch (err) {
+        log.warn('studio FTS hydration skipped — error resolving key', {
+          key,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+      if (!art) {
+        log.debug('studio FTS hydration skipped — artifact missing for key', { key });
+        continue;
+      }
+      rank++;
+      rankMap.set(safeNormalize(key), rank);
+      results.push({
+        url: key,
+        title: art.title ?? key,
+        markdown: (art.markdown ?? '').slice(0, 5000),
+        relevance_score: 0,
+        source: 'studio',
+        trusted: art.contentTrusted,
+        match_signals: {
+          fts5_rank: rank,
+          fused_score: 0,
+        },
+      });
+    }
+    return results;
+  } catch (err) {
+    log.error('studio FTS search failed', { error: String(err) });
     return [];
   }
 }

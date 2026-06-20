@@ -149,6 +149,7 @@ describe('buildCitationsFromEvidence', () => {
         score: 0.7,
         citation_id: citationId,
         source_span: { start: 0, end: 10 },
+        trusted: false,
       },
     ];
     const baseCitations: Citation[] = [
@@ -173,6 +174,7 @@ describe('buildCitationsFromEvidence', () => {
         score: 0.7,
         citation_id: stableCitationId('https://example.com/a', 0),
         source_span: { start: 0, end: 10 },
+        trusted: false,
       },
     ];
     const baseCitations: Citation[] = [
@@ -205,6 +207,7 @@ describe('buildCitationsFromEvidence', () => {
         score: 0.7,
         citation_id: stableCitationId('https://example.com/a', 0),
         source_span: { start: 0, end: 10 },
+        trusted: false,
       },
     ];
     const out = buildCitationsFromEvidence(results, evidence, [baseCitation]);

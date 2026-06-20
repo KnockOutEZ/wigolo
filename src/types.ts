@@ -553,6 +553,13 @@ export interface EvidenceItem {
   score: number;
   citation_id: string;
   source_span: SourceSpan;
+  /**
+   * Whether the source bytes are safe AS INSTRUCTIONS — mirrors the source
+   * result's trust (C4), so a find_similar evidence passage carries the same
+   * tag as the result it was extracted from (studio clips/qa + url_cache + web
+   * ⇒ false; human-authored studio notes ⇒ true). Surface-tagged, never hidden.
+   */
+  trusted: boolean;
 }
 
 export type CitationFormat = 'numbered' | 'anthropic_tags' | 'json';
