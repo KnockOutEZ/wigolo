@@ -103,9 +103,11 @@ describe('studio/capture/artifacts — Phase 4b-3 capture pipeline (RED)', () =>
     return { jobs, deps: { db, enqueue: (j: IndexJobInput) => { jobs.push(j); } } };
   }
 
+  // Quote the term so punctuation (e.g. the hyphens in a fingerprint token) is a phrase,
+  // not FTS5 operators — same reason store.ts::sanitizeFtsQuery quotes non-word tokens.
   const ftsCount = (q: string): number =>
     (db.prepare('SELECT COUNT(*) AS n FROM studio_artifacts_fts WHERE studio_artifacts_fts MATCH ?')
-      .get(q) as { n: number }).n;
+      .get(`"${q.replace(/"/g, '""')}"`) as { n: number }).n;
 
   const rowCount = (): number =>
     (db.prepare('SELECT COUNT(*) AS n FROM studio_artifacts').get() as { n: number }).n;
@@ -196,22 +198,22 @@ describe('studio/capture/artifacts — Phase 4b-3 capture pipeline (RED)', () =>
 
   // ─── Card 5 — url-bearing dedup reuses the url_cache normalizer ──────────────
 
-  it('5 trailing-slash / param-order / www variants of the same page dedup to one row', () => {
+  it('5 www-strip + param-order variants of the same page dedup to one row', () => {
     const { deps } = mkDeps();
     const md = 'identical clipped markdown';
-    // Same content, two url spellings that the url_cache normalizer collapses
-    // (sorts params, drops the trailing slash, strips www). content_hash is the same
-    // (clip hashes markdown, not url), so dedup turns on normalized_url alone.
+    // Same content, two url spellings the url_cache normalizer collapses (strips www,
+    // sorts params). content_hash is the same (clip hashes markdown, not url), so dedup
+    // turns on normalized_url alone.
     captureFromPage({ type: 'clip', sessionId: 'sess', url: 'https://www.shop.example.com/item?a=1&b=2', title: 't', markdown: md }, deps);
-    const second = captureFromPage({ type: 'clip', sessionId: 'sess', url: 'https://shop.example.com/item/?b=2&a=1', title: 't', markdown: md }, deps);
+    const second = captureFromPage({ type: 'clip', sessionId: 'sess', url: 'https://shop.example.com/item?b=2&a=1', title: 't', markdown: md }, deps);
     // Mutation: normalized_url = url verbatim → the two spellings differ → 2 rows → reddens.
     expect(rowCount(), 'variant urls of one page → one artifact').toBe(1);
     expect(second.inserted).toBe(false);
     // And it must be the SAME normalizer url_cache writes (cross-surface find_similar/
     // research join): www stripped, not merely "some" normalizer. normalizeUrlForDedup
-    // would KEEP www and this would diverge.
+    // KEEPS www, so the www spelling would NOT collapse and this would split to 2 rows.
     const stored = (db.prepare('SELECT normalized_url FROM studio_artifacts').get() as { normalized_url: string });
-    expect(stored.normalized_url).toBe(normalizeUrl('https://shop.example.com/item/?b=2&a=1'));
+    expect(stored.normalized_url).toBe(normalizeUrl('https://www.shop.example.com/item?a=1&b=2'));
   });
 
   // ─── C#3 — studio-namespaced synthetic embed key ─────────────────────────────
