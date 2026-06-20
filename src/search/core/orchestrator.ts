@@ -229,14 +229,17 @@ export async function runV1Search(
 
   const allEntries = getEntriesForVertical(vertical);
 
-  // Date-support filtering. If no engines remain, silently fall back to the
-  // full entry list — the engines may still filter client-side, and a later
-  // rerank step can apply temporal weighting. Better than returning empty.
-  let entries = allEntries;
-  if (hasDateBound) {
-    const dateAware = allEntries.filter((e) => e.supportsDateFilter === true);
-    entries = dateAware.length > 0 ? dateAware : allEntries;
-  }
+  // Wave-3 A3 (news-vertical recall): a date bound no longer narrows the
+  // engine set. The previous behaviour dropped every date-naive engine the
+  // moment one date-aware engine was present, which collapsed a date-bounded
+  // news search to HN-Algolia alone (2 results). Server-side date filtering
+  // is best-effort: engines that support it get fromDate/toDate in options;
+  // engines that don't still run and contribute recall. Their results are
+  // freshness-filtered client-side below (effectiveFromDate/effectiveToDate
+  // post-filter), which drops older-than-window results while keeping
+  // within-window AND undated ones — so recall isn't sacrificed for results
+  // that merely lack a parseable published_date.
+  const entries = allEntries;
 
   const options: SearchEngineOptions = {
     maxResults: input.maxResults ?? DEFAULT_MAX_RESULTS,

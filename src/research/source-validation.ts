@@ -5,7 +5,7 @@
 // is deliberately NOT a relevance filter; it only drops thin AND off-topic
 // shells so a short on-topic doc and a long off-topic page both survive.
 
-export type UrlShapeReason = 'homepage' | 'serp';
+export type UrlShapeReason = 'homepage' | 'serp' | 'social-promo';
 export type ContentGateReason = 'low-content' | 'low-overlap';
 export type ScoreFloorReason = 'negative-score';
 
@@ -38,9 +38,27 @@ const SCORE_FLOOR = 0;
  * or a relevant cross-encoder logit) always survive, so this is a no-op when
  * no cross-encoder ran. The caller is responsible for never emptying the pool
  * (it keeps the single best source as a floor of last resort).
+ *
+ * `withinBreadthKeep` marks the top-N best-ranked candidates (by the reranker's
+ * own ordering) and disables the negative-score reject for them entirely. The
+ * cross-encoder's ABSOLUTE logits are miscalibrated per-query: on a niche query
+ * it damps the WHOLE pool below zero — including genuinely canonical, on-topic
+ * pages (live C1: sqlite.org/fts5.html, the sqlite-vec author's post, dev.to /
+ * deepwiki / kentcdodds explainers all scored below even -0.35), which collapses
+ * standard depth to ~1 source. Its RELATIVE ordering stays meaningful, so inside
+ * the keep window the quality bar is rank position + the upstream url-shape and
+ * content gates, NOT an absolute cutoff. Outside the window the strict `< 0`
+ * rule applies unchanged, so a genuinely off-topic page that ranks past the pool
+ * (it sorts below the on-topic survivors) is still rejected — that is what keeps
+ * junk out of the long tail while the window stays wide.
  */
-export function classifyScoreFloor(relevanceScore: number): ScoreFloorVerdict {
-  if (Number.isFinite(relevanceScore) && relevanceScore < SCORE_FLOOR) {
+export function classifyScoreFloor(
+  relevanceScore: number,
+  withinBreadthKeep = false,
+): ScoreFloorVerdict {
+  if (!Number.isFinite(relevanceScore)) return { reject: false };
+  if (withinBreadthKeep) return { reject: false };
+  if (relevanceScore < SCORE_FLOOR) {
     return { reject: true, reason: 'negative-score' };
   }
   return { reject: false };
@@ -87,6 +105,12 @@ function isSearchEngineHost(host: string): boolean {
   return host.split('.').some((label) => SEARCH_ENGINE_LABELS.has(label));
 }
 
+// Match the linkedin domain on label boundaries so a host that merely contains
+// the token as a substring is never treated as LinkedIn.
+function isLinkedInHost(host: string): boolean {
+  return host.split('.').includes('linkedin');
+}
+
 /**
  * Classify a candidate URL by shape alone (no fetch). A bare-root homepage or a
  * search-engine results page is junk for research synthesis. `includeDomains`
@@ -118,6 +142,24 @@ export function classifyUrlShape(url: string, includeDomains?: string[]): UrlSha
     const hasSearchParam = SERP_QUERY_PARAMS.some((p) => parsed.searchParams.has(p));
     if (isSearchPath || hasSearchParam) {
       return { reject: true, reason: 'serp' };
+    }
+  }
+
+  // Social-promo: LinkedIn is policy-junk for research synthesis on EVERY path,
+  // not just activity posts. /posts/...activity-<digits> are bare promo posts;
+  // /pulse/ articles are gated, login-walled, SEO-spun reposts; /in/ and
+  // /company/ are profile/marketing pages. None is a citable canonical source.
+  // A live COLD research call leaked a /pulse/ article that the old
+  // /posts/...activity-<digits> rule missed, so the gate is host-level: reject
+  // any linkedin.com URL. include_domains is honored — if the caller explicitly
+  // scoped research to linkedin.com the page is an intentional target.
+  if (isLinkedInHost(host)) {
+    const exempt = (includeDomains ?? []).some((d) => {
+      const dn = d.replace(/^www\./, '').toLowerCase();
+      return host === dn || host.endsWith(`.${dn}`);
+    });
+    if (!exempt) {
+      return { reject: true, reason: 'social-promo' };
     }
   }
 

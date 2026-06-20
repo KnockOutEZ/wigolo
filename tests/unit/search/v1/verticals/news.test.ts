@@ -44,13 +44,31 @@ describe('getNewsEngines', () => {
     }
   });
 
-  it('returns three entries when no RSS configured and feed store empty', () => {
-    expect(getNewsEngines()).toHaveLength(3);
+  it('returns five entries when no RSS configured and feed store empty', () => {
+    expect(getNewsEngines()).toHaveLength(5);
   });
 
-  it('wraps hn-algolia, lobsters, and bing_news engines (preserving names)', () => {
+  it('wraps hn-algolia, lobsters, bing_news, duckduckgo, mojeek (preserving names)', () => {
     const names = getNewsEngines().map((e) => e.engine.name);
-    expect(names).toEqual(['hn-algolia', 'lobsters', 'bing_news']);
+    expect(names).toEqual(['hn-algolia', 'lobsters', 'bing_news', 'duckduckgo', 'mojeek']);
+  });
+
+  // Wave-3 A3 (news-vertical recall): a news search with a time bound used to
+  // collapse to HN-Algolia alone because the orchestrator dropped every
+  // non-date-aware engine. Widening the vertical with the general web engines
+  // (date-naive, client-side freshness-filtered) is half the recall fix.
+  it('includes the general web engines duckduckgo + mojeek for breadth', () => {
+    const names = getNewsEngines().map((e) => e.engine.name);
+    expect(names).toContain('duckduckgo');
+    expect(names).toContain('mojeek');
+  });
+
+  it('marks duckduckgo + mojeek as date-naive (they freshness-filter client-side)', () => {
+    const entries = getNewsEngines();
+    const ddg = entries.find((e) => e.engine.name === 'duckduckgo');
+    const mojeek = entries.find((e) => e.engine.name === 'mojeek');
+    expect(ddg?.supportsDateFilter).toBe(false);
+    expect(mojeek?.supportsDateFilter).toBe(false);
   });
 
   it('weights bing_news lower than HN/lobsters (broader but noisier source)', () => {

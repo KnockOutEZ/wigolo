@@ -24,6 +24,35 @@ export function recencyMultiplier(
   return raw;
 }
 
+// Stale-result demotion. Distinct from recencyMultiplier (a boost in [1.0,
+// 2.0] that lifts recent results): this is a penalty in (0, 1] that actively
+// pushes STALE dated results DOWN. Used on temporal-intent queries where an
+// out-of-date page must lose its slot to a fresher one. Undated and recent
+// results inside the grace window are untouched (factor = 1.0); older results
+// decay toward DEMOTE_FLOOR. Decoupled from the boost so the two compose
+// without double-counting: the boost is applied once at RRF fusion, this is
+// applied once at the final-ordering seam.
+const DEMOTE_GRACE_DAYS = 14;
+const DEMOTE_TAU_DAYS = 365;
+const DEMOTE_FLOOR = 0.25;
+
+export function recencyDemotion(
+  publishedDate: string | undefined,
+  now: Date = new Date(),
+): number {
+  if (!publishedDate) return 1.0;
+  const t = new Date(publishedDate).getTime();
+  if (Number.isNaN(t)) return 1.0;
+
+  const ageDays = Math.max(0, now.getTime() - t) / MS_PER_DAY;
+  if (ageDays <= DEMOTE_GRACE_DAYS) return 1.0;
+
+  // Exponential decay past the grace window, floored so a stale result is
+  // demoted but never zeroed out of the set entirely.
+  const decay = Math.exp(-(ageDays - DEMOTE_GRACE_DAYS) / DEMOTE_TAU_DAYS);
+  return DEMOTE_FLOOR + (1 - DEMOTE_FLOOR) * decay;
+}
+
 const TEMPORAL_WORD_RE =
   /\b(latest|today|yesterday|this week|this month|this year|news|breaking|recent|update|now|current)\b/i;
 const TEMPORAL_YEAR_RE = /\b(20[2-3][0-9])\b/;

@@ -281,6 +281,158 @@ describe('tls-tier: caller signal shares the per-fetch budget (attack-4 regressi
   });
 });
 
+describe('tls-tier: profile rotation on Cloudflare challenge (FIX2)', () => {
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    resetConfig();
+    _setTlsBackendForTests(null);
+    _resetTlsBackend();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    resetConfig();
+    _setTlsBackendForTests(null);
+    _resetTlsBackend();
+  });
+
+  function challenge403(url: string) {
+    return {
+      status: 403,
+      url,
+      headers: {
+        entries: function* () {
+          yield ['content-type', 'text/html'];
+        },
+      },
+      // Cloudflare "Just a moment" interstitial — isAntiBotSignal flags this.
+      text: async () =>
+        '<html><head><title>Just a moment...</title></head><body>cf-browser-verification</body></html>',
+    };
+  }
+
+  function fullPage200(url: string, profile: string) {
+    return {
+      status: 200,
+      url,
+      headers: {
+        entries: function* () {
+          yield ['content-type', 'text/html'];
+        },
+      },
+      text: async () => `<html><body>full page rendered by ${profile}</body></html>`,
+    };
+  }
+
+  it('rotates to the next profile when the first profile is served a Cloudflare challenge', async () => {
+    // WHY: on the Stack Exchange network every chrome profile is served a
+    // Cloudflare 403 "Just a moment" challenge in <50ms, while firefox/safari
+    // profiles return a full 200 page. Without rotation the TLS tier returns
+    // the still-blocked 403, the router escalates, and Stack Overflow never
+    // hydrates even with an infinite budget (Slice C found this). Rotation
+    // makes the chrome->firefox fallback hydrate the page transparently.
+    const seenProfiles: string[] = [];
+    _setTlsBackendForTests({
+      fetch: async (url, init) => {
+        const profile = init?.browser ?? '<none>';
+        seenProfiles.push(profile);
+        // chrome family is Cloudflare-blocked; firefox/safari succeed.
+        if (profile.startsWith('chrome')) return challenge403(url);
+        return fullPage200(url, profile);
+      },
+    });
+
+    // Default profile is the Cloudflare-blocked chrome.
+    process.env.WIGOLO_TLS_BROWSER = 'chrome_142';
+    resetConfig();
+
+    const result = await tlsFetch('https://stackoverflow.com/questions/1');
+
+    // Rotation returned a healthy 200 page from a non-chrome profile.
+    expect(result.statusCode).toBe(200);
+    expect(result.html).toContain('full page rendered by');
+    expect(result.html).not.toContain('cf-browser-verification');
+    // It actually tried chrome first, then rotated to a different family.
+    expect(seenProfiles[0]).toBe('chrome_142');
+    expect(seenProfiles.length).toBeGreaterThanOrEqual(2);
+    expect(seenProfiles.some((p) => !p.startsWith('chrome'))).toBe(true);
+  });
+
+  it('does NOT rotate when the first profile succeeds (happy path, no wasted attempts)', async () => {
+    const seenProfiles: string[] = [];
+    _setTlsBackendForTests({
+      fetch: async (url, init) => {
+        seenProfiles.push(init?.browser ?? '<none>');
+        return fullPage200(url, init?.browser ?? '');
+      },
+    });
+
+    process.env.WIGOLO_TLS_BROWSER = 'chrome_142';
+    resetConfig();
+
+    const result = await tlsFetch('https://example.com/page');
+    expect(result.statusCode).toBe(200);
+    // Exactly one attempt — no rotation on a first-try success.
+    expect(seenProfiles).toEqual(['chrome_142']);
+  });
+
+  it('is bounded: tries at most the fixed fallback list, then returns the last blocked result', async () => {
+    // Every profile is Cloudflare-blocked. Rotation must NOT loop forever; it
+    // tries the bounded fallback list and surfaces the final still-blocked
+    // result so the router can escalate to the browser engine.
+    const seenProfiles: string[] = [];
+    _setTlsBackendForTests({
+      fetch: async (url, init) => {
+        seenProfiles.push(init?.browser ?? '<none>');
+        return challenge403(url);
+      },
+    });
+
+    process.env.WIGOLO_TLS_BROWSER = 'chrome_142';
+    resetConfig();
+
+    const result = await tlsFetch('https://stackoverflow.com/questions/2');
+
+    // Surfaced the blocked result (router decides escalation) — still 403.
+    expect(result.statusCode).toBe(403);
+    // Bounded: distinct profiles, at most 3, no repeats, no infinite loop.
+    expect(seenProfiles.length).toBeGreaterThanOrEqual(2);
+    expect(seenProfiles.length).toBeLessThanOrEqual(3);
+    expect(new Set(seenProfiles).size).toBe(seenProfiles.length);
+  });
+
+  it('all rotation attempts share the caller per-fetch deadline (no attack-4 blowup)', async () => {
+    // WHY: each rotated attempt must reuse the SAME caller deadline budget, not
+    // mint a fresh full timeout per profile. We hand an already-exhausted caller
+    // signal; every attempt the backend sees must already be aborted, proving
+    // the budget is shared rather than reset per rotation.
+    const abortedStates: boolean[] = [];
+    _setTlsBackendForTests({
+      fetch: async (url, init) => {
+        abortedStates.push(init?.signal?.aborted ?? false);
+        // Stay blocked so rotation continues to the next profile.
+        return challenge403(url);
+      },
+    });
+
+    process.env.WIGOLO_TLS_BROWSER = 'chrome_142';
+    resetConfig();
+
+    const controller = new AbortController();
+    controller.abort(new DOMException('caller deadline', 'TimeoutError'));
+
+    // Long internal timeout so a fresh per-attempt timeout would NOT be aborted.
+    await tlsFetch('https://stackoverflow.com/questions/3', {
+      signal: controller.signal,
+      timeoutMs: 30000,
+    });
+
+    expect(abortedStates.length).toBeGreaterThanOrEqual(2);
+    // Every attempt saw an already-aborted signal -> shared caller deadline.
+    expect(abortedStates.every((aborted) => aborted === true)).toBe(true);
+  });
+});
+
 describe('tls-tier: MCP-stdio safety', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };

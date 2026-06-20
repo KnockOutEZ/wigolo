@@ -17,6 +17,32 @@ const reactShell = readFileSync(
   'utf-8',
 );
 
+// Real served HTML for https://react.dev/reference/react (captured live). Unlike
+// the hand-built shell above, this carries react.dev's real layout: <main> and the
+// reference-index <aside> are both wrapped in a grid container whose Tailwind class
+// happens to contain the substring "sidebar" (grid-cols-sidebar-content). The
+// over-broad [class*="sidebar"] boilerplate selector matched that wrapper and deleted
+// the WHOLE content region, leaving only the 7-link top nav (~228-char markdown). The
+// shell fixture cannot reproduce this — that blind spot hid the bug repeatedly.
+const reactReferenceReal = readFileSync(
+  join(import.meta.dirname, '../fixtures/extraction/react-reference-real.html'),
+  'utf-8',
+);
+
+// Real served HTML for https://vuejs.org/guide/introduction (captured live, body
+// trimmed). VitePress nests the page as
+//   <div class="VPContent has-sidebar">
+//     <aside class="VPSidebar">…</aside>
+//     <div class="VPContentDoc has-aside has-sidebar"><main>…guide body…</main></div>
+// Both layout wrappers carry the substring "sidebar" in a state class (has-sidebar)
+// yet each CONTAINS the page's single <main>. The boilerplate pre-pass matched and
+// removed the whole VPContent wrapper, deleting <main> before content-root isolation
+// could find it — leaving only the VitePress navbar cluster (~nav-only markdown).
+const vitepressGuide = readFileSync(
+  join(import.meta.dirname, '../fixtures/extraction/vitepress-guide.html'),
+  'utf-8',
+);
+
 function recipeFixture(): string {
   const recipe = {
     '@context': 'https://schema.org',
@@ -161,6 +187,41 @@ describe('extract pipeline v1 — integration via factory', () => {
     const head = result.markdown.slice(0, 400);
     expect(head).not.toMatch(/Learn.*Reference.*Community.*Blog/s);
     expect(result.markdown.length).toBeGreaterThan(200);
+  });
+
+  it('REAL react.dev/reference/react → reference body, not 7-link nav-only', async () => {
+    const provider = await getExtractProvider();
+    const result = await provider.extract(
+      reactReferenceReal,
+      'https://react.dev/reference/react',
+    );
+    // The reference body — intro prose + the Hooks/Components/APIs index — must survive.
+    expect(result.markdown).toMatch(/detailed reference/i);
+    expect(result.markdown).toMatch(/Hooks/);
+    expect(result.markdown).toMatch(/Components/);
+    // Nav-only failure mode (~228 chars of brand links) must be gone.
+    expect(result.markdown.length).toBeGreaterThan(500);
+    const head = result.markdown.slice(0, 300);
+    expect(head).not.toMatch(/React.*v19.*Learn.*Reference.*Community.*Blog/s);
+  });
+
+  it('REAL vuejs.org/guide/introduction → VitePress guide body, not navbar-only', async () => {
+    const provider = await getExtractProvider();
+    const result = await provider.extract(
+      vitepressGuide,
+      'https://vuejs.org/guide/introduction',
+    );
+    // The guide body inside <main> must survive the boilerplate pre-pass.
+    expect(result.markdown).toMatch(/Single-File/);
+    expect(result.markdown).toMatch(/declarative/i);
+    expect(result.markdown).toMatch(/reactiv/i);
+    expect(result.markdown).toMatch(/Progressive Framework/);
+    expect(result.markdown.length).toBeGreaterThan(500);
+    // Navbar-only failure mode must be gone: the VitePress top-nav cluster
+    // ("Main Navigation … Quick Start … Tutorial … Examples … API") must not
+    // lead the output.
+    const head = result.markdown.slice(0, 300);
+    expect(head).not.toMatch(/Main Navigation.*Quick Start.*Tutorial.*Examples.*API/s);
   });
 });
 

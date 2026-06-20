@@ -152,8 +152,72 @@ function headersToRecord(h: WreqHeaders | undefined): Record<string, string> {
 }
 
 /**
- * Single-shot TLS-impersonation fetch. Returns the same shape as the default
- * HTTP tier so router.ts can swap tiers without branching elsewhere.
+ * Profiles tried, in order, when the active profile is served an anti-bot
+ * challenge (FIX2). Some networks (e.g. the Stack Exchange Cloudflare edge)
+ * serve every chrome impersonation profile a "Just a moment" 403 in <50ms but
+ * return a full 200 page on a firefox/safari fingerprint. Rotating across
+ * distinct browser families recovers those pages without a browser-engine
+ * escalation. A chrome 403 fails in <50ms, so chrome→firefox rotation costs
+ * ~1s total — well within the per-fetch stage budget. Rotation beats flipping
+ * the default because it survives a future per-profile block too.
+ */
+const PROFILE_FALLBACK_ORDER = ['firefox_143', 'safari_18'] as const;
+
+/**
+ * Cap on total impersonation attempts per fetch (active profile + rotations).
+ * Bounds the rotation so a fully-walled host fails fast and escalates to the
+ * browser engine rather than walking an unbounded profile list.
+ */
+const MAX_PROFILE_ATTEMPTS = 3;
+
+/**
+ * Build the bounded, de-duplicated list of impersonation profiles to try for a
+ * single fetch: the configured/active profile first, then the fixed fallback
+ * order, capped at {@link MAX_PROFILE_ATTEMPTS}.
+ */
+function buildProfileRotation(active: string): string[] {
+  const order: string[] = [active];
+  for (const profile of PROFILE_FALLBACK_ORDER) {
+    if (order.length >= MAX_PROFILE_ATTEMPTS) break;
+    if (!order.includes(profile)) order.push(profile);
+  }
+  return order;
+}
+
+async function readResponse(url: string, response: WreqResponse): Promise<TlsFetchResult> {
+  const headers = headersToRecord(response.headers);
+  const contentType = headers['content-type'] ?? '';
+  const isPdf = contentType.includes('application/pdf');
+  let html = '';
+  let rawBuffer: Buffer | undefined;
+  if (isPdf && typeof response.arrayBuffer === 'function') {
+    const ab = await response.arrayBuffer();
+    rawBuffer = Buffer.from(ab);
+  } else {
+    html = await response.text();
+  }
+  return {
+    url,
+    finalUrl: response.url ?? url,
+    html,
+    contentType,
+    statusCode: response.status,
+    headers,
+    rawBuffer,
+  };
+}
+
+/**
+ * TLS-impersonation fetch with bounded profile rotation on anti-bot challenges.
+ *
+ * Returns the same shape as the default HTTP tier so router.ts can swap tiers
+ * without branching elsewhere. When the active profile is served an anti-bot
+ * challenge (Cloudflare/DataDome — see {@link isAntiBotSignal}) the tier
+ * rotates to the next browser family in {@link PROFILE_FALLBACK_ORDER} and
+ * returns the first healthy response. If every profile stays blocked it returns
+ * the last (still-blocked) result so the router can escalate. All attempts
+ * share ONE combined deadline (caller signal + internal timeout) so rotation
+ * never mints a fresh full timeout per profile (the attack-4 latency blowup).
  */
 export async function tlsFetch(url: string, options: TlsFetchOptions = {}): Promise<TlsFetchResult> {
   const backend = await loadBackend();
@@ -161,10 +225,10 @@ export async function tlsFetch(url: string, options: TlsFetchOptions = {}): Prom
   const timeoutMs = options.timeoutMs ?? config.fetchTimeoutMs;
 
   // Combine the internal timeout budget with the caller's deadline (if any) so
-  // the TLS attempt shares the same per-fetch budget rather than stacking a
-  // fresh full timeout on top of an already-spent one. `anySignal` is the
-  // hand-rolled combiner the HTTP tier uses (Node 20.0–20.2 lack
-  // AbortSignal.any; floor is >=20).
+  // every attempt shares the same per-fetch budget rather than stacking a
+  // fresh full timeout on top of an already-spent one. Built ONCE and reused
+  // across rotations. `anySignal` is the hand-rolled combiner the HTTP tier
+  // uses (Node 20.0–20.2 lack AbortSignal.any; floor is >=20).
   let signal: AbortSignal | undefined;
   let cleanup: (() => void) | undefined;
   try {
@@ -180,34 +244,33 @@ export async function tlsFetch(url: string, options: TlsFetchOptions = {}): Prom
     signal = options.signal;
   }
 
+  const profiles = buildProfileRotation(config.tlsBrowser);
+
   try {
-    const response = await backend.fetch(url, {
-      headers: options.headers,
-      browser: config.tlsBrowser,
-      signal,
-    });
+    let last: TlsFetchResult | undefined;
+    for (const browser of profiles) {
+      const response = await backend.fetch(url, {
+        headers: options.headers,
+        browser,
+        signal,
+      });
+      const result = await readResponse(url, response);
 
-    const headers = headersToRecord(response.headers);
-    const contentType = headers['content-type'] ?? '';
-    const isPdf = contentType.includes('application/pdf');
-    let html = '';
-    let rawBuffer: Buffer | undefined;
-    if (isPdf && typeof response.arrayBuffer === 'function') {
-      const ab = await response.arrayBuffer();
-      rawBuffer = Buffer.from(ab);
-    } else {
-      html = await response.text();
+      // Healthy response — return immediately. No rotation on a first-try win.
+      if (!isAntiBotSignal(result.statusCode, result.html)) {
+        return result;
+      }
+
+      // Anti-bot challenge: remember it and rotate to the next profile. Every
+      // rotation reuses the SAME shared deadline (never a fresh per-attempt
+      // timeout); the bounded profile list caps the total work, and a real
+      // exhausted deadline makes the next `backend.fetch` reject — which
+      // propagates and fails fast rather than walking the rest of the list.
+      last = result;
     }
-
-    return {
-      url,
-      finalUrl: response.url ?? url,
-      html,
-      contentType,
-      statusCode: response.status,
-      headers,
-      rawBuffer,
-    };
+    // Every profile stayed blocked (or the shared deadline fired). Surface the
+    // last result so the router can escalate to the browser engine.
+    return last as TlsFetchResult;
   } finally {
     // Detach the combiner's listeners from the (long-lived) caller signal so a
     // shared per-fetch deadline doesn't accumulate one listener per TLS attempt.

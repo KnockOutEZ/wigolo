@@ -180,6 +180,25 @@ function isAntiBotTlsDomain(host: string, extra: readonly string[]): boolean {
   return matchesDomainSet(host, ANTI_BOT_TLS_DOMAINS) || matchesDomainSet(host, extra);
 }
 
+/**
+ * Slice C/3 (FIX2): public predicate over a full URL. True when the URL's host
+ * is in the curated anti-bot/TLS-first set or the operator-supplied
+ * WIGOLO_TLS_DOMAINS list — i.e. the same domains {@link SmartRouter.fetch}
+ * routes through the TLS-impersonation tier first. The search-hydration path
+ * uses this to grant those domains a larger per-URL fetch budget so a working
+ * TLS attempt (~1-5s) is not starved by the small balanced per-URL budget.
+ * Returns false (never throws) for malformed URLs.
+ */
+export function isAntiBotTlsFirstUrl(url: string, extraDomains: readonly string[]): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return false;
+  }
+  return isAntiBotTlsDomain(host, extraDomains);
+}
+
 // Wave-2 W4: connection-level timeout / reset errors that surface as a THROW
 // (no HTTP status) rather than a response. Mirrors the retryable set the HTTP
 // client uses; the AbortSignal.timeout path throws TimeoutError, while raw

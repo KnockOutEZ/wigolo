@@ -196,6 +196,42 @@ describe('fetchWithPlaywright blocks capture until deferred SPA body mounts (dat
     expect(result.html).toContain('Real Article');
     expect(result.text).toContain('Substantive article paragraph');
   }, 60_000);
+
+  it('does not capture a LARGE nav-only app-root shell; waits for the deferred <main> body (FIX1, react.dev shape)', async () => {
+    if (!canLaunch) {
+      console.warn('Playwright cannot launch here (sandbox); deferring real render to CI/unsandboxed gate');
+      return;
+    }
+    // The exact false-positive that hid through attack-5 / W1: the SPA app-root
+    // (#__next, react.dev) is populated IMMEDIATELY with a big sidebar nav whose
+    // link descriptions sit in <p> tags — > 1200 chars of chrome text AND many
+    // <p> blocks at first probe. The OLD app-root branch measured the whole root
+    // and counted those nav <p>s, declared hydrated, so escalation never fired
+    // and page.content() returned this nav-only shell. The article <main> mounts
+    // ONLY after a setTimeout — deferred, NOT pre-baked in the static HTML — so
+    // the test fails on the old code (captures nav-only) and passes on the fix
+    // (gates until <main> mounts, then captures the real body).
+    const navItems = Array.from(
+      { length: 30 },
+      (_, i) => `<p>Section ${i} navigation entry describing yet another docs page link target</p>`,
+    ).join('');
+    const headerText = 'site header brand search docs blog community '.repeat(20);
+    const html = `<!doctype html><html><head><title>spa</title></head><body>` +
+      `<div id="__next">` +
+      `<header>${headerText}</header>` +
+      `<nav class="sidebar">${navItems}</nav>` +
+      `</div>` +
+      `<script>setTimeout(function(){` +
+      `var m=document.createElement('main');` +
+      `m.innerHTML='<h1>Real Article</h1><p>'+'Substantive article paragraph that mounts only after hydration. '.repeat(20)+'</p>';` +
+      `document.getElementById('__next').appendChild(m);` +
+      `},300);</script>` +
+      `</body></html>`;
+    const url = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+    const result = await fetchWithPlaywright(url, { timeoutMs: 15000 });
+    expect(result.html).toContain('Real Article');
+    expect(result.text).toContain('Substantive article paragraph');
+  }, 60_000);
 });
 
 describe('getDaemonBrowser race safety', () => {

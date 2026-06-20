@@ -609,7 +609,7 @@ export interface ResearchSource {
 
 export interface RejectedSource {
   url: string;
-  reason: 'homepage' | 'serp' | 'low-content' | 'low-overlap' | 'negative-score';
+  reason: 'homepage' | 'serp' | 'social-promo' | 'low-content' | 'low-overlap' | 'negative-score';
   stage: 'url-shape' | 'content-gate' | 'score-floor';
 }
 

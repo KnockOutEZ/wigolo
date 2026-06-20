@@ -1,5 +1,6 @@
 import type { SearchResultItem } from '../types.js';
-import type { SmartRouter } from '../fetch/router.js';
+import { type SmartRouter, isAntiBotTlsFirstUrl } from '../fetch/router.js';
+import { getConfig } from '../config.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { cacheContent } from '../cache/store.js';
 import { getEmbeddingService } from '../embedding/embed.js';
@@ -21,11 +22,48 @@ export interface FetchContentContext {
    *  to today's legacy path: no stage timer, per-URL timeoutSignal is the
    *  only cancellation mechanism. */
   stageBudgetMs?: number;
+  /** Slice C/3 (FIX2): per-URL budget for anti-bot/TLS-first domains
+   *  (stackoverflow.com et al.). These are routed through the TLS-impersonation
+   *  tier first; a working TLS attempt takes ~1-5s and is starved by the small
+   *  `fetchTimeoutMs`. When absent, a default larger budget is derived from
+   *  `fetchTimeoutMs`/`stageBudgetMs` so existing call sites benefit. Always
+   *  clamped to the stage budget so the overall stage stays bounded. */
+  antiBotFetchTimeoutMs?: number;
 }
 
 interface SingleFetch {
   content?: string;
   error?: string;
+}
+
+/**
+ * Slice C/3 (FIX2): resolve the per-URL fetch budget for a single target.
+ * Anti-bot/TLS-first domains (routed through the TLS-impersonation tier first
+ * by the router) get the larger {@link FetchContentContext.antiBotFetchTimeoutMs}
+ * budget so a working ~1-5s TLS attempt is not starved by the small
+ * `fetchTimeoutMs`. Everyone else keeps the small budget — no blanket bump.
+ *
+ * The anti-bot budget is clamped to the stage budget (when set) so the overall
+ * stage stays bounded — the per-URL budget never exceeds the stage ceiling, so
+ * the stage timer (not an unbounded per-URL timer) is what caps wall-clock.
+ * This is the attack-4 guard: the per-URL budget can be larger than the small
+ * default but never larger than the stage budget.
+ */
+function perUrlBudgetFor(url: string, ctx: FetchContentContext): number {
+  if (!isAntiBotTlsFirstUrl(url, getConfig().tlsDomains)) {
+    return ctx.fetchTimeoutMs;
+  }
+  // Default the anti-bot budget to the stage budget when not supplied, so the
+  // TLS attempt gets the full hydration window rather than the small per-URL
+  // slice. Falls back to fetchTimeoutMs when neither is set (legacy path).
+  const desired =
+    ctx.antiBotFetchTimeoutMs ?? ctx.stageBudgetMs ?? ctx.fetchTimeoutMs;
+  // Never grant LESS than the normal budget, and never MORE than the stage
+  // budget — keeps the overall stage bounded.
+  const floored = Math.max(desired, ctx.fetchTimeoutMs);
+  return ctx.stageBudgetMs !== undefined
+    ? Math.min(floored, ctx.stageBudgetMs)
+    : floored;
 }
 
 /** Map an abort/error reason to the fetch_failed flag value. */
@@ -87,7 +125,7 @@ async function fetchOne(
     return { error: reasonToFlag(stageSignal.reason) };
   }
 
-  const perUrl = timeoutSignal(ctx.fetchTimeoutMs, 'timeout');
+  const perUrl = timeoutSignal(perUrlBudgetFor(url, ctx), 'timeout');
   const { signal, cleanup } = anySignal([stageSignal, perUrl.signal]);
 
   const work = doFetchAndExtract(url, router, ctx, signal);

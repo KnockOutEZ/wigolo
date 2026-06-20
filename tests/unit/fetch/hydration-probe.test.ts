@@ -86,6 +86,38 @@ describe('isHydrated', () => {
     });
   });
 
+  it('returns false for a large nav-only SPA app-root (react.dev sidebar shell, body not yet mounted)', () => {
+    // FIX1 regression guard. react.dev wraps everything in <div id="__next">.
+    // Before the article mounts, that root already holds a header + a sidebar
+    // nav whose link descriptions live in <p> tags: > 1200 chars of chrome text
+    // AND >= 3 <p> blocks. The old app-root branch measured the WHOLE root and
+    // counted chrome <p>s, so it falsely declared hydrated — the escalation
+    // re-poll never fired and page.content() captured nav-only HTML. With the
+    // fix the app-root branch counts only content OUTSIDE nav/header/aside, so
+    // a nav-only shell is correctly NOT hydrated.
+    const navLink = '<p>Section navigation entry describing yet another docs page link target</p>';
+    const sidebar = '<nav>' + navLink.repeat(30) + '</nav>';
+    const header = '<header>' + 'site header brand search docs blog community '.repeat(20) + '</header>';
+    const html = `<html><body><div id="__next">${header}${sidebar}</div></body></html>`;
+    withInnerText(html, (doc) => {
+      expect(isHydrated(doc as never)).toBe(false);
+    });
+  });
+
+  it('returns true once the article body mounts inside the app-root alongside the nav shell', () => {
+    // The same large nav shell, but now the <main> article has mounted with
+    // genuine prose. Content OUTSIDE the chrome clears the threshold → hydrated.
+    const navLink = '<p>Section navigation entry describing yet another docs page link target</p>';
+    const sidebar = '<nav>' + navLink.repeat(30) + '</nav>';
+    const header = '<header>' + 'site header brand search docs blog community '.repeat(20) + '</header>';
+    const articlePara = '<p>' + 'Genuine article prose that only appears after hydration completes. '.repeat(15) + '</p>';
+    const article = `<main>${articlePara}${articlePara}${articlePara}</main>`;
+    const html = `<html><body><div id="__next">${header}${sidebar}${article}</div></body></html>`;
+    withInnerText(html, (doc) => {
+      expect(isHydrated(doc as never)).toBe(true);
+    });
+  });
+
   it('returns false when only the nav-shell rendered (sidebar text, no article)', () => {
     // Header + sidebar + footer prose only, no <main>/<article>/SPA root.
     const navText = '<nav>' + 'nav link '.repeat(30) + '</nav>';

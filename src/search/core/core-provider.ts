@@ -21,6 +21,7 @@ import { expandQuery, LOW_RECALL_THRESHOLD } from './query-expansion.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
 import { foldRerankIntoOrdering } from './rerank-fold.js';
 import { applyScoreFloor, DEFAULT_SEARCH_SCORE_FLOOR } from './score-floor.js';
+import { recencyDemotion, hasTemporalIntent } from './recency-boost.js';
 import { detectBrandCollision, detectLexicalCollision } from './brand-collision.js';
 import { computeFreshnessSignal } from './freshness.js';
 import { buildQueryUnderstanding } from './query-understanding.js';
@@ -62,6 +63,20 @@ function matchesAnyDomain(url: string, domains: string[]): boolean {
     if (host === needle || host.endsWith(`.${needle}`)) return true;
   }
   return false;
+}
+
+// Recall backfill buffer (wave2.1 FIX4). The downstream score-floor + stale
+// demotion drop junk from the dispatched set; without an over-fetch they have
+// nothing to backfill from and the response thins below max_results. Mirror
+// the research module's 40%-over buffer (research/pipeline.ts): ask the
+// orchestrator for max_results + ceil(40%) so the floor can trim and the final
+// slice still refills to max_results. Returns undefined when the caller set no
+// max_results — the orchestrator default already over-fetches relative to a
+// typical floor in that case.
+const RECALL_BUFFER_RATIO = 0.4;
+function bufferedMaxResults(maxResults: number | undefined): number | undefined {
+  if (typeof maxResults !== 'number' || maxResults <= 0) return maxResults;
+  return maxResults + Math.ceil(maxResults * RECALL_BUFFER_RATIO);
 }
 
 function normalizeArrayQueries(queries: string[]): string[] {
@@ -250,6 +265,17 @@ export class CoreSearchProvider implements SearchProvider {
         log.debug('rare-term variant firing', { original: queries[0], variant: rareVariant });
       }
 
+      // Recall backfill (wave2.1 FIX4): the orchestrator slices to the
+      // maxResults it is handed, so the downstream score-floor + stale
+      // demotion would have NOTHING to backfill from when they drop junk —
+      // leaving fewer than max_results even when good survivors exist. Mirror
+      // the research module's pattern: over-fetch a small buffer here so the
+      // floor can trim and the final slice still refills to max_results. The
+      // buffer is bounded (40% over, like research) so engine load stays
+      // proportional; when no max_results is set the orchestrator default
+      // already over-fetches relative to a typical floor, so we leave it.
+      const dispatchMaxResults = bufferedMaxResults(input.max_results);
+
       const dispatches = await Promise.all(
         dispatchQueries.map((q) =>
           runV1Search({
@@ -257,7 +283,7 @@ export class CoreSearchProvider implements SearchProvider {
             category,
             fromDate: input.from_date,
             toDate: input.to_date,
-            maxResults: input.max_results,
+            maxResults: dispatchMaxResults,
             language: input.language,
             includeDomains: input.include_domains,
             excludeDomains: input.exclude_domains,
@@ -300,7 +326,7 @@ export class CoreSearchProvider implements SearchProvider {
             category,
             fromDate: input.from_date,
             toDate: input.to_date,
-            maxResults: input.max_results,
+            maxResults: dispatchMaxResults,
             language: input.language,
             includeDomains: input.include_domains,
             excludeDomains: input.exclude_domains,
@@ -437,6 +463,24 @@ export class CoreSearchProvider implements SearchProvider {
           deep: depth === 'deep',
           maxResults: input.max_results,
         });
+      }
+
+      // Stale-result demotion (wave2.1 FIX3): on a temporal-intent query an
+      // out-of-date page must lose its slot to a fresher one. The RRF-fusion
+      // recency BOOST (orchestrator.ts) only lifts recent results — it cannot
+      // push a stale one down. This applies the demotion penalty exactly once,
+      // here at the final-ordering seam (after rerank-fold, before the floor),
+      // so it is the authoritative last word on staleness and is never
+      // overwritten by an upstream re-score. Gated on temporal intent so
+      // evergreen queries (no date sensitivity) are untouched; undated and
+      // recent results carry a factor of 1.0 and are unaffected.
+      const demoteForRecency = queries.some((q) => hasTemporalIntent(q));
+      if (demoteForRecency) {
+        const now = new Date();
+        processed = [...processed]
+          .map((r) => ({ r, demoted: r.relevance_score * recencyDemotion(r.published_date, now) }))
+          .sort((a, b) => b.demoted - a.demoted)
+          .map(({ r, demoted }) => ({ ...r, relevance_score: demoted }));
       }
 
       // Relevance-score floor (wave2-w2): the LAST trim before the slice, so

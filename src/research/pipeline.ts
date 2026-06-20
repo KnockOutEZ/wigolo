@@ -28,11 +28,17 @@ import type { SmartRouter } from '../fetch/router.js';
 
 const log = createLogger('research');
 
-const DEPTH_CONFIG: Record<string, { subQueries: number; minSources: number; maxSources: number }> = {
+export const DEPTH_CONFIG: Record<string, { subQueries: number; minSources: number; maxSources: number }> = {
   quick: { subQueries: 2, minSources: 5, maxSources: 8 },
-  standard: { subQueries: 4, minSources: 10, maxSources: 15 },
+  standard: { subQueries: 4, minSources: 15, maxSources: 20 },
   comprehensive: { subQueries: 7, minSources: 20, maxSources: 25 },
 };
+
+// Over-fetch a buffer beyond maxSources so the post-fetch content gate can drop
+// empty shells and still back-fill to maxSources. 0.6 (up from 0.4) keeps the
+// rank-based in-window keep fed on niche queries where the cross-encoder damps
+// the whole pool negative and the gates eat a larger share of the candidates.
+export const OVER_FETCH_BUFFER_FACTOR = 0.6;
 
 // Per-depth budgets for the sub-query fan-out. exploreInParallel guarantees
 // a single slow sub-query can't burn the whole research budget — comprehensive
@@ -164,13 +170,25 @@ export async function runResearchPipeline(
     // The cross-encoder scores off-topic real-content domains (benchmark C1:
     // YouTube / Google Play / Zhihu / MyBroadband) below zero; url-shape and
     // the content gate both pass them because they ARE real, on-domain pages.
-    // Dropping negatives here closes that gap. merged is sorted desc by score,
-    // so merged[0] is the top — always keep it so the pool is never emptied
-    // when the reranker damped everything below zero.
+    // Dropping negatives here closes that gap.
+    //
+    // But the cross-encoder's ABSOLUTE logits are miscalibrated per-query: on a
+    // niche query it damps the WHOLE pool below zero — including genuinely
+    // canonical, on-topic pages (live C1: sqlite.org/fts5.html, the sqlite-vec
+    // author's post, dev.to / deepwiki / kentcdodds explainers all scored below
+    // even -0.35) — so any fixed absolute floor collapses standard depth to ~1
+    // source. Its RELATIVE ordering stays meaningful, so merged (sorted desc by
+    // score) puts the most-on-topic first: inside the top-`minSources`
+    // breadth-keep window candidates are kept BY RANK regardless of a negative
+    // score (the url-shape + content gates above already removed junk, and rank
+    // is the quality bar here). Outside the window the strict `< 0` rule still
+    // drops genuine off-topic junk that ranks past the pool (it sorts below the
+    // on-topic survivors). i === 0 always survives so the pool is never emptied.
+    const breadthKeep = Math.max(config.minSources, 1);
     const scoreKept: MergedResult[] = [];
     for (let i = 0; i < merged.length; i++) {
       const m = merged[i];
-      const verdict = i === 0 ? { reject: false } : classifyScoreFloor(m.relevance_score);
+      const verdict = i === 0 ? { reject: false } : classifyScoreFloor(m.relevance_score, i < breadthKeep);
       if (verdict.reject && verdict.reason) {
         rejected_sources.push({ url: m.url, reason: verdict.reason, stage: 'score-floor' });
       } else {
@@ -204,11 +222,12 @@ export async function runResearchPipeline(
       };
     }
 
-    // Over-fetch a small buffer beyond maxSources so the post-fetch content
-    // gate can drop empty shells and still back-fill to maxSources.
+    // Over-fetch a buffer beyond maxSources (OVER_FETCH_BUFFER_FACTOR) so the
+    // post-fetch content gate can drop empty shells and still back-fill to
+    // maxSources.
     const buffer = Math.min(
       Math.max(urlKept.length - maxSources, 0),
-      Math.ceil(maxSources * 0.4),
+      Math.ceil(maxSources * OVER_FETCH_BUFFER_FACTOR),
     );
     const toFetch = urlKept.slice(0, maxSources + buffer);
 

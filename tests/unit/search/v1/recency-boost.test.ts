@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   recencyMultiplier,
+  recencyDemotion,
   hasTemporalIntent,
 } from '../../../../src/search/core/recency-boost.js';
 
@@ -83,6 +84,43 @@ describe('recencyMultiplier', () => {
   it('accepts YYYY-MM-DD date strings', () => {
     const m = recencyMultiplier('2026-05-21', NOW);
     expect(m).toBeGreaterThan(1.95);
+  });
+});
+
+describe('recencyDemotion', () => {
+  // Unlike recencyMultiplier (a boost in [1.0, 2.0]), recencyDemotion is a
+  // penalty in (0, 1] that actively pushes STALE results DOWN. Fresh/recent
+  // and undated results are unaffected (factor = 1.0); old dated results
+  // drop below 1.0 so they lose top-N slots on temporal-intent queries.
+  it('returns 1.0 for a fresh (today) result — no penalty', () => {
+    expect(recencyDemotion(isoDaysAgo(0), NOW)).toBe(1.0);
+  });
+
+  it('returns 1.0 for an undefined date — undated results are not penalized', () => {
+    expect(recencyDemotion(undefined, NOW)).toBe(1.0);
+  });
+
+  it('returns 1.0 for an invalid date string', () => {
+    expect(recencyDemotion('not-a-date', NOW)).toBe(1.0);
+  });
+
+  it('returns 1.0 for a recent result inside the grace window', () => {
+    expect(recencyDemotion(isoDaysAgo(7), NOW)).toBe(1.0);
+  });
+
+  it('demotes a clearly stale result below 1.0', () => {
+    expect(recencyDemotion(isoDaysAgo(365), NOW)).toBeLessThan(1.0);
+  });
+
+  it('demotes a 2-year-old result harder than a 6-month-old one (monotonic)', () => {
+    const m180 = recencyDemotion(isoDaysAgo(180), NOW);
+    const m730 = recencyDemotion(isoDaysAgo(730), NOW);
+    expect(m730).toBeLessThan(m180);
+  });
+
+  it('never returns a non-positive factor (clamped floor)', () => {
+    const m = recencyDemotion(isoDaysAgo(36500), NOW); // ~100 years
+    expect(m).toBeGreaterThan(0);
   });
 });
 

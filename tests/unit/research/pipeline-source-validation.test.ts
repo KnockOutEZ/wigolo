@@ -107,6 +107,28 @@ describe('research pipeline source validation', () => {
     expect(result.sources).toHaveLength(8);
   });
 
+  it('drops a bare LinkedIn activity post as social-promo via url-shape', async () => {
+    // WHY: the C1 query surfaced a linkedin.com/posts/...activity-<id> promo
+    // post into the pool. It is real, on-domain content (so the content gate
+    // would pass it) but a sentence of self-promotion, not article text — the
+    // url-shape filter must drop it, tagged social-promo, before it takes a slot.
+    const results: RawSearchResult[] = [
+      { title: 'Promo post', url: 'https://www.linkedin.com/posts/jane_sqlite-vector-activity-7123456789012345678-AbCd', snippet: 'check out my post', relevance_score: 0.97, engine: 'stub' },
+      ...Array.from({ length: 10 }, (_, i) => goodResult(i, 0.9 - i * 0.01)),
+    ];
+    const input: ResearchInput = { question: QUESTION, depth: 'quick' };
+
+    const result = await runResearchPipeline(input, [createStubEngine(results)], createStubRouter());
+
+    const urls = result.sources.map((s) => s.url);
+    expect(urls).not.toContain(
+      'https://www.linkedin.com/posts/jane_sqlite-vector-activity-7123456789012345678-AbCd',
+    );
+    const promoReject = (result.rejected_sources ?? []).find((r) => r.reason === 'social-promo');
+    expect(promoReject).toBeDefined();
+    expect(promoReject?.stage).toBe('url-shape');
+  });
+
   it('drops a fetched empty-shell page via the content gate', async () => {
     // WHY: a URL can be content-shaped yet resolve to an empty shell; the
     // post-fetch gate catches what url-shape can't, tagged content-gate.

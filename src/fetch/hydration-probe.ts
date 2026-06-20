@@ -19,7 +19,8 @@
 
 interface ProbeElement {
   innerText?: string | null;
-  querySelectorAll(selector: string): { length: number };
+  querySelectorAll(selector: string): ArrayLike<ProbeElement>;
+  closest?(selector: string): ProbeElement | null;
 }
 
 interface ProbeDocument {
@@ -34,6 +35,22 @@ const SPA_APP_ROOT_SELECTORS = [
   '#root',
   '[data-reactroot]',
   '[data-v-app]',
+].join(', ');
+
+// Site chrome that surrounds the article: nav, header, sidebar, footer. The
+// app-root branch must NOT count chrome text or chrome content-blocks, or a
+// large nav-only shell (react.dev's sidebar ships > 1200 chars of link text and
+// several <p> blocks BEFORE the article mounts) falsely reads as hydrated, the
+// escalation re-poll never fires, and page.content() captures nav-only HTML.
+const NAV_CHROME_SELECTORS = [
+  'nav',
+  'header',
+  'aside',
+  'footer',
+  '[role="navigation"]',
+  '[role="banner"]',
+  '[role="contentinfo"]',
+  '.sidebar',
 ].join(', ');
 
 // Content-class selectors target the article body only — no nav, no sidebar.
@@ -62,6 +79,48 @@ function countBlocks(el: ProbeElement | null, selector: string): number {
   }
 }
 
+// Within an app-root that wraps the whole SPA, measure ONLY genuine article
+// content: prose/code blocks that are NOT inside nav/header/aside/footer
+// chrome. Returns combined block text length plus separate <p> and code counts
+// so the app-root branch can apply the same content-block threshold the
+// semantic-landmark branches use, but against article body only — never the
+// surrounding chrome. This is what stops a nav-only shell reading as hydrated.
+function measureContentOutsideChrome(
+  root: ProbeElement | null,
+): { textLen: number; pCount: number; codeCount: number } {
+  if (!root) return { textLen: 0, pCount: 0, codeCount: 0 };
+  const inChrome = (el: ProbeElement): boolean =>
+    typeof el.closest === 'function' && el.closest(NAV_CHROME_SELECTORS) !== null;
+  let textLen = 0;
+  let pCount = 0;
+  let codeCount = 0;
+  const tally = (selector: string, onMatch: (el: ProbeElement) => void): void => {
+    let nodes: ArrayLike<ProbeElement>;
+    try {
+      nodes = root.querySelectorAll(selector);
+    } catch {
+      return;
+    }
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      if (inChrome(node)) continue;
+      onMatch(node);
+    }
+  };
+  // Mirror the semantic-landmark branches' counting (p separately, pre+code
+  // together) but only over blocks OUTSIDE site chrome, and sum their text so
+  // the threshold reflects genuine article prose, never nav/sidebar link text.
+  tally('p', (el) => {
+    pCount += 1;
+    textLen += measure(el);
+  });
+  tally('pre, code', (el) => {
+    codeCount += 1;
+    textLen += measure(el);
+  });
+  return { textLen, pCount, codeCount };
+}
+
 export function isHydrated(doc: ProbeDocument): boolean {
   const article = doc.querySelector('article');
   if (measure(article) > 500) {
@@ -84,18 +143,27 @@ export function isHydrated(doc: ProbeDocument): boolean {
     if (pCount >= 3 || codeCount >= 2 || pCount + codeCount >= 4) return true;
   }
 
+  // App-root catch-all: an SPA root wraps nav + sidebar + article + footer, so
+  // measuring its whole innerText counts chrome. Require genuine article
+  // content OUTSIDE that chrome — otherwise a large nav-only shell (react.dev's
+  // sidebar) reads as hydrated before the body mounts and escalation never fires.
   const appRoot = doc.querySelector(SPA_APP_ROOT_SELECTORS);
-  if (measure(appRoot) > 1200) {
-    const pCount = countBlocks(appRoot, 'p');
-    const codeCount = countBlocks(appRoot, 'pre, code');
-    if (pCount >= 3 || codeCount >= 2 || pCount + codeCount >= 4) return true;
+  if (appRoot) {
+    const { textLen, pCount, codeCount } = measureContentOutsideChrome(appRoot);
+    if (textLen > 500 && (pCount >= 3 || codeCount >= 2 || pCount + codeCount >= 4)) return true;
   }
 
+  // Paragraph fallback for blogs without semantic landmarks. Skip paragraphs
+  // living inside site chrome so a nav/sidebar whose link descriptions are <p>
+  // tags (react.dev's sidebar) can't satisfy the body threshold on its own.
   const paragraphs = doc.querySelectorAll('p');
   let pText = 0;
-  const limit = Math.min(paragraphs.length, 12);
-  for (let i = 0; i < limit; i++) {
-    pText += (paragraphs[i].innerText ?? '').length;
+  let counted = 0;
+  for (let i = 0; i < paragraphs.length && counted < 12; i++) {
+    const p = paragraphs[i];
+    if (typeof p.closest === 'function' && p.closest(NAV_CHROME_SELECTORS)) continue;
+    pText += (p.innerText ?? '').length;
+    counted += 1;
   }
   return pText > 700;
 }
@@ -118,10 +186,28 @@ export function isAppShellOnly(doc: ProbeDocument): boolean {
 const HYDRATED_PREDICATE_BODY = `
   const SPA_APP_ROOT_SELECTORS = ${JSON.stringify(SPA_APP_ROOT_SELECTORS)};
   const SPA_CONTENT_SELECTORS = ${JSON.stringify(SPA_CONTENT_SELECTORS)};
+  const NAV_CHROME_SELECTORS = ${JSON.stringify(NAV_CHROME_SELECTORS)};
   const measure = (el) => el ? ((el.innerText || '').trim().length) : 0;
   const countBlocks = (el, sel) => {
     if (!el) return 0;
     try { return el.querySelectorAll(sel).length; } catch { return 0; }
+  };
+  const measureContentOutsideChrome = (root) => {
+    if (!root) return { textLen: 0, pCount: 0, codeCount: 0 };
+    const inChrome = (el) => typeof el.closest === 'function' && el.closest(NAV_CHROME_SELECTORS) !== null;
+    let textLen = 0, pCount = 0, codeCount = 0;
+    const tally = (sel, onMatch) => {
+      let nodes;
+      try { nodes = root.querySelectorAll(sel); } catch { return; }
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        if (inChrome(node)) continue;
+        onMatch(node);
+      }
+    };
+    tally('p', (el) => { pCount += 1; textLen += measure(el); });
+    tally('pre, code', (el) => { codeCount += 1; textLen += measure(el); });
+    return { textLen, pCount, codeCount };
   };
 
   const article = document.querySelector('article');
@@ -146,17 +232,19 @@ const HYDRATED_PREDICATE_BODY = `
   }
 
   const appRoot = document.querySelector(SPA_APP_ROOT_SELECTORS);
-  if (measure(appRoot) > 1200) {
-    const p = countBlocks(appRoot, 'p');
-    const c = countBlocks(appRoot, 'pre, code');
-    if (p >= 3 || c >= 2 || p + c >= 4) return true;
+  if (appRoot) {
+    const m = measureContentOutsideChrome(appRoot);
+    if (m.textLen > 500 && (m.pCount >= 3 || m.codeCount >= 2 || m.pCount + m.codeCount >= 4)) return true;
   }
 
   const paragraphs = document.querySelectorAll('p');
   let pText = 0;
-  const limit = Math.min(paragraphs.length, 12);
-  for (let i = 0; i < limit; i++) {
-    pText += ((paragraphs[i].innerText || '')).length;
+  let counted = 0;
+  for (let i = 0; i < paragraphs.length && counted < 12; i++) {
+    const p = paragraphs[i];
+    if (typeof p.closest === 'function' && p.closest(NAV_CHROME_SELECTORS)) continue;
+    pText += ((p.innerText || '')).length;
+    counted += 1;
   }
   return pText > 700;
 `;

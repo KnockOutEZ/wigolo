@@ -260,10 +260,12 @@ describe('search pipeline filtering (core provider)', () => {
     );
   });
 
-  // 8. max_results is threaded into the engine search options and caps the
-  // final result count. (The legacy provider over-fetched maxResults*N to
-  // survive filter attrition; core passes the caller's value straight through
-  // and hard-caps after fusion — this protects that pass-through + cap.)
+  // 8. max_results drives the engine search options and caps the final result
+  // count. Core over-fetches a bounded recall buffer (max_results + ceil(40%))
+  // so the score-floor + recency demotion have survivors to backfill from, then
+  // hard-caps the output to the caller's max_results after fusion — this
+  // protects the buffered dispatch + post-fusion cap. (max_results 2 → buffered
+  // dispatch 3 = 2 + ceil(2 * 0.4); output still capped to 2.)
   it('passes max_results to engine options and caps the output', async () => {
     const eng = makeEntry('bing', [
       makeResult('bing', 'https://a.example/1'),
@@ -283,7 +285,7 @@ describe('search pipeline filtering (core provider)', () => {
     if (!r.ok) return;
     expect(eng.search).toHaveBeenCalledWith(
       'react',
-      expect.objectContaining({ maxResults: 2 }),
+      expect.objectContaining({ maxResults: 3 }),
     );
     expect(r.data.results.length).toBeLessThanOrEqual(2);
   });

@@ -443,3 +443,106 @@ describe('fetchContentForResults — stage budget abort orchestration', () => {
     expect(results[0].fetch_failed).toBe('timeout');
   });
 });
+
+// --- Slice C/3 (FIX2): dedicated per-URL budget for anti-bot/TLS-first domains
+//
+// WHY: W4 routes anti-bot/timeout-prone domains (stackoverflow.com et al.)
+// through the TLS-impersonation tier FIRST on the search-hydration path. A
+// working TLS attempt takes ~1-5s, but the shared balanced per-URL budget
+// (searchFetchTimeoutBalancedMs ~= 3000ms) starves it under parallel fetch —
+// the tier is selected but never gets enough time, producing fetch_failed:
+// timeout. The fix gives anti-bot/TLS-first domains a LARGER per-URL budget
+// (capped by the stage budget so the overall stage stays bounded — no attack-4
+// blowup), while non-anti-bot domains keep the small budget.
+
+describe('fetchContentForResults — anti-bot/TLS-first per-URL budget (Slice C/3 FIX2)', () => {
+  afterEach(() => vi.useRealTimers());
+
+  function mockRouter(impl: (url: string, opts: { signal?: AbortSignal; [k: string]: unknown }) => Promise<unknown>) {
+    return { fetch: vi.fn(impl) } as unknown as SmartRouter;
+  }
+  const item = (url: string): SearchResultItem => ({ title: url, url, snippet: 's', relevance_score: 1 });
+
+  // A fetch that resolves only after `delayMs`, but rejects early if the
+  // per-URL (or stage) abort fires first. Models a slow-but-eventually-OK
+  // TLS attempt.
+  function slowFetch(delayMs: number, url: string) {
+    return (_u: string, opts: { signal?: AbortSignal }) =>
+      new Promise((resolve, reject) => {
+        const t = setTimeout(
+          () =>
+            resolve({
+              html: `<html><body>${url}</body></html>`,
+              finalUrl: url,
+              contentType: 'text/html',
+              statusCode: 200,
+              method: 'tls-impersonation',
+              headers: {},
+            }),
+          delayMs,
+        );
+        opts.signal?.addEventListener('abort', () => {
+          clearTimeout(t);
+          reject(opts.signal!.reason);
+        });
+      });
+  }
+
+  // Stage budget 6000ms > anti-bot needs; per-URL fetchTimeoutMs 3000ms would
+  // starve a 3500ms TLS attempt under the OLD shared budget.
+  const ctx = (over: Partial<Parameters<typeof fetchContentForResults>[2]> = {}): Parameters<typeof fetchContentForResults>[2] => ({
+    contentMaxChars: 30000,
+    maxTotalChars: 50000,
+    fetchTimeoutMs: 3000,
+    totalDeadline: Date.now() + 30000,
+    forceRefresh: false,
+    stageBudgetMs: 6000,
+    ...over,
+  });
+
+  it('gives a known anti-bot/TLS-first domain (stackoverflow.com) the larger budget so a ~3.5s attempt completes', async () => {
+    vi.useFakeTimers();
+    const url = 'https://stackoverflow.com/questions/123/x';
+    const router = mockRouter(slowFetch(3500, url));
+    const results = [item(url)];
+    const p = fetchContentForResults(results, router, ctx());
+    // Advance past the OLD shared budget (3000ms) — a non-anti-bot URL would
+    // have timed out here — then past the 3500ms TLS attempt.
+    await vi.advanceTimersByTimeAsync(3500);
+    await p;
+    expect(results[0].fetch_failed).toBeUndefined();
+    expect(results[0].markdown_content).toBeDefined();
+  });
+
+  it('keeps a non-anti-bot domain on the SMALL budget — a ~3.5s attempt still times out at fetchTimeoutMs', async () => {
+    vi.useFakeTimers();
+    const url = 'https://example.com/article';
+    const router = mockRouter(slowFetch(3500, url));
+    const results = [item(url)];
+    const p = fetchContentForResults(results, router, ctx());
+    await vi.advanceTimersByTimeAsync(3500);
+    await p;
+    // The small (3000ms) per-URL budget fires before the 3500ms attempt
+    // resolves — proves the budget differs by domain class (no blanket bump).
+    expect(results[0].fetch_failed).toBe('timeout');
+    expect(results[0].markdown_content).toBeUndefined();
+  });
+
+  it('keeps the OVERALL stage bounded — anti-bot per-URL budget never exceeds the stage budget (attack-4 ceiling)', async () => {
+    vi.useFakeTimers();
+    const url = 'https://stackoverflow.com/questions/456/y';
+    // Attempt would take 9s — longer than the 6000ms stage budget. The stage
+    // timer MUST cut it off at the stage budget, NOT let the larger anti-bot
+    // per-URL budget run unbounded.
+    const router = mockRouter(slowFetch(9000, url));
+    const results = [item(url)];
+    const start = Date.now();
+    const p = fetchContentForResults(results, router, ctx({ stageBudgetMs: 6000 }));
+    await vi.advanceTimersByTimeAsync(6000);
+    await p;
+    const elapsed = Date.now() - start;
+    // Bounded by the stage budget, not the 9s attempt.
+    expect(elapsed).toBeLessThanOrEqual(6500);
+    expect(results[0].fetch_failed).toBe('stage_timeout');
+  });
+});

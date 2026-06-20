@@ -86,6 +86,67 @@ describe('classifyUrlShape', () => {
     expect(classifyUrlShape('https://notgoogle.com/search?q=x')).toEqual({ reject: false });
   });
 
+  it('rejects a bare social-activity post as social-promo', () => {
+    // WHY: a LinkedIn /posts/...activity-<id> URL is an individual promo post —
+    // a sentence of self-promotion plus a link, not article text. The C1 query
+    // surfaced one into the source pool. This is the original /posts/ rejection;
+    // it must keep rejecting after the rule widened to host-level (regression).
+    expect(
+      classifyUrlShape(
+        'https://www.linkedin.com/posts/janedoe_sqlite-vector-search-activity-7123456789012345678-AbCd',
+      ),
+    ).toEqual({ reject: true, reason: 'social-promo' });
+  });
+
+  it('rejects a LinkedIn Pulse article as social-promo', () => {
+    // WHY: LinkedIn is policy-junk for research regardless of path. A live COLD
+    // research call (just after PR #127 widened breadth) leaked a /pulse/ article
+    // into the source pool — the prior rule only caught /posts/...activity-<id>,
+    // so /pulse/ (LinkedIn's article platform) slipped through. LinkedIn content
+    // is gated/social-promo content, not a citable canonical source: reject the
+    // whole host. This is the fail-first regression for the /pulse/ leak.
+    expect(
+      classifyUrlShape('https://www.linkedin.com/pulse/sqlite-fts5-vs-vector-db-jane-doe'),
+    ).toEqual({ reject: true, reason: 'social-promo' });
+  });
+
+  it('rejects any linkedin.com path (in/company) as social-promo', () => {
+    // WHY: host-level rejection is the correct, simplest rule — every LinkedIn
+    // path (/in/ profiles, /company/ pages, /feed/, etc.) is social/gated junk
+    // for research synthesis, not just /posts/ and /pulse/.
+    expect(classifyUrlShape('https://www.linkedin.com/in/jane-doe')).toEqual({
+      reject: true,
+      reason: 'social-promo',
+    });
+    expect(classifyUrlShape('https://www.linkedin.com/company/acme')).toEqual({
+      reject: true,
+      reason: 'social-promo',
+    });
+  });
+
+  it('honors include_domains for a deliberately-scoped linkedin.com target', () => {
+    // WHY: if the caller explicitly scoped research to linkedin.com, its content
+    // is an intentional target and must not be dropped by the host-level rule.
+    expect(
+      classifyUrlShape(
+        'https://www.linkedin.com/pulse/sqlite-fts5-vs-vector-db-jane-doe',
+        ['linkedin.com'],
+      ),
+    ).toEqual({ reject: false });
+  });
+
+  it('does not over-reach: a non-LinkedIn on-topic doc is kept', () => {
+    // WHY: the host-level reject must be scoped to linkedin.com only — a
+    // canonical on-topic source (the SQLite FTS5 docs) must survive untouched.
+    expect(classifyUrlShape('https://sqlite.org/fts5.html')).toEqual({ reject: false });
+  });
+
+  it('keeps a non-LinkedIn post-shaped path on other hosts', () => {
+    // WHY: the host-level reject is keyed on the linkedin.com host, not the bare
+    // word "posts" — a blog at /posts/my-article on another host is real content.
+    expect(classifyUrlShape('https://example.com/posts/my-article')).toEqual({ reject: false });
+  });
+
   it('rejects a malformed URL rather than throwing', () => {
     // WHY: classifyUrlShape must never throw on bad input — an unparseable URL
     // is not a usable source.

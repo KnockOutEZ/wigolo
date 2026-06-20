@@ -245,10 +245,11 @@ describe('search filtering pipeline integration (core provider)', () => {
 
   it('full pipeline: domain-filter attrition still caps to max_results', async () => {
     // Engine over-returns matching hosts; with include_domains active the
-    // orchestrator filters then hard-caps to max_results. (The legacy
-    // provider over-fetched maxResults*3 to survive attrition; core passes
-    // max_results to the engine and caps after fusion — this protects the
-    // pass-through + cap, the behaviour the old *3 assertion stood in for.)
+    // orchestrator filters then hard-caps to max_results. The core provider
+    // over-fetches a bounded recall buffer (wave2.1 FIX4: max_results +
+    // ceil(40%)) so the downstream score-floor / stale-demotion have
+    // survivors to backfill from; the final slice still caps to max_results.
+    // Here max_results=2 → buffered fetch of 3.
     const eng = makeEntry('bing', [
       makeResult('bing', 'https://react.dev/1', 0.9),
       makeResult('bing', 'https://react.dev/2', 0.85),
@@ -267,7 +268,7 @@ describe('search filtering pipeline integration (core provider)', () => {
     if (!r.ok) return;
     expect(eng.search).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ maxResults: 2 }),
+      expect.objectContaining({ maxResults: 3 }),
     );
     expect(r.data.results.length).toBeLessThanOrEqual(2);
     expect(r.data.results.every((res) => res.url.includes('react.dev'))).toBe(true);
