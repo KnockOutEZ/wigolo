@@ -51,6 +51,21 @@ const rerankMock = vi.fn(async (query: string, results: MergedSearchResult[]): P
 });
 vi.mock('../../../src/search/rerank.js', () => ({ rerankResults: rerankMock }));
 
+// Count studio FTS calls (PIN-4: at most once per run) while DELEGATING to the real read —
+// the seeded db is queried for real. Spreads ...actual so getStudioArtifactByEmbedKey,
+// studioEmbedKey, and captureFromPage stay real; only searchStudioArtifactKeys is wrapped.
+const { searchKeysSpy } = vi.hoisted(() => ({ searchKeysSpy: vi.fn() }));
+vi.mock('../../../src/studio/capture/artifacts.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/studio/capture/artifacts.js')>();
+  return {
+    ...actual,
+    searchStudioArtifactKeys: (query: string, limit: number): string[] => {
+      searchKeysSpy(query, limit);
+      return actual.searchStudioArtifactKeys(query, limit);
+    },
+  };
+});
+
 const { runResearchPipeline } = await import('../../../src/research/pipeline.js');
 
 const QUESTION = 'wigolo studio capture pipeline dedup moat';
@@ -215,5 +230,89 @@ describe('research — studio_artifacts as local sources (C3 slice-1)', () => {
     expect(out.report).toContain('Forged Heading (9)');
     expect(out.report).not.toContain('## Forged Heading');
     expect(out.report).not.toContain('[9]');
+  });
+});
+
+/**
+ * C3 local-rescue — surface studio sources when web search returns EMPTY. slice-1 injected
+ * studio post-fetch, so the web-empty early-return (pipeline.ts:213) skipped studio entirely.
+ * This collects studio ONCE before the no-sources decision; web-empty + studio-present
+ * synthesizes from studio alone, web-empty + studio-empty stays no_sources, web-present is
+ * byte-unchanged from slice-1. At most one studio FTS call per run.
+ */
+describe('research — studio local-rescue when web is empty (C3 local-rescue)', () => {
+  beforeEach(() => {
+    _resetMigrationGuard();
+    initDatabase(':memory:');
+    extractMock.mockResolvedValue({
+      title: 'Web Extract', markdown: '# Web\n\nGeneric article body about an unrelated subject.',
+      metadata: {}, links: [], images: [], extractor: 'defuddle' as const,
+    });
+    searchKeysSpy.mockClear();
+  });
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  it('RED ANCHOR: web-empty + a matching clip/qa → studio sources synthesized (studio://<type>|<id>, trusted:false), NOT no_sources', async () => {
+    const clipId = seedClip();
+    const qaId = seedQa();
+    const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine([])], stubRouter()); // WEB EMPTY
+    const clipKey = `studio://clip|${clipId}`;
+    const qaKey = `studio://qa|${qaId}`;
+    expect(out.error, 'no error').toBeUndefined();
+    expect(out.report, 'NOT the no_sources report').not.toContain('No sources could be found');
+    expect(out.report.length).toBeGreaterThan(0);
+    const clipSrc = out.sources.find((s) => s.url === clipKey);
+    expect(clipSrc, `clip ${clipKey}; got ${JSON.stringify(out.sources.map((s) => s.url))}`).toBeDefined();
+    expect(out.sources.find((s) => s.url === qaKey), `qa ${qaKey}`).toBeDefined();
+    expect(clipSrc!.trusted).toBe(false);
+    expect(out.citations.find((c) => c.url === clipKey), 'clip citation').toBeDefined();
+  });
+
+  // ── PIN-1 rescue — web-empty + studio-present synthesizes from studio ──
+  it('PIN-1: web-empty + studio-present → studio sources present + report synthesized, no error', async () => {
+    const clipId = seedClip();
+    const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine([])], stubRouter());
+    // mutation: gate the studio collection behind web-present (skip on web-empty) → web-empty
+    // returns no_sources with studio absent → RED.
+    expect(out.error).toBeUndefined();
+    expect(out.sources.find((s) => s.url === `studio://clip|${clipId}`)).toBeDefined();
+    expect(out.report).not.toContain('No sources could be found');
+    expect(out.report.length).toBeGreaterThan(0);
+  });
+
+  // ── PIN-2 truly-empty regression — web-empty + studio-empty stays no_sources ──
+  it('PIN-2: web-empty + studio-empty → the no_sources report, no studio source', async () => {
+    // nothing seeded → studio cache empty
+    const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine([])], stubRouter());
+    // mutation: drop the no_sources guard / always proceed → genuinely-empty no longer reports
+    // no_sources → RED.
+    expect(out.report).toContain('No sources could be found');
+    expect(out.sources).toHaveLength(0);
+    expect(out.citations).toHaveLength(0);
+    expect(out.sources.some((s) => s.url.startsWith('studio://'))).toBe(false);
+  });
+
+  // ── PIN-3 web-present regression — slice-1 behavior persists through the restructure ──
+  it('PIN-3: web-present + studio-present → both surface, studio keeps studio:// identity + trusted:false (slice-1 unchanged)', async () => {
+    const clipId = seedClip();
+    const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine()], stubRouter()); // WEB PRESENT (default results)
+    const clipKey = `studio://clip|${clipId}`;
+    expect(out.error).toBeUndefined();
+    const clip = out.sources.find((s) => s.url === clipKey);
+    expect(clip, 'studio clip present alongside web').toBeDefined();
+    expect(clip!.trusted).toBe(false);
+    expect(out.sources.some((s) => s.url.startsWith('https://')), 'web sources present').toBe(true);
+    expect(out.citations.find((c) => c.url === clipKey)?.trusted).toBe(false);
+  });
+
+  // ── PIN-4 no double-collect — studio FTS runs at most once per pipeline run ──
+  it('PIN-4: collectStudioSources/searchStudioArtifactKeys is invoked AT MOST ONCE per run (web-present)', async () => {
+    seedClip();
+    searchKeysSpy.mockClear();
+    await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine()], stubRouter());
+    // mutation: add a redundant second collectStudioSources on the web-present path → 2 → RED.
+    expect(searchKeysSpy).toHaveBeenCalledTimes(1);
   });
 });

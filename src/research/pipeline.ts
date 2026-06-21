@@ -210,7 +210,13 @@ export async function runResearchPipeline(
       }
     }
 
-    if (urlKept.length === 0) {
+    // C3 local-rescue: collect LOCAL studio sources ONCE here — BEFORE the no-sources
+    // decision — so a web-empty run can still synthesize from studio (slice-1 injected
+    // post-fetch, which the early-return below skipped). Single FTS call per run; this same
+    // result feeds BOTH the no-sources guard and the post-fetch merge below.
+    const studioSources = await collectStudioSources(input.question, maxSources);
+
+    if (urlKept.length === 0 && studioSources.length === 0) {
       return {
         report: `## Research: ${input.question}\n\nNo sources could be found for this query.`,
         citations: [],
@@ -256,12 +262,10 @@ export async function runResearchPipeline(
     // sources beat no sources (rerank already ordered them).
     const webPool: ResearchSource[] = gated.length > 0 ? gated : fetched;
     if (gated.length > 0) rejected_sources.push(...contentRejects);
-    // C3 slice-1: merge LOCAL studio artifacts (clip/qa) as research sources — built
-    // post-fetch from the shared studio read (no network), reranked onto the same scale as
-    // web — then sort the union by relevance and cap together so the budget is rank-fair (no
-    // reserved quota; studio is dedup-inert vs web by its studio:// identity → C1b). Empty
-    // cache → studioSources is [] → the sort/slice is a no-op over the already-ranked webPool.
-    const studioSources = await collectStudioSources(input.question, maxSources);
+    // C3: merge the LOCAL studio sources (collected ONCE above) with web — sort the union by
+    // relevance and cap together (rank-fair; no reserved quota; studio dedup-inert vs web by
+    // its studio:// identity → C1b). web-empty + studio-present lands here with webPool=[] →
+    // sources = studioSources; web-empty + studio-empty already returned no_sources above.
     const sources: ResearchSource[] = [...webPool, ...studioSources]
       .sort((a, b) => b.relevance_score - a.relevance_score)
       .slice(0, maxSources);
