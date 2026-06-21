@@ -13,6 +13,7 @@
  */
 import { countTokens } from '../../search/tokens.js';
 import { assignRefs, computeFingerprint, hash } from './id.js';
+import { isCredentialField, type FieldSemantics } from '../credential.js';
 
 /** Interactive a11y roles — the actionable surface (matches the 2D spike's filter so its numbers transfer). */
 const INTERACTIVE = new Set([
@@ -68,6 +69,10 @@ export interface PageSnapshot {
   groupByRef: Map<string, string>;
   /** backendNodeId → parent backendNodeId (null at root), host-side ONLY. 2J's click occlusion hit-test walks UP this from the topmost node to confirm it is the target or a descendant (else element_occluded). Crosses shadow boundaries (a shadow root's parent is its host). */
   domParent: Map<number, number | null>;
+  /** ref → the element's TRUE DOM semantics (tag + credential-relevant attrs + a11y name), host-side ONLY (never serialized to the agent). The 5a credential guard reads this (never the spoofable role/name); resolve surfaces the resolved target's entry. Optional so fakes that build a PageSnapshot directly stay valid. */
+  domByRef?: Map<string, FieldSemantics>;
+  /** True if ANY interactive element on the page is a credential field (input[type=password] / credential autocomplete), host-side ONLY — the 5a/5b credential-context signal. */
+  hasCredentialField?: boolean;
 }
 
 export interface PerceptionCdp {
@@ -117,7 +122,7 @@ function pathSig(map: Map<number, DomInfo>, be: number): string {
 /** Pure: join the AX tree to the pierced DOM, assign refs, measure tokens. No I/O, no state. */
 export function buildSnapshot(axNodes: AxNode[], domRoot: DomNode | undefined, opts: { tokenBudget: number }): PageSnapshot {
   const { map: dom, truncated: domTruncated } = flattenDom(domRoot);
-  const records: Array<{ role: string; name: string; be: number | undefined; fingerprint: string; positionPath: string }> = [];
+  const records: Array<{ role: string; name: string; be: number | undefined; fingerprint: string; positionPath: string; sem: FieldSemantics }> = [];
   for (const n of axNodes) {
     if (n.ignored) continue;
     const role = n.role?.value;
@@ -131,12 +136,17 @@ export function buildSnapshot(axNodes: AxNode[], domRoot: DomNode | undefined, o
       be,
       fingerprint: computeFingerprint({ role, name, attrs: d?.attrs }),
       positionPath: be != null ? pathSig(dom, be) : '',
+      // TRUE DOM semantics for the 5a credential guard: tag + credential-relevant attrs from the
+      // privileged pierced DOM, plus the (untrusted) a11y name the guard must NOT decide on.
+      sem: { tag: d?.localName, type: d?.attrs?.type, autocomplete: d?.attrs?.autocomplete, name },
     });
   }
   const refs = assignRefs(records);
   const elements: SnapshotElement[] = [];
   const refMap = new Map<string, number>();
   const groupByRef = new Map<string, string>();
+  const domByRef = new Map<string, FieldSemantics>();
+  let hasCredentialField = false;
   records.forEach((r, i) => {
     const { ref, confidence } = refs[i];
     elements.push(confidence ? { ref, role: r.role, name: r.name, confidence } : { ref, role: r.role, name: r.name });
@@ -144,12 +154,15 @@ export function buildSnapshot(axNodes: AxNode[], domRoot: DomNode | undefined, o
     // Low-confidence (identical-sibling) refs share a fingerprint group, so the diff
     // can recognize their positional drift as churn rather than phantom add/remove.
     if (confidence === 'low') groupByRef.set(ref, 'g' + hash(r.fingerprint));
+    // Host-side true-semantics map (5a credential guard) + the page-level credential-context flag.
+    domByRef.set(ref, r.sem);
+    if (isCredentialField(r.sem)) hasCredentialField = true;
   });
   const tokenCount = countTokens(JSON.stringify(elements));
   const id = 's' + hash(JSON.stringify(elements));
   const domParent = new Map<number, number | null>();
   for (const [be, info] of dom) domParent.set(be, info.parent);
-  return { id, elements, tokenCount, overBudget: tokenCount > opts.tokenBudget, domTruncated, refMap, groupByRef, domParent };
+  return { id, elements, tokenCount, overBudget: tokenCount > opts.tokenBudget, domTruncated, refMap, groupByRef, domParent, domByRef, hasCredentialField };
 }
 
 export class PageSnapshotter {

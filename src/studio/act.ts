@@ -31,6 +31,7 @@ import type { StudioActInput, StudioActOutput, StudioToolError } from '../daemon
 import type { AuditRecordInput, AuditOutcome } from './audit.js';
 import { classifyRisk, type RiskTier, type RiskPatterns } from './risk.js';
 import type { ApprovalDecision, ApprovalRequest } from './approvals.js';
+import { refuseAgentType, type FieldSemantics } from './credential.js';
 
 /** The narrow view of the control token the act handler needs (the real ControlToken satisfies it). */
 export interface ActControlToken {
@@ -184,6 +185,11 @@ export function createActHandler(
     hint: STANDDOWN_HINT,
     ...(charsLanded !== undefined ? { charsLanded } : {}),
   });
+  // Slice 5a — the hard, fail-closed credential refusal (NOT an approval; login is human-only).
+  const credentialRefused = (): StudioToolError => ({
+    error_reason: 'credential_field_refused',
+    hint: 'This is a credential field — the agent never enters credentials (login is human-only). Do not retry; hand off to the human.',
+  });
 
   /** Map a non-approval verdict to the tool error the agent sees (do-not-retry hints; never a wrong/silent fire). */
   const approvalRefusal = (decision: ApprovalDecision): StudioToolError => {
@@ -272,7 +278,7 @@ export function createActHandler(
    */
   const gateAndResolve = async (
     input: StudioActInput,
-  ): Promise<{ ok: true; gateEpoch: number; center: { x: number; y: number }; role?: string; name?: string } | StudioToolError> => {
+  ): Promise<{ ok: true; gateEpoch: number; center: { x: number; y: number }; role?: string; name?: string; semantics?: FieldSemantics; pageHasCredentialField?: boolean } | StudioToolError> => {
     const gate = controlToken.assertCanDrive('agent');
     if (!gate.ok) return refused(gate.currentEpoch);
     const gateEpoch = controlToken.epoch;
@@ -280,8 +286,9 @@ export function createActHandler(
     if (!ref) return { error_reason: 'missing_ref', hint: `${input.action} requires the \`ref\` of an element from studio_observe.` };
     const resolved = await resolve(ref); // LIVE — fresh snapshot, occlusion hit-test, never cached coords
     if (isResolveError(resolved)) return mapResolveError(resolved.error);
-    // role/name (page-derived, untrusted) ride along for the 6c risk gate's soft signal.
-    return { ok: true, gateEpoch, center: resolved.center, role: resolved.role, name: resolved.name };
+    // role/name (page-derived, untrusted) ride along for the 6c risk gate's soft signal; the TRUE
+    // pierced-DOM semantics + the page credential flag ride along for the 5a hard credential guard.
+    return { ok: true, gateEpoch, center: resolved.center, role: resolved.role, name: resolved.name, semantics: resolved.semantics, pageHasCredentialField: resolved.pageHasCredentialField };
   };
 
   const clickAct = async (input: StudioActInput): Promise<ActResolution> => {
@@ -297,6 +304,13 @@ export function createActHandler(
   const typeAct = async (input: StudioActInput): Promise<ActResolution> => {
     const g = await gateAndResolve(input);
     if ('error_reason' in g) return { result: g };
+    // Slice 5a — the HARD credential-input refusal, BEFORE the approval gate and before focus.
+    // Fail-closed, NOT approval-gated (HANDOFF §2/§4: login is human-only). Decides on the resolved
+    // element's TRUE pierced-DOM semantics (never the spoofable a11y name), so a password field with a
+    // blank/forged label is still caught; an unresolvable target in a credential context fails closed.
+    if (refuseAgentType({ target: g.semantics, pageUrl: currentUrl?.(), pageHasCredentialField: g.pageHasCredentialField })) {
+      return { result: credentialRefused() };
+    }
     // Gate BEFORE focusing/typing — a credential-context type must not even focus the field unapproved.
     const gate = await applyRiskGate(input, g.gateEpoch, g.role, g.name);
     if ('blocked' in gate) return { result: gate.blocked, risk: gate.risk, approval: gate.approval };

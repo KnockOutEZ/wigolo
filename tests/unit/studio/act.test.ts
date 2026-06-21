@@ -3,7 +3,8 @@ import { createActHandler, keystrokeEvents, type ActControlToken } from '../../.
 import type { NavGrant } from '../../../src/studio/nav-policy.js';
 import type { ControlParty } from '../../../src/studio/control-token.js';
 import type { AgentInputEvent } from '../../../src/studio/input.js';
-import type { ResolveResult } from '../../../src/studio/perception/resolve.js';
+import { createResolver, type ResolveResult } from '../../../src/studio/perception/resolve.js';
+import { buildSnapshot, type AxNode, type DomNode, type PerceptionCdp } from '../../../src/studio/perception/snapshot.js';
 import { isStudioToolError, type StudioActOutput, type StudioToolError } from '../../../src/daemon/studio-dispatch.js';
 import { SessionAuditLog } from '../../../src/studio/audit.js';
 import type { ApprovalDecision, ApprovalRequest } from '../../../src/studio/approvals.js';
@@ -481,14 +482,18 @@ describe('createActHandler — risk-tiered approval gate (Phase 6c)', () => {
     expect(ch.calls).toHaveLength(0);
   });
 
-  it('a credential-context type is gated; a denial blocks BEFORE focusing/typing', async () => {
+  it('a credential-context type on a NON-password field (username) is 6c approval-gated; a denial blocks BEFORE focusing/typing', async () => {
+    // 5a hard-refuses password / OTP fields, but a USERNAME field (type=text) on a login URL is NOT a
+    // credential field — so it passes 5a and reaches the 6c credential-risk approval gate. (The hard
+    // refusal of an actual password/credential field is covered in the "hard credential-field refusal" block.)
     const ap = fakeApprovals('refused');
     const ch = recordingChannel();
     const act = createActHandler({
       browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
-      resolve: resolvedAt(), channel: ch.channel, currentUrl: loginUrl, approvals: ap.approvals,
+      resolve: fixedResolve({ backendNodeId: 7, center: { x: 1, y: 2 }, semantics: { tag: 'input', type: 'text', name: 'Username' } }),
+      channel: ch.channel, currentUrl: loginUrl, approvals: ap.approvals,
     });
-    expect(asErr(await act({ action: 'type', ref: 'e1', text: 'hunter2' })).error_reason).toBe('approval_refused');
+    expect(asErr(await act({ action: 'type', ref: 'e1', text: 'alice' })).error_reason).toBe('approval_refused');
     expect(ap.requests[0]).toMatchObject({ action: 'type', risk: 'credential' });
     expect(ch.calls).toHaveLength(0); // never focused, never typed a character
   });
@@ -576,5 +581,151 @@ describe('keystrokeEvents — unit composition (modifier wrap is atomic)', () =>
     // guard then skips it, so a space never lands in the held-key map.
     expect(evs.map((e) => (e as { code?: string }).code)).toEqual([undefined, undefined, undefined]);
     expect(evs[1]).toMatchObject({ type: 'char', text: ' ' });
+  });
+});
+
+// --- Slice 5a: hard credential-input refusal ------------------------------------------------
+// These drive the agent's REAL type path (createActHandler → typeAct → gateAndResolve) over the
+// REAL buildSnapshot + REAL createResolver with a fake CDP page — only the input channel + control
+// token are faked. So the credential decision reads the element's TRUE pierced-DOM semantics, not a
+// stubbed verdict: a stubbed `resolve` would make (iii) shadow-pierce and (iv) unresolvable vacuous.
+
+/** content quad for a 20x10 box at (100,200) → centre (110,205); reused for every resolved target. */
+const CRED_BOX = [100, 200, 120, 200, 120, 210, 100, 210];
+
+interface FieldSpec { be: number; role: string; name: string; attrs?: Record<string, string>; tag?: string; shadow?: 'closed'; }
+
+/** Build a getFullAXTree + DOM.getDocument(pierce:true) pair (mirrors the snapshot-test builder; adds a `tag` override + closed-shadow nesting). */
+function buildAxDom(specs: FieldSpec[]): { axNodes: AxNode[]; root: DomNode } {
+  const axNodes: AxNode[] = specs.map((s) => ({ ignored: false, role: { value: s.role }, name: { value: s.name }, backendDOMNodeId: s.be }));
+  const light: DomNode[] = [];
+  const closed: DomNode[] = [];
+  for (const s of specs) {
+    const tag = s.tag ?? (s.role === 'textbox' ? 'input' : s.role === 'link' ? 'a' : 'button');
+    const node: DomNode = { backendNodeId: s.be, localName: tag, attributes: Object.entries(s.attrs ?? {}).flat() };
+    (s.shadow === 'closed' ? closed : light).push(node);
+  }
+  const closedHost: DomNode[] = closed.length
+    ? [{ backendNodeId: 90, localName: 'closed-widget', shadowRoots: [{ backendNodeId: 91, shadowRootType: 'closed', children: closed }] }]
+    : [];
+  const body: DomNode = { backendNodeId: 2, localName: 'body', children: [...light, ...closedHost] };
+  return { axNodes, root: { backendNodeId: 1, localName: 'html', children: [body] } };
+}
+
+/** Fake CDP for the resolver's coordinate path: a box for the target be, target = topmost (no occlusion), scroll 0. */
+function resolveCdp(targetBe: number): PerceptionCdp {
+  return {
+    send: async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'DOM.getBoxModel') return (params?.backendNodeId as number) === targetBe ? { model: { content: CRED_BOX } } : {};
+      if (method === 'DOM.getNodeForLocation') return { backendNodeId: targetBe };
+      if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { pageX: 0, pageY: 0 } };
+      return {};
+    },
+  };
+}
+
+/** Drive a studio_act TYPE against `targetBe` through the real snapshot+resolver; returns the tool result + the recording channel. */
+async function typeAtTarget(opts: { specs: FieldSpec[]; targetBe: number; url?: string; text?: string }): Promise<{ result: StudioActOutput | StudioToolError; ch: ReturnType<typeof recordingChannel> }> {
+  const { axNodes, root } = buildAxDom(opts.specs);
+  const snapshot = async () => buildSnapshot(axNodes, root, { tokenBudget: 4000 });
+  const ref = [...(await snapshot()).refMap.entries()].find(([, be]) => be === opts.targetBe)?.[0];
+  if (!ref) throw new Error(`target be ${opts.targetBe} not in snapshot`);
+  const ch = recordingChannel();
+  const act = createActHandler({
+    browser: makeFakeBrowser().browser,
+    controlToken: makeFakeToken('agent', [1]),
+    grant: allowGrant,
+    resolve: createResolver({ snapshot, cdp: resolveCdp(opts.targetBe) }),
+    channel: ch.channel,
+    ...(opts.url ? { currentUrl: () => opts.url } : {}),
+  });
+  const result = await act({ action: 'type', ref, text: opts.text ?? 'secret' });
+  return { result, ch };
+}
+
+/** Direct value read (not asErr) so the RED — TDD AND the mutation — surfaces as a clean value-flip: "expected 'credential_field_refused', got undefined" (the type landed). */
+const expectCredentialRefused = (x: StudioActOutput | StudioToolError): void => {
+  expect((x as StudioToolError).error_reason).toBe('credential_field_refused');
+};
+
+describe('createActHandler — type: hard credential-field refusal (Slice 5a)', () => {
+  it('(i) REFUSES input[type=password] on an OFF-login URL with a BLANK a11y name (reads true semantics, not the label)', async () => {
+    const { result, ch } = await typeAtTarget({
+      specs: [{ be: 100, role: 'textbox', name: '', attrs: { type: 'password' } }],
+      targetBe: 100,
+      url: 'https://example.com/app/settings',
+      text: 'hunter2',
+    });
+    expectCredentialRefused(result);
+    expect(ch.calls).toHaveLength(0); // never focused, never typed a character
+  });
+
+  it('(ii) REFUSES autocomplete=one-time-code on a TEXT input (the heuristic NAME gate would miss "Enter code")', async () => {
+    const { result, ch } = await typeAtTarget({
+      specs: [{ be: 101, role: 'textbox', name: 'Enter code', attrs: { type: 'text', autocomplete: 'one-time-code' } }],
+      targetBe: 101,
+      url: 'https://example.com/app',
+      text: '123456',
+    });
+    expectCredentialRefused(result);
+    expect(ch.calls).toHaveLength(0);
+  });
+
+  it('(iii) REFUSES a credential field nested in a CLOSED shadow root (the privileged snapshot pierces → credential)', async () => {
+    const { result, ch } = await typeAtTarget({
+      specs: [{ be: 102, role: 'textbox', name: '', attrs: { type: 'password' }, shadow: 'closed' }],
+      targetBe: 102,
+      url: 'https://example.com/app',
+      text: 'hunter2',
+    });
+    expectCredentialRefused(result);
+    expect(ch.calls).toHaveLength(0);
+  });
+
+  it('(iv) FAIL-CLOSED: an unresolvable target (custom web component) in a credential CONTEXT (login URL) is refused', async () => {
+    const { result, ch } = await typeAtTarget({
+      specs: [{ be: 103, role: 'textbox', name: '', tag: 'acme-secure-field' }],
+      targetBe: 103,
+      url: 'https://acme.example/login',
+      text: 'hunter2',
+    });
+    expectCredentialRefused(result);
+    expect(ch.calls).toHaveLength(0);
+  });
+
+  it('(iv) FAIL-CLOSED: an unresolvable target on a non-login page is refused when a credential field is present (context = field, not URL)', async () => {
+    const { result, ch } = await typeAtTarget({
+      specs: [
+        { be: 104, role: 'textbox', name: '', tag: 'acme-secure-field' }, // ambiguous target
+        { be: 105, role: 'textbox', name: '', attrs: { type: 'password' } }, // a credential field elsewhere on the page
+      ],
+      targetBe: 104,
+      url: 'https://example.com/account', // NOT a login URL — the context is the password field present
+      text: 'hunter2',
+    });
+    expectCredentialRefused(result);
+    expect(ch.calls).toHaveLength(0);
+  });
+
+  it('NEGATIVE CONTROL: a plain search input on a non-credential page TYPES (guards over-refusal)', async () => {
+    const { result, ch } = await typeAtTarget({
+      specs: [{ be: 200, role: 'textbox', name: 'Search', attrs: { type: 'search' } }],
+      targetBe: 200,
+      url: 'https://example.com/',
+      text: 'hi',
+    });
+    expect(result).toMatchObject({ ok: true, action: 'type', charsLanded: 2 });
+    expect(ch.calls).toHaveLength(3); // focus click + 2 keystrokes
+  });
+
+  it('NEGATIVE CONTROL: an unresolvable target OUTSIDE a credential context TYPES (rule 2 does not over-refuse ambiguous fields everywhere)', async () => {
+    const { result, ch } = await typeAtTarget({
+      specs: [{ be: 201, role: 'textbox', name: 'Comment', tag: 'rich-editor' }],
+      targetBe: 201,
+      url: 'https://example.com/post',
+      text: 'hi',
+    });
+    expect(result).toMatchObject({ ok: true, action: 'type', charsLanded: 2 });
+    expect(ch.calls).toHaveLength(3);
   });
 });

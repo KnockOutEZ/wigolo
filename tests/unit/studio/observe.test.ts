@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createObserver } from '../../../src/studio/observe.js';
 import { StudioEventQueue } from '../../../src/studio/event-queue.js';
 import { writeSpill, enforceSpillBudget } from '../../../src/studio/perception/spill.js';
-import type { PageSnapshot, SnapshotElement } from '../../../src/studio/perception/snapshot.js';
+import { buildSnapshot, type PageSnapshot, type SnapshotElement, type AxNode, type DomNode } from '../../../src/studio/perception/snapshot.js';
 import type { StudioObserveOutput, StudioToolError } from '../../../src/daemon/studio-dispatch.js';
 
 const el = (ref: string, name: string): SnapshotElement => ({ ref, role: 'button', name });
@@ -133,5 +133,34 @@ describe('createObserver — trust boundary: every page-perception payload is ta
     const fetched = ok(await obs({ snapshot_ref: r.snapshotRef }));
     expect(fetched.kind).toBe('full');
     expect(fetched.trusted).toBe(false);
+  });
+});
+
+describe('createObserver — Slice 5a non-serialization: host-side credential maps never reach the agent', () => {
+  it('domByRef / hasCredentialField / true-semantics attrs are EXCLUDED from the agent-facing payload (elements stay {ref,role,name})', async () => {
+    // A REAL snapshot WITH a credential field → host-side domByRef + hasCredentialField ARE populated.
+    const axNodes: AxNode[] = [{ ignored: false, role: { value: 'textbox' }, name: { value: 'Account secret' }, backendDOMNodeId: 10 }];
+    const root: DomNode = {
+      backendNodeId: 1,
+      localName: 'html',
+      children: [{ backendNodeId: 2, localName: 'body', children: [{ backendNodeId: 10, localName: 'input', attributes: ['type', 'password', 'autocomplete', 'current-password'] }] }],
+    };
+    const snap = buildSnapshot(axNodes, root, { tokenBudget: 100000 });
+    // Host-side: the credential semantics DO exist on the snapshot...
+    expect(snap.hasCredentialField).toBe(true);
+    expect([...(snap.domByRef ?? new Map()).values()].some((s) => s.type === 'password')).toBe(true);
+
+    // ...but the agent-facing observe payload (the serialization boundary, observe.ts) carries NONE of it.
+    const r = ok(await observer(async () => snap, new StudioEventQueue(100))({}));
+    const wire = JSON.stringify(r); // exactly what crosses to the agent
+    expect(wire).not.toContain('domByRef');
+    expect(wire).not.toContain('hasCredentialField');
+    expect(wire).not.toContain('password'); // neither type="password" nor the autocomplete token "current-password" leaks
+    expect(wire).not.toContain('autocomplete');
+    const parsed = JSON.parse(wire) as { kind: string; elements?: Array<Record<string, unknown>> };
+    expect(parsed.kind).toBe('full');
+    for (const e of parsed.elements ?? []) {
+      expect(Object.keys(e).sort()).toEqual(['name', 'ref', 'role']); // only the agent-facing triple — no tag/type/autocomplete
+    }
   });
 });

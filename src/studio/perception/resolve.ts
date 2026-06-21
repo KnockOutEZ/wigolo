@@ -1,4 +1,5 @@
 import type { PageSnapshot, PerceptionCdp } from './snapshot.js';
+import type { FieldSemantics } from '../credential.js';
 
 /**
  * Resolve a snapshot `ref` to a clickable coordinate AT ACTION TIME — never cached.
@@ -38,6 +39,14 @@ export interface ResolvedTarget {
    */
   role?: string;
   name?: string;
+  /**
+   * The resolved element's TRUE DOM input semantics (tag + credential-relevant attrs), read from the
+   * privileged pierced snapshot — the 5a credential guard's HARD signal, NEVER the spoofable role/name.
+   * Optional so callers/fakes that don't populate the snapshot's domByRef stay valid.
+   */
+  semantics?: FieldSemantics;
+  /** Whether the CURRENT page has any credential field present (host-read) — the 5a/5b credential-context signal. */
+  pageHasCredentialField?: boolean;
 }
 
 export type ResolveErrorReason =
@@ -124,7 +133,8 @@ export function createResolver(deps: ResolveDeps): (ref: string) => Promise<Reso
     if (top != null && !isTargetOrDescendant(top, backendNodeId, snap.domParent)) {
       return { error: 'element_occluded' };
     }
-    // Surface the page-derived role/name (untrusted) alongside the coords — the 6c risk gate's soft signal.
-    return { backendNodeId, center, role: el.role, name: el.name };
+    // Surface the page-derived role/name (untrusted) alongside the coords — the 6c risk gate's soft signal —
+    // plus the target's TRUE pierced-DOM semantics + the page credential-context flag for the 5a hard guard.
+    return { backendNodeId, center, role: el.role, name: el.name, semantics: snap.domByRef?.get(ref), pageHasCredentialField: snap.hasCredentialField };
   };
 }
