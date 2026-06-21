@@ -4,6 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { dispatchStudioTool, type StudioHostHandlers, type McpToolResult, type StudioGeneralizeOutput, type StudioCaptureInput } from '../../../src/daemon/studio-dispatch.js';
 import { writeHandle, setMyInstanceId, type SessionHandle } from '../../../src/studio/handle.js';
+import Database from 'better-sqlite3';
+import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
+import { createCaptureHandler } from '../../../src/studio/capture/handler.js';
+import type { IndexJobInput } from '../../../src/embedding/background-queue.js';
 
 let dir: string;
 let proxyCalls: Array<{ name: string; args: Record<string, unknown> }>;
@@ -180,5 +184,56 @@ describe('dispatchStudioTool — studio_capture routing', () => {
     const r = await dispatchStudioTool('studio_capture', { type: 'clip', content: 'b', url: 'https://x/' }, undefined, dir, { proxyFactory: proxyReturning(hostResult) });
     expect(proxyCalls).toEqual([{ name: 'studio_capture', args: { type: 'clip', content: 'b', url: 'https://x/' } }]);
     expect(r).toEqual(hostResult);
+  });
+});
+
+/**
+ * C5 — open the qa gate on studio_capture, entered THROUGH the real dispatch (not a direct
+ * handler call), so a regression anywhere on the dispatch → handler → captureFromPage path
+ * reds. The host wires the REAL createCaptureHandler over a migrated db (008+009), so a qa
+ * pair travels the exact path the live host runs. qa is url-less {question, answer}; the
+ * session is server-bound (deps.sessionId), never a caller field — mirror of the clip path.
+ */
+describe('dispatchStudioTool — studio_capture qa gate (C5, through dispatch, real host)', () => {
+  const HOST_SESSION_QA = 'host-sess-qa';
+  let qdir: string;
+  let db: Database.Database;
+  let jobs: IndexJobInput[];
+
+  beforeEach(() => {
+    _resetMigrationGuard();
+    qdir = mkdtempSync(join(tmpdir(), 'wigolo-dispatch-qa-'));
+    db = new Database(join(qdir, 'cache.db'));
+    db.pragma('foreign_keys = ON');
+    applyMigrations(db, { vecLoaded: false });
+    jobs = [];
+  });
+  afterEach(() => {
+    try { db.close(); } catch { /* ignore */ }
+    try { rmSync(qdir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  const realHost = (): StudioHostHandlers => ({
+    observe: async () => ({ id: 'snap', kind: 'full', trusted: false, elements: [], events: [], eventCursor: 0, eventsDropped: 0, domTruncated: false }),
+    act: async (input) => ({ ok: true, action: input.action, url: input.url }),
+    marks: async () => ({ marks: [] }),
+    capture: createCaptureHandler({ sessionId: HOST_SESSION_QA, db, enqueue: (j: IndexJobInput) => { jobs.push(j); } }),
+  });
+  const rowById = (id: number) => db.prepare('SELECT * FROM studio_artifacts WHERE id = ?').get(id) as Record<string, unknown>;
+
+  it('GATE-OPENING: a qa pair through dispatch persists and returns {artifact_id, inserted:true, content_hash} (RED until the qa gate opens — handler.ts:40 + the schema enum)', async () => {
+    const r = await dispatchStudioTool('studio_capture', { type: 'qa', question: 'What is the moat?', answer: 'Durable local capture compounds across sessions.' }, realHost(), qdir);
+    // Today the handler refuses any non-clip → unsupported_capture_type → dispatch maps it to
+    // isError:true. These reds until the gate opens for qa.
+    expect(r.isError).toBe(false);
+    const out = JSON.parse(r.content[0].text) as { artifact_id: number; inserted: boolean; content_hash: string };
+    expect(out.inserted).toBe(true);
+    expect(typeof out.artifact_id).toBe('number');
+    expect(out.content_hash).toMatch(/^[0-9a-f]{64}$/);
+    // The persisted row is a real qa artifact, attributed to the server-bound session, url-less.
+    const row = rowById(out.artifact_id);
+    expect(row.artifact_type).toBe('qa');
+    expect(row.session_id).toBe(HOST_SESSION_QA);
+    expect(row.normalized_url).toBeNull();
   });
 });
