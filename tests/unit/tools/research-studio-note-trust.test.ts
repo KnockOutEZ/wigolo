@@ -84,13 +84,13 @@ function stubRouter(): SmartRouter {
 }
 
 function seedNote(sessionId = 's1', text = NOTE_TEXT): number {
-  return captureHumanNote({ sessionId, text }, { db: getDatabase(), enqueue: () => undefined }).id;
+  return captureHumanNote({ sessionId, text }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
 }
 function seedClip(sessionId = 's1', url = 'https://example.com/clip-page', markdown = CLIP_MD): number {
-  return captureFromPage({ type: 'clip', sessionId, url, title: 'Capture Pipeline Notes', markdown }, { db: getDatabase(), enqueue: () => undefined }).id;
+  return captureFromPage({ type: 'clip', sessionId, url, title: 'Capture Pipeline Notes', markdown }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
 }
 function seedQa(sessionId = 's1', question = QA_Q, answer = QA_A): number {
-  return captureFromPage({ type: 'qa', sessionId, question, answer }, { db: getDatabase(), enqueue: () => undefined }).id;
+  return captureFromPage({ type: 'qa', sessionId, question, answer }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
 }
 
 async function research() {
@@ -207,7 +207,7 @@ describe('research — a human note is the first trusted source (C3 slice-2)', (
     // (type-set AND markdown), so an in-set clip is what isolates the markdown guard.
     const emptyClipId = captureFromPage(
       { type: 'clip', sessionId: 's1', url: 'https://example.com/empty', title: QUESTION, markdown: '' },
-      { db: getDatabase(), enqueue: () => undefined },
+      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
     ).id;
     const r = await research();
     const out = r.ok ? r.data : null;

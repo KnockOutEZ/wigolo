@@ -100,7 +100,7 @@ describe('studio/capture/artifacts — Phase 4b-3 capture pipeline (RED)', () =>
   // watch which captures enqueue.)
   function mkDeps() {
     const jobs: IndexJobInput[] = [];
-    return { jobs, deps: { db, enqueue: (j: IndexJobInput) => { jobs.push(j); } } };
+    return { jobs, deps: { db, enqueue: (j: IndexJobInput) => { jobs.push(j); }, credentialContext: {} } };
   }
 
   // Quote the term so punctuation (e.g. the hyphens in a fingerprint token) is a phrase,
@@ -306,7 +306,7 @@ describe('studio/capture/artifacts — Phase 4b-3 capture pipeline (RED)', () =>
     // the throw rolls the row back; the AFTER INSERT trigger's FTS row rolls back with it.
     const broken = new BackgroundIndexQueue({ dbPath: join(dir, 'jobs.db'), autoStart: false, syncMode: false });
     broken.shutdown(); // closes the queue's db handle → enqueue now throws for real
-    const deps = { db, enqueue: (j: IndexJobInput) => broken.enqueue(j) };
+    const deps = { db, enqueue: (j: IndexJobInput) => broken.enqueue(j), credentialContext: {} };
 
     expect(() => captureFromPage(
       { type: 'clip', sessionId: 'sess', url: 'https://x.example/atomic', title: 'roll', markdown: 'back me out' },

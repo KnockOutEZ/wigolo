@@ -12,6 +12,7 @@ import { contentHashFor } from '../../../../src/studio/capture/artifacts.js';
 // RIGHT-REASON RED: the capture handler is absent. Migrations 008+009 ARE applied, so
 // the schema is real and the only missing piece is the handler.
 import { createCaptureHandler, type StudioCaptureInput } from '../../../../src/studio/capture/handler.js';
+import type { FieldSemantics } from '../../../../src/studio/credential.js';
 
 /**
  * Phase 4c — studio_capture MCP tool, RED at the HANDLER/DISPATCH seam (S4).
@@ -75,7 +76,8 @@ describe('studio/capture/handler — Phase 4c studio_capture boundary (RED)', ()
   // The handler the host wires: server-bound session id + cache db + a recording embed sink.
   function mkHandler() {
     const jobs: IndexJobInput[] = [];
-    const handler = createCaptureHandler({ sessionId: HOST_SESSION, db, enqueue: (j: IndexJobInput) => { jobs.push(j); } });
+    // credentialContext is REQUIRED; a benign `{}` provider opts this non-credential fixture out explicitly (fail-loud).
+    const handler = createCaptureHandler({ sessionId: HOST_SESSION, db, enqueue: (j: IndexJobInput) => { jobs.push(j); }, credentialContext: async () => ({}) });
     return { handler, jobs };
   }
 
@@ -276,7 +278,7 @@ describe('studio/capture/handler — Phase 4d qa gate (C5)', () => {
 
   function qaHandler(sessionId: string) {
     const jobs: IndexJobInput[] = [];
-    const handler = createCaptureHandler({ sessionId, db, enqueue: (j: IndexJobInput) => { jobs.push(j); } });
+    const handler = createCaptureHandler({ sessionId, db, enqueue: (j: IndexJobInput) => { jobs.push(j); }, credentialContext: async () => ({}) });
     return { handler, jobs };
   }
   const rowById = (id: number) => db.prepare('SELECT * FROM studio_artifacts WHERE id = ?').get(id) as Record<string, unknown>;
@@ -343,5 +345,103 @@ describe('studio/capture/handler — Phase 4d qa gate (C5)', () => {
     expect(ok.artifact_id).toBe(first.artifact_id);
     expect(ok.inserted).toBe(false);
     expect(rowCount()).toBe(1);
+  });
+});
+
+/**
+ * Slice 5b — capture exclusion on a credential context. A clip/qa captured while the live page
+ * is a login/credential context (login URL OR a credential field present) is EXCLUDED ENTIRELY:
+ * no FTS row, no embed enqueue (both live in insertArtifact, so "no row" ⇒ "no embed"), no
+ * trusted=0 row — a clear capture_refused, surfaced by studio_capture. The credential-context
+ * signal is sourced FRESH at capture-time via the threaded `credentialContext` provider (the host
+ * wires it to a live snapshot + page url); these tests inject it directly to drive the seam.
+ */
+describe('studio/capture/handler — Slice 5b credential-context exclusion', () => {
+  let dir: string;
+  let db: Database.Database;
+
+  beforeEach(() => {
+    _resetMigrationGuard();
+    dir = mkdtempSync(join(tmpdir(), 'wigolo-studio-5b-'));
+    db = new Database(join(dir, 'cache.db'));
+    db.pragma('foreign_keys = ON');
+    applyMigrations(db, { vecLoaded: false });
+  });
+  afterEach(() => {
+    try { db.close(); } catch { /* ignore */ }
+    try { chmodSync(dir, 0o700); } catch { /* ignore */ }
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  // The handler with a threaded credential-context provider (async, resolved fresh per capture).
+  function mkHandlerWithCtx(ctx: { pageUrl?: string; fields?: FieldSemantics[] }) {
+    const jobs: IndexJobInput[] = [];
+    const handler = createCaptureHandler({
+      sessionId: '5b-sess',
+      db,
+      enqueue: (j: IndexJobInput) => { jobs.push(j); },
+      credentialContext: async () => ctx,
+    });
+    return { handler, jobs };
+  }
+  const rowCount = (): number => (db.prepare('SELECT COUNT(*) AS n FROM studio_artifacts').get() as { n: number }).n;
+  const rowById = (id: number) => db.prepare('SELECT * FROM studio_artifacts WHERE id = ?').get(id) as Record<string, unknown>;
+  const isRefusal = (r: unknown): r is { error_reason: string } =>
+    typeof r === 'object' && r !== null && 'error_reason' in r;
+
+  it('A: a clip on a LOGIN-URL page is refused (capture_refused) — NO FTS row, NO embed enqueue', async () => {
+    const { handler, jobs } = mkHandlerWithCtx({ pageUrl: 'https://acme.example/login', fields: [] });
+    const r = await handler({ type: 'clip', content: 'a login form region', url: 'https://acme.example/login' } as StudioCaptureInput);
+    expect(isRefusal(r)).toBe(true);
+    expect((r as { error_reason: string }).error_reason).toBe('capture_refused');
+    expect(rowCount(), 'no row persisted').toBe(0);
+    expect(jobs.length, 'no embed enqueued (same function as the FTS insert)').toBe(0);
+  });
+
+  it('B: a qa on a LOGIN-URL page is refused — NO row, NO embed', async () => {
+    const { handler, jobs } = mkHandlerWithCtx({ pageUrl: 'https://acme.example/login', fields: [] });
+    const r = await handler({ type: 'qa', question: 'what password did you use?', answer: 'hunter2' } as StudioCaptureInput);
+    expect(isRefusal(r)).toBe(true);
+    expect((r as { error_reason: string }).error_reason).toBe('capture_refused');
+    expect(rowCount()).toBe(0);
+    expect(jobs.length).toBe(0);
+  });
+
+  it('C: a clip on a NON-login URL that HAS a credential field present is refused (the field-present half carries it)', async () => {
+    const { handler, jobs } = mkHandlerWithCtx({ pageUrl: 'https://example.com/account', fields: [{ tag: 'input', type: 'password' }] });
+    const r = await handler({ type: 'clip', content: 'account page region', url: 'https://example.com/account' } as StudioCaptureInput);
+    expect(isRefusal(r)).toBe(true);
+    expect((r as { error_reason: string }).error_reason).toBe('capture_refused');
+    expect(rowCount()).toBe(0);
+    expect(jobs.length).toBe(0);
+  });
+
+  it('NEGATIVE CONTROL: clip + qa on a non-credential page SUCCEED — FTS row + embed enqueue ARE written (trusted=0), no over-refusal', async () => {
+    const { handler, jobs } = mkHandlerWithCtx({ pageUrl: 'https://example.com/article', fields: [{ tag: 'input', type: 'search' }] });
+    const clip = await handler({ type: 'clip', content: 'a readable article body', url: 'https://example.com/article' } as StudioCaptureInput);
+    expect(isRefusal(clip), 'clip succeeds on a benign page').toBe(false);
+    const qa = await handler({ type: 'qa', question: 'What is X?', answer: 'X is Y.' } as StudioCaptureInput);
+    expect(isRefusal(qa), 'qa succeeds on a benign page').toBe(false);
+    expect(rowCount(), 'both rows persisted').toBe(2);
+    expect(jobs.length, 'both embeds enqueued').toBe(2);
+    expect(rowById((clip as { artifact_id: number }).artifact_id).content_trusted, 'page-derived stays trusted=0').toBe(0);
+  });
+
+  it('INVOKED-PIN: the credential-context provider is invoked on EVERY capture (clip AND qa) — required, fail-closed sourcing', async () => {
+    // The provider is REQUIRED + called with no `?.`, so it fires once per capture and the signal is
+    // always sourced fresh. Mutation: make the provider call conditional/skippable (handler defaults to
+    // `{}` instead of awaiting it) → calls stays 0 → this REDs (value-flip: invoked → not invoked).
+    let calls = 0;
+    const jobs: IndexJobInput[] = [];
+    const handler = createCaptureHandler({
+      sessionId: '5b-sess',
+      db,
+      enqueue: (j: IndexJobInput) => { jobs.push(j); },
+      credentialContext: async () => { calls++; return {}; },
+    });
+    await handler({ type: 'clip', content: 'body', url: 'https://example.com/p' } as StudioCaptureInput);
+    expect(calls, 'provider invoked for the clip capture').toBe(1);
+    await handler({ type: 'qa', question: 'q', answer: 'a' } as StudioCaptureInput);
+    expect(calls, 'provider invoked for the qa capture too').toBe(2);
   });
 });

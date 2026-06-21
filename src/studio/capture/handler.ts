@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
-import { captureFromPage } from './artifacts.js';
+import { captureFromPage, CaptureRefusedError } from './artifacts.js';
 import { getBackgroundIndexQueue, type IndexJobInput } from '../../embedding/background-queue.js';
+import type { FieldSemantics } from '../credential.js';
 import type { StudioCaptureInput, StudioCaptureOutput, StudioToolError } from '../../daemon/studio-dispatch.js';
 
 export type { StudioCaptureInput, StudioCaptureOutput } from '../../daemon/studio-dispatch.js';
@@ -27,6 +28,14 @@ export interface CaptureHandlerDeps {
   db: Database.Database;
   /** Embed-job sink; defaults to the shared background queue. Injected for tests. */
   enqueue?: (job: IndexJobInput) => unknown;
+  /**
+   * Slice 5b — resolve the live page's credential-context signal FRESH at capture-time (the host wires
+   * this to a fresh snapshot's fields + the live page url). Threaded into captureFromPage so the single
+   * persist choke excludes a credential context entirely. REQUIRED (not optional): an unwired host then
+   * fails the type-check rather than silently skipping the guard (closes the absent-provider fail-open).
+   * A benign provider that returns `{}` opts a path out explicitly, fail-loud.
+   */
+  credentialContext: () => Promise<{ pageUrl?: string; fields?: FieldSemantics[] }>;
 }
 
 export function createCaptureHandler(
@@ -38,42 +47,63 @@ export function createCaptureHandler(
     const { type, content, url, question, answer } = input;
     const enqueue = deps.enqueue ?? ((job) => getBackgroundIndexQueue().enqueue(job));
 
-    // content_trusted=0 + dedup + atomic embed enqueue all live in captureFromPage (4b-3). Both
-    // branches route through it (never the human-note trusted=1 path), so neither clip nor qa can
-    // be marked trusted-as-instructions; the session is server-bound deps.sessionId, never a caller field.
-    if (type === 'clip') {
-      if (typeof url !== 'string' || url.trim() === '') {
-        return { error_reason: 'missing_url', hint: 'A clip requires the page url it was captured from.' };
-      }
-      if (typeof content !== 'string' || content === '') {
-        return { error_reason: 'missing_content', hint: 'A clip requires content to capture.' };
-      }
-      const result = captureFromPage(
-        { type: 'clip', sessionId: deps.sessionId, url, title: '', markdown: content },
-        { db: deps.db, enqueue },
-      );
-      return { artifact_id: result.id, inserted: result.inserted, content_hash: result.contentHash };
-    }
+    try {
+      // Slice 5b: resolve the live page's credential-context signal FRESH (one snapshot per capture)
+      // and thread it into captureFromPage — the single persist choke excludes a credential context
+      // entirely (no FTS row, no embed). The provider is REQUIRED (no `?.`), so it is invoked on every
+      // capture (clip AND qa); an unwired host fails the type-check, never silently skips. The human-note
+      // (trusted=1) writer is not reachable from this tool, so a human noting their own secret is unaffected.
+      const credentialContext = await deps.credentialContext();
+      const captureDeps = { db: deps.db, enqueue, credentialContext };
 
-    if (type === 'qa') {
-      // qa is url-less: a question + answer pair from the session (the "save session as research"
-      // building block). The answer may be page/agent-derived → content_trusted=0 by the same path.
-      if (typeof question !== 'string' || question.trim() === '') {
-        return { error_reason: 'missing_question', hint: 'A qa capture requires the question.' };
+      // content_trusted=0 + dedup + atomic embed enqueue all live in captureFromPage (4b-3). Both
+      // branches route through it (never the human-note trusted=1 path), so neither clip nor qa can
+      // be marked trusted-as-instructions; the session is server-bound deps.sessionId, never a caller field.
+      if (type === 'clip') {
+        if (typeof url !== 'string' || url.trim() === '') {
+          return { error_reason: 'missing_url', hint: 'A clip requires the page url it was captured from.' };
+        }
+        if (typeof content !== 'string' || content === '') {
+          return { error_reason: 'missing_content', hint: 'A clip requires content to capture.' };
+        }
+        const result = captureFromPage(
+          { type: 'clip', sessionId: deps.sessionId, url, title: '', markdown: content },
+          captureDeps,
+        );
+        return { artifact_id: result.id, inserted: result.inserted, content_hash: result.contentHash };
       }
-      if (typeof answer !== 'string' || answer.trim() === '') {
-        return { error_reason: 'missing_answer', hint: 'A qa capture requires the answer.' };
-      }
-      const result = captureFromPage(
-        { type: 'qa', sessionId: deps.sessionId, question, answer },
-        { db: deps.db, enqueue },
-      );
-      return { artifact_id: result.id, inserted: result.inserted, content_hash: result.contentHash };
-    }
 
-    return {
-      error_reason: 'unsupported_capture_type',
-      hint: `studio_capture handles 'clip' and 'qa'; '${String(type)}' is not capturable through this tool.`,
-    };
+      if (type === 'qa') {
+        // qa is url-less: a question + answer pair from the session (the "save session as research"
+        // building block). The answer may be page/agent-derived → content_trusted=0 by the same path.
+        if (typeof question !== 'string' || question.trim() === '') {
+          return { error_reason: 'missing_question', hint: 'A qa capture requires the question.' };
+        }
+        if (typeof answer !== 'string' || answer.trim() === '') {
+          return { error_reason: 'missing_answer', hint: 'A qa capture requires the answer.' };
+        }
+        const result = captureFromPage(
+          { type: 'qa', sessionId: deps.sessionId, question, answer },
+          captureDeps,
+        );
+        return { artifact_id: result.id, inserted: result.inserted, content_hash: result.contentHash };
+      }
+
+      return {
+        error_reason: 'unsupported_capture_type',
+        hint: `studio_capture handles 'clip' and 'qa'; '${String(type)}' is not capturable through this tool.`,
+      };
+    } catch (e) {
+      // Slice 5b: a credential-context capture is excluded entirely — surfaced as a clean refusal, not
+      // a crash. The error carries no page content/URL, so nothing sensitive is constructed here. Other
+      // failures (e.g. captureFromPage's atomic enqueue rollback) propagate unchanged.
+      if (e instanceof CaptureRefusedError) {
+        return {
+          error_reason: 'capture_refused',
+          hint: 'This page is a login/credential context — captures are excluded here so credentials are never persisted. Do not retry.',
+        };
+      }
+      throw e;
+    }
   };
 }

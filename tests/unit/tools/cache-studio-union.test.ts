@@ -51,7 +51,7 @@ function vec(url: string, score: number): VectorSearchResult {
 function captureClip(sessionId: string): number {
   return captureFromPage(
     { type: 'clip', sessionId, url: 'https://x.example.com/p', title: 'Capture Notes', markdown: CLIP_MD },
-    { db: getDatabase(), enqueue: () => undefined },
+    { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
   ).id;
 }
 
@@ -62,7 +62,7 @@ function captureClip(sessionId: string): number {
 function captureQa(sessionId: string): number {
   return captureFromPage(
     { type: 'qa', sessionId, question: 'How does the capture pipeline work?', answer: CLIP_MD },
-    { db: getDatabase(), enqueue: () => undefined },
+    { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
   ).id;
 }
 
@@ -105,7 +105,7 @@ describe('cache tool — captured studio artifact (4d slice-3)', () => {
     it('a human-authored studio note surfaces trusted:true', async () => {
       const note = captureHumanNote(
         { sessionId: 'sess-note', text: `wigolo studio capture pipeline moat — a human note safe as instructions.` },
-        { db: getDatabase(), enqueue: () => undefined },
+        { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
       );
       const out = await handleCache({ query: QUERY });
       const hit = (out.results ?? []).find((r) => r.url === `studio://note|${note.id}`);

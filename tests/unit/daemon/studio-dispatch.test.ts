@@ -217,7 +217,7 @@ describe('dispatchStudioTool — studio_capture qa gate (C5, through dispatch, r
     observe: async () => ({ id: 'snap', kind: 'full', trusted: false, elements: [], events: [], eventCursor: 0, eventsDropped: 0, domTruncated: false }),
     act: async (input) => ({ ok: true, action: input.action, url: input.url }),
     marks: async () => ({ marks: [] }),
-    capture: createCaptureHandler({ sessionId: HOST_SESSION_QA, db, enqueue: (j: IndexJobInput) => { jobs.push(j); } }),
+    capture: createCaptureHandler({ sessionId: HOST_SESSION_QA, db, enqueue: (j: IndexJobInput) => { jobs.push(j); }, credentialContext: async () => ({}) }),
   });
   const rowById = (id: number) => db.prepare('SELECT * FROM studio_artifacts WHERE id = ?').get(id) as Record<string, unknown>;
 

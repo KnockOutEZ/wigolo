@@ -85,10 +85,10 @@ function stubRouter(): SmartRouter {
 }
 
 function seedNote(sessionId = 's1', text = NOTE_TEXT): number {
-  return captureHumanNote({ sessionId, text }, { db: getDatabase(), enqueue: () => undefined }).id;
+  return captureHumanNote({ sessionId, text }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
 }
 function seedClip(sessionId = 's1', url = 'https://example.com/clip-page', markdown = CLIP_MD): number {
-  return captureFromPage({ type: 'clip', sessionId, url, title: 'Capture Pipeline Notes', markdown }, { db: getDatabase(), enqueue: () => undefined }).id;
+  return captureFromPage({ type: 'clip', sessionId, url, title: 'Capture Pipeline Notes', markdown }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
 }
 
 async function research() {

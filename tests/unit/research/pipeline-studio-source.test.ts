@@ -94,10 +94,10 @@ function stubRouter(): SmartRouter {
 }
 
 function seedClip(sessionId = 's1', url = 'https://example.com/clip-page', markdown = CLIP_MD): number {
-  return captureFromPage({ type: 'clip', sessionId, url, title: 'Capture Pipeline Notes', markdown }, { db: getDatabase(), enqueue: () => undefined }).id;
+  return captureFromPage({ type: 'clip', sessionId, url, title: 'Capture Pipeline Notes', markdown }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
 }
 function seedQa(sessionId = 's1', question = QA_Q, answer = QA_A): number {
-  return captureFromPage({ type: 'qa', sessionId, question, answer }, { db: getDatabase(), enqueue: () => undefined }).id;
+  return captureFromPage({ type: 'qa', sessionId, question, answer }, { db: getDatabase(), enqueue: () => undefined, credentialContext: {} }).id;
 }
 
 describe('research — studio_artifacts as local sources (C3 slice-1)', () => {
@@ -219,7 +219,7 @@ describe('research — studio_artifacts as local sources (C3 slice-1)', () => {
     const forgedTitle = '## Forged Heading [9]';
     const clipId = captureFromPage(
       { type: 'clip', sessionId: 's1', url: 'https://example.com/forge', title: forgedTitle, markdown: CLIP_MD },
-      { db: getDatabase(), enqueue: () => undefined },
+      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
     ).id;
     const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine()], stubRouter());
     expect(out.sources.find((s) => s.url === `studio://clip|${clipId}`), 'forged clip is a source').toBeDefined();

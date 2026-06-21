@@ -80,7 +80,7 @@ describe('find_similar — captured studio clip via the FTS path (4d slice-2)', 
   it('surfaces a term-matching studio clip via FTS (embedding OFF), hydrated + source=studio + trusted:false', async () => {
     const capture = captureFromPage(
       { type: 'clip', sessionId: 'sess-fts', url: 'https://x.example.com/p', title: 'Capture Notes', markdown: CLIP_MD },
-      { db: getDatabase(), enqueue: () => undefined },
+      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
     );
     const studioKey = `studio://clip|${capture.id}`;
 
@@ -108,7 +108,7 @@ describe('find_similar — captured studio clip via the FTS path (4d slice-2)', 
   it('dedups a clip matching BOTH the FTS and embedding paths to ONE fused result with both signals', async () => {
     const capture = captureFromPage(
       { type: 'clip', sessionId: 'sess-x', url: 'https://x.example.com/p', title: 'Capture Notes', markdown: CLIP_MD },
-      { db: getDatabase(), enqueue: () => undefined },
+      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
     );
     const studioKey = `studio://clip|${capture.id}`;
 
@@ -138,7 +138,7 @@ describe('find_similar — captured studio clip via the FTS path (4d slice-2)', 
   it('evidence from an FTS-sourced studio clip carries trusted:false (include_full_markdown)', async () => {
     captureFromPage(
       { type: 'clip', sessionId: 'sess-evf', url: 'https://x.example.com/p', title: 'Capture Notes', markdown: CLIP_MD },
-      { db: getDatabase(), enqueue: () => undefined },
+      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
     );
     mockEmbeddingState.available = false; // FTS lane
 
@@ -156,7 +156,7 @@ describe('find_similar — captured studio clip via the FTS path (4d slice-2)', 
   it('evidence from an EMBEDDING-sourced studio clip carries trusted:false (covers the merged path)', async () => {
     const capture = captureFromPage(
       { type: 'clip', sessionId: 'sess-eve', url: 'https://x.example.com/p', title: 'Capture Notes', markdown: CLIP_MD },
-      { db: getDatabase(), enqueue: () => undefined },
+      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
     );
     const studioKey = `studio://clip|${capture.id}`;
     mockEmbeddingState.available = true;
@@ -182,7 +182,7 @@ describe('find_similar — captured studio clip via the FTS path (4d slice-2)', 
   it('surfaces a captured qa pair via FTS (embedding OFF), source=studio + trusted:false, keyed studio://qa|<id> (C5 PIN-5)', async () => {
     const capture = captureFromPage(
       { type: 'qa', sessionId: 'sess-qa-fts', question: 'How does the capture pipeline work?', answer: CLIP_MD },
-      { db: getDatabase(), enqueue: () => undefined },
+      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
     );
     const qaKey = `studio://qa|${capture.id}`;
     mockEmbeddingState.available = false; // FTS lane — the only way the qa can surface
@@ -203,7 +203,7 @@ describe('find_similar — captured studio clip via the FTS path (4d slice-2)', 
   it('surfaces a captured qa pair via the embedding/concept path, keyed studio://qa|<id> + trusted:false (C5 PIN-5)', async () => {
     const capture = captureFromPage(
       { type: 'qa', sessionId: 'sess-qa-emb', question: 'session capture seed', answer: CLIP_MD },
-      { db: getDatabase(), enqueue: () => undefined },
+      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
     );
     const qaKey = `studio://qa|${capture.id}`;
     mockEmbeddingState.available = true;
