@@ -503,7 +503,24 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     observe,
     act,
     marks: marksTool,
-    capture: (input) => createCaptureHandler({ sessionId: session.id, db: getDatabase() })(input),
+    capture: (input) => createCaptureHandler({
+      sessionId: session.id,
+      db: getDatabase(),
+      // Slice 5b: source the credential-context signal FRESH per capture — a live snapshot's fields
+      // (the same domByRef the 5a guard reads, so capture and field-scan agree by construction) + the
+      // host-observed live page url. A credential context (login URL OR a credential field present)
+      // excludes the capture entirely.
+      credentialContext: async () => {
+        const snap = await snapshotter.snapshot(sessionBrowser.cdp);
+        let pageUrl: string | undefined;
+        try {
+          pageUrl = sessionBrowser.page.url();
+        } catch {
+          /* browser not started / mid-recovery — url unknown; the field signal still applies */
+        }
+        return { pageUrl, fields: [...(snap.domByRef?.values() ?? [])] };
+      },
+    })(input),
   });
 
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };

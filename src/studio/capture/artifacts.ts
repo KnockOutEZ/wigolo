@@ -3,6 +3,7 @@ import { hashArtifact } from './hash.js';
 import { normalizeUrl, sanitizeFtsQuery } from '../../cache/store.js';
 import { getBackgroundIndexQueue, type IndexJobInput } from '../../embedding/background-queue.js';
 import { getDatabase } from '../../cache/db.js';
+import { isCredentialContext, type FieldSemantics } from '../credential.js';
 
 /**
  * Phase 4b-3 — the Studio capture pipeline. The host persists a human-marked target,
@@ -40,6 +41,36 @@ export interface CaptureDeps {
   db: Database.Database;
   /** Embed-job sink; defaults to the shared background queue. Injected for tests. */
   enqueue?: (job: IndexJobInput) => unknown;
+  /**
+   * Optional on the BASE so captureHumanNote (not a page-capture, never guarded) can share this deps
+   * shape and ignore it. captureFromPage narrows it to REQUIRED via PageCaptureDeps below.
+   */
+  credentialContext?: { pageUrl?: string; fields?: FieldSemantics[] };
+}
+
+/**
+ * Slice 5b — the deps captureFromPage requires. `credentialContext` is the live page's credential
+ * signal, resolved FRESH at capture-time by the host (a fresh snapshot's fields + the host-observed
+ * page url). It is REQUIRED here (narrowing the optional base): an unwired page-capture path then fails
+ * the type-check (fail-loud, structural) instead of silently skipping the guard and persisting a
+ * credential — closing the fail-open of an absent provider. An empty object means "checked, no
+ * credential context".
+ */
+export interface PageCaptureDeps extends CaptureDeps {
+  credentialContext: { pageUrl?: string; fields?: FieldSemantics[] };
+}
+
+/**
+ * Slice 5b — thrown by captureFromPage when the live page is a credential context, so the capture is
+ * excluded ENTIRELY (no FTS row, no embed enqueue). Thrown (not returned) to preserve captureFromPage's
+ * CaptureResult contract that its dedup-result callers depend on; the studio_capture handler catches it
+ * and surfaces capture_refused. Carries NO page content/URL — nothing for a logger to leak.
+ */
+export class CaptureRefusedError extends Error {
+  constructor(public readonly reason: 'credential_context') {
+    super(`capture refused: ${reason}`);
+    this.name = 'CaptureRefusedError';
+  }
 }
 
 export interface CaptureResult {
@@ -160,7 +191,17 @@ function resolveEnqueue(deps: CaptureDeps): (job: IndexJobInput) => unknown {
  * trust parameter. Text mapping: clip → markdown (title = page title); qa → title =
  * question, markdown = answer; mark → title = role+name (searchable), selectors → metadata.
  */
-export function captureFromPage(input: PageCapture, deps: CaptureDeps): CaptureResult {
+export function captureFromPage(input: PageCapture, deps: PageCaptureDeps): CaptureResult {
+  // Slice 5b — exclude ENTIRELY on a credential context (login URL OR a credential field present on
+  // the page at capture-time), BEFORE the FTS row AND the embed enqueue (both live in insertArtifact).
+  // The agent must never precipitate a login/secret into the durable cache. This is the single live
+  // persist choke clip + qa both cross; captureHumanNote does NOT cross here, so a human noting their
+  // own secret stays untouched. `credentialContext` is REQUIRED (PageCaptureDeps), so an unwired
+  // caller fails the type-check rather than silently skipping this guard. Fail-closed: thrown before
+  // any row is built; the handler surfaces it as capture_refused.
+  if (isCredentialContext(deps.credentialContext)) {
+    throw new CaptureRefusedError('credential_context');
+  }
   const now = new Date().toISOString();
   const contentHash = contentHashFor(input);
 
