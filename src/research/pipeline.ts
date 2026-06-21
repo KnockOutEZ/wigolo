@@ -295,7 +295,7 @@ export async function runResearchPipeline(
       try {
         const localSources = sources
           .filter((s) => s.fetched && s.markdown_content.length > 0)
-          .map((s) => ({ url: s.url, title: s.title, markdown: s.markdown_content }));
+          .map((s) => ({ url: s.url, title: s.title, markdown: s.markdown_content, trusted: s.trusted }));
         if (localSources.length > 0) {
           const local = await synthesizeLocal(input.question, localSources);
           finalReport = local.text;
@@ -310,7 +310,7 @@ export async function runResearchPipeline(
                 url: s.url,
                 title: s.title,
                 snippet: s.markdown.slice(0, 200),
-                trusted: false, // research sources are web/page-derived (C4)
+                trusted: s.trusted, // mirror source trust (C3 slice-2: note=true; web/clip/qa=false)
               };
             });
           log.info('local synthesis succeeded', { reportLength: finalReport.length });
@@ -452,13 +452,14 @@ async function fetchSources(
 
 // C3 slice-1 — local studio artifacts as research sources. The shared studio read
 // (searchStudioArtifactKeys / getStudioArtifactByEmbedKey / studioEmbedKey) is reused
-// VERBATIM — no re-derived query. clip + qa ONLY (note → slice-2; mark has null markdown).
-// Identity = studio://<type>|<id> (a non-null url even for url-less qa; dedup-inert vs web
-// → honors C1b; re-resolvable). trusted MIRRORS content_trusted (false for clip/qa). Content
-// is local → fetched:true, never hits fetchSources/the network. Candidates are reranked onto
-// the SAME cross-encoder scale as web so the merged cap is rank-fair. RESILIENT: any throw or
-// miss logs and yields [] — a studio-read failure never aborts research (web sources stand).
-const STUDIO_RESEARCH_TYPES = new Set(['clip', 'qa']);
+// VERBATIM — no re-derived query. clip + qa + note (note is the ONLY content_trusted=1 type;
+// mark is excluded — it has null markdown). Identity = studio://<type>|<id> (a non-null url
+// even for url-less qa/note; dedup-inert vs web → honors C1b; re-resolvable). trusted MIRRORS
+// content_trusted (true for note, false for clip/qa). Content is local → fetched:true, never
+// hits fetchSources/the network. Candidates are reranked onto the SAME cross-encoder scale as
+// web so the merged cap is rank-fair. RESILIENT: any throw or miss logs and yields [] — a
+// studio-read failure never aborts research (web sources stand).
+const STUDIO_RESEARCH_TYPES = new Set(['clip', 'qa', 'note']);
 
 async function collectStudioSources(question: string, limit: number): Promise<ResearchSource[]> {
   try {
@@ -468,7 +469,12 @@ async function collectStudioSources(question: string, limit: number): Promise<Re
     const byUrl = new Map<string, { title: string; markdown: string; trusted: boolean }>();
     for (const key of keys) {
       const art = getStudioArtifactByEmbedKey(key);
-      if (!art || !STUDIO_RESEARCH_TYPES.has(art.type)) continue; // clip/qa only this slice
+      if (!art) continue;
+      if (!STUDIO_RESEARCH_TYPES.has(art.type)) {
+        // non-research types (e.g. mark — null markdown) match FTS but are excluded here.
+        log.debug('studio research source skipped: non-research artifact type', { type: art.type });
+        continue;
+      }
       if (art.markdown === null || art.markdown.length === 0) continue;
       const url = studioEmbedKey(art.type, art.id); // studio://<type>|<id>
       const title = art.title ?? '';
@@ -487,7 +493,7 @@ async function collectStudioSources(question: string, limit: number): Promise<Re
         markdown_content: meta.markdown,
         relevance_score: r.relevance_score,
         fetched: true, // local content — already hydrated, no network fetch
-        trusted: meta.trusted, // mirrors content_trusted (false for clip/qa)
+        trusted: meta.trusted, // mirrors content_trusted (true for note, false for clip/qa)
       });
     }
     return sources;
