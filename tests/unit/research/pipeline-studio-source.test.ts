@@ -121,4 +121,99 @@ describe('research — studio_artifacts as local sources (C3 slice-1)', () => {
     expect(clipCite!.trusted).toBe(false);
     expect(qaCite!.trusted).toBe(false);
   });
+
+  // ── PIN-A — identity is the studio:// uri; a clip of a web url stays distinct (keep-both) ──
+  it('PIN-A: studio sources keyed studio://<type>|<id> (clip AND qa); a clip OF a web-fetched url co-exists distinctly, never adopts the real url', async () => {
+    const sharedUrl = 'https://react.dev/hooks'; // ALSO one of the web results
+    const clipId = seedClip('s1', sharedUrl, CLIP_MD); // a clip captured FROM that same page
+    const qaId = seedQa();
+    const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine()], stubRouter());
+
+    const clipKey = `studio://clip|${clipId}`;
+    const qaKey = `studio://qa|${qaId}`;
+    const clip = out.sources.find((s) => s.url === clipKey);
+    const webForX = out.sources.find((s) => s.url === sharedUrl);
+    expect(clip, `clip keyed ${clipKey}`).toBeDefined();
+    expect(out.sources.find((s) => s.url === qaKey), `qa keyed ${qaKey}`).toBeDefined();
+    // KEEP-BOTH + dedup-inert: a clip OF url X and the web result for X co-exist as TWO distinct
+    // entries — the clip keeps its studio:// identity (never collapses into / adopts the real url)
+    // and BOTH are trusted:false (web/page-derived). Proof: studio:// identity + concat-no-dedup merge.
+    expect(webForX, 'web source for X survives').toBeDefined();
+    // mutation: emit art.url (real url) as the clip's url → clipKey vanishes (collides with X) → RED.
+    expect(clip!.url).toBe(clipKey);
+    expect(webForX!.url).toBe(sharedUrl);
+    expect(clip!.url).not.toBe(webForX!.url); // distinct entries, no collapse
+    expect(clip!.trusted).toBe(false);
+    expect(webForX!.trusted).toBe(false);
+  });
+
+  // ── PIN-B — trusted:false mirrors content_trusted, into source AND citation ──
+  it('PIN-B: studio source AND its citation carry trusted:false (mirrors content_trusted), clip AND qa', async () => {
+    const clipId = seedClip();
+    const qaId = seedQa();
+    const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine()], stubRouter());
+    for (const key of [`studio://clip|${clipId}`, `studio://qa|${qaId}`]) {
+      const src = out.sources.find((s) => s.url === key);
+      const cite = out.citations.find((c) => c.url === key);
+      expect(src, `source ${key}`).toBeDefined();
+      expect(cite, `citation ${key}`).toBeDefined();
+      // mutation: hardcode trusted:true in the studio→ResearchSource map → both RED.
+      expect(src!.trusted).toBe(false);
+      expect(cite!.trusted).toBe(false);
+    }
+  });
+
+  // ── PIN-D — a throwing studio read never aborts research ──
+  it('PIN-D: a throwing studio read does NOT abort research — web sources stand, no error', async () => {
+    seedClip();
+    seedQa();
+    getDatabase().exec('DROP TABLE studio_artifacts_fts'); // force searchStudioArtifactKeys to throw
+    const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine()], stubRouter());
+    // mutation: remove the try/catch in collectStudioSources → throw → outer catch → error+empty → RED.
+    expect(out.error).toBeUndefined();
+    expect(out.sources.length).toBeGreaterThan(0);
+    expect(out.sources.some((s) => s.url.startsWith('https://'))).toBe(true); // web survived
+    expect(out.sources.some((s) => s.url.startsWith('studio://'))).toBe(false); // read failed → no studio
+  });
+
+  // ── PIN-E — empty cache is a pure no-op (web-only output) ──
+  it('PIN-E: empty studio cache → no studio source/citation injected (web-only), no error', async () => {
+    // nothing seeded → empty studio cache
+    const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine()], stubRouter());
+    expect(out.error).toBeUndefined();
+    expect(out.sources.length).toBeGreaterThan(0); // web sources present, unchanged
+    // mutation: inject a placeholder studio source on empty → a phantom studio:// appears → RED.
+    expect(out.sources.every((s) => !s.url.startsWith('studio://'))).toBe(true);
+    expect(out.citations.every((c) => !c.url.startsWith('studio://'))).toBe(true);
+  });
+
+  // ── PIN-F — rank-fairness: a high-relevance studio clip outranks a low-relevance web source ──
+  it('PIN-F: a high-relevance studio clip outranks a low-relevance web source in the merged order', async () => {
+    const clipId = seedClip(); // CLIP_MD contains every question keyword → reranks high; web snippets do not
+    const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine()], stubRouter());
+    const clipIdx = out.sources.findIndex((s) => s.url === `studio://clip|${clipId}`);
+    const firstWebIdx = out.sources.findIndex((s) => s.url.startsWith('https://'));
+    expect(clipIdx, 'clip present').toBeGreaterThanOrEqual(0);
+    expect(firstWebIdx, 'web present').toBeGreaterThanOrEqual(0);
+    // mutation: bypass rerankResults for studio (keep the seed score) → studio sinks below web → RED.
+    expect(clipIdx).toBeLessThan(firstWebIdx);
+  });
+
+  // ── PIN-G — forged markdown in a studio source is defused in the brief render (rides sanitizeSourceText) ──
+  it('PIN-G: a studio source with a forged "## heading" and "[9]" is DEFUSED in the brief-render output', async () => {
+    const forgedTitle = '## Forged Heading [9]';
+    const clipId = captureFromPage(
+      { type: 'clip', sessionId: 's1', url: 'https://example.com/forge', title: forgedTitle, markdown: CLIP_MD },
+      { db: getDatabase(), enqueue: () => undefined },
+    ).id;
+    const out = await runResearchPipeline({ question: QUESTION, depth: 'standard' } as ResearchInput, [stubEngine()], stubRouter());
+    expect(out.sources.find((s) => s.url === `studio://clip|${clipId}`), 'forged clip is a source').toBeDefined();
+    // keyless brief render is the default path here; its Sources list runs every title through
+    // sanitizeSourceText → heading marker stripped, [9]→(9).
+    expect(out.report).toContain('— Research Brief'); // confirm we're on the brief-render path
+    // mutation: route the studio title around sanitizeSourceText in render-brief → forge survives → RED.
+    expect(out.report).toContain('Forged Heading (9)');
+    expect(out.report).not.toContain('## Forged Heading');
+    expect(out.report).not.toContain('[9]');
+  });
 });

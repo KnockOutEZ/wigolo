@@ -16,6 +16,7 @@ import { cacheContent } from '../cache/store.js';
 import { getEmbeddingService } from '../embedding/embed.js';
 import { checkSamplingSupport, type SamplingCapableServer } from '../search/sampling.js';
 import { isLlmConfiguredWithKeyStore } from '../integrations/cloud/llm/run.js';
+import { searchStudioArtifactKeys, getStudioArtifactByEmbedKey, studioEmbedKey } from '../studio/capture/artifacts.js';
 import type {
   ResearchInput,
   ResearchOutput,
@@ -253,13 +254,17 @@ export async function runResearchPipeline(
     }
     // Fail open — never let the content gate empty the result; mediocre
     // sources beat no sources (rerank already ordered them).
-    let sources: ResearchSource[];
-    if (gated.length > 0) {
-      sources = gated.slice(0, maxSources);
-      rejected_sources.push(...contentRejects);
-    } else {
-      sources = fetched.slice(0, maxSources);
-    }
+    const webPool: ResearchSource[] = gated.length > 0 ? gated : fetched;
+    if (gated.length > 0) rejected_sources.push(...contentRejects);
+    // C3 slice-1: merge LOCAL studio artifacts (clip/qa) as research sources — built
+    // post-fetch from the shared studio read (no network), reranked onto the same scale as
+    // web — then sort the union by relevance and cap together so the budget is rank-fair (no
+    // reserved quota; studio is dedup-inert vs web by its studio:// identity → C1b). Empty
+    // cache → studioSources is [] → the sort/slice is a no-op over the already-ranked webPool.
+    const studioSources = await collectStudioSources(input.question, maxSources);
+    const sources: ResearchSource[] = [...webPool, ...studioSources]
+      .sort((a, b) => b.relevance_score - a.relevance_score)
+      .slice(0, maxSources);
     applySourceBudget(sources, PER_SOURCE_CHAR_CAP, TOTAL_SOURCES_CHAR_CAP);
     log.info('fetch phase complete', {
       fetched: sources.filter((s) => s.fetched).length,
@@ -439,6 +444,55 @@ async function fetchSources(
   });
 
   return Promise.all(fetchPromises);
+}
+
+// C3 slice-1 — local studio artifacts as research sources. The shared studio read
+// (searchStudioArtifactKeys / getStudioArtifactByEmbedKey / studioEmbedKey) is reused
+// VERBATIM — no re-derived query. clip + qa ONLY (note → slice-2; mark has null markdown).
+// Identity = studio://<type>|<id> (a non-null url even for url-less qa; dedup-inert vs web
+// → honors C1b; re-resolvable). trusted MIRRORS content_trusted (false for clip/qa). Content
+// is local → fetched:true, never hits fetchSources/the network. Candidates are reranked onto
+// the SAME cross-encoder scale as web so the merged cap is rank-fair. RESILIENT: any throw or
+// miss logs and yields [] — a studio-read failure never aborts research (web sources stand).
+const STUDIO_RESEARCH_TYPES = new Set(['clip', 'qa']);
+
+async function collectStudioSources(question: string, limit: number): Promise<ResearchSource[]> {
+  try {
+    const keys = searchStudioArtifactKeys(question, limit);
+    if (keys.length === 0) return [];
+    const candidates: MergedResult[] = [];
+    const byUrl = new Map<string, { title: string; markdown: string; trusted: boolean }>();
+    for (const key of keys) {
+      const art = getStudioArtifactByEmbedKey(key);
+      if (!art || !STUDIO_RESEARCH_TYPES.has(art.type)) continue; // clip/qa only this slice
+      if (art.markdown === null || art.markdown.length === 0) continue;
+      const url = studioEmbedKey(art.type, art.id); // studio://<type>|<id>
+      const title = art.title ?? '';
+      candidates.push({ title, url, snippet: art.markdown, relevance_score: 0, engines: ['studio'] });
+      byUrl.set(url, { title, markdown: art.markdown, trusted: art.contentTrusted });
+    }
+    if (candidates.length === 0) return [];
+    const reranked = await rerankResults(question, candidates);
+    const sources: ResearchSource[] = [];
+    for (const r of reranked) {
+      const meta = byUrl.get(r.url);
+      if (!meta) continue;
+      sources.push({
+        url: r.url,
+        title: meta.title,
+        markdown_content: meta.markdown,
+        relevance_score: r.relevance_score,
+        fetched: true, // local content — already hydrated, no network fetch
+        trusted: meta.trusted, // mirrors content_trusted (false for clip/qa)
+      });
+    }
+    return sources;
+  } catch (err) {
+    log.warn('studio source read failed; continuing web-only', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
 }
 
 // Cap total returned markdown_content across sources in relevance order.
