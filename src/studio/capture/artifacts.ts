@@ -288,6 +288,8 @@ export interface StudioArtifactRow {
   markdown: string | null;
   /** content_trusted as a boolean — safe AS INSTRUCTIONS (human note) vs not. */
   contentTrusted: boolean;
+  /** Capture timestamp (studio_artifacts.fetched_at) — for cache-tool fetched_at. */
+  fetchedAt: string;
 }
 
 /**
@@ -309,10 +311,10 @@ export function getStudioArtifactByEmbedKey(key: string): StudioArtifactRow | nu
 
   const row = getDatabase()
     .prepare(
-      'SELECT id, artifact_type, url, title, markdown, content_trusted FROM studio_artifacts WHERE id = ?',
+      'SELECT id, artifact_type, url, title, markdown, content_trusted, fetched_at FROM studio_artifacts WHERE id = ?',
     )
     .get(id) as
-    | { id: number; artifact_type: string; url: string | null; title: string | null; markdown: string | null; content_trusted: number }
+    | { id: number; artifact_type: string; url: string | null; title: string | null; markdown: string | null; content_trusted: number; fetched_at: string }
     | undefined;
   if (!row) return null;
   // The key's type must match the stored row — guards a stale/forged key that
@@ -326,6 +328,7 @@ export function getStudioArtifactByEmbedKey(key: string): StudioArtifactRow | nu
     title: row.title,
     markdown: row.markdown,
     contentTrusted: row.content_trusted === 1,
+    fetchedAt: row.fetched_at,
   };
 }
 

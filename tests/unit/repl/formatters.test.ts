@@ -243,7 +243,7 @@ describe('formatCacheResult', () => {
   it('formats search results', () => {
     const searchOutput: CacheOutput = {
       results: [
-        { url: 'https://react.dev/hooks', title: 'React Hooks', markdown: 'content...', fetched_at: '2024-03-20T14:22:00Z' },
+        { url: 'https://react.dev/hooks', title: 'React Hooks', markdown: 'content...', fetched_at: '2024-03-20T14:22:00Z', source: 'cache', trusted: false },
       ],
     };
     const formatted = stripAnsi(formatCacheResult(searchOutput));

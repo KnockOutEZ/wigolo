@@ -11,6 +11,7 @@ import { reciprocalRankFusion, sortByRRFScore, buildRankMap } from '../search/rr
 import { applyAggregateMarkdownBudget } from '../search/evidence.js';
 import { getEmbedProvider } from '../providers/embed-provider.js';
 import { getVectorStore } from '../providers/vector-store.js';
+import { isStudioEmbedKey, getStudioArtifactByEmbedKey, searchStudioArtifactKeys } from '../studio/capture/artifacts.js';
 import { createLogger } from '../logger.js';
 import type { CacheInput, CacheOutput, CacheResultItem, ChangeReport } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
@@ -127,11 +128,12 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
       mode: input.mode,
       limit: input.limit,
     });
+    const limit = input.limit ?? DEFAULT_CACHE_QUERY_LIMIT;
     const results = searchCacheFiltered({
       query: input.query,
       urlPattern: input.url_pattern,
       since: input.since,
-      limit: input.limit ?? DEFAULT_CACHE_QUERY_LIMIT,
+      limit,
     });
 
     const mapped: CacheResultItem[] = results.map((r) => ({
@@ -139,8 +141,15 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
       title: r.title,
       markdown: r.markdown,
       fetched_at: r.fetchedAt,
+      source: 'cache',
+      trusted: false, // url_cache page — page-derived, never trusted as instructions
     }));
-    return { results: applyBudget(mapped, input.max_tokens_out) };
+    // 4d slice-3: union studio_artifacts FTS hits (only when a query drives FTS).
+    // url_cache ranking above is unchanged; studio is appended then the merge is
+    // capped to `limit`. Guarded — studio retrieval must never error the cache tool.
+    const studioHits = input.query ? studioFtsCacheResults(input.query, limit) : [];
+    const merged = dedupeByUrl([...mapped, ...studioHits]).slice(0, limit);
+    return { results: applyBudget(merged, input.max_tokens_out) };
   } catch (err) {
     log.error('Cache tool error', { error: String(err) });
     return { error: err instanceof Error ? err.message : String(err) };
@@ -159,6 +168,52 @@ function applyBudget(results: CacheResultItem[], maxTokensOut?: number): CacheRe
     { maxTokensOut },
   );
   return results;
+}
+
+/**
+ * 4d slice-3: studio_artifacts FTS hits as cache results. Hydrates via the shared
+ * getStudioArtifactByEmbedKey (no re-derivation); per-row resilient (a missing or
+ * stale key is skipped, never surfaced empty). Whole thing is guarded so any
+ * failure (e.g. studio retrieval unavailable) degrades to no studio hits rather
+ * than erroring the cache tool.
+ */
+function studioFtsCacheResults(query: string, limit: number): CacheResultItem[] {
+  try {
+    const keys = searchStudioArtifactKeys(query, limit);
+    const out: CacheResultItem[] = [];
+    for (const key of keys) {
+      try {
+        const art = getStudioArtifactByEmbedKey(key);
+        if (!art) continue;
+        out.push({
+          url: key, // C1: the stable studio URI is the identity
+          title: art.title ?? key,
+          markdown: art.markdown ?? '',
+          fetched_at: art.fetchedAt,
+          source: 'studio',
+          trusted: art.contentTrusted, // mirrors content_trusted (clips/qa => false)
+        });
+      } catch {
+        continue;
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** Dedup cache results by url, keeping the first occurrence. url_cache urls and
+ * studio://<type>|<id> URIs never collide; this collapses any within-source dups. */
+function dedupeByUrl(items: CacheResultItem[]): CacheResultItem[] {
+  const seen = new Set<string>();
+  const out: CacheResultItem[] = [];
+  for (const it of items) {
+    if (seen.has(it.url)) continue;
+    seen.add(it.url);
+    out.push(it);
+  }
+  return out;
 }
 
 /**
@@ -209,23 +264,55 @@ async function runHybridSearch(input: CacheInput): Promise<CacheResultItem[] | n
 
   const ftsRankMap = buildRankMap(ftsHits.map(h => h.url));
   const vecRankMap = buildRankMap(vecHits.map(h => h.metadata.url));
+  // 4d slice-3: studio_artifacts FTS as a SEPARATE RRF list. The vector side
+  // already returns studio://<type>|<id> keys (shared store), so a studio
+  // artifact can arrive via BOTH sides and fuse by URI to one result. Guarded.
+  let studioFtsRankMap: Map<string, number>;
+  try {
+    studioFtsRankMap = buildRankMap(searchStudioArtifactKeys(query, candidateLimit));
+  } catch {
+    studioFtsRankMap = new Map();
+  }
 
-  if (ftsRankMap.size === 0 && vecRankMap.size === 0) return [];
+  if (ftsRankMap.size === 0 && vecRankMap.size === 0 && studioFtsRankMap.size === 0) return [];
 
-  const fused = reciprocalRankFusion([ftsRankMap, vecRankMap], 60);
+  const fused = reciprocalRankFusion([ftsRankMap, studioFtsRankMap, vecRankMap], 60);
   const ordered = sortByRRFScore(fused);
 
   const results: CacheResultItem[] = [];
-  for (const [normalizedUrl] of ordered) {
+  for (const [key] of ordered) {
     if (results.length >= limit) break;
-    const cached = getCachedContentByNormalizedUrl(normalizedUrl);
-    if (!cached) continue;
-    results.push({
-      url: cached.url,
-      title: cached.title,
-      markdown: cached.markdown,
-      fetched_at: cached.fetchedAt,
-    });
+    // Route by key shape: studio://<type>|<id> hydrates from studio_artifacts BY
+    // ID (never new URL'd); url keys via url_cache. Per-row resilient — a miss or
+    // throw is skipped, never aborting the batch (the slice-1 lesson).
+    if (isStudioEmbedKey(key)) {
+      let art;
+      try {
+        art = getStudioArtifactByEmbedKey(key);
+      } catch {
+        continue;
+      }
+      if (!art) continue;
+      results.push({
+        url: key,
+        title: art.title ?? key,
+        markdown: art.markdown ?? '',
+        fetched_at: art.fetchedAt,
+        source: 'studio',
+        trusted: art.contentTrusted,
+      });
+    } else {
+      const cached = getCachedContentByNormalizedUrl(key);
+      if (!cached) continue;
+      results.push({
+        url: cached.url,
+        title: cached.title,
+        markdown: cached.markdown,
+        fetched_at: cached.fetchedAt,
+        source: 'cache',
+        trusted: false,
+      });
+    }
   }
 
   return results;

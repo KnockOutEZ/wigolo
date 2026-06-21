@@ -889,6 +889,13 @@ export interface CacheResultItem {
   title: string;
   markdown: string;
   fetched_at: string;
+  /** Provenance: 'studio' = a captured session artifact (URI studio://<type>|<id>),
+   * 'cache' = a fetched url_cache page. */
+  source: 'cache' | 'studio';
+  /** Safe AS INSTRUCTIONS — mirrors studio_artifacts.content_trusted (studio
+   * clips/qa + url_cache pages ⇒ false; human-authored studio notes ⇒ true),
+   * NOT curated_by_human. Required so a caller never sees an untagged row. */
+  trusted: boolean;
 }
 
 export interface CacheStats {
