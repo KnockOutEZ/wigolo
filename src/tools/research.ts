@@ -100,7 +100,7 @@ async function attachEvidence(out: ResearchOutput, input: ResearchInput): Promis
       s.title,
       s.url,
       s.markdown_content,
-      { maxItems: 1 },
+      { maxItems: 1, trusted: s.trusted }, // C3 slice-2: a note source (content_trusted=1) yields trusted evidence
     );
     collected.push(...evs);
   }
