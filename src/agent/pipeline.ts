@@ -8,6 +8,7 @@ import {
   checkSamplingSupport,
 } from '../search/sampling.js';
 import { isLlmConfiguredWithKeyStore, runLlmText } from '../integrations/cloud/llm/run.js';
+import { wrapUntrusted } from '../security/untrusted.js';
 import type {
   AgentInput,
   AgentOutput,
@@ -265,7 +266,9 @@ async function synthesizeViaLlmRunner(
   const maxCharsPerSource = 3000;
   const sourceBlocks = sources.map((s, i) => {
     const content = s.markdown_content.slice(0, maxCharsPerSource);
-    return `[${i + 1}] ${s.title} (${s.url})\n${content}`;
+    // P6-a: the page body goes INSIDE the untrusted-data fence so an injected directive is
+    // read by the synthesis model as quoted data, not as an instruction.
+    return `[${i + 1}] ${s.title} (${s.url})\n${wrapUntrusted(content)}`;
   });
   const truncated = sourceBlocks.join('\n\n').slice(0, 40000);
   const fullPrompt =
@@ -286,7 +289,8 @@ async function synthesizeWithSampling(
     const maxCharsPerSource = 3000;
     const sourceBlocks = sources.map((s, i) => {
       const content = s.markdown_content.slice(0, maxCharsPerSource);
-      return `[${i + 1}] ${s.title} (${s.url})\n${content}`;
+      // P6-a: fence the page body as untrusted data inside the sampling prompt.
+      return `[${i + 1}] ${s.title} (${s.url})\n${wrapUntrusted(content)}`;
     });
 
     const totalSourceText = sourceBlocks.join('\n\n');
@@ -340,14 +344,18 @@ function buildFallbackSynthesis(prompt: string, sources: AgentSource[]): string 
     result += sourceHeader;
     remaining -= sourceHeader.length;
 
-    const contentBudget = Math.min(remaining - 10, source.markdown_content.length, 1500);
+    // P6-a: reserve room for the untrusted-data fence so the content is truncated before
+    // wrapping and the fence stays well-formed within the budget.
+    const wrapOverhead = wrapUntrusted('').length;
+    const contentBudget = Math.min(remaining - 10 - wrapOverhead, source.markdown_content.length, 1500);
     if (contentBudget > 0) {
       let content = source.markdown_content.slice(0, contentBudget);
       if (content.length < source.markdown_content.length) {
         content = content.slice(0, Math.max(contentBudget - 3, 0)) + '...';
       }
-      result += content + '\n\n';
-      remaining -= content.length + 2;
+      const wrapped = wrapUntrusted(content);
+      result += wrapped + '\n\n';
+      remaining -= wrapped.length + 2;
     }
   }
 
