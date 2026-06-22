@@ -945,6 +945,15 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     const base = `http://127.0.0.1:${port}`;
     const page = host.sessionBrowser.page as unknown as import('playwright').Page;
     try {
+      // 0. NEGATIVE CONTROL (L-5c-1): /protected is cookie-CONTINGENT — with NO auth cookie it returns the
+      //    401 branch, not the authed body. This makes the post-completion positive below a real
+      //    AUTHENTICATION proof (the agent's 200 depends on the cookie carried in the live context), not a
+      //    mere reachability flip against an unconditional handler. Same /protected path the agent later hits.
+      await host.sessionBrowser.navigate(`${base}/protected`);
+      const preLoginBody = await page.evaluate(() => document.body.textContent);
+      expect(preLoginBody, 'pre-login /protected must be the 401 branch (no cookie)').toContain('UNAUTHORIZED-401');
+      expect(preLoginBody).not.toContain('PROTECTED-AUTHED-OK');
+
       // 1. On the credential wall → open the human-holding handoff window (baseline: no auth cookie yet).
       await host.sessionBrowser.navigate(`${base}/login`);
       await host.handoff.detectWall();

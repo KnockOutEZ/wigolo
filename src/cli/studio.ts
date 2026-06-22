@@ -99,6 +99,10 @@ export interface StudioHostOptions extends StudioArgs {
   profileStore?: ProfileStore;
   /** Inject the mark store (tests). Defaults to a fresh in-memory MarkStore. */
   markStore?: MarkStore;
+  /** 5e-c: host-level surface for a login-profile PERSIST failure on completion. Defaults to a host log. The
+   *  live session is authenticated + re-granted regardless (persist = future reuse); this keeps the failure
+   *  visible without propagating it as an unhandled rejection. Receives the error only — never any storageState. */
+  onLoginPersistError?: (err: unknown) => void;
 }
 
 export interface StudioHost {
@@ -247,7 +251,22 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       const r = await profileStore.get(profileId);
       return r.ok ? (JSON.parse(r.storageState) as StorageStateInput) : undefined;
     };
-    onLoginComplete = createLoginCapture({ profilePersist: profileStore, profileId });
+    const capture = createLoginCapture({ profilePersist: profileStore, profileId });
+    // 5e-c closeout (L-5c-2): the completing re-grant fires regardless of the persist (in settleCompleted's
+    // `finally`), so a persist FAILURE must not propagate out of onComplete — both checkCompletion callers
+    // (the bounded poll + the human-nav handler) invoke it as a fire-and-forget `void`, where a rejection
+    // would be an unhandled rejection / host crash. Catch at this host boundary and surface it (NO storageState
+    // is passed to the surface — the error only), so the failure is visible but the agent still resumes.
+    const surfacePersistError =
+      opts.onLoginPersistError ??
+      ((err: unknown) => logger.warn('login profile persist failed; session re-granted regardless', { error: err instanceof Error ? err.message : String(err) }));
+    onLoginComplete = async (ctx) => {
+      try {
+        await capture(ctx);
+      } catch (err) {
+        surfacePersistError(err);
+      }
+    };
   }
   const sessionBrowser = new SessionBrowser({ sessionId: session.id, launch: opts.browserLauncher, loadProfile });
   await sessionBrowser.start();
