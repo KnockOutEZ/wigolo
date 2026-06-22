@@ -13,8 +13,8 @@
  *
  * LOCKED terminals (aborted / vanished) NEVER re-grant the agent and NEVER invoke the hook:
  * a disconnect or a give-up must not silently resume an agent into a half-finished login.
- * In 5e-a NO terminal re-grants the agent at all (re-grant is 5e-c); the only token op the
- * machine performs is the wall-detect `reclaim`. The hook fires ONLY on detected completion.
+ * Only the COMPLETING terminal re-grants (5e-c): after the hook resolves it hands the wheel back
+ * so the agent resumes the now-authenticated session. The hook fires ONLY on detected completion.
  *
  * Completion is conservative and AND-gated: the live page must have LEFT the credential
  * context AND a MEANINGFUL storageState delta must have appeared for the wall origin (a real
@@ -262,8 +262,17 @@ export class LoginHandoff {
     this.clearTimers();
     this._state = 'completed';
     this._signal = { state: 'completed' };
-    // The hook (5e-b persist origin-scoped, 5e-c re-grant + resume). 5e-a does NOT re-grant here.
-    await this.deps.onComplete?.({ storageState: current, wallOrigin: this.wallOrigin });
+    // 5e-b: persist the captured session origin-scoped (FUTURE reuse). 5e-c: re-grant the agent so it
+    // resumes driving the LIVE, now-authenticated session (the signal above is the login_handoff:completed
+    // the agent observes). The grant is in `finally`: the live context is authenticated regardless of the
+    // persist outcome, so a transient persist failure must NOT strand the agent — yet the rejection still
+    // propagates (a persist failure is surfaced, never silent). This re-grant is on the COMPLETING path
+    // ONLY; settleFailed (abort/vanish) NEVER grants — a disconnect/timeout must not resume the agent.
+    try {
+      await this.deps.onComplete?.({ storageState: current, wallOrigin: this.wallOrigin });
+    } finally {
+      this.deps.controlToken.grant('agent');
+    }
   }
 
   private settleFailed(state: 'aborted' | 'vanished'): void {
