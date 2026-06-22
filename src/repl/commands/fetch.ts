@@ -41,7 +41,8 @@ export async function executeFetch(args: ParsedArgs, deps: ReplDeps): Promise<Fe
     }
 
     log.debug('executing fetch command', { url, flags: args.flags });
-    const r = await handleFetch(input, deps.router);
+    // REPL is a human-initiated entry — may reach a local dev server (P6-a source policy).
+    const r = await handleFetch(input, deps.router, 'human');
     if (!r.ok) {
       return {
         url,

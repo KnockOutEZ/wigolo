@@ -11,6 +11,7 @@ import { truncateSmartly, applyOutputBudget } from '../search/truncate.js';
 import { buildEvidenceFromMarkdown } from '../search/evidence.js';
 import { resolveMode } from '../util/mode.js';
 import { createLogger } from '../logger.js';
+import type { NavSource } from '../security/ssrf.js';
 
 const log = createLogger('fetch');
 
@@ -149,6 +150,7 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
 export async function handleFetch(
   input: FetchInput,
   router: SmartRouter,
+  source: NavSource = 'agent',
 ): Promise<StageResult<FetchOutput>> {
   const mode = resolveMode(input.mode);
   const _fetchStart = Date.now();
@@ -206,6 +208,7 @@ export async function handleFetch(
       screenshot: input.screenshot,
       actions: input.actions,
       mode,
+      source, // P6-a: agent (default) blocks private; human (REPL) may reach localhost
     });
 
     // T11: stealth mode can return a StageError (e.g., playwright_not_installed,

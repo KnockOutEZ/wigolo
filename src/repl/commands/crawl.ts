@@ -37,7 +37,8 @@ export async function executeCrawl(
     }
 
     log.debug('executing crawl command', { url, flags: args.flags });
-    return await handleCrawl(input, deps.router);
+    // REPL is a human-initiated entry — may reach a local dev server (P6-a source policy).
+    return await handleCrawl(input, deps.router, 'human');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error('crawl command failed', { error: msg });

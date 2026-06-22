@@ -788,7 +788,7 @@ describe('handleFetch --- evidence shape', () => {
 describe('handleFetch — source-aware SSRF threading (P6-a exfil leg)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getCachedContent).mockReturnValue(undefined); // cache miss → reach router.fetch
+    vi.mocked(getCachedContent).mockReturnValue(null); // cache miss → reach router.fetch
   });
 
   it('threads source=human into router.fetch (human/REPL entry may reach localhost)', async () => {
