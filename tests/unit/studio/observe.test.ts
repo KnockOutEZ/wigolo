@@ -256,3 +256,29 @@ describe('createObserver — Slice 5e-a login_handoff signal delivery (the agent
     expect(r.login_handoff).toBeUndefined();
   });
 });
+
+describe('createObserver — the page-perception payload carries the untrusted-data notice (P6-a)', () => {
+  it('a full snapshot result carries a well-formed untrusted-data instruction-channel statement', async () => {
+    const r = ok(await observer(async () => mkSnap('s1', [el('e1', 'A')]), new StudioEventQueue(100))({}));
+    expect(r.kind).toBe('full');
+    expect(typeof r.untrusted_notice).toBe('string');
+    expect(r.untrusted_notice).toMatch(/UNTRUSTED DATA/);
+    expect(r.untrusted_notice.toLowerCase()).toMatch(/not.*instruction|never.*(follow|obey|execute)/);
+  });
+
+  it('the notice is present and IDENTICAL on a credential-context result (never gated on a flag)', async () => {
+    const full = ok(await observer(async () => mkSnap('s1', [el('e1', 'A')]), new StudioEventQueue(100))({}));
+    const credObs = createObserver({
+      snapshot: async () => mkSnap('sC', [el('e1', 'secret-code')]),
+      eventQueue: new StudioEventQueue(100),
+      inlineBudget: 100000,
+      spillMaxBytes: 10_000_000,
+      dataDir: dir,
+      currentUrl: () => 'https://acme.example/login',
+    });
+    const cred = ok(await credObs({}));
+    expect(cred.credentialContext).toBe(true);
+    expect(typeof cred.untrusted_notice).toBe('string');
+    expect(cred.untrusted_notice).toBe(full.untrusted_notice); // same statement whether or not it's a credential page
+  });
+});
