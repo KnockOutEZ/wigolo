@@ -42,6 +42,8 @@ import { writeHandle } from '../../../src/studio/handle.js';
 import type { LaunchedSessionBrowser, StorageStateOut } from '../../../src/studio/session-browser.js';
 import { MarkStore } from '../../../src/studio/mark/store.js';
 import type { ProfileStore } from '../../../src/studio/profile-store.js';
+import { scopeStorageStateToOrigin } from '../../../src/studio/login-capture.js';
+import { readFileSync } from 'node:fs';
 
 // Slice 5e-a — a session-browser launcher whose live page URL + storageState are MUTABLE, so a test
 // can drive the login-handoff window: an agent act lands on a credential URL (wall), then the human
@@ -569,5 +571,89 @@ describe('cli/studio startStudioHost', () => {
 
     await host.bridge.stop();
     await host.daemon.stop();
+  });
+});
+
+// Slice 5e-b-h — TEST-ONLY hardening pins closing the 5e-b mutation-coverage gaps. The src is already
+// correct; each pin's VALIDITY is proven by mutation (mutate the real predicate → the named pin reddens
+// → revert), recorded in the slice report — NOT by a manufactured RED. Co-located here (the already-gated
+// cli/studio.test.ts) so the pins are in typecheck:studio WITHOUT bumping check-gate 23→24 (a new include
+// entry would; login-capture.js/profile-store.js are not safety-gated modules, so importing them adds no
+// offender). Grounded divergence vs a new login-capture.test.ts file, forced by the 23-pin gate budget.
+describe('cli/studio 5e-b-h — credential-persist hardening pins (validity by mutation)', () => {
+  // PIN-M8 [HIGH/security] — no-logger tripwire on the credential-persist path. SOURCE-LEVEL, not a
+  // logger seam: we do NOT thread a logger in (that would weaken the structural-by-absence guarantee).
+  // This reddens the moment a logger/console reference lands on login-capture.ts OR profile-store.ts,
+  // forcing a no-sensitive-field assertion at that point. Validate: add a logger ref → this reddens.
+  it('PIN-M8: the credential-persist modules import/reference no logger or console (no-leak tripwire)', () => {
+    for (const rel of ['login-capture.ts', 'profile-store.ts']) {
+      const src = readFileSync(new URL(`../../../src/studio/${rel}`, import.meta.url), 'utf8');
+      // Strip comments so the doc-prose ("emits no logs") cannot satisfy the tripwire — only CODE counts.
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
+      expect(code, `${rel} must not import a logger`).not.toMatch(/createLogger|from\s+['"][^'"]*logger\.js['"]/);
+      expect(code, `${rel} must not reference console`).not.toMatch(/\bconsole\s*\./);
+    }
+  });
+
+  // PIN-M4 [HIGH/leak] — the dot-boundary in the RFC-6265 host-match is load-bearing. A SUFFIX-confusion
+  // wall host (notacme.example) must NOT receive an acme.example cookie. Validate: '.'+d → d → this
+  // reddens (notacme.example.endsWith('acme.example') === true wrongly KEEPS the unrelated-domain cookie).
+  it('PIN-M4: suffix-confusion — wall notacme.example DROPS an acme.example cookie (dot-boundary)', () => {
+    const out = scopeStorageStateToOrigin({ cookies: [cookie('s', 'acme.example')], origins: [] }, 'https://notacme.example');
+    expect(out.cookies).toEqual([]);
+  });
+
+  // PIN-M2 [LOW] — the KEEP direction of L6a (honest both-directions). A wall host that is a SUBDOMAIN of
+  // the cookie domain (app.acme.example under acme.example) must KEEP the parent cookie — a request from
+  // app.acme.example would carry it. Validate: drop the h.endsWith('.'+d) arm → this reddens (dropped).
+  it('PIN-M2: subdomain wall app.acme.example KEEPS an acme.example parent cookie', () => {
+    const out = scopeStorageStateToOrigin({ cookies: [cookie('auth', 'acme.example')], origins: [] }, 'https://app.acme.example');
+    expect(out.cookies.map((c) => c.name)).toEqual(['auth']);
+  });
+
+  // PIN-M5b [LOW-MED] — localStorage is partitioned by scheme+host+port (no domain tree). A cross-SCHEME
+  // (http://) and a cross-PORT (:8443) same-host origin must BOTH be dropped. Validate: relax the origin
+  // filter to host-only (strip scheme+port) → this reddens (host-only wrongly keeps all three).
+  it('PIN-M5b: localStorage drops cross-scheme and cross-port same-host origins (exact scheme+host+port)', () => {
+    const out = scopeStorageStateToOrigin(
+      {
+        cookies: [],
+        origins: [
+          { origin: 'https://acme.example', localStorage: [{ name: 'keep', value: '1' }] },
+          { origin: 'http://acme.example', localStorage: [{ name: 'drop_scheme', value: '1' }] },
+          { origin: 'https://acme.example:8443', localStorage: [{ name: 'drop_port', value: '1' }] },
+        ],
+      },
+      'https://acme.example',
+    );
+    expect(out.origins.map((o) => o.origin)).toEqual(['https://acme.example']);
+  });
+
+  // PIN-M7 [LOCKED-A] — named-profile-only as a VALUE-FLIP pin (replaces 5e-b's incidental keychain-crash
+  // redden). A spy store is injected but NO profileId is opted in: the gate must leave onComplete unwired
+  // so ProfileStore.set is called ZERO times even though the handoff completes. Validate: remove the
+  // if(opts.profileId) gate AND supply a defaulted profileId (the brittle refactor) → this spy reddens
+  // (set called once) while the old test 531 — which asserts only state==='completed' — stays green.
+  it('PIN-M7: a no-profile session completing the handoff calls ProfileStore.set ZERO times', async () => {
+    const setCalls: Array<{ profileId: string; json: string }> = [];
+    const spyStore = {
+      get: async () => ({ ok: false as const, reason: 'profile_absent' as const }),
+      set: async (profileId: string, json: string) => { setCalls.push({ profileId, json }); },
+    } as unknown as ProfileStore;
+    const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
+    // Store injected, but NO profileId → the named-profile gate must leave the capture unwired.
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch, profileStore: spyStore,
+    });
+    try {
+      await host.handoff.detectWall();
+      launcher.state.url = 'https://acme.example/dashboard';
+      launcher.state.storage = { cookies: [cookie('session', 'acme.example')], origins: [] };
+      await host.handoff.checkCompletion();
+      expect(host.handoff.state).toBe('completed'); // completion still detected…
+      expect(setCalls.length).toBe(0); // …but NOTHING persisted — no profile opted in
+    } finally {
+      await host.daemon.stop();
+    }
   });
 });
