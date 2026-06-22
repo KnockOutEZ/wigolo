@@ -157,10 +157,59 @@ describe('createObserver — Slice 5a non-serialization: host-side credential ma
     expect(wire).not.toContain('hasCredentialField');
     expect(wire).not.toContain('password'); // neither type="password" nor the autocomplete token "current-password" leaks
     expect(wire).not.toContain('autocomplete');
-    const parsed = JSON.parse(wire) as { kind: string; elements?: Array<Record<string, unknown>> };
-    expect(parsed.kind).toBe('full');
-    for (const e of parsed.elements ?? []) {
-      expect(Object.keys(e).sort()).toEqual(['name', 'ref', 'role']); // only the agent-facing triple — no tag/type/autocomplete
-    }
+    const parsed = JSON.parse(wire) as { kind: string; credentialContext?: boolean; elements?: unknown[] };
+    // 5e-0 boundary: a credential snapshot is now also a credential CONTEXT, so observe excludes ALL
+    // page content (no elements) and returns the credential-context signal. The host-side maps stay
+    // absent (the original 5a non-serialization pin); "elements present + maps absent" moves to the
+    // 5e-0 non-credential negative control below.
+    expect(parsed.credentialContext).toBe(true);
+    expect(parsed.elements ?? []).toEqual([]);
+  });
+});
+
+describe('createObserver — Slice 5e-0 credential-context perception exclusion (the agent READ path)', () => {
+  let dir2: string;
+  beforeEach(() => { dir2 = mkdtempSync(join(tmpdir(), 'wigolo-observe-5e0-')); });
+  afterEach(() => { rmSync(dir2, { recursive: true, force: true }); });
+
+  const credObserver = (snapshot: () => Promise<PageSnapshot>, currentUrl: () => string | undefined) =>
+    createObserver({ snapshot, eventQueue: new StudioEventQueue(100), inlineBudget: 100000, spillMaxBytes: 10_000_000, dataDir: dir2, currentUrl });
+
+  it('PRIMARY: a credential page that DISPLAYS a secret (surfaced as an interactive element NAME) → observe EXCLUDES all page content, returns only the credential-context signal', async () => {
+    // The displayed secret reaches the agent as an element NAME (the a11y snapshot carries interactive
+    // names) — NOT merely a password field's label. A 2FA/recovery code shown as a link/button text is
+    // exactly this. The password field makes the page a credential context.
+    const axNodes: AxNode[] = [
+      { ignored: false, role: { value: 'link' }, name: { value: '123456' }, backendDOMNodeId: 10 }, // the displayed secret, as an element name
+      { ignored: false, role: { value: 'textbox' }, name: { value: 'Password' }, backendDOMNodeId: 11 }, // the credential field → credential context
+    ];
+    const root: DomNode = {
+      backendNodeId: 1, localName: 'html',
+      children: [{ backendNodeId: 2, localName: 'body', children: [
+        { backendNodeId: 10, localName: 'a', attributes: [] },
+        { backendNodeId: 11, localName: 'input', attributes: ['type', 'password'] },
+      ] }],
+    };
+    const snap = async () => buildSnapshot(axNodes, root, { tokenBudget: 100000 });
+    // Non-vacuity: the secret IS in the raw snapshot's agent-facing elements (so the exclusion has something to remove).
+    expect(JSON.stringify((await snap()).elements)).toContain('123456');
+
+    const r = ok(await credObserver(snap, () => 'https://example.com/account')({})); // non-login URL; the password FIELD drives the credential context
+    expect(r).toMatchObject({ credentialContext: true });
+    const wire = JSON.stringify(r);
+    // MUTATION: remove the observe credential-context exclusion → the displayed "123456" + the field names appear in the agent payload → these RED.
+    expect(wire, 'the displayed secret is excluded from the agent payload').not.toContain('123456');
+    expect(wire, 'field names/labels are excluded too').not.toContain('Password');
+  });
+
+  it('NEGATIVE CONTROL: a NON-credential page → normal full observe payload (no over-suppression); host-side maps still excluded', async () => {
+    const axNodes: AxNode[] = [{ ignored: false, role: { value: 'link' }, name: { value: 'Dashboard' }, backendDOMNodeId: 10 }];
+    const root: DomNode = { backendNodeId: 1, localName: 'html', children: [{ backendNodeId: 2, localName: 'body', children: [{ backendNodeId: 10, localName: 'a', attributes: [] }] }] };
+    const r = ok(await credObserver(async () => buildSnapshot(axNodes, root, { tokenBudget: 100000 }), () => 'https://example.com/home')({}));
+    expect(r.credentialContext).toBeUndefined(); // not a credential page → not flagged
+    const wire = JSON.stringify(r);
+    expect(wire, 'normal page content IS delivered').toContain('Dashboard');
+    expect(wire).not.toContain('domByRef'); // host-side maps still excluded (5a holds, with elements present)
+    expect(wire).not.toContain('hasCredentialField');
   });
 });
