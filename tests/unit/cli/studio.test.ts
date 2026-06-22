@@ -767,3 +767,105 @@ describe('cli/studio 5e-c closeout — persist-error surface (B1/L-5c-2) + no-le
     }
   });
 });
+
+// Slice 5eb1 — bind a named profile to its origin (close the confused-deputy persist gap). Opting into
+// profile X for origin X, then completing a login on a DIFFERENT origin Y, must NOT persist Y's creds
+// under X. Policy (a): refuse-persist on mismatch + surface a secret-free signal; the 5e-c re-grant still
+// fires (the binding gates WHERE creds persist, not whether the live session resumes). Backward-compatible:
+// with no profileOrigin bound, persist behaves as before (the sealed 5e-b/5e-c tests are unchanged).
+describe('cli/studio 5eb1 — named-profile↔origin binding (confused-deputy guard)', () => {
+  const profileSpy = () => {
+    const setCalls: Array<{ profileId: string; json: string }> = [];
+    const store = {
+      get: async () => ({ ok: false as const, reason: 'profile_absent' as const }),
+      set: async (profileId: string, json: string) => { setCalls.push({ profileId, json }); },
+    } as unknown as ProfileStore;
+    return { store, setCalls };
+  };
+
+  it('PIN-1 (mismatch — NO cross-persist): profile X bound to origin X, a login completing on a DIFFERENT origin Y does NOT persist under X', async () => {
+    // MUTATION (relax the wallOrigin-match guard to always-match): set('github', Yscoped) fires → the
+    // confused-deputy cross-persist returns → RED. The guard refuses persist when the completed origin
+    // does not match the origin bound to the opted-into profile.
+    const { store, setCalls } = profileSpy();
+    const launcher = makeWallLauncher({ url: 'https://evil.example/login' }); // login wall on Y
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+      profileId: 'github', profileStore: store, profileOrigin: 'https://github.com', // bound to X ≠ Y
+    });
+    try {
+      await host.handoff.detectWall(); // wallOrigin = https://evil.example (Y)
+      launcher.state.url = 'https://evil.example/dashboard';
+      launcher.state.storage = { cookies: [cookie('session', 'evil.example')], origins: [] };
+      await host.handoff.checkCompletion();
+      expect(host.handoff.state).toBe('completed');
+      expect(setCalls.length).toBe(0); // Y's creds NEVER land under X — the confused-deputy refusal
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  it('PIN-2 (match — STILL persists): profile X bound to origin X, a login completing on X persists under X (the guard is not too strict)', async () => {
+    const { store, setCalls } = profileSpy();
+    const launcher = makeWallLauncher({ url: 'https://github.com/login' });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+      profileId: 'github', profileStore: store, profileOrigin: 'https://github.com',
+    });
+    try {
+      await host.handoff.detectWall();
+      launcher.state.url = 'https://github.com/dashboard';
+      launcher.state.storage = { cookies: [cookie('session', 'github.com')], origins: [] };
+      await host.handoff.checkCompletion();
+      expect(setCalls.length).toBe(1); // the bound origin matches → persists as before (L6a both-directions)
+      expect(setCalls[0].profileId).toBe('github');
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  it('PIN-3 (mismatch signal is SECRET-FREE): the origin-mismatch signal carries origins/profileId ONLY — never a cookie/storageState field', async () => {
+    const SECRET = 'SUPER_SECRET_MISMATCH_TOKEN_7a2f';
+    const mismatches: unknown[] = [];
+    const { store } = profileSpy();
+    const launcher = makeWallLauncher({ url: 'https://evil.example/login' });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+      profileId: 'github', profileStore: store, profileOrigin: 'https://github.com',
+      onLoginOriginMismatch: (info) => mismatches.push(info),
+    });
+    try {
+      await host.handoff.detectWall();
+      launcher.state.url = 'https://evil.example/dashboard';
+      launcher.state.storage = {
+        cookies: [{ name: 'session', value: SECRET, domain: 'evil.example', path: '/', expires: -1, httpOnly: false, secure: false, sameSite: 'Lax' }],
+        origins: [],
+      };
+      await host.handoff.checkCompletion();
+      expect(mismatches.length).toBe(1); // the mismatch WAS surfaced (visible, not silent)
+      // MUTATION (embed scopedJSON/the cookie in the signal): this reddens.
+      expect(JSON.stringify(mismatches[0])).not.toContain(SECRET);
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  it('PIN-4 (re-grant INDEPENDENT of the binding): a mismatch refuses persist but the agent is STILL re-granted (5e-c continuity intact)', async () => {
+    const { store } = profileSpy();
+    const launcher = makeWallLauncher({ url: 'https://evil.example/login' });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+      profileId: 'github', profileStore: store, profileOrigin: 'https://github.com',
+    });
+    try {
+      await host.handoff.detectWall();
+      launcher.state.url = 'https://evil.example/dashboard';
+      launcher.state.storage = { cookies: [cookie('session', 'evil.example')], origins: [] };
+      await host.handoff.checkCompletion();
+      expect(host.handoff.state).toBe('completed');
+      expect(host.controller.controlSnapshot().holder).toBe('agent'); // re-granted despite refuse-persist
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+});
