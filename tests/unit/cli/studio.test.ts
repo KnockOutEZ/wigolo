@@ -41,7 +41,7 @@ import { getEmbedProvider } from '../../../src/providers/embed-provider.js';
 import { writeHandle } from '../../../src/studio/handle.js';
 import type { LaunchedSessionBrowser, StorageStateOut } from '../../../src/studio/session-browser.js';
 import { MarkStore } from '../../../src/studio/mark/store.js';
-import type { ProfileStore } from '../../../src/studio/profile-store.js';
+import { ProfileStore } from '../../../src/studio/profile-store.js';
 import { scopeStorageStateToOrigin } from '../../../src/studio/login-capture.js';
 import { readFileSync } from 'node:fs';
 
@@ -655,5 +655,56 @@ describe('cli/studio 5e-b-h — credential-persist hardening pins (validity by m
     } finally {
       await host.daemon.stop();
     }
+  });
+});
+
+// Slice 5e-c closeout — the persist-error path must land VISIBLY (not an unhandledRejection / host crash)
+// and carry no credential material. B1 is a real RED→GREEN (the defect: the propagated persist-rejection
+// was unhandled in both checkCompletion callers — the void poll + the void navigate handler).
+describe('cli/studio 5e-c closeout — persist-error surface (B1/L-5c-2) + no-leak (B2/L-5bh-1)', () => {
+  it('B1: a persist failure on completion is SURFACED to a host handler (not unhandled/crash), checkCompletion resolves, and the agent is STILL re-granted', async () => {
+    // MUTATION (drop the onComplete error-wrap in cli/studio.ts): the persist rejection propagates out of
+    // settleCompleted → checkCompletion rejects (an unhandledRejection in the void poll/navigate callers)
+    // → the resolves assertion reddens. The fix catches at the host boundary: surface it, keep the re-grant.
+    const persistErrors: unknown[] = [];
+    const failingStore = {
+      get: async () => ({ ok: false as const, reason: 'profile_absent' as const }),
+      set: async () => { throw new Error('disk full — persist failed'); },
+    } as unknown as ProfileStore;
+    const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+      profileId: 'gh', profileStore: failingStore, onLoginPersistError: (err) => persistErrors.push(err),
+    });
+    try {
+      await host.handoff.detectWall();
+      launcher.state.url = 'https://acme.example/dashboard';
+      launcher.state.storage = { cookies: [cookie('session', 'acme.example')], origins: [] };
+
+      // The persist throws — completion must NOT reject (no unhandled rejection / host crash).
+      await expect(host.handoff.checkCompletion()).resolves.toBeUndefined();
+      expect(host.handoff.state).toBe('completed');
+      expect(persistErrors.length).toBe(1); // the host-level handler OBSERVED it — surfaced, not swallowed
+      expect(host.controller.controlSnapshot().holder).toBe('agent'); // …and the agent was STILL re-granted
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  it('B2: a ProfileStore.set failure throws an error carrying NO credential material (no cookie value / storageState plaintext)', async () => {
+    // The error-as-leak vector B1 propagates + logs: the thrown error must never embed the secret.
+    const SECRET = 'SUPER_SECRET_SESSION_TOKEN_4f3a9b';
+    const storageStateJson = JSON.stringify({
+      cookies: [{ name: 'session', value: SECRET, domain: 'acme.example', path: '/', expires: -1, httpOnly: false, secure: false, sameSite: 'Lax' }],
+      origins: [],
+    });
+    // keychain unavailable → set() fail-closes BEFORE any write (no plaintext, no scrypt file).
+    const store = new ProfileStore({ dataDir: '/tmp/wigolo-b2-noexist', keychain: { available: () => false, getKek: () => null, setKek: () => {} } });
+    let thrown: unknown;
+    try { await store.set('p', storageStateJson); } catch (e) { thrown = e; }
+    expect(thrown, 'set() must fail-closed when the keychain is unavailable').toBeInstanceOf(Error);
+    // MUTATION (embed storageStateJson in the thrown error): this assertion reddens.
+    const errStr = `${(thrown as Error).message}\n${(thrown as Error).stack ?? ''}`;
+    expect(errStr).not.toContain(SECRET);
   });
 });
