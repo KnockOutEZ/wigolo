@@ -68,6 +68,13 @@ export interface StudioObserveOutput {
    * Host-set; mirrors the 5b capture-exclusion for the agent's read path.
    */
   credentialContext?: boolean;
+  /**
+   * Slice 5e-a: the login-wall handoff signal. `in_progress` (with `doNotRetry`) while a login
+   * wall is being handled by the human — the agent waits rather than retrying into the fence — or
+   * the settled `completed` / `failed`. Carries ONLY the state: never storageState, cookies, or
+   * page content. Host-set; absent when no handoff is active.
+   */
+  login_handoff?: { state: 'in_progress' | 'completed' | 'failed'; doNotRetry?: true };
 }
 
 export interface StudioActInput {

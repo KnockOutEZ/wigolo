@@ -21,6 +21,7 @@ import type { PageSnapshot, SnapshotElement } from './perception/snapshot.js';
 import type { StudioEventQueue } from './event-queue.js';
 import type { StudioObserveInput, StudioObserveOutput, StudioToolError } from '../daemon/studio-dispatch.js';
 import { isCredentialContext } from './credential.js';
+import type { LoginHandoffSignal } from './handoff.js';
 
 export interface ObserverDeps {
   /** Take the live snapshot (the host binds this to sessionBrowser.cdp). */
@@ -35,6 +36,12 @@ export interface ObserverDeps {
   maxStableRetries?: number;
   /** Slice 5e-0: the live page URL (host-observed) — the hard half of the credential-context check. Optional; absent ⇒ URL contributes nothing (field-present still applies). */
   currentUrl?: () => string | undefined;
+  /**
+   * Slice 5e-a: the current login_handoff signal (pulled fresh each observe) — in_progress while
+   * a login wall is being handled (the agent waits, does not retry), or the settled completed/failed.
+   * Carries ONLY the state, never page content or storageState. Null ⇒ no active handoff ⇒ no field.
+   */
+  handoffSignal?: () => LoginHandoffSignal | null;
 }
 
 /** Build the observe closure. Holds per-session `lastSnapshot` for diffing; otherwise stateless. */
@@ -79,6 +86,12 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
     // code) and returns ONLY the credential-context signal so the agent waits. Events are NOT drained
     // (preserved for after; a content-bearing mark/nav event must not leak either), and lastSnapshot is
     // NOT updated (the credential snapshot never enters a later diff). Mirrors 5b's capture-exclusion.
+    // Slice 5e-a: the login_handoff signal rides every live observe (pulled fresh) so the agent
+    // learns to wait (in_progress) or that the handoff settled — on the credential short-circuit
+    // (the handoff window IS a credential context) AND the normal path (the completed settle, by
+    // then off the credential screen). Carries only {state}, never content/storageState.
+    const handoff = deps.handoffSignal?.() ?? null;
+
     if (isCredentialContext({ pageUrl: deps.currentUrl?.(), fields: snap.domByRef?.values() })) {
       return {
         id: snap.id,
@@ -90,6 +103,7 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
         eventCursor: input.since ?? 0,
         eventsDropped: 0,
         domTruncated: false,
+        ...(handoff ? { login_handoff: handoff } : {}),
       };
     }
 
@@ -106,6 +120,7 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
       eventCursor: cursor, // advanced to the captured instant — gap events are acked, never replayed
       eventsDropped: drained.dropped,
       domTruncated: snap.domTruncated,
+      ...(handoff ? { login_handoff: handoff } : {}),
     };
 
     if (resolved.kind === 'full') {

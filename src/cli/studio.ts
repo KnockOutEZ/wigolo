@@ -29,6 +29,7 @@ import { SessionApprovals } from '../studio/approvals.js';
 import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
 import { isCredentialContext } from '../studio/credential.js';
+import { LoginHandoff } from '../studio/handoff.js';
 import { buildTarget, buildTargetFromFlat, indexAxByBackendNode, type StructuredTarget } from '../studio/mark/target.js';
 import { heal, type HealResult } from '../studio/mark/heal.js';
 import { generalize, applyGeometry, type GenBox } from '../studio/mark/generalize.js';
@@ -123,7 +124,7 @@ export interface StudioHost {
   marksTool: (input: StudioMarksInput) => Promise<StudioMarksOutput | StudioGeneralizeOutput | StudioToolError>;
   /** The agent's observe verb (studio_observe) — host-authoritative snapshot + event drain. Exposed for the host-boundary/headed tests. */
   observe: (input: StudioObserveInput) => Promise<StudioObserveOutput | StudioToolError>;
-  /** The agent's acting verb (studio_act) — gate + live ref-resolve + the token-gated input channel, host-authoritative. Exposed for the host-boundary tests. */
+  /** The agent's acting verb (studio_act), wrapped so a post-act login wall hands off to the human (5e-a). Host-authoritative. Exposed for the host-boundary tests. */
   act: (input: StudioActInput) => Promise<StudioActOutput | StudioToolError>;
   /** Phase 6b: the per-session append-only audit log of every agent action + outcome (for trust + the Phase-7 replay timeline). Exposed for the timeline + headed tests. */
   audit: SessionAuditLog;
@@ -131,6 +132,8 @@ export interface StudioHost {
   approvals: SessionApprovals;
   /** Human-only, per-session, revocable: lift the agent's localhost/RFC1918 nav block (cloud-metadata stays blocked). */
   grantAgentPrivateNav: (on: boolean) => void;
+  /** Slice 5e-a: the login-wall handoff machine — wall-detect → human-holding → completing/aborted/vanished. Exposed for the host-boundary/headed tests. */
+  handoff: LoginHandoff;
   hub: StudioWsHub;
   handle: SessionHandle;
   endpoint: string;
@@ -166,6 +169,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // but the hub (which routes client ack/input/control to them) precedes the daemon.
   let bridge: ScreencastBridge | undefined;
   let controller: SessionController | undefined;
+  // Late-bound like controller: the login-wall handoff machine is created once the session
+  // browser + perception are up, but the hub's onDetach (which routes a client disconnect to
+  // it for the LOCKED vanish) must be wired before the daemon.
+  let handoff: LoginHandoff | undefined;
   let onNavHandler: ((msg: Record<string, unknown>) => void) | undefined;
   let onMarkHandler: ((msg: Record<string, unknown>) => void) | undefined;
   let onApprovalHandler: ((msg: Record<string, unknown>) => void) | undefined;
@@ -182,6 +189,8 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       // A disconnect (graceful, error, or heartbeat reap of a half-open client)
       // releases any input the holder left pressed — no stranded drag/modifier.
       controller?.onClientGone();
+      // If a client vanishes mid-login-handoff, LOCK the handoff (no auto re-grant to the agent).
+      handoff?.onClientGone();
     },
     onAck: () => bridge?.onClientAck(),
     onInput: (_id, msg) => {
@@ -304,6 +313,51 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const eventQueue = new StudioEventQueue(STUDIO_EVENT_QUEUE_MAX);
   const snapshotter = new PageSnapshotter({ tokenBudget: cfg.studioSnapshotTokenBudget });
 
+  // Whether the LIVE page is a credential context (login URL OR a credential field present). The
+  // host probe behind the 5e-0/5b exclusions; here it also drives the 5e-a wall detection + the
+  // handoff's completion check. Host-side detection — the snapshot/url are never agent-facing.
+  const isCredentialPage = async (): Promise<boolean> => {
+    const snap = await snapshotter.snapshot(sessionBrowser.cdp);
+    let pageUrl: string | undefined;
+    try {
+      pageUrl = sessionBrowser.page.url();
+    } catch {
+      /* not started / no url — the field signal still applies */
+    }
+    return isCredentialContext({ pageUrl, fields: snap.domByRef?.values() });
+  };
+
+  // Slice 5e-a: the login-wall handoff machine. Wall-detect reclaims to the human (instant
+  // takeover) + signals the agent to wait; the human logs in; completion (left the credential
+  // context + a meaningful storageState delta) invokes onComplete — the seam 5e-b (persist the
+  // profile origin-scoped) + 5e-c (re-grant + authenticated resume) fill. A timeout/disconnect
+  // LOCKS it (no auto re-grant). storageState() is the host-only read-back; never agent-facing,
+  // never logged. The machine drives the event queue's content-drop so a credential-context mark
+  // name (a displayed secret) or a login navigation generated during the window never reaches
+  // the agent — only the login_handoff signal does.
+  handoff = new LoginHandoff({
+    controlToken,
+    eventQueue,
+    pageContext: isCredentialPage,
+    storageState: () => sessionBrowser.storageState(),
+    currentUrl: () => {
+      try {
+        return sessionBrowser.page.url();
+      } catch {
+        return undefined;
+      }
+    },
+    onComplete: async () => {
+      // 5e-a SEAM (stub): 5e-b captures + persists the storageState origin-scoped via the profile
+      // store; 5e-c re-grants control to the agent + resumes the authenticated session. 5e-a does
+      // neither — it only invokes this hook on a DETECTED completion (never on abort/vanish).
+    },
+  });
+  const loginHandoff = handoff;
+  // A control-token flip TO the agent during the window can only be an explicit human WS grant —
+  // end the window (the machine never grants itself; the agent can't self-grant).
+  controlToken.onChange((s) => loginHandoff.onControlChange(s.holder));
+
   const navigate = async (url: string): Promise<void> => {
     // Finding C: navigation is holder-gated. {t:nav} is the host-stamped HUMAN channel,
     // so refuse it unless the human currently holds the token — a non-holder viewer
@@ -314,8 +368,14 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       return;
     }
     const r = await navigateSession(sessionBrowser, url, policyForHolder('human', grant));
-    if (r.ok) eventQueue.enqueue({ type: 'navigation', url }); // human nav → the agent learns of it via studio_observe
-    else hub.broadcast(session.id, { t: 'error', reason: r.reason });
+    if (r.ok) {
+      // human nav → the agent learns of it via studio_observe, EXCEPT during a login-handoff
+      // window: a login-step navigation is credential-context content and is dropped at source.
+      loginHandoff.enqueueContentEvent({ type: 'navigation', url });
+      // A human navigation during the window may be the one that completes the login. Awaited so
+      // the completion lands before the nav returns; an immediate no-op when no window is open.
+      await loginHandoff.checkCompletion();
+    } else hub.broadcast(session.id, { t: 'error', reason: r.reason });
   };
   onNavHandler = (msg) => {
     void navigate(typeof msg.url === 'string' ? msg.url : '');
@@ -339,7 +399,9 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     onMark: (target) => {
       const m = markStore.add(target);
       // trusted:false rides the event: role/name are page-derived (untrusted), like 2G vision.
-      eventQueue.enqueue({ type: 'mark', markId: m.markId, role: target.role, name: target.name, trusted: false });
+      // During a login-handoff window the mark is dropped at source — a mark made on the credential
+      // screen carries a displayed secret in its name and must never reach the agent (L-5e0-1).
+      loginHandoff.enqueueContentEvent({ type: 'mark', markId: m.markId, role: target.role, name: target.name, trusted: false });
     },
   });
   const mark = async (): Promise<void> => {
@@ -437,17 +499,8 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   };
   // 5e-0: studio_marks is an UNGATED agent read whose marks carry page-derived role/name — a displayed
   // secret if a mark was made on the credential screen. When the live page is a credential context,
-  // exclude all mark content (mirrors the observe/capture exclusion). Host-side detection; nothing logged.
-  const isCredentialPage = async (): Promise<boolean> => {
-    const snap = await snapshotter.snapshot(sessionBrowser.cdp);
-    let pageUrl: string | undefined;
-    try {
-      pageUrl = sessionBrowser.page.url();
-    } catch {
-      /* not started / no url — the field signal still applies */
-    }
-    return isCredentialContext({ pageUrl, fields: snap.domByRef?.values() });
-  };
+  // exclude all mark content (mirrors the observe/capture exclusion) via the shared isCredentialPage
+  // probe defined above (the same host-side detection the 5e-a handoff uses). Nothing logged.
   // The studio_marks tool entry: list (default) or generalize a single mark. Thin dispatch only.
   const marksTool = async (input: StudioMarksInput): Promise<StudioMarksOutput | StudioGeneralizeOutput | StudioToolError> => {
     if (await isCredentialPage()) return { marks: [], credentialContext: true };
@@ -500,6 +553,9 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
         return undefined;
       }
     },
+    // 5e-a: the login_handoff signal rides each observe (in_progress while a login wall is being
+    // handled → the agent waits; completed/failed on settle). Pulled fresh; carries only {state}.
+    handoffSignal: () => loginHandoff.signal(),
   });
   // The agent's click/type resolve refs LIVE at action time through the 2J.1 resolver
   // (fresh snapshot per call + occlusion hit-test, never cached coords). Bind it to the
@@ -538,6 +594,18 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       }
     },
   });
+  // Slice 5e-a: wrap (do NOT modify) the act handler so that after an agent action lands, the
+  // host checks the post-act live page — if the agent drove onto a login wall, hand off to the
+  // human. Only the page-changing verbs can surface a wall (scroll cannot), so afterAgentAct is
+  // gated to them. The act handler itself is unchanged; this is pure orchestration around it.
+  const actWithHandoff = async (input: StudioActInput): Promise<StudioActOutput | StudioToolError> => {
+    const result = await act(input);
+    if (input.action === 'navigate' || input.action === 'click' || input.action === 'type') {
+      await loginHandoff.afterAgentAct();
+    }
+    return result;
+  };
+
   // Phase 4c: the studio_capture handler — the agent persists a page clip to the cache as a
   // session artifact. Trusted-0 by construction (routes through captureFromPage); the session
   // id is bound HERE (server-side), never a caller field. The cache db is resolved LAZILY at
@@ -545,7 +613,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // once the session + cache are live — eager resolution at wiring would break host boot.
   daemon.setStudioHost({
     observe,
-    act,
+    act: actWithHandoff,
     marks: marksTool,
     capture: (input) => createCaptureHandler({
       sessionId: session.id,
@@ -570,7 +638,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, marks: () => markStore.list(), healMark, marksView, generalizeMark, marksTool, observe, act, audit: auditLog, approvals, grantAgentPrivateNav, hub, handle, endpoint };
+  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, marks: () => markStore.list(), healMark, marksView, generalizeMark, marksTool, observe, act: actWithHandoff, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint };
 }
 
 export function runStudio(args: string[]): void {
