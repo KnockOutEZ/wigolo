@@ -41,6 +41,7 @@ import { getEmbedProvider } from '../../../src/providers/embed-provider.js';
 import { writeHandle } from '../../../src/studio/handle.js';
 import type { LaunchedSessionBrowser, StorageStateOut } from '../../../src/studio/session-browser.js';
 import { MarkStore } from '../../../src/studio/mark/store.js';
+import type { ProfileStore } from '../../../src/studio/profile-store.js';
 
 // Slice 5e-a — a session-browser launcher whose live page URL + storageState are MUTABLE, so a test
 // can drive the login-handoff window: an agent act lands on a credential URL (wall), then the human
@@ -495,6 +496,47 @@ describe('cli/studio startStudioHost', () => {
       // the in-window login-step nav lands in the queue → leaks here on the post-window drain → RED.
       const events = (r as { events?: Array<{ type: string }> }).events ?? [];
       expect(events.some((e) => e.type === 'navigation')).toBe(false);
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  it('5e-b: a completed login persists the wall-origin-SCOPED storageState to the opted-in named profile (onComplete is wired to the capture)', async () => {
+    const setCalls: Array<{ profileId: string; json: string }> = [];
+    const fakeStore = {
+      get: async () => ({ ok: false as const, reason: 'profile_absent' as const }),
+      set: async (profileId: string, json: string) => { setCalls.push({ profileId, json }); },
+    } as unknown as ProfileStore;
+    const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch, profileId: 'gh', profileStore: fakeStore,
+    });
+    try {
+      await host.handoff.detectWall(); // window opens, baseline = empty storage
+      // The human logs in: leaves the credential context, a session cookie appears (+ an unrelated one).
+      launcher.state.url = 'https://acme.example/dashboard';
+      launcher.state.storage = { cookies: [cookie('session', 'acme.example'), cookie('ga', 'tracker.example')], origins: [] };
+      await host.handoff.checkCompletion();
+      expect(host.handoff.state).toBe('completed');
+      // MUTATION (revert onComplete to the no-op stub) → set never called → RED.
+      expect(setCalls.length).toBe(1);
+      expect(setCalls[0].profileId).toBe('gh');
+      expect(setCalls[0].json).toContain('session'); // wall-origin auth persisted…
+      expect(setCalls[0].json).not.toContain('tracker.example'); // …origin-scoped at the wiring boundary (L6a)
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  it('5e-b: a clean session (no opted-in profile) completes the handoff but persists NOTHING (nowhere to persist)', async () => {
+    const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch }); // no profileId
+    try {
+      await host.handoff.detectWall();
+      launcher.state.url = 'https://acme.example/dashboard';
+      launcher.state.storage = { cookies: [cookie('session', 'acme.example')], origins: [] };
+      await host.handoff.checkCompletion();
+      expect(host.handoff.state).toBe('completed'); // completion still detected; onComplete is a no-op (no profile)
     } finally {
       await host.daemon.stop();
     }

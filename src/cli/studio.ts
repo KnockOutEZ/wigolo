@@ -30,6 +30,7 @@ import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
 import { isCredentialContext } from '../studio/credential.js';
 import { LoginHandoff } from '../studio/handoff.js';
+import { createLoginCapture } from '../studio/login-capture.js';
 import { buildTarget, buildTargetFromFlat, indexAxByBackendNode, type StructuredTarget } from '../studio/mark/target.js';
 import { heal, type HealResult } from '../studio/mark/heal.js';
 import { generalize, applyGeometry, type GenBox } from '../studio/mark/generalize.js';
@@ -235,6 +236,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // (start + crash recovery) via the 5c store. profile_absent (opted-in but not-yet-persisted) ⇒
   // undefined ⇒ a clean session (5e's first login persists it). No profile content is logged.
   let loadProfile: (() => Promise<StorageStateInput>) | undefined;
+  // Slice 5e-b: when a named profile is opted in, the login-handoff onComplete captures the
+  // authenticated session — origin-scoped to the wall origin — and persists it to that profile.
+  // Unset (a clean session) ⇒ undefined ⇒ the handoff completes but persists nothing (nowhere to).
+  let onLoginComplete: ReturnType<typeof createLoginCapture> | undefined;
   if (opts.profileId) {
     const profileStore = opts.profileStore ?? new ProfileStore();
     const profileId = opts.profileId;
@@ -242,6 +247,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       const r = await profileStore.get(profileId);
       return r.ok ? (JSON.parse(r.storageState) as StorageStateInput) : undefined;
     };
+    onLoginComplete = createLoginCapture({ profilePersist: profileStore, profileId });
   }
   const sessionBrowser = new SessionBrowser({ sessionId: session.id, launch: opts.browserLauncher, loadProfile });
   await sessionBrowser.start();
@@ -347,11 +353,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
         return undefined;
       }
     },
-    onComplete: async () => {
-      // 5e-a SEAM (stub): 5e-b captures + persists the storageState origin-scoped via the profile
-      // store; 5e-c re-grants control to the agent + resumes the authenticated session. 5e-a does
-      // neither — it only invokes this hook on a DETECTED completion (never on abort/vanish).
-    },
+    // 5e-b: capture + origin-scoped persist to the opted-in named profile (undefined ⇒ a clean
+    // session with no profile to persist to ⇒ no-op). 5e-c will re-grant + resume the authenticated
+    // session. Fired ONLY on a detected completion (the 5e-a AND-gate), never on abort/vanish.
+    onComplete: onLoginComplete,
   });
   const loginHandoff = handoff;
   // A control-token flip TO the agent during the window can only be an explicit human WS grant —
