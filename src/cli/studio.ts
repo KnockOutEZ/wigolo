@@ -31,6 +31,7 @@ import { MarkStore, type StudioMark } from '../studio/mark/store.js';
 import { isCredentialContext } from '../studio/credential.js';
 import { LoginHandoff } from '../studio/handoff.js';
 import { createLoginCapture, type OriginMismatch } from '../studio/login-capture.js';
+import { UNTRUSTED_STUDIO_NOTICE } from '../security/untrusted.js';
 import { buildTarget, buildTargetFromFlat, indexAxByBackendNode, type StructuredTarget } from '../studio/mark/target.js';
 import { heal, type HealResult } from '../studio/mark/heal.js';
 import { generalize, applyGeometry, type GenBox } from '../studio/mark/generalize.js';
@@ -491,7 +492,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // low/none ask. Healing all marks shares ONE candidate build.
   const marksView = async (): Promise<StudioMarksOutput> => {
     const all = markStore.list();
-    if (all.length === 0) return { marks: [] };
+    if (all.length === 0) return { marks: [], untrusted_notice: UNTRUSTED_STUDIO_NOTICE };
     const candidates = await buildHealCandidates();
     return {
       marks: all.map((m) => {
@@ -506,6 +507,8 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
         if (h.ref) view.ref = h.ref;
         return view;
       }),
+      // P6-a: the marks' page-derived role/name are untrusted data — carry the instruction-channel statement.
+      untrusted_notice: UNTRUSTED_STUDIO_NOTICE,
     };
   };
   // The viewport-relative bounding box of a live node (CSS px) for the generalize geometric
@@ -549,7 +552,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // probe defined above (the same host-side detection the 5e-a handoff uses). Nothing logged.
   // The studio_marks tool entry: list (default) or generalize a single mark. Thin dispatch only.
   const marksTool = async (input: StudioMarksInput): Promise<StudioMarksOutput | StudioGeneralizeOutput | StudioToolError> => {
-    if (await isCredentialPage()) return { marks: [], credentialContext: true };
+    if (await isCredentialPage()) return { marks: [], credentialContext: true, untrusted_notice: UNTRUSTED_STUDIO_NOTICE };
     return input.op === 'generalize' ? generalizeMark(input.markId) : marksView();
   };
 

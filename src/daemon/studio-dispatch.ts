@@ -50,6 +50,13 @@ export interface StudioObserveOutput {
    * sub-result. REQUIRED literal so a new observe return path cannot ship page content untagged.
    */
   trusted: false;
+  /**
+   * P6-a structural containment for this structured sink: the instruction-channel statement that
+   * the page-perception payload (`elements`/`diff`) is UNTRUSTED DATA, never instructions. REQUIRED
+   * (like `trusted`) so a new observe return path cannot ship page content without the statement,
+   * and emitted UNCONDITIONALLY — never gated on `trusted` or `credentialContext`.
+   */
+  untrusted_notice: string;
   elements?: unknown[];
   diff?: unknown;
   /** Spill ref when the snapshot/diff exceeded the inline budget. */
@@ -129,6 +136,12 @@ export interface StudioMarkView {
 
 export interface StudioMarksOutput {
   marks: StudioMarkView[];
+  /**
+   * P6-a: the instruction-channel statement that the marks' page-derived role/name are UNTRUSTED
+   * DATA, never instructions. REQUIRED + emitted unconditionally (including the credential-exclusion
+   * path), never gated on a flag.
+   */
+  untrusted_notice: string;
   /**
    * Slice 5e-0: true when the live page is a credential context — the marks (page-derived role/name,
    * which can be a displayed secret if a mark was made on the credential screen) are then EXCLUDED
