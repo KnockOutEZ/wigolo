@@ -60,7 +60,8 @@ describe('agent pipeline — page content is structurally contained (P6-a)', () 
     isLlmConfiguredMock.mockResolvedValue(false); // no LLM runner
     const input: AgentInput = { prompt: 'gather evil' };
     const out = await runAgentPipeline(input, [stubEngine()], stubRouter()); // no server -> fallback
-    expectFenced(out.result, INJECT);
+    expect(typeof out.result).toBe('string'); // fallback synthesis returns a string, not the schema object
+    expectFenced(out.result as string, INJECT);
   });
 
   it('llm-runner synthesis prompt embeds page content INSIDE the wrapper', async () => {
