@@ -61,6 +61,13 @@ export interface StudioObserveOutput {
   eventsDropped: number;
   domTruncated: boolean;
   vision?: VisionSubResult;
+  /**
+   * Slice 5e-0: true when the live page is a credential context (login URL or a credential field
+   * present). The page a11y content (`elements`/`diff`) is then EXCLUDED — an element name can be a
+   * displayed secret (a 2FA/recovery code) — and only this signal is returned so the agent waits.
+   * Host-set; mirrors the 5b capture-exclusion for the agent's read path.
+   */
+  credentialContext?: boolean;
 }
 
 export interface StudioActInput {
@@ -115,6 +122,12 @@ export interface StudioMarkView {
 
 export interface StudioMarksOutput {
   marks: StudioMarkView[];
+  /**
+   * Slice 5e-0: true when the live page is a credential context — the marks (page-derived role/name,
+   * which can be a displayed secret if a mark was made on the credential screen) are then EXCLUDED
+   * (empty `marks`) and only this signal is returned. Mirrors the observe/capture exclusion.
+   */
+  credentialContext?: boolean;
 }
 
 /**

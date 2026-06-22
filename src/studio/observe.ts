@@ -20,6 +20,7 @@ import { fitElementsToBudget, fitDiffToBudget, readSpill, enforceSpillBudget } f
 import type { PageSnapshot, SnapshotElement } from './perception/snapshot.js';
 import type { StudioEventQueue } from './event-queue.js';
 import type { StudioObserveInput, StudioObserveOutput, StudioToolError } from '../daemon/studio-dispatch.js';
+import { isCredentialContext } from './credential.js';
 
 export interface ObserverDeps {
   /** Take the live snapshot (the host binds this to sessionBrowser.cdp). */
@@ -32,6 +33,8 @@ export interface ObserverDeps {
   dataDir?: string;
   /** Atomic-capture retry cap before forcing a full resync (default 3). */
   maxStableRetries?: number;
+  /** Slice 5e-0: the live page URL (host-observed) — the hard half of the credential-context check. Optional; absent ⇒ URL contributes nothing (field-present still applies). */
+  currentUrl?: () => string | undefined;
 }
 
 /** Build the observe closure. Holds per-session `lastSnapshot` for diffing; otherwise stateless. */
@@ -68,6 +71,26 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
         churned = true;
         break;
       }
+    }
+
+    // 5e-0: credential-context perception exclusion. The snapshot above was taken HOST-SIDE for
+    // detection; if the live page is a credential context, the agent-facing payload EXCLUDES all page
+    // a11y content (element names/roles/text — a name can be a displayed secret like a 2FA/recovery
+    // code) and returns ONLY the credential-context signal so the agent waits. Events are NOT drained
+    // (preserved for after; a content-bearing mark/nav event must not leak either), and lastSnapshot is
+    // NOT updated (the credential snapshot never enters a later diff). Mirrors 5b's capture-exclusion.
+    if (isCredentialContext({ pageUrl: deps.currentUrl?.(), fields: snap.domByRef?.values() })) {
+      return {
+        id: snap.id,
+        kind: 'full',
+        trusted: false,
+        credentialContext: true,
+        elements: [],
+        events: [],
+        eventCursor: input.since ?? 0,
+        eventsDropped: 0,
+        domTruncated: false,
+      };
     }
 
     const drained = deps.eventQueue.drainSince(input.since ?? 0);

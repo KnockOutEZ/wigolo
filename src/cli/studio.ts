@@ -28,6 +28,7 @@ import { SessionAuditLog } from '../studio/audit.js';
 import { SessionApprovals } from '../studio/approvals.js';
 import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
+import { isCredentialContext } from '../studio/credential.js';
 import { buildTarget, buildTargetFromFlat, indexAxByBackendNode, type StructuredTarget } from '../studio/mark/target.js';
 import { heal, type HealResult } from '../studio/mark/heal.js';
 import { generalize, applyGeometry, type GenBox } from '../studio/mark/generalize.js';
@@ -94,6 +95,8 @@ export interface StudioHostOptions extends StudioArgs {
   profileId?: string;
   /** Inject the profile store (tests). Defaults to the keychain-backed ProfileStore. Only consulted when profileId is set. */
   profileStore?: ProfileStore;
+  /** Inject the mark store (tests). Defaults to a fresh in-memory MarkStore. */
+  markStore?: MarkStore;
 }
 
 export interface StudioHost {
@@ -324,7 +327,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // off the privileged AX⋈DOM, lands in the in-memory MarkStore (durable cache capture is
   // Phase 4), and surfaces to the agent as a studio_observe event. The inspector reads
   // sessionBrowser.cdp live per enable, so it follows a crash-recovery rebind.
-  const markStore = new MarkStore();
+  const markStore = opts.markStore ?? new MarkStore();
   const resolveMark = async (backendNodeId: number): Promise<StructuredTarget | null> => {
     const ax = (await sessionBrowser.cdp.send('Accessibility.getFullAXTree')) as { nodes?: AxNode[] };
     const doc = (await sessionBrowser.cdp.send('DOM.getDocument', { depth: -1, pierce: true })) as { root?: DomNode };
@@ -432,9 +435,24 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     const refined = applyGeometry(structural, boxes);
     return { markId, refs: refined.refs, confidence: refined.confidence, requires_confirmation: true };
   };
+  // 5e-0: studio_marks is an UNGATED agent read whose marks carry page-derived role/name — a displayed
+  // secret if a mark was made on the credential screen. When the live page is a credential context,
+  // exclude all mark content (mirrors the observe/capture exclusion). Host-side detection; nothing logged.
+  const isCredentialPage = async (): Promise<boolean> => {
+    const snap = await snapshotter.snapshot(sessionBrowser.cdp);
+    let pageUrl: string | undefined;
+    try {
+      pageUrl = sessionBrowser.page.url();
+    } catch {
+      /* not started / no url — the field signal still applies */
+    }
+    return isCredentialContext({ pageUrl, fields: snap.domByRef?.values() });
+  };
   // The studio_marks tool entry: list (default) or generalize a single mark. Thin dispatch only.
-  const marksTool = async (input: StudioMarksInput): Promise<StudioMarksOutput | StudioGeneralizeOutput | StudioToolError> =>
-    input.op === 'generalize' ? generalizeMark(input.markId) : marksView();
+  const marksTool = async (input: StudioMarksInput): Promise<StudioMarksOutput | StudioGeneralizeOutput | StudioToolError> => {
+    if (await isCredentialPage()) return { marks: [], credentialContext: true };
+    return input.op === 'generalize' ? generalizeMark(input.markId) : marksView();
+  };
 
   bridge = new ScreencastBridge({
     cdp: sessionBrowser.cdp,
@@ -473,6 +491,15 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     inlineBudget: cfg.studioSnapshotTokenBudget,
     spillMaxBytes: STUDIO_SPILL_MAX_BYTES,
     dataDir: opts.dataDir,
+    // 5e-0: the host-observed live page URL — the hard half of the credential-context perception
+    // exclusion (the snapshot supplies the field half). A read failure degrades to undefined.
+    currentUrl: () => {
+      try {
+        return sessionBrowser.page.url();
+      } catch {
+        return undefined;
+      }
+    },
   });
   // The agent's click/type resolve refs LIVE at action time through the 2J.1 resolver
   // (fresh snapshot per call + occlusion hit-test, never cached coords). Bind it to the

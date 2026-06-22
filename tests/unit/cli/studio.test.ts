@@ -40,6 +40,7 @@ import { parseStudioArgs, startStudioHost } from '../../../src/cli/studio.js';
 import { getEmbedProvider } from '../../../src/providers/embed-provider.js';
 import { writeHandle } from '../../../src/studio/handle.js';
 import type { LaunchedSessionBrowser } from '../../../src/studio/session-browser.js';
+import { MarkStore } from '../../../src/studio/mark/store.js';
 
 // A fake session-browser launcher: no real Chromium, so the host boots in unit tests.
 const fakeBrowserLauncher = async (): Promise<LaunchedSessionBrowser> =>
@@ -152,6 +153,29 @@ describe('cli/studio startStudioHost', () => {
     const listed = await host.marksTool({});
     expect(listed).toEqual({ marks: [] }); // no marks in this fresh session → empty list, NOT a generalize shape
     await host.daemon.stop();
+  });
+
+  it('Slice 5e-0: studio_marks EXCLUDES mark content on a credential-context page (ungated read; mirrors the observe/capture exclusion)', async () => {
+    const ms = new MarkStore();
+    // A mark whose NAME is a displayed secret — e.g. a recovery code the human marked on the login screen.
+    ms.add({ backendNodeId: 1, role: 'textbox', name: '123456', trusted: false, fingerprint: 'fp', ancestorPath: 'html/body/input', attrs: {} });
+    // A live page that IS a credential context (login URL); cdp returns empty AX/DOM (the URL drives it).
+    const credLauncher = async (): Promise<LaunchedSessionBrowser> =>
+      ({
+        browser: { close: async () => {}, on: () => {} },
+        context: { close: async () => {} },
+        page: { close: async () => {}, goto: async () => null, on: () => {}, url: () => 'https://acme.example/login' },
+        cdp: { send: async () => ({}), on: () => {}, off: () => {} },
+      }) as unknown as LaunchedSessionBrowser;
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: credLauncher, markStore: ms });
+    try {
+      const r = await host.marksTool({});
+      // MUTATION (remove the marks credential gate) → marksView returns the seeded mark's name → "123456" appears → this REDs (content present).
+      expect(JSON.stringify(r), 'no credential-screen mark content reaches the agent').not.toContain('123456');
+      expect(r).toMatchObject({ credentialContext: true });
+    } finally {
+      await host.daemon.stop();
+    }
   });
 
   it('generalizeMark refuses missing/unknown marks with typed errors (never a blind preview)', async () => {
