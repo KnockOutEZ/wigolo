@@ -6,7 +6,8 @@ import { checkBindHost } from '../studio/bind.js';
 import { resolveHostToken } from '../studio/auth.js';
 import { SessionRegistry } from '../studio/registry.js';
 import type { Session } from '../studio/session.js';
-import { SessionBrowser, type SessionBrowserLauncher } from '../studio/session-browser.js';
+import { SessionBrowser, type SessionBrowserLauncher, type StorageStateInput } from '../studio/session-browser.js';
+import { ProfileStore } from '../studio/profile-store.js';
 import { ScreencastBridge } from '../studio/screencast.js';
 import { ControlToken } from '../studio/control-token.js';
 import { InputForwarder } from '../studio/input.js';
@@ -89,6 +90,10 @@ export interface StudioHostOptions extends StudioArgs {
   registry?: SessionRegistry;
   /** Inject the session-browser launcher (tests). Defaults to the real Playwright launcher. */
   browserLauncher?: SessionBrowserLauncher;
+  /** Slice 5d: the opted-in named profile id (opaque). Set ⇒ load that profile's storageState on launch; unset ⇒ a clean default session. */
+  profileId?: string;
+  /** Inject the profile store (tests). Defaults to the keychain-backed ProfileStore. Only consulted when profileId is set. */
+  profileStore?: ProfileStore;
 }
 
 export interface StudioHost {
@@ -214,7 +219,19 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // Bring up the session's dedicated headed browser, then the screencast bridge,
   // before publishing the handle — so the session is fully live (streamable) by
   // the time a client can discover it.
-  const sessionBrowser = new SessionBrowser({ sessionId: session.id, launch: opts.browserLauncher });
+  // Slice 5d: when the session opts into a named profile, resolve its storageState FRESH per launch
+  // (start + crash recovery) via the 5c store. profile_absent (opted-in but not-yet-persisted) ⇒
+  // undefined ⇒ a clean session (5e's first login persists it). No profile content is logged.
+  let loadProfile: (() => Promise<StorageStateInput>) | undefined;
+  if (opts.profileId) {
+    const profileStore = opts.profileStore ?? new ProfileStore();
+    const profileId = opts.profileId;
+    loadProfile = async (): Promise<StorageStateInput> => {
+      const r = await profileStore.get(profileId);
+      return r.ok ? (JSON.parse(r.storageState) as StorageStateInput) : undefined;
+    };
+  }
+  const sessionBrowser = new SessionBrowser({ sessionId: session.id, launch: opts.browserLauncher, loadProfile });
   await sessionBrowser.start();
 
   const cfg = getConfig();

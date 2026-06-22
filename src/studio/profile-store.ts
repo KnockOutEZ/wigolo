@@ -102,9 +102,10 @@ export class ProfileStore {
   }
 
   /**
-   * Fetch the KEK and decrypt the blob. If the keychain is unavailable, the KEK is absent, or the
-   * blob file is missing → profile_absent (graceful; the agent re-logs in). NO scrypt-decrypt is
-   * attempted without the real KEK, and nothing throws on the absent path.
+   * Fetch the KEK and decrypt the blob. Four graceful-absent cases → profile_absent (the agent
+   * re-logs in), nothing thrown to the host: keychain unavailable, KEK absent, blob file missing,
+   * OR the blob is corrupt/tampered (decrypt/AES-GCM auth failure). NO scrypt-decrypt is attempted
+   * without the real KEK.
    */
   async get(profileId: string): Promise<ProfileGetResult> {
     if (!this.keychain.available()) return { ok: false, reason: 'profile_absent' };
@@ -112,7 +113,15 @@ export class ProfileStore {
     if (!kek) return { ok: false, reason: 'profile_absent' };
     const path = this.profilePath(profileId);
     if (!existsSync(path)) return { ok: false, reason: 'profile_absent' };
-    const storageState = await decryptFromFile(kek, path);
-    return { ok: true, storageState };
+    try {
+      const storageState = await decryptFromFile(kek, path);
+      return { ok: true, storageState };
+    } catch {
+      // 4th absent-case: a corrupt/tampered blob (AES-GCM auth failure) or an unreadable file → treat
+      // as profile_absent so the session starts CLEAN (the human re-logs in) instead of crashing the
+      // host. GCM has already REJECTED the tampered ciphertext — this is the graceful-absent (liveness)
+      // half, NOT a security relaxation. No secret/path is logged.
+      return { ok: false, reason: 'profile_absent' };
+    }
   }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, statSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync, statSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // The wished-for encrypted profile store — Slice 5c. Until src/studio/profile-store.ts exists this
@@ -87,5 +87,18 @@ describe('studio/profile-store — encrypted profile store (keychain KEK + disk 
     expect(second).not.toBe(first);
     // …and it still decrypts back to the original.
     expect(((await store.get('prof-1')) as { ok: true; storageState: string }).storageState).toBe(STORAGE_STATE);
+  });
+
+  it('corrupt/tampered blob (4th absent-case): KEK present + blob present but decrypt fails → profile_absent (graceful re-login), NOT a host crash', async () => {
+    const store = new ProfileStore({ dataDir: dir, keychain: memKeychain(true) });
+    await store.set('prof-1', STORAGE_STATE); // a valid .enc + KEK
+    // Tamper the ciphertext on disk — AES-GCM authentication REJECTS it on decrypt (security intact);
+    // the store must convert that decrypt-throw into a graceful profile_absent so the session re-logs
+    // in clean rather than crashing the host. No secret/path is logged.
+    const blob = blobPath('prof-1');
+    writeFileSync(blob, readFileSync(blob, 'utf8').slice(0, -8) + 'AAAAAAAA', 'utf8');
+    // Mutation: remove the try/catch in get() → the decrypt throw propagates → get REJECTS → this
+    // `resolves` assertion REDs (the value-flip: graceful-absent → thrown error reaching the host).
+    await expect(store.get('prof-1')).resolves.toMatchObject({ ok: false, reason: 'profile_absent' });
   });
 });

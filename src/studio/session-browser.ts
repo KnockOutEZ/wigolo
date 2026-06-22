@@ -1,6 +1,14 @@
-import { chromium } from 'playwright';
+import { chromium, type BrowserContext, type BrowserContextOptions } from 'playwright';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
+
+/**
+ * Slice 5d — the storageState to LOAD into a session context (a profile blob the host resolved, or
+ * undefined for a clean session). Mirrors Playwright's newContext storageState input.
+ */
+export type StorageStateInput = BrowserContextOptions['storageState'];
+/** Slice 5d — the storageState READ BACK from a live context (5e capture-after-login). Host-only. */
+export type StorageStateOut = Awaited<ReturnType<BrowserContext['storageState']>>;
 
 /**
  * The live, headed, isolated browser bound to a Studio session — the thing the
@@ -34,7 +42,8 @@ export interface SessionCdp {
 
 export interface LaunchedSessionBrowser {
   browser: { close(): Promise<void>; on(event: 'disconnected', cb: () => void): void };
-  context: { close(): Promise<void> };
+  /** `storageState()` is the HOST-ONLY read-back accessor for 5e capture-after-login — never agent-reachable, never logged. */
+  context: { close(): Promise<void>; storageState(): Promise<StorageStateOut> };
   page: SessionPage;
   cdp: SessionCdp;
 }
@@ -42,6 +51,8 @@ export interface LaunchedSessionBrowser {
 export interface LaunchOptions {
   headless: boolean;
   viewport: { width: number; height: number };
+  /** Slice 5d: an opted-in named profile's storageState to load into the context. Undefined ⇒ clean session. Host-resolved; never logged. */
+  storageState?: StorageStateInput;
 }
 
 export type SessionBrowserLauncher = (opts: LaunchOptions) => Promise<LaunchedSessionBrowser>;
@@ -49,10 +60,15 @@ export type SessionBrowserLauncher = (opts: LaunchOptions) => Promise<LaunchedSe
 /** The real launcher: dedicated headed Chromium → isolated context → page → CDP session. */
 export async function defaultSessionLauncher(opts: LaunchOptions): Promise<LaunchedSessionBrowser> {
   const browser = await chromium.launch({ headless: opts.headless });
-  // A fresh isolated context = a clean ephemeral profile (persistent profiles
-  // are Phase 5). deviceScaleFactor:1 keeps screencast frame coords 1:1 with
-  // the CSS viewport for input mapping (Phase 1c).
-  const context = await browser.newContext({ viewport: opts.viewport, deviceScaleFactor: 1 });
+  // deviceScaleFactor:1 keeps screencast frame coords 1:1 with the CSS viewport for input
+  // mapping (Phase 1c). Slice 5d: an opted-in named profile loads its storageState here (the
+  // browser scopes the cookies by origin naturally — origin-scoping at PERSIST is 5e's job);
+  // absent ⇒ a clean ephemeral profile.
+  const context = await browser.newContext({
+    viewport: opts.viewport,
+    deviceScaleFactor: 1,
+    ...(opts.storageState !== undefined ? { storageState: opts.storageState } : {}),
+  });
   const page = await context.newPage();
   const cdp = await context.newCDPSession(page);
   // Adapt Playwright's precisely-typed handles to the narrow session interfaces
@@ -67,12 +83,19 @@ export interface SessionBrowserOptions {
   launch?: SessionBrowserLauncher;
   /** Max relaunch attempts before giving up; defaults to config.studioBrowserCrashMaxRestarts. */
   maxRestarts?: number;
+  /**
+   * Slice 5d: resolve the opted-in named profile's storageState FRESH per launch (start AND crash
+   * recovery), so a crash never loses the login. undefined return ⇒ clean session (no profile /
+   * profile_absent). Host-injected; never logged.
+   */
+  loadProfile?: () => Promise<StorageStateInput>;
 }
 
 export class SessionBrowser {
   readonly sessionId: string;
   private readonly launcher: SessionBrowserLauncher;
   private readonly maxRestarts: number;
+  private readonly loadProfile?: () => Promise<StorageStateInput>;
   private launched: LaunchedSessionBrowser | null = null;
   private _currentUrl = '';
   private closed = false;
@@ -86,6 +109,7 @@ export class SessionBrowser {
     this.sessionId = opts.sessionId;
     this.launcher = opts.launch ?? defaultSessionLauncher;
     this.maxRestarts = opts.maxRestarts ?? getConfig().studioBrowserCrashMaxRestarts;
+    this.loadProfile = opts.loadProfile;
   }
 
   /** Register a callback fired after a successful crash recovery (the screencast bridge restarts here in 1b). */
@@ -118,6 +142,15 @@ export class SessionBrowser {
     return this.launched.cdp;
   }
 
+  /**
+   * Slice 5d — HOST-ONLY read-back of the live context's storageState, for 5e capture-after-login.
+   * NEVER agent-reachable (no MCP tool returns it) and NEVER logged — it carries the session cookies.
+   */
+  async storageState(): Promise<StorageStateOut> {
+    if (!this.launched) throw new Error('session_browser_not_started');
+    return this.launched.context.storageState();
+  }
+
   get currentUrl(): string {
     return this._currentUrl;
   }
@@ -130,9 +163,12 @@ export class SessionBrowser {
   async start(): Promise<void> {
     if (this.launched || this.closed) return;
     const cfg = getConfig();
+    // Slice 5d: resolve the opted-in profile fresh (undefined ⇒ clean). Loaded into the context here.
+    const storageState = await this.loadProfile?.();
     this.launched = await this.launcher({
       headless: cfg.studioBrowserHeadless,
       viewport: { width: cfg.studioScreencastMaxWidth, height: cfg.studioScreencastMaxHeight },
+      ...(storageState !== undefined ? { storageState } : {}),
     });
     this.registerCrashHandlers();
     log.info('studio session browser started', { sessionId: this.sessionId, headless: cfg.studioBrowserHeadless });
@@ -188,9 +224,13 @@ export class SessionBrowser {
       });
       const cfg = getConfig();
       this.launched = null; // old handles are dead
+      // Slice 5d: re-load the opted-in profile on the relaunch too — a crash must NOT lose the login.
+      // Resolved fresh (so a 5e re-persist mid-session is picked up); undefined ⇒ clean.
+      const storageState = await this.loadProfile?.();
       this.launched = await this.launcher({
         headless: cfg.studioBrowserHeadless,
         viewport: { width: cfg.studioScreencastMaxWidth, height: cfg.studioScreencastMaxHeight },
+        ...(storageState !== undefined ? { storageState } : {}),
       });
       this.registerCrashHandlers();
       // Pre-nav hooks fire on the FRESH cdp BEFORE the recovery re-navigation, so a
