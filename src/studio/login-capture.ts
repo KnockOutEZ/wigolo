@@ -33,6 +33,27 @@ export interface ProfilePersist {
   set(profileId: string, storageStateJson: string): Promise<void>;
 }
 
+/**
+ * Slice 5eb1 — surfaced when a login completes on an origin that is NOT the one bound to the named profile
+ * (the confused-deputy refusal). Carries ORIGINS + the profileId ONLY — never a cookie/storageState field
+ * (mirrors the persist-error surfacing contract; the host handler may log it).
+ */
+export interface OriginMismatch {
+  profileId: string;
+  expectedOrigin: string;
+  completedOrigin: string | undefined;
+}
+
+/** Same-origin (scheme+host+port) compare; an absent/unparseable completed origin can't be confirmed ⇒ NO match (fail-closed). */
+function sameOrigin(completed: string | undefined, expected: string): boolean {
+  if (!completed) return false;
+  try {
+    return new URL(completed).origin === new URL(expected).origin;
+  } catch {
+    return false;
+  }
+}
+
 /** RFC 6265 cookie domain-match: would a request to `wallHost` carry a cookie scoped to `cookieDomain`? */
 function hostReceivesCookie(wallHost: string, cookieDomain: string): boolean {
   const d = cookieDomain.replace(/^\./, '').toLowerCase();
@@ -73,15 +94,32 @@ export function isEmptyStorageState(state: StorageStateOut): boolean {
 /**
  * Build the onComplete hook: on a detected login completion, origin-scope the captured storageState to
  * the wall origin and persist it to the opted-in named profile — UNLESS the scoped state is empty
- * (L3-2 backstop), in which case nothing is persisted.
+ * (L3-2 backstop) OR the completed origin does not match the origin bound to the profile (5eb1
+ * confused-deputy guard), in which case nothing is persisted.
  */
 export function createLoginCapture(deps: {
   profilePersist: ProfilePersist;
   profileId: string;
+  /**
+   * Slice 5eb1: the origin the human bound this named profile to (the wallOrigin opted into). When set, a
+   * login completing on a DIFFERENT origin is REFUSED — so profile X can never silently receive origin Y's
+   * creds. Unset ⇒ no binding ⇒ persist as before (backward-compatible).
+   */
+  expectedOrigin?: string;
+  /** Slice 5eb1: surface a binding mismatch host-side. Receives origins/profileId ONLY — never the storageState. */
+  onOriginMismatch?: (info: OriginMismatch) => void;
 }): (ctx: HandoffCompletionContext) => Promise<void> {
   return async (ctx: HandoffCompletionContext): Promise<void> => {
     const scoped = scopeStorageStateToOrigin(ctx.storageState, ctx.wallOrigin);
     if (isEmptyStorageState(scoped)) return; // no wall-origin auth captured → never persist a no-auth profile
+    if (deps.expectedOrigin !== undefined && !sameOrigin(ctx.wallOrigin, deps.expectedOrigin)) {
+      // 5eb1 confused-deputy guard: the completed login's origin must match the origin bound to this named
+      // profile, else X would silently receive Y's creds. Refuse-persist (fail-closed) + surface the mismatch
+      // (origins/profileId ONLY — never the storageState). The 5e-c re-grant still fires (the live session is
+      // authed regardless); this gates only WHERE creds persist, not whether the agent resumes.
+      deps.onOriginMismatch?.({ profileId: deps.profileId, expectedOrigin: deps.expectedOrigin, completedOrigin: ctx.wallOrigin });
+      return;
+    }
     await deps.profilePersist.set(deps.profileId, JSON.stringify(scoped));
   };
 }

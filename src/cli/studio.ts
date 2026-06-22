@@ -30,7 +30,7 @@ import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
 import { isCredentialContext } from '../studio/credential.js';
 import { LoginHandoff } from '../studio/handoff.js';
-import { createLoginCapture } from '../studio/login-capture.js';
+import { createLoginCapture, type OriginMismatch } from '../studio/login-capture.js';
 import { buildTarget, buildTargetFromFlat, indexAxByBackendNode, type StructuredTarget } from '../studio/mark/target.js';
 import { heal, type HealResult } from '../studio/mark/heal.js';
 import { generalize, applyGeometry, type GenBox } from '../studio/mark/generalize.js';
@@ -103,6 +103,13 @@ export interface StudioHostOptions extends StudioArgs {
    *  live session is authenticated + re-granted regardless (persist = future reuse); this keeps the failure
    *  visible without propagating it as an unhandled rejection. Receives the error only — never any storageState. */
   onLoginPersistError?: (err: unknown) => void;
+  /** 5eb1: the origin the human binds this named profile to. When set, a login completing on a DIFFERENT origin
+   *  is REFUSED (confused-deputy guard) — one site's creds never persist under another site's named profile.
+   *  Unset ⇒ no binding ⇒ persist as before (backward-compatible). */
+  profileOrigin?: string;
+  /** 5eb1: host-level surface for a profile↔origin binding MISMATCH (refuse-persist). Defaults to a host log.
+   *  Receives origins/profileId only — never any storageState/cookie. */
+  onLoginOriginMismatch?: (info: OriginMismatch) => void;
 }
 
 export interface StudioHost {
@@ -251,7 +258,22 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       const r = await profileStore.get(profileId);
       return r.ok ? (JSON.parse(r.storageState) as StorageStateInput) : undefined;
     };
-    const capture = createLoginCapture({ profilePersist: profileStore, profileId });
+    const capture = createLoginCapture({
+      profilePersist: profileStore,
+      profileId,
+      // 5eb1: bind the named profile to the origin the human opted into; a login completing elsewhere is
+      // refused (never persisting Y's creds under profile X). The mismatch surface carries origins/profileId
+      // only — never any storageState (mirrors the persist-error contract).
+      expectedOrigin: opts.profileOrigin,
+      onOriginMismatch:
+        opts.onLoginOriginMismatch ??
+        ((info: OriginMismatch) =>
+          logger.warn('login profile origin mismatch; persist refused', {
+            profileId: info.profileId,
+            expectedOrigin: info.expectedOrigin,
+            completedOrigin: info.completedOrigin,
+          })),
+    });
     // 5e-c closeout (L-5c-2): the completing re-grant fires regardless of the persist (in settleCompleted's
     // `finally`), so a persist FAILURE must not propagate out of onComplete — both checkCompletion callers
     // (the bounded poll + the human-nav handler) invoke it as a fire-and-forget `void`, where a rejection
