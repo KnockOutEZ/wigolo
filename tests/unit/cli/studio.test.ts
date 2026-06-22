@@ -729,4 +729,41 @@ describe('cli/studio 5e-c closeout — persist-error surface (B1/L-5c-2) + no-le
     expect(catchBody, 'the persist-error catch block must exist').toBeTruthy();
     expect(catchBody![1], 'the persist-error catch must surface the error only — no ctx/storageState/etc').not.toMatch(FORBIDDEN);
   });
+
+  it('L-closeout-2: END-TO-END — capture(ctx) throwing through the onComplete wrapper surfaces a SECRET-FREE message, even with the secret in the scoped storageState', async () => {
+    // The persist-error log records err.message, and `err` propagates from the WHOLE capture(ctx): the
+    // origin-scoping (login-capture.ts) THEN ProfileStore.set. login-capture.ts has ZERO throw sites
+    // (CONFIRM count 0; `new URL` is caught; set() is the only thrower), so the scoping source is
+    // vacuously secret-free. This pin proves the surfacing CONTRACT end-to-end: a REAL ProfileStore.set
+    // failure — fired AFTER the scoping keeps a planted SECRET cookie into scopedJSON — surfaces a message
+    // that carries NO secret. Mirrors B2b, routed through the actual wrapper.
+    const SECRET = 'SUPER_SECRET_SESSION_TOKEN_e2e_9c4d';
+    const surfaced: unknown[] = [];
+    // Real ProfileStore, keychain unavailable → set() throws ProfileKeychainUnavailableError (the real
+    // persist error-source) AFTER scoping has kept the SECRET cookie into the blob it is handed.
+    const realStore = new ProfileStore({ dataDir: '/tmp/wigolo-closeout2-noexist', keychain: { available: () => false, getKek: () => null, setKek: () => {} } });
+    const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+      profileId: 'gh', profileStore: realStore, onLoginPersistError: (err) => surfaced.push(err),
+    });
+    try {
+      await host.handoff.detectWall(); // baseline: empty
+      launcher.state.url = 'https://acme.example/dashboard';
+      // the live storageState at completion carries the SECRET (a real wall-origin auth cookie kept by scoping)
+      launcher.state.storage = {
+        cookies: [{ name: 'session', value: SECRET, domain: 'acme.example', path: '/', expires: -1, httpOnly: false, secure: false, sameSite: 'Lax' }],
+        origins: [],
+      };
+      await expect(host.handoff.checkCompletion()).resolves.toBeUndefined(); // wrapper caught the set() throw
+      expect(surfaced.length).toBe(1); // the persist failure WAS surfaced (scoping kept the secret, set threw)
+
+      const err = surfaced[0];
+      const logged = err instanceof Error ? err.message : String(err); // exactly what the default handler logs
+      // MUTATION (make the set() OR the scoping throw embed the blob): this reddens.
+      expect(logged).not.toContain(SECRET);
+    } finally {
+      await host.daemon.stop();
+    }
+  });
 });
