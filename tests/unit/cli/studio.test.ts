@@ -707,4 +707,26 @@ describe('cli/studio 5e-c closeout — persist-error surface (B1/L-5c-2) + no-le
     const errStr = `${(thrown as Error).message}\n${(thrown as Error).stack ?? ''}`;
     expect(errStr).not.toContain(SECRET);
   });
+
+  it('L-closeout-1: the persist-error SURFACE in cli/studio.ts carries the error ONLY — the catch block + default handler reference no storageState/cookie/key/KEK/ciphertext/scoped/ctx', () => {
+    // Grounded divergence vs the whole-file M8 tripwire (cli/studio.ts logs elsewhere LEGITIMATELY): a
+    // source-text REGION pin scoped to (1) the default onLoginPersistError handler and (2) the onComplete
+    // persist-error CATCH block. The try's `await capture(ctx)` is deliberately EXCLUDED (ctx is the
+    // legitimate persist input there) — only the error-surfacing path is guarded against a secret leak.
+    const src = readFileSync(new URL('../../../src/cli/studio.ts', import.meta.url), 'utf8');
+    const FORBIDDEN = /storageState|scoped|cookie|\bkek\b|\bkey\b|ciphertext|plaintext|\bctx\b/i;
+
+    // Region 1 — the default onLoginPersistError handler (must log message/code only, never the raw object/state).
+    const def = src.match(/const surfacePersistError =([\s\S]*?)onLoginComplete = async/);
+    expect(def, 'the surfacePersistError default-handler region must exist').toBeTruthy();
+    expect(def![1], 'default persist-error handler must reference no secret-bearing token').not.toMatch(FORBIDDEN);
+
+    // Region 2 — the onComplete persist-error CATCH block (must surface the error ONLY). Extract the wrapper
+    // body, then the catch sub-block, so the try's `capture(ctx)` is structurally excluded.
+    const wrapper = src.match(/onLoginComplete = async \(ctx\) => \{([\s\S]*?)\n\s*\};/);
+    expect(wrapper, 'the onLoginComplete wrapper must exist').toBeTruthy();
+    const catchBody = wrapper![1].match(/catch \(err\) \{([\s\S]*)$/);
+    expect(catchBody, 'the persist-error catch block must exist').toBeTruthy();
+    expect(catchBody![1], 'the persist-error catch must surface the error only — no ctx/storageState/etc').not.toMatch(FORBIDDEN);
+  });
 });
