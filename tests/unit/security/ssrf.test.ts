@@ -129,3 +129,25 @@ describe('guardNavigation — 6to4/NAT64 metadata blocked for BOTH parties (Find
     expect(guardNavigation('http://[64:ff9b::808:808]/', { source: 'agent' }).ok).toBe(true);
   });
 });
+
+// The CONTENT-PATH policy (distinct from studio nav): loopback is reachable by BOTH parties
+// (incl. agent), RFC1918 stays agent-blocked, metadata/link-local blocked for both. Expressed via
+// the `allowLoopback` opt so the studio-nav default (loopback follows allowPrivate) is unchanged.
+describe('guardNavigation — content-path policy (allowLoopback)', () => {
+  it('agent + allowLoopback reaches loopback, but NOT RFC1918 or cloud-metadata', () => {
+    expect(guardNavigation('http://127.0.0.1:3000/', { source: 'agent', allowLoopback: true }).ok).toBe(true);
+    expect(guardNavigation('http://localhost/', { source: 'agent', allowLoopback: true }).ok).toBe(true);
+    expect(guardNavigation('http://[::1]/', { source: 'agent', allowLoopback: true }).ok).toBe(true);
+    expect(guardNavigation('http://10.0.0.5/', { source: 'agent', allowLoopback: true }).ok).toBe(false); // RFC1918 still agent-blocked
+    expect(guardNavigation('http://192.168.1.1/', { source: 'agent', allowLoopback: true }).ok).toBe(false);
+    expect(guardNavigation('http://169.254.169.254/', { source: 'agent', allowLoopback: true }).ok).toBe(false); // metadata never
+  });
+
+  it('allowLoopback does NOT change the studio default (no flag → agent loopback stays blocked)', () => {
+    expect(guardNavigation('http://127.0.0.1/', { source: 'agent' }).ok).toBe(false);
+  });
+
+  it('human + allowLoopback still reaches RFC1918 (human may reach private)', () => {
+    expect(guardNavigation('http://10.0.0.5/', { source: 'human', allowLoopback: true }).ok).toBe(true);
+  });
+});

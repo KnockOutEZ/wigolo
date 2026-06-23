@@ -601,3 +601,26 @@ describe('handleExtract mode=brand', () => {
     expect(provenance.colors).toBe('unknown');
   });
 });
+
+describe('handleExtract — source-aware SSRF guard (P6-a exfil leg)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getCachedContent).mockReturnValue(null);
+    vi.mocked(isExpired).mockReturnValue(false);
+  });
+
+  it('threads source=human into router.fetch on the standard path (human entry may reach localhost)', async () => {
+    const router = mockRouter();
+    await handleExtract({ url: 'http://localhost:3000/', mode: 'metadata' }, router as any, 'human');
+    expect(router.fetch).toHaveBeenCalledWith('http://localhost:3000/', expect.objectContaining({ source: 'human' }));
+  });
+
+  it('blocks an AGENT stealth fetch to cloud-metadata at the handler entry — the router-bypass path is guarded too', async () => {
+    const router = mockRouter();
+    const r = await handleExtract({ url: 'http://169.254.169.254/latest/meta-data/', execution_mode: 'stealth' }, router as any, 'agent');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe('navigation_blocked');
+    // the stealth path (fetchWithPlaywright) must NOT have been reached — guarded BEFORE the bypass
+    expect(fetchWithPlaywright).not.toHaveBeenCalled();
+  });
+});

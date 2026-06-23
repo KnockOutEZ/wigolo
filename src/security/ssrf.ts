@@ -136,12 +136,17 @@ export type GuardResult =
 export interface GuardNavigationOptions {
   source: NavSource;
   /**
-   * Allow loopback/RFC1918 targets. Defaults by source: human → true (co-browsing
-   * a local dev server is a primary use case), agent → false (blocked unless an
-   * explicit per-session human grant). Cloud-metadata / link-local is NEVER
-   * allowed for either, regardless of this flag.
+   * Allow RFC1918 private targets (10/8, 172.16/12, 192.168/16). Defaults by source:
+   * human → true, agent → false. Cloud-metadata / link-local is NEVER allowed regardless.
    */
   allowPrivate?: boolean;
+  /**
+   * Allow loopback (127.0.0.0/8, ::1) INDEPENDENTLY of RFC1918. Defaults to the effective
+   * `allowPrivate` value, so studio-nav / watch callers (which don't set it) keep their
+   * loopback-follows-private semantics unchanged. The CONTENT-PATH callers set it `true` so the
+   * agent can reach a local dev server (127.x) while RFC1918 stays agent-blocked.
+   */
+  allowLoopback?: boolean;
 }
 
 /**
@@ -171,8 +176,13 @@ export function guardNavigation(raw: string, opts: GuardNavigationOptions): Guar
     return { ok: false, code: 'blocked', category, host: parsed.hostname };
   }
 
-  // loopback | private: allowed only when the policy permits it.
+  // loopback and private are gated SEPARATELY: loopback (127.x/::1) can be reachable by both
+  // parties for the content path while RFC1918 stays agent-blocked. `allowLoopback` defaults to
+  // the effective `allowPrivate` so studio-nav / watch (which set neither for the agent) keep
+  // their current loopback-follows-private behavior.
   const allowPrivate = opts.allowPrivate ?? opts.source === 'human';
-  if (allowPrivate) return { ok: true, url: parsed, category };
+  const allowLoopback = opts.allowLoopback ?? allowPrivate;
+  const permitted = category === 'loopback' ? allowLoopback : allowPrivate;
+  if (permitted) return { ok: true, url: parsed, category };
   return { ok: false, code: 'blocked', category, host: parsed.hostname };
 }

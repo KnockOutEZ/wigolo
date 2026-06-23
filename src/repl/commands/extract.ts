@@ -30,7 +30,8 @@ export async function executeExtract(args: ParsedArgs, deps: ReplDeps): Promise<
     }
 
     log.debug('executing extract command', { url, flags: args.flags });
-    const r = await handleExtract(input, deps.router);
+    // REPL is a human-initiated entry — may reach a local dev server (P6-a source policy).
+    const r = await handleExtract(input, deps.router, 'human');
     if (!r.ok) {
       return {
         data: {},

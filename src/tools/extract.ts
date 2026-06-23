@@ -1,5 +1,6 @@
 import type { ExtractInput, ExtractOutput, StageResult, TableData } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
+import { guardNavigation, type NavSource } from '../security/ssrf.js';
 import { extractMetadata, extractSelector, extractTables } from '../extraction/extract.js';
 import {
   extractWithSchema,
@@ -185,6 +186,7 @@ function buildSuccessOutput(
 async function resolveHtml(
   input: ExtractInput,
   router: SmartRouter,
+  source: NavSource = 'agent',
 ): Promise<{ html: string; sourceUrl?: string }> {
   if (input.execution_mode === 'stealth' && input.url) {
     const pw = await fetchWithPlaywright(input.url);
@@ -201,6 +203,7 @@ async function resolveHtml(
     const raw = await router.fetch(input.url, {
       renderJs: 'auto',
       useAuth: false,
+      source,
     });
     return { html: raw.html, sourceUrl: raw.finalUrl };
   }
@@ -211,6 +214,7 @@ async function resolveHtml(
 export async function handleExtract(
   input: ExtractInput,
   router: SmartRouter,
+  source: NavSource = 'agent',
 ): Promise<StageResult<ExtractOutput>> {
   const mode = input.mode ?? 'metadata';
   const _start = Date.now();
@@ -260,8 +264,30 @@ export async function handleExtract(
     };
   }
 
+  // P6-a exfil guard at the handler ENTRY — covers BOTH the stealth path (which fetches via the
+  // browser tier, bypassing router.fetch) and the standard path. Source-aware: agent blocks
+  // localhost/private; human (REPL) may reach a local dev server; cloud-metadata blocked for both.
+  if (input.url) {
+    const verdict = guardNavigation(input.url, { source, allowLoopback: true });
+    if (!verdict.ok) {
+      return {
+        ok: false,
+        error: 'navigation_blocked',
+        error_reason:
+          verdict.code === 'blocked'
+            ? `Blocked ${source}-initiated extraction of a non-public address: ${verdict.host ?? input.url}`
+            : `Invalid extraction target (${verdict.code}): ${input.url}`,
+        stage: 'extract',
+        hint:
+          source === 'agent'
+            ? 'Cloud-internal/metadata is never reachable; localhost/private requires a human-initiated request.'
+            : 'The address is not a navigable public/local target.',
+      };
+    }
+  }
+
   try {
-    const { html, sourceUrl } = await resolveHtml(input, router);
+    const { html, sourceUrl } = await resolveHtml(input, router, source);
 
     if (input.named_schema) {
       const namedData = await extractNamedSchema(input.named_schema, html, sourceUrl ?? input.url ?? '');

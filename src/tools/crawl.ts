@@ -4,6 +4,7 @@ import type {
   MapOutput,
 } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
+import type { NavSource } from '../security/ssrf.js';
 import { Crawler } from '../crawl/crawler.js';
 import { deduplicatePages } from '../crawl/dedup.js';
 import { mapUrls } from '../crawl/mapper.js';
@@ -23,18 +24,19 @@ const DEFAULT_MAX_TOKENS_OUT = 4000;
 export async function handleCrawl(
   input: CrawlInput,
   router: SmartRouter,
+  source: NavSource = 'agent',
 ): Promise<CrawlOutput | (MapOutput & { crawled: number })> {
   const _start = Date.now();
   try {
     // Map strategy: lightweight URL-only discovery, skip full crawl pipeline
     if (input.strategy === 'map') {
-      return handleMapStrategy(input, router);
+      return handleMapStrategy(input, router, source);
     }
 
     // Crawler needs full markdown internally for dedup; opt in explicitly so
     // handleFetch's default strip does not steal page bodies mid-crawl.
     const fetchFn = async (url: string) => {
-      const r = await handleFetch({ url, use_auth: input.use_auth, include_full_markdown: true }, router);
+      const r = await handleFetch({ url, use_auth: input.use_auth, include_full_markdown: true }, router, source);
       if (!r.ok) {
         return {
           url,
@@ -51,7 +53,7 @@ export async function handleCrawl(
     };
 
     const rawFetchFn = async (url: string) =>
-      router.fetch(url, { renderJs: 'never' });
+      router.fetch(url, { renderJs: 'never', source });
 
     const crawler = new Crawler(fetchFn, rawFetchFn);
     const result = await crawler.crawl(input);
@@ -184,9 +186,10 @@ async function attachEvidence(out: CrawlOutput, input: CrawlInput): Promise<void
 async function handleMapStrategy(
   input: CrawlInput,
   router: SmartRouter,
+  source: NavSource = 'agent',
 ): Promise<MapOutput & { crawled: number }> {
   const httpFetchFn = async (url: string) => {
-    const raw = await router.fetch(url, { renderJs: 'never' });
+    const raw = await router.fetch(url, { renderJs: 'never', source });
     return { html: raw.html, finalUrl: raw.finalUrl, statusCode: raw.statusCode };
   };
 

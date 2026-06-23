@@ -784,3 +784,22 @@ describe('handleFetch --- evidence shape', () => {
     expect(result.evidence![0].citation_id).toMatch(/^[a-f0-9]{12}$/);
   });
 });
+
+describe('handleFetch — source-aware SSRF threading (P6-a exfil leg)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getCachedContent).mockReturnValue(null); // cache miss → reach router.fetch
+  });
+
+  it('threads source=human into router.fetch (human/REPL entry may reach localhost)', async () => {
+    const router = mockRouter();
+    await handleFetch({ url: 'http://localhost:3000/' }, router as any, 'human');
+    expect(router.fetch).toHaveBeenCalledWith('http://localhost:3000/', expect.objectContaining({ source: 'human' }));
+  });
+
+  it('defaults source to agent (fail-closed) when no source is given (MCP/agent entry)', async () => {
+    const router = mockRouter();
+    await handleFetch({ url: 'https://example.com/' }, router as any);
+    expect(router.fetch).toHaveBeenCalledWith('https://example.com/', expect.objectContaining({ source: 'agent' }));
+  });
+});

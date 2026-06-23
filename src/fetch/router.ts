@@ -20,6 +20,7 @@ import {
   recordTlsImpersonationSuccess,
 } from '../cache/store.js';
 import type { RawFetchResult, BrowserAction, Mode, StageError } from '../types.js';
+import { guardNavigation, type NavSource } from '../security/ssrf.js';
 
 // Domains we know up-front are heavily client-rendered. HTTP-first detection
 // keeps mis-classifying these (react.dev SSRs enough nav text to clear the
@@ -79,6 +80,13 @@ export interface RouterFetchOptions {
    *  will be cancelled when the signal fires. No behavior change — signal is
    *  only plumbed here; enforcement lives in the HTTP client and browser pool. */
   signal?: AbortSignal;
+  /**
+   * Who initiated this fetch (P6-a exfil guard). 'agent' (default, fail-closed) blocks
+   * loopback/RFC1918; 'human' (CLI/REPL entry, where the person typed the URL) may reach a
+   * local dev server. Cloud-metadata / link-local is blocked for BOTH. Machine-discovered URLs
+   * (research/agent/find_similar) keep the 'agent' default.
+   */
+  source?: NavSource;
 }
 
 export interface HttpClient {
@@ -277,7 +285,28 @@ export class SmartRouter {
     url: string,
     options: RouterFetchOptions = {},
   ): Promise<RawFetchResult | StageError> {
-    const { renderJs = 'auto', useAuth = false, headers, screenshot, actions, mode, conditionalHeaders, signal } = options;
+    const { renderJs = 'auto', useAuth = false, headers, screenshot, actions, mode, conditionalHeaders, signal, source = 'agent' } = options;
+
+    // P6-a exfil guard — runs before ANY fetcher (HTTP / TLS / browser), so a blocked target
+    // never touches the network. Source-aware: agent blocks loopback/RFC1918 by default; human
+    // (CLI/REPL) may reach a local dev server; cloud-metadata / link-local is blocked for both.
+    // Redirect HOPS are re-validated in http-client.ts under the same source.
+    const navVerdict = guardNavigation(url, { source, allowLoopback: true });
+    if (!navVerdict.ok) {
+      return {
+        error: 'navigation_blocked',
+        error_reason:
+          navVerdict.code === 'blocked'
+            ? `Blocked ${source}-initiated navigation to a non-public address: ${navVerdict.host ?? url}`
+            : `Invalid navigation target (${navVerdict.code}): ${url}`,
+        stage: 'fetch',
+        hint:
+          source === 'agent'
+            ? 'Cloud-internal/metadata is never reachable; localhost/private addresses require a human-initiated request.'
+            : 'The address is not a navigable public/local target.',
+      };
+    }
+
     const config = getConfig();
     const logger = createLogger('fetch');
     const threshold = config.browserFallbackThreshold;
