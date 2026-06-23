@@ -45,18 +45,115 @@ export interface AuditEntry extends AuditRecordInput {
   ts: number;
 }
 
+/**
+ * The narrow DB surface the audit log writes through (Phase 6b persistence). A real better-sqlite3
+ * Database satisfies it structurally; tests inject a migrated in-memory DB. Kept as an injected
+ * interface (not a getDatabase import) so audit.ts stays a leaf — the persistent INSERT lands HERE
+ * (sole writer), but the handle is provided by the host.
+ */
+export interface AuditDb {
+  prepare(sql: string): { run(...args: unknown[]): unknown; all(...args: unknown[]): unknown[] };
+}
+
 export interface AuditDeps {
   /** Injected clock for deterministic tests; defaults to the wall clock. */
   now?: () => number;
+  /** When set (with `sessionId`): durably persist each record + hydrate prior entries on construction. */
+  db?: AuditDb;
+  /** The session this log belongs to — the FK + query scope for persistence. */
+  sessionId?: string;
+}
+
+/** One persisted row (flattened entry). Metadata only — there is no raw-typed-text column to read back. */
+interface AuditRow {
+  seq: number;
+  action: string;
+  epoch: number;
+  target_url: string | null;
+  target_ref: string | null;
+  target_direction: string | null;
+  target_amount: number | null;
+  outcome_ok: number;
+  outcome_error_reason: string | null;
+  outcome_chars_landed: number | null;
+  risk: string | null;
+  approval: string | null;
+  ts: number;
+}
+
+/** Rebuild a frozen AuditEntry from a persisted row so a hydrated entry is indistinguishable from a freshly-recorded one (same shape, same freeze). */
+function rowToEntry(r: AuditRow): AuditEntry {
+  const target: NonNullable<AuditRecordInput['target']> = {};
+  if (r.target_url != null) target.url = r.target_url;
+  if (r.target_ref != null) target.ref = r.target_ref;
+  if (r.target_direction != null) target.direction = r.target_direction as 'up' | 'down';
+  if (r.target_amount != null) target.amount = r.target_amount;
+  const outcome: AuditOutcome = r.outcome_ok
+    ? { ok: true, ...(r.outcome_chars_landed != null ? { charsLanded: r.outcome_chars_landed } : {}) }
+    : { ok: false, error_reason: r.outcome_error_reason ?? '', ...(r.outcome_chars_landed != null ? { charsLanded: r.outcome_chars_landed } : {}) };
+  return Object.freeze({
+    action: r.action,
+    epoch: r.epoch,
+    ...(Object.keys(target).length ? { target: Object.freeze(target) } : {}),
+    outcome: Object.freeze(outcome),
+    ...(r.risk != null ? { risk: r.risk as RiskTier } : {}),
+    ...(r.approval != null ? { approval: r.approval as ApprovalDecision } : {}),
+    seq: r.seq,
+    ts: r.ts,
+  });
 }
 
 export class SessionAuditLog {
   private readonly entries: AuditEntry[] = [];
   private seq = 0;
   private readonly now: () => number;
+  private readonly db?: AuditDb;
+  private readonly sessionId?: string;
 
   constructor(deps: AuditDeps = {}) {
     this.now = deps.now ?? (() => Date.now());
+    this.db = deps.db;
+    this.sessionId = deps.sessionId;
+    if (this.db && this.sessionId) this.hydrate();
+  }
+
+  /** Reconstruct the prior session sequence from the table (ordered by seq) — for display/forensics, never re-execution. */
+  private hydrate(): void {
+    const rows = this.db!.prepare(
+      `SELECT seq, action, epoch, target_url, target_ref, target_direction, target_amount,
+              outcome_ok, outcome_error_reason, outcome_chars_landed, risk, approval, ts
+       FROM studio_audit WHERE session_id = ? ORDER BY seq ASC`,
+    ).all(this.sessionId) as AuditRow[];
+    for (const r of rows) {
+      this.entries.push(rowToEntry(r));
+      if (r.seq > this.seq) this.seq = r.seq;
+    }
+  }
+
+  /** The sole audit writer: auto-seed the session (FK parent, idempotent) then INSERT the row. INSERT-only — never UPDATE/DELETE. */
+  private persist(entry: AuditEntry): void {
+    this.db!.prepare(`INSERT OR IGNORE INTO studio_sessions (id) VALUES (?)`).run(this.sessionId);
+    this.db!.prepare(
+      `INSERT INTO studio_audit
+         (session_id, seq, action, epoch, target_url, target_ref, target_direction, target_amount,
+          outcome_ok, outcome_error_reason, outcome_chars_landed, risk, approval, ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      this.sessionId,
+      entry.seq,
+      entry.action,
+      entry.epoch,
+      entry.target?.url ?? null,
+      entry.target?.ref ?? null,
+      entry.target?.direction ?? null,
+      entry.target?.amount ?? null,
+      entry.outcome.ok ? 1 : 0,
+      entry.outcome.ok ? null : entry.outcome.error_reason,
+      entry.outcome.charsLanded ?? null,
+      entry.risk ?? null,
+      entry.approval ?? null,
+      entry.ts,
+    );
   }
 
   /** Append one agent action + outcome. Returns the stamped, frozen entry. */
@@ -72,6 +169,7 @@ export class SessionAuditLog {
       ts: this.now(),
     });
     this.entries.push(entry);
+    if (this.db && this.sessionId) this.persist(entry);
     return entry;
   }
 

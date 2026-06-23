@@ -24,7 +24,7 @@ import { createObserver } from '../studio/observe.js';
 import { createActHandler } from '../studio/act.js';
 import { createCaptureHandler } from '../studio/capture/handler.js';
 import { getDatabase } from '../cache/db.js';
-import { SessionAuditLog } from '../studio/audit.js';
+import { SessionAuditLog, type AuditDb } from '../studio/audit.js';
 import { SessionApprovals } from '../studio/approvals.js';
 import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
@@ -622,7 +622,12 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // fence + held-input neutralization).
   // Phase 6b: the per-session append-only audit log. The act handler records every agent
   // action + its outcome here; the Phase-7 timeline replays it. In-memory now (Phase 4 owns persistence).
-  const auditLog = new SessionAuditLog();
+  // Phase 6b persistence: durably record the audit trail. getDatabase() throws until initDatabase()
+  // has run (the daemon does so before sessions exist); guard so the unit harness — which builds a
+  // host without a DB — falls back to the in-memory log cleanly (mirrors the lazy-db capture pattern).
+  let auditDb: AuditDb | undefined;
+  try { auditDb = getDatabase(); } catch { auditDb = undefined; }
+  const auditLog = new SessionAuditLog(auditDb ? { db: auditDb, sessionId: session.id } : {});
   // Phase 6c: the act handler classifies each click/type (deterministic) and HOLDS a risky one for
   // human approval before firing. currentUrl is the live page URL — the HARD signal the classifier
   // weights over the page-controlled element role/name; a read failure degrades to undefined (the
