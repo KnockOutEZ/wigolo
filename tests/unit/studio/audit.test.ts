@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
+import Database from 'better-sqlite3';
 import { SessionAuditLog, type AuditEntry } from '../../../src/studio/audit.js';
+import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
+
+function migratedDb(): Database.Database {
+  _resetMigrationGuard();
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  applyMigrations(db, { vecLoaded: false });
+  return db;
+}
 
 /**
  * Phase 6b: a per-session APPEND-ONLY record of every agent action + its outcome, for
@@ -79,5 +89,24 @@ describe('SessionAuditLog — per-session append-only audit log', () => {
     const e = log.record({ action: 'navigate', epoch: 0, outcome: { ok: true } });
     expect(typeof e.ts).toBe('number');
     expect(e.ts).toBeGreaterThan(0);
+  });
+});
+
+describe('SessionAuditLog — durable persistence (Phase 6b)', () => {
+  it('a recorded entry SURVIVES a fresh load from the DB, in order (durability, not in-memory)', () => {
+    const db = migratedDb();
+    const log1 = new SessionAuditLog({ db, sessionId: 'sess-A', now: () => 4242 });
+    log1.record({ action: 'navigate', epoch: 0, target: { url: 'https://x/' }, outcome: { ok: true } });
+    log1.record({ action: 'click', epoch: 1, target: { ref: 'e1' }, outcome: { ok: false, error_reason: 'element_occluded' } });
+
+    // A FRESH log instance reading the SAME session from the DB — empty unless the entries persisted.
+    const log2 = new SessionAuditLog({ db, sessionId: 'sess-A' });
+    const seq = log2.replay();
+
+    expect(seq.map((e) => e.action)).toEqual(['navigate', 'click']);
+    expect(seq.map((e) => e.seq)).toEqual([1, 2]); // ordered by seq
+    expect(seq[0].target).toEqual({ url: 'https://x/' });
+    expect(seq[1].outcome).toEqual({ ok: false, error_reason: 'element_occluded' });
+    db.close();
   });
 });

@@ -45,18 +45,37 @@ export interface AuditEntry extends AuditRecordInput {
   ts: number;
 }
 
+/**
+ * The narrow DB surface the audit log writes through (Phase 6b persistence). A real better-sqlite3
+ * Database satisfies it structurally; tests inject a migrated in-memory DB. Kept as an injected
+ * interface (not a getDatabase import) so audit.ts stays a leaf — the persistent INSERT lands HERE
+ * (sole writer), but the handle is provided by the host.
+ */
+export interface AuditDb {
+  prepare(sql: string): { run(...args: unknown[]): unknown; all(...args: unknown[]): unknown[] };
+}
+
 export interface AuditDeps {
   /** Injected clock for deterministic tests; defaults to the wall clock. */
   now?: () => number;
+  /** When set (with `sessionId`): durably persist each record + hydrate prior entries on construction. */
+  db?: AuditDb;
+  /** The session this log belongs to — the FK + query scope for persistence. */
+  sessionId?: string;
 }
 
 export class SessionAuditLog {
   private readonly entries: AuditEntry[] = [];
   private seq = 0;
   private readonly now: () => number;
+  private readonly db?: AuditDb;
+  private readonly sessionId?: string;
 
   constructor(deps: AuditDeps = {}) {
     this.now = deps.now ?? (() => Date.now());
+    this.db = deps.db;
+    this.sessionId = deps.sessionId;
+    // GREEN wires hydrate-from-DB here.
   }
 
   /** Append one agent action + outcome. Returns the stamped, frozen entry. */

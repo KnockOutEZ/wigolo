@@ -182,6 +182,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_artifacts_nourl
 // 009-studio-artifacts-content.sql.
 const MIGRATION_009_STUDIO_ARTIFACTS_CONTENT = '';
 
+// Phase 6b: durable per-session audit log of every agent action. Metadata-only by construction
+// (no raw typed text — the in-memory AuditEntry never carries it; only `outcome_chars_landed`).
+// session_id FKs studio_sessions (008, parent). The (session_id, seq) unique index gives the stable
+// replay order + makes the sole-writer INSERT idempotent on re-append. INSERT-only — no UPDATE/DELETE
+// anywhere. Mirrored in 010-studio-audit.sql.
+const MIGRATION_010_STUDIO_AUDIT = `
+CREATE TABLE IF NOT EXISTS studio_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL REFERENCES studio_sessions(id),
+  seq INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  epoch INTEGER NOT NULL,
+  target_url TEXT,
+  target_ref TEXT,
+  target_direction TEXT,
+  target_amount REAL,
+  outcome_ok INTEGER NOT NULL,
+  outcome_error_reason TEXT,
+  outcome_chars_landed INTEGER,
+  risk TEXT,
+  approval TEXT,
+  ts INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_audit_session_seq
+  ON studio_audit(session_id, seq);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -286,6 +314,7 @@ export const MIGRATIONS: Migration[] = [
       db.exec(`INSERT INTO studio_artifacts_fts(studio_artifacts_fts) VALUES('rebuild')`);
     },
   },
+  { name: '010-studio-audit', sql: MIGRATION_010_STUDIO_AUDIT },
 ];
 
 function isReadOnlyError(err: unknown): boolean {
