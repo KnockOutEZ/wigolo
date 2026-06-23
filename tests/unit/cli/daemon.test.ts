@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, statSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { resetConfig } from '../../../src/config.js';
 
 // Mock DaemonHttpServer to prevent actual server start
@@ -172,5 +175,87 @@ describe('buildServeAuth (audit S3 closure)', () => {
       minted: false,
       remote: true,
     });
+  });
+});
+
+// D13 — the MINTED per-launch remote bearer is delivered via a 0600 handle file, not echoed to
+// stderr (terminal/shell-log scrollback is a leak surface). Fail CLOSED on write error. All pins
+// enter through real startup (runDaemon); the minted path needs a non-loopback bind + --allow-remote
+// + NO operator token. Landmines: loopback path untouched (P6-d back-compat), 0600 owner-only, the
+// token value never reaches stderr.
+describe('D13 — minted serve bearer via a 0600 handle file (not stderr)', () => {
+  const originalEnv = process.env;
+  let dataDir: string;
+  let stderrOutput: string;
+  const exitCalls: number[] = [];
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.WIGOLO_STUDIO_TOKEN; // unset -> the per-launch token is MINTED on a remote bind
+    dataDir = mkdtempSync(join(tmpdir(), 'wigolo-d13-'));
+    process.env.WIGOLO_DATA_DIR = dataDir;
+    resetConfig();
+    vi.clearAllMocks();
+    stderrOutput = '';
+    exitCalls.length = 0;
+    vi.spyOn(process.stderr, 'write').mockImplementation((data: string | Uint8Array) => {
+      stderrOutput += typeof data === 'string' ? data : new TextDecoder().decode(data);
+      return true;
+    });
+    vi.spyOn(process, 'exit').mockImplementation((code?: number | string | null): never => {
+      exitCalls.push(typeof code === 'number' ? code : 0);
+      throw new Error(`process.exit(${code})`);
+    });
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    rmSync(dataDir, { recursive: true, force: true });
+    resetConfig();
+    vi.restoreAllMocks();
+  });
+
+  const bearerPath = () => join(dataDir, 'serve-bearer');
+
+  it('D13-1: writes the minted REMOTE bearer to a 0600 file', async () => {
+    const { runDaemon } = await import('../../../src/cli/daemon.js');
+    runDaemon(['--host', '0.0.0.0', '--allow-remote']);
+    // flipped value: the bearer file exists (no file on current code -> RED).
+    expect(existsSync(bearerPath())).toBe(true);
+    expect(readFileSync(bearerPath(), 'utf-8')).toHaveLength(43); // minted token format
+    expect(statSync(bearerPath()).mode & 0o777).toBe(0o600); // owner-only (MUT 0644 -> RED)
+  });
+
+  it('D13-2: does NOT echo the minted bearer VALUE to stderr — points to the file instead', async () => {
+    const { runDaemon } = await import('../../../src/cli/daemon.js');
+    runDaemon(['--host', '0.0.0.0', '--allow-remote']);
+    // flipped value: no "label: <long-token>" echo (current code prints the token -> RED).
+    expect(stderrOutput).not.toMatch(/bearer token[^\n]*: \S{20,}/i);
+    expect(stderrOutput).toMatch(/serve-bearer/); // the PATH is surfaced instead
+    // strengthening (GREEN state): the actual written token never appears in stderr.
+    if (existsSync(bearerPath())) {
+      expect(stderrOutput).not.toContain(readFileSync(bearerPath(), 'utf-8'));
+    }
+  });
+
+  it('D13-3: fail-closed on a handle-file write error — refuses, no stderr-fallback', async () => {
+    // Force the write to fail: point dataDir at a regular FILE so mkdirSync throws.
+    const filePath = join(dataDir, 'not-a-dir');
+    writeFileSync(filePath, 'x');
+    process.env.WIGOLO_DATA_DIR = filePath;
+    resetConfig();
+    const { runDaemon } = await import('../../../src/cli/daemon.js');
+    // process.exit is mocked to throw -> the fail-closed path surfaces as a throw (no quiet return).
+    expect(() => runDaemon(['--host', '0.0.0.0', '--allow-remote'])).toThrow(/process\.exit/);
+    expect(exitCalls).toContain(1); // refused
+    expect(stderrOutput).toMatch(/error|refus/i);
+    expect(stderrOutput).not.toMatch(/bearer token[^\n]*: \S{20,}/i); // no fallback leak
+  });
+
+  it('D13-4: loopback-default (no --allow-remote) still works WITHOUT a handle file', async () => {
+    const { runDaemon } = await import('../../../src/cli/daemon.js');
+    expect(() => runDaemon(['--host', '127.0.0.1'])).not.toThrow();
+    expect(existsSync(bearerPath())).toBe(false); // no bearer file on the loopback path (MUT require-file -> RED)
+    expect(exitCalls).toHaveLength(0); // no refusal
   });
 });

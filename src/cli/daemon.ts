@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync, chmodSync, renameSync } from 'node:fs';
+import { join } from 'node:path';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { DaemonHttpServer, type DaemonAuthConfig } from '../daemon/http-server.js';
@@ -9,6 +11,23 @@ const logger = createLogger('cli');
 
 function log(msg: string): void {
   process.stderr.write(`[wigolo serve] ${msg}\n`);
+}
+
+/**
+ * D13: atomically write the minted per-launch remote bearer to a 0600 owner-only file
+ * (`<dataDir>/serve-bearer`), mirroring the studio handle discipline (mkdir 0700 -> write 0600
+ * -> chmod -> rename). Returns the path. Throws on any fs error so the caller can fail closed —
+ * the token is never echoed to stderr as a fallback.
+ */
+function writeServeBearer(token: string): string {
+  const dataDir = getConfig().dataDir;
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  const finalPath = join(dataDir, 'serve-bearer');
+  const tmpPath = `${finalPath}.${process.pid}.tmp`;
+  writeFileSync(tmpPath, token, { mode: 0o600 });
+  chmodSync(tmpPath, 0o600); // deterministic regardless of umask
+  renameSync(tmpPath, finalPath);
+  return finalPath;
 }
 
 export interface DaemonArgs {
@@ -89,8 +108,18 @@ export function runDaemon(args: string[]): void {
   if (decision.remote) {
     log('WARNING: bound to a non-loopback host — the daemon is reachable beyond this machine; a bearer token is required on every request.');
     if (decision.minted && decision.auth) {
-      log(`  Bearer token (required by every client): ${decision.auth.token}`);
-      log('  This token is invalidated on restart — pin WIGOLO_STUDIO_TOKEN for stable remote use.');
+      // D13: deliver the minted bearer via a 0600 handle file, NOT echoed to stderr (terminal/shell-log
+      // scrollback is a leak surface). Fail CLOSED on write error — never fall back to printing the
+      // token, never start with remote exposure unprotected.
+      let handlePath: string;
+      try {
+        handlePath = writeServeBearer(decision.auth.token);
+      } catch (err) {
+        log(`ERROR: refusing to start — could not write the bearer token file (${err instanceof Error ? err.message : String(err)}). Fix the data dir or pin WIGOLO_STUDIO_TOKEN.`);
+        process.exit(1);
+        return;
+      }
+      log(`  Bearer token written to ${handlePath} (0600, owner-only). Every client must send it; it is invalidated on restart — pin WIGOLO_STUDIO_TOKEN for stable remote use.`);
     }
   }
 
