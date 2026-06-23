@@ -1,6 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { rmSync } from 'node:fs';
 import { initDatabase, closeDatabase } from '../../../src/cache/db.js';
 import { resetConfig } from '../../../src/config.js';
+import { scrubProviderEnv, emptyKeystoreDataDir } from '../../helpers/provider-isolation.js';
+
+// D11: neutralize the KEYCHAIN leg of provider detection (a real dev-keychain key defeats the no-provider
+// assert). ENV + FILE legs neutralized in beforeEach (scrub + empty keystore dataDir).
+vi.mock('../../../src/security/keychain.js', () => ({
+  keychainAvailable: () => false,
+  keychainGet: () => null,
+  keychainSet: () => {},
+  keychainDelete: () => {},
+  WIGOLO_SERVICE: 'wigolo',
+}));
 
 vi.mock('../../../src/integrations/cloud/llm/anthropic.js', () => ({
   callAnthropic: vi.fn(),
@@ -27,14 +39,12 @@ const schema = {
 
 describe('extractWithLLM', () => {
   const originalEnv = process.env;
+  let d11dir: string;
 
   beforeEach(() => {
     process.env = { ...originalEnv };
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.GOOGLE_API_KEY;
-    delete process.env.GROQ_API_KEY;
-    delete process.env.WIGOLO_LLM_PROVIDER;
+    scrubProviderEnv(); // ENV leg: 4 provider keys + WIGOLO_LLM_API_KEY + WIGOLO_LLM_PROVIDER
+    d11dir = emptyKeystoreDataDir(); // FILE leg absent-by-construction
     resetConfig();
     initDatabase(':memory:');
     vi.mocked(callAnthropic).mockReset();
@@ -44,6 +54,7 @@ describe('extractWithLLM', () => {
   afterEach(() => {
     closeDatabase();
     process.env = originalEnv;
+    rmSync(d11dir, { recursive: true, force: true });
     resetConfig();
   });
 

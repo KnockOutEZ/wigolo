@@ -54,6 +54,16 @@ vi.mock('../../../src/cache/db.js', () => {
 vi.mock('../../../src/search/core/rss/feed-config.js', () => ({
   loadFeedConfig: vi.fn(() => ({ feeds: [], sources: [] })),
 }));
+// D11: neutralize the KEYCHAIN leg of provider detection — a real key in the dev's OS keychain otherwise
+// defeats the no-provider asserts (this box: gemini "configured (keychain)"). Env scrubbed in beforeEach;
+// the FILE leg is neutralized by the node:fs existsSync mock above (no real .enc is read).
+vi.mock('../../../src/security/keychain.js', () => ({
+  keychainAvailable: () => false,
+  keychainGet: () => null,
+  keychainSet: () => {},
+  keychainDelete: () => {},
+  WIGOLO_SERVICE: 'wigolo',
+}));
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -61,6 +71,7 @@ import { runDoctor } from '../../../src/cli/doctor.js';
 import { getEmbedProvider } from '../../../src/providers/embed-provider.js';
 import { initDatabase } from '../../../src/cache/db.js';
 import { loadFeedConfig } from '../../../src/search/core/rss/feed-config.js';
+import { scrubProviderEnv } from '../../helpers/provider-isolation.js';
 
 function okProc(stdout = ''): ReturnType<typeof spawnSync> {
   return { status: 0, stdout, stderr: '', signal: null, pid: 1, output: [], error: undefined } as ReturnType<typeof spawnSync>;
@@ -73,7 +84,7 @@ describe('runDoctor', () => {
     return true;
   });
 
-  beforeEach(() => { outBuffer = ''; resetConfig(); vi.clearAllMocks(); });
+  beforeEach(() => { outBuffer = ''; scrubProviderEnv(); resetConfig(); vi.clearAllMocks(); });
   afterEach(() => { resetConfig(); writeSpy.mockClear(); });
 
   it('exits 0 when everything is healthy', async () => {

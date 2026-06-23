@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { rmSync } from 'node:fs';
+import { resetConfig } from '../../../src/config.js';
+import { scrubProviderEnv, emptyKeystoreDataDir } from '../../helpers/provider-isolation.js';
 
 const mockCalls: Array<{ provider: string; model: string; prompt: string }> = [];
 
@@ -16,6 +19,15 @@ vi.mock('../../../src/integrations/cloud/llm/text-adapters.js', () => {
     },
   };
 });
+// D11: neutralize the KEYCHAIN leg of provider detection (a real dev-keychain key defeats the no-provider
+// asserts). ENV + FILE legs neutralized in beforeEach (scrub + empty keystore dataDir).
+vi.mock('../../../src/security/keychain.js', () => ({
+  keychainAvailable: () => false,
+  keychainGet: () => null,
+  keychainSet: () => {},
+  keychainDelete: () => {},
+  WIGOLO_SERVICE: 'wigolo',
+}));
 
 const { runLlmText, runLlmJson, isLlmConfigured } = await import(
   '../../../src/integrations/cloud/llm/run.js'
@@ -26,22 +38,23 @@ const { resolveModel, providerDefaultModel } = await import(
 
 describe('runLlmText', () => {
   const originalEnv = process.env;
+  let d11dir: string;
   beforeEach(() => {
     mockCalls.length = 0;
     process.env = { ...originalEnv };
-    delete process.env.WIGOLO_LLM_PROVIDER;
     delete process.env.WIGOLO_LLM_MODEL;
     delete process.env.WIGOLO_LLM_MODEL_GEMINI;
     delete process.env.WIGOLO_LLM_MODEL_ANTHROPIC;
     delete process.env.WIGOLO_LLM_MODEL_OPENAI;
     delete process.env.WIGOLO_LLM_MODEL_GROQ;
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.GOOGLE_API_KEY;
-    delete process.env.GROQ_API_KEY;
+    scrubProviderEnv(); // 4 provider keys + WIGOLO_LLM_API_KEY + WIGOLO_LLM_PROVIDER (ENV leg)
+    d11dir = emptyKeystoreDataDir(); // FILE leg absent-by-construction (fresh empty keystore dataDir)
+    resetConfig();
   });
   afterEach(() => {
     process.env = originalEnv;
+    rmSync(d11dir, { recursive: true, force: true });
+    resetConfig();
   });
 
   it('routes to gemini when WIGOLO_LLM_PROVIDER=gemini + GOOGLE_API_KEY set', async () => {
