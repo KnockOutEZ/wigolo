@@ -109,4 +109,22 @@ describe('SessionAuditLog — durable persistence (Phase 6b)', () => {
     expect(seq[1].outcome).toEqual({ ok: false, error_reason: 'element_occluded' });
     db.close();
   });
+
+  it('(c) append-only: exposes NO mutation API, and a fresh-hydrated replay is ordered + frozen', () => {
+    const db = migratedDb();
+    const log = new SessionAuditLog({ db, sessionId: 'sess-AO' });
+    log.record({ action: 'navigate', epoch: 0, outcome: { ok: true } });
+    log.record({ action: 'click', epoch: 1, target: { ref: 'e1' }, outcome: { ok: true } });
+    // Structural append-only: no row-altering API on the audit store (instance or prototype).
+    for (const m of ['update', 'delete', 'remove', 'clear', 'set', 'mutate']) {
+      expect((log as unknown as Record<string, unknown>)[m]).toBeUndefined();
+    }
+    // A fresh hydrate over the persisted sequence is ordered + each entry frozen (tamper-proof).
+    const fresh = new SessionAuditLog({ db, sessionId: 'sess-AO' });
+    const seq = fresh.replay();
+    expect(seq.map((e) => e.seq)).toEqual([1, 2]);
+    expect(Object.isFrozen(seq[0])).toBe(true);
+    expect(Object.isFrozen(seq[1])).toBe(true);
+    db.close();
+  });
 });

@@ -8,6 +8,16 @@ import { buildSnapshot, type AxNode, type DomNode, type PerceptionCdp } from '..
 import { isStudioToolError, type StudioActOutput, type StudioToolError } from '../../../src/daemon/studio-dispatch.js';
 import { SessionAuditLog } from '../../../src/studio/audit.js';
 import type { ApprovalDecision, ApprovalRequest } from '../../../src/studio/approvals.js';
+import Database from 'better-sqlite3';
+import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
+
+function migratedDb(): Database.Database {
+  _resetMigrationGuard();
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  applyMigrations(db, { vecLoaded: false });
+  return db;
+}
 
 function makeFakeBrowser(impl?: (url: string) => Promise<void>) {
   const gotos: string[] = [];
@@ -727,5 +737,48 @@ describe('createActHandler — type: hard credential-field refusal (Slice 5a)', 
     });
     expect(result).toMatchObject({ ok: true, action: 'type', charsLanded: 2 });
     expect(ch.calls).toHaveLength(3);
+  });
+});
+
+describe('audit persistence — guard pins through the act choke (P6-b)', () => {
+  it('(a) EVERY action through the choke is persisted — successes, refusals, AND unknown verbs', async () => {
+    const db = migratedDb();
+    const audit = new SessionAuditLog({ db, sessionId: 'sess-C' });
+    const human = createActHandler({ browser: makeFakeBrowser().browser, controlToken: makeFakeToken('human'), grant: denyGrant, ...base, audit });
+    await human({ action: 'navigate', url: 'https://x/' }); // refused (human holds) — still recorded
+    await human({ action: 'frobnicate' } as unknown as { action: 'navigate' }); // unknown verb — still recorded
+    const agent = createActHandler({ browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent'), grant: allowGrant, ...base, audit });
+    await agent({ action: 'navigate', url: 'https://y/' }); // success
+    // Read from a FRESH log — proves all three durably persisted, in order.
+    const persisted = new SessionAuditLog({ db, sessionId: 'sess-C' }).replay();
+    expect(persisted.map((e) => e.action)).toEqual(['navigate', 'frobnicate', 'navigate']);
+    expect(persisted.map((e) => e.outcome.ok)).toEqual([false, false, true]);
+    db.close();
+  });
+
+  it('(b) a typeAct secret value is NEVER persisted — only metadata (charsLanded)', async () => {
+    const db = migratedDb();
+    const audit = new SessionAuditLog({ db, sessionId: 'sess-R' });
+    const SECRET = 'SUPERSECRETVALUE-123';
+    const ch = recordingChannel();
+    const handler = createActHandler({
+      browser: makeFakeBrowser().browser,
+      controlToken: makeFakeToken('agent'),
+      grant: allowGrant,
+      resolve: fixedResolve({ backendNodeId: 7, center: { x: 1, y: 1 } }),
+      channel: ch.channel,
+      audit,
+      currentUrl: () => 'https://example.com/search',
+    });
+    const r = await handler({ action: 'type', ref: 'e1', text: SECRET });
+    expect(r).toMatchObject({ ok: true, action: 'type', charsLanded: SECRET.length });
+    // The secret is in NEITHER the hydrated entries NOR the raw columns; only charsLanded survives.
+    const replayed = new SessionAuditLog({ db, sessionId: 'sess-R' }).replay();
+    expect(replayed).toHaveLength(1);
+    expect(JSON.stringify(replayed)).not.toContain(SECRET);
+    expect(replayed[0].outcome).toMatchObject({ ok: true, charsLanded: SECRET.length });
+    const rawRows = db.prepare('SELECT * FROM studio_audit WHERE session_id = ?').all('sess-R');
+    expect(JSON.stringify(rawRows)).not.toContain(SECRET);
+    db.close();
   });
 });
