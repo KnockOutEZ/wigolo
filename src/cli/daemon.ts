@@ -43,7 +43,7 @@ export function parseDaemonArgs(args: string[]): DaemonArgs {
 
 export type ServeAuthDecision =
   | { ok: false; message: string }
-  | { ok: true; auth?: DaemonAuthConfig; minted: boolean };
+  | { ok: true; auth?: DaemonAuthConfig; minted: boolean; remote: boolean };
 
 /**
  * Decide `wigolo serve` auth from the bind target — closes audit S3
@@ -60,14 +60,15 @@ export function buildServeAuth(opts: {
   const bind = checkBindHost(opts.host, { allowRemote: opts.allowRemote });
   if (!bind.ok) return { ok: false, message: bind.message };
 
+  // bind.requireAuth is true iff the bind is non-loopback (loopback short-circuits to false above).
   if (bind.requireAuth) {
     const { token, minted } = resolveHostToken(opts.configuredToken);
-    return { ok: true, auth: { token, host: opts.host }, minted };
+    return { ok: true, auth: { token, host: opts.host }, minted, remote: true };
   }
 
   const trimmed = opts.configuredToken?.trim();
-  if (trimmed) return { ok: true, auth: { token: trimmed, host: opts.host }, minted: false };
-  return { ok: true, auth: undefined, minted: false };
+  if (trimmed) return { ok: true, auth: { token: trimmed, host: opts.host }, minted: false, remote: false };
+  return { ok: true, auth: undefined, minted: false, remote: false };
 }
 
 export function runDaemon(args: string[]): void {
@@ -83,10 +84,14 @@ export function runDaemon(args: string[]): void {
     process.exit(1);
     return;
   }
-  if (decision.minted && decision.auth) {
-    log('WARNING: bound to a non-loopback host with a freshly MINTED per-launch bearer token.');
-    log(`  Bearer token (required by every client): ${decision.auth.token}`);
-    log('  This token is invalidated on restart — pin WIGOLO_STUDIO_TOKEN for stable remote use.');
+  // Keyed off the non-loopback bind, NOT token minting: an operator-supplied token is just as
+  // remotely reachable on a 0.0.0.0 bind, so the operator must be warned either way.
+  if (decision.remote) {
+    log('WARNING: bound to a non-loopback host — the daemon is reachable beyond this machine; a bearer token is required on every request.');
+    if (decision.minted && decision.auth) {
+      log(`  Bearer token (required by every client): ${decision.auth.token}`);
+      log('  This token is invalidated on restart — pin WIGOLO_STUDIO_TOKEN for stable remote use.');
+    }
   }
 
   log(`Starting daemon on ${parsed.host}:${parsed.port}...`);

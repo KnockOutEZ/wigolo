@@ -102,6 +102,27 @@ describe('runDaemon', () => {
     expect(parseDaemonArgs([]).allowRemote).toBe(false);
     expect(parseDaemonArgs(['--allow-remote']).allowRemote).toBe(true);
   });
+
+  // P6-d finding 2: the prominent remote-exposure WARNING must key off the NON-LOOPBACK bind,
+  // not off token minting. An operator-supplied token (minted:false) on a 0.0.0.0 bind is just
+  // as remotely reachable, so the operator must still be warned.
+  it('emits the remote-exposure WARNING on a non-loopback bind even with an OPERATOR token (not minted-gated)', async () => {
+    process.env.WIGOLO_STUDIO_TOKEN = 'pinned-operator-token';
+    resetConfig();
+    const { runDaemon } = await import('../../../src/cli/daemon.js');
+    runDaemon(['--host', '0.0.0.0', '--allow-remote']); // operator token → minted:false
+    expect(stderrOutput).toMatch(/WARNING[\s\S]*non-loopback/i);
+  });
+
+  // Guard the other side: a loopback bind never emits the remote-exposure WARNING (keyed off
+  // non-loopback, NOT "always warn"). Holds before and after the fix.
+  it('does NOT emit the remote-exposure WARNING on a loopback bind with an operator token', async () => {
+    process.env.WIGOLO_STUDIO_TOKEN = 'pinned-operator-token';
+    resetConfig();
+    const { runDaemon } = await import('../../../src/cli/daemon.js');
+    runDaemon(['--host', '127.0.0.1']);
+    expect(stderrOutput).not.toMatch(/WARNING/i);
+  });
 });
 
 describe('buildServeAuth (audit S3 closure)', () => {
@@ -111,6 +132,7 @@ describe('buildServeAuth (audit S3 closure)', () => {
       ok: true,
       auth: undefined,
       minted: false,
+      remote: false,
     });
   });
 
@@ -120,6 +142,7 @@ describe('buildServeAuth (audit S3 closure)', () => {
       ok: true,
       auth: { token: 'pinned', host: '127.0.0.1' },
       minted: false,
+      remote: false,
     });
   });
 
@@ -147,6 +170,7 @@ describe('buildServeAuth (audit S3 closure)', () => {
       ok: true,
       auth: { token: 'pinned', host: '0.0.0.0' },
       minted: false,
+      remote: true,
     });
   });
 });
