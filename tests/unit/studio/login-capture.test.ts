@@ -121,6 +121,17 @@ describe('createLoginCapture — origin-scope then persist (onComplete fill)', (
     expect(persist.set).not.toHaveBeenCalled();
   });
 
+  it('PIN-A2 (never-skip): with NO bound origin, a real wall-origin login is REFUSED persist (the undefined-skip is gone)', async () => {
+    // Slice D2/A: removing the `deps.expectedOrigin !== undefined` skip at login-capture.ts:115 makes an
+    // UNBOUND capture FAIL-CLOSED — a named profile with no bound origin must never persist. value-flip RED:
+    // today undefined ⇒ the skip is taken ⇒ the scoped state persists.
+    // MUTATION (restore the `deps.expectedOrigin !== undefined &&` skip): undefined bypasses the match ⇒ persists ⇒ RED.
+    const persist = spyPersist();
+    const capture = createLoginCapture({ profilePersist: persist, profileId: 'p1' }); // no expectedOrigin
+    await capture({ storageState: ss([cookie('session', 'acme.example')]), wallOrigin: WALL });
+    expect(persist.set).not.toHaveBeenCalled();
+  });
+
   it('round-trip: a real ctx → ProfileStore.set the scoped JSON; 5c\'s get returns it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wigolo-logincap-'));
     try {
