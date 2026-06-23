@@ -935,3 +935,53 @@ describe('cli/studio D2/A — profileId reachability + mandatory binding + R5 wa
     }
   });
 });
+
+// Slice D2/B — durable binding: the boundOrigin is persisted in the profile envelope and survives a restart.
+// M2: launch#1 declares it; thereafter --profile-origin is optional but, if given, must MATCH the persisted
+// binding (no silent rebind). A malformed profile fails closed (host refuses to start).
+describe('cli/studio D2/B — durable profile↔origin binding (M2 + anti-rebind)', () => {
+  const aStorage = JSON.stringify({ cookies: [cookie('s', 'a.example')], origins: [] });
+
+  it('PIN-B1 (durability): --profile X with origin OMITTED reads the PERSISTED boundOrigin — a login on it re-persists', async () => {
+    // value-flip RED: today (slice A) an omitted origin on a profile ⇒ first-use refusal (no persistence read).
+    // MUTATION (effectiveBoundOrigin = opts.profileOrigin, ignoring the persisted boundOrigin): the omitted
+    // origin leaves expectedOrigin undefined ⇒ never-skip refuses the matching login ⇒ no re-persist ⇒ RED.
+    const setCalls: Array<{ profileId: string; boundOrigin: string; json: string }> = [];
+    const boundStore = {
+      get: async () => ({ ok: true as const, boundOrigin: 'https://a.example', storageState: aStorage }),
+      set: async (profileId: string, boundOrigin: string, json: string) => { setCalls.push({ profileId, boundOrigin, json }); },
+    } as unknown as ProfileStore;
+    const launcher = makeWallLauncher({ url: 'https://a.example/login' });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+      profileId: 'gh', profileStore: boundStore, // NO profileOrigin — the binding must come from persistence
+    });
+    try {
+      await host.handoff.detectWall();
+      launcher.state.url = 'https://a.example/dashboard';
+      launcher.state.storage = { cookies: [cookie('session', 'a.example')], origins: [] };
+      await host.handoff.checkCompletion();
+      expect(host.handoff.state).toBe('completed');
+      expect(setCalls.length).toBe(1); // re-persisted on the persisted origin ⇒ M2 read the boundOrigin
+      expect(setCalls[0].boundOrigin).toBe('https://a.example');
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  it('PIN-B2 (no silent rebind): --profile X --profile-origin b.example when X is bound to a.example is REFUSED', async () => {
+    // value-flip RED: today no persisted-binding read ⇒ the declared origin is just used. MUTATION (let the
+    // declared origin override the persisted boundOrigin): startStudioHost resolves (rebinds) ⇒ RED.
+    const boundStore = {
+      get: async () => ({ ok: true as const, boundOrigin: 'https://a.example', storageState: aStorage }),
+      set: async () => {},
+    } as unknown as ProfileStore;
+    const launcher = makeWallLauncher({ url: 'https://a.example/login' });
+    await expect(
+      startStudioHost({
+        port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+        profileId: 'gh', profileStore: boundStore, profileOrigin: 'https://b.example', // declares a DIFFERENT origin
+      }),
+    ).rejects.toThrow(/rebind|bound to/);
+  });
+});
