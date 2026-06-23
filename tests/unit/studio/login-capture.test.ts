@@ -89,7 +89,7 @@ describe('createLoginCapture — origin-scope then persist (onComplete fill)', (
   it('L6a NOT-too-loose: the persisted profile contains ONLY the wall-origin state — an unrelated cookie never lands', async () => {
     // MUTATION (persist the UNSCOPED ctx.storageState): the tracker cookie lands in the profile → RED.
     const persist = spyPersist();
-    const capture = createLoginCapture({ profilePersist: persist, profileId: 'p1' });
+    const capture = createLoginCapture({ profilePersist: persist, profileId: 'p1', expectedOrigin: WALL });
     await capture({
       storageState: ss([cookie('session', 'acme.example'), cookie('ga', 'tracker.example')]),
       wallOrigin: WALL,
@@ -105,7 +105,7 @@ describe('createLoginCapture — origin-scope then persist (onComplete fill)', (
     // MUTATION (scope to EXACT-origin-only, dropping dotted-domain): the .acme.example auth cookie is
     // dropped → reuse would not authenticate → RED.
     const persist = spyPersist();
-    const capture = createLoginCapture({ profilePersist: persist, profileId: 'p1' });
+    const capture = createLoginCapture({ profilePersist: persist, profileId: 'p1', expectedOrigin: WALL });
     await capture({ storageState: ss([cookie('auth', '.acme.example')]), wallOrigin: WALL });
     expect(persist.set).toHaveBeenCalledTimes(1);
     const parsed = JSON.parse(persist.calls[0].json) as StorageStateOut;
@@ -121,11 +121,22 @@ describe('createLoginCapture — origin-scope then persist (onComplete fill)', (
     expect(persist.set).not.toHaveBeenCalled();
   });
 
+  it('PIN-A2 (never-skip): with NO bound origin, a real wall-origin login is REFUSED persist (the undefined-skip is gone)', async () => {
+    // Slice D2/A: removing the `deps.expectedOrigin !== undefined` skip at login-capture.ts:115 makes an
+    // UNBOUND capture FAIL-CLOSED — a named profile with no bound origin must never persist. value-flip RED:
+    // today undefined ⇒ the skip is taken ⇒ the scoped state persists.
+    // MUTATION (restore the `deps.expectedOrigin !== undefined &&` skip): undefined bypasses the match ⇒ persists ⇒ RED.
+    const persist = spyPersist();
+    const capture = createLoginCapture({ profilePersist: persist, profileId: 'p1' }); // no expectedOrigin
+    await capture({ storageState: ss([cookie('session', 'acme.example')]), wallOrigin: WALL });
+    expect(persist.set).not.toHaveBeenCalled();
+  });
+
   it('round-trip: a real ctx → ProfileStore.set the scoped JSON; 5c\'s get returns it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wigolo-logincap-'));
     try {
       const store = new ProfileStore({ dataDir: dir, keychain: memKeychain() });
-      const capture = createLoginCapture({ profilePersist: store, profileId: 'gh' });
+      const capture = createLoginCapture({ profilePersist: store, profileId: 'gh', expectedOrigin: WALL });
       await capture({
         storageState: ss([cookie('session', 'acme.example'), cookie('ga', 'tracker.example')], [lsOrigin('https://acme.example', { tok: 'x' })]),
         wallOrigin: WALL,

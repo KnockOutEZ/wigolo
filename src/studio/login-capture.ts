@@ -40,13 +40,13 @@ export interface ProfilePersist {
  */
 export interface OriginMismatch {
   profileId: string;
-  expectedOrigin: string;
+  expectedOrigin: string | undefined;
   completedOrigin: string | undefined;
 }
 
-/** Same-origin (scheme+host+port) compare; an absent/unparseable completed origin can't be confirmed ⇒ NO match (fail-closed). */
-function sameOrigin(completed: string | undefined, expected: string): boolean {
-  if (!completed) return false;
+/** Same-origin (scheme+host+port) compare; an absent/unparseable completed OR expected origin can't be confirmed ⇒ NO match (fail-closed). */
+function sameOrigin(completed: string | undefined, expected: string | undefined): boolean {
+  if (!completed || !expected) return false;
   try {
     return new URL(completed).origin === new URL(expected).origin;
   } catch {
@@ -101,9 +101,10 @@ export function createLoginCapture(deps: {
   profilePersist: ProfilePersist;
   profileId: string;
   /**
-   * Slice 5eb1: the origin the human bound this named profile to (the wallOrigin opted into). When set, a
-   * login completing on a DIFFERENT origin is REFUSED — so profile X can never silently receive origin Y's
-   * creds. Unset ⇒ no binding ⇒ persist as before (backward-compatible).
+   * Slice 5eb1 + D2/A: the origin the human bound this named profile to (the wallOrigin opted into). A login
+   * completing on a DIFFERENT origin is REFUSED — so profile X can never silently receive origin Y's creds.
+   * MANDATORY in practice: the host refuses to start a named profile without it, and an absent one here is
+   * treated as a mismatch (fail-closed — an unbound capture never persists; the undefined-skip is gone).
    */
   expectedOrigin?: string;
   /** Slice 5eb1: surface a binding mismatch host-side. Receives origins/profileId ONLY — never the storageState. */
@@ -112,11 +113,13 @@ export function createLoginCapture(deps: {
   return async (ctx: HandoffCompletionContext): Promise<void> => {
     const scoped = scopeStorageStateToOrigin(ctx.storageState, ctx.wallOrigin);
     if (isEmptyStorageState(scoped)) return; // no wall-origin auth captured → never persist a no-auth profile
-    if (deps.expectedOrigin !== undefined && !sameOrigin(ctx.wallOrigin, deps.expectedOrigin)) {
-      // 5eb1 confused-deputy guard: the completed login's origin must match the origin bound to this named
-      // profile, else X would silently receive Y's creds. Refuse-persist (fail-closed) + surface the mismatch
-      // (origins/profileId ONLY — never the storageState). The 5e-c re-grant still fires (the live session is
-      // authed regardless); this gates only WHERE creds persist, not whether the agent resumes.
+    // D2/A mandatory binding (never-skip): the completed login's origin MUST match the origin bound to this
+    // named profile, else X would silently receive Y's creds. The host refuses to start a profile without a
+    // bound origin, so a real capture always has expectedOrigin; an absent one is treated as a mismatch
+    // (fail-closed). Refuse-persist + surface the mismatch (origins/profileId ONLY — never the storageState).
+    // The 5e-c re-grant still fires (the live session is authed regardless); this gates only WHERE creds
+    // persist, not whether the agent resumes.
+    if (!sameOrigin(ctx.wallOrigin, deps.expectedOrigin)) {
       deps.onOriginMismatch?.({ profileId: deps.profileId, expectedOrigin: deps.expectedOrigin, completedOrigin: ctx.wallOrigin });
       return;
     }

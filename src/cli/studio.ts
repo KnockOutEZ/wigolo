@@ -63,6 +63,10 @@ export interface StudioArgs {
   port: number;
   host: string;
   allowRemote: boolean;
+  /** Slice D2/A: opt into a named profile via `--profile <id>` — loads + persists its authenticated storageState across launches. */
+  profileId?: string;
+  /** Slice D2/A: the origin the named profile is bound to (`--profile-origin <origin>`). MANDATORY whenever profileId is set — a login completing on any OTHER origin is refused (confused-deputy guard). */
+  profileOrigin?: string;
 }
 
 export function parseStudioArgs(args: string[]): StudioArgs {
@@ -70,6 +74,8 @@ export function parseStudioArgs(args: string[]): StudioArgs {
   let port = config.daemonPort;
   let host = config.daemonHost;
   let allowRemote = false;
+  let profileId: string | undefined;
+  let profileOrigin: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--port' && i + 1 < args.length) {
@@ -79,12 +85,18 @@ export function parseStudioArgs(args: string[]): StudioArgs {
     } else if (args[i] === '--host' && i + 1 < args.length) {
       host = args[i + 1];
       i++;
+    } else if (args[i] === '--profile' && i + 1 < args.length) {
+      profileId = args[i + 1];
+      i++;
+    } else if (args[i] === '--profile-origin' && i + 1 < args.length) {
+      profileOrigin = args[i + 1];
+      i++;
     } else if (args[i] === '--allow-remote') {
       allowRemote = true;
     }
   }
 
-  return { port, host, allowRemote };
+  return { port, host, allowRemote, profileId, profileOrigin };
 }
 
 export interface StudioHostOptions extends StudioArgs {
@@ -94,8 +106,6 @@ export interface StudioHostOptions extends StudioArgs {
   registry?: SessionRegistry;
   /** Inject the session-browser launcher (tests). Defaults to the real Playwright launcher. */
   browserLauncher?: SessionBrowserLauncher;
-  /** Slice 5d: the opted-in named profile id (opaque). Set ⇒ load that profile's storageState on launch; unset ⇒ a clean default session. */
-  profileId?: string;
   /** Inject the profile store (tests). Defaults to the keychain-backed ProfileStore. Only consulted when profileId is set. */
   profileStore?: ProfileStore;
   /** Inject the mark store (tests). Defaults to a fresh in-memory MarkStore. */
@@ -104,10 +114,6 @@ export interface StudioHostOptions extends StudioArgs {
    *  live session is authenticated + re-granted regardless (persist = future reuse); this keeps the failure
    *  visible without propagating it as an unhandled rejection. Receives the error only — never any storageState. */
   onLoginPersistError?: (err: unknown) => void;
-  /** 5eb1: the origin the human binds this named profile to. When set, a login completing on a DIFFERENT origin
-   *  is REFUSED (confused-deputy guard) — one site's creds never persist under another site's named profile.
-   *  Unset ⇒ no binding ⇒ persist as before (backward-compatible). */
-  profileOrigin?: string;
   /** 5eb1: host-level surface for a profile↔origin binding MISMATCH (refuse-persist). Defaults to a host log.
    *  Receives origins/profileId only — never any storageState/cookie. */
   onLoginOriginMismatch?: (info: OriginMismatch) => void;
@@ -162,6 +168,15 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const bind = checkBindHost(opts.host, { allowRemote: opts.allowRemote });
   if (!bind.ok) {
     throw new Error(bind.message);
+  }
+
+  // Slice D2/A: a named profile MUST declare the origin it is bound to. profileId without a profileOrigin is
+  // refused at host entry — before any token mint or browser launch — because an unbound named profile would
+  // let a login completing on ANY origin persist under it (the confused-deputy gap). Mandatory + never-skip.
+  if (opts.profileId && !opts.profileOrigin) {
+    throw new Error(
+      `studio profile '${opts.profileId}' requires --profile-origin (the origin the profile is bound to); refusing to start an unbound named profile.`,
+    );
   }
 
   const { token, minted } = resolveHostToken(getConfig().studioAuthToken);
@@ -255,6 +270,12 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   if (opts.profileId) {
     const profileStore = opts.profileStore ?? new ProfileStore();
     const profileId = opts.profileId;
+    // Slice D2/A (R5): a loaded authenticated profile means live credentials sit in a browser the agent
+    // co-drives. Warn the operator at launch (P6-d parity — `[wigolo studio] WARNING: …` + 2-space-indented
+    // continuation). The bound origin is sourced from profileOrigin here; Slice B re-sources it from the
+    // persisted profile.
+    log(`WARNING: authenticated profile '${profileId}' is loaded — live credentials are present in a browser session co-driven by the agent.`);
+    log(`  The agent can act within the authenticated origin (${opts.profileOrigin}).`);
     loadProfile = async (): Promise<StorageStateInput> => {
       const r = await profileStore.get(profileId);
       return r.ok ? (JSON.parse(r.storageState) as StorageStateInput) : undefined;

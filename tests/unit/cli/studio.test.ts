@@ -535,7 +535,7 @@ describe('cli/studio startStudioHost', () => {
     } as unknown as ProfileStore;
     const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
     const host = await startStudioHost({
-      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch, profileId: 'gh', profileStore: fakeStore,
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch, profileId: 'gh', profileOrigin: 'https://acme.example', profileStore: fakeStore,
     });
     try {
       await host.handoff.detectWall(); // window opens, baseline = empty storage
@@ -698,7 +698,7 @@ describe('cli/studio 5e-c closeout — persist-error surface (B1/L-5c-2) + no-le
     const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
     const host = await startStudioHost({
       port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
-      profileId: 'gh', profileStore: failingStore, onLoginPersistError: (err) => persistErrors.push(err),
+      profileId: 'gh', profileOrigin: 'https://acme.example', profileStore: failingStore, onLoginPersistError: (err) => persistErrors.push(err),
     });
     try {
       await host.handoff.detectWall();
@@ -769,7 +769,7 @@ describe('cli/studio 5e-c closeout — persist-error surface (B1/L-5c-2) + no-le
     const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
     const host = await startStudioHost({
       port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
-      profileId: 'gh', profileStore: realStore, onLoginPersistError: (err) => surfaced.push(err),
+      profileId: 'gh', profileOrigin: 'https://acme.example', profileStore: realStore, onLoginPersistError: (err) => surfaced.push(err),
     });
     try {
       await host.handoff.detectWall(); // baseline: empty
@@ -890,6 +890,48 @@ describe('cli/studio 5eb1 — named-profile↔origin binding (confused-deputy gu
       expect(host.controller.controlSnapshot().holder).toBe('agent'); // re-granted despite refuse-persist
     } finally {
       await host.daemon.stop();
+    }
+  });
+});
+
+// Slice D2/A — profileId reachability (one CLI flag pair: --profile / --profile-origin) + MANDATORY
+// profile↔origin binding (the login-capture.ts:115 compare made mandatory + never-skip) + the R5
+// authenticated-profile WARNING (P6-d parity). An unbound named profile is refused at host entry.
+describe('cli/studio D2/A — profileId reachability + mandatory binding + R5 warning', () => {
+  const absentStore = () => ({
+    get: async () => ({ ok: false as const, reason: 'profile_absent' as const }),
+    set: async () => {},
+  } as unknown as ProfileStore);
+
+  it('PIN-A1 (mandatory binding): --profile with NO --profile-origin refuses to start (unbound named profile)', async () => {
+    // value-flip RED: today there is no mandatory check ⇒ startStudioHost LAUNCHES (resolves) for an unbound
+    // profile. MUTATION (drop the profileId⇒profileOrigin host-entry check): it launches again ⇒ RED.
+    const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
+    await expect(
+      startStudioHost({
+        port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+        profileId: 'gh', profileStore: absentStore(), // NO profileOrigin
+      }),
+    ).rejects.toThrow(/profile-origin/);
+  });
+
+  it('PIN-A3 (R5 warning): a loaded profile emits the authenticated-profile WARNING (P6-d parity) naming the bound origin', async () => {
+    // value-flip RED: today no warning is emitted. MUTATION (remove the warning emit in the if(opts.profileId)
+    // branch): the WARNING line is absent ⇒ RED.
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const launcher = makeWallLauncher({ url: 'https://github.com/login' });
+    let host: Awaited<ReturnType<typeof startStudioHost>> | undefined;
+    try {
+      host = await startStudioHost({
+        port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+        profileId: 'github', profileStore: absentStore(), profileOrigin: 'https://github.com',
+      });
+      const out = writeSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(out).toContain("WARNING: authenticated profile 'github' is loaded");
+      expect(out).toContain('https://github.com'); // names the bound origin the agent can act within
+    } finally {
+      writeSpy.mockRestore();
+      await host?.daemon.stop();
     }
   });
 });
