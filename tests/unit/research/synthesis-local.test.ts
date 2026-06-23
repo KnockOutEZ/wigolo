@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { synthesizeLocal } from '../../../src/research/synthesis-local.js';
+import { scrubProviderEnv, emptyKeystoreDataDir } from '../../helpers/provider-isolation.js';
 
 // In-memory keychain so storeKey/resolveProviderKey work without a real OS keychain.
 vi.mock('../../../src/security/keychain.js', () => {
@@ -22,25 +23,33 @@ const { _store } = keychainMod as typeof keychainMod & { _store: Map<string, str
 const { storeKey, clearKeyStoreMemo } = await import('../../../src/security/key-store.js');
 const { resetConfig } = await import('../../../src/config.js');
 
-const ORIGINAL_PROVIDER = process.env['WIGOLO_LLM_PROVIDER'];
-const ORIGINAL_MODEL = process.env['WIGOLO_LLM_MODEL'];
-
-function restoreEnv() {
-  if (ORIGINAL_PROVIDER === undefined) delete process.env['WIGOLO_LLM_PROVIDER'];
-  else process.env['WIGOLO_LLM_PROVIDER'] = ORIGINAL_PROVIDER;
-  if (ORIGINAL_MODEL === undefined) delete process.env['WIGOLO_LLM_MODEL'];
-  else process.env['WIGOLO_LLM_MODEL'] = ORIGINAL_MODEL;
-}
-
 describe('synthesizeLocal', () => {
+  // D18: synthesizeLocal's gate is keystore+config-aware (env -> config.json -> keychain
+  // -> file). "no provider configured" must be source-complete, not "happens clean on this
+  // box": scrub the provider env, point the keystore dataDir + config path at a fresh empty
+  // temp dir (absent by construction), clear the in-memory keychain mock + the memo. The
+  // happy-path cases below set WIGOLO_LLM_PROVIDER themselves after this runs.
+  const originalEnv = process.env;
+  let tmpDir: string;
+
   beforeEach(() => {
-    vi.restoreAllMocks();
-    delete process.env['WIGOLO_LLM_PROVIDER'];
+    process.env = { ...originalEnv };
+    scrubProviderEnv();
+    _store.clear();
+    clearKeyStoreMemo();
+    tmpDir = emptyKeystoreDataDir();
+    process.env['WIGOLO_CONFIG_PATH'] = join(tmpDir, 'config.json');
     delete process.env['WIGOLO_LLM_MODEL'];
+    resetConfig();
+    vi.restoreAllMocks();
   });
 
   afterEach(() => {
-    restoreEnv();
+    process.env = originalEnv;
+    rmSync(tmpDir, { recursive: true, force: true });
+    clearKeyStoreMemo();
+    resetConfig();
+    vi.restoreAllMocks();
   });
 
   it('throws when local LLM not configured', async () => {

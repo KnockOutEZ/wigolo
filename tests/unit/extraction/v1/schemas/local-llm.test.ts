@@ -3,6 +3,7 @@ import {
   extractWithLocalLlm,
   isLocalLlmEnabled,
 } from '../../../../../src/extraction/v1/local-llm.js';
+import { scrubProviderEnv } from '../../../../helpers/provider-isolation.js';
 
 const ORIGINAL_PROVIDER = process.env['WIGOLO_LLM_PROVIDER'];
 const ORIGINAL_MODEL = process.env['WIGOLO_LLM_MODEL'];
@@ -10,7 +11,10 @@ const ORIGINAL_MODEL = process.env['WIGOLO_LLM_MODEL'];
 describe('extractWithLocalLlm', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    delete process.env['WIGOLO_LLM_PROVIDER'];
+    // D18: isLocalLlmEnabled()->isLlmConfigured() reads provider keys from env (env-only
+    // gate, no keystore). Scrub all of them so "returns null when env is unset" holds
+    // regardless of ambient provider keys. Per-test cases re-set WIGOLO_LLM_PROVIDER.
+    scrubProviderEnv();
     delete process.env['WIGOLO_LLM_MODEL'];
   });
 
