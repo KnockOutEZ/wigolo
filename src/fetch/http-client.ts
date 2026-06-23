@@ -1,6 +1,7 @@
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
+import { guardNavigation } from '../security/ssrf.js';
 
 export interface HttpFetchOptions {
   headers?: Record<string, string>;
@@ -197,6 +198,14 @@ async function fetchWithRedirects(
 
       // Resolve relative redirects
       currentUrl = new URL(location, currentUrl).toString();
+      // P6-a: re-validate each redirect HOP as AGENT-source (the PAGE chose the target, not the
+      // human) — the classic SSRF-via-redirect bypass (a public URL that 302s to 169.254.169.254
+      // or an RFC1918 host). Loopback stays allowed (non-escalation), matching the content-path
+      // policy. Block BEFORE the loop re-requests, so the internal target is never fetched.
+      const hopVerdict = guardNavigation(currentUrl, { source: 'agent', allowLoopback: true });
+      if (!hopVerdict.ok) {
+        throw new HttpFetchError(`Redirect to a blocked address (${hopVerdict.host ?? currentUrl})`, false);
+      }
       continue;
     }
 
