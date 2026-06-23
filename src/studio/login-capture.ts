@@ -28,9 +28,9 @@
 import type { StorageStateOut } from './session-browser.js';
 import type { HandoffCompletionContext } from './handoff.js';
 
-/** The persist seam — the real ProfileStore.set (5c) satisfies it, used as-is. */
+/** The persist seam — the real ProfileStore.set (5c/D2/B) satisfies it, used as-is. */
 export interface ProfilePersist {
-  set(profileId: string, storageStateJson: string): Promise<void>;
+  set(profileId: string, boundOrigin: string, storageStateJson: string): Promise<void>;
 }
 
 /**
@@ -119,10 +119,12 @@ export function createLoginCapture(deps: {
     // (fail-closed). Refuse-persist + surface the mismatch (origins/profileId ONLY — never the storageState).
     // The 5e-c re-grant still fires (the live session is authed regardless); this gates only WHERE creds
     // persist, not whether the agent resumes.
-    if (!sameOrigin(ctx.wallOrigin, deps.expectedOrigin)) {
+    if (deps.expectedOrigin === undefined || !sameOrigin(ctx.wallOrigin, deps.expectedOrigin)) {
       deps.onOriginMismatch?.({ profileId: deps.profileId, expectedOrigin: deps.expectedOrigin, completedOrigin: ctx.wallOrigin });
       return;
     }
-    await deps.profilePersist.set(deps.profileId, JSON.stringify(scoped));
+    // The match passed ⇒ expectedOrigin is the bound origin. Persist it INSIDE the envelope (D2/B) so the
+    // binding survives a restart; a later launch reads it back when --profile-origin is omitted (M2).
+    await deps.profilePersist.set(deps.profileId, deps.expectedOrigin, JSON.stringify(scoped));
   };
 }

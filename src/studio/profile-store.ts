@@ -50,10 +50,44 @@ export class ProfileKeychainUnavailableError extends Error {
   }
 }
 
-/** The result of a get(): the decrypted storageState, or a graceful profile_absent the caller resolves by re-login. */
+/** The result of a get(): the decrypted envelope (boundOrigin + storageState), a graceful profile_absent the
+ *  caller resolves by re-login, or a fail-closed `malformed` for a decryptable-but-not-an-envelope blob. */
 export type ProfileGetResult =
-  | { ok: true; storageState: string }
-  | { ok: false; reason: 'profile_absent' };
+  | { ok: true; boundOrigin: string; storageState: string }
+  | { ok: false; reason: 'profile_absent' | 'malformed' };
+
+/** Slice D2/B — the persisted profile ENVELOPE: the bound origin lives INSIDE the encrypted blob (no plaintext
+ *  sidecar), versioned for forward-compat. `set` wraps + encrypts; `get` decrypts + validates. */
+interface ProfileEnvelope {
+  v: 1;
+  boundOrigin: string;
+  storageState: string;
+}
+
+function encodeEnvelope(boundOrigin: string, storageStateJson: string): string {
+  const env: ProfileEnvelope = { v: 1, boundOrigin, storageState: storageStateJson };
+  return JSON.stringify(env);
+}
+
+/** Parse + validate a decrypted envelope; null for any non-envelope/malformed payload (fail-closed). */
+function decodeEnvelope(plaintext: string): ProfileEnvelope | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(plaintext);
+  } catch {
+    return null;
+  }
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    (parsed as { v?: unknown }).v !== 1 ||
+    typeof (parsed as { boundOrigin?: unknown }).boundOrigin !== 'string' ||
+    typeof (parsed as { storageState?: unknown }).storageState !== 'string'
+  ) {
+    return null;
+  }
+  return parsed as ProfileEnvelope;
+}
 
 export interface ProfileStoreOptions {
   /** Data dir root for `studio/profiles/<profileId>.enc`. Defaults to config.dataDir. */
@@ -92,20 +126,22 @@ export class ProfileStore {
   }
 
   /**
-   * Encrypt + persist the storageState blob under profileId. Throws ProfileKeychainUnavailableError
-   * when the keychain is unavailable, BEFORE any disk write — no plaintext, no scrypt-only file. The
-   * key-crypto wire format adds a per-encryption salt, so repeated encrypts of the same blob differ.
+   * Encrypt + persist the {boundOrigin, storageState} ENVELOPE under profileId (D2/B — the bound origin lives
+   * INSIDE the ciphertext, no plaintext sidecar). Throws ProfileKeychainUnavailableError when the keychain is
+   * unavailable, BEFORE any disk write — no plaintext, no scrypt-only file. The key-crypto wire format adds a
+   * per-encryption salt, so repeated encrypts of the same blob differ.
    */
-  async set(profileId: string, storageStateJson: string): Promise<void> {
+  async set(profileId: string, boundOrigin: string, storageStateJson: string): Promise<void> {
     const kek = this.getOrCreateKek(profileId); // throws (fail-closed) if the keychain is unavailable
-    await encryptToFile(storageStateJson, kek, this.profilePath(profileId));
+    await encryptToFile(encodeEnvelope(boundOrigin, storageStateJson), kek, this.profilePath(profileId));
   }
 
   /**
-   * Fetch the KEK and decrypt the blob. Four graceful-absent cases → profile_absent (the agent
-   * re-logs in), nothing thrown to the host: keychain unavailable, KEK absent, blob file missing,
-   * OR the blob is corrupt/tampered (decrypt/AES-GCM auth failure). NO scrypt-decrypt is attempted
-   * without the real KEK.
+   * Fetch the KEK, decrypt, and validate the envelope. Graceful-absent cases → profile_absent (the agent
+   * re-logs in), nothing thrown to the host: keychain unavailable, KEK absent, blob file missing, OR a
+   * corrupt/tampered blob (decrypt/AES-GCM auth failure). A blob that DECRYPTS but is not a valid envelope →
+   * `malformed` (fail-closed, D2/B): never silently treated as unbound-usable (that would drop the binding).
+   * NO scrypt-decrypt is attempted without the real KEK.
    */
   async get(profileId: string): Promise<ProfileGetResult> {
     if (!this.keychain.available()) return { ok: false, reason: 'profile_absent' };
@@ -113,15 +149,20 @@ export class ProfileStore {
     if (!kek) return { ok: false, reason: 'profile_absent' };
     const path = this.profilePath(profileId);
     if (!existsSync(path)) return { ok: false, reason: 'profile_absent' };
+    let plaintext: string;
     try {
-      const storageState = await decryptFromFile(kek, path);
-      return { ok: true, storageState };
+      plaintext = await decryptFromFile(kek, path);
     } catch {
-      // 4th absent-case: a corrupt/tampered blob (AES-GCM auth failure) or an unreadable file → treat
-      // as profile_absent so the session starts CLEAN (the human re-logs in) instead of crashing the
-      // host. GCM has already REJECTED the tampered ciphertext — this is the graceful-absent (liveness)
-      // half, NOT a security relaxation. No secret/path is logged.
+      // A corrupt/tampered blob (AES-GCM auth failure) or an unreadable file → treat as profile_absent so the
+      // session starts CLEAN (the human re-logs in) instead of crashing the host. GCM has already REJECTED the
+      // tampered ciphertext — the graceful-absent (liveness) half, NOT a security relaxation. No secret logged.
       return { ok: false, reason: 'profile_absent' };
     }
+    // D2/B fail-closed: a decryptable but non-envelope payload is NOT used as a bare storageState (that would
+    // silently drop the origin binding). Surface `malformed` so the host refuses to start on it — distinct
+    // from the graceful profile_absent (which starts a clean session).
+    const env = decodeEnvelope(plaintext);
+    if (!env) return { ok: false, reason: 'malformed' };
+    return { ok: true, boundOrigin: env.boundOrigin, storageState: env.storageState };
   }
 }

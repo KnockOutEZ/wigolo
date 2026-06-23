@@ -7,6 +7,7 @@ import { join } from 'node:path';
 // RIGHT-REASON RED (the store primitive is absent). It imports key-crypto + keychain, NOT
 // daemon/studio-dispatch, so it is not a safety-importing test → check-gate stays 23.
 import { ProfileStore, type ProfileKeychain } from '../../../src/studio/profile-store.js';
+import { encryptToFile } from '../../../src/security/key-crypto.js';
 
 /**
  * Slice 5c — the encrypted profile store: a per-profile random 32-byte KEK stored KEYCHAIN-ONLY,
@@ -44,7 +45,7 @@ describe('studio/profile-store — encrypted profile store (keychain KEK + disk 
 
   it('PRIMARY (fail-closed): keychain UNAVAILABLE → set() THROWS and writes NO blob (no plaintext, no scrypt-encrypted file)', async () => {
     const store = new ProfileStore({ dataDir: dir, keychain: memKeychain(false) });
-    await expect(store.set('prof-1', STORAGE_STATE)).rejects.toThrow();
+    await expect(store.set('prof-1', 'https://acme.example', STORAGE_STATE)).rejects.toThrow();
     // Mutation: give the KEK helper a file/scrypt fallthrough (mimic key-store.ts::storeKey) → the
     // keychain-unavailable set() would mint a KEK anyway, succeed, and write a blob → this REDs.
     // Proves the no-fallthrough (hard-fail) is load-bearing: the KEK never lands on disk.
@@ -54,7 +55,7 @@ describe('studio/profile-store — encrypted profile store (keychain KEK + disk 
   it('round-trip: set then get returns the original storageState blob; envelope is keychain-KEK + 0o600 ciphertext', async () => {
     const kc = memKeychain(true);
     const store = new ProfileStore({ dataDir: dir, keychain: kc });
-    await store.set('prof-1', STORAGE_STATE);
+    await store.set('prof-1', 'https://acme.example', STORAGE_STATE);
 
     // get round-trips the exact blob.
     const r = await store.get('prof-1');
@@ -80,9 +81,9 @@ describe('studio/profile-store — encrypted profile store (keychain KEK + disk 
 
   it('per-encryption salt: encrypting the same blob twice yields DIFFERENT ciphertext (the wire-format salt)', async () => {
     const store = new ProfileStore({ dataDir: dir, keychain: memKeychain(true) });
-    await store.set('prof-1', STORAGE_STATE);
+    await store.set('prof-1', 'https://acme.example', STORAGE_STATE);
     const first = readFileSync(blobPath('prof-1'), 'utf8');
-    await store.set('prof-1', STORAGE_STATE); // same KEK (fetched), fresh salt
+    await store.set('prof-1', 'https://acme.example', STORAGE_STATE); // same KEK (fetched), fresh salt
     const second = readFileSync(blobPath('prof-1'), 'utf8');
     expect(second).not.toBe(first);
     // …and it still decrypts back to the original.
@@ -91,7 +92,7 @@ describe('studio/profile-store — encrypted profile store (keychain KEK + disk 
 
   it('corrupt/tampered blob (4th absent-case): KEK present + blob present but decrypt fails → profile_absent (graceful re-login), NOT a host crash', async () => {
     const store = new ProfileStore({ dataDir: dir, keychain: memKeychain(true) });
-    await store.set('prof-1', STORAGE_STATE); // a valid .enc + KEK
+    await store.set('prof-1', 'https://acme.example', STORAGE_STATE); // a valid .enc + KEK
     // Tamper the ciphertext on disk — AES-GCM authentication REJECTS it on decrypt (security intact);
     // the store must convert that decrypt-throw into a graceful profile_absent so the session re-logs
     // in clean rather than crashing the host. No secret/path is logged.
@@ -100,5 +101,35 @@ describe('studio/profile-store — encrypted profile store (keychain KEK + disk 
     // Mutation: remove the try/catch in get() → the decrypt throw propagates → get REJECTS → this
     // `resolves` assertion REDs (the value-flip: graceful-absent → thrown error reaching the host).
     await expect(store.get('prof-1')).resolves.toMatchObject({ ok: false, reason: 'profile_absent' });
+  });
+
+  it('PIN-B4 (D2/B — boundOrigin lives INSIDE the encrypted envelope): set(id, boundOrigin, blob) → get round-trips boundOrigin; it is NEVER plaintext on disk', async () => {
+    // value-flip RED: today set() takes no boundOrigin and get() returns none. MUTATION (drop boundOrigin from
+    // the envelope / store it in a plaintext sidecar): the round-trip OR the not-on-disk assertion reds.
+    const kc = memKeychain(true);
+    const store = new ProfileStore({ dataDir: dir, keychain: kc });
+    const BOUND = 'https://github.com';
+    await store.set('prof-1', BOUND, STORAGE_STATE);
+    const r = await store.get('prof-1');
+    expect(r.ok).toBe(true);
+    expect((r as { ok: true; boundOrigin: string; storageState: string }).boundOrigin).toBe(BOUND);
+    expect((r as { ok: true; storageState: string }).storageState).toBe(STORAGE_STATE); // storageState still round-trips
+    const onDisk = readFileSync(blobPath('prof-1'), 'utf8');
+    expect(onDisk, 'boundOrigin is inside the ciphertext, never plaintext on disk').not.toContain(BOUND);
+  });
+
+  it('PIN-B3 (D2/B — fail-closed on malformed): a decryptable but NON-envelope payload → get() returns malformed, never silent unbound-use', async () => {
+    // value-flip RED: today get() returns {ok:true, storageState:<raw>} for any decryptable blob (no envelope
+    // check). MUTATION (fall through to using the bare decrypted payload as storageState): get→ok ⇒ RED.
+    const kc = memKeychain(true);
+    const store = new ProfileStore({ dataDir: dir, keychain: kc });
+    await store.set('prof-1', 'https://x.example', STORAGE_STATE); // seeds the KEK + a valid envelope
+    const kek = kc.store.get('prof-1');
+    expect(kek).toBeTruthy();
+    // Overwrite the blob with a decryptable NON-envelope payload (valid JSON, but no { v, boundOrigin, storageState }).
+    await encryptToFile(JSON.stringify({ cookies: [], origins: [] }), kek as string, blobPath('prof-1'));
+    const r = await store.get('prof-1');
+    expect(r.ok).toBe(false);
+    expect((r as { ok: false; reason: string }).reason).toBe('malformed');
   });
 });

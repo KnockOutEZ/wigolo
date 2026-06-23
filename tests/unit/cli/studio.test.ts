@@ -528,10 +528,10 @@ describe('cli/studio startStudioHost', () => {
   });
 
   it('5e-b: a completed login persists the wall-origin-SCOPED storageState to the opted-in named profile (onComplete is wired to the capture)', async () => {
-    const setCalls: Array<{ profileId: string; json: string }> = [];
+    const setCalls: Array<{ profileId: string; boundOrigin: string; json: string }> = [];
     const fakeStore = {
       get: async () => ({ ok: false as const, reason: 'profile_absent' as const }),
-      set: async (profileId: string, json: string) => { setCalls.push({ profileId, json }); },
+      set: async (profileId: string, boundOrigin: string, json: string) => { setCalls.push({ profileId, boundOrigin, json }); },
     } as unknown as ProfileStore;
     const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
     const host = await startStudioHost({
@@ -659,10 +659,10 @@ describe('cli/studio 5e-b-h — credential-persist hardening pins (validity by m
   // if(opts.profileId) gate AND supply a defaulted profileId (the brittle refactor) → this spy reddens
   // (set called once) while the old test 531 — which asserts only state==='completed' — stays green.
   it('PIN-M7: a no-profile session completing the handoff calls ProfileStore.set ZERO times', async () => {
-    const setCalls: Array<{ profileId: string; json: string }> = [];
+    const setCalls: Array<{ profileId: string; boundOrigin: string; json: string }> = [];
     const spyStore = {
       get: async () => ({ ok: false as const, reason: 'profile_absent' as const }),
-      set: async (profileId: string, json: string) => { setCalls.push({ profileId, json }); },
+      set: async (profileId: string, boundOrigin: string, json: string) => { setCalls.push({ profileId, boundOrigin, json }); },
     } as unknown as ProfileStore;
     const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
     // Store injected, but NO profileId → the named-profile gate must leave the capture unwired.
@@ -725,7 +725,7 @@ describe('cli/studio 5e-c closeout — persist-error surface (B1/L-5c-2) + no-le
     // keychain unavailable → set() fail-closes BEFORE any write (no plaintext, no scrypt file).
     const store = new ProfileStore({ dataDir: '/tmp/wigolo-b2-noexist', keychain: { available: () => false, getKek: () => null, setKek: () => {} } });
     let thrown: unknown;
-    try { await store.set('p', storageStateJson); } catch (e) { thrown = e; }
+    try { await store.set('p', 'https://acme.example', storageStateJson); } catch (e) { thrown = e; }
     expect(thrown, 'set() must fail-closed when the keychain is unavailable').toBeInstanceOf(Error);
     // MUTATION (embed storageStateJson in the thrown error): this assertion reddens.
     const errStr = `${(thrown as Error).message}\n${(thrown as Error).stack ?? ''}`;
@@ -799,10 +799,10 @@ describe('cli/studio 5e-c closeout — persist-error surface (B1/L-5c-2) + no-le
 // with no profileOrigin bound, persist behaves as before (the sealed 5e-b/5e-c tests are unchanged).
 describe('cli/studio 5eb1 — named-profile↔origin binding (confused-deputy guard)', () => {
   const profileSpy = () => {
-    const setCalls: Array<{ profileId: string; json: string }> = [];
+    const setCalls: Array<{ profileId: string; boundOrigin: string; json: string }> = [];
     const store = {
       get: async () => ({ ok: false as const, reason: 'profile_absent' as const }),
-      set: async (profileId: string, json: string) => { setCalls.push({ profileId, json }); },
+      set: async (profileId: string, boundOrigin: string, json: string) => { setCalls.push({ profileId, boundOrigin, json }); },
     } as unknown as ProfileStore;
     return { store, setCalls };
   };
@@ -933,5 +933,55 @@ describe('cli/studio D2/A — profileId reachability + mandatory binding + R5 wa
       writeSpy.mockRestore();
       await host?.daemon.stop();
     }
+  });
+});
+
+// Slice D2/B — durable binding: the boundOrigin is persisted in the profile envelope and survives a restart.
+// M2: launch#1 declares it; thereafter --profile-origin is optional but, if given, must MATCH the persisted
+// binding (no silent rebind). A malformed profile fails closed (host refuses to start).
+describe('cli/studio D2/B — durable profile↔origin binding (M2 + anti-rebind)', () => {
+  const aStorage = JSON.stringify({ cookies: [cookie('s', 'a.example')], origins: [] });
+
+  it('PIN-B1 (durability): --profile X with origin OMITTED reads the PERSISTED boundOrigin — a login on it re-persists', async () => {
+    // value-flip RED: today (slice A) an omitted origin on a profile ⇒ first-use refusal (no persistence read).
+    // MUTATION (effectiveBoundOrigin = opts.profileOrigin, ignoring the persisted boundOrigin): the omitted
+    // origin leaves expectedOrigin undefined ⇒ never-skip refuses the matching login ⇒ no re-persist ⇒ RED.
+    const setCalls: Array<{ profileId: string; boundOrigin: string; json: string }> = [];
+    const boundStore = {
+      get: async () => ({ ok: true as const, boundOrigin: 'https://a.example', storageState: aStorage }),
+      set: async (profileId: string, boundOrigin: string, json: string) => { setCalls.push({ profileId, boundOrigin, json }); },
+    } as unknown as ProfileStore;
+    const launcher = makeWallLauncher({ url: 'https://a.example/login' });
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+      profileId: 'gh', profileStore: boundStore, // NO profileOrigin — the binding must come from persistence
+    });
+    try {
+      await host.handoff.detectWall();
+      launcher.state.url = 'https://a.example/dashboard';
+      launcher.state.storage = { cookies: [cookie('session', 'a.example')], origins: [] };
+      await host.handoff.checkCompletion();
+      expect(host.handoff.state).toBe('completed');
+      expect(setCalls.length).toBe(1); // re-persisted on the persisted origin ⇒ M2 read the boundOrigin
+      expect(setCalls[0].boundOrigin).toBe('https://a.example');
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  it('PIN-B2 (no silent rebind): --profile X --profile-origin b.example when X is bound to a.example is REFUSED', async () => {
+    // value-flip RED: today no persisted-binding read ⇒ the declared origin is just used. MUTATION (let the
+    // declared origin override the persisted boundOrigin): startStudioHost resolves (rebinds) ⇒ RED.
+    const boundStore = {
+      get: async () => ({ ok: true as const, boundOrigin: 'https://a.example', storageState: aStorage }),
+      set: async () => {},
+    } as unknown as ProfileStore;
+    const launcher = makeWallLauncher({ url: 'https://a.example/login' });
+    await expect(
+      startStudioHost({
+        port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
+        profileId: 'gh', profileStore: boundStore, profileOrigin: 'https://b.example', // declares a DIFFERENT origin
+      }),
+    ).rejects.toThrow(/rebind|bound to/);
   });
 });

@@ -170,13 +170,34 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     throw new Error(bind.message);
   }
 
-  // Slice D2/A: a named profile MUST declare the origin it is bound to. profileId without a profileOrigin is
-  // refused at host entry — before any token mint or browser launch — because an unbound named profile would
-  // let a login completing on ANY origin persist under it (the confused-deputy gap). Mandatory + never-skip.
-  if (opts.profileId && !opts.profileOrigin) {
-    throw new Error(
-      `studio profile '${opts.profileId}' requires --profile-origin (the origin the profile is bound to); refusing to start an unbound named profile.`,
-    );
+  // Slice D2/B: resolve the named-profile binding BEFORE any launch (M2 — declare-on-first-use, then durable).
+  // The boundOrigin is read from the persisted profile envelope: a declared --profile-origin that DISAGREES is
+  // a rebind attempt (refused, no silent rebind); an omitted one uses the persisted binding; a first use MUST
+  // declare; a profile that won't decode fails closed (refuse to start — never silently unbound).
+  let profileBinding: { store: ProfileStore; profileId: string; boundOrigin: string } | undefined;
+  if (opts.profileId) {
+    const store = opts.profileStore ?? new ProfileStore();
+    const existing = await store.get(opts.profileId);
+    if (existing.ok) {
+      if (opts.profileOrigin && opts.profileOrigin !== existing.boundOrigin) {
+        throw new Error(
+          `studio profile '${opts.profileId}' is bound to ${existing.boundOrigin}; refusing to rebind to ${opts.profileOrigin} (omit --profile-origin to use the existing binding).`,
+        );
+      }
+      profileBinding = { store, profileId: opts.profileId, boundOrigin: existing.boundOrigin };
+    } else if (existing.reason === 'malformed') {
+      log(
+        `WARNING: studio profile '${opts.profileId}' is unreadable (corrupt or unrecognized format); refusing to start. Re-declare --profile-origin and log in again to re-establish it.`,
+      );
+      throw new Error(`studio profile '${opts.profileId}' is unreadable; refusing to start on a malformed profile.`);
+    } else {
+      if (!opts.profileOrigin) {
+        throw new Error(
+          `studio profile '${opts.profileId}' requires --profile-origin (the origin the profile is bound to); refusing to start an unbound named profile.`,
+        );
+      }
+      profileBinding = { store, profileId: opts.profileId, boundOrigin: opts.profileOrigin };
+    }
   }
 
   const { token, minted } = resolveHostToken(getConfig().studioAuthToken);
@@ -267,15 +288,14 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // authenticated session — origin-scoped to the wall origin — and persists it to that profile.
   // Unset (a clean session) ⇒ undefined ⇒ the handoff completes but persists nothing (nowhere to).
   let onLoginComplete: ReturnType<typeof createLoginCapture> | undefined;
-  if (opts.profileId) {
-    const profileStore = opts.profileStore ?? new ProfileStore();
-    const profileId = opts.profileId;
+  if (profileBinding) {
+    const { store: profileStore, profileId, boundOrigin } = profileBinding;
     // Slice D2/A (R5): a loaded authenticated profile means live credentials sit in a browser the agent
     // co-drives. Warn the operator at launch (P6-d parity — `[wigolo studio] WARNING: …` + 2-space-indented
-    // continuation). The bound origin is sourced from profileOrigin here; Slice B re-sources it from the
-    // persisted profile.
+    // continuation). The bound origin is the resolved binding (declared on first use, else read from the
+    // persisted profile — D2/B/M2).
     log(`WARNING: authenticated profile '${profileId}' is loaded — live credentials are present in a browser session co-driven by the agent.`);
-    log(`  The agent can act within the authenticated origin (${opts.profileOrigin}).`);
+    log(`  The agent can act within the authenticated origin (${boundOrigin}).`);
     loadProfile = async (): Promise<StorageStateInput> => {
       const r = await profileStore.get(profileId);
       return r.ok ? (JSON.parse(r.storageState) as StorageStateInput) : undefined;
@@ -283,10 +303,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     const capture = createLoginCapture({
       profilePersist: profileStore,
       profileId,
-      // 5eb1: bind the named profile to the origin the human opted into; a login completing elsewhere is
-      // refused (never persisting Y's creds under profile X). The mismatch surface carries origins/profileId
-      // only — never any storageState (mirrors the persist-error contract).
-      expectedOrigin: opts.profileOrigin,
+      // D2/B: bind to the resolved boundOrigin (declared on first use, else the persisted binding); a login
+      // completing elsewhere is refused (never persisting Y's creds under profile X). The mismatch surface
+      // carries origins/profileId only — never any storageState (mirrors the persist-error contract).
+      expectedOrigin: boundOrigin,
       onOriginMismatch:
         opts.onLoginOriginMismatch ??
         ((info: OriginMismatch) =>

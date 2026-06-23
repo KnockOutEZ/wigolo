@@ -27,9 +27,9 @@ function memKeychain(): ProfileKeychain {
   const m = new Map<string, string>();
   return { available: () => true, getKek: (id) => m.get(id) ?? null, setKek: (id, k) => { m.set(id, k); } };
 }
-const spyPersist = (): ProfilePersist & { calls: Array<{ profileId: string; json: string }> } => {
-  const calls: Array<{ profileId: string; json: string }> = [];
-  return { calls, set: vi.fn(async (profileId: string, json: string) => { calls.push({ profileId, json }); }) };
+const spyPersist = (): ProfilePersist & { calls: Array<{ profileId: string; boundOrigin: string; json: string }> } => {
+  const calls: Array<{ profileId: string; boundOrigin: string; json: string }> = [];
+  return { calls, set: vi.fn(async (profileId: string, boundOrigin: string, json: string) => { calls.push({ profileId, boundOrigin, json }); }) };
 };
 
 describe('scopeStorageStateToOrigin — RFC-6265 exact-host + dotted-parent-domain (keep wall-origin auth, drop unrelated)', () => {
