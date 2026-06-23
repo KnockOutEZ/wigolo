@@ -677,7 +677,15 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // has run (the daemon does so before sessions exist); guard so the unit harness — which builds a
   // host without a DB — falls back to the in-memory log cleanly (mirrors the lazy-db capture pattern).
   let auditDb: AuditDb | undefined;
-  try { auditDb = getDatabase(); } catch { auditDb = undefined; }
+  try {
+    auditDb = getDatabase();
+  } catch {
+    // Degraded state: no DB means the audit trail can only live in memory. Surface it (no
+    // silent failure) so an operator running a host without an initialized DB knows the trail
+    // won't persist. Prod inits the DB before sessions exist, so this never fires there.
+    auditDb = undefined;
+    log("WARNING: audit trail persistence unavailable (database not initialized) — falling back to an in-memory log; this session's audit trail will NOT survive a restart.");
+  }
   const auditLog = new SessionAuditLog(auditDb ? { db: auditDb, sessionId: session.id } : {});
   // Phase 6c: the act handler classifies each click/type (deterministic) and HOLDS a risky one for
   // human approval before firing. currentUrl is the live page URL — the HARD signal the classifier
