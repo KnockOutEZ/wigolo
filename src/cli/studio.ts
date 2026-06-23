@@ -21,6 +21,7 @@ import { PageSnapshotter, buildSnapshot, flattenDom, type AxNode, type DomNode }
 import { createResolver } from '../studio/perception/resolve.js';
 import { StudioEventQueue } from '../studio/event-queue.js';
 import { createObserver } from '../studio/observe.js';
+import { NavEpoch } from '../studio/nav-epoch.js';
 import { createActHandler } from '../studio/act.js';
 import { createCaptureHandler } from '../studio/capture/handler.js';
 import { getDatabase } from '../cache/db.js';
@@ -367,7 +368,14 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // hop-evaluation, so a flip to the agent takes effect on the very NEXT hop (incl. a
   // redirect hop already mid-chain) with no disarm→re-arm window where a stale, more
   // permissive policy could leak a hop through.
-  const navInterceptor = new NavInterceptor(() => policyForHolder(controlToken.holder, grant));
+  // D4/A: the per-session nav-epoch — bumped on every allowed Document hop (below), refreshed on each
+  // studio_observe page-read, and re-checked by studio_capture (D4/B) to refuse a capture against a page
+  // the agent has navigated away from since its last observe.
+  const navEpoch = new NavEpoch();
+  const navInterceptor = new NavInterceptor(
+    () => policyForHolder(controlToken.holder, grant),
+    () => navEpoch.bumpNavigation(),
+  );
   await navInterceptor.start(sessionBrowser.cdp);
   // Finding A: rebind the nav interceptor on the FRESH cdp BEFORE the crash-recovery
   // re-navigation (awaited pre-nav hook), so a redirect hop during recovery is
@@ -646,6 +654,8 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     // 5e-a: the login_handoff signal rides each observe (in_progress while a login wall is being
     // handled → the agent waits; completed/failed on settle). Pulled fresh; carries only {state}.
     handoffSignal: () => loginHandoff.signal(),
+    // D4/A: refresh lastObserveEpoch on each real page-read so studio_capture can detect a nav since.
+    markObserved: () => navEpoch.markObserved(),
   });
   // The agent's click/type resolve refs LIVE at action time through the 2J.1 resolver
   // (fresh snapshot per call + occlusion hit-test, never cached coords). Bind it to the

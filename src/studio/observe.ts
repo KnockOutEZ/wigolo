@@ -43,6 +43,12 @@ export interface ObserverDeps {
    * Carries ONLY the state, never page content or storageState. Null ⇒ no active handoff ⇒ no field.
    */
   handoffSignal?: () => LoginHandoffSignal | null;
+  /**
+   * D4/A: called when a REAL page-read completes (a full/diff snapshot of the live page) — refreshes the
+   * session lastObserveEpoch so the capture re-check (D4/B) knows the agent has seen the current page. NOT
+   * called on spill-retrieval or the credential-context exclusion (neither is a fresh read of the current page).
+   */
+  markObserved?: () => void;
 }
 
 /** Build the observe closure. Holds per-session `lastSnapshot` for diffing; otherwise stateless. */
@@ -114,6 +120,9 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
     const navigated = churned || drained.dropped > 0 || drained.events.some((e) => e.type === 'navigation');
     const resolved = resolveObserve(lastSnapshot, snap, { heldBaseId: input.base_id, navigated });
     lastSnapshot = snap;
+    // D4/A: a real page-read completed (the credential-exclusion + spill-retrieval paths already returned
+    // above) → refresh the session lastObserveEpoch so a later capture knows the agent saw THIS page.
+    deps.markObserved?.();
 
     const base = {
       id: snap.id,

@@ -44,6 +44,8 @@ const DOCUMENT_PATTERN = { urlPattern: '*', resourceType: 'Document', requestSta
 export class NavInterceptor {
   private cdp: NavCdp | null = null;
   private readonly policyProvider: () => NavPolicy;
+  /** D4/A: bump the session nav-epoch on each ALLOWED committed Document hop (set by the host; absent in tests that don't track epochs). */
+  private readonly onAllowedNavigation?: () => void;
   /** Document requestIds currently being evaluated / in flight — the set abortInFlight fails closed on a reclaim. */
   private readonly inFlight = new Set<string>();
 
@@ -55,8 +57,9 @@ export class NavInterceptor {
    * mid-chain) is judged under the agent policy, never the more-permissive policy of
    * a moment earlier.
    */
-  constructor(policyProvider: () => NavPolicy) {
+  constructor(policyProvider: () => NavPolicy, onAllowedNavigation?: () => void) {
     this.policyProvider = policyProvider;
+    this.onAllowedNavigation = onAllowedNavigation;
   }
 
   /** Begin intercepting document navigations on this CDP session. */
@@ -128,6 +131,10 @@ export class NavInterceptor {
         const verdict = guardNavigation(event.request?.url ?? '', policy);
         if (verdict.ok) {
           await cdp.send('Fetch.continueRequest', { requestId });
+          // D4/A: bump the session nav-epoch on an ALLOWED committed Document hop ONLY (post-continue). A
+          // guard-BLOCKED hop (the else branch) did not change the page, so it must not bump — else a capture
+          // against the still-current page would false-abort.
+          this.onAllowedNavigation?.();
         } else {
           log.debug('blocked navigation hop', { url: event.request?.url, source: policy.source });
           await cdp.send('Fetch.failRequest', { requestId, errorReason: 'AccessDenied' });
