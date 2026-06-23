@@ -38,14 +38,20 @@ describe('SmartRouter.fetch — source-aware SSRF navigation guard (P6-a exfil l
     expect(httpClient.fetch).not.toHaveBeenCalled();
   });
 
-  it('agent-sourced fetch to localhost is blocked by default (no per-call human grant)', async () => {
+  it('agent-sourced fetch to localhost is ALLOWED (refined: loopback reachable by both parties)', async () => {
     const r = await router.fetch('http://localhost:3000/', { source: 'agent' });
-    expect('error' in r && r.error).toBe('navigation_blocked');
-    expect(httpClient.fetch).not.toHaveBeenCalled();
+    expect('error' in r).toBe(false);
+    expect(httpClient.fetch).toHaveBeenCalledTimes(1);
   });
 
   it('human-sourced fetch to localhost is ALLOWED (co-browse a local dev server)', async () => {
     const r = await router.fetch('http://localhost:3000/', { source: 'human' });
+    expect('error' in r).toBe(false);
+    expect(httpClient.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('human-sourced fetch to RFC1918 is ALLOWED (human may reach private networks)', async () => {
+    const r = await router.fetch('http://10.0.0.5/', { source: 'human' });
     expect('error' in r).toBe(false);
     expect(httpClient.fetch).toHaveBeenCalledTimes(1);
   });
