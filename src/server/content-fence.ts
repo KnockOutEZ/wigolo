@@ -1,5 +1,5 @@
 import { wrapUntrusted } from '../security/untrusted.js';
-import type { FetchOutput, CrawlOutput, ExtractOutput, MapOutput } from '../types.js';
+import type { FetchOutput, CrawlOutput, ExtractOutput, MapOutput, FindSimilarOutput, SearchOutput } from '../types.js';
 
 /** handleCrawl returns a crawl OR a map (mode='map', URL-list only, no page bodies). */
 type CrawlResult = CrawlOutput | (MapOutput & { crawled: number });
@@ -32,4 +32,13 @@ export function fenceExtractData(data: ExtractOutput): ExtractOutput {
   // D7/A: only the FLAT-STRING shape (e.g. mode=selector) is body-fenced here; structured shapes
   // (tables / json-ld / structured) are per-content-field fenced in D7/B.
   return typeof data.data === 'string' ? { ...data, data: wrapUntrusted(data.data) } : data;
+}
+
+// STUB (D7/B RED): identity — per-content-field fencing of the structured array returns lands in GREEN.
+export function fenceFindSimilarData(data: FindSimilarOutput): FindSimilarOutput {
+  return data;
+}
+
+export function fenceSearchData(data: SearchOutput): SearchOutput {
+  return data;
 }
