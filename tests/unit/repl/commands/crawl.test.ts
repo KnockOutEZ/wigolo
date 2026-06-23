@@ -28,6 +28,7 @@ describe('executeCrawl', () => {
     expect(handleCrawl).toHaveBeenCalledWith(
       expect.objectContaining({ url: 'https://ex.com' }),
       mockRouter,
+      'human', // REPL is a human-initiated entry (P6-a source policy)
     );
     expect(result).toEqual(baseOutput);
   });
@@ -38,6 +39,7 @@ describe('executeCrawl', () => {
     expect(handleCrawl).toHaveBeenCalledWith(
       expect.objectContaining({ max_depth: 3 }),
       expect.anything(),
+      'human', // REPL is a human-initiated entry (P6-a source policy)
     );
   });
 
@@ -47,6 +49,7 @@ describe('executeCrawl', () => {
     expect(handleCrawl).toHaveBeenCalledWith(
       expect.objectContaining({ max_pages: 20 }),
       expect.anything(),
+      'human', // REPL is a human-initiated entry (P6-a source policy)
     );
   });
 
@@ -56,6 +59,7 @@ describe('executeCrawl', () => {
     expect(handleCrawl).toHaveBeenCalledWith(
       expect.objectContaining({ strategy: 'sitemap' }),
       expect.anything(),
+      'human', // REPL is a human-initiated entry (P6-a source policy)
     );
   });
 
