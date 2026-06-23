@@ -535,7 +535,7 @@ describe('cli/studio startStudioHost', () => {
     } as unknown as ProfileStore;
     const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
     const host = await startStudioHost({
-      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch, profileId: 'gh', profileStore: fakeStore,
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch, profileId: 'gh', profileOrigin: 'https://acme.example', profileStore: fakeStore,
     });
     try {
       await host.handoff.detectWall(); // window opens, baseline = empty storage
@@ -698,7 +698,7 @@ describe('cli/studio 5e-c closeout — persist-error surface (B1/L-5c-2) + no-le
     const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
     const host = await startStudioHost({
       port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
-      profileId: 'gh', profileStore: failingStore, onLoginPersistError: (err) => persistErrors.push(err),
+      profileId: 'gh', profileOrigin: 'https://acme.example', profileStore: failingStore, onLoginPersistError: (err) => persistErrors.push(err),
     });
     try {
       await host.handoff.detectWall();
@@ -769,7 +769,7 @@ describe('cli/studio 5e-c closeout — persist-error surface (B1/L-5c-2) + no-le
     const launcher = makeWallLauncher({ url: 'https://acme.example/login' });
     const host = await startStudioHost({
       port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: launcher.launch,
-      profileId: 'gh', profileStore: realStore, onLoginPersistError: (err) => surfaced.push(err),
+      profileId: 'gh', profileOrigin: 'https://acme.example', profileStore: realStore, onLoginPersistError: (err) => surfaced.push(err),
     });
     try {
       await host.handoff.detectWall(); // baseline: empty

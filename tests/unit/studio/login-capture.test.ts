@@ -89,7 +89,7 @@ describe('createLoginCapture — origin-scope then persist (onComplete fill)', (
   it('L6a NOT-too-loose: the persisted profile contains ONLY the wall-origin state — an unrelated cookie never lands', async () => {
     // MUTATION (persist the UNSCOPED ctx.storageState): the tracker cookie lands in the profile → RED.
     const persist = spyPersist();
-    const capture = createLoginCapture({ profilePersist: persist, profileId: 'p1' });
+    const capture = createLoginCapture({ profilePersist: persist, profileId: 'p1', expectedOrigin: WALL });
     await capture({
       storageState: ss([cookie('session', 'acme.example'), cookie('ga', 'tracker.example')]),
       wallOrigin: WALL,
@@ -105,7 +105,7 @@ describe('createLoginCapture — origin-scope then persist (onComplete fill)', (
     // MUTATION (scope to EXACT-origin-only, dropping dotted-domain): the .acme.example auth cookie is
     // dropped → reuse would not authenticate → RED.
     const persist = spyPersist();
-    const capture = createLoginCapture({ profilePersist: persist, profileId: 'p1' });
+    const capture = createLoginCapture({ profilePersist: persist, profileId: 'p1', expectedOrigin: WALL });
     await capture({ storageState: ss([cookie('auth', '.acme.example')]), wallOrigin: WALL });
     expect(persist.set).toHaveBeenCalledTimes(1);
     const parsed = JSON.parse(persist.calls[0].json) as StorageStateOut;
@@ -136,7 +136,7 @@ describe('createLoginCapture — origin-scope then persist (onComplete fill)', (
     const dir = mkdtempSync(join(tmpdir(), 'wigolo-logincap-'));
     try {
       const store = new ProfileStore({ dataDir: dir, keychain: memKeychain() });
-      const capture = createLoginCapture({ profilePersist: store, profileId: 'gh' });
+      const capture = createLoginCapture({ profilePersist: store, profileId: 'gh', expectedOrigin: WALL });
       await capture({
         storageState: ss([cookie('session', 'acme.example'), cookie('ga', 'tracker.example')], [lsOrigin('https://acme.example', { tok: 'x' })]),
         wallOrigin: WALL,
