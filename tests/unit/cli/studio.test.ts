@@ -167,6 +167,27 @@ describe('cli/studio startStudioHost', () => {
     }
   });
 
+  it('P6b-1: warns (degraded-state) when the audit log falls back to in-memory on an uninit DB — the fallback is not silent', async () => {
+    // getDatabase() throws until initDatabase() runs; the unit harness never inits, so the host
+    // falls back to an in-memory audit log (the audit test above relies on it). That fallback must
+    // NOT be silent: a degraded-state stderr warning fires so an operator running without a DB knows
+    // the audit trail won't persist. Prod inits the DB before sessions exist, so this never fires there.
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
+      return true;
+    });
+    try {
+      const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+      await host.daemon.stop();
+    } finally {
+      spy.mockRestore();
+    }
+    // flipped value: the degraded-state audit warning is PRESENT (absent on current code -> RED).
+    const warned = writes.some((w) => /\[wigolo studio\] WARNING:.*audit/i.test(w));
+    expect(warned).toBe(true);
+  });
+
   it('marksTool routes op=generalize to generalizeMark and the default (no op) to the list view', async () => {
     const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
     // generalize on an unknown mark surfaces a typed error (routed to generalizeMark, not the list).
