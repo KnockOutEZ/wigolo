@@ -737,6 +737,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
         }
         return { pageUrl, fields: [...(snap.domByRef?.values() ?? [])] };
       },
+      // Slice D4/B: the server-tracked nav-epoch getters — studio_capture refuses a capture against a page the
+      // agent navigated away from since its last observe (current !== lastObserve). No agent-supplied epoch.
+      currentNavEpoch: () => navEpoch.current,
+      lastObserveEpoch: () => navEpoch.lastObserve,
     })(input),
   });
 

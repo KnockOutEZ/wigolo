@@ -67,7 +67,7 @@ export interface PageCaptureDeps extends CaptureDeps {
  * and surfaces capture_refused. Carries NO page content/URL — nothing for a logger to leak.
  */
 export class CaptureRefusedError extends Error {
-  constructor(public readonly reason: 'credential_context') {
+  constructor(public readonly reason: 'credential_context' | 'nav_epoch_stale') {
     super(`capture refused: ${reason}`);
     this.name = 'CaptureRefusedError';
   }

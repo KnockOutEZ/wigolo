@@ -77,7 +77,7 @@ describe('studio/capture/handler — Phase 4c studio_capture boundary (RED)', ()
   function mkHandler() {
     const jobs: IndexJobInput[] = [];
     // credentialContext is REQUIRED; a benign `{}` provider opts this non-credential fixture out explicitly (fail-loud).
-    const handler = createCaptureHandler({ sessionId: HOST_SESSION, db, enqueue: (j: IndexJobInput) => { jobs.push(j); }, credentialContext: async () => ({}) });
+    const handler = createCaptureHandler({ sessionId: HOST_SESSION, db, enqueue: (j: IndexJobInput) => { jobs.push(j); }, credentialContext: async () => ({}), currentNavEpoch: () => 0, lastObserveEpoch: () => 0 });
     return { handler, jobs };
   }
 
@@ -278,7 +278,7 @@ describe('studio/capture/handler — Phase 4d qa gate (C5)', () => {
 
   function qaHandler(sessionId: string) {
     const jobs: IndexJobInput[] = [];
-    const handler = createCaptureHandler({ sessionId, db, enqueue: (j: IndexJobInput) => { jobs.push(j); }, credentialContext: async () => ({}) });
+    const handler = createCaptureHandler({ sessionId, db, enqueue: (j: IndexJobInput) => { jobs.push(j); }, credentialContext: async () => ({}), currentNavEpoch: () => 0, lastObserveEpoch: () => 0 });
     return { handler, jobs };
   }
   const rowById = (id: number) => db.prepare('SELECT * FROM studio_artifacts WHERE id = ?').get(id) as Record<string, unknown>;
@@ -381,6 +381,8 @@ describe('studio/capture/handler — Slice 5b credential-context exclusion', () 
       db,
       enqueue: (j: IndexJobInput) => { jobs.push(j); },
       credentialContext: async () => ctx,
+      currentNavEpoch: () => 0,
+      lastObserveEpoch: () => 0,
     });
     return { handler, jobs };
   }
@@ -438,6 +440,8 @@ describe('studio/capture/handler — Slice 5b credential-context exclusion', () 
       db,
       enqueue: (j: IndexJobInput) => { jobs.push(j); },
       credentialContext: async () => { calls++; return {}; },
+      currentNavEpoch: () => 0,
+      lastObserveEpoch: () => 0,
     });
     await handler({ type: 'clip', content: 'body', url: 'https://example.com/p' } as StudioCaptureInput);
     expect(calls, 'provider invoked for the clip capture').toBe(1);

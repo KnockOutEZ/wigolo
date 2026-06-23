@@ -36,6 +36,14 @@ export interface CaptureHandlerDeps {
    * A benign provider that returns `{}` opts a path out explicitly, fail-loud.
    */
   credentialContext: () => Promise<{ pageUrl?: string; fields?: FieldSemantics[] }>;
+  /**
+   * Slice D4/B — the session nav-epoch getters (server-tracked; the agent supplies NO epoch). currentNavEpoch
+   * is the live epoch (bumped on every allowed Document hop); lastObserveEpoch is the epoch at the agent's last
+   * studio_observe page-read. REQUIRED (no `?.`, mirroring credentialContext): an unwired host fails the
+   * type-check / fails LOUD at call, never silently skips the TOCTOU guard.
+   */
+  currentNavEpoch: () => number;
+  lastObserveEpoch: () => number;
 }
 
 export function createCaptureHandler(
@@ -48,6 +56,14 @@ export function createCaptureHandler(
     const enqueue = deps.enqueue ?? ((job) => getBackgroundIndexQueue().enqueue(job));
 
     try {
+      // Slice D4/B — capture-path TOCTOU close: refuse if the live page navigated since the agent's last
+      // studio_observe (currentNavEpoch !== lastObserveEpoch). The capture content is agent-supplied from an
+      // earlier observe; a navigation since means it no longer reflects the live page the credential check
+      // below would validate. Server-tracked epochs (no agent-supplied value); checked BEFORE captureFromPage
+      // so a stale capture never builds a row, and fail-fast (sync — no wasted CDP round-trip on a stale one).
+      if (deps.currentNavEpoch() !== deps.lastObserveEpoch()) {
+        throw new CaptureRefusedError('nav_epoch_stale');
+      }
       // Slice 5b: resolve the live page's credential-context signal FRESH (one snapshot per capture)
       // and thread it into captureFromPage — the single persist choke excludes a credential context
       // entirely (no FTS row, no embed). The provider is REQUIRED (no `?.`), so it is invoked on every
@@ -98,6 +114,14 @@ export function createCaptureHandler(
       // a crash. The error carries no page content/URL, so nothing sensitive is constructed here. Other
       // failures (e.g. captureFromPage's atomic enqueue rollback) propagate unchanged.
       if (e instanceof CaptureRefusedError) {
+        if (e.reason === 'nav_epoch_stale') {
+          // D4/B: the page navigated since the agent's last observe — the agent-supplied content is stale.
+          // The hint carries NO content/url (nothing for a logger to leak); re-observe, then capture.
+          return {
+            error_reason: 'capture_refused',
+            hint: 'The page navigated since you last observed it — re-observe the live page before capturing. Do not retry with stale content.',
+          };
+        }
         return {
           error_reason: 'capture_refused',
           hint: 'This page is a login/credential context — captures are excluded here so credentials are never persisted. Do not retry.',
