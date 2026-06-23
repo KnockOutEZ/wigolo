@@ -1,5 +1,5 @@
 import { wrapUntrusted } from '../security/untrusted.js';
-import type { FetchOutput, CrawlOutput, ExtractOutput, MapOutput } from '../types.js';
+import type { FetchOutput, CrawlOutput, ExtractOutput, MapOutput, FindSimilarOutput, SearchOutput, TableData } from '../types.js';
 
 /** handleCrawl returns a crawl OR a map (mode='map', URL-list only, no page bodies). */
 type CrawlResult = CrawlOutput | (MapOutput & { crawled: number });
@@ -28,8 +28,52 @@ export function fenceCrawlData(data: CrawlResult): CrawlResult {
   };
 }
 
+function fenceTable(t: TableData): TableData {
+  return {
+    ...t,
+    ...(typeof t.caption === 'string' ? { caption: wrapUntrusted(t.caption) } : {}),
+    headers: Array.isArray(t.headers) ? t.headers.map((h) => wrapUntrusted(h)) : t.headers,
+    rows: Array.isArray(t.rows)
+      ? t.rows.map((row) => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === 'string' ? wrapUntrusted(v) : v])))
+      : t.rows,
+  };
+}
+
 export function fenceExtractData(data: ExtractOutput): ExtractOutput {
-  // D7/A: only the FLAT-STRING shape (e.g. mode=selector) is body-fenced here; structured shapes
-  // (tables / json-ld / structured) are per-content-field fenced in D7/B.
-  return typeof data.data === 'string' ? { ...data, data: wrapUntrusted(data.data) } : data;
+  // D7/A flat string; D7/B structured ARRAYS (string[] selector-multi, TableData[] tables) — per-content-field.
+  // Object shapes (StructuredData / MetadataData / arbitrary json-ld Records) carry deeper nested text and are
+  // NOT traversed here — a noted D7 residual (deep arbitrary traversal is D8-structural-isolation territory).
+  if (typeof data.data === 'string') {
+    return { ...data, data: wrapUntrusted(data.data) };
+  }
+  if (Array.isArray(data.data)) {
+    const fenced = data.data.map((item) => (typeof item === 'string' ? wrapUntrusted(item) : fenceTable(item as TableData)));
+    return { ...data, data: fenced as ExtractOutput['data'] };
+  }
+  return data;
+}
+
+export function fenceFindSimilarData(data: FindSimilarOutput): FindSimilarOutput {
+  if (!Array.isArray(data.results)) return data;
+  return {
+    ...data,
+    results: data.results.map((r) => ({
+      ...r,
+      title: typeof r.title === 'string' ? wrapUntrusted(r.title) : r.title,
+      markdown: typeof r.markdown === 'string' ? wrapUntrusted(r.markdown) : r.markdown,
+    })),
+  };
+}
+
+export function fenceSearchData(data: SearchOutput): SearchOutput {
+  if (!Array.isArray(data.results)) return data;
+  return {
+    ...data,
+    results: data.results.map((r) => ({
+      ...r,
+      title: typeof r.title === 'string' ? wrapUntrusted(r.title) : r.title,
+      snippet: typeof r.snippet === 'string' ? wrapUntrusted(r.snippet) : r.snippet,
+      ...(typeof r.markdown_content === 'string' ? { markdown_content: wrapUntrusted(r.markdown_content) } : {}),
+    })),
+  };
 }

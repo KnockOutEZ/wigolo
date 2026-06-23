@@ -17,7 +17,7 @@ import { initDatabase, closeDatabase } from './cache/db.js';
 import { handleFetch } from './tools/fetch.js';
 import { handleSearch } from './tools/search.js';
 import { buildSearchContentBlocks } from './server/search-response.js';
-import { fenceFetchData, fenceCrawlData, fenceExtractData } from './server/content-fence.js';
+import { fenceFetchData, fenceCrawlData, fenceExtractData, fenceFindSimilarData } from './server/content-fence.js';
 import { handleCrawl } from './tools/crawl.js';
 import { handleCache } from './tools/cache.js';
 import { handleExtract } from './tools/extract.js';
@@ -501,8 +501,9 @@ export function createMcpServer(subsystems: Subsystems): Server {
           isError: true,
         };
       }
+      // D7/B: fence the agent-facing per-result content (title/markdown); operational fields (url/score) raw.
       return {
-        content: [{ type: 'text', text: JSON.stringify(r.data, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(fenceFindSimilarData(r.data), null, 2) }],
         isError: false,
       };
     }

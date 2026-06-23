@@ -1,4 +1,5 @@
 import type { SearchInput, SearchOutput, StreamAnswerEnvelope } from '../types.js';
+import { fenceSearchData } from './content-fence.js';
 
 // Build the MCP content blocks for the search tool. The default shape keeps
 // the legacy "[wigolo notice] ..." text prefix block + a JSON payload block,
@@ -11,8 +12,10 @@ import type { SearchInput, SearchOutput, StreamAnswerEnvelope } from '../types.j
 // `JSON.parse(text)` and pull either field structurally.
 export function buildSearchContentBlocks(
   input: SearchInput,
-  data: SearchOutput,
+  rawData: SearchOutput,
 ): { type: 'text'; text: string }[] {
+  // D7/B: fence the agent-facing per-result content (title/snippet/markdown_content); operational fields raw.
+  const data = fenceSearchData(rawData);
   if (input.format === 'stream_answer') {
     const { warning, answer, ...rest } = data;
     const envelope: StreamAnswerEnvelope = {
