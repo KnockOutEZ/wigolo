@@ -60,6 +60,18 @@ vi.mock('../../../src/searxng/docker.js', () => ({
   })),
 }));
 
+// P6-d PIN-1 (LOCKED-B): spy the credential-store reads (passthrough) so a guard pin can assert the
+// serve dispatch never reaches them. Passthrough keeps every other test's behavior identical.
+const { readKeySpy, resolveProviderKeySpy } = vi.hoisted(() => ({ readKeySpy: vi.fn(), resolveProviderKeySpy: vi.fn() }));
+vi.mock('../../../src/security/key-store.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/security/key-store.js')>();
+  return {
+    ...actual,
+    readKey: (...args: Parameters<typeof actual.readKey>) => { readKeySpy(...args); return actual.readKey(...args); },
+    resolveProviderKey: (...args: Parameters<typeof actual.resolveProviderKey>) => { resolveProviderKeySpy(...args); return actual.resolveProviderKey(...args); },
+  };
+});
+
 describe('DaemonHttpServer', () => {
   beforeEach(() => {
     resetConfig();
@@ -621,6 +633,46 @@ describe('DaemonHttpServer websocket upgrade seam', () => {
     try {
       await expect(connect(`${wsUrl}/anything`, [])).rejects.toBeDefined();
     } finally {
+      await daemon.stop();
+    }
+  });
+});
+
+describe('DaemonHttpServer — P6-d close-out guard pins', () => {
+  beforeEach(() => { resetConfig(); vi.clearAllMocks(); });
+  afterEach(() => { resetConfig(); });
+
+  it('PIN-1 (LOCKED-B): the credential store is UNREACHABLE from the serve dispatch', async () => {
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1' }); // loopback serve
+    try {
+      const url = await daemon.start();
+      await fetch(`${url}/health`); // serve dispatch entry (handleRequest)
+      await fetch(`${url}/nonexistent`); // reaches routeRequest
+      // mutation: wire a credential read (readKey/resolveProviderKey) into the serve dispatch → fires → reds.
+      expect(readKeySpy).not.toHaveBeenCalled();
+      expect(resolveProviderKeySpy).not.toHaveBeenCalled();
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('PIN-2 (slice 3d): the bearer is NEVER written to stderr/logs on the verify path', async () => {
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const TOKEN = 'p6d-pin2-secret-bearer-abc123xyz';
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', auth: { token: TOKEN, host: '127.0.0.1' } });
+    const writes: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as unknown as { write: (c: unknown) => boolean }).write = (chunk: unknown) => { writes.push(typeof chunk === 'string' ? chunk : String(chunk)); return true; };
+    try {
+      const url = await daemon.start();
+      // verify-FAIL (wrong bearer) + verify-PASS (correct bearer) — both run checkAuth on the verify path.
+      await fetch(`${url}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer wrong' }, body: '{}' });
+      await fetch(`${url}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` }, body: '{}' });
+      // mutation: log the token in the auth/verify block (e.g. log.error('t', this.auth.token)) → it lands here → reds.
+      expect(writes.join('')).not.toContain(TOKEN);
+    } finally {
+      (process.stderr as unknown as { write: typeof origWrite }).write = origWrite;
       await daemon.stop();
     }
   });
