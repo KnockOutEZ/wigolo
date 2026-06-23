@@ -28,6 +28,25 @@ describe('createObserver — atomic, bounded capture + coherent events', () => {
     expect(r.id).toBe('s1');
   });
 
+  it('PIN-A3 (nav-epoch OBSERVE REFRESH): a successful page-read calls markObserved (lastObserveEpoch := current)', async () => {
+    // D4/A: studio_observe is the page-read that establishes "the agent has seen the current page", so its
+    // completion refreshes lastObserveEpoch. value-flip RED: createObserver ignores the markObserved dep today
+    // → observed stays 0. MUT: drop the markObserved() call on the observe completion path → observed 0 → RED.
+    let observed = 0;
+    const obs = createObserver({
+      snapshot: async () => mkSnap('s1', [el('e1', 'A')]),
+      eventQueue: new StudioEventQueue(100),
+      inlineBudget: 100000,
+      spillMaxBytes: 10_000_000,
+      dataDir: dir,
+      maxStableRetries: 3,
+      markObserved: () => { observed++; },
+    });
+    const r = ok(await obs({}));
+    expect(r.kind).toBe('full');
+    expect(observed).toBe(1); // a real page-read refreshed lastObserveEpoch
+  });
+
   it('CHURNING page never settles → BOUNDED give-up to a full resync, does NOT livelock', async () => {
     const q = new StudioEventQueue(100);
     let snaps = 0;

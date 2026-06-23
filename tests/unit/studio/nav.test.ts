@@ -199,6 +199,37 @@ describe('NavInterceptor', () => {
     await tick();
     expect(continued(fresh, 'fr')).toBe(true);
   });
+
+  it('PIN-A1 (nav-epoch SOURCE-AGNOSTIC bump): a HUMAN-initiated ALLOWED hop bumps the nav-epoch', async () => {
+    // D4/A: the nav-epoch must track ALL navigation (human OR agent), so a human-driven page change since
+    // the agent's last observe is also caught by the capture re-check. value-flip RED: no onAllowedNavigation
+    // callback exists yet → bumps stays 0. MUT: gate the bump on source==='agent' → a human hop won't bump → RED.
+    const f = makeFakeCdp();
+    let bumps = 0;
+    const iv = new NavInterceptor(fixed({ source: 'human', allowPrivate: true }), () => { bumps++; });
+    await iv.start(f.cdp);
+    f.pause('r1', 'https://example.com/'); // human-allowed public hop
+    await tick();
+    expect(continued(f, 'r1')).toBe(true);
+    expect(bumps).toBe(1); // the allowed hop bumped, regardless of source
+  });
+
+  it('PIN-A2 (nav-epoch BLOCKED-NAV exclusion): an allowed hop bumps but a guard-BLOCKED hop does NOT', async () => {
+    // D4/A: a blocked nav (e.g. SSRF refusal) did NOT change the page, so it must NOT bump — else a capture
+    // against the still-current page would false-abort. value-flip RED: no bump exists → bumps 0 ≠ 1.
+    // MUT: bump pre-guard / on every paused hop → the blocked hop ALSO bumps → bumps===2 → RED.
+    const f = makeFakeCdp();
+    let bumps = 0;
+    const iv = new NavInterceptor(fixed({ source: 'human', allowPrivate: true }), () => { bumps++; });
+    await iv.start(f.cdp);
+    f.pause('ok', 'https://example.com/'); // allowed → bumps
+    await tick();
+    f.pause('m', 'http://169.254.169.254/'); // cloud-metadata → BLOCKED for either party → must NOT bump
+    await tick();
+    expect(continued(f, 'ok')).toBe(true);
+    expect(failed(f, 'm')).toBe(true);
+    expect(bumps).toBe(1); // ONLY the allowed hop bumped
+  });
 });
 
 describe('navigateSession', () => {
