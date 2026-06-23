@@ -32,6 +32,7 @@ describe('executeFetch', () => {
     expect(handleFetch).toHaveBeenCalledWith(
       expect.objectContaining({ url: 'https://example.com' }),
       mockRouter,
+      'human', // REPL is a human-initiated entry (P6-a source policy)
     );
     expect(result).toEqual(baseOutput);
   });
@@ -42,6 +43,7 @@ describe('executeFetch', () => {
     expect(handleFetch).toHaveBeenCalledWith(
       expect.objectContaining({ render_js: 'never' }),
       expect.anything(),
+      'human', // REPL is a human-initiated entry (P6-a source policy)
     );
   });
 
@@ -51,6 +53,7 @@ describe('executeFetch', () => {
     expect(handleFetch).toHaveBeenCalledWith(
       expect.objectContaining({ render_js: 'auto' }),
       expect.anything(),
+      'human', // REPL is a human-initiated entry (P6-a source policy)
     );
   });
 

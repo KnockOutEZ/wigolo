@@ -27,6 +27,7 @@ describe('executeExtract', () => {
     expect(handleExtract).toHaveBeenCalledWith(
       expect.objectContaining({ url: 'https://ex.com' }),
       mockRouter,
+      'human', // REPL is a human-initiated entry (P6-a source policy)
     );
     expect(result).toEqual(baseOutput);
   });
@@ -37,6 +38,7 @@ describe('executeExtract', () => {
     expect(handleExtract).toHaveBeenCalledWith(
       expect.objectContaining({ mode: 'tables' }),
       expect.anything(),
+      'human', // REPL is a human-initiated entry (P6-a source policy)
     );
   });
 
@@ -46,6 +48,7 @@ describe('executeExtract', () => {
     expect(handleExtract).toHaveBeenCalledWith(
       expect.objectContaining({ mode: 'selector', css_selector: '.content' }),
       expect.anything(),
+      'human', // REPL is a human-initiated entry (P6-a source policy)
     );
   });
 
