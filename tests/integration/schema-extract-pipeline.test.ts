@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { httpFetch } from '../../src/fetch/http-client.js';
 import { initDatabase, closeDatabase } from '../../src/cache/db.js';
 import { handleExtract } from '../../src/tools/extract.js';
+import { scrubProviderEnv } from '../helpers/provider-isolation.js';
 import type { SmartRouter } from '../../src/fetch/router.js';
 import type { RawFetchResult } from '../../src/types.js';
 
@@ -65,6 +66,10 @@ function makeRouter(): SmartRouter {
 
 describe('integration: schema extraction pipeline', () => {
   beforeAll(async () => {
+    // D18: handleExtract mode=schema prefers the LLM extractor when isLocalLlmEnabled()
+    // (->isLlmConfigured(), env-only gate). Scrub provider env so this pipeline asserts
+    // the deterministic schema-extraction path regardless of ambient provider keys.
+    scrubProviderEnv();
     initDatabase(':memory:');
     baseUrl = await startServer();
   });

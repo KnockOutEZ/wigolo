@@ -33,6 +33,7 @@ vi.mock('../../../src/logger.js', () => ({
   }),
 }));
 
+import { scrubProviderEnv } from '../../helpers/provider-isolation.js';
 import { handleExtract } from '../../../src/tools/extract.js';
 import { extractMetadata, extractSelector, extractTables } from '../../../src/extraction/extract.js';
 import { getCachedContent, isExpired } from '../../../src/cache/store.js';
@@ -250,6 +251,13 @@ describe('handleExtract', () => {
 });
 
 describe('handleExtract mode=schema', () => {
+  // D18: the schema branch prefers the LLM extractor when isLocalLlmEnabled()
+  // (->isLlmConfigured(), env-only gate). Scrub provider env so these assert the
+  // deterministic extractWithSchema path regardless of ambient provider keys.
+  beforeEach(() => {
+    scrubProviderEnv();
+  });
+
   it('dispatches to extractWithSchema for mode=schema', async () => {
     vi.mocked(extractWithSchema).mockReturnValue({ name: 'Widget', price: '$10' });
 
