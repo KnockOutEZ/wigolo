@@ -642,14 +642,19 @@ describe('DaemonHttpServer — P6-d close-out guard pins', () => {
   beforeEach(() => { resetConfig(); vi.clearAllMocks(); });
   afterEach(() => { resetConfig(); });
 
-  it('PIN-1 (LOCKED-B): the credential store is UNREACHABLE from the serve dispatch', async () => {
+  // Refactor-safety (NOT the LOCKED-B guard): a non-tool serve path (health / 404) does not resolve a
+  // PROVIDER API key (security/key-store.ts). This is acceptable-and-harmless — a serve-dispatched LLM
+  // TOOL legitimately resolves a provider key; this only pins that bare dispatch/health paths don't.
+  // The LOCKED-B browser-credential-store invariant is the structural import-closure pin in
+  // serve-lockedb-closure.test.ts (profile-store.ts), NOT this provider-key spy.
+  it('refactor-safety: bare serve paths (health/404) do not resolve a PROVIDER key', async () => {
     const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
     const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1' }); // loopback serve
     try {
       const url = await daemon.start();
       await fetch(`${url}/health`); // serve dispatch entry (handleRequest)
       await fetch(`${url}/nonexistent`); // reaches routeRequest
-      // mutation: wire a credential read (readKey/resolveProviderKey) into the serve dispatch → fires → reds.
+      // mutation: wire a provider-key read (readKey/resolveProviderKey) into the bare dispatch → fires → reds.
       expect(readKeySpy).not.toHaveBeenCalled();
       expect(resolveProviderKeySpy).not.toHaveBeenCalled();
     } finally {
