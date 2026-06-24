@@ -50,6 +50,7 @@ import WebSocket from 'ws';
 import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
 import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import { createCaptureHandler, type StudioCaptureInput } from '../../../src/studio/capture/handler.js';
+import { captureHumanNote } from '../../../src/studio/capture/artifacts.js';
 
 /** Attach the host's REAL ws hub to a loopback server and connect a real client — exercises handleUpgrade end-to-end. */
 async function connectToHostHub(host: Awaited<ReturnType<typeof startStudioHost>>) {
@@ -1317,6 +1318,67 @@ describe('cli/studio startStudioHost — 7b-notes S1 comment round-trip', () => 
       await conn.close();
       await host.daemon.stop();
       initDatabase(':memory:'); // restore for afterEach's closeDatabase()
+    }
+  });
+
+  // ── 7b-notes S2: comment snapshot (post-hello backfill of this session's comments) ──
+  const seedComment = (sessionId: string, text: string) =>
+    captureHumanNote({ sessionId, text }, { db: getDatabase(), enqueue: () => undefined });
+
+  // PIN-A (backfill exists, through the real handleUpgrade). NAMED mutation that REDs: remove the comment
+  // snapshot from the host's postHello → a connecting client never receives {t:comment_snapshot} and
+  // waitForType times out.
+  it('S2 PIN-A: a connecting client backfills this session’s comments via post-hello {t:comment_snapshot}', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    seedComment(host.session.id, 'first note'); // both stored BEFORE the client connects — the backfill must carry them
+    seedComment(host.session.id, 'second note');
+    const conn = await connectToHostHub(host);
+    try {
+      const snap = await conn.waitForType('comment_snapshot');
+      expect(Array.isArray(snap.comments)).toBe(true);
+      const comments = snap.comments as Array<Record<string, unknown>>;
+      expect(comments.map((c) => c.text)).toEqual(['first note', 'second note']); // this session, append-order
+      expect(typeof comments[0].id).toBe('number'); // each carries its persisted artifact id (the panel's key)
+    } finally {
+      await conn.close();
+      await host.daemon.stop();
+    }
+  });
+
+  // PIN-B (ISOLATION — the load-bearing pin for the new session-scoped read; 7e generalizes it). NAMED
+  // mutation that REDs: drop/widen the WHERE session_id filter in listSessionComments → another session's
+  // comment leaks into this session's snapshot.
+  it('S2 PIN-B: the comment snapshot returns ONLY this session’s comments (session isolation)', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    seedComment(host.session.id, 'mine');
+    seedComment('a-different-session', 'theirs'); // a foreign session's note in the SAME cache db
+    const conn = await connectToHostHub(host);
+    try {
+      const snap = await conn.waitForType('comment_snapshot');
+      const texts = (snap.comments as Array<Record<string, unknown>>).map((c) => c.text);
+      expect(texts).toEqual(['mine']); // 'theirs' must NOT leak across the session boundary
+    } finally {
+      await conn.close();
+      await host.daemon.stop();
+    }
+  });
+
+  // PIN-C (cap selection + count — decision: most-recent N=200; the 7d-S3 two-mutation style). NAMED mutations
+  // that RED: (a) oldest-200 → slice(0,200) → count stays 200 but the boundary diverges (note 1, not note 51);
+  // (b) unbounded → slice() → count diverges (250 ≠ 200).
+  it('S2 PIN-C: with >200 comments the snapshot is EXACTLY the most-recent 200', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    for (let i = 1; i <= 250; i++) seedComment(host.session.id, `note ${i}`);
+    const conn = await connectToHostHub(host);
+    try {
+      const snap = await conn.waitForType('comment_snapshot');
+      const comments = snap.comments as Array<Record<string, unknown>>;
+      expect(comments.length).toBe(200); // capped — not the full 250, not a wrong N
+      expect(comments[0].text).toBe('note 51'); // most-recent 200 = note 51..250 (oldest-200 would start at note 1)
+      expect(comments[199].text).toBe('note 250');
+    } finally {
+      await conn.close();
+      await host.daemon.stop();
     }
   });
 });
