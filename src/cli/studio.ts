@@ -877,6 +877,11 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       // agent navigated away from since its last observe (current !== lastObserve). No agent-supplied epoch.
       currentNavEpoch: () => navEpoch.current,
       lastObserveEpoch: () => navEpoch.lastObserve,
+      // 7e S1: a live captured-item delta. A REAL clip/qa insert (never a dedup no-op, never note/mark — the
+      // captured-type filter lives at the insert) fans out to the connected human client(s) as {t:'artifact',
+      // <light projection>} — the captured-items panel's live half (S2 adds the post-hello backfill). Session
+      // routing is THIS closure's session.id, so a capture never broadcasts into another session's panel.
+      onArtifact: (delta) => hub.broadcast(session.id, { t: 'artifact', ...delta }),
     })(input),
   });
 
