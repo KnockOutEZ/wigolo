@@ -17,7 +17,7 @@ describe('Studio web-app split-view shell', () => {
   function mount() {
     const host = document.createElement('div');
     document.body.appendChild(host);
-    const connect = vi.fn(() => () => {});
+    const connect = vi.fn((_canvas: HTMLCanvasElement) => () => {});
     act(() => {
       render(<App connect={connect} />, host);
     });

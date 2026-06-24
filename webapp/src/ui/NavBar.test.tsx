@@ -33,7 +33,9 @@ describe('NavBar — emit nav requests via the codec', () => {
   function submit(host: HTMLElement): Event {
     const form = host.querySelector('form') as HTMLFormElement;
     const ev = new Event('submit', { bubbles: true, cancelable: true });
-    act(() => form.dispatchEvent(ev));
+    act(() => {
+      form.dispatchEvent(ev);
+    });
     return ev;
   }
 

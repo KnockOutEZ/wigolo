@@ -27,7 +27,9 @@ describe('ControlHandoff — emit control ops via the codec', () => {
   function click(host: HTMLElement, label: string) {
     const btn = [...host.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes(label));
     if (!btn) throw new Error(`button not found: ${label}`);
-    act(() => btn.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    act(() => {
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
   }
 
   // PIN (wiring value-flip). NAMED mutation that REDs: change the grant action to emit the wrong op

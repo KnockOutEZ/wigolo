@@ -43,14 +43,18 @@ describe('ControlsPanel — direct-drive controls', () => {
     const emit = vi.fn();
     const host = mount(new ControlsModel(), emit);
     const grant = host.querySelector('.studio-handoff-grant') as HTMLButtonElement;
-    act(() => grant.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    act(() => {
+      grant.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
     expect(JSON.parse(emit.mock.calls[0][0])).toEqual({ t: 'control', op: 'grant', to: 'agent' });
     const input = host.querySelector('input') as HTMLInputElement;
     act(() => {
       input.value = 'https://x.test';
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    act(() => (host.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    act(() => {
+      (host.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
     expect(JSON.parse(emit.mock.calls[1][0])).toEqual({ t: 'nav', url: 'https://x.test' });
   });
 
@@ -61,7 +65,9 @@ describe('ControlsPanel — direct-drive controls', () => {
     const model = new ControlsModel();
     const host = mount(model, vi.fn());
     const grant = host.querySelector('.studio-handoff-grant') as HTMLButtonElement;
-    act(() => grant.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    act(() => {
+      grant.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
     expect(host.textContent).toContain('You are driving'); // not flipped by the local action
     act(() => model.applyServer('agent', 1)); // the host's control echo is what actually flips it
     expect(host.textContent).toContain('Agent is driving');
