@@ -9,6 +9,7 @@ import { initSubsystems, createMcpServer, type Subsystems } from '../server.js';
 import type { StudioHostHandlers } from './studio-dispatch.js';
 import { probeHealth } from './health-check.js';
 import { checkAuth, checkAuthSubprotocol, checkOriginHost } from '../studio/auth.js';
+import { serveStaticAsset } from './static-assets.js';
 import { createLogger } from '../logger.js';
 
 export type UpgradeHandler = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
@@ -34,6 +35,12 @@ export interface DaemonOptions {
    * path only — the stdio server never constructs this server.
    */
   onUpgrade?: UpgradeHandler;
+  /**
+   * When set, the built Studio web-app shell is served (OPEN, like `/health`) from this directory for
+   * `GET /` and the allowlisted shell assets — and ONLY those paths (see static-assets.ts). The auth-gated
+   * MCP surface is never shadowed. Host path only; unset on the stdio server (no static serving).
+   */
+  webappRoot?: string;
 }
 
 export class DaemonHttpServer {
@@ -48,6 +55,7 @@ export class DaemonHttpServer {
   private readonly auth: DaemonAuthConfig | null;
   private readonly requestTimeoutMs: number;
   private readonly onUpgrade: UpgradeHandler | null;
+  private readonly webappRoot: string | null;
   private mcpRequestCount = 0;
   private studioHost: StudioHostHandlers | null = null;
 
@@ -60,6 +68,7 @@ export class DaemonHttpServer {
     this.auth = options.auth ?? null;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 0;
     this.onUpgrade = options.onUpgrade ?? null;
+    this.webappRoot = options.webappRoot ?? null;
   }
 
   /**
@@ -135,6 +144,13 @@ export class DaemonHttpServer {
     // detect a running host) and exposes no tool surface.
     if (pathname === '/health' && method === 'GET') {
       return this.handleHealthRequest(res);
+    }
+
+    // Studio web-app shell — OPEN (like /health), served BEFORE the auth gate. `serveStaticAsset` OWNS
+    // only `GET /` + the allowlisted shell assets; for anything else it returns false and we fall through
+    // to the auth gate + router, so this can never shadow the auth-gated /mcp surface (S1 PIN-A).
+    if (this.webappRoot && method === 'GET' && serveStaticAsset(this.webappRoot, pathname, res)) {
+      return;
     }
 
     // Auth + Origin/Host guard for the MCP surface. Host path only: the stdio

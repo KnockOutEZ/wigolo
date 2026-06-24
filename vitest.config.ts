@@ -50,6 +50,18 @@ export default defineConfig({
           fileParallelism: false,
         },
       },
+      {
+        // Phase-7a: the Studio web app (Preact) component lane. jsdom DOM + Preact JSX transform. Lives
+        // under webapp/, disjoint from the tests/** globs above (no overlap, no gap). This is the GATE the
+        // component tests plug into; E2E browser smoke is deferred to 7f.
+        test: {
+          globals: true,
+          name: 'webapp',
+          environment: 'jsdom',
+          include: ['webapp/**/*.test.ts', 'webapp/**/*.test.tsx'],
+        },
+        esbuild: { jsx: 'automatic', jsxImportSource: 'preact' },
+      },
     ],
   },
 });

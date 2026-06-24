@@ -48,6 +48,16 @@ import type {
   StudioToolError,
 } from '../daemon/studio-dispatch.js';
 import { randomUUID } from 'node:crypto';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * The built Studio web-app shell dir the daemon serves (S1). Resolved relative to THIS module so it points
+ * at the package's `dist/webapp` from both the built CLI (`dist/cli/studio.js`) and the dev entry
+ * (`src/cli/studio.ts`) — both are two levels under the package root. Absent in a not-yet-built dev tree;
+ * the static route then simply 404s its assets (non-fatal — the studio command is internal/unadvertised).
+ */
+const STUDIO_WEBAPP_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'webapp');
 
 /** Bounded human-event buffer; overflow is fail-loud (drained events surface a dropped count → resync). */
 const STUDIO_EVENT_QUEUE_MAX = 256;
@@ -262,6 +272,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     auth: { token, host: opts.host },
     requestTimeoutMs: getConfig().studioRequestTimeoutMs,
     onUpgrade: (req, socket, head) => hub.handleUpgrade(req, socket, head),
+    webappRoot: STUDIO_WEBAPP_ROOT,
   });
 
   const endpoint = await daemon.start();
