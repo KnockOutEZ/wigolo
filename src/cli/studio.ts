@@ -294,11 +294,6 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
 
   const endpoint = await daemon.start();
 
-  // Open the web-app tab at the shell, carrying the one-time NONCE (never the bearer) in the URL. Default
-  // opener just logs the URL (safe for non-interactive/test boots); the CLI entry passes a spawning opener.
-  const webappUrl = `${endpoint}/?n=${handshakeNonce}`;
-  (opts.openTab ?? ((u: string) => logger.info('Studio web app ready', { url: u })))(webappUrl);
-
   // Warm the embedding model in the BACKGROUND now that the host endpoint is reachable. This was
   // previously awaited here (warm-before-live), which blocked the host on a cold model load/DOWNLOAD
   // — the Phase-0 model-init risk, the same one that blocked MCP `initialize` on the shared path.
@@ -310,6 +305,12 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   );
 
   const session = registry.create({ endpoint, token });
+
+  // Open the web-app tab at the shell, carrying the one-time NONCE (never the bearer) + the session id in
+  // the URL. Default opener just logs the URL (safe for non-interactive/test boots); the CLI entry passes a
+  // spawning opener.
+  const webappUrl = `${endpoint}/?n=${handshakeNonce}&s=${session.id}`;
+  (opts.openTab ?? ((u: string) => logger.info('Studio web app ready', { url: u })))(webappUrl);
 
   // Bring up the session's dedicated headed browser, then the screencast bridge,
   // before publishing the handle — so the session is fully live (streamable) by

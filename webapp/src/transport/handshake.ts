@@ -9,6 +9,7 @@
  */
 
 const NONCE_PARAM = 'n';
+const SESSION_PARAM = 's';
 const TOKEN_PATH = '/studio/token';
 const STREAM_SUBPROTOCOL = 'wigolo.stream';
 const BEARER_SUBPROTOCOL_PREFIX = 'wigolo.bearer.';
@@ -16,6 +17,11 @@ const BEARER_SUBPROTOCOL_PREFIX = 'wigolo.bearer.';
 /** Read the one-time nonce the host put in the tab URL. */
 export function readNonce(search: string = location.search): string | null {
   return new URLSearchParams(search).get(NONCE_PARAM);
+}
+
+/** Read the session id the host put in the tab URL (not a secret — it scopes the stream path). */
+export function readSessionId(search: string = location.search): string | null {
+  return new URLSearchParams(search).get(SESSION_PARAM);
 }
 
 export interface ExchangeDeps {

@@ -1,33 +1,47 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render } from 'preact';
+import { act } from 'preact/test-utils';
 import { App } from './App.js';
 
 /**
- * Smoke test for the Studio web-app shell — proves the whole component lane works end-to-end (Preact render
- * + jsdom DOM + the esbuild Preact-JSX transform under the new `webapp` vitest project). S7 expands this
- * into the split-view assertions; here it just guarantees the shell mounts and carries no dependency-name
- * leakage in its user-facing copy (the S7 guardrail, asserted early).
+ * Split-view shell tests (S7). A no-op `connect` is injected so the pane renders without attempting a live
+ * stream (the default bootstrap also no-ops without a WebSocket, but injecting keeps the test explicit).
  */
-describe('Studio web-app shell', () => {
+describe('Studio web-app split-view shell', () => {
   afterEach(() => {
     document.body.innerHTML = '';
   });
 
-  it('mounts into the DOM and renders the shell heading', () => {
+  function mount() {
     const host = document.createElement('div');
     document.body.appendChild(host);
-    render(<App />, host);
-    expect(host.querySelector('#studio-root')).not.toBeNull();
+    const connect = vi.fn(() => () => {});
+    act(() => {
+      render(<App connect={connect} />, host);
+    });
+    return { host, connect };
+  }
+
+  it('renders the split view: a browser pane (canvas) and the session rail', () => {
+    const { host, connect } = mount();
+    expect(host.querySelector('.studio-split')).not.toBeNull();
+    expect(host.querySelector('canvas.studio-canvas')).not.toBeNull();
+    expect(host.querySelector('aside.studio-rail')).not.toBeNull();
     expect(host.textContent).toContain('wigolo studio');
+    // the pane wires the live stream onto its canvas
+    expect(connect).toHaveBeenCalledOnce();
+    expect(connect.mock.calls[0][0]).toBeInstanceOf(HTMLCanvasElement);
   });
 
-  it('uses capability language only — no implementation/dependency names in the served copy', () => {
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    render(<App />, host);
+  // GUARDRAIL PIN (S7): no implementation/dependency name appears anywhere in the served UI text — capability
+  // language only. NAMED mutation that REDs: add any banned name to a component's copy (e.g. "Powered by
+  // Playwright" in the rail) → it lands in the rendered text and this assertion fails.
+  it('GUARDRAIL: the served UI uses capability language only — no dependency/implementation names', () => {
+    const { host } = mount();
     const text = (host.textContent ?? '').toLowerCase();
-    for (const banned of ['preact', 'playwright', 'searxng', 'chromium', 'cdp', 'trafilatura']) {
-      expect(text).not.toContain(banned);
+    const banned = ['preact', 'playwright', 'chromium', 'searxng', 'cdp', 'trafilatura', 'esbuild', 'sqlite', 'onnx', 'fastembed', 'websocket', 'jsdom'];
+    for (const name of banned) {
+      expect(text, `served UI must not mention "${name}"`).not.toContain(name);
     }
   });
 });
