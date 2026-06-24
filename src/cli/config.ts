@@ -9,6 +9,7 @@
  *   --export [path]      Export config to file (default: ~/wigolo-config-export.json)
  *   --import <path>      Import config from file
  *   --cleanup <component> Cleanup a component (cache|embeddings|models|browser|searxng)
+ *   --prune-audit --older-than <dur> --yes  Prune studio audit rows older than <dur> (fail-closed)
  *   --uninstall [--yes]  Full uninstall (requires --yes to skip confirmation)
  *   --storage            Print storage usage map
  *   --cache-stats        Print cache statistics
@@ -37,6 +38,7 @@ const CONFIG_USAGE = [
   '  --export [path]          Export config to file (secrets excluded)',
   '  --import <path>          Import config from file',
   '  --cleanup <component>    Free storage for: cache|embeddings|models|browser|searxng',
+  '  --prune-audit --older-than <dur> --yes  Prune studio audit rows older than <dur> (e.g. 30d)',
   '  --set <key>=<value>      Update a single non-secret setting headlessly',
   '  --uninstall              Full uninstall (requires --yes)',
   '  --yes                    Skip interactive confirmation (use with --uninstall)',
@@ -59,6 +61,18 @@ interface ConfigFlags {
   set: string | null;
   uninstall: boolean;
   yes: boolean;
+  pruneAudit: boolean;
+  olderThan: string | null;
+}
+
+/** Parse an `--older-than` duration (`30d`, `12h`, `45m`, `60s`, `2w`) to milliseconds. Returns null on garbage/empty/non-positive — the caller fails closed (no delete) on null. */
+function parseDurationMs(raw: string): number | null {
+  const m = /^(\d+)\s*([smhdw])$/.exec(raw.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const unit: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+  return n * unit[m[2]];
 }
 
 function parseConfigFlags(args: string[]): ConfigFlags {
@@ -75,6 +89,8 @@ function parseConfigFlags(args: string[]): ConfigFlags {
     set: null,
     uninstall: false,
     yes: false,
+    pruneAudit: false,
+    olderThan: null,
   };
 
   let i = 0;
@@ -89,6 +105,23 @@ function parseConfigFlags(args: string[]): ConfigFlags {
     if (arg === '--cache-stats') { flags.cacheStats = true; i++; continue; }
     if (arg === '--yes' || arg === '-y') { flags.yes = true; i++; continue; }
     if (arg === '--uninstall') { flags.uninstall = true; i++; continue; }
+    if (arg === '--prune-audit') { flags.pruneAudit = true; i++; continue; }
+
+    if (arg === '--older-than') {
+      const next = args[i + 1];
+      if (next && !next.startsWith('-')) {
+        flags.olderThan = next;
+        i += 2;
+      } else {
+        i++;
+      }
+      continue;
+    }
+    if (arg.startsWith('--older-than=')) {
+      flags.olderThan = arg.slice('--older-than='.length) || null;
+      i++;
+      continue;
+    }
 
     if (arg === '--export') {
       flags.exportRequested = true;
@@ -255,6 +288,38 @@ export async function runConfig(args: string[]): Promise<number> {
     return 1;
   }
 
+  if (flags.pruneAudit) {
+    // Operator-only prune of the studio audit forensic log. Fail-closed: require an explicit
+    // by-age cutoff AND a typed confirmation before ANY row is deleted (a forensic log — stricter
+    // than --cleanup, which has no confirm). Never default a missing/garbage cutoff to delete-all.
+    if (!flags.olderThan) {
+      process.stderr.write('--prune-audit requires --older-than <duration> (e.g. 30d, 12h). No rows deleted.\n');
+      return 1;
+    }
+    const durationMs = parseDurationMs(flags.olderThan);
+    if (durationMs === null) {
+      process.stderr.write(`Invalid --older-than duration: ${flags.olderThan}. Use e.g. 30d, 12h, 45m, 60s, 2w. No rows deleted.\n`);
+      return 1;
+    }
+    if (!flags.yes) {
+      process.stderr.write('Pruning the audit log is irreversible. Re-run with --yes to confirm. No rows deleted.\n');
+      return 1;
+    }
+    const { getDatabase } = await import('../cache/db.js');
+    const { pruneStudioAudit } = await import('../studio/audit-retention.js');
+    let db: ReturnType<typeof getDatabase>;
+    try {
+      db = getDatabase();
+    } catch {
+      process.stderr.write('No database initialized — nothing to prune.\n');
+      return 1;
+    }
+    const cutoffMs = Date.now() - durationMs;
+    const { deleted } = pruneStudioAudit(db, { cutoffMs });
+    process.stdout.write(`Pruned ${deleted} studio audit row(s) older than ${flags.olderThan}.\n`);
+    return 0;
+  }
+
   if (flags.set !== null) {
     const eqIdx = flags.set.indexOf('=');
     const key = flags.set.slice(0, eqIdx);
@@ -354,6 +419,7 @@ export async function runConfig(args: string[]): Promise<number> {
   process.stdout.write('  wigolo config --export           Export settings to file\n');
   process.stdout.write('  wigolo config --import <path>    Import settings from file\n');
   process.stdout.write('  wigolo config --cleanup <comp>   Free storage per component\n');
+  process.stdout.write('  wigolo config --prune-audit --older-than <dur> --yes  Prune aged studio audit rows\n');
   process.stdout.write('  wigolo config --set k=v          Update a single non-secret setting\n');
   process.stdout.write('  wigolo config --uninstall --yes  Full uninstall\n');
 
