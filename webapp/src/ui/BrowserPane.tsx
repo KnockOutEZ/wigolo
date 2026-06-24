@@ -1,21 +1,19 @@
 import { useRef, useEffect } from 'preact/hooks';
-import { bootstrapStream } from '../transport/bootstrap.js';
 
 /**
- * The live browser pane (S7): a canvas the host's screencast paints onto and that forwards human input.
- * The transport wiring is INJECTABLE (`connect`) so the component renders inertly in tests; the default is
- * the real bootstrap, which itself no-ops without a WebSocket (jsdom) so mounting never opens a socket in a
- * test environment.
+ * The live browser pane (S7): a canvas the host's screencast paints onto and that forwards human input. The
+ * transport wiring is INJECTED (`connect`) by the App, which owns the single shared connection (S4); when no
+ * connect is supplied the pane renders inertly, so mounting never opens a socket in a test environment.
  */
 export interface BrowserPaneProps {
-  /** Wire the live stream onto the canvas; returns a teardown. Defaults to the real bootstrap. */
+  /** Paint frames + forward input onto the canvas; returns a teardown. */
   connect?: (canvas: HTMLCanvasElement) => () => void;
 }
 
-export function BrowserPane({ connect = bootstrapStream }: BrowserPaneProps) {
+export function BrowserPane({ connect }: BrowserPaneProps = {}) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
-    if (!ref.current) return;
+    if (!ref.current || !connect) return;
     return connect(ref.current);
   }, [connect]);
   return (
