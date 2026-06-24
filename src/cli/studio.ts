@@ -50,6 +50,8 @@ import type {
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+import { NonceStore } from '../studio/nonce.js';
 
 /**
  * The built Studio web-app shell dir the daemon serves (S1). Resolved relative to THIS module so it points
@@ -128,6 +130,11 @@ export interface StudioHostOptions extends StudioArgs {
   /** 5eb1: host-level surface for a profile↔origin binding MISMATCH (refuse-persist). Defaults to a host log.
    *  Receives origins/profileId only — never any storageState/cookie. */
   onLoginOriginMismatch?: (info: OriginMismatch) => void;
+  /** Inject the nonce store (tests). Defaults to a fresh store; backs the S2 token handshake. */
+  nonceStore?: NonceStore;
+  /** Open the web-app tab at the given (nonce-bearing, token-FREE) URL. Defaults to logging the URL (safe
+   *  for non-interactive/test boots); the CLI entry passes a real spawning opener. */
+  openTab?: (url: string) => void;
 }
 
 export interface StudioHost {
@@ -167,6 +174,10 @@ export interface StudioHost {
   hub: StudioWsHub;
   handle: SessionHandle;
   endpoint: string;
+  /** The web-app tab URL opened on launch — carries the one-time nonce, NEVER the bearer. */
+  webappUrl: string;
+  /** The nonce store backing the S2 token handshake (exposed for the host-boundary tests). */
+  nonceStore: NonceStore;
 }
 
 /**
@@ -266,6 +277,11 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     // even if it joins after a flip (defaults before the controller exists).
     helloExtras: () => controller?.controlSnapshot() ?? { holder: 'human', epoch: 0 },
   });
+  // S2: the nonce store backs the one-time bearer handshake. A nonce is minted per launch and passed in the
+  // tab URL; the page redeems it (POST /studio/token) for the bearer, which then rides the WS subprotocol —
+  // so the bearer never touches a URL/query.
+  const nonceStore = opts.nonceStore ?? new NonceStore();
+  const handshakeNonce = nonceStore.mint();
   const daemon = new DaemonHttpServer({
     port: opts.port,
     host: opts.host,
@@ -273,9 +289,15 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     requestTimeoutMs: getConfig().studioRequestTimeoutMs,
     onUpgrade: (req, socket, head) => hub.handleUpgrade(req, socket, head),
     webappRoot: STUDIO_WEBAPP_ROOT,
+    nonceStore,
   });
 
   const endpoint = await daemon.start();
+
+  // Open the web-app tab at the shell, carrying the one-time NONCE (never the bearer) in the URL. Default
+  // opener just logs the URL (safe for non-interactive/test boots); the CLI entry passes a spawning opener.
+  const webappUrl = `${endpoint}/?n=${handshakeNonce}`;
+  (opts.openTab ?? ((u: string) => logger.info('Studio web app ready', { url: u })))(webappUrl);
 
   // Warm the embedding model in the BACKGROUND now that the host endpoint is reachable. This was
   // previously awaited here (warm-before-live), which blocked the host on a cold model load/DOWNLOAD
@@ -766,14 +788,28 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, marks: () => markStore.list(), healMark, marksView, generalizeMark, marksTool, observe, act: actWithHandoff, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint };
+  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, marks: () => markStore.list(), healMark, marksView, generalizeMark, marksTool, observe, act: actWithHandoff, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
+}
+
+/** Open the web-app tab in the platform browser; the logged URL is the fallback if no opener is present. */
+function openStudioTab(url: string): void {
+  log(`Studio web app: ${url}`);
+  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
+  const cmdArgs = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
+  try {
+    const child = spawn(cmd, cmdArgs, { stdio: 'ignore', detached: true });
+    child.on('error', () => { /* no opener available — the logged URL is the fallback */ });
+    child.unref();
+  } catch {
+    /* non-fatal — the human can open the logged URL manually */
+  }
 }
 
 export function runStudio(args: string[]): void {
   const parsed = parseStudioArgs(args);
   log(`Starting studio host on ${parsed.host}:${parsed.port}…`);
 
-  startStudioHost(parsed)
+  startStudioHost({ ...parsed, openTab: openStudioTab })
     .then((host) => {
       log(`Studio host running at ${host.endpoint} (session ${host.session.id})`);
       log(`Session handle: ${studioHandlePath()}`);

@@ -10,6 +10,7 @@ import type { StudioHostHandlers } from './studio-dispatch.js';
 import { probeHealth } from './health-check.js';
 import { checkAuth, checkAuthSubprotocol, checkOriginHost } from '../studio/auth.js';
 import { serveStaticAsset } from './static-assets.js';
+import type { NonceStore } from '../studio/nonce.js';
 import { createLogger } from '../logger.js';
 
 export type UpgradeHandler = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
@@ -41,6 +42,13 @@ export interface DaemonOptions {
    * MCP surface is never shadowed. Host path only; unset on the stdio server (no static serving).
    */
   webappRoot?: string;
+  /**
+   * When set (with `auth`), `POST /studio/token` exchanges a valid one-time nonce for the session bearer.
+   * The browser tab is opened with a NONCE in its URL (not the bearer); the page redeems it here over a
+   * loopback POST so the long-lived bearer never rides a URL/query. Open (the tab has no bearer yet) but
+   * Origin/Host-guarded and single-use/TTL-bounded by the nonce store. Host path only.
+   */
+  nonceStore?: NonceStore;
 }
 
 export class DaemonHttpServer {
@@ -56,6 +64,7 @@ export class DaemonHttpServer {
   private readonly requestTimeoutMs: number;
   private readonly onUpgrade: UpgradeHandler | null;
   private readonly webappRoot: string | null;
+  private readonly nonceStore: NonceStore | null;
   private mcpRequestCount = 0;
   private studioHost: StudioHostHandlers | null = null;
 
@@ -69,6 +78,7 @@ export class DaemonHttpServer {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 0;
     this.onUpgrade = options.onUpgrade ?? null;
     this.webappRoot = options.webappRoot ?? null;
+    this.nonceStore = options.nonceStore ?? null;
   }
 
   /**
@@ -151,6 +161,13 @@ export class DaemonHttpServer {
     // to the auth gate + router, so this can never shadow the auth-gated /mcp surface (S1 PIN-A).
     if (this.webappRoot && method === 'GET' && serveStaticAsset(this.webappRoot, pathname, res)) {
       return;
+    }
+
+    // Nonce→bearer exchange (S2) — OPEN (the tab has no bearer yet) but Origin/Host-guarded and gated by a
+    // single-use, TTL-bounded nonce. Sits BEFORE the bearer-auth gate by necessity; it is the ONLY non-health
+    // path that bypasses the bearer, and it hands the bearer back only for a freshly-minted, unredeemed nonce.
+    if (this.nonceStore && this.auth && pathname === '/studio/token' && method === 'POST') {
+      return this.handleTokenExchange(req, res);
     }
 
     // Auth + Origin/Host guard for the MCP surface. Host path only: the stdio
@@ -270,6 +287,28 @@ export class DaemonHttpServer {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'down', error: String(err) }));
     }
+  }
+
+  /**
+   * Exchange a one-time nonce for the session bearer. Origin/Host-guarded (rebind defense); the nonce is
+   * redeemed single-use + TTL-bounded by the store. A bad/expired/used nonce → 401, and the bearer is
+   * never written to a log on any path. `this.auth`/`this.nonceStore` are guaranteed by the route guard.
+   */
+  private async handleTokenExchange(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const origin = checkOriginHost(req, { host: this.auth!.host });
+    if (!origin.ok) return this.writeRequestError(res, 403, 'forbidden', origin.reason);
+    let nonce: unknown;
+    try {
+      const body = (await this.readJsonBody(req)) as { nonce?: unknown };
+      nonce = body?.nonce;
+    } catch {
+      return this.writeRequestError(res, 400, 'bad_request', 'invalid_body');
+    }
+    if (typeof nonce !== 'string' || this.nonceStore!.redeem(nonce).ok === false) {
+      return this.writeRequestError(res, 401, 'unauthorized', 'bad_nonce');
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ token: this.auth!.token }));
   }
 
   private async handleStreamableHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {

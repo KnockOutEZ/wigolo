@@ -137,6 +137,29 @@ describe('cli/studio startStudioHost', () => {
     await host.daemon.stop();
   }, 5000);
 
+  it('S2: opens the tab with a one-time nonce (never the bearer), and that nonce is live in the shared store', async () => {
+    // DaemonHttpServer is mocked here (no real listener) — the real /studio/token exchange dispatch is
+    // proven in tests/unit/daemon/token-exchange.test.ts. This is the WIRING pin: the tab URL carries the
+    // nonce and NOT the bearer, and the nonce minted into the tab URL is the very nonce the (shared) store
+    // the daemon was handed will redeem — single-use.
+    let opened: string | undefined;
+    const host = await startStudioHost({
+      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher,
+      openTab: (u) => { opened = u; },
+    });
+    try {
+      expect(opened).toBeDefined();
+      expect(opened).toBe(host.webappUrl);
+      expect(opened).toContain('?n=');
+      expect(opened).not.toContain(host.handle.token); // the bearer never rides the URL
+      const nonce = new URL(opened!).searchParams.get('n')!;
+      expect(host.nonceStore.redeem(nonce).ok).toBe(true); // the minted nonce is live in the store the daemon holds
+      expect(host.nonceStore.redeem(nonce).ok).toBe(false); // single-use — second redeem fails
+    } finally {
+      await host.daemon.stop();
+    }
+  }, 5000);
+
   it('still kicks off the embedding warm in the background (after the endpoint is live, not before)', async () => {
     const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
     expect(events).toContain('warmup'); // the warm is still triggered (not dropped)
