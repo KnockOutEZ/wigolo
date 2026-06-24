@@ -66,8 +66,17 @@ async function connectToHostHub(host: Awaited<ReturnType<typeof startStudioHost>
         else if (Date.now() - t0 > 1500) { clearInterval(iv); reject(new Error(`no message at index ${i} within 1500ms`)); }
       }, 5);
     });
+  const waitForType = (t: string): Promise<Record<string, unknown>> =>
+    new Promise((resolve, reject) => {
+      const t0 = Date.now();
+      const iv = setInterval(() => {
+        const hit = msgs.find((m) => m.t === t);
+        if (hit) { clearInterval(iv); resolve(hit); }
+        else if (Date.now() - t0 > 1500) { clearInterval(iv); reject(new Error(`no message of type ${t} within 1500ms`)); }
+      }, 5);
+    });
   const close = async () => { ws.close(); await new Promise<void>((r) => server.close(() => r())); };
-  return { ws, at, close };
+  return { ws, msgs, at, waitForType, close };
 }
 
 // Slice 5e-a — a session-browser launcher whose live page URL + storageState are MUTABLE, so a test
@@ -326,6 +335,70 @@ describe('cli/studio startStudioHost', () => {
       expect(snap.t).toBe('marks_snapshot');
       expect(snap.marks).toEqual(viaTool.marks); // SAME builder, SAME heal confidence — no parallel/stubbed value
     } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // ── 7c S3: marks live delta — dual-emit at the real mark sink (onMarkResolved, the fn the inspector calls) ──
+  const seedTarget = (name: string) => ({ backendNodeId: 1, role: 'button', name, trusted: false as const, fingerprint: 'fp', ancestorPath: 'html/body/button', attrs: {} });
+
+  // PIN-A (delta exists). NAMED mutation that REDs: remove the hub.broadcast in the mark sink → a human mark
+  // produces no {t:'mark'} delta, so a connected client never sees it and waitForType times out.
+  it('S3 PIN-A: a human mark broadcasts a live {t:mark} delta to connected clients (delta exists)', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher, markStore: new MarkStore() });
+    const conn = await connectToHostHub(host);
+    try {
+      await conn.at(1); // hello + initial (empty) marks snapshot
+      host.onMarkResolved(seedTarget('Add to cart')); // enter through the REAL action site
+      const delta = await conn.waitForType('mark');
+      expect(delta).toMatchObject({ t: 'mark', role: 'button', name: 'Add to cart', trusted: false });
+      expect(typeof delta.markId).toBe('string');
+      expect(typeof delta.confidence).toBe('string'); // a StudioMarkView — confidence rides the delta
+    } finally {
+      await conn.close();
+      await host.daemon.stop();
+    }
+  });
+
+  // PIN-B (agent path intact — DUAL-emit, not replace). NAMED mutation that REDs: replace the enqueue with the
+  // broadcast (drop loginHandoff.enqueueContentEvent) → the agent's observe-drain no longer receives the mark.
+  it('S3 PIN-B: a human mark STILL enqueues the agent content event (dual-emit, not replace)', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher, markStore: new MarkStore() });
+    try {
+      host.onMarkResolved(seedTarget('Add to cart'));
+      const obs = await host.observe({});
+      expect('events' in obs).toBe(true);
+      if ('events' in obs) {
+        const markEv = obs.events.find((e) => e.type === 'mark');
+        expect(markEv, 'the agent observe-drain still receives the mark').toBeTruthy();
+        expect(markEv).toMatchObject({ markId: 'm1', role: 'button', name: 'Add to cart', trusted: false });
+      }
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // PIN-C (handoff bypass — the LOCKED default). NAMED mutation that REDs: gate the human broadcast behind
+  // `loginHandoff.active` → during the login-handoff window the human delta is suppressed too, so the human
+  // misses their own mark while it is exactly what they must still see.
+  it('S3 PIN-C: during a login-handoff window the human mark delta STILL broadcasts while the agent enqueue stays suppressed', async () => {
+    const wall = makeWallLauncher({ url: 'https://acme.example/login' });
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: wall.launch, markStore: new MarkStore() });
+    const conn = await connectToHostHub(host);
+    try {
+      await conn.at(1); // hello + snapshot
+      await host.handoff.detectWall(); // open the human-holding window
+      expect(host.handoff.active).toBe(true);
+      host.onMarkResolved(seedTarget('Submit'));
+      // the human delta BYPASSES the suppression — it must arrive
+      const delta = await conn.waitForType('mark');
+      expect(delta).toMatchObject({ t: 'mark', role: 'button', name: 'Submit' });
+      // …while the agent enqueue is dropped at source during the window — observe drains NO mark
+      const obs = await host.observe({});
+      if ('events' in obs) expect(obs.events.find((e) => e.type === 'mark')).toBeFalsy();
+    } finally {
+      host.handoff.onClientGone(); // settle the window → clears the armed deadline timer
+      await conn.close();
       await host.daemon.stop();
     }
   });
