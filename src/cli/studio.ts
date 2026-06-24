@@ -760,6 +760,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     log("WARNING: audit trail persistence unavailable (database not initialized) — falling back to an in-memory log; this session's audit trail will NOT survive a restart.");
   }
   const auditLog = new SessionAuditLog(auditDb ? { db: auditDb, sessionId: session.id } : {});
+  // 7d S2: a live audit delta. Each recorded agent action (the single act-handler choke point) fans out to
+  // the connected human client(s) as {t:'audit', <entry>} — the Phase-7 timeline's live half (S3 adds the
+  // post-hello backfill). The frozen entry is broadcast verbatim; the human read surface renders it inert.
+  auditLog.onRecord((entry) => hub.broadcast(session.id, { t: 'audit', ...entry }));
   // Phase 6c: the act handler classifies each click/type (deterministic) and HOLDS a risky one for
   // human approval before firing. currentUrl is the live page URL — the HARD signal the classifier
   // weights over the page-controlled element role/name; a read failure degrades to undefined (the

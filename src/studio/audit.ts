@@ -109,6 +109,7 @@ export class SessionAuditLog {
   private readonly now: () => number;
   private readonly db?: AuditDb;
   private readonly sessionId?: string;
+  private readonly recordHandlers: Array<(entry: AuditEntry) => void> = [];
 
   constructor(deps: AuditDeps = {}) {
     this.now = deps.now ?? (() => Date.now());
@@ -170,7 +171,16 @@ export class SessionAuditLog {
     });
     this.entries.push(entry);
     if (this.db && this.sessionId) this.persist(entry);
+    // 7d S2: notify-only — hand the SAME deeply-frozen entry to each subscriber (the host wires this to
+    // hub.broadcast({t:'audit', <entry>}) for the live Phase-7 timeline). Mirrors controlToken.onChange:
+    // a subscriber cannot mutate the log (frozen entry, no write-back path), it only observes.
+    for (const cb of this.recordHandlers) cb(entry);
     return entry;
+  }
+
+  /** Subscribe to each recorded action (notify-only). The host wires this to a live {t:'audit'} broadcast. */
+  onRecord(cb: (entry: AuditEntry) => void): void {
+    this.recordHandlers.push(cb);
   }
 
   /** The full ordered session sequence — a fresh array of frozen entries (append-only: tampering the result cannot corrupt the log). */
