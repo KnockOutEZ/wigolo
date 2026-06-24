@@ -6,6 +6,7 @@ import {
   extractTextFromSamplingResponse,
 } from './sampling.js';
 import { isLlmConfiguredWithKeyStore, runLlmText } from '../integrations/cloud/llm/run.js';
+import { wrapUntrusted } from '../security/untrusted.js';
 import { selectProvider, selectProviderWithKeyStore } from '../integrations/cloud/llm/select.js';
 import { resolveModel } from '../integrations/cloud/llm/model-select.js';
 import { getConfig } from '../config.js';
@@ -100,7 +101,10 @@ export function buildSourcesText(results: SearchResultItem[]): string {
         ? content.slice(0, MAX_CHARS_PER_SOURCE)
         : content;
 
-      blocks.push(`[${sourceIndex}] ${result.title} (${result.url})\n${truncated}`);
+      // D8a: fence the page body (same treatment as research/synthesize.ts) so an injected directive
+      // can't be read as an instruction. Truncate BEFORE wrapping (above) so the closing marker is
+      // never severed by the clamp. Search results are web-derived (trusted-0); fenced uniformly.
+      blocks.push(`[${sourceIndex}] ${result.title} (${result.url})\n${wrapUntrusted(truncated)}`);
       sourceIndex++;
     }
 

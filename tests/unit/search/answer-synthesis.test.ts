@@ -113,7 +113,10 @@ describe('buildSourcesText', () => {
     const text = buildSourcesText(results);
 
     const sourceContent = text.split('\n\n---\n\n')[0];
-    expect(sourceContent.length).toBeLessThan(3200);
+    // D8a: the body is now wrapped in the untrusted-data fence (preamble + markers add fixed
+    // overhead). The truncation-to-3000 intent is on the page body INSIDE the fence.
+    const fenced = sourceContent.slice(sourceContent.indexOf('[[BEGIN UNTRUSTED DATA]]'), sourceContent.indexOf('[[END UNTRUSTED DATA]]'));
+    expect((fenced.match(/x/g) || []).length).toBeLessThanOrEqual(3000);
   });
 
   it('returns empty string for empty results', () => {
