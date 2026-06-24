@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
-import type { IncomingMessage } from 'node:http';
+import http, { type IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { resetConfig } from '../../../src/config.js';
 import { NonceStore } from '../../../src/studio/nonce.js';
@@ -105,7 +105,54 @@ describe('DaemonHttpServer — S2 nonce→bearer exchange (POST /studio/token)',
       await daemon.stop();
     }
   });
+
+  // R0 PIN-COMPLETION (security, the DNS-rebind half). The exchange's Origin/Host guard exists in
+  // handleTokenExchange; the sibling test above pins the ORIGIN vector, but the HOST-header vector — the
+  // actual DNS-rebinding case the guard documents (a victim browser resolves attacker.com → 127.0.0.1 and
+  // sends `Host: attacker.com` with NO cross-origin Origin) — was unpinned. `fetch`/undici forbids setting
+  // `Host`, so this drives a raw node:http POST through the SAME real /studio/token dispatch (handleRequest →
+  // handleTokenExchange), sending a foreign Host and NO Origin so ONLY the Host branch can reject it.
+  // NAMED mutation that REDs (and that the Origin-only test above does NOT catch): delete the
+  // `host && !isAllowedHost(...)` block in studio/auth.ts::checkOriginHost → the foreign-Host POST redeems
+  // the valid nonce → 200 (token leaked), so this assertion fails.
+  it('R0: a foreign-Host nonce-exchange POST is rejected (403) — the DNS-rebind half', async () => {
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const nonces = new NonceStore();
+    const nonce = nonces.mint();
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', auth: AUTH, nonceStore: nonces });
+    try {
+      const url = new URL(await daemon.start());
+      const resp = await rawPostToken(url, { Host: 'evil.com' }, JSON.stringify({ nonce }));
+      expect(resp.status).toBe(403);
+      expect(resp.body).not.toContain(TOKEN);
+    } finally {
+      await daemon.stop();
+    }
+  });
 });
+
+/** Raw HTTP POST to /studio/token so a forbidden header (Host) can be set verbatim — undici/fetch strips it. */
+function rawPostToken(base: URL, headers: Record<string, string>, body: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: base.hostname,
+        port: base.port,
+        path: '/studio/token',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...headers },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }));
+      },
+    );
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
 
 describe('DaemonHttpServer — S2 WS upgrade carries the bearer ONLY via subprotocol', () => {
   beforeEach(() => { resetConfig(); vi.clearAllMocks(); });
