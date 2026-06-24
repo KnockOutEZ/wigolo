@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { captureFromPage, CaptureRefusedError } from './artifacts.js';
+import { captureFromPage, CaptureRefusedError, type ArtifactDelta } from './artifacts.js';
 import { getBackgroundIndexQueue, type IndexJobInput } from '../../embedding/background-queue.js';
 import type { FieldSemantics } from '../credential.js';
 import type { StudioCaptureInput, StudioCaptureOutput, StudioToolError } from '../../daemon/studio-dispatch.js';
@@ -44,6 +44,12 @@ export interface CaptureHandlerDeps {
    */
   currentNavEpoch: () => number;
   lastObserveEpoch: () => number;
+  /**
+   * Phase 7e S1 — notify-only sink for a REAL captured-item insert. The host wires it to the live
+   * {t:'artifact'} broadcast; threaded into captureFromPage so a clip/qa capture fans out to the
+   * connected human client(s) the moment it lands (real-insert-only, never a dedup no-op).
+   */
+  onArtifact?: (delta: ArtifactDelta) => void;
 }
 
 export function createCaptureHandler(
@@ -70,7 +76,7 @@ export function createCaptureHandler(
       // capture (clip AND qa); an unwired host fails the type-check, never silently skips. The human-note
       // (trusted=1) writer is not reachable from this tool, so a human noting their own secret is unaffected.
       const credentialContext = await deps.credentialContext();
-      const captureDeps = { db: deps.db, enqueue, credentialContext };
+      const captureDeps = { db: deps.db, enqueue, credentialContext, onArtifact: deps.onArtifact };
 
       // content_trusted=0 + dedup + atomic embed enqueue all live in captureFromPage (4b-3). Both
       // branches route through it (never the human-note trusted=1 path), so neither clip nor qa can

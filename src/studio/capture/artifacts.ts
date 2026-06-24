@@ -46,6 +46,14 @@ export interface CaptureDeps {
    * shape and ignore it. captureFromPage narrows it to REQUIRED via PageCaptureDeps below.
    */
   credentialContext?: { pageUrl?: string; fields?: FieldSemantics[] };
+  /**
+   * Phase 7e S1 — notify-only sink for a REAL captured-item insert (the host wires it to a
+   * hub.broadcast({t:'artifact', …}) delta). Injected (like `enqueue`); session scoping comes from the
+   * caller's closure. Fired post-commit, ONLY on a real insert AND only for captured types (NOT note/mark) —
+   * a free function cannot host a class-style subscriber list without a module-global that cross-leaks the
+   * per-session broadcast, so the dep-injection mirrors onRecord's notify-only semantics, session-safely.
+   */
+  onArtifact?: (delta: ArtifactDelta) => void;
 }
 
 /**
@@ -78,6 +86,32 @@ export interface CaptureResult {
   /** False when an existing row deduped the capture (no new row, no re-embed). */
   inserted: boolean;
   contentHash: string;
+}
+
+/**
+ * Phase 7e S1 — the LIGHT projection of a freshly-inserted artifact that the notify-only `onArtifact`
+ * hook hands to the host (which broadcasts it as the live {t:'artifact'} captured-items delta). It carries
+ * the panel's display fields ONLY — NEVER the full markdown body (the body lives in the cache; the panel
+ * reads title/url). `trusted` is content_trusted as a boolean.
+ */
+export interface ArtifactDelta {
+  id: number;
+  type: string;
+  title: string | null;
+  url: string | null;
+  trusted: boolean;
+  created_at: string;
+}
+
+/**
+ * The captured-items panel's type scope (locked): one home per artifact type. `note` owns the comments
+ * panel ({t:'comment'}) and `mark` owns the marks panel ({t:'mark'}); every other type (clip, qa) is a
+ * captured item. This single predicate gates BOTH the live onArtifact delta (insertArtifact) and the
+ * post-hello snapshot read (listSessionArtifacts) so neither channel can route a type to two panels.
+ */
+const CAPTURED_PANEL_EXCLUDED_TYPES = new Set(['note', 'mark']);
+export function isCapturedPanelType(type: string): boolean {
+  return !CAPTURED_PANEL_EXCLUDED_TYPES.has(type);
 }
 
 type HashableArtifact = PageCapture | { type: 'note'; sessionId: string; text: string };
@@ -134,6 +168,7 @@ function insertArtifact(
   row: ArtifactInsert,
   embed: { text: string } | null,
   enqueue: (job: IndexJobInput) => unknown,
+  onArtifact?: (delta: ArtifactDelta) => void,
 ): CaptureResult {
   const tx = db.transaction((): CaptureResult => {
     // session_id is NOT NULL + a FK (NO ACTION) — ensure the origin row exists first.
@@ -178,7 +213,22 @@ function insertArtifact(
 
     return { id, inserted, contentHash: row.contentHash };
   });
-  return tx();
+  const result = tx();
+  // 7e S1 — notify-only, POST-COMMIT (mirrors audit onRecord: observe-only, never mutates the row). Gated
+  // on a REAL insert (the same `inserted` predicate the embed enqueue rides) AND the captured-type filter —
+  // a dedup no-op fires nothing, and note/mark route to their own panels, never the captured channel. The
+  // delta is the LIGHT projection — display fields only, never the markdown body.
+  if (result.inserted && onArtifact && isCapturedPanelType(row.type)) {
+    onArtifact({
+      id: result.id,
+      type: row.type,
+      title: row.title,
+      url: row.url,
+      trusted: row.contentTrusted === 1,
+      created_at: row.createdAt,
+    });
+  }
+  return result;
 }
 
 function resolveEnqueue(deps: CaptureDeps): (job: IndexJobInput) => unknown {
@@ -260,6 +310,9 @@ export function captureFromPage(input: PageCapture, deps: PageCaptureDeps): Capt
     },
     embed,
     resolveEnqueue(deps),
+    // Both paths forward the hook; the captured-type filter in insertArtifact is the single structural
+    // gate (clip/qa fire; a stray mark capture would be filtered there, not here).
+    deps.onArtifact,
   );
 }
 
@@ -288,6 +341,9 @@ export function captureHumanNote(input: NoteCapture, deps: CaptureDeps): Capture
     },
     { text: input.text },
     resolveEnqueue(deps),
+    // Forwarded for symmetry; type='note' is excluded by insertArtifact's captured-type filter, so a
+    // human note never phantoms into the captured channel (it owns {t:'comment'}).
+    deps.onArtifact,
   );
 }
 
