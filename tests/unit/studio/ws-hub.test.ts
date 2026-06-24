@@ -193,6 +193,23 @@ describe('StudioWsHub', () => {
     await closed; // resolves only if the server closed the socket
     expect(h.hub.clientCount('sess-Z')).toBe(0);
   });
+
+  // A1 (clean-close terminal signal, through the real closeAll path). NAMED mutation that REDs against
+  // present+correct code: delete the pre-close `this.send(ws, {t:'closed',...})` line in closeAll → the
+  // socket still closes but the client never receives a terminal message, so the {t:'closed'} frame is
+  // absent (diverging value: present → absent) and this assertion flips true → false. A clean shutdown
+  // must be ANNOUNCED before the drop, not silent — that announcement is what lets a client distinguish a
+  // terminal close from a transient drop (it cannot read the WS close code; see connection.ts).
+  it('A1: closeAll() emits a terminal {t:closed} message to each client BEFORE the socket closes (clean shutdown is announced, not a silent drop)', async () => {
+    const h = await startHub();
+    const ws = new WebSocket(h.url('/studio/sess-term/stream'));
+    const msgs = collect(ws);
+    await waitFor(() => msgs.some((m) => m.t === 'hello'));
+    const closed = new Promise<void>((resolve) => ws.on('close', () => resolve()));
+    h.hub.closeAll();
+    await closed;
+    expect(msgs.some((m) => m.t === 'closed' && m.reason === 'host_shutdown')).toBe(true);
+  });
 });
 
 describe('StudioWsHub — lifecycle / leak prevention', () => {
