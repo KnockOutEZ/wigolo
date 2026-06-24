@@ -25,7 +25,7 @@ import { NavEpoch } from '../studio/nav-epoch.js';
 import { createActHandler } from '../studio/act.js';
 import { createCaptureHandler } from '../studio/capture/handler.js';
 import { getDatabase } from '../cache/db.js';
-import { SessionAuditLog, type AuditDb } from '../studio/audit.js';
+import { SessionAuditLog, type AuditDb, type AuditEntry } from '../studio/audit.js';
 import { SessionApprovals } from '../studio/approvals.js';
 import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
@@ -65,6 +65,12 @@ const STUDIO_WEBAPP_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '
 const STUDIO_EVENT_QUEUE_MAX = 256;
 /** Total byte budget the spill-dir GC enforces (snapshots + diffs + vision PNGs). In-code, not operator-tunable. */
 const STUDIO_SPILL_MAX_BYTES = 64 * 1024 * 1024;
+/**
+ * 7d S3 / decision #8: the post-hello audit backfill caps to the most-recent N entries. A connecting client
+ * hydrates its timeline from the last 200 recorded actions; older history + "load more" is deferred to 7f.
+ * Live deltas (the S2 {t:'audit'} feed) remain unbounded.
+ */
+const AUDIT_SNAPSHOT_CAP = 200;
 
 const logger = createLogger('cli');
 
@@ -280,9 +286,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     // Tell a connecting client the current {holder, epoch} so it stamps valid input
     // even if it joins after a flip (defaults before the controller exists).
     helloExtras: () => controller?.controlSnapshot() ?? { holder: 'human', epoch: 0 },
-    // 7c S2: backfill a connecting human client with the marks already stored this session (own message,
-    // after hello). `marksSnapshot` is defined below; the closure defers the call until a client connects.
-    postHello: async () => [await marksSnapshot()],
+    // 7c S2 + 7d S3: backfill a connecting human client with this session's read state (own messages, after
+    // hello): the marks already stored, then the audit timeline (most-recent N). Both `marksSnapshot` and
+    // `auditSnapshot` are defined below; the closure defers the calls until a client connects.
+    postHello: async () => [await marksSnapshot(), auditSnapshot()],
   });
   // S2: the nonce store backs the one-time bearer handshake. A nonce is minted per launch and passed in the
   // tab URL; the page redeems it (POST /studio/token) for the bearer, which then rides the WS subprotocol —
@@ -764,6 +771,13 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // the connected human client(s) as {t:'audit', <entry>} — the Phase-7 timeline's live half (S3 adds the
   // post-hello backfill). The frozen entry is broadcast verbatim; the human read surface renders it inert.
   auditLog.onRecord((entry) => hub.broadcast(session.id, { t: 'audit', ...entry }));
+  // 7d S3: the post-hello audit backfill — a connecting human client hydrates its timeline from the
+  // most-recent AUDIT_SNAPSHOT_CAP recorded actions (decision #8). replay() hands out the frozen entries in
+  // append order; slice(-N) keeps the tail (the most recent), so a fresh client sees the latest history.
+  const auditSnapshot = (): { t: 'audit_snapshot'; entries: AuditEntry[] } => ({
+    t: 'audit_snapshot',
+    entries: auditLog.replay().slice(-AUDIT_SNAPSHOT_CAP),
+  });
   // Phase 6c: the act handler classifies each click/type (deterministic) and HOLDS a risky one for
   // human approval before firing. currentUrl is the live page URL — the HARD signal the classifier
   // weights over the page-controlled element role/name; a read failure degrades to undefined (the
