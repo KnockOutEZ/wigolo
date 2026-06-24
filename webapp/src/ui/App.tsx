@@ -6,6 +6,7 @@ import type { MarksModel } from '../transport/marks.js';
 import type { ApprovalsModel } from '../transport/approvals.js';
 import type { TimelineModel } from '../transport/timeline.js';
 import type { CommentsModel } from '../transport/comments.js';
+import type { ArtifactsModel } from '../transport/artifacts.js';
 
 /**
  * The Studio web-app root (S7 split view + S4 controls + 7c marks). It owns the single shared connection: one
@@ -27,6 +28,8 @@ export interface AppProps {
   timeline?: TimelineModel;
   /** Override the comments model (tests). Defaults to the shared bootstrap. */
   comments?: CommentsModel;
+  /** Override the captured-items model (tests). Defaults to the shared bootstrap. */
+  artifacts?: ArtifactsModel;
 }
 
 /**
@@ -34,12 +37,12 @@ export interface AppProps {
  * reach the rail — the prior `boot?.controls` read a field the wiring never carried, leaving the rail inert
  * in production. Returns {} when there is no wiring (jsdom / no WebSocket).
  */
-export function deriveRailProps(boot: StudioWiring | null): { controls?: RailControls; marks?: MarksModel; approvals?: ApprovalsModel; timeline?: TimelineModel; comments?: CommentsModel } {
+export function deriveRailProps(boot: StudioWiring | null): { controls?: RailControls; marks?: MarksModel; approvals?: ApprovalsModel; timeline?: TimelineModel; comments?: CommentsModel; artifacts?: ArtifactsModel } {
   if (!boot) return {};
-  return { controls: { model: boot.model, emit: boot.emit }, marks: boot.marks, approvals: boot.approvals, timeline: boot.timeline, comments: boot.comments };
+  return { controls: { model: boot.model, emit: boot.emit }, marks: boot.marks, approvals: boot.approvals, timeline: boot.timeline, comments: boot.comments, artifacts: boot.artifacts };
 }
 
-export function App({ connect, controls, marks, approvals, timeline, comments }: AppProps = {}) {
+export function App({ connect, controls, marks, approvals, timeline, comments, artifacts }: AppProps = {}) {
   const boot = useMemo(() => bootstrapStudio(), []);
   const connectFn = connect ?? boot?.connectCanvas;
   const rail = deriveRailProps(boot);
@@ -48,6 +51,7 @@ export function App({ connect, controls, marks, approvals, timeline, comments }:
   const approvalsModel = approvals ?? rail.approvals;
   const timelineModel = timeline ?? rail.timeline;
   const commentsModel = comments ?? rail.comments;
+  const artifactsModel = artifacts ?? rail.artifacts;
   return (
     <div id="studio-root" class="studio-split">
       <header class="studio-header">
@@ -55,7 +59,7 @@ export function App({ connect, controls, marks, approvals, timeline, comments }:
       </header>
       <div class="studio-body">
         <BrowserPane connect={connectFn} />
-        <Rail controls={controlsObj} marks={marksModel} approvals={approvalsModel} timeline={timelineModel} comments={commentsModel} />
+        <Rail controls={controlsObj} marks={marksModel} approvals={approvalsModel} timeline={timelineModel} comments={commentsModel} artifacts={artifactsModel} />
       </div>
     </div>
   );

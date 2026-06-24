@@ -8,6 +8,7 @@ import { MarksModel } from './marks.js';
 import { ApprovalsModel } from './approvals.js';
 import { TimelineModel } from './timeline.js';
 import { CommentsModel } from './comments.js';
+import { ArtifactsModel } from './artifacts.js';
 
 /**
  * Wire the full live Studio session (S7 stream + S4 controls) onto ONE connection: redeem the one-time nonce
@@ -30,6 +31,8 @@ export interface StudioWiring {
   timeline: TimelineModel;
   /** The server-authoritative comments list, fed by comment_snapshot (backfill) + comment (live echo delta) down-messages (7b-notes S3). */
   comments: CommentsModel;
+  /** The server-authoritative captured-items list, fed by artifact_snapshot (backfill) + artifact (live delta) down-messages (7e S3). */
+  artifacts: ArtifactsModel;
   /** Send an encoded up-message to the host (no-op until the socket is up). */
   emit: (wire: string) => void;
   /** Paint frames + forward input onto a canvas; returns a teardown that detaches just that canvas. */
@@ -47,6 +50,7 @@ export function bootstrapStudio(): StudioWiring | null {
   const approvals = new ApprovalsModel();
   const timeline = new TimelineModel();
   const comments = new CommentsModel();
+  const artifacts = new ArtifactsModel();
   let conn: StreamConnection | null = null;
   let epoch = 0;
   const sinks = new Set<FrameSink>();
@@ -94,6 +98,13 @@ export function bootstrapStudio(): StudioWiring | null {
             // 7b-notes S3: a live human-comment echo (upsert by id). SERVER-authoritative — the comment shows
             // only on this echo, never optimistically on the human's local submit.
             comments.applyDelta({ id: msg.id, text: msg.text });
+          } else if (msg.t === 'artifact_snapshot') {
+            // 7e S3: the post-hello backfill — the host's complete captured set this session (replaces).
+            artifacts.applySnapshot(msg.items);
+          } else if (msg.t === 'artifact') {
+            // 7e S3: a live captured-item delta (upsert by id). SERVER-authoritative — no optimistic local add.
+            const { t: _t, ...item } = msg;
+            artifacts.applyDelta(item);
           }
         },
       });
@@ -147,5 +158,5 @@ export function bootstrapStudio(): StudioWiring | null {
     };
   };
 
-  return { model, marks, approvals, timeline, comments, emit, connectCanvas };
+  return { model, marks, approvals, timeline, comments, artifacts, emit, connectCanvas };
 }

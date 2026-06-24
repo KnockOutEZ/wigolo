@@ -67,6 +67,21 @@ export interface CommentView {
   text: string;
 }
 
+/**
+ * One captured item (clip/qa) as the captured-items panel shows it (7e S3): the host's light projection. id is
+ * the persisted artifact id (the list key + upsert key). title/url are page-derived UNTRUSTED strings — the
+ * panel renders them via SafeText; a null/absent title or url is coerced to '' at the seam (a url-less qa).
+ * `trusted` is the host-authoritative content_trusted flag the badge reflects verbatim (never re-derived).
+ */
+export interface ArtifactView {
+  id: number;
+  type: string;
+  title: string;
+  url: string;
+  trusted: boolean;
+  created_at: string;
+}
+
 export type DownMessage =
   | { t: 'hello'; sessionId: string; holder?: ControlParty; epoch?: number }
   | { t: 'frame'; data: string; meta?: unknown }
@@ -78,7 +93,9 @@ export type DownMessage =
   | ({ t: 'audit' } & AuditView)
   | { t: 'audit_snapshot'; entries: AuditView[] }
   | { t: 'comment_snapshot'; comments: CommentView[] }
-  | { t: 'comment'; id: number; text: string };
+  | { t: 'comment'; id: number; text: string }
+  | { t: 'artifact_snapshot'; items: ArtifactView[] }
+  | ({ t: 'artifact' } & ArtifactView);
 
 export type UpMessage =
   | { t: 'ack' }
@@ -106,6 +123,21 @@ function parseCommentView(o: unknown): CommentView | null {
   if (!isObj(o)) return null;
   if (typeof o.id !== 'number' || typeof o.text !== 'string') return null;
   return { id: o.id, text: o.text };
+}
+
+/** Parse one host-broadcast captured item (shared by the delta + snapshot paths); null if id/type/trusted/created_at
+ * is malformed. title/url are coerced: a string passes through, anything else (null/absent) becomes '' (a url-less qa). */
+function parseArtifactView(o: unknown): ArtifactView | null {
+  if (!isObj(o)) return null;
+  if (typeof o.id !== 'number' || typeof o.type !== 'string' || typeof o.trusted !== 'boolean' || typeof o.created_at !== 'string') return null;
+  return {
+    id: o.id,
+    type: o.type,
+    title: typeof o.title === 'string' ? o.title : '',
+    url: typeof o.url === 'string' ? o.url : '',
+    trusted: o.trusted,
+    created_at: o.created_at,
+  };
 }
 
 /** Parse one host-broadcast audit entry (shared by the delta + snapshot paths); null if any required field is malformed. */
@@ -197,6 +229,16 @@ export function parseDownMessage(raw: unknown): DownMessage | null {
       // Drop only the malformed entries — a single bad comment never voids the whole backfill.
       const comments = m.comments.map(parseCommentView).filter((x): x is CommentView => x !== null);
       return { t: 'comment_snapshot', comments };
+    }
+    case 'artifact': {
+      const av = parseArtifactView(m);
+      return av ? { t: 'artifact', ...av } : null;
+    }
+    case 'artifact_snapshot': {
+      if (!Array.isArray(m.items)) return null;
+      // Drop only the malformed entries — a single bad item never voids the whole backfill.
+      const items = m.items.map(parseArtifactView).filter((x): x is ArtifactView => x !== null);
+      return { t: 'artifact_snapshot', items };
     }
     default:
       return null;

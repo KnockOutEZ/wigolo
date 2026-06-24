@@ -4,6 +4,7 @@ import { act } from 'preact/test-utils';
 import { ControlsModel } from '../transport/controls.js';
 import { MarksModel } from '../transport/marks.js';
 import { CommentsModel } from '../transport/comments.js';
+import { ArtifactsModel } from '../transport/artifacts.js';
 import { Rail } from './Rail.js';
 
 /**
@@ -63,5 +64,16 @@ describe('Rail — controls mounted as the first panel', () => {
   it('renders the comments panel inertly when no comments model is injected', () => {
     const host = mount(<Rail />);
     expect(host.querySelector('.studio-comments')).not.toBeNull();
+  });
+
+  // 7e S3: the captured-items panel mounts in the rail, wired to the live ArtifactsModel.
+  it('mounts the captured-items panel in the rail', () => {
+    const host = mount(<Rail controls={{ model: new ControlsModel(), emit: vi.fn() }} artifacts={new ArtifactsModel()} />);
+    expect(host.querySelector('.studio-captured')).not.toBeNull();
+  });
+
+  it('renders the captured-items panel inertly when no artifacts model is injected', () => {
+    const host = mount(<Rail />);
+    expect(host.querySelector('.studio-captured')).not.toBeNull();
   });
 });
