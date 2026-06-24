@@ -40,6 +40,22 @@ export interface ApprovalRequestView {
   target?: { url?: string; ref?: string };
 }
 
+/**
+ * One audit-trail entry as the timeline shows it (7d S4): the host-broadcast frozen AuditEntry. action /
+ * outcome.error_reason / target.* are host-relayed but may echo page-derived content, so the panel renders
+ * each through SafeText as inert text. Append-only + replay-ordered by `seq`.
+ */
+export interface AuditView {
+  seq: number;
+  ts: number;
+  action: string;
+  epoch: number;
+  outcome: { ok: boolean; error_reason?: string; charsLanded?: number };
+  risk?: string;
+  approval?: string;
+  target?: { url?: string; ref?: string; direction?: string; amount?: number };
+}
+
 export type DownMessage =
   | { t: 'hello'; sessionId: string; holder?: ControlParty; epoch?: number }
   | { t: 'frame'; data: string; meta?: unknown }
@@ -47,7 +63,9 @@ export type DownMessage =
   | { t: 'error'; reason: string }
   | { t: 'approval_request'; id: number; action: string; risk: string; target?: { url?: string; ref?: string } }
   | { t: 'marks_snapshot'; marks: MarkView[] }
-  | { t: 'mark'; markId: string; role: string; name: string; confidence: string; ref?: string };
+  | { t: 'mark'; markId: string; role: string; name: string; confidence: string; ref?: string }
+  | ({ t: 'audit' } & AuditView)
+  | { t: 'audit_snapshot'; entries: AuditView[] };
 
 export type UpMessage =
   | { t: 'ack' }
@@ -66,6 +84,28 @@ function parseMarkView(o: unknown): MarkView | null {
   if (!isObj(o)) return null;
   if (typeof o.markId !== 'string' || typeof o.role !== 'string' || typeof o.name !== 'string' || typeof o.confidence !== 'string') return null;
   return { markId: o.markId, role: o.role, name: o.name, confidence: o.confidence, ...(typeof o.ref === 'string' ? { ref: o.ref } : {}) };
+}
+
+/** Parse one host-broadcast audit entry (shared by the delta + snapshot paths); null if any required field is malformed. */
+function parseAuditEntry(o: unknown): AuditView | null {
+  if (!isObj(o)) return null;
+  if (typeof o.seq !== 'number' || typeof o.ts !== 'number' || typeof o.action !== 'string' || typeof o.epoch !== 'number') return null;
+  if (!isObj(o.outcome) || typeof o.outcome.ok !== 'boolean') return null;
+  const outcome: AuditView['outcome'] = { ok: o.outcome.ok };
+  if (typeof o.outcome.error_reason === 'string') outcome.error_reason = o.outcome.error_reason;
+  if (typeof o.outcome.charsLanded === 'number') outcome.charsLanded = o.outcome.charsLanded;
+  const view: AuditView = { seq: o.seq, ts: o.ts, action: o.action, epoch: o.epoch, outcome };
+  if (typeof o.risk === 'string') view.risk = o.risk;
+  if (typeof o.approval === 'string') view.approval = o.approval;
+  if (isObj(o.target)) {
+    const t: NonNullable<AuditView['target']> = {};
+    if (typeof o.target.url === 'string') t.url = o.target.url;
+    if (typeof o.target.ref === 'string') t.ref = o.target.ref;
+    if (typeof o.target.direction === 'string') t.direction = o.target.direction;
+    if (typeof o.target.amount === 'number') t.amount = o.target.amount;
+    if (Object.keys(t).length) view.target = t;
+  }
+  return view;
 }
 
 /** Parse an inbound WS payload (string or pre-parsed object) into a typed down-message, or null if malformed/unknown. */
@@ -115,6 +155,16 @@ export function parseDownMessage(raw: unknown): DownMessage | null {
     case 'mark': {
       const mv = parseMarkView(m);
       return mv ? { t: 'mark', ...mv } : null;
+    }
+    case 'audit': {
+      const av = parseAuditEntry(m);
+      return av ? { t: 'audit', ...av } : null;
+    }
+    case 'audit_snapshot': {
+      if (!Array.isArray(m.entries)) return null;
+      // Drop only the malformed entries — a single bad entry never voids the whole backfill.
+      const entries = m.entries.map(parseAuditEntry).filter((x): x is AuditView => x !== null);
+      return { t: 'audit_snapshot', entries };
     }
     default:
       return null;
