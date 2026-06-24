@@ -25,6 +25,7 @@ import { NavEpoch } from '../studio/nav-epoch.js';
 import { createActHandler } from '../studio/act.js';
 import { createCaptureHandler } from '../studio/capture/handler.js';
 import { getDatabase } from '../cache/db.js';
+import { captureHumanNote } from '../studio/capture/artifacts.js';
 import { SessionAuditLog, type AuditDb, type AuditEntry } from '../studio/audit.js';
 import { SessionApprovals } from '../studio/approvals.js';
 import { createInspector } from '../studio/mark/inspect.js';
@@ -257,6 +258,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   let onNavHandler: ((msg: Record<string, unknown>) => void) | undefined;
   let onMarkHandler: ((msg: Record<string, unknown>) => void) | undefined;
   let onApprovalHandler: ((msg: Record<string, unknown>) => void) | undefined;
+  let onCommentHandler: ((msg: Record<string, unknown>) => void) | undefined;
   // The WS hub fans frames/input over the host's WebSocket; the daemon authorizes
   // each upgrade (Origin/Host + subprotocol bearer) before handing it here. WS
   // clients are session viewers, so onAttach/onDetach keep the Session's client
@@ -283,6 +285,9 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     // The human's answer to a held risky action ({t:'approval'}). The WS is the human channel, so
     // an approval can only originate from the human (the agent drives via studio_act, never the WS).
     onApproval: (_id, msg) => onApprovalHandler?.(msg),
+    // The human's comment/annotation ({t:'comment', text}). The WS is the human channel, so the comment is
+    // human-authored → captured trusted=1 (the agent's MCP capture path can never reach this writer).
+    onComment: (_id, msg) => onCommentHandler?.(msg),
     // Tell a connecting client the current {holder, epoch} so it stamps valid input
     // even if it joins after a flip (defaults before the controller exists).
     helloExtras: () => controller?.controlSnapshot() ?? { holder: 'human', epoch: 0 },
@@ -402,6 +407,23 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // takeover — and the act handler layers the epoch fence on top.
   const approvals = new SessionApprovals({ broadcast: (msg) => hub.broadcast(session.id, msg) });
   onApprovalHandler = (msg) => approvals.handleWire(msg);
+
+  // 7b-notes S1: the human comment/annotation sink. A {t:'comment', text} the human pushes over the WS is
+  // human-authored, so it persists via captureHumanNote — the SOLE content_trusted=1 writer (the agent's
+  // studio_capture path is hardcoded trusted=0 and can never reach this). Server-authoritative: the echo
+  // broadcasts ONLY AFTER a successful capture, so a comment the human sees is ALWAYS a captured comment — a
+  // failed cache write surfaces as no echo (logged), never an optimistic phantom. The db is resolved lazily
+  // (getDatabase() throws until the cache is up); a throw is caught here and yields no echo.
+  onCommentHandler = (msg) => {
+    const text = msg.text;
+    if (typeof text !== 'string' || text.trim() === '') return; // ignore empty/garbage; never throw on client input
+    try {
+      const result = captureHumanNote({ sessionId: session.id, text }, { db: getDatabase() });
+      hub.broadcast(session.id, { t: 'comment', id: result.id, text, trusted: true });
+    } catch (e) {
+      logger.debug('comment capture failed — no echo', { error: e instanceof Error ? e.message : String(e) });
+    }
+  };
 
   // Navigation guard. The agent path is fail-closed by default: the agent reaches
   // localhost/RFC1918 only via an explicit, human-issued, revocable per-session grant

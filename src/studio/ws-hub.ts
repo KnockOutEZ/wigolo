@@ -57,6 +57,8 @@ export interface StudioWsHubOptions {
   onMark?: (sessionId: string, msg: Record<string, unknown>) => void;
   /** Inbound human approval answer ({t:'approval', id, decision}) — host wires this to SessionApprovals.handleWire (the WS is the human channel, so an approval can only come from the human). */
   onApproval?: (sessionId: string, msg: Record<string, unknown>) => void;
+  /** Inbound human comment/annotation ({t:'comment', text}) — host wires this to capturing a trusted=1 note (the WS is the human channel, so a comment is human-authored). */
+  onComment?: (sessionId: string, msg: Record<string, unknown>) => void;
   /** Skip sending a frame to a client whose send buffer already exceeds this (drop-under-load). */
   frameBackpressureBytes?: number;
   /** Extra fields merged into the `hello` sent on connect — the host supplies the initial control state {holder, epoch} so a client knows the epoch to stamp on input. */
@@ -91,6 +93,7 @@ export class StudioWsHub {
   private readonly onNav?: (sessionId: string, msg: Record<string, unknown>) => void;
   private readonly onMark?: (sessionId: string, msg: Record<string, unknown>) => void;
   private readonly onApproval?: (sessionId: string, msg: Record<string, unknown>) => void;
+  private readonly onComment?: (sessionId: string, msg: Record<string, unknown>) => void;
   private readonly helloExtras?: (sessionId: string) => Record<string, unknown>;
   private readonly postHello?: (sessionId: string) => Array<Record<string, unknown>> | Promise<Array<Record<string, unknown>>>;
   private readonly frameBackpressureBytes: number;
@@ -105,6 +108,7 @@ export class StudioWsHub {
     this.onNav = opts.onNav;
     this.onMark = opts.onMark;
     this.onApproval = opts.onApproval;
+    this.onComment = opts.onComment;
     this.helloExtras = opts.helloExtras;
     this.postHello = opts.postHello;
     this.frameBackpressureBytes = opts.frameBackpressureBytes ?? DEFAULT_FRAME_BACKPRESSURE_BYTES;
@@ -237,6 +241,9 @@ export class StudioWsHub {
         break;
       case 'approval':
         this.onApproval?.(sessionId, msg);
+        break;
+      case 'comment':
+        this.onComment?.(sessionId, msg);
         break;
     }
   }
