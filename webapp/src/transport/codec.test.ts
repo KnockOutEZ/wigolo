@@ -89,6 +89,33 @@ describe('Studio stream codec (S3) — down parsing', () => {
     expect(parseDownMessage({ t: 'comment', id: 1 })).toBeNull(); // no text
     expect(parseDownMessage({ t: 'comment_snapshot' })).toBeNull(); // no comments array
   });
+
+  // ── 7e S3: captured-item delta + artifact_snapshot backfill ──
+  it('parses the live artifact delta (a host-broadcast captured clip/qa)', () => {
+    expect(parseDownMessage({ t: 'artifact', id: 7, type: 'clip', title: 'Deal', url: 'https://x.example/p', trusted: false, created_at: '2026-06-24T00:00:00.000Z' }))
+      .toEqual({ t: 'artifact', id: 7, type: 'clip', title: 'Deal', url: 'https://x.example/p', trusted: false, created_at: '2026-06-24T00:00:00.000Z' });
+  });
+
+  it('coerces a null/absent title or url to an empty string (a url-less qa)', () => {
+    expect(parseDownMessage({ t: 'artifact', id: 8, type: 'qa', title: 'why?', url: null, trusted: false, created_at: '2026-06-24T00:00:00.000Z' }))
+      .toEqual({ t: 'artifact', id: 8, type: 'qa', title: 'why?', url: '', trusted: false, created_at: '2026-06-24T00:00:00.000Z' });
+  });
+
+  it('parses the artifact_snapshot backfill, dropping only malformed entries', () => {
+    const snap = parseDownMessage({ t: 'artifact_snapshot', items: [
+      { id: 1, type: 'clip', title: 'a', url: 'https://x.example/1', trusted: false, created_at: '2026-06-24T00:00:00.000Z' },
+      { id: 'nope' }, // malformed — dropped, not thrown
+    ] });
+    expect(snap).toEqual({ t: 'artifact_snapshot', items: [{ id: 1, type: 'clip', title: 'a', url: 'https://x.example/1', trusted: false, created_at: '2026-06-24T00:00:00.000Z' }] });
+  });
+
+  it('drops a malformed artifact message as null (missing id/type/trusted/created_at)', () => {
+    expect(parseDownMessage({ t: 'artifact', type: 'clip', trusted: false, created_at: 'x' })).toBeNull(); // no id
+    expect(parseDownMessage({ t: 'artifact', id: 1, trusted: false, created_at: 'x' })).toBeNull(); // no type
+    expect(parseDownMessage({ t: 'artifact', id: 1, type: 'clip', created_at: 'x' })).toBeNull(); // no trusted
+    expect(parseDownMessage({ t: 'artifact', id: 1, type: 'clip', trusted: false })).toBeNull(); // no created_at
+    expect(parseDownMessage({ t: 'artifact_snapshot' })).toBeNull(); // no items array
+  });
 });
 
 describe('Studio stream codec (S3) — up encoding', () => {
