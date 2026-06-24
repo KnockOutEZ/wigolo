@@ -9,6 +9,7 @@ import { resetConfig } from '../../../src/config.js';
 vi.mock('../../../src/cache/db.js', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
+  getDatabase: vi.fn(() => ({})), // D10 audit sink handle — never exercised here (no audited tool calls)
 }));
 vi.mock('../../../src/fetch/browser-pool.js', () => {
   class MockMultiBrowserPool {
