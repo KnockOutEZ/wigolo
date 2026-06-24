@@ -29,6 +29,25 @@ describe('Studio stream codec (S3) — down parsing', () => {
     expect(parsed!.t).toBe('frame');
     expect((parsed as { t: 'frame'; data: string }).data).toBe('JPEGB64');
   });
+
+  // 7c S4: the two marks down-messages the host emits — the post-hello backfill snapshot and the live delta.
+  it('parses the marks_snapshot backfill (the post-hello per-connection hydrate)', () => {
+    const snap = parseDownMessage({ t: 'marks_snapshot', marks: [{ markId: 'm1', role: 'button', name: 'Add', trusted: false, confidence: 'high', ref: 'e3' }] });
+    expect(snap).toEqual({ t: 'marks_snapshot', marks: [{ markId: 'm1', role: 'button', name: 'Add', confidence: 'high', ref: 'e3' }] });
+  });
+
+  it('parses the live mark delta (top-level StudioMarkView fields)', () => {
+    expect(parseDownMessage({ t: 'mark', markId: 'm2', role: 'link', name: 'More', trusted: false, confidence: 'low' }))
+      .toEqual({ t: 'mark', markId: 'm2', role: 'link', name: 'More', confidence: 'low' });
+  });
+
+  it('drops a malformed marks message as null (missing required descriptor)', () => {
+    expect(parseDownMessage({ t: 'mark', markId: 'm3', role: 'button' })).toBeNull(); // no name/confidence
+    expect(parseDownMessage({ t: 'marks_snapshot' })).toBeNull(); // no marks array
+    // a snapshot drops only the malformed entries, keeps the valid ones (never throws)
+    expect(parseDownMessage({ t: 'marks_snapshot', marks: [{ markId: 'ok', role: 'button', name: 'X', confidence: 'none' }, { junk: 1 }] }))
+      .toEqual({ t: 'marks_snapshot', marks: [{ markId: 'ok', role: 'button', name: 'X', confidence: 'none' }] });
+  });
 });
 
 describe('Studio stream codec (S3) — up encoding', () => {

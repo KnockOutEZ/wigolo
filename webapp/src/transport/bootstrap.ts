@@ -4,6 +4,7 @@ import { FrameSink, createCanvasDraw } from './frame-sink.js';
 import { parseDownMessage, encodeUp, up } from './codec.js';
 import { toNormalized, mouseInput, keyInput, domButton, modifiersOf, type MouseEventType } from './input.js';
 import { ControlsModel } from './controls.js';
+import { MarksModel } from './marks.js';
 
 /**
  * Wire the full live Studio session (S7 stream + S4 controls) onto ONE connection: redeem the one-time nonce
@@ -18,6 +19,8 @@ import { ControlsModel } from './controls.js';
 export interface StudioWiring {
   /** The server-authoritative control state, fed by hello/control down-messages. */
   model: ControlsModel;
+  /** The server-authoritative marks list, fed by marks_snapshot (backfill) + mark (live delta) down-messages. */
+  marks: MarksModel;
   /** Send an encoded up-message to the host (no-op until the socket is up). */
   emit: (wire: string) => void;
   /** Paint frames + forward input onto a canvas; returns a teardown that detaches just that canvas. */
@@ -31,6 +34,7 @@ export function bootstrapStudio(): StudioWiring | null {
   if (!nonce || !sessionId) return null;
 
   const model = new ControlsModel();
+  const marks = new MarksModel();
   let conn: StreamConnection | null = null;
   let epoch = 0;
   const sinks = new Set<FrameSink>();
@@ -54,6 +58,12 @@ export function bootstrapStudio(): StudioWiring | null {
               epoch = msg.epoch;
               model.applyServer(msg.holder, msg.epoch);
             }
+          } else if (msg.t === 'marks_snapshot') {
+            // 7c: the post-hello backfill — the host's complete marks set for this session (replaces).
+            marks.applySnapshot(msg.marks);
+          } else if (msg.t === 'mark') {
+            // 7c: a live human-mark delta (upsert by id). SERVER-authoritative — no optimistic local add.
+            marks.applyDelta({ markId: msg.markId, role: msg.role, name: msg.name, confidence: msg.confidence, ...(msg.ref ? { ref: msg.ref } : {}) });
           }
         },
       });
@@ -107,5 +117,5 @@ export function bootstrapStudio(): StudioWiring | null {
     };
   };
 
-  return { model, emit, connectCanvas };
+  return { model, marks, emit, connectCanvas };
 }

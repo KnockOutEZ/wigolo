@@ -1,7 +1,9 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
-import { App } from './App.js';
+import { App, deriveRailProps } from './App.js';
+import { ControlsModel } from '../transport/controls.js';
+import { MarksModel } from '../transport/marks.js';
 
 /**
  * Split-view shell tests (S7). A no-op `connect` is injected so the pane renders without attempting a live
@@ -21,6 +23,25 @@ describe('Studio web-app split-view shell', () => {
     });
     return { host, connect };
   }
+
+  // 7c S4 — closes a latent 7b-1 wiring gap: App must hand the LIVE bootstrap wiring to the rail. The prior
+  // code read `boot?.controls`, a field bootstrapStudio never returns → the rail was inert in production
+  // (tests passed only because they inject `controls`). deriveRailProps maps the wiring explicitly. NAMED
+  // mutation that REDs: derive the rail's controls from `boot.controls` (undefined) → controls is undefined
+  // and the live model never reaches the rail.
+  it('deriveRailProps maps the live wiring to the rail (controls + marks both reach it)', () => {
+    const model = new ControlsModel();
+    const marks = new MarksModel();
+    const wiring = { model, marks, emit: vi.fn(), connectCanvas: vi.fn(() => () => {}) };
+    const props = deriveRailProps(wiring);
+    expect(props.controls?.model).toBe(model); // the SAME live control model, not undefined
+    expect(props.controls?.emit).toBe(wiring.emit);
+    expect(props.marks).toBe(marks); // and the live marks model
+  });
+
+  it('deriveRailProps returns nothing when there is no wiring (jsdom/no-WebSocket)', () => {
+    expect(deriveRailProps(null)).toEqual({});
+  });
 
   it('renders the split view: a browser pane (canvas) and the session rail', () => {
     const { host, connect } = mount();

@@ -14,12 +14,27 @@
 export type ControlParty = 'human' | 'agent';
 export type ControlOp = 'reclaim' | 'grant' | 'release';
 
+/**
+ * One human mark as the read surface shows it (7c S4): the host-built StudioMarkView minus the agent-only
+ * `trusted` tag. role/name are page-derived UNTRUSTED strings — the panel renders them via SafeText.
+ * `confidence` is the host's heal-computed verdict (high/medium/low/none).
+ */
+export interface MarkView {
+  markId: string;
+  role: string;
+  name: string;
+  confidence: string;
+  ref?: string;
+}
+
 export type DownMessage =
   | { t: 'hello'; sessionId: string; holder?: ControlParty; epoch?: number }
   | { t: 'frame'; data: string; meta?: unknown }
   | { t: 'control'; holder: ControlParty; epoch: number }
   | { t: 'error'; reason: string }
-  | { t: 'approval_request'; id: number; action: string; risk: string; target?: { url?: string; ref?: string } };
+  | { t: 'approval_request'; id: number; action: string; risk: string; target?: { url?: string; ref?: string } }
+  | { t: 'marks_snapshot'; marks: MarkView[] }
+  | { t: 'mark'; markId: string; role: string; name: string; confidence: string; ref?: string };
 
 export type UpMessage =
   | { t: 'ack' }
@@ -31,6 +46,13 @@ export type UpMessage =
 
 function isObj(x: unknown): x is Record<string, unknown> {
   return typeof x === 'object' && x !== null;
+}
+
+/** Parse one host-built mark descriptor (shared by the snapshot + delta paths); null if any required field is malformed. */
+function parseMarkView(o: unknown): MarkView | null {
+  if (!isObj(o)) return null;
+  if (typeof o.markId !== 'string' || typeof o.role !== 'string' || typeof o.name !== 'string' || typeof o.confidence !== 'string') return null;
+  return { markId: o.markId, role: o.role, name: o.name, confidence: o.confidence, ...(typeof o.ref === 'string' ? { ref: o.ref } : {}) };
 }
 
 /** Parse an inbound WS payload (string or pre-parsed object) into a typed down-message, or null if malformed/unknown. */
@@ -71,6 +93,16 @@ export function parseDownMessage(raw: unknown): DownMessage | null {
         risk: m.risk,
         ...(isObj(m.target) ? { target: m.target as { url?: string; ref?: string } } : {}),
       };
+    case 'marks_snapshot': {
+      if (!Array.isArray(m.marks)) return null;
+      // Drop only the malformed entries — a single bad mark never voids the whole backfill.
+      const marks = m.marks.map(parseMarkView).filter((x): x is MarkView => x !== null);
+      return { t: 'marks_snapshot', marks };
+    }
+    case 'mark': {
+      const mv = parseMarkView(m);
+      return mv ? { t: 'mark', ...mv } : null;
+    }
     default:
       return null;
   }
