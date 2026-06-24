@@ -370,6 +370,41 @@ export function listSessionComments(db: Database.Database, sessionId: string, li
 }
 
 /**
+ * Phase 7e S2 — the captured-items panel's post-hello backfill read. Generalizes listSessionComments to
+ * the captured scope: session-scoped (the `WHERE session_id = ?` ISOLATION boundary — one session's
+ * captures never leak into another's panel), artifact_type NOT IN (note,mark) (one home per type: notes
+ * own the comments panel, marks own the marks panel), append-ordered, capped to the most-recent `limit`
+ * via slice(-limit). Returns the LIGHT projection — display fields only, NEVER the markdown body (the body
+ * stays in the cache; the panel shows title/url). Identical to the live onArtifact delta shape so snapshot +
+ * delta upsert by the same id on the client.
+ */
+export function listSessionArtifacts(db: Database.Database, sessionId: string, limit: number): ArtifactDelta[] {
+  const rows = db
+    .prepare(
+      `SELECT id, artifact_type, title, url, content_trusted, created_at
+       FROM studio_artifacts
+       WHERE session_id = ? AND artifact_type NOT IN ('note', 'mark')
+       ORDER BY id ASC`,
+    )
+    .all(sessionId) as Array<{
+      id: number;
+      artifact_type: string;
+      title: string | null;
+      url: string | null;
+      content_trusted: number;
+      created_at: string;
+    }>;
+  return rows.slice(-limit).map((r) => ({
+    id: r.id,
+    type: r.artifact_type,
+    title: r.title,
+    url: r.url,
+    trusted: r.content_trusted === 1,
+    created_at: r.created_at,
+  }));
+}
+
+/**
  * Mark an existing artifact as human-curated. Keyed by row id; sets ONLY
  * curated_by_human and never names content_trusted — page-derived content stays
  * untrusted-as-instructions forever, even once a human keeps it.

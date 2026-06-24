@@ -25,7 +25,7 @@ import { NavEpoch } from '../studio/nav-epoch.js';
 import { createActHandler } from '../studio/act.js';
 import { createCaptureHandler } from '../studio/capture/handler.js';
 import { getDatabase } from '../cache/db.js';
-import { captureHumanNote, listSessionComments, type SessionCommentRow } from '../studio/capture/artifacts.js';
+import { captureHumanNote, listSessionComments, listSessionArtifacts, type SessionCommentRow, type ArtifactDelta } from '../studio/capture/artifacts.js';
 import { SessionAuditLog, type AuditDb, type AuditEntry } from '../studio/audit.js';
 import { SessionApprovals } from '../studio/approvals.js';
 import { createInspector } from '../studio/mark/inspect.js';
@@ -74,6 +74,8 @@ const STUDIO_SPILL_MAX_BYTES = 64 * 1024 * 1024;
 const AUDIT_SNAPSHOT_CAP = 200;
 /** 7b-notes: the post-hello comment backfill carries the most-recent N comments of the session. */
 const COMMENT_SNAPSHOT_CAP = 200;
+/** 7e: the post-hello captured-items backfill carries the most-recent N captured artifacts of the session. */
+const ARTIFACT_SNAPSHOT_CAP = 200;
 
 const logger = createLogger('cli');
 
@@ -293,10 +295,28 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     // Tell a connecting client the current {holder, epoch} so it stamps valid input
     // even if it joins after a flip (defaults before the controller exists).
     helloExtras: () => controller?.controlSnapshot() ?? { holder: 'human', epoch: 0 },
-    // 7c S2 + 7d S3: backfill a connecting human client with this session's read state (own messages, after
-    // hello): the marks already stored, then the audit timeline (most-recent N). Both `marksSnapshot` and
-    // `auditSnapshot` are defined below; the closure defers the calls until a client connects.
-    postHello: async () => [await marksSnapshot(), auditSnapshot(), commentSnapshot()],
+    // 7c S2 + 7d S3 + 7b-notes S2 + 7e S2: backfill a connecting human client with this session's read state
+    // (own messages, after hello): marks, audit timeline, comments, and captured items. Each producer is
+    // defined below; the closure defers the calls until a client connects. 7e S2 hardening: EVERY read is
+    // wrapped in safeSnapshot, so one read throwing (e.g. a corrupt mark store) yields its EMPTY fallback +
+    // a logged warning instead of rejecting the whole array — which ws-hub's single catch would turn into
+    // ALL snapshots suppressed (the no-silent-failure gap the per-read isolation closes).
+    postHello: async () => {
+      const safeSnapshot = async <T extends { t: string }>(label: string, produce: () => T | Promise<T>, fallback: T): Promise<T> => {
+        try {
+          return await produce();
+        } catch (e) {
+          logger.warn('postHello snapshot read failed', { label, sessionId: session.id, error: e instanceof Error ? e.message : String(e) });
+          return fallback;
+        }
+      };
+      return [
+        await safeSnapshot('marks', marksSnapshot, { t: 'marks_snapshot', marks: [] }),
+        await safeSnapshot('audit', auditSnapshot, { t: 'audit_snapshot', entries: [] }),
+        await safeSnapshot('comment', commentSnapshot, { t: 'comment_snapshot', comments: [] }),
+        await safeSnapshot('artifact', artifactSnapshot, { t: 'artifact_snapshot', items: [] }),
+      ];
+    },
   });
   // S2: the nonce store backs the one-time bearer handshake. A nonce is minted per launch and passed in the
   // tab URL; the page redeems it (POST /studio/token) for the bearer, which then rides the WS subprotocol —
@@ -815,6 +835,14 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     }
     return { t: 'comment_snapshot', comments };
   };
+  // 7e S2: the post-hello captured-items backfill — a connecting human client hydrates its captured panel
+  // from this session's stored clips/qa (most-recent N), session-scoped + type-filtered (NOT note/mark) by
+  // listSessionArtifacts. NO inner try/catch: the postHello composer wraps every read in safeSnapshot, which
+  // isolates AND warn-logs a failure (the no-silent-failure gap the comment debug-catch left open).
+  const artifactSnapshot = (): { t: 'artifact_snapshot'; items: ArtifactDelta[] } => ({
+    t: 'artifact_snapshot',
+    items: listSessionArtifacts(getDatabase(), session.id, ARTIFACT_SNAPSHOT_CAP),
+  });
   // Phase 6c: the act handler classifies each click/type (deterministic) and HOLDS a risky one for
   // human approval before firing. currentUrl is the live page URL — the HARD signal the classifier
   // weights over the page-controlled element role/name; a read failure degrades to undefined (the
