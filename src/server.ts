@@ -13,7 +13,7 @@ import { SmartRouter, type HttpClient } from './fetch/router.js';
 import { MultiBrowserPool } from './fetch/browser-pool.js';
 import { closeDaemonBrowser } from './fetch/playwright-tier.js';
 import { httpFetch } from './fetch/http-client.js';
-import { initDatabase, closeDatabase } from './cache/db.js';
+import { initDatabase, closeDatabase, getDatabase } from './cache/db.js';
 import { handleFetch } from './tools/fetch.js';
 import { handleSearch } from './tools/search.js';
 import { buildSearchContentBlocks } from './server/search-response.js';
@@ -67,6 +67,7 @@ import { PluginRegistry } from './plugins/registry.js';
 // through the proxy + the (host-injected) studioHost closure — no session-module import,
 // so the stdio path stays untouched (grep invariant).
 import { dispatchStudioTool, type StudioHostHandlers } from './daemon/studio-dispatch.js';
+import { projectToolArgs, recordToolCall, type ToolAuditDb } from './server/tool-audit.js';
 import { registerExtractor } from './extraction/pipeline.js';
 import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput, AgentInput, ProgressCallback, WatchJobInput } from './types.js';
 
@@ -86,6 +87,20 @@ function readPackageVersion(): string {
 
 const SERVER_VERSION = readPackageVersion();
 
+/** D10: best-effort pull of the typed `error_reason` from a failed tool result's JSON envelope. The
+ * value is a typed reason string (e.g. 'invalid_url', 'no_studio_session'), not user content — safe to
+ * audit. Returns undefined when the envelope is absent/unparseable or carries no reason. */
+function extractErrorReason(result: { content: { type: 'text'; text: string }[] }): string | undefined {
+  const text = result.content[0]?.text;
+  if (typeof text !== 'string') return undefined;
+  try {
+    const parsed = JSON.parse(text) as { error_reason?: unknown };
+    return typeof parsed.error_reason === 'string' ? parsed.error_reason : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface Subsystems {
   searchEngines: SearchEngine[];
   browserPool: MultiBrowserPool;
@@ -96,6 +111,10 @@ export interface Subsystems {
   bootstrapSearxng: () => Promise<void>;
   /** Set ONLY in the live Studio host process (injected by cli/studio.ts via DaemonHttpServer.setStudioHost). Undefined on stdio → studio_* calls proxy to the host. */
   studioHost?: StudioHostHandlers;
+  /** D10: the (injected) handle the non-studio tool-invocation audit writes through. Wired from
+   * getDatabase() in initSubsystems; left undefined by test harnesses that don't exercise the audit
+   * (recordToolCall no-ops on undefined). The leaf never reaches for the global DB itself. */
+  toolAuditDb?: ToolAuditDb;
 }
 
 export async function initSubsystems(): Promise<Subsystems> {
@@ -272,6 +291,8 @@ export async function initSubsystems(): Promise<Subsystems> {
       searxngBootstrap = bootstrapSearxng();
       return searxngBootstrap;
     },
+    // D10: the live cache DB is the audit sink. initDatabase ran above, so getDatabase() resolves.
+    toolAuditDb: getDatabase(),
   };
 }
 
@@ -424,6 +445,9 @@ export function createMcpServer(subsystems: Subsystems): Server {
           }
         : undefined;
 
+    // D10: the whole tool dispatch runs inside one inner function so a SINGLE post-dispatch wrap can
+    // audit every (non-studio_*) call — compute the result first, record it after as a fail-safe.
+    const dispatch = async (): Promise<{ content: { type: 'text'; text: string }[]; isError: boolean }> => {
     if (name === 'fetch') {
       const input = (args ?? {}) as unknown as FetchInput;
       const r = await handleFetch(input, router);
@@ -571,6 +595,24 @@ export function createMcpServer(subsystems: Subsystems): Server {
       content: [{ type: 'text', text: `Unknown tool: ${name}` }],
       isError: true,
     };
+    };
+
+    // D10: compute the tool result FIRST, then record it as a best-effort fail-safe side effect.
+    // recordToolCall swallows DB errors, so an audit write can never corrupt or fail the result.
+    // studio_* calls are EXCLUDED — they carry the richer per-session studio_audit.
+    const auditStartedAt = Date.now();
+    const result = await dispatch();
+    if (!name.startsWith('studio_')) {
+      recordToolCall(subsystems.toolAuditDb, {
+        tool: name,
+        argsMeta: projectToolArgs(name, (args ?? {}) as Record<string, unknown>),
+        outcomeOk: !result.isError,
+        errorReason: result.isError ? extractErrorReason(result) : undefined,
+        ts: Date.now(),
+        durationMs: Date.now() - auditStartedAt,
+      });
+    }
+    return result;
   });
 
   return server;

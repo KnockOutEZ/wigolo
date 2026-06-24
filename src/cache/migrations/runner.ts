@@ -210,6 +210,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_audit_session_seq
   ON studio_audit(session_id, seq);
 `;
 
+// D10: non-studio tool-invocation audit log. An append-only forensic record of every NON-studio_*
+// MCP tool call (tool, privacy-projected args_meta, outcome, duration). A STANDALONE table — NOT
+// studio_audit (010), whose session_id NOT-NULL FK + studio-shaped columns don't fit a session-less
+// stdio tool call. INSERT-only: the sole writer (src/server/tool-audit.ts) never UPDATEs/DELETEs.
+// Mirrored in 011-tool-audit.sql.
+const MIGRATION_011_TOOL_AUDIT = `
+CREATE TABLE IF NOT EXISTS tool_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tool TEXT NOT NULL,
+  args_meta TEXT,
+  outcome_ok INTEGER NOT NULL,
+  error_reason TEXT,
+  ts INTEGER NOT NULL,
+  duration_ms INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_audit_ts ON tool_audit(ts);
+CREATE INDEX IF NOT EXISTS idx_tool_audit_tool ON tool_audit(tool);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -315,6 +335,7 @@ export const MIGRATIONS: Migration[] = [
     },
   },
   { name: '010-studio-audit', sql: MIGRATION_010_STUDIO_AUDIT },
+  { name: '011-tool-audit', sql: MIGRATION_011_TOOL_AUDIT },
 ];
 
 function isReadOnlyError(err: unknown): boolean {
