@@ -196,7 +196,10 @@ describe('synthesizeLocal', () => {
     });
     const body = JSON.parse(String((fetchSpy.mock.calls[0]![1] as RequestInit).body));
     const content = body.messages[0].content as string;
-    expect((content.match(/x/g) || []).length).toBeLessThanOrEqual(100);
+    // D8a: the source body is now wrapped in the untrusted-data fence. Count 'x' INSIDE the fence
+    // (the preamble's word "execute" carries an 'x'); the truncation-to-100 intent is on the body.
+    const fenced = content.slice(content.indexOf('[[BEGIN UNTRUSTED DATA]]'), content.indexOf('[[END UNTRUSTED DATA]]'));
+    expect((fenced.match(/x/g) || []).length).toBeLessThanOrEqual(100);
   });
 });
 

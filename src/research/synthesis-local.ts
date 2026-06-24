@@ -1,5 +1,6 @@
 import { createLogger } from '../logger.js';
 import { isLlmConfiguredWithKeyStore, runLlmText } from '../integrations/cloud/llm/run.js';
+import { wrapUntrusted } from '../security/untrusted.js';
 
 const log = createLogger('research');
 
@@ -44,7 +45,10 @@ export async function synthesizeLocal(
     const body = s.markdown.length > maxCharsPerSource
       ? s.markdown.slice(0, maxCharsPerSource)
       : s.markdown;
-    return `[${i + 1}] ${s.title}\n${body}`;
+    // D8a: the page body is embedded INSIDE the untrusted-data fence (same treatment as
+    // research/synthesize.ts) so an injected directive can't be read as an instruction. Truncate
+    // BEFORE wrapping (above) so the closing marker is never severed. Flag-independent by design.
+    return `[${i + 1}] ${s.title}\n${wrapUntrusted(body)}`;
   });
 
   const prompt =
