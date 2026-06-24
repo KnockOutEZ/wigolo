@@ -17,10 +17,20 @@ import {
  * listSessionComments to the captured panel scope (artifact_type NOT IN note/mark), session-scoped,
  * light projection, most-recent `limit`.
  *
- *  PIN-B  ISOLATION — WHERE session_id is the boundary; a foreign session's artifact never leaks.
- *  PIN-C  TYPE FILTER — NOT IN (note,mark): notes/marks never leak into the captured snapshot.
- *  PIN-D  CAP — >limit ⇒ EXACTLY the most-recent `limit` (slice(-limit)), boundary + count.
- *  PIN-E  LIGHT projection — {id,type,title,url,trusted,created_at} only; never the markdown body.
+ * VALUE-FLIP PINS (R2-hardened). Each pin below is mutation-verified against the PRESENT, correct
+ * function — applying ONLY its named mutation REDs the test with the diverging values shown, so none can
+ * pass vacuously. (The original 7e-S2 RED at 6cf66c2 failed on module-absence — the function did not yet
+ * exist — NOT on a value flip; these assertions are the genuine pins that history's RED only stood in for.)
+ *
+ *  PIN-B  ISOLATION   — WHERE session_id is the boundary. Mutation: widen `session_id = ?` → `(… OR 1=1)`
+ *                       ⇒ a foreign session's clip leaks ⇒ ['/1','/2'] ≠ ['/1'].
+ *  PIN-C  TYPE FILTER — NOT IN (note,mark). Mutation: drop the filter ⇒ note+mark leak ⇒
+ *                       ['clip','mark','note','qa'] ≠ ['clip','qa'].
+ *  PIN-D  CAP         — most-recent `limit` via slice(-limit). TWO independent mutations:
+ *                       slice(0,limit) ⇒ count holds 200 but boundary item[0] '/1' ≠ '/51';
+ *                       slice(0) ⇒ count 250 ≠ 200. Test asserts BOTH count and boundary, so each REDs it.
+ *  PIN-E  LIGHT proj  — {id,type,title,url,trusted,created_at} only. Mutation: add `markdown` to SELECT+map
+ *                       ⇒ body leaks ⇒ markdown:'body 7' ≠ undefined and keys gain `markdown`.
  */
 
 const deps = (db: Database.Database) => ({ db, enqueue: () => undefined, credentialContext: {} as const });
@@ -37,7 +47,7 @@ function mark(db: Database.Database, sessionId: string): PageCapture {
   };
 }
 
-describe('studio/capture/listSessionArtifacts — Phase 7e S2 (RED)', () => {
+describe('studio/capture/listSessionArtifacts — Phase 7e S2 (value-flip pins, R2-hardened)', () => {
   let dir: string;
   let db: Database.Database;
 

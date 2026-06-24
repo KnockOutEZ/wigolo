@@ -9,6 +9,9 @@ import { CapturedPanel } from './CapturedPanel.js';
  * the SERVER-authoritative ArtifactsModel (post-hello snapshot + live deltas) and renders each item's
  * title/url (page-derived → SafeText, inert) plus a trusted|untrusted badge. No optimistic add. Copy is
  * capability language only.
+ *
+ * VALUE-FLIP PINS (R2-verified). PIN-A/B/C below are mutation-verified against the PRESENT components —
+ * applying ONLY the named mutation REDs the pin with the diverging value shown, so none passes vacuously.
  */
 describe('CapturedPanel — captured-items read surface', () => {
   afterEach(() => {
@@ -49,7 +52,7 @@ describe('CapturedPanel — captured-items read surface', () => {
 
   // PIN-A (trust at the panel seam). A title/url carrying markup MUST render as LITERAL text via SafeText.
   // NAMED mutation that REDs: render the value via dangerouslySetInnerHTML (bypass SafeText) → the browser
-  // parses the markup and an <img> materializes.
+  // parses the markup and an <img> materializes (RED: querySelector('img') ≠ null).
   it('PIN-A: a title/url carrying markup renders as LITERAL text, parsing no element', () => {
     const model = new ArtifactsModel();
     const host = mount(model);
@@ -60,7 +63,7 @@ describe('CapturedPanel — captured-items read surface', () => {
   });
 
   // PIN-B (trusted badge correctness — the captured-panel trust surface). NAMED mutation that REDs: ignore or
-  // invert the trusted field → a trusted=0 item shows as trusted.
+  // invert the trusted field → a trusted=0 item shows as trusted (RED: badge 'trusted' ≠ 'untrusted').
   it('PIN-B: a trusted=0 item badges UNTRUSTED and a trusted=1 item badges TRUSTED', () => {
     const model = new ArtifactsModel();
     const host = mount(model);
@@ -71,7 +74,8 @@ describe('CapturedPanel — captured-items read surface', () => {
     expect(badge(rows[1])).toBe('trusted');   // trusted=1 — mutation that ignores/inverts trusted REDs here
   });
 
-  // PIN-C (authoritative snapshot at the panel — replace, not merge).
+  // PIN-C (authoritative snapshot at the panel — replace, not merge). NAMED mutation that REDs: applySnapshot
+  // merges (`[...this.items, ...items]`) instead of replacing → a stale item survives (RED: text contains 'stale').
   it('PIN-C: a fresh snapshot replaces the list (a stale item does not survive)', () => {
     const model = new ArtifactsModel();
     const host = mount(model);
