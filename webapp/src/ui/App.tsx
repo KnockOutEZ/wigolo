@@ -1,26 +1,41 @@
 import { useMemo } from 'preact/hooks';
 import { BrowserPane } from './BrowserPane.js';
 import { Rail, type RailControls } from './Rail.js';
-import { bootstrapStudio } from '../transport/bootstrap.js';
+import { bootstrapStudio, type StudioWiring } from '../transport/bootstrap.js';
+import type { MarksModel } from '../transport/marks.js';
 
 /**
- * The Studio web-app root (S7 split view + S4 controls). It owns the single shared connection: one
- * `bootstrapStudio` feeds BOTH the browser pane (frames + input) and the rail's direct-drive controls
- * (server-authoritative model + codec emit). In jsdom/tests `bootstrapStudio` returns null, so the UI renders
- * inertly; both the canvas `connect` and the `controls` are injectable for explicit tests. All user-facing
- * copy uses capability language only (the served-UI guardrail).
+ * The Studio web-app root (S7 split view + S4 controls + 7c marks). It owns the single shared connection: one
+ * `bootstrapStudio` feeds the browser pane (frames + input) AND the rail (server-authoritative control + marks
+ * models + codec emit). In jsdom/tests `bootstrapStudio` returns null, so the UI renders inertly; the canvas
+ * `connect`, the `controls`, and the `marks` model are all injectable for explicit tests. All user-facing copy
+ * uses capability language only (the served-UI guardrail).
  */
 export interface AppProps {
   /** Override the canvas wiring (tests). Defaults to the shared bootstrap. */
   connect?: (canvas: HTMLCanvasElement) => () => void;
   /** Override the rail controls (tests). Defaults to the shared bootstrap. */
   controls?: RailControls;
+  /** Override the marks model (tests). Defaults to the shared bootstrap. */
+  marks?: MarksModel;
 }
 
-export function App({ connect, controls }: AppProps = {}) {
+/**
+ * Map the live bootstrap wiring to the rail's props. Explicit so the live control + marks models actually
+ * reach the rail — the prior `boot?.controls` read a field the wiring never carried, leaving the rail inert
+ * in production. Returns {} when there is no wiring (jsdom / no WebSocket).
+ */
+export function deriveRailProps(boot: StudioWiring | null): { controls?: RailControls; marks?: MarksModel } {
+  if (!boot) return {};
+  return { controls: { model: boot.model, emit: boot.emit }, marks: boot.marks };
+}
+
+export function App({ connect, controls, marks }: AppProps = {}) {
   const boot = useMemo(() => bootstrapStudio(), []);
   const connectFn = connect ?? boot?.connectCanvas;
-  const controlsObj = controls ?? boot?.controls;
+  const rail = deriveRailProps(boot);
+  const controlsObj = controls ?? rail.controls;
+  const marksModel = marks ?? rail.marks;
   return (
     <div id="studio-root" class="studio-split">
       <header class="studio-header">
@@ -28,7 +43,7 @@ export function App({ connect, controls }: AppProps = {}) {
       </header>
       <div class="studio-body">
         <BrowserPane connect={connectFn} />
-        <Rail controls={controlsObj} />
+        <Rail controls={controlsObj} marks={marksModel} />
       </div>
     </div>
   );
