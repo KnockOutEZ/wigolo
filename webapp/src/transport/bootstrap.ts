@@ -7,6 +7,7 @@ import { ControlsModel } from './controls.js';
 import { MarksModel } from './marks.js';
 import { ApprovalsModel } from './approvals.js';
 import { TimelineModel } from './timeline.js';
+import { CommentsModel } from './comments.js';
 
 /**
  * Wire the full live Studio session (S7 stream + S4 controls) onto ONE connection: redeem the one-time nonce
@@ -27,6 +28,8 @@ export interface StudioWiring {
   approvals: ApprovalsModel;
   /** The server-authoritative audit timeline, fed by audit_snapshot (backfill) + audit (live delta) down-messages (7d S4). */
   timeline: TimelineModel;
+  /** The server-authoritative comments list, fed by comment_snapshot (backfill) + comment (live echo delta) down-messages (7b-notes S3). */
+  comments: CommentsModel;
   /** Send an encoded up-message to the host (no-op until the socket is up). */
   emit: (wire: string) => void;
   /** Paint frames + forward input onto a canvas; returns a teardown that detaches just that canvas. */
@@ -43,6 +46,7 @@ export function bootstrapStudio(): StudioWiring | null {
   const marks = new MarksModel();
   const approvals = new ApprovalsModel();
   const timeline = new TimelineModel();
+  const comments = new CommentsModel();
   let conn: StreamConnection | null = null;
   let epoch = 0;
   const sinks = new Set<FrameSink>();
@@ -83,6 +87,13 @@ export function bootstrapStudio(): StudioWiring | null {
             // 7d S4: a live audit delta — a newly-recorded agent action. SERVER-authoritative — append, no optimistic add.
             const { t: _t, ...entry } = msg;
             timeline.applyDelta(entry);
+          } else if (msg.t === 'comment_snapshot') {
+            // 7b-notes S3: the post-hello backfill — the host's complete comment set this session (replaces).
+            comments.applySnapshot(msg.comments);
+          } else if (msg.t === 'comment') {
+            // 7b-notes S3: a live human-comment echo (upsert by id). SERVER-authoritative — the comment shows
+            // only on this echo, never optimistically on the human's local submit.
+            comments.applyDelta({ id: msg.id, text: msg.text });
           }
         },
       });
@@ -136,5 +147,5 @@ export function bootstrapStudio(): StudioWiring | null {
     };
   };
 
-  return { model, marks, approvals, timeline, emit, connectCanvas };
+  return { model, marks, approvals, timeline, comments, emit, connectCanvas };
 }

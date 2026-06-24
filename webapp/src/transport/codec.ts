@@ -56,6 +56,17 @@ export interface AuditView {
   target?: { url?: string; ref?: string; direction?: string; amount?: number };
 }
 
+/**
+ * One human comment/annotation as the read surface shows it (7b-notes S3): the host's captured-note echo minus
+ * the implicit `trusted` tag (a comment is human-authored → always trusted; the panel never re-derives trust).
+ * `text` is human-authored but still rendered via SafeText (inert) — uniform with every other relayed string.
+ * `id` is the persisted artifact id (the list key).
+ */
+export interface CommentView {
+  id: number;
+  text: string;
+}
+
 export type DownMessage =
   | { t: 'hello'; sessionId: string; holder?: ControlParty; epoch?: number }
   | { t: 'frame'; data: string; meta?: unknown }
@@ -65,7 +76,9 @@ export type DownMessage =
   | { t: 'marks_snapshot'; marks: MarkView[] }
   | { t: 'mark'; markId: string; role: string; name: string; confidence: string; ref?: string }
   | ({ t: 'audit' } & AuditView)
-  | { t: 'audit_snapshot'; entries: AuditView[] };
+  | { t: 'audit_snapshot'; entries: AuditView[] }
+  | { t: 'comment_snapshot'; comments: CommentView[] }
+  | { t: 'comment'; id: number; text: string };
 
 export type UpMessage =
   | { t: 'ack' }
@@ -73,7 +86,8 @@ export type UpMessage =
   | { t: 'control'; op: ControlOp; to?: ControlParty }
   | { t: 'nav'; url: string }
   | { t: 'mark' }
-  | { t: 'approval'; id: number; decision: string };
+  | { t: 'approval'; id: number; decision: string }
+  | { t: 'comment'; text: string };
 
 function isObj(x: unknown): x is Record<string, unknown> {
   return typeof x === 'object' && x !== null;
@@ -84,6 +98,14 @@ function parseMarkView(o: unknown): MarkView | null {
   if (!isObj(o)) return null;
   if (typeof o.markId !== 'string' || typeof o.role !== 'string' || typeof o.name !== 'string' || typeof o.confidence !== 'string') return null;
   return { markId: o.markId, role: o.role, name: o.name, confidence: o.confidence, ...(typeof o.ref === 'string' ? { ref: o.ref } : {}) };
+}
+
+/** Parse one host-echoed comment (shared by the snapshot + delta paths); null if id/text is malformed. The
+ * `trusted` tag is intentionally dropped — a comment is always human-authored/trusted on this surface. */
+function parseCommentView(o: unknown): CommentView | null {
+  if (!isObj(o)) return null;
+  if (typeof o.id !== 'number' || typeof o.text !== 'string') return null;
+  return { id: o.id, text: o.text };
 }
 
 /** Parse one host-broadcast audit entry (shared by the delta + snapshot paths); null if any required field is malformed. */
@@ -166,6 +188,16 @@ export function parseDownMessage(raw: unknown): DownMessage | null {
       const entries = m.entries.map(parseAuditEntry).filter((x): x is AuditView => x !== null);
       return { t: 'audit_snapshot', entries };
     }
+    case 'comment': {
+      const cv = parseCommentView(m);
+      return cv ? { t: 'comment', ...cv } : null;
+    }
+    case 'comment_snapshot': {
+      if (!Array.isArray(m.comments)) return null;
+      // Drop only the malformed entries — a single bad comment never voids the whole backfill.
+      const comments = m.comments.map(parseCommentView).filter((x): x is CommentView => x !== null);
+      return { t: 'comment_snapshot', comments };
+    }
     default:
       return null;
   }
@@ -190,6 +222,9 @@ export const up = {
   },
   approval(id: number, decision: string): UpMessage {
     return { t: 'approval', id, decision };
+  },
+  comment(text: string): UpMessage {
+    return { t: 'comment', text };
   },
 };
 
