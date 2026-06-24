@@ -6,6 +6,7 @@ import { toNormalized, mouseInput, keyInput, domButton, modifiersOf, type MouseE
 import { ControlsModel } from './controls.js';
 import { MarksModel } from './marks.js';
 import { ApprovalsModel } from './approvals.js';
+import { TimelineModel } from './timeline.js';
 
 /**
  * Wire the full live Studio session (S7 stream + S4 controls) onto ONE connection: redeem the one-time nonce
@@ -24,6 +25,8 @@ export interface StudioWiring {
   marks: MarksModel;
   /** The server-authoritative pending-approval set, fed by approval_request down-messages (7d S1). */
   approvals: ApprovalsModel;
+  /** The server-authoritative audit timeline, fed by audit_snapshot (backfill) + audit (live delta) down-messages (7d S4). */
+  timeline: TimelineModel;
   /** Send an encoded up-message to the host (no-op until the socket is up). */
   emit: (wire: string) => void;
   /** Paint frames + forward input onto a canvas; returns a teardown that detaches just that canvas. */
@@ -39,6 +42,7 @@ export function bootstrapStudio(): StudioWiring | null {
   const model = new ControlsModel();
   const marks = new MarksModel();
   const approvals = new ApprovalsModel();
+  const timeline = new TimelineModel();
   let conn: StreamConnection | null = null;
   let epoch = 0;
   const sinks = new Set<FrameSink>();
@@ -72,6 +76,13 @@ export function bootstrapStudio(): StudioWiring | null {
             // 7d S1: the host holds a risky agent action and asks the human. SERVER-authoritative — the card
             // appears only on this message; the human's verdict rides back out via the codec emit.
             approvals.add({ id: msg.id, action: msg.action, risk: msg.risk, ...(msg.target ? { target: msg.target } : {}) });
+          } else if (msg.t === 'audit_snapshot') {
+            // 7d S4: the post-hello backfill — the host's most-recent audit entries for this session (replaces).
+            timeline.applySnapshot(msg.entries);
+          } else if (msg.t === 'audit') {
+            // 7d S4: a live audit delta — a newly-recorded agent action. SERVER-authoritative — append, no optimistic add.
+            const { t: _t, ...entry } = msg;
+            timeline.applyDelta(entry);
           }
         },
       });
@@ -125,5 +136,5 @@ export function bootstrapStudio(): StudioWiring | null {
     };
   };
 
-  return { model, marks, approvals, emit, connectCanvas };
+  return { model, marks, approvals, timeline, emit, connectCanvas };
 }

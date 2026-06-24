@@ -4,6 +4,7 @@ import { Rail, type RailControls } from './Rail.js';
 import { bootstrapStudio, type StudioWiring } from '../transport/bootstrap.js';
 import type { MarksModel } from '../transport/marks.js';
 import type { ApprovalsModel } from '../transport/approvals.js';
+import type { TimelineModel } from '../transport/timeline.js';
 
 /**
  * The Studio web-app root (S7 split view + S4 controls + 7c marks). It owns the single shared connection: one
@@ -21,6 +22,8 @@ export interface AppProps {
   marks?: MarksModel;
   /** Override the approvals model (tests). Defaults to the shared bootstrap. */
   approvals?: ApprovalsModel;
+  /** Override the timeline model (tests). Defaults to the shared bootstrap. */
+  timeline?: TimelineModel;
 }
 
 /**
@@ -28,18 +31,19 @@ export interface AppProps {
  * reach the rail — the prior `boot?.controls` read a field the wiring never carried, leaving the rail inert
  * in production. Returns {} when there is no wiring (jsdom / no WebSocket).
  */
-export function deriveRailProps(boot: StudioWiring | null): { controls?: RailControls; marks?: MarksModel; approvals?: ApprovalsModel } {
+export function deriveRailProps(boot: StudioWiring | null): { controls?: RailControls; marks?: MarksModel; approvals?: ApprovalsModel; timeline?: TimelineModel } {
   if (!boot) return {};
-  return { controls: { model: boot.model, emit: boot.emit }, marks: boot.marks, approvals: boot.approvals };
+  return { controls: { model: boot.model, emit: boot.emit }, marks: boot.marks, approvals: boot.approvals, timeline: boot.timeline };
 }
 
-export function App({ connect, controls, marks, approvals }: AppProps = {}) {
+export function App({ connect, controls, marks, approvals, timeline }: AppProps = {}) {
   const boot = useMemo(() => bootstrapStudio(), []);
   const connectFn = connect ?? boot?.connectCanvas;
   const rail = deriveRailProps(boot);
   const controlsObj = controls ?? rail.controls;
   const marksModel = marks ?? rail.marks;
   const approvalsModel = approvals ?? rail.approvals;
+  const timelineModel = timeline ?? rail.timeline;
   return (
     <div id="studio-root" class="studio-split">
       <header class="studio-header">
@@ -47,7 +51,7 @@ export function App({ connect, controls, marks, approvals }: AppProps = {}) {
       </header>
       <div class="studio-body">
         <BrowserPane connect={connectFn} />
-        <Rail controls={controlsObj} marks={marksModel} approvals={approvalsModel} />
+        <Rail controls={controlsObj} marks={marksModel} approvals={approvalsModel} timeline={timelineModel} />
       </div>
     </div>
   );

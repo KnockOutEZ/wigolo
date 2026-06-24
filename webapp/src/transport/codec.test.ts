@@ -48,6 +48,27 @@ describe('Studio stream codec (S3) — down parsing', () => {
     expect(parseDownMessage({ t: 'marks_snapshot', marks: [{ markId: 'ok', role: 'button', name: 'X', confidence: 'none' }, { junk: 1 }] }))
       .toEqual({ t: 'marks_snapshot', marks: [{ markId: 'ok', role: 'button', name: 'X', confidence: 'none' }] });
   });
+
+  it('parses the live audit delta (7d S4 — the frozen entry the host broadcasts)', () => {
+    expect(parseDownMessage({ t: 'audit', seq: 5, ts: 1700, action: 'click', epoch: 2, outcome: { ok: false, error_reason: 'not_holder' }, risk: 'money', target: { ref: 'e1' } }))
+      .toEqual({ t: 'audit', seq: 5, ts: 1700, action: 'click', epoch: 2, outcome: { ok: false, error_reason: 'not_holder' }, risk: 'money', target: { ref: 'e1' } });
+  });
+
+  it('parses the audit_snapshot backfill, dropping only malformed entries', () => {
+    const snap = parseDownMessage({ t: 'audit_snapshot', entries: [
+      { seq: 1, ts: 1001, action: 'navigate', epoch: 0, outcome: { ok: true }, target: { url: 'https://a/' } },
+      { junk: 1 }, // malformed — dropped, not thrown
+    ] });
+    expect(snap).toEqual({ t: 'audit_snapshot', entries: [
+      { seq: 1, ts: 1001, action: 'navigate', epoch: 0, outcome: { ok: true }, target: { url: 'https://a/' } },
+    ] });
+  });
+
+  it('drops a malformed audit message as null (missing seq/ts/outcome)', () => {
+    expect(parseDownMessage({ t: 'audit', action: 'click', epoch: 0, outcome: { ok: true } })).toBeNull(); // no seq/ts
+    expect(parseDownMessage({ t: 'audit', seq: 1, ts: 2, action: 'click', epoch: 0 })).toBeNull(); // no outcome
+    expect(parseDownMessage({ t: 'audit_snapshot' })).toBeNull(); // no entries array
+  });
 });
 
 describe('Studio stream codec (S3) — up encoding', () => {
