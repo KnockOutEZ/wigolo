@@ -82,6 +82,49 @@ export function keyInput(i: KeyForward): UpMessage {
   return up.input({ kind: 'key', ...i });
 }
 
+/** The DOM-keyboard fields the forwarder reads (a real KeyboardEvent satisfies it structurally). */
+export interface KeyEventLike {
+  key: string;
+  code?: string;
+  altKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+}
+
+/**
+ * Is this a PRINTABLE key (one whose `ev.key` is the character it inserts), vs a named/control key
+ * ('Enter', 'Tab', 'ArrowLeft', 'Backspace', 'Escape', 'Shift', 'F1', 'Dead', …)?
+ *
+ * A printable key's `ev.key` is a single Unicode CODE POINT — 'a', '1', ' ', '€', '中', '😀' (one code point,
+ * two UTF-16 units). A named key is a multi-character word. Count code points via the iterator (spread), NOT
+ * `key.length` (UTF-16 units): a length-based test would misclassify a non-BMP printable like '😀'
+ * (`'😀'.length === 2`) as named and silently drop its character — the same no-insert failure one layer down.
+ */
+export function isPrintableKey(key: string): boolean {
+  return [...key].length === 1;
+}
+
+/**
+ * Map ONE human DOM keyboard event to the host input wire messages. The host inserts text only on a
+ * `text`-bearing event, so a PRINTABLE keyDown forwards its keyDown PLUS a `{type:'char', text}` event —
+ * converging on the agent path's char-emission shape (src/studio/act.ts keystrokeEvents), not a parallel
+ * mechanism. A named/control key forwards keyDown ONLY (so 'Enter'/'Tab'/arrows never insert their name as
+ * literal text). A keyUp forwards keyUp only. The epoch is stamped so a flip-in-flight is dropped at the host
+ * gate. (The agent path needs no such predicate: it is fed already-printable literal text, char by char.)
+ */
+export function keyForwardMessages(domType: 'keydown' | 'keyup', ev: KeyEventLike, epoch: number): UpMessage[] {
+  const modifiers = modifiersOf(ev);
+  if (domType === 'keyup') {
+    return [keyInput({ type: 'keyUp', key: ev.key, code: ev.code, epoch, modifiers })];
+  }
+  const msgs: UpMessage[] = [keyInput({ type: 'keyDown', key: ev.key, code: ev.code, epoch, modifiers })];
+  if (isPrintableKey(ev.key)) {
+    msgs.push(keyInput({ type: 'char', key: ev.key, text: ev.key, epoch, modifiers }));
+  }
+  return msgs;
+}
+
 /** CDP modifier bitmask (Alt=1, Ctrl=2, Meta/Cmd=4, Shift=8). */
 export function modifiersOf(ev: { altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }): number {
   return (ev.altKey ? 1 : 0) | (ev.ctrlKey ? 2 : 0) | (ev.metaKey ? 4 : 0) | (ev.shiftKey ? 8 : 0);

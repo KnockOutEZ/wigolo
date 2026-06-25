@@ -3,7 +3,7 @@ import { type SocketLike } from './connection.js';
 import { SessionConnector } from './session-connector.js';
 import { FrameSink, createCanvasDraw } from './frame-sink.js';
 import { parseDownMessage, encodeUp, up } from './codec.js';
-import { toNormalized, mouseInput, keyInput, domButton, modifiersOf, type MouseEventType } from './input.js';
+import { toNormalized, mouseInput, domButton, modifiersOf, keyForwardMessages, type MouseEventType } from './input.js';
 import { ControlsModel } from './controls.js';
 import { MarksModel } from './marks.js';
 import { ApprovalsModel } from './approvals.js';
@@ -147,14 +147,16 @@ export function bootstrapStudio(): StudioWiring | null {
       const { nx, ny } = toNormalized(ev.clientX, ev.clientY, canvas.getBoundingClientRect());
       connector?.send(encodeUp(mouseInput({ type: 'mouseWheel', nx, ny, epoch, deltaX: ev.deltaX, deltaY: ev.deltaY })));
     };
-    const sendKey = (type: 'keyDown' | 'keyUp') => (ev: KeyboardEvent) => {
-      connector?.send(encodeUp(keyInput({ type, key: ev.key, code: ev.code, epoch, modifiers: modifiersOf(ev) })));
+    // A printable keyDown forwards a `char` text-insertion event too (keyForwardMessages); a named/control key
+    // forwards keyDown only — so the human's typing actually lands in the page, not just key events with no text.
+    const sendKey = (domType: 'keydown' | 'keyup') => (ev: KeyboardEvent) => {
+      for (const m of keyForwardMessages(domType, ev, epoch)) connector?.send(encodeUp(m));
     };
     const onDown = sendMouse('mousePressed');
     const onUp = sendMouse('mouseReleased');
     const onMove = sendMouse('mouseMoved');
-    const onKeyDown = sendKey('keyDown');
-    const onKeyUp = sendKey('keyUp');
+    const onKeyDown = sendKey('keydown');
+    const onKeyUp = sendKey('keyup');
 
     canvas.addEventListener('mousedown', onDown);
     canvas.addEventListener('mouseup', onUp);

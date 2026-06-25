@@ -51,6 +51,7 @@
     "test:e2e": "vitest run tests/e2e",
     "test:security": "vitest run tests/security-regression.test.ts",
     "test:studio:headed": "RUN_STUDIO_HEADED=1 WIGOLO_STUDIO_HEADLESS=1 vitest run tests/integration/studio-bridge.test.ts",
+    "test:studio:e2e": "RUN_STUDIO_HEADED=1 WIGOLO_STUDIO_HEADLESS=1 vitest run tests/e2e/studio",
     "test:perf": "vitest run --config vitest.perf.config.ts",
     "lint": "tsc --noEmit",
     "typecheck:studio": "tsc -p tsconfig.test.json",

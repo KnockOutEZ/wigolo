@@ -104,6 +104,10 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     // Human holds at epoch 0. Click to focus the full-screen input (also proves click forwarding), then type "hi".
     send({ t: 'input', kind: 'mouse', epoch: 0, type: 'mousePressed', nx: 0.5, ny: 0.5, button: 'left' });
     send({ t: 'input', kind: 'mouse', epoch: 0, type: 'mouseReleased', nx: 0.5, ny: 0.5, button: 'left' });
+    // NOTE: this hand-rolls the `text:` field directly on the wire — it does NOT exercise the web app's own
+    // keyboard forwarding (bootstrap.ts sendKey → keyForwardMessages, which derives the `char`/`text` from a
+    // DOM KeyboardEvent). That client path is covered by webapp/src/transport/input.test.ts + the browser-loaded
+    // e2e smoke (tests/e2e/studio/smoke.test.ts). Do NOT read this as webapp keyboard-forwarding coverage.
     for (const [key, code] of [['h', 'KeyH'], ['i', 'KeyI']]) {
       send({ t: 'input', kind: 'key', epoch: 0, type: 'keyDown', key, code, text: key });
       send({ t: 'input', kind: 'key', epoch: 0, type: 'keyUp', key, code });
