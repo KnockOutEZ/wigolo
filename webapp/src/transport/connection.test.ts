@@ -99,6 +99,26 @@ describe('StreamConnection (S6 reconnect)', () => {
     expect(conn.currentState).toBe('terminal');
   });
 
+  // A3 (bounded retry — the auth-reject catch-all). A dead/evicted session (or a stale bearer the daemon
+  // rejects at the upgrade) never reaches 'open' — every socket just closes. The tab CANNOT distinguish an
+  // auth-rejected 401 upgrade from a transient drop (no readable close code; see step-0 recon), so an
+  // attempt cap is the sole catch-all that stops the loop. NAMED mutation that REDs against present+correct
+  // code: drop the `if (this.attempt >= this.maxAttempts) { this.giveUp(); return; }` guard in
+  // scheduleReconnect (back to unbounded) → the client re-subscribes forever (diverging value: openSocket
+  // settles at 1+N=4 → grows to 11 across the driven drops; state terminal → reconnecting).
+  it('A3: bounded retry — after N failed reconnects the client gives up and enters terminal (no infinite loop on a dead/evicted session or rejected bearer)', () => {
+    const sockets: ReturnType<typeof mockSocket>[] = [];
+    const openSocket = vi.fn(() => { const m = mockSocket(); sockets.push(m); return m.socket; });
+    const conn = new StreamConnection({ openSocket, bearer: 'DEAD', onMessage: () => {}, schedule: (fn) => fn(), maxAttempts: 3 });
+    conn.start(); // open #1 — never reaches 'open' (dead session)
+    for (let i = 0; i < 10; i++) {
+      sockets[sockets.length - 1].fire('close'); // each close synchronously re-subscribes until the cap
+      if (conn.currentState === 'terminal') break;
+    }
+    expect(conn.currentState).toBe('terminal');
+    expect(openSocket).toHaveBeenCalledTimes(4); // 1 initial + 3 bounded retries, then give up
+  });
+
   it('backs off with increasing delay across consecutive drops, resetting on a healthy open', () => {
     const delays: number[] = [];
     const m = mockSocket();

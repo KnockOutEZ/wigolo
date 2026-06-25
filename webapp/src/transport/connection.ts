@@ -32,9 +32,12 @@ export interface StreamConnectionDeps {
   backoffMs?: (attempt: number) => number;
   /** Schedule a reconnect (injected for tests); default setTimeout. */
   schedule?: (fn: () => void, ms: number) => void;
+  /** Give up after this many consecutive failed reconnect attempts (default 8) → terminal state. */
+  maxAttempts?: number;
 }
 
 const DEFAULT_BACKOFF = (attempt: number): number => Math.min(1000 * 2 ** attempt, 15_000);
+const DEFAULT_MAX_ATTEMPTS = 8;
 
 export class StreamConnection {
   private state: ConnState = 'idle';
@@ -48,10 +51,12 @@ export class StreamConnection {
   private terminal = false;
   private readonly backoffMs: (attempt: number) => number;
   private readonly schedule: (fn: () => void, ms: number) => void;
+  private readonly maxAttempts: number;
 
   constructor(private readonly deps: StreamConnectionDeps) {
     this.backoffMs = deps.backoffMs ?? DEFAULT_BACKOFF;
     this.schedule = deps.schedule ?? ((fn, ms) => void setTimeout(fn, ms));
+    this.maxAttempts = deps.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   }
 
   get currentState(): ConnState {
@@ -99,11 +104,22 @@ export class StreamConnection {
 
   private scheduleReconnect(): void {
     if (this.stopped || this.terminal) return; // a terminal session is gone — never re-subscribe
+    // Bounded retry: a dead/evicted session (or a bearer the daemon now rejects) never reaches 'open', so
+    // attempt climbs without resetting. The tab cannot tell an auth-rejected upgrade from a transient drop,
+    // so the cap is the sole catch-all that stops an otherwise-infinite reconnect loop.
+    if (this.attempt >= this.maxAttempts) return this.giveUp();
     this.setState('reconnecting');
     const delay = this.backoffMs(this.attempt++);
     this.schedule(() => {
       if (!this.stopped && !this.terminal) this.open(); // fully re-establish: a brand-new socket subscription
     }, delay);
+  }
+
+  /** Exhausted the retry budget against an unreachable session — stop and enter the terminal state. */
+  private giveUp(): void {
+    this.terminal = true;
+    this.setState('terminal');
+    this.socket = null;
   }
 
   /**
