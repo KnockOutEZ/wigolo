@@ -5,7 +5,7 @@ import { getEmbedProvider } from '../providers/embed-provider.js';
 import { checkBindHost } from '../studio/bind.js';
 import { resolveHostToken } from '../studio/auth.js';
 import { SessionRegistry } from '../studio/registry.js';
-import type { Session } from '../studio/session.js';
+import { sessionMeta, type Session, type SessionMeta } from '../studio/session.js';
 import { SessionBrowser, type SessionBrowserLauncher, type StorageStateInput } from '../studio/session-browser.js';
 import { ProfileStore } from '../studio/profile-store.js';
 import { ScreencastBridge } from '../studio/screencast.js';
@@ -170,6 +170,8 @@ export interface StudioHost {
   marksView: () => Promise<StudioMarksOutput>;
   /** The post-hello marks backfill payload (7c S2): {t:'marks_snapshot', marks} reusing marksView so confidence is the SAME heal-computed value as studio_marks. Wired into the hub's per-connecting-client postHello. Exposed for tests. */
   marksSnapshot: () => Promise<{ t: 'marks_snapshot'; marks: StudioMarkView[] }>;
+  /** The post-hello session-switcher backfill (7f B1): {t:'sessions_snapshot', sessions} enumerating the registry's live sessions, metadata-only (no token, no url). Wired into postHello. Exposed for tests. */
+  sessionsSnapshot: () => { t: 'sessions_snapshot'; sessions: SessionMeta[] };
   /** Preview the repeating sibling set a mark belongs to (Phase 3d generalize op — preview-only READ, never acts). Exposed for the headed tests + the studio_marks generalize op. */
   generalizeMark: (markId?: string) => Promise<StudioGeneralizeOutput | StudioToolError>;
   /** The studio_marks tool entry: lists marks, or (op='generalize') previews a mark's repeating set. Exposed for the host-boundary/headed tests. */
@@ -315,6 +317,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
         await safeSnapshot('audit', auditSnapshot, { t: 'audit_snapshot', entries: [] }),
         await safeSnapshot('comment', commentSnapshot, { t: 'comment_snapshot', comments: [] }),
         await safeSnapshot('artifact', artifactSnapshot, { t: 'artifact_snapshot', items: [] }),
+        await safeSnapshot('sessions', sessionsSnapshot, { t: 'sessions_snapshot', sessions: [] }),
       ];
     },
   });
@@ -843,6 +846,13 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     t: 'artifact_snapshot',
     items: listSessionArtifacts(getDatabase(), session.id, ARTIFACT_SNAPSHOT_CAP),
   });
+  // 7f B1: the session-switcher backfill. Enumerates ALL live sessions via the public registry.list()
+  // (NOT active(), which is single/undefined and would collapse a multi-session view), projected to
+  // metadata-only by sessionMeta — no token, no url ever leaves the host.
+  const sessionsSnapshot = (): { t: 'sessions_snapshot'; sessions: SessionMeta[] } => ({
+    t: 'sessions_snapshot',
+    sessions: registry.list().map(sessionMeta),
+  });
   // Phase 6c: the act handler classifies each click/type (deterministic) and HOLDS a risky one for
   // human approval before firing. currentUrl is the live page URL — the HARD signal the classifier
   // weights over the page-controlled element role/name; a read failure degrades to undefined (the
@@ -916,7 +926,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, generalizeMark, marksTool, observe, act: actWithHandoff, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
+  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe, act: actWithHandoff, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
 }
 
 /** Open the web-app tab in the platform browser; the logged URL is the fallback if no opener is present. */

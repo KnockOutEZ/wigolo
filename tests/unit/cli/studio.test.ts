@@ -423,6 +423,63 @@ describe('cli/studio startStudioHost', () => {
     }
   });
 
+  // 7f B1 PIN-A (sessions backfill exists, through the real handleUpgrade). NAMED mutation that REDs against
+  // present+correct code: drop the `sessions` safeSnapshot from the host's postHello array → a connecting
+  // client never backfills the session list and waitForType('sessions_snapshot') times out (diverging value:
+  // a sessions_snapshot frame present → absent).
+  it('7f B1 PIN-A: a connecting client backfills the session list via post-hello {t:sessions_snapshot}', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    const conn = await connectToHostHub(host);
+    try {
+      const snap = await conn.waitForType('sessions_snapshot');
+      expect(Array.isArray(snap.sessions)).toBe(true);
+      const sessions = snap.sessions as Array<Record<string, unknown>>;
+      expect(sessions.map((s) => s.id)).toContain(host.session.id); // the live session is enumerated
+    } finally {
+      await conn.close();
+      await host.daemon.stop();
+    }
+  });
+
+  // 7f B1 PIN-B (TRUST — metadata-only; the load-bearing pin). NAMED mutation that REDs against present+correct
+  // code: add the session token (or endpoint) to the sessionMeta projection → a bearer token leaks into the
+  // enumeration every client receives (diverging value: no token-shaped field → a `token` key appears). The
+  // switcher payload must NEVER carry a credential or a url.
+  it('7f B1 PIN-B: the sessions snapshot is metadata-only — no token and no url/endpoint leak', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    try {
+      const snap = host.sessionsSnapshot();
+      expect(snap.t).toBe('sessions_snapshot');
+      expect(snap.sessions.length).toBeGreaterThanOrEqual(1);
+      for (const s of snap.sessions) {
+        expect('token' in s).toBe(false); // no bearer leak
+        expect('endpoint' in s).toBe(false); // no url leak
+        expect('url' in s).toBe(false);
+        expect(Object.keys(s).sort()).toEqual(['clients', 'createdAt', 'id', 'lastActiveAt', 'status']); // metadata only
+      }
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // 7f B1 PIN-C (the multi-session shift — enumerate ALL, via list() not active()). NAMED mutation that REDs
+  // against present+correct code: build the snapshot from `registry.active()` (single/undefined) instead of
+  // `registry.list()` → with >1 open session active() returns undefined, so the enumeration collapses to
+  // none/one instead of all (diverging value: 2 ids → 0/1).
+  it('7f B1 PIN-C: with >1 open session the snapshot enumerates ALL of them (list(), not active())', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    const second = host.registry.create({ endpoint: host.endpoint, token: 'second-token' });
+    try {
+      const snap = host.sessionsSnapshot();
+      const ids = snap.sessions.map((s) => s.id);
+      expect(ids).toContain(host.session.id);
+      expect(ids).toContain(second.id); // BOTH open sessions enumerated — active() would drop to undefined here
+      expect(snap.sessions.length).toBe(2);
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
   // PIN-B (agent path intact — DUAL-emit, not replace). NAMED mutation that REDs: replace the enqueue with the
   // broadcast (drop loginHandoff.enqueueContentEvent) → the agent's observe-drain no longer receives the mark.
   it('S3 PIN-B: a human mark STILL enqueues the agent content event (dual-emit, not replace)', async () => {

@@ -20,6 +20,24 @@ export interface SessionSnapshot {
   lastActiveAt: number;
 }
 
+/**
+ * The session-switcher projection: the ONLY session fields safe to enumerate to a connected client.
+ * Deliberately EXCLUDES `token` (a bearer leak) and `endpoint`/url (not needed — a daemon-scoped bearer
+ * reaches every session by path, so the client never needs a per-session URL). Metadata only.
+ */
+export interface SessionMeta {
+  id: string;
+  status: SessionStatus;
+  clients: number;
+  createdAt: number;
+  lastActiveAt: number;
+}
+
+/** Project a Session to its enumeration-safe metadata (no token, no url). */
+export function sessionMeta(s: Session): SessionMeta {
+  return { id: s.id, status: s.status, clients: s.clients, createdAt: s.createdAt, lastActiveAt: s.lastActiveAt };
+}
+
 export interface SessionOptions {
   endpoint: string;
   id?: string;
