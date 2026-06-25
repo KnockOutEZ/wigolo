@@ -69,6 +69,36 @@ describe('StreamConnection (S6 reconnect)', () => {
     expect(openSocket.mock.calls.length).toBe(before);
   });
 
+  // A2 (react-to-terminal). A clean close is ANNOUNCED by the server with a terminal {t:'closed'} message
+  // BEFORE the socket drops (ws-hub closeAll). The tab cannot read the WS close code, so this app-message is
+  // its only signal that the drop is terminal, not transient. NAMED mutation that REDs against present+correct
+  // code: drop the `if (this.isTerminalMessage(data)) this.enterTerminal()` call in the message handler → the
+  // terminal message is treated as any other frame, the following close falls through to scheduleReconnect,
+  // and the client re-subscribes to a dead session (diverging value: openSocket 1 → 2, state terminal → reconnecting).
+  it('A2: a terminal {t:closed} message stops reconnection — a following close does NOT re-subscribe', () => {
+    const sockets: ReturnType<typeof mockSocket>[] = [];
+    const openSocket = vi.fn(() => { const m = mockSocket(); sockets.push(m); return m.socket; });
+    const conn = new StreamConnection({ openSocket, bearer: 'B', onMessage: () => {}, schedule: (fn) => fn() });
+    conn.start();
+    sockets[0].fire('open');
+    sockets[0].fire('message', { data: '{"t":"closed","reason":"host_shutdown"}' });
+    sockets[0].fire('close'); // server closed the socket right after the terminal message
+    expect(openSocket).toHaveBeenCalledTimes(1); // did NOT re-subscribe to a dead session
+    expect(conn.currentState).toBe('terminal');
+  });
+
+  it('A2: a {t:error,reason:session_failed} (crash) message is also terminal — no reconnect', () => {
+    const sockets: ReturnType<typeof mockSocket>[] = [];
+    const openSocket = vi.fn(() => { const m = mockSocket(); sockets.push(m); return m.socket; });
+    const conn = new StreamConnection({ openSocket, bearer: 'B', onMessage: () => {}, schedule: (fn) => fn() });
+    conn.start();
+    sockets[0].fire('open');
+    sockets[0].fire('message', { data: '{"t":"error","reason":"session_failed"}' });
+    sockets[0].fire('close');
+    expect(openSocket).toHaveBeenCalledTimes(1);
+    expect(conn.currentState).toBe('terminal');
+  });
+
   it('backs off with increasing delay across consecutive drops, resetting on a healthy open', () => {
     const delays: number[] = [];
     const m = mockSocket();

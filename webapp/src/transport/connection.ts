@@ -11,7 +11,7 @@
  * (jsdom has none).
  */
 
-export type ConnState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'stopped';
+export type ConnState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'stopped' | 'terminal';
 
 /** The minimal socket surface this SM drives (the browser WebSocket satisfies it structurally). */
 export interface SocketLike {
@@ -41,6 +41,11 @@ export class StreamConnection {
   private attempt = 0;
   private socket: SocketLike | null = null;
   private stopped = false;
+  // Set when the server announces a terminal close ({t:'closed'} / crash {t:'error',reason:'session_failed'}).
+  // Distinct from `stopped` (user-initiated teardown): a terminal session is GONE, so re-subscribing would
+  // loop forever against a dead session. The tab cannot read the WS close code, so this app-message is the
+  // only terminal signal it gets.
+  private terminal = false;
   private readonly backoffMs: (attempt: number) => number;
   private readonly schedule: (fn: () => void, ms: number) => void;
 
@@ -53,9 +58,10 @@ export class StreamConnection {
     return this.state;
   }
 
-  /** Open the stream and keep it up — re-subscribing on every drop until stop(). */
+  /** Open the stream and keep it up — re-subscribing on every drop until stop() or a terminal signal. */
   start(): void {
     this.stopped = false;
+    this.terminal = false;
     this.open();
   }
 
@@ -80,7 +86,11 @@ export class StreamConnection {
       this.attempt = 0; // reset backoff on a healthy connection
       this.setState('open');
     });
-    socket.addEventListener('message', (ev) => this.deps.onMessage((ev as { data: unknown }).data));
+    socket.addEventListener('message', (ev) => {
+      const data = (ev as { data: unknown }).data;
+      this.deps.onMessage(data); // forward FIRST so the app renders the terminal payload before we tear down
+      if (this.isTerminalMessage(data)) this.enterTerminal();
+    });
     socket.addEventListener('close', () => this.scheduleReconnect());
     socket.addEventListener('error', () => {
       /* a close event follows an error; reconnect is driven from close so we don't double-schedule */
@@ -88,12 +98,35 @@ export class StreamConnection {
   }
 
   private scheduleReconnect(): void {
-    if (this.stopped) return;
+    if (this.stopped || this.terminal) return; // a terminal session is gone — never re-subscribe
     this.setState('reconnecting');
     const delay = this.backoffMs(this.attempt++);
     this.schedule(() => {
-      if (!this.stopped) this.open(); // fully re-establish: a brand-new socket subscription
+      if (!this.stopped && !this.terminal) this.open(); // fully re-establish: a brand-new socket subscription
     }, delay);
+  }
+
+  /**
+   * A server-announced terminal close: the session is gone (clean shutdown `{t:'closed'}` or crash
+   * `{t:'error', reason:'session_failed'}`). Tear down and stop reconnecting — entering a distinct
+   * `terminal` state the UI can surface (vs the user-initiated `stopped`).
+   */
+  private isTerminalMessage(data: unknown): boolean {
+    let obj: unknown = data;
+    if (typeof data === 'string') {
+      try { obj = JSON.parse(data); } catch { return false; }
+    }
+    if (typeof obj !== 'object' || obj === null) return false;
+    const t = (obj as { t?: unknown }).t;
+    if (t === 'closed') return true;
+    return t === 'error' && (obj as { reason?: unknown }).reason === 'session_failed';
+  }
+
+  private enterTerminal(): void {
+    this.terminal = true;
+    this.setState('terminal');
+    this.socket?.close();
+    this.socket = null;
   }
 
   private setState(state: ConnState): void {
