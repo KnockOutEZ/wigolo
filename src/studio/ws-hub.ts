@@ -153,6 +153,20 @@ export class StudioWsHub {
     return this.clients.get(sessionId)?.size ?? 0;
   }
 
+  /**
+   * Send a message to EVERY open client across ALL sessions (server → client). Used for the session-switcher
+   * delta (7f B2): a session create/close is relevant to every connected client's switcher, not just the
+   * clients of the changed session. Metadata-only payloads — never a token.
+   */
+  broadcastAll(message: Record<string, unknown>): void {
+    const data = JSON.stringify(message);
+    for (const set of this.clients.values()) {
+      for (const ws of set) {
+        if (ws.readyState === WebSocket.OPEN) ws.send(data);
+      }
+    }
+  }
+
   /** Send a control message to every open client of a session (server → client). */
   broadcast(sessionId: string, message: Record<string, unknown>): void {
     const set = this.clients.get(sessionId);

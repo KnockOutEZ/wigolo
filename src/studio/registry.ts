@@ -16,6 +16,11 @@ export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
   private readonly idleMs: number;
   private readonly now: () => number;
+  /**
+   * Fired AFTER the live session set changes (create/close), so the host can push a metadata-only
+   * {t:'sessions'} switcher delta to connected clients (7f B2). Set by the host once the hub exists.
+   */
+  onChange?: () => void;
 
   constructor(opts: SessionRegistryOptions = {}) {
     this.idleMs = opts.idleMs ?? 30 * 60_000;
@@ -25,6 +30,7 @@ export class SessionRegistry {
   create(opts: Omit<SessionOptions, 'now'>): Session {
     const session = new Session({ ...opts, now: this.now });
     this.sessions.set(session.id, session);
+    this.onChange?.();
     return session;
   }
 
@@ -51,6 +57,7 @@ export class SessionRegistry {
     if (session) {
       session.close();
       this.sessions.delete(id);
+      this.onChange?.();
     }
   }
 

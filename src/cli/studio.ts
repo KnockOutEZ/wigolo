@@ -321,6 +321,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       ];
     },
   });
+  // 7f B2: push a metadata-only {t:'sessions'} switcher delta to ALL connected clients whenever the live
+  // session set changes (registry create/close). Wired now that the hub exists; the same sessionMeta
+  // projection as the post-hello backfill, so a switcher applies snapshot + delta uniformly (never a token).
+  registry.onChange = () => hub.broadcastAll({ t: 'sessions', sessions: registry.list().map(sessionMeta) });
   // S2: the nonce store backs the one-time bearer handshake. A nonce is minted per launch and passed in the
   // tab URL; the page redeems it (POST /studio/token) for the bearer, which then rides the WS subprotocol —
   // so the bearer never touches a URL/query.
