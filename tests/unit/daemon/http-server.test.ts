@@ -8,6 +8,7 @@ vi.mock('../../../src/cache/db.js', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   getDatabase: vi.fn(() => ({})), // D10 audit sink handle — never exercised here (no audited tool calls)
+  probeCacheDb: vi.fn(() => true), // /health cache liveness probe — cache reports active in this harness
 }));
 
 vi.mock('../../../src/fetch/browser-pool.js', () => {

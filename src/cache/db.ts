@@ -186,3 +186,17 @@ export function closeDatabase(): void {
     vecLoaded = false;
   }
 }
+
+/**
+ * Liveness probe for the cache DB: true iff it is initialized AND answers a trivial
+ * query. Used by the /health endpoint instead of assuming the cache is up. Never throws.
+ */
+export function probeCacheDb(): boolean {
+  if (!instance) return false;
+  try {
+    instance.prepare('SELECT 1').get();
+    return true;
+  } catch {
+    return false;
+  }
+}

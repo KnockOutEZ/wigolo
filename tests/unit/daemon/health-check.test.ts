@@ -14,10 +14,11 @@ function makeInput(overrides?: Partial<HealthProbeInput>): HealthProbeInput {
 describe('probeHealth', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('returns status=healthy when backend is active and browser pool exists', () => {
+  it('returns status=healthy when backend is active, browser pool exists, and cache is live', () => {
     const report = probeHealth(makeInput({
       backendStatus: { isActive: true } as any,
       browserPool: {} as any,
+      cacheProbe: () => true,
     }));
     expect(report.status).toBe('healthy');
   });
@@ -97,6 +98,32 @@ describe('probeHealth', () => {
     const report = probeHealth(makeInput());
     expect(report).toHaveProperty('cache');
     expect(typeof report.cache).toBe('string');
+  });
+
+  it('cache is "active" only when the real cache-DB probe succeeds', () => {
+    const report = probeHealth(makeInput({
+      backendStatus: { isActive: true } as any,
+      browserPool: {} as any,
+      cacheProbe: () => true,
+    }));
+    expect(report.cache).toBe('active');
+    expect(report.status).toBe('healthy');
+  });
+
+  it('a down cache reports cache=unavailable and degrades status (NOT a cosmetic active)', () => {
+    const report = probeHealth(makeInput({
+      backendStatus: { isActive: true } as any,
+      browserPool: {} as any,
+      cacheProbe: () => false, // DB open but unreachable/erroring
+    }));
+    expect(report.cache).toBe('unavailable');
+    expect(report.status).not.toBe('healthy'); // degraded/down, never healthy on a down cache
+    expect(['degraded', 'down']).toContain(report.status);
+  });
+
+  it('cache is "not_initialized" when no probe is wired', () => {
+    const report = probeHealth(makeInput({ cacheProbe: null }));
+    expect(report.cache).toBe('not_initialized');
   });
 
   it('includes uptime_seconds as a number', () => {

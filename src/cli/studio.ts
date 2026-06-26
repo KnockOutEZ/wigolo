@@ -21,6 +21,7 @@ import { PageSnapshotter, buildSnapshot, flattenDom, type AxNode, type DomNode }
 import { createResolver } from '../studio/perception/resolve.js';
 import { StudioEventQueue } from '../studio/event-queue.js';
 import { createObserver } from '../studio/observe.js';
+import { SessionMetrics } from '../studio/metrics.js';
 import { NavEpoch } from '../studio/nav-epoch.js';
 import { createActHandler } from '../studio/act.js';
 import { createCaptureHandler } from '../studio/capture/handler.js';
@@ -153,6 +154,8 @@ export interface StudioHost {
   registry: SessionRegistry;
   /** Periodic idle-session sweeper tick; stop() on shutdown to clear the interval. */
   idleSweeper: IdleSweeper;
+  /** Per-session observability gauges (read-only): token-spend, frame counts, process memory. */
+  sessionMetrics: SessionMetrics;
   session: Session;
   sessionBrowser: SessionBrowser;
   bridge: ScreencastBridge;
@@ -361,6 +364,9 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   );
 
   const session = registry.create({ endpoint, token });
+  // Per-session observability gauges (read-only): token-spend from the observe path,
+  // frame counters from the screencast bridge, process memory sampled on read.
+  const sessionMetrics = new SessionMetrics();
 
   // Open the web-app tab at the shell, carrying the one-time NONCE (never the bearer) + the session id in
   // the URL. Default opener just logs the URL (safe for non-interactive/test boots); the CLI entry passes a
@@ -756,6 +762,8 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     maxHeight: cfg.studioScreencastMaxHeight,
     everyNthFrame: cfg.studioScreencastEveryNthFrame,
     ackTimeoutMs: cfg.studioFrameAckTimeoutMs,
+    onForward: () => sessionMetrics.recordFrameForwarded(),
+    onDrop: () => sessionMetrics.recordFrameDropped(),
   });
   // On a browser-crash recovery, rebind the screencast + input channel to the FRESH
   // cdp (each resets its stale state); the control token persists. The nav interceptor
@@ -795,6 +803,8 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     handoffSignal: () => loginHandoff.signal(),
     // D4/A: refresh lastObserveEpoch on each real page-read so studio_capture can detect a nav since.
     markObserved: () => navEpoch.markObserved(),
+    // F2a: attribute each page-read's inline token count to the session gauge (read-only).
+    recordTokens: (n) => sessionMetrics.recordTokens(n),
   });
   // The agent's click/type resolve refs LIVE at action time through the 2J.1 resolver
   // (fresh snapshot per call + occlusion hit-test, never cached coords). Bind it to the
@@ -938,7 +948,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, idleSweeper, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe, act: actWithHandoff, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
+  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe, act: actWithHandoff, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
 }
 
 /** Open the web-app tab in the platform browser; the logged URL is the fallback if no opener is present. */

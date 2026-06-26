@@ -5,13 +5,19 @@ export interface HealthProbeInput {
   backendStatus: BackendStatus | null;
   browserPool: MultiBrowserPool | null;
   startedAt: number;
+  /**
+   * Real cache-DB liveness probe (e.g. a trivial SELECT). Absent ⇒ the cache is not
+   * initialized; returns false ⇒ the DB is open but unreachable/erroring. Replaces the
+   * former cosmetic hardcoded 'active'.
+   */
+  cacheProbe?: (() => boolean) | null;
 }
 
 export interface HealthReport {
   status: 'healthy' | 'degraded' | 'down';
   searxng: 'active' | 'unavailable' | 'not_initialized';
   browsers: 'ready' | 'not_initialized';
-  cache: 'active' | 'not_initialized';
+  cache: 'active' | 'unavailable' | 'not_initialized';
   uptime_seconds: number;
 }
 
@@ -32,13 +38,19 @@ export function probeHealth(input: HealthProbeInput): HealthReport {
     ? 'ready'
     : 'not_initialized';
 
-  const cache: HealthReport['cache'] = 'active';
+  // Real cache-DB probe: absent ⇒ not initialized; a false return ⇒ open but unreachable.
+  let cache: HealthReport['cache'];
+  if (input.cacheProbe == null) {
+    cache = 'not_initialized';
+  } else {
+    cache = input.cacheProbe() ? 'active' : 'unavailable';
+  }
 
   let status: HealthReport['status'];
-  if (searxng === 'active' && browsers === 'ready') {
-    status = 'healthy';
-  } else if (browsers === 'not_initialized' && searxng !== 'active') {
+  if (browsers === 'not_initialized' && searxng !== 'active') {
     status = 'down';
+  } else if (searxng === 'active' && browsers === 'ready' && cache === 'active') {
+    status = 'healthy';
   } else {
     status = 'degraded';
   }

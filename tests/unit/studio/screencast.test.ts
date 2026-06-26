@@ -84,6 +84,28 @@ describe('ScreencastBridge', () => {
     expect(frames.map((x) => x.data)).toEqual(['A', 'B']);
   });
 
+  it('fires onForward per forwarded frame and onDrop when a held frame is discarded (metric source)', async () => {
+    const f = makeFakeCdp();
+    let forwarded = 0;
+    let dropped = 0;
+    const bridge = new ScreencastBridge({
+      cdp: f.cdp,
+      sink: () => {},
+      ...OPTS,
+      onForward: () => { forwarded += 1; },
+      onDrop: () => { dropped += 1; },
+    });
+    await bridge.start();
+    f.emitFrame('A', 1); // forwarded
+    f.emitFrame('B', 2); // held (no prior held → no drop)
+    f.emitFrame('C', 3); // replaces B as newest held → B is dropped
+    expect(forwarded).toBe(1);
+    expect(dropped).toBe(1);
+    bridge.onClientAck(); // releases C → forwarded
+    expect(forwarded).toBe(2);
+    expect(dropped).toBe(1);
+  });
+
   it('stop() ends the screencast and ignores later frames', async () => {
     const f = makeFakeCdp();
     const frames: ScreencastFrame[] = [];

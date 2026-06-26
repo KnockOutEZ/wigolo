@@ -49,6 +49,8 @@ export interface ObserverDeps {
    * called on spill-retrieval or the credential-context exclusion (neither is a fresh read of the current page).
    */
   markObserved?: () => void;
+  /** Observability: attribute the inline payload's token count to the session (read-only gauge source). */
+  recordTokens?: (n: number) => void;
 }
 
 /** Build the observe closure. Holds per-session `lastSnapshot` for diffing; otherwise stateless. */
@@ -137,11 +139,13 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
 
     if (resolved.kind === 'full') {
       const fit = fitElementsToBudget(resolved.snapshot.elements, deps.inlineBudget, deps.dataDir);
+      deps.recordTokens?.(fit.tokenCount);
       enforceSpillBudget({ maxBytes: deps.spillMaxBytes, protect: new Set(fit.spillRef ? [fit.spillRef] : []), dataDir: deps.dataDir });
       return { ...base, kind: 'full', elements: fit.elements, ...(fit.spillRef ? { snapshotRef: fit.spillRef } : {}) };
     }
 
     const fitD = fitDiffToBudget(resolved.diff, deps.inlineBudget, deps.dataDir);
+    deps.recordTokens?.(fitD.tokenCount);
     enforceSpillBudget({ maxBytes: deps.spillMaxBytes, protect: new Set(fitD.spillRef ? [fitD.spillRef] : []), dataDir: deps.dataDir });
     return { ...base, kind: 'diff', diff: fitD.diff ?? fitD.summary, ...(fitD.spillRef ? { snapshotRef: fitD.spillRef } : {}) };
   };

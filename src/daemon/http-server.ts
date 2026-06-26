@@ -8,6 +8,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { initSubsystems, createMcpServer, type Subsystems } from '../server.js';
 import type { StudioHostHandlers } from './studio-dispatch.js';
 import { probeHealth } from './health-check.js';
+import { probeCacheDb } from '../cache/db.js';
 import { checkAuth, checkAuthSubprotocol, checkOriginHost } from '../studio/auth.js';
 import { serveStaticAsset } from './static-assets.js';
 import type { NonceStore } from '../studio/nonce.js';
@@ -277,6 +278,7 @@ export class DaemonHttpServer {
         backendStatus: this.subsystems?.backendStatus ?? null,
         browserPool: this.subsystems?.browserPool ?? null,
         startedAt: this.startedAt,
+        cacheProbe: () => probeCacheDb(),
       });
 
       const statusCode = report.status === 'down' ? 503 : 200;

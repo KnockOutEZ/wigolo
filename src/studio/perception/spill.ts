@@ -77,6 +77,8 @@ export interface DiffFitResult {
   diff: SnapshotDiff | null;
   summary?: { added: number; removed: number; churn: number; changed: number };
   spillRef: string | null;
+  /** Tokens of the INLINE payload (the diff when it fits, else the counts summary). */
+  tokenCount: number;
 }
 
 export interface SpillGcResult {
@@ -124,15 +126,18 @@ export function enforceSpillBudget(opts: { maxBytes: number; protect?: ReadonlyS
 
 /** A diff that itself blows the budget (big change / navigation) spills whole; a small counts summary stays inline. */
 export function fitDiffToBudget(diff: SnapshotDiff, budget: number, dataDir?: string): DiffFitResult {
-  if (countTokens(JSON.stringify(diff)) <= budget) return { diff, spillRef: null };
+  const diffTokens = countTokens(JSON.stringify(diff));
+  if (diffTokens <= budget) return { diff, spillRef: null, tokenCount: diffTokens };
+  const summary = {
+    added: diff.added.length,
+    removed: diff.removed.length,
+    churn: diff.lowConfidenceChurn.added.length + diff.lowConfidenceChurn.removed.length,
+    changed: diff.changed.length,
+  };
   return {
     diff: null,
-    summary: {
-      added: diff.added.length,
-      removed: diff.removed.length,
-      churn: diff.lowConfidenceChurn.added.length + diff.lowConfidenceChurn.removed.length,
-      changed: diff.changed.length,
-    },
+    summary,
     spillRef: writeSpill(diff, dataDir),
+    tokenCount: countTokens(JSON.stringify(summary)),
   };
 }

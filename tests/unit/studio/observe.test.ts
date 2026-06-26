@@ -47,6 +47,24 @@ describe('createObserver — atomic, bounded capture + coherent events', () => {
     expect(observed).toBe(1); // a real page-read refreshed lastObserveEpoch
   });
 
+  it('PIN (token gauge source): a successful page-read attributes the inline token count via recordTokens', async () => {
+    // F2a: the observe full/diff path is the per-session token source. value-flip RED: createObserver
+    // ignores recordTokens → tokens stays 0. MUT: drop deps.recordTokens?.(fit.tokenCount) → 0 → RED.
+    let tokens = 0;
+    const obs = createObserver({
+      snapshot: async () => mkSnap('s1', [el('e1', 'A')]),
+      eventQueue: new StudioEventQueue(100),
+      inlineBudget: 100000,
+      spillMaxBytes: 10_000_000,
+      dataDir: dir,
+      maxStableRetries: 3,
+      recordTokens: (n) => { tokens += n; },
+    });
+    const r = ok(await obs({}));
+    expect(r.kind).toBe('full');
+    expect(tokens).toBeGreaterThan(0); // the inline payload's token count was attributed to the session
+  });
+
   it('CHURNING page never settles → BOUNDED give-up to a full resync, does NOT livelock', async () => {
     const q = new StudioEventQueue(100);
     let snaps = 0;

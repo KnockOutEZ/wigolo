@@ -52,6 +52,9 @@ export interface ScreencastBridgeOptions {
   maxHeight: number;
   everyNthFrame: number;
   ackTimeoutMs: number;
+  /** Observability hooks (optional): fired when a frame is forwarded / dropped under backpressure. */
+  onForward?: () => void;
+  onDrop?: () => void;
 }
 
 export class ScreencastBridge {
@@ -62,6 +65,8 @@ export class ScreencastBridge {
   private readonly maxHeight: number;
   private readonly everyNthFrame: number;
   private readonly ackTimeoutMs: number;
+  private readonly onForward?: () => void;
+  private readonly onDrop?: () => void;
 
   private started = false;
   private pending = false; // a forwarded frame is awaiting the client's ack
@@ -76,6 +81,8 @@ export class ScreencastBridge {
     this.maxHeight = o.maxHeight;
     this.everyNthFrame = o.everyNthFrame;
     this.ackTimeoutMs = o.ackTimeoutMs;
+    this.onForward = o.onForward;
+    this.onDrop = o.onDrop;
   }
 
   async start(): Promise<void> {
@@ -132,7 +139,8 @@ export class ScreencastBridge {
     void this.cdp.send('Page.screencastFrameAck', { sessionId: ev.sessionId }).catch(() => {});
     const frame: ScreencastFrame = { data: ev.data, metadata: ev.metadata };
     if (this.pending) {
-      this.held = frame; // newest-held-wins; the older held frame is dropped
+      if (this.held) this.onDrop?.(); // the previously held frame is discarded (newest-held-wins)
+      this.held = frame;
       return;
     }
     this.forward(frame);
@@ -141,6 +149,7 @@ export class ScreencastBridge {
   private forward(frame: ScreencastFrame): void {
     this.held = null;
     this.pending = true;
+    this.onForward?.();
     this.sink(frame);
     this.ackTimer = setTimeout(() => {
       this.ackTimer = null;
