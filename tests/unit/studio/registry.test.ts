@@ -98,4 +98,26 @@ describe('studio/SessionRegistry', () => {
     expect(s.status).toBe('closed');
     sweeper.stop();
   });
+
+  it('the WIRED sweeper NEVER evicts a client-attached session, however old (dangerous-direction invariant)', () => {
+    // Load-bearing safety pin: a connected human/agent client must survive the sweep regardless of age.
+    // Driven through the WIRED tick (not a direct sweepIdle call). NON-VACUITY: drop the clientless guard
+    // in sweepIdle → this old attached session is evicted → RED (evicted vs survives).
+    let t = 0;
+    const reg = new SessionRegistry({ idleMs: 1000, now: () => t, maxSessions: 10 });
+    const attached = reg.create({ endpoint: 'attached' });
+    attached.attach(); // a client is connected
+    let tick: (() => void) | undefined;
+    const sweeper = startIdleSweeper(reg, 500, {
+      schedule: (cb) => {
+        tick = cb;
+        return () => { tick = undefined; };
+      },
+    });
+    t = 1_000_000; // absurdly old — far past idleMs, yet a client is attached
+    tick?.(); // wired lifecycle tick fires
+    expect(reg.get(attached.id)).toBe(attached); // SURVIVES — never evicted while a client is attached
+    expect(attached.status).not.toBe('closed');
+    sweeper.stop();
+  });
 });
