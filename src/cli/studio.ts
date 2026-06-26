@@ -4,7 +4,7 @@ import { DaemonHttpServer } from '../daemon/http-server.js';
 import { getEmbedProvider } from '../providers/embed-provider.js';
 import { checkBindHost } from '../studio/bind.js';
 import { resolveHostToken } from '../studio/auth.js';
-import { SessionRegistry } from '../studio/registry.js';
+import { SessionRegistry, startIdleSweeper, type IdleSweeper } from '../studio/registry.js';
 import { sessionMeta, type Session, type SessionMeta } from '../studio/session.js';
 import { SessionBrowser, type SessionBrowserLauncher, type StorageStateInput } from '../studio/session-browser.js';
 import { ProfileStore } from '../studio/profile-store.js';
@@ -151,6 +151,8 @@ export interface StudioHostOptions extends StudioArgs {
 export interface StudioHost {
   daemon: DaemonHttpServer;
   registry: SessionRegistry;
+  /** Periodic idle-session sweeper tick; stop() on shutdown to clear the interval. */
+  idleSweeper: IdleSweeper;
   session: Session;
   sessionBrowser: SessionBrowser;
   bridge: ScreencastBridge;
@@ -250,7 +252,13 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const instanceId = randomUUID();
   setMyInstanceId(instanceId);
 
-  const registry = opts.registry ?? new SessionRegistry();
+  const idleTimeoutMs = getConfig().browserIdleTimeoutMs;
+  const registry =
+    opts.registry ?? new SessionRegistry({ maxSessions: getConfig().maxStudioSessions, idleMs: idleTimeoutMs });
+  // Reclaim idle clientless sessions on a periodic tick (only `create` sweeps otherwise).
+  // Cadence + threshold both track the configured idle timeout; a live (client-attached)
+  // session is never evicted regardless of age.
+  const idleSweeper = startIdleSweeper(registry, idleTimeoutMs);
   // Late-bound: the screencast bridge is created once the session browser is up,
   // but the hub (which routes client frame-acks to it) must exist before the daemon.
   // Late-bound: bridge + controller are created once the session browser is up,
@@ -930,7 +938,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe, act: actWithHandoff, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
+  return { daemon, registry, idleSweeper, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe, act: actWithHandoff, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
 }
 
 /** Open the web-app tab in the platform browser; the logged URL is the fallback if no opener is present. */
@@ -959,6 +967,7 @@ export function runStudio(args: string[]): void {
 
       const shutdown = async () => {
         log('Shutting down studio host…');
+        host.idleSweeper.stop();
         removeHandle();
         host.hub.closeAll();
         await host.bridge.stop().catch((e) =>

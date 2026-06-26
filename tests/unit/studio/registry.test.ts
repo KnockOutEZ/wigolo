@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SessionRegistry } from '../../../src/studio/registry.js';
+import { SessionRegistry, startIdleSweeper } from '../../../src/studio/registry.js';
 
 describe('studio/SessionRegistry', () => {
   it('create/get/list round-trips a session', () => {
@@ -54,5 +54,48 @@ describe('studio/SessionRegistry', () => {
     t = 1200; // age 700 < 1000
     expect(reg.sweepIdle()).toEqual([]);
     expect(reg.get(s.id)).toBe(s);
+  });
+
+  it('rejects create over maxSessions with studio_session_limit; flipping the cap admits the same Nth', () => {
+    // max=N: N creates succeed, the (N+1)th is rejected by the named admission error.
+    const cap = new SessionRegistry({ maxSessions: 2 });
+    cap.create({ endpoint: 'e1' });
+    cap.create({ endpoint: 'e2' });
+    let err: unknown;
+    try {
+      cap.create({ endpoint: 'e3' });
+    } catch (e) {
+      err = e;
+    }
+    expect((err as { code?: string } | undefined)?.code).toBe('studio_session_limit');
+    expect(cap.size).toBe(2); // over-cap create did NOT admit
+
+    // Flip max=N+1: the SAME 3rd create now succeeds — diverging value proves the cap is the gate.
+    const wider = new SessionRegistry({ maxSessions: 3 });
+    wider.create({ endpoint: 'e1' });
+    wider.create({ endpoint: 'e2' });
+    const third = wider.create({ endpoint: 'e3' });
+    expect(wider.size).toBe(3);
+    expect(third.id).toBeTruthy();
+  });
+
+  it('the WIRED idle sweeper evicts an idle clientless session on its lifecycle tick', () => {
+    let t = 0;
+    const reg = new SessionRegistry({ idleMs: 1000, now: () => t, maxSessions: 10 });
+    const s = reg.create({ endpoint: 'e' });
+    // Capture the scheduled tick instead of a wall-clock timer so we fire the REAL
+    // lifecycle callback (not a direct reg.sweepIdle() call) deterministically.
+    let tick: (() => void) | undefined;
+    const sweeper = startIdleSweeper(reg, 500, {
+      schedule: (cb) => {
+        tick = cb;
+        return () => { tick = undefined; };
+      },
+    });
+    t = 2000; // session is now 2000ms idle (> 1000 idleMs), clientless
+    tick?.(); // the wired tick fires → must evict via sweepIdle
+    expect(reg.get(s.id)).toBeUndefined();
+    expect(s.status).toBe('closed');
+    sweeper.stop();
   });
 });

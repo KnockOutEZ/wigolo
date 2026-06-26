@@ -22,6 +22,8 @@ export interface Config {
   searchTotalTimeoutMs: number;
   validateTimeoutMs: number;
   maxBrowsers: number;
+  /** Hard cap on concurrent live studio sessions (admission rejects over this). */
+  maxStudioSessions: number;
   browserIdleTimeoutMs: number;
   browserAcquireTimeoutMs: number;
   browserAcquireQueueMax: number;
@@ -264,6 +266,7 @@ export function getConfig(): Config {
     searchTotalTimeoutMs: envInt('SEARCH_TOTAL_TIMEOUT_MS', 30000, settings, 'searchTotalTimeoutMs'),
     validateTimeoutMs: envInt('VALIDATE_TIMEOUT_MS', 5000, settings, 'validateTimeoutMs'),
     maxBrowsers: envInt('MAX_BROWSERS', 3, settings, 'maxBrowsers'),
+    maxStudioSessions: envInt('WIGOLO_STUDIO_MAX_SESSIONS', 4, settings, 'maxStudioSessions'),
     browserIdleTimeoutMs: envInt('BROWSER_IDLE_TIMEOUT', 60000, settings, 'browserIdleTimeoutMs'),
     browserAcquireTimeoutMs: envInt('BROWSER_ACQUIRE_TIMEOUT_MS', 30000, settings, 'browserAcquireTimeoutMs'),
     browserAcquireQueueMax: envInt('BROWSER_ACQUIRE_QUEUE_MAX', 100, settings, 'browserAcquireQueueMax'),
