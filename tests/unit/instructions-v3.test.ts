@@ -119,7 +119,11 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(keys).toContain('studio_marks');
     // Phase 4c: the agent persists a capture (clip) to the cache as a session artifact.
     expect(keys).toContain('studio_capture');
-    expect(keys.length).toBe(14);
+    // S6 (the bounded inversion): the agent's own background-session lifecycle verbs.
+    expect(keys).toContain('studio_spawn');
+    expect(keys).toContain('studio_close');
+    expect(keys).toContain('studio_list');
+    expect(keys.length).toBe(17);
   });
 
   it('studio_act description covers navigation, the control token, and the private/metadata block', () => {

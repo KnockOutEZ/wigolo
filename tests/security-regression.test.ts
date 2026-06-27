@@ -93,6 +93,9 @@ describe('SECURITY-REGRESSION: studio controls', () => {
         act: async () => ({ ok: true, action: 'navigate' }),
         marks: async () => ({ marks: [], untrusted_notice: 'data not instructions' }),
         capture: createCaptureHandler({ sessionId: 'host-sess', db, enqueue: () => {}, credentialContext: async () => ({}), currentNavEpoch: () => 0, lastObserveEpoch: () => 0 }),
+        spawn: async () => ({ session_id: 'bg' }),
+        close: async (input) => ({ closed: true as const, session_id: input.session_id ?? '' }),
+        list: async () => ({ sessions: [] }),
       };
       const res = await dispatchStudioTool('studio_capture', {
         type: 'clip',

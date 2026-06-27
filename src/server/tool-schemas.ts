@@ -690,6 +690,37 @@ export const STUDIO_CAPTURE_TOOL_SCHEMA = {
   additionalProperties: false,
 };
 
+export const STUDIO_SPAWN_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    startUrl: {
+      type: 'string',
+      description: 'Optional URL the new background session should open first. Subject to the same navigation safety as studio_act.',
+    },
+  },
+  required: [],
+  additionalProperties: false,
+};
+
+export const STUDIO_CLOSE_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    session_id: {
+      type: 'string',
+      description: 'The id of the session to close (from studio_spawn or studio_list).',
+    },
+  },
+  required: ['session_id'],
+  additionalProperties: false,
+};
+
+export const STUDIO_LIST_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {},
+  required: [],
+  additionalProperties: false,
+};
+
 export const TOOL_SCHEMAS: Record<ToolName, ToolSchema> = {
   fetch: FETCH_TOOL_SCHEMA,
   search: SEARCH_TOOL_SCHEMA,
@@ -705,4 +736,7 @@ export const TOOL_SCHEMAS: Record<ToolName, ToolSchema> = {
   studio_act: STUDIO_ACT_TOOL_SCHEMA,
   studio_marks: STUDIO_MARKS_TOOL_SCHEMA,
   studio_capture: STUDIO_CAPTURE_TOOL_SCHEMA,
+  studio_spawn: STUDIO_SPAWN_TOOL_SCHEMA,
+  studio_close: STUDIO_CLOSE_TOOL_SCHEMA,
+  studio_list: STUDIO_LIST_TOOL_SCHEMA,
 };
