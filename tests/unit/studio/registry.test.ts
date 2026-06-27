@@ -147,4 +147,73 @@ describe('studio/SessionRegistry', () => {
     expect(lastIds).toContain(live.id); // the live session is retained
     sweeper.stop();
   });
+
+  // ── S4: background keep-alive (all driven through the REAL wired sweepIdle tick) ──
+  // A helper that wires the real lifecycle tick (not a direct sweepIdle call), mirroring the harness above.
+  function wireTick(reg: SessionRegistry) {
+    let tick: (() => void) | undefined;
+    const sweeper = startIdleSweeper(reg, 500, { schedule: (cb) => { tick = cb; return () => { tick = undefined; }; } });
+    return { fire: () => tick?.(), stop: () => sweeper.stop() };
+  }
+
+  // S4 PIN — clientless + keepAlive + WITHIN max-lifetime SURVIVES the idle sweep. Mutation that REDs:
+  // drop the `!keepAlive` term from the idle condition → the keepAlive session evicts on idle → RED (survives vs evicted).
+  it('S4: a clientless keepAlive session WITHIN max-lifetime survives the wired sweep (idle does not evict it)', () => {
+    let t = 0;
+    const reg = new SessionRegistry({ idleMs: 1000, backgroundMaxMs: 100_000, now: () => t, maxSessions: 10 });
+    const bg = reg.create({ endpoint: 'bg' });
+    bg.setKeepAlive(true);
+    const w = wireTick(reg);
+    t = 2000; // idle past idleMs (1000) but well within backgroundMaxMs (100000), clientless
+    w.fire();
+    expect(reg.get(bg.id)).toBe(bg); // SURVIVES — keepAlive lifts idle eviction
+    expect(bg.status).not.toBe('closed');
+    w.stop();
+  });
+
+  // S4 PIN — clientless + !keepAlive STILL EVICTS on idle (default behavior unchanged). Mutation that REDs:
+  // flip the keepAlive DEFAULT to true → a normal clientless session wrongly survives → RED (evicted vs survives).
+  it('S4: a normal clientless (!keepAlive) session still evicts on idle; keepAlive defaults OFF', () => {
+    let t = 0;
+    const reg = new SessionRegistry({ idleMs: 1000, backgroundMaxMs: 100_000, now: () => t, maxSessions: 10 });
+    const normal = reg.create({ endpoint: 'n' });
+    expect(normal.keepAlive).toBe(false); // default OFF — the keepAlive-default→true mutation reds this AND the eviction below
+    const w = wireTick(reg);
+    t = 2000;
+    w.fire();
+    expect(reg.get(normal.id)).toBeUndefined(); // evicted — unchanged idle behavior
+    expect(normal.status).toBe('closed');
+    w.stop();
+  });
+
+  // S4 PIN — clientless + keepAlive + PAST max-lifetime IS EVICTED by the backstop (abandoned-session leak guard).
+  // Mutation that REDs: remove the backstop (backstopEvict) → the keepAlive session leaks forever → RED (evicted vs survives).
+  it('S4: a clientless keepAlive session PAST max-lifetime is evicted by the backstop', () => {
+    let t = 0;
+    const reg = new SessionRegistry({ idleMs: 1000, backgroundMaxMs: 100_000, now: () => t, maxSessions: 10 });
+    const bg = reg.create({ endpoint: 'bg' });
+    bg.setKeepAlive(true);
+    const w = wireTick(reg);
+    t = 200_000; // past backgroundMaxMs (100000) since createdAt=0 → abandoned background session
+    w.fire();
+    expect(reg.get(bg.id)).toBeUndefined(); // backstop evicts even a keepAlive session
+    expect(bg.status).toBe('closed');
+    w.stop();
+  });
+
+  // S4 PIN (F1c stays GREEN) — a client-attached keepAlive session past BOTH clocks STILL survives (the clients===0
+  // first term is never weakened). Mutation that REDs: weaken the `clients !== 0` guard → an attached session evicts → RED.
+  it('S4: a client-attached session past idle AND max-lifetime still survives (F1c attached-guard intact)', () => {
+    let t = 0;
+    const reg = new SessionRegistry({ idleMs: 1000, backgroundMaxMs: 100_000, now: () => t, maxSessions: 10 });
+    const attached = reg.create({ endpoint: 'attached' });
+    attached.setKeepAlive(true);
+    attached.attach(); // a client is connected
+    const w = wireTick(reg);
+    t = 1_000_000; // far past both clocks
+    w.fire();
+    expect(reg.get(attached.id)).toBe(attached); // SURVIVES — attached guard unchanged
+    expect(attached.status).not.toBe('closed');
+    w.stop();
+  });
 });

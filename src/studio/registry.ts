@@ -12,6 +12,12 @@ export interface SessionRegistryOptions {
   now?: () => number;
   /** Hard cap on concurrent live sessions; admission rejects over this (default 4). */
   maxSessions?: number;
+  /**
+   * S4: max lifetime (since creation) for a clientless KEEP-ALIVE (background) session before the backstop
+   * evicts it anyway — prevents an abandoned background session leaking forever (default 30 min). Does NOT
+   * affect non-keepAlive sessions (those evict on the idle clock) or client-attached sessions (never evicted).
+   */
+  backgroundMaxMs?: number;
 }
 
 /** Thrown by {@link SessionRegistry.create} when admission would exceed the cap. */
@@ -28,6 +34,7 @@ export class SessionRegistry {
   private readonly idleMs: number;
   private readonly now: () => number;
   private readonly maxSessions: number;
+  private readonly backgroundMaxMs: number;
   /**
    * Fired AFTER the live session set changes (create/close), so the host can push a metadata-only
    * {t:'sessions'} switcher delta to connected clients (7f B2). Set by the host once the hub exists.
@@ -38,6 +45,7 @@ export class SessionRegistry {
     this.idleMs = opts.idleMs ?? 30 * 60_000;
     this.now = opts.now ?? Date.now;
     this.maxSessions = opts.maxSessions ?? 4;
+    this.backgroundMaxMs = opts.backgroundMaxMs ?? 30 * 60_000;
   }
 
   create(opts: Omit<SessionOptions, 'now'>): Session {
@@ -89,10 +97,20 @@ export class SessionRegistry {
    * is never evicted, regardless of age.
    */
   sweepIdle(): string[] {
-    const cutoff = this.now() - this.idleMs;
+    const idleCutoff = this.now() - this.idleMs;
+    const maxLifeCutoff = this.now() - this.backgroundMaxMs;
     const evicted: string[] = [];
     for (const session of this.list()) {
-      if (session.clients === 0 && session.lastActiveAt < cutoff) {
+      // F1c attached-guard — the `clients === 0` first term is UNCHANGED and never weakened: a client-attached
+      // session is never evicted, however old.
+      if (session.clients !== 0) continue;
+      // Normal idle eviction: a clientless, NON-keepAlive session idle past idleMs (S4 adds the !keepAlive term —
+      // a background keep-alive session is exempt from the idle clock).
+      const idleEvict = !session.keepAlive && session.lastActiveAt < idleCutoff;
+      // S4 backstop: a clientless KEEP-ALIVE session past its max lifetime IS still evicted (prevents an abandoned
+      // background session leaking forever). Keyed on createdAt (absolute age), not the idle clock.
+      const backstopEvict = session.keepAlive && session.createdAt < maxLifeCutoff;
+      if (idleEvict || backstopEvict) {
         session.close();
         this.sessions.delete(session.id);
         evicted.push(session.id);

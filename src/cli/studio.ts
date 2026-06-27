@@ -257,7 +257,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
 
   const idleTimeoutMs = getConfig().browserIdleTimeoutMs;
   const registry =
-    opts.registry ?? new SessionRegistry({ maxSessions: getConfig().maxStudioSessions, idleMs: idleTimeoutMs });
+    opts.registry ?? new SessionRegistry({ maxSessions: getConfig().maxStudioSessions, idleMs: idleTimeoutMs, backgroundMaxMs: getConfig().backgroundSessionMaxMs });
   // Reclaim idle clientless sessions on a periodic tick (only `create` sweeps otherwise).
   // Cadence + threshold both track the configured idle timeout; a live (client-attached)
   // session is never evicted regardless of age.

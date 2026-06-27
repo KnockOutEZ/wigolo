@@ -24,6 +24,8 @@ export interface Config {
   maxBrowsers: number;
   /** Hard cap on concurrent live studio sessions (admission rejects over this). */
   maxStudioSessions: number;
+  /** S4: max lifetime (ms since creation) for a clientless background keep-alive session before the registry backstop evicts it. */
+  backgroundSessionMaxMs: number;
   browserIdleTimeoutMs: number;
   browserAcquireTimeoutMs: number;
   browserAcquireQueueMax: number;
@@ -267,6 +269,7 @@ export function getConfig(): Config {
     validateTimeoutMs: envInt('VALIDATE_TIMEOUT_MS', 5000, settings, 'validateTimeoutMs'),
     maxBrowsers: envInt('MAX_BROWSERS', 3, settings, 'maxBrowsers'),
     maxStudioSessions: envInt('WIGOLO_STUDIO_MAX_SESSIONS', 4, settings, 'maxStudioSessions'),
+    backgroundSessionMaxMs: envInt('WIGOLO_STUDIO_BACKGROUND_MAX_MS', 1_800_000, settings, 'backgroundSessionMaxMs'),
     browserIdleTimeoutMs: envInt('BROWSER_IDLE_TIMEOUT', 60000, settings, 'browserIdleTimeoutMs'),
     browserAcquireTimeoutMs: envInt('BROWSER_ACQUIRE_TIMEOUT_MS', 30000, settings, 'browserAcquireTimeoutMs'),
     browserAcquireQueueMax: envInt('BROWSER_ACQUIRE_QUEUE_MAX', 100, settings, 'browserAcquireQueueMax'),

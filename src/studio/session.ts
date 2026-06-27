@@ -55,6 +55,14 @@ export class Session {
   private _status: SessionStatus = 'active';
   private _clients = 0;
   private _lastActiveAt: number;
+  /**
+   * S4: background keep-alive flag. A keep-alive session is EXEMPT from the registry's idle eviction (it
+   * survives clientless), but the registry's max-lifetime backstop STILL evicts an abandoned one. Defaults
+   * OFF so a normal session's idle eviction is unchanged. HOST-ONLY: the agent holds no Session reference,
+   * so this is unreachable from the MCP/agent surface — only the host (e.g. an agent-spawned background
+   * session in S6) flips it.
+   */
+  private _keepAlive = false;
 
   constructor(opts: SessionOptions) {
     this.nowFn = opts.now ?? Date.now;
@@ -75,6 +83,16 @@ export class Session {
 
   get lastActiveAt(): number {
     return this._lastActiveAt;
+  }
+
+  /** S4: true when this is a background keep-alive session (idle-eviction-exempt; the max-lifetime backstop still applies). */
+  get keepAlive(): boolean {
+    return this._keepAlive;
+  }
+
+  /** S4 host-only setter — mark/unmark this session as background keep-alive. Never reachable from the agent surface. */
+  setKeepAlive(v: boolean): void {
+    this._keepAlive = v;
   }
 
   /** Mark activity: refresh the idle clock and revive an idle (not closed) session. */
