@@ -7,6 +7,7 @@ import { MarksModel } from '../transport/marks.js';
 import { ApprovalsModel } from '../transport/approvals.js';
 import { TimelineModel } from '../transport/timeline.js';
 import { CommentsModel } from '../transport/comments.js';
+import { NarrationModel } from '../transport/narration.js';
 import { ArtifactsModel } from '../transport/artifacts.js';
 import { SessionsModel } from '../transport/sessions.js';
 
@@ -40,10 +41,12 @@ describe('Studio web-app split-view shell', () => {
     const approvals = new ApprovalsModel();
     const timeline = new TimelineModel();
     const comments = new CommentsModel();
+    const narration = new NarrationModel();
     const artifacts = new ArtifactsModel();
     const sessions = new SessionsModel();
-    const wiring = { model, marks, approvals, timeline, comments, artifacts, sessions, sessionId: 'sess-boot', switchSession: vi.fn(), emit: vi.fn(), connectCanvas: vi.fn((_c: HTMLCanvasElement) => () => {}) };
+    const wiring = { model, marks, approvals, timeline, comments, narration, artifacts, sessions, sessionId: 'sess-boot', switchSession: vi.fn(), emit: vi.fn(), connectCanvas: vi.fn((_c: HTMLCanvasElement) => () => {}) };
     const props = deriveRailProps(wiring);
+    expect(props.narration).toBe(narration); // and the live narration model (S2b)
     expect(props.controls?.model).toBe(model); // the SAME live control model, not undefined
     expect(props.controls?.emit).toBe(wiring.emit);
     expect(props.marks).toBe(marks); // and the live marks model

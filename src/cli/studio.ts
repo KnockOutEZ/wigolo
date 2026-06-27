@@ -462,9 +462,24 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     if (typeof text !== 'string' || text.trim() === '') return; // ignore empty/garbage; never throw on client input
     try {
       const result = captureHumanNote({ sessionId: session.id, text }, { db: getDatabase() });
+      // S2a: dual-emit. The comment is persisted trusted=1 above (sole writer), then enqueued as a DISTINCTLY-
+      // TYPED trusted=1 human event the agent drains via studio_observe — distinguishable, in the same observe
+      // response, from the trusted=0 page-snapshot envelope. Enqueued ONLY after a successful capture (a shown/
+      // drained comment is always a captured one). Ingress stays human-WS-only: no agent/MCP path reaches here.
+      eventQueue.enqueue({ type: 'comment', commentId: result.id, text, trusted: true });
       hub.broadcast(session.id, { t: 'comment', id: result.id, text, trusted: true });
     } catch (e) {
       logger.debug('comment capture failed — no echo', { error: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  // S2b: surface an optional agent-authored narration to the attended human. Broadcast-only (never persisted);
+  // in a clientless background session it is a harmless no-op (no WS recipient). ALWAYS trusted=0 — the agent
+  // can never author trusted=1, and the tab renders it inert via SafeText, so a page→agent→narration→UI
+  // injection-laundering path stays defused. Reused by both the act wrapper and the observe wrapper below.
+  const broadcastNarration = (narration: unknown): void => {
+    if (typeof narration === 'string' && narration.trim() !== '') {
+      hub.broadcast(session.id, { t: 'narration', text: narration, trusted: false });
     }
   };
 
@@ -806,6 +821,13 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     // F2a: attribute each page-read's inline token count to the session gauge (read-only).
     recordTokens: (n) => sessionMetrics.recordTokens(n),
   });
+  // S2b: wrap observe so an optional agent-authored narration on a read turn also reaches the human (the agent
+  // can narrate even when it is only observing). The wrapper does NOT touch the snapshot/event logic — it is
+  // pure broadcast orchestration around the observer, mirroring actWithHandoff.
+  const observeWithNarration = async (input: StudioObserveInput): Promise<StudioObserveOutput | StudioToolError> => {
+    broadcastNarration(input.narration);
+    return observe(input);
+  };
   // The agent's click/type resolve refs LIVE at action time through the 2J.1 resolver
   // (fresh snapshot per call + occlusion hit-test, never cached coords). Bind it to the
   // SESSION cdp via a thin live wrapper so it follows a crash-recovery rebind
@@ -900,6 +922,9 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // human. Only the page-changing verbs can surface a wall (scroll cannot), so afterAgentAct is
   // gated to them. The act handler itself is unchanged; this is pure orchestration around it.
   const actWithHandoff = async (input: StudioActInput): Promise<StudioActOutput | StudioToolError> => {
+    // S2b: the agent narrates its intent to the human BEFORE the act runs, so the narration surfaces even if
+    // the act is refused (e.g. not the control holder). Broadcast-only; trusted=0 by construction.
+    broadcastNarration(input.narration);
     const result = await act(input);
     if (input.action === 'navigate' || input.action === 'click' || input.action === 'type') {
       await loginHandoff.afterAgentAct();
@@ -913,7 +938,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // capture time: getDatabase() throws until initDatabase() has run, and a capture only arrives
   // once the session + cache are live — eager resolution at wiring would break host boot.
   daemon.setStudioHost({
-    observe,
+    observe: observeWithNarration,
     act: actWithHandoff,
     marks: marksTool,
     capture: (input) => createCaptureHandler({
@@ -948,7 +973,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe, act: actWithHandoff, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
+  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
 }
 
 /** Open the web-app tab in the platform browser; the logged URL is the fallback if no opener is present. */

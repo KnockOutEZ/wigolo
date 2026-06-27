@@ -6,6 +6,7 @@ import type { MarksModel } from '../transport/marks.js';
 import type { ApprovalsModel } from '../transport/approvals.js';
 import type { TimelineModel } from '../transport/timeline.js';
 import type { CommentsModel } from '../transport/comments.js';
+import type { NarrationModel } from '../transport/narration.js';
 import type { ArtifactsModel } from '../transport/artifacts.js';
 import type { SessionsModel } from '../transport/sessions.js';
 
@@ -29,6 +30,8 @@ export interface AppProps {
   timeline?: TimelineModel;
   /** Override the comments model (tests). Defaults to the shared bootstrap. */
   comments?: CommentsModel;
+  /** Override the narration model (tests). Defaults to the shared bootstrap. */
+  narration?: NarrationModel;
   /** Override the captured-items model (tests). Defaults to the shared bootstrap. */
   artifacts?: ArtifactsModel;
   /** Override the sessions model (tests). Defaults to the shared bootstrap. */
@@ -40,12 +43,12 @@ export interface AppProps {
  * reach the rail — the prior `boot?.controls` read a field the wiring never carried, leaving the rail inert
  * in production. Returns {} when there is no wiring (jsdom / no WebSocket).
  */
-export function deriveRailProps(boot: StudioWiring | null): { controls?: RailControls; marks?: MarksModel; approvals?: ApprovalsModel; timeline?: TimelineModel; comments?: CommentsModel; artifacts?: ArtifactsModel; sessions?: SessionsModel } {
+export function deriveRailProps(boot: StudioWiring | null): { controls?: RailControls; marks?: MarksModel; approvals?: ApprovalsModel; timeline?: TimelineModel; comments?: CommentsModel; narration?: NarrationModel; artifacts?: ArtifactsModel; sessions?: SessionsModel } {
   if (!boot) return {};
-  return { controls: { model: boot.model, emit: boot.emit }, marks: boot.marks, approvals: boot.approvals, timeline: boot.timeline, comments: boot.comments, artifacts: boot.artifacts, sessions: boot.sessions };
+  return { controls: { model: boot.model, emit: boot.emit }, marks: boot.marks, approvals: boot.approvals, timeline: boot.timeline, comments: boot.comments, narration: boot.narration, artifacts: boot.artifacts, sessions: boot.sessions };
 }
 
-export function App({ connect, controls, marks, approvals, timeline, comments, artifacts, sessions }: AppProps = {}) {
+export function App({ connect, controls, marks, approvals, timeline, comments, narration, artifacts, sessions }: AppProps = {}) {
   const boot = useMemo(() => bootstrapStudio(), []);
   const connectFn = connect ?? boot?.connectCanvas;
   const rail = deriveRailProps(boot);
@@ -54,6 +57,7 @@ export function App({ connect, controls, marks, approvals, timeline, comments, a
   const approvalsModel = approvals ?? rail.approvals;
   const timelineModel = timeline ?? rail.timeline;
   const commentsModel = comments ?? rail.comments;
+  const narrationModel = narration ?? rail.narration;
   const artifactsModel = artifacts ?? rail.artifacts;
   const sessionsModel = sessions ?? rail.sessions;
   // The session the stream is bound to (switcher highlight). Switching rebinds the connection AND updates the
@@ -70,7 +74,7 @@ export function App({ connect, controls, marks, approvals, timeline, comments, a
       </header>
       <div class="studio-body">
         <BrowserPane connect={connectFn} />
-        <Rail controls={controlsObj} marks={marksModel} approvals={approvalsModel} timeline={timelineModel} comments={commentsModel} artifacts={artifactsModel} sessions={sessionsModel} currentSessionId={current} onSelectSession={onSelectSession} />
+        <Rail controls={controlsObj} marks={marksModel} approvals={approvalsModel} timeline={timelineModel} comments={commentsModel} narration={narrationModel} artifacts={artifactsModel} sessions={sessionsModel} currentSessionId={current} onSelectSession={onSelectSession} />
       </div>
     </div>
   );

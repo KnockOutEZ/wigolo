@@ -51,6 +51,7 @@ import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.
 import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import { createCaptureHandler, type StudioCaptureInput } from '../../../src/studio/capture/handler.js';
 import { captureHumanNote, captureFromPage } from '../../../src/studio/capture/artifacts.js';
+import { STUDIO_ACT_TOOL_SCHEMA, STUDIO_OBSERVE_TOOL_SCHEMA, TOOL_SCHEMAS } from '../../../src/server/tool-schemas.js';
 
 /** Attach the host's REAL ws hub to a loopback server and connect a real client — exercises handleUpgrade end-to-end. */
 async function connectToHostHub(host: Awaited<ReturnType<typeof startStudioHost>>) {
@@ -1556,5 +1557,124 @@ describe('cli/studio startStudioHost — 7e S2 captured snapshot + postHello iso
       await conn.close();
       await host.daemon.stop();
     }
+  });
+});
+
+/**
+ * S2 — agent dialogue. Two halves, both through the REAL host path:
+ *  (a) comment→agent: a human {t:'comment'} WS message persists trusted=1 (sole writer) AND dual-emits a
+ *      DISTINCTLY-TYPED trusted=1 human event the agent drains via studio_observe — distinguishable, in the
+ *      same observe response, from the trusted=0 page-snapshot envelope. Ingress stays human-WS-only.
+ *  (b) agent→human narration: an optional agent-authored `narration` on studio_act AND studio_observe is
+ *      broadcast to attended human WS clients as {t:'narration',text,trusted:false} (agent can never author
+ *      trusted=1), rendered inert via SafeText on the tab. No new MCP verb; broadcast-only, never persisted.
+ */
+type ObserveLike = { events: Array<Record<string, unknown>>; trusted: boolean };
+
+describe('cli/studio startStudioHost — S2 agent dialogue', () => {
+  beforeEach(() => {
+    events.length = 0;
+    resetConfig();
+    _resetMigrationGuard();
+    initDatabase(':memory:');
+  });
+  afterEach(() => {
+    try { closeDatabase(); } catch { /* already closed */ }
+    resetConfig();
+  });
+
+  // ── S2a PIN-1 (positive) + PIN-3 (page-content trust stays 0) ──
+  // A human comment surfaces in the studio_observe drain as a DISTINCTLY-TYPED trusted=1 human event, while
+  // the page-snapshot envelope in the SAME observe stays trusted=0. NAMED mutation that REDs: drop the
+  // eventQueue.enqueue in onCommentHandler → no comment event in the drain (presence diverges); OR enqueue it
+  // with trusted:false / no trusted → the trust diverges.
+  it('S2a PIN-1: a human comment surfaces in studio_observe as a trusted=1 human event (envelope stays trusted=0)', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    const conn = await connectToHostHub(host);
+    try {
+      await conn.at(0); // hello
+      conn.ws.send(JSON.stringify({ t: 'comment', text: 'click the blue button' }));
+      await conn.waitForType('comment'); // echo fires only AFTER a successful capture → comment is persisted + enqueued
+      const obs = (await host.observe({ since: 0 })) as unknown as ObserveLike;
+      const commentEv = obs.events.find((e) => e.type === 'comment');
+      expect(commentEv, `comment event present in observe drain; got ${JSON.stringify(obs.events)}`).toBeTruthy();
+      expect(commentEv!.text).toBe('click the blue button');
+      expect(commentEv!.trusted).toBe(true); // DISTINCTLY-TYPED trusted=1 human event (mutation flip→false REDs)
+      expect(obs.trusted).toBe(false); // PIN-3: page-snapshot envelope in the same observe stays trusted=0
+    } finally {
+      await conn.close();
+      await host.daemon.stop();
+    }
+  });
+
+  // ── S2a PIN-2 (structural — comment ingress is human-WS-only) ──
+  // Agent-reachable verbs create NO comment event; only the human WS path does. NAMED mutation that REDs: add an
+  // agent-reachable comment writer (e.g. enqueue a comment event from act/observe or a new agent verb) → an agent
+  // op produces a comment event and the first assertion REDs.
+  it('S2a PIN-2: comment ingress is human-WS-only — agent verbs create no comment event, only the WS path does', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    const conn = await connectToHostHub(host);
+    try {
+      await conn.at(0);
+      // Drive agent-reachable verbs — none may enqueue a comment.
+      await host.observe({});
+      await host.act({ action: 'scroll' });
+      const afterAgent = (await host.observe({ since: 0 })) as unknown as ObserveLike;
+      expect(afterAgent.events.some((e) => e.type === 'comment')).toBe(false); // no agent/MCP path creates a comment
+      // The human WS path IS the producer.
+      conn.ws.send(JSON.stringify({ t: 'comment', text: 'human authored' }));
+      await conn.waitForType('comment');
+      const afterHuman = (await host.observe({ since: 0 })) as unknown as ObserveLike;
+      expect(afterHuman.events.filter((e) => e.type === 'comment').length).toBe(1);
+    } finally {
+      await conn.close();
+      await host.daemon.stop();
+    }
+  });
+
+  // ── S2b PIN-3a (positive — narration on studio_act reaches the human) + PIN-2 (trusted=0) ──
+  // NAMED mutation that REDs: drop the narration broadcast in actWithHandoff → no {t:'narration'} arrives
+  // (waitForType times out); OR stamp trusted:true → the trust diverges (agent can never author trusted=1).
+  it('S2b PIN-3a: narration on studio_act reaches human WS clients as {t:narration,trusted:false}', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    const conn = await connectToHostHub(host);
+    try {
+      await conn.at(0);
+      await host.act({ action: 'scroll', narration: 'scrolling to the reviews' });
+      const n = await conn.waitForType('narration');
+      expect(n.text).toBe('scrolling to the reviews');
+      expect(n.trusted).toBe(false); // agent-authored → ALWAYS trusted=0 (mutation flip→true REDs)
+    } finally {
+      await conn.close();
+      await host.daemon.stop();
+    }
+  });
+
+  // ── S2b PIN-3b (positive — narration on studio_observe reaches the human) ──
+  // NAMED mutation that REDs: drop the narration broadcast in the observe wrapper → no {t:'narration'} arrives.
+  it('S2b PIN-3b: narration on studio_observe reaches human WS clients as {t:narration,trusted:false}', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    const conn = await connectToHostHub(host);
+    try {
+      await conn.at(0);
+      await host.observe({ narration: 'reading the page to plan the next step' });
+      const n = await conn.waitForType('narration');
+      expect(n.text).toBe('reading the page to plan the next step');
+      expect(n.trusted).toBe(false);
+    } finally {
+      await conn.close();
+      await host.daemon.stop();
+    }
+  });
+
+  // ── S2b PIN-4 (structural — NO new MCP verb; narration rides the existing act/observe schemas only) ──
+  // NAMED mutation that REDs: add a standalone studio_narrate tool → the studio tool set grows / a narrate key
+  // appears. narration must be a FIELD on the existing schemas, not its own verb.
+  it('S2b PIN-4: narration is a field on studio_act + studio_observe schemas, NOT a new MCP verb', () => {
+    expect(STUDIO_ACT_TOOL_SCHEMA.properties).toHaveProperty('narration');
+    expect(STUDIO_OBSERVE_TOOL_SCHEMA.properties).toHaveProperty('narration');
+    const studioVerbs = Object.keys(TOOL_SCHEMAS).filter((k) => k.startsWith('studio_'));
+    expect(studioVerbs.sort()).toEqual(['studio_act', 'studio_capture', 'studio_marks', 'studio_observe']);
+    expect(studioVerbs).not.toContain('studio_narrate');
   });
 });

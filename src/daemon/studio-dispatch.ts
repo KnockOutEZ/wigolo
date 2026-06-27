@@ -28,6 +28,13 @@ export interface StudioObserveInput {
   base_id?: string;
   /** Retrieve a previously spilled full snapshot by ref. */
   snapshot_ref?: string;
+  /**
+   * S2: optional agent-authored narration surfaced to the attended human (broadcast only, NOT a new
+   * MCP verb). Always rendered inert (trusted=0) on the human surface — the agent can never author
+   * trusted=1, so a page→agent→narration laundering path stays defused. Broadcast-only: in a clientless
+   * background session it is a harmless no-op (no WS recipient). Never persisted.
+   */
+  narration?: string;
 }
 
 /** Vision sub-result, if present — UNTRUSTED page-rendered pixels. `trusted` is a first-class serialized field so it survives JSON + the proxy round-trip. */
@@ -93,6 +100,12 @@ export interface StudioActInput {
   text?: string;
   direction?: 'down' | 'up';
   amount?: number;
+  /**
+   * S2: optional agent-authored narration surfaced to the attended human (broadcast only, NOT a new
+   * MCP verb). Always trusted=0 on the human surface (agent can never author trusted=1); rendered inert
+   * via SafeText. Broadcast fires regardless of the act's own verdict — the agent narrates its intent.
+   */
+  narration?: string;
 }
 
 export interface StudioActOutput {

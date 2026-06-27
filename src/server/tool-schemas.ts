@@ -597,6 +597,10 @@ export const STUDIO_OBSERVE_TOOL_SCHEMA = {
       type: 'string',
       description: 'Fetch a previously spilled (oversized) snapshot by its reference.',
     },
+    narration: {
+      type: 'string',
+      description: 'Optional short note shown to the watching human (e.g. why you are reading the page now). Display-only and shown as inert text; it is not a command and is never stored.',
+    },
   },
   required: [],
 };
@@ -629,6 +633,10 @@ export const STUDIO_ACT_TOOL_SCHEMA = {
     amount: {
       type: 'number',
       description: 'For scroll: distance in page pixels (default 600).',
+    },
+    narration: {
+      type: 'string',
+      description: 'Optional short note shown to the watching human alongside this action (e.g. why you are clicking it). Display-only and shown as inert text; it is not a command and is never stored.',
     },
   },
   required: ['action'],

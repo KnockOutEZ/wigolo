@@ -9,6 +9,7 @@ import { MarksModel } from './marks.js';
 import { ApprovalsModel } from './approvals.js';
 import { TimelineModel } from './timeline.js';
 import { CommentsModel } from './comments.js';
+import { NarrationModel } from './narration.js';
 import { ArtifactsModel } from './artifacts.js';
 import { SessionsModel } from './sessions.js';
 
@@ -33,6 +34,8 @@ export interface StudioWiring {
   timeline: TimelineModel;
   /** The server-authoritative comments list, fed by comment_snapshot (backfill) + comment (live echo delta) down-messages (7b-notes S3). */
   comments: CommentsModel;
+  /** The agent's ephemeral narration stream, fed by narration (live delta) down-messages (S2b). Broadcast-only — no backfill. */
+  narration: NarrationModel;
   /** The server-authoritative captured-items list, fed by artifact_snapshot (backfill) + artifact (live delta) down-messages (7e S3). */
   artifacts: ArtifactsModel;
   /** The server-authoritative live-session list, fed by sessions_snapshot (backfill) + sessions (delta) down-messages (7f B3). */
@@ -58,6 +61,7 @@ export function bootstrapStudio(): StudioWiring | null {
   const approvals = new ApprovalsModel();
   const timeline = new TimelineModel();
   const comments = new CommentsModel();
+  const narration = new NarrationModel();
   const artifacts = new ArtifactsModel();
   const sessions = new SessionsModel();
   let connector: SessionConnector | null = null;
@@ -110,6 +114,9 @@ export function bootstrapStudio(): StudioWiring | null {
             // 7b-notes S3: a live human-comment echo (upsert by id). SERVER-authoritative — the comment shows
             // only on this echo, never optimistically on the human's local submit.
             comments.applyDelta({ id: msg.id, text: msg.text });
+          } else if (msg.t === 'narration') {
+            // S2b: a live agent→human narration. Ephemeral (no backfill) — append; rendered inert via SafeText.
+            narration.applyDelta(msg.text);
           } else if (msg.t === 'artifact_snapshot') {
             // 7e S3: the post-hello backfill — the host's complete captured set this session (replaces).
             artifacts.applySnapshot(msg.items);
@@ -176,5 +183,5 @@ export function bootstrapStudio(): StudioWiring | null {
     };
   };
 
-  return { model, marks, approvals, timeline, comments, artifacts, sessions, sessionId, switchSession, emit, connectCanvas };
+  return { model, marks, approvals, timeline, comments, narration, artifacts, sessions, sessionId, switchSession, emit, connectCanvas };
 }

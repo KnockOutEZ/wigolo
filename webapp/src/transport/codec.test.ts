@@ -30,6 +30,16 @@ describe('Studio stream codec (S3) — down parsing', () => {
     expect((parsed as { t: 'frame'; data: string }).data).toBe('JPEGB64');
   });
 
+  // S2b: the agent→human narration down-message. Parses to {t:'narration',text}; the `trusted` tag is dropped
+  // (a narration is ALWAYS agent-authored/untrusted on this surface and rendered inert via SafeText). NAMED
+  // mutation that REDs: drop the `case 'narration'` from parseDownMessage → a real narration parses to null and
+  // never reaches the panel.
+  it('S2b: parses an agent narration to {t:narration, text}; malformed (no text) is null', () => {
+    expect(parseDownMessage({ t: 'narration', text: 'reading the page', trusted: false })).toEqual({ t: 'narration', text: 'reading the page' });
+    expect(parseDownMessage({ t: 'narration' })).toBeNull(); // missing text
+    expect(parseDownMessage({ t: 'narration', text: 42 })).toBeNull(); // non-string text
+  });
+
   // 7c S4: the two marks down-messages the host emits — the post-hello backfill snapshot and the live delta.
   it('parses the marks_snapshot backfill (the post-hello per-connection hydrate)', () => {
     const snap = parseDownMessage({ t: 'marks_snapshot', marks: [{ markId: 'm1', role: 'button', name: 'Add', trusted: false, confidence: 'high', ref: 'e3' }] });

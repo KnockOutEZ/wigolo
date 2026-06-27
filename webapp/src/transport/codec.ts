@@ -109,6 +109,7 @@ export type DownMessage =
   | { t: 'audit_snapshot'; entries: AuditView[] }
   | { t: 'comment_snapshot'; comments: CommentView[] }
   | { t: 'comment'; id: number; text: string }
+  | { t: 'narration'; text: string }
   | { t: 'artifact_snapshot'; items: ArtifactView[] }
   | ({ t: 'artifact' } & ArtifactView)
   | { t: 'sessions_snapshot'; sessions: SessionMetaView[] }
@@ -250,6 +251,12 @@ export function parseDownMessage(raw: unknown): DownMessage | null {
     case 'comment': {
       const cv = parseCommentView(m);
       return cv ? { t: 'comment', ...cv } : null;
+    }
+    case 'narration': {
+      // S2b: agent→human narration. The `trusted` tag is intentionally dropped — a narration is ALWAYS
+      // agent-authored/untrusted on this surface and rendered inert via SafeText regardless.
+      if (typeof m.text !== 'string') return null;
+      return { t: 'narration', text: m.text };
     }
     case 'comment_snapshot': {
       if (!Array.isArray(m.comments)) return null;
