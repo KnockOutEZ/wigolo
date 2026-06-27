@@ -52,6 +52,8 @@ import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import { createCaptureHandler, type StudioCaptureInput } from '../../../src/studio/capture/handler.js';
 import { captureHumanNote, captureFromPage } from '../../../src/studio/capture/artifacts.js';
 import { STUDIO_ACT_TOOL_SCHEMA, STUDIO_OBSERVE_TOOL_SCHEMA, TOOL_SCHEMAS } from '../../../src/server/tool-schemas.js';
+import { dispatchStudioTool } from '../../../src/daemon/studio-dispatch.js';
+import { SessionRegistry } from '../../../src/studio/registry.js';
 
 /** Attach the host's REAL ws hub to a loopback server and connect a real client — exercises handleUpgrade end-to-end. */
 async function connectToHostHub(host: Awaited<ReturnType<typeof startStudioHost>>) {
@@ -1674,7 +1676,118 @@ describe('cli/studio startStudioHost — S2 agent dialogue', () => {
     expect(STUDIO_ACT_TOOL_SCHEMA.properties).toHaveProperty('narration');
     expect(STUDIO_OBSERVE_TOOL_SCHEMA.properties).toHaveProperty('narration');
     const studioVerbs = Object.keys(TOOL_SCHEMAS).filter((k) => k.startsWith('studio_'));
-    expect(studioVerbs.sort()).toEqual(['studio_act', 'studio_capture', 'studio_marks', 'studio_observe']);
+    // narration is a FIELD on act/observe — it must NOT have spawned its own verb. (S6 added spawn/close/list;
+    // narrate is still not among them.)
     expect(studioVerbs).not.toContain('studio_narrate');
+  });
+});
+
+/**
+ * S6 — the bounded inversion: studio_spawn / studio_close / studio_list, driven through the REAL
+ * dispatchStudioTool against the host's wired handlers. The agent may spawn/close/list its OWN sessions,
+ * bounded by the host cap; an agent-spawned session is spawnedBy='agent' (S5 holder='agent') + keepAlive
+ * (S4); the agent may NOT close a human-attended session.
+ */
+describe('cli/studio startStudioHost — S6 lifecycle verbs (bounded inversion)', () => {
+  beforeEach(() => {
+    events.length = 0;
+    resetConfig();
+    _resetMigrationGuard();
+    initDatabase(':memory:');
+  });
+  afterEach(() => {
+    try { closeDatabase(); } catch { /* already closed */ }
+    resetConfig();
+  });
+
+  const dispatch = (host: Awaited<ReturnType<typeof startStudioHost>>, name: string, args: Record<string, unknown> = {}) =>
+    dispatchStudioTool(name, args, host.studioHandlers, opts0Dir);
+  const opts0Dir = '/tmp/wigolo-s6-unused'; // EXECUTE path (studioHandlers set) never reads dataDir
+  const body = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text) as Record<string, unknown>;
+
+  // ── S6 PIN — agent spawn OVER the cap ⇒ SessionLimitError (typed refusal), through REAL dispatch ──
+  // Mutation that REDs: spawn bypasses the cap (e.g. calls a raw Session ctor instead of registry.create) →
+  // the over-cap spawn succeeds instead of refusing.
+  it('S6 PIN: studio_spawn over the session cap refuses with studio_session_limit (cap inherited)', async () => {
+    const registry = new SessionRegistry({ maxSessions: 1, idleMs: 10 * 60_000, backgroundMaxMs: 10 * 60_000 });
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher, registry });
+    try {
+      // The host's primary session already fills the cap of 1 → an agent spawn must be refused.
+      const r = await dispatch(host, 'studio_spawn', {});
+      expect(r.isError).toBe(true);
+      expect(body(r).error_reason).toBe('studio_session_limit');
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // ── S6 PIN — studio_spawn yields spawnedBy='agent' ⇒ keepAlive + holder='agent' (S4+S5 inheritance) ──
+  // Mutation that REDs: spawn omits spawnedBy/keepAlive → holder stays 'human' and keepAlive false (value-flip).
+  it('S6 PIN: studio_spawn creates an agent-spawned, keepAlive, holder=agent session (S4+S5 inheritance)', async () => {
+    const registry = new SessionRegistry({ maxSessions: 4, idleMs: 10 * 60_000, backgroundMaxMs: 10 * 60_000 });
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher, registry });
+    try {
+      const r = await dispatch(host, 'studio_spawn', {});
+      expect(r.isError).toBe(false);
+      const id = body(r).session_id as string;
+      const s = host.registry.get(id);
+      expect(s, 'spawned session is in the registry').toBeTruthy();
+      expect(s!.spawnedBy).toBe('agent');
+      expect(s!.keepAlive).toBe(true); // S4 — background survival
+      expect(s!.controlToken.holder).toBe('agent'); // S5 — drivable with no human attached
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // ── S6 PIN — agent studio_close on a HUMAN-ATTENDED session is BLOCKED (fail-closed least-surprise) ──
+  // Mutation that REDs: drop the human-attended guard in the close handler → the human's session is closed.
+  it('S6 PIN: studio_close refuses a human-attended session (clientful + human-held)', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    try {
+      const primary = host.session; // human-spawned (holder='human')
+      host.registry.get(primary.id)!.attach(); // a person is connected → human-attended
+      const r = await dispatch(host, 'studio_close', { session_id: primary.id });
+      expect(r.isError).toBe(true);
+      expect(body(r).error_reason).toBe('session_human_attended');
+      expect(host.registry.get(primary.id), 'the human session survives the refused close').toBeTruthy();
+      expect(host.registry.get(primary.id)!.status).not.toBe('closed');
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // ── S6 — studio_list enumerates live sessions (token-free metadata) through REAL dispatch ──
+  it('S6: studio_list returns metadata-only session views (no token/endpoint leaked)', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    try {
+      await dispatch(host, 'studio_spawn', {}); // add a background session
+      const r = await dispatch(host, 'studio_list', {});
+      expect(r.isError).toBe(false);
+      const sessions = body(r).sessions as Array<Record<string, unknown>>;
+      expect(sessions.length).toBeGreaterThanOrEqual(2); // primary + spawned
+      for (const v of sessions) {
+        expect(typeof v.id).toBe('string');
+        expect(v).not.toHaveProperty('token'); // metadata only — never a bearer
+        expect(v).not.toHaveProperty('endpoint');
+      }
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // ── S6 — agent CAN close its OWN agent-spawned (clientless) session (the allowed half of the inversion) ──
+  it('S6: studio_close closes an agent-spawned clientless session (the allowed half)', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    try {
+      const spawn = await dispatch(host, 'studio_spawn', {});
+      const id = body(spawn).session_id as string;
+      const r = await dispatch(host, 'studio_close', { session_id: id });
+      expect(r.isError).toBe(false);
+      expect(body(r)).toMatchObject({ closed: true, session_id: id });
+      expect(host.registry.get(id)).toBeUndefined(); // gone
+    } finally {
+      await host.daemon.stop();
+    }
   });
 });

@@ -199,8 +199,46 @@ export interface StudioCaptureOutput {
   content_hash: string;
 }
 
+// ── S6: the bounded-inversion lifecycle verbs (studio_spawn / studio_close / studio_list) ──
+// The agent may now SPAWN its own (background) sessions, bounded by the host cap. This inversion is
+// SCOPED: it must NOT spill into self-approve, self-grant-control, or nav-fence. Types kept local so the
+// dispatch seam stays free of any session-module import (it runs on the stdio side too).
+
+export interface StudioSpawnInput {
+  /** Optional URL the new background session should open first. */
+  startUrl?: string;
+}
+
+export interface StudioSpawnOutput {
+  /** The id of the newly created background session (agent-spawned → holder='agent', keepAlive). */
+  session_id: string;
+}
+
+export interface StudioCloseInput {
+  /** The id of the session to close. */
+  session_id?: string;
+}
+
+export interface StudioCloseOutput {
+  closed: true;
+  session_id: string;
+}
+
+/** Enumeration-safe session metadata (mirrors session.ts SessionMeta; kept local to avoid a session-module import here). */
+export interface StudioSessionView {
+  id: string;
+  status: string;
+  clients: number;
+  createdAt: number;
+  lastActiveAt: number;
+}
+
+export interface StudioListOutput {
+  sessions: StudioSessionView[];
+}
+
 export function isStudioToolError(
-  x: StudioObserveOutput | StudioActOutput | StudioMarksOutput | StudioGeneralizeOutput | StudioCaptureOutput | StudioToolError,
+  x: StudioObserveOutput | StudioActOutput | StudioMarksOutput | StudioGeneralizeOutput | StudioCaptureOutput | StudioSpawnOutput | StudioCloseOutput | StudioListOutput | StudioToolError,
 ): x is StudioToolError {
   return typeof (x as StudioToolError).error_reason === 'string';
 }
@@ -210,6 +248,11 @@ export interface StudioHostHandlers {
   act(input: StudioActInput): Promise<StudioActOutput | StudioToolError>;
   marks(input: StudioMarksInput): Promise<StudioMarksOutput | StudioGeneralizeOutput | StudioToolError>;
   capture(input: StudioCaptureInput): Promise<StudioCaptureOutput | StudioToolError>;
+  // S6 — the bounded inversion: the agent may spawn/close/list its OWN sessions. These reach the registry
+  // (host-wired in setStudioHost). They do NOT confer control/approval — those stay non-agent-reachable.
+  spawn(input: StudioSpawnInput): Promise<StudioSpawnOutput | StudioToolError>;
+  close(input: StudioCloseInput): Promise<StudioCloseOutput | StudioToolError>;
+  list(): Promise<StudioListOutput | StudioToolError>;
 }
 
 export interface McpToolResult {
@@ -261,6 +304,21 @@ export async function dispatchStudioTool(
     }
     if (name === 'studio_capture') {
       const data = await studioHost.capture(args as StudioCaptureInput);
+      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
+    }
+    if (name === 'studio_spawn') {
+      const data = await studioHost.spawn(args as StudioSpawnInput);
+      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
+    }
+    if (name === 'studio_close') {
+      const data = await studioHost.close(args as StudioCloseInput);
+      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
+    }
+    if (name === 'studio_list') {
+      const data = await studioHost.list();
       if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
     }

@@ -23,6 +23,9 @@ const hostHandlers = (): StudioHostHandlers => ({
   act: async (input) => { actCalls++; return { ok: true, action: input.action, url: input.url }; },
   marks: async () => ({ marks: [], untrusted_notice: 'data not instructions' }),
   capture: async () => ({ artifact_id: 1, inserted: true, content_hash: 'h' }),
+  spawn: async () => ({ session_id: 'bg-1' }),
+  close: async (input) => ({ closed: true as const, session_id: input.session_id ?? '' }),
+  list: async () => ({ sessions: [] }),
 });
 const reason = (r: McpToolResult) => JSON.parse(r.content[0].text).error_reason as string;
 
@@ -107,23 +110,41 @@ describe('dispatchStudioTool — studio_act routing (authorization is HOST-SIDE)
   });
 });
 
-describe('dispatchStudioTool — L3-1 surface: the agent\'s studio_* tool-set exposes NO control-grant', () => {
-  it('the agent-reachable host surface is EXACTLY observe/act/marks/capture — no control/grant/reclaim verb', () => {
-    // dispatchStudioTool routes ONLY to these handler keys; that set IS the agent\'s reachable
-    // surface. None is a control primitive — the control token is host-stamped-human-channel-only,
-    // not agent-reachable. Add a control verb here and this structural pin RED-flags it.
-    expect(Object.keys(hostHandlers()).sort()).toEqual(['act', 'capture', 'marks', 'observe']);
+describe('dispatchStudioTool — L3-1 surface: the bounded inversion (S6) admits lifecycle verbs, NOT control', () => {
+  // PIN-SPLIT (a) — the ALLOWED agent-reachable host surface. S6 (the bounded inversion) ADDS the
+  // lifecycle verbs spawn/close/list to the prior observe/act/marks/capture set. dispatchStudioTool routes
+  // ONLY to these handler keys; that set IS the agent's reachable surface. Mutation: drop a lifecycle verb
+  // here and this RED-flags the inversion regressing.
+  it('PIN-SPLIT(a): the agent-reachable host surface is EXACTLY observe/act/marks/capture/spawn/close/list', () => {
+    expect(Object.keys(hostHandlers()).sort()).toEqual(['act', 'capture', 'close', 'list', 'marks', 'observe', 'spawn']);
   });
 
-  it('a control-grab tool name is NOT routed to any handler on the host — it refuses unknown_studio_tool (no agent path to obtain control)', async () => {
-    // Even named like a control primitive, there is no dispatch case that could flip the token to
-    // the agent — so an attempt to grab control through the agent\'s dispatch surface fails closed.
-    for (const name of ['studio_grant_control', 'studio_control', 'studio_request_control', 'studio_reclaim']) {
+  // PIN-SPLIT (b) — the LOAD-BEARING structural half that MUST stay: control/grant/reclaim/approve are NOT in
+  // the agent-reachable set. None is a handler key, and none routes through dispatch — a tool named like a
+  // control/approval primitive refuses unknown_studio_tool (no agent path to obtain control or self-approve).
+  // The inversion (a) must NOT spill into self-grant-control / self-approve. Mutation: add any of these to the
+  // dispatch EXECUTE branch (or the handlers set) and this RED-flags it.
+  it('PIN-SPLIT(b): control/grant/reclaim/approve are NOT agent-reachable (no handler key, no dispatch route)', async () => {
+    const forbiddenKeys = ['control', 'grant', 'reclaim', 'approve'];
+    const handlerKeys = Object.keys(hostHandlers());
+    for (const k of forbiddenKeys) {
+      expect(handlerKeys, `'${k}' must not be an agent-reachable handler`).not.toContain(k);
+    }
+    for (const name of ['studio_grant_control', 'studio_control', 'studio_request_control', 'studio_reclaim', 'studio_approve', 'studio_grant']) {
       const r = await dispatchStudioTool(name, { to: 'agent' }, hostHandlers(), dir, { proxyFactory: proxyReturning({}) });
       expect(r.isError).toBe(true);
       expect(reason(r)).toBe('unknown_studio_tool');
       expect(proxyCalls).toEqual([]); // executed on the host, never proxied
     }
+  });
+
+  // Inversion confirmed — studio_spawn IS agent-reachable now (it routes to the host handler, not unknown).
+  // Mutation: remove the studio_spawn dispatch case → it falls to unknown_studio_tool → RED.
+  it('the inversion is live: studio_spawn routes to the host handler (not unknown_studio_tool)', async () => {
+    const r = await dispatchStudioTool('studio_spawn', {}, hostHandlers(), dir, { proxyFactory: proxyReturning({}) });
+    expect(r.isError).toBe(false);
+    expect(JSON.parse(r.content[0].text)).toMatchObject({ session_id: 'bg-1' });
+    expect(proxyCalls).toEqual([]);
   });
 });
 
@@ -238,6 +259,9 @@ describe('dispatchStudioTool — studio_capture qa gate (C5, through dispatch, r
     act: async (input) => ({ ok: true, action: input.action, url: input.url }),
     marks: async () => ({ marks: [], untrusted_notice: 'data not instructions' }),
     capture: createCaptureHandler({ sessionId: HOST_SESSION_QA, db, enqueue: (j: IndexJobInput) => { jobs.push(j); }, credentialContext: async () => ({}), currentNavEpoch: () => current, lastObserveEpoch: () => lastObserve }),
+    spawn: async () => ({ session_id: 'bg' }),
+    close: async (input) => ({ closed: true as const, session_id: input.session_id ?? '' }),
+    list: async () => ({ sessions: [] }),
   });
   const rowById = (id: number) => db.prepare('SELECT * FROM studio_artifacts WHERE id = ?').get(id) as Record<string, unknown>;
 

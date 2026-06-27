@@ -60,6 +60,9 @@ import {
   STUDIO_ACT_TOOL_SCHEMA,
   STUDIO_MARKS_TOOL_SCHEMA,
   STUDIO_CAPTURE_TOOL_SCHEMA,
+  STUDIO_SPAWN_TOOL_SCHEMA,
+  STUDIO_CLOSE_TOOL_SCHEMA,
+  STUDIO_LIST_TOOL_SCHEMA,
 } from './server/tool-schemas.js';
 import { loadPlugins } from './plugins/loader.js';
 import { PluginRegistry } from './plugins/registry.js';
@@ -405,6 +408,21 @@ export function createMcpServer(subsystems: Subsystems): Server {
         description: TOOL_DESCRIPTIONS.studio_capture,
         inputSchema: STUDIO_CAPTURE_TOOL_SCHEMA,
       },
+      {
+        name: 'studio_spawn',
+        description: TOOL_DESCRIPTIONS.studio_spawn,
+        inputSchema: STUDIO_SPAWN_TOOL_SCHEMA,
+      },
+      {
+        name: 'studio_close',
+        description: TOOL_DESCRIPTIONS.studio_close,
+        inputSchema: STUDIO_CLOSE_TOOL_SCHEMA,
+      },
+      {
+        name: 'studio_list',
+        description: TOOL_DESCRIPTIONS.studio_list,
+        inputSchema: STUDIO_LIST_TOOL_SCHEMA,
+      },
     ],
   }));
 
@@ -584,7 +602,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
       };
     }
 
-    if (name === 'studio_observe' || name === 'studio_act' || name === 'studio_marks' || name === 'studio_capture') {
+    if (name === 'studio_observe' || name === 'studio_act' || name === 'studio_marks' || name === 'studio_capture' || name === 'studio_spawn' || name === 'studio_close' || name === 'studio_list') {
       // Route through the shared seam: execute-on-host (studioHost set) or proxy/refuse on stdio.
       // studio_act's control-token gate runs inside the host handler — host-authoritative.
       const result = await dispatchStudioTool(name, (args ?? {}) as Record<string, unknown>, subsystems.studioHost, getConfig().dataDir);

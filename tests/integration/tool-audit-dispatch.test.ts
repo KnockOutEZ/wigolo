@@ -43,6 +43,9 @@ const STUDIO_HOST: StudioHostHandlers = {
   act: async (input) => ({ ok: true, action: input.action, url: input.url }),
   marks: async () => ({ marks: [], untrusted_notice: 'data not instructions' }),
   capture: async () => ({ artifact_id: 1, inserted: true, content_hash: 'h' }),
+  spawn: async () => ({ session_id: 'bg' }),
+  close: async (input) => ({ closed: true as const, session_id: input.session_id ?? '' }),
+  list: async () => ({ sessions: [] }),
 };
 
 function stubSubsystems(toolAuditDb: Database.Database | undefined, studioHost?: StudioHostHandlers): Subsystems {

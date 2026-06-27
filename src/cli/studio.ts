@@ -4,7 +4,7 @@ import { DaemonHttpServer } from '../daemon/http-server.js';
 import { getEmbedProvider } from '../providers/embed-provider.js';
 import { checkBindHost } from '../studio/bind.js';
 import { resolveHostToken } from '../studio/auth.js';
-import { SessionRegistry, startIdleSweeper, type IdleSweeper } from '../studio/registry.js';
+import { SessionRegistry, SessionLimitError, startIdleSweeper, type IdleSweeper } from '../studio/registry.js';
 import { sessionMeta, type Session, type SessionMeta } from '../studio/session.js';
 import { SessionBrowser, type SessionBrowserLauncher, type StorageStateInput } from '../studio/session-browser.js';
 import { ProfileStore } from '../studio/profile-store.js';
@@ -47,6 +47,7 @@ import type {
   StudioMarkView,
   StudioGeneralizeOutput,
   StudioToolError,
+  StudioHostHandlers,
 } from '../daemon/studio-dispatch.js';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -184,6 +185,8 @@ export interface StudioHost {
   observe: (input: StudioObserveInput) => Promise<StudioObserveOutput | StudioToolError>;
   /** The agent's acting verb (studio_act), wrapped so a post-act login wall hands off to the human (5e-a). Host-authoritative. Exposed for the host-boundary tests. */
   act: (input: StudioActInput) => Promise<StudioActOutput | StudioToolError>;
+  /** S6: the full agent-reachable handler object wired into the daemon (observe/act/marks/capture + the bounded-inversion spawn/close/list). Exposed so tests drive the lifecycle verbs through the REAL dispatchStudioTool. */
+  studioHandlers: StudioHostHandlers;
   /** Phase 6b: the per-session append-only audit log of every agent action + outcome (for trust + the Phase-7 replay timeline). Exposed for the timeline + headed tests. */
   audit: SessionAuditLog;
   /** Phase 6c: the host↔human approval gate — risky actions are held here pending the human's WS answer. Exposed for the headed proof + the Phase-7 approval card. */
@@ -938,7 +941,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // id is bound HERE (server-side), never a caller field. The cache db is resolved LAZILY at
   // capture time: getDatabase() throws until initDatabase() has run, and a capture only arrives
   // once the session + cache are live — eager resolution at wiring would break host boot.
-  daemon.setStudioHost({
+  const studioHandlers: StudioHostHandlers = {
     observe: observeWithNarration,
     act: actWithHandoff,
     marks: marksTool,
@@ -969,12 +972,47 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       // routing is THIS closure's session.id, so a capture never broadcasts into another session's panel.
       onArtifact: (delta) => hub.broadcast(session.id, { t: 'artifact', ...delta }),
     })(input),
-  });
+    // S6 — the bounded inversion. The agent may spawn/close/list its OWN sessions, reaching the SAME registry.
+    // spawn: registry.create INHERITS the cap (SessionLimitError → typed refusal), sets spawnedBy:'agent' (S5
+    // holder='agent') + keepAlive (S4 background survival, bounded by the max-lifetime backstop). close: the
+    // agent may close ONLY a clientless or agent-held session — a human-ATTENDED session is refused (fail-closed
+    // least-surprise). list: token-free metadata enumeration (same projection as the switcher snapshot).
+    spawn: async (input) => {
+      try {
+        const s = registry.create({ endpoint, spawnedBy: 'agent' });
+        s.setKeepAlive(true);
+        if (typeof input.startUrl === 'string' && input.startUrl) {
+          logger.debug('studio_spawn startUrl recorded (background driving consumes it later)', { sessionId: s.id });
+        }
+        return { session_id: s.id };
+      } catch (e) {
+        if (e instanceof SessionLimitError) {
+          return { error_reason: e.code, hint: `At most ${e.max} concurrent studio sessions — close one with studio_close or wait.` };
+        }
+        throw e;
+      }
+    },
+    close: async (input) => {
+      const id = typeof input.session_id === 'string' ? input.session_id : '';
+      const s = registry.get(id);
+      if (!s || s.status === 'closed') {
+        return { error_reason: 'no_such_session', hint: 'No live session with that id — call studio_list.' };
+      }
+      // Fail-closed least-surprise: never close a session a person is attached to and holding.
+      if (s.clients > 0 && s.controlToken.holder === 'human') {
+        return { error_reason: 'session_human_attended', hint: 'A person is attached to that session — you cannot close it. Close one of your own background sessions instead.' };
+      }
+      registry.close(id);
+      return { closed: true as const, session_id: id };
+    },
+    list: async () => ({ sessions: registry.list().map(sessionMeta) }),
+  };
+  daemon.setStudioHost(studioHandlers);
 
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
+  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
 }
 
 /** Open the web-app tab in the platform browser; the logged URL is the fallback if no opener is present. */
