@@ -49,6 +49,13 @@ export interface FetchInput {
   include_full_markdown?: boolean;
   citation_format?: CitationFormat;
   mode?: Mode;
+  /**
+   * D19: optional live Studio session id (from studio_spawn / studio_list). When set, the fetch runs
+   * against that session's authenticated co-browse browser — navigate-class: control-token gated + SSRF
+   * -fenced — instead of an ephemeral fetch. An unknown/closed id is an explicit error, never a silent
+   * ephemeral fallback. Absent ⇒ the ephemeral fetch path is unchanged.
+   */
+  session_id?: string;
 }
 
 /**
@@ -836,6 +843,12 @@ export interface CrawlInput {
   max_tokens_out?: number;
   include_full_markdown?: boolean;
   citation_format?: CitationFormat;
+  /**
+   * D19: optional live Studio session id. When set, crawl runs against that session's authenticated browser
+   * (navigation is control-token gated + SSRF-fenced). An unknown/closed id is an explicit error, never a
+   * silent ephemeral fallback. Absent ⇒ the ephemeral crawl path is unchanged.
+   */
+  session_id?: string;
 }
 
 export interface CrawlResultItem {
@@ -950,6 +963,12 @@ export interface ExtractInput {
   named_schema?: NamedSchemaType;
   execution_mode?: Mode;
   max_tokens_out?: number;
+  /**
+   * D19: optional live Studio session id. When set, extract reads the session browser's CURRENT page (the
+   * sole token-free read — it does NOT navigate) instead of fetching url/html. An unknown/closed id is an
+   * explicit error, never a silent ephemeral fallback. Absent ⇒ the ephemeral extract path is unchanged.
+   */
+  session_id?: string;
 }
 
 export interface MetadataData {

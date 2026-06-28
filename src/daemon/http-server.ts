@@ -7,6 +7,7 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { initSubsystems, createMcpServer, type Subsystems } from '../server.js';
 import type { StudioHostHandlers } from './studio-dispatch.js';
+import type { StudioSessionsAccessor } from '../studio/session-drive.js';
 import { probeHealth } from './health-check.js';
 import { probeCacheDb } from '../cache/db.js';
 import { checkAuth, checkAuthSubprotocol, checkOriginHost } from '../studio/auth.js';
@@ -68,6 +69,7 @@ export class DaemonHttpServer {
   private readonly nonceStore: NonceStore | null;
   private mcpRequestCount = 0;
   private studioHost: StudioHostHandlers | null = null;
+  private studioSessions: StudioSessionsAccessor | null = null;
 
   // `options` is exposed readonly for observability/wiring assertions (e.g. confirming
   // the host enforces the same bearer it published to the handle). In-process only; the
@@ -94,6 +96,17 @@ export class DaemonHttpServer {
     if (this.subsystems) this.subsystems.studioHost = handlers;
   }
 
+  /**
+   * D19: inject the live session-drive accessor (late setter, mirrors setStudioHost). cli/studio.ts calls this
+   * alongside setStudioHost, AFTER start() builds the subsystems but BEFORE the handle is published. The lazy
+   * per-session createMcpServer reads subsystems.studioSessions, so a late-set value is picked up by every
+   * subsequent agent connection — a session-targeted fetch/extract/crawl forwarded to this host resolves here.
+   */
+  setStudioSessions(accessor: StudioSessionsAccessor): void {
+    this.studioSessions = accessor;
+    if (this.subsystems) this.subsystems.studioSessions = accessor;
+  }
+
   /** Count of MCP (`POST /mcp`) requests handled — observability + round-trip verification. */
   getMcpRequestCount(): number {
     return this.mcpRequestCount;
@@ -106,6 +119,7 @@ export class DaemonHttpServer {
     try {
       this.subsystems = await initSubsystems();
       if (this.studioHost) this.subsystems.studioHost = this.studioHost; // apply if set before start()
+      if (this.studioSessions) this.subsystems.studioSessions = this.studioSessions; // D19: same apply-if-pre-start
     } catch (err) {
       log.error('Failed to initialize subsystems', { error: String(err) });
       throw err;

@@ -25,10 +25,11 @@ import { NavEpoch } from '../studio/nav-epoch.js';
 import { createActHandler } from '../studio/act.js';
 import { createCaptureHandler } from '../studio/capture/handler.js';
 import { getDatabase } from '../cache/db.js';
-import { captureHumanNote, listSessionComments, listSessionArtifacts, type SessionCommentRow, type ArtifactDelta } from '../studio/capture/artifacts.js';
+import { captureFromPage, captureHumanNote, listSessionComments, listSessionArtifacts, type SessionCommentRow, type ArtifactDelta, type CaptureResult } from '../studio/capture/artifacts.js';
 import { SessionAuditLog, type AuditDb, type AuditEntry } from '../studio/audit.js';
 import { SessionApprovals } from '../studio/approvals.js';
 import { PreGrantStore, type PreGrantEntry } from '../studio/pre-grant.js';
+import { createSessionDrive, type StudioSessionsAccessor } from '../studio/session-drive.js';
 import type { ParkedAction } from '../studio/act.js';
 import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
@@ -197,6 +198,10 @@ export interface StudioHost {
   grantAgentPrivateNav: (on: boolean) => void;
   /** S7: the pre-grant authorization scope store (closure-local). Exposed for tests to assert the {t:'grant'} WS-human write boundary; the agent holds no reference to it. */
   preGrant: PreGrantStore;
+  /** D19: the host-injected session-drive accessor (mirrors studioHost). Exposed for tests; resolves the live session's gated drive by id. */
+  studioSessions: StudioSessionsAccessor;
+  /** D19: the primary session's drive seam (gated navigate + current-page read + trusted-0 insert). Exposed for tests. */
+  sessionDrive: ReturnType<typeof createSessionDrive>;
   /** Slice 5e-a: the login-wall handoff machine — wall-detect → human-holding → completing/aborted/vanished. Exposed for the host-boundary/headed tests. */
   handoff: LoginHandoff;
   hub: StudioWsHub;
@@ -972,6 +977,53 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     return result;
   };
 
+  // D19: the session-targeted DRIVE SEAM. Mirrors the studioHost injection — a host-side accessor the
+  // cross-process fetch/extract/crawl forward resolves a live session's drive through. The host drives ONE
+  // browser (the primary session), so getSessionDrive returns the drive ONLY for session.id and ONLY while it
+  // is live; any other / closed id ⇒ undefined ⇒ the tool surfaces an explicit error (never a silent ephemeral
+  // fallback). The Session STAYS metadata-only — the drive ctx is these closure-locals, never on Session.
+  const readSessionHtml = async (): Promise<string> => {
+    const r = (await sessionBrowser.cdp.send('Runtime.evaluate', {
+      expression: 'document.documentElement.outerHTML',
+      returnByValue: true,
+    })) as { result?: { value?: unknown } };
+    return typeof r.result?.value === 'string' ? r.result.value : '';
+  };
+  // Trusted-0 BY CONSTRUCTION (captureFromPage — the agent can never reach the trusted=1 human-note writer);
+  // session bound server-side; credential-context resolved FRESH and excluded (same provider as studio_capture),
+  // so a session-fetch of a login page never persists or returns credentials.
+  const insertSessionContent = async (a: { url: string; title: string; markdown: string }): Promise<CaptureResult> => {
+    const snap = await snapshotter.snapshot(sessionBrowser.cdp);
+    let pageUrl: string | undefined;
+    try {
+      pageUrl = sessionBrowser.page.url();
+    } catch {
+      /* not started / mid-recovery — the field signal still applies */
+    }
+    return captureFromPage(
+      { type: 'clip', sessionId: session.id, url: a.url, title: a.title, markdown: a.markdown },
+      { db: getDatabase(), credentialContext: { pageUrl, fields: [...(snap.domByRef?.values() ?? [])] } },
+    );
+  };
+  const sessionDrive = createSessionDrive({
+    browser: sessionBrowser,
+    controlToken,
+    grant,
+    currentUrl: () => {
+      try {
+        return sessionBrowser.page.url();
+      } catch {
+        return undefined;
+      }
+    },
+    readHtml: readSessionHtml,
+    insert: insertSessionContent,
+  });
+  const studioSessions: StudioSessionsAccessor = {
+    getSessionDrive: (id) =>
+      id === session.id && session.status !== 'closed' && sessionBrowser.running ? sessionDrive : undefined,
+  };
+
   // Phase 4c: the studio_capture handler — the agent persists a page clip to the cache as a
   // session artifact. Trusted-0 by construction (routes through captureFromPage); the session
   // id is bound HERE (server-side), never a caller field. The cache db is resolved LAZILY at
@@ -1044,11 +1096,12 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     list: async () => ({ sessions: registry.list().map(sessionMeta) }),
   };
   daemon.setStudioHost(studioHandlers);
+  daemon.setStudioSessions(studioSessions);
 
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, preGrant, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
+  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, preGrant, studioSessions, sessionDrive, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
 }
 
 /** Open the web-app tab in the platform browser; the logged URL is the fallback if no opener is present. */

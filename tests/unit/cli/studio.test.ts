@@ -19,6 +19,7 @@ vi.mock('../../../src/daemon/http-server.js', () => ({
       return 'http://127.0.0.1:7777';
     });
     setStudioHost = vi.fn().mockImplementation(() => { events.push('setStudioHost'); });
+    setStudioSessions = vi.fn().mockImplementation(() => { events.push('setStudioSessions'); });
     stop = vi.fn().mockResolvedValue(undefined);
   },
 }));
@@ -589,6 +590,10 @@ describe('cli/studio startStudioHost', () => {
     // The handle is the only discovery path — setStudioHost must run first so a studio_*
     // call can't arrive, read the handle pointing at us, and proxy into a self-loop.
     expect(events.indexOf('setStudioHost')).toBeLessThan(events.indexOf('handle'));
+    // D19: the session-drive accessor is injected in the SAME pre-handle window (same self-loop reasoning —
+    // a forwarded session-targeted fetch must find studioSessions set before the handle is discoverable).
+    expect(events).toContain('setStudioSessions');
+    expect(events.indexOf('setStudioSessions')).toBeLessThan(events.indexOf('handle'));
     await host.daemon.stop();
   });
 

@@ -325,6 +325,22 @@ export async function dispatchStudioTool(
     return refusal('unknown_studio_tool', `No host handler for ${name}.`);
   }
 
+  return proxyToStudioHost(name, args, dataDir, deps);
+}
+
+/**
+ * The stdio-side forward to the live Studio host: read the published handle, REFUSE if none, REFUSE-SELF if it
+ * points at THIS process (wiring-window defense; instance UUID, not pid), else PROXY the call and pass the
+ * host's result back VERBATIM (untrusted tags + every field survive the round-trip). Shared by the studio_*
+ * dispatch AND the D19 session-targeted fetch/extract/crawl forward, so both ride ONE bearer-authed,
+ * instanceId-guarded proxy path — never a second hand-rolled lane.
+ */
+export async function proxyToStudioHost(
+  name: string,
+  args: Record<string, unknown>,
+  dataDir?: string,
+  deps?: DispatchDeps,
+): Promise<McpToolResult> {
   const handle = readHandle(dataDir);
   // REFUSE — no session published.
   if (!handle) return refusal('no_studio_session', 'No active studio session — ask the human to run `wigolo studio`.');

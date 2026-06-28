@@ -33,6 +33,7 @@
     "tests/integration/tool-audit-dispatch.test.ts",
     "tests/unit/daemon/proxy-roundtrip.test.ts",
     "tests/integration/studio-bridge.test.ts",
+    "tests/integration/studio-session-target.test.ts",
     "tests/integration/studio-observe-seam.test.ts",
     "tests/security-regression.test.ts"
   ],
