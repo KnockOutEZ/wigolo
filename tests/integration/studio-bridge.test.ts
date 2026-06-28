@@ -859,6 +859,11 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     try {
       await host.sessionBrowser.navigate(`http://127.0.0.1:${port}/checkout`); // loopback Origin → passes the Origin check, isolating the bearer as the lock
       host.controller.handleControl({ op: 'grant', to: 'agent' });
+      // Test isolation: this describe shares ONE beforeAll host, and the prior S7 proofs left a legit
+      // {127.0.0.1,click,money} grant in the store. Reset to a known-empty baseline so the forge below is
+      // measured by DELTA (a forged write would add the distinct evil-forge.example key), not an absolute.
+      host.preGrant.clear();
+      const FORGED = { domain: 'evil-forge.example', actionType: 'click', riskTier: 'money' as const };
       const obs = (await host.observe({})) as { elements?: Array<{ ref: string; role: string }> };
       const btn = (obs.elements ?? []).find((e) => e.role === 'button');
       const wsUrl = host.endpoint.replace('http://', 'ws://') + `/studio/${host.session.id}/stream`;
@@ -870,7 +875,7 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
           new Promise<boolean>((resolve) => {
             let ws: WebSocket;
             try { ws = new WebSocket(wsUrl, ['wigolo.stream']); } catch { resolve(false); return; }
-            ws.onopen = () => { try { ws.send(JSON.stringify({ t: 'grant', entries: [{ domain: '127.0.0.1', actionType: 'click', riskTier: 'money' }] })); } catch { /* ignore */ } resolve(true); };
+            ws.onopen = () => { try { ws.send(JSON.stringify({ t: 'grant', entries: [{ domain: 'evil-forge.example', actionType: 'click', riskTier: 'money' }] })); } catch { /* ignore */ } resolve(true); };
             ws.onerror = () => resolve(false);
             ws.onclose = () => resolve(false);
             setTimeout(() => resolve(false), 2500);
@@ -884,7 +889,7 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
       // that check and this connects + grants → the assertions below redden (the bearer is the lock).
       const forged = new WebSocket(wsUrl, ['wigolo.stream'], { origin: `http://127.0.0.1:${port}` });
       const forgedOutcome = await new Promise<'open' | 'rejected'>((resolve) => {
-        forged.on('open', () => { forged.send(JSON.stringify({ t: 'grant', entries: [{ domain: '127.0.0.1', actionType: 'click', riskTier: 'money' }] })); resolve('open'); });
+        forged.on('open', () => { forged.send(JSON.stringify({ t: 'grant', entries: [{ domain: 'evil-forge.example', actionType: 'click', riskTier: 'money' }] })); resolve('open'); });
         forged.on('error', () => resolve('rejected'));
         forged.on('close', () => resolve('rejected'));
         setTimeout(() => resolve('rejected'), 3000);
@@ -893,7 +898,10 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
       expect(forgedOutcome, 'a loopback-origin, no-bearer (page-equivalent) upgrade is rejected at the WS bearer check').toBe('rejected');
 
       await new Promise((r) => setTimeout(r, 300));
-      expect(host.preGrant.size, 'no forged grant reached the scope store — it stays empty').toBe(0);
+      // DELTA-0: the forge added NO entry — the distinct evil-forge.example key is absent and the store is
+      // still at its cleared baseline. (Not a loosened absolute: a forged write would surface that exact key.)
+      expect(host.preGrant.matches(FORGED), 'the forged grant is absent from the store').toBe(false);
+      expect(host.preGrant.size, 'the forge added no entry (delta 0 from the cleared baseline)').toBe(0);
 
       // The risky action therefore stays PARKED — the page never self-authorized its own click.
       const r = (await host.act({ action: 'click', ref: btn!.ref })) as { error_reason?: string };
