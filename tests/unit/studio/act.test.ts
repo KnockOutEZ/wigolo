@@ -7,7 +7,8 @@ import { createResolver, type ResolveResult } from '../../../src/studio/percepti
 import { buildSnapshot, type AxNode, type DomNode, type PerceptionCdp } from '../../../src/studio/perception/snapshot.js';
 import { isStudioToolError, type StudioActOutput, type StudioToolError } from '../../../src/daemon/studio-dispatch.js';
 import { SessionAuditLog } from '../../../src/studio/audit.js';
-import type { ApprovalDecision, ApprovalRequest } from '../../../src/studio/approvals.js';
+import { PreGrantStore } from '../../../src/studio/pre-grant.js';
+import type { ParkedAction } from '../../../src/studio/act.js';
 import Database from 'better-sqlite3';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 
@@ -71,13 +72,17 @@ function recordingChannel(lands: (callIndex: number) => boolean = () => true) {
   };
 }
 
-/** A fake approval gate: records every request + returns a fixed decision. */
-function fakeApprovals(decision: ApprovalDecision = 'approved') {
-  const requests: ApprovalRequest[] = [];
-  return {
-    approvals: { request: async (req: ApprovalRequest) => { requests.push(req); return decision; } },
-    requests,
-  };
+/** S7: a pre-grant store seeded with the given entries (empty by default = the fail-closed baseline). */
+function grantStore(...entries: Array<{ domain: string; actionType: string; riskTier: 'money' | 'credential' | 'destructive' }>): PreGrantStore {
+  const s = new PreGrantStore();
+  for (const e of entries) s.add(e);
+  return s;
+}
+
+/** S7: records the actions parked for human batch review. */
+function parkRecorder() {
+  const parked: ParkedAction[] = [];
+  return { parked, park: (i: ParkedAction) => parked.push(i) };
 }
 
 const asErr = (x: StudioActOutput | StudioToolError): StudioToolError => {
@@ -412,149 +417,111 @@ describe('createActHandler — audit log (Phase 6b: every agent action is record
   });
 });
 
-describe('createActHandler — risk-tiered approval gate (Phase 6c)', () => {
-  const moneyUrl = () => 'https://shop.example/checkout';
-  const loginUrl = () => 'https://acme.example/login';
+describe('createActHandler — S7 pre-grant authorization gate', () => {
+  const moneyUrl = () => 'https://shop.example/checkout'; // domain shop.example
+  const loginUrl = () => 'https://acme.example/login'; // domain acme.example
   const benignUrl = () => 'https://en.wikipedia.org/wiki/Cat';
   const resolvedAt = (c = { x: 1, y: 2 }) => fixedResolve({ backendNodeId: 7, center: c });
 
-  it('a risky click (money-context URL) requests human approval and fires ONLY once approved', async () => {
-    const ap = fakeApprovals('approved');
+  // PIN — empty pre-grant (the fail-closed default): a risky click PARKS, never executes, and is enqueued.
+  // Mutation that REDs: default the scope to non-empty → the action authorizes + dispatches instead of parking.
+  it('S7 PIN(empty-default): a risky click with an EMPTY pre-grant PARKS (parked_for_review), never dispatched', async () => {
     const ch = recordingChannel();
+    const pk = parkRecorder();
     const act = createActHandler({
       browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
-      resolve: resolvedAt(), channel: ch.channel, currentUrl: moneyUrl, approvals: ap.approvals,
+      resolve: resolvedAt(), channel: ch.channel, currentUrl: moneyUrl, preGrant: new PreGrantStore(), park: pk.park,
+    });
+    expect(asErr(await act({ action: 'click', ref: 'e9' })).error_reason).toBe('parked_for_review');
+    expect(ch.calls).toHaveLength(0); // NOT executed
+    expect(pk.parked).toHaveLength(1); // enqueued for the human's batch review
+    expect(pk.parked[0]).toMatchObject({ action: 'click', risk: 'money', domain: 'shop.example' });
+  });
+
+  // PIN — a MATCHING pre-grant authorizes WITHOUT a human verdict (executes), never parks.
+  // Mutation that REDs: break the match key (wrong domain) → falls to park (authorized/parked diverge).
+  it('S7 PIN(match): a risky click MATCHING a pre-grant is authorized (no verdict wait) and dispatched', async () => {
+    const ch = recordingChannel();
+    const pk = parkRecorder();
+    const act = createActHandler({
+      browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
+      resolve: resolvedAt(), channel: ch.channel, currentUrl: moneyUrl,
+      preGrant: grantStore({ domain: 'shop.example', actionType: 'click', riskTier: 'money' }), park: pk.park,
     });
     const r = await act({ action: 'click', ref: 'e9' });
-    expect(ap.requests).toEqual([{ action: 'click', risk: 'money', target: { ref: 'e9' } }]); // asked, with the classified tier
     expect(r).toMatchObject({ ok: true, action: 'click' });
-    expect(ch.calls).toHaveLength(1); // fired AFTER approval
+    expect(ch.calls).toHaveLength(1); // authorized → executed
+    expect(pk.parked).toHaveLength(0); // never parked
   });
 
-  it('a DENIED risky click is blocked (approval_refused) and NEVER dispatched (the action was held, then refused)', async () => {
-    const ap = fakeApprovals('refused');
+  // PIN — a pre-grant for a DIFFERENT domain does NOT authorize (the wrong-domain mutation of the match pin).
+  it('S7 PIN(no-match): a pre-grant for a different domain does not authorize — the action PARKS, not executes', async () => {
     const ch = recordingChannel();
+    const pk = parkRecorder();
     const act = createActHandler({
       browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
-      resolve: resolvedAt(), channel: ch.channel, currentUrl: moneyUrl, approvals: ap.approvals,
+      resolve: resolvedAt(), channel: ch.channel, currentUrl: moneyUrl,
+      preGrant: grantStore({ domain: 'other.example', actionType: 'click', riskTier: 'money' }), park: pk.park,
     });
-    expect(asErr(await act({ action: 'click', ref: 'e9' })).error_reason).toBe('approval_refused');
-    expect(ap.requests).toHaveLength(1); // it WAS held for approval
-    expect(ch.calls).toHaveLength(0); // and never fired
-  });
-
-  it('a TIMED-OUT risky action is blocked (approval_timeout) — fail-closed, not dispatched', async () => {
-    const ap = fakeApprovals('timeout');
-    const ch = recordingChannel();
-    const act = createActHandler({
-      browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
-      resolve: resolvedAt(), channel: ch.channel, currentUrl: moneyUrl, approvals: ap.approvals,
-    });
-    expect(asErr(await act({ action: 'click', ref: 'e9' })).error_reason).toBe('approval_timeout');
+    expect(asErr(await act({ action: 'click', ref: 'e9' })).error_reason).toBe('parked_for_review');
     expect(ch.calls).toHaveLength(0);
+    expect(pk.parked).toHaveLength(1);
   });
 
-  it('EPOCH FENCE: a reclaim DURING the approval wait drops the action — a late approval does NOT fire (aborted_reclaimed)', async () => {
-    // gateEpoch=5, pre-wait re-check sees 5 (still holder) → prompt; the human APPROVES, but a
-    // reclaim landed during the wait → post-wait epoch read is 6 ≠ 5 → the held action is dropped,
-    // NOT fired into the context the human has since taken over. This is the critical composition
-    // with the 2J epoch fence: an approved-but-stale action must never fire.
-    const ap = fakeApprovals('approved');
+  // A grant is action-type + risk-tier scoped: a 'click' grant does not authorize a 'type', and a 'money' grant
+  // does not cover a 'credential'-risk action.
+  it('S7: a credential-context type with no matching grant parks (action-type/risk scoped)', async () => {
     const ch = recordingChannel();
-    const act = createActHandler({
-      browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5, 5, 6]), grant: allowGrant,
-      resolve: resolvedAt(), channel: ch.channel, currentUrl: moneyUrl, approvals: ap.approvals,
-    });
-    expect(asErr(await act({ action: 'click', ref: 'e9' })).error_reason).toBe('aborted_reclaimed');
-    expect(ap.requests).toHaveLength(1); // it did ask
-    expect(ch.calls).toHaveLength(0); // but the stale-epoch unit was NEVER dispatched
-  });
-
-  it('the pre-wait fence skips prompting for an action already stale before the request (no doomed prompt)', async () => {
-    const ap = fakeApprovals('approved');
-    const ch = recordingChannel();
-    const act = createActHandler({
-      browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5, 6]), grant: allowGrant,
-      resolve: resolvedAt(), channel: ch.channel, currentUrl: moneyUrl, approvals: ap.approvals,
-    });
-    expect(asErr(await act({ action: 'click', ref: 'e9' })).error_reason).toBe('aborted_reclaimed');
-    expect(ap.requests).toHaveLength(0); // never prompted the human for a doomed action
-    expect(ch.calls).toHaveLength(0);
-  });
-
-  it('FAIL-CLOSED: a risky action with NO approval mechanism wired is refused (approval_unavailable), never fired', async () => {
-    const ch = recordingChannel();
-    const act = createActHandler({
-      browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
-      resolve: resolvedAt(), channel: ch.channel, currentUrl: moneyUrl, // NO approvals dep
-    });
-    expect(asErr(await act({ action: 'click', ref: 'e9' })).error_reason).toBe('approval_unavailable');
-    expect(ch.calls).toHaveLength(0);
-  });
-
-  it('a credential-context type on a NON-password field (username) is 6c approval-gated; a denial blocks BEFORE focusing/typing', async () => {
-    // 5a hard-refuses password / OTP fields, but a USERNAME field (type=text) on a login URL is NOT a
-    // credential field — so it passes 5a and reaches the 6c credential-risk approval gate. (The hard
-    // refusal of an actual password/credential field is covered in the "hard credential-field refusal" block.)
-    const ap = fakeApprovals('refused');
-    const ch = recordingChannel();
+    const pk = parkRecorder();
     const act = createActHandler({
       browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
       resolve: fixedResolve({ backendNodeId: 7, center: { x: 1, y: 2 }, semantics: { tag: 'input', type: 'text', name: 'Username' } }),
-      channel: ch.channel, currentUrl: loginUrl, approvals: ap.approvals,
+      channel: ch.channel, currentUrl: loginUrl,
+      // a click/money grant on this domain does NOT cover a type/credential action
+      preGrant: grantStore({ domain: 'acme.example', actionType: 'click', riskTier: 'money' }), park: pk.park,
     });
-    expect(asErr(await act({ action: 'type', ref: 'e1', text: 'alice' })).error_reason).toBe('approval_refused');
-    expect(ap.requests[0]).toMatchObject({ action: 'type', risk: 'credential' });
-    expect(ch.calls).toHaveLength(0); // never focused, never typed a character
+    expect(asErr(await act({ action: 'type', ref: 'e1', text: 'alice' })).error_reason).toBe('parked_for_review');
+    expect(ch.calls).toHaveLength(0); // never focused, never typed
+    expect(pk.parked[0]).toMatchObject({ action: 'type', risk: 'credential' });
   });
 
-  it('the resolved element NAME drives the gate when the URL is silent (a "Pay $99.00" button → money)', async () => {
-    const ap = fakeApprovals('approved');
+  it('S7: a SAFE click is NOT gated — dispatched normally, never parked (co-browsing stays usable)', async () => {
     const ch = recordingChannel();
-    const act = createActHandler({
-      browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
-      resolve: fixedResolve({ backendNodeId: 7, center: { x: 1, y: 2 }, role: 'button', name: 'Pay $99.00' }),
-      channel: ch.channel, approvals: ap.approvals, // NO currentUrl — the soft signal is the only one
-    });
-    await act({ action: 'click', ref: 'e9' });
-    expect(ap.requests[0]).toMatchObject({ risk: 'money' });
-    expect(ch.calls).toHaveLength(1);
-  });
-
-  it('a SAFE click is NOT gated: no approval requested, dispatched normally (co-browsing stays usable)', async () => {
-    const ap = fakeApprovals('approved');
-    const ch = recordingChannel();
+    const pk = parkRecorder();
     const act = createActHandler({
       browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
       resolve: fixedResolve({ backendNodeId: 7, center: { x: 1, y: 2 }, role: 'link', name: 'References' }),
-      channel: ch.channel, currentUrl: benignUrl, approvals: ap.approvals,
+      channel: ch.channel, currentUrl: benignUrl, preGrant: new PreGrantStore(), park: pk.park,
     });
     const r = await act({ action: 'click', ref: 'e9' });
-    expect(ap.requests).toHaveLength(0); // the gate never engaged
     expect(r).toMatchObject({ ok: true, action: 'click' });
     expect(ch.calls).toHaveLength(1);
+    expect(pk.parked).toHaveLength(0); // safe → never parked
   });
 
-  it('the gating decision is audited through the SINGLE choke point (risk tier + approval on the entry)', async () => {
+  // PIN — the authorization SOURCE is audited through the single choke point: 'pre-grant' on a match,
+  // 'parked' on a no-match. Mutation that REDs: drop the source from the gate's resolution → the audit
+  // entry loses its approval flag.
+  it('S7 PIN(audit-source): pre-grant-authorized → approval:pre-grant; parked → approval:parked (single choke point)', async () => {
     const fixedClock = { now: () => 1000 };
-    const approvedAudit = new SessionAuditLog(fixedClock);
-    const approved = fakeApprovals('approved');
+    const grantedAudit = new SessionAuditLog(fixedClock);
     await createActHandler({
       browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
-      resolve: resolvedAt(), channel: recordingChannel().channel, currentUrl: moneyUrl, approvals: approved.approvals, audit: approvedAudit,
+      resolve: resolvedAt(), channel: recordingChannel().channel, currentUrl: moneyUrl,
+      preGrant: grantStore({ domain: 'shop.example', actionType: 'click', riskTier: 'money' }), park: () => {}, audit: grantedAudit,
     })({ action: 'click', ref: 'e9' });
-    expect(approvedAudit.replay()).toEqual([
-      { seq: 1, ts: 1000, action: 'click', epoch: 5, target: { ref: 'e9' }, outcome: { ok: true }, risk: 'money', approval: 'approved' },
+    expect(grantedAudit.replay()).toEqual([
+      { seq: 1, ts: 1000, action: 'click', epoch: 5, target: { ref: 'e9' }, outcome: { ok: true }, risk: 'money', approval: 'pre-grant' },
     ]);
 
-    const refusedAudit = new SessionAuditLog(fixedClock);
-    const refused = fakeApprovals('refused');
+    const parkedAudit = new SessionAuditLog(fixedClock);
     await createActHandler({
       browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
-      resolve: resolvedAt(), channel: recordingChannel().channel, currentUrl: moneyUrl, approvals: refused.approvals, audit: refusedAudit,
+      resolve: resolvedAt(), channel: recordingChannel().channel, currentUrl: moneyUrl,
+      preGrant: new PreGrantStore(), park: () => {}, audit: parkedAudit,
     })({ action: 'click', ref: 'e9' });
-    expect(refusedAudit.replay()).toEqual([
-      { seq: 1, ts: 1000, action: 'click', epoch: 5, target: { ref: 'e9' }, outcome: { ok: false, error_reason: 'approval_refused' }, risk: 'money', approval: 'refused' },
+    expect(parkedAudit.replay()).toEqual([
+      { seq: 1, ts: 1000, action: 'click', epoch: 5, target: { ref: 'e9' }, outcome: { ok: false, error_reason: 'parked_for_review' }, risk: 'money', approval: 'parked' },
     ]);
   });
 });

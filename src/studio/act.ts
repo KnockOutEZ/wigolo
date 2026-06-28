@@ -31,7 +31,19 @@ import type { StudioActInput, StudioActOutput, StudioToolError } from '../daemon
 import type { AuditRecordInput, AuditOutcome } from './audit.js';
 import { classifyRisk, type RiskTier, type RiskPatterns } from './risk.js';
 import type { ApprovalDecision, ApprovalRequest } from './approvals.js';
+import { deriveDomain, type PreGrantStore } from './pre-grant.js';
 import { refuseAgentType, type FieldSemantics } from './credential.js';
+
+/** S7: how a risky action was authorized at the gate, recorded in the audit alongside the live-verdict decisions. */
+export type AuthSource = ApprovalDecision | 'pre-grant' | 'parked';
+
+/** S7: a risky action with no matching pre-grant, enqueued for the human's batch review (not executed). */
+export interface ParkedAction {
+  action: string;
+  risk: RiskTier;
+  domain?: string;
+  ref?: string;
+}
 
 /** The narrow view of the control token the act handler needs (the real ControlToken satisfies it). */
 export interface ActControlToken {
@@ -70,6 +82,17 @@ export interface ActHandlerDeps {
   currentUrl?: () => string | undefined;
   /** Phase 6c: override the classifier's pattern set (configurable gate policy). Defaults to the built-in set. */
   riskPatterns?: RiskPatterns;
+  /**
+   * S7: the human pre-grant scope store (read PULL-AT-EVAL at the gate). A risky action MATCHING a live grant
+   * is authorized without a verdict wait; NO match parks. Absent (unit tests of the safe paths) ⇒ no grant ever
+   * matches ⇒ every risky action parks (fail-closed).
+   */
+  preGrant?: PreGrantStore;
+  /**
+   * S7: enqueue a risky, un-granted action for the human's batch review (surfaced host-side). Called on the
+   * park path; the action does NOT execute. Absent ⇒ the action still parks (the typed refusal), just not surfaced.
+   */
+  park?: (item: ParkedAction) => void;
 }
 
 /**
@@ -80,7 +103,7 @@ export interface ActHandlerDeps {
 interface ActResolution {
   result: StudioActOutput | StudioToolError;
   risk?: RiskTier;
-  approval?: ApprovalDecision;
+  approval?: AuthSource;
 }
 
 /** CDP modifier bitmask for Shift. */
@@ -177,7 +200,7 @@ function auditOutcome(result: StudioActOutput | StudioToolError): AuditOutcome {
 export function createActHandler(
   deps: ActHandlerDeps,
 ): (input: StudioActInput) => Promise<StudioActOutput | StudioToolError> {
-  const { browser, controlToken, grant, resolve, channel, audit, approvals, currentUrl, riskPatterns } = deps;
+  const { browser, controlToken, grant, resolve, channel, audit, currentUrl, riskPatterns, preGrant, park } = deps;
 
   const refused = (currentEpoch: number): StudioToolError => ({ error_reason: 'not_holder', hint: HOLD_HINT, currentEpoch });
   const standDown = (charsLanded?: number): StudioToolError => ({
@@ -191,48 +214,37 @@ export function createActHandler(
     hint: 'This is a credential field — the agent never enters credentials (login is human-only). Do not retry; hand off to the human.',
   });
 
-  /** Map a non-approval verdict to the tool error the agent sees (do-not-retry hints; never a wrong/silent fire). */
-  const approvalRefusal = (decision: ApprovalDecision): StudioToolError => {
-    if (decision === 'refused')
-      return { error_reason: 'approval_refused', hint: 'The human declined this action — do not retry; ask or take a different step.' };
-    if (decision === 'timeout')
-      return { error_reason: 'approval_timeout', hint: 'The human did not approve this risky action in time — do not retry automatically; ask.' };
-    // 'superseded' is normally caught earlier by the epoch fence (a reclaim advanced the epoch); map it to the same stand-down.
-    return standDown();
-  };
+  /** S7: a risky action with no matching pre-grant — parked for human batch review, NOT executed. Do-not-retry. */
+  const parkedRefusal = (): StudioToolError => ({
+    error_reason: 'parked_for_review',
+    hint: 'This risky action has no matching human authorization — it was parked for the human to review. Continue with other work; do not retry.',
+  });
 
   /**
-   * Phase 6c risk gate. Classify the action (deterministic, code-only — NOT an LLM, which would
-   * read untrusted page content to decide). A SAFE action passes straight through. A risky one
-   * (money/credential/destructive) is HELD for human approval and composed with the 2J epoch fence:
-   *   - FAIL-CLOSED: a risky action with no gate wired is refused, never fired.
-   *   - pre-wait fence: if the grant was already revoked, drop without prompting (no doomed prompt).
-   *   - post-wait fence (the hard composition): a reclaim DURING the wait advances the epoch → the
-   *     human has taken over → never fire the held action, even if it was approved (a late approval
-   *     for a now-stale epoch must not fire into a context the human has since changed).
+   * S7 risk gate. Classify the action (deterministic, code-only — NOT an LLM, which would read untrusted
+   * page content to decide). A SAFE action passes straight through. A risky one (money/credential/destructive)
+   * is authorized ONLY by a matching human PRE-GRANT (read pull-at-eval); otherwise it is PARKED for the human's
+   * batch review — enqueued + surfaced, the action does NOT execute, and the agent is not blocked (it continues
+   * other work). FAIL-CLOSED: an empty store (the default), an unreadable domain, or a missing grant all park.
+   * The control token's epoch fence still rides on the authorize path via the channel dispatch downstream.
    * Returns `{ok}` to proceed to dispatch, or `{blocked}` with the tool error + gating metadata to record.
    */
   const applyRiskGate = async (
     input: StudioActInput,
-    gateEpoch: number,
+    _gateEpoch: number,
     role?: string,
     name?: string,
-  ): Promise<{ ok: true; risk?: RiskTier; approval?: ApprovalDecision } | { blocked: StudioToolError; risk: RiskTier; approval?: ApprovalDecision }> => {
+  ): Promise<{ ok: true; risk?: RiskTier; approval?: AuthSource } | { blocked: StudioToolError; risk: RiskTier; approval?: AuthSource }> => {
     const risk = classifyRisk({ action: input.action, pageUrl: currentUrl?.(), role, name }, riskPatterns);
     if (risk === 'safe') return { ok: true };
-    if (!approvals)
-      return {
-        blocked: { error_reason: 'approval_unavailable', hint: 'This action needs human approval but no approval channel is connected — open the studio UI.' },
-        risk,
-      };
-    // Pre-wait fence: don't prompt the human for an action whose grant is already gone.
-    if (controlToken.holder !== 'agent' || controlToken.epoch !== gateEpoch) return { blocked: standDown(), risk };
-    const target = typeof input.ref === 'string' ? { ref: input.ref } : undefined;
-    const approval = await approvals.request({ action: input.action, risk, ...(target ? { target } : {}) });
-    // POST-WAIT EPOCH FENCE: a reclaim during the wait advanced the epoch → never fire the stale action.
-    if (controlToken.holder !== 'agent' || controlToken.epoch !== gateEpoch) return { blocked: standDown(), risk, approval };
-    if (approval !== 'approved') return { blocked: approvalRefusal(approval), risk, approval };
-    return { ok: true, risk, approval };
+    const domain = deriveDomain(currentUrl?.());
+    // A matching human pre-grant AUTHORIZES the action without a live verdict wait (audited as pre-grant).
+    if (preGrant?.matches({ domain, actionType: input.action, riskTier: risk })) {
+      return { ok: true, risk, approval: 'pre-grant' };
+    }
+    // No matching grant → PARK for human batch review: enqueue + surface, never execute, never block the agent.
+    park?.({ action: input.action, risk, ...(domain ? { domain } : {}), ...(typeof input.ref === 'string' ? { ref: input.ref } : {}) });
+    return { blocked: parkedRefusal(), risk, approval: 'parked' };
   };
 
   const navigate = async (input: StudioActInput): Promise<StudioActOutput | StudioToolError> => {

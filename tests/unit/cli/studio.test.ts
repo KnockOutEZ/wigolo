@@ -1791,3 +1791,96 @@ describe('cli/studio startStudioHost — S6 lifecycle verbs (bounded inversion)'
     }
   });
 });
+
+/**
+ * S7 — the pre-grant authorization subsystem, host side, driven through the REAL WS codec + dispatch.
+ * The scope store is written ONLY by the {t:'grant'} WS-human handler (bright-line); a client claiming
+ * party='agent' is rejected; an agent-spawned session carries no pre-grant.
+ */
+describe('cli/studio startStudioHost — S7 pre-grant ingress (bright-line)', () => {
+  beforeEach(() => {
+    events.length = 0;
+    resetConfig();
+    _resetMigrationGuard();
+    initDatabase(':memory:');
+  });
+  afterEach(() => {
+    try { closeDatabase(); } catch { /* already closed */ }
+    resetConfig();
+  });
+
+  const waitFor = async (pred: () => boolean, ms = 1000) => {
+    const t0 = Date.now();
+    while (!pred() && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 5));
+  };
+  const s6Dir = '/tmp/wigolo-s7-unused';
+
+  // ── S7 PIN — {t:'grant'} over the REAL WS (human channel) writes the scope store ──
+  it('S7: a {t:grant} WS message from the human writes the pre-grant scope store', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    const conn = await connectToHostHub(host);
+    try {
+      await conn.at(0);
+      expect(host.preGrant.size).toBe(0); // empty by default
+      conn.ws.send(JSON.stringify({ t: 'grant', entries: [{ domain: 'shop.example', actionType: 'click', riskTier: 'money' }] }));
+      await waitFor(() => host.preGrant.size === 1);
+      expect(host.preGrant.size).toBe(1);
+      expect(host.preGrant.matches({ domain: 'shop.example', actionType: 'click', riskTier: 'money' })).toBe(true);
+    } finally {
+      await conn.close();
+      await host.daemon.stop();
+    }
+  });
+
+  // ── S7 PIN — party host-stamped human: a client CLAIMING party='agent' is REJECTED ──
+  // Mutation that REDs: drop the `if (msg.party === 'agent') return` rejection → the agent-claimed grant writes the store.
+  it('S7 PIN(party-stamp): a {t:grant} claiming party=agent is rejected — the store is not written', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    const conn = await connectToHostHub(host);
+    try {
+      await conn.at(0);
+      conn.ws.send(JSON.stringify({ t: 'grant', party: 'agent', entries: [{ domain: 'shop.example', actionType: 'click', riskTier: 'money' }] }));
+      await new Promise((r) => setTimeout(r, 150)); // give the host room to (wrongly) write
+      expect(host.preGrant.size).toBe(0); // rejected — agent-claimed grants never write
+      // a legitimate human grant (no agent claim) DOES write — proves the path works, only the claim is rejected
+      conn.ws.send(JSON.stringify({ t: 'grant', entries: [{ domain: 'shop.example', actionType: 'click', riskTier: 'money' }] }));
+      await waitFor(() => host.preGrant.size === 1);
+      expect(host.preGrant.size).toBe(1);
+    } finally {
+      await conn.close();
+      await host.daemon.stop();
+    }
+  });
+
+  // ── S7 BRIGHT-LINE PIN — the scope store is written ONLY by the {t:grant} WS handler ──
+  // No agent-reachable verb (observe/act/marks/spawn/close/list, via the REAL dispatch) writes the store.
+  // Mutation that REDs: add an agent-reachable writer (e.g. studio_spawn calls preGrant.add) → size > 0 after agent ops.
+  it('S7 BRIGHT-LINE: agent verbs never write the scope store — only {t:grant} does', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    try {
+      // Exercise the agent-reachable surface through the REAL dispatch — none may write the store.
+      await dispatchStudioTool('studio_observe', {}, host.studioHandlers, s6Dir);
+      await dispatchStudioTool('studio_act', { action: 'scroll' }, host.studioHandlers, s6Dir);
+      await dispatchStudioTool('studio_marks', {}, host.studioHandlers, s6Dir);
+      await dispatchStudioTool('studio_list', {}, host.studioHandlers, s6Dir);
+      const spawn = await dispatchStudioTool('studio_spawn', {}, host.studioHandlers, s6Dir);
+      const spawnedId = JSON.parse(spawn.content[0].text).session_id as string;
+      await dispatchStudioTool('studio_close', { session_id: spawnedId }, host.studioHandlers, s6Dir);
+      expect(host.preGrant.size, 'no agent verb wrote the pre-grant store').toBe(0);
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+
+  // ── S7 PIN — an agent-spawned session carries NO pre-grant (studio_spawn never auto-authorizes) ──
+  // Mutation that REDs: studio_spawn pre-populates a scope → size > 0 after spawn.
+  it('S7 PIN(agent-spawn-no-grant): studio_spawn does not populate the pre-grant store', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    try {
+      await dispatchStudioTool('studio_spawn', { startUrl: 'https://shop.example/checkout' }, host.studioHandlers, s6Dir);
+      expect(host.preGrant.size).toBe(0); // an agent-spawned background session is never auto-authorized
+    } finally {
+      await host.daemon.stop();
+    }
+  });
+});

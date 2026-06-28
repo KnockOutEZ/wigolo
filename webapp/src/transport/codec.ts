@@ -110,6 +110,7 @@ export type DownMessage =
   | { t: 'comment_snapshot'; comments: CommentView[] }
   | { t: 'comment'; id: number; text: string }
   | { t: 'narration'; text: string }
+  | { t: 'parked'; action: string; risk: string; domain?: string; ref?: string }
   | { t: 'artifact_snapshot'; items: ArtifactView[] }
   | ({ t: 'artifact' } & ArtifactView)
   | { t: 'sessions_snapshot'; sessions: SessionMetaView[] }
@@ -122,7 +123,8 @@ export type UpMessage =
   | { t: 'nav'; url: string }
   | { t: 'mark' }
   | { t: 'approval'; id: number; decision: string }
-  | { t: 'comment'; text: string };
+  | { t: 'comment'; text: string }
+  | { t: 'grant'; entries: Array<{ domain: string; actionType: string; riskTier: string }> };
 
 function isObj(x: unknown): x is Record<string, unknown> {
   return typeof x === 'object' && x !== null;
@@ -258,6 +260,11 @@ export function parseDownMessage(raw: unknown): DownMessage | null {
       if (typeof m.text !== 'string') return null;
       return { t: 'narration', text: m.text };
     }
+    case 'parked': {
+      // S7: a risky agent action parked for the human's batch review. action/risk are required; domain/ref optional.
+      if (typeof m.action !== 'string' || typeof m.risk !== 'string') return null;
+      return { t: 'parked', action: m.action, risk: m.risk, ...(typeof m.domain === 'string' ? { domain: m.domain } : {}), ...(typeof m.ref === 'string' ? { ref: m.ref } : {}) };
+    }
     case 'comment_snapshot': {
       if (!Array.isArray(m.comments)) return null;
       // Drop only the malformed entries — a single bad comment never voids the whole backfill.
@@ -312,6 +319,9 @@ export const up = {
   },
   comment(text: string): UpMessage {
     return { t: 'comment', text };
+  },
+  grant(entries: Array<{ domain: string; actionType: string; riskTier: string }>): UpMessage {
+    return { t: 'grant', entries };
   },
 };
 

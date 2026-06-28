@@ -59,6 +59,8 @@ export interface StudioWsHubOptions {
   onApproval?: (sessionId: string, msg: Record<string, unknown>) => void;
   /** Inbound human comment/annotation ({t:'comment', text}) — host wires this to capturing a trusted=1 note (the WS is the human channel, so a comment is human-authored). */
   onComment?: (sessionId: string, msg: Record<string, unknown>) => void;
+  /** Inbound human pre-grant ({t:'grant', ...}) — host wires this to the pre-grant scope store (S7). The WS is the human channel, so a grant is human-authored; the host stamps party='human' and rejects a client claiming party='agent'. */
+  onGrant?: (sessionId: string, msg: Record<string, unknown>) => void;
   /** Skip sending a frame to a client whose send buffer already exceeds this (drop-under-load). */
   frameBackpressureBytes?: number;
   /** Extra fields merged into the `hello` sent on connect — the host supplies the initial control state {holder, epoch} so a client knows the epoch to stamp on input. */
@@ -94,6 +96,7 @@ export class StudioWsHub {
   private readonly onMark?: (sessionId: string, msg: Record<string, unknown>) => void;
   private readonly onApproval?: (sessionId: string, msg: Record<string, unknown>) => void;
   private readonly onComment?: (sessionId: string, msg: Record<string, unknown>) => void;
+  private readonly onGrant?: (sessionId: string, msg: Record<string, unknown>) => void;
   private readonly helloExtras?: (sessionId: string) => Record<string, unknown>;
   private readonly postHello?: (sessionId: string) => Array<Record<string, unknown>> | Promise<Array<Record<string, unknown>>>;
   private readonly frameBackpressureBytes: number;
@@ -109,6 +112,7 @@ export class StudioWsHub {
     this.onMark = opts.onMark;
     this.onApproval = opts.onApproval;
     this.onComment = opts.onComment;
+    this.onGrant = opts.onGrant;
     this.helloExtras = opts.helloExtras;
     this.postHello = opts.postHello;
     this.frameBackpressureBytes = opts.frameBackpressureBytes ?? DEFAULT_FRAME_BACKPRESSURE_BYTES;
@@ -268,6 +272,9 @@ export class StudioWsHub {
         break;
       case 'comment':
         this.onComment?.(sessionId, msg);
+        break;
+      case 'grant':
+        this.onGrant?.(sessionId, msg);
         break;
     }
   }

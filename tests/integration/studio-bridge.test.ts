@@ -501,8 +501,8 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     // The button's volatile attrs (id/class) will change on re-render; its role+name+stable-attrs
     // (the fingerprint) stay — so heal tier 1 re-resolves it though its backend node id changed.
     // NB: a NEUTRAL name ("Continue") on purpose — this proves heal, and the agent CLICKS it below;
-    // a money/credential/destructive name (e.g. "Checkout") would now be held by the 6c approval
-    // gate, which this heal proof does not answer. The gate's behaviour is proven by the 6c proofs.
+    // a money/credential/destructive name (e.g. "Checkout") would now be PARKED by the S7 pre-grant
+    // gate, which this heal proof does not answer. The gate's behaviour is proven by the S7 proofs.
     const html =
       '<button id="old-1" class="v1" type="submit" style="position:fixed;left:40px;top:40px;width:220px;height:60px">Continue</button>';
     await host.sessionBrowser.navigate('data:text/html,' + encodeURIComponent(html));
@@ -751,8 +751,11 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     host.controller.handleControl({ op: 'reclaim' });
   }, 30_000);
 
-  // ───────────────────────────── Phase 6c: risk-tiered approval gate ─────────────────────────────
-  it('6c: a risky action on a real /checkout page is HELD, requests human approval over the WS, and fires only once the human approves — logged with the tier + decision', async () => {
+  // ───────────────────────── S7: pre-grant authorization gate (headed) ─────────────────────────
+  // NB: these are RUN_STUDIO_HEADED-gated (real browser). They were swept from the Phase-6c
+  // blocking-approval model to the S7 pre-grant/park model when S7 replaced the synchronous
+  // approval wait at the act gate.
+  it('S7: a risky action on a real /checkout page PARKS with no grant (never clicks), then a human {t:grant} authorizes it to fire — logged with the source', async () => {
     // A real HTTP page at a money-context PATH. The classifier's HARD signal is the live page URL
     // (sessionBrowser.page.url()), so /checkout → money regardless of the (benign) button name.
     const server = createServer((_req, res) => {
@@ -763,32 +766,36 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     const page = host.sessionBrowser.page as unknown as import('playwright').Page;
     const ws = new WebSocket(host.endpoint.replace('http://', 'ws://') + `/studio/${host.session.id}/stream`, ['wigolo.stream', `wigolo.bearer.${host.session.token}`]);
     try {
-      // Open the WS + attach the listener BEFORE any slow await, so 'open' is not missed.
       await new Promise<void>((resolve, reject) => { ws.on('open', () => resolve()); ws.on('error', reject); });
-      // A real WS client that auto-approves the first approval_request it sees (the human's browser).
-      const seen: Array<Record<string, unknown>> = [];
+      const parked: Array<Record<string, unknown>> = [];
       ws.on('message', (data: WebSocket.RawData) => {
         const m = JSON.parse(data.toString());
-        if (m.t === 'approval_request') { seen.push(m); ws.send(JSON.stringify({ t: 'approval', id: m.id, decision: 'approve' })); }
+        if (m.t === 'parked') parked.push(m); // the human's pending-review surface
       });
 
       await host.sessionBrowser.navigate(`http://127.0.0.1:${port}/checkout`); // live URL is now money-context
       const before = host.audit.size;
-
       host.controller.handleControl({ op: 'grant', to: 'agent' });
       const obs = (await host.observe({})) as { elements?: Array<{ ref: string; role: string }> };
       const btn = (obs.elements ?? []).find((e) => e.role === 'button');
       expect(btn, 'observe should surface the button').toBeTruthy();
 
-      const r = (await host.act({ action: 'click', ref: btn!.ref })) as { ok?: boolean; action?: string; error_reason?: string };
-      expect(r.error_reason, 'the approved action should fire, not error').toBeUndefined();
-      expect(r).toMatchObject({ ok: true, action: 'click' });
-      expect(seen.length, 'the human WAS asked for approval over the WS (not fired silently)').toBe(1);
-      expect(seen[0]).toMatchObject({ t: 'approval_request', action: 'click', risk: 'money' }); // classified from the real /checkout URL
-      await expect.poll(() => page.evaluate(() => (window as unknown as { __paid?: number }).__paid), { timeout: 5000 }).toBe(1); // it actually clicked the page
+      // No pre-grant yet → the risky click PARKS, the page is NEVER clicked.
+      const parkedRes = (await host.act({ action: 'click', ref: btn!.ref })) as { error_reason?: string };
+      expect(parkedRes.error_reason).toBe('parked_for_review');
+      await new Promise((res) => setTimeout(res, 200));
+      expect(await page.evaluate(() => (window as unknown as { __paid?: number }).__paid)).toBeUndefined();
+      await expect.poll(() => parked.length, { timeout: 5000 }).toBe(1); // surfaced to the human
+      expect(host.audit.replay().slice(before).at(-1)!).toMatchObject({ action: 'click', risk: 'money', approval: 'parked', outcome: { ok: false, error_reason: 'parked_for_review' } });
 
-      const e = host.audit.replay().slice(before).at(-1)!;
-      expect(e).toMatchObject({ action: 'click', risk: 'money', approval: 'approved', outcome: { ok: true } }); // the gate decision is in the trail
+      // The human grants click/money on this domain over the REAL WS → the next click is authorized + fires.
+      ws.send(JSON.stringify({ t: 'grant', entries: [{ domain: '127.0.0.1', actionType: 'click', riskTier: 'money' }] }));
+      await expect.poll(() => host.preGrant.size, { timeout: 5000 }).toBe(1);
+      const okRes = (await host.act({ action: 'click', ref: btn!.ref })) as { ok?: boolean; error_reason?: string };
+      expect(okRes.error_reason, 'the granted action should fire, not park').toBeUndefined();
+      expect(okRes).toMatchObject({ ok: true, action: 'click' });
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __paid?: number }).__paid), { timeout: 5000 }).toBe(1);
+      expect(host.audit.replay().at(-1)!).toMatchObject({ action: 'click', risk: 'money', approval: 'pre-grant', outcome: { ok: true } });
       host.controller.handleControl({ op: 'reclaim' });
     } finally {
       ws.close();
@@ -796,9 +803,10 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     }
   }, 30_000);
 
-  it('6c EPOCH FENCE: a human reclaim WHILE an action is held for approval drops it — a late approval does NOT fire the now-stale action (aborted_reclaimed, the page is never clicked, logged)', async () => {
-    // The critical composition with the 2J epoch fence: an action held pending approval is in-flight.
-    // A reclaim during the wait must drop it, and a late "approve" for the now-stale epoch must NOT fire.
+  it('S7 CONTROL FENCE: even a PRE-GRANTED risky action is refused when the human holds — the control token still gates (not_holder, the page is never clicked)', async () => {
+    // Under S7 a matching pre-grant authorizes a risky action WITHOUT a verdict wait — but it still goes through
+    // the control-token gate. If the human holds (reclaimed), the agent's risky click is refused not_holder and
+    // the page is never clicked: the pre-grant authorizes the RISK class, it does not seize control.
     const server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end('<button id="go" onclick="window.__paid2=1" style="position:fixed;left:40px;top:40px;width:300px;height:60px">Continue</button>');
@@ -808,34 +816,27 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     const ws = new WebSocket(host.endpoint.replace('http://', 'ws://') + `/studio/${host.session.id}/stream`, ['wigolo.stream', `wigolo.bearer.${host.session.token}`]);
     try {
       await new Promise<void>((resolve, reject) => { ws.on('open', () => resolve()); ws.on('error', reject); });
-      let reqId: number | undefined;
-      ws.on('message', (data: WebSocket.RawData) => {
-        const m = JSON.parse(data.toString());
-        if (m.t === 'approval_request') reqId = m.id as number; // capture but do NOT answer yet
-      });
 
       await host.sessionBrowser.navigate(`http://127.0.0.1:${port}/checkout`);
       const before = host.audit.size;
 
+      // A matching pre-grant exists (click/money on this domain) AND the agent is granted control to observe.
+      ws.send(JSON.stringify({ t: 'grant', entries: [{ domain: '127.0.0.1', actionType: 'click', riskTier: 'money' }] }));
+      await expect.poll(() => host.preGrant.size, { timeout: 5000 }).toBe(1);
       host.controller.handleControl({ op: 'grant', to: 'agent' });
       const obs = (await host.observe({})) as { elements?: Array<{ ref: string; role: string }> };
       const btn = (obs.elements ?? []).find((e) => e.role === 'button');
       expect(btn, 'observe should surface the button').toBeTruthy();
 
-      const actP = host.act({ action: 'click', ref: btn!.ref }); // HELD — pending the human's answer
-      await expect.poll(() => host.approvals.pendingCount, { timeout: 5000 }).toBe(1); // genuinely held + requested
-      expect(reqId, 'the request reached the human WS client').toBeTypeOf('number');
-
-      host.controller.handleControl({ op: 'reclaim' });                 // the human takes over DURING the wait
-      ws.send(JSON.stringify({ t: 'approval', id: reqId, decision: 'approve' })); // a LATE approval for the now-stale epoch
-
-      const r = (await actP) as { error_reason?: string };
-      expect(r.error_reason).toBe('aborted_reclaimed');                 // the held action stood down — not fired
-      await new Promise((res) => setTimeout(res, 200));                 // give any (wrongly-fired) click time to land
-      expect(await page.evaluate(() => (window as unknown as { __paid2?: number }).__paid2)).toBeUndefined(); // the page was NEVER clicked
+      // The human RECLAIMS — now holds control. The agent's pre-granted risky click must still be refused.
+      host.controller.handleControl({ op: 'reclaim' });
+      const r = (await host.act({ action: 'click', ref: btn!.ref })) as { error_reason?: string };
+      expect(r.error_reason).toBe('not_holder');                        // the control token gates even a pre-granted action
+      await new Promise((res) => setTimeout(res, 200));
+      expect(await page.evaluate(() => (window as unknown as { __paid2?: number }).__paid2)).toBeUndefined(); // never clicked
 
       const e = host.audit.replay().slice(before).at(-1)!;
-      expect(e).toMatchObject({ action: 'click', risk: 'money', outcome: { error_reason: 'aborted_reclaimed' } }); // dropped, and audited
+      expect(e).toMatchObject({ action: 'click', outcome: { error_reason: 'not_holder' } }); // refused, and audited
       host.controller.handleControl({ op: 'reclaim' });
     } finally {
       ws.close();
@@ -843,63 +844,47 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     }
   }, 30_000);
 
-  it('6c BOUNDARY (adversarial): an {approval} frame from the studio-browser PAGE context cannot self-approve — the page lacks the WS-upgrade bearer, so its forged current-epoch approve never reaches the channel', async () => {
-    // The approval channel has NO per-message party check; its boundary is the daemon WS-upgrade
-    // auth (per-session bearer subprotocol + Origin/Host, http-server.ts:200). The 2B nav interceptor
-    // is Document-only — it does NOT cover the page's in-page WS to localhost — so the BEARER is the
-    // lock. The page is served from 127.0.0.1 so its Origin PASSES the (loopback-allowing) Origin
-    // check, isolating the bearer as the thing that rejects it. We even hand the page the real
-    // request id (ids are sequential + guessable); it still cannot approve.
+  it('S7 BOUNDARY (adversarial): a {t:grant} frame from the studio-browser PAGE context cannot self-authorize — the page lacks the WS-upgrade bearer, so its forged scope grant never reaches the store, and the risky action stays parked', async () => {
+    // The pre-grant ingress has its boundary at the daemon WS-upgrade auth (per-session bearer subprotocol +
+    // Origin/Host). The page is served from 127.0.0.1 so its Origin PASSES the (loopback-allowing) Origin check,
+    // isolating the bearer as the lock. A page that could forge a {t:'grant'} would self-authorize its own risky
+    // actions — so a no-bearer (page-equivalent) upgrade MUST be rejected, the scope store MUST stay empty, and
+    // the risky action MUST stay parked (never clicked).
     const server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end('<button id="go" onclick="window.__paid3=1" style="position:fixed;left:40px;top:40px;width:300px;height:60px">Continue</button>');
     });
     const port = await new Promise<number>((resolve) => server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port)));
     const page = host.sessionBrowser.page as unknown as import('playwright').Page;
-    // A LEGIT human client (has the bearer) — only to capture the request id; it never approves.
-    const human = new WebSocket(host.endpoint.replace('http://', 'ws://') + `/studio/${host.session.id}/stream`, ['wigolo.stream', `wigolo.bearer.${host.session.token}`]);
     try {
-      await new Promise<void>((resolve, reject) => { human.on('open', () => resolve()); human.on('error', reject); });
-      let reqId: number | undefined;
-      human.on('message', (d: WebSocket.RawData) => { const m = JSON.parse(d.toString()); if (m.t === 'approval_request') reqId = m.id as number; });
-
       await host.sessionBrowser.navigate(`http://127.0.0.1:${port}/checkout`); // loopback Origin → passes the Origin check, isolating the bearer as the lock
       host.controller.handleControl({ op: 'grant', to: 'agent' });
       const obs = (await host.observe({})) as { elements?: Array<{ ref: string; role: string }> };
       const btn = (obs.elements ?? []).find((e) => e.role === 'button');
-
-      const actP = host.act({ action: 'click', ref: btn!.ref }); // HELD pending approval
-      await expect.poll(() => host.approvals.pendingCount, { timeout: 5000 }).toBe(1);
-      expect(reqId, 'request id captured').toBeTypeOf('number');
-
       const wsUrl = host.endpoint.replace('http://', 'ws://') + `/studio/${host.session.id}/stream`;
 
-      // ATTEMPT A — the LITERAL injected-page context: from the page's own JS, open the control WS
-      // and try to approve the held action at its real id. The page cannot establish the control WS
-      // at all in the studio browser, so it never even reaches the channel (opened === false).
+      // ATTEMPT A — the LITERAL injected-page context: from the page's own JS, open the WS and try to send a
+      // {t:'grant'} for this domain. The page cannot establish the WS at all in the studio browser (no bearer).
       const pageOpened = await page.evaluate(
-        ({ wsUrl, id }) =>
+        ({ wsUrl }) =>
           new Promise<boolean>((resolve) => {
             let ws: WebSocket;
             try { ws = new WebSocket(wsUrl, ['wigolo.stream']); } catch { resolve(false); return; }
-            ws.onopen = () => { try { ws.send(JSON.stringify({ t: 'approval', id, decision: 'approve' })); } catch { /* ignore */ } resolve(true); };
+            ws.onopen = () => { try { ws.send(JSON.stringify({ t: 'grant', entries: [{ domain: '127.0.0.1', actionType: 'click', riskTier: 'money' }] })); } catch { /* ignore */ } resolve(true); };
             ws.onerror = () => resolve(false);
             ws.onclose = () => resolve(false);
             setTimeout(() => resolve(false), 2500);
           }),
-        { wsUrl, id: reqId! },
+        { wsUrl },
       );
-      expect(pageOpened, 'the injected page cannot even establish the control WS').toBe(false);
+      expect(pageOpened, 'the injected page cannot even establish the WS').toBe(false);
 
-      // ATTEMPT B — faithfully reproduce the page's NETWORK FRAME, deterministically, to isolate the
-      // enforcing lock: a LOOPBACK Origin (so checkOriginHost passes — loopback is allowed), the
-      // NON-SECRET `wigolo.stream` subprotocol (clears the hub's protocol negotiation), the guessed
-      // current id — but NO bearer (the page can't read the 0600 handle). The daemon's
-      // checkAuthSubprotocol MUST reject it. Disable that bearer check and this attempt connects,
-      // approves, and fires → the assertions below redden (mutation-probed; the bearer is the lock).
+      // ATTEMPT B — faithfully reproduce the page's NETWORK FRAME: loopback Origin (Origin check passes), the
+      // NON-SECRET `wigolo.stream` subprotocol, but NO bearer. The daemon's bearer check MUST reject it. Disable
+      // that check and this connects + grants → the assertions below redden (the bearer is the lock).
       const forged = new WebSocket(wsUrl, ['wigolo.stream'], { origin: `http://127.0.0.1:${port}` });
       const forgedOutcome = await new Promise<'open' | 'rejected'>((resolve) => {
-        forged.on('open', () => { forged.send(JSON.stringify({ t: 'approval', id: reqId, decision: 'approve' })); resolve('open'); });
+        forged.on('open', () => { forged.send(JSON.stringify({ t: 'grant', entries: [{ domain: '127.0.0.1', actionType: 'click', riskTier: 'money' }] })); resolve('open'); });
         forged.on('error', () => resolve('rejected'));
         forged.on('close', () => resolve('rejected'));
         setTimeout(() => resolve('rejected'), 3000);
@@ -907,16 +892,15 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
       forged.close();
       expect(forgedOutcome, 'a loopback-origin, no-bearer (page-equivalent) upgrade is rejected at the WS bearer check').toBe('rejected');
 
-      // Give any (wrongly-accepted) forged approve time to settle + fire, then prove it did NEITHER.
       await new Promise((r) => setTimeout(r, 300));
-      expect(host.approvals.pendingCount, 'no forged approve reached the channel — the action is STILL held').toBe(1);
-      expect(await page.evaluate(() => (window as unknown as { __paid3?: number }).__paid3), 'the page was never self-clicked').toBeUndefined();
+      expect(host.preGrant.size, 'no forged grant reached the scope store — it stays empty').toBe(0);
 
-      // The genuinely-held action is dropped when the human reclaims (not by the page's forged approve).
+      // The risky action therefore stays PARKED — the page never self-authorized its own click.
+      const r = (await host.act({ action: 'click', ref: btn!.ref })) as { error_reason?: string };
+      expect(r.error_reason).toBe('parked_for_review');
+      expect(await page.evaluate(() => (window as unknown as { __paid3?: number }).__paid3), 'the page was never self-clicked').toBeUndefined();
       host.controller.handleControl({ op: 'reclaim' });
-      expect(((await actP) as { error_reason?: string }).error_reason).toBe('aborted_reclaimed');
     } finally {
-      human.close();
       await new Promise<void>((r) => server.close(() => r()));
     }
   }, 30_000);

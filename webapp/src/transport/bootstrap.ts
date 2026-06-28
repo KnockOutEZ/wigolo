@@ -10,6 +10,7 @@ import { ApprovalsModel } from './approvals.js';
 import { TimelineModel } from './timeline.js';
 import { CommentsModel } from './comments.js';
 import { NarrationModel } from './narration.js';
+import { ParkedModel } from './parked.js';
 import { ArtifactsModel } from './artifacts.js';
 import { SessionsModel } from './sessions.js';
 
@@ -36,6 +37,8 @@ export interface StudioWiring {
   comments: CommentsModel;
   /** The agent's ephemeral narration stream, fed by narration (live delta) down-messages (S2b). Broadcast-only — no backfill. */
   narration: NarrationModel;
+  /** The agent's parked risky actions awaiting human review, fed by parked (live delta) down-messages (S7). Broadcast-only — no backfill. */
+  parked: ParkedModel;
   /** The server-authoritative captured-items list, fed by artifact_snapshot (backfill) + artifact (live delta) down-messages (7e S3). */
   artifacts: ArtifactsModel;
   /** The server-authoritative live-session list, fed by sessions_snapshot (backfill) + sessions (delta) down-messages (7f B3). */
@@ -62,6 +65,7 @@ export function bootstrapStudio(): StudioWiring | null {
   const timeline = new TimelineModel();
   const comments = new CommentsModel();
   const narration = new NarrationModel();
+  const parked = new ParkedModel();
   const artifacts = new ArtifactsModel();
   const sessions = new SessionsModel();
   let connector: SessionConnector | null = null;
@@ -117,6 +121,9 @@ export function bootstrapStudio(): StudioWiring | null {
           } else if (msg.t === 'narration') {
             // S2b: a live agent→human narration. Ephemeral (no backfill) — append; rendered inert via SafeText.
             narration.applyDelta(msg.text);
+          } else if (msg.t === 'parked') {
+            // S7: a risky agent action parked for human review (no matching pre-grant). Ephemeral — append.
+            parked.applyDelta({ action: msg.action, risk: msg.risk, ...(msg.domain ? { domain: msg.domain } : {}), ...(msg.ref ? { ref: msg.ref } : {}) });
           } else if (msg.t === 'artifact_snapshot') {
             // 7e S3: the post-hello backfill — the host's complete captured set this session (replaces).
             artifacts.applySnapshot(msg.items);
@@ -183,5 +190,5 @@ export function bootstrapStudio(): StudioWiring | null {
     };
   };
 
-  return { model, marks, approvals, timeline, comments, narration, artifacts, sessions, sessionId, switchSession, emit, connectCanvas };
+  return { model, marks, approvals, timeline, comments, narration, parked, artifacts, sessions, sessionId, switchSession, emit, connectCanvas };
 }

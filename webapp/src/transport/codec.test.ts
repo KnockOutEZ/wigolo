@@ -40,6 +40,18 @@ describe('Studio stream codec (S3) — down parsing', () => {
     expect(parseDownMessage({ t: 'narration', text: 42 })).toBeNull(); // non-string text
   });
 
+  // S7: the parked down-message + the grant up-message.
+  it('S7: parses a parked down-message; rejects one missing action/risk', () => {
+    expect(parseDownMessage({ t: 'parked', action: 'click', risk: 'money', domain: 'shop.example', ref: 'e9' }))
+      .toEqual({ t: 'parked', action: 'click', risk: 'money', domain: 'shop.example', ref: 'e9' });
+    expect(parseDownMessage({ t: 'parked', action: 'click' })).toBeNull(); // missing risk
+  });
+
+  it('S7: up.grant builds a {t:grant, entries} message through the codec', () => {
+    const wire = encodeUp(up.grant([{ domain: 'shop.example', actionType: 'click', riskTier: 'money' }]));
+    expect(JSON.parse(wire)).toEqual({ t: 'grant', entries: [{ domain: 'shop.example', actionType: 'click', riskTier: 'money' }] });
+  });
+
   // 7c S4: the two marks down-messages the host emits — the post-hello backfill snapshot and the live delta.
   it('parses the marks_snapshot backfill (the post-hello per-connection hydrate)', () => {
     const snap = parseDownMessage({ t: 'marks_snapshot', marks: [{ markId: 'm1', role: 'button', name: 'Add', trusted: false, confidence: 'high', ref: 'e3' }] });

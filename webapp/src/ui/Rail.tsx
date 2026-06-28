@@ -5,6 +5,7 @@ import { ApprovalsModel } from '../transport/approvals.js';
 import { TimelineModel } from '../transport/timeline.js';
 import { CommentsModel } from '../transport/comments.js';
 import { NarrationModel } from '../transport/narration.js';
+import { ParkedModel } from '../transport/parked.js';
 import { ArtifactsModel } from '../transport/artifacts.js';
 import { SessionsModel } from '../transport/sessions.js';
 import { ControlsPanel } from './ControlsPanel.js';
@@ -13,6 +14,8 @@ import { ApprovalsPanel } from './ApprovalsPanel.js';
 import { TimelinePanel } from './TimelinePanel.js';
 import { CommentsPanel } from './CommentsPanel.js';
 import { NarrationPanel } from './NarrationPanel.js';
+import { ScopePanel } from './ScopePanel.js';
+import { PendingPanel } from './PendingPanel.js';
 import { CapturedPanel } from './CapturedPanel.js';
 import { SessionSwitcher } from './SessionSwitcher.js';
 
@@ -35,6 +38,7 @@ export interface RailProps {
   timeline?: TimelineModel;
   comments?: CommentsModel;
   narration?: NarrationModel;
+  parked?: ParkedModel;
   artifacts?: ArtifactsModel;
   sessions?: SessionsModel;
   /** The session the stream is bound to (switcher highlight). */
@@ -43,19 +47,22 @@ export interface RailProps {
   onSelectSession?: (sessionId: string) => void;
 }
 
-export function Rail({ controls, marks, approvals, timeline, comments, narration, artifacts, sessions, currentSessionId, onSelectSession }: RailProps = {}) {
+export function Rail({ controls, marks, approvals, timeline, comments, narration, parked, artifacts, sessions, currentSessionId, onSelectSession }: RailProps = {}) {
   const c = useMemo<RailControls>(() => controls ?? { model: new ControlsModel(), emit: () => {} }, [controls]);
   const m = useMemo<MarksModel>(() => marks ?? new MarksModel(), [marks]);
   const a = useMemo<ApprovalsModel>(() => approvals ?? new ApprovalsModel(), [approvals]);
   const tl = useMemo<TimelineModel>(() => timeline ?? new TimelineModel(), [timeline]);
   const cm = useMemo<CommentsModel>(() => comments ?? new CommentsModel(), [comments]);
   const nm = useMemo<NarrationModel>(() => narration ?? new NarrationModel(), [narration]);
+  const pm = useMemo<ParkedModel>(() => parked ?? new ParkedModel(), [parked]);
   const am = useMemo<ArtifactsModel>(() => artifacts ?? new ArtifactsModel(), [artifacts]);
   const sm = useMemo<SessionsModel>(() => sessions ?? new SessionsModel(), [sessions]);
   return (
     <aside class="studio-rail" aria-label="Session panel">
       <ApprovalsPanel model={a} emit={c.emit} />
+      <PendingPanel model={pm} />
       <ControlsPanel model={c.model} emit={c.emit} />
+      <ScopePanel emit={c.emit} />
       <SessionSwitcher model={sm} currentSessionId={currentSessionId} onSelect={onSelectSession} />
       <MarksPanel model={m} />
       <CommentsPanel model={cm} emit={c.emit} />

@@ -28,6 +28,8 @@ import { getDatabase } from '../cache/db.js';
 import { captureHumanNote, listSessionComments, listSessionArtifacts, type SessionCommentRow, type ArtifactDelta } from '../studio/capture/artifacts.js';
 import { SessionAuditLog, type AuditDb, type AuditEntry } from '../studio/audit.js';
 import { SessionApprovals } from '../studio/approvals.js';
+import { PreGrantStore, type PreGrantEntry } from '../studio/pre-grant.js';
+import type { ParkedAction } from '../studio/act.js';
 import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
 import { isCredentialContext } from '../studio/credential.js';
@@ -193,6 +195,8 @@ export interface StudioHost {
   approvals: SessionApprovals;
   /** Human-only, per-session, revocable: lift the agent's localhost/RFC1918 nav block (cloud-metadata stays blocked). */
   grantAgentPrivateNav: (on: boolean) => void;
+  /** S7: the pre-grant authorization scope store (closure-local). Exposed for tests to assert the {t:'grant'} WS-human write boundary; the agent holds no reference to it. */
+  preGrant: PreGrantStore;
   /** Slice 5e-a: the login-wall handoff machine — wall-detect → human-holding → completing/aborted/vanished. Exposed for the host-boundary/headed tests. */
   handoff: LoginHandoff;
   hub: StudioWsHub;
@@ -278,6 +282,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   let onMarkHandler: ((msg: Record<string, unknown>) => void) | undefined;
   let onApprovalHandler: ((msg: Record<string, unknown>) => void) | undefined;
   let onCommentHandler: ((msg: Record<string, unknown>) => void) | undefined;
+  let onGrantHandler: ((msg: Record<string, unknown>) => void) | undefined;
   // The WS hub fans frames/input over the host's WebSocket; the daemon authorizes
   // each upgrade (Origin/Host + subprotocol bearer) before handing it here. WS
   // clients are session viewers, so onAttach/onDetach keep the Session's client
@@ -307,6 +312,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     // The human's comment/annotation ({t:'comment', text}). The WS is the human channel, so the comment is
     // human-authored → captured trusted=1 (the agent's MCP capture path can never reach this writer).
     onComment: (_id, msg) => onCommentHandler?.(msg),
+    // S7: the human's pre-grant ({t:'grant', ...}). The WS is the human channel (bearer-authed upgrade); the
+    // host stamps party='human' and rejects a client claiming party='agent' — the agent can never write the
+    // scope store (no agent/MCP path reaches it).
+    onGrant: (_id, msg) => onGrantHandler?.(msg),
     // Tell a connecting client the current {holder, epoch} so it stamps valid input
     // even if it joins after a flip (defaults before the controller exists).
     helloExtras: () => controller?.controlSnapshot() ?? { holder: 'human', epoch: 0 },
@@ -454,6 +463,29 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // takeover — and the act handler layers the epoch fence on top.
   const approvals = new SessionApprovals({ broadcast: (msg) => hub.broadcast(session.id, msg) });
   onApprovalHandler = (msg) => approvals.handleWire(msg);
+
+  // S7: the pre-grant authorization scope store — CLOSURE-LOCAL (mirroring NavGrant), OFF the session object,
+  // EMPTY by default. The act gate reads it pull-at-eval; the ONLY writer is onGrantHandler below (the human WS
+  // channel). A risky action with no matching grant PARKS: enqueued for the human's batch review and surfaced
+  // as a {t:'parked'} broadcast (the agent is not blocked; the action does not execute).
+  const preGrant = new PreGrantStore();
+  const park = (item: ParkedAction): void => {
+    hub.broadcast(session.id, { t: 'parked', action: item.action, risk: item.risk, ...(item.domain ? { domain: item.domain } : {}), ...(item.ref ? { ref: item.ref } : {}) });
+  };
+  // S7: the human's pre-grant ingress. The WS is the human channel (bearer-authed upgrade), so the host STAMPS
+  // party='human' and REJECTS a client claiming party='agent' — the agent can never write the scope store. The
+  // message carries {entries:[{domain, actionType, riskTier}]}; each well-formed entry is added (idempotent).
+  onGrantHandler = (msg) => {
+    if (msg.party === 'agent') return; // reject a client claiming to be the agent — grants are human-only
+    const entries = Array.isArray(msg.entries) ? msg.entries : [];
+    for (const raw of entries) {
+      if (!raw || typeof raw !== 'object') continue;
+      const e = raw as Record<string, unknown>;
+      if (typeof e.domain !== 'string' || typeof e.actionType !== 'string' || typeof e.riskTier !== 'string') continue;
+      if (e.riskTier !== 'money' && e.riskTier !== 'credential' && e.riskTier !== 'destructive') continue;
+      preGrant.add({ domain: e.domain, actionType: e.actionType, riskTier: e.riskTier } as PreGrantEntry);
+    }
+  };
 
   // 7b-notes S1: the human comment/annotation sink. A {t:'comment', text} the human pushes over the WS is
   // human-authored, so it persists via captureHumanNote — the SOLE content_trusted=1 writer (the agent's
@@ -913,6 +945,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     channel: controller,
     audit: auditLog,
     approvals,
+    // S7: the pre-grant gate. A risky action matching a live human grant is authorized (audited pre-grant);
+    // no match parks (surfaced via the broadcast above, not executed). preGrant is read pull-at-eval here.
+    preGrant,
+    park,
     currentUrl: () => {
       try {
         return sessionBrowser.page.url();
@@ -1012,7 +1048,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
+  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, preGrant, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
 }
 
 /** Open the web-app tab in the platform browser; the logged URL is the fallback if no opener is present. */

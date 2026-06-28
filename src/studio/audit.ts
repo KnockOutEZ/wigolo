@@ -33,8 +33,12 @@ export interface AuditRecordInput {
   outcome: AuditOutcome;
   /** Phase 6c: the risk tier the deterministic classifier assigned. Absent when the action was not classified risky (safe). */
   risk?: RiskTier;
-  /** Phase 6c: the human approval decision when the action passed through the gate. Absent when the action was never gated. */
-  approval?: ApprovalDecision;
+  /**
+   * Phase 6c / S7: how a risky action was authorized — the live-verdict decision (approved/refused/timeout/
+   * superseded) OR the S7 authorization source ('pre-grant' = a matching human scope grant authorized it;
+   * 'parked' = no matching grant, enqueued for human review, not executed). Absent when the action was never gated.
+   */
+  approval?: ApprovalDecision | 'pre-grant' | 'parked';
 }
 
 /** A stamped, immutable audit entry. */
@@ -97,7 +101,7 @@ function rowToEntry(r: AuditRow): AuditEntry {
     ...(Object.keys(target).length ? { target: Object.freeze(target) } : {}),
     outcome: Object.freeze(outcome),
     ...(r.risk != null ? { risk: r.risk as RiskTier } : {}),
-    ...(r.approval != null ? { approval: r.approval as ApprovalDecision } : {}),
+    ...(r.approval != null ? { approval: r.approval as ApprovalDecision | 'pre-grant' | 'parked' } : {}),
     seq: r.seq,
     ts: r.ts,
   });
