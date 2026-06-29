@@ -45,8 +45,14 @@ const END = '[[END UNTRUSTED DATA]]';
  * Break any verbatim BEGIN/END marker embedded in the content so it cannot forge a region
  * boundary. The replacements are visibly distinct strings that do NOT contain the verbatim
  * marker substring, so the wrapped output holds exactly one real BEGIN and one real END.
+ *
+ * Exported for D8b: the structured studio sinks (studio_observe elements/diff, studio_marks
+ * role/name) carry page-derived display text as sibling JSON fields rather than inside a flat
+ * fence, so they apply this same delimiter-neutralization field-wise at their emit seams — a
+ * hostile element name embedding the marker cannot forge the boundary the notice describes.
+ * Idempotent: re-running on already-neutralized text is a no-op (no verbatim marker remains).
  */
-function neutralizeMarkers(s: string): string {
+export function neutralizeMarkers(s: string): string {
   return s.split(END).join('[ [END UNTRUSTED DATA] ]').split(BEGIN).join('[ [BEGIN UNTRUSTED DATA] ]');
 }
 

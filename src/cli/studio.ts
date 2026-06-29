@@ -36,7 +36,7 @@ import { MarkStore, type StudioMark } from '../studio/mark/store.js';
 import { isCredentialContext } from '../studio/credential.js';
 import { LoginHandoff } from '../studio/handoff.js';
 import { createLoginCapture, type OriginMismatch } from '../studio/login-capture.js';
-import { UNTRUSTED_STUDIO_NOTICE } from '../security/untrusted.js';
+import { UNTRUSTED_STUDIO_NOTICE, neutralizeMarkers } from '../security/untrusted.js';
 import { buildTarget, buildTargetFromFlat, indexAxByBackendNode, type StructuredTarget } from '../studio/mark/target.js';
 import { heal, type HealResult } from '../studio/mark/heal.js';
 import { generalize, applyGeometry, type GenBox } from '../studio/mark/generalize.js';
@@ -740,8 +740,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
         const h = heal(m.target, candidates);
         const view: StudioMarkView = {
           markId: m.markId,
-          role: m.target.role,
-          name: m.target.name,
+          // D8b: neutralize the boundary marker in the mark's page-derived display text (role/name) so a
+          // hostile mark name cannot forge the fence. Operational fields (markId/ref/confidence) stay RAW.
+          role: neutralizeMarkers(m.target.role),
+          name: neutralizeMarkers(m.target.name),
           trusted: false,
           confidence: h.confidence,
         };

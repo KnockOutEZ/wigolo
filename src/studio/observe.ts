@@ -15,14 +15,39 @@
  *  - spill retrieval routes to the host: studio_observe({snapshot_ref}) reads the
  *    host-local spill; an evicted ref returns a TYPED error, never a bare null.
  */
-import { resolveObserve } from './perception/diff.js';
+import { resolveObserve, type SnapshotDiff } from './perception/diff.js';
 import { fitElementsToBudget, fitDiffToBudget, readSpill, enforceSpillBudget } from './perception/spill.js';
 import type { PageSnapshot, SnapshotElement } from './perception/snapshot.js';
 import type { StudioEventQueue } from './event-queue.js';
 import type { StudioObserveInput, StudioObserveOutput, StudioToolError } from '../daemon/studio-dispatch.js';
 import { isCredentialContext } from './credential.js';
 import type { LoginHandoffSignal } from './handoff.js';
-import { UNTRUSTED_STUDIO_NOTICE } from '../security/untrusted.js';
+import { UNTRUSTED_STUDIO_NOTICE, neutralizeMarkers } from '../security/untrusted.js';
+
+/**
+ * D8b structural containment for the studio_observe sink: neutralize the untrusted-data boundary marker
+ * in a page-derived element's DISPLAY-TEXT fields (role/name) so a hostile name cannot FORGE the fence the
+ * untrusted_notice describes. Operational fields (ref, confidence) pass through RAW — the agent targets by
+ * ref. Returns a NEW element so the stored snapshot stays raw (future diffs compare raw-vs-raw).
+ */
+const neutralizeElement = (e: SnapshotElement): SnapshotElement => ({
+  ...e,
+  role: neutralizeMarkers(e.role),
+  name: neutralizeMarkers(e.name),
+});
+
+/** D8b: neutralize the display text on every element descriptor a diff carries (added/removed/changed + churn). */
+const neutralizeDiff = (d: SnapshotDiff): SnapshotDiff => ({
+  ...d,
+  added: d.added.map(neutralizeElement),
+  removed: d.removed.map(neutralizeElement),
+  changed: d.changed.map(neutralizeElement),
+  lowConfidenceChurn: {
+    ...d.lowConfidenceChurn,
+    added: d.lowConfidenceChurn.added.map(neutralizeElement),
+    removed: d.lowConfidenceChurn.removed.map(neutralizeElement),
+  },
+});
 
 export interface ObserverDeps {
   /** Take the live snapshot (the host binds this to sessionBrowser.cdp). */
@@ -66,7 +91,12 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
       if (content === null) {
         return { error_reason: 'studio_spill_evicted', hint: 'That spilled snapshot is no longer available — re-observe for a fresh one.' };
       }
-      return { id: input.base_id ?? '', kind: 'full', trusted: false, untrusted_notice: UNTRUSTED_STUDIO_NOTICE, elements: content as SnapshotElement[], events: [], eventCursor: input.since ?? 0, eventsDropped: 0, domTruncated: false };
+      // D8b: neutralize the boundary marker in the retrieved set's display text before re-emitting to
+      // the agent (an elements spill is an array; an over-budget diff spill is the diff object).
+      const restored: unknown = Array.isArray(content)
+        ? content.map(neutralizeElement)
+        : neutralizeDiff(content as SnapshotDiff);
+      return { id: input.base_id ?? '', kind: 'full', trusted: false, untrusted_notice: UNTRUSTED_STUDIO_NOTICE, elements: restored as SnapshotElement[], events: [], eventCursor: input.since ?? 0, eventsDropped: 0, domTruncated: false };
     }
 
     // ATOMIC, BOUNDED capture: snapshot + cursor at one instant; give up to a full resync if the page never settles.
@@ -141,12 +171,12 @@ export function createObserver(deps: ObserverDeps): (input: StudioObserveInput) 
       const fit = fitElementsToBudget(resolved.snapshot.elements, deps.inlineBudget, deps.dataDir);
       deps.recordTokens?.(fit.tokenCount);
       enforceSpillBudget({ maxBytes: deps.spillMaxBytes, protect: new Set(fit.spillRef ? [fit.spillRef] : []), dataDir: deps.dataDir });
-      return { ...base, kind: 'full', elements: fit.elements, ...(fit.spillRef ? { snapshotRef: fit.spillRef } : {}) };
+      return { ...base, kind: 'full', elements: fit.elements.map(neutralizeElement), ...(fit.spillRef ? { snapshotRef: fit.spillRef } : {}) };
     }
 
     const fitD = fitDiffToBudget(resolved.diff, deps.inlineBudget, deps.dataDir);
     deps.recordTokens?.(fitD.tokenCount);
     enforceSpillBudget({ maxBytes: deps.spillMaxBytes, protect: new Set(fitD.spillRef ? [fitD.spillRef] : []), dataDir: deps.dataDir });
-    return { ...base, kind: 'diff', diff: fitD.diff ?? fitD.summary, ...(fitD.spillRef ? { snapshotRef: fitD.spillRef } : {}) };
+    return { ...base, kind: 'diff', diff: fitD.diff ? neutralizeDiff(fitD.diff) : fitD.summary, ...(fitD.spillRef ? { snapshotRef: fitD.spillRef } : {}) };
   };
 }
