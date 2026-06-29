@@ -257,6 +257,78 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     }
   }, 30_000);
 
+  // ───────────────────────────── D14: page-(JS)-initiated nav is fenced ─────────────────────────────
+  it('D14: a page-JS-initiated top-level navigation to a private/internal target is caught by the nav fence (window.location + meta-refresh)', async () => {
+    // classifyRisk tags navigate/scroll as "safe" → the SSRF NavInterceptor fence is the SOLE nav guard.
+    // This VERIFIES the fence is trigger-agnostic: a navigation the PAGE initiates from its own JS
+    // (window.location / meta-refresh), NOT via studio_act/navigateSession, is still paused by CDP
+    // Fetch{Document, Request} and re-validated by guardNavigation under the live holder policy. Loopback
+    // (127.0.0.1) is a reachable proxy for a private/internal target the AGENT policy blocks (RFC1918 +
+    // link-local take the same guardNavigation classification path). GROUND TRUTH = server-hit count: the
+    // fence fails the request at the Request stage, BEFORE it leaves the browser, so a fenced nav is 0 hits.
+    host.grantAgentPrivateNav(false); // ensure the default agent policy: loopback/private blocked
+    let targetHits = 0;
+    const server = createServer((req, res) => {
+      if (req.url === '/start') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<body>START-PAGE</body>'); }
+      else if (req.url?.startsWith('/target')) { targetHits++; res.writeHead(200, { 'content-type': 'text/html' }); res.end('<body>PRIVATE-TARGET-REACHED</body>'); }
+      else { res.writeHead(404); res.end(); }
+    });
+    const port = await new Promise<number>((resolve) =>
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port)),
+    );
+    const base = `http://127.0.0.1:${port}`;
+    const page = host.sessionBrowser.page as unknown as import('playwright').Page;
+    const human = { source: 'human' as const, allowPrivate: true };
+
+    const reachedWithin = async (before: number): Promise<boolean> => {
+      for (let i = 0; i < 50; i++) {
+        if (targetHits > before) return true;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return targetHits > before;
+    };
+    // Page-initiated full navigation, deferred a tick so page.evaluate returns before the nav commits.
+    const pageNav = (url: string) =>
+      page.evaluate((u) => { setTimeout(() => { (window as unknown as { location: { href: string } }).location.href = u; }, 0); }, url);
+    const armAgentOnStart = async () => {
+      host.controller.handleControl({ op: 'reclaim' });
+      expect((await navigateSession(host.sessionBrowser, `${base}/start`, human)).ok).toBe(true);
+      host.controller.handleControl({ op: 'grant', to: 'agent' }); // interceptor now pulls AGENT policy per hop
+    };
+
+    try {
+      // POSITIVE CONTROL — human holds: the SAME page-JS nav to loopback IS allowed (fence continues it),
+      // proving the target is reachable and window.location drives a real nav through the fence.
+      host.controller.handleControl({ op: 'reclaim' });
+      expect((await navigateSession(host.sessionBrowser, `${base}/start`, human)).ok).toBe(true);
+      const beforeHuman = targetHits;
+      await pageNav(`${base}/target?human`);
+      expect(await reachedWithin(beforeHuman), 'human page-JS nav reaches loopback (positive control)').toBe(true);
+
+      // PROBE 1 — agent holds + window.location: the page-JS nav to loopback must be BLOCKED by the fence.
+      await armAgentOnStart();
+      const beforeWinloc = targetHits;
+      await pageNav(`${base}/target?agent-winloc`);
+      // MUTATION (bypass guardNavigation's loopback/private block) → this nav reaches the server → RED.
+      expect(await reachedWithin(beforeWinloc), 'agent page-JS window.location is fenced (never reaches loopback)').toBe(false);
+
+      // PROBE 2 — agent holds + meta-refresh: an injected <meta http-equiv=refresh> nav is fenced too.
+      await armAgentOnStart();
+      const beforeMeta = targetHits;
+      await page.evaluate((u) => {
+        const m = document.createElement('meta');
+        m.httpEquiv = 'refresh';
+        m.content = `0;url=${u}`;
+        document.head.appendChild(m);
+      }, `${base}/target?agent-meta`);
+      await new Promise((r) => setTimeout(r, 1500)); // let the refresh fire — it must NOT reach the server
+      expect(targetHits, 'agent meta-refresh nav is fenced (never reaches loopback)').toBe(beforeMeta);
+    } finally {
+      host.controller.handleControl({ op: 'reclaim' });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 30_000);
+
   // ───────────────────────────── 2J.2 abort-layer safety proofs ─────────────────────────────
   // The agent's click/type/scroll dispatch through the SAME token-gated CDP input channel the
   // human uses (SessionController → InputForwarder), stamped party='agent' at the gate epoch.
