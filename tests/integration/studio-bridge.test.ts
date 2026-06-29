@@ -375,11 +375,18 @@ describe.skipIf(!RUN)('studio screencast bridge (integration, real browser)', ()
     const tb = (obs.elements ?? []).find((el) => el.role === 'textbox');
     expect(tb, 'observe should surface the textbox').toBeTruthy();
 
-    // Type a long string; reclaim shortly after so it aborts partway (80 keystroke units cannot
-    // all land in the window → the abort is deterministic; the exact landed count is not asserted).
-    const text = 'a'.repeat(80);
+    // DETERMINISTIC mid-type reclaim (D22). The old form blind-waited a fixed 60ms then reclaimed —
+    // a race: when all units landed inside that window the type FINISHED before the reclaim, so there
+    // was nothing to abort → error_reason undefined (timing-flaky on faster/loaded hosts). Instead:
+    //  (1) a long text, so the per-unit loop always has a large run of units still pending, and
+    //  (2) a SYNCHRONIZATION POINT — wait until the first char has actually landed on the page (the
+    //      type is provably in-flight), THEN reclaim.
+    // The reclaim advances the epoch synchronously on the microtask after the poll resolves, before the
+    // loop's next per-unit CDP dispatch (a macrotask) runs, so the next unit hits the stale-epoch fence
+    // and aborts BETWEEN units — guaranteed mid-flight, independent of machine speed/load.
+    const text = 'a'.repeat(400);
     const p = host.act({ action: 'type', ref: tb!.ref, text });
-    await new Promise((r) => setTimeout(r, 60));
+    await expect.poll(async () => (await fieldOf()).length, { interval: 10, timeout: 5000 }).toBeGreaterThanOrEqual(1);
     host.controller.handleControl({ op: 'reclaim' });
     const r = (await p) as { error_reason?: string; charsLanded?: number };
 
