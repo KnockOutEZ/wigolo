@@ -2,101 +2,103 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/KnockOutEZ/wigolo/main/assets/brand/wigolo-wordmark-dark.png">
-  <img alt="wigolo" src="https://raw.githubusercontent.com/KnockOutEZ/wigolo/main/assets/brand/wigolo-wordmark-light.png" width="340">
+  <img alt="wigolo" src="https://raw.githubusercontent.com/KnockOutEZ/wigolo/main/assets/brand/wigolo-wordmark-light.png" width="300">
 </picture>
 
-### The go-to web for your agent.
+### The go-to web for your agent
 
-**Local-first web intelligence over MCP — no keys, no cloud, no metered bill.**
+Local-first web intelligence over MCP — **no keys, no cloud, no metered bill.**
 
 [![npm](https://img.shields.io/npm/v/wigolo?color=cb3837&logo=npm)](https://www.npmjs.com/package/wigolo)
 [![node](https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed)](https://modelcontextprotocol.io)
-[![license](https://img.shields.io/badge/license-AGPL--3.0-2563eb)](#-license)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-22c55e)](#-contributing)
-[![Buy me a coffee](https://img.shields.io/badge/%E2%98%95-buy%20me%20a%20coffee-ffdd00)](https://buymeacoffee.com/knockoutez)
+[![license](https://img.shields.io/badge/license-AGPL--3.0-2563eb)](#license)
 
-**[Quickstart](#-quickstart) · [Tools](#-the-tools) · [Architecture](#%EF%B8%8F-architecture) · [Setup](#-recommended-setup) · [Reference](#%EF%B8%8F-full-reference) · [When it fits](#-when-wigolo-fits) · [Contribute](#-contributing)**
+[Quickstart](#quickstart) · [Tools](#the-tools) · [Why wigolo](#why-its-different) · [Architecture](#architecture) · [Configuration](#configuration) · [Contribute](#contributing)
 
 </div>
 
 ---
 
-wigolo runs on your machine as an MCP server and hands an AI coding agent one durable surface for everything web-related: **search, fetch, crawl, extract, cache, find-similar, research,** and autonomous gather loops. It needs no API keys to do its core work, and nothing it touches leaves `~/.wigolo/`.
-
-The goal of the project is plain: web search and research for agents should be as good as the paid services — and stay open, local, and free — instead of being a meter you feed every time your agent gets curious. That's the bar it's held to.
+wigolo runs on your machine as an MCP server and gives an AI coding agent one durable surface for everything web-related — **search, fetch, crawl, extract, cache, find-similar, research,** and autonomous gather loops. The core tools need no API keys, nothing it touches leaves `~/.wigolo/`, and there's no bill that grows with how much your agent thinks.
 
 ```bash
-npx wigolo init --agents=claude-code   # set up everything in one step
+npx wigolo init --agents=claude-code   # install components, wire into your agent
 ```
 
----
+## See it
 
-## ⚡ Quickstart
+```console
+$ wigolo shell
+wigolo> search "postgres lateral join vs subquery" --category=docs
 
-You need **Node ≥ 20** and ~**1.5 GB** of free disk (headless browser, the reranker, the embedding model, and a cache that grows with use). macOS, Linux, Windows all work. Python is only needed if you opt into the legacy SearXNG backend.
+◆ 5 results · 18 engines → rank-fusion → rerank · 312 ms
+
+[1] LATERAL — PostgreSQL Documentation                              0.94
+    postgresql.org/docs/current/queries-table-expressions.html
+    "A LATERAL item can reference columns of preceding FROM items; a
+     plain subquery in the FROM list cannot — ideal for top-N-per-group."
+
+[2] When a LATERAL join beats a correlated subquery                 0.88
+    …/blog/lateral-joins
+    "LATERAL runs the right side once per outer row, so the planner can
+     push down LIMIT — a correlated subquery re-scans every time."
+
+evidence for [1][2][4] · cached — the next call for this is 0 ms and free
+```
+
+Every result carries an explainable score and a citation id; the whole response lands in the local cache, so re-querying costs nothing. Ask for `format: "answer"` (with an optional LLM) and wigolo synthesizes a cited answer instead.
+
+## Quickstart
+
+You need **Node ≥ 20** and ~**1.5 GB** of free disk (headless browser, reranker, embedding model, and a cache that grows with use). macOS, Linux, and Windows all work.
 
 ```bash
-# 1. set up everything: install components, wire into your agent (idempotent — safe to re-run)
-npx wigolo init --agents=claude-code
-
-# 2. confirm everything's healthy (no network fetches)
-npx wigolo doctor
+npx wigolo init --agents=claude-code   # set up everything (idempotent — safe to re-run)
+npx wigolo doctor                      # confirm it's healthy (no network)
 ```
 
-**Headless / CI setup** (one command, no prompts):
-```bash
-WIGOLO_LLM_API_KEY=sk-... npx wigolo init --non-interactive --agents=claude-code,cursor --provider=anthropic --search=core
-```
-
-> The LLM provider key is **optional** — wigolo's core tools (search, fetch, crawl, extract, cache) work without one. Only the `research` and `agent` tools use an LLM to synthesize results. The key is read from the `WIGOLO_LLM_API_KEY` env var; it is never passed as a CLI flag.
-
-Or add it to any MCP client by hand:
+Add it to any MCP client by hand:
 
 ```bash
 claude mcp add wigolo -- npx wigolo
 ```
 
-Prefer to kick the tyres without an agent? There's a REPL:
+> **The LLM key is optional.** The core tools (search, fetch, crawl, extract, cache) work without one. Only `research`, `agent`, and `search format=answer` use an LLM to *synthesize* — point wigolo at a local model (Ollama) or a cloud provider and it's still fully functional either way.
+
+<details>
+<summary>Headless / CI setup (one command, no prompts)</summary>
 
 ```bash
-wigolo shell
-wigolo> search "rate limiter token bucket typescript" --category=code --limit=15
-wigolo> fetch https://docs.python.org/3/library/functools.html --section=lru_cache
-wigolo> research "Compare Bun, Deno, Node.js for HTTP servers" --depth=standard
+WIGOLO_LLM_API_KEY=sk-... npx wigolo init --non-interactive \
+  --agents=claude-code,cursor --provider=anthropic --search=core
 ```
+The key is read from the env var, never passed as a CLI flag.
+</details>
 
----
-
-## ✨ Why wigolo
-
-- **Zero keys to start.** Default search talks to public engines through direct adapters; the reranker and embeddings run on-device. Useful within a minute of installing.
-- **Local-first, private by default.** Cache, embeddings, models, and config live under `~/.wigolo/`. No telemetry unless you switch it on. Optional LLM keys are strictly additive — never required.
-- **Built for agents, not humans.** Parallel multi-query fan-out (one call, many engines, in parallel — a serial host tool-loop can't match it), transparent per-result scoring, and budget-aware output.
-- **Honest output.** Results flag stale cache, failed fetches, degraded backends, and truncated diffs instead of returning empty-but-successful-looking data.
-- **One surface, eight jobs.** Search → fetch → crawl → extract → cache → find-similar → research → autonomous agent, all behind a single MCP connection.
-
-It's **not** a hosted SaaS, **not** a vector database other apps query, and **not** a general web-automation framework. It does one thing: feed agents good web data, locally.
-
----
-
-## 🧰 The tools
+## The tools
 
 | Tool | What it does |
 |------|--------------|
-| 🔎 `search` | Multi-engine web search (18 direct engine adapters) with reciprocal-rank fusion, ML cross-encoder reranking, and an explainable per-result score. Pass a query **array** for parallel breadth. |
-| 📄 `fetch` | Load one URL through a tiered router (HTTP → TLS-impersonation → headless browser) that auto-escalates on anti-bot challenges or SPA shells. Clean markdown + metadata + links + optional screenshot. |
-| 🕸️ `crawl` | Multi-page crawl — BFS, DFS, sitemap, auto, or map-only. Per-domain rate limits, robots.txt respect, boilerplate dedup. |
+| 🔎 `search` | Multi-engine web search (18 direct adapters) with rank fusion, ML cross-encoder reranking, and an explainable per-result score. Pass a query **array** for parallel breadth. |
+| 📄 `fetch` | Load one URL through a tiered router (HTTP → TLS-impersonation → headless browser) that auto-escalates on anti-bot challenges or SPA shells. Clean markdown + metadata + links. |
+| 🕸️ `crawl` | Multi-page crawl — BFS, DFS, sitemap, or map-only. Per-domain rate limits, robots.txt respect, boilerplate dedup. |
 | 🧩 `extract` | Structured data from a page: tables, metadata, JSON-LD, brand identity, named schemas (Article / Recipe / Product / …), or any custom JSON Schema. |
-| 💾 `cache` | Query everything already seen — keyword (FTS5/BM25) or hybrid (BM25 + on-device vectors, fused). Plus stats, clear, and change detection. |
+| 💾 `cache` | Query everything already seen — keyword (BM25) or hybrid (BM25 + on-device vectors). Plus stats, clear, and change detection. |
 | 🧲 `find_similar` | Pages similar to a URL or a concept, via 3-way fusion of keyword + semantic + live web. |
-| 🧠 `research` | Decompose a question → fan out sub-queries → fetch sources → synthesize a cited report (or emit a structured brief the host LLM can write from). |
+| 🧠 `research` | Decompose a question → fan out sub-queries → fetch sources → synthesize a cited report (or a structured brief the host LLM writes from). |
 | 🤖 `agent` | Autonomous gather loop: plan → search → fetch → extract → synthesize, with a step log, time budget, and optional output schema. |
-| 🔁 `diff` / `watch` | Content change detection and URL polling (reserved; shipping incrementally). |
 
----
+## Why it's different
 
-## 🏗️ Architecture
+- **$0 per query, free to re-query.** Default search talks to public engines through direct adapters; the reranker and embeddings run on-device. Every response is cached, so asking again is instant and costs nothing.
+- **Private by default.** Cache, embeddings, models, and config live under `~/.wigolo/`. Nothing reaches a third party unless you explicitly opt into an LLM for synthesis.
+- **Built for agents, not humans.** One MCP call fans out many queries across many engines in parallel — something a serial host tool-loop can't replicate — with transparent per-result scoring and budget-aware output.
+- **Honest output.** Stale cache, failed fetches, degraded backends, and truncation are surfaced in the result, never disguised as empty-but-successful data.
+
+It's **not** a hosted SaaS, a vector database other apps query, or a general web-automation framework. And it's honest about the trade: a hosted service will still beat it on **massive semantic discovery** over a global neural index, **crawling hostile sites at scale**, and **one-call finished answers** with zero local compute. wigolo is built for the local, private, low-cost lane — and to be as good as the paid services within it.
+
+## Architecture
 
 A single Node process speaking MCP (JSON-RPC over stdio). Everything heavy is local and lazy-loaded, so a zero-key install pays nothing for the parts it isn't using.
 
@@ -115,7 +117,7 @@ flowchart TD
     T2 --> ML["🧠 On-device ML<br/>BGE-small embeddings (384d)<br/>MiniLM cross-encoder reranker"]
 
     F -.->|optional| LLM["☁️ Cloud LLM<br/>synthesis only · opt-in"]
-    S -.->|optional| SX["🔀 SearXNG<br/>opt-in legacy / hybrid"]
+    S -.->|optional| SX["🔀 Aggregator backend<br/>opt-in legacy / hybrid"]
 
     F --> WEB["🌍 Public web"]
     S --> WEB
@@ -127,79 +129,40 @@ flowchart TD
     style SX stroke-dasharray: 5 5
 ```
 
-Four choices shape how it behaves:
+- **Code beats model.** Deterministic work — canonicalization, rank fusion, dedup, schema matching, hashing — never touches an LLM. The model is reserved for judgment, opt-in, and capped per request. LLM-filled fields are checked against the source and nulled if absent, so hallucinations don't reach your output.
+- **Routing on observable signals.** The fetch ladder escalates to a real browser on what it *sees* — SPA markers, challenge bodies, thin content — not domain guesses. It learns per-domain and unlearns when a site stops needing it.
+- **Transparent, honest results.** Every result carries a score breakdown and a query-understanding block; degraded state is always surfaced, never hidden.
 
-- **Code beats model.** Deterministic work — URL canonicalization, rank fusion, dedup, schema matching, hashing — never goes to an LLM. The model is reserved for judgment (synthesis, filling schema fields the DOM can't), it's opt-in, and it's capped per request. When an LLM *does* fill a field, the value is checked against the source text and nulled if it isn't there — hallucinations don't reach your structured output.
-- **Routing on observable signals.** The fetch ladder escalates to a real browser based on what it sees — SPA markers, anti-bot challenge bodies, thin content — not guesses about which domains are "probably JS-heavy." It learns per-domain, and unlearns when a site stops needing the browser.
-- **Transparent ranking.** Every result carries a score breakdown (relevance × domain quality × lexical alignment × recency, plus consensus and authority) and a query-understanding block. You can audit why something ranked where it did.
-- **No silent failure.** Stale cache, failed fetches, degraded backends, and truncation are surfaced in the result, not hidden.
+## Configuration
 
----
-
-## 🚀 Recommended setup
-
-A clean install works. But a handful of settings noticeably change output quality. Set them as environment variables, or in your agent's MCP `env` block.
-
-#### 1. Close the synthesis gap — the single biggest lever
-
-The common hosts (Claude Code, Claude Desktop) don't expose MCP sampling, so `research`, `agent`, and `search format=answer` fall back to a plain source listing unless you point wigolo at an LLM:
+A clean install works out of the box. A few settings meaningfully raise output quality — set them as environment variables or in your agent's MCP `env` block.
 
 ```bash
-# local — everything stays on your machine, no cloud, no cost:
-export WIGOLO_LLM_PROVIDER=http://localhost:11434   # Ollama / vLLM / LM Studio
+# 1. Synthesis — the biggest lever. Hosts like Claude Code don't expose MCP
+#    sampling, so research/agent/answer need an LLM to write the final text.
+export WIGOLO_LLM_PROVIDER=http://localhost:11434   # local (Ollama/vLLM/LM Studio) — free, on-device
+export WIGOLO_LLM_PROVIDER=anthropic                # or cloud; key → OS keychain, never config.json
 
-# or cloud — better-written synthesis, one cheap call per report:
-export WIGOLO_LLM_PROVIDER=anthropic                # key goes to the OS keychain, never config.json
-export WIGOLO_LLM_API_KEY=sk-...                    # key for whichever provider WIGOLO_LLM_PROVIDER names
+# 2. Wider retrieval funnel
+export WIGOLO_SEARCH=hybrid                         # core engines + aggregator fallback
+export WIGOLO_GITHUB_TOKEN=...                      # GitHub code search 10 → 30 req/min + org-private
+
+# 3. Land more fetches, stay warm
+export WIGOLO_TLS_TIER=auto                         # per-domain TLS-impersonation past Cloudflare/DataDome
+export WIGOLO_EAGER_WARMUP=1                        # pay the ~1s model load up front, not on first search
 ```
 
-For a cloud provider you can supply the key either via the provider-specific var
-(`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` / `GROQ_API_KEY`) or via the
-generic `WIGOLO_LLM_API_KEY`, which applies to whichever provider `WIGOLO_LLM_PROVIDER`
-names. The provider-specific var wins when both are set.
+For repeated interactive use, run `wigolo serve` so the browser pool, embeddings, and reranker stay resident across calls. To stay 100% on-device, a local LLM endpoint + `WIGOLO_TLS_TIER=auto` is the honest minimal set.
 
-For synthesizing already-retrieved evidence, a local 7–8B model is plenty. Reach for cloud only when you're shipping a report.
+**Per-call habits that pay off:** query **arrays** (`["a","b","c"]`) for parallel breadth · `search_depth: "deep"` for queries that matter · `include_domains` as a hard filter for docs lookups.
 
-#### 2. Widen the retrieval funnel
-
-Search quality is bounded by what the engines surface, so give them more to surface:
-
-```bash
-export WIGOLO_SEARCH=hybrid       # core engines + SearXNG fallback on the cases core alone misses
-export BRAVE_API_KEY=...          # adds Brave to the pool; better fusion consensus
-export WIGOLO_GITHUB_TOKEN=...    # GitHub code search 10 → 30 req/min, plus org-private results
-```
-
-#### 3. Land more fetches, keep things warm
-
-```bash
-export WIGOLO_TLS_TIER=auto       # per-domain TLS-impersonation; clears Cloudflare/DataDome without the cost on sites that don't need it
-export WIGOLO_EAGER_WARMUP=1      # pays the ~1s ONNX load up front, not on first search
-```
-
-For repeated interactive use, run `wigolo serve` so the browser pool, embeddings, and reranker stay resident across calls.
-
-#### Per-call habits that pay off
-
-- **Query arrays** (`["a", "b", "c"]`) for breadth — the parallel fan-out is the thing a serial host loop can't replicate.
-- **`search_depth: "deep"`** for queries that matter (adds evidence extraction + rerank on highlights); `balanced` is the everyday default.
-- **`include_domains`** for docs/library lookups — it's a hard filter, not a hint.
-- To warm `find_similar`, crawl a corpus first with **`WIGOLO_CRAWL_INDEX=1`**, then run `wigolo backfill`.
-
-> **Want to stay 100% on-device?** The honest minimal set is a local LLM endpoint + `WIGOLO_TLS_TIER=auto` + `WIGOLO_EAGER_WARMUP=1`. Fully local, and the synthesis path still works.
-
----
-
-## ⚙️ Full reference
-
-Everything you can set, with a one-line description each. Collapsed to keep this readable — click to expand.
-
-### CLI commands
+<details>
+<summary><b>CLI commands</b></summary>
 
 | Command | What it does |
 |---------|--------------|
 | `wigolo` / `wigolo mcp` | Start the MCP stdio server (the default command). |
-| `wigolo init` | Set up wigolo: install components, wire into your detected agents. `--non-interactive --agents=<csv> --provider=<name> --search=<backend>` for CI. |
+| `wigolo init` | Set up wigolo: install components, wire into detected agents. `--non-interactive --agents=<csv> --provider=<name> --search=<backend>` for CI. |
 | `wigolo setup mcp` | Re-write just the MCP server entries, without the full wizard. |
 | `wigolo doctor` | Cold-start health check — no network fetches. |
 | `wigolo verify` | End-to-end smoke test (fetch, crawl, extract, search, rerank, embed). |
@@ -212,17 +175,19 @@ Everything you can set, with a one-line description each. Collapsed to keep this
 | `wigolo plugin add\|list\|remove` | Manage custom extractor / search-engine plugins. |
 | `wigolo uninstall` | Remove wigolo from agent configs (keeps your cache). |
 
+</details>
+
 <details>
-<summary><b>🔎 Search &amp; engines</b></summary>
+<summary><b>Environment variables — search &amp; engines</b></summary>
 
 | Var | Default | Effect |
 |-----|---------|--------|
-| `WIGOLO_SEARCH` | `core` | `core` (direct engines) / `searxng` (legacy) / `hybrid` (core + searxng fallback). |
+| `WIGOLO_SEARCH` | `core` | `core` (direct engines) / `searxng` (legacy) / `hybrid` (core + fallback). |
 | `BRAVE_API_KEY` | — | When set, Brave joins the engine pool (env-only, never persisted). |
 | `WIGOLO_GITHUB_TOKEN` | — | Lifts GitHub code search 10 → 30 req/min; enables org-private search (env-only). |
-| `SEARXNG_URL` | — | External SearXNG URL; when set, skips local bootstrap. |
+| `SEARXNG_URL` | — | External aggregator URL; when set, skips local bootstrap. |
 | `SEARXNG_MODE` | `native` | `native` (Python venv) or `docker`. |
-| `SEARXNG_PORT` | `8888` | Port for native SearXNG. |
+| `SEARXNG_PORT` | `8888` | Port for the native aggregator. |
 | `SEARXNG_QUERY_TIMEOUT_MS` | `8000` | Per-query timeout to the aggregator. |
 | `WIGOLO_MULTI_QUERY_CONCURRENCY` | `5` | Max parallel (query × engine) tasks. |
 | `WIGOLO_MULTI_QUERY_MAX` | `10` | Max unique queries after normalization. |
@@ -231,7 +196,7 @@ Everything you can set, with a one-line description each. Collapsed to keep this
 </details>
 
 <details>
-<summary><b>📄 Fetch, network &amp; TLS</b></summary>
+<summary><b>Environment variables — fetch, network &amp; TLS</b></summary>
 
 | Var | Default | Effect |
 |-----|---------|--------|
@@ -251,7 +216,7 @@ Everything you can set, with a one-line description each. Collapsed to keep this
 </details>
 
 <details>
-<summary><b>🖥️ Browser pool &amp; auth</b></summary>
+<summary><b>Environment variables — browser pool &amp; auth</b></summary>
 
 | Var | Default | Effect |
 |-----|---------|--------|
@@ -266,7 +231,7 @@ Everything you can set, with a one-line description each. Collapsed to keep this
 </details>
 
 <details>
-<summary><b>💾 Cache &amp; crawl</b></summary>
+<summary><b>Environment variables — cache &amp; crawl</b></summary>
 
 | Var | Default | Effect |
 |-----|---------|--------|
@@ -286,7 +251,7 @@ Everything you can set, with a one-line description each. Collapsed to keep this
 </details>
 
 <details>
-<summary><b>🧠 Reranker, embedding &amp; relevance</b></summary>
+<summary><b>Environment variables — reranker, embedding &amp; relevance</b></summary>
 
 | Var | Default | Effect |
 |-----|---------|--------|
@@ -302,7 +267,7 @@ Everything you can set, with a one-line description each. Collapsed to keep this
 </details>
 
 <details>
-<summary><b>☁️ LLM integration (all optional)</b></summary>
+<summary><b>Environment variables — LLM integration (all optional)</b></summary>
 
 | Var | Default | Effect |
 |-----|---------|--------|
@@ -314,23 +279,23 @@ Everything you can set, with a one-line description each. Collapsed to keep this
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | — | Read on every call; never persisted. |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | — | Either name accepted. |
 | `GROQ_API_KEY` | — | Same. |
-| `WIGOLO_LLM_API_KEY` | — | Generic key for whichever provider `WIGOLO_LLM_PROVIDER` names. Last-resort env fallback — the provider-specific var above wins, and it is ignored during auto-detect (no explicit provider). |
+| `WIGOLO_LLM_API_KEY` | — | Generic key for whichever provider `WIGOLO_LLM_PROVIDER` names. The provider-specific var wins; ignored during auto-detect. |
 
 Keys can also live in the OS keychain or an AES-encrypted file (`wigolo init` / `wigolo config`) — never in `config.json`.
 
 </details>
 
 <details>
-<summary><b>🔧 Daemon, warmup, paths, logging &amp; misc</b></summary>
+<summary><b>Environment variables — daemon, warmup, paths, logging &amp; misc</b></summary>
 
 | Var | Default | Effect |
 |-----|---------|--------|
-| `WIGOLO_DATA_DIR` | `~/.wigolo` | Root for cache, models, keys, plugins, SearXNG venv. |
+| `WIGOLO_DATA_DIR` | `~/.wigolo` | Root for cache, models, keys, plugins, aggregator venv. |
 | `WIGOLO_CONFIG_PATH` | `${DATA_DIR}/config.json` | Persisted config path. |
 | `WIGOLO_DAEMON_PORT` | `3333` | Listen port for `wigolo serve`. |
 | `WIGOLO_DAEMON_HOST` | `127.0.0.1` | Bind address. |
 | `WIGOLO_EAGER_WARMUP` | — | `1` → pre-warm embed + rerank on startup (fire-and-forget). |
-| `WIGOLO_BOOTSTRAP_MAX_ATTEMPTS` | `3` | SearXNG bootstrap retry limit. |
+| `WIGOLO_BOOTSTRAP_MAX_ATTEMPTS` | `3` | Aggregator bootstrap retry limit. |
 | `WIGOLO_HEALTH_PROBE_INTERVAL_MS` | `30000` | Background backend-health probe period. |
 | `WIGOLO_PLUGINS_DIR` | `${DATA_DIR}/plugins` | Plugin discovery root. |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`. |
@@ -342,7 +307,7 @@ Keys can also live in the OS keychain or an AES-encrypted file (`wigolo init` / 
 </details>
 
 <details>
-<summary><b>🎛️ Common per-call options (tool arguments)</b></summary>
+<summary><b>Common per-call options (tool arguments)</b></summary>
 
 | Option | Tools | Notes |
 |--------|-------|-------|
@@ -367,69 +332,20 @@ Keys can also live in the OS keychain or an AES-encrypted file (`wigolo init` / 
 
 </details>
 
----
+## Contributing
 
-## 🧭 When wigolo fits
+Bug reports, feature requests, and PRs are all welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)**. Keep tool handlers thin (business logic lives in the domain modules), add tests, and run the suite before opening a PR. wigolo also has a plugin system for custom extractors and search engines: `wigolo plugin add <git-url>`.
 
-There's a healthy field of agent-search tools now, and they're good. This is an honest map of where wigolo's tradeoffs land — not a takedown of anything else. wigolo trades global scale for locality, privacy, and near-zero marginal cost.
+## License
 
-**wigolo is the right fit when:**
-
-- **Cost matters.** Every query is $0, and every re-query is free from the local cache — there's no meter that grows with how much your agent thinks.
-- **Privacy matters.** Queries, fetched content, embeddings, and cache stay under `~/.wigolo/`. Nothing goes to a third-party cloud unless you explicitly opt into an LLM for synthesis.
-- **You're doing technical research.** Docs, code, papers, and repeated deep dives — where the local cache and parallel multi-query fan-out compound in your favour.
-- **You want zero setup friction.** `npx` and go — no account, no API key, no dashboard.
-
-**Where a hosted service may serve you better:**
-
-- **Massive semantic discovery** over a global neural index built from hundreds of millions of pages — not something a local tool can match cold.
-- **Crawling hostile sites at scale**, behind a continuously-maintained anti-bot layer.
-- **A single finished, cited answer** with zero local compute or setup.
-
-wigolo doesn't pretend to win those. It's built for the local, private, low-cost lane — and to be as good as the paid services within it.
-
----
-
-## 🤝 Contributing
-
-Bug reports, feature requests, PRs, and ideas are all welcome — this is the kind of project that gets better with more eyes on it.
-
-- **Found a bug or want a feature?** [Open an issue](https://github.com/KnockOutEZ/wigolo/issues).
-- **Sending a PR?** Go for it. Keep tool handlers thin (business logic lives in the domain modules), run the test suite, and follow the existing conventions.
-- **Want to extend it?** wigolo has a plugin system for custom extractors and search engines — `wigolo plugin add <git-url>`.
-
-If something's unclear, ask in an issue. No contribution is too small.
-
----
-
-## ☕ Support the project
-
-wigolo is open and free, and I intend to keep it that way — maintained, not abandoned, and never turned into a paywalled API. If it saves you a metered search bill, consider chipping in so the upkeep stays sustainable:
+**[GNU AGPL-3.0-only](LICENSE).** Free to use, modify, and self-host — including inside a company. The one obligation: if you run a **modified** version as a network service, you must publish your modified source under the same license. That keeps wigolo open while preventing a closed, hosted fork. See **[SECURITY.md](SECURITY.md)** to report a vulnerability and **[TRADEMARK.md](TRADEMARK.md)** for use of the name. For commercial-licensing questions, reach out.
 
 <div align="center">
+<br>
 
-### **[☕ Buy me a coffee →](https://buymeacoffee.com/knockoutez)**
+wigolo is free and meant to stay that way — maintained, not paywalled.
+If it saves you a metered search bill, a ⭐, a sharp issue, or a **[☕ coffee](https://buymeacoffee.com/knockoutez)** helps keep it sustainable.
 
-</div>
+<sub>Built and maintained by <a href="https://github.com/KnockOutEZ">@KnockOutEZ</a> · <a href="mailto:ktowhid20@gmail.com">ktowhid20@gmail.com</a></sub>
 
-Sponsorship of any size helps. So does a ⭐, a sharp bug report, or a good PR.
-
----
-
-## 📜 License
-
-**[GNU AGPL-3.0-only](LICENSE).** Free to use, modify, and self-host — including inside a company. The one obligation: if you run a **modified** version as a network service, you must make your modified source available under the same license. That keeps wigolo open while preventing a closed, hosted fork.
-
-Contributions are welcome under the terms in **[CONTRIBUTING.md](CONTRIBUTING.md)**. See **[SECURITY.md](SECURITY.md)** to report a vulnerability, and **[TRADEMARK.md](TRADEMARK.md)** for use of the wigolo name. For commercial-licensing questions, reach out.
-
-## 📬 Contact
-
-Licensing, commercial use, concerns about the project, or anything that doesn't fit a GitHub issue:
-
-📧 **ktowhid20@gmail.com**
-
----
-
-<div align="center">
-<sub>Built and maintained by <a href="https://github.com/KnockOutEZ">@KnockOutEZ</a>. If wigolo is useful to you, the best thanks is a ⭐, an issue, or a coffee.</sub>
 </div>
