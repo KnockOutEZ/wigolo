@@ -115,12 +115,12 @@ describe('GithubCodeEngine', () => {
     expect(calls[0].url).toContain('per_page=15');
   });
 
-  // Slice S11b: the audit found github-code returning 401 without any hint
-  // about the env-var fix. The engine_warnings registry already maps 401 →
+  // github-code previously returned 401 without any hint about the env-var
+  // fix. The engine_warnings registry already maps 401 →
   // WIGOLO_GITHUB_TOKEN; this test asserts the adapter actually reads the
   // token from config when it is set, so authenticated users avoid the 401
   // altogether (and the hint stays useful for the unauthenticated path).
-  it('audit: github-code 401 — attaches Bearer auth when WIGOLO_GITHUB_TOKEN is set', async () => {
+  it('github-code 401 — attaches Bearer auth when WIGOLO_GITHUB_TOKEN is set', async () => {
     process.env.WIGOLO_GITHUB_TOKEN = 'ghp_test_token_value';
     resetConfig();
     const { calls } = captureFetch({ items: [] });
@@ -129,7 +129,7 @@ describe('GithubCodeEngine', () => {
     expect(headers?.Authorization).toBe('Bearer ghp_test_token_value');
   });
 
-  it('audit: github-code 401 — does NOT attach Authorization header when token unset', async () => {
+  it('github-code 401 — does NOT attach Authorization header when token unset', async () => {
     // Unauthed mode is still supported (the engine_warnings hint covers the
     // 401 path). The adapter must not fabricate an empty Bearer header.
     const { calls } = captureFetch({ items: [] });
@@ -138,12 +138,12 @@ describe('GithubCodeEngine', () => {
     expect(headers?.Authorization).toBeUndefined();
   });
 
-  // Slice S11b: thin-snippet improvement. The previous parser used either
+  // Thin-snippet improvement. The previous parser used either
   // the repo description OR the file path, never both — losing token overlap
-  // with the query when only one was present. The audit flagged this as a
+  // with the query when only one was present. This was a
   // "thin snippet" case. The improved parser concatenates both so lexical
   // alignment (downstream score component) has more surface area.
-  it('audit: thin snippet — snippet includes both repo description and path when both are available', async () => {
+  it('thin snippet — snippet includes both repo description and path when both are available', async () => {
     const body = {
       items: [
         {

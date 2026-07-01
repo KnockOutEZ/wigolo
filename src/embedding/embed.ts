@@ -33,7 +33,7 @@ export interface IndexView {
  * Embedding service backed by the native fastembed (ONNX) provider and
  * the sqlite-vec VectorStore.
  *
- * Phase 5 replaced the in-memory VectorIndex with the sqlite-vec backed
+ * The in-memory VectorIndex was replaced with the sqlite-vec backed
  * store accessed via getVectorStore(). The public surface (init /
  * embedAndStore / embedAsync / findSimilar / getIndex / isAvailable /
  * shutdown) is unchanged so callers in server.ts, tools/fetch.ts,

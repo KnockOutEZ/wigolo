@@ -437,7 +437,7 @@ describe('findSimilar', () => {
   });
 
   it('emits weak-signal cold_start with raw scores when top fused_score is below threshold', async () => {
-    // Bench FS3 (verdict §5 #6): concept "obscure niche topic xyzzy quantum
+    // Concept "obscure niche topic xyzzy quantum
     // widget framework" returned 5 cache hits with normalized relevance_score
     // 0.94-1.0 even though raw signals were weak. fuseResults normalizes the
     // top RRF score to 1.0 regardless of its absolute strength, so callers
@@ -514,12 +514,12 @@ describe('findSimilar', () => {
     }
   });
 
-  // Slice S7 (H9): audit case "retrieval augmented generation" → 1 irrelevant
-  // result with NO cold_start. Now: concept mode with a thin local-cache
-  // signal (very few cache hits and no web fallback) must emit cold_start so
-  // the host LLM can tell the user the result is weakly grounded.
-  it('emits cold_start when concept mode returns only 1 cache hit with no web fallback (audit H9 RAG case)', async () => {
-    // Seed a populated-but-irrelevant cache (matching the audit case: cache
+  // A concept like "retrieval augmented generation" previously returned 1
+  // irrelevant result with NO cold_start. Now: concept mode with a thin
+  // local-cache signal (very few cache hits and no web fallback) must emit
+  // cold_start so the host LLM can tell the user the result is weakly grounded.
+  it('emits cold_start when concept mode returns only 1 cache hit with no web fallback', async () => {
+    // Seed a populated-but-irrelevant cache (the cache
     // had many pages, but the concept query only weakly matched one). We
     // share one token ('generation') with a single page so FTS5 returns one
     // hit, then the H9 thin-cache cold_start must fire because the local
@@ -551,11 +551,11 @@ describe('findSimilar', () => {
       mockRouter,
     );
 
-    // Match the audit shape: at most a handful of cache hits, no web.
+    // Thin-cache shape: at most a handful of cache hits, no web.
     expect(result.results.length).toBeGreaterThan(0);
     expect(result.results.length).toBeLessThanOrEqual(2);
     expect(result.search_hits).toBe(0);
-    // Audit demands the cold_start signal fire here so the LLM knows the
+    // The cold_start signal must fire here so the LLM knows the
     // local-cache result is thin.
     expect(result.cold_start).toBeDefined();
     expect(result.cold_start).toMatch(/thin|too few|weak|sparse|cold|1 cache match|few cache match/i);
@@ -613,10 +613,10 @@ describe('findSimilar', () => {
     }
   });
 
-  // Slice S7 (M10): audit found fts5_rank and embedding_rank disagree
-  // without any way for the caller to inspect the disagreement. Add an
-  // opt-in `ranking_debug` field per result, off by default.
-  describe('ranking_debug (audit M10)', () => {
+  // fts5_rank and embedding_rank can disagree without any way for the caller
+  // to inspect the disagreement. Add an opt-in `ranking_debug` field per
+  // result, off by default.
+  describe('ranking_debug', () => {
     it('omits ranking_debug by default (no shape regression)', async () => {
       seedCache(
         'https://react.dev/hooks',
@@ -663,8 +663,8 @@ describe('findSimilar', () => {
         expect(r.ranking_debug).toBeDefined();
         expect(typeof r.ranking_debug!.rrf_score).toBe('number');
         // Every cache result must surface its fts5_rank in the debug block;
-        // the audit's complaint is that the disagreement between fts5 and
-        // embedding ranks was opaque.
+        // without it, the disagreement between fts5 and embedding ranks is
+        // opaque.
         expect(typeof r.ranking_debug!.fts5_rank).toBe('number');
       }
     });

@@ -1,4 +1,4 @@
-// Phase 9 — context-aware re-ranking.
+// Context-aware re-ranking.
 //
 // Re-scores RawSearchResult[] using cosine similarity against an embedded
 // `query + agent context` vector. Maps cosine ∈ [-1, 1] to a multiplier in

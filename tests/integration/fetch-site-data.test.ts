@@ -62,7 +62,7 @@ describe('integration: fetch surfaces site_data for reddit', () => {
     expect(site).toBeDefined();
     expect(site).not.toBeNull();
 
-    // Spec-mandated fields per docs/superpowers/specs/...-gap-closure-design.md §5 C1.
+    // Spec-mandated fields.
     expect(site!.subreddit).toBe('programming');
     expect(site!.author).toBe('ts_fan');
     expect(site!.score).toBe(2048);
@@ -129,7 +129,7 @@ describe('integration: fetch surfaces site_data for youtube', () => {
     expect(site).toBeDefined();
     expect(site).not.toBeNull();
 
-    // Spec-mandated fields per docs/superpowers/specs/...-gap-closure-design.md §5 C2.
+    // Spec-mandated fields.
     expect(site!.video_id).toBe('dQw4w9WgXcQ');
     expect(site!.channel).toBe('Example Channel');
     expect(typeof site!.duration).toBe('string');
@@ -188,7 +188,7 @@ describe('integration: fetch surfaces site_data for amazon', () => {
     expect(site).toBeDefined();
     expect(site).not.toBeNull();
 
-    // Spec-mandated fields per docs/superpowers/specs/...-gap-closure-design.md §5 C3.
+    // Spec-mandated fields.
     expect(site!.asin).toBe('B08N5WRWNW');
     expect(typeof site!.title).toBe('string');
     expect((site!.title as string).toLowerCase()).toContain('acme');
@@ -206,12 +206,12 @@ describe('integration: fetch surfaces site_data for amazon', () => {
   });
 });
 
-// Slice S7 (C5): audit found Reddit "blocked by network security" responses
+// Reddit "blocked by network security" responses
 // were silently emitted with no site_data and no caller-visible signal — the
 // caller could not tell whether the page actually had no site data or
 // whether the bytes were a bot challenge. The extractor must short-circuit
 // AND the fetch envelope must surface `fetch_failed: "blocked"`.
-describe('integration: fetch surfaces fetch_failed=blocked when reddit is anti-bot blocked (audit C5)', () => {
+describe('integration: fetch surfaces fetch_failed=blocked when reddit is anti-bot blocked', () => {
   beforeEach(() => {
     initDatabase(':memory:');
     resetConfig();
@@ -221,7 +221,7 @@ describe('integration: fetch surfaces fetch_failed=blocked when reddit is anti-b
     resetConfig();
   });
 
-  it('returns NO site_data on a Reddit anti-bot challenge body (audit C5 reddit pretending success)', async () => {
+  it('returns NO site_data on a Reddit anti-bot challenge body (reddit pretending success)', async () => {
     const html = load(siteFixturesDir, 'reddit-blocked.html');
     const url =
       'https://old.reddit.com/r/programming/comments/abc123/blocked/';
@@ -234,7 +234,7 @@ describe('integration: fetch surfaces fetch_failed=blocked when reddit is anti-b
     expect(r.data.site_data).toBeUndefined();
   });
 
-  it('surfaces fetch_failed="blocked" on the envelope (audit C5 reddit honest failure)', async () => {
+  it('surfaces fetch_failed="blocked" on the envelope (reddit honest failure)', async () => {
     const html = load(siteFixturesDir, 'reddit-blocked.html');
     const url =
       'https://old.reddit.com/r/programming/comments/abc123/blocked/';
@@ -262,8 +262,8 @@ describe('integration: fetch surfaces fetch_failed=blocked when reddit is anti-b
   });
 });
 
-// Slice S7 (C5): same as above for Amazon Page Not Found / anti-bot pages.
-describe('integration: fetch surfaces fetch_failed=blocked when amazon is page-not-found (audit C5)', () => {
+// Same as above for Amazon Page Not Found / anti-bot pages.
+describe('integration: fetch surfaces fetch_failed=blocked when amazon is page-not-found', () => {
   beforeEach(() => {
     initDatabase(':memory:');
     resetConfig();
@@ -273,7 +273,7 @@ describe('integration: fetch surfaces fetch_failed=blocked when amazon is page-n
     resetConfig();
   });
 
-  it('returns NO site_data on an Amazon Page Not Found body (audit C5 amazon pretending success)', async () => {
+  it('returns NO site_data on an Amazon Page Not Found body (amazon pretending success)', async () => {
     const html = load(amazonFixturesDir, 'blocked.html');
     const url = 'https://www.amazon.com/dp/B08N5WRWNW/';
     const router = makeRouter(url, html);
@@ -285,7 +285,7 @@ describe('integration: fetch surfaces fetch_failed=blocked when amazon is page-n
     expect(r.data.site_data).toBeUndefined();
   });
 
-  it('surfaces fetch_failed="blocked" on the envelope (audit C5 amazon honest failure)', async () => {
+  it('surfaces fetch_failed="blocked" on the envelope (amazon honest failure)', async () => {
     const html = load(amazonFixturesDir, 'blocked.html');
     const url = 'https://www.amazon.com/dp/B08N5WRWNW/';
     const router = makeRouter(url, html);

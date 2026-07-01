@@ -1,5 +1,5 @@
 /**
- * DoctorScreen — slice 11 wrapper around runDoctor().
+ * DoctorScreen — wrapper around runDoctor().
  *
  * Tests assert the wrapper:
  *   - delegates to runDoctor with the dataDir from getConfig()

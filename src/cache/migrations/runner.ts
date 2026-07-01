@@ -113,7 +113,7 @@ CREATE INDEX IF NOT EXISTS idx_watch_jobs_status ON watch_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_watch_jobs_url ON watch_jobs(url);
 `;
 
-// Slice D2: TLS-impersonation routing columns on domain_routing. The base
+// TLS-impersonation routing columns on domain_routing. The base
 // table is created inline in src/cache/db.ts; tests and bare callers get a
 // safety-net CREATE here. ALTERs are skipped (per-statement) when the column
 // already exists so the migration is idempotent against existing installs
@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS domain_routing (
 );
 `;
 
-// Slice S1 (C2): add nullable http_status column so cache + change-detection
+// Add nullable http_status column so cache + change-detection
 // can distinguish status-code transitions from body changes. SQL is empty
 // because the entire effect is in the postStep — `ADD COLUMN IF NOT EXISTS`
 // doesn't exist in SQLite, and an unguarded `ALTER` blows up on re-runs.

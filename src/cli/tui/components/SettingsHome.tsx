@@ -12,9 +12,6 @@
  *             on an action      → onAction(name)
  *   - q       quit; if the store is dirty, prompt for confirmation first
  *   - ?       toggle a one-line inline help overlay
- *
- * Real action screens (Verify/Doctor/Export/Import/Uninstall) land in slice 11.
- * Multi-category CATALOG and propagation/save land in later slices.
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';

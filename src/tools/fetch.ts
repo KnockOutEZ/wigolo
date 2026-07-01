@@ -26,10 +26,10 @@ const AUX_FIELD_CAP_WHEN_CHARS_BOUNDED = 50;
 const AUX_FIELD_CAP_WHEN_TIGHT = 20;
 
 /**
- * Slice 8 / L1: precise URL validation for the fetch tool. The audit
- * observed callers passing a localhost URL with an out-of-range port
- * (e.g. localhost:99999) and getting a vague TypeError / cache-miss
- * surface instead of a clear "invalid port" message. This validator
+ * Precise URL validation for the fetch tool. Callers can pass a localhost
+ * URL with an out-of-range port (e.g. localhost:99999) and get a vague
+ * TypeError / cache-miss surface instead of a clear "invalid port"
+ * message. This validator
  * runs BEFORE any cache/router code, identifies the failure shape, and
  * returns a structured envelope the handler turns into a stage error.
  *
@@ -117,9 +117,9 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     markdown = truncateSmartly(markdown, input.max_content_chars);
   }
 
-  // Slice S1 (C3): section_matched=false must NOT serve the full body —
+  // section_matched=false must NOT serve the full body —
   // returning the whole page when the caller explicitly asked for a section
-  // is the audit's classic "silent-failure" mode. Empty the body and leave
+  // is a classic "silent-failure" mode. Empty the body and leave
   // section_matched=false visible so the caller can branch.
   if (sectionMatched === false) {
     markdown = '';
@@ -138,7 +138,7 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     cached: true,
     cached_at: cached.fetchedAt,
     fetch_method: 'cache',
-    // Slice S1 (C2): surface the recorded HTTP status when available. Null
+    // Surface the recorded HTTP status when available. Null
     // means the row predates the column; we simply omit the field.
     ...(typeof cached.httpStatus === 'number' ? { http_status: cached.httpStatus } : {}),
   };
@@ -157,7 +157,7 @@ export async function handleFetch(
     return out;
   };
 
-  // Slice 8 / L1: pre-validate the URL so an invalid-port error reads as
+  // Pre-validate the URL so an invalid-port error reads as
   // "invalid port" rather than the downstream "URL not in cache" / generic
   // TypeError surface. Localhost URLs (localhost:3000) are explicitly
   // accepted — the docs promise they work — provided the port is parseable.
@@ -208,7 +208,7 @@ export async function handleFetch(
       mode,
     });
 
-    // T11: stealth mode can return a StageError (e.g., playwright_not_installed,
+    // stealth mode can return a StageError (e.g., playwright_not_installed,
     // playwright_fetch_failed). Surface it directly.
     if ('error' in raw && typeof (raw as { error?: unknown }).error === 'string') {
       const stageErr = raw as unknown as { error: string; error_reason?: string; stage?: string; hint?: string };
@@ -253,7 +253,7 @@ export async function handleFetch(
 
     let changeResult: { changed: boolean; previousHash?: string; diffSummary?: string } | undefined;
     try {
-      // Slice S1 (C2): pass the upstream status code so a 200→404 transition
+      // Pass the upstream status code so a 200→404 transition
       // (or vice-versa) is reported as changed even when the body hash
       // happens to match — the previous implementation was status-blind.
       changeResult = detectChange(raw.finalUrl, extraction.markdown, raw.statusCode);
@@ -276,7 +276,7 @@ export async function handleFetch(
       log.debug('embedding hook skipped', { error: String(err) });
     }
 
-    // Slice S1 (C3): when the caller asked for a section, detect whether
+    // When the caller asked for a section, detect whether
     // the extractor's pipeline actually matched a heading. The v1 pipeline
     // currently slices to the section internally but does not signal a
     // miss — we re-run extractSection on the cleaned markdown to determine
@@ -321,7 +321,7 @@ export async function handleFetch(
       // Propagate the router-chosen tier name onto the public response so
       // callers can audit which path served the bytes (P2 visibility).
       fetch_method: raw.method,
-      // Slice S1 (C2): always surface the upstream status code on fresh
+      // Always surface the upstream status code on fresh
       // fetches so callers / cache consumers can distinguish 200 / 404 /
       // 5xx pages that may extract to a usable HTML body.
       ...(typeof raw.statusCode === 'number' ? { http_status: raw.statusCode } : {}),
@@ -337,7 +337,7 @@ export async function handleFetch(
       // Surfacing at top level (rather than nesting under `extra`) matches
       // the existing house style for `evidence` / `screenshot`.
       ...(extraction.site_data ? { site_data: extraction.site_data } : {}),
-      // Slice S7 (C5): partial-success marker. When a Reddit / Amazon site
+      // Partial-success marker. When a Reddit / Amazon site
       // extractor detected an anti-bot or page-not-found body, the routed
       // extractor sets `site_data_blocked` and we surface it on the envelope
       // as `fetch_failed` so callers branch honestly. site_data is

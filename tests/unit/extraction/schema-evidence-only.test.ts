@@ -1,7 +1,7 @@
 /**
- * Slice 4 / C1 — evidence-only constraint on schema-mode extraction.
+ * Evidence-only constraint on schema-mode extraction.
  *
- * Why this matters (audit cc-test-report.md, line 51-55):
+ * Why this matters:
  *
  *   On Wikipedia/Model_Context_Protocol with schema {name, developer, introduced}:
  *     extract returned {
@@ -10,8 +10,7 @@
  *     }
  *   Wikipedia infobox clearly lists "Developed by: Anthropic, Introduced: November 25,
  *   2024" — so the LLM free-form-completed values that were not literally
- *   present in the page text. This is the single biggest trust killer in the
- *   audit (5.4/10 vs Tavily 8.0).
+ *   present in the page text. This is a significant trust killer.
  *
  * Contract:
  *   - Any field whose value is NOT literally present in the extracted text
@@ -87,9 +86,9 @@ describe('schema extraction — evidence-only constraint (C1)', () => {
     resetConfig();
   });
 
-  it('nulls fields the LLM hallucinated that are not present in source text (the C1 audit case)', async () => {
-    // LLM "completes" wrong facts — these were the exact values in the audit
-    // report. The evidence-only filter must reject them.
+  it('nulls fields the LLM hallucinated that are not present in source text', async () => {
+    // LLM "completes" wrong facts — these were the exact hallucinated values.
+    // The evidence-only filter must reject them.
     vi.mocked(callAnthropic).mockResolvedValue({
       values: {
         name: 'Model Context Protocol',

@@ -20,7 +20,7 @@ vi.mock('node:fs', async () => {
 // Mock the bundled Playwright module the same way doctor.test.ts does, so the
 // post-install probe can be driven via executablePath() + existsSync + launch.
 // launch() defaults to a successful headless browser that closes cleanly; the
-// shared browser-probe runs this smoke-test as the real health verdict.
+// shared browser-probe runs this smoke-test as the real health check.
 vi.mock('playwright', () => {
   const okLaunch = () => Promise.resolve({ close: () => Promise.resolve() });
   return {

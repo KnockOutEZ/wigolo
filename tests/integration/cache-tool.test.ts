@@ -79,7 +79,7 @@ describe('cache tool integration', () => {
     expect(result.stats!.total_size_mb).toBeGreaterThanOrEqual(0);
   });
 
-  // Slice 8 / M19: the tool-boundary version of the cached_at <-> newest
+  // The tool-boundary version of the cached_at <-> newest
   // equality. A caller who runs `cache stats` immediately after a
   // `cache search` must see `stats.newest` matching the fetched_at of the
   // search-row hit. Pre-fix these read from different time sources and

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { SearchInput, SearchOutput } from '../../../src/types.js';
 import { buildSearchContentBlocks } from '../../../src/server/search-response.js';
 
-// Bench S5 (verdict §5 #12): format=stream_answer leaked the synthesis
+// format=stream_answer leaked the synthesis
 // warning out as a raw `[wigolo notice] ...` text block alongside the JSON
 // payload. Callers expecting a structured envelope (e.g. to pattern-match
 // `notice` vs `stream`) could not parse it. The MCP shape stays a text

@@ -132,13 +132,13 @@ describe('SearchOutput.brand_collision_warning (sub-ticket 3.12)', () => {
   });
 });
 
-// Slice 8 / M9: brand_collision_warning was blind to lexical collisions —
+// brand_collision_warning was blind to lexical collisions —
 // queries that look like a popular dev/tech term but mean something else.
-// The audit's example pair was "useState" (React hook) ↔ generic prose.
-// Add a normalized-Levenshtein / substring check against a small lexicon
-// of high-traffic dev terms; emit the warning whenever a 1-token query
+// One example pair is "useState" (React hook) ↔ generic prose.
+// A normalized-Levenshtein / substring check against a small lexicon
+// of high-traffic dev terms emits the warning whenever a 1-token query
 // scores above the similarity threshold against any lexicon entry.
-describe('brand_collision_warning lexical-similarity path (Slice 8 / M9)', () => {
+describe('brand_collision_warning lexical-similarity path', () => {
   it('emits a warning when the query is the popular React hook "useState"', async () => {
     verticalState.general = [
       makeEntry('bing', [makeResult('bing', 'https://example.com/a')]),

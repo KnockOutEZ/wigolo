@@ -1,7 +1,7 @@
 /**
  * Rerank throughput perf bench (gated on RUN_TRANSFORMERS=1).
  *
- * Performance gates (Phase 4 target — captured on dev host):
+ * Performance gates (captured on dev host):
  *   batch 5  P50 ≤ 150ms
  *   batch 20 P50 ≤ 400ms
  *   batch 50 P50 ≤ 800ms

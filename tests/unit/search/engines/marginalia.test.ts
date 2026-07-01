@@ -1,4 +1,4 @@
-// Slice S11a (long-tail engine breadth): Marginalia adapter.
+// Marginalia adapter.
 //
 // WHY: Marginalia is a non-commercial search engine focused on the
 // long-tail small web — pages the major engines deprioritize or skip

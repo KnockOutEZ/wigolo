@@ -35,7 +35,7 @@ describe('engine-quality — resolveEngineWeight precedence', () => {
   it('prefers the registry tier weight when the engine is known', () => {
     // `wikipedia` is in the high-tier registry so a caller-supplied legacy
     // weight (e.g. an old per-vertical override) must NOT override the tier
-    // weight. This is what keeps the audit fix consistent across verticals.
+    // weight. This keeps tier-based weighting consistent across verticals.
     expect(resolveEngineWeight('wikipedia', 0.2)).toBeCloseTo(1.0, 5);
   });
 

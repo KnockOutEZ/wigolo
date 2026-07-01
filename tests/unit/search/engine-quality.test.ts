@@ -1,12 +1,12 @@
-// Slice S11b: every registered engine MUST carry a quality tier so S11c's
+// Every registered engine MUST carry a quality tier so the later
 // RRF-weighting work has metadata to consume.
 //
-// WHY: the audit called out "Add evidence-quality scoring per adapter — some
-// engines produce better snippets than others; weight RRF accordingly." We
-// ship the metadata first (this test), tag every engine in the verticals,
-// and leave the multiplier inert until S11c flips it. A missing tier would
-// silently fall back to 'medium' on the consuming side; the test makes the
-// gap fail-loud at the registry boundary.
+// WHY: some engines produce better snippets than others, so RRF should be
+// weighted by evidence quality per adapter. We ship the metadata first (this
+// test), tag every engine in the verticals, and leave the multiplier inert
+// until the weighting is enabled. A missing tier would silently fall back to
+// 'medium' on the consuming side; the test makes that fail-loud at the
+// registry boundary.
 
 import { describe, it, expect, beforeEach } from 'vitest';
 

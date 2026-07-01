@@ -508,21 +508,19 @@ export const AGENT_TOOL_SCHEMA = {
   required: ['prompt'],
 };
 
-// Slice A1: registration-only stub. The real implementation lands in slice B1
-// (see docs/superpowers/specs/2026-05-26-webclaw-gap-closure-design.md §5).
-// `old` / `new` are unconstrained objects here so the wire shape can evolve in
-// B1 without re-rolling the schema; the stub handler does not consume them.
+// `old` / `new` are unconstrained objects so the wire shape can carry any of
+// the accepted side keys; the handler validates the required combination.
 export const DIFF_TOOL_SCHEMA = {
   type: 'object' as const,
   properties: {
     old: {
       type: 'object',
-      description: 'Left-hand side of the diff. One of { url, markdown, content_hash } will be required in slice B1.',
+      description: 'Left-hand side of the diff. Requires one of { url, markdown, content_hash }.',
       additionalProperties: true,
     },
     new: {
       type: 'object',
-      description: 'Right-hand side of the diff. One of { url, markdown } will be required in slice B1.',
+      description: 'Right-hand side of the diff. Requires one of { url, markdown }.',
       additionalProperties: true,
     },
     output: {
@@ -538,8 +536,6 @@ export const DIFF_TOOL_SCHEMA = {
   },
 };
 
-// Slice A1: registration-only stub. Real implementation lands in slice B3
-// (see docs/superpowers/specs/2026-05-26-webclaw-gap-closure-design.md §5).
 // Lazy-execution model — there is no background daemon; checks happen when
 // the tool is called or when another tool runs and the job is overdue.
 export const WATCH_TOOL_SCHEMA = {

@@ -9,8 +9,8 @@ export interface BrandCollisionWarning {
 
 const BRAND_TLD_RE = /\.(?:co\.uk|shop|store|deals|sale|boutique|fashion|com\.au|co\.nz)$/i;
 
-// Slice 8 / M9: popular dev terms whose phonetic/lexical neighbours often
-// pull a search into the wrong intent space. The audit's example pair was
+// Popular dev terms whose phonetic/lexical neighbours often pull a search
+// into the wrong intent space. One example pair is
 // "Us statehood" ↔ "useState". Each entry is the high-traffic dev term;
 // the warning fires whenever the user's 1-token query equals an entry
 // (case-insensitive) or differs by <= 1 character (handles camelCase /
@@ -18,7 +18,7 @@ const BRAND_TLD_RE = /\.(?:co\.uk|shop|store|deals|sale|boutique|fashion|com\.au
 //
 // Kept small + curated — we want precision (a warning that's actually
 // useful) over recall. Adding noise here would re-introduce the old
-// false-positive problem the audit was already complaining about.
+// false-positive problem.
 const DEV_TERM_COLLISION_LEXICON = new Set([
   'usestate', 'useeffect', 'usememo', 'usereducer', 'usecallback', 'useref',
   'usecontext', 'usestore',
@@ -129,9 +129,9 @@ function withinEditDistance(a: string, b: string, maxDist: number): boolean {
 }
 
 /**
- * Slice 8 / M9: lexical-collision detector. Fires when the (1-token,
+ * Lexical-collision detector. Fires when the (1-token,
  * normalised) query is identical or near-identical to a popular dev term
- * — the audit's "useState" case. Does not require a brand domain in the
+ * — e.g. the "useState" case. Does not require a brand domain in the
  * top-3, since the collision is purely phonetic/lexical: the user may have
  * mistyped or downcased the term and gotten generic prose back instead of
  * the framework hit.

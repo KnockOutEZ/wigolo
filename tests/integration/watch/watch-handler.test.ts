@@ -73,11 +73,11 @@ describe('watch handler', () => {
       expect(r.jobs[0].status).toBe('active');
     });
 
-    // Slice 8 / M17: single-URL create returns `{ job }` (singular) alongside
+    // Single-URL create returns `{ job }` (singular) alongside
     // the legacy `{ jobs[0] }` shape. Batch (urls[]) returns `{ jobs }`
-    // without a `job` field. The audit observed the singular path always
-    // emitted `jobs[]` which read as "this MAY be plural" to callers.
-    it('returns a singular `job` field when one URL is passed (M17)', async () => {
+    // without a `job` field. The singular path used to always emit `jobs[]`,
+    // which read as "this MAY be plural" to callers.
+    it('returns a singular `job` field when one URL is passed', async () => {
       const router = mockRouter('hello');
       const r = mustOk(await handleWatch(
         { action: 'create', url: 'https://example.com/m17-single', interval_seconds: 60 },
@@ -90,7 +90,7 @@ describe('watch handler', () => {
       expect(r.jobs[0].id).toBe(r.job!.id);
     });
 
-    it('returns `jobs[]` without a `job` field when batch urls[] are passed (M17)', async () => {
+    it('returns `jobs[]` without a `job` field when batch urls[] are passed', async () => {
       const router = mockRouter('hello');
       const r = mustOk(await handleWatch(
         {

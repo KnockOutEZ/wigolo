@@ -131,7 +131,7 @@ export function initDatabase(dbPath: string): Database.Database {
     );
   `);
 
-  // Embedding columns migration (Slice 22)
+  // Embedding columns migration
   try {
     const columns = db.pragma('table_info(url_cache)') as Array<{ name: string }>;
     const columnNames = new Set(columns.map(c => c.name));

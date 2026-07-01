@@ -246,7 +246,7 @@ describe('search filtering pipeline integration (core provider)', () => {
   it('full pipeline: domain-filter attrition still caps to max_results', async () => {
     // Engine over-returns matching hosts; with include_domains active the
     // orchestrator filters then hard-caps to max_results. The core provider
-    // over-fetches a bounded recall buffer (wave2.1 FIX4: max_results +
+    // over-fetches a bounded recall buffer (max_results +
     // ceil(40%)) so the downstream score-floor / stale-demotion have
     // survivors to backfill from; the final slice still caps to max_results.
     // Here max_results=2 → buffered fetch of 3.

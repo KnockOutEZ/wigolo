@@ -555,7 +555,7 @@ describe('handleExtract mode=metadata with JSON-LD', () => {
   });
 });
 
-// Slice B2b: brand mode is dispatched via extractBrandAsync, which fetches
+// brand mode is dispatched via extractBrandAsync, which fetches
 // images for palette extraction. The MCP wiring change went from sync
 // extractBrand to async extractBrandAsync. This block ensures the
 // dispatch in handleExtract still produces a brand envelope and surfaces

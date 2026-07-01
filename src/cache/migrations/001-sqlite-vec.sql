@@ -1,4 +1,4 @@
--- Phase 5 (v1 engine overhaul): sqlite-vec backing tables for vector search.
+-- sqlite-vec backing tables for vector search.
 --
 -- vec_documents holds the 384-dim float embeddings (BGE-small-en-v1.5).
 -- vec_id_map maps external string ids (URLs today) to integer rowids that

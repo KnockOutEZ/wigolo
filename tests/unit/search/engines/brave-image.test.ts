@@ -1,8 +1,9 @@
-// Slice S11a (H7): Brave Search Image adapter.
+// Brave Search Image adapter.
 //
-// WHY: Brave is the higher-quality opt-in path for image search — closes
-// H7 ("category=images returns unsupported_category on core") alongside the
-// zero-key DDG Image adapter. Brave's image endpoint requires an API token
+// WHY: Brave is the higher-quality opt-in path for image search — it enables
+// image search on the core backend (previously `unsupported_category`)
+// alongside the zero-key DDG Image adapter. Brave's image endpoint requires
+// an API token
 // (`BRAVE_API_KEY`); without one, the adapter throws so the orchestrator
 // records a clear `missing_api_key` warning instead of silently dropping.
 

@@ -53,7 +53,7 @@ describe('getNewsEngines', () => {
     expect(names).toEqual(['hn-algolia', 'lobsters', 'bing_news', 'duckduckgo', 'mojeek']);
   });
 
-  // Wave-3 A3 (news-vertical recall): a news search with a time bound used to
+  // A news search with a time bound used to
   // collapse to HN-Algolia alone because the orchestrator dropped every
   // non-date-aware engine. Widening the vertical with the general web engines
   // (date-naive, client-side freshness-filtered) is half the recall fix.

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { SearchInput, SearchResultItem } from '../../../src/types.js';
 import { stripMarkdownBodiesForAnswerMode } from '../../../src/search/legacy/searxng-orchestrator.js';
 
-// H2: stripMarkdownBodiesForAnswerMode drops per-result markdown_content when
+// stripMarkdownBodiesForAnswerMode drops per-result markdown_content when
 // the caller asked for synthesis (format='answer'/'stream_answer') and did NOT
 // opt into include_full_markdown. The function is invoked from 4 separate
 // branches in the legacy orchestrator (cache-replay, multi-query, single-query

@@ -1,4 +1,4 @@
-// Phase 9 — drop results the agent has already seen.
+// Drop results the agent has already seen.
 //
 // Normalizes URLs for comparison: lowercased host, drops default ports,
 // strips trailing slash + fragment, removes tracking params (utm_*, gclid,

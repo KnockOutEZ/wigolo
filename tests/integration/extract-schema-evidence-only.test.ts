@@ -1,14 +1,12 @@
 /**
- * Integration test at the `extract` tool boundary for slice 4 (C1).
+ * Integration test at the `extract` tool boundary for the schema
+ * evidence-only filter.
  *
- * Per the integration-surface memory: "slices that ship a module behind an
- * existing MCP tool MUST add an integration test at the tool boundary, not
- * just a module-level unit test." The schema-evidence-only unit test
- * covers the verifier; this test pins the contract end-to-end through
- * `handleExtract` so a future refactor of the tool handler can't
- * accidentally bypass the filter.
+ * The schema-evidence-only unit test covers the verifier; this test pins the
+ * contract end-to-end through `handleExtract` so a future refactor of the tool
+ * handler can't accidentally bypass the filter.
  *
- * Audit reference (cc-test-report.md line 51-55):
+ * Regression case:
  *   On Wikipedia/Model_Context_Protocol with schema {name, developer, introduced}:
  *     extract returned developer: "Nvidia", introduced: "May 2024"
  *     — both wrong (real values: Anthropic / Nov 2024).
@@ -20,8 +18,8 @@ import type { SmartRouter } from '../../src/fetch/router.js';
 
 // Mock the local-LLM extraction path. The extract tool routes through
 // `extractWithLocalLlm` when ANY LLM provider is configured (see
-// src/tools/extract.ts schema-mode branch) — that's the exact path the
-// C1 audit hit on Wikipedia / Model Context Protocol. We assert the
+// src/tools/extract.ts schema-mode branch) — that's the exact path that
+// mis-extracted on Wikipedia / Model Context Protocol. We assert the
 // evidence-only filter runs AFTER this returns, before the values reach
 // the caller.
 vi.mock('../../src/extraction/v1/local-llm.js', () => ({

@@ -43,7 +43,7 @@ const AMAZON_HOSTS = new Set([
 const PRODUCT_PATH_RE = /\/(dp|gp\/product|gp\/aw\/d)\/[A-Z0-9]{10}\b/i;
 const ASIN_RE = /\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})\b/i;
 
-// Slice S7 (C5): Amazon frequently returns a generic "Looking for something?
+// Amazon frequently returns a generic "Looking for something?
 // / Page Not Found" landing when an ASIN is unrecognized or when the request
 // trips bot detection. The previous behavior was to silently extract an
 // empty product record and pretend success. Detect the canonical "not
@@ -492,7 +492,7 @@ export const amazonExtractor: Extractor = {
   },
 
   extract(html: string, url: string): ExtractionResult | null {
-    // Slice S7 (C5): refuse to produce site_data when the body is a known
+    // Refuse to produce site_data when the body is a known
     // anti-bot / page-not-found landing. The caller learns about this via
     // the fetch envelope's fetch_failed="blocked" surface (set in routed.ts).
     if (detectAntiBotBlock(html)) return null;

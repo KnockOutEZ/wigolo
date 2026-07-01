@@ -1,5 +1,5 @@
 /**
- * Slice B2a 20-site fixture coverage test.
+ * 20-site fixture coverage test.
  *
  * Why this matters: the brand extractor only earns its keep when it works
  * across the ecosystem, not on a single hand-crafted HTML. The spec's

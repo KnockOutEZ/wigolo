@@ -99,7 +99,7 @@ describe('parseSitemapEntries', () => {
 
 describe('sortSitemapEntries', () => {
   it('orders by lastmod descending so most recently modified pages come first', () => {
-    // Bench C1 (verdict §5 #9): sitemap crawl with budget cap returned the
+    // Sitemap crawl with budget cap returned the
     // first four alphabetical pages (clients/antitrust/charter/communication)
     // and dropped four "over budget". The most-recent pages were buried
     // alphabetically. After sorting, the recent ones survive the cap.

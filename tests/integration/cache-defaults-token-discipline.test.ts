@@ -29,7 +29,7 @@ function makeExtraction(overrides: Partial<ExtractionResult> = {}): ExtractionRe
   };
 }
 
-// H3: cache.query default limit should be 5 to keep response within token caps.
+// cache.query default limit should be 5 to keep response within token caps.
 describe('cache.query — H3 default limit', () => {
   beforeEach(() => {
     resetConfig();

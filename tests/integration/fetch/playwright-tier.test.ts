@@ -197,12 +197,12 @@ describe('fetchWithPlaywright blocks capture until deferred SPA body mounts (dat
     expect(result.text).toContain('Substantive article paragraph');
   }, 60_000);
 
-  it('does not capture a LARGE nav-only app-root shell; waits for the deferred <main> body (FIX1, react.dev shape)', async () => {
+  it('does not capture a LARGE nav-only app-root shell; waits for the deferred <main> body (react.dev shape)', async () => {
     if (!canLaunch) {
       console.warn('Playwright cannot launch here (sandbox); deferring real render to CI/unsandboxed gate');
       return;
     }
-    // The exact false-positive that hid through attack-5 / W1: the SPA app-root
+    // The exact false-positive to guard against: the SPA app-root
     // (#__next, react.dev) is populated IMMEDIATELY with a big sidebar nav whose
     // link descriptions sit in <p> tags — > 1200 chars of chrome text AND many
     // <p> blocks at first probe. The OLD app-root branch measured the whole root

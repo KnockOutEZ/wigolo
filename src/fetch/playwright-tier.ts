@@ -106,7 +106,7 @@ export async function fetchWithPlaywright(url: string, opts: { timeoutMs?: numbe
     // pass neither timeoutMs nor signal, so `overall` is 30000 and nothing
     // would otherwise clamp the legs — three independent 5s/5s/6s waits would
     // triple worst-case post-goto wall-clock to ~16s, re-introducing the
-    // attack-4 latency blowup. A single deadline guarantees total post-goto
+    // latency blowup. A single deadline guarantees total post-goto
     // time can never exceed the cap regardless of signal/timeoutMs.
     //
     // Within that one deadline we still reserve room for the escalation re-poll:

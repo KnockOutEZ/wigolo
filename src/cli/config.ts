@@ -12,7 +12,7 @@
  *   --uninstall [--yes]  Full uninstall (requires --yes to skip confirmation)
  *   --storage            Print storage usage map
  *   --cache-stats        Print cache statistics
- *   --set key=value      Update a single non-secret setting (slice 12)
+ *   --set key=value      Update a single non-secret setting
  *
  * HARD invariant: NEVER called from the MCP stdio path. Only mounted here,
  * from `init`, and from `doctor --interactive`.
@@ -332,7 +332,7 @@ export async function runConfig(args: string[]): Promise<number> {
 
   // Plain / non-interactive: print current settings from the schema CATALOG.
   // The catalog + persisted-config accessor stay the source of truth — no
-  // separate curated-env-vars list exists post-slice 12.
+  // separate curated-env-vars list exists.
   const { CATALOG } = await import('./tui/schema/catalog.js');
   const { readPersistedConfig } = await import('../persisted-config.js');
   const config = getConfig();

@@ -45,8 +45,6 @@ describe('WIGOLO_DOCS_URI', () => {
 
 describe('TOOL_DESCRIPTIONS', () => {
   it('has one description per public tool', () => {
-    // Slice A1 (2026-05-26): added `diff` + `watch` as registration-only
-    // stubs. Real implementations land in slices B1 and B3 respectively.
     expect(Object.keys(TOOL_DESCRIPTIONS).sort()).toEqual(
       ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'watch'].sort(),
     );

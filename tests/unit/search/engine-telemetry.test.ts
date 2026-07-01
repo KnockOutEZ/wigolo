@@ -102,8 +102,7 @@ describe('engine_telemetry (sub-ticket 3.13)', () => {
   });
 
   it('marks breaker-skipped engine with reason=breaker_open and remaining cooldown', async () => {
-    // WHY (Slice 4, engine-pool recovery): during the 2026-06-12 benchmark
-    // two engines sat behind open breakers for the whole run with zero
+    // WHY: two engines can sit behind open breakers for a whole run with zero
     // caller-visible signal. `reason` + `cooldown_remaining_ms` make the
     // skip distinguishable from a plain error and tell callers when the
     // engine will be retried.
@@ -212,11 +211,11 @@ describe('engine_telemetry (sub-ticket 3.13)', () => {
   });
 });
 
-// --- Slice S1 (M2): engine_warnings top-level surface ---
+// --- engine_warnings top-level surface ---
 //
-// WHY: integration test at the search-provider boundary, per memory
-// `feedback_slice_brief_integration_surface`. Module-level unit tests live
-// in tests/unit/search/engine-warnings.test.ts; this asserts the wiring.
+// WHY: integration test at the search-provider boundary. Module-level unit
+// tests live in tests/unit/search/engine-warnings.test.ts; this asserts the
+// wiring.
 
 function makeHttpStatusFailingEntry(name: string, status: number): EngineEntry {
   const engine: SearchEngine = {

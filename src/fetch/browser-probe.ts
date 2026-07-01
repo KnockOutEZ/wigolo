@@ -50,7 +50,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
  * A browser is only healthy when it actually launches: on bare Linux the
  * binary can be on disk yet fail at launch because OS shared libs (libnss3,
  * libgbm, ...) are missing. existsSync alone would lie; the launch smoke-test
- * is the honest "does it work" verdict.
+ * is the honest "does it work" result.
  */
 export async function probeBrowser(
   name: BrowserName,
@@ -87,7 +87,7 @@ export async function probeBrowser(
     try {
       await browser.close();
     } catch {
-      // Close failures don't change the verdict — it launched.
+      // Close failures don't change the result — it launched.
     }
     return { onDisk: true, launchable: true, execPath };
   } catch (err) {

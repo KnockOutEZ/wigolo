@@ -41,7 +41,7 @@ function dispatchOf(results: RawSearchResult[]) {
   return { results, enginesUsed: ['e1'], outcomes: [], degraded: false };
 }
 
-describe('core-provider stale-result demotion (FIX3)', () => {
+describe('core-provider stale-result demotion', () => {
   beforeEach(() => {
     runV1Search.mockReset();
     foldRerankIntoOrdering.mockReset();
@@ -100,7 +100,7 @@ describe('core-provider stale-result demotion (FIX3)', () => {
   });
 });
 
-describe('core-provider floored-recall backfill (FIX4)', () => {
+describe('core-provider floored-recall backfill', () => {
   beforeEach(() => {
     runV1Search.mockReset();
     foldRerankIntoOrdering.mockReset();

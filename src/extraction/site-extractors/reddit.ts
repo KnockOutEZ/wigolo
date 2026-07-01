@@ -26,7 +26,7 @@ export interface RedditThread {
 
 const THREAD_URL_RE = /\/r\/[^/]+\/comments\/[^/]+/;
 
-// Slice S7 (C5): the Reddit response sometimes comes back as a generic
+// The Reddit response sometimes comes back as a generic
 // "Whoa there, partner" / "blocked by network security" body when the
 // upstream firewall flags the user-agent. The extractor used to parse that
 // as a normal page, emit empty site_data, and silently pretend success.
@@ -280,7 +280,7 @@ export const redditExtractor: Extractor = {
 
   extract(html: string, url: string): ExtractionResult | null {
     if (!html) return null;
-    // Slice S7 (C5): refuse to produce site_data when the body is a known
+    // Refuse to produce site_data when the body is a known
     // anti-bot / firewall challenge page. The caller learns about this via
     // the fetch envelope's fetch_failed="blocked" surface (set in routed.ts).
     if (detectAntiBotBlock(html)) return null;

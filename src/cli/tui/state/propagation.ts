@@ -487,7 +487,7 @@ async function applyPropagationToAgent(
 }
 
 // ---------------------------------------------------------------------------
-// installAgent — primitive used by the Agents category screen (slice 9).
+// installAgent — primitive used by the Agents category screen.
 // Writes/refreshes the wigolo server entry in one agent's config, preserves
 // any other entries, seeds the env block (merging with any pre-existing
 // keys), writes a backup first, and refuses to follow symlinks.
@@ -563,7 +563,7 @@ export async function installAgent(opts: InstallAgentOpts): Promise<InstallAgent
 }
 
 // ---------------------------------------------------------------------------
-// uninstallAgent — primitive used by the Agents category screen (slice 9).
+// uninstallAgent — primitive used by the Agents category screen.
 // Removes the wigolo server entry from one agent's config, preserves other
 // servers, writes a backup, and prunes old backups.
 // ---------------------------------------------------------------------------

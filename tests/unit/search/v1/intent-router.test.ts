@@ -220,7 +220,7 @@ describe('classifyIntent', () => {
   });
 
   describe('VERTICALS export', () => {
-    it('exports all six verticals (images added in S11a to close audit H7)', () => {
+    it('exports all six verticals (including images)', () => {
       expect(VERTICALS).toEqual([
         'general',
         'news',

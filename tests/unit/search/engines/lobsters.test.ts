@@ -181,11 +181,11 @@ describe('LobstersEngine', () => {
     expect(await new LobstersEngine().search('q')).toEqual([]);
   });
 
-  // Slice S11b: audit found lobsters returning 400 on multi-word queries.
+  // lobsters previously returned 400 on multi-word queries.
   // The most common cause for community-site 400s is a missing User-Agent —
   // lobste.rs's Rack middleware treats requests with no UA as bot traffic
   // and rejects them. Adding a stable wigolo UA fixes the 400 path.
-  it('audit: lobsters 400 — sends a stable User-Agent header so multi-word queries do not 400', async () => {
+  it('lobsters 400 — sends a stable User-Agent header so multi-word queries do not 400', async () => {
     const { calls } = captureFetch([]);
     await new LobstersEngine().search('postgres index tuning');
     expect(calls).toHaveLength(1);

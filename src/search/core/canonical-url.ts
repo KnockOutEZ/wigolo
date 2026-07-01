@@ -6,7 +6,7 @@
 // RRF entries — over-counting consensus and starving the *actual* highest
 // score of a contributor signal.
 //
-// canonicalizeUrl normalises the surface variants the audit found in the
+// canonicalizeUrl normalises the surface variants seen in the
 // engine pool:
 //
 //   * Tracking params: utm_*, fbclid, gclid, msclkid, mc_cid, mc_eid, ref,

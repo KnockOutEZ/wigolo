@@ -1,4 +1,4 @@
-// C6: arxiv PDF fetch error'd out and killed paper retrieval. Root cause:
+// arxiv PDF fetch error'd out and killed paper retrieval. Root cause:
 // pdf-parse@2.x exposes a `PDFParse` class with `.getText({})`, NOT a default
 // function. The legacy code did `(await import('pdf-parse')).default` which
 // resolves to `undefined`, the call throws "pdfParse is not a function", the

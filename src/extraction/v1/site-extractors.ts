@@ -36,16 +36,16 @@ export function _resetSiteExtractorsForTest(): void {
     docsGenericExtractor,
     redditExtractor,
   );
-  // Re-register slice-added extractors so each test sees the same registry
-  // as production. Append-only — see C1/C2/C3 in the gap-closure spec.
+  // Re-register the append-only extractors so each test sees the same registry
+  // as production.
   registerSiteExtractor(youtubeExtractor);
   registerSiteExtractor(amazonExtractor);
 }
 
-// Slice C2: YouTube watch pages. Append-only registration so concurrent slices
-// (C1 reddit, C3 amazon) don't conflict on the constructor array above.
+// YouTube watch pages. Append-only registration so it doesn't conflict with
+// the constructor array above.
 registerSiteExtractor(youtubeExtractor);
 
-// Slice C3: Amazon product pages. Append-only registration so concurrent slices
-// don't conflict on the constructor array above.
+// Amazon product pages. Append-only registration so it doesn't conflict with
+// the constructor array above.
 registerSiteExtractor(amazonExtractor);

@@ -1,4 +1,4 @@
-// Slice S11a: cold-start engine health summary for doctor + telemetry.
+// Cold-start engine health summary for doctor + telemetry.
 //
 // WHY: the spec calls for a "per-engine health-check on cold start" so a
 // user running `wigolo doctor` can see at a glance which engines are
@@ -37,7 +37,7 @@ export interface EngineHealthEntry {
   /** Optional engine weight (for visibility — informational only). */
   weight?: number;
   /** Circuit-breaker state, joined from getBreakerSnapshot(). Omitted for
-   * engines that never dispatched in this process (Slice 4). */
+   * engines that never dispatched in this process. */
   breaker?: BreakerSnapshotState;
   /** Last upstream error the breaker recorded for this engine. */
   lastError?: string;
@@ -58,7 +58,7 @@ const KEY_REQUIRED: Record<string, KeyRequirement> = {
   'github-code': { envVar: 'WIGOLO_GITHUB_TOKEN', registeredWithoutKey: true },
 };
 
-// Wave-2 W3 (honest engine-pool health): known per-engine limitations that
+// Known per-engine limitations that
 // are NOT misconfigurations and NOT user-fixable. These surface as an
 // informational note in doctor even when the engine is otherwise "ok", so a
 // user who sees an engine intermittently absent from telemetry understands
@@ -101,7 +101,7 @@ function verticalPools(): Array<[Vertical, EngineEntry[]]> {
 
 /**
  * Flattened engine entries across every vertical pool. Used by doctor's
- * `--probe-engines` flag as the live-probe target list (Slice 4). May
+ * `--probe-engines` flag as the live-probe target list. May
  * contain the same engine name more than once when an engine is registered
  * in multiple verticals — callers dedupe by name.
  */
@@ -117,7 +117,7 @@ export function getRegisteredEngineEntries(): EngineEntry[] {
  */
 export function getEngineHealthSummary(): EngineHealthEntry[] {
   const verticals = verticalPools();
-  // Slice 4: join live breaker state by engine name so doctor can show
+  // Join live breaker state by engine name so doctor can show
   // which engines are dark right now and why.
   const breakerByEngine = new Map(getBreakerSnapshot().map((s) => [s.engine, s]));
 

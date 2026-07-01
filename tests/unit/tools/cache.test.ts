@@ -114,7 +114,7 @@ describe('handleCache', () => {
     expect(result.results![0].title).toBe('Example');
     expect(result.results![0].markdown).toBe('# Example\n\nContent here.');
     expect(result.results![0].fetched_at).toBe('2026-04-12 10:00:00');
-    // H3: cache.query default limit is 5 to keep response token-bounded
+    // cache.query default limit is 5 to keep response token-bounded
     expect(searchCacheFiltered).toHaveBeenCalledWith({
       query: 'example',
       urlPattern: undefined,
@@ -128,7 +128,7 @@ describe('handleCache', () => {
 
     await handleCache({ query: 'test', url_pattern: '*docs*', since: '2026-04-01' });
 
-    // H3: cache.query default limit is 5 to keep response token-bounded
+    // cache.query default limit is 5 to keep response token-bounded
     expect(searchCacheFiltered).toHaveBeenCalledWith({
       query: 'test',
       urlPattern: '*docs*',
@@ -443,7 +443,7 @@ describe('handleCache --- check_changes mode', () => {
 
     const result = await handleCache({ check_changes: true }, mockRouter());
 
-    // Slice S1 (C2): cache check_changes now forwards the upstream status
+    // cache check_changes now forwards the upstream status
     // code so detectChange can flag 200→404 status flips as changes.
     expect(vi.mocked(detectChange)).toHaveBeenCalledWith(
       'https://example.com',

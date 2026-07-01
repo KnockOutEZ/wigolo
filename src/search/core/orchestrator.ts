@@ -146,8 +146,8 @@ function matchesDomain(host: string, domain: string): boolean {
 // match an entry is dropped (host-suffix match — `docs.foo.com` matches
 // `foo.com`). exclude_domains is the symmetric hard drop. Earlier versions
 // applied a soft floor that demoted off-domain results when matches were
-// below 3; that leaked off-domain URLs into responses and was the audit's C8
-// flaw. Hard enforcement matches Tavily semantics and what wigolo advertises.
+// below 3; that leaked off-domain URLs into responses. Hard enforcement
+// matches Tavily semantics and what wigolo advertises.
 function applyDomainFilters(
   results: RawSearchResult[],
   includeDomains?: string[],
@@ -229,7 +229,7 @@ export async function runV1Search(
 
   const allEntries = getEntriesForVertical(vertical);
 
-  // Wave-3 A3 (news-vertical recall): a date bound no longer narrows the
+  // A date bound no longer narrows the
   // engine set. The previous behaviour dropped every date-naive engine the
   // moment one date-aware engine was present, which collapsed a date-bounded
   // news search to HN-Algolia alone (2 results). Server-side date filtering
@@ -279,7 +279,7 @@ export async function runV1Search(
   // came only from secondary engines (see sub-ticket 2.2).
   const urlPrimaryCount = new Map<string, number>();
   const urlSecondaryCount = new Map<string, number>();
-  // exact_match phrase awareness (audit C7): record every canonical key
+  // exact_match phrase awareness: record every canonical key
   // where at least one contributing engine's title+snippet contained the
   // exact phrase.
   const urlExactMatchHit = new Set<string>();
@@ -423,7 +423,7 @@ export async function runV1Search(
     });
   }
   if (exactPhrase) {
-    // C7: union of (urlExactMatchHit observed during ingest) ∪ (post-merge
+    // union of (urlExactMatchHit observed during ingest) ∪ (post-merge
     // title+snippet match on the urlToResult variant). The post-merge check
     // catches the case where engines were rewritten/reranked between ingest
     // and this point; the ingest set rescues URLs whose preferred variant

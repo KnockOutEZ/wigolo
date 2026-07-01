@@ -82,7 +82,7 @@ function build(opts: BuildOpts = {}) {
   return { router, httpClient, browserPool, tlsFetcher, tlsPersistence, recordedDomains };
 }
 
-describe('SmartRouter — anti-bot domain TLS-first routing (Wave-2 W4)', () => {
+describe('SmartRouter — anti-bot domain TLS-first routing', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {

@@ -9,8 +9,8 @@
  * their effects fire.
  *
  * Coverage is intentionally narrow — Dashboard and DashboardCleanup were
- * deleted in slice 12 because nothing reached them after the entry-router
- * refactor; the screens still wired into router/ink.tsx remain tested here.
+ * deleted because nothing reached them after the entry-router refactor;
+ * the screens still wired into router/ink.tsx remain tested here.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

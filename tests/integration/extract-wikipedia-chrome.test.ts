@@ -1,15 +1,15 @@
-// Integration test at the tool boundary for slice 6:
+// Integration test at the tool boundary for Wikipedia chrome filtering:
 //
-//   H6 — `extract` tables mode on Wikipedia returns CSS-navbox cells
-//        ("Cite this page | Wikidata item") instead of real content tables.
-//        The tool boundary must drop navbox/infobox/role=navigation tables
-//        before they ever land in the user-facing payload.
+//   - `extract` tables mode on Wikipedia returns CSS-navbox cells
+//     ("Cite this page | Wikidata item") instead of real content tables.
+//     The tool boundary must drop navbox/infobox/role=navigation tables
+//     before they ever land in the user-facing payload.
 //
-//   H11 — `extract` named_schema=Article on a Wikipedia-shaped page dumped
-//         30KB of body text including references / LaTeX / infobox chrome.
-//         The tool boundary must surface a cleaned Article body that excludes
-//         the references section, LaTeX `$$ … $$` math blocks, and Wikipedia
-//         infobox/navbox tables — while preserving real article prose.
+//   - `extract` named_schema=Article on a Wikipedia-shaped page dumped
+//     30KB of body text including references / LaTeX / infobox chrome.
+//     The tool boundary must surface a cleaned Article body that excludes
+//     the references section, LaTeX `$$ … $$` math blocks, and Wikipedia
+//     infobox/navbox tables — while preserving real article prose.
 //
 // Runs entirely against the in-memory cache + the HTML-only branch of
 // handleExtract (no HTTP server), so the test is safe under sandboxes that
@@ -26,7 +26,7 @@ function makeRouter(): SmartRouter {
   return {} as unknown as SmartRouter;
 }
 
-describe('extract — Wikipedia chrome filtering (slice 6: H6 + H11)', () => {
+describe('extract — Wikipedia chrome filtering (tables + Article body)', () => {
   beforeEach(() => {
     resetConfig();
     initDatabase(':memory:');
@@ -37,7 +37,7 @@ describe('extract — Wikipedia chrome filtering (slice 6: H6 + H11)', () => {
     resetConfig();
   });
 
-  it('H6: tables mode drops Wikipedia navbox / infobox / role=navigation', async () => {
+  it('tables mode drops Wikipedia navbox / infobox / role=navigation', async () => {
     const wikipediaLikeHtml = `<html><body>
       <table class="navbox">
         <tr><th>Cite this page</th><th>Wikidata item</th></tr>
@@ -68,8 +68,8 @@ describe('extract — Wikipedia chrome filtering (slice 6: H6 + H11)', () => {
     expect(tables[0].rows[0]).toEqual({ Year: '2023', Title: 'Claude 1' });
   });
 
-  it('H11: named_schema=Article on Wikipedia-shaped HTML strips refs, LaTeX, infobox/navbox', async () => {
-    // Inspired by the audit's Wikipedia-page failure: real article prose
+  it('named_schema=Article on Wikipedia-shaped HTML strips refs, LaTeX, infobox/navbox', async () => {
+    // Regression for a Wikipedia-page failure: real article prose
     // ("Claude is an LLM …") must survive while references, LaTeX math, and
     // Wikipedia chrome get filtered before reaching the user.
     const wikipediaArticleHtml = `<html>

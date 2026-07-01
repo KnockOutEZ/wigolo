@@ -251,8 +251,7 @@ export function MountRoot(props: MountRootProps): React.ReactElement {
  *
  * Headless callers (no TTY / CI / --plain / --non-interactive) get the
  * resolution back without any rendering so they can fall through to their
- * own plain-text flow. First-run headless is intentionally not implemented
- * here — slice 12 ships the full `--set` headless parity; until then,
+ * own plain-text flow. First-run headless is not implemented here — headless
  * callers print a "rerun in a terminal or use --plain" message and exit.
  */
 export async function runEntry(opts: RunEntryOpts): Promise<RunEntryResult> {

@@ -1,7 +1,7 @@
 /**
- * Vector store interface — Phase 1 Task 1.3 of v1 engine overhaul.
+ * Vector store interface.
  *
- * Phase 5 switched the default implementation from the in-memory
+ * The default implementation switched from the in-memory
  * VectorIndex adapter to the sqlite-vec backed store. The interface is
  * unchanged so callers do not need to change.
  */

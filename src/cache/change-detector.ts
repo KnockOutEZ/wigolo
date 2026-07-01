@@ -13,7 +13,7 @@ export interface ChangeResult {
   changed: boolean;
   previousHash?: string;
   diffSummary?: string;
-  /** Slice S1 (C2): when the upstream status code transitioned (e.g.
+  /** When the upstream status code transitioned (e.g.
    *  200 → 404), report the previous one so callers can distinguish a
    *  status flip from a content edit. Absent when the previous status was
    *  null/unknown or did not change. */
@@ -21,15 +21,15 @@ export interface ChangeResult {
 }
 
 /**
- * Slice S1 (C2): change detection now compares HTTP status alongside the
+ * Change detection compares HTTP status alongside the
  * body hash. A 200 page that becomes a 404 with an identical-looking body
- * (or vice-versa) IS a change — pretending otherwise is the silent-failure
- * mode the audit flagged.
+ * (or vice-versa) IS a change — pretending otherwise is a silent-failure
+ * mode.
  */
 export function detectChange(url: string, newMarkdown: string, newHttpStatus?: number): ChangeResult {
   try {
     const normalizedUrl = normalizeUrl(url);
-    // Slice S1 follow-up: one SELECT for both columns, not two.
+    // One SELECT for both columns, not two.
     const { hash: previousHash, status: previousStatus } =
       getHashAndStatusForNormalizedUrl(normalizedUrl);
 

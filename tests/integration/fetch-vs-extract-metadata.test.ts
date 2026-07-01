@@ -3,7 +3,7 @@ import { extractMetadata } from '../../src/extraction/metadata.js';
 import { mergeMetadata } from '../../src/extraction/pipeline.js';
 
 // Sub-ticket 2.11: fetch tool and extract mode=metadata previously diverged
-// on which fields they surfaced (verdict §5 #10). Unifying both paths around
+// on which fields they surfaced. Unifying both paths around
 // the canonical extractMetadata function means the same HTML must yield the
 // same og_image, og_type, canonical_url, and keywords regardless of which
 // tool the caller invoked.

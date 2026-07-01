@@ -72,8 +72,8 @@ beforeEach(() => {
   verticalState.papers = [];
 });
 
-// C7 — exact_match must not drop a URL just because one engine's title/snippet
-// happens to omit the phrase. Audit case: "useState hook" — every engine
+// exact_match must not drop a URL just because one engine's title/snippet
+// happens to omit the phrase. For example: "useState hook" — every engine
 // returns the right page but one engine's snippet is sanitized and lacks the
 // phrase. Post-dedup filtering on the (collapsed) higher-scored copy then
 // discards the URL even though another contributing copy contains the phrase.
@@ -143,7 +143,7 @@ describe('exact_match — pre-dedup awareness (C7)', () => {
   });
 
   it('regression: common phrase that previously dropped to 0 returns >0 hits when any engine matched', async () => {
-    // Audit-mode: every engine returns the page but the merged variant in
+    // Every engine returns the page but the merged variant in
     // post-dedup happens to be the "no phrase" one. Expectation: >=1 result.
     // Dispatched-first engine has a sanitised snippet without the phrase; the
     // SECOND engine has a snippet containing the phrase. Without pre-dedup

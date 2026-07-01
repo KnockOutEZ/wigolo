@@ -1,14 +1,14 @@
 /**
- * Slice 5/12 — Smart-router escalation tuning regression suite.
+ * Smart-router escalation tuning regression suite.
  *
- * Background (from the 2026-05-26 audit):
- *   - audit C2: `render_js: never` returns in 146ms; the default Playwright
+ * Background:
+ *   - `render_js: never` returns in 146ms; the default Playwright
  *     path on the same URL is 8.2s (~56× slower). The router CODE PATH is
  *     correct (HTTP-first → escalate). The escalation SIGNALS fire too
  *     eagerly.
- *   - audit H5: papers fetch ~36s, format=answer ~16s, research quick ~21s,
+ *   - papers fetch ~36s, format=answer ~16s, research quick ~21s,
  *     agent w/ schema 30s+ — most of these are downstream consequences of
- *     over-escalation. After H4 tuning the slow tier should not be invoked
+ *     over-escalation. After tuning the slow tier should not be invoked
  *     when content is reachable via HTTP.
  *
  * Each test below asserts the HTTP-first path is taken (Playwright NOT
@@ -77,7 +77,7 @@ function buildRouter(opts: {
   return { router, httpClient, browserPool };
 }
 
-describe('SmartRouter escalation tuning — H4 (HTTP-first on audit slow-path set)', () => {
+describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
@@ -92,7 +92,7 @@ describe('SmartRouter escalation tuning — H4 (HTTP-first on audit slow-path se
 
   describe('SPA-shell heuristic — require both shell-id AND script-heavy markers', () => {
     it('keeps HTTP path when shell-id is present but the page also has substantive <noscript>', async () => {
-      // audit case: noscript with real prose is NOT "please enable JS"; it's
+      // noscript with real prose is NOT "please enable JS"; it's
       // a legitimate fallback. Today the router escalates whenever
       // <noscript> contains "javascript"/"enable" — even when the surrounding
       // body has substantive content. Tighten: substantive <noscript> must
@@ -124,7 +124,7 @@ describe('SmartRouter escalation tuning — H4 (HTTP-first on audit slow-path se
     });
 
     it('keeps HTTP path when <noscript> contains a "javascript" warning BUT the article body has 500+ chars of visible text', async () => {
-      // audit case: many docs sites ship `<noscript>You need to enable
+      // many docs sites ship `<noscript>You need to enable
       // JavaScript</noscript>` defensively even when the article is fully
       // rendered SSR. Today this triggers escalation; tighten so the noscript
       // marker only counts when the rest of the body is thin.

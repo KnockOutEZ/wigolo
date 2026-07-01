@@ -155,7 +155,7 @@ describe('search v1 pipeline — factory + provider integration', () => {
     expect(result.data.results.length).toBeGreaterThan(0);
     expect(result.data.engines_used.length).toBeGreaterThan(0);
     // engines_used should be a subset of the general pool's mocked engines.
-    // Wave-2 W3 removed wiby; the unmocked pool members (mojeek/marginalia)
+    // wiby was removed; the unmocked pool members (mojeek/marginalia)
     // simply fail their fetch and never enter engines_used.
     for (const name of result.data.engines_used) {
       expect(['bing', 'duckduckgo', 'wikipedia']).toContain(name);
@@ -209,7 +209,7 @@ describe('search v1 pipeline — factory + provider integration', () => {
   it('threads from_date through to the HN Algolia engine as numericFilters', async () => {
     const { calls } = installFetchRoutes([
       { match: (u) => u.includes('hn.algolia.com'), body: { hits: [HN_HIT] } },
-      // Wave-3 A3 (news-vertical recall): a date bound no longer filters out
+      // A date bound no longer filters out
       // the date-naive news engines. They still run and contribute recall —
       // their results are freshness-filtered client-side. Provide routes so
       // they don't blow up the test; the assertion below confirms Lobsters is

@@ -1,4 +1,4 @@
--- Slice D2 (webclaw gap closure): extend domain_routing with TLS-impersonation
+-- Extend domain_routing with TLS-impersonation
 -- learning columns. When the TLS-impersonation tier succeeds for a domain N
 -- times (default 3), `prefer_tls_impersonation` flips to 1 so the next visit
 -- skips the HTTP attempt and tries the TLS tier first.

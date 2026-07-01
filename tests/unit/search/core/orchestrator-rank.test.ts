@@ -166,10 +166,9 @@ describe('runV1Search — brand-collision rank (sub-ticket 2.1)', () => {
     expect(mdnIdx === -1 || pgvectorIdx < mdnIdx).toBe(true);
   });
 
-  // S11c sub-area 1 — tier-based RRF weighting. The audit's "5.4 vs Tavily 8.0"
-  // gap is partly that every engine contributed equal RRF weight. With tier
-  // metadata, a high-tier engine's top hit should outrank a low-tier engine's
-  // top hit even when they're at the same rank position.
+  // Tier-based RRF weighting. Previously every engine contributed equal RRF
+  // weight. With tier metadata, a high-tier engine's top hit should outrank a
+  // low-tier engine's top hit even when they're at the same rank position.
   it('tier-based RRF: high-tier rank-1 outranks low-tier rank-1 on disjoint URLs', async () => {
     // Both engines emit exactly one result at rank 1 with disjoint URLs.
     // With tier weights high=1.0, low=0.5:
@@ -366,8 +365,8 @@ describe('runV1Search — brand-collision rank (sub-ticket 2.1)', () => {
   });
 });
 
-describe('rare-term ranking (parity attack 3)', () => {
-  it('A4: ranks the exact sqlite-vec doc above the generic sqlite.org homepage', async () => {
+describe('rare-term ranking', () => {
+  it('ranks the exact sqlite-vec doc above the generic sqlite.org homepage', async () => {
     verticalState.general = [
       makeEntry('e1', [
         makeResult('e1', 'https://sqlite.org/', 'SQLite Home Page', 'small fast self-contained database'),
@@ -386,7 +385,7 @@ describe('rare-term ranking (parity attack 3)', () => {
     expect(out.results.slice(0, 2).map((r) => r.url)).toContain('https://alexgarcia.xyz/sqlite-vec/');
   });
 
-  it('A1: ranks the RRF concept page above the "reciprocal" dictionary page', async () => {
+  it('ranks the RRF concept page above the "reciprocal" dictionary page', async () => {
     verticalState.general = [
       makeEntry('e1', [
         makeResult('e1', 'https://en.wikipedia.org/wiki/Multiplicative_inverse', 'Reciprocal (mathematics)', 'the reciprocal of a number x is 1/x'),

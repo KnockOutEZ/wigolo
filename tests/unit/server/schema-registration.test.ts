@@ -1,19 +1,16 @@
 /**
- * Slice A1: schema groundwork for `diff` + `watch` + brand mode.
+ * Schema + registration coverage for `diff` + `watch` + brand mode.
  *
  * Why this matters:
- *  - The MCP `tools/list` surface is part of the wigolo contract — adding
- *    `diff` and `watch` increases it from 8 to 10 tools. A test that asserts
- *    on exact tool count + names protects future PRs (especially A1's stub
- *    handlers) from accidentally dropping either tool when the dispatch
- *    chain in `server.ts` is edited.
- *  - The stub handlers must return a structured `not_implemented_yet`
- *    notice so dependent slices (B1, B2a, B3) can tell whether they were
- *    correctly wired before they ship the real implementation. A silent
- *    "Unknown tool" branch would mask a registration regression.
- *  - `extract({ mode: 'brand' })` must accept the new mode without
- *    rejecting via the existing JSON-schema enum guard, and must dispatch
- *    to the stub rather than silently falling through to metadata.
+ *  - The MCP `tools/list` surface is part of the wigolo contract — `diff`
+ *    and `watch` bring it to 10 tools. A test that asserts on exact tool
+ *    count + names protects future PRs from accidentally dropping either
+ *    tool when the dispatch chain in `server.ts` is edited.
+ *  - The handlers must return structured envelopes so a silent "Unknown
+ *    tool" branch can't mask a registration regression.
+ *  - `extract({ mode: 'brand' })` must accept the mode without rejecting
+ *    via the existing JSON-schema enum guard, and must dispatch to brand
+ *    extraction rather than silently falling through to metadata.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -24,10 +21,10 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { resetConfig } from '../../../src/config.js';
 import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 
-// Slice B3 made the `watch` handler hit the real DB (via the cache/db.js
+// The `watch` handler hits the real DB (via the cache/db.js
 // `getDatabase()` helper), so the schema-registration suite needs a real
-// in-memory SQLite. We can't keep the old `getDatabase: () => null` mock
-// or the migration runner has nowhere to apply the 004-watch-jobs table.
+// in-memory SQLite. A `getDatabase: () => null` mock won't work —
+// the migration runner has nowhere to apply the 004-watch-jobs table.
 //
 // Strategy: stub `cache/db.js` to bind every initDatabase call onto a
 // shared `:memory:` instance for the duration of the test file. The real
@@ -139,7 +136,7 @@ async function connectClient() {
   return { client, teardown };
 }
 
-describe('Slice A1 — diff + watch tool registration', () => {
+describe('diff + watch tool registration', () => {
   let tmpDataDir: string;
 
   beforeEach(() => {
@@ -182,9 +179,8 @@ describe('Slice A1 — diff + watch tool registration', () => {
     }
   });
 
-  // Slice B1 (2026-05-26): diff is no longer a stub. The MCP surface must
-  // accept the real input shape ({ old, new, output }) and return a
-  // structured DiffOutput rather than the `not_implemented_yet` notice.
+  // The MCP surface accepts the real input shape ({ old, new, output }) and
+  // returns a structured DiffOutput.
   it('tools/call diff computes a real diff between two markdown bodies', async () => {
     const { client, teardown } = await connectClient();
     try {
@@ -207,11 +203,10 @@ describe('Slice A1 — diff + watch tool registration', () => {
     }
   });
 
-  it('tools/call watch with no action returns a real error envelope (B3 shipped — no stub)', async () => {
-    // Slice B3 replaced the stub with the real handler, so an empty
-    // payload now yields a typed input-error envelope instead of the
-    // `not_implemented_yet` notice. The error path still proves the tool
-    // is wired into the dispatch chain.
+  it('tools/call watch with no action returns a real error envelope', async () => {
+    // The real handler yields a typed input-error envelope for an empty
+    // payload. The error path still proves the tool is wired into the
+    // dispatch chain.
     const { client, teardown } = await connectClient();
     try {
       const res = await client.callTool({ name: 'watch', arguments: {} });

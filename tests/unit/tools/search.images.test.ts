@@ -1,4 +1,4 @@
-// Slice S11a (H7): integration test at the MCP tool boundary for the
+// Integration test at the MCP tool boundary for the
 // images vertical.
 //
 // WHY: per memory `feedback_slice_brief_integration_surface`, shipping a
@@ -6,7 +6,7 @@
 // boundary, not just module-level unit coverage. Module-level shape is
 // covered by the adapter tests in tests/unit/search/engines/; this asserts
 // that `handleSearch` with `category: 'images'` actually:
-//   1. STOPS returning `unsupported_category` (the audit's H7 failure).
+//   1. STOPS returning `unsupported_category`.
 //   2. Returns image-shaped results (image_url / source url / title).
 //   3. Surfaces a `needs_key` warning when Brave's adapter is keyless.
 //   4. The zero-key DDG path still produces results on its own.
@@ -140,7 +140,7 @@ describe('handleSearch — category=images (S11a H7 integration)', () => {
     _resetSearchProviderForTest();
   });
 
-  it('no longer returns unsupported_category for category=images on core (audit H7)', async () => {
+  it('no longer returns unsupported_category for category=images on core', async () => {
     verticalState.images = [
       makeImageEntry('ddg-image', [
         imageResult('ddg-image', 'https://example.com/cats', 'https://cdn.example.com/cat.jpg', {

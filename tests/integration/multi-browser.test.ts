@@ -153,8 +153,8 @@ describe('multi-browser integration', () => {
 
   describe('warmup result types', () => {
     it('WarmupResult interface accepts firefox and webkit fields', () => {
-      // Type-level check: WarmupResult should accept firefox and webkit fields
-      // after Slice 17 modifications. This test verifies the type compiles.
+      // Type-level check: WarmupResult should accept firefox and webkit
+      // fields. This test verifies the type compiles.
       const result: { firefox?: string; webkit?: string } = {
         firefox: 'ok',
         webkit: 'failed',

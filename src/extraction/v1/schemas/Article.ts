@@ -10,9 +10,9 @@ export interface ArticleData {
   language?: string;
 }
 
-// H11: extract named_schema=Article on Wikipedia-like pages dumped 30KB of
-// references + LaTeX + infobox/navbox chrome. The audit calls this out as the
-// dominant token-budget tax. cleanArticleBody strips:
+// extract named_schema=Article on Wikipedia-like pages dumped 30KB of
+// references + LaTeX + infobox/navbox chrome — the dominant token-budget
+// tax. cleanArticleBody strips:
 //   - the references section (heading + ordered list following it)
 //   - LaTeX math `$$ … $$` blocks (display math; inline `$ … $` is preserved
 //     because that pattern also matches dollar amounts and prices on news

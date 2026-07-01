@@ -53,9 +53,8 @@ describe('MCP description token budgets', () => {
         // eslint-disable-next-line no-console
         console.log(`  ${a.tool}.${a.path}  ${a.tokens} / ${ARG_DESC_BUDGET}`);
       });
-    // Slice A1 (2026-05-26): added `diff` + `watch` registration-only stubs
-    // alongside the v3 8 tools. Both ship with descriptions so they count
-    // toward the per-tool token budget walk.
+    // All 10 tools ship with descriptions so they count toward the
+    // per-tool token budget walk.
     expect(toolEntries.length).toBe(10);
     expect(argEntries.length).toBeGreaterThan(0); // sanity: walker actually walked
   });

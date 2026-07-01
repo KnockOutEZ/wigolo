@@ -1,6 +1,6 @@
 // Drop the `#fragment` portion of a URL. Anchors are intra-page navigation,
 // not page identity; the crawler's dedup key and emitted page URLs both key
-// off the fragment-stripped form (bench C3, verdict §5 #11).
+// off the fragment-stripped form.
 export function stripFragment(url: string): string {
   try {
     const u = new URL(url);

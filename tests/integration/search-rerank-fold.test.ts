@@ -79,7 +79,7 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('rerank-fold wiring (parity attack 2)', () => {
+describe('rerank-fold wiring', () => {
   it('balanced: cross-encoder demotes the content-irrelevant result below the relevant one', async () => {
     rerankScores['OFFTOPIC'] = -5;
     rerankScores['ONTOPIC'] = 5;

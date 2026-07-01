@@ -100,9 +100,9 @@ describe('computeFreshnessSignal (sub-ticket 3.11)', () => {
     expect(fs.published_date).toBe('2024-03-15');
   });
 
-  // Slice 8 / L2: when nothing can be inferred we omit the signal entirely.
-  // Pre-fix this returned { confidence: 'unknown', inferred: false } which
-  // added noise to every result lacking a parseable date (the majority of
+  // When nothing can be inferred we omit the signal entirely.
+  // Returning { confidence: 'unknown', inferred: false } would add
+  // noise to every result lacking a parseable date (the majority of
   // the web). undefined is the more honest signal: "we have nothing here".
   it('returns undefined when no signal can be extracted or inferred', () => {
     const fs = computeFreshnessSignal('https://example.com/page', undefined);
@@ -142,9 +142,9 @@ describe('SearchResultItem.freshness_signal (sub-ticket 3.11)', () => {
     expect(out.data.results[0].freshness_signal?.published_date).toBe('2024-05-01');
   });
 
-  // Slice 8 / L2: at the provider boundary too — when a result has no
+  // At the provider boundary too — when a result has no
   // parseable date the field must be omitted, not emitted as
-  // `{confidence: 'unknown'}`. The audit observed the noisy variant on
+  // `{confidence: 'unknown'}`. The noisy variant shows up on
   // every non-news search.
   it('omits freshness_signal entirely when no date can be extracted or inferred', async () => {
     verticalState.general = [

@@ -47,7 +47,7 @@ export class LobstersEngine implements SearchEngine {
     log.debug('lobsters search', { query });
 
     // Lobste.rs's Rack middleware treats UA-less requests as bot traffic and
-    // returns 400 — the audit's "lobsters 400 on multi-word queries" was
+    // returns 400 — what looks like "lobsters 400 on multi-word queries" is
     // really "lobsters 400 on every request, more visible on multi-word
     // queries that exercise the engine more often". A stable identifier
     // restores 200s.

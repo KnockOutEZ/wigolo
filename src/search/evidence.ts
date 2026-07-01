@@ -19,9 +19,9 @@ const DEFAULT_MAX_TOKENS_OUT = 4000;
 const MAX_EVIDENCE_PASSAGES = 20;
 const TRUNCATION_MARKER = '[... content truncated]';
 
-// M18: drop passages that are too short to be useful evidence.
+// drop passages that are too short to be useful evidence.
 const MIN_EVIDENCE_EXCERPT_CHARS = 40;
-// M18: drop passages where markdown-link markup dominates the body.
+// drop passages where markdown-link markup dominates the body.
 const MAX_LINK_MARKUP_RATIO = 0.5;
 
 // Returns true when the excerpt is genuine prose worth surfacing as evidence.
@@ -215,7 +215,7 @@ export async function applyEvidenceDefault(
     evidenceBudget = Math.max(0, maxTokensOut - overhead);
   }
 
-  // H1: when the caller passes max_results, cap evidence at that count so the
+  // when the caller passes max_results, cap evidence at that count so the
   // response shape mirrors what they asked for. M18: drop short / link-heavy
   // excerpts BEFORE the cap so the budget reserves slots for genuine prose.
   const maxEvidence = input.max_results !== undefined

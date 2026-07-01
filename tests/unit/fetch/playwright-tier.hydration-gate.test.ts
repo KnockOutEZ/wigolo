@@ -186,11 +186,11 @@ describe('fetchWithPlaywright gates capture on the hydration probe', () => {
   });
 });
 
-// Perf guard (attack-4): the three post-goto phases — networkidle wait, probe
+// Perf guard: the three post-goto phases — networkidle wait, probe
 // wait, escalation re-poll — must draw from ONE shared deadline, not three
 // independent budgets. Signal-less callers (extract.ts, router stealth tier)
 // pass no timeoutMs and no signal, so WITHOUT a shared deadline worst-case
-// post-goto wall-clock would be ~5s+5s+6s = ~16s (the attack-4 blowup). We
+// post-goto wall-clock would be ~5s+5s+6s = ~16s (a latency blowup). We
 // assert ACTUAL post-goto elapsed wall-clock stays within the cap — and that
 // every later leg's granted timeout is clamped to the budget still remaining,
 // so a leg can never be handed more than what's left on the shared deadline.
@@ -239,7 +239,7 @@ describe('fetchWithPlaywright bounds total post-goto wait by a single shared dea
     await promise;
 
     // Actual post-goto wall-clock (simulated) must not exceed the shared cap —
-    // this is the attack-4 guard: even unbounded callers stay within budget.
+    // this bounds latency: even unbounded callers stay within budget.
     const elapsed = Date.now() - startNow;
     expect(elapsed).toBeLessThanOrEqual(POST_GOTO_CAP);
 

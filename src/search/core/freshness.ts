@@ -53,7 +53,7 @@ export function computeFreshnessSignal(
       confidence: 'inferred-url',
     };
   }
-  // Slice 8 / L2: return undefined (rather than `{confidence: 'unknown'}`)
+  // Return undefined (rather than `{confidence: 'unknown'}`)
   // when we have nothing to say. The unknown branch fires on the vast
   // majority of web results (no parseable date), so emitting an object
   // there just adds noise to every search response. Callers reading

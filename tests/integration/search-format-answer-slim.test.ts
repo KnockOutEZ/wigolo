@@ -72,7 +72,7 @@ const mockRouter = {
   }),
 } as unknown as SmartRouter;
 
-// H2: format=answer must not return full markdown bodies. The synthesized
+// format=answer must not return full markdown bodies. The synthesized
 // answer + thin citations are the contract; per-result markdown_content is
 // pure overhead at that point and must be dropped.
 describe('search format=answer — H2 slim payload', () => {

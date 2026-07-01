@@ -72,7 +72,7 @@ describe('tls-tier: anti-bot detectors', () => {
   });
 
   it('isAntiBotSignal treats a bare 429 (no challenge body) as a rate-limit, NOT anti-bot', async () => {
-    // Slice 5 (audit H4): bare 429s are rate-limits. Playwright cannot
+    // Bare 429s are rate-limits. Playwright cannot
     // bypass a rate limit, so escalation just pays the browser cold-start
     // cost. Only escalate when 429 carries a challenge body.
     const { isAntiBotSignal: isAntiBot, isRateLimit } = await import('../../../src/fetch/tls-tier.js');
@@ -178,7 +178,7 @@ describe('tls-tier: lazy load + module cache safety', () => {
   });
 });
 
-describe('tls-tier: caller signal shares the per-fetch budget (attack-4 regression guard)', () => {
+describe('tls-tier: caller signal shares the per-fetch budget (latency regression guard)', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     resetConfig();
@@ -210,7 +210,7 @@ describe('tls-tier: caller signal shares the per-fetch budget (attack-4 regressi
     // WHY: the timeout-escalation path hands tlsFetch the per-fetch deadline.
     // If tlsFetch drops it and mints a fresh AbortSignal.timeout, the caller's
     // already-spent budget is ignored and the TLS attempt stacks a second full
-    // timeout — the attack-4 latency blowup. This test fails against the
+    // timeout — a latency blowup. This test fails against the
     // dropped-signal code because the backend would receive an un-aborted fresh
     // timeout signal instead of the caller's already-aborted one.
     let seenSignal: AbortSignal | undefined;
@@ -281,7 +281,7 @@ describe('tls-tier: caller signal shares the per-fetch budget (attack-4 regressi
   });
 });
 
-describe('tls-tier: profile rotation on Cloudflare challenge (FIX2)', () => {
+describe('tls-tier: profile rotation on Cloudflare challenge', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     resetConfig();
@@ -329,7 +329,7 @@ describe('tls-tier: profile rotation on Cloudflare challenge (FIX2)', () => {
     // Cloudflare 403 "Just a moment" challenge in <50ms, while firefox/safari
     // profiles return a full 200 page. Without rotation the TLS tier returns
     // the still-blocked 403, the router escalates, and Stack Overflow never
-    // hydrates even with an infinite budget (Slice C found this). Rotation
+    // hydrates even with an infinite budget. Rotation
     // makes the chrome->firefox fallback hydrate the page transparently.
     const seenProfiles: string[] = [];
     _setTlsBackendForTests({
@@ -401,7 +401,7 @@ describe('tls-tier: profile rotation on Cloudflare challenge (FIX2)', () => {
     expect(new Set(seenProfiles).size).toBe(seenProfiles.length);
   });
 
-  it('all rotation attempts share the caller per-fetch deadline (no attack-4 blowup)', async () => {
+  it('all rotation attempts share the caller per-fetch deadline (no latency blowup)', async () => {
     // WHY: each rotated attempt must reuse the SAME caller deadline budget, not
     // mint a fresh full timeout per profile. We hand an already-exhausted caller
     // signal; every attempt the backend sees must already be aborted, proving

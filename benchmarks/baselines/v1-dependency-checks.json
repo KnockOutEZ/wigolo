@@ -25,7 +25,7 @@
       "alternatives": [
         {
           "name": "@huggingface/transformers",
-          "rationale": "Mature ONNX-based TS/JS path with first-class cross-encoder reranker support (e.g. Xenova/ms-marco-MiniLM-L-6-v2, BAAI/bge-reranker-base). Recommended primary target for Phase 4.",
+          "rationale": "Mature ONNX-based TS/JS path with first-class cross-encoder reranker support (e.g. Xenova/ms-marco-MiniLM-L-6-v2, BAAI/bge-reranker-base). Recommended primary target for reranking.",
           "priority": "primary"
         },
         {
@@ -35,7 +35,7 @@
         }
       ],
       "v1_blocker": false,
-      "phase4_impact": "Phase 4 design needs amendment: switch from fastembed to @huggingface/transformers as primary, onnxruntime-node as fallback."
+      "impact": "Reranker design needs amendment: switch from fastembed to @huggingface/transformers as primary, onnxruntime-node as fallback."
     },
     "sqlite_vec": {
       "package": "sqlite-vec",
@@ -61,7 +61,7 @@
       "status": "PASS",
       "conclusion": "sqlite-vec 0.1.9 loads cleanly on darwin-arm64. API uses getLoadablePath() (not loadablePath() as the plan checklist guessed).",
       "v1_blocker": false,
-      "phase3_impact": "Phase 3 can proceed; call sites must use getLoadablePath, not loadablePath.",
+      "impact": "Vector-store integration can proceed; call sites must use getLoadablePath, not loadablePath.",
       "ci_followup": [
         "Verify load on linux-x64",
         "Verify load on linux-arm64",
@@ -73,7 +73,7 @@
   },
   "overall": {
     "v1_blocker": false,
-    "notes": "Fastembed reranker absent — Phase 4 plan needs design tweak to use @huggingface/transformers. sqlite-vec works on tested platform; other platforms need CI verification before merge gate."
+    "notes": "Fastembed reranker absent — reranker plan needs a design tweak to use @huggingface/transformers. sqlite-vec works on tested platform; other platforms need CI verification before merge gate."
   },
-  "narrative_writeup": "docs/superpowers/specs/v1-dependency-checks.md (untracked per CLAUDE.md docs/ exclusion; on-disk only)"
+  "narrative_writeup": "Dependency compatibility checks for the v1 native/runtime stack."
 }

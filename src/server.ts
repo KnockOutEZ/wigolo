@@ -505,8 +505,8 @@ export function createMcpServer(subsystems: Subsystems): Server {
       };
     }
 
-    // Slice A1 stub — `diff` real engine lands in slice B1. Watch shipped in
-    // B3 (this file), so it takes a router and does real work.
+    // `diff` compares cached/inline content and needs no router; `watch`
+    // takes the router because it fetches and diffs on each check.
     if (name === 'diff') {
       const input = (args ?? {}) as Record<string, unknown>;
       const r = await handleDiff(input);

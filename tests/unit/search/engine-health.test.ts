@@ -1,4 +1,4 @@
-// Slice S11a: cold-start engine health summary tests.
+// Cold-start engine health summary tests.
 //
 // WHY: doctor needs to surface the engine-pool state at a glance so users
 // can see whether brave is gated, whether github-code needs a token, etc.
@@ -62,7 +62,7 @@ describe('getEngineHealthSummary', () => {
     expect(mojeek?.status).toBe('ok');
   });
 
-  // Wave-2 W3 (honest engine-pool health): mojeek's 403s are IP-reputation
+  // Mojeek's 403s are IP-reputation
   // driven (confirmed in src/search/engines/mojeek.ts), NOT UA-fixable. A
   // user seeing mojeek "ok" but absent from telemetry deserves to know WHY.
   // The note is informational — it does not change status or block dispatch.
@@ -78,7 +78,7 @@ describe('getEngineHealthSummary', () => {
     expect(ddg?.note).toBeUndefined();
   });
 
-  it('does not register wiby in any vertical (removed in Wave-2 W3)', () => {
+  it('does not register wiby in any vertical (removed)', () => {
     const summary = getEngineHealthSummary();
     expect(summary.find((e) => e.name === 'wiby')).toBeUndefined();
   });
@@ -128,11 +128,11 @@ describe('getEngineHealthSummary', () => {
     expect(gh?.status).toBe('ok');
   });
 
-  // Slice 4 (engine-pool recovery): per-engine breaker state in doctor.
-  // WHY: during the 2026-06-12 benchmark two engines sat behind open
-  // breakers for the whole run with zero user visibility — doctor must
-  // surface breaker state + the last upstream error.
-  describe('breaker state join (Slice 4)', () => {
+  // Per-engine breaker state in doctor.
+  // WHY: two engines can sit behind open breakers for a whole run with zero
+  // user visibility — doctor must surface breaker state + the last upstream
+  // error.
+  describe('breaker state join', () => {
     beforeEach(() => {
       _resetBreakersForTest();
     });
@@ -173,7 +173,7 @@ describe('getEngineHealthSummary', () => {
   });
 });
 
-describe('getRegisteredEngineEntries (Slice 4 — doctor --probe-engines source)', () => {
+describe('getRegisteredEngineEntries (doctor --probe-engines source)', () => {
   it('returns the flattened engine entries across all verticals', () => {
     const entries = getRegisteredEngineEntries();
     expect(entries.length).toBeGreaterThan(0);

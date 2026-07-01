@@ -220,7 +220,7 @@ describe('Crawl Pipeline Integration', () => {
     expect(urls).not.toContain('https://docs.test.com/changelog');
   });
 
-  // H10 (audit): every crawl strategy returned `markdown: ""` on every page
+  // Every crawl strategy returned `markdown: ""` on every page
   // by default even though the extraction pipeline had already produced a
   // body. The tool boundary must surface the extracted markdown by default
   // across strategies (BFS, sitemap, map and include_patterns variants).
@@ -259,9 +259,9 @@ describe('Crawl Pipeline Integration', () => {
     }
   });
 
-  it('H10: sitemap strategy also keeps markdown populated by default', async () => {
-    // The bench audit specifically called out sitemap as one of the
-    // strategies returning `markdown: ""`. Provide a sitemap response from
+  it('sitemap strategy also keeps markdown populated by default', async () => {
+    // Sitemap was one of the strategies returning `markdown: ""`.
+    // Provide a sitemap response from
     // the router and confirm the crawl tool emits non-empty markdown.
     const sitemapXml = `<?xml version="1.0"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">

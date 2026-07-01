@@ -67,7 +67,7 @@ export async function handleWatch(
   }
 
   if (action === 'create') {
-    // Slice 8 / M17: accept `url` (single) OR `urls` (batch). Mutually
+    // Accept `url` (single) OR `urls` (batch). Mutually
     // exclusive — passing both is ambiguous about intent. Single-URL path
     // returns `{ job }` (singular) so callers reading one-shot creates
     // don't have to index into a length-1 array. Batch returns `{ jobs }`.

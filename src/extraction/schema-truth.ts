@@ -1,12 +1,11 @@
 /**
- * Evidence-only constraint for LLM-sourced schema fields (slice 4 / flaw C1).
+ * Evidence-only constraint for LLM-sourced schema fields.
  *
  * Why this exists:
- *   The audit (cc-test-report.md §C1) caught the LLM free-form-completing
- *   missing fields with confidently-wrong values — `developer: "Nvidia"` and
- *   `introduced: "May 2024"` on the Model Context Protocol Wikipedia page,
- *   where the source plainly says `Anthropic` / `November 25, 2024`. The
- *   single biggest trust killer in the report.
+ *   An LLM can free-form-complete missing fields with confidently-wrong
+ *   values — e.g. `developer: "Nvidia"` and `introduced: "May 2024"` on the
+ *   Model Context Protocol Wikipedia page, where the source plainly says
+ *   `Anthropic` / `November 25, 2024`. That is a major trust killer.
  *
  * What we do:
  *   For every field whose provenance is `llm`, verify the returned value is
@@ -14,7 +13,7 @@
  *   number parse, year parse from a date string). If the verifier rejects, we
  *   set the field to `null` and emit a warning so the caller can debug why.
  *
- * What we deliberately don't do (out of scope per slice brief):
+ * What we deliberately don't do:
  *   - LLM-based hallucination detection / cross-encoder verification.
  *   - Replace the LLM with a pure rule-based extractor.
  *   - Verify heuristic / structured-data values — those are already trusted.

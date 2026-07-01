@@ -2,8 +2,7 @@ import { parseHTML } from 'linkedom';
 import type { MetadataData } from '../types.js';
 
 // Canonical metadata extractor. fetch and extract mode=metadata both route
-// through here so the two paths never diverge on which fields they surface
-// (bench E2 / verdict §5 #10).
+// through here so the two paths never diverge on which fields they surface.
 function getMetaContent(doc: Document, nameOrProperty: string): string | undefined {
   const el =
     doc.querySelector(`meta[name="${nameOrProperty}"]`) ??

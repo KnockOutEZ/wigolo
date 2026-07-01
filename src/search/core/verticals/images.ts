@@ -3,8 +3,8 @@ import { BraveImageEngine } from '../../engines/brave-image.js';
 import { wrapWithRetryAndBreaker, type EngineEntry } from '../engine-base.js';
 import { getConfig } from '../../../config.js';
 
-// Slice S11a (H7): images vertical for the core backend. Closes the audit
-// finding that `category: 'images'` returned `unsupported_category` on
+// Images vertical for the core backend. Previously `category: 'images'`
+// returned `unsupported_category` on
 // `WIGOLO_SEARCH=core`. DDG Image is the zero-key critical path and ALWAYS
 // runs; Brave Image is gated behind the existing BRAVE_API_KEY env var so
 // users without one see no behavior change (and Brave's adapter raises a

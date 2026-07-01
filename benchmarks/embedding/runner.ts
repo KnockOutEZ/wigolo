@@ -13,8 +13,8 @@
  *
  * Output: benchmarks/embedding/output/results.json
  *
- * Phase 3 gates (from 2026-05-20-v1-engine-overhaul.md):
- *   nDCG@5  ≥ legacy baseline (Phase 1 Task 1.5)
+ * Quality gates:
+ *   nDCG@5  ≥ legacy baseline
  *   nDCG@10 ≥ legacy baseline
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';

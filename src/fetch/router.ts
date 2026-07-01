@@ -39,7 +39,7 @@ const KNOWN_SPA_DOMAINS = new Set<string>([
   'nuxt.com',
 ]);
 
-// Wave-2 W4: known anti-bot, connection-timeout-prone CONTENT domains. These
+// Known anti-bot, connection-timeout-prone CONTENT domains. These
 // close the connection / time out BEFORE returning a 4xx/5xx, so the
 // signal-based HTTP→TLS escalation never sees a response to react to — the
 // plain-HTTP fetch just burns the whole per-fetch budget on a doomed call and
@@ -122,7 +122,7 @@ export type PlaywrightFetcher = (
 ) => Promise<{ html: string; text: string }>;
 
 /**
- * Slice D2: injectable TLS-impersonation fetcher. Same shape as `tlsFetch`
+ * Injectable TLS-impersonation fetcher. Same shape as `tlsFetch`
  * from tls-tier.ts; left injectable so unit tests can stub without touching
  * the wreq-js native binary.
  */
@@ -142,9 +142,9 @@ export interface SmartRouterOptions {
   browserPool?: BrowserPoolInterface;
   httpFetcher?: HttpFetcher;
   playwrightFetcher?: PlaywrightFetcher;
-  /** Slice D2 — when provided, overrides the default lazy-loaded wreq backend. */
+  /** When provided, overrides the default lazy-loaded wreq backend. */
   tlsFetcher?: TlsFetcher;
-  /** Slice D2 — persistence for `prefer_tls_impersonation` learning. */
+  /** Persistence for `prefer_tls_impersonation` learning. */
   tlsPersistence?: TlsRoutingPersistence;
 }
 
@@ -172,7 +172,7 @@ function matchesDomainSet(host: string, set: Set<string> | readonly string[]): b
 }
 
 /**
- * Wave-2 W4: a domain is in the anti-bot TLS-first set when it is in the
+ * A domain is in the anti-bot TLS-first set when it is in the
  * built-in {@link ANTI_BOT_TLS_DOMAINS} list OR the operator-supplied
  * WIGOLO_TLS_DOMAINS list. Both match the host exactly or as a subdomain.
  */
@@ -181,7 +181,7 @@ function isAntiBotTlsDomain(host: string, extra: readonly string[]): boolean {
 }
 
 /**
- * Slice C/3 (FIX2): public predicate over a full URL. True when the URL's host
+ * Public predicate over a full URL. True when the URL's host
  * is in the curated anti-bot/TLS-first set or the operator-supplied
  * WIGOLO_TLS_DOMAINS list — i.e. the same domains {@link SmartRouter.fetch}
  * routes through the TLS-impersonation tier first. The search-hydration path
@@ -199,7 +199,7 @@ export function isAntiBotTlsFirstUrl(url: string, extraDomains: readonly string[
   return isAntiBotTlsDomain(host, extraDomains);
 }
 
-// Wave-2 W4: connection-level timeout / reset errors that surface as a THROW
+// Connection-level timeout / reset errors that surface as a THROW
 // (no HTTP status) rather than a response. Mirrors the retryable set the HTTP
 // client uses; the AbortSignal.timeout path throws TimeoutError, while raw
 // socket failures carry a Node error `code`.
@@ -376,7 +376,7 @@ export class SmartRouter {
       logger.debug('routing to http (never)', { url });
       const result = await this.httpClient.fetch(url, { headers, conditionalHeaders, signal });
       const neverStats = this.ensureStats(domain);
-      // Slice 5 (audit H4): a known-SPA domain that returns substantive
+      // A known-SPA domain that returns substantive
       // HTTP content on a render_js: never call proves the domain is
       // reachable without a browser. Reset the sticky pre-mark so a
       // subsequent default-mode fetch on the same domain skips Playwright.
@@ -400,7 +400,7 @@ export class SmartRouter {
       return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
     }
 
-    // Slice D2 + Wave-2 W4: decide whether to try the TLS-impersonation tier
+    // Decide whether to try the TLS-impersonation tier
     // before HTTP. We try TLS-first when:
     //   - WIGOLO_TLS_TIER=on, or
     //   - WIGOLO_TLS_TIER=auto AND the domain has been promoted via repeated
@@ -439,7 +439,7 @@ export class SmartRouter {
         return this.toRawFetchResult(result);
       }
 
-      // Slice 5 (audit H4): a 429 without a challenge body is a rate-limit,
+      // A 429 without a challenge body is a rate-limit,
       // not an anti-bot wall. Playwright cannot bypass a rate limit, so
       // escalation just pays the browser cold-start cost. Surface the 429
       // directly so callers (tools/fetch.ts) can map it to a stage error.
@@ -448,7 +448,7 @@ export class SmartRouter {
         return this.toRawFetchResult(result);
       }
 
-      // Slice D2: anti-bot signal (403/503 or challenge body, plus 429 with
+      // Anti-bot signal (403/503 or challenge body, plus 429 with
       // a challenge body) escalates to the TLS tier first when
       // WIGOLO_TLS_TIER is auto/on; if the TLS tier also fails or isn't
       // installed, fall through to Playwright.
@@ -468,7 +468,7 @@ export class SmartRouter {
         return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
       }
 
-      // Slice 5 (audit H4): with TLS tier disabled, escalate to Playwright
+      // With TLS tier disabled, escalate to Playwright
       // only when we have a STRONG anti-bot signal — a Cloudflare/DataDome
       // challenge body. A bare 403 (or any anti-bot status code without a
       // challenge marker) is NOT enough on its own: an admin endpoint
@@ -489,7 +489,7 @@ export class SmartRouter {
         return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
       }
 
-      // Slice 5 (audit H4): SPA-shell detection is only meaningful for 2xx
+      // SPA-shell detection is only meaningful for 2xx
       // responses. A 4xx/5xx body is an error page, not a hydration shell —
       // escalating to Playwright won't recover content the server refuses
       // to ship. Pass non-2xx through; tools/fetch.ts surfaces them as
@@ -503,7 +503,7 @@ export class SmartRouter {
         return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
       }
 
-      // Slice 5 (audit H4): a known-SPA domain (pre-marked preferPlaywright
+      // A known-SPA domain (pre-marked preferPlaywright
       // via KNOWN_SPA_DOMAINS) that returns a substantive HTTP response
       // demonstrates the domain is reachable without a browser. Reset the
       // sticky pre-mark so subsequent requests skip the Playwright cold
@@ -526,7 +526,7 @@ export class SmartRouter {
         error: err instanceof Error ? err.message : String(err),
       });
 
-      // Wave-2 W4: timeout-as-escalation-signal. Anti-bot content domains (and
+      // Timeout-as-escalation-signal. Anti-bot content domains (and
       // any domain when the global tier is on) close the connection / time out
       // BEFORE returning a status code, so the response-based escalation above
       // never fires. When the HTTP attempt throws a timeout/connection error
@@ -593,7 +593,7 @@ export class SmartRouter {
     };
   }
 
-  // --- Slice D2: TLS-impersonation tier helpers ---
+  // --- TLS-impersonation tier helpers ---
 
   /**
    * Attempt the TLS-impersonation tier for `url`. Returns:

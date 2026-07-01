@@ -42,10 +42,9 @@ export function parseSitemapEntries(xml: string): SitemapEntry[] {
 
 // Order URLs so the most recently modified pages survive a budget cap.
 // Lastmod descending is primary; entries with no lastmod fall back to
-// priority descending and then preserve input order (stable). Bench C1
-// (verdict §5 #9) failed because the previous implementation returned URLs
-// in document order, which most sitemaps emit alphabetically — useful pages
-// got dropped at the cap.
+// priority descending and then preserve input order (stable). A previous
+// implementation returned URLs in document order, which most sitemaps emit
+// alphabetically — useful pages got dropped at the cap.
 export function sortSitemapEntries<T extends SitemapEntry>(entries: T[]): T[] {
   return entries
     .map((entry, index) => ({ entry, index }))

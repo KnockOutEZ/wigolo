@@ -207,9 +207,9 @@ export async function findSimilar(
         .slice(0, maxResults);
     }
 
-    // H8: hard post-filter on raw fused_score. Empty result is the correct
+    // Hard post-filter on raw fused_score. Empty result is the correct
     // answer when nothing meets the threshold — do not silently relax.
-    // Filters on the raw RRF signal because that's the field the audit case
+    // Filters on the raw RRF signal because that's the field the threshold
     // reports against (`threshold: 0.95` vs `fused_score: 0.029`); the
     // normalized relevance_score top-scales to 1.0 and would always pass.
     const threshold = input.threshold ?? 0;
@@ -247,8 +247,8 @@ export async function findSimilar(
       }
     }
 
-    // Slice S7 (M10): opt-in ranking_debug — emit per-result fts5_rank /
-    // embedding_rank / web_rank plus raw rrf_score so the caller can audit
+    // Opt-in ranking_debug — emit per-result fts5_rank /
+    // embedding_rank / web_rank plus raw rrf_score so the caller can inspect
     // disagreement between the three ranking sources. Off by default so the
     // standard response shape stays slim.
     if (input.include_ranking_debug) {
@@ -361,16 +361,15 @@ function buildColdStartNote(
   if (cacheHits === 0 && searchHits > 0) {
     return `No cache matches for this query (cache has ${initialCacheSize} pages overall). Results come from live web search. Use wigolo_fetch on relevant sources before re-running for hybrid ranking.`;
   }
-  // Slice S7 (H9): audit case "retrieval augmented generation" → 1
-  // unrelated cache hit, no cold_start, no signal to caller. When concept
-  // mode returns very few results AND search wasn't used to corroborate,
-  // tell the caller the local-cache signal is thin. Bound at <= 2 because
-  // that's the threshold the audit case demonstrates — a single Deployment
-  // page returned for an unrelated query.
+  // A query can return a single unrelated cache hit with no cold_start and
+  // no signal to the caller. When concept mode returns very few results AND
+  // search wasn't used to corroborate, tell the caller the local-cache
+  // signal is thin. Bound at <= 2 because that's the point where a lone
+  // off-topic page is the likely result for an unrelated query.
   //
   // Guard with `initialCacheSize >= 3` so the existing "cache is small"
   // notes still win when the cache is essentially empty (those are
-  // system-level posture signals; H9 is a per-query thinness signal).
+  // system-level posture signals; this is a per-query thinness signal).
   if (
     conceptMode &&
     searchHits === 0 &&

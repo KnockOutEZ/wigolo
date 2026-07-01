@@ -20,7 +20,7 @@ import type { JsonSchema } from '../extraction/schema.js';
 
 const log = createLogger('agent');
 
-// H3: tight default to keep agent responses under token caps. 10 pages was
+// tight default to keep agent responses under token caps. 10 pages was
 // blowing budgets on long runs; 3 reads enough for synthesis on most prompts
 // while letting callers opt in to more via input.max_pages.
 const DEFAULT_MAX_PAGES = 3;
@@ -125,7 +125,7 @@ export async function runAgentPipeline(
       time_ms: Date.now() - synthStart,
     });
 
-    // Slice S1 (C4): when every fetch failed but the planner produced URLs,
+    // When every fetch failed but the planner produced URLs,
     // surface that as a partial-fail warning so callers don't see "No data
     // could be gathered" with zero context. The synthesis text already
     // mentions the attempt count; the warning gives clients a structured
@@ -208,7 +208,7 @@ async function synthesizeResult(
   const fetchedSources = sources.filter((s) => s.fetched && s.markdown_content.length > 0);
 
   if (fetchedSources.length === 0) {
-    // Slice S1 (C4): never claim "no data" when the planner did surface
+    // Never claim "no data" when the planner did surface
     // candidate URLs. Name the attempt count so callers can tell apart
     // "fetches all failed" from "search returned nothing" — both shapes
     // used to collapse to the same blank message.

@@ -329,11 +329,11 @@ describe('find_similar integration', () => {
     expect(resultB.error).toBeUndefined();
   });
 
-  // Slice S7 (H9): integration-boundary regression guard for the audit's
-  // RAG case. Concept mode + thin cache + no web fallback must emit
+  // Integration-boundary regression guard for the RAG case. Concept mode +
+  // thin cache + no web fallback must emit
   // cold_start through the handleFindSimilar boundary.
   it('end-to-end H9: cold_start fires when concept mode returns only 1-2 weak cache hits', async () => {
-    // Audit case shape: populated cache (>= 3 pages) but only 1 weak hit on
+    // Populated cache (>= 3 pages) but only 1 weak hit on
     // the actual concept query — the per-query thinness must surface.
     seedCache(
       'https://example.com/deployment',
@@ -364,7 +364,7 @@ describe('find_similar integration', () => {
     expect(result.cold_start).toMatch(/thin|too few|weak|sparse|cold|1 cache match|few cache match/i);
   });
 
-  // Slice S7 (M10): integration-boundary regression guard for the opt-in
+  // Integration-boundary regression guard for the opt-in
   // ranking_debug field. Default off, on when input flag is true.
   it('end-to-end M10: ranking_debug is OMITTED by default', async () => {
     seedCache(

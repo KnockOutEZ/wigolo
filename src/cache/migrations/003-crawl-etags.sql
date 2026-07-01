@@ -1,4 +1,4 @@
--- Phase 11 (v1 engine overhaul): per-URL ETag + Last-Modified cache so the
+-- Per-URL ETag + Last-Modified cache so the
 -- crawler can detect unchanged pages on incremental runs and skip
 -- extraction. SmartRouter does not yet expose conditional headers, so this
 -- table is content-hash-aware only — full GET still happens, but downstream

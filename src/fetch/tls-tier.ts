@@ -1,5 +1,5 @@
 /**
- * Slice D2 — TLS-fingerprint HTTP tier.
+ * TLS-fingerprint HTTP tier.
  *
  * Wraps the `wreq-js` napi backend in the same surface as the default HTTP
  * tier (HttpClient.fetch shape). The wreq module is lazy-imported on the
@@ -29,7 +29,7 @@ export interface TlsFetchOptions {
    * internal `timeoutMs` budget — whichever fires first wins — so the TLS tier
    * never mints a fresh full timeout on top of an already-spent per-fetch
    * deadline. Dropping it would let a timeout-escalation path stack
-   * HTTP-timeout + a fresh TLS-timeout (the attack-4 latency blowup).
+   * HTTP-timeout + a fresh TLS-timeout (a latency blowup).
    */
   signal?: AbortSignal;
 }
@@ -153,7 +153,7 @@ function headersToRecord(h: WreqHeaders | undefined): Record<string, string> {
 
 /**
  * Profiles tried, in order, when the active profile is served an anti-bot
- * challenge (FIX2). Some networks (e.g. the Stack Exchange Cloudflare edge)
+ * challenge. Some networks (e.g. the Stack Exchange Cloudflare edge)
  * serve every chrome impersonation profile a "Just a moment" 403 in <50ms but
  * return a full 200 page on a firefox/safari fingerprint. Rotating across
  * distinct browser families recovers those pages without a browser-engine
@@ -217,7 +217,7 @@ async function readResponse(url: string, response: WreqResponse): Promise<TlsFet
  * returns the first healthy response. If every profile stays blocked it returns
  * the last (still-blocked) result so the router can escalate. All attempts
  * share ONE combined deadline (caller signal + internal timeout) so rotation
- * never mints a fresh full timeout per profile (the attack-4 latency blowup).
+ * never mints a fresh full timeout per profile (a latency blowup).
  */
 export async function tlsFetch(url: string, options: TlsFetchOptions = {}): Promise<TlsFetchResult> {
   const backend = await loadBackend();
@@ -306,7 +306,7 @@ export function hasChallengeBody(html: string | null | undefined): boolean {
 }
 
 /**
- * Slice 5 (audit H4): a 429 without an anti-bot challenge body is a plain
+ * A 429 without an anti-bot challenge body is a plain
  * rate-limit, not an anti-bot wall. Playwright will hit the same rate
  * limit, so escalation just pays the browser cold-start cost for no gain.
  *

@@ -22,7 +22,7 @@ export interface FetchContentContext {
    *  to today's legacy path: no stage timer, per-URL timeoutSignal is the
    *  only cancellation mechanism. */
   stageBudgetMs?: number;
-  /** Slice C/3 (FIX2): per-URL budget for anti-bot/TLS-first domains
+  /** Per-URL budget for anti-bot/TLS-first domains
    *  (stackoverflow.com et al.). These are routed through the TLS-impersonation
    *  tier first; a working TLS attempt takes ~1-5s and is starved by the small
    *  `fetchTimeoutMs`. When absent, a default larger budget is derived from
@@ -37,7 +37,7 @@ interface SingleFetch {
 }
 
 /**
- * Slice C/3 (FIX2): resolve the per-URL fetch budget for a single target.
+ * Resolve the per-URL fetch budget for a single target.
  * Anti-bot/TLS-first domains (routed through the TLS-impersonation tier first
  * by the router) get the larger {@link FetchContentContext.antiBotFetchTimeoutMs}
  * budget so a working ~1-5s TLS attempt is not starved by the small
@@ -46,8 +46,8 @@ interface SingleFetch {
  * The anti-bot budget is clamped to the stage budget (when set) so the overall
  * stage stays bounded — the per-URL budget never exceeds the stage ceiling, so
  * the stage timer (not an unbounded per-URL timer) is what caps wall-clock.
- * This is the attack-4 guard: the per-URL budget can be larger than the small
- * default but never larger than the stage budget.
+ * This bounds worst-case latency: the per-URL budget can be larger than the
+ * small default but never larger than the stage budget.
  */
 function perUrlBudgetFor(url: string, ctx: FetchContentContext): number {
   if (!isAntiBotTlsFirstUrl(url, getConfig().tlsDomains)) {
@@ -150,7 +150,7 @@ async function fetchOne(
 // order. Mutates each SearchResultItem in place with markdown_content, or
 // fetch_failed/content_truncated metadata when applicable.
 //
-// Slice S1 (M16): when `max_fetches > 1` and one of the top-N parallel
+// When `max_fetches > 1` and one of the top-N parallel
 // fetches fails, attempt fallback fetches from `results[maxFetches..]`
 // within the remaining timeout budget. One backup attempt per failed slot
 // — keeps the total successful-fetch count from exceeding the cap (so

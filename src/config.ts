@@ -87,7 +87,7 @@ export interface Config {
   llmCacheTtlDays: number;
   llmMaxCallsPerRequest: number;
   /**
-   * TLS-impersonation HTTP tier mode (slice D2):
+   * TLS-impersonation HTTP tier mode:
    *   - 'off'  : tier disabled, current pipeline unchanged (DEFAULT)
    *   - 'auto' : only invoked on anti-bot signal (403/429/503 or challenge body)
    *   - 'on'   : tried first for cold domains, then HTTP, then Playwright

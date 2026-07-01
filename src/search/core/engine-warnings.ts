@@ -1,7 +1,7 @@
-// Slice S1 (M2): promote per-engine error telemetry into a top-level
+// Promote per-engine error telemetry into a top-level
 // `engine_warnings` list on the search response.
 //
-// WHY: the audit found 401 / 400 / 5xx engine failures were only visible
+// WHY: 401 / 400 / 5xx engine failures were only visible
 // when callers opted into the debug-shaped `include_engine_outcomes` flag.
 // That made lobsters 400 and github-code 401 silently invisible to every
 // normal caller — the response looked successful while one engine was
@@ -35,7 +35,7 @@ const ENGINE_AUTH_HINTS: Record<string, string> = {
   // search limit. The token is read by the existing adapter; the hint names
   // the env var so users can set it in their MCP host config.
   'github-code': 'set WIGOLO_GITHUB_TOKEN to lift GitHub API rate limits',
-  // Slice S11a: Brave Image is gated behind the same key as the Brave web
+  // Brave Image is gated behind the same key as the Brave web
   // engine. When the orchestrator dispatches the adapter and the key is
   // missing, the adapter raises `BRAVE_API_KEY not set ...` which we
   // detect below and convert to a `needs_key` warning code.
@@ -57,7 +57,7 @@ const MISSING_KEY_PATTERN = /\b([A-Z][A-Z0-9_]+_API_KEY|GITHUB_TOKEN|BRAVE_API_K
  * — we pull the numeric status out so callers can match on it. Falls back
  * to `'error'` when no HTTP-status pattern is found (DNS, timeout, abort).
  *
- * Slice S11a: adds `needs_key` for messages naming a missing API-key env
+ * Adds `needs_key` for messages naming a missing API-key env
  * var (e.g. `"BRAVE_API_KEY not set"`). HTTP status detection takes
  * precedence so a 401 from a configured-but-rejected key still surfaces
  * as `http_401` and the env-hint comes from the auth-hint table.

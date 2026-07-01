@@ -127,7 +127,7 @@ describe('handleDiff', () => {
       }
     });
 
-    // Slice 8 / M11: tool-boundary regression — granularity='word' returns
+    // Tool-boundary regression — granularity='word' returns
     // word-scoped hunks (not line-grouped). Mirrors the engine-level word
     // test so the dispatch at the handler stays honest.
     it('returns word-scoped hunks when granularity=word', async () => {

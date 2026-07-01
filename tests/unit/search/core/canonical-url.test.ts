@@ -3,10 +3,10 @@ import { canonicalizeUrl } from '../../../../src/search/core/canonical-url.js';
 
 // S11c sub-area 2 — cross-engine canonical URL dedup.
 //
-// Pre-S11c dedup matched URLs by raw string. Two engines returning the same
+// Raw-string dedup matched URLs literally. Two engines returning the same
 // page through different URL variants (utm_*, AMP, mobile subdomain, trailing
 // slash, http vs https) would surface as two results, breaking RRF fusion and
-// over-counting consensus. The audit logged this as a recall/quality flaw.
+// over-counting consensus — a recall/quality flaw.
 //
 // canonicalizeUrl(url) MUST produce the same output for any pair of URLs the
 // audit considers "the same page from the same canonical site".

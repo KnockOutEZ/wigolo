@@ -1,5 +1,5 @@
 /**
- * Slice 4 fix-up — perf regression for schema-truth evidence filter.
+ * Perf regression for schema-truth evidence filter.
  *
  * Why this matters:
  *   `src/extraction/schema-truth.ts` line 37 explicitly states:

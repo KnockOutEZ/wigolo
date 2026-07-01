@@ -77,7 +77,7 @@ const DDG_HTML = `<html><body>
   <div class="result-snippet">Reference for the Vue composition API.</div>
 </body></html>`;
 // Defensive empty route for the general pool's authoritative engine
-// (Wikipedia opensearch). Wave-2 W3 removed the wiby long-tail engine; this
+// (Wikipedia opensearch). The wiby long-tail engine was removed; this
 // keeps an extra general-pool route present without contributing results.
 const WIKI_EMPTY: unknown[] = [];
 

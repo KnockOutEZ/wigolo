@@ -6,11 +6,10 @@ import type {
 } from '../../../src/types.js';
 import type { EngineEntry } from '../../../src/search/core/engine-base.js';
 
-// Slice 8 / M1: `engines_used` vs `engine_telemetry` semantics.
+// `engines_used` vs `engine_telemetry` semantics.
 //
-// WHY: the audit (cc-test-report.md, M1) flagged that the two arrays were
-// indistinguishable to a caller — both contained "every engine that didn't
-// error". The fix carves a clear divide:
+// WHY: the two arrays used to be indistinguishable to a caller — both
+// contained "every engine that didn't error". The fix carves a clear divide:
 //   - `engines_used`     = engines that contributed >= 1 result to the
 //                          final fused/deduped list (semantic — "who
 //                          ended up in the answer").
@@ -99,7 +98,7 @@ beforeEach(() => {
   verticalState.papers = [];
 });
 
-describe('engines_used vs engine_telemetry semantics (Slice 8, M1)', () => {
+describe('engines_used vs engine_telemetry semantics', () => {
   it('engines_used contains only engines with >= 1 deduped result', async () => {
     // Two engines fire; one returns 0 results.
     // engine_telemetry must list BOTH (raw attempt log);

@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { buildEngineWarnings } from '../../../src/search/core/engine-warnings.js';
 import type { EngineTelemetry } from '../../../src/types.js';
 
-// Slice S1 (M2): unit tests for engine_warnings construction.
+// Unit tests for engine_warnings construction.
 //
-// WHY: the audit found lobsters 400 and github-code 401 only visible in
+// WHY: lobsters 400 and github-code 401 were previously only visible in
 // debug-shaped telemetry. The warning surface must promote them into a
 // stable top-level array so callers branch on engine health without
 // extra flags — including the env-var hint for documented 401 engines.

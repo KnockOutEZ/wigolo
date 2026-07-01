@@ -343,7 +343,7 @@ export class MultiBrowserPool {
 
       let screenshotBase64: string | undefined;
       if (options.screenshot) {
-        // Slice 5 (audit M15): screenshots require a real browser tab — the
+        // Screenshots require a real browser tab — the
         // HTTP and TLS tiers cannot rasterise a page. When `force_refresh`
         // is combined with `screenshot: true` the request unavoidably pays
         // the full Playwright cold-start (~5-8s) on top of the navigation

@@ -110,7 +110,7 @@ function clampExtractData(
   return data;
 }
 
-// H3: default char ceiling for mode='tables' when caller didn't pass
+// default char ceiling for mode='tables' when caller didn't pass
 // max_tokens_out. Large tables blow token budgets; this default keeps the
 // response useful for the common case while flipping `truncated: true` so
 // callers can detect the clip and re-request explicitly if they need more.
@@ -292,7 +292,7 @@ export async function handleExtract(
         html,
         url: sourceUrl ?? input.url ?? '',
       });
-      // C1: evidence-only constraint also applies to the local-llm path.
+      // evidence-only constraint also applies to the local-llm path.
       // Otherwise an LLM hallucination (e.g. `developer: "Nvidia"` for an
       // MCP Wikipedia page that says "Anthropic") would escape unchecked.
       const raw = (llmData ?? {}) as Record<string, unknown>;

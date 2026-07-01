@@ -6,7 +6,7 @@
  *
  * Note: the legacy `COMPONENT_REGISTRY`, `FIREFOX_COMPONENT`, `ToggleMap`,
  * `buildDefaultToggles`, `CURATED_ENV_VARS`, `ENV_GROUP_LABELS`, `EnvVarMeta`,
- * `EnvGroupId`, `ScreenId`, and `EntryMode` exports were dropped in slice 12
+ * `EnvGroupId`, `ScreenId`, and `EntryMode` exports were dropped
  * after the schema-driven CATALOG replaced the curated env-var subset and the
  * pre-wizard install/review screens.
  */

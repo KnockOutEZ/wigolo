@@ -1,9 +1,9 @@
 /**
- * Slice B2b unit tests for `src/extraction/brand-palette.ts`.
+ * Unit tests for `src/extraction/brand-palette.ts`.
  *
  * Why this matters:
- *   B2a returns CSS-var-sourced primary_colors when sites declare them in
- *   custom properties. Many real sites don't — they inline brand colors
+ *   The sync extractor returns CSS-var-sourced primary_colors when sites
+ *   declare them in custom properties. Many real sites don't — they inline brand colors
  *   in compiled stylesheets, attribute styles, or only as raster bytes
  *   inside the logo. Without an image fallback, `mode: 'brand'` returns
  *   no colors at all on a meaningful fraction of the ecosystem and the

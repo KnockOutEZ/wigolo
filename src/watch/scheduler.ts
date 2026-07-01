@@ -99,8 +99,8 @@ export async function runCheck(
     report.diff_summary = computeDiffSummary('', markdown); // approximate — without prior body
     // If we still hold the prior markdown in the URL cache for this same
     // page (handleFetch with force_refresh:true overwrote it), this summary
-    // is just a line-count of the new body. Real prior-body diffing is part
-    // of slice B1's `diff` engine; this slice surfaces a coarse marker.
+    // is just a line-count of the new body. Real prior-body diffing is
+    // handled by the `diff` engine; this path surfaces a coarse marker.
 
     recordCheck(job.id, Date.now(), currentHash);
     log.info('watch change detected', { id: job.id, url: job.url });

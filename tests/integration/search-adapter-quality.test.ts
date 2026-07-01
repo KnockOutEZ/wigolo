@@ -1,4 +1,4 @@
-// Slice S11b: integration coverage for the adapter quality push at the
+// Integration coverage for the adapter quality push at the
 // handleSearch tool boundary.
 //
 // WHY: per memory `feedback_slice_brief_integration_surface`, every slice
@@ -6,7 +6,7 @@
 // test at the tool surface — not just an isolated module unit test. This
 // file asserts that:
 //   1. The lobsters User-Agent fix actually flows through the orchestrator
-//      to a real fetch call (the audit's "Lobsters returned 400" path).
+//      to a real fetch call (the "Lobsters returned 400" path).
 //   2. The github-code WIGOLO_GITHUB_TOKEN wire-up sends Bearer auth from
 //      the tool handler down to the adapter when the env var is set.
 //   3. Quality-tier metadata is queryable through the orchestrator without

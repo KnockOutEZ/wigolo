@@ -177,11 +177,11 @@ describe('detectChange', () => {
     });
   });
 
-  // --- Slice S1 (C2): HTTP status transitions count as changes ---
+  // --- HTTP status transitions count as changes ---
   //
   // WHY: a cached 200 page that flips to a 404 (or vice-versa) is a
   // change even when the body bytes hash identically — silently treating
-  // them as the same is the failure mode the audit flagged. Status-aware
+  // them as the same is a failure mode. Status-aware
   // change detection lets cache check_changes report status flips
   // distinct from body edits.
 

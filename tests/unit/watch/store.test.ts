@@ -24,7 +24,7 @@ import {
  *     break user intent.
  *   - `staleness_seconds` is the user-facing visibility into how overdue a
  *     check is. The numeric semantics (negative = future-due, positive =
- *     overdue) are documented in spec §5 B3.
+ *     overdue) are part of the watch tool's behavior.
  */
 describe('watch store', () => {
   beforeEach(() => {

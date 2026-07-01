@@ -1,4 +1,4 @@
-// Slice S11a (long-tail engine breadth): Mojeek adapter.
+// Mojeek adapter.
 //
 // WHY: Mojeek operates a real independent web index with no Bing/Google
 // affiliation. Adding it to the general vertical dilutes brand-collision

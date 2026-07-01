@@ -54,7 +54,7 @@ const cacheSearchResultsMock = vi.mocked(cacheSearchResults);
 const ctx = { router: undefined } as never;
 
 describe('CoreSearchProvider', () => {
-  // Slice S11a (H7): pre-existing behavior was that the provider rejected
+  // Pre-existing behavior was that the provider rejected
   // category=images with `unsupported_category`. The images vertical is now
   // a first-class core vertical (DDG Image + Brave Image). The legacy
   // assertion is gone; this replaces it by pinning that the provider DOES
@@ -62,7 +62,7 @@ describe('CoreSearchProvider', () => {
   // `ok: true`. Detailed image-shaped contracts live in
   // tests/unit/tools/search.images.test.ts (integration boundary) and the
   // adapter tests under tests/unit/search/engines/.
-  it('dispatches category=images to the orchestrator (no longer unsupported_category — audit H7)', async () => {
+  it('dispatches category=images to the orchestrator (no longer unsupported_category)', async () => {
     runV1SearchMock.mockClear();
     runV1SearchMock.mockResolvedValueOnce({
       results: [

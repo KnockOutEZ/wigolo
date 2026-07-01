@@ -161,13 +161,13 @@ describe('computeHunks', () => {
     expect(result.hunks).toEqual([]);
   });
 
-  // Slice 8 / M11: granularity:'word' must walk tokens, not lines. Pre-fix
-  // the dispatch fell back to line-LCS regardless of granularity, so word
-  // and line produced identical hunks for any single-line edit. WHY: the
+  // granularity:'word' must walk tokens, not lines. If the dispatch falls
+  // back to line-LCS regardless of granularity, word and line produce
+  // identical hunks for any single-line edit. WHY: the
   // tool's API surface promises 'word' as a real granularity; a reviewer
   // staring at a paragraph wants to see "this word changed", not "this
   // whole paragraph changed".
-  describe('word granularity (Slice 8, M11)', () => {
+  describe('word granularity', () => {
     it('emits word-scoped hunks for an intra-line change instead of line hunks', () => {
       const oldText = 'the quick brown fox jumps over the lazy dog';
       const newText = 'the quick brown CAT jumps over the lazy dog';

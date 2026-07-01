@@ -78,7 +78,7 @@ function build(opts: BuildOpts = {}) {
   return { router, httpClient, browserPool, tlsFetcher, tlsPersistence, recordedDomains };
 }
 
-describe('SmartRouter — TLS tier (Slice D2)', () => {
+describe('SmartRouter — TLS tier', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
@@ -174,7 +174,7 @@ describe('SmartRouter — TLS tier (Slice D2)', () => {
       resetConfig();
 
       const { router, httpClient, tlsFetcher, browserPool, recordedDomains } = build();
-      // Slice 5 (audit H4): use 403 + Cloudflare challenge body to trigger
+      // Use 403 + Cloudflare challenge body to trigger
       // anti-bot escalation. A bare 429 is now treated as a rate-limit and
       // does NOT escalate to Playwright — see router-escalation-tuning.test.ts.
       vi.mocked(httpClient.fetch).mockResolvedValue(

@@ -249,10 +249,10 @@ describe('redditExtractor — edge cases', () => {
   });
 });
 
-// Slice S7 (C5): audit found Reddit anti-bot pages were silently treated as
+// Reddit anti-bot pages were previously silently treated as
 // regular reddit responses — no site_data emitted, no signal to caller.
 // Detect the block string and refuse to produce fake site_data.
-describe('redditExtractor — anti-bot block detection (audit C5)', () => {
+describe('redditExtractor — anti-bot block detection', () => {
   const BLOCKED_HTML = loadFixture('reddit-blocked.html');
   const url =
     'https://old.reddit.com/r/programming/comments/abc123/something/';
@@ -271,7 +271,7 @@ describe('redditExtractor — anti-bot block detection (audit C5)', () => {
     expect(detectAntiBotBlock(THREAD_HTML)).toBeNull();
   });
 
-  it('extract returns null on a blocked body (audit C5 — must not pretend success)', () => {
+  it('extract returns null on a blocked body (must not pretend success)', () => {
     expect(redditExtractor.extract(BLOCKED_HTML, url)).toBeNull();
   });
 });

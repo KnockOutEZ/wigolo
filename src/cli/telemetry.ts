@@ -1,5 +1,5 @@
 /**
- * Opt-in telemetry — Phase 14 of v1 engine overhaul.
+ * Opt-in telemetry.
  *
  * Off by default. Enabled when `WIGOLO_TELEMETRY=1`. Writes one NDJSON line
  * per event to `${dataDir}/telemetry/events-YYYYMMDD.ndjson`. Optionally

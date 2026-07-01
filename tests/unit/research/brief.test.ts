@@ -94,7 +94,7 @@ describe('buildResearchBrief', () => {
     expect(brief.key_findings[0]).not.toContain('https://');
   });
 
-  // Slice 8 / M4: the audit observed `](http://...)` artifacts leaking into
+  // `](http://...)` artifacts can leak into
   // key_findings text even after the existing inline-link strip. Reference-
   // style links (`[label][1]`), bare URLs, and HTML anchors are additional
   // hyperlink shapes that must be flattened to plain text before the finding
@@ -197,7 +197,7 @@ describe('buildResearchBrief', () => {
     expect(brief.sections.comparison).toBeUndefined();
   });
 
-  // Parity attack 7 / slice 1: the comparison section must capture the actual
+  // The comparison section must capture the actual
   // source SENTENCE that pairs an entity with a comparison term, plus the
   // index of the source it came from — not just a bare keyword. WHY: the
   // template renderer quotes these as cited tradeoffs ("[1] React is faster
@@ -258,8 +258,8 @@ describe('buildResearchBrief', () => {
     expect(brief.citation_graph).toBeUndefined();
   });
 
-  // Slice 8 / M5: citation_graph source_indices must align with the output
-  // `sources` array (0-based, full list — including unfetched). Pre-fix the
+  // citation_graph source_indices must align with the output
+  // `sources` array (0-based, full list — including unfetched). The
   // graph was indexed against the `fetched` subset, so when the first source
   // failed to fetch, source_indices=[0] silently pointed to the wrong row.
   // WHY: a caller who reads `sources[graph[0].source_indices[0]]` should get

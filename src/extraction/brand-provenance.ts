@@ -1,13 +1,12 @@
 /**
  * Brand extractor provenance enums — single source of truth.
  *
- * Why this file exists (slice 4 / flaw L3):
- *   The audit (cc-test-report.md row L3) caught us emitting provenance
- *   values that weren't in the documented enum (e.g. 'palette-extraction'
- *   showed up in real output but wasn't documented). The TS type
- *   `BrandExtractionOutput['provenance']` carries one form of the
- *   declaration, but the code, tests, and external docs each duplicate it.
- *   Drift is inevitable.
+ * Why this file exists:
+ *   Without a single source, provenance values can be emitted that aren't in
+ *   the documented enum (e.g. 'palette-extraction' appearing in real output
+ *   but undocumented). The TS type `BrandExtractionOutput['provenance']`
+ *   carries one form of the declaration, but the code, tests, and external
+ *   docs each duplicate it. Drift is inevitable.
  *
  * Fix: every emission point reads from these arrays. The type in
  * `src/types.ts` is derived from them. The brand-honesty test asserts the

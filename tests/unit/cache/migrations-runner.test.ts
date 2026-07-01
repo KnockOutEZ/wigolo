@@ -33,7 +33,7 @@ describe('applyMigrations', () => {
     expect(applied).toContain('005-tls-routing');
     expect(applied).not.toContain('001-sqlite-vec'); // requiresVec, skipped
 
-    // Slice D2: domain_routing now carries the TLS-impersonation columns.
+    // domain_routing now carries the TLS-impersonation columns.
     const drCols = db.prepare("PRAGMA table_info('domain_routing')").all() as Array<{ name: string }>;
     const drNames = drCols.map((c) => c.name).sort();
     expect(drNames).toContain('prefer_tls_impersonation');

@@ -226,11 +226,11 @@ describe('runAgentPipeline', () => {
     expect(result.sources.some((s) => s.fetch_error)).toBe(true);
   });
 
-  // --- Slice S1 (C4): agent silent-fail visibility ---
+  // --- agent silent-fail visibility ---
   //
   // WHY: when the agent attempted to fetch N pages and all failed (network,
   // 4xx, timeout), the synthesis stage used to emit "No data could be
-  // gathered for this request." The CEO complaint: that's not "no data" —
+  // gathered for this request." That's not "no data" —
   // it's "fetch failed for every candidate." Callers can't tell whether
   // they should retry, broaden the query, or surface a real error.
   // The fix: surface attempted page count + name the failure shape.

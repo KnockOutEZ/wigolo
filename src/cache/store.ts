@@ -82,14 +82,14 @@ export function cacheContent(result: RawFetchResult, extraction: ExtractionResul
     const normalizedUrl = normalizeUrl(result.finalUrl || result.url);
     const contentHash = createHash('sha256').update(extraction.markdown).digest('hex');
 
-    // Slice 8 / M19: SINGLE source of truth for `now` in this write. Both
+    // SINGLE source of truth for `now` in this write. Both
     // `fetched_at` (returned to callers as `cached_at`) and the derived
     // `expires_at` use this same Date instance. `getCacheStats().newest`
     // reads MAX(fetched_at) — same column, same value, no clock drift.
     // Future writers MUST NOT swap one of these for SQLite's
     // `datetime('now')` (which has its own clock + timezone surface)
-    // unless the OTHER also moves; mixing JS + SQL clocks is what produced
-    // the audit's mismatch.
+    // unless the OTHER also moves; mixing JS + SQL clocks is what produces
+    // a cached_at / newest mismatch.
     const now = new Date();
     const expiresAt = new Date(now.getTime() + config.cacheTtlContent * 1000);
 
@@ -120,7 +120,7 @@ export function cacheContent(result: RawFetchResult, extraction: ExtractionResul
       contentHash: contentHash,
       fetchedAt: toIsoSeconds(now),
       expiresAt: toIsoSeconds(expiresAt),
-      // Slice S1 (C2): persist upstream status so cache lookups can branch
+      // Persist upstream status so cache lookups can branch
       // on 200 vs 404 vs 5xx instead of trusting body-hash alone.
       httpStatus: typeof result.statusCode === 'number' ? result.statusCode : null,
     });
@@ -148,7 +148,7 @@ interface DbRow {
   content_hash: string;
   fetched_at: string;
   expires_at: string | null;
-  // Slice S1 (C2): nullable so legacy rows from before the column existed
+  // Nullable so legacy rows from before the column existed
   // still hydrate cleanly. Migration 006 adds the column without a default.
   http_status: number | null;
 }
@@ -201,7 +201,7 @@ export function getHashForNormalizedUrl(normalizedUrl: string): string | null {
 }
 
 /**
- * Slice S1 (C2): cached HTTP status for change-detection. Returns `null`
+ * Cached HTTP status for change-detection. Returns `null`
  * when the row was persisted before migration 006 added the column, so
  * callers must treat `null` as "unknown, body-hash is authoritative".
  */
@@ -218,7 +218,7 @@ export function getHttpStatusForNormalizedUrl(normalizedUrl: string): number | n
 }
 
 /**
- * Slice S1 follow-up: read content_hash and http_status in a single
+ * Read content_hash and http_status in a single
  * prepared SELECT. Change-detection needs both on the hot path and
  * coalescing them halves the index lookup cost. Returns `{ hash: null,
  * status: null }` when the URL is absent; `status` is also `null` for
@@ -569,7 +569,7 @@ export function getCacheStats(): CacheStats {
   };
 }
 
-// --- Embedding store functions (Slice 22) ---
+// --- Embedding store functions ---
 
 export function updateCacheEmbedding(
   url: string,
@@ -643,7 +643,7 @@ export interface StoredEmbedding {
   dims: number;
 }
 
-// --- Domain routing (Slice D2: TLS-impersonation learning) ---
+// --- Domain routing (TLS-impersonation learning) ---
 
 export interface DomainRoutingRow {
   domain: string;

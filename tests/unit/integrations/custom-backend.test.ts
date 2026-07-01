@@ -1,6 +1,6 @@
 /**
  * Tests for resolveCustomBackend + pickOllamaModel — the seam that makes the
- * `ollama` alias a first-class keyless backend (parity attack 7, slice 2).
+ * `ollama` alias a first-class keyless backend.
  *
  * WHY: Ollama previously only worked via a raw WIGOLO_LLM_PROVIDER=http://...
  * URL. Users expect a friendly `ollama` alias that auto-targets localhost:11434

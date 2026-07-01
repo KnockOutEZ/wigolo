@@ -292,7 +292,7 @@ describe('runResearchPipeline', () => {
     expect(typeof result.total_time_ms).toBe('number');
   });
 
-  // Parity attack 7 / slice 1: in keyless template mode (no sampling server,
+  // In keyless template mode (no sampling server,
   // no local LLM), the returned `report` must be the rendered brief — the
   // organized "— Research Brief" document — NOT the flat buildFallbackReport
   // per-source dump. WHY: this is the parity lever vs an LLM essay; a flat

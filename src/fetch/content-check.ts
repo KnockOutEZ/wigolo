@@ -1,6 +1,6 @@
 const VISIBLE_TEXT_THRESHOLD = 200;
 const SCRIPT_RATIO_THRESHOLD = 0.8;
-// Slice 5 (audit H4): the body-substantive cutoff above which a defensive
+// The body-substantive cutoff above which a defensive
 // <noscript> or `enable JavaScript` marker is no longer load-bearing. Docs
 // sites routinely ship a "please enable JS" <noscript> alongside fully SSR
 // article bodies; the noscript marker alone was forcing Playwright on pages
@@ -47,7 +47,7 @@ function hasSpaShellIndicator(html: string): boolean {
   const hasSemanticContent = /<main[\s>]|<article[\s>]/i.test(html);
   if (hasSemanticContent) return false;
 
-  // Slice 5 (audit H4): if the shell-id is present but the surrounding body
+  // If the shell-id is present but the surrounding body
   // already contains a substantive amount of visible prose (>= 500 chars,
   // excluding <noscript> warnings), don't escalate. The article is reachable
   // via HTTP even though the framework chose to wrap it in a #root/#app div.
@@ -63,7 +63,7 @@ function hasNextData(html: string): boolean {
 }
 
 /**
- * Slice 5 (audit H4): only treat a `<noscript>` block as a JS-required
+ * Only treat a `<noscript>` block as a JS-required
  * marker when:
  *   (a) the noscript text actually warns about JavaScript (the existing
  *       "javascript"/"enable" keyword check), AND

@@ -81,7 +81,7 @@ describe('response_time_ms on search output (sub-ticket 3.7)', () => {
     if (!out.ok) return;
     expect(typeof out.data.response_time_ms).toBe('number');
     expect(out.data.response_time_ms!).toBeGreaterThanOrEqual(0);
-    // Should be approximately equal to total_time_ms (Tavily-canonical alias)
+    // Should be approximately equal to total_time_ms (canonical alias)
     expect(out.data.response_time_ms).toBe(out.data.total_time_ms);
   });
 });

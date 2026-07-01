@@ -66,7 +66,7 @@ describe('extractMetadata', () => {
   });
 
   it('falls back to twitter:image when og:image missing', () => {
-    // Bench E2 (verdict §5 #10): some sites (e.g. pgedge.com) ship a
+    // Some sites (e.g. pgedge.com) ship a
     // twitter:image card without og:image. Surface it as og_image so the
     // extract path matches what site-specific extractors and downstream
     // consumers expect.
@@ -275,7 +275,7 @@ describe('extractTables', () => {
     expect(result[0].rows).toEqual([{ Name: 'Alice' }]);
   });
 
-  // H6: tables mode on Wikipedia returns CSS-navbox cells ("Cite this page |
+  // tables mode on Wikipedia returns CSS-navbox cells ("Cite this page |
   // Wikidata item") instead of real content tables. Skip Wikipedia chrome
   // tables (navbox, role=navigation, infobox-data-row-only patterns) so callers
   // see only meaningful data tables.

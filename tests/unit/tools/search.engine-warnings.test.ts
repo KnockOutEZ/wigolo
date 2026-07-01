@@ -1,4 +1,4 @@
-// Slice S1 (M2): integration test at the MCP tool boundary.
+// Integration test at the MCP tool boundary.
 //
 // WHY: per memory `feedback_slice_brief_integration_surface`, shipping a
 // module behind an MCP tool MUST include an integration test at the tool

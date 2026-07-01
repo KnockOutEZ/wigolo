@@ -112,7 +112,7 @@ async function installBrowser(
   // surfaces if launch also fails.
   const deps = await installLinuxDeps(browser, cli);
 
-  // Launch smoke-test via the shared probe — same verdict doctor reports.
+  // Launch smoke-test via the shared probe — same result doctor reports.
   const probe = await probeBrowser(browser);
   if (probe.launchable) return { ok: true };
 

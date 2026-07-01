@@ -1,6 +1,6 @@
-// Slice S11a (H7): DDG Image search adapter.
+// DDG Image search adapter.
 //
-// WHY: the audit found `category: 'images'` returns `unsupported_category` on
+// WHY: `category: 'images'` previously returned `unsupported_category` on
 // the `core` backend. DDG image is the critical-path zero-key adapter — it
 // MUST work without any API token so users can opt into image search out of
 // the box. Brave Image (key-gated) is the higher-quality opt-in path.

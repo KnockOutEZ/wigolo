@@ -5,7 +5,7 @@ import {
   recordTlsImpersonationSuccess,
 } from '../../../src/cache/store.js';
 
-describe('domain_routing — TLS-impersonation columns (Slice D2)', () => {
+describe('domain_routing — TLS-impersonation columns', () => {
   beforeEach(() => {
     initDatabase(':memory:');
   });

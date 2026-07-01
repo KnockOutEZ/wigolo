@@ -14,7 +14,7 @@
  *
  * Output: benchmarks/search/output/rerank-quality.json
  *
- * Phase 4 gates (from 2026-05-20-v1-engine-overhaul.md):
+ * Quality gates:
  *   nDCG@5  ≥ legacy reranker baseline
  *   nDCG@10 ≥ legacy reranker baseline
  */

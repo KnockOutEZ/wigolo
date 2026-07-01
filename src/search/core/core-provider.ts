@@ -1,4 +1,4 @@
-// CoreSearchProvider — Phase 7 retrieval-only adapter.
+// CoreSearchProvider — retrieval-only adapter.
 //
 // Delegates to the core orchestrator (intent routing + per-vertical engines +
 // RRF fusion) and maps RawSearchResult to SearchResultItem for the MCP
@@ -65,7 +65,7 @@ function matchesAnyDomain(url: string, domains: string[]): boolean {
   return false;
 }
 
-// Recall backfill buffer (wave2.1 FIX4). The downstream score-floor + stale
+// Recall backfill buffer. The downstream score-floor + stale
 // demotion drop junk from the dispatched set; without an over-fetch they have
 // nothing to backfill from and the response thins below max_results. Mirror
 // the research module's 40%-over buffer (research/pipeline.ts): ask the
@@ -158,7 +158,7 @@ export class CoreSearchProvider implements SearchProvider {
       };
     }
 
-    // Slice S11a (H7): the images vertical is now first-class on core via
+    // The images vertical is first-class on core via
     // the DDG Image (zero-key) + Brave Image (key-gated) adapters. Earlier
     // releases returned `unsupported_category` here; that branch is gone.
     const category = input.category;
@@ -245,7 +245,7 @@ export class CoreSearchProvider implements SearchProvider {
     const autoRewrites: string[] = [];
 
     if (!servedFromCache && !ultraFastMiss) {
-      // Parity attack 3: for a single-query call carrying a compound token
+      // For a single-query call carrying a compound token
       // (sqlite-vec, vec0, snake_case), add ONE quoted-phrase variant to the
       // initial fan-out so engines that honour phrase quotes surface exact-match
       // pages they'd otherwise drop by stripping the hyphen. The variant is
@@ -265,7 +265,7 @@ export class CoreSearchProvider implements SearchProvider {
         log.debug('rare-term variant firing', { original: queries[0], variant: rareVariant });
       }
 
-      // Recall backfill (wave2.1 FIX4): the orchestrator slices to the
+      // Recall backfill: the orchestrator slices to the
       // maxResults it is handed, so the downstream score-floor + stale
       // demotion would have NOTHING to backfill from when they drop junk —
       // leaving fewer than max_results even when good survivors exist. Mirror
@@ -414,7 +414,7 @@ export class CoreSearchProvider implements SearchProvider {
       }
       engineTelemetry = [...telemetryByEngine.values()];
 
-      // Slice 8 / M1: `engines_used` = engines that contributed >= 1 result
+      // `engines_used` = engines that contributed >= 1 result
       // to the deduped fused list (semantic — "who ended up in the answer").
       // `engine_telemetry` already carries the per-engine dedup_kept count;
       // deriving `engines_used` from it here keeps the two surfaces in sync
@@ -449,7 +449,7 @@ export class CoreSearchProvider implements SearchProvider {
         processed = dedupAgainstRecentUrls(processed, input.agent_context.recent_urls);
       }
 
-      // Cross-encoder rerank-fold (parity attack 2): the LAST reorder, after
+      // Cross-encoder rerank-fold: the LAST reorder, after
       // all cross-query merges + context-rank. Balanced/deep only; images skip
       // (snippet rerank on image results is noise); gated on the same onnx
       // reranker config the evidence path uses. The helper is failure-safe.
@@ -465,7 +465,7 @@ export class CoreSearchProvider implements SearchProvider {
         });
       }
 
-      // Stale-result demotion (wave2.1 FIX3): on a temporal-intent query an
+      // Stale-result demotion: on a temporal-intent query an
       // out-of-date page must lose its slot to a fresher one. The RRF-fusion
       // recency BOOST (orchestrator.ts) only lifts recent results — it cannot
       // push a stale one down. This applies the demotion penalty exactly once,
@@ -483,7 +483,7 @@ export class CoreSearchProvider implements SearchProvider {
           .map(({ r, demoted }) => ({ ...r, relevance_score: demoted }));
       }
 
-      // Relevance-score floor (wave2-w2): the LAST trim before the slice, so
+      // Relevance-score floor: the LAST trim before the slice, so
       // an upstream slice cannot bypass it and the near-zero/negative junk the
       // rerank-fold scored into the tier-0 band never consumes a top-N slot.
       // The user-settable relevanceThreshold raises the floor; it never lowers
@@ -503,14 +503,14 @@ export class CoreSearchProvider implements SearchProvider {
           snippet: r.snippet,
           relevance_score: r.relevance_score,
           ...(r.published_date ? { published_date: r.published_date } : {}),
-          // Slice 8 / L2: omit the field entirely when the freshness
+          // Omit the field entirely when the freshness
           // helper returns undefined (the "no parseable date" case) so the
           // response shape stays clean.
           ...(freshness ? { freshness_signal: freshness } : {}),
           ...(r.evidence_score ? { evidence_score: r.evidence_score } : {}),
           ...(r.image_url ? { image_url: r.image_url } : {}),
           ...(r.image_alt ? { image_alt: r.image_alt } : {}),
-          // Image-search fields (Slice S11a): only set when the engine carried
+          // Image-search fields: only set when the engine carried
           // them — non-image engines leave these undefined so the response
           // shape stays slim for general/code/docs/papers verticals.
           ...(r.thumbnail_url ? { thumbnail_url: r.thumbnail_url } : {}),
@@ -558,7 +558,7 @@ export class CoreSearchProvider implements SearchProvider {
 
     // category 'images' is rejected above, so by this point `category` is
     // either undefined or a vertical the orchestrator accepts.
-    // Slice 8 / M7 + S11c: `rewrites` reports query expansions. When the
+    // `rewrites` reports query expansions. When the
     // caller hands us an array, they ARE the rewriter so echoing their own
     // input back is misleading — we omit caller-supplied alternates. We DO
     // surface S11c auto-rewrites (low-recall expansion fired by us) so
@@ -578,7 +578,7 @@ export class CoreSearchProvider implements SearchProvider {
     }
 
     const totalTimeMs = Date.now() - start;
-    // Slice S1 (M2): promote per-engine errors out of debug-only telemetry
+    // Promote per-engine errors out of debug-only telemetry
     // into a top-level array so every caller sees broken engines. Empty
     // array on cache hits or all-ok runs (cleaner than `undefined?.length`).
     const engineWarnings = buildEngineWarnings(engineTelemetry);
@@ -598,7 +598,7 @@ export class CoreSearchProvider implements SearchProvider {
       ...(engineTelemetry ? { engine_warnings: engineWarnings } : {}),
     };
 
-    // Slice 8 / M9: try the brand-domain check first (cheap, requires
+    // Try the brand-domain check first (cheap, requires
     // top-3 to actually carry a brand TLD). Fall back to the lexical
     // dev-term collision check — fires on "useState" etc. even when the
     // top-3 has no brand domain. Either path emits the same warning shape.
@@ -666,7 +666,7 @@ export class CoreSearchProvider implements SearchProvider {
         data.streaming = true;
       }
 
-      // H2: slim payload. The synthesized answer + citations are the contract
+      // slim payload. The synthesized answer + citations are the contract
       // when format=answer; per-result markdown_content is pure overhead
       // (~3× cost in the bench). Drop bodies unless the caller explicitly
       // asked for include_full_markdown.

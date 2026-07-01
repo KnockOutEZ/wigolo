@@ -1,5 +1,5 @@
 /**
- * Slice B2a unit tests for `src/extraction/brand.ts`.
+ * Unit tests for `src/extraction/brand.ts`.
  *
  * Why this matters:
  *  - `mode: 'brand'` is a contract surface; downstream tools (autonomous
@@ -11,9 +11,9 @@
  *  - The priority order (JSON-LD > og:logo > heuristic > favicon) is the
  *    only way callers can reason about quality. The priority tests below
  *    are the regression net for that ordering.
- *  - Slice B2b will populate `primary_colors` via palette extraction. The
+ *  - `primary_colors` is populated later via palette extraction. The
  *    CSS-vars test pins the expected provenance to `'css-vars'` so when
- *    B2b lands, a missed branch immediately changes the provenance and
+ *    palette extraction lands, a missed branch immediately changes the provenance and
  *    fails this suite — preventing palette extraction from masking a CSS
  *    var miss.
  */
@@ -186,8 +186,8 @@ describe('extractBrand — heuristic DOM logo', () => {
     expect(out.provenance?.logo).toBe('json-ld');
   });
 
-  it('does NOT promote favicon to logo_url when no real logo source exists (M3 honesty)', () => {
-    // Slice 4 / M3: favicons never promote to `logo_url`. A favicon is a
+  it('does NOT promote favicon to logo_url when no real logo source exists', () => {
+    // Favicons never promote to `logo_url`. A favicon is a
     // 16x16/32x32 browser tab icon — surfacing it as a logo gives callers
     // pixelated brand cards. The favicon stays in its own field; logo_url
     // is undefined and provenance is 'unknown'.
@@ -313,10 +313,10 @@ describe('extractBrand — CSS-var color extraction', () => {
     expect(out.provenance?.colors).toBe('unknown');
   });
 
-  it('records provenance as "unknown" when no CSS vars match (palette extraction is a separate slice)', () => {
-    // This pins the B2a contract: when CSS vars miss, we DON'T look
-    // at pixels here. B2b will extend this; if a future patch eagerly
-    // sets `palette-extraction` without B2b being merged, this test
+  it('records provenance as "unknown" when no CSS vars match (palette extraction is separate)', () => {
+    // This pins the sync contract: when CSS vars miss, we DON'T look
+    // at pixels here. The async palette path extends this; if a future patch eagerly
+    // sets `palette-extraction` without the palette path being merged, this test
     // catches the regression.
     const html = wrap('<title>no css vars</title>');
     const out = extractBrand(html, { baseUrl: 'https://x.example/' });
@@ -502,8 +502,8 @@ describe('extractBrand — font hints', () => {
 describe('extractBrand — URL safety', () => {
   it('drops javascript: / mailto: / data: schemes from logo_url and favicon_url', () => {
     // A malformed page must never produce a logo_url that, when followed,
-    // would execute JavaScript. This is a safety contract. After slice-4 /
-    // M3 dropped the favicon→logo fallback, logo_url may be undefined here
+    // would execute JavaScript. This is a safety contract. Since the
+    // favicon→logo fallback was dropped, logo_url may be undefined here
     // (the only "logo" candidate is a javascript: URL that gets rejected,
     // and we no longer fall back to favicon). Honest undefined is fine;
     // a javascript: URL would NOT be.

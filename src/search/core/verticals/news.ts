@@ -46,7 +46,7 @@ export function getNewsEngines(): EngineEntry[] {
     // scrapes /search?filters=tnews and surfaces .news_dt → published_date so
     // the recency layer can rank it like the other date-aware engines.
     { engine: wrapWithRetryAndBreaker(new BingNewsEngine()), weight: 0.9, supportsDateFilter: false, quality: 'medium' },
-    // Wave-3 A3 (news-vertical recall): HN/Lobsters/Bing-News alone are too
+    // HN/Lobsters/Bing-News alone are too
     // tech-skewed and too thin for general news recall — a date-bounded news
     // query was collapsing to HN-Algolia's 2 results. Reusing the general
     // vertical's broad web engines (same adapters as verticals/general.ts)

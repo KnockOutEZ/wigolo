@@ -1,14 +1,14 @@
 /**
- * Slice B2b integration tests for `extractBrandAsync` — the async entry
- * point that adds image-based palette extraction on top of B2a.
+ * Integration tests for `extractBrandAsync` — the async entry
+ * point that adds image-based palette extraction on top of the sync extractor.
  *
  * Why these tests are shaped the way they are:
  *
- *   The B2a unit tests pin the sync extractor's contract (priority of
+ *   The sync extractor's unit tests pin its contract (priority of
  *   logo sources, CSS-var color parsing, social link normalization, etc).
  *   Those must stay green and unchanged.
  *
- *   B2b adds ONE behavior: when CSS vars miss, fetch the logo or
+ *   The async path adds ONE behavior: when CSS vars miss, fetch the logo or
  *   og_image and quantize a palette. The contract is small but the
  *   regression net needs to be tight because:
  *     - The image fetch is network-side-effect bearing — tests must
@@ -337,11 +337,11 @@ describe('extractBrandAsync — control flags', () => {
 
 describe('extractBrandAsync — fixture-mirror coverage', () => {
   it('flips ≥5 hand-rolled CSS-var-less sites to palette-extraction provenance', async () => {
-    // The 20-site B2a fixtures already produce CSS-var colors. To
-    // verify B2b actually fires the palette path, we strip the <style>
+    // The 20-site fixtures already produce CSS-var colors. To
+    // verify the palette path actually fires, we strip the <style>
     // blocks from 5 of them and assert the provenance flips.
     //
-    // Why 5 and not all 20: the B2a fixtures intentionally test the
+    // Why 5 and not all 20: the fixtures intentionally test the
     // CSS-var path. We want regression coverage for the palette path
     // without duplicating the entire 20-site corpus — 5 is enough to
     // catch a "palette path silently broke for all sites" regression.

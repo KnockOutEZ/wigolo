@@ -114,11 +114,11 @@ describe('CoreSearchProvider — query_understanding on output (sub-ticket 3.9)'
   });
 });
 
-// Slice 8 / M6: query_understanding.entities is populated for queries
-// containing named entities. The audit observed entities=[] on every
-// real query. Verify both the casing-sensitive proper-noun path and
-// the all-lowercase common-name path the audit hit (e.g. "anthropic ceo").
-describe('query_understanding.entities (Slice 8 / M6)', () => {
+// query_understanding.entities is populated for queries
+// containing named entities. A naive implementation returns entities=[] on
+// every real query. Verify both the casing-sensitive proper-noun path and
+// the all-lowercase common-name path (e.g. "anthropic ceo").
+describe('query_understanding.entities', () => {
   it('extracts proper-noun + acronym entities from a properly-cased query', async () => {
     verticalState.general = [
       makeEntry('bing', [makeResult('bing', 'https://example.com/a')]),
@@ -153,11 +153,10 @@ describe('query_understanding.entities (Slice 8 / M6)', () => {
   });
 });
 
-// Slice 8 / M7: when caller passes a string[] (multi-query) the
-// `rewrites` field must NOT echo the input variants back to them. The
-// audit observed rewrites === input — useless, the caller already
-// authored those.
-describe('query_understanding.rewrites in multi-query (Slice 8 / M7)', () => {
+// When caller passes a string[] (multi-query) the
+// `rewrites` field must NOT echo the input variants back to them. Echoing
+// rewrites === input is useless — the caller already authored those.
+describe('query_understanding.rewrites in multi-query', () => {
   it('rewrites is empty when caller is the rewriter', async () => {
     verticalState.general = [
       makeEntry('bing', [makeResult('bing', 'https://example.com/a')]),
@@ -176,7 +175,7 @@ describe('query_understanding.rewrites in multi-query (Slice 8 / M7)', () => {
   });
 });
 
-describe('buildQueryUnderstanding compound_terms (parity attack 3)', () => {
+describe('buildQueryUnderstanding compound_terms', () => {
   it('surfaces detected compound tokens', () => {
     const qu = buildQueryUnderstanding('sqlite-vec vec0 knn query');
     expect(qu.compound_terms).toEqual(expect.arrayContaining(['sqlite-vec', 'vec0']));

@@ -1,5 +1,5 @@
 /**
- * VerifyScreen — slice 11 wrapper around the Verification component.
+ * VerifyScreen — wrapper around the Verification component.
  *
  * Tests assert the wrapper:
  *   - mounts without throwing

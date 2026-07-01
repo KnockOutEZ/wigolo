@@ -87,7 +87,7 @@ describe('isHydrated', () => {
   });
 
   it('returns false for a large nav-only SPA app-root (react.dev sidebar shell, body not yet mounted)', () => {
-    // FIX1 regression guard. react.dev wraps everything in <div id="__next">.
+    // Regression guard. react.dev wraps everything in <div id="__next">.
     // Before the article mounts, that root already holds a header + a sidebar
     // nav whose link descriptions live in <p> tags: > 1200 chars of chrome text
     // AND >= 3 <p> blocks. The old app-root branch measured the WHOLE root and

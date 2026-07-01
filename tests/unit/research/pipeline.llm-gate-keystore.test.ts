@@ -1,5 +1,5 @@
 /**
- * Slice 1b/3: the research local-synthesis gate must be keystore-aware.
+ * The research local-synthesis gate must be keystore-aware.
  *
  * In the zero-env scenario (no provider/key env vars, key in the OS keychain)
  * the research pipeline must still recognize the LLM as configured and run the

@@ -48,7 +48,7 @@ function makeHighlight(over: Partial<Highlight> = {}): Highlight {
   };
 }
 
-// H1: Evidence array must respect max_results.
+// Evidence array must respect max_results.
 describe('applyEvidenceDefault — H1 max_results cap', () => {
   beforeEach(() => {
     mockedExtract.mockReset();
@@ -106,7 +106,7 @@ describe('applyEvidenceDefault — H1 max_results cap', () => {
   });
 });
 
-// M18: Evidence excerpts that are too short OR mostly link-markup should be dropped.
+// Evidence excerpts that are too short OR mostly link-markup should be dropped.
 describe('applyEvidenceDefault — M18 link-fragment filter', () => {
   beforeEach(() => {
     mockedExtract.mockReset();

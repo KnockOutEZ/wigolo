@@ -94,7 +94,7 @@ export class Crawler {
     const visited = new Set<string>();
     const pages: CrawlResultItem[] = [];
     const allLinks: LinkEdge[] = [];
-    // M14: track which (from, fragment-stripped to) pairs we've already emitted
+    // track which (from, fragment-stripped to) pairs we've already emitted
     // into the link graph so /foo, /foo#a, /foo#b collapse to ONE edge.
     const seenEdges = new Set<string>();
     const indexing = isIndexingEnabled();
@@ -159,7 +159,7 @@ export class Crawler {
         }
 
         if (input.extract_links) {
-          // M14: anchor fragments are intra-page navigation, not page
+          // anchor fragments are intra-page navigation, not page
           // identity. Strip `#section-a` / `#section-b` before adding to
           // the link graph so /foo, /foo#a, /foo#b collapse to ONE edge.
           addUniqueEdges(allLinks, seenEdges, url, fetchResult.links);
@@ -253,7 +253,7 @@ export class Crawler {
     const toFetch = filtered.slice(0, maxPages);
     const pages: CrawlResultItem[] = [];
     const allLinks: LinkEdge[] = [];
-    // M14: see crawlTraversal — same dedup key used here so the sitemap path
+    // see crawlTraversal — same dedup key used here so the sitemap path
     // emits one edge per (from, canonical-to) pair.
     const seenEdges = new Set<string>();
     const indexing = isIndexingEnabled();
@@ -276,7 +276,7 @@ export class Crawler {
           if (indexing) await enqueueIndexCrawl(item);
 
           if (input.extract_links) {
-            // M14: dedupe fragment variants in the link graph.
+            // dedupe fragment variants in the link graph.
             addUniqueEdges(allLinks, seenEdges, url, result.links);
           }
         }
@@ -338,7 +338,7 @@ export class Crawler {
 
     // Sort so the most recently modified pages survive the max_pages cap.
     // Document order is usually alphabetical, which buried fresh content
-    // under stale glossary pages (bench C1).
+    // under stale glossary pages.
     return sortSitemapEntries(allEntries).map(e => e.url);
   }
 }
@@ -350,7 +350,7 @@ function isDocPage(url: string): boolean {
   return DOC_PATH_PATTERNS.some(p => path.includes(p));
 }
 
-// M14: emit one LinkEdge per (from, fragment-stripped to). Bench audit:
+// emit one LinkEdge per (from, fragment-stripped to). For example,
 // /foo, /foo#section-a, /foo#section-b previously created three distinct
 // edges; collapse to one by keying off the fragment-stripped target.
 function addUniqueEdges(

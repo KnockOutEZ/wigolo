@@ -201,7 +201,7 @@ describe('runV1Search — date-bounded routing', () => {
     expect(out.vertical).toBe('news');
   });
 
-  // Wave-3 A3 (news-vertical recall): a date bound must NOT silence the
+  // A date bound must NOT silence the
   // date-naive engines. Server-side date filtering is best-effort — engines
   // that can't filter server-side still contribute results, which are then
   // freshness-filtered client-side. Before this fix the orchestrator dropped
@@ -441,10 +441,10 @@ describe('runV1Search — brand-collision guard', () => {
 });
 
 describe('runV1Search — domain filters', () => {
-  it('hard-filters off-domain results even when matches are sparse (C8)', async () => {
-    // includeDomains is a HARD whitelist (slice S3 / audit C8). Earlier the
+  it('hard-filters off-domain results even when matches are sparse', async () => {
+    // includeDomains is a HARD whitelist. Earlier the
     // orchestrator used a soft floor that backfilled non-matching domains
-    // when fewer than 3 matched. The audit found this leaked off-domain
+    // when fewer than 3 matched. This leaked off-domain
     // results, sometimes ranked above on-domain. Now: drop every off-domain
     // result, even if only one in-domain hit survives.
     const { entry } = makeEntry({

@@ -93,10 +93,10 @@ function makeExtraction(overrides: Partial<ExtractionResult> = {}): ExtractionRe
   };
 }
 
-// Slice 8 / L1: precise URL validation for fetch. Localhost URLs with a
+// Precise URL validation for fetch. Localhost URLs with a
 // VALID port are accepted (docs promise local dev servers work); invalid
 // ports get a clear "invalid port" message instead of a vague TypeError.
-describe('handleFetch URL validation (Slice 8 / L1)', () => {
+describe('handleFetch URL validation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getCachedContent).mockReturnValue(null);
@@ -583,7 +583,7 @@ describe('handleFetch --- change detection', () => {
     expect(vi.mocked(detectChange)).toHaveBeenCalledWith(
       expect.any(String),
       '# New Content',
-      // Slice S1 (C2): detectChange now receives upstream status code so it
+      // detectChange now receives upstream status code so it
       // can flag 200→404 status flips as changes alongside body-hash diffs.
       expect.any(Number),
     );

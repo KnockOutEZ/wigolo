@@ -381,8 +381,8 @@ describe('getCacheStats', () => {
     expect(stats.oldest <= stats.newest).toBe(true);
   });
 
-  // Slice 8 / M19: the audit observed `cached_at` (returned by
-  // fetch/getCachedContent) disagreeing with `stats.newest`. They are the
+  // `cached_at` (returned by fetch/getCachedContent) can disagree with
+  // `stats.newest`. They are the
   // same column read from the same row, so they MUST match string-for-
   // string. Pin both ends so a future change can't silently drift them
   // (e.g. by reading `fetched_at` for cached_at but `created_at` for
@@ -629,7 +629,7 @@ describe('getMarkdownForNormalizedUrl', () => {
   });
 });
 
-// --- Slice S1 follow-up: coalesce hash + http_status into a single SELECT.
+// --- coalesce hash + http_status into a single SELECT.
 //
 // WHY: change-detector previously did two indexed SELECTs against the same
 // normalized_url to read content_hash and http_status separately. Combining

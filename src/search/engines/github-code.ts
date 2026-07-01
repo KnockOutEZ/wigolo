@@ -38,9 +38,9 @@ export class GithubCodeEngine implements SearchEngine {
     const url = `https://api.github.com/search/code?${params}`;
     log.debug('github code search', { query });
 
-    // Slice S11b: wire WIGOLO_GITHUB_TOKEN into the request. The audit found
-    // the engine_warnings hint already names the env var, but the adapter
-    // wasn't actually reading it — so users who set the var still hit 401.
+    // Wire WIGOLO_GITHUB_TOKEN into the request. The
+    // engine_warnings hint already names the env var, but the adapter
+    // previously wasn't reading it — so users who set the var still hit 401.
     // When present, the token is sent as a Bearer credential and the
     // recommended `X-GitHub-Api-Version` header is added for stability.
     // Unauthed mode is still supported (no header fabricated).

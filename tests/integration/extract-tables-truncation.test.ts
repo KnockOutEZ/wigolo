@@ -30,7 +30,7 @@ function makeRouter(): SmartRouter {
   return {} as unknown as SmartRouter;
 }
 
-// H3: extract mode=tables should apply an implicit cap (~30000 chars) when no
+// extract mode=tables should apply an implicit cap (~30000 chars) when no
 // max_tokens_out is provided, AND surface a `truncated: true` marker so the
 // caller knows the payload was clipped.
 describe('extract mode=tables — H3 default size cap + truncation marker', () => {

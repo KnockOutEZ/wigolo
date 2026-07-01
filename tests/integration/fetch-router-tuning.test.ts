@@ -1,13 +1,12 @@
 /**
- * Slice 5/12 — integration coverage at the fetch tool boundary.
+ * Integration coverage at the fetch tool boundary.
  *
- * Per memory `feedback_slice_brief_integration_surface`: router-level unit
- * tests are necessary but not sufficient. At least one path must go through
- * `handleFetch` end-to-end to verify the tuning works at the user-facing
- * boundary, not just in isolation.
+ * Router-level unit tests are necessary but not sufficient. At least one path
+ * must go through `handleFetch` end-to-end to verify the tuning works at the
+ * user-facing boundary, not just in isolation.
  *
- * Audit case quoted here:
- *   - C2: `render_js: never` returns in 146ms; default Playwright path on
+ * Regression case:
+ *   - `render_js: never` returns in 146ms; default Playwright path on
  *     the same URL is 8.2s. The router must NOT escalate when the HTTP
  *     response carries substantive SSR content even if a shell-id /
  *     <noscript> warning is present.
@@ -42,7 +41,7 @@ function makeBrowserResult(url: string): RawFetchResult {
   };
 }
 
-describe('handleFetch — router tuning at the tool boundary (Slice 5)', () => {
+describe('handleFetch — router tuning at the tool boundary', () => {
   beforeEach(() => {
     resetConfig();
     initDatabase(':memory:');

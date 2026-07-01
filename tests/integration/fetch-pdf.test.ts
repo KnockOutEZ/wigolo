@@ -1,4 +1,4 @@
-// C6: arxiv / generic PDF fetch returned an empty body because the
+// arxiv / generic PDF fetch returned an empty body because the
 // extractor's PDF branch called the v1 pdf-parse default-export API that no
 // longer exists on pdf-parse@2.x. Wire the v2 PDFParse class form and verify
 // at the tool boundary that handleFetch returns the actual extracted PDF

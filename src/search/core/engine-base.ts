@@ -9,9 +9,8 @@ const log = createLogger('search');
 
 /**
  * Quality tier for an engine adapter. Reflects observed snippet quality +
- * stability of the upstream source. Slice S11b adds these as metadata only;
- * S11c will consume the tier to weight RRF fusion. Until S11c lands the tier
- * is informational and does NOT affect ranking.
+ * stability of the upstream source. The tier is consumed to weight RRF
+ * fusion — higher-tier engines contribute more to the fused ranking.
  *
  * Tier semantics (see also docs in src/search/core/engine-quality.ts):
  *   - 'high'   : authoritative source with structured payload (JSON/API),
@@ -40,9 +39,9 @@ export interface EngineEntry {
    * lexical alignment with the query is low. Used by the code vertical
    * to admit MDN without letting it dominate database/library queries. */
   secondary?: boolean;
-  /** Snippet / source-quality tier (Slice S11b). Metadata only — S11c will
-   * consume this to weight RRF fusion. Every registered entry MUST set a
-   * tier; a registered-engines test enforces that the field is present. */
+  /** Snippet / source-quality tier, consumed to weight RRF fusion. Every
+   * registered entry MUST set a tier; a registered-engines test enforces
+   * that the field is present. */
   quality?: EngineQualityTier;
   /** When true, the engine is registered but the orchestrator must skip
    * dispatch. Used when an upstream endpoint is gone or the adapter is

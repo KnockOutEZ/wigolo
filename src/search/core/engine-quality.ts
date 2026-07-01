@@ -1,19 +1,19 @@
-// Slice S11b: per-engine snippet/source quality registry.
-// Slice S11c: tier-to-weight mapping consumed by RRF fusion.
+// Per-engine snippet/source quality registry.
+// Tier-to-weight mapping consumed by RRF fusion.
 //
-// WHY: the audit found that some engines (devdocs, lobsters) produce thin
+// WHY: some engines (devdocs, lobsters) produce thin
 // snippets ("Title — type", "12 score / 4 comments") while others
-// (StackOverflow, Wikipedia, MDN) return rich evidence text. RRF currently
-// treats them all uniformly via the static per-engine `weight`. S11c flips
-// `qualityRrfMultiplier` to use the tier weights below so fusion is keyed
+// (StackOverflow, Wikipedia, MDN) return rich evidence text. A uniform
+// static per-engine `weight` treats them all the same.
+// `qualityRrfMultiplier` uses the tier weights below so fusion is keyed
 // by evidence quality, not just engine identity.
 //
 // Tier semantics: see EngineQualityTier doc in engine-base.ts.
 //
 // Three tiers (high / medium / low) instead of arbitrary floats:
-//   - The audit's complaint was that every engine contributed equal RRF
-//     weight, so a noisy low-recall adapter (Lobsters when it 400s, MDN on
-//     a non-JS query) ranked alongside a high-recall first-party docs API.
+//   - When every engine contributes equal RRF weight, a noisy low-recall
+//     adapter (Lobsters when it 400s, MDN on a non-JS query) ranks
+//     alongside a high-recall first-party docs API.
 //   - Three discrete tiers give an unambiguous knob to label engines
 //     without bike-shedding decimal weights per-engine.
 //   - The mapping is monotonic: high > medium > low, so a high-tier engine's
@@ -63,16 +63,16 @@ const ENGINE_QUALITY: Record<string, EngineQualityTier> = {
   // RSS feed engine (news vertical, conditional on config). Curated by the
   // user — treat the per-item content as medium quality by default.
   'rss-feed': 'medium',
-  // Slice S11a long-tail web engines: both run independent indexes and are
+  // Long-tail web engines: both run independent indexes and are
   // tagged `secondary` in the general vertical so they cannot dominate
   // consensus. Snippets tend to be sparse (Mojeek title+brief; Marginalia
-  // small-web descriptions), so `low` matches the S11b convention used for
+  // small-web descriptions), so `low` matches the convention used for
   // lobsters/devdocs.
   mojeek: 'low',
   marginalia: 'low',
-  // Slice S11a image engines: image-search results carry source-page +
+  // Image engines: image-search results carry source-page +
   // thumbnail/url + alt text rather than evidence-quality snippets. Tag as
-  // `medium` so S11c's RRF tuning treats them like the general medium pool
+  // `medium` so the RRF tuning treats them like the general medium pool
   // (DDG image is the zero-key floor, Brave image is a key-gated peer).
   'ddg-image': 'medium',
   'brave-image': 'medium',
@@ -89,7 +89,7 @@ export function engineQualityTier(name: string): EngineQualityTier {
 }
 
 /**
- * Slice S11c: tier → RRF weight mapping. High-tier engines (structured
+ * Tier → RRF weight mapping. High-tier engines (structured
  * first-party APIs) contribute full weight; low-tier engines (sparse
  * snippets, fallback-only payloads) contribute half. Medium sits between
  * so most scraped HTML engines stay close to today's behavior.

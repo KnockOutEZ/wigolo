@@ -1,4 +1,4 @@
--- Slice B3 (webclaw gap closure): persistent state for the `watch` MCP tool.
+-- Persistent state for the `watch` MCP tool.
 -- Lazy-execution model — there is no background daemon. `last_check_at` is
 -- consulted on every other tool call to decide whether a job is overdue and
 -- should fire before the calling tool's work.

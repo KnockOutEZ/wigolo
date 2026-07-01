@@ -1,7 +1,7 @@
 /**
  * Vector search perf bench (gated on RUN_VEC_PERF=1).
  *
- * Performance gates (from v1 engine overhaul plan, Phase 5):
+ * Performance gates:
  *   P50 search latency ≤ 200ms on a 10k vector corpus
  *   Should be at least 3x faster than the legacy in-memory linear scan
  *   recall@10 within 1% of legacy cosine-similarity ranking

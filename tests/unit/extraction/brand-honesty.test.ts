@@ -1,7 +1,7 @@
 /**
- * Slice 4 / M3 — brand extract honesty.
+ * Brand extract honesty.
  *
- * Why this matters (audit cc-test-report.md row M3):
+ * Why this matters:
  *   Brand extract on Anthropic.com returned `name == tagline` and
  *   `logo_url == favicon_url` — meaning the extractor silently fell back
  *   when the real value wasn't found, blurring the contract. Downstream
@@ -134,10 +134,10 @@ describe('extractBrand — logo honesty (M3)', () => {
   });
 });
 
-describe('extractBrand — provenance enum compliance (M3 + L3)', () => {
-  // The audit (L3) noted that emitted provenance values like
-  // 'palette-extraction' were not in the documented enum. The doc is
-  // the source of truth. Every value the code emits must appear in
+describe('extractBrand — provenance enum compliance', () => {
+  // Emitted provenance values like 'palette-extraction' were not in the
+  // documented enum. The doc is the source of truth. Every value the code
+  // emits must appear in
   // the corresponding documented enum.
   it('only emits documented logo provenance values', () => {
     // Drive every known logo-source branch through extractBrand and

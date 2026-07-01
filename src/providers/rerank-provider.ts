@@ -1,10 +1,10 @@
 /**
- * Rerank provider interface — Phase 1 Task 1.3 of v1 engine overhaul.
+ * Rerank provider interface.
  *
- * Phase 4 Part A switches the default factory to TransformersRerankProvider
+ * The default factory returns TransformersRerankProvider
  * (Transformers.js cross-encoder, in-process ONNX runtime). The legacy
  * Python FlashRank adapter still exists in `search/reranker/legacy-provider.ts`
- * pending Phase 4 Part B deletions, but it is no longer wired in.
+ * but it is no longer wired in.
  */
 import { createLogger } from '../logger.js';
 

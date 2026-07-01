@@ -1,5 +1,4 @@
-// Slice S11a (long-tail engine breadth): integration test at the MCP
-// tool boundary.
+// Integration test at the MCP tool boundary for long-tail engine breadth.
 //
 // WHY: per memory `feedback_slice_brief_integration_surface`, every slice
 // that ships a module behind an MCP tool MUST include an integration test

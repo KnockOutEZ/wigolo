@@ -1,6 +1,6 @@
-// Slice 4 (engine-pool recovery): breaker half-open state machine.
+// Breaker half-open state machine.
 //
-// WHY: during the 2026-06-12 benchmark two broken engines tripped their
+// WHY: two broken engines tripped their
 // breakers and stayed dark for the whole run — the old breaker auto-reset
 // after cooldown let EVERY caller retry at once (thundering herd) and gave
 // no visibility into why an engine was missing. Half-open admits exactly

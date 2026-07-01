@@ -1,4 +1,4 @@
-// Slice S11a: formatEngineHealthLines unit tests.
+// formatEngineHealthLines unit tests.
 //
 // WHY: the engine health summary is the cold-start visibility surface for
 // doctor — when a user's BRAVE_API_KEY is missing or github-code is gated
@@ -56,9 +56,9 @@ describe('formatEngineHealthLines', () => {
     expect(lines[0]).toMatch(/ok$/);
   });
 
-  // Slice 4 (engine-pool recovery): breaker visibility. WHY: an open
-  // breaker is the one state where "ok" config status actively lies to the
-  // user — the engine is configured fine but will not dispatch.
+  // Breaker visibility. WHY: an open breaker is the one state where "ok"
+  // config status actively lies to the user — the engine is configured fine
+  // but will not dispatch.
   it('renders breaker state and truncated lastError when the breaker is not closed', () => {
     const longError = 'x'.repeat(200);
     const entries: EngineHealthEntry[] = [
@@ -73,10 +73,9 @@ describe('formatEngineHealthLines', () => {
     expect(lines.find((l) => l.includes('marginalia'))).toMatch(/breaker half-open/);
   });
 
-  // Wave-2 W3 (honest engine-pool health): an informational note (e.g.
-  // mojeek's IP-reputation limitation) renders even when the engine is "ok"
-  // and the breaker is closed, so the doctor output is honest about why an
-  // engine may intermittently go dark.
+  // An informational note (e.g. mojeek's IP-reputation limitation) renders
+  // even when the engine is "ok" and the breaker is closed, so the doctor
+  // output is honest about why an engine may intermittently go dark.
   it('renders an informational note for ok engines that carry one', () => {
     const entries: EngineHealthEntry[] = [
       { name: 'mojeek', vertical: 'general', status: 'ok', note: 'intermittent 403s (IP reputation)' },

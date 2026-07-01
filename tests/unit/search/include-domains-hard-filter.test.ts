@@ -67,9 +67,9 @@ beforeEach(() => {
   verticalState.papers = [];
 });
 
-// C8 — include_domains must be a HARD filter, not a soft demotion-with-floor.
-// Today applyDomainFilters in orchestrator demotes off-domain results when
-// in-domain matches are below SOFT_INCLUDE_FLOOR=3. Audit found this leaks
+// include_domains must be a HARD filter, not a soft demotion-with-floor.
+// A soft floor (applyDomainFilters demoting off-domain results when
+// in-domain matches are below SOFT_INCLUDE_FLOOR=3) leaks
 // off-domain results, sometimes ranked above on-domain.
 describe('include_domains — hard filter (C8)', () => {
   it('drops ALL off-domain results when fewer than 3 matching', async () => {
@@ -158,7 +158,7 @@ describe('include_domains — hard filter (C8)', () => {
   });
 
   it('exclude_domains regression: still hard-drops excluded hosts', async () => {
-    // Audit W2 said exclude_domains works; ensure refactor doesn't regress.
+    // exclude_domains already works; ensure a refactor doesn't regress it.
     verticalState.general = [
       makeEntry('bing', [
         makeResult('bing', 'https://example.com/a'),

@@ -30,7 +30,7 @@ const MAX_RESULTS_CAP = 20;
 const DEFAULT_CONTENT_MAX_CHARS = 30000;
 const DEFAULT_MAX_TOTAL_CHARS = 50000;
 
-// C7: collect the set of URLs whose RAW (pre-dedup) title+snippet matched any
+// collect the set of URLs whose RAW (pre-dedup) title+snippet matched any
 // exact phrase across any engine. Used to rescue URLs whose dedup-collapsed
 // variant happens to lack the phrase even though another engine's copy had it.
 function collectExactMatchUrls(
@@ -46,7 +46,7 @@ function collectExactMatchUrls(
   return hits;
 }
 
-// H2: when format=answer/stream_answer, the synthesized answer + citations are
+// when format=answer/stream_answer, the synthesized answer + citations are
 // the contract. Per-result markdown_content is pure overhead (~3× cost in the
 // bench) — drop it unless the caller explicitly asked for include_full_markdown.
 // Exported for direct unit testing — keeps the strip behavior pinned across
@@ -105,7 +105,7 @@ export async function runSearxngSearch(
   const totalTimeoutMs = config.searchTotalTimeoutMs;
   const fetchTimeoutMs = config.searchFetchTimeoutMs;
 
-  // Q12: when the query has temporal intent ("latest", "recent", "this week", current year),
+  // when the query has temporal intent ("latest", "recent", "this week", current year),
   // bypass cache and constrain engines to recent results. Existing recency-boost in rerank
   // already biases newer published_date once results land; this gates the upstream retrieval.
   {
@@ -276,7 +276,7 @@ export async function runSearxngSearch(
 
     await emit(2, 5, `Deduplicating and reranking ${filteredRaw.length} results...`);
 
-    // C7: snapshot the URLs that matched the phrase pre-dedup so we can
+    // snapshot the URLs that matched the phrase pre-dedup so we can
     // rescue results whose post-dedup variant lacks the phrase.
     const exactMatchUrlsMq = collectExactMatchUrls(filteredRaw, exactPhrases);
 
@@ -501,7 +501,7 @@ export async function runSearxngSearch(
 
   await emit(2, 5, `Deduplicating and reranking ${filteredAllRaw.length} results...`);
 
-  // C7: snapshot exact-phrase hits pre-dedup, then union with post-dedup
+  // snapshot exact-phrase hits pre-dedup, then union with post-dedup
   // matches when filtering (same rationale as the multi-query path above).
   const exactMatchUrlsSq = collectExactMatchUrls(filteredAllRaw, exactPhrases);
 

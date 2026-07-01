@@ -93,10 +93,10 @@ describe('fetchContentForResults — max_fetches cap', () => {
   });
 });
 
-// --- Slice S1 (M16): backup-fetch behavior ---
+// --- backup-fetch behavior ---
 //
 // WHY: when the top-N parallel fetches lose one to a transient timeout,
-// the audit complained that callers got fewer pages than they asked for.
+// callers could get fewer pages than they asked for.
 // The fix: try `results[maxFetches..]` sequentially as backups when there's
 // remaining budget. `max_fetches: 1` is exempt — a literal cap of 1 must
 // not silently fetch a second URL.
@@ -230,12 +230,12 @@ describe('fetchContentForResults — M16 backup behavior', () => {
     expect(callCount).toBeLessThanOrEqual(2);
   });
 
-  // --- Slice S1 (M16) follow-up: backup fetches must run in PARALLEL waves,
+  // --- backup fetches must run in PARALLEL waves,
   // not slot-by-slot. The original loop awaited each backup sequentially,
   // which on the very requests that already had a bad day (all top fetches
   // failed) inflated wall-clock to N × fetchTimeoutMs. This test pins the
   // contract: backups for independent failed slots fire concurrently.
-  it('fires backup-fetch wave in parallel, not slot-by-slot (M16 perf fix)', async () => {
+  it('fires backup-fetch wave in parallel, not slot-by-slot', async () => {
     const fetchEntries: number[] = [];
     const router = {
       fetch: vi.fn(async (url: string) => {
@@ -444,18 +444,18 @@ describe('fetchContentForResults — stage budget abort orchestration', () => {
   });
 });
 
-// --- Slice C/3 (FIX2): dedicated per-URL budget for anti-bot/TLS-first domains
+// --- Dedicated per-URL budget for anti-bot/TLS-first domains
 //
-// WHY: W4 routes anti-bot/timeout-prone domains (stackoverflow.com et al.)
-// through the TLS-impersonation tier FIRST on the search-hydration path. A
+// WHY: the router routes anti-bot/timeout-prone domains (stackoverflow.com et
+// al.) through the TLS-impersonation tier FIRST on the search-hydration path. A
 // working TLS attempt takes ~1-5s, but the shared balanced per-URL budget
 // (searchFetchTimeoutBalancedMs ~= 3000ms) starves it under parallel fetch —
 // the tier is selected but never gets enough time, producing fetch_failed:
 // timeout. The fix gives anti-bot/TLS-first domains a LARGER per-URL budget
-// (capped by the stage budget so the overall stage stays bounded — no attack-4
+// (capped by the stage budget so the overall stage stays bounded — no runaway
 // blowup), while non-anti-bot domains keep the small budget.
 
-describe('fetchContentForResults — anti-bot/TLS-first per-URL budget (Slice C/3 FIX2)', () => {
+describe('fetchContentForResults — anti-bot/TLS-first per-URL budget', () => {
   afterEach(() => vi.useRealTimers());
 
   function mockRouter(impl: (url: string, opts: { signal?: AbortSignal; [k: string]: unknown }) => Promise<unknown>) {
@@ -528,7 +528,7 @@ describe('fetchContentForResults — anti-bot/TLS-first per-URL budget (Slice C/
     expect(results[0].markdown_content).toBeUndefined();
   });
 
-  it('keeps the OVERALL stage bounded — anti-bot per-URL budget never exceeds the stage budget (attack-4 ceiling)', async () => {
+  it('keeps the OVERALL stage bounded — anti-bot per-URL budget never exceeds the stage budget (latency ceiling)', async () => {
     vi.useFakeTimers();
     const url = 'https://stackoverflow.com/questions/456/y';
     // Attempt would take 9s — longer than the 6000ms stage budget. The stage

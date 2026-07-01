@@ -4,7 +4,7 @@ import type { SearchInput, SearchOutput, StreamAnswerEnvelope } from '../types.j
 // the legacy "[wigolo notice] ..." text prefix block + a JSON payload block,
 // so existing callers keep their parsing.
 //
-// `format=stream_answer` (bench S5, verdict §5 #12) used to emit the warning
+// `format=stream_answer` used to emit the warning
 // out as a raw text block alongside the JSON, leaving callers without a
 // reliable way to pattern-match `notice` vs body. Now stream_answer collapses
 // to a single JSON block shaped `{stream, notice?, ...rest}` so callers can

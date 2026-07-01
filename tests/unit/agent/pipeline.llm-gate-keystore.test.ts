@@ -1,5 +1,5 @@
 /**
- * Slice 1b/3: the agent synthesis gate must be keystore-aware.
+ * The agent synthesis gate must be keystore-aware.
  *
  * In the zero-env scenario (no provider/key env vars, key lives in the OS
  * keychain) the agent pipeline must still recognize the LLM as configured and

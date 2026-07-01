@@ -40,7 +40,7 @@ describe('extractArticle', () => {
   });
 });
 
-// H11: named_schema=Article on Wikipedia-shaped pages dumped 30KB of refs +
+// named_schema=Article on Wikipedia-shaped pages dumped 30KB of refs +
 // LaTeX + infobox/navbox chrome. cleanArticleBody is the targeted strip.
 describe('cleanArticleBody — H11 chrome / refs / LaTeX strip', () => {
   it('strips a markdown References section and its list entries', () => {

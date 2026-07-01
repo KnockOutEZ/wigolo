@@ -38,7 +38,7 @@ export async function routedExtract(input: RoutedExtractInput): Promise<Extracti
   const siteHit = trySiteExtractors(cleanedHtml, url, html);
   if (siteHit) return siteHit;
 
-  // Slice S7 (C5): when no site extractor matched, the URL might still belong
+  // When no site extractor matched, the URL might still belong
   // to a site we know — Reddit / Amazon — and the body might be an anti-bot
   // challenge or "page not found" landing. Detect that case so the caller
   // sees an honest `fetch_failed="blocked"` instead of silent fake success.
@@ -80,7 +80,7 @@ export async function routedExtract(input: RoutedExtractInput): Promise<Extracti
   return result;
 }
 
-// Slice S7 (C5): URL-scoped block detection. Only fires for hosts where we
+// URL-scoped block detection. Only fires for hosts where we
 // have a site extractor and a known anti-bot body shape — Reddit / Amazon.
 // A generic block body on an unrelated host is not our problem here; that
 // case is covered by the fetch tier's http_status / router escalation.

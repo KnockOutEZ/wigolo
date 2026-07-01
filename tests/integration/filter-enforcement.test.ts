@@ -12,14 +12,13 @@ import { resetConfig } from '../../src/config.js';
 import { initDatabase, closeDatabase } from '../../src/cache/db.js';
 import { cacheContent } from '../../src/cache/store.js';
 
-// Slice 3 — integration tests at the tool boundary for filter-enforcement.
-// Per feedback_slice_brief_integration_surface, every slice that hardens a
-// module must add a test at the tool boundary, not just module-level.
+// Integration tests at the tool boundary for filter-enforcement. Hardening a
+// module warrants a test at the tool boundary, not just module-level.
 //
 // These tests exercise:
-//   - search response respects include_domains as a HARD filter (C8)
-//   - search response respects exact_match across pre-dedup variants (C7)
-//   - find_similar response respects threshold (H8)
+//   - search response respects include_domains as a HARD filter
+//   - search response respects exact_match across pre-dedup variants
+//   - find_similar response respects threshold
 
 const verticalState: {
   general: EngineEntry[];

@@ -159,8 +159,8 @@ describe('handleCrawl', () => {
       } as unknown as typeof Crawler);
     });
 
-    it('H10: default keeps page markdown populated (extraction pipeline output survives)', async () => {
-      // Audit H10: every strategy returned `markdown: ""` on every page even
+    it('default keeps page markdown populated (extraction pipeline output survives)', async () => {
+      // Every strategy returned `markdown: ""` on every page even
       // though the extraction pipeline had already run. Default behavior must
       // now surface the extracted body so callers see the actual page content.
       const router = mockRouter();

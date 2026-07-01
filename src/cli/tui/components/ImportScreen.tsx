@@ -1,5 +1,5 @@
 /**
- * ImportScreen — slice 11 import flow.
+ * ImportScreen — import flow.
  *
  * Three phases:
  *   1. prompt — user types a file path (~/-relative ok)

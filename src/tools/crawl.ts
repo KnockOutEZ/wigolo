@@ -131,7 +131,7 @@ function buildPageExcerpt(markdown: string, maxChars = 600): string {
 
 async function attachEvidence(out: CrawlOutput, input: CrawlInput): Promise<void> {
   if (out.pages.length === 0) return;
-  // H10 (bench audit): the crawl tool previously stripped `markdown` to ''
+  // The crawl tool previously stripped `markdown` to ''
   // on every page when `include_full_markdown` was unset, even though the
   // crawler had already run the full extraction pipeline per page. That
   // forced callers to opt-in just to see the bodies the crawl had already

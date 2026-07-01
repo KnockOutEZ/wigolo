@@ -1,5 +1,5 @@
 /**
- * Image-based palette extraction for `extract mode: 'brand'` (slice B2b).
+ * Image-based palette extraction for `extract mode: 'brand'`.
  *
  * Pipeline:
  *   1. Validate the input buffer (size cap, MIME type — reject SVG/non-raster).

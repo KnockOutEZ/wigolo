@@ -192,7 +192,7 @@ describe('synthesizeLocal', () => {
 });
 
 /**
- * Slice 1c: synthesizeLocal's configured-gate must be keystore-aware.
+ * synthesizeLocal's configured-gate must be keystore-aware.
  *
  * Zero-env scenario: no provider/key env vars, provider chosen in config.json,
  * key in the OS keychain. The env-only isLlmConfigured() gate would wrongly

@@ -1,5 +1,5 @@
 /**
- * ImportScreen — slice 11 import flow.
+ * ImportScreen — import flow.
  *
  * Tests assert the screen:
  *   - prompts the user for a file path

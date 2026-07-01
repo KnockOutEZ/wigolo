@@ -50,8 +50,8 @@ function seedCache(url: string, title: string, markdown: string): void {
   cacheContent(rawResult, extraction);
 }
 
-// H8 — find_similar `threshold` parameter must be enforced as a HARD post-filter
-// on the per-result fused_score (the actual signal strength). Audit case:
+// find_similar `threshold` parameter must be enforced as a HARD post-filter
+// on the per-result fused_score (the actual signal strength). For example:
 // threshold: 0.95 returned 3 results with fused_score: 0.029. Today the field
 // is silently ignored.
 describe('find_similar — threshold enforcement (H8)', () => {
@@ -120,7 +120,7 @@ describe('find_similar — threshold enforcement (H8)', () => {
     for (const r of result.results) {
       expect(r.match_signals.fused_score).toBeGreaterThanOrEqual(0.9);
     }
-    // Audit case: threshold:0.95 returned 3 results with fused_score:0.029.
+    // For example: threshold:0.95 returned 3 results with fused_score:0.029.
     // After the fix the answer must be an empty array (or at least zero
     // sub-threshold leaks).
     const subThreshold = result.results.filter(

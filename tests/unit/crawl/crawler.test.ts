@@ -476,7 +476,7 @@ describe('Crawler — canonical output URLs', () => {
   });
 
   it('strips anchor fragments from emitted page URLs', async () => {
-    // Bench C3 (verdict §5 #11): pages[] held two `/intro` entries because
+    // pages[] held two `/intro` entries because
     // fetchResult.url carried different anchor fragments (e.g. `#welcome`,
     // `#getting-started`). Anchors are intra-page navigation, not page
     // identity — emit should strip them so dedup is visible in the output.
@@ -508,8 +508,8 @@ describe('Crawler — canonical output URLs', () => {
     expect(introHits[0].url).toBe('https://docs.example.com/intro');
   });
 
-  it('M14: dedupes anchor-fragment URLs in the link graph', async () => {
-    // Audit M14: docs claimed the crawl link graph deduped anchor fragments,
+  it('dedupes anchor-fragment URLs in the link graph', async () => {
+    // Docs claimed the crawl link graph deduped anchor fragments,
     // but a page that linked to /foo, /foo#section-a, /foo#section-b created
     // three separate edges. The link graph must collapse those into a single
     // entry per (from, canonical-to) pair.

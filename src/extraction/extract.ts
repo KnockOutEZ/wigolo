@@ -23,7 +23,7 @@ export function extractSelector(
 }
 
 // Class / role tokens that mark a table as Wikipedia chrome rather than
-// content. Bench H6: extract tables on Wikipedia returned the navbox cells
+// content. Extracting tables on Wikipedia used to return the navbox cells
 // ("Cite this page | Wikidata item") instead of the real article tables —
 // these patterns are page navigation / metadata, not data.
 const WIKIPEDIA_CHROME_CLASS_TOKENS = [

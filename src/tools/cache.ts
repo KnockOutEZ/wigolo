@@ -17,7 +17,7 @@ import type { SmartRouter } from '../fetch/router.js';
 
 const log = createLogger('cache');
 
-// H3: cache.query default limit. The cache table can hold thousands of rows;
+// cache.query default limit. The cache table can hold thousands of rows;
 // without a tight default the response easily blows token budgets. Callers who
 // genuinely need more results still get them by passing `limit` explicitly.
 const DEFAULT_CACHE_QUERY_LIMIT = 5;
@@ -57,9 +57,9 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
           const extraction = await extractor.extract(raw.html, raw.finalUrl, {
             contentType: raw.contentType,
           });
-          // Slice S1 (C2): pass the upstream status code so cache check_changes
+          // Pass the upstream status code so cache check_changes
           // surfaces 200→404 transitions as changes even when the body hash
-          // matches — silent equality on missing pages was the audit's
+          // matches — silent equality on missing pages was a
           // "cache treats 404 as identical content" failure mode.
           const changeResult = detectChange(entry.url, extraction.markdown, raw.statusCode);
           changes.push({

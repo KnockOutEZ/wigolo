@@ -37,7 +37,7 @@ interface BraveImageBody {
 //     }, ...]
 //   }
 // We surface the asset on `image_url`, preview on `thumbnail_url`, source
-// page on `url`. Required by S11a alongside DDG Image to close audit H7.
+// page on `url`. Paired with DDG Image so category=images is supported.
 //
 // Auth model: throws a string with the literal `BRAVE_API_KEY` token so
 // `buildEngineWarnings` can detect the env-var name in `engine_warnings`

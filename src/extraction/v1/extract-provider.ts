@@ -46,7 +46,7 @@ async function handlePdf(
   url: string,
   options: ExtractProviderOptions,
 ): Promise<ExtractionResult> {
-  // C6 (bench audit): arxiv / generic PDF fetch returned an empty body
+  // arxiv / generic PDF fetch returned an empty body
   // because the code called `(await import('pdf-parse')).default(...)`,
   // which throws "pdfParse is not a function" against pdf-parse@2.x.
   // The v2 API exposes a `PDFParse` class with `.getText({})`. Wire the

@@ -1,4 +1,4 @@
--- Slice S1 (C2): persist upstream http_status on every cached fetch so
+-- Persist upstream http_status on every cached fetch so
 -- cache + change-detection can distinguish 200/404/5xx pages that may hash
 -- identically (e.g. empty bodies). The column is nullable so legacy rows
 -- stay readable; callers branch on `null` as "unknown".

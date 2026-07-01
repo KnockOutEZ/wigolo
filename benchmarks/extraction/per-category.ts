@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Per-category extraction quality bench — Phase 6 gate.
+ * Per-category extraction quality bench.
  *
  * Runs each manifest fixture through BOTH the legacy ensemble pipeline
  * (extractContent) and the v1 routed extractor (via the factory), then
@@ -13,7 +13,7 @@
  *
  * Output: benchmarks/extraction/output/per-category.json
  *
- * Phase 6 gate (from 2026-05-20-v1-engine-overhaul.md):
+ * Quality gates:
  *   Aggregate F1 ≥ legacy
  *   Per-category drop ≤ 3% (else focused fallback required before merge)
  */
@@ -210,7 +210,7 @@ async function main(): Promise<void> {
   const outPath = join(OUT_DIR, 'per-category.json');
   writeFileSync(outPath, JSON.stringify(report, null, 2), 'utf-8');
 
-  process.stderr.write('\n[bench:per-category] === Phase 6 Gate ===\n');
+  process.stderr.write('\n[bench:per-category] === Quality Gate ===\n');
   process.stderr.write(
     `  legacy aggregate F1: ${legacyAggregateF1.toFixed(4)}\n` +
       `      v1 aggregate F1: ${v1AggregateF1.toFixed(4)}\n` +

@@ -23,14 +23,12 @@ describe('getGeneralEngines', () => {
     _resetGeneralEnginesForTest();
   });
 
-  // Slice S11a (long-tail engine breadth): mojeek + marginalia added to the
-  // general pool for the broader-lexical signal goal. WHY they're at this
-  // layer rather than a separate vertical: they're plain web engines, just
-  // with thinner indexes — fusing them via RRF in the general pool is what
-  // S11a is designed to do.
-  // Wave-2 W3 (engine cleanup): wiby was removed from the pool. The
-  // 2026-06-14 parity benchmark showed it errored / opened its circuit
-  // breaker on EVERY run — pure latency tax, zero contribution. The
+  // mojeek + marginalia added to the general pool for a broader-lexical
+  // signal. WHY they're at this layer rather than a separate vertical:
+  // they're plain web engines, just with thinner indexes — fusing them via
+  // RRF in the general pool is the intended design.
+  // wiby was removed from the pool: it errored / opened its circuit
+  // breaker on every run — pure latency tax, zero contribution. The
   // exact-set assertion below is what enforces the removal: nothing outside
   // this list (and no re-added wiby) can register.
   it('returns five entries by default (bing, duckduckgo, wikipedia, mojeek, marginalia)', () => {

@@ -1,24 +1,24 @@
 /**
- * Slice 3/3 — Zero-touch "just works" acceptance gate.
+ * Zero-touch "just works" acceptance gate.
  *
- * Proves the three merged slices compose into the spec invariant: with ZERO
- * relevant env vars set, a fresh process resolves search backend + LLM provider
- * + LLM key purely from the persisted config.json + key-store (keychain / file),
- * and both the agent and research pipeline gates report the LLM configured.
+ * Proves the spec invariant: with ZERO relevant env vars set, a fresh process
+ * resolves search backend + LLM provider + LLM key purely from the persisted
+ * config.json + key-store (keychain / file), and both the agent and research
+ * pipeline gates report the LLM configured.
  *
- * Each assertion is annotated with the slice it guards so a future regression
- * points at the right code:
- *   - Slice 1  (search self-config):  getConfig()/getSearchProvider() read
- *              config.json `searchBackend` (src/config.ts, src/providers/search-provider.ts).
- *   - Slice 1  (LLM self-config):     selectProviderWithKeyStore reads config.json
- *              `llmProvider` + keychain key (src/integrations/cloud/llm/select.ts,
- *              src/security/key-store.ts).
- *   - Slice 1b (keystore-aware gate): isLlmConfiguredWithKeyStore consults the
- *              key-store, not just env (src/integrations/cloud/llm/run.ts) — used by
- *              both the research and agent pipelines.
- *   - Slice 2 (init persistence):     the shape this test seeds (config.json
- *              `settings.{searchBackend,llmProvider}` + keychain key) is exactly
- *              what `wigolo init` writes (src/cli/init.ts).
+ * Each assertion is annotated with the code it guards so a future regression
+ * points at the right place:
+ *   - search self-config:  getConfig()/getSearchProvider() read
+ *     config.json `searchBackend` (src/config.ts, src/providers/search-provider.ts).
+ *   - LLM self-config:     selectProviderWithKeyStore reads config.json
+ *     `llmProvider` + keychain key (src/integrations/cloud/llm/select.ts,
+ *     src/security/key-store.ts).
+ *   - keystore-aware gate: isLlmConfiguredWithKeyStore consults the
+ *     key-store, not just env (src/integrations/cloud/llm/run.ts) — used by
+ *     both the research and agent pipelines.
+ *   - init persistence:     the shape this test seeds (config.json
+ *     `settings.{searchBackend,llmProvider}` + keychain key) is exactly
+ *     what `wigolo init` writes (src/cli/init.ts).
  *
  * The seed is written through the SAME persisted-config + key-store APIs the
  * runtime reads, so it is a faithful stand-in for a post-`init` machine.
@@ -30,7 +30,7 @@ import { tmpdir } from 'node:os';
 
 // In-memory keychain so storeKey/resolveProviderKey exercise the keychain tier
 // deterministically without depending on a real OS keychain being present in
-// the sandbox. This is the SAME seam slice 1b's gate test uses.
+// the sandbox. This is the SAME seam the keystore-aware gate test uses.
 vi.mock('../../src/security/keychain.js', () => {
   const store = new Map<string, string>();
   return {
@@ -94,7 +94,7 @@ describe('zero-touch "just works" acceptance gate (slices 1 + 1b + 2)', () => {
     resetPersistedConfig();
 
     // --- Seed: exactly what `wigolo init --provider=anthropic --search=hybrid`
-    // with WIGOLO_LLM_API_KEY set persists (slice 2). Non-secrets → config.json,
+    // with WIGOLO_LLM_API_KEY set persists. Non-secrets → config.json,
     // secret → key-store. The key value is NEVER written to config.json.
     writeFileSync(
       configPath,
@@ -123,7 +123,7 @@ describe('zero-touch "just works" acceptance gate (slices 1 + 1b + 2)', () => {
     vi.restoreAllMocks();
   });
 
-  it('resolves the search backend to hybrid from config.json with zero env (slice 1)', async () => {
+  it('resolves the search backend to hybrid from config.json with zero env', async () => {
     // The value the runtime reads (search-provider.ts uses getConfig().searchBackend).
     expect(getConfig().searchBackend).toBe('hybrid');
 
@@ -133,7 +133,7 @@ describe('zero-touch "just works" acceptance gate (slices 1 + 1b + 2)', () => {
     expect(provider.name).toBe('hybrid');
   });
 
-  it('resolves the LLM provider to anthropic and recovers the key from the key-store with zero env (slice 1)', async () => {
+  it('resolves the LLM provider to anthropic and recovers the key from the key-store with zero env', async () => {
     const resolved = await selectProviderWithKeyStore(process.env, { dataDir: getConfig().dataDir });
     expect(resolved).not.toBeNull();
     expect(resolved!.provider).toBe('anthropic');
@@ -144,7 +144,7 @@ describe('zero-touch "just works" acceptance gate (slices 1 + 1b + 2)', () => {
     expect(key).toBe('sk-zero-touch-anthropic');
   });
 
-  it('the agent + research pipeline gates both report the LLM configured with zero env (slice 1b)', async () => {
+  it('the agent + research pipeline gates both report the LLM configured with zero env', async () => {
     // Both pipelines call isLlmConfiguredWithKeyStore() with no args (env=process.env).
     // With env cleared, a true result can only come from config.json + keystore.
     await expect(isLlmConfiguredWithKeyStore()).resolves.toBe(true);
@@ -152,14 +152,14 @@ describe('zero-touch "just works" acceptance gate (slices 1 + 1b + 2)', () => {
     await expect(isLlmConfiguredWithKeyStore(process.env)).resolves.toBe(true);
   });
 
-  it('does NOT write the secret key into config.json (slice 2 secret hygiene)', async () => {
+  it('does NOT write the secret key into config.json (secret hygiene)', async () => {
     const { readFileSync } = await import('node:fs');
     const raw = readFileSync(configPath, 'utf-8');
     expect(raw).not.toContain('sk-zero-touch-anthropic');
   });
 
   describe('env still wins over config.json (precedence guard)', () => {
-    it('WIGOLO_SEARCH=core overrides config.json searchBackend=hybrid (slice 1 precedence)', async () => {
+    it('WIGOLO_SEARCH=core overrides config.json searchBackend=hybrid (precedence)', async () => {
       process.env.WIGOLO_SEARCH = 'core';
       _resetSearchProviderForTest();
       resetConfig();
@@ -171,7 +171,7 @@ describe('zero-touch "just works" acceptance gate (slices 1 + 1b + 2)', () => {
       expect(provider.name).toBe('core');
     });
 
-    it('WIGOLO_LLM_PROVIDER=openai overrides config.json llmProvider=anthropic (slice 1 precedence)', async () => {
+    it('WIGOLO_LLM_PROVIDER=openai overrides config.json llmProvider=anthropic (precedence)', async () => {
       // Provide an openai key in the keystore so the explicit env provider resolves.
       await storeKey('openai', 'sk-zero-touch-openai', { dataDir: tmpDir });
       clearKeyStoreMemo();

@@ -19,7 +19,7 @@ type ProvenanceLogo = NonNullable<BrandExtractionOutput['provenance']>['logo'];
 type ProvenanceColors = NonNullable<BrandExtractionOutput['provenance']>['colors'];
 type ProvenanceFonts = NonNullable<BrandExtractionOutput['provenance']>['fonts'];
 
-// CSS-vars-only color provenance for slice B2a. Palette extraction is B2b.
+// CSS-vars-only color provenance. Palette extraction runs separately.
 // `--brand-primary`, `--color-primary`, `--brand`, `--primary`, `--accent`,
 // `--color-accent` are the dominant naming conventions in modern design
 // systems (Tailwind, shadcn, Vercel design system, Linear, Stripe). Anchor
@@ -883,7 +883,7 @@ export interface ExtractBrandOptions {
   baseUrl?: string;
   /**
    * When provided, this fetcher is used to download logo/og_image bytes
-   * for palette extraction (slice B2b). Defaults to a small wrapper over
+   * for palette extraction. Defaults to a small wrapper over
    * the existing `httpFetch` helper so cache + UA rotation + retries are
    * reused. Pass a mock in tests to keep the suite hermetic.
    *
@@ -1011,7 +1011,7 @@ export const defaultImageFetcher: BrandImageFetcher = async (url, opts) => {
 };
 
 /**
- * Async brand extraction (slice B2b). Runs the synchronous extractor first,
+ * Async brand extraction. Runs the synchronous extractor first,
  * then — when CSS-var colors come up short — fetches the logo/og_image and
  * runs palette quantization. Returns the augmented output with
  * `provenance.colors` set to `'palette-extraction'` when the image path
@@ -1124,10 +1124,10 @@ export function extractBrand(
   // No fallback to favicon — that's a different field with its own provenance.
 
   // Name precedence: JSON-LD > og:site_name > heuristic alt text.
-  // Honesty contract (M3): the page <title> is NOT a name source. A title
+  // Honesty contract: the page <title> is NOT a name source. A title
   // like "Home \\ Anthropic" or "Build software faster | Acme" carries
   // the tagline first; splitting on " | " and using the prefix as `name`
-  // gave us tagline-as-name on Anthropic.com (the audit M3 case). When
+  // gives tagline-as-name on Anthropic.com. When
   // no explicit name source exists, `name` stays undefined and the caller
   // can decide whether to render a placeholder.
   const titleRaw = doc.querySelector('title')?.textContent?.trim();

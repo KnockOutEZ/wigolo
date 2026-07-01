@@ -35,9 +35,8 @@ interface DdgImageBody {
 //   1. GET https://duckduckgo.com/?q=<query>  → scrape vqd token from HTML
 //   2. GET https://duckduckgo.com/i.js?q=<query>&vqd=<token>&o=json → JSON
 // We surface the asset URL on `image_url`, the preview on `thumbnail_url`,
-// and the SOURCE page on `url` so callers can navigate. Required by S11a
-// to close the audit's H7 finding (category=images returned unsupported on
-// core).
+// and the SOURCE page on `url` so callers can navigate. Ensures
+// category=images is supported on core (it previously returned unsupported).
 export class DdgImageEngine implements SearchEngine {
   name = 'ddg-image';
 

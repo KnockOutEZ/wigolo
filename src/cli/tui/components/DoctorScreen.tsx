@@ -1,5 +1,5 @@
 /**
- * DoctorScreen — slice 11 wrapper around the existing runDoctor() CLI action.
+ * DoctorScreen — wrapper around the existing runDoctor() CLI action.
  *
  * Runs runDoctor() (which writes its diagnostic to stderr) and shows a single
  * line of status in the Ink frame. Doctor's stderr output appears above the

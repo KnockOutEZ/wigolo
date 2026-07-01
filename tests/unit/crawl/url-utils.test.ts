@@ -35,7 +35,7 @@ describe('stripFragment', () => {
 });
 
 describe('canonicalForOutput strips fragments', () => {
-  // Bench C3 (verdict §5 #11): BFS pages[] contained two `/intro` entries
+  // BFS pages[] contained two `/intro` entries
   // because the emitted URL kept anchor fragments. Anchors are intra-page
   // navigation, not page identity — strip them on emission so the result
   // shape matches what callers expect.

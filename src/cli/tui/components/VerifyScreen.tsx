@@ -1,5 +1,5 @@
 /**
- * VerifyScreen — slice 11 wrapper around the existing Verification component.
+ * VerifyScreen — wrapper around the existing Verification component.
  *
  * Mounts Verification with the dataDir resolved from getConfig() and adds an
  * esc/q hotkey to return to SettingsHome. No verify logic lives here — all of

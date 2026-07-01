@@ -1,7 +1,7 @@
 /**
- * Embed provider interface — Phase 1 Task 1.3 of v1 engine overhaul.
+ * Embed provider interface.
  *
- * Stable interface for embedding implementations. Phase 3 swapped the
+ * Stable interface for embedding implementations. The default swapped the
  * sentence-transformers Python subprocess for fastembed (Rust ONNX via
  * Node bindings); the factory now returns FastembedEmbedProvider.
  */

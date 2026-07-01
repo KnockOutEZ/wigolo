@@ -175,7 +175,7 @@ export async function executeAgentPlan(
       time_ms: Date.now() - fetchStart,
     });
 
-    // Phase 4: Post-fetch relevance scoring (Bug 3 fix)
+    // Phase 4: Post-fetch relevance scoring
     // Only filter when a real reranker is configured; the token-overlap
     // fallback is too noisy to drop sources from on its own.
     const trimmedPrompt = prompt.trim();

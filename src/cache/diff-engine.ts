@@ -367,10 +367,10 @@ export function computeHunks(
     return computeSectionHunks(oldText, newText);
   }
 
-  // Slice 8 / M11: dispatch word granularity to a token-level LCS. Pre-fix
-  // word fell through to line-LCS, so a single intra-line edit produced a
-  // hunk containing the entire line. The word path tokenises both sides
-  // on whitespace + punctuation, runs LCS over tokens, and emits per-run
+  // Dispatch word granularity to a token-level LCS. Line-LCS on a single
+  // intra-line edit produces a hunk containing the entire line. The word
+  // path tokenises both sides on whitespace + punctuation, runs LCS over
+  // tokens, and emits per-run
   // hunks containing only the changed tokens — what callers asking for
   // "word granularity" actually expect.
   if (granularity === 'word') {
@@ -413,7 +413,7 @@ export function computeHunks(
   return { hunks, truncated: false, summary };
 }
 
-// Slice 8 / M11: word-granularity hunks. Splits on whitespace/punctuation
+// Word-granularity hunks. Splits on whitespace/punctuation
 // boundaries — emits whitespace and word tokens separately so we can
 // reconstruct readable hunk text without inventing spaces. Empty tokens
 // are dropped; the result is the same sequence a human would read.
