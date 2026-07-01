@@ -9,11 +9,11 @@
 [![npm](https://img.shields.io/npm/v/@knockoutez/wigolo?color=cb3837&logo=npm)](https://www.npmjs.com/package/@knockoutez/wigolo)
 [![node](https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed)](https://modelcontextprotocol.io)
-[![license](https://img.shields.io/badge/license-PolyForm--NC--1.0.0-2563eb)](#-license)
+[![license](https://img.shields.io/badge/license-AGPL--3.0-2563eb)](#-license)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-22c55e)](#-contributing)
 [![Buy me a coffee](https://img.shields.io/badge/%E2%98%95-buy%20me%20a%20coffee-ffdd00)](https://buymeacoffee.com/knockoutez)
 
-**[Quickstart](#-quickstart) · [Tools](#-the-tools) · [Architecture](#%EF%B8%8F-architecture) · [Setup](#-recommended-setup) · [Reference](#%EF%B8%8F-full-reference) · [Compare](#-how-it-compares) · [Contribute](#-contributing)**
+**[Quickstart](#-quickstart) · [Tools](#-the-tools) · [Architecture](#%EF%B8%8F-architecture) · [Setup](#-recommended-setup) · [Reference](#%EF%B8%8F-full-reference) · [When it fits](#-when-wigolo-fits) · [Contribute](#-contributing)**
 
 </div>
 
@@ -100,7 +100,7 @@ A single Node process speaking MCP (JSON-RPC over stdio). Everything heavy is lo
 ```mermaid
 flowchart TD
     A["🤖 AI agent<br/>Claude Code · Cursor · Zed · VS Code · …"]
-    A -->|MCP over stdio| B["<b>wigolo</b><br/>10 tools · dynamic instructions<br/>in-process browser pool + cache + models"]
+    A -->|MCP over stdio| B["<b>wigolo</b><br/>8 tools · dynamic instructions<br/>in-process browser pool + cache + models"]
 
     B --> C{"Tool layer"}
     C --> T1["search · fetch · crawl · extract"]
@@ -366,27 +366,24 @@ Keys can also live in the OS keychain or an AES-encrypted file (`wigolo init` / 
 
 ---
 
-## 📊 How it compares
+## 🧭 When wigolo fits
 
-There's a healthy field of agent-search tools now, and they're good — this isn't a takedown, it's an honest map of where the tradeoffs land. Short version: the hosted services win on scale (global neural indexes, anti-bot infrastructure, zero ops); wigolo wins on locality, privacy, and marginal cost.
+There's a healthy field of agent-search tools now, and they're good. This is an honest map of where wigolo's tradeoffs land — not a takedown of anything else. wigolo trades global scale for locality, privacy, and near-zero marginal cost.
 
-| Dimension | **wigolo** | Tavily | Exa | Firecrawl | Perplexity Sonar | Crawl4AI |
-|-----------|:----------:|:------:|:---:|:---------:|:----------------:|:--------:|
-| **Where it runs** | your machine (`npx`) | hosted | hosted | hosted / self-host (Docker+DB) | hosted | your machine |
-| **Cost per query** | **$0** | ~$0.008 after free tier | ~$49/mo+ | self-host free / $19+/mo | per-request + per-token | **$0** |
-| **Works with no key** | ✅ | ❌ | ❌ | self-host only | ❌ | ✅ |
-| **License** | source-available (NC) | closed | closed | AGPL-3.0 | closed | Apache-2.0 |
-| **Web recall** | metasearch (18 engines) | aggregated index | neural index, 100s of M pages | crawl-driven | grounded index | — (you bring the search) |
-| **Semantic find-similar** | ✅ local | ❌ | ✅ signature feature | ❌ | ❌ | ❌ |
-| **Crawl + extract** | ✅ | partial | partial | ✅ core strength | ❌ | ✅ core strength |
-| **Synthesized cited answers** | ✅ opt-in LLM | ✅ | ✅ | ✅ agent endpoint | ✅ its whole job | ❌ |
-| **Local persistent cache** | ✅ free re-queries | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Data stays on device** | ✅ | ❌ | ❌ | self-host only | ❌ | ✅ |
-| **Best at** | private, low-cost technical research | fastest hosted RAG setup | semantic discovery | hostile-site crawling at scale | one-call answers | DIY crawl pipelines |
+**wigolo is the right fit when:**
 
-<sub>Pricing moves — verify current numbers with each provider. Recent shifts: Tavily was acquired by Nebius (Feb 2026); Brave Search API retired its perpetual free tier (Feb 2026). Most competitors now ship an MCP server too — but for the hosted ones, your queries and fetched content still travel to their cloud, which is the line the "data stays on device" row really draws.</sub>
+- **Cost matters.** Every query is $0, and every re-query is free from the local cache — there's no meter that grows with how much your agent thinks.
+- **Privacy matters.** Queries, fetched content, embeddings, and cache stay under `~/.wigolo/`. Nothing goes to a third-party cloud unless you explicitly opt into an LLM for synthesis.
+- **You're doing technical research.** Docs, code, papers, and repeated deep dives — where the local cache and parallel multi-query fan-out compound in your favour.
+- **You want zero setup friction.** `npx` and go — no account, no API key, no dashboard.
 
-**Where the others are clearly ahead, and wigolo isn't pretending otherwise:** Exa owns semantic discovery (a global neural index wigolo can't match cold); Firecrawl has a maintained anti-bot layer for crawling hostile sites at volume; Perplexity Sonar returns a finished cited answer in a single call. **Where wigolo fits:** privacy- or cost-sensitive work, technical research, repeated queries (the local cache makes re-querying free), and agents that benefit from parallel multi-query fan-out — without a bill that grows with how much your agent thinks.
+**Where a hosted service may serve you better:**
+
+- **Massive semantic discovery** over a global neural index built from hundreds of millions of pages — not something a local tool can match cold.
+- **Crawling hostile sites at scale**, behind a continuously-maintained anti-bot layer.
+- **A single finished, cited answer** with zero local compute or setup.
+
+wigolo doesn't pretend to win those. It's built for the local, private, low-cost lane — and to be as good as the paid services within it.
 
 ---
 
@@ -418,7 +415,9 @@ Sponsorship of any size helps. So does a ⭐, a sharp bug report, or a good PR.
 
 ## 📜 License
 
-Source-available under **PolyForm Noncommercial 1.0.0** — free to use, modify, and self-host for any noncommercial purpose. For commercial use, or any question or concern about the license, please reach out; I'm happy to talk it through.
+**[GNU AGPL-3.0-only](LICENSE).** Free to use, modify, and self-host — including inside a company. The one obligation: if you run a **modified** version as a network service, you must make your modified source available under the same license. That keeps wigolo open while preventing a closed, hosted fork.
+
+Contributions are welcome under the terms in **[CONTRIBUTING.md](CONTRIBUTING.md)**. See **[SECURITY.md](SECURITY.md)** to report a vulnerability, and **[TRADEMARK.md](TRADEMARK.md)** for use of the wigolo name. For commercial-licensing questions, reach out.
 
 ## 📬 Contact
 
