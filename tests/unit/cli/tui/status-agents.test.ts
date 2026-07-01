@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { readConnectedAgents } from '../../../../src/cli/tui/status-agents.js';
+import { vscodeUserDir } from '../../../../src/cli/agents/vscode.js';
 
 let tmpHome: string;
 
@@ -70,5 +71,31 @@ describe('readConnectedAgents', () => {
     const result = readConnectedAgents({ home: tmpHome });
     const cursor = result.find(a => a.id === 'cursor');
     expect(cursor?.configured).toBe(false);
+  });
+
+  it('reports vscode as configured from the per-user Code/User dir, not ~/.vscode', () => {
+    // VS Code is detected at vscodeUserDir(home)/mcp.json (servers.wigolo), the
+    // same per-user path the installer writes — clear XDG/APPDATA so the dir
+    // resolves under the temp home on every platform.
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const savedAppData = process.env.APPDATA;
+    delete process.env.XDG_CONFIG_HOME;
+    delete process.env.APPDATA;
+    try {
+      const vscodeDir = vscodeUserDir(tmpHome);
+      mkdirSync(vscodeDir, { recursive: true });
+      writeFileSync(
+        join(vscodeDir, 'mcp.json'),
+        JSON.stringify({ servers: { wigolo: { command: 'npx' } } }),
+      );
+
+      const result = readConnectedAgents({ home: tmpHome });
+      const vscode = result.find(a => a.id === 'vscode');
+      expect(vscode?.configured).toBe(true);
+      expect(vscode?.path).toBe(join(vscodeDir, 'mcp.json'));
+    } finally {
+      if (savedXdg !== undefined) process.env.XDG_CONFIG_HOME = savedXdg;
+      if (savedAppData !== undefined) process.env.APPDATA = savedAppData;
+    }
   });
 });

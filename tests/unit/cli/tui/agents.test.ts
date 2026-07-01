@@ -9,6 +9,15 @@ vi.mock('../../../../src/cli/tui/detect-helpers.js', () => ({
   getCwd: vi.fn(() => '/proj'),
 }));
 
+// vscodeUserDir's platform/env resolution is exercised in agents/vscode.test.ts.
+// Here we only assert the descriptor delegates to it, so stub it to a stable dir.
+const { vscodeUserDirMock } = vi.hoisted(() => ({
+  vscodeUserDirMock: vi.fn((home?: string) => `${home ?? '/home/test'}/.config/Code/User`),
+}));
+vi.mock('../../../../src/cli/agents/vscode.js', () => ({
+  vscodeUserDir: vscodeUserDirMock,
+}));
+
 import { binaryInPath, dirExists } from '../../../../src/cli/tui/detect-helpers.js';
 import { AGENTS, detectAgents } from '../../../../src/cli/tui/agents.js';
 
@@ -98,14 +107,20 @@ describe('VS Code descriptor', () => {
     expect(getDescriptor('vscode').detect(ENV)).toBe(false);
   });
 
-  it('configPath prefers project .vscode/mcp.json', () => {
+  it('configPath routes through vscodeUserDir(home), never the project/cwd dir', () => {
+    // VS Code reads global MCP servers from the per-user Code/User dir, not the
+    // project or ~/.vscode dir — configPath must delegate to vscodeUserDir(home)
+    // even when a project .vscode dir is present.
     vi.mocked(dirExists).mockImplementation((p) => p === join('/proj', '.vscode'));
-    expect(getDescriptor('vscode').configPath(ENV)).toBe(join('/proj', '.vscode', 'mcp.json'));
+    const result = getDescriptor('vscode').configPath(ENV);
+    expect(vscodeUserDirMock).toHaveBeenCalledWith('/home/test');
+    expect(result).toBe(join('/home/test/.config/Code/User', 'mcp.json'));
   });
 
-  it('configPath falls back to ~/.vscode/mcp.json', () => {
+  it('configPath is home-derived and independent of cwd', () => {
     vi.mocked(dirExists).mockReturnValue(false);
-    expect(getDescriptor('vscode').configPath(ENV)).toBe(join('/home/test', '.vscode', 'mcp.json'));
+    const result = getDescriptor('vscode').configPath({ cwd: '/some/other/cwd', home: '/home/test' });
+    expect(result).toBe(join('/home/test/.config/Code/User', 'mcp.json'));
   });
 });
 

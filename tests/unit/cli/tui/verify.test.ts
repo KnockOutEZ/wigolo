@@ -1,10 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const { startMock, stopMock, execSyncMock, rerankMock } = vi.hoisted(() => ({
+const { startMock, stopMock, rerankMock, existsSyncMock, readdirSyncMock } = vi.hoisted(() => ({
   startMock: vi.fn(),
   stopMock: vi.fn(),
-  execSyncMock: vi.fn(),
   rerankMock: vi.fn(),
+  existsSyncMock: vi.fn(),
+  readdirSyncMock: vi.fn(),
 }));
 
 vi.mock('../../../../src/searxng/process.js', () => ({
@@ -14,13 +15,12 @@ vi.mock('../../../../src/searxng/process.js', () => ({
   }),
 }));
 
-vi.mock('node:child_process', () => ({
-  execSync: execSyncMock,
-}));
-
-vi.mock('../../../../src/python-env.js', () => ({
-  getPythonBin: (_dir: string) => '/fake/venv/python',
-}));
+// The embeddings probe is a filesystem check on the fastembed model dir, not a
+// Python subprocess — mock node:fs so tests drive "installed / empty / absent".
+vi.mock('node:fs', async (importActual) => {
+  const actual = await importActual<typeof import('node:fs')>();
+  return { ...actual, existsSync: existsSyncMock, readdirSync: readdirSyncMock };
+});
 
 vi.mock('../../../../src/providers/rerank-provider.js', () => ({
   getRerankProvider: vi.fn(async () => ({
@@ -45,9 +45,13 @@ class FakeReporter {
 beforeEach(() => {
   startMock.mockReset();
   stopMock.mockReset();
-  execSyncMock.mockReset();
   rerankMock.mockReset();
+  existsSyncMock.mockReset();
+  readdirSyncMock.mockReset();
   rerankMock.mockResolvedValue([{ id: '0', score: 0.5 }]);
+  // Default: fastembed model dir present and non-empty (embeddings installed).
+  existsSyncMock.mockReturnValue(true);
+  readdirSyncMock.mockReturnValue(['model.onnx']);
 });
 
 describe('runVerify — SearXNG branches', () => {
@@ -77,7 +81,6 @@ describe('runVerify — SearXNG branches', () => {
 
   it('records searxng: ok and URL when start() resolves', async () => {
     startMock.mockResolvedValueOnce('http://127.0.0.1:8888');
-    execSyncMock.mockReturnValue(Buffer.from(''));
 
     const reporter = new FakeReporter();
     const result = await runVerify('/tmp/wigolo-data', reporter);
@@ -94,28 +97,19 @@ describe('runVerify — package probes', () => {
     startMock.mockResolvedValue('http://127.0.0.1:8888');
   });
 
-  it('marks reranker ok when the provider responds', async () => {
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('sentence_transformers')) return Buffer.from('384\n');
-      throw new Error('unexpected cmd: ' + cmd);
-    });
-
+  it('marks reranker and embeddings ok when the provider responds and the model dir is populated', async () => {
     const reporter = new FakeReporter();
     const result = await runVerify('/tmp/wigolo-data', reporter);
 
     expect(result.reranker).toBe('ok');
     expect(result.embeddings).toBe('ok');
-    expect(result.embeddingsDim).toBe(384);
     expect(reporter.events).toContain('success:reranker:installed (Xenova/ms-marco-MiniLM-L-6-v2)');
-    expect(reporter.events).toContain('success:embeddings:384-dim');
+    expect(reporter.events).toContain('success:embeddings:installed');
   });
 
   it('marks each package missing when its probe fails', async () => {
     rerankMock.mockRejectedValueOnce(new Error('model load failed'));
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('sentence_transformers')) throw new Error('ModuleNotFoundError: sentence_transformers');
-      return Buffer.from('');
-    });
+    existsSyncMock.mockReturnValue(false); // fastembed model dir absent
 
     const reporter = new FakeReporter();
     const result = await runVerify('/tmp/wigolo-data', reporter);
@@ -128,25 +122,21 @@ describe('runVerify — package probes', () => {
     expect(reporter.events).toContain('fail:embeddings:not installed');
   });
 
-  it('marks embeddings missing when dim parse fails', async () => {
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('sentence_transformers')) return Buffer.from('not-a-number\n');
-      throw new Error('unexpected cmd: ' + cmd);
-    });
+  it('marks embeddings missing when the model dir exists but is empty', async () => {
+    // A present-but-empty fastembed dir means warmup never finished downloading
+    // the model — treat it as not installed, not as ok.
+    existsSyncMock.mockReturnValue(true);
+    readdirSyncMock.mockReturnValue([]);
 
     const reporter = new FakeReporter();
     const result = await runVerify('/tmp/wigolo-data', reporter);
 
     expect(result.embeddings).toBe('missing');
-    expect(result.embeddingsError).toContain('could not parse');
+    expect(result.embeddingsError).toContain('empty or missing');
+    expect(reporter.events).toContain('fail:embeddings:not installed');
   });
 
   it('allPassed is true only when every check is ok', async () => {
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('sentence_transformers')) return Buffer.from('384\n');
-      throw new Error('unexpected cmd: ' + cmd);
-    });
-
     const reporter = new FakeReporter();
     const result = await runVerify('/tmp/wigolo-data', reporter);
 
@@ -169,10 +159,6 @@ describe('runVerify — suggestions on failure', () => {
 
   it('emits no notes when everything passes', async () => {
     startMock.mockResolvedValue('http://127.0.0.1:8888');
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.includes('sentence_transformers')) return Buffer.from('384\n');
-      throw new Error('unexpected cmd: ' + cmd);
-    });
 
     const reporter = new FakeReporter();
     const result = await runVerify('/tmp/wigolo-data', reporter);

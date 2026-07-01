@@ -96,4 +96,18 @@ describe('settings-store.blur', () => {
     await p3;
     expect(store.dirtyKeys()).not.toContain('llm.key');  // all done
   });
+
+  it('commits the saved value into current so re-selecting it is not dirty', async () => {
+    const store = createSettingsStore({ 'llm.model': 'claude-haiku-4-5' });
+    store.set('llm.model', 'claude-sonnet-4-6');
+    expect(store.isDirty()).toBe(true);
+
+    await store.commitOne('llm.model');
+
+    // After a successful single-key commit the in-memory snapshot must reflect
+    // the persisted value; otherwise re-selecting the saved value re-dirties it.
+    expect(store.getCurrent()['llm.model']).toBe('claude-sonnet-4-6');
+    store.set('llm.model', 'claude-sonnet-4-6');
+    expect(store.isDirty()).toBe(false);
+  });
 });

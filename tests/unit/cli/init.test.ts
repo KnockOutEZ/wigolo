@@ -12,6 +12,7 @@ const {
   probeSetupStatusMock,
   summarizeSetupMock,
   runConfigMock,
+  wasUninstalledMock,
 } = vi.hoisted(() => ({
   runSystemCheckMock: vi.fn(),
   renderBannerMock: vi.fn(() => 'BANNER\n'),
@@ -24,6 +25,7 @@ const {
   probeSetupStatusMock: vi.fn(),
   summarizeSetupMock: vi.fn(),
   runConfigMock: vi.fn(),
+  wasUninstalledMock: vi.fn(() => false),
 }));
 
 vi.mock('../../../src/cli/tui/system-check.js', () => ({
@@ -68,6 +70,9 @@ vi.mock('../../../src/cli/tui/actions/setup-status.js', () => ({
 }));
 vi.mock('../../../src/cli/config.js', () => ({
   runConfig: runConfigMock,
+}));
+vi.mock('../../../src/cli/tui/state/uninstall-signal.js', () => ({
+  wasUninstalled: wasUninstalledMock,
 }));
 vi.mock('../../../src/cli/tui/reporter-auto.js', () => ({
   autoReporter: vi.fn(() => ({
@@ -285,6 +290,7 @@ describe('runInit', () => {
       delete process.env.GITHUB_ACTIONS;
       runConfigMock.mockResolvedValue(0);
       runWarmupMock.mockResolvedValue(undefined);
+      wasUninstalledMock.mockReturnValue(false);
     });
 
     afterEach(() => {
@@ -328,6 +334,21 @@ describe('runInit', () => {
         const code = await runInit([]);
         expect(code).toBe(1);
         expect(cap.stderr.join('')).toMatch(/browser download blocked/);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('skips warmup when the user uninstalled mid-session', async () => {
+      // Navigating to the uninstall screen wipes ~/.wigolo; runInit must not
+      // re-run warmup afterward or it would recreate everything just removed.
+      wasUninstalledMock.mockReturnValue(true);
+      const cap = capture();
+      try {
+        const code = await runInit([]);
+        expect(code).toBe(0);
+        expect(runConfigMock).toHaveBeenCalledTimes(1);
+        expect(runWarmupMock).not.toHaveBeenCalled();
       } finally {
         cap.restore();
       }

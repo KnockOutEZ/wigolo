@@ -150,3 +150,18 @@ describe('vscodeHandler metadata', () => {
     expect(vscodeHandler.supportsCommands).toBe(false);
   });
 });
+
+// The TUI install path resolves the VS Code config dir from a caller-supplied
+// home rather than homedir(), so the exported helper must honor that argument.
+describe('vscodeUserDir — explicit home argument', () => {
+  it('uses the passed home over homedir() (Linux, XDG unset)', async () => {
+    const { vscodeUserDir } = await import('../../../../src/cli/agents/vscode.js');
+    const explicit = join(tmpdir(), 'wigolo-explicit-home');
+    expect(vscodeUserDir(explicit)).toBe(join(explicit, '.config', 'Code', 'User'));
+  });
+
+  it('falls back to homedir() when no home is passed', async () => {
+    const { vscodeUserDir } = await import('../../../../src/cli/agents/vscode.js');
+    expect(vscodeUserDir()).toBe(join(tmpHome, '.config', 'Code', 'User'));
+  });
+});

@@ -43,6 +43,18 @@ vi.mock('../../../src/config.js', () => ({
 import { chromium } from 'playwright';
 import { runCommand } from '../../../src/cli/tui/run-command.js';
 import { runWarmup } from '../../../src/cli/warmup.js';
+import type { WarmupReporter } from '../../../src/cli/tui/reporter.js';
+
+class FakeReporter implements WarmupReporter {
+  events: string[] = [];
+  start(id: string, _label: string, _opts?: { totalBytes?: number }) { this.events.push(`start:${id}`); }
+  update(id: string, text: string) { this.events.push(`update:${id}:${text}`); }
+  progress(id: string, fraction: number) { this.events.push(`progress:${id}:${fraction}`); }
+  success(id: string, detail?: string) { this.events.push(`success:${id}:${detail ?? ''}`); }
+  fail(id: string, error: string) { this.events.push(`fail:${id}:${error}`); }
+  note(text: string) { this.events.push(`note:${text}`); }
+  finish() { this.events.push('finish'); }
+}
 
 const ok = { code: 0, stdout: '', stderr: '', timedOut: false };
 const fail = { code: 1, stdout: '', stderr: 'no sudo', timedOut: false };
@@ -78,7 +90,7 @@ describe('cross-platform browser system deps (GH #116)', () => {
     Object.defineProperty(process, 'getuid', { value: realGetuid, configurable: true });
   });
 
-  it('Linux non-root + no passwordless sudo: skips deps, never invokes sudo, launch-fail reports the exact install-deps hint', async () => {
+  it('Linux non-root + no passwordless sudo: skips deps, never invokes sudo, launch-fail surfaces the exact install-deps hint', async () => {
     setPlatform('linux');
     setUid(1000); // non-root
     // sudo -n true fails (no passwordless sudo); binary install succeeds.
@@ -91,12 +103,16 @@ describe('cross-platform browser system deps (GH #116)', () => {
       new Error('libnss3.so: cannot open shared object file'),
     );
 
-    const result = await runWarmup([]);
+    const reporter = new FakeReporter();
+    const result = await runWarmup([], reporter);
 
     expect(result.playwright).toBe('failed');
-    expect(result.playwrightError).toBe(
-      'system libraries missing — run: sudo npx playwright install-deps chromium',
-    );
+    // The result field carries the headline; the exact fix command and the
+    // re-run step are emitted as notes so the user sees what to run next.
+    expect(result.playwrightError).toBe('system libraries missing — install them with:');
+    const notes = reporter.events.filter((e) => e.startsWith('note:'));
+    expect(notes.some((n) => n.includes('sudo npx playwright install-deps chromium'))).toBe(true);
+    expect(notes.some((n) => n.includes('wigolo warmup'))).toBe(true);
     // Must NEVER have run sudo to actually install (only the -n true probe).
     const installDepsViaSudo = vi.mocked(runCommand).mock.calls.find(
       (c) => cmdOf(c) === 'sudo' && argsOf(c).includes('install-deps'),
