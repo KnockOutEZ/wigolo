@@ -1,6 +1,9 @@
 <div align="center">
 
-# 🌐 wigolo
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/KnockOutEZ/wigolo/main/assets/brand/wigolo-wordmark-dark.png">
+  <img alt="wigolo" src="https://raw.githubusercontent.com/KnockOutEZ/wigolo/main/assets/brand/wigolo-wordmark-light.png" width="340">
+</picture>
 
 ### The go-to web for your agent.
 
