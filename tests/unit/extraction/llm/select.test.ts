@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectProvider } from '../../../../src/integrations/cloud/llm/select.js';
+import { selectProvider, providerKeyFromEnv } from '../../../../src/integrations/cloud/llm/select.js';
 
 describe('selectProvider', () => {
   it('returns null when no keys set', () => {
@@ -67,5 +67,36 @@ describe('selectProvider', () => {
         WIGOLO_LLM_API_KEY: 'x',
       }),
     ).toBe('gemini');
+  });
+
+  it('accepts GEMINI_API_KEY as an alias for the gemini key (auto-detect)', () => {
+    expect(selectProvider({ GEMINI_API_KEY: 'x' })).toBe('gemini');
+  });
+
+  it('accepts GEMINI_API_KEY with an explicit gemini provider', () => {
+    expect(
+      selectProvider({ WIGOLO_LLM_PROVIDER: 'gemini', GEMINI_API_KEY: 'x' }),
+    ).toBe('gemini');
+  });
+});
+
+describe('providerKeyFromEnv', () => {
+  it('reads the canonical var per provider', () => {
+    expect(providerKeyFromEnv('anthropic', { ANTHROPIC_API_KEY: 'a' })).toBe('a');
+    expect(providerKeyFromEnv('gemini', { GOOGLE_API_KEY: 'g' })).toBe('g');
+  });
+
+  it('accepts GEMINI_API_KEY as an alias for gemini', () => {
+    expect(providerKeyFromEnv('gemini', { GEMINI_API_KEY: 'k' })).toBe('k');
+  });
+
+  it('canonical GOOGLE_API_KEY wins over the GEMINI_API_KEY alias', () => {
+    expect(
+      providerKeyFromEnv('gemini', { GOOGLE_API_KEY: 'g', GEMINI_API_KEY: 'k' }),
+    ).toBe('g');
+  });
+
+  it('the alias is gemini-only — GEMINI_API_KEY does not satisfy other providers', () => {
+    expect(providerKeyFromEnv('openai', { GEMINI_API_KEY: 'k' })).toBeUndefined();
   });
 });

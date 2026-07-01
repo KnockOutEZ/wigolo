@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { existsSync, unlinkSync } from 'node:fs';
 import { keychainAvailable, keychainSet, keychainGet, keychainDelete, WIGOLO_SERVICE } from './keychain.js';
 import { encryptToFile, decryptFromFile } from './key-crypto.js';
-import { providerEnvVar } from '../integrations/cloud/llm/select.js';
+import { providerKeyFromEnv } from '../integrations/cloud/llm/select.js';
 import type { LLMProvider } from '../integrations/cloud/llm/types.js';
 
 export interface KeyStoreOpts {
@@ -199,9 +199,9 @@ export async function resolveProviderKey(
   if (storedValue !== null) return storedValue;
 
   // 3: provider-specific env var (read-only, ALWAYS live — never memoized so
-  // env changes and per-test env teardown are respected).
-  const envVar = providerEnvVar(provider);
-  const envValue = process.env[envVar];
+  // env changes and per-test env teardown are respected). Accepts the canonical
+  // var or an alias (e.g. GEMINI_API_KEY as well as GOOGLE_API_KEY).
+  const envValue = providerKeyFromEnv(provider, process.env);
   if (envValue) return envValue;
 
   // 4: WIGOLO_LLM_API_KEY last-resort fallback (issue #102). The TUI writes

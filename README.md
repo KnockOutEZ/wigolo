@@ -1,11 +1,6 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/KnockOutEZ/wigolo/main/assets/brand/wigolo-wordmark-dark.png">
-  <img alt="wigolo" src="https://raw.githubusercontent.com/KnockOutEZ/wigolo/main/assets/brand/wigolo-wordmark-light.png" width="300">
-</picture>
-
-### The go-to web for your agent
+<img alt="wigolo — the go-to web for your agent" src="assets/brand/wigolo-banner.png" width="640">
 
 Local-first web intelligence over MCP — **no keys, no cloud, no metered bill.**
 
@@ -14,7 +9,7 @@ Local-first web intelligence over MCP — **no keys, no cloud, no metered bill.*
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed)](https://modelcontextprotocol.io)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-2563eb)](#license)
 
-[Quickstart](#quickstart) · [Tools](#the-tools) · [Why wigolo](#why-its-different) · [Architecture](#architecture) · [Configuration](#configuration) · [Contribute](#contributing)
+[Quickstart](#quickstart) · [Tools](#the-tools) · [Why wigolo](#why-its-different) · [Benchmark](#benchmark) · [Architecture](#architecture) · [Configuration](#configuration) · [Contribute](#contributing)
 
 </div>
 
@@ -22,59 +17,40 @@ Local-first web intelligence over MCP — **no keys, no cloud, no metered bill.*
 
 wigolo runs on your machine as an MCP server and gives an AI coding agent one durable surface for everything web-related — **search, fetch, crawl, extract, cache, find-similar, research,** and autonomous gather loops. The core tools need no API keys, nothing it touches leaves `~/.wigolo/`, and there's no bill that grows with how much your agent thinks.
 
-```bash
-npx wigolo init --agents=claude-code   # install components, wire into your agent
-```
+<div align="center">
 
-## See it
+<img alt="wigolo demo — Claude Code answering a live web question through wigolo, no API keys" src="assets/wigolo-demo.gif" width="800">
 
-```console
-$ wigolo shell
-wigolo> search "postgres lateral join vs subquery" --category=docs
-
-◆ 5 results · 18 engines → rank-fusion → rerank · 312 ms
-
-[1] LATERAL — PostgreSQL Documentation                              0.94
-    postgresql.org/docs/current/queries-table-expressions.html
-    "A LATERAL item can reference columns of preceding FROM items; a
-     plain subquery in the FROM list cannot — ideal for top-N-per-group."
-
-[2] When a LATERAL join beats a correlated subquery                 0.88
-    …/blog/lateral-joins
-    "LATERAL runs the right side once per outer row, so the planner can
-     push down LIMIT — a correlated subquery re-scans every time."
-
-evidence for [1][2][4] · cached — the next call for this is 0 ms and free
-```
-
-Every result carries an explainable score and a citation id; the whole response lands in the local cache, so re-querying costs nothing. Ask for `format: "answer"` (with an optional LLM) and wigolo synthesizes a cited answer instead.
+</div>
 
 ## Quickstart
 
-You need **Node ≥ 20** and ~**1.5 GB** of free disk (headless browser, reranker, embedding model, and a cache that grows with use). macOS, Linux, and Windows all work.
+Requires **Node ≥ 20** and ~1.5 GB of free disk. macOS, Linux, and Windows.
+
+One command installs the local engine (search, browser, on-device models), wires it into your agent, and sets up the MCP connection:
 
 ```bash
-npx wigolo init --agents=claude-code   # set up everything (idempotent — safe to re-run)
-npx wigolo doctor                      # confirm it's healthy (no network)
+npx wigolo init --non-interactive --agents=<your-agent>
 ```
 
-Add it to any MCP client by hand:
+- **`<your-agent>`** — one or more of `claude-code` · `cursor` · `codex` · `gemini-cli` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated).
+
+That's the whole setup — **search, fetch, crawl, extract, cache, and find-similar work with no API key.** Check it's healthy:
 
 ```bash
-claude mcp add wigolo -- npx wigolo
+npx wigolo doctor
 ```
 
-> **The LLM key is optional.** The core tools (search, fetch, crawl, extract, cache) work without one. Only `research`, `agent`, and `search format=answer` use an LLM to *synthesize* — point wigolo at a local model (Ollama) or a cloud provider and it's still fully functional either way.
+### Optional — enable answer synthesis
 
-<details>
-<summary>Headless / CI setup (one command, no prompts)</summary>
+`research`, `agent`, and `search format=answer` use an LLM to *write* the final answer. Turn them on by setting a **provider and its key** (in your shell, or in your agent's MCP `env` block). `WIGOLO_LLM_PROVIDER` names the LLM — set it alongside the key:
 
 ```bash
-WIGOLO_LLM_API_KEY=sk-... npx wigolo init --non-interactive \
-  --agents=claude-code,cursor --provider=anthropic --search=core
+export WIGOLO_LLM_PROVIDER=gemini
+export GEMINI_API_KEY=<your-key>      # free from https://aistudio.google.com/apikey — the free tier is plenty
 ```
-The key is read from the env var, never passed as a CLI flag.
-</details>
+
+Any provider works — use `anthropic` + `ANTHROPIC_API_KEY`, `openai` + `OPENAI_API_KEY`, or `groq` + `GROQ_API_KEY`. To stay fully local and keyless, set `WIGOLO_LLM_PROVIDER=ollama` (or a local server URL) instead. Gemini is suggested because its free tier is more than enough for wigolo.
 
 ## The tools
 
@@ -98,13 +74,27 @@ The key is read from the env var, never passed as a CLI flag.
 
 It's **not** a hosted SaaS, a vector database other apps query, or a general web-automation framework. And it's honest about the trade: a hosted service will still beat it on **massive semantic discovery** over a global neural index, **crawling hostile sites at scale**, and **one-call finished answers** with zero local compute. wigolo is built for the local, private, low-cost lane — and to be as good as the paid services within it.
 
+## Benchmark
+
+One query, run live inside a single AI-agent session and fanned out to four web tools at once — built-in **WebSearch**, **wigolo**, **Tavily**, and **Firecrawl** — then scored by the agent itself. The prompt: `postgres 18 async IO real-world benchmark`.
+
+wigolo held its own against the paid tools. It surfaced the **same #1 source** as WebSearch (`postgresqlhtx.com`), returned as many results as Firecrawl, and was the only tool to hand back **real benchmark excerpts with an explainable per-result score** — pulling the concrete figure the others left on the table (`15,071ms → 5,723ms` on `io_uring`). Then it re-served the entire query **from local cache in ~3 ms, for $0** — no API key, nothing leaving the machine.
+
+One honest query, not a leaderboard — and the weak spot shows too: a little more docs/homepage noise in the long tail than the hosted neural indexes carry. Here's the full run:
+
+<div align="center">
+
+<img alt="wigolo vs built-in WebSearch, Tavily, and Firecrawl on one real query" src="assets/wigolo-vs.gif" width="900">
+
+</div>
+
 ## Architecture
 
 A single Node process speaking MCP (JSON-RPC over stdio). Everything heavy is local and lazy-loaded, so a zero-key install pays nothing for the parts it isn't using.
 
 ```mermaid
 flowchart TD
-    A["🤖 AI agent<br/>Claude Code · Cursor · Zed · VS Code · …"]
+    A["🤖 AI coding agent<br/>any MCP client"]
     A -->|MCP over stdio| B["<b>wigolo</b><br/>8 tools · dynamic instructions<br/>in-process browser pool + cache + models"]
 
     B --> C{"Tool layer"}
@@ -138,10 +128,11 @@ flowchart TD
 A clean install works out of the box. A few settings meaningfully raise output quality — set them as environment variables or in your agent's MCP `env` block.
 
 ```bash
-# 1. Synthesis — the biggest lever. Hosts like Claude Code don't expose MCP
-#    sampling, so research/agent/answer need an LLM to write the final text.
-export WIGOLO_LLM_PROVIDER=http://localhost:11434   # local (Ollama/vLLM/LM Studio) — free, on-device
-export WIGOLO_LLM_PROVIDER=anthropic                # or cloud; key → OS keychain, never config.json
+# 1. Synthesis — the biggest lever. research / agent / search-answer need an LLM
+#    to write the final text. Set the provider AND its key (a key alone is ignored).
+export WIGOLO_LLM_PROVIDER=gemini                   # names the LLM; free tier is plenty (or anthropic/openai/groq)
+export GEMINI_API_KEY=<your-key>                    # that provider's key (ANTHROPIC_API_KEY / OPENAI_API_KEY / …)
+#   ...or fully local & keyless:  export WIGOLO_LLM_PROVIDER=ollama   (or a local http URL)
 
 # 2. Wider retrieval funnel
 export WIGOLO_SEARCH=hybrid                         # core engines + aggregator fallback
@@ -277,7 +268,7 @@ For repeated interactive use, run `wigolo serve` so the browser pool, embeddings
 | `WIGOLO_LLM_MAX_CALLS_PER_REQUEST` | `1` | Hard ceiling on LLM calls per tool invocation. |
 | `WIGOLO_LLM_CACHE_TTL_DAYS` | `7` | LLM response cache TTL. |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | — | Read on every call; never persisted. |
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | — | Either name accepted. |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | — | Gemini provider key (either name; read on every call, never persisted). |
 | `GROQ_API_KEY` | — | Same. |
 | `WIGOLO_LLM_API_KEY` | — | Generic key for whichever provider `WIGOLO_LLM_PROVIDER` names. The provider-specific var wins; ignored during auto-detect. |
 

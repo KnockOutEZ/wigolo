@@ -12,6 +12,26 @@ const PROVIDER_ENV: Record<LLMProvider, string> = {
   groq: 'GROQ_API_KEY',
 };
 
+// Extra env var names accepted for a provider's key, beyond the canonical one
+// above. Gemini keys are commonly named GEMINI_API_KEY, so accept both — users
+// shouldn't have to guess which name wigolo reads.
+const PROVIDER_ENV_ALIASES: Partial<Record<LLMProvider, readonly string[]>> = {
+  gemini: ['GEMINI_API_KEY'],
+};
+
+/** Read a provider's API key from env, accepting the canonical var or an alias. */
+export function providerKeyFromEnv(
+  p: LLMProvider,
+  env: Record<string, string | undefined>,
+): string | undefined {
+  const primary = env[PROVIDER_ENV[p]];
+  if (primary) return primary;
+  for (const alias of PROVIDER_ENV_ALIASES[p] ?? []) {
+    if (env[alias]) return env[alias];
+  }
+  return undefined;
+}
+
 export function selectProvider(
   env: Record<string, string | undefined>,
 ): LLMProvider | null {
@@ -20,12 +40,12 @@ export function selectProvider(
     const p = override as LLMProvider;
     // Provider-specific var wins; WIGOLO_LLM_API_KEY is the last-resort fallback
     // and is only honored here because the provider is explicitly named (#102).
-    if (env[PROVIDER_ENV[p]] || env.WIGOLO_LLM_API_KEY) return p;
+    if (providerKeyFromEnv(p, env) || env.WIGOLO_LLM_API_KEY) return p;
   }
   // Auto-detect: WIGOLO_LLM_API_KEY is ambiguous without an explicit provider,
   // so it is intentionally NOT consulted in this loop.
   for (const p of PROVIDER_ORDER) {
-    if (env[PROVIDER_ENV[p]]) return p;
+    if (providerKeyFromEnv(p, env)) return p;
   }
   return null;
 }

@@ -20,14 +20,15 @@ import { printHelp, printVersion, printUnknownCommand } from './cli/help.js';
 import { getConfig } from './config.js';
 import { shutdownCli } from './cli/shutdown.js';
 
-async function exitCli(code: number): Promise<never> {
+async function exitCli(code: number): Promise<void> {
   await shutdownCli();
-  // Defer the actual exit so native worker threads (ONNX runtime, sqlite-vec)
-  // finish their teardown before libc++ destructors fire. Without this gap
-  // macOS exits cleanly to the shell but prints a noisy
-  // `mutex lock failed: Invalid argument` from the C++ runtime.
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  process.exit(code);
+  // Exit naturally: set the code and let the event loop drain. Forcing
+  // process.exit() here races the native ONNX runtime's thread-pool teardown
+  // and aborts with `mutex lock failed: Invalid argument`; letting Node shut
+  // down on its own tears the native runtime down cleanly. This relies on
+  // shutdownCli() releasing every long-lived handle (search engine process,
+  // browser pool, model idle timers, DB) so nothing keeps the loop alive.
+  process.exitCode = code;
 }
 
 // Surface SIGABRT explicitly so the libc++ destructor noise on macOS doesn't
