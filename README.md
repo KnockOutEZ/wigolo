@@ -17,7 +17,11 @@ Local-first web intelligence over MCP — **no keys, no cloud, no metered bill.*
 
 wigolo runs on your machine as an MCP server and gives an AI coding agent one durable surface for everything web-related — **search, fetch, crawl, extract, cache, find-similar, research,** and autonomous gather loops. The core tools need no API keys, nothing it touches leaves `~/.wigolo/`, and there's no bill that grows with how much your agent thinks.
 
-<!-- demo gif goes here -->
+<div align="center">
+
+<img alt="wigolo demo — Claude Code answering a live web question through wigolo, no API keys" src="https://raw.githubusercontent.com/KnockOutEZ/wigolo/main/assets/wigolo-demo.gif" width="800">
+
+</div>
 
 ## Quickstart
 
