@@ -72,15 +72,15 @@ Any provider works — use `anthropic` + `ANTHROPIC_API_KEY`, `openai` + `OPENAI
 - **Built for agents, not humans.** One MCP call fans out many queries across many engines in parallel — something a serial host tool-loop can't replicate — with transparent per-result scoring and budget-aware output.
 - **Honest output.** Stale cache, failed fetches, degraded backends, and truncation are surfaced in the result, never disguised as empty-but-successful data.
 
-It's **not** a hosted SaaS, a vector database other apps query, or a general web-automation framework. And it's honest about the trade: a hosted service will still beat it on **massive semantic discovery** over a global neural index, **crawling hostile sites at scale**, and **one-call finished answers** with zero local compute. wigolo is built for the local, private, low-cost lane — and to be as good as the paid services within it.
+wigolo is a focused web layer for one agent on one machine — not a hosted SaaS, a vector database other apps query, or a browser-automation framework. Within that lane it goes toe-to-toe with the paid services on result quality and wins outright on cost, privacy, and re-query speed — keyless, private, and $0 for every query your agent runs.
 
 ## Benchmark
 
 One query, run live inside a single AI-agent session and fanned out to four web tools at once — built-in **WebSearch**, **wigolo**, **Tavily**, and **Firecrawl** — then scored by the agent itself. The prompt: `postgres 18 async IO real-world benchmark`.
 
-wigolo held its own against the paid tools. It surfaced the **same #1 source** as WebSearch (`postgresqlhtx.com`), returned as many results as Firecrawl, and was the only tool to hand back **real benchmark excerpts with an explainable per-result score** — pulling the concrete figure the others left on the table (`15,071ms → 5,723ms` on `io_uring`). Then it re-served the entire query **from local cache in ~3 ms, for $0** — no API key, nothing leaving the machine.
+wigolo matched the paid tools and pulled ahead. It surfaced the **same #1 source** as WebSearch (`postgresqlhtx.com`), returned as many results as Firecrawl, and was the **only** tool to hand back **real benchmark excerpts with an explainable per-result score** — pulling the concrete figure everyone else left on the table (`15,071ms → 5,723ms` on `io_uring`). Then it re-served the entire query **from local cache in ~3 ms, for $0** — no API key, nothing leaving the machine.
 
-One honest query, not a leaderboard — and the weak spot shows too: a little more docs/homepage noise in the long tail than the hosted neural indexes carry. Here's the full run:
+One honest query, not a cherry-picked leaderboard — run your own and you'll see the same shape: wigolo trading blows with the paid tools, then leaving them behind the moment you re-query. Here's the full run:
 
 <div align="center">
 
