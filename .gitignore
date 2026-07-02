@@ -51,3 +51,6 @@ __pycache__/
 # Private strategy doc (never commit)
 competitive-blueprint.md
 
+
+# local demo tooling (VHS tapes + build scripts), not shipped
+.demo/
