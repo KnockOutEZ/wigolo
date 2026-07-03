@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { buildEvidenceFromMarkdown, buildEvidenceItem, stableCitationId } from '../../../src/search/evidence.js';
+import {
+  applyAggregateMarkdownBudget,
+  buildEvidenceFromMarkdown,
+  buildEvidenceItem,
+  stableCitationId,
+} from '../../../src/search/evidence.js';
 
 describe('stableCitationId', () => {
   it('is identical for the same url + start across calls', () => {
@@ -40,6 +45,47 @@ describe('buildEvidenceItem', () => {
       excerpt: 'x', score: 0, sourceSpan: { start: 0, end: 1 },
     });
     expect(ev.section_heading).toBeNull();
+  });
+});
+
+describe('applyAggregateMarkdownBudget', () => {
+  interface Item { body: string }
+  const longBody = 'Alpha beta gamma delta epsilon zeta eta theta iota kappa. '.repeat(60);
+
+  function run(items: Item[], opts: { maxTokensOut?: number; maxChars?: number; minTokensPerItem?: number }) {
+    applyAggregateMarkdownBudget(
+      items,
+      (i) => i.body,
+      (i, body) => { i.body = body; },
+      opts,
+    );
+    return items;
+  }
+
+  it('without minTokensPerItem: exhausted budget clears later bodies (unchanged behavior)', () => {
+    const items: Item[] = [{ body: longBody }, { body: longBody }, { body: longBody }];
+    run(items, { maxTokensOut: 40 });
+    // First item consumes the budget; later bodied items are cleared to ''.
+    expect(items[0].body.length).toBeGreaterThan(0);
+    expect(items[items.length - 1].body).toBe('');
+  });
+
+  it('minTokensPerItem: every item that HAD a body keeps >=1 char even past the budget', () => {
+    // WHY: crawl must never empty a later page's real content while an earlier
+    // page kept content. The per-item floor beats shared-budget starvation.
+    const items: Item[] = [{ body: longBody }, { body: longBody }, { body: longBody }, { body: longBody }];
+    run(items, { maxTokensOut: 20, minTokensPerItem: 32 });
+    for (const it of items) {
+      expect(it.body.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('minTokensPerItem: an item WITHOUT a body stays empty (never fabricates content)', () => {
+    const items: Item[] = [{ body: longBody }, { body: '' }, { body: longBody }];
+    run(items, { maxTokensOut: 10, minTokensPerItem: 32 });
+    expect(items[0].body.length).toBeGreaterThan(0);
+    expect(items[1].body).toBe(''); // empty source stays empty
+    expect(items[2].body.length).toBeGreaterThan(0); // floored, not cleared
   });
 });
 

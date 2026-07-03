@@ -167,6 +167,45 @@ describe('SmartRouter', () => {
     expect(result.method).toBe('playwright');
   });
 
+  describe('binary-download pre-sniff (PDF routing)', () => {
+    function makePdfHttpResult(url: string): Awaited<ReturnType<HttpClient['fetch']>> {
+      return {
+        url,
+        finalUrl: url,
+        html: '',
+        contentType: 'application/pdf',
+        statusCode: 200,
+        headers: { 'content-type': 'application/pdf' },
+        rawBuffer: Buffer.from('%PDF-1.4 stub'),
+      };
+    }
+
+    it('routes a .pdf URL to HTTP even on a preferPlaywright (known-SPA) domain', async () => {
+      // WHY: a binary download must be buffered by the byte-tier, never handed
+      // to a browser that treats a PDF response as a download and hard-errors.
+      // react.dev is in KNOWN_SPA_DOMAINS → starts preferPlaywright=true.
+      const url = 'https://react.dev/whitepaper.pdf';
+      vi.mocked(httpClient.fetch).mockResolvedValue(makePdfHttpResult(url));
+
+      const result = await router.fetch(url);
+
+      expect(httpClient.fetch).toHaveBeenCalledOnce();
+      expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
+      expect(result.method).toBe('http');
+    });
+
+    it('render_js:"always" on a .pdf URL still goes to the browser (explicit override wins)', async () => {
+      // The pre-sniff must not hijack an explicit browser request.
+      const url = 'https://example.com/report.pdf';
+
+      const result = await router.fetch(url, { renderJs: 'always' });
+
+      expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
+      expect(httpClient.fetch).not.toHaveBeenCalled();
+      expect(result.method).toBe('playwright');
+    });
+  });
+
   it('records domain routing decisions', async () => {
     await router.fetch('https://stats.com/page');
 

@@ -200,6 +200,86 @@ describe('handleCrawl', () => {
       expect(result.pages.every((p) => p.markdown.length > 0)).toBe(true);
     });
 
+    it('default budget never empties a later page while an earlier page kept content', async () => {
+      // Root cause (H11): DEFAULT_MAX_TOKENS_OUT was a SHARED aggregate cap
+      // across ALL pages, so once the first pages consumed it every later page
+      // was cleared to ''. Invariant under test: with the default budget, EVERY
+      // page whose source markdown was non-empty comes back non-empty, and the
+      // LAST page still carries its own distinct sentinel token.
+      const sentinels = ['PAGEBODY_ONE', 'PAGEBODY_TWO', 'PAGEBODY_THREE', 'PAGEBODY_FOUR', 'PAGEBODY_FIVE'];
+      const longPage = (tag: string) =>
+        `# ${tag}\n\n` +
+        `${tag} `.repeat(4) +
+        ('This documentation section explains configuration, routing, and lifecycle ' +
+          'behavior in depth so that the extracted body is several thousand characters ' +
+          'of genuine prose rather than a short stub. ').repeat(20);
+      const mockCrawl = vi.fn().mockResolvedValue({
+        pages: sentinels.map((s, i) => ({
+          url: `https://docs.example.com/${i}`,
+          title: s,
+          markdown: longPage(s),
+          depth: i === 0 ? 0 : 1,
+        })),
+        total_found: sentinels.length,
+        crawled: sentinels.length,
+      });
+      vi.mocked(Crawler).mockImplementation(function (this: any) {
+        this.crawl = mockCrawl;
+        this.crawlSitemap = vi.fn();
+      } as unknown as typeof Crawler);
+
+      const router = mockRouter();
+      const input: CrawlInput = { url: 'https://docs.example.com' };
+
+      const result = await handleCrawl(input, router as unknown as SmartRouter) as CrawlOutput;
+
+      // Only pages the crawl actually returned (max_total_chars may drop some);
+      // every returned page had non-empty source markdown, so every returned
+      // page must be non-empty.
+      for (const p of result.pages) {
+        expect(p.markdown.length).toBeGreaterThan(0);
+      }
+      // The last returned page must still carry its own sentinel — proving it
+      // was not starved to '' by earlier pages consuming the shared budget.
+      const last = result.pages[result.pages.length - 1];
+      expect(last.markdown).toContain(last.title);
+    });
+
+    it('explicit tight max_tokens_out floors every page instead of emptying later ones', async () => {
+      // WHY: an explicit tight budget should degrade to "short but present on
+      // every page" rather than "full on page 1, empty after". The per-page
+      // floor beats shared-budget starvation.
+      const bodies = Array.from({ length: 5 }, (_, i) =>
+        `# Page ${i}\n\n` +
+        `SENTINEL_${i} ` +
+        ('Detailed prose about the topic that is long enough to exceed a tight token ' +
+          'budget many times over so the aggregate cap would otherwise clear it. ').repeat(25),
+      );
+      const mockCrawl = vi.fn().mockResolvedValue({
+        pages: bodies.map((md, i) => ({
+          url: `https://docs.example.com/p${i}`,
+          title: `Page ${i}`,
+          markdown: md,
+          depth: i === 0 ? 0 : 1,
+        })),
+        total_found: 5,
+        crawled: 5,
+      });
+      vi.mocked(Crawler).mockImplementation(function (this: any) {
+        this.crawl = mockCrawl;
+        this.crawlSitemap = vi.fn();
+      } as unknown as typeof Crawler);
+
+      const router = mockRouter();
+      const input: CrawlInput = { url: 'https://docs.example.com', max_tokens_out: 200 };
+
+      const result = await handleCrawl(input, router as unknown as SmartRouter) as CrawlOutput;
+
+      for (const p of result.pages) {
+        expect(p.markdown.length).toBeGreaterThan(0);
+      }
+    });
+
     it('include_full_markdown=false drops markdown but surfaces excerpt', async () => {
       // Explicit opt-out for callers that only want the evidence + excerpt
       // envelope. Mirrors handleFetch's include_full_markdown contract.

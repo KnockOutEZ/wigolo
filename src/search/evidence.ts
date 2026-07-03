@@ -106,13 +106,22 @@ export async function buildEvidenceFromMarkdown(
 // budget. Bodies past the budget are cleared (set to ''). Used by all
 // multi-item tools (search markdown_content, find_similar, crawl, research,
 // agent) so per-tool max_tokens_out is an aggregate cap, not per-item.
+//
+// `minTokensPerItem` (opt-in, default no-op) sets a per-item floor: once the
+// shared budget is exhausted, an item that HAS a body still emits at least the
+// floor's worth of tokens instead of being cleared to ''. Items with no body
+// stay empty — the floor never fabricates content. Callers that omit it keep
+// the exact clear-past-budget behavior. Multi-page tools (crawl) pass it so a
+// later page with real content is never emptied while an earlier page kept
+// content.
 export function applyAggregateMarkdownBudget<T>(
   items: T[],
   getBody: (item: T) => string,
   setBody: (item: T, body: string) => void,
-  opts: { maxTokensOut?: number; maxChars?: number },
+  opts: { maxTokensOut?: number; maxChars?: number; minTokensPerItem?: number },
 ): void {
   const budget = opts.maxTokensOut;
+  const floor = opts.minTokensPerItem ?? 0;
   let used = 0;
   for (const item of items) {
     const body = getBody(item);
@@ -120,10 +129,17 @@ export function applyAggregateMarkdownBudget<T>(
     if (budget !== undefined) {
       const remaining = budget - used;
       if (remaining <= 0) {
-        setBody(item, '');
+        if (floor > 0) {
+          const floored = applyOutputBudget(body, { maxTokensOut: floor, maxChars: opts.maxChars });
+          setBody(item, floored);
+          used += countTokens(floored);
+        } else {
+          setBody(item, '');
+        }
         continue;
       }
-      const trimmed = applyOutputBudget(body, { maxTokensOut: remaining, maxChars: opts.maxChars });
+      const effective = floor > 0 ? Math.max(remaining, floor) : remaining;
+      const trimmed = applyOutputBudget(body, { maxTokensOut: effective, maxChars: opts.maxChars });
       setBody(item, trimmed);
       used += countTokens(trimmed);
     } else {
