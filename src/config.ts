@@ -20,6 +20,16 @@ export interface Config {
   searchStageBudgetBalancedMs: number;
   searchStageBudgetDeepMs: number;
   searchTotalTimeoutMs: number;
+  /** Total per-URL fetch budget pool (ms) shared across a NARROW candidate set
+   * during search enrichment. When set, each URL's per-URL budget is scaled up
+   * proportionally to `1/candidateCount` (fewer candidates → more time each),
+   * always clamped to the stage budget. `0`/undefined preserves the legacy
+   * small per-URL budget regardless of candidate count. */
+  searchNarrowSetBudgetMs: number;
+  /** Pre-launch the browser engine before search enrichment so the first
+   * hydration fetch doesn't pay the browser cold-start inline. Latency-only —
+   * no change to results. Defaults on; set false to disable. */
+  searchPrewarmBrowser: boolean;
   validateTimeoutMs: number;
   maxBrowsers: number;
   browserIdleTimeoutMs: number;
@@ -236,6 +246,8 @@ export function getConfig(): Config {
     searchStageBudgetBalancedMs: envInt('SEARCH_STAGE_BUDGET_BALANCED_MS', 4000, settings, 'searchStageBudgetBalancedMs'),
     searchStageBudgetDeepMs: envInt('SEARCH_STAGE_BUDGET_DEEP_MS', 10000, settings, 'searchStageBudgetDeepMs'),
     searchTotalTimeoutMs: envInt('SEARCH_TOTAL_TIMEOUT_MS', 30000, settings, 'searchTotalTimeoutMs'),
+    searchNarrowSetBudgetMs: envInt('SEARCH_NARROW_SET_BUDGET_MS', 8000, settings, 'searchNarrowSetBudgetMs'),
+    searchPrewarmBrowser: envBool('SEARCH_PREWARM_BROWSER', true, settings, 'searchPrewarmBrowser'),
     validateTimeoutMs: envInt('VALIDATE_TIMEOUT_MS', 5000, settings, 'validateTimeoutMs'),
     maxBrowsers: envInt('MAX_BROWSERS', 3, settings, 'maxBrowsers'),
     browserIdleTimeoutMs: envInt('BROWSER_IDLE_TIMEOUT', 60000, settings, 'browserIdleTimeoutMs'),

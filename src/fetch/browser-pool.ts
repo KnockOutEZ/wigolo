@@ -181,6 +181,29 @@ export class MultiBrowserPool {
     return typePool.browser;
   }
 
+  /**
+   * Pre-launch the browser engine for the default (first configured) type so a
+   * later fetch does not pay the browser cold-start inline. Idempotent — a
+   * no-op when the browser is already launched — and best-effort: a launch
+   * failure is swallowed (the lazy path on first fetch surfaces it honestly).
+   * Latency-only; does not touch the context pool, so it never disturbs
+   * in-flight fetches, downloads, or the idle-eviction bookkeeping.
+   */
+  async warm(): Promise<void> {
+    if (this.shutdownCalled) return;
+    const type = this.configuredTypes[0];
+    const typePool = this.pools.get(type);
+    if (!typePool || typePool.browser) return; // already warm
+    try {
+      await this.launchBrowser(type);
+    } catch (err) {
+      log.debug('browser prewarm skipped', {
+        type,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   protected async acquireForType(type: BrowserType): Promise<BrowserContext> {
     const config = getConfig();
     const maxBrowsers = config.maxBrowsers;

@@ -411,6 +411,11 @@ export interface SearchResultItem {
   markdown_content?: string;
   fetch_failed?: string;
   content_truncated?: boolean;
+  /** True when `markdown_content` was populated from the result's own snippet
+   * because the content fetch timed out. The failure is still recorded in
+   * `fetch_failed`; this flag marks that the content is snippet-derived
+   * evidence, not extracted page content. */
+  content_from_snippet?: boolean;
   /** Legacy aggregate score in [0, 1]. Equals `evidence_score.final` when
    * the core path emits both; coexists for back-compat with callers that
    * read this field directly. `relevance_score` and

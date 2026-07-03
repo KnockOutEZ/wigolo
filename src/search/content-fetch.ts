@@ -29,6 +29,22 @@ export interface FetchContentContext {
    *  `fetchTimeoutMs`/`stageBudgetMs` so existing call sites benefit. Always
    *  clamped to the stage budget so the overall stage stays bounded. */
   antiBotFetchTimeoutMs?: number;
+  /** Number of candidates the caller intends to hydrate (typically the fetched
+   *  slice size). Used with {@link narrowSetBudgetMs} to scale the per-URL
+   *  budget up for a NARROW set — a structural signal, never a domain
+   *  allowlist. When absent, no narrow-set scaling applies. */
+  candidateCount?: number;
+  /** Total per-URL budget pool (ms) shared across the candidate set. With a
+   *  narrow set (few candidates), each URL's budget scales toward
+   *  `narrowSetBudgetMs / candidateCount`, floored at the small base
+   *  `fetchTimeoutMs` and clamped to `stageBudgetMs`. Absent ⇒ legacy path
+   *  (no narrow-set bump). */
+  narrowSetBudgetMs?: number;
+  /** When true, a per-URL/stage/total TIMEOUT falls back to the result's own
+   *  snippet as `markdown_content` (flagged `content_from_snippet`) so callers
+   *  get evidence text instead of empty content. The failure is still recorded
+   *  in `fetch_failed`. Absent/false ⇒ legacy path (empty content on timeout). */
+  snippetFallback?: boolean;
 }
 
 interface SingleFetch {
@@ -37,34 +53,64 @@ interface SingleFetch {
 }
 
 /**
+ * Narrow-set scaling: when there are FEW candidates to hydrate, each deserves
+ * proportionally more time (the stage budget would otherwise sit mostly unspent
+ * while a single slow page times out at the small default). Keys on
+ * `candidateCount` — a STRUCTURAL signal — never a domain allowlist. Returns the
+ * small base budget when scaling is not configured or when the scaled slice is
+ * below the base (a WIDE set), preserving today's behavior.
+ */
+function narrowSetBudgetFor(ctx: FetchContentContext): number {
+  if (ctx.narrowSetBudgetMs === undefined || ctx.candidateCount === undefined) {
+    return ctx.fetchTimeoutMs;
+  }
+  const count = Math.max(1, ctx.candidateCount);
+  const scaled = Math.floor(ctx.narrowSetBudgetMs / count);
+  // Never below the small base — a wide set keeps today's budget.
+  return Math.max(ctx.fetchTimeoutMs, scaled);
+}
+
+/**
  * Resolve the per-URL fetch budget for a single target.
  * Anti-bot/TLS-first domains (routed through the TLS-impersonation tier first
  * by the router) get the larger {@link FetchContentContext.antiBotFetchTimeoutMs}
  * budget so a working ~1-5s TLS attempt is not starved by the small
- * `fetchTimeoutMs`. Everyone else keeps the small budget — no blanket bump.
+ * `fetchTimeoutMs`. A NARROW candidate set (few results) lifts every URL's
+ * budget toward `narrowSetBudgetMs / candidateCount`. Everyone else keeps the
+ * small budget — no blanket bump.
  *
- * The anti-bot budget is clamped to the stage budget (when set) so the overall
- * stage stays bounded — the per-URL budget never exceeds the stage ceiling, so
- * the stage timer (not an unbounded per-URL timer) is what caps wall-clock.
- * This bounds worst-case latency: the per-URL budget can be larger than the
- * small default but never larger than the stage budget.
+ * The budget is clamped to the stage budget (when set) so the overall stage
+ * stays bounded — the per-URL budget never exceeds the stage ceiling, so the
+ * stage timer (not an unbounded per-URL timer) is what caps wall-clock.
  */
 function perUrlBudgetFor(url: string, ctx: FetchContentContext): number {
+  const narrow = narrowSetBudgetFor(ctx);
+  let budget: number;
   if (!isAntiBotTlsFirstUrl(url, getConfig().tlsDomains)) {
-    return ctx.fetchTimeoutMs;
+    // Non-anti-bot domains keep the small base UNLESS a narrow candidate set
+    // grants them more time.
+    budget = narrow;
+  } else {
+    // Default the anti-bot budget to the stage budget when not supplied, so the
+    // TLS attempt gets the full hydration window rather than the small per-URL
+    // slice. Falls back to fetchTimeoutMs when neither is set (legacy path).
+    const desired =
+      ctx.antiBotFetchTimeoutMs ?? ctx.stageBudgetMs ?? ctx.fetchTimeoutMs;
+    // Take the larger of the anti-bot budget and the narrow-set slice; never
+    // less than the normal base budget.
+    budget = Math.max(desired, narrow, ctx.fetchTimeoutMs);
   }
-  // Default the anti-bot budget to the stage budget when not supplied, so the
-  // TLS attempt gets the full hydration window rather than the small per-URL
-  // slice. Falls back to fetchTimeoutMs when neither is set (legacy path).
-  const desired =
-    ctx.antiBotFetchTimeoutMs ?? ctx.stageBudgetMs ?? ctx.fetchTimeoutMs;
-  // Never grant LESS than the normal budget, and never MORE than the stage
-  // budget — keeps the overall stage bounded.
-  const floored = Math.max(desired, ctx.fetchTimeoutMs);
+  // Never MORE than the stage budget — keeps the overall stage bounded so the
+  // stage timer (not an unbounded per-URL timer) caps wall-clock.
   return ctx.stageBudgetMs !== undefined
-    ? Math.min(floored, ctx.stageBudgetMs)
-    : floored;
+    ? Math.min(budget, ctx.stageBudgetMs)
+    : budget;
 }
+
+// Timeout-class fetch_failed reasons that qualify for snippet fallback. A slow
+// page that timed out still has usable snippet evidence; a hard failure (403,
+// 404, DNS) does not, so the fallback is deliberately scoped to timeouts.
+const TIMEOUT_FLAGS = new Set(['timeout', 'stage_timeout', 'total_timeout']);
 
 /** Map an abort/error reason to the fetch_failed flag value. */
 function reasonToFlag(reason: unknown): string {
@@ -248,6 +294,15 @@ export async function fetchContentForResults(
 
       if (error) {
         result.fetch_failed = error;
+        // On a timeout the extracted page never arrived, but the result's own
+        // snippet is real evidence text — surface it as content (flagged) so
+        // callers get something instead of an empty field. Never fabricate: only
+        // a non-empty existing snippet is promoted, and the failure stays
+        // recorded. Scoped to timeout-class failures; hard failures pass empty.
+        if (ctx.snippetFallback && TIMEOUT_FLAGS.has(error) && result.snippet) {
+          result.markdown_content = result.snippet;
+          result.content_from_snippet = true;
+        }
         continue;
       }
       if (content === undefined) continue;

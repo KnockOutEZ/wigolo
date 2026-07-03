@@ -577,6 +577,19 @@ export class CoreSearchProvider implements SearchProvider {
         const config = getConfig();
         const fetchStart = Date.now();
         const isDeep = depth === 'deep';
+        // Pre-launch the browser engine before enrichment so the first
+        // hydration fetch doesn't pay the cold-start inline. Best-effort +
+        // idempotent; latency-only. Awaited so the launch overlaps setup rather
+        // than the per-fetch critical path.
+        if (config.searchPrewarmBrowser && typeof ctx.router.prewarmBrowser === 'function') {
+          await ctx.router.prewarmBrowser();
+        }
+        // Candidate set the fetcher will hydrate: min(maxFetches, items). A
+        // NARROW set grants each URL a proportionally larger per-URL budget.
+        const candidateCount =
+          input.max_fetches !== undefined
+            ? Math.min(input.max_fetches, items.length)
+            : items.length;
         await fetchContentForResults(items, ctx.router, {
           contentMaxChars: input.content_max_chars ?? DEFAULT_CONTENT_MAX_CHARS,
           maxContentChars: input.max_content_chars,
@@ -586,6 +599,9 @@ export class CoreSearchProvider implements SearchProvider {
           totalDeadline: start + config.searchTotalTimeoutMs,
           forceRefresh: input.force_refresh ?? false,
           maxFetches: input.max_fetches,
+          candidateCount,
+          narrowSetBudgetMs: config.searchNarrowSetBudgetMs || undefined,
+          snippetFallback: true,
         });
         fetchElapsed = Date.now() - fetchStart;
         contentFetched = true;

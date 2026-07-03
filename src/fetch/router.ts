@@ -109,6 +109,10 @@ export interface BrowserPoolInterface {
     url: string,
     options?: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string; screenshot?: boolean; actions?: BrowserAction[]; cdpUrl?: string; signal?: AbortSignal },
   ): Promise<RawFetchResult>;
+  /** Optional pre-launch of the browser engine so a later fetch doesn't pay
+   *  cold-start inline. Idempotent + best-effort. Pools that don't implement it
+   *  simply skip prewarming. */
+  warm?(): Promise<void>;
 }
 
 export type HttpFetcher = (
@@ -592,6 +596,18 @@ export class SmartRouter {
 
   getDomainStats(domain: string): DomainStats | undefined {
     return this.domainMap.get(domain);
+  }
+
+  /**
+   * Pre-launch the browser engine so a subsequent fetch that escalates to the
+   * browser doesn't pay the cold-start inline. Best-effort and idempotent —
+   * a no-op when no browser pool is configured or the pool doesn't support
+   * warming. Latency-only; never changes fetch results.
+   */
+  async prewarmBrowser(): Promise<void> {
+    if (this.browserPool?.warm) {
+      await this.browserPool.warm();
+    }
   }
 
   private ensureStats(domain: string): DomainStats {
