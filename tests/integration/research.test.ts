@@ -105,6 +105,16 @@ describe('research tool integration', () => {
     expect(result.depth).toBe('quick');
     expect(result.total_time_ms).toBeGreaterThanOrEqual(0);
     expect(result.sampling_supported).toBe(false);
+
+    // WHY: citation density is measured on the synthesized PROSE, not just the
+    // Sources list. When the keyless brief renderer produced the report, the
+    // Key Findings / Summary body must contain inline [n] markers so a reader
+    // can verify claims per-bullet. Guarded on the renderer signature so the
+    // assertion is skipped only when a local LLM authored the report instead.
+    if (result.report.includes('— Research Brief')) {
+      const beforeSources = result.report.slice(0, result.report.indexOf('### Sources'));
+      expect(beforeSources).toMatch(/\[\d+\]/);
+    }
   });
 
   it('standard depth produces more sub-queries and sources', async () => {

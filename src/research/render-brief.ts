@@ -43,9 +43,9 @@ export function renderBriefReport(
   const parts: string[] = [];
   parts.push(`## ${question.trim()} — Research Brief`);
 
-  parts.push(renderVerdictOrSummary(brief));
+  parts.push(renderVerdictOrSummary(brief, sources.length));
 
-  const keyFindings = renderKeyFindings(brief);
+  const keyFindings = renderKeyFindings(brief, sources.length);
   if (keyFindings) parts.push(keyFindings);
 
   const agreement = renderAgreement(brief.sections.overview.cross_references, sources.length);
@@ -67,11 +67,25 @@ export function renderBriefReport(
   return parts.join('\n\n');
 }
 
+// Per-claim citation suffix for a key finding, keyed on whether THAT finding
+// has a resolved source index. Fails open: an absent or out-of-range index
+// yields no citation rather than a fabricated `[n]` — the emitted marker must
+// always resolve to a real line in the ### Sources list.
+function findingCitation(
+  brief: ResearchBrief,
+  findingIdx: number,
+  sourceCount: number,
+): string {
+  const src = brief.key_finding_sources?.[findingIdx];
+  if (src === undefined || src < 0 || src >= sourceCount) return '';
+  return ` [${src + 1}]`;
+}
+
 // A source-quoted verdict is the honest parity lever: each tradeoff is a real
 // sentence from a source, cited `[n]`. With no quotable tradeoff we must NOT
 // invent directionality — fall back to a clearly-labeled heuristic Summary
-// drawn from top key_findings.
-function renderVerdictOrSummary(brief: ResearchBrief): string {
+// drawn from top key_findings, citing each bullet per-claim.
+function renderVerdictOrSummary(brief: ResearchBrief, sourceCount: number): string {
   const tradeoffs = brief.sections.comparison?.tradeoffs ?? [];
   if (tradeoffs.length > 0) {
     const lines = tradeoffs.slice(0, MAX_VERDICT_TRADEOFFS).map((t) => {
@@ -81,16 +95,20 @@ function renderVerdictOrSummary(brief: ResearchBrief): string {
     return `**Verdict (from sources):** the tradeoffs reported across sources:\n${lines.join('\n')}`;
   }
 
-  const bullets = brief.key_findings.slice(0, MAX_SUMMARY_BULLETS).map((f) => `- ${sanitizeSourceText(f)}`);
+  const bullets = brief.key_findings
+    .slice(0, MAX_SUMMARY_BULLETS)
+    .map((f, i) => `- ${sanitizeSourceText(f)}${findingCitation(brief, i, sourceCount)}`);
   if (bullets.length === 0) {
     return '**Summary (heuristic):** no substantive findings could be extracted from the sources.';
   }
   return `**Summary (heuristic):** synthesized from the top findings below.\n${bullets.join('\n')}`;
 }
 
-function renderKeyFindings(brief: ResearchBrief): string | null {
+function renderKeyFindings(brief: ResearchBrief, sourceCount: number): string | null {
   if (brief.key_findings.length === 0) return null;
-  const lines = brief.key_findings.slice(0, MAX_KEY_FINDINGS).map((f) => `- ${sanitizeSourceText(f)}`);
+  const lines = brief.key_findings
+    .slice(0, MAX_KEY_FINDINGS)
+    .map((f, i) => `- ${sanitizeSourceText(f)}${findingCitation(brief, i, sourceCount)}`);
   return `### Key Findings\n${lines.join('\n')}`;
 }
 

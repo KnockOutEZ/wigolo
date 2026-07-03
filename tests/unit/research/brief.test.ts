@@ -222,6 +222,33 @@ describe('buildResearchBrief', () => {
     expect(vueTradeoff!.source_index).toBe(1);
   });
 
+  // WHY: comparison tradeoffs are built against the fetched-only view but the
+  // renderer cites `[source_index + 1]` against the FULL ### Sources list. With
+  // a leading UNfetched source the fetched-view index was one low, so the
+  // verdict cited the wrong source. source_index must be remapped to the full
+  // array so `sources[tradeoff.source_index]` is the doc the sentence came from.
+  it('remaps tradeoff source_index to the full sources array when a leading source is unfetched (M5)', async () => {
+    const sources = [
+      // index 0 — UNfetched. Pre-fix the fetched-view index for the real source
+      // was 0, so the verdict cited [1] (this failed row) instead of the doc.
+      mkSource({ url: 'https://failed.com', markdown_content: '', fetched: false }),
+      mkSource({ url: 'https://react.com', markdown_content: 'React is faster than Vue for large applications because its reconciler batches updates efficiently.' }),
+      mkSource({ url: 'https://vue.com', markdown_content: 'Vue has a simpler API than React and is easier to learn for beginners just starting out.' }),
+    ];
+    const brief = await buildResearchBrief('React vs Vue', sources, [], 3000, 40000, 'comparison', ['React', 'Vue']);
+    const tradeoffs = brief.sections.comparison!.tradeoffs;
+    expect(tradeoffs.length).toBeGreaterThan(0);
+    const fasterTradeoff = tradeoffs.find((t) => t.term === 'faster')!;
+    expect(fasterTradeoff).toBeDefined();
+    // The React sentence lives at full index 1 (fetched-view index 0 pre-remap).
+    expect(fasterTradeoff.source_index).toBe(1);
+    expect(sources[fasterTradeoff.source_index].url).toBe('https://react.com');
+    // The Vue sentence at full index 2 (fetched-view index 1 pre-remap).
+    const vueTradeoff = tradeoffs.find((t) => t.text.includes('simpler API'))!;
+    expect(vueTradeoff.source_index).toBe(2);
+    expect(sources[vueTradeoff.source_index].url).toBe('https://vue.com');
+  });
+
   it('keeps comparison_points keywords alongside the enriched tradeoffs', async () => {
     const sources = [
       mkSource({ url: 'https://a.com', markdown_content: 'React is faster than Vue for large applications and has better performance characteristics overall.' }),
@@ -290,6 +317,46 @@ describe('buildResearchBrief', () => {
     // sources). When remapped to the output `sources` array, that's index 1
     // (since sources[0] failed). The graph must report 1, not 0.
     expect(brief.citation_graph![0].source_indices).toEqual([1]);
+  });
+
+  // WHY: a caller indexing sources[key_finding_sources[i]] must land on the
+  // document the finding was extracted from — the same invariant citation_graph
+  // enforces (M5). The parallel array is index-aligned to key_findings and
+  // remapped from the fetched-only view to the FULL sources array, so a leading
+  // UNfetched source can't produce an off-by-one citation.
+  it('populates key_finding_sources index-aligned to key_findings, remapped to the full sources array (M5)', async () => {
+    const sources = [
+      // index 0 — UNfetched. buildKeyFindings iterates the fetched subset, so
+      // a naive fetched-index would collide with this row.
+      mkSource({ url: 'https://failed.com', markdown_content: '', fetched: false }),
+      mkSource({ url: 'https://a.com', markdown_content: 'Server components render efficiently on the server before shipping to the client, which reduces the JavaScript bundle a browser must download and parse.' }),
+      mkSource({ url: 'https://b.com', markdown_content: 'Streaming server-side rendering flushes HTML chunks progressively as each part of the tree finishes rendering, improving time-to-first-byte for large pages.' }),
+    ];
+    const brief = await buildResearchBrief('q', sources, [], 3000, 40000);
+    expect(brief.key_finding_sources).toBeDefined();
+    expect(brief.key_finding_sources!.length).toBe(brief.key_findings.length);
+    // Every entry indexes into the FULL sources array and never points at the
+    // unfetched leading row (index 0).
+    for (const idx of brief.key_finding_sources!) {
+      expect(idx).toBeGreaterThanOrEqual(1);
+      expect(idx).toBeLessThan(sources.length);
+      expect(sources[idx].fetched).toBe(true);
+    }
+  });
+
+  // WHY: key_finding_sources must stay index-aligned to key_findings, which are
+  // ordered by relevance. The first finding's source must be the highest-
+  // relevance fetched source so sources[key_finding_sources[0]] is correct.
+  it('orders key_finding_sources by relevance to match key_findings ordering', async () => {
+    const sources = [
+      mkSource({ url: 'https://low.com', relevance_score: 0.4, markdown_content: 'A lower relevance paragraph about topic ALPHA that is substantive enough to survive the eighty character minimum length filter for a key finding entry.' }),
+      mkSource({ url: 'https://high.com', relevance_score: 0.95, markdown_content: 'A higher relevance paragraph about topic BETA that is clearly substantive and long enough to be included as the first finding in the ordered list.' }),
+    ];
+    const brief = await buildResearchBrief('q', sources, [], 3000, 40000);
+    expect(brief.key_findings[0]).toContain('topic BETA');
+    // The first finding came from the high-relevance source (index 1).
+    expect(brief.key_finding_sources![0]).toBe(1);
+    expect(sources[brief.key_finding_sources![0]].url).toBe('https://high.com');
   });
 
   it('detects gaps when sub-queries have no source coverage', async () => {

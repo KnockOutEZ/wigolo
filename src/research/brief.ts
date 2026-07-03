@@ -37,34 +37,58 @@ export async function buildResearchBrief(
 
   const { highlights } = await extractHighlights(question, searchItems, MAX_HIGHLIGHTS);
 
+  // All source-index provenance is built against the `fetched` view (only the
+  // documents we have content for), but the rendered ### Sources list and every
+  // emitted `[n]` index into the FULL `sources` array. Remap fetched-view
+  // indices back to the full array once so a leading unfetched row can't shift
+  // a citation by one. Reused for findings, cross-references, tradeoffs, and
+  // the citation graph.
+  const fetchedToFull = fetched.map((s) => sources.indexOf(s));
+
   const topics = buildTopics(subQueries, fetched);
-  const keyFindings = buildKeyFindings(fetched);
-  const crossReferences = detectCrossReferences(fetched);
+  const keyFindingsWithSource = buildKeyFindings(fetched);
+  const keyFindings = keyFindingsWithSource.map((f) => f.text);
+  const keyFindingSources = keyFindingsWithSource.map(
+    (f) => fetchedToFull[f.fetchedIdx],
+  );
+
+  const crossReferences = detectCrossReferences(fetched).map((ref) => ({
+    ...ref,
+    source_indices: ref.source_indices
+      .map((idx) => fetchedToFull[idx])
+      .filter((idx) => idx >= 0),
+  }));
+
   const gaps: Array<string | { entity: string; reason: string }> = [
     ...detectGaps(subQueries, fetched),
     ...detectEntityGaps(question, subQueries),
   ];
 
-  const comparison = queryType === 'comparison' && comparisonEntities.length >= 2
+  const rawComparison = queryType === 'comparison' && comparisonEntities.length >= 2
     ? buildComparisonSection(comparisonEntities, fetched)
     : undefined;
+  const comparison = rawComparison
+    ? {
+        ...rawComparison,
+        tradeoffs: rawComparison.tradeoffs.map((t) => ({
+          ...t,
+          source_index: fetchedToFull[t.source_index] ?? t.source_index,
+        })),
+      }
+    : undefined;
 
-  // citation_graph source_indices must align with the output
-  // `sources` array (0-based, full list including unfetched rows). We build
-  // the graph against the `fetched` view (only documents we have content
-  // for), then remap each index back into the original `sources` array so
-  // a caller can index `sources[entry.source_indices[i]]` directly.
+  // citation_graph source_indices must align with the output `sources` array
+  // (0-based, full list including unfetched rows), same as above.
   let citationGraph: ReturnType<typeof buildCitationGraph> | undefined;
   if (synthesisText && synthesisText.trim().length > 0 && fetched.length > 0) {
     const rawGraph = buildCitationGraph(
       synthesisText,
       fetched.map((s) => ({ url: s.url, title: s.title, markdown: s.markdown_content })),
     );
-    const fetchedToFullIndex = fetched.map((s) => sources.indexOf(s));
     citationGraph = rawGraph.map((entry) => ({
       ...entry,
       source_indices: entry.source_indices
-        .map((idx) => fetchedToFullIndex[idx])
+        .map((idx) => fetchedToFull[idx])
         .filter((idx) => idx >= 0),
     }));
   }
@@ -73,6 +97,7 @@ export async function buildResearchBrief(
     topics,
     highlights,
     key_findings: keyFindings,
+    key_finding_sources: keyFindingSources,
     per_source_char_cap: perSourceCharCap,
     total_sources_char_cap: totalSourcesCharCap,
     sections: {
@@ -101,18 +126,32 @@ function buildTopics(subQueries: string[], sources: ResearchSource[]): string[] 
 }
 
 // First substantive paragraph per source, trimmed to a finding-sized blurb.
-// Ordered by source relevance so the most-weighted finding is first.
-function buildKeyFindings(sources: ResearchSource[]): string[] {
-  const out: string[] = [];
-  for (const s of [...sources].sort((a, b) => b.relevance_score - a.relevance_score)) {
+// Ordered by source relevance so the most-weighted finding is first. Each
+// finding carries the index of the source it came from WITHIN the passed-in
+// (fetched) view, so the caller can attach per-claim provenance. Dedupe is
+// applied to the finding text, keeping the first (highest-relevance) source
+// for a repeated blurb so text and index stay aligned.
+function buildKeyFindings(
+  sources: ResearchSource[],
+): Array<{ text: string; fetchedIdx: number }> {
+  const ordered = sources
+    .map((s, fetchedIdx) => ({ s, fetchedIdx }))
+    .sort((a, b) => b.s.relevance_score - a.s.relevance_score);
+
+  const out: Array<{ text: string; fetchedIdx: number }> = [];
+  const seen = new Set<string>();
+  for (const { s, fetchedIdx } of ordered) {
     const first = firstSubstantiveParagraph(s.markdown_content);
     if (!first) continue;
     const trimmed = first.length > MAX_KEY_FINDING_LEN
       ? first.slice(0, MAX_KEY_FINDING_LEN - 1).trimEnd() + '…'
       : first;
-    out.push(trimmed);
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ text: trimmed, fetchedIdx });
   }
-  return dedupe(out);
+  return out;
 }
 
 export function detectCrossReferences(sources: ResearchSource[]): CrossReference[] {

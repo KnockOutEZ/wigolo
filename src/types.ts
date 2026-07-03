@@ -638,9 +638,10 @@ export interface CrossReference {
 
 /** A source-quoted comparison tradeoff: the actual sentence from a source that
  * pairs a compared entity with a comparison term, plus the index of the source
- * it came from (0-based into the brief's `fetched` view). Captured instead of a
- * bare keyword so the template renderer can quote a real, cited tradeoff rather
- * than fabricate directionality. */
+ * it came from (0-based into the full output `sources` array, so a renderer can
+ * cite `[source_index + 1]` against the ### Sources list). Captured instead of
+ * a bare keyword so the template renderer can quote a real, cited tradeoff
+ * rather than fabricate directionality. */
 export interface ComparisonTradeoff {
   text: string;
   source_index: number;
@@ -657,6 +658,13 @@ export interface ResearchBrief {
   topics: string[];
   highlights: Highlight[];
   key_findings: string[];
+  /** Provenance for `key_findings`: 0-based indices into the full output
+   * `sources` array, index-aligned to `key_findings`. Lets a renderer cite
+   * each finding `[n]` per-claim. Optional and parallel so the public
+   * `key_findings: string[]` shape stays unchanged (mirrors `citation_graph`
+   * as an auxiliary provenance structure). An entry may be absent or out of
+   * range when a finding's origin is unknown — renderers must fail open. */
+  key_finding_sources?: number[];
   per_source_char_cap: number;
   total_sources_char_cap: number;
   sections: {

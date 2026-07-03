@@ -243,4 +243,80 @@ describe('renderBriefReport', () => {
     // Our legitimate citation still survives.
     expect(md).toContain('[1]');
   });
+
+  // WHY: every rendered Key Findings bullet that has a known origin must carry
+  // a resolvable [n] into the ### Sources list so a reader can verify the claim
+  // per-bullet. Before this slice the dominant Key Findings section emitted
+  // uncited bullets, which is why most sources never resolved to an inline [n].
+  it('cites each key finding with [n] when key_finding_sources is present', () => {
+    const brief = mkBrief({
+      key_findings: ['Finding A about X.', 'Finding B about Y.'],
+      key_finding_sources: [0, 2],
+    });
+    const sources = [
+      mkSource({ url: 'https://a.com', title: 'Source A' }),
+      mkSource({ url: 'https://b.com', title: 'Source B' }),
+      mkSource({ url: 'https://c.com', title: 'Source C' }),
+    ];
+    const md = renderBriefReport('q', brief, sources);
+    // key_finding_sources[0]=0 -> [1]; [1]=2 -> [3]. Cited per-bullet.
+    expect(md).toMatch(/Finding A about X\.[^\n]*\[1\]/);
+    expect(md).toMatch(/Finding B about Y\.[^\n]*\[3\]/);
+  });
+
+  // WHY: fail-open per-bullet. A finding whose source index is out-of-range (or
+  // whose parallel array entry is missing) must render UNCITED — never with a
+  // fabricated [n] that points at a source that doesn't exist. Citation is
+  // keyed on whether THAT finding has a resolved index, not a query-wide flag.
+  it('renders a key finding uncited (no fabricated [n]) when its source index is out of range', () => {
+    const brief = mkBrief({
+      key_findings: ['Only finding with a bad index.'],
+      key_finding_sources: [5],
+    });
+    const sources = [
+      mkSource({ url: 'https://a.com', title: 'Source A' }),
+      mkSource({ url: 'https://b.com', title: 'Source B' }),
+    ];
+    const md = renderBriefReport('q', brief, sources);
+    const findingLine = md
+      .split('\n')
+      .find((l) => l.includes('Only finding with a bad index.'));
+    expect(findingLine).toBeDefined();
+    // No trailing citation of any kind on this bullet.
+    expect(findingLine).not.toMatch(/\[\d+\]/);
+    // The out-of-range index [6] must not appear anywhere.
+    expect(md).not.toContain('[6]');
+  });
+
+  // WHY: when the parallel array is absent entirely (older briefs / no
+  // provenance), bullets still render — just uncited. Additive field must be
+  // backwards compatible.
+  it('renders key findings uncited when key_finding_sources is undefined', () => {
+    const md = renderBriefReport('q', mkBrief(), [mkSource()]);
+    expect(md).toContain('### Key Findings');
+    const kfBlock = md.slice(md.indexOf('### Key Findings'));
+    const firstBullet = kfBlock.split('\n').find((l) => l.startsWith('- '));
+    expect(firstBullet).toBeDefined();
+    expect(firstBullet).not.toMatch(/\[\d+\]/);
+  });
+
+  // WHY: the heuristic Summary branch (fired for non-comparison queries with no
+  // tradeoffs) is the other dominant uncited surface. Its bullets are drawn
+  // from key_findings, so they must carry the same per-claim [n].
+  it('cites heuristic Summary bullets per-claim when no comparison tradeoffs', () => {
+    const brief = mkBrief({
+      query_type: 'general',
+      key_findings: ['Summary claim one.', 'Summary claim two.'],
+      key_finding_sources: [1, 0],
+    });
+    const sources = [
+      mkSource({ url: 'https://a.com', title: 'Source A' }),
+      mkSource({ url: 'https://b.com', title: 'Source B' }),
+    ];
+    const md = renderBriefReport('q', brief, sources);
+    expect(md).toContain('**Summary');
+    // Summary bullet for claim one is sourced at index 1 -> [2]; claim two -> [1].
+    expect(md).toMatch(/Summary claim one\.[^\n]*\[2\]/);
+    expect(md).toMatch(/Summary claim two\.[^\n]*\[1\]/);
+  });
 });
