@@ -8,7 +8,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { handleFetch } from '../../src/tools/fetch.js';
 import { initDatabase, closeDatabase } from '../../src/cache/db.js';
 import { resetConfig } from '../../src/config.js';
-import type { SmartRouter } from '../../src/fetch/router.js';
+import { SmartRouter } from '../../src/fetch/router.js';
+import type { HttpClient, BrowserPoolInterface, SmartRouter as SmartRouterType } from '../../src/fetch/router.js';
 import type { RawFetchResult } from '../../src/types.js';
 
 // Hand-rolled minimal "Hello, world!" PDF — same shape used in the unit
@@ -31,7 +32,7 @@ function helloPdfBuffer(): Buffer {
   return Buffer.from(HELLO_PDF_BASE64, 'base64');
 }
 
-function mockPdfRouter(pdfUrl: string): SmartRouter {
+function mockPdfRouter(pdfUrl: string): SmartRouterType {
   // Router stub that returns a raw PDF response for the arxiv-like URL.
   const router = {
     fetch: async (url: string): Promise<RawFetchResult> => {
@@ -58,7 +59,7 @@ function mockPdfRouter(pdfUrl: string): SmartRouter {
       };
     },
     getDomainStats: () => undefined,
-  } as unknown as SmartRouter;
+  } as unknown as SmartRouterType;
   return router;
 }
 
@@ -85,5 +86,41 @@ describe('handleFetch — PDF (C6 boundary)', () => {
     expect(data.markdown.length).toBeGreaterThan(0);
     expect(data.markdown.toLowerCase()).toContain('hello');
     expect(data.http_status).toBe(200);
+  });
+
+  it('a .pdf on a preferPlaywright host is buffered by the byte tier, never handed to the browser', async () => {
+    // Real SmartRouter routing (not a fully stubbed fetch). react.dev is a
+    // known-SPA domain → starts preferPlaywright, so without the extension
+    // pre-sniff a .pdf would route to Playwright, which throws on a download.
+    // The pre-sniff must force HTTP so the PDF round-trips its extracted text.
+    const url = 'https://react.dev/papers/hooks.pdf';
+    const browserCalls: string[] = [];
+
+    const httpClient: HttpClient = {
+      fetch: async (u) => ({
+        url: u,
+        finalUrl: u,
+        html: '',
+        contentType: 'application/pdf',
+        statusCode: 200,
+        headers: { 'content-type': 'application/pdf' },
+        rawBuffer: helloPdfBuffer(),
+      }),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: async (u) => {
+        browserCalls.push(u);
+        throw new Error('Download is starting');
+      },
+    };
+    const router = new SmartRouter(httpClient, browserPool);
+
+    const out = await handleFetch({ url }, router);
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.data.markdown.length).toBeGreaterThan(0);
+    expect(out.data.markdown.toLowerCase()).toContain('hello');
+    expect(browserCalls).toEqual([]); // browser tier never touched
   });
 });

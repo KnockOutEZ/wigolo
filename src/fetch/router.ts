@@ -153,6 +153,27 @@ interface DomainStats {
   preferPlaywright: boolean;
 }
 
+// Path extensions that a browser treats as a file download rather than a
+// navigable document. Chromium fires a download event / throws "Download is
+// starting" on these, so they must be buffered by the byte tier instead of
+// being handed to Playwright. Pattern-level (extension set), NOT a site list.
+const BINARY_DOWNLOAD_EXTENSIONS = [
+  '.pdf', '.zip',
+  '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+];
+
+// True when the URL's pathname ends in a known binary-download extension.
+// Returns false (never throws) for malformed URLs.
+export function looksLikeBinaryDownload(url: string): boolean {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return BINARY_DOWNLOAD_EXTENSIONS.some((ext) => pathname.endsWith(ext));
+}
+
 function isKnownSpaDomain(host: string): boolean {
   const lower = host.toLowerCase();
   if (KNOWN_SPA_DOMAINS.has(lower)) return true;
@@ -388,6 +409,21 @@ export class SmartRouter {
         logger.info('known-SPA domain served substantive HTTP via render_js:never — downgrading prefer-chromium', { url, domain });
         neverStats.preferPlaywright = false;
       }
+      return this.toRawFetchResult(result);
+    }
+
+    // Binary downloads (PDF/zip/office docs) must go to the byte tier: the
+    // HTTP/TLS tiers buffer them into rawBuffer, but a browser treats a
+    // download response as a "Download is starting" hard error. Force HTTP when
+    // the URL looks like a binary download. Explicit browser requests
+    // (renderJs='always' / useAuth / actions) already returned above and are
+    // honored; renderJs='never' is already HTTP-only — so this only affects the
+    // implicit auto path where the domain might otherwise prefer Playwright.
+    if (looksLikeBinaryDownload(url)) {
+      if (!this.httpClient) throw new Error('SmartRouter: httpClient not configured');
+      logger.debug('routing to http (binary download)', { url });
+      const result = await this.httpClient.fetch(url, { headers, conditionalHeaders, signal });
+      this.ensureStats(domain);
       return this.toRawFetchResult(result);
     }
 
