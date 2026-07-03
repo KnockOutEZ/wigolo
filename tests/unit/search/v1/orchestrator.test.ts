@@ -784,9 +784,17 @@ describe('runV1Search — degraded fallback to general', () => {
   });
 
   it('does not fall back when the original vertical succeeds', async () => {
+    // Return enough results (≥ the starvation floor) that neither the
+    // query-wide degraded fallback nor the partial-starvation backfill fires —
+    // a healthy, well-populated vertical must not touch the general pool.
     const codeOk = makeEntry({
       name: 'github-code',
-      results: [makeResult('github-code', 'https://gh.test/code')],
+      results: [
+        makeResult('github-code', 'https://gh.test/code1'),
+        makeResult('github-code', 'https://gh.test/code2'),
+        makeResult('github-code', 'https://gh.test/code3'),
+        makeResult('github-code', 'https://gh.test/code4'),
+      ],
     });
     verticalState.code = [codeOk.entry];
 
@@ -818,6 +826,181 @@ describe('runV1Search — degraded fallback to general', () => {
 
     const out = await runV1Search({ query: 'fix python regex' });
     expect(out.vertical).toBe('general');
+  });
+});
+
+describe('runV1Search — per-result starvation re-dispatch', () => {
+  // A non-general vertical that returns fewer than the starvation floor must
+  // pull in the general pool and RRF-merge, rather than shipping a near-empty
+  // set. This is distinct from the query-wide degraded fallback (which only
+  // fires when the vertical returns ZERO). WHY: a vertical with a thin engine
+  // pool (e.g. papers = arxiv only) starves on any query it doesn't index; the
+  // caller still deserves web recall. pool_degraded surfaces that it happened.
+  it('re-dispatches to general and merges when a vertical returns below the floor', async () => {
+    const papersThin = makeEntry({
+      name: 'arxiv',
+      results: [makeResult('arxiv', 'https://arxiv.org/abs/only')],
+    });
+    verticalState.papers = [papersThin.entry];
+
+    const generalRich = makeEntry({
+      name: 'bing',
+      results: [
+        makeResult('bing', 'https://example.com/g1'),
+        makeResult('bing', 'https://example.com/g2'),
+        makeResult('bing', 'https://example.com/g3'),
+        makeResult('bing', 'https://example.com/g4'),
+      ],
+    });
+    verticalState.general = [generalRich.entry];
+
+    const out = await runV1Search({
+      query: 'arxiv quantum error correction surface code',
+      maxResults: 10,
+    });
+
+    expect(out.vertical).toBe('papers');
+    // The general pool must have been dispatched to backfill the thin vertical.
+    expect(generalRich.spy).toHaveBeenCalled();
+    const urls = out.results.map((r) => r.url);
+    expect(urls).toContain('https://arxiv.org/abs/only');
+    // At least one general-only URL merged in.
+    expect(urls.some((u) => u.startsWith('https://example.com/g'))).toBe(true);
+    expect(out.pool_degraded).toBeDefined();
+    expect(out.pool_degraded?.reasons).toContain('starvation_redispatch');
+  });
+
+  it('does NOT re-dispatch to general when the vertical is already well-populated', async () => {
+    const codeRich = makeEntry({
+      name: 'github-code',
+      results: Array.from({ length: 12 }, (_, i) =>
+        makeResult('github-code', `https://gh.test/${i}`),
+      ),
+    });
+    verticalState.code = [codeRich.entry];
+
+    const generalSpy = makeEntry({ name: 'bing', results: [makeResult('bing', 'https://example.com/g')] });
+    verticalState.general = [generalSpy.entry];
+
+    const out = await runV1Search({ query: 'fix typescript error', maxResults: 5 });
+    expect(out.vertical).toBe('code');
+    expect(generalSpy.spy).not.toHaveBeenCalled();
+    expect(out.pool_degraded).toBeUndefined();
+  });
+
+  it('does NOT re-dispatch for the general vertical (nowhere to fall back to)', async () => {
+    const thin = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://example.com/one')],
+    });
+    verticalState.general = [thin.entry];
+
+    const out = await runV1Search({ query: 'some sparse query', maxResults: 10 });
+    expect(out.vertical).toBe('general');
+    // Called exactly once (the initial dispatch), not a second starvation wave.
+    expect(thin.spy).toHaveBeenCalledOnce();
+    expect(out.pool_degraded).toBeUndefined();
+  });
+
+  it('does not double-count a URL a shared engine returns in both waves', async () => {
+    // code + general share an engine name (duckduckgo). A thin code vertical
+    // triggers the starvation re-dispatch to general, where the SAME engine
+    // returns the SAME URL again. WHY: without per-(engine,url) dedupe across
+    // waves the shared URL's RRF contribution + engine_consensus would be
+    // summed twice, inflating its rank on a wasted duplicate. Consensus for a
+    // URL only that one engine returned must stay 1.
+    const sharedUrl = 'https://shared.test/doc';
+    const codeDdg = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', sharedUrl)],
+    });
+    verticalState.code = [codeDdg.entry];
+
+    const generalDdg = makeEntry({
+      name: 'duckduckgo',
+      results: [
+        makeResult('duckduckgo', sharedUrl),
+        makeResult('duckduckgo', 'https://general.test/other'),
+      ],
+    });
+    verticalState.general = [generalDdg.entry];
+
+    const out = await runV1Search({ query: 'fix typescript error', maxResults: 10 });
+    // Starvation fired (thin code vertical).
+    expect(generalDdg.spy).toHaveBeenCalled();
+    const shared = out.results.find((r) => r.url === sharedUrl);
+    expect(shared).toBeDefined();
+    // Only duckduckgo returned this URL, across two waves — counted once.
+    expect(shared!.evidence_score?.components.engine_consensus).toBe(1);
+    // The URL appears exactly once (dedup intact).
+    expect(out.results.filter((r) => r.url === sharedUrl)).toHaveLength(1);
+  });
+});
+
+describe('runV1Search — news undated demotion', () => {
+  // When a caller sets an explicit recency window on a news query, an undated
+  // page must lose slots to a dated in-window page — but must NOT be dropped
+  // (recall must not collapse to only dated results). WHY: an undated homepage
+  // is weaker evidence than a dated release note for a "latest X" query, yet
+  // dropping undated entirely nukes recall.
+  //
+  // The setup ISOLATES the ×0.3 undated demotion from the pre-existing recency
+  // BOOST: the undated result comes from a heavier engine (weight 2) at rank 1,
+  // the dated result from a lighter engine (weight 1) and is deliberately near
+  // the window edge (~29 days old, TAU_DAYS=30 → recency boost ~1.37). Weight-2
+  // undated (base 2/61) beats weight-1 dated even after that boost
+  // (1/61 × 1.37), so recency ALONE keeps undated first. ONLY the ×0.3 demotion
+  // can flip the order. Neutralising undatedMul→1.0 therefore breaks this test.
+  // Neutral hosts + identical titles/snippets keep domain-quality + lexical
+  // alignment equal across the two results so the demotion is the sole variable.
+  it('demotes an undated news result below a dated in-window result', async () => {
+    const now = Date.now();
+    const DAY = 86_400_000;
+    // 29 days old: in-window (time_range=month ≈ 30d) but far enough that the
+    // recency boost is near its in-window floor (~1.37), not the ~1.9 of a
+    // 2-day-old page.
+    const nearEdge = new Date(now - 29 * DAY).toISOString().slice(0, 10);
+
+    const undated = makeResult('undated-eng', 'https://example.com/undated-home', 'Kernel release notes');
+    const dated = makeResult('dated-eng', 'https://example.org/dated-release', 'Kernel release notes');
+    dated.published_date = nearEdge;
+
+    const undatedEngine = makeEntry({
+      name: 'undated-eng',
+      weight: 2,
+      results: [undated],
+    });
+    const datedEngine = makeEntry({
+      name: 'dated-eng',
+      weight: 1,
+      results: [dated],
+    });
+    verticalState.news = [undatedEngine.entry, datedEngine.entry];
+
+    const out = await runV1Search({
+      query: 'latest kernel LTS release',
+      category: 'news',
+      timeRange: 'month',
+      maxResults: 10,
+    });
+
+    const byUrl = new Map(out.results.map((r) => [r.url, r]));
+    // Both survive (recall preserved — undated is demoted, not dropped).
+    expect(byUrl.has('https://example.org/dated-release')).toBe(true);
+    expect(byUrl.has('https://example.com/undated-home')).toBe(true);
+    const urls = out.results.map((r) => r.url);
+    const datedIdx = urls.indexOf('https://example.org/dated-release');
+    const undatedIdx = urls.indexOf('https://example.com/undated-home');
+    // Dated ranks first — a flip that only the ×0.3 undated demotion can cause,
+    // since the weight-2 undated result out-bases the boosted weight-1 dated one.
+    expect(datedIdx).toBeLessThan(undatedIdx);
+    // Numeric isolation: undated is suppressed well below the dated result.
+    // Without the demotion the weight-2 undated result would score ABOVE the
+    // dated one (ratio ~1.4); the ×0.3 drives the ratio under 0.6.
+    const ratio =
+      byUrl.get('https://example.com/undated-home')!.relevance_score /
+      byUrl.get('https://example.org/dated-release')!.relevance_score;
+    expect(ratio).toBeLessThan(0.6);
   });
 });
 

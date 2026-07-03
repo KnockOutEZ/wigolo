@@ -157,8 +157,15 @@ describe('search pipeline filtering (core provider)', () => {
   // by seeding only the code vertical and confirming its engine fired (and
   // the general vertical's did not) when category: 'code' is requested.
   it('routes category to the matching vertical engines', async () => {
+    // Seed the code vertical with enough results that the partial-starvation
+    // backfill does not fire — otherwise a thin vertical would legitimately
+    // pull in general, which is a different behaviour than the routing this
+    // test protects.
     const codeEng = makeEntry('github-code', [
       makeResult('github-code', 'https://github.com/x/y'),
+      makeResult('github-code', 'https://github.com/x/z'),
+      makeResult('github-code', 'https://github.com/x/w'),
+      makeResult('github-code', 'https://github.com/x/v'),
     ]);
     const generalEng = makeEntry('bing', [
       makeResult('bing', 'https://example.com/a'),
@@ -239,6 +246,59 @@ describe('search pipeline filtering (core provider)', () => {
         includeDomains: ['react.dev', 'github.com'],
       }),
     );
+  });
+
+  // 6b. With a small include_domains set the orchestrator also injects a
+  // site:-scoped operator into the dispatched query string so engines that
+  // honour `site:` narrow at the source, not just post-filter after fusion.
+  it('injects a site: operator into the dispatched query for a small include_domains set', async () => {
+    const eng = makeEntry('bing', [makeResult('bing', 'https://react.dev/learn')]);
+    verticalState.general = [eng.entry];
+
+    await handleSearch(
+      { query: 'react hooks', include_domains: ['react.dev'], include_content: false },
+      [],
+      fakeRouter,
+    );
+
+    const dispatchedQueries = eng.search.mock.calls.map((c) => c[0] as string);
+    expect(dispatchedQueries.some((q) => q.includes('site:react.dev'))).toBe(true);
+  });
+
+  // 9. Starvation re-dispatch survives the full tool-boundary pipeline. A thin
+  // code vertical (1 hit, below the starvation floor) backfills from general;
+  // the merged general URL must survive fuseRankedLists → context-rank →
+  // score-floor → slice to the handleSearch result, and engine_pool must carry
+  // the starvation reason. WHY: the integration-surface invariant — a module
+  // behind an MCP tool needs a test at the tool boundary, not just a unit test.
+  it('surfaces a starvation-merged general URL and engine_pool at the tool boundary', async () => {
+    const codeThin = makeEntry('github-code', [
+      makeResult('github-code', 'https://github.com/x/only'),
+    ]);
+    const generalRich = makeEntry('bing', [
+      makeResult('bing', 'https://example.com/g1'),
+      makeResult('bing', 'https://example.com/g2'),
+      makeResult('bing', 'https://example.com/g3'),
+    ]);
+    verticalState.code = [codeThin.entry];
+    verticalState.general = [generalRich.entry];
+
+    const r = await handleSearch(
+      { query: 'fix typescript error', max_results: 10, include_content: false },
+      [],
+      fakeRouter,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const urls = r.data.results.map((x) => x.url);
+    expect(urls).toContain('https://github.com/x/only');
+    // A general-only URL merged through the full pipeline to the final result.
+    expect(urls.some((u) => u.startsWith('https://example.com/g'))).toBe(true);
+    // engine_pool is populated at the tool boundary and carries the reason.
+    expect(r.data.engine_pool).toBeDefined();
+    expect(r.data.engine_pool!.total).toBeGreaterThan(0);
+    expect(r.data.engine_pool!.degraded).toBe(true);
+    expect(r.data.engine_pool!.reasons).toContain('starvation_redispatch');
   });
 
   // 7. exclude_domains is likewise threaded into the engine search options.

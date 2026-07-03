@@ -1,11 +1,16 @@
 import type {
+  EnginePoolHealth,
   EvidenceScore,
   RawSearchResult,
   ScoreBreakdown,
   SearchEngineOptions,
 } from '../../types.js';
 import { createLogger } from '../../logger.js';
-import { classifyIntentDetailed, type Vertical } from './intent-router.js';
+import {
+  classifyIntentDetailed,
+  extractErrorTokens,
+  type Vertical,
+} from './intent-router.js';
 import {
   runEnginesParallel,
   type EngineEntry,
@@ -74,6 +79,49 @@ const log = createLogger('search');
 const RRF_K = 60;
 const DEFAULT_MAX_RESULTS = 10;
 const DEFAULT_TIMEOUT_MS = 10_000;
+// A non-general vertical returning fewer than this after fusion is starved:
+// its engine pool is too thin for the query. We backfill from the general
+// pool rather than shipping a near-empty set.
+const STARVATION_FLOOR = 3;
+// Undated results on a recency-bound query are kept but demoted so dated,
+// in-window pages win the top slots without collapsing recall.
+const UNDATED_DEMOTION = 0.3;
+
+// Wrap every error/status-code token in the query in double quotes in place so
+// engines treat the code as one atom (substring matching on an unquoted code
+// lets glossary/definition junk rank). Idempotent: already-quoted tokens are
+// left alone.
+function quoteErrorTokens(query: string): string {
+  const tokens = extractErrorTokens(query);
+  if (tokens.length === 0) return query;
+  let out = query;
+  for (const tok of tokens) {
+    // Replace the bare token (not one already inside quotes) with a quoted form.
+    const re = new RegExp(`(?<!")\\b${escapeRegExp(tok)}\\b(?!")`, 'g');
+    out = out.replace(re, `"${tok}"`);
+  }
+  return out;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Build a `site:` operator group for engines that honour it, e.g.
+// ` (site:a.com OR site:b.com)`. Only emitted for a small domain set —
+// beyond that the operator string bloats and some engines choke.
+const MAX_SITE_SCOPE_DOMAINS = 3;
+function siteScopeSuffix(includeDomains?: string[]): string {
+  if (!includeDomains?.length || includeDomains.length > MAX_SITE_SCOPE_DOMAINS) {
+    return '';
+  }
+  const clauses = includeDomains
+    .map((d) => d.trim().replace(/^\./, ''))
+    .filter(Boolean)
+    .map((d) => `site:${d}`);
+  if (clauses.length === 0) return '';
+  return clauses.length === 1 ? ` ${clauses[0]}` : ` (${clauses.join(' OR ')})`;
+}
 
 export interface OrchestratorInput {
   query: string;
@@ -109,6 +157,11 @@ export interface OrchestratorOutput {
   enginesUsed: string[];
   outcomes: EngineOutcome[];
   degraded: boolean;
+  /** Set when the engine pool degraded during this dispatch — e.g. a thin
+   * vertical starved and was backfilled from the general pool. Carries the
+   * merged engine count + the reasons that fired. Consumed by core-provider,
+   * which surfaces it as SearchOutput.engine_pool. */
+  pool_degraded?: EnginePoolHealth;
 }
 
 function getEntriesForVertical(vertical: Vertical): EngineEntry[] {
@@ -204,11 +257,18 @@ export async function runV1Search(
     };
   }
 
-  // exact_match: quote the query for engines that honour `"..."`. Strip any
-  // existing surrounding quotes so we don't double-wrap.
+  // exact_match: quote the whole query for engines that honour `"..."`. Strip
+  // any existing surrounding quotes so we don't double-wrap. Otherwise, quote
+  // any code-shaped tokens in place so a code is matched as one atom and
+  // glossary/definition junk can't rank on a bare substring match. This uses
+  // the BROAD token set (quoting an acronym is benign); docs-suppression and
+  // dictionary demotion gate on the STRICT queryHasErrorToken instead.
+  const hasQuotableToken = extractErrorTokens(query).length > 0;
   const engineQuery = input.exactMatch
     ? `"${query.replace(/^"|"$/g, '')}"`
-    : query;
+    : hasQuotableToken
+      ? quoteErrorTokens(query)
+      : query;
   const exactPhrase = input.exactMatch
     ? query.replace(/^"|"$/g, '').toLowerCase()
     : '';
@@ -260,153 +320,196 @@ export async function runV1Search(
     hasDateBound,
   });
 
-  const outcomes = await runEnginesParallel(entries, engineQuery, options);
+  // Initial dispatch: engineQuery carries the error-token quoting (if any). For
+  // a small include_domains set we additionally inject a `site:` operator group
+  // so engines that honour it narrow at the source; applyDomainFilters below is
+  // still the hard post-filter safety net.
+  const primaryDispatchQuery = engineQuery + siteScopeSuffix(input.includeDomains);
+  const outcomes = await runEnginesParallel(entries, primaryDispatchQuery, options);
 
   const wantsRecency =
     vertical === 'news' || hasDateBound || hasTemporalIntent(query);
+  // Undated results are demoted (not dropped) when the caller set an explicit
+  // recency window on a recency-sensitive query: news vertical, or a caller
+  // date bound / temporal-intent query. Keeps recall while letting dated
+  // in-window pages win the top slots.
+  const demoteUndated = hasDateBound && wantsRecency;
 
-  // Per-engine dedup, then RRF with per-entry weights and optional recency boost.
-  //
-  // S11c sub-area 2: keys are CANONICAL urls (canonicalizeUrl strips utm,
-  // AMP, mobile subdomain, trailing slash, http vs https) so two engines
-  // emitting different variants of the same underlying page fuse into a
-  // single RRF entry instead of splitting consensus across rows. The
-  // original first-seen url is preserved on the result object so downstream
-  // formatting, citations, and links keep the human-friendly form.
-  const fused = new Map<string, number>();
-  const urlToResult = new Map<string, RawSearchResult>();
-  // Track per-canonical-key contributor counts so we can flag results that
-  // came only from secondary engines (see sub-ticket 2.2).
-  const urlPrimaryCount = new Map<string, number>();
-  const urlSecondaryCount = new Map<string, number>();
-  // exact_match phrase awareness: record every canonical key
-  // where at least one contributing engine's title+snippet contained the
-  // exact phrase.
-  const urlExactMatchHit = new Set<string>();
-  function canonKey(url: string): string {
+  const canonKey = (url: string): string => {
     try {
       return canonicalizeUrl(url);
     } catch {
       return url;
     }
-  }
-
-  for (let i = 0; i < outcomes.length; i++) {
-    const outcome = outcomes[i];
-    if (!outcome.ok || outcome.results.length === 0) continue;
-    const dedupedResults = dedupWithinEngine(outcome.results);
-    // Replace results in outcome to keep telemetry consistent with what we fused.
-    outcome.results = dedupedResults;
-
-    // S11c: tier-based weights take precedence over the legacy numeric
-    // `weight`. Falls back to the per-vertical numeric weight when no
-    // quality tier is set, preserving existing behaviour for engines that
-    // haven't been classified by S11b yet.
-    const weight = resolveEngineWeight(
-      entries[i].engine.name,
-      entries[i].weight,
-      entries[i].quality,
-    );
-    const isSecondary = entries[i].secondary === true;
-    for (let j = 0; j < dedupedResults.length; j++) {
-      const r = dedupedResults[j];
-      const rank = j + 1;
-      const base = weight / (RRF_K + rank);
-      const recMul = wantsRecency ? recencyMultiplier(r.published_date) : 1.0;
-      const key = canonKey(r.url);
-      fused.set(key, (fused.get(key) ?? 0) + base * recMul);
-      if (!urlToResult.has(key)) {
-        urlToResult.set(key, r);
-      }
-      if (isSecondary) {
-        urlSecondaryCount.set(key, (urlSecondaryCount.get(key) ?? 0) + 1);
-      } else {
-        urlPrimaryCount.set(key, (urlPrimaryCount.get(key) ?? 0) + 1);
-      }
-      if (exactPhrase) {
-        const hay = `${r.title} ${r.snippet}`.toLowerCase();
-        if (hay.includes(exactPhrase)) urlExactMatchHit.add(key);
-      }
-    }
-  }
-
-  // Write the raw RRF score (small, ~0.016 range) into relevance_score so
-  // downstream additive boosters (authority) dominate engine arrival order.
-  // Final score is renormalized to [0,1] after boosting + sort.
-  let merged: RawSearchResult[] = [...fused.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([key, score]) => {
-      const base = urlToResult.get(key);
-      return base ? { ...base, relevance_score: score } : undefined;
-    })
-    .filter((r): r is RawSearchResult => r !== undefined);
+  };
 
   const rare = detectRareTerms(query);
   const hasRareTerms = rare.compoundTokens.length > 0 || rare.conceptPhrase !== null;
-  // Cap generic authority per-result for rare-term MISSES only (results that
-  // don't contain the query's compounds / phrase). Hits keep full authority, so
-  // a legitimately on-topic high-authority page is never demoted.
-  const capUrls = hasRareTerms
-    ? new Set(merged.filter((r) => isRareTermMiss(r, rare)).map((r) => r.url))
-    : undefined;
-  merged = applyAuthorityBoost(query, merged, { capUrls });
-  merged = applyBrandCollisionGuard(query, merged);
-
-  // Brand-collision rank (sub-ticket 2.1): damp brand-domain matches and
-  // results whose surface text has near-zero overlap with the query before
-  // the threshold cut. Without this, `next.co.uk` for a `next.js` query
-  // pre-normalises higher than `nextjs.org` and post-normalises to 1.0.
   const breakdowns = input.includeScoreBreakdown
     ? new Map<string, ScoreBreakdown>()
     : undefined;
   // Sub-ticket 3.8: explainable per-result score breakdown, always emitted.
   const evidenceScores = new Map<string, EvidenceScore>();
-  merged = merged.map((r) => {
-    // S11c: per-URL maps are keyed by canonical url. Re-derive the key from
-    // the result's first-seen url so the count lookups hit the same bucket
-    // that the ingest loop wrote.
-    const key = canonKey(r.url);
-    const base = r.relevance_score;
-    const dq = domainQualityScore(r.url, vertical, query);
-    const la = lexicalAlignment(query, r.title, r.snippet);
-    const primaryCount = urlPrimaryCount.get(key) ?? 0;
-    const secondaryCount = urlSecondaryCount.get(key) ?? 0;
-    const isSecondaryOnly = primaryCount === 0 && secondaryCount > 0;
-    const secondaryPenalty = isSecondaryOnly && la < 0.5 ? 0.3 : 1.0;
-    const recencyMul = wantsRecency ? recencyMultiplier(r.published_date) : 1.0;
-    const rtf = rareTermFactor({ title: r.title, url: r.url, snippet: r.snippet }, rare);
-    const final = base * dq * (0.5 + 0.5 * la) * secondaryPenalty * rtf;
-    if (breakdowns) {
-      breakdowns.set(r.url, {
-        base,
-        domain_quality: dq,
-        lexical_alignment: la,
-        final,
-      });
-    }
-    evidenceScores.set(r.url, {
-      final,
-      components: {
-        base_rrf: base,
-        context_cosine: 0,
-        domain_quality: dq,
-        lexical_alignment: la,
-        recency_boost: recencyMul,
-        engine_consensus: primaryCount + secondaryCount,
-        rare_terms: rtf,
-      },
-      explanation: explainEvidence({
-        base,
-        dq,
-        la,
-        recencyMul,
-        engineConsensus: primaryCount + secondaryCount,
-      }),
-    });
-    return { ...r, relevance_score: final };
-  });
+  // exact_match phrase awareness: canonical keys whose contributing engine's
+  // title+snippet contained the exact phrase. Hoisted so the post-fusion
+  // exact-phrase filter can read it; repopulated on each scoreOutcomes call.
+  const urlExactMatchHit = new Set<string>();
 
-  merged.sort((a, b) => b.relevance_score - a.relevance_score);
+  // Fuse + score a set of engine outcomes into a sorted result list. Rebuilt
+  // from scratch each call so a backfill / starvation wave that appends more
+  // outcomes re-runs RRF + the full score map over the combined set (per-result
+  // merge, not a naive concat). `entryList` must be positionally aligned with
+  // `outcomeList` so per-engine weight/secondary metadata lines up.
+  function scoreOutcomes(
+    outcomeList: EngineOutcome[],
+    entryList: EngineEntry[],
+  ): RawSearchResult[] {
+    const fused = new Map<string, number>();
+    const urlToResult = new Map<string, RawSearchResult>();
+    const urlPrimaryCount = new Map<string, number>();
+    const urlSecondaryCount = new Map<string, number>();
+    urlExactMatchHit.clear();
+    // A shared engine (e.g. DuckDuckGo, Brave) can dispatch across more than
+    // one wave — the vertical pool plus the domain-backfill / starvation
+    // re-dispatch. Count each (engine, canonical-url) pair ONCE (first, best-
+    // rank occurrence wins) so a URL a shared engine returns in two waves
+    // doesn't get its RRF contribution + consensus double-summed.
+    const countedByEngine = new Set<string>();
+
+    for (let i = 0; i < outcomeList.length; i++) {
+      const outcome = outcomeList[i];
+      if (!outcome.ok || outcome.results.length === 0) continue;
+      const dedupedResults = dedupWithinEngine(outcome.results);
+      outcome.results = dedupedResults;
+      const engineName = entryList[i].engine.name;
+      const weight = resolveEngineWeight(
+        engineName,
+        entryList[i].weight,
+        entryList[i].quality,
+      );
+      const isSecondary = entryList[i].secondary === true;
+      for (let j = 0; j < dedupedResults.length; j++) {
+        const r = dedupedResults[j];
+        const rank = j + 1;
+        const base = weight / (RRF_K + rank);
+        const recMul = wantsRecency ? recencyMultiplier(r.published_date) : 1.0;
+        const key = canonKey(r.url);
+        const engineUrlKey = `${engineName} ${key}`;
+        if (countedByEngine.has(engineUrlKey)) {
+          // Same engine already contributed this URL in an earlier wave —
+          // still record first-seen result/exact-phrase, but don't re-sum.
+          if (!urlToResult.has(key)) urlToResult.set(key, r);
+          continue;
+        }
+        countedByEngine.add(engineUrlKey);
+        fused.set(key, (fused.get(key) ?? 0) + base * recMul);
+        if (!urlToResult.has(key)) urlToResult.set(key, r);
+        if (isSecondary) {
+          urlSecondaryCount.set(key, (urlSecondaryCount.get(key) ?? 0) + 1);
+        } else {
+          urlPrimaryCount.set(key, (urlPrimaryCount.get(key) ?? 0) + 1);
+        }
+        if (exactPhrase) {
+          const hay = `${r.title} ${r.snippet}`.toLowerCase();
+          if (hay.includes(exactPhrase)) urlExactMatchHit.add(key);
+        }
+      }
+    }
+
+    // Write the raw RRF score (small, ~0.016 range) into relevance_score so
+    // downstream additive boosters (authority) dominate engine arrival order.
+    let scored: RawSearchResult[] = [...fused.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([key, score]) => {
+        const base = urlToResult.get(key);
+        return base ? { ...base, relevance_score: score } : undefined;
+      })
+      .filter((r): r is RawSearchResult => r !== undefined);
+
+    // Cap generic authority per-result for rare-term MISSES only.
+    const capUrls = hasRareTerms
+      ? new Set(scored.filter((r) => isRareTermMiss(r, rare)).map((r) => r.url))
+      : undefined;
+    scored = applyAuthorityBoost(query, scored, { capUrls });
+    scored = applyBrandCollisionGuard(query, scored);
+
+    if (breakdowns) breakdowns.clear();
+    evidenceScores.clear();
+    scored = scored.map((r) => {
+      const key = canonKey(r.url);
+      const base = r.relevance_score;
+      const dq = domainQualityScore(r.url, vertical, query);
+      const la = lexicalAlignment(query, r.title, r.snippet);
+      const primaryCount = urlPrimaryCount.get(key) ?? 0;
+      const secondaryCount = urlSecondaryCount.get(key) ?? 0;
+      const isSecondaryOnly = primaryCount === 0 && secondaryCount > 0;
+      const secondaryPenalty = isSecondaryOnly && la < 0.5 ? 0.3 : 1.0;
+      const recencyMul = wantsRecency ? recencyMultiplier(r.published_date) : 1.0;
+      // Demote undated results on a recency-bound query so dated in-window
+      // pages outrank them, without dropping them (recall preserved).
+      const undatedMul = demoteUndated && !r.published_date ? UNDATED_DEMOTION : 1.0;
+      const rtf = rareTermFactor({ title: r.title, url: r.url, snippet: r.snippet }, rare);
+      const final = base * dq * (0.5 + 0.5 * la) * secondaryPenalty * rtf * undatedMul;
+      if (breakdowns) {
+        breakdowns.set(r.url, {
+          base,
+          domain_quality: dq,
+          lexical_alignment: la,
+          final,
+        });
+      }
+      evidenceScores.set(r.url, {
+        final,
+        components: {
+          base_rrf: base,
+          context_cosine: 0,
+          domain_quality: dq,
+          lexical_alignment: la,
+          recency_boost: recencyMul,
+          engine_consensus: primaryCount + secondaryCount,
+          rare_terms: rtf,
+        },
+        explanation: explainEvidence({
+          base,
+          dq,
+          la,
+          recencyMul,
+          engineConsensus: primaryCount + secondaryCount,
+        }),
+      });
+      return { ...r, relevance_score: final };
+    });
+
+    scored.sort((a, b) => b.relevance_score - a.relevance_score);
+    return scored;
+  }
+
+  // Accumulate outcomes + their aligned entries across dispatch waves so the
+  // score map fuses every wave per-result rather than concatenating.
+  const allOutcomes: EngineOutcome[] = [...outcomes];
+  const wavedEntries: EngineEntry[] = [...entries];
+
+  // Dispatch-level domain scoping starves the on-domain set (site: narrows
+  // recall). When the primary wave used a site-scoped query and the post-filter
+  // survivors fall short of maxResults, run one broad backfill wave (no site:
+  // scoping) and re-apply the hard filter — refilling with on-domain survivors
+  // the narrow wave missed.
+  const requestedMax = input.maxResults ?? DEFAULT_MAX_RESULTS;
+  const siteScoped = siteScopeSuffix(input.includeDomains) !== '';
+  if (siteScoped) {
+    const preBackfill = applyDomainFilters(
+      scoreOutcomes(allOutcomes, wavedEntries),
+      input.includeDomains,
+      input.excludeDomains,
+    );
+    if (preBackfill.length < requestedMax) {
+      const backfillOutcomes = await runEnginesParallel(entries, engineQuery, options);
+      allOutcomes.push(...backfillOutcomes);
+      wavedEntries.push(...entries);
+    }
+  }
+
+  let merged = scoreOutcomes(allOutcomes, wavedEntries);
 
   merged = applyDomainFilters(merged, input.includeDomains, input.excludeDomains);
 
@@ -430,13 +533,73 @@ export async function runV1Search(
     // (kept by urlToResult, first-seen wins) didn't have the phrase but
     // another engine's variant did.
     merged = merged.filter((r) => {
-      if (urlExactMatchHit.has(canonKey(r.url))) return true;
+      const key = canonKey(r.url);
+      if (urlExactMatchHit.has(key)) return true;
       const hay = `${r.title} ${r.snippet}`.toLowerCase();
       return hay.includes(exactPhrase);
     });
   }
 
-  const maxResults = input.maxResults ?? DEFAULT_MAX_RESULTS;
+  // Per-result starvation re-dispatch: a non-general/non-images vertical that
+  // fused fewer than STARVATION_FLOOR (and below the requested max) has a pool
+  // too thin for the query. Pull the general pool with the SAME query+options
+  // and RRF-merge its results in per-result (re-run the score map over the
+  // combined outcomes). Gated on post-fusion COUNT, distinct from the query-
+  // wide degraded fallback below (which only fires at zero results).
+  let poolDegraded: EnginePoolHealth | undefined;
+  const starvationFloor = Math.min(requestedMax, STARVATION_FLOOR);
+  // Partial-starvation only: the vertical returned SOME results but fewer than
+  // the floor. A zero-result vertical is left to the query-wide degraded
+  // fallback below (which re-runs as general AND reports vertical='general'),
+  // so the two paths don't both fire on the same empty vertical.
+  if (
+    merged.length > 0 &&
+    merged.length < starvationFloor &&
+    vertical !== 'general' &&
+    vertical !== 'images' &&
+    !opts._isFallback
+  ) {
+    const generalEntries = getGeneralEngines();
+    if (generalEntries.length > 0) {
+      log.info('vertical starved below floor, backfilling from general', {
+        from: vertical,
+        count: merged.length,
+        floor: starvationFloor,
+      });
+      const generalOutcomes = await runEnginesParallel(
+        generalEntries,
+        engineQuery,
+        options,
+      );
+      allOutcomes.push(...generalOutcomes);
+      wavedEntries.push(...generalEntries);
+      merged = scoreOutcomes(allOutcomes, wavedEntries);
+      merged = applyDomainFilters(merged, input.includeDomains, input.excludeDomains);
+      if (effectiveFromDate) {
+        merged = merged.filter((r) => !r.published_date || r.published_date >= effectiveFromDate);
+      }
+      if (effectiveToDate) {
+        merged = merged.filter((r) => !r.published_date || r.published_date <= effectiveToDate);
+      }
+      if (exactPhrase) {
+        merged = merged.filter((r) => {
+          const key = canonKey(r.url);
+          if (urlExactMatchHit.has(key)) return true;
+          const hay = `${r.title} ${r.snippet}`.toLowerCase();
+          return hay.includes(exactPhrase);
+        });
+      }
+      const healthy = allOutcomes.filter((o) => o.ok && o.results.length > 0).length;
+      poolDegraded = {
+        healthy,
+        total: allOutcomes.length,
+        degraded: true,
+        reasons: ['starvation_redispatch'],
+      };
+    }
+  }
+
+  const maxResults = requestedMax;
   let results = merged.slice(0, maxResults);
 
   if (results.length > 0) {
@@ -466,17 +629,17 @@ export async function runV1Search(
     return { ...r, evidence_score: { ...ev, final: r.relevance_score } };
   });
 
-  const enginesUsed = outcomes
+  const enginesUsed = allOutcomes
     .filter((o) => o.ok && o.results.length > 0)
     .map((o) => o.engine);
 
-  const degraded = outcomes.every((o) => !o.ok) || results.length === 0;
+  const degraded = allOutcomes.every((o) => !o.ok) || results.length === 0;
 
   if (degraded) {
     log.warn('orchestrator returning degraded result', {
       vertical,
-      attempted: outcomes.length,
-      ok: outcomes.filter((o) => o.ok).length,
+      attempted: allOutcomes.length,
+      ok: allOutcomes.filter((o) => o.ok).length,
       resultCount: results.length,
     });
   }
@@ -498,8 +661,9 @@ export async function runV1Search(
     vertical,
     results,
     enginesUsed,
-    outcomes,
+    outcomes: allOutcomes,
     degraded,
+    ...(poolDegraded ? { pool_degraded: poolDegraded } : {}),
   };
 }
 

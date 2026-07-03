@@ -13,6 +13,7 @@
 // Returns a multiplier in [0, 1] applied on top of the RRF + authority-boosted
 // base score. 1.0 = no penalty.
 import type { Vertical } from './intent-router.js';
+import { queryHasErrorToken } from './intent-router.js';
 
 // Curated registry of brand domains that frequently cause collisions in the
 // general/docs/code verticals. Subset — extend as bench evidence warrants.
@@ -94,8 +95,22 @@ const DB_LIBRARY_TERMS: ReadonlySet<string> = new Set([
 
 const MDN_HTML_ELEMENT_PATH_RE = /\/web\/html\/element\//i;
 
+// Dictionary / glossary / thesaurus hosts. On an error-code query the plain
+// English word inside the code string (e.g. "permission" in EACCES) false-
+// matches these hosts, which then crowd out the issue tracker / docs page
+// that actually resolves the error. Pattern-level: matches known dictionary
+// hosts plus any host whose registrable name contains `dictionary`,
+// `thesaurus`, `vocabulary`, or `glossary`. Not keyed on any benchmark host.
+const DICTIONARY_HOST_RE =
+  /(?:^|\.)(?:wiktionary\.org|merriam-webster\.com|dictionary\.com|thesaurus\.com|vocabulary\.com|collinsdictionary\.com|dictionary\.cambridge\.org|(?:[a-z0-9-]+\.)?(?:dictionary|thesaurus|vocabulary|glossary))\b/i;
+
 const BRAND_PENALTY = 0.2;
 const MDN_ELEMENT_DRIFT_PENALTY = 0.1;
+const DICTIONARY_ERROR_PENALTY = 0.25;
+
+function isDictionaryHost(host: string): boolean {
+  return DICTIONARY_HOST_RE.test(host);
+}
 
 function urlParts(url: string): { host: string; path: string } | null {
   try {
@@ -148,6 +163,14 @@ export function domainQualityScore(
     queryMentionsDbTerm(query)
   ) {
     return MDN_ELEMENT_DRIFT_PENALTY;
+  }
+
+  // Per-result hit/miss gate: a dictionary/glossary host is demoted ONLY when
+  // the query carries an error token. A normal query ("reciprocal rank fusion
+  // explained") leaves the same host at 1.0 — the gate is per-result, never a
+  // query-wide switch.
+  if (queryHasErrorToken(query) && isDictionaryHost(host)) {
+    return DICTIONARY_ERROR_PENALTY;
   }
 
   if (isBrandHost(host)) {

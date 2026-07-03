@@ -516,6 +516,19 @@ export interface SearchOutput {
    * input.include_images is true. Empty array means the request asked for
    * images but no engine surfaced any. */
   images?: ImageItem[];
+  /** Health of the engine pool that produced this result. `total` = engines
+   * dispatched, `healthy` = engines that returned ≥1 result, `degraded` =
+   * healthy < total. `reasons` names the events that degraded the pool
+   * (e.g. `starvation_redispatch` when a thin vertical fell back to the
+   * general pool). Single surface for "pool degraded to N engines". */
+  engine_pool?: EnginePoolHealth;
+}
+
+export interface EnginePoolHealth {
+  healthy: number;
+  total: number;
+  degraded: boolean;
+  reasons?: string[];
 }
 
 export interface QueryUnderstanding {

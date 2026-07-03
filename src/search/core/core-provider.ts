@@ -201,6 +201,9 @@ export class CoreSearchProvider implements SearchProvider {
     let cachedAt: string | undefined;
     let engineOutcomes: EngineOutcomeSummary[] | undefined;
     let engineTelemetry: EngineTelemetry[] | undefined;
+    // Reasons any dispatch reported its engine pool degraded (e.g. a thin
+    // vertical starved and backfilled from general). Surfaced on engine_pool.
+    const poolReasons = new Set<string>();
 
     if (!input.force_refresh) {
       try {
@@ -351,6 +354,9 @@ export class CoreSearchProvider implements SearchProvider {
       }
       enginesUsed = [...enginesUsedSet];
       allDegraded = dispatches.every((d) => d.degraded);
+      for (const d of dispatches) {
+        for (const reason of d.pool_degraded?.reasons ?? []) poolReasons.add(reason);
+      }
 
       if (input.include_engine_outcomes) {
         // Flatten per-dispatch outcomes into a single array, summarized so we
@@ -582,6 +588,24 @@ export class CoreSearchProvider implements SearchProvider {
     // into a top-level array so every caller sees broken engines. Empty
     // array on cache hits or all-ok runs (cleaner than `undefined?.length`).
     const engineWarnings = buildEngineWarnings(engineTelemetry);
+    // Pool health: total = engines dispatched, healthy = engines that returned
+    // ≥1 result. Degraded when any didn't contribute OR a dispatch flagged a
+    // degrade reason (e.g. starvation re-dispatch). Single "pool degraded to N
+    // engines" surface. Cache hits omit it (no telemetry to source from).
+    const enginePool = engineTelemetry
+      ? (() => {
+          const total = engineTelemetry.length;
+          const healthy = engineTelemetry.filter((t) => t.result_count > 0).length;
+          const reasons = [...poolReasons];
+          const degraded = healthy < total || reasons.length > 0;
+          return {
+            healthy,
+            total,
+            degraded,
+            ...(reasons.length > 0 ? { reasons } : {}),
+          };
+        })()
+      : undefined;
     const data: SearchOutput = {
       results: items,
       query: displayQuery,
@@ -596,6 +620,7 @@ export class CoreSearchProvider implements SearchProvider {
       // Always emit on engine-pool path (telemetry present); cache hits
       // intentionally omit since there's no telemetry to source from.
       ...(engineTelemetry ? { engine_warnings: engineWarnings } : {}),
+      ...(enginePool ? { engine_pool: enginePool } : {}),
     };
 
     // Try the brand-domain check first (cheap, requires
