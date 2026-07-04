@@ -16,6 +16,7 @@ import { cacheContent } from '../cache/store.js';
 import { getEmbeddingService } from '../embedding/embed.js';
 import { checkSamplingSupport, type SamplingCapableServer } from '../search/sampling.js';
 import { isLlmConfiguredWithKeyStore } from '../integrations/cloud/llm/run.js';
+import { resolveLocalModelTier } from '../integrations/cloud/llm/local-tier.js';
 import type {
   ResearchInput,
   ResearchOutput,
@@ -275,20 +276,31 @@ export async function runResearchPipeline(
     );
     log.info('synthesis complete', { samplingUsed: synthesisResult.samplingUsed, reportLength: synthesisResult.report.length });
 
-    // Phase 5b: Local-LLM synthesis fallback — only when host LLM did not
-    // produce output AND a local provider is configured. Failures fall through
-    // to the existing heuristic report in synthesisResult.
+    // Phase 5b: Local-model synthesis fallback — the MIDDLE rung of the ladder
+    // (host-sampling > local model > deterministic). Fires when host sampling
+    // did NOT produce the report AND either a cloud key / explicit provider is
+    // configured OR the C0 opt-in local-model tier is reachable. The tier is
+    // self-configuring (own endpoint/model) so it enables synthesis even when
+    // WIGOLO_LOCAL_LLM is the only signal. Failures fall through to the existing
+    // heuristic report in synthesisResult. When neither the keystore nor the
+    // tier applies (the keyless default), synthesizeLocal is never called — the
+    // deterministic path below is byte-for-byte identical to today.
     let finalReport = synthesisResult.report;
     let finalCitations: Citation[] = synthesisResult.citations;
     let localSynthesisText: string | undefined;
     let localSynthesisSucceeded = false;
-    if (!synthesisResult.samplingUsed && await isLlmConfiguredWithKeyStore()) {
+    const localTier = synthesisResult.samplingUsed ? null : await resolveLocalModelTier();
+    if (!synthesisResult.samplingUsed && (localTier || await isLlmConfiguredWithKeyStore())) {
       try {
         const localSources = sources
           .filter((s) => s.fetched && s.markdown_content.length > 0)
           .map((s) => ({ url: s.url, title: s.title, markdown: s.markdown_content }));
         if (localSources.length > 0) {
-          const local = await synthesizeLocal(input.question, localSources);
+          const local = await synthesizeLocal(
+            input.question,
+            localSources,
+            localTier ? { tier: { endpoint: localTier.endpoint, model: localTier.model } } : {},
+          );
           finalReport = local.text;
           localSynthesisText = local.text;
           localSynthesisSucceeded = true;
