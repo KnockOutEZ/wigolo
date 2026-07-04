@@ -6,6 +6,14 @@ import { resetConfig } from '../../../src/config.js';
 import { initDatabase, closeDatabase } from '../../../src/cache/db.js';
 import { cacheSearchResults } from '../../../src/cache/store.js';
 import { expandIfSingle } from '../../../src/search/multi-query.js';
+import { _resetSearchProviderForTest } from '../../../src/providers/search-provider.js';
+
+// The core provider builds its own engine pool and dispatches through
+// runV1Search; mock it so the core-path snippet-fallback e2e below drives a
+// deterministic narrow result set instead of the live network. Inert for the
+// legacy (searxng) tests above — they never import the core orchestrator.
+const mockRunV1Search = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/search/core/orchestrator.js', () => ({ runV1Search: mockRunV1Search }));
 
 const extractMock = vi.fn().mockResolvedValue({
   title: 'Mock Title',
@@ -273,3 +281,79 @@ describe('handleSearch', () => {
     expect(output.results.length).toBeGreaterThan(0);
   });
 });
+
+// --- S4: end-to-end snippet fallback on the CORE search path ---
+//
+// WHY (test_assertion e): on the core provider (production default), a narrow
+// result set whose enrichment fetch times out must still hand the caller
+// non-empty content — the result's own snippet — instead of an empty content
+// field. Runs under WIGOLO_SEARCH=core with the orchestrator dispatch mocked so
+// the narrow set is deterministic; the REAL content-fetch runs against a
+// rejecting router to simulate the timeout. The failure is still recorded.
+describe('handleSearch — core-path snippet fallback on fetch timeout (e2e)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv, VALIDATE_LINKS: 'false', WIGOLO_RERANKER: 'none', WIGOLO_SEARCH: 'core' };
+    resetConfig();
+    _resetSearchProviderForTest();
+    initDatabase(':memory:');
+    vi.clearAllMocks();
+    mockRunV1Search.mockResolvedValue({
+      results: [
+        { title: 'A', url: 'https://a.example/1', snippet: 'Alpha evidence snippet', relevance_score: 0.9, engine: 'e1' },
+        { title: 'B', url: 'https://b.example/2', snippet: 'Beta evidence snippet', relevance_score: 0.8, engine: 'e1' },
+      ] satisfies RawSearchResult[],
+      enginesUsed: ['e1'],
+      outcomes: [],
+      degraded: false,
+    });
+  });
+
+  afterEach(() => {
+    closeDatabase();
+    process.env = originalEnv;
+    resetConfig();
+    _resetSearchProviderForTest();
+  });
+
+  it('a narrow result set still returns non-empty content (snippet) on a simulated fetch timeout', async () => {
+    const timeoutRouter = {
+      fetch: vi.fn().mockRejectedValue(new Error('timeout')),
+    } as unknown as SmartRouter;
+
+    // include_full_markdown so the per-result content body is surfaced (the
+    // default slim payload folds content into `evidence` and clears the field).
+    const input: SearchInput = { query: 'obscure niche library changelog', max_results: 2, include_full_markdown: true };
+    const __r_output = await handleSearch(input, [], timeoutRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
+
+    expect(output.results.length).toBeGreaterThan(0);
+    for (const r of output.results) {
+      // Failure recorded honestly...
+      expect(r.fetch_failed).toBe('timeout');
+      // ...and the snippet surfaced as content (non-empty) with provenance.
+      expect(r.markdown_content).toBe(r.snippet);
+      expect(r.content_from_snippet).toBe(true);
+      expect((r.markdown_content ?? '').length).toBeGreaterThan(0);
+    }
+  });
+
+  it('marks content_from_snippet on the default slim payload (fallback still ran before content-folding)', async () => {
+    const timeoutRouter = {
+      fetch: vi.fn().mockRejectedValue(new Error('timeout')),
+    } as unknown as SmartRouter;
+    // No include_full_markdown: the slim payload folds content into evidence and
+    // clears markdown_content, but the fallback still ran (provenance flag set)
+    // so the snippet fed the evidence pipeline rather than an empty body.
+    const input: SearchInput = { query: 'obscure niche library changelog', max_results: 2 };
+    const __r_output = await handleSearch(input, [], timeoutRouter);;
+    const output = __r_output.ok ? __r_output.data : ({ ...__r_output } as any);
+
+    for (const r of output.results) {
+      expect(r.fetch_failed).toBe('timeout');
+      expect(r.content_from_snippet).toBe(true);
+    }
+  });
+});
+

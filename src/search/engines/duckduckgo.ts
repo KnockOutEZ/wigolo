@@ -2,14 +2,9 @@ import { parseHTML } from 'linkedom';
 import type { SearchEngine, SearchEngineOptions, RawSearchResult } from '../../types.js';
 import { createLogger } from '../../logger.js';
 import { normalizeResultUrl } from '../url-unwrap.js';
+import { nextUserAgent, isBlockedError } from './user-agents.js';
 
 const log = createLogger('search');
-
-const USER_AGENTS = [
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0',
-];
 
 // DDG Lite sometimes prefixes snippets with dates like "Jan 15, 2025 -" or "2025-01-15 ·"
 const DATE_SNIPPET_PATTERN = /^(\w{3}\s+\d{1,2},\s+\d{4}|\d{4}-\d{2}-\d{2})\s*[·—–-]/;
@@ -23,6 +18,11 @@ function parseDateFromSnippet(snippet: string): string | undefined {
 
 export class DuckDuckGoEngine implements SearchEngine {
   name = 'duckduckgo';
+  private userAgent = nextUserAgent();
+
+  onRetry(_attempt: number, lastError: unknown): void {
+    if (isBlockedError(lastError)) this.userAgent = nextUserAgent(this.userAgent);
+  }
 
   async search(query: string, options: SearchEngineOptions = {}): Promise<RawSearchResult[]> {
     const timeoutMs = options.timeoutMs ?? 10000;
@@ -39,7 +39,7 @@ export class DuckDuckGoEngine implements SearchEngine {
 
     const response = await fetch(url, {
       signal: AbortSignal.timeout(timeoutMs),
-      headers: { 'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)] },
+      headers: { 'User-Agent': this.userAgent },
     });
 
     if (!response.ok) throw new Error(`DDG returned ${response.status}`);

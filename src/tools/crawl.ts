@@ -19,6 +19,15 @@ const log = createLogger('crawl');
 
 const DEFAULT_MAX_TOTAL_CHARS = 100000;
 const DEFAULT_MAX_TOKENS_OUT = 4000;
+// Crawl is inherently multi-page, so the default markdown budget scales with
+// page count (a flat 4000-token aggregate starves later pages). max_total_chars
+// still bounds total bytes; MAX_TOKENS_OUT_CEILING caps the scaled default so a
+// huge crawl can't request an unbounded token budget.
+const PER_PAGE_TOKENS = 2000;
+const MAX_TOKENS_OUT_CEILING = 60000;
+// Per-page floor so a page with real markdown is never emptied while an earlier
+// page kept content, even when the shared budget is exhausted.
+const MIN_TOKENS_PER_PAGE = 256;
 
 export async function handleCrawl(
   input: CrawlInput,
@@ -140,7 +149,13 @@ async function attachEvidence(out: CrawlOutput, input: CrawlInput): Promise<void
   // honour an explicit `include_full_markdown: false` for callers that
   // really only want the per-page evidence + excerpt envelope.
   const includeFull = input.include_full_markdown ?? true;
-  const maxTokensOut = input.max_tokens_out ?? DEFAULT_MAX_TOKENS_OUT;
+  // Scale the default aggregate budget with page count so later pages are not
+  // starved. An explicit max_tokens_out is honored as-is; max_total_chars still
+  // bounds total bytes.
+  const maxTokensOut = input.max_tokens_out ?? Math.min(
+    MAX_TOKENS_OUT_CEILING,
+    Math.max(DEFAULT_MAX_TOKENS_OUT, PER_PAGE_TOKENS * out.pages.length),
+  );
 
   let used = 0;
   for (const page of out.pages) {
@@ -176,7 +191,7 @@ async function attachEvidence(out: CrawlOutput, input: CrawlInput): Promise<void
       out.pages,
       (p) => p.markdown ?? '',
       (p, body) => { p.markdown = body; },
-      { maxTokensOut },
+      { maxTokensOut, minTokensPerItem: MIN_TOKENS_PER_PAGE },
     );
   }
 }

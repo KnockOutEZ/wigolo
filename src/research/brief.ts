@@ -37,34 +37,58 @@ export async function buildResearchBrief(
 
   const { highlights } = await extractHighlights(question, searchItems, MAX_HIGHLIGHTS);
 
+  // All source-index provenance is built against the `fetched` view (only the
+  // documents we have content for), but the rendered ### Sources list and every
+  // emitted `[n]` index into the FULL `sources` array. Remap fetched-view
+  // indices back to the full array once so a leading unfetched row can't shift
+  // a citation by one. Reused for findings, cross-references, tradeoffs, and
+  // the citation graph.
+  const fetchedToFull = fetched.map((s) => sources.indexOf(s));
+
   const topics = buildTopics(subQueries, fetched);
-  const keyFindings = buildKeyFindings(fetched);
-  const crossReferences = detectCrossReferences(fetched);
+  const keyFindingsWithSource = buildKeyFindings(fetched);
+  const keyFindings = keyFindingsWithSource.map((f) => f.text);
+  const keyFindingSources = keyFindingsWithSource.map(
+    (f) => fetchedToFull[f.fetchedIdx],
+  );
+
+  const crossReferences = detectCrossReferences(fetched).map((ref) => ({
+    ...ref,
+    source_indices: ref.source_indices
+      .map((idx) => fetchedToFull[idx])
+      .filter((idx) => idx >= 0),
+  }));
+
   const gaps: Array<string | { entity: string; reason: string }> = [
     ...detectGaps(subQueries, fetched),
     ...detectEntityGaps(question, subQueries),
   ];
 
-  const comparison = queryType === 'comparison' && comparisonEntities.length >= 2
+  const rawComparison = queryType === 'comparison' && comparisonEntities.length >= 2
     ? buildComparisonSection(comparisonEntities, fetched)
     : undefined;
+  const comparison = rawComparison
+    ? {
+        ...rawComparison,
+        tradeoffs: rawComparison.tradeoffs.map((t) => ({
+          ...t,
+          source_index: fetchedToFull[t.source_index] ?? t.source_index,
+        })),
+      }
+    : undefined;
 
-  // citation_graph source_indices must align with the output
-  // `sources` array (0-based, full list including unfetched rows). We build
-  // the graph against the `fetched` view (only documents we have content
-  // for), then remap each index back into the original `sources` array so
-  // a caller can index `sources[entry.source_indices[i]]` directly.
+  // citation_graph source_indices must align with the output `sources` array
+  // (0-based, full list including unfetched rows), same as above.
   let citationGraph: ReturnType<typeof buildCitationGraph> | undefined;
   if (synthesisText && synthesisText.trim().length > 0 && fetched.length > 0) {
     const rawGraph = buildCitationGraph(
       synthesisText,
       fetched.map((s) => ({ url: s.url, title: s.title, markdown: s.markdown_content })),
     );
-    const fetchedToFullIndex = fetched.map((s) => sources.indexOf(s));
     citationGraph = rawGraph.map((entry) => ({
       ...entry,
       source_indices: entry.source_indices
-        .map((idx) => fetchedToFullIndex[idx])
+        .map((idx) => fetchedToFull[idx])
         .filter((idx) => idx >= 0),
     }));
   }
@@ -73,6 +97,7 @@ export async function buildResearchBrief(
     topics,
     highlights,
     key_findings: keyFindings,
+    key_finding_sources: keyFindingSources,
     per_source_char_cap: perSourceCharCap,
     total_sources_char_cap: totalSourcesCharCap,
     sections: {
@@ -101,18 +126,32 @@ function buildTopics(subQueries: string[], sources: ResearchSource[]): string[] 
 }
 
 // First substantive paragraph per source, trimmed to a finding-sized blurb.
-// Ordered by source relevance so the most-weighted finding is first.
-function buildKeyFindings(sources: ResearchSource[]): string[] {
-  const out: string[] = [];
-  for (const s of [...sources].sort((a, b) => b.relevance_score - a.relevance_score)) {
+// Ordered by source relevance so the most-weighted finding is first. Each
+// finding carries the index of the source it came from WITHIN the passed-in
+// (fetched) view, so the caller can attach per-claim provenance. Dedupe is
+// applied to the finding text, keeping the first (highest-relevance) source
+// for a repeated blurb so text and index stay aligned.
+function buildKeyFindings(
+  sources: ResearchSource[],
+): Array<{ text: string; fetchedIdx: number }> {
+  const ordered = sources
+    .map((s, fetchedIdx) => ({ s, fetchedIdx }))
+    .sort((a, b) => b.s.relevance_score - a.s.relevance_score);
+
+  const out: Array<{ text: string; fetchedIdx: number }> = [];
+  const seen = new Set<string>();
+  for (const { s, fetchedIdx } of ordered) {
     const first = firstSubstantiveParagraph(s.markdown_content);
     if (!first) continue;
     const trimmed = first.length > MAX_KEY_FINDING_LEN
       ? first.slice(0, MAX_KEY_FINDING_LEN - 1).trimEnd() + '…'
       : first;
-    out.push(trimmed);
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ text: trimmed, fetchedIdx });
   }
-  return dedupe(out);
+  return out;
 }
 
 export function detectCrossReferences(sources: ResearchSource[]): CrossReference[] {
@@ -285,9 +324,59 @@ function firstSubstantiveParagraph(markdown: string): string | null {
     if (p.startsWith('#') || p.startsWith('|') || p.startsWith('```')) continue;
     const cleaned = stripMarkdownLinks(p);
     if (cleaned.length < 80) continue;
-    return cleaned.replace(/\s+/g, ' ');
+    const normalized = cleaned.replace(/\s+/g, ' ');
+    // Skip nav/byline/caption chrome so a candidate advances to the next
+    // paragraph — the article body — instead of surfacing a photo-credit,
+    // author byline, or breadcrumb menu as a fabricated finding. Evaluated on
+    // BOTH the raw paragraph (a truncated image span never link-flattens) and
+    // the normalized prose (nav labels read as plain text after flatten).
+    if (isBoilerplateSpan(p, normalized)) continue;
+    return normalized;
   }
   return null;
+}
+
+// Photo-credit signatures that mark a paragraph as a caption rather than the
+// article body: "(AP Photo/…)", "(Getty Images)", "(Reuters)", "Photo by …",
+// or a standalone "Credit:"/"Image:" attribution.
+const PHOTO_CREDIT_PATTERNS: ReadonlyArray<RegExp> = [
+  /\((?:AP Photo|Getty|Reuters|AFP|Bloomberg|EPA|Shutterstock)[^)]*\)/i,
+  /\bphoto by [A-Z]/,
+  /^(?:photo|image|credit|caption)\s*:/i,
+];
+
+// A byline is provenance chrome ("By Jane Smith … | 5 min read | Published …"),
+// NOT prose. It opens with "By " + a Capitalized proper name AND carries a
+// byline chrome marker (a "N min read", a Published/Updated stamp, or the
+// pipe-delimited meta chain). Requiring the chrome marker is what keeps an
+// ordinary sentence that merely begins with the preposition "By" (e.g. "By
+// reducing the memory footprint …") from being filtered as a byline.
+const BYLINE_LEAD = /^By\s+[A-Z][a-z]+(?:\s+[A-Z][a-z.]+){0,3}\b/;
+const BYLINE_CHROME = /\b\d+\s+min read\b|\b(?:Published|Updated)\b|[|·]/;
+
+// Detect a nav/menu/breadcrumb chain: short labels joined by pipes or chevrons
+// with no sentence punctuation. `separators / segments` is high and the mean
+// segment is short — the shape of "Home | News | Technology | …", not prose.
+function isNavigationChain(text: string): boolean {
+  const separators = (text.match(/[|»›>·]/g) ?? []).length;
+  if (separators < 3) return false;
+  if (/[.!?](?:\s|$)/.test(text)) return false;
+  const segments = text.split(/\s*[|»›>·]\s*/).map((s) => s.trim()).filter(Boolean);
+  if (segments.length < 4) return false;
+  const longSegments = segments.filter((s) => s.split(/\s+/).length > 4).length;
+  return longSegments === 0;
+}
+
+function isBoilerplateSpan(raw: string, normalized: string): boolean {
+  // Caption/credit: a paragraph that opens with an image span (well-formed or
+  // truncated mid-link, which never link-flattens) or carries a photo credit.
+  if (/^\s*!?\[?!\[/.test(raw)) return true;
+  if (PHOTO_CREDIT_PATTERNS.some((re) => re.test(normalized))) return true;
+  // Author byline chrome.
+  if (BYLINE_LEAD.test(normalized) && BYLINE_CHROME.test(normalized)) return true;
+  // Navigation / breadcrumb menu chain.
+  if (isNavigationChain(normalized)) return true;
+  return false;
 }
 
 // Flatten markdown link/image syntax to plain text so a downstream char-slice

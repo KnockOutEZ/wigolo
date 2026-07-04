@@ -22,6 +22,14 @@ export interface HttpFetchResult {
   rawBuffer?: Buffer;
 }
 
+// The leading bytes of every PDF file. Used to recognise a PDF that a server
+// served with a generic/absent content-type so the byte tier buffers it.
+const PDF_MAGIC = '%PDF-';
+
+function bufferLooksLikePdf(buf: Buffer): boolean {
+  return buf.length >= PDF_MAGIC.length && buf.subarray(0, PDF_MAGIC.length).toString('latin1') === PDF_MAGIC;
+}
+
 const RETRYABLE_STATUSES = new Set([429, 502, 503]);
 const RETRYABLE_ERROR_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED']);
 const REDIRECT_STATUSES = new Set([301, 302, 307, 308]);
@@ -210,14 +218,32 @@ async function fetchWithRedirects(
       headers[key] = value;
     });
 
-    const isPdf = contentType.includes('application/pdf');
+    const declaredPdf = contentType.includes('application/pdf');
+    // An ambiguous content-type (generic binary or none) may still be a PDF
+    // served without the right header. Sniff the body's magic bytes so those
+    // are buffered like a declared PDF instead of being decoded to garbage
+    // text. HTML/JSON/text/xml responses are never sniffed — they decode as
+    // before with no extra buffering.
+    const ambiguousType = contentType === '' || contentType.includes('application/octet-stream');
     let html: string;
     let rawBuffer: Buffer | undefined;
+    // Normalised so a magic-bytes PDF is reported as application/pdf to the
+    // extractor (which keys PDF handling on the content-type).
+    let effectiveContentType = contentType;
 
-    if (isPdf) {
+    if (declaredPdf) {
       const arrayBuf = await response.arrayBuffer();
       rawBuffer = Buffer.from(arrayBuf);
       html = '';
+    } else if (ambiguousType) {
+      const buf = Buffer.from(await response.arrayBuffer());
+      if (bufferLooksLikePdf(buf)) {
+        rawBuffer = buf;
+        html = '';
+        effectiveContentType = 'application/pdf';
+      } else {
+        html = buf.toString('utf-8');
+      }
     } else {
       html = await response.text();
     }
@@ -226,7 +252,7 @@ async function fetchWithRedirects(
       url: originalUrl,
       finalUrl: currentUrl,
       html,
-      contentType,
+      contentType: effectiveContentType,
       statusCode: response.status,
       headers,
       rawBuffer,

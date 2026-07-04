@@ -227,7 +227,13 @@ export interface Extractor {
 }
 
 // Provenance source for a single extracted field
-export type FieldProvenance = 'json-ld' | 'microdata' | 'rdfa' | 'heuristic' | 'llm';
+export type FieldProvenance =
+  | 'json-ld'
+  | 'microdata'
+  | 'rdfa'
+  | 'structured'
+  | 'heuristic'
+  | 'llm';
 
 // One block of structured data found in HTML
 export interface StructuredDataResult {
@@ -405,6 +411,11 @@ export interface SearchResultItem {
   markdown_content?: string;
   fetch_failed?: string;
   content_truncated?: boolean;
+  /** True when `markdown_content` was populated from the result's own snippet
+   * because the content fetch timed out. The failure is still recorded in
+   * `fetch_failed`; this flag marks that the content is snippet-derived
+   * evidence, not extracted page content. */
+  content_from_snippet?: boolean;
   /** Legacy aggregate score in [0, 1]. Equals `evidence_score.final` when
    * the core path emits both; coexists for back-compat with callers that
    * read this field directly. `relevance_score` and
@@ -516,6 +527,19 @@ export interface SearchOutput {
    * input.include_images is true. Empty array means the request asked for
    * images but no engine surfaced any. */
   images?: ImageItem[];
+  /** Health of the engine pool that produced this result. `total` = engines
+   * dispatched, `healthy` = engines that returned ≥1 result, `degraded` =
+   * healthy < total. `reasons` names the events that degraded the pool
+   * (e.g. `starvation_redispatch` when a thin vertical fell back to the
+   * general pool). Single surface for "pool degraded to N engines". */
+  engine_pool?: EnginePoolHealth;
+}
+
+export interface EnginePoolHealth {
+  healthy: number;
+  total: number;
+  degraded: boolean;
+  reasons?: string[];
 }
 
 export interface QueryUnderstanding {
@@ -638,9 +662,10 @@ export interface CrossReference {
 
 /** A source-quoted comparison tradeoff: the actual sentence from a source that
  * pairs a compared entity with a comparison term, plus the index of the source
- * it came from (0-based into the brief's `fetched` view). Captured instead of a
- * bare keyword so the template renderer can quote a real, cited tradeoff rather
- * than fabricate directionality. */
+ * it came from (0-based into the full output `sources` array, so a renderer can
+ * cite `[source_index + 1]` against the ### Sources list). Captured instead of
+ * a bare keyword so the template renderer can quote a real, cited tradeoff
+ * rather than fabricate directionality. */
 export interface ComparisonTradeoff {
   text: string;
   source_index: number;
@@ -657,6 +682,13 @@ export interface ResearchBrief {
   topics: string[];
   highlights: Highlight[];
   key_findings: string[];
+  /** Provenance for `key_findings`: 0-based indices into the full output
+   * `sources` array, index-aligned to `key_findings`. Lets a renderer cite
+   * each finding `[n]` per-claim. Optional and parallel so the public
+   * `key_findings: string[]` shape stays unchanged (mirrors `citation_graph`
+   * as an auxiliary provenance structure). An entry may be absent or out of
+   * range when a finding's origin is unknown — renderers must fail open. */
+  key_finding_sources?: number[];
   per_source_char_cap: number;
   total_sources_char_cap: number;
   sections: {
@@ -698,6 +730,13 @@ export interface AgentSource {
   markdown_content: string;
   fetched: boolean;
   fetch_error?: string;
+  /**
+   * Raw HTML of the fetched page. Carried so schema extraction can consume
+   * real <table>/<dl>/microdata structures the markdown flattens away; the
+   * agent tool otherwise saw only markdown and returned {} for table-backed
+   * schemas. Optional — sources without it fall back to the markdown body.
+   */
+  rawHtml?: string;
 }
 
 export interface AgentStep {

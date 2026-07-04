@@ -314,6 +314,9 @@ async function fetchPages(
         url,
         title: extraction.title,
         markdown_content: extraction.markdown,
+        // Carry raw HTML so schema extraction can read real table/definition/
+        // microdata structures the markdown flattens away.
+        rawHtml: raw.html,
         fetched: true,
       };
     } catch (err) {

@@ -1,4 +1,6 @@
 import { COMMON_NOUNS } from '../hybrid/common-nouns.js';
+import { extractEntities } from './query-understanding.js';
+import { queryHasErrorToken } from './intent-router.js';
 
 export interface BrandCollisionWarning {
   detected: true;
@@ -6,6 +8,29 @@ export interface BrandCollisionWarning {
   brand_domains_in_top_3: string[];
   suggested_rewrites: string[];
 }
+
+// Generic category / qualifier nouns that follow an entity head in an
+// ambiguous "Entity + generic tail" query (e.g. "Phoenix framework",
+// "Apollo documentation", "Comet ML experiment tracking"). These are the
+// everyday category words that DON'T disambiguate the entity — they signal a
+// caller who typed a proper-noun product/company name plus a topic, which is
+// exactly the collision case. Pattern-level: category words, never entity
+// names, so the detector never depends on a benchmark allowlist.
+const GENERIC_TAIL_NOUNS: ReadonlySet<string> = new Set([
+  'framework', 'library', 'documentation', 'docs', 'api', 'sdk', 'cli',
+  'pricing', 'price', 'cost', 'plan', 'plans', 'tier', 'tiers',
+  'deployment', 'deploy', 'hosting', 'install', 'installation', 'setup',
+  'config', 'configuration', 'guide', 'tutorial', 'reference', 'manual',
+  'dashboard', 'console', 'account', 'login', 'signup', 'auth',
+  'app', 'service', 'platform', 'tool', 'client', 'server', 'agent',
+  'banking', 'bank', 'card', 'payment', 'payments', 'transfer', 'transport',
+  'tracking', 'analytics', 'metrics', 'monitoring', 'logging',
+  'experiment', 'experiments', 'dataset', 'model', 'training',
+  'limits', 'limit', 'quota', 'rate', 'usage', 'billing',
+  'database', 'db', 'storage', 'cache', 'queue', 'stream',
+  'network', 'proxy', 'gateway', 'router', 'firewall', 'vpn',
+  'support', 'status', 'health', 'uptime', 'release', 'changelog',
+]);
 
 const BRAND_TLD_RE = /\.(?:co\.uk|shop|store|deals|sale|boutique|fashion|com\.au|co\.nz)$/i;
 
@@ -41,10 +66,105 @@ function looksBrandy(host: string): boolean {
   return BRAND_TLD_RE.test(host);
 }
 
-function isBrandCollisionProne(query: string): boolean {
+// Sentence-frame lead words: capitalized because they open a query, NOT
+// because they name an entity. A query that leads with an interrogative,
+// article, possessive, superlative, or imperative verb is a question/command
+// ("How to deploy Rails", "Best framework for api", "Configure nginx …"), not
+// an "Entity + generic tail" collision. Pattern-level stopword/verb set, never
+// entity-specific. Compared lowercase so casing of the lead doesn't matter.
+const SENTENCE_FRAME_LEADS: ReadonlySet<string> = new Set([
+  // interrogatives
+  'how', 'what', 'why', 'when', 'where', 'which', 'who', 'whose', 'whom',
+  // articles / demonstratives
+  'the', 'a', 'an', 'this', 'that', 'these', 'those',
+  // possessives
+  'my', 'your', 'our', 'their', 'its', 'his', 'her',
+  // superlatives / quantifiers
+  'best', 'top', 'most', 'worst', 'least', 'some', 'any', 'all',
+  // imperative / instructional verbs
+  'configure', 'deploy', 'deploying', 'build', 'building', 'use', 'using',
+  'setup', 'set', 'create', 'creating', 'add', 'adding', 'fix', 'fixing',
+  'install', 'installing', 'run', 'running', 'get', 'getting', 'make',
+  'making', 'compare', 'comparing', 'choose', 'choosing', 'understand',
+  'understanding', 'learn', 'learning', 'enable', 'disable', 'update',
+  'upgrade', 'migrate', 'remove', 'debug', 'test', 'write', 'find',
+]);
+
+// A token is an entity HEAD for the v2 collision path when the user typed it
+// as a Capitalized-word proper noun — a product/company/place name like
+// Phoenix, Apollo, Mercury, Comet, or a dotted brand like Next.js. This is a
+// STRUCTURAL casing signal (`^[A-Z][a-z]`), narrower than the general entity
+// extractor on purpose:
+//   - a lowercase technical phrase ("react server components") never reads as
+//     an entity head, so it can't false-fire;
+//   - a bare ALL-CAPS acronym ("RAG tutorial", "HTTP guide") is NOT a
+//     brand-collision-prone name — acronyms disambiguate themselves and drive
+//     other routing (docs vertical), so they're excluded here;
+//   - a capitalized SENTENCE-FRAME lead (How/Best/Configure/…) opens a
+//     question or command, not an entity name — excluded via the stopword set.
+function isEntityToken(token: string): boolean {
+  const stripped = token.replace(/[^A-Za-z0-9.\-]/g, '');
+  if (stripped.length < 2) return false;
+  if (!/^[A-Z][a-z]/.test(stripped)) return false;
+  if (SENTENCE_FRAME_LEADS.has(stripped.toLowerCase())) return false;
+  return extractEntities(stripped).length > 0;
+}
+
+/**
+ * Structural brand-collision predicate (unified — this is the single source of
+ * truth; query-understanding re-exports it for its `is_brand_collision_prone`
+ * field). Fires in two pattern-level cases:
+ *
+ *   1. Short common-noun query (<=2 tokens, every token a collision-prone
+ *      common noun) — the original "next", "apple mint" case.
+ *   2. Proper-noun-head + generic-tail (any token count) — the first token is
+ *      an entity AND a later token is a generic category noun, e.g.
+ *      "Phoenix framework deployment", "Apollo API documentation". This is the
+ *      s5-class collision the old <=2-token gate could never reach.
+ *
+ * Never fires on an error-token query (S1 owns error intent) — an error string
+ * like "TypeError undefined api" must not be treated as a brand collision.
+ */
+export function isBrandCollisionProne(query: string): boolean {
   const tokens = query.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0 || tokens.length > 2) return false;
-  return tokens.every((t) => COMMON_NOUNS.has(t.toLowerCase()));
+  if (tokens.length === 0) return false;
+  if (queryHasErrorToken(query)) return false;
+
+  // Case 1: short all-common-noun query.
+  if (tokens.length <= 2 && tokens.every((t) => COMMON_NOUNS.has(t.toLowerCase()))) {
+    return true;
+  }
+
+  // Case 2: proper-noun head + generic tail.
+  if (tokens.length >= 2 && isEntityToken(tokens[0])) {
+    for (let i = 1; i < tokens.length; i++) {
+      const t = tokens[i].toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (GENERIC_TAIL_NOUNS.has(t)) return true;
+    }
+  }
+  return false;
+}
+
+// True for a short ALL-CAPS acronym token (ML, AI, DB, API) that trails a
+// capitalized head as part of the brand name ("Comet ML", "Vertex AI").
+function isAcronymSuffix(token: string): boolean {
+  const stripped = token.replace(/[^A-Za-z0-9]/g, '');
+  return /^[A-Z]{2,4}$/.test(stripped);
+}
+
+// The verbatim entity head of the query. Starts with the leading capitalized
+// proper-noun token, then absorbs a contiguous ALL-CAPS acronym token (ML/AI/
+// DB) that is part of the brand name so a multi-token brand like "Comet ML" is
+// anchored whole in the rewrite rather than split to just "Comet".
+function entityHead(query: string): string {
+  const tokens = query.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0 || !isEntityToken(tokens[0])) return '';
+  const head: string[] = [tokens[0]];
+  for (let i = 1; i < tokens.length; i++) {
+    if (isEntityToken(tokens[i]) || isAcronymSuffix(tokens[i])) head.push(tokens[i]);
+    else break;
+  }
+  return head.join(' ');
 }
 
 function suggestRewrites(query: string): string[] {
@@ -96,6 +216,58 @@ export function detectBrandCollision(
     reason: `query "${query.trim()}" is a common noun that also matches brand domain(s) in the top-3`,
     brand_domains_in_top_3: brandy,
     suggested_rewrites: suggestRewrites(query),
+  };
+}
+
+/**
+ * Build an entity-qualified rewrite of an "Entity + generic tail" query. The
+ * entity head is quoted so an engine treats it as one atom, keeping the whole
+ * original query intent while anchoring on the ambiguous entity — e.g.
+ * `Phoenix framework deployment` → `"Phoenix" framework deployment`. Returns
+ * null when the query carries no detectable entity head.
+ */
+export function entityQualifiedRewrite(query: string): string | null {
+  const q = query.trim();
+  const head = entityHead(q);
+  if (!head) return null;
+  const rest = q.slice(head.length).trim();
+  const rewrite = rest ? `"${head}" ${rest}` : `"${head}"`;
+  // Only useful when it actually differs from the original query.
+  return rewrite !== q ? rewrite : null;
+}
+
+/**
+ * Detect an entity-collision condition (brand-collision v2): a proper-noun-head
+ * + generic-tail query is structurally ambiguous — the head names an entity
+ * that clashes with an everyday word. Unlike detectBrandCollision this does NOT
+ * require a brand TLD in the top-3, since the collision is in the query itself.
+ * Emits a warning whose rewrites anchor the entity head verbatim so the caller
+ * can disambiguate. Returns null when the query is not entity-collision prone.
+ */
+export function detectEntityCollision(query: string): BrandCollisionWarning | null {
+  const q = query.trim();
+  if (!q) return null;
+  const tokens = q.split(/\s+/).filter(Boolean);
+  // Only the v2 shape: an entity head with a generic tail. The <=2-token
+  // common-noun case is handled by the domain-aware detectBrandCollision path.
+  if (queryHasErrorToken(q)) return null;
+  if (!(tokens.length >= 2 && isEntityToken(tokens[0]))) return null;
+  const hasGenericTail = tokens
+    .slice(1)
+    .some((t) => GENERIC_TAIL_NOUNS.has(t.toLowerCase().replace(/[^a-z0-9]/g, '')));
+  if (!hasGenericTail) return null;
+
+  const head = entityHead(q) || tokens[0];
+  const qualified = entityQualifiedRewrite(q);
+  const rewrites: string[] = [];
+  if (qualified) rewrites.push(qualified);
+  rewrites.push(`${head} (software)`, `${head} official site`);
+
+  return {
+    detected: true,
+    reason: `query "${q}" pairs the entity "${head}" with a generic term — the entity name may collide with an unrelated meaning; results may drift off-entity`,
+    brand_domains_in_top_3: [],
+    suggested_rewrites: rewrites,
   };
 }
 

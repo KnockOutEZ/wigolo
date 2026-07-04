@@ -96,6 +96,64 @@ describe('buildQueryUnderstanding (sub-ticket 3.9)', () => {
   });
 });
 
+// Brand-collision detector v2 (item 3). The old predicate only fired on a
+// <=2-token, all-common-noun query, so a real "Entity + generic tail" collision
+// like "Phoenix framework deployment" (Phoenix = Elixir framework / city / bird)
+// never fired. WHY it matters: a proper-noun-head + generic-tail query is the
+// canonical ambiguous case the caller needs disambiguated — the detector must
+// fire regardless of token count, but MUST NOT fire on a pure technical query
+// that carries no generic tail (those disambiguate themselves).
+describe('buildQueryUnderstanding — brand-collision v2 (proper-noun head + generic tail)', () => {
+  it('fires on a 3-token proper-noun-head + generic-tail query', () => {
+    const u = buildQueryUnderstanding('Phoenix framework deployment', {});
+    expect(u.is_brand_collision_prone).toBe(true);
+  });
+
+  it('fires on an entity head with a "documentation" generic tail', () => {
+    const u = buildQueryUnderstanding('Apollo API documentation', {});
+    expect(u.is_brand_collision_prone).toBe(true);
+  });
+
+  it('does NOT fire on a pure technical query with no generic tail', () => {
+    // "pgvector hnsw ef_search tuning" — an entity + technical qualifiers, but
+    // no ambiguous generic category word. Disambiguates itself; must stay false.
+    const u = buildQueryUnderstanding('pgvector hnsw ef_search tuning', {});
+    expect(u.is_brand_collision_prone).toBe(false);
+  });
+
+  it('does NOT fire on a generic-tail query with no proper-noun head', () => {
+    // No entity head anchors the collision — a bare category phrase should not
+    // trip the detector.
+    const u = buildQueryUnderstanding('open source database framework', {});
+    expect(u.is_brand_collision_prone).toBe(false);
+  });
+
+  it('does NOT fire on an error-token query even with a generic tail', () => {
+    // Error strings must not be swallowed by the brand-collision path — S1 owns
+    // error-intent handling; the detector defers to it.
+    const u = buildQueryUnderstanding('TypeError undefined api reference', {});
+    expect(u.is_brand_collision_prone).toBe(false);
+  });
+
+  // BLOCKER I2 — a capitalized SENTENCE-FRAME lead (interrogative / article /
+  // imperative verb) is not an entity head, so an ordinary question that ends
+  // in a generic-tail noun must NOT be flagged brand-collision-prone.
+  it.each([
+    'How to deploy Rails',
+    'Configure nginx reverse proxy',
+    'Deploy app to kubernetes',
+    'Best framework for api development',
+    'When to use a cache',
+    'The framework guide for beginners',
+  ])('does NOT flag sentence-frame lead: "%s"', (q) => {
+    expect(buildQueryUnderstanding(q, {}).is_brand_collision_prone).toBe(false);
+  });
+
+  it('still flags a genuine capitalized brand head + generic tail', () => {
+    expect(buildQueryUnderstanding('Stripe payment api', {}).is_brand_collision_prone).toBe(true);
+  });
+});
+
 describe('CoreSearchProvider — query_understanding on output (sub-ticket 3.9)', () => {
   it('emits query_understanding on SearchOutput', async () => {
     verticalState.general = [

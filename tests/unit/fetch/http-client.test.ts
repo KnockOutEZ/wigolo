@@ -50,6 +50,43 @@ describe('httpFetch', () => {
       expect(result.headers).toBeDefined();
     });
 
+    it('buffers a PDF served as application/octet-stream into rawBuffer (magic-bytes sniff)', async () => {
+      // WHY: some servers ship a PDF with a generic content-type (octet-stream
+      // or none). The byte tier must recognise the %PDF- magic marker and
+      // buffer the bytes, otherwise the router's PDF short-circuit never fires
+      // and the empty-decoded body escalates to the browser.
+      const pdfBytes = Buffer.from('%PDF-1.4\n%âãÏÓ\nfake pdf body', 'latin1');
+      server = await startServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        res.end(pdfBytes);
+      });
+
+      const url = `http://127.0.0.1:${getPort(server)}/paper`;
+      const result = await httpFetch(url);
+
+      expect(result.statusCode).toBe(200);
+      expect(result.rawBuffer).toBeDefined();
+      expect(result.rawBuffer!.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+      expect(result.html).toBe('');
+      // Normalised so the extractor (keys on content-type) runs pdf-parse.
+      expect(result.contentType).toBe('application/pdf');
+    });
+
+    it('does NOT buffer a normal octet-stream (non-PDF) response into rawBuffer', async () => {
+      // Regression guard: only %PDF- bodies get the byte-tier treatment; a
+      // generic binary/text octet-stream still decodes to html as before.
+      server = await startServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        res.end('just some plain text, not a pdf');
+      });
+
+      const url = `http://127.0.0.1:${getPort(server)}/data`;
+      const result = await httpFetch(url);
+
+      expect(result.rawBuffer).toBeUndefined();
+      expect(result.html).toContain('just some plain text');
+    });
+
     it('sends custom headers', async () => {
       let receivedHeaders: http.IncomingHttpHeaders = {};
       server = await startServer((req, res) => {

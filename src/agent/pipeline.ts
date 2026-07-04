@@ -1,7 +1,7 @@
 import { createLogger } from '../logger.js';
 import { planExecution } from './planner.js';
 import { executeAgentPlan } from './executor.js';
-import { extractWithSchema } from '../extraction/schema.js';
+import { extractWithSchemaDetailed } from '../extraction/schema.js';
 import {
   type SamplingCapableServer,
   requestSampling,
@@ -94,7 +94,7 @@ export async function runAgentPipeline(
         if (schemaResult) {
           return {
             result: schemaResult,
-            sources,
+            sources: stripRawHtml(sources),
             pages_fetched: pagesFetched,
             steps,
             total_time_ms: Date.now() - start,
@@ -137,7 +137,7 @@ export async function runAgentPipeline(
 
     return {
       result,
-      sources,
+      sources: stripRawHtml(sources),
       pages_fetched: pagesFetched,
       steps,
       total_time_ms: Date.now() - start,
@@ -161,6 +161,14 @@ export async function runAgentPipeline(
   }
 }
 
+// rawHtml is internal fuel for schema extraction only — it must never reach
+// the caller. Left in place it ships hundreds of KB of raw page HTML per
+// source and, on the no-schema path, inflates enforceResponseEnvelope's
+// token count so it over-drops evidence/sources.
+function stripRawHtml(sources: AgentSource[]): AgentSource[] {
+  return sources.map(({ rawHtml: _rawHtml, ...rest }) => rest);
+}
+
 function applySchemaExtraction(
   sources: AgentSource[],
   schema: JsonSchema,
@@ -173,8 +181,13 @@ function applySchemaExtraction(
 
     for (const source of fetchedSources) {
       try {
-        const html = `<html><body>${source.markdown_content}</body></html>`;
-        const extracted = extractWithSchema(html, schema);
+        // Prefer the raw HTML so the shared schema engine can read real
+        // <table>/<dl>/microdata structures; fall back to wrapping the
+        // markdown body when a source carries no raw HTML.
+        const html = source.rawHtml && source.rawHtml.length > 0
+          ? source.rawHtml
+          : `<html><body>${source.markdown_content}</body></html>`;
+        const extracted = extractWithSchemaDetailed(html, schema).values;
 
         for (const [key, value] of Object.entries(extracted)) {
           if (value !== undefined && value !== null && value !== '') {

@@ -1,11 +1,9 @@
 import { parseHTML } from 'linkedom';
 import type { SearchEngine, SearchEngineOptions, RawSearchResult } from '../../types.js';
 import { createLogger } from '../../logger.js';
+import { nextUserAgent, isBlockedError } from './user-agents.js';
 
 const log = createLogger('search');
-
-const USER_AGENT =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 // Mojeek runs a real independent web index — no Bing/Google reliance. Adding
 // it to the general vertical adds an independent lexical signal that dilutes
@@ -15,11 +13,15 @@ const USER_AGENT =
 // Request shape mirrors SearXNG's proven mojeek adapter: no `fmt` param
 // (never sent for web search), `safe=0`, and no explicit `s` offset on page 1
 // (sending `s=0` triggers rate-limiting). Mojeek 403s are IP-reputation /
-// rate-limit driven, not UA-driven, so a browser-like header set
-// (Accept + Accept-Language) keeps the request indistinguishable from a
-// normal page load.
+// rate-limit driven; on a block the engine rotates its browser fingerprint
+// (a shared UA pool) on retry, which clears many transient blocks.
 export class MojeekEngine implements SearchEngine {
   name = 'mojeek';
+  private userAgent = nextUserAgent();
+
+  onRetry(_attempt: number, lastError: unknown): void {
+    if (isBlockedError(lastError)) this.userAgent = nextUserAgent(this.userAgent);
+  }
 
   async search(query: string, options: SearchEngineOptions = {}): Promise<RawSearchResult[]> {
     const timeoutMs = options.timeoutMs ?? 10000;
@@ -33,7 +35,7 @@ export class MojeekEngine implements SearchEngine {
     const response = await fetch(url, {
       signal: AbortSignal.timeout(timeoutMs),
       headers: {
-        'User-Agent': USER_AGENT,
+        'User-Agent': this.userAgent,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
       },

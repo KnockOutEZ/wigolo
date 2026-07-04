@@ -2,14 +2,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SearchEngine, RawSearchResult, ResearchInput } from '../../../src/types.js';
 import type { SmartRouter } from '../../../src/fetch/router.js';
 
-const extractMock = vi.fn().mockResolvedValue({
-  title: 'Extracted Title',
-  markdown: '# Extracted Content\n\nArticle content about the topic.',
+// Derive distinct, substantive markdown per source URL so key_findings are
+// non-empty and non-duplicate (each source yields its own finding). The
+// paragraph clears the firstSubstantiveParagraph >=80-char threshold.
+const extractMock = vi.fn().mockImplementation(async (_html: string, url: string) => ({
+  title: `Extracted Title for ${url}`,
+  markdown: `# Extracted Content\n\nThis is a substantive paragraph of article content about the topic covered by ${url}, long enough to be surfaced as a distinct key finding in the research brief renderer.`,
   metadata: {},
   links: [],
   images: [],
   extractor: 'defuddle' as const,
-});
+}));
 vi.mock('../../../src/providers/extract-provider.js', () => ({
   getExtractProvider: vi.fn(async () => ({
     name: 'v1' as const,
@@ -35,15 +38,15 @@ function createStubEngine(results: RawSearchResult[]): SearchEngine {
 
 function createStubRouter(): SmartRouter {
   return {
-    fetch: vi.fn().mockResolvedValue({
-      url: 'https://example.com',
-      finalUrl: 'https://example.com',
+    fetch: vi.fn().mockImplementation((url: string) => Promise.resolve({
+      url,
+      finalUrl: url,
       html: '<html><body><h1>Test</h1><p>Article content about the topic.</p></body></html>',
       contentType: 'text/html',
       statusCode: 200,
       method: 'http' as const,
       headers: {},
-    }),
+    })),
   } as unknown as SmartRouter;
 }
 
@@ -314,6 +317,17 @@ describe('runResearchPipeline', () => {
     expect(result.report).not.toMatch(/^## Research: /);
     // The brief is still attached for host-LLM consumers.
     expect(result.brief).toBeDefined();
+
+    // Citation density must scale with the sources actually used, not plateau
+    // at cross-references only. The Key Findings section now carries per-claim
+    // [n], so distinct inline citations should reach at least 2 with the multi-
+    // source stub (defaultResults has 5 fetchable sources).
+    const keyFindingsBlock = result.report.slice(result.report.indexOf('### Key Findings'));
+    expect(keyFindingsBlock).toMatch(/\[\d+\]/);
+    const distinctCitations = new Set(
+      Array.from(result.report.matchAll(/\[(\d+)\]/g)).map((m) => m[1]),
+    );
+    expect(distinctCitations.size).toBeGreaterThanOrEqual(2);
   });
 
   // WHY: when the brief is unavailable the renderer can't run, so the ultimate

@@ -59,14 +59,17 @@ const KEY_REQUIRED: Record<string, KeyRequirement> = {
 };
 
 // Known per-engine limitations that
-// are NOT misconfigurations and NOT user-fixable. These surface as an
-// informational note in doctor even when the engine is otherwise "ok", so a
-// user who sees an engine intermittently absent from telemetry understands
-// the cause. Mojeek's 403s are IP-reputation / rate-limit driven (see
-// src/search/engines/mojeek.ts) — a real fix needs a proxy pool, which is out
-// of local scope; the engine already degrades gracefully behind its breaker.
+// are NOT misconfigurations. These surface as an informational note in doctor
+// even when the engine is otherwise "ok", so a user who sees an engine
+// intermittently absent from telemetry understands the cause AND what the
+// client already does about it. Mojeek's 403s are IP-reputation / rate-limit
+// driven (see src/search/engines/mojeek.ts); on a block the engine rotates its
+// browser fingerprint on retry (a shared UA pool), which clears many transient
+// blocks. Persistent reputation blocks would need a proxy pool (out of local
+// scope); the engine degrades gracefully behind its breaker.
 const ENGINE_NOTES: Record<string, string> = {
-  mojeek: 'may intermittently 403 (IP reputation / rate-limit, not UA-fixable); degrades gracefully',
+  mojeek:
+    'may intermittently 403 (IP reputation / rate-limit); rotates its browser fingerprint on a blocked retry and degrades gracefully behind its breaker',
 };
 
 function noteFor(engineName: string): string | undefined {

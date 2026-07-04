@@ -64,7 +64,10 @@ describe('SmartRouter', () => {
       fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
     };
 
-    router = new SmartRouter(httpClient, browserPool);
+    // Inject a non-PDF probe so the shared router never issues a real network
+    // HEAD when the browser-bound path runs (dedicated PDF tests inject their
+    // own probe). Keeps these unit tests hermetic.
+    router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
 
     vi.mocked(getAuthOptions).mockResolvedValue(null);
   });
@@ -165,6 +168,132 @@ describe('SmartRouter', () => {
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
     expect(result.method).toBe('playwright');
+  });
+
+  describe('binary-download pre-sniff (PDF routing)', () => {
+    function makePdfHttpResult(url: string): Awaited<ReturnType<HttpClient['fetch']>> {
+      return {
+        url,
+        finalUrl: url,
+        html: '',
+        contentType: 'application/pdf',
+        statusCode: 200,
+        headers: { 'content-type': 'application/pdf' },
+        rawBuffer: Buffer.from('%PDF-1.4 stub'),
+      };
+    }
+
+    it('routes a .pdf URL to HTTP even on a preferPlaywright (known-SPA) domain', async () => {
+      // WHY: a binary download must be buffered by the byte-tier, never handed
+      // to a browser that treats a PDF response as a download and hard-errors.
+      // react.dev is in KNOWN_SPA_DOMAINS → starts preferPlaywright=true.
+      const url = 'https://react.dev/whitepaper.pdf';
+      vi.mocked(httpClient.fetch).mockResolvedValue(makePdfHttpResult(url));
+
+      const result = await router.fetch(url);
+
+      expect(httpClient.fetch).toHaveBeenCalledOnce();
+      expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
+      expect(result.method).toBe('http');
+    });
+
+    it('render_js:"always" on a .pdf URL still goes to the browser (explicit override wins)', async () => {
+      // The pre-sniff must not hijack an explicit browser request.
+      const url = 'https://example.com/report.pdf';
+
+      const result = await router.fetch(url, { renderJs: 'always' });
+
+      expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
+      expect(httpClient.fetch).not.toHaveBeenCalled();
+      expect(result.method).toBe('playwright');
+    });
+
+    it('an extensionless PDF (application/pdf, empty html + rawBuffer) does NOT escalate to the browser as an SPA shell', async () => {
+      // WHY: extensionless PDF URLs (e.g. arxiv.org/pdf/1706.03762) slip past
+      // the extension pre-sniff and reach the HTTP tier, which returns an empty
+      // html + rawBuffer. The old SPA-shell check saw empty html and escalated
+      // to the browser, which hard-errors with "Download is starting". A PDF
+      // response must be recognised by its content-type and returned as-is.
+      const url = 'https://arxiv-clone.test/pdf/1706.03762';
+      vi.mocked(httpClient.fetch).mockResolvedValue({
+        url,
+        finalUrl: url,
+        html: '',
+        contentType: 'application/pdf',
+        statusCode: 200,
+        headers: { 'content-type': 'application/pdf' },
+        rawBuffer: Buffer.from('%PDF-1.7 real pdf bytes'),
+      });
+
+      const result = await router.fetch(url);
+
+      expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
+      expect(result.method).toBe('http');
+      expect(result.rawBuffer).toBeDefined();
+      expect(result.contentType).toBe('application/pdf');
+    });
+
+    it('recognises a PDF by magic bytes when the server omits the content-type', async () => {
+      // Some servers return octet-stream / no content-type for a PDF. A
+      // %PDF- magic-bytes body must still be treated as a completed byte-tier
+      // result, never re-routed to the browser as thin content.
+      const url = 'https://files.test/download/doc-12345';
+      vi.mocked(httpClient.fetch).mockResolvedValue({
+        url,
+        finalUrl: url,
+        html: '',
+        contentType: 'application/octet-stream',
+        statusCode: 200,
+        headers: { 'content-type': 'application/octet-stream' },
+        rawBuffer: Buffer.from('%PDF-1.4 octet stream pdf'),
+      });
+
+      const result = await router.fetch(url);
+
+      expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
+      expect(result.method).toBe('http');
+    });
+
+    it('probes content-type before the browser tier so an extensionless PDF on a preferPlaywright domain routes to HTTP', async () => {
+      // WHY: a preferPlaywright domain (known-SPA / prior escalation) sends the
+      // extensionless PDF URL straight to the browser, which hard-errors. A
+      // cheap content-type probe before the browser dispatch reroutes any PDF
+      // — extension or not — to the byte tier.
+      const url = 'https://react.dev/papers/whitepaper-2024';
+      const pdfProbe = vi.fn(async () => true);
+      const probingRouter = new SmartRouter({ httpClient, browserPool, pdfProbe });
+      vi.mocked(httpClient.fetch).mockResolvedValue({
+        url,
+        finalUrl: url,
+        html: '',
+        contentType: 'application/pdf',
+        statusCode: 200,
+        headers: { 'content-type': 'application/pdf' },
+        rawBuffer: Buffer.from('%PDF-1.5 spa domain pdf'),
+      });
+
+      const result = await probingRouter.fetch(url);
+
+      expect(pdfProbe).toHaveBeenCalledOnce();
+      expect(pdfProbe.mock.calls[0][0]).toBe(url);
+      expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
+      expect(result.method).toBe('http');
+    });
+
+    it('does NOT probe or reroute a normal HTML fetch on a preferPlaywright domain', async () => {
+      // Regression guard: the content-type probe must only run on the browser
+      // dispatch path and, when it reports non-PDF, the browser tier is used
+      // unchanged. A normal known-SPA HTML page still renders in the browser.
+      const url = 'https://react.dev/learn';
+      const pdfProbe = vi.fn(async () => false);
+      const probingRouter = new SmartRouter({ httpClient, browserPool, pdfProbe });
+      vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(makeBrowserResult(url));
+
+      const result = await probingRouter.fetch(url);
+
+      expect(result.method).toBe('playwright');
+      expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
+    });
   });
 
   it('records domain routing decisions', async () => {

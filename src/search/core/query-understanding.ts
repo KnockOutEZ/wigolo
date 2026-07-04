@@ -3,8 +3,8 @@ import {
   type DateHint,
   type Vertical,
 } from './intent-router.js';
-import { COMMON_NOUNS } from '../hybrid/common-nouns.js';
 import { detectRareTerms } from './rare-terms.js';
+import { isBrandCollisionProne } from './brand-collision.js';
 
 export interface QueryUnderstanding {
   intent: Vertical;
@@ -21,16 +21,6 @@ export interface BuildQUOptions {
   language?: string;
   rewrites?: string[];
   now?: Date;
-}
-
-function tokenize(query: string): string[] {
-  return query.trim().split(/\s+/).filter((t) => t.length > 0);
-}
-
-function isBrandCollisionProne(query: string): boolean {
-  const tokens = tokenize(query);
-  if (tokens.length === 0 || tokens.length > 2) return false;
-  return tokens.every((t) => COMMON_NOUNS.has(t.toLowerCase()));
 }
 
 // Lowercase lexicon for queries that arrive downcased.
@@ -64,7 +54,7 @@ const LOWERCASE_ENTITY_LEXICON = new Set([
   'ceo', 'cto', 'cfo', 'coo', 'cmo',
 ]);
 
-function extractEntities(query: string): string[] {
+export function extractEntities(query: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   // Acronyms / mixed-case tokens (HNSW, Next.js, pgvector with dot, React)

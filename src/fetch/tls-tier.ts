@@ -184,15 +184,35 @@ function buildProfileRotation(active: string): string[] {
   return order;
 }
 
+const PDF_MAGIC = '%PDF-';
+
+function bufferLooksLikePdf(buf: Buffer): boolean {
+  return buf.length >= PDF_MAGIC.length && buf.subarray(0, PDF_MAGIC.length).toString('latin1') === PDF_MAGIC;
+}
+
 async function readResponse(url: string, response: WreqResponse): Promise<TlsFetchResult> {
   const headers = headersToRecord(response.headers);
   const contentType = headers['content-type'] ?? '';
-  const isPdf = contentType.includes('application/pdf');
+  const declaredPdf = contentType.includes('application/pdf');
+  // Mirror the HTTP tier: buffer a declared PDF, and also sniff an ambiguous
+  // (generic/absent) content-type for the %PDF- magic marker so an
+  // extension-less PDF served without a proper header is still byte-buffered.
+  const ambiguousType = contentType === '' || contentType.includes('application/octet-stream');
   let html = '';
   let rawBuffer: Buffer | undefined;
-  if (isPdf && typeof response.arrayBuffer === 'function') {
+  // Normalised so a magic-bytes PDF is reported as application/pdf downstream.
+  let effectiveContentType = contentType;
+  if (declaredPdf && typeof response.arrayBuffer === 'function') {
     const ab = await response.arrayBuffer();
     rawBuffer = Buffer.from(ab);
+  } else if (ambiguousType && typeof response.arrayBuffer === 'function') {
+    const buf = Buffer.from(await response.arrayBuffer());
+    if (bufferLooksLikePdf(buf)) {
+      rawBuffer = buf;
+      effectiveContentType = 'application/pdf';
+    } else {
+      html = buf.toString('utf-8');
+    }
   } else {
     html = await response.text();
   }
@@ -200,7 +220,7 @@ async function readResponse(url: string, response: WreqResponse): Promise<TlsFet
     url,
     finalUrl: response.url ?? url,
     html,
-    contentType,
+    contentType: effectiveContentType,
     statusCode: response.status,
     headers,
     rawBuffer,

@@ -224,6 +224,29 @@ describe('handleExtract', () => {
     expect(extractTables).toHaveBeenCalledOnce();
   });
 
+  it('mode=tables surfaces a div/flex-grid when no <table> markup exists', async () => {
+    // extractTables returns [] (no <table>), but the div-grid detector must
+    // recover the 3-card pricing grid so tables mode is not empty.
+    vi.mocked(extractTables).mockReturnValue([]);
+    const gridHtml = `<html><body>
+      <div class="tiers">
+        <div class="plan"><h3>Starter</h3><span class="price">$9</span></div>
+        <div class="plan"><h3>Pro</h3><span class="price">$29</span></div>
+        <div class="plan"><h3>Enterprise</h3><span class="price">$99</span></div>
+      </div>
+    </body></html>`;
+
+    const __r = await handleExtract({ html: gridHtml, mode: 'tables' }, mockRouter());
+    expect(__r.ok).toBe(true);
+    if (!__r.ok) return;
+    const tables = __r.data.data as Array<{ headers: string[]; rows: Record<string, string>[] }>;
+    expect(tables.length).toBeGreaterThanOrEqual(1);
+    expect(tables[0].rows).toHaveLength(3);
+    const flat = tables[0].rows.map((r) => Object.values(r).join(' '));
+    expect(flat[0]).toContain('Starter');
+    expect(flat[0]).toContain('$9');
+  });
+
   it('ignores schema field when mode is not schema', async () => {
     vi.mocked(extractMetadata).mockReturnValue({ title: 'Test' });
 

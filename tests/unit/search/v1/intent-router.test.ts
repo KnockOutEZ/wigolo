@@ -168,6 +168,65 @@ describe('classifyIntent', () => {
     });
   });
 
+  describe('error-token queries do not get swallowed by docs', () => {
+    // An error string like "ENOENT ... api ..." matches DOCS_PHRASE_RE via the
+    // \bapi\b clause, which would misroute a debugging query into the docs
+    // vertical (MDN/DevDocs), starving it of the issue-tracker / discussion
+    // pages that actually resolve the error. When an all-caps error token is
+    // present the query must NOT classify as docs.
+    it('"ENOENT no such file api" is not docs', () => {
+      expect(classifyIntent('ENOENT no such file api')).not.toBe('docs');
+    });
+
+    it('"EACCES permission denied api reference" is not docs', () => {
+      expect(classifyIntent('EACCES permission denied api reference')).not.toBe('docs');
+    });
+
+    it('preserves an explicit code classification for "npm error code EACCES"', () => {
+      // Regression guard: the error-token suppression must not knock a query
+      // out of the code vertical when real code signals are present.
+      expect(classifyIntent('npm error code EACCES')).toBe('code');
+    });
+
+    it('SQLSTATE with a numeric code is treated as an error (not docs)', () => {
+      expect(classifyIntent('SQLSTATE 23505 unique violation api')).not.toBe('docs');
+    });
+
+    it('a TypeError-style class name is treated as an error (not docs)', () => {
+      expect(classifyIntent('TypeError cannot read properties api reference')).not.toBe('docs');
+    });
+  });
+
+  describe('plain acronyms are NOT error-intent (must still route docs)', () => {
+    // The error-intent gate (docs suppression + dictionary demotion) must fire
+    // ONLY for genuinely error-shaped tokens. A bare 5+ letter acronym is a
+    // normal noun — suppressing docs for it would misroute real doc lookups.
+    // These MUST still classify as docs via their docs phrase.
+    it('"NGINX reverse proxy guide" routes to docs', () => {
+      expect(classifyIntent('NGINX reverse proxy guide')).toBe('docs');
+    });
+
+    it('"GRAPHQL api reference" routes to docs', () => {
+      expect(classifyIntent('GRAPHQL api reference')).toBe('docs');
+    });
+
+    it('"HTTPS tutorial" routes to docs', () => {
+      expect(classifyIntent('HTTPS tutorial')).toBe('docs');
+    });
+
+    it('"OAUTH2 getting started guide" routes to docs', () => {
+      expect(classifyIntent('OAUTH2 getting started guide')).toBe('docs');
+    });
+
+    it('"README documentation" routes to docs', () => {
+      expect(classifyIntent('README documentation')).toBe('docs');
+    });
+
+    it('"SQLITE api reference" routes to docs (no numeric code)', () => {
+      expect(classifyIntent('SQLITE api reference')).toBe('docs');
+    });
+  });
+
   describe('negative cases / false positives', () => {
     it('"citizen journalism" is not papers (cite substring)', () => {
       expect(classifyIntent('citizen journalism')).not.toBe('papers');

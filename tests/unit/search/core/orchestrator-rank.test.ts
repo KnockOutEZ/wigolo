@@ -396,3 +396,65 @@ describe('rare-term ranking', () => {
     expect(out.results[0].url).toBe('https://example.com/rrf');
   });
 });
+
+describe('error-token atomicity + dictionary demotion', () => {
+  it('demotes a dictionary definition below the issue/doc that carries the error token', async () => {
+    // On an error-code query the dictionary entry for the plain-English word
+    // in the code string is never the answer — the issue tracker / docs page
+    // is. WHY: an error code is a literal atom; a definition of "permission"
+    // does not help debug EACCES. The dictionary result must score strictly
+    // below the code/issue result.
+    verticalState.general = [
+      makeEntry('e1', [
+        makeResult(
+          'e1',
+          'https://www.merriam-webster.com/dictionary/permission',
+          'Permission definition',
+          'the act of permitting; formal consent.',
+        ),
+        makeResult(
+          'e1',
+          'https://github.com/nodejs/node/issues/9111',
+          'EACCES: permission denied when listening on port',
+          'Node throws EACCES: permission denied on listen for privileged ports.',
+        ),
+      ], { quality: 'high' }),
+    ];
+
+    const out = await runV1Search({ query: 'EACCES permission denied listen', category: 'general' });
+    const dictIdx = out.results.findIndex((r) => r.url.includes('merriam-webster.com'));
+    const codeIdx = out.results.findIndex((r) => r.url.includes('github.com'));
+    expect(codeIdx).toBeGreaterThanOrEqual(0);
+    expect(dictIdx).toBeGreaterThanOrEqual(0);
+    const dictScore = out.results[dictIdx].relevance_score;
+    const codeScore = out.results[codeIdx].relevance_score;
+    expect(dictScore).toBeLessThan(codeScore);
+  });
+
+  it('wraps an all-caps error token in quotes in the dispatched engineQuery', async () => {
+    // Substring lexical matching on an unquoted error string lets glossary
+    // junk rank; quoting forces engines to treat the code as one atom.
+    const entry = makeEntry('bing', [
+      makeResult('bing', 'https://example.com/x', 'x', 'body'),
+    ]);
+    verticalState.general = [entry];
+
+    await runV1Search({ query: 'ERR_PNPM_OUTDATED_LOCKFILE ci install', category: 'general' });
+    const spy = entry.engine.search as ReturnType<typeof vi.fn>;
+    expect(spy).toHaveBeenCalled();
+    const dispatchedQuery = spy.mock.calls[0][0] as string;
+    expect(dispatchedQuery).toContain('"ERR_PNPM_OUTDATED_LOCKFILE"');
+  });
+
+  it('keeps an all-caps code with digits atomic in the engineQuery', async () => {
+    const entry = makeEntry('bing', [
+      makeResult('bing', 'https://example.com/x', 'x', 'body'),
+    ]);
+    verticalState.general = [entry];
+
+    await runV1Search({ query: 'SQLSTATE 23505 unique violation', category: 'general' });
+    const spy = entry.engine.search as ReturnType<typeof vi.fn>;
+    const dispatchedQuery = spy.mock.calls[0][0] as string;
+    expect(dispatchedQuery).toContain('"SQLSTATE"');
+  });
+});

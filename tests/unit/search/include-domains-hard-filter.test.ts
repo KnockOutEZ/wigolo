@@ -178,6 +178,52 @@ describe('include_domains — hard filter (C8)', () => {
     expect(hosts).toContain('example.com');
   });
 
+  it('injects a site-scoped query and backfills toward max_results with only on-domain URLs', async () => {
+    // Post-RRF-only filtering starves the on-domain set: the site-scoped
+    // dispatch narrows recall, so after the hard filter drops off-domain
+    // survivors the count sits below max_results. A backfill wave re-dispatches
+    // broad (no site: scoping) and re-applies the filter, refilling the set
+    // with additional on-domain URLs. WHY: callers scoping to a domain still
+    // expect a full page of on-domain results, not the 1-2 the narrow first
+    // wave found.
+    const captured: string[] = [];
+    const search = vi.fn(async (q: string, _opts?: SearchEngineOptions) => {
+      captured.push(q);
+      // The site-scoped first wave surfaces only one on-domain page. The broad
+      // backfill wave (no site: operator) reaches deeper into the domain.
+      if (q.includes('site:')) {
+        return [
+          makeResult('bing', 'https://gnu.org/software/make/manual/one'),
+          makeResult('bing', 'https://medium.com/off'),
+        ];
+      }
+      return [
+        makeResult('bing', 'https://gnu.org/software/make/manual/one'),
+        makeResult('bing', 'https://gnu.org/software/make/manual/two'),
+        makeResult('bing', 'https://gnu.org/software/make/manual/three'),
+        makeResult('bing', 'https://reddit.com/off'),
+        makeResult('bing', 'https://stackoverflow.com/off'),
+      ];
+    });
+    verticalState.general = [{ engine: { name: 'bing', search } }];
+
+    const out = await runV1Search({
+      query: 'make recursive variable expansion',
+      includeDomains: ['gnu.org'],
+      maxResults: 5,
+    });
+
+    // A site-scoped query was dispatched.
+    expect(captured.some((q) => q.includes('site:gnu.org'))).toBe(true);
+    // The backfill wave refilled beyond the single first-wave on-domain hit.
+    expect(out.results.length).toBeGreaterThan(1);
+    // Every surviving result is on-domain.
+    const hosts = out.results.map((r) => new URL(r.url).hostname);
+    for (const h of hosts) {
+      expect(h === 'gnu.org' || h.endsWith('.gnu.org')).toBe(true);
+    }
+  });
+
   it('multiple include domains all act as a hard whitelist', async () => {
     verticalState.general = [
       makeEntry('bing', [

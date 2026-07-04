@@ -1,6 +1,7 @@
 import { parseHTML } from 'linkedom';
 import type { SearchEngine, SearchEngineOptions, RawSearchResult } from '../../types.js';
 import { createLogger } from '../../logger.js';
+import { nextUserAgent, isBlockedError } from './user-agents.js';
 
 const log = createLogger('search');
 
@@ -62,6 +63,11 @@ function parseDateFromSnippet(snippet: string): string | undefined {
 
 export class BingEngine implements SearchEngine {
   name = 'bing';
+  private userAgent = nextUserAgent();
+
+  onRetry(_attempt: number, lastError: unknown): void {
+    if (isBlockedError(lastError)) this.userAgent = nextUserAgent(this.userAgent);
+  }
 
   async search(query: string, options: SearchEngineOptions = {}): Promise<RawSearchResult[]> {
     const timeoutMs = options.timeoutMs ?? 10000;
@@ -76,7 +82,7 @@ export class BingEngine implements SearchEngine {
     const response = await fetch(url, {
       signal: AbortSignal.timeout(timeoutMs),
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'User-Agent': this.userAgent,
         'Accept-Language': options.language ?? 'en-US,en;q=0.9',
       },
     });

@@ -7,6 +7,7 @@ import { stripBoilerplateDom } from '../boilerplate.js';
 import { createLogger } from '../../logger.js';
 import { classifyContent, type ContentType } from './classifier.js';
 import { isolateContentRoot } from './content-root.js';
+import { narrowToGrid } from '../div-grid.js';
 import { extractRecipe } from './recipe.js';
 import { extractProduct } from './product.js';
 import { extractNews } from './news.js';
@@ -52,7 +53,12 @@ export async function routedExtract(input: RoutedExtractInput): Promise<Extracti
   // body content instead of leading nav chrome. Inert on clean pages and
   // unrendered shells (two-factor guard). Classification above stays on the
   // full html so type detection is unaffected.
-  const scoped = isolateContentRoot(cleanedHtml);
+  const rooted = isolateContentRoot(cleanedHtml);
+
+  // Then narrow div/flex pricing grids to the card region by sibling-removal
+  // so markdown extraction of a table-less pricing page returns the tiers
+  // instead of surrounding chrome. Inert on non-grid pages (two-factor guard).
+  const scoped = narrowToGrid(rooted);
 
   const result = await (async () => {
     switch (type) {

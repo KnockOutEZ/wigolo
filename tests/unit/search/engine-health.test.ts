@@ -62,14 +62,20 @@ describe('getEngineHealthSummary', () => {
     expect(mojeek?.status).toBe('ok');
   });
 
-  // Mojeek's 403s are IP-reputation
-  // driven (confirmed in src/search/engines/mojeek.ts), NOT UA-fixable. A
-  // user seeing mojeek "ok" but absent from telemetry deserves to know WHY.
-  // The note is informational — it does not change status or block dispatch.
-  it('attaches an IP-reputation note to mojeek so its intermittent absence is honest', () => {
+  // Mojeek's 403s are IP-reputation driven. The engine now rotates its
+  // browser fingerprint on a blocked retry, which clears many transient
+  // blocks; the ones that remain degrade gracefully behind the breaker. A
+  // user seeing mojeek "ok" but absent from telemetry deserves to know WHY
+  // and that the client already attempts a fresh fingerprint. The note is
+  // informational — it does not change status or block dispatch.
+  it('attaches an IP-reputation note to mojeek that reflects the fingerprint-rotation retry', () => {
     const summary = getEngineHealthSummary();
     const mojeek = summary.find((e) => e.name === 'mojeek');
     expect(mojeek?.note).toMatch(/IP reputation/i);
+    // The reworded note is actionable: it states a rotated fingerprint is
+    // attempted on a block rather than claiming the 403 is unfixable.
+    expect(mojeek?.note).toMatch(/fingerprint|rotat/i);
+    expect(mojeek?.note).not.toMatch(/not UA-fixable/i);
   });
 
   it('does not attach a note to engines without a known limitation', () => {

@@ -1,6 +1,7 @@
 import { parseHTML } from 'linkedom';
-import type { StructuredData, DefinitionPair, ChartHint, KeyValuePair } from '../types.js';
+import type { StructuredData, DefinitionPair, ChartHint, KeyValuePair, TableData } from '../types.js';
 import { extractTables } from './extract.js';
+import { detectDivGridTablesFromDoc } from './div-grid.js';
 import { extractJsonLd } from './jsonld.js';
 
 const MAX_VALUE_LEN = 400;
@@ -12,7 +13,7 @@ const MAX_ITEMS_PER_TYPE = 200;
 export function extractStructured(html: string): StructuredData {
   const { document: doc } = parseHTML(html);
 
-  const tables = extractTables(html);
+  const tables = mergeGridTables(extractTables(html), detectDivGridTablesFromDoc(doc));
   const jsonld = extractJsonLd(html);
   const definitions = extractDefinitions(doc);
   const chart_hints = extractChartHints(doc);
@@ -25,6 +26,24 @@ export function extractStructured(html: string): StructuredData {
     chart_hints,
     key_value_pairs,
   };
+}
+
+// Merge div/flex-grid tables into the <table>-derived set, skipping any grid
+// whose row contents are already covered by a real <table> (dedup so a page
+// with both a semantic table and a styled grid of the same data doesn't
+// double-report).
+export function mergeGridTables(tableData: TableData[], gridData: TableData[]): TableData[] {
+  if (gridData.length === 0) return tableData;
+  const existing = new Set(
+    tableData.map((t) => t.rows.map((r) => Object.values(r).join('|')).join('||')),
+  );
+  const merged = [...tableData];
+  for (const grid of gridData) {
+    const sig = grid.rows.map((r) => Object.values(r).join('|')).join('||');
+    if (existing.has(sig)) continue;
+    merged.push(grid);
+  }
+  return merged;
 }
 
 // <dl><dt>Term</dt><dd>Description</dd></dl> is the canonical key-value

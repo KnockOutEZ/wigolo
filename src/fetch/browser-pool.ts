@@ -1,4 +1,5 @@
-import { chromium, firefox, webkit, type Browser, type BrowserContext } from 'playwright';
+import { chromium, firefox, webkit, type Browser, type BrowserContext, type Download } from 'playwright';
+import { readFile } from 'node:fs/promises';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { BrowserSelector, type SelectionStrategy } from './browser-selector.js';
@@ -37,6 +38,39 @@ export interface PoolTypeStat {
 const log = createLogger('fetch');
 
 const NAV_RACE_PATTERN = /execution context (?:was )?destroyed|page is navigating|frame.*detached|target closed/i;
+// Chromium rejects page.goto with this when the response is a download
+// (e.g. a PDF served with content-type application/pdf).
+const DOWNLOAD_START_PATTERN = /download is starting/i;
+// How long to wait for a `download` event when goto rejects with "Download is
+// starting" before the event handler captured it (an async race). Short — the
+// download has already begun, so the event is imminent.
+const DOWNLOAD_EVENT_WAIT_MS = 3000;
+
+// Read a captured Playwright download into a Buffer, bounded by the caller's
+// abort signal. Returns null when the bytes cannot be read.
+async function readDownloadBuffer(
+  download: Download,
+  url: string,
+  signal?: AbortSignal,
+): Promise<Buffer | null> {
+  try {
+    const path = await Promise.race([
+      download.path(),
+      abortRejection(signal),
+    ]);
+    if (!path) return null;
+    return await Promise.race([
+      readFile(path),
+      abortRejection(signal),
+    ]);
+  } catch (err) {
+    log.warn('failed to read intercepted download', {
+      url,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
 
 async function readContentWithRetry(
   page: import('playwright').Page,
@@ -151,6 +185,29 @@ export class MultiBrowserPool {
     return typePool.browser;
   }
 
+  /**
+   * Pre-launch the browser engine for the default (first configured) type so a
+   * later fetch does not pay the browser cold-start inline. Idempotent — a
+   * no-op when the browser is already launched — and best-effort: a launch
+   * failure is swallowed (the lazy path on first fetch surfaces it honestly).
+   * Latency-only; does not touch the context pool, so it never disturbs
+   * in-flight fetches, downloads, or the idle-eviction bookkeeping.
+   */
+  async warm(): Promise<void> {
+    if (this.shutdownCalled) return;
+    const type = this.configuredTypes[0];
+    const typePool = this.pools.get(type);
+    if (!typePool || typePool.browser) return; // already warm
+    try {
+      await this.launchBrowser(type);
+    } catch (err) {
+      log.debug('browser prewarm skipped', {
+        type,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   protected async acquireForType(type: BrowserType): Promise<BrowserContext> {
     const config = getConfig();
     const maxBrowsers = config.maxBrowsers;
@@ -169,7 +226,10 @@ export class MultiBrowserPool {
     if (typePool.activeCount < maxBrowsers) {
       typePool.activeCount++;
       const browser = await this.launchBrowser(type);
-      return browser.newContext();
+      // acceptDownloads lets a PDF (or other binary) response be captured as a
+      // download rather than triggering an unhandled navigation error. Harmless
+      // for normal navigations — no download event fires.
+      return browser.newContext({ acceptDownloads: true });
     }
 
     return new Promise<BrowserContext>((resolve) => {
@@ -244,6 +304,15 @@ export class MultiBrowserPool {
     const onAbort = () => { page.close().catch(() => {}); };
     options.signal?.addEventListener('abort', onAbort, { once: true });
 
+    // Capture a download so a PDF (or other binary) response served to the
+    // browser is turned into a buffered result instead of a hard nav error.
+    // Registered before goto so the event is never missed. Guarded so page
+    // stubs without `on` (unit-test mocks) are unaffected.
+    let capturedDownload: Download | undefined;
+    if (typeof page.on === 'function') {
+      page.on('download', (dl) => { capturedDownload = dl; });
+    }
+
     if (options.headers) {
       await page.setExtraHTTPHeaders(options.headers);
     }
@@ -276,13 +345,48 @@ export class MultiBrowserPool {
           contentType = rawHeaders['content-type'] ?? '';
         }
       } catch (err) {
+        // A PDF (or other binary) response makes Chromium reject goto with
+        // "Download is starting" and/or fire a download event. Don't hard-error
+        // — read the downloaded bytes and return them as a buffered result so
+        // the tool layer extracts the PDF exactly like the HTTP-tier path.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (capturedDownload || DOWNLOAD_START_PATTERN.test(msg)) {
+          // Chromium can reject goto with "Download is starting" BEFORE the
+          // `download` event handler has captured the object (the event is
+          // emitted asynchronously). When we don't have it yet, wait briefly
+          // for the event so a real PDF isn't lost to the race.
+          let download = capturedDownload;
+          if (!download && typeof page.waitForEvent === 'function') {
+            download = await page
+              .waitForEvent('download', { timeout: DOWNLOAD_EVENT_WAIT_MS })
+              .catch(() => undefined);
+          }
+          if (download) {
+            const buf = await readDownloadBuffer(download, url, options.signal);
+            if (buf) {
+              log.debug('intercepted browser download, returning buffered bytes', { url, bytes: buf.length });
+              return {
+                url,
+                finalUrl: url,
+                html: '',
+                contentType: 'application/pdf',
+                statusCode: 200,
+                method: 'playwright',
+                headers: {},
+                rawBuffer: buf,
+              };
+            }
+          }
+          // No download object (or unreadable) — surface as a download error
+          // rather than pretending it was a normal navigation.
+          throw err;
+        }
         // SPAs may hydrate past the nav timeout. Rather than failing the whole
         // fetch, capture whatever HTML the page already rendered and tag a
         // warning so callers (and host LLMs) know the content is partial.
         // AbortError (from abortRejection) has name 'AbortError', NOT
         // 'TimeoutError', so isTimeout is false and the error is rethrown —
         // no new branch is needed here.
-        const msg = err instanceof Error ? err.message : String(err);
         const isTimeout =
           (err instanceof Error && err.name === 'TimeoutError') ||
           /Timeout\s+\d+ms\s+exceeded/i.test(msg);

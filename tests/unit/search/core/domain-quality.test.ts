@@ -96,4 +96,69 @@ describe('domainQualityScore', () => {
     const score = domainQualityScore('not-a-url', 'general', 'anything');
     expect(score).toBe(1.0);
   });
+
+  // Dictionary/glossary demotion is a PER-RESULT hit/miss gate: it fires only
+  // when the query carries an error token (an all-caps code like ERR_*/ENOENT)
+  // AND the host is a dictionary domain. On an error-code query a dictionary
+  // definition of an English word in the error string is never the answer;
+  // the issue tracker / docs page is. It must NOT fire on a normal query
+  // (proving the gate is per-result, not query-wide).
+  describe('dictionary demotion on error-token queries', () => {
+    it('leaves a dictionary host at full score on a non-error query', () => {
+      const score = domainQualityScore(
+        'https://www.merriam-webster.com/dictionary/reciprocal',
+        'general',
+        'reciprocal rank fusion explained',
+      );
+      expect(score).toBe(1.0);
+    });
+
+    it('demotes a dictionary host on an error-token query', () => {
+      const score = domainQualityScore(
+        'https://www.merriam-webster.com/dictionary/permission',
+        'general',
+        'EACCES permission denied listen',
+      );
+      expect(score).toBeLessThanOrEqual(0.25);
+    });
+
+    it('demotes a wiktionary host on an error-token query', () => {
+      const score = domainQualityScore(
+        'https://en.wiktionary.org/wiki/violation',
+        'general',
+        'SQLSTATE 23505 unique violation',
+      );
+      expect(score).toBeLessThanOrEqual(0.25);
+    });
+
+    it('does NOT demote a non-dictionary host on an error-token query', () => {
+      const score = domainQualityScore(
+        'https://github.com/nodejs/node/issues/1234',
+        'general',
+        'EACCES permission denied listen',
+      );
+      expect(score).toBe(1.0);
+    });
+
+    // A plain 5+ letter acronym (NGINX, GRAPHQL, HTTPS, SQLITE) is NOT an error
+    // token, so a dictionary host on such a query keeps full score — the gate
+    // must not fire on ordinary acronyms.
+    it('does NOT demote a dictionary host on a plain-acronym query', () => {
+      const score = domainQualityScore(
+        'https://www.merriam-webster.com/dictionary/proxy',
+        'general',
+        'NGINX reverse proxy guide',
+      );
+      expect(score).toBe(1.0);
+    });
+
+    it('DOES demote a dictionary host when a numeric status code makes it an error', () => {
+      const score = domainQualityScore(
+        'https://en.wiktionary.org/wiki/violation',
+        'general',
+        'SQLSTATE 23505 unique violation',
+      );
+      expect(score).toBeLessThanOrEqual(0.25);
+    });
+  });
 });

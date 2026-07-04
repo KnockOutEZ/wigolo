@@ -217,6 +217,81 @@ describe('runV1Search — secondary-engine demotion (sub-ticket 2.2)', () => {
     expect(sharedIdx).toBeLessThan(otherIdx);
   });
 
+  it('yields secondary general-web results for a docs query when MDN + DevDocs return nothing', async () => {
+    // Docs pool = MDN + DevDocs (both empty here) + secondary general-web
+    // engines. WHY: MDN/DevDocs do not index every docs subject; the secondary
+    // web signal is what keeps a docs query from starving to zero.
+    verticalState.docs = [
+      makeEntry('mdn', [], { weight: 1.2 }),
+      makeEntry('devdocs', [], { weight: 0.8 }),
+      makeEntry(
+        'bing',
+        [
+          makeResult(
+            'bing',
+            'https://caddyserver.com/docs/reverse-proxy',
+            'Caddy reverse proxy configuration',
+            'How to configure a reverse proxy in Caddy server documentation.',
+          ),
+        ],
+        { weight: 0.7, secondary: true },
+      ),
+    ];
+
+    const out = await runV1Search({
+      query: 'how to configure reverse proxy',
+      category: 'docs',
+    });
+
+    const webIdx = out.results.findIndex((r) => r.url.includes('caddyserver.com'));
+    expect(webIdx).toBeGreaterThanOrEqual(0);
+  });
+
+  it('does NOT let a low-alignment secondary web result outrank a real MDN hit in the docs pool', async () => {
+    verticalState.docs = [
+      makeEntry(
+        'mdn',
+        [
+          makeResult(
+            'mdn',
+            'https://developer.mozilla.org/en-US/docs/Web/API/fetch',
+            'javascript fetch api reference global function',
+            'The fetch() method starts the process of fetching a resource from the network.',
+          ),
+        ],
+        { weight: 1.2 },
+      ),
+      makeEntry(
+        'bing',
+        [
+          // Snippet shares SOME query tokens ("fetch", "api") so the result is
+          // not filtered out entirely by the relevance threshold — this forces
+          // the assertion to prove ordering, not survival.
+          makeResult(
+            'bing',
+            'https://random-blog.example.com/post',
+            'A fetch api opinion piece',
+            'Loose blog musings that mention fetch and api once each in passing.',
+          ),
+        ],
+        { weight: 0.7, secondary: true },
+      ),
+    ];
+
+    const out = await runV1Search({
+      query: 'javascript fetch api reference',
+      category: 'docs',
+    });
+
+    const mdnIdx = out.results.findIndex((r) => r.url.includes('developer.mozilla.org'));
+    const webIdx = out.results.findIndex((r) => r.url.includes('random-blog.example.com'));
+    // Both must be present — otherwise the ordering assertion passes trivially
+    // because the web result was dropped rather than demoted.
+    expect(mdnIdx).toBeGreaterThanOrEqual(0);
+    expect(webIdx).toBeGreaterThanOrEqual(0);
+    expect(mdnIdx).toBeLessThan(webIdx);
+  });
+
   it('keeps a real MDN HTML-element page out of the top result for a database code query', async () => {
     verticalState.code = [
       makeEntry(

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head><title>Season Standings</title></head>
+<body>
+  <!--
+    A DENSE ordinal leaderboard whose gates are tuned to isolate the SPARSITY
+    check specifically. Header-less <table>. Most rows are rank-led (1./2./3.…)
+    but two rows are non-ordinal ("Promoted"/"Relegated") so the record-start
+    rows are a strict MINORITY of the rows — the minority check (starts <
+    bodyRows) and the >=3-records check both PASS. Every cell is fully populated
+    (no empty cells, no spacer rows) so filled/gridCells ≈ 1.0. The ONLY gate
+    left to reject segmentation is sparsity (filled/gridCells < 0.5). This is
+    real tabular data and must stay one row per <tr> (col_N), NEVER folded to
+    rank/title/meta. Non-HN tags/classes on purpose: the guard is shape-based.
+  -->
+  <table class="standings">
+    <tr class="rank-row"><td>1.</td><td>Northwind United</td><td>34</td><td>+41</td></tr>
+    <tr class="rank-row"><td>2.</td><td>Harbor City FC</td><td>31</td><td>+28</td></tr>
+    <tr class="rank-row"><td>3.</td><td>Ridgeline Athletic</td><td>29</td><td>+19</td></tr>
+    <tr class="note-row"><td>Promoted</td><td>Summit Rovers</td><td>27</td><td>+15</td></tr>
+    <tr class="rank-row"><td>4.</td><td>Delta Valley SC</td><td>24</td><td>+9</td></tr>
+    <tr class="rank-row"><td>5.</td><td>Ironside Town</td><td>22</td><td>+3</td></tr>
+    <tr class="rank-row"><td>6.</td><td>Coastal Wanderers</td><td>20</td><td>-2</td></tr>
+    <tr class="note-row"><td>Relegated</td><td>Old Mill Rangers</td><td>12</td><td>-30</td></tr>
+  </table>
+</body>
+</html>

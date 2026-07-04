@@ -19,6 +19,10 @@ import {
   BreakerOpenError,
   _resetBreakersForTest,
 } from '../../../src/search/core/engine-base.js';
+import {
+  nextUserAgent,
+  USER_AGENT_POOL,
+} from '../../../src/search/engines/user-agents.js';
 
 function makeResult(title: string): RawSearchResult {
   return {
@@ -290,5 +294,190 @@ describe('breaker half-open state machine', () => {
     expect(snap!.lastError).not.toMatch(/[\x00-\x1f\x7f]/);
     expect(snap!.lastError).toContain('hostile');
     expect(snap!.lastError!.length).toBeLessThanOrEqual(300);
+  });
+});
+
+// Shared rotating user-agent pool.
+//
+// WHY: HTML-scraping engines (bing, duckduckgo, mojeek) 403 on IP/UA
+// reputation. A single hardcoded UA can't recover; a fresh fingerprint on
+// retry often clears the block. The pool is SHARED and applied by error
+// class (403/blocked) across every HTML-scraping engine — not a per-engine
+// special case — so the capability is pattern-level.
+describe('shared user-agent pool', () => {
+  it('exposes more than one browser-like user agent so retries can rotate', () => {
+    expect(USER_AGENT_POOL.length).toBeGreaterThan(1);
+    for (const ua of USER_AGENT_POOL) {
+      expect(ua).toMatch(/Mozilla\/5\.0/);
+    }
+  });
+
+  it('never returns the previous user agent so a retry gets a fresh fingerprint', () => {
+    // WHY: the whole point of rotating on a 403 is a DIFFERENT fingerprint;
+    // handing back the same UA would make the retry pointless.
+    let prev: string | undefined;
+    const seen = new Set<string>();
+    for (let i = 0; i < USER_AGENT_POOL.length * 3; i++) {
+      const ua = nextUserAgent(prev);
+      expect(ua).not.toBe(prev);
+      seen.add(ua);
+      prev = ua;
+    }
+    // Rotation cycles the whole pool, not just two entries.
+    expect(seen.size).toBe(USER_AGENT_POOL.length);
+  });
+
+  it('returns a valid pool member even with no previous UA', () => {
+    const ua = nextUserAgent(undefined);
+    expect(USER_AGENT_POOL).toContain(ua);
+  });
+});
+
+// In-call retry backoff + UA rotation on blocked errors.
+//
+// WHY: item 6 — the engine pool silently shrinks under load. The two gaps
+// the audit flagged: (1) the in-call retry backoff was a FLAT 100ms, (2) a
+// 403/blocked engine retried with the SAME fingerprint and stayed dark. The
+// fix keeps the already-correct adaptive cooldown + half-open probe (proven
+// above) and adds exponential in-call backoff + a UA-rotation hook driven by
+// the engine-agnostic retry loop.
+describe('adaptive in-call retry', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    _resetBreakersForTest();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    _resetBreakersForTest();
+  });
+
+  it('grows the in-call backoff across attempts instead of a flat 100ms', async () => {
+    // WHY: a flat 100ms retry hammers a rate-limited engine and rarely
+    // clears a transient block. Backoff must GROW (100ms then ~300ms).
+    const waits: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const timeoutSpy = vi
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation(((fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
+        if (typeof ms === 'number' && ms > 0) waits.push(ms);
+        return (realSetTimeout as unknown as (...a: unknown[]) => unknown)(fn, ms, ...rest);
+      }) as unknown as typeof setTimeout);
+
+    const spy = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const wrapped = wrapWithRetryAndBreaker(makeEngine('rb1', spy), {
+      failureThreshold: 10,
+      cooldownMs: 60_000,
+      retryAttempts: 3,
+    });
+
+    const p = wrapped.search('q').catch(() => undefined);
+    await vi.runAllTimersAsync();
+    await p;
+
+    timeoutSpy.mockRestore();
+
+    // 3 attempts => 2 inter-attempt backoffs, strictly increasing.
+    expect(waits.length).toBeGreaterThanOrEqual(2);
+    expect(waits[0]).toBe(100);
+    expect(waits[1]).toBeGreaterThan(waits[0]);
+    expect(waits[1]).toBe(300);
+    // Engine was retried the full configured count.
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+
+  it('defaults to two attempts with a 100ms backoff (legacy behaviour preserved)', async () => {
+    // WHY: existing callers pass no retry config — the default retry loop
+    // must stay a 2-attempt / 100ms shape so the breaker trip tests hold.
+    const waits: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const timeoutSpy = vi
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation(((fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
+        if (typeof ms === 'number' && ms > 0) waits.push(ms);
+        return (realSetTimeout as unknown as (...a: unknown[]) => unknown)(fn, ms, ...rest);
+      }) as unknown as typeof setTimeout);
+
+    const spy = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const wrapped = wrapWithRetryAndBreaker(makeEngine('rb2', spy), {
+      failureThreshold: 10,
+      cooldownMs: 60_000,
+    });
+
+    const p = wrapped.search('q').catch(() => undefined);
+    await vi.runAllTimersAsync();
+    await p;
+    timeoutSpy.mockRestore();
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(waits).toEqual([100]);
+  });
+
+  it('rotates to a different user agent on a 403/blocked retry via the engine onRetry hook', async () => {
+    // WHY: IP/UA-reputation 403s often clear on a fresh fingerprint. The
+    // retry loop is engine-agnostic, so it drives an optional onRetry hook;
+    // an HTML-scraping engine rotates its UA there. Assert > 1 distinct UA
+    // was observed across the attempts and that the SECOND attempt did not
+    // reuse the FIRST attempt's UA.
+    const observedUas: string[] = [];
+    let currentUa = USER_AGENT_POOL[0];
+    const engine = {
+      name: 'rb3',
+      async search(): Promise<RawSearchResult[]> {
+        observedUas.push(currentUa);
+        throw new Error('rb3 returned 403');
+      },
+      onRetry(_attempt: number, lastErr: unknown): void {
+        // Rotate only for the blocked error class.
+        if (lastErr instanceof Error && /\b403\b/.test(lastErr.message)) {
+          currentUa = nextUserAgent(currentUa);
+        }
+      },
+    };
+    const wrapped = wrapWithRetryAndBreaker(engine, {
+      failureThreshold: 10,
+      cooldownMs: 60_000,
+      retryAttempts: 3,
+    });
+
+    const p = wrapped.search('q').catch(() => undefined);
+    await vi.runAllTimersAsync();
+    await p;
+
+    expect(observedUas.length).toBe(3);
+    const distinct = new Set(observedUas);
+    expect(distinct.size).toBeGreaterThan(1);
+    expect(observedUas[1]).not.toBe(observedUas[0]);
+  });
+
+  it('does not invoke onRetry after the final attempt', async () => {
+    // WHY: onRetry prepares the NEXT attempt; firing it after the last
+    // attempt would rotate state with no call to use it.
+    const onRetry = vi.fn();
+    const engine = {
+      name: 'rb4',
+      search: vi.fn(async (): Promise<RawSearchResult[]> => {
+        throw new Error('rb4 returned 403');
+      }),
+      onRetry,
+    };
+    const wrapped = wrapWithRetryAndBreaker(engine, {
+      failureThreshold: 10,
+      cooldownMs: 60_000,
+      retryAttempts: 2,
+    });
+
+    const p = wrapped.search('q').catch(() => undefined);
+    await vi.runAllTimersAsync();
+    await p;
+
+    // 2 attempts => onRetry fires exactly once (between attempt 1 and 2).
+    expect(engine.search).toHaveBeenCalledTimes(2);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onRetry).toHaveBeenCalledWith(1, expect.any(Error));
   });
 });

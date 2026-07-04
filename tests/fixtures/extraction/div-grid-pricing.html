@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head><title>Plans &amp; Pricing</title></head>
+<body>
+  <!--
+    A div/flex pricing grid (the round-2 win): repeated card siblings with a
+    tier name, a price (including a NON-numeric "Custom" top tier), and a
+    feature list. This is NOT a <table>. It locks the div-grid detector against
+    the per-story-listing segmentation so a future change can't trade one for
+    the other.
+  -->
+  <section class="pricing">
+    <h2>Choose your plan</h2>
+    <div class="tiers">
+      <div class="plan">
+        <h3>Free</h3>
+        <span class="price">$0</span>
+        <ul>
+          <li>Unlimited members</li>
+          <li>2 teams</li>
+          <li>250 issues</li>
+        </ul>
+      </div>
+      <div class="plan">
+        <h3>Basic</h3>
+        <span class="price">$10 per user/month</span>
+        <ul>
+          <li>5 teams</li>
+          <li>Unlimited issues</li>
+          <li>Admin roles</li>
+        </ul>
+      </div>
+      <div class="plan">
+        <h3>Business</h3>
+        <span class="price">$16 per user/month</span>
+        <ul>
+          <li>Unlimited teams</li>
+          <li>SAML SSO</li>
+          <li>Advanced analytics</li>
+        </ul>
+      </div>
+      <div class="plan">
+        <h3>Enterprise</h3>
+        <span class="price">Custom</span>
+        <ul>
+          <li>Dedicated support</li>
+          <li>SLA guarantees</li>
+          <li>Custom contracts</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</body>
+</html>

@@ -22,10 +22,16 @@ import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
 import { foldRerankIntoOrdering } from './rerank-fold.js';
 import { applyScoreFloor, DEFAULT_SEARCH_SCORE_FLOOR } from './score-floor.js';
 import { recencyDemotion, hasTemporalIntent } from './recency-boost.js';
-import { detectBrandCollision, detectLexicalCollision } from './brand-collision.js';
+import {
+  detectBrandCollision,
+  detectEntityCollision,
+  detectLexicalCollision,
+  entityQualifiedRewrite,
+} from './brand-collision.js';
 import { computeFreshnessSignal } from './freshness.js';
 import { buildQueryUnderstanding } from './query-understanding.js';
 import { detectRareTerms } from './rare-terms.js';
+import { extractErrorTokens, resultMatchesErrorToken } from './error-intent.js';
 import { buildEngineWarnings } from './engine-warnings.js';
 import { faviconUrlFor } from './favicon.js';
 import { runSynthesis } from '../answer-synthesis.js';
@@ -46,6 +52,13 @@ const DEFAULT_CONTENT_MAX_CHARS = 30000;
 const DEFAULT_MAX_TOTAL_CHARS = 50000;
 
 const RRF_K = 60;
+
+// Per-result damp for an error-intent result that mentions none of the query's
+// atomic error tokens. Strong enough to sink broadcaster/dictionary junk below
+// on-target fix pages and, in combination with the score floor, trim it out;
+// a multiplier (not a drop) so the set is never emptied when no engine indexed
+// the token.
+const ERROR_TOKEN_MISS_DAMP = 0.15;
 
 function hostnameOf(url: string): string {
   try {
@@ -201,6 +214,9 @@ export class CoreSearchProvider implements SearchProvider {
     let cachedAt: string | undefined;
     let engineOutcomes: EngineOutcomeSummary[] | undefined;
     let engineTelemetry: EngineTelemetry[] | undefined;
+    // Reasons any dispatch reported its engine pool degraded (e.g. a thin
+    // vertical starved and backfilled from general). Surfaced on engine_pool.
+    const poolReasons = new Set<string>();
 
     if (!input.force_refresh) {
       try {
@@ -243,6 +259,12 @@ export class CoreSearchProvider implements SearchProvider {
     // single-query call (multi-query callers already supplied their own
     // variants — we trust them).
     const autoRewrites: string[] = [];
+    // Every query actually dispatched to the orchestrator (user query/queries
+    // plus any concurrent auto-variant — rare-term, entity-qualified,
+    // low-recall expansion). Surfaced as SearchOutput.queries_executed so the
+    // dual-dispatch fan-out is auditable. Defaults to the user queries so cache
+    // hits / ultra-fast misses still report what was asked.
+    const queriesExecuted: string[] = [...queries];
 
     if (!servedFromCache && !ultraFastMiss) {
       // For a single-query call carrying a compound token
@@ -253,15 +275,72 @@ export class CoreSearchProvider implements SearchProvider {
       // sweep), so it adds engine load but no extra wall-clock latency. Bounded
       // to one extra concurrent dispatch; `queries` stays the user-supplied list
       // (the low-recall block below still keys its single-query gate off it).
-      const rareVariant =
+      // Error-intent bare-token variant: when a single query carries an atomic
+      // error token (ERR_MODULE_NOT_FOUND, error[E0499], ...), engines that
+      // return ZERO for the long natural-language form often return on-target
+      // fix pages for the token ALONE. Dispatch the bare token(s) concurrently
+      // so those results enter the fused pool. Joined with a space when a query
+      // carries several tokens; skipped when the token(s) already equal the
+      // whole query (no new signal to gain).
+      const errorTokens =
         category !== 'images' && queries.length === 1
+          ? extractErrorTokens(queries[0])
+          : [];
+      const errorTokenVariant =
+        errorTokens.length > 0 ? errorTokens.join(' ') : null;
+
+      // The rare-term quoted variant, the entity-qualified variant and the
+      // error-token variant each add ONE concurrent dispatch. When error-intent
+      // fires, the bare-token variant is the recall lever that works (engines
+      // ignore the phrase quote on error strings, and the entity rewrite anchors
+      // the wrong head — both verified); the other two add only wasted engine
+      // load. Prefer the error-token variant and suppress the rare-term + entity
+      // variants in that case so an error query stays at exactly two dispatches.
+      const rareVariant =
+        category !== 'images' && queries.length === 1 && errorTokens.length === 0
           ? buildRareTermVariant(queries[0])
           : null;
-      const dispatchQueries =
-        rareVariant && rareVariant.trim() !== queries[0].trim()
-          ? [...queries, rareVariant]
-          : queries;
-      if (dispatchQueries.length > queries.length) {
+      // Brand-collision dual-dispatch: when a single-query call is an
+      // "Entity + generic tail" collision (e.g. "Phoenix framework deployment"),
+      // run an entity-qualified variant CONCURRENTLY so the entity head is
+      // anchored and its results RRF-merge with the plain query. Gated on the
+      // SAME predicate the warning uses (detectEntityCollision) so an ordinary
+      // capitalized-head query with no collision ("React hooks useEffect
+      // cleanup", "Amazon rainforest deforestation") pays no extra dispatch.
+      // Multi-query callers author their own variants — single-query path only.
+      // Suppressed when error-intent fires: the bare-token variant is the right
+      // recall lever there and the entity rewrite would anchor the wrong head.
+      const entityVariant =
+        category !== 'images' &&
+        queries.length === 1 &&
+        errorTokens.length === 0 &&
+        detectEntityCollision(queries[0]) !== null
+          ? entityQualifiedRewrite(queries[0])
+          : null;
+      const dispatchQueries = [...queries];
+      if (rareVariant && rareVariant.trim() !== queries[0]?.trim()) {
+        dispatchQueries.push(rareVariant);
+      }
+      if (
+        entityVariant &&
+        entityVariant.trim() !== queries[0]?.trim() &&
+        !dispatchQueries.includes(entityVariant)
+      ) {
+        dispatchQueries.push(entityVariant);
+        log.debug('entity-collision variant firing', { original: queries[0], variant: entityVariant });
+      }
+      // Error-token bare-token variant: recovers the on-target results engines
+      // return for the atomic token alone but miss on the long natural-language
+      // form. Concurrent, one extra dispatch; captured in queriesExecuted below.
+      if (
+        errorTokenVariant &&
+        errorTokenVariant.trim().toLowerCase() !== queries[0].trim().toLowerCase() &&
+        !dispatchQueries.some((q) => q.trim().toLowerCase() === errorTokenVariant.trim().toLowerCase())
+      ) {
+        dispatchQueries.push(errorTokenVariant);
+        log.debug('error-token variant firing', { original: queries[0], variant: errorTokenVariant });
+      }
+      if (rareVariant && dispatchQueries.includes(rareVariant)) {
         log.debug('rare-term variant firing', { original: queries[0], variant: rareVariant });
       }
 
@@ -295,9 +374,20 @@ export class CoreSearchProvider implements SearchProvider {
         ),
       );
 
-      if (rareVariant && dispatchQueries.length > queries.length) {
+      if (rareVariant && dispatchQueries.includes(rareVariant)) {
         autoRewrites.push(rareVariant);
       }
+      if (
+        errorTokenVariant &&
+        dispatchQueries.some((q) => q.trim().toLowerCase() === errorTokenVariant.trim().toLowerCase())
+      ) {
+        autoRewrites.push(errorTokenVariant);
+      }
+      if (entityVariant && dispatchQueries.includes(entityVariant)) {
+        autoRewrites.push(entityVariant);
+      }
+      queriesExecuted.length = 0;
+      queriesExecuted.push(...dispatchQueries);
 
       let fused =
         dispatches.length === 1
@@ -339,6 +429,7 @@ export class CoreSearchProvider implements SearchProvider {
           // we keep ranking signal from both passes.
           fused = fuseRankedLists([fused, retry.results]);
           autoRewrites.push(rewrite);
+          queriesExecuted.push(rewrite);
           // Merge enginesUsed + outcomes from the retry into the in-scope
           // accumulators so the response telemetry reflects the full work.
           dispatches.push(retry);
@@ -351,6 +442,9 @@ export class CoreSearchProvider implements SearchProvider {
       }
       enginesUsed = [...enginesUsedSet];
       allDegraded = dispatches.every((d) => d.degraded);
+      for (const d of dispatches) {
+        for (const reason of d.pool_degraded?.reasons ?? []) poolReasons.add(reason);
+      }
 
       if (input.include_engine_outcomes) {
         // Flatten per-dispatch outcomes into a single array, summarized so we
@@ -483,6 +577,38 @@ export class CoreSearchProvider implements SearchProvider {
           .map(({ r, demoted }) => ({ ...r, relevance_score: demoted }));
       }
 
+      // Atomic error-token survival damp: for an error-intent query, a result
+      // that mentions none of the query's atomic error tokens
+      // (ERR_MODULE_NOT_FOUND, error[E0499], ...) is off-target junk — the
+      // broadcaster (err.ee), dictionary ("ERR" definition) and unrelated-brand
+      // pages that general engines substring-match against the shortest error
+      // fragment. Applied at the final-ordering seam so it is the last word
+      // before the floor, PER-RESULT on a hit/miss predicate (a query merely
+      // containing an uppercase word is never tagged as an error, so a normal
+      // query is untouched). Damps rather than drops so a token that no engine
+      // indexed still leaves the pool non-empty; the score floor then trims the
+      // damped junk below the floor. Single-query only, mirroring the bare-token
+      // recall variant: an array caller supplies their own phrasings (which may
+      // mix error and non-error sub-queries), so damping the merged pool on one
+      // sub-query's token would suppress on-topic results from its siblings.
+      const errorIntentTokens =
+        queries.length === 1 ? extractErrorTokens(queries[0]) : [];
+      if (errorIntentTokens.length > 0) {
+        processed = [...processed]
+          .map((r) => {
+            const onTarget = resultMatchesErrorToken(
+              { title: r.title, url: r.url, snippet: r.snippet },
+              errorIntentTokens,
+            );
+            return {
+              r,
+              damped: onTarget ? r.relevance_score : r.relevance_score * ERROR_TOKEN_MISS_DAMP,
+            };
+          })
+          .sort((a, b) => b.damped - a.damped)
+          .map(({ r, damped }) => ({ ...r, relevance_score: damped }));
+      }
+
       // Relevance-score floor: the LAST trim before the slice, so
       // an upstream slice cannot bypass it and the near-zero/negative junk the
       // rerank-fold scored into the tier-0 band never consumes a top-N slot.
@@ -532,6 +658,19 @@ export class CoreSearchProvider implements SearchProvider {
         const config = getConfig();
         const fetchStart = Date.now();
         const isDeep = depth === 'deep';
+        // Pre-launch the browser engine before enrichment so the first
+        // hydration fetch doesn't pay the cold-start inline. Best-effort +
+        // idempotent; latency-only. Awaited so the launch overlaps setup rather
+        // than the per-fetch critical path.
+        if (config.searchPrewarmBrowser && typeof ctx.router.prewarmBrowser === 'function') {
+          await ctx.router.prewarmBrowser();
+        }
+        // Candidate set the fetcher will hydrate: min(maxFetches, items). A
+        // NARROW set grants each URL a proportionally larger per-URL budget.
+        const candidateCount =
+          input.max_fetches !== undefined
+            ? Math.min(input.max_fetches, items.length)
+            : items.length;
         await fetchContentForResults(items, ctx.router, {
           contentMaxChars: input.content_max_chars ?? DEFAULT_CONTENT_MAX_CHARS,
           maxContentChars: input.max_content_chars,
@@ -541,6 +680,9 @@ export class CoreSearchProvider implements SearchProvider {
           totalDeadline: start + config.searchTotalTimeoutMs,
           forceRefresh: input.force_refresh ?? false,
           maxFetches: input.max_fetches,
+          candidateCount,
+          narrowSetBudgetMs: config.searchNarrowSetBudgetMs || undefined,
+          snippetFallback: true,
         });
         fetchElapsed = Date.now() - fetchStart;
         contentFetched = true;
@@ -582,6 +724,24 @@ export class CoreSearchProvider implements SearchProvider {
     // into a top-level array so every caller sees broken engines. Empty
     // array on cache hits or all-ok runs (cleaner than `undefined?.length`).
     const engineWarnings = buildEngineWarnings(engineTelemetry);
+    // Pool health: total = engines dispatched, healthy = engines that returned
+    // ≥1 result. Degraded when any didn't contribute OR a dispatch flagged a
+    // degrade reason (e.g. starvation re-dispatch). Single "pool degraded to N
+    // engines" surface. Cache hits omit it (no telemetry to source from).
+    const enginePool = engineTelemetry
+      ? (() => {
+          const total = engineTelemetry.length;
+          const healthy = engineTelemetry.filter((t) => t.result_count > 0).length;
+          const reasons = [...poolReasons];
+          const degraded = healthy < total || reasons.length > 0;
+          return {
+            healthy,
+            total,
+            degraded,
+            ...(reasons.length > 0 ? { reasons } : {}),
+          };
+        })()
+      : undefined;
     const data: SearchOutput = {
       results: items,
       query: displayQuery,
@@ -591,19 +751,24 @@ export class CoreSearchProvider implements SearchProvider {
       search_time_ms: searchElapsed,
       fetch_time_ms: fetchElapsed,
       query_understanding: queryUnderstanding,
+      ...(queriesExecuted.length > 0 ? { queries_executed: [...queriesExecuted] } : {}),
       ...(engineOutcomes ? { engine_outcomes: engineOutcomes } : {}),
       ...(engineTelemetry ? { engine_telemetry: engineTelemetry } : {}),
       // Always emit on engine-pool path (telemetry present); cache hits
       // intentionally omit since there's no telemetry to source from.
       ...(engineTelemetry ? { engine_warnings: engineWarnings } : {}),
+      ...(enginePool ? { engine_pool: enginePool } : {}),
     };
 
     // Try the brand-domain check first (cheap, requires
-    // top-3 to actually carry a brand TLD). Fall back to the lexical
-    // dev-term collision check — fires on "useState" etc. even when the
-    // top-3 has no brand domain. Either path emits the same warning shape.
+    // top-3 to actually carry a brand TLD). Then the entity-collision v2 check
+    // — fires on a proper-noun-head + generic-tail query ("Phoenix framework
+    // deployment") regardless of the top-3 hosts. Finally the lexical dev-term
+    // collision check — fires on "useState" etc. Every path emits the same
+    // warning shape.
     const collisionWarning =
       detectBrandCollision(displayQuery, items.map((i) => i.url)) ??
+      detectEntityCollision(displayQuery) ??
       detectLexicalCollision(displayQuery);
     if (collisionWarning) data.brand_collision_warning = collisionWarning;
 

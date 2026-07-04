@@ -37,6 +37,59 @@ const HOWTO_VERB_RE = /\b(error|fix|debug|compile)\b/i;
 
 const DOCS_PHRASE_RE = /(\bhow to\b|\btutorial\b|\breference\b|\bapi\b|\bdocumentation\b|\bdocs for\b|\bmdn\b|\bdevdocs\b|\bguide\b|\bgetting started\b)/i;
 
+// Two predicate families over error/status tokens, split by consequence:
+//
+// 1. QUOTING ATOMICITY (broad). Any ALL-CAPS run ≥5 chars, or a PascalCase
+//    *Error/*Exception/*Warning class name, is quoted in the dispatched query
+//    so an engine matches it as one atom. Over-quoting a benign acronym
+//    (HTTPS, README) is harmless — it just prevents a stray substring split —
+//    so this family stays broad. Used only by extractErrorTokens (quoting).
+//
+// 2. ERROR INTENT (strict). Drives behaviour that MISROUTES on a false
+//    positive: docs-vertical suppression and dictionary demotion. A bare
+//    5+ letter acronym (HTTPS, README, NGINX, GRAPHQL, OAUTH2, SQLITE, ASCII,
+//    COVID, SOLID) must NOT count as an error. Only these genuinely
+//    error-shaped forms do:
+//      - errno E-prefix codes: EACCES, ENOENT, EPERM, EADDRINUSE
+//      - underscore-bearing ALL-CAPS: ERR_PNPM_OUTDATED_LOCKFILE, HTTP_500
+//      - an ALL-CAPS code token immediately followed by a standalone numeric
+//        code: "SQLSTATE 23505", "HTTP 404", "ORA 00001"
+//      - PascalCase *Error/*Exception/*Warning class names: TypeError
+const QUOTE_TOKEN_RE = /\b[A-Z][A-Z0-9_]{4,}\b|\b[A-Z][a-z]+(?:[A-Z][a-z]+)*(?:Error|Exception|Warning)\b/g;
+
+const ERRNO_RE = /\bE[A-Z]{3,}\b/;
+const UNDERSCORE_CODE_RE = /\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b/;
+const CODE_WITH_NUMBER_RE = /\b[A-Z]{3,}\s+\d{2,}\b/;
+const ERROR_CLASS_RE = /\b[A-Z][a-z]+(?:[A-Z][a-z]+)*(?:Error|Exception|Warning)\b/;
+
+/**
+ * STRICT error-intent predicate. True only for genuinely error-shaped tokens
+ * (errno E-codes, underscore ALL-CAPS codes, ALL-CAPS-adjacent-numeric status
+ * codes, PascalCase *Error/*Exception names) — NOT for plain acronyms like
+ * NGINX or GRAPHQL. Gates docs-vertical suppression + dictionary demotion, so a
+ * false positive here would misroute a normal docs query.
+ */
+export function queryHasErrorToken(query: string): boolean {
+  if (!query) return false;
+  return (
+    ERRNO_RE.test(query) ||
+    UNDERSCORE_CODE_RE.test(query) ||
+    CODE_WITH_NUMBER_RE.test(query) ||
+    ERROR_CLASS_RE.test(query)
+  );
+}
+
+/**
+ * Return every quotable code token found in the query, in order. BROAD by
+ * design — quoting an acronym atom is benign. Used to wrap tokens in the
+ * dispatched engine query; not an intent signal.
+ */
+export function extractErrorTokens(query: string): string[] {
+  if (!query) return [];
+  const matches = query.match(QUOTE_TOKEN_RE);
+  return matches ? [...matches] : [];
+}
+
 // Year tokens were previously in this regex (2024|2025|2026), but bare years
 // drive far too many false-positive news routings ("vector database choice
 // 2026" → bing_news → BEST Express Vietnam logistics). Years now only count
@@ -179,6 +232,14 @@ export function classifyIntentDetailed(
     return { vertical: 'general' };
   }
 
+  // An error/status-code token makes the query a debugging lookup, not a
+  // documentation request — even when it happens to contain a docs phrase
+  // (`api`, `reference`, `guide`). Routing "ENOENT ... api ..." to the docs
+  // vertical starves it of the issue-tracker / discussion pages that resolve
+  // the error. Code signals still take precedence (they route to `code`); the
+  // suppression only blocks the weaker docs branch.
+  const hasErrorToken = queryHasErrorToken(trimmed);
+
   let vertical: Vertical;
   if (PAPERS_RE.test(trimmed)) {
     vertical = 'papers';
@@ -186,7 +247,7 @@ export function classifyIntentDetailed(
     vertical = 'code';
   } else if (LANG_TOKEN_RE.test(trimmed) && HOWTO_VERB_RE.test(trimmed)) {
     vertical = 'code';
-  } else if (DOCS_PHRASE_RE.test(trimmed) || /\blearn\b/i.test(trimmed)) {
+  } else if (!hasErrorToken && (DOCS_PHRASE_RE.test(trimmed) || /\blearn\b/i.test(trimmed))) {
     vertical = 'docs';
   } else if (opts?.hasDateBound || NEWS_RE.test(trimmed) || !!dateHint) {
     vertical = 'news';
