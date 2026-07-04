@@ -168,9 +168,55 @@ function isInterleavedListing(bodyRows: Element[], columnCount: number): boolean
   return filled / gridCells < 0.5;
 }
 
-// Collapse an interleaved listing into ONE row per record: the rank cell, the
-// longest non-empty cell as the title/primary, and the remaining non-empty
-// cell text folded into a meta column. Spacer/empty rows contribute nothing.
+// An anchor whose whole text is a metric/timestamp — "342 points",
+// "128 comments", "3 hours ago", "reply". These are meta links, never the
+// record's title, so the title selection skips them regardless of length.
+const META_ANCHOR_RE =
+  /^\d[\d,]*\s*(?:point|comment|vote|upvote|reply|answer|view|share|like|day|hour|minute|second|week|month|year)s?(?:\s+ago)?$/i;
+
+// An href that points at a user/author profile rather than the record's
+// content. On a byline-first listing the author link precedes the story link,
+// so a profile-style href must not be chosen as the title.
+const PROFILE_HREF_RE = /(?:^|\/)(?:u|user|users|author|authors|profile|people|member|members)\/|\/@[^/]+\/?$/i;
+
+// The record's title anchor is chosen deterministically in DOM order, in
+// preference tiers so a byline-first layout still picks the story link:
+//   1. first non-metric, non-byline anchor (the story link), else
+//   2. first non-metric anchor (title link with no better option), else
+//   3. the longest anchor (every anchor read as a metric).
+// Vote arrows are empty; "342 points" / "3 hours ago" are metric links; an
+// "/u/jane" author link is a byline — all deprioritised. Returns the anchor's
+// href + text, or null when the record carries no linked title.
+function primaryAnchor(group: Element[]): { href: string; text: string } | null {
+  let firstContent: { href: string; text: string } | null = null;
+  let firstNonMeta: { href: string; text: string } | null = null;
+  let longest: { href: string; text: string } | null = null;
+  for (const row of group) {
+    for (const a of row.querySelectorAll('a[href]')) {
+      const text = (a.textContent ?? '').replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      const href = a.getAttribute('href') ?? '';
+      const cand = { href, text };
+      if (!longest || text.length > longest.text.length) longest = cand;
+      if (META_ANCHOR_RE.test(text)) continue;
+      if (!firstNonMeta) firstNonMeta = cand;
+      if (!firstContent && !PROFILE_HREF_RE.test(href)) firstContent = cand;
+    }
+  }
+  return firstContent ?? firstNonMeta ?? longest;
+}
+
+// A short numeric metric cell inside a record's meta content ("342 points",
+// "128 comments"). We surface the bare integer as a typed field so consumers
+// read a number, not prose.
+const METRIC_RE = /\b(\d[\d,]*)\b/g;
+
+// Collapse an interleaved listing into ONE row per record with DETERMINISTIC
+// field binding: the rank ordinal, the story anchor's text as the title (never
+// "longest cell", which swapped title<->meta when the meta line ran longer),
+// the story anchor's href, the remaining non-title cell text as meta, and each
+// numeric metric surfaced as a typed num_N field. Spacer/empty rows contribute
+// nothing.
 function segmentInterleavedListing(bodyRows: Element[]): TableData | null {
   const groups: Element[][] = [];
   let current: Element[] | null = null;
@@ -200,16 +246,26 @@ function segmentInterleavedListing(bodyRows: Element[]): TableData | null {
       obj.rank = texts[0];
       rest = texts.slice(1);
     }
-    if (rest.length > 0) {
-      // The longest remaining cell is the record's primary field (the title
-      // line on a listing); the rest is metadata (points / author / comments).
-      let titleIdx = 0;
-      for (let i = 1; i < rest.length; i++) {
-        if (rest[i].length > rest[titleIdx].length) titleIdx = i;
+
+    // Deterministic title = the story anchor's text; fall back to the first
+    // non-empty cell only when the record carries no linked title.
+    const anchor = primaryAnchor(group);
+    const title = anchor?.text ?? rest[0] ?? '';
+    if (title) obj.title = title;
+    if (anchor?.href) obj.href = anchor.href;
+
+    // Meta = the record's remaining cell text with the title text removed, so
+    // the title is never duplicated into meta.
+    const metaParts = rest.filter((t) => t !== title);
+    const meta = metaParts.join(' ').replace(/\s+/g, ' ').trim();
+    if (meta) {
+      obj.meta = meta;
+      const nums = meta.match(METRIC_RE);
+      if (nums) {
+        nums.slice(0, 4).forEach((n, i) => {
+          obj[`num_${i + 1}`] = n.replace(/,/g, '');
+        });
       }
-      obj.title = rest[titleIdx];
-      const meta = rest.filter((_, i) => i !== titleIdx).join(' ').trim();
-      if (meta) obj.meta = meta;
     }
     if (Object.keys(obj).length > 0) rows.push(obj);
   }

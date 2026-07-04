@@ -225,6 +225,25 @@ describe('extractStructured', () => {
     expect(out.chart_hints).toEqual([]);
     expect(out.jsonld).toEqual([]);
   });
+
+  it('surfaces a repeated-sibling <ol> listing in .tables (list detector merged)', () => {
+    // A ranked feed rendered as an <ol> of linked items with metrics — no
+    // <table> and no div-grid card shape. The list detector, merged at the
+    // structured seam, surfaces it as a table so agents/schema read one row
+    // per item with hrefs and typed metrics.
+    const html = `<html><body><main><ol class="feed">
+      <li><a href="/p/ring-buffer">Lock-free ring buffer</a> <span>184 points</span> <span>57 comments</span></li>
+      <li><a href="/p/columnar">Column-oriented storage</a> <span>92 points</span> <span>31 comments</span></li>
+      <li><a href="/p/wasm">Compiling to WebAssembly</a> <span>211 points</span> <span>88 comments</span></li>
+    </ol></main></body></html>`;
+    const out = extractStructured(html);
+    const listing = out.tables.find((t) =>
+      t.rows.some((r) => Object.values(r).some((v) => v.includes('ring buffer'))),
+    );
+    expect(listing).toBeDefined();
+    expect(listing!.rows).toHaveLength(3);
+    expect(listing!.rows[0].href).toBe('/p/ring-buffer');
+  });
 });
 
 // WHY: div/flex pricing grids are the single biggest Extract miss — a page

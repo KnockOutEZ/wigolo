@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { extractTables } from '../../../src/extraction/extract.js';
 import { detectDivGridTables } from '../../../src/extraction/div-grid.js';
+import { detectListTables } from '../../../src/extraction/list.js';
 import { extractStructured } from '../../../src/extraction/structured.js';
 
 // BOTH-WAYS regression lock.
@@ -136,5 +137,116 @@ describe('div/flex pricing grid → tier capture (round-2 win)', () => {
     const grids = detectDivGridTables(html);
     expect(grids[0].headers).not.toContain('meta');
     expect(grids[0].headers).not.toContain('rank');
+  });
+});
+
+// THREE-WAY BOTH-WAYS LOCK.
+//
+// Structured extraction now runs THREE structural detectors — extractTables
+// (<table>), detectDivGridTables (div/flex cards), detectListTables
+// (<ol>/<ul> listings). A round-N change to any ONE has historically regressed
+// another (round-2 improving the div-grid silently broke listing segmentation).
+// This matrix proves each detector (a) FIRES on its own shape and (b) does NOT
+// mis-handle the other two shapes. If a future change lets one detector
+// cannibalise another, exactly one of these assertions breaks.
+
+// Shape 1: a semantic <table> data grid.
+const TABLE_SHAPE = `<html><body><table>
+  <thead><tr><th>City</th><th>Population</th></tr></thead>
+  <tbody>
+    <tr><td>Paris</td><td>2.1M</td></tr>
+    <tr><td>Berlin</td><td>3.6M</td></tr>
+    <tr><td>Madrid</td><td>3.2M</td></tr>
+  </tbody>
+</table></body></html>`;
+
+// Shape 2: a div/flex pricing grid of >=3 parallel cards.
+const DIVGRID_SHAPE = `<html><body><main><section class="pricing"><h2>Plans</h2>
+  <div class="tiers">
+    <div class="plan"><h3>Starter</h3><span class="price">$9</span><ul><li>10 seats</li></ul></div>
+    <div class="plan"><h3>Pro</h3><span class="price">$29</span><ul><li>50 seats</li></ul></div>
+    <div class="plan"><h3>Enterprise</h3><span class="price">$99</span><ul><li>Unlimited</li></ul></div>
+  </div>
+</section></main></body></html>`;
+
+// Shape 3: an <ol>/<ul> repeated-sibling listing of linked items with metrics.
+const LIST_SHAPE = `<html><body><main><ol class="feed">
+  <li><a href="/p/ring-buffer">Lock-free ring buffer</a> <span>184 points</span> <span>57 comments</span></li>
+  <li><a href="/p/columnar">Column-oriented storage</a> <span>92 points</span> <span>31 comments</span></li>
+  <li><a href="/p/wasm">Compiling to WebAssembly</a> <span>211 points</span> <span>88 comments</span></li>
+</ol></main></body></html>`;
+
+describe('three-way detector cannibalization lock', () => {
+  describe('<table> shape', () => {
+    it('POSITIVE: extractTables fires and yields the data rows', () => {
+      const t = extractTables(TABLE_SHAPE);
+      expect(t).toHaveLength(1);
+      expect(t[0].headers).toEqual(['City', 'Population']);
+      expect(t[0].rows).toHaveLength(3);
+    });
+    it('MUST-NOT-FIRE: the div-grid detector ignores <table> markup', () => {
+      expect(detectDivGridTables(TABLE_SHAPE)).toHaveLength(0);
+    });
+    it('MUST-NOT-FIRE: the list detector ignores a <table> (no <ol>/<ul>)', () => {
+      expect(detectListTables(TABLE_SHAPE)).toHaveLength(0);
+    });
+  });
+
+  describe('div-grid shape', () => {
+    it('POSITIVE: the div-grid detector fires and yields one row per card', () => {
+      const g = detectDivGridTables(DIVGRID_SHAPE);
+      expect(g).toHaveLength(1);
+      expect(g[0].rows).toHaveLength(3);
+      expect(g[0].rows.map((r) => r.name)).toEqual(['Starter', 'Pro', 'Enterprise']);
+    });
+    it('MUST-NOT-FIRE: extractTables ignores a card grid (no <table>)', () => {
+      expect(extractTables(DIVGRID_SHAPE)).toHaveLength(0);
+    });
+    it('MUST-NOT-FIRE: the list detector does not turn a card grid into a listing', () => {
+      // The cards use <ul><li>10 seats</li></ul> internally, but each list has
+      // only ONE <li> (below the >=3 gate), so no phantom listing is emitted.
+      expect(detectListTables(DIVGRID_SHAPE)).toHaveLength(0);
+    });
+  });
+
+  describe('<ol>/<ul> list shape', () => {
+    it('POSITIVE: the list detector fires with hrefs + typed metrics', () => {
+      const l = detectListTables(LIST_SHAPE);
+      expect(l).toHaveLength(1);
+      expect(l[0].rows).toHaveLength(3);
+      expect(l[0].rows[0].href).toBe('/p/ring-buffer');
+      const nums = Object.values(l[0].rows[0]).filter((v) => /^\d+$/.test(v));
+      expect(nums).toContain('184');
+    });
+    it('MUST-NOT-FIRE: extractTables ignores a bare <ol> (no <table>)', () => {
+      expect(extractTables(LIST_SHAPE)).toHaveLength(0);
+    });
+    it('MUST-NOT-FIRE: the div-grid detector does not treat <li> items as cards', () => {
+      // <li> is not a table tag, but the div-grid card gate needs a price/
+      // numeric-cell signal AND >=3 parallel non-<li>-listing siblings. A plain
+      // linked listing with per-item spans must not manufacture a card grid.
+      const g = detectDivGridTables(LIST_SHAPE);
+      // If the div-grid detector fires here it would double-report the listing
+      // AND shape it wrong (name/price/feature columns instead of title/href).
+      expect(g.every((t) => !t.rows.some((r) => r.href))).toBe(true);
+      expect(g).toHaveLength(0);
+    });
+  });
+
+  describe('fresh over-fire probe: an ordinary article is untouched by all three', () => {
+    // A prose article with a couple of inline links and a short bullet list of
+    // nav labels — none of the three detectors may manufacture a table.
+    const ARTICLE = `<html><body><article>
+      <h1>Understanding memory ordering</h1>
+      <p>See the <a href="/spec">spec</a> and the <a href="/faq">FAQ</a> for details.</p>
+      <p>Memory ordering matters when threads share state without locks.</p>
+      <ul><li>Home</li><li>Guides</li><li>Reference</li></ul>
+    </article></body></html>`;
+    it('no phantom tables from any detector', () => {
+      expect(extractTables(ARTICLE)).toHaveLength(0);
+      expect(detectDivGridTables(ARTICLE)).toHaveLength(0);
+      expect(detectListTables(ARTICLE)).toHaveLength(0);
+      expect(extractStructured(ARTICLE).tables).toHaveLength(0);
+    });
   });
 });

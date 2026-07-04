@@ -163,6 +163,21 @@ function planWithFallback(prompt: string): { searches: string[]; urls: string[];
   const extractedUrls = extractUrlsFromText(prompt);
   const searches = generateSearchQueries(prompt);
 
+  // A non-empty prompt that yielded no keyword queries (all stop-words / a
+  // single short token) AND no URLs would leave the executor with nothing to
+  // fetch → 0 sources. Since no URL was seeded, gather pages via a search: use
+  // the raw prompt as the query so the executor always has something to run.
+  if (searches.length === 0 && extractedUrls.length === 0) {
+    const raw = prompt.trim().slice(0, MAX_QUERY_LENGTH);
+    if (raw.length > 0) {
+      return {
+        searches: [raw],
+        urls: extractedUrls,
+        notes: 'Fallback plan: raw-prompt search (no keywords extracted)',
+      };
+    }
+  }
+
   return {
     searches,
     urls: extractedUrls,

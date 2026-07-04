@@ -5,6 +5,7 @@ import { extractWithLLM, type LLMFallbackBudget } from './llm-fallback.js';
 import { applyEvidenceFilter, getSourceText } from './schema-truth.js';
 import type {
   FieldProvenance,
+  GridConfidence,
   SchemaExtractionResult,
   StructuredData,
   StructuredDataResult,
@@ -41,6 +42,9 @@ export function extractWithSchemaDetailed(
 ): SchemaExtractionResult {
   const values: Record<string, unknown> = {};
   const provenance: Record<string, FieldProvenance> = {};
+  const confidence: Record<string, GridConfidence> = {};
+  const withConfidence = (r: SchemaExtractionResult): SchemaExtractionResult =>
+    Object.keys(confidence).length > 0 ? { ...r, confidence } : r;
   if (!html || !schema.properties) return { values, provenance };
 
   const blocks = extractStructuredData(html);
@@ -61,7 +65,7 @@ export function extractWithSchemaDetailed(
 
   const allCovered = () =>
     Object.keys(schema.properties!).every((k) => values[k] !== undefined);
-  if (allCovered()) return { values, provenance };
+  if (allCovered()) return withConfidence({ values, provenance });
 
   // Structure fuzzy-match: when data lives in tables / definition lists /
   // key-value pairs (not JSON-LD or class-named DOM), fuzzy-match remaining
@@ -76,10 +80,16 @@ export function extractWithSchemaDetailed(
     // to a whole grid: one item object per row, each item property fuzzy-matched
     // to a header. Try this first so `wigolo agent` gets clean structured rows
     // instead of falling through to the run-on class-name heuristic.
-    const rows = matchArrayOfObjectsFromStructures(fieldSchema, structured);
-    if (rows !== undefined) {
-      values[fieldName] = rows;
+    const grid = matchArrayOfObjectsFromStructures(fieldSchema, structured);
+    if (grid !== undefined) {
+      values[fieldName] = grid.rows;
       provenance[fieldName] = 'structured';
+      confidence[fieldName] = {
+        score: grid.score,
+        scalarMatches: grid.scalarMatches,
+        arrayFilled: grid.arrayFilled,
+        rowCount: grid.rows.length,
+      };
       continue;
     }
     const v = matchFieldFromStructures(fieldName, structured);
@@ -89,7 +99,7 @@ export function extractWithSchemaDetailed(
     }
   }
 
-  if (allCovered()) return { values, provenance };
+  if (allCovered()) return withConfidence({ values, provenance });
 
   // Heuristic fallback only for fields still missing
   const { document: doc } = parseHTML(html);
@@ -102,7 +112,7 @@ export function extractWithSchemaDetailed(
     }
   }
 
-  return { values, provenance };
+  return withConfidence({ values, provenance });
 }
 
 // ---------- structure fuzzy-match helpers ----------
@@ -236,6 +246,8 @@ const PLAUSIBLE_MAX = 6;
 interface GridCandidate {
   rows: Array<Record<string, string | string[]>>;
   score: number;
+  scalarMatches: number;
+  arrayFilled: boolean;
 }
 
 function scoreCandidate(
@@ -258,7 +270,7 @@ function scoreCandidate(
 function matchArrayOfObjectsFromStructures(
   fieldSchema: JsonSchema,
   structured: StructuredData,
-): Array<Record<string, string | string[]>> | undefined {
+): GridCandidate | undefined {
   if (fieldSchema.type !== 'array') return undefined;
   const items = fieldSchema.items;
   if (!items || items.type !== 'object' || !items.properties) return undefined;
@@ -320,10 +332,12 @@ function matchArrayOfObjectsFromStructures(
     if (rows.length === 0) continue;
 
     const score = scoreCandidate(scalarProps.size, arrayFilled, rows.length);
-    if (!best || score > best.score) best = { rows, score };
+    if (!best || score > best.score) {
+      best = { rows, score, scalarMatches: scalarProps.size, arrayFilled };
+    }
   }
 
-  return best?.rows;
+  return best;
 }
 
 export interface SchemaExtractionAsyncResult extends SchemaExtractionResult {

@@ -242,10 +242,23 @@ export interface StructuredDataResult {
   fields: Record<string, unknown>;
 }
 
+// Shape-completeness signal for an array-of-objects field matched from an
+// extracted grid. Lets callers judge whether the selected grid is the right one
+// (a shape-complete plan-tier grid) or a wrong-shape/absurd-cardinality dump
+// (name+price add-ons) that should be rejected in favour of prose synthesis.
+export interface GridConfidence {
+  score: number;
+  scalarMatches: number;
+  arrayFilled: boolean;
+  rowCount: number;
+}
+
 // Schema-mode extraction with provenance
 export interface SchemaExtractionResult {
   values: Record<string, unknown>;
   provenance: Record<string, FieldProvenance>;
+  // Present only for array-of-objects fields resolved from an extracted grid.
+  confidence?: Record<string, GridConfidence>;
 }
 
 // --- Search layer types ---

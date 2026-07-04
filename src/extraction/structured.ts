@@ -2,6 +2,7 @@ import { parseHTML } from 'linkedom';
 import type { StructuredData, DefinitionPair, ChartHint, KeyValuePair, TableData } from '../types.js';
 import { extractTables } from './extract.js';
 import { detectDivGridTablesFromDoc } from './div-grid.js';
+import { detectListTablesFromDoc } from './list.js';
 import { extractJsonLd } from './jsonld.js';
 
 const MAX_VALUE_LEN = 400;
@@ -13,7 +14,10 @@ const MAX_ITEMS_PER_TYPE = 200;
 export function extractStructured(html: string): StructuredData {
   const { document: doc } = parseHTML(html);
 
-  const tables = mergeGridTables(extractTables(html), detectDivGridTablesFromDoc(doc));
+  const tables = mergeGridTables(
+    mergeGridTables(extractTables(html), detectDivGridTablesFromDoc(doc)),
+    detectListTablesFromDoc(doc),
+  );
   const jsonld = extractJsonLd(html);
   const definitions = extractDefinitions(doc);
   const chart_hints = extractChartHints(doc);

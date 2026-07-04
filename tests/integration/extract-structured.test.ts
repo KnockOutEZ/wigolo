@@ -106,4 +106,32 @@ describe('extract mode:structured end-to-end', () => {
     expect(data.tables).toEqual([]);
     expect(data.chart_hints).toEqual([]);
   });
+
+  it('surfaces a repeated-sibling <ol>/<ul> listing as a table (list detector at tool boundary)', async () => {
+    // The generic list detector is wired into the structured seam, so the
+    // extract tool now surfaces an <ol> feed of linked items with metrics as a
+    // table — one row per item with anchor hrefs and typed numeric fields.
+    const __r_result = await handleExtract(
+      {
+        html: `<html><body><main><ol class="feed">
+          <li><a href="/p/ring-buffer">Lock-free ring buffer</a> <span>184 points</span> <span>57 comments</span></li>
+          <li><a href="/p/columnar">Column-oriented storage</a> <span>92 points</span> <span>31 comments</span></li>
+          <li><a href="/p/wasm">Compiling to WebAssembly</a> <span>211 points</span> <span>88 comments</span></li>
+        </ol></main></body></html>`,
+        mode: 'structured',
+      },
+      mockRouter,
+    );;
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    const data = result.data as { tables: Array<{ rows: Array<Record<string, string>> }> };
+    const listing = data.tables.find((t) =>
+      t.rows.some((r) => Object.values(r).some((v) => v.includes('ring buffer'))),
+    );
+    expect(listing).toBeDefined();
+    expect(listing!.rows).toHaveLength(3);
+    expect(listing!.rows[0].href).toBe('/p/ring-buffer');
+    const nums = Object.values(listing!.rows[0]).filter((v) => /^\d+$/.test(v));
+    expect(nums).toContain('184');
+  });
 });

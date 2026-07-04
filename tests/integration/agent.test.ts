@@ -221,4 +221,79 @@ describe('agent tool integration', () => {
     expect(result.total_time_ms).toBeGreaterThanOrEqual(0);
     expect(result.total_time_ms).toBeLessThanOrEqual(after - before + 200);
   });
+
+  const tiersSchema = {
+    type: 'object' as const,
+    properties: {
+      tiers: {
+        type: 'array' as const,
+        items: {
+          type: 'object' as const,
+          properties: {
+            name: { type: 'string' as const },
+            price: { type: 'string' as const },
+            key_features: { type: 'array' as const, items: { type: 'string' as const } },
+          },
+        },
+      },
+    },
+  };
+
+  function gridRouter(html: string): SmartRouter {
+    return {
+      fetch: vi.fn().mockResolvedValue({
+        url: 'https://vendor.example/pricing',
+        finalUrl: 'https://vendor.example/pricing',
+        html,
+        contentType: 'text/html',
+        statusCode: 200,
+        method: 'http' as const,
+        headers: {},
+      }),
+    } as unknown as SmartRouter;
+  }
+
+  it('schema tiers: prose fallback at tool boundary when only a wrong-shape add-on grid matches', async () => {
+    const cards = Array.from({ length: 30 }, (_, i) =>
+      `<div class="addon"><h3>Add-on ${i + 1}</h3><span class="price">$${i + 1}</span></div>`,
+    ).join('');
+    const html =
+      `<html><body><main><section class="marketplace"><h2>Add-ons</h2>` +
+      `<div class="addons">${cards}</div></section>` +
+      `<p>These add-ons extend the base plan.</p></main></body></html>`;
+    const input: AgentInput = {
+      prompt: 'Extract the pricing tiers',
+      urls: ['https://vendor.example/pricing'],
+      schema: tiersSchema,
+    };
+
+    const __r_result = await handleAgent(input, [stubEngine], gridRouter(html));
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(typeof result.result).toBe('string');
+    expect(result.warning).toBeDefined();
+  });
+
+  it('schema tiers: shape-complete grid returns typed rows at tool boundary (negative)', async () => {
+    const html =
+      `<html><body><main><h2>Pricing</h2><div class="pricing">` +
+      `<div class="tier"><h3>Starter</h3><span class="price">$29</span><ul><li>10 seats</li><li>1 project</li></ul></div>` +
+      `<div class="tier"><h3>Pro</h3><span class="price">$99</span><ul><li>50 seats</li><li>10 projects</li></ul></div>` +
+      `<div class="tier"><h3>Enterprise</h3><span class="price">$299</span><ul><li>Unlimited seats</li><li>Unlimited projects</li></ul></div>` +
+      `</div></main></body></html>`;
+    const input: AgentInput = {
+      prompt: 'Extract the pricing tiers',
+      urls: ['https://vendor.example/pricing'],
+      schema: tiersSchema,
+    };
+
+    const __r_result = await handleAgent(input, [stubEngine], gridRouter(html));
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(typeof result.result).toBe('object');
+    const tiers = (result.result as Record<string, unknown>).tiers as Array<Record<string, unknown>>;
+    expect(Array.isArray(tiers)).toBe(true);
+    expect(tiers).toHaveLength(3);
+    expect(result.warning).toBeUndefined();
+  });
 });

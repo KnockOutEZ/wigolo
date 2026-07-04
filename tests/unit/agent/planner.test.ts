@@ -112,6 +112,25 @@ describe('planExecution', () => {
       const result = await planExecution('Comprehensive comparison of all JavaScript frameworks');
       expect(result.searches.length).toBeLessThanOrEqual(5);
     });
+
+    it('always yields a search for a non-empty prompt with no extractable keywords', async () => {
+      // A prompt that is all stop-words used to yield 0 searches AND 0 URLs, so
+      // the executor fetched nothing → 0 sources. With no seeded URL the planner
+      // must still gather pages via a search: fall back to the raw prompt as the
+      // query so the executor has something to run.
+      const result = await planExecution('the a an is to of');
+      expect(result.urls).toHaveLength(0);
+      expect(result.searches.length).toBeGreaterThan(0);
+    });
+
+    it('still yields no search for an empty/whitespace prompt with no URLs', async () => {
+      // The fallback is scoped to NON-empty prompts — a blank request has
+      // nothing to search and must not manufacture a junk query.
+      const empty = await planExecution('');
+      expect(empty.searches).toHaveLength(0);
+      const ws = await planExecution('   ');
+      expect(ws.searches).toHaveLength(0);
+    });
   });
 
   describe('sampling planning (with mock server)', () => {
