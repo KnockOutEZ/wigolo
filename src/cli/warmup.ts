@@ -11,6 +11,8 @@ import { runCommand } from './tui/run-command.js';
 import type { WarmupReporter } from './tui/reporter.js';
 import { autoReporter } from './tui/reporter-auto.js';
 import { runVerify as runVerifyTui } from './tui/verify.js';
+import { sanitizeForTerminal } from './doctor.js';
+import { resolveLocalModelTier, type LocalModelTier } from '../integrations/cloud/llm/local-tier.js';
 
 /**
  * Resolve the CLI entrypoint of the *bundled* Playwright module — the same
@@ -148,6 +150,25 @@ export interface WarmupResult {
   webkitError?: string;
   embeddings?: 'ok' | 'failed';
   embeddingsError?: string;
+}
+
+/**
+ * Format the opt-in local-model tier (`WIGOLO_LOCAL_LLM`) summary line for
+ * warmup. Pure so the branching is asserted without a live server. warmup does
+ * not install models — it only reports the resolved state. Component names
+ * (local model server / model name) are allowed in warmup output.
+ */
+export function formatLocalLlmWarmupLine(state: {
+  localLlm: string;
+  tier: LocalModelTier | null;
+}): string {
+  if (state.localLlm === 'off') {
+    return '  Local language model: off (default — set WIGOLO_LOCAL_LLM=auto to auto-detect a keyless local model)';
+  }
+  if (state.tier) {
+    return `  Local model:   reachable at ${sanitizeForTerminal(state.tier.endpoint)} (${sanitizeForTerminal(state.tier.model)})`;
+  }
+  return `  Local model:   ${sanitizeForTerminal(state.localLlm)} — not reachable (synthesis falls back to keyless)`;
 }
 
 function wipeSearxngState(dataDir: string, reporter: WarmupReporter): void {
@@ -370,6 +391,15 @@ export async function runWarmup(
   if (result.firefox) reporterImpl.note(`  Firefox:       ${result.firefox}${result.firefoxError ? ` (${result.firefoxError})` : ''}`);
   if (result.webkit) reporterImpl.note(`  WebKit:        ${result.webkit}${result.webkitError ? ` (${result.webkitError})` : ''}`);
   if (result.embeddings) reporterImpl.note(`  Embeddings:    ${result.embeddings}${result.embeddingsError ? ` (${result.embeddingsError})` : ''}`);
+
+  // Opt-in local-model tier state. Off by default — the line is still shown so
+  // the lever is discoverable, but the resolver (and its fast, negative-cached
+  // probe) runs only when the flag is on.
+  const localLlm = config.localLlm ?? 'off';
+  const localTier = localLlm === 'off'
+    ? null
+    : await resolveLocalModelTier({ localLlm, localLlmModel: config.localLlmModel ?? null });
+  reporterImpl.note(formatLocalLlmWarmupLine({ localLlm, tier: localTier }));
 
   if (flagSet.has('--verify') || flagSet.has('--all')) {
     await runVerify(config.dataDir, reporterImpl);
