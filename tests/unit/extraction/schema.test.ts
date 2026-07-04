@@ -422,3 +422,189 @@ describe('extractWithSchemaDetailed structure fuzzy-match (keyless)', () => {
     expect(result.provenance.price).toBe('microdata');
   });
 });
+
+// WHY: `wigolo agent` with a pricing schema like {tiers:[{name,price,
+// key_features}]} matched 0 fields and fell back to prose, even against a page
+// whose tier facts sat in a clean <table>/div-grid. The flat fuzzy matcher only
+// resolved a schema field NAME to a single scalar; a top-level array-of-objects
+// field ("tiers") had no structure literally named "tiers", so it fell through
+// to the crude class-name heuristic which returned run-on garbage. Nested
+// array-of-objects fields must map to the best-matching grid: one item object
+// per row, each item property fuzzy-matched to a header. This engine is shared
+// by both the extract tool and the agent pipeline, so both benefit.
+describe('extractWithSchemaDetailed nested array-of-objects (pricing tiers)', () => {
+  const pricingTable = `<html><body>
+    <table>
+      <thead><tr><th>Name</th><th>Price</th><th>Seats</th></tr></thead>
+      <tbody>
+        <tr><td>Starter</td><td>$29</td><td>5</td></tr>
+        <tr><td>Pro</td><td>$99</td><td>25</td></tr>
+        <tr><td>Enterprise</td><td>Contact sales</td><td>Unlimited</td></tr>
+      </tbody>
+    </table>
+  </body></html>`;
+
+  const tiersSchema = {
+    type: 'object',
+    properties: {
+      tiers: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            price: { type: 'string' },
+          },
+        },
+      },
+    },
+  };
+
+  it('populates a tiers[] array with one object per row from a pricing table', () => {
+    const result = extractWithSchemaDetailed(pricingTable, tiersSchema);
+    const tiers = result.values.tiers as Array<Record<string, string>>;
+    expect(Array.isArray(tiers)).toBe(true);
+    expect(tiers).toHaveLength(3);
+    expect(tiers[0]).toEqual({ name: 'Starter', price: '$29' });
+    expect(tiers[1]).toEqual({ name: 'Pro', price: '$99' });
+    // Non-numeric price is preserved verbatim (Part B interplay).
+    expect(tiers[2]).toEqual({ name: 'Enterprise', price: 'Contact sales' });
+    expect(result.provenance.tiers).toBe('structured');
+  });
+
+  it('maps item properties from a div/flex pricing grid (no <table> markup)', () => {
+    const grid = `<html><body>
+      <div class="pricing">
+        <div class="tier"><h3>Free</h3><span class="price">$0</span></div>
+        <div class="tier"><h3>Team</h3><span class="price">$12</span></div>
+        <div class="tier"><h3>Business</h3><span class="price">$40</span></div>
+      </div>
+    </body></html>`;
+    const result = extractWithSchemaDetailed(grid, tiersSchema);
+    const tiers = result.values.tiers as Array<Record<string, string>>;
+    expect(tiers).toHaveLength(3);
+    expect(tiers[0].name).toBe('Free');
+    expect(tiers[0].price).toBe('$0');
+    expect(tiers[2].name).toBe('Business');
+    expect(tiers[2].price).toBe('$40');
+    expect(result.provenance.tiers).toBe('structured');
+  });
+
+  it('folds an array item property against a synonym-ish header (key_features -> Features)', () => {
+    const html = `<html><body>
+      <table>
+        <thead><tr><th>Plan</th><th>Features</th></tr></thead>
+        <tbody>
+          <tr><td>Basic</td><td>SSO</td></tr>
+          <tr><td>Pro</td><td>SSO, Audit</td></tr>
+          <tr><td>Max</td><td>SSO, Audit, SLA</td></tr>
+        </tbody>
+      </table>
+    </body></html>`;
+    const schema = {
+      type: 'object',
+      properties: {
+        plans: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              plan: { type: 'string' },
+              features: { type: 'string' },
+            },
+          },
+        },
+      },
+    };
+    const result = extractWithSchemaDetailed(html, schema);
+    const plans = result.values.plans as Array<Record<string, string>>;
+    expect(plans).toHaveLength(3);
+    expect(plans[0]).toEqual({ plan: 'Basic', features: 'SSO' });
+  });
+
+  it('collects a card feature list into an array-typed item property (key_features)', () => {
+    // The full pricing schema {tiers:[{name,price,key_features}]}: the div-grid
+    // detector emits per-card list items as feature_1/feature_2/... columns, so
+    // an array-typed key_features property harvests them into a string[].
+    const grid = `<html><body>
+      <main><h2>Pricing</h2><div class="pricing">
+        <div class="tier"><h3>Starter</h3><span class="price">$29</span><ul><li>10 seats</li><li>Email support</li></ul></div>
+        <div class="tier"><h3>Pro</h3><span class="price">$99</span><ul><li>50 seats</li><li>Priority support</li></ul></div>
+        <div class="tier"><h3>Enterprise</h3><span class="price">Contact sales</span><ul><li>Unlimited seats</li><li>SSO</li></ul></div>
+      </div></main>
+    </body></html>`;
+    const schema = {
+      type: 'object',
+      properties: {
+        tiers: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              price: { type: 'string' },
+              key_features: { type: 'array', items: { type: 'string' } },
+            },
+          },
+        },
+      },
+    };
+    const result = extractWithSchemaDetailed(grid, schema);
+    const tiers = result.values.tiers as Array<Record<string, unknown>>;
+    expect(tiers).toHaveLength(3);
+    expect(tiers[0].name).toBe('Starter');
+    expect(tiers[0].price).toBe('$29');
+    expect(tiers[0].key_features).toEqual(['10 seats', 'Email support']);
+    expect(tiers[2].price).toBe('Contact sales');
+    expect(tiers[2].key_features).toEqual(['Unlimited seats', 'SSO']);
+    expect(result.provenance.tiers).toBe('structured');
+  });
+
+  it('does NOT manufacture a tiers[] from an unrelated grid (no matching columns)', () => {
+    // A weather/spec grid whose headers do not fuzzy-match ANY item property
+    // must NOT populate the array — the no-false-positive invariant holds for
+    // nested schemas too.
+    const html = `<html><body>
+      <table>
+        <thead><tr><th>City</th><th>Temperature</th></tr></thead>
+        <tbody>
+          <tr><td>Oslo</td><td>2C</td></tr>
+          <tr><td>Cairo</td><td>30C</td></tr>
+          <tr><td>Lima</td><td>18C</td></tr>
+        </tbody>
+      </table>
+    </body></html>`;
+    const schema = {
+      type: 'object',
+      properties: {
+        tiers: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              plan_name: { type: 'string' },
+              monthly_price: { type: 'string' },
+            },
+          },
+        },
+      },
+    };
+    const result = extractWithSchemaDetailed(html, schema);
+    expect(result.values.tiers).toBeUndefined();
+  });
+
+  it('leaves a flat (non-array) schema behaviour unchanged', () => {
+    // Regression: the nested-array path must not perturb scalar field matching.
+    const html = `<html><body>
+      <table><thead><tr><th>Plan</th><th>Price</th></tr></thead>
+      <tbody><tr><td>Pro</td><td>$29</td></tr></tbody></table>
+    </body></html>`;
+    const schema = {
+      type: 'object',
+      properties: { plan: { type: 'string' }, price: { type: 'string' } },
+    };
+    const result = extractWithSchemaDetailed(html, schema);
+    expect(result.values.plan).toBe('Pro');
+    expect(result.values.price).toBe('$29');
+  });
+});
