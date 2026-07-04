@@ -750,3 +750,100 @@ describe('fetchContentForResults — snippet fallback on timeout', () => {
     expect(results[0].content_from_snippet).toBeUndefined();
   });
 });
+
+// --- Narrow-set browser-render escalation
+//
+// WHY: JS-heavy documentation SPAs (react.dev-class) served over the HTTP tier
+// return an empty JS shell — extraction "succeeds" with near-empty content, so
+// the snippet fallback never fires and callers get a content-poor result. When
+// include_domains narrows the enrichment set to a FEW URLs (bounded cost), the
+// fetch should force the browser engine (renderJs:'always') so the SPA is
+// actually rendered and real content recovered. Broad (many-URL) searches must
+// stay on today's fast auto path (no browser cold-start on every result). Keys
+// on candidateCount — a STRUCTURAL signal — never a domain allowlist. The
+// snippet-fallback safety net is preserved when even the render fetch fails.
+
+describe('fetchContentForResults — narrow-set browser-render escalation', () => {
+  afterEach(() => vi.useRealTimers());
+
+  function captureRouter() {
+    const renderModes: Array<'auto' | 'always' | 'never' | undefined> = [];
+    const router = {
+      fetch: vi.fn(async (url: string, opts: { renderJs?: 'auto' | 'always' | 'never' }) => {
+        renderModes.push(opts?.renderJs);
+        return makeRaw(url);
+      }),
+    } as unknown as SmartRouter;
+    return { router, renderModes };
+  }
+
+  const item = (url: string): SearchResultItem => ({ title: url, url, snippet: 's', relevance_score: 1 });
+
+  const baseCtx = (over: Partial<Parameters<typeof fetchContentForResults>[2]> = {}): Parameters<typeof fetchContentForResults>[2] => ({
+    contentMaxChars: 30000,
+    maxTotalChars: 50000,
+    fetchTimeoutMs: 5000,
+    totalDeadline: Date.now() + 30000,
+    forceRefresh: false,
+    stageBudgetMs: 8000,
+    ...over,
+  });
+
+  it('forces renderJs:always for a NARROW set (candidateCount <= maxCandidates) so the SPA is rendered', async () => {
+    const { router, renderModes } = captureRouter();
+    const results = [item('https://docs.example.com/a'), item('https://docs.example.com/b')];
+    await fetchContentForResults(results, router, baseCtx({
+      candidateCount: 2,
+      renderNarrowSet: { maxCandidates: 3 },
+    }));
+    // Every hydration fetch used the browser-render path.
+    expect(renderModes.length).toBe(2);
+    expect(renderModes.every((m) => m === 'always')).toBe(true);
+  });
+
+  it('keeps renderJs:auto for a WIDE set (candidateCount > maxCandidates) — fast path unchanged', async () => {
+    const { router, renderModes } = captureRouter();
+    const results = Array.from({ length: 5 }, (_, i) => item(`https://docs.example.com/${i}`));
+    await fetchContentForResults(results, router, baseCtx({
+      candidateCount: 5,
+      renderNarrowSet: { maxCandidates: 3 },
+    }));
+    expect(renderModes.length).toBe(5);
+    expect(renderModes.every((m) => m === 'auto')).toBe(true);
+  });
+
+  it('keeps renderJs:auto when renderNarrowSet is absent regardless of candidate count (legacy path)', async () => {
+    const { router, renderModes } = captureRouter();
+    const results = [item('https://docs.example.com/a'), item('https://docs.example.com/b')];
+    await fetchContentForResults(results, router, baseCtx({ candidateCount: 2 }));
+    expect(renderModes.every((m) => m === 'auto')).toBe(true);
+  });
+
+  it('preserves the snippet-fallback safety net when the render fetch still times out', async () => {
+    vi.useFakeTimers();
+    const renderModes: Array<string | undefined> = [];
+    const router = {
+      fetch: vi.fn((url: string, opts: { renderJs?: string; signal?: AbortSignal }) => {
+        renderModes.push(opts?.renderJs);
+        return new Promise((_, rej) => opts.signal?.addEventListener('abort', () => rej(opts.signal!.reason)));
+      }),
+    } as unknown as SmartRouter;
+    const results: SearchResultItem[] = [
+      { title: 't', url: 'https://docs.example.com/slow', snippet: 'real snippet evidence', relevance_score: 1 },
+    ];
+    const p = fetchContentForResults(results, router, baseCtx({
+      candidateCount: 1,
+      renderNarrowSet: { maxCandidates: 3 },
+      fetchTimeoutMs: 2000,
+      snippetFallback: true,
+    }));
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+    // Render path was chosen...
+    expect(renderModes[0]).toBe('always');
+    // ...and when it still fails on timeout, the snippet is preserved.
+    expect(results[0].fetch_failed).toBe('timeout');
+    expect(results[0].markdown_content).toBe('real snippet evidence');
+    expect(results[0].content_from_snippet).toBe(true);
+  });
+});

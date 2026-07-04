@@ -705,6 +705,15 @@ export class CoreSearchProvider implements SearchProvider {
           input.max_fetches !== undefined
             ? Math.min(input.max_fetches, items.length)
             : items.length;
+        // A domain-narrowed search (include_domains) whose candidate set is
+        // small forces the browser-render path so JS-heavy documentation SPAs
+        // yield real content instead of an empty HTTP shell. The narrow bound
+        // (candidateCount <= maxCandidates) is enforced inside the fetcher, so
+        // even a many-result include_domains search stays on the fast auto path.
+        const renderNarrowSet =
+          input.include_domains?.length && config.searchNarrowRenderMaxCandidates > 0
+            ? { maxCandidates: config.searchNarrowRenderMaxCandidates }
+            : undefined;
         await fetchContentForResults(items, ctx.router, {
           contentMaxChars: input.content_max_chars ?? DEFAULT_CONTENT_MAX_CHARS,
           maxContentChars: input.max_content_chars,
@@ -717,6 +726,7 @@ export class CoreSearchProvider implements SearchProvider {
           candidateCount,
           narrowSetBudgetMs: config.searchNarrowSetBudgetMs || undefined,
           snippetFallback: true,
+          ...(renderNarrowSet && { renderNarrowSet }),
         });
         fetchElapsed = Date.now() - fetchStart;
         contentFetched = true;

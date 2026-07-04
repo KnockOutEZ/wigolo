@@ -45,6 +45,16 @@ export interface FetchContentContext {
    *  get evidence text instead of empty content. The failure is still recorded
    *  in `fetch_failed`. Absent/false ⇒ legacy path (empty content on timeout). */
   snippetFallback?: boolean;
+  /** Force the browser-render path (renderJs:'always') for a NARROW candidate
+   *  set. JS-heavy documentation SPAs served over the HTTP tier hand back an
+   *  empty JS shell — extraction "succeeds" with near-empty content, so neither
+   *  the timeout path nor the snippet fallback fires and callers get a
+   *  content-poor result. When set AND {@link candidateCount} ≤ `maxCandidates`,
+   *  the enrichment fetch renders the SPA so real content is recovered. Keys on
+   *  `candidateCount` — a STRUCTURAL signal — never a domain allowlist, so cost
+   *  stays bounded to a few URLs. Absent ⇒ legacy auto path for every URL
+   *  (broad searches never pay the browser cold-start). */
+  renderNarrowSet?: { maxCandidates: number };
 }
 
 interface SingleFetch {
@@ -107,6 +117,23 @@ function perUrlBudgetFor(url: string, ctx: FetchContentContext): number {
     : budget;
 }
 
+/**
+ * Render mode for a single enrichment fetch. Defaults to `'auto'` (the router
+ * decides HTTP-first vs browser on runtime signals — today's fast path). When
+ * {@link FetchContentContext.renderNarrowSet} is set AND the candidate set is
+ * narrow (`candidateCount` ≤ `maxCandidates`), force `'always'` so a JS-heavy
+ * SPA is rendered by the browser engine instead of yielding an empty HTTP
+ * shell. `'always'` routes straight to the browser pool inside the router —
+ * bypassing the HTTP/TLS-impersonation tiers — so no fetch-option threading
+ * through those tiers is needed. A WIDE set (or absent config) keeps `'auto'`.
+ */
+function renderModeFor(ctx: FetchContentContext): 'auto' | 'always' {
+  if (ctx.renderNarrowSet === undefined || ctx.candidateCount === undefined) {
+    return 'auto';
+  }
+  return ctx.candidateCount <= ctx.renderNarrowSet.maxCandidates ? 'always' : 'auto';
+}
+
 // Timeout-class fetch_failed reasons that qualify for snippet fallback. A slow
 // page that timed out still has usable snippet evidence; a hard failure (403,
 // 404, DNS) does not, so the fallback is deliberately scoped to timeouts.
@@ -128,7 +155,7 @@ async function doFetchAndExtract(
   signal: AbortSignal,
 ): Promise<string> {
   const raw = await router.fetch(url, {
-    renderJs: 'auto',
+    renderJs: renderModeFor(ctx),
     signal,
     ...(ctx.forceRefresh && { force_refresh: true }),
   });
