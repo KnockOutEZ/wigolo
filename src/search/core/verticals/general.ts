@@ -26,8 +26,11 @@ export function getGeneralEngines(): EngineEntry[] {
     // outcomes from the existing major-engine pool. Weight stays low and the
     // engine is marked `secondary` so it cannot dominate consensus when its
     // alignment with the query is weak. Quality tier `low` matches the
-    // long-tail role from the registry convention.
-    { engine: wrapWithRetryAndBreaker(new MojeekEngine()), weight: 0.8, supportsDateFilter: false, secondary: true, quality: 'low' },
+    // long-tail role from the registry convention. Held out of the primary
+    // wave by default (probeOnly): it reputation-blocks (403) most callers so
+    // it is a per-call tax that cascades the pool under burst; the
+    // degraded-recovery wave still pulls it when the pool collapses.
+    { engine: wrapWithRetryAndBreaker(new MojeekEngine()), weight: 0.8, supportsDateFilter: false, secondary: true, quality: 'low', probeOnly: getConfig().searchMojeekProbeOnly },
     // Marginalia indexes the long-tail small web that the major
     // engines deprioritize. Same `secondary` rule as Mojeek — adds a niche
     // signal without dominating consensus.

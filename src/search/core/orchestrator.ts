@@ -97,6 +97,17 @@ const ENGINE_POOL_CHRONIC_SOFT_DEADLINE_MS = 1_200;
 // its engine pool is too thin for the query. We backfill from the general
 // pool rather than shipping a near-empty set.
 const STARVATION_FLOOR = 3;
+// Burst-load pool-collapse floor: when fewer than HALF of the DISPATCHED
+// primary engines returned results (rounded up), the pool has degraded under
+// burst — breakers tripped mid-burst, or engines returned empty on this query
+// class. Below this floor the orchestrator runs ONE recovery wave that
+// dispatches the held-back probe-only roster plus any breaker-open primary
+// engine, force-probing them so the pool can recover WITHIN the burst instead
+// of waiting out the full cooldown. Half is the natural collapse signal: a
+// 5-engine pool down to 2 healthy is limping, down to 1 is collapsed.
+function poolHealthFloor(dispatchedCount: number): number {
+  return Math.ceil(dispatchedCount / 2);
+}
 // Undated results on a recency-bound query are kept but demoted so dated,
 // in-window pages win the top slots without collapsing recall.
 const UNDATED_DEMOTION = 0.3;
@@ -331,7 +342,12 @@ export async function runV1Search(
   // post-filter), which drops older-than-window results while keeping
   // within-window AND undated ones — so recall isn't sacrificed for results
   // that merely lack a parseable published_date.
-  const entries = allEntries;
+  //
+  // Probe-only engines are held back from the primary wave: they are a
+  // per-call latency/failure tax on the happy path but still an independent
+  // signal the degraded-recovery wave can pull in when the pool collapses.
+  const entries = allEntries.filter((e) => e.probeOnly !== true);
+  const probeEntries = allEntries.filter((e) => e.probeOnly === true);
 
   const options: SearchEngineOptions = {
     maxResults: input.maxResults ?? DEFAULT_MAX_RESULTS,
@@ -570,13 +586,73 @@ export async function runV1Search(
     });
   }
 
+  let poolDegraded: EnginePoolHealth | undefined;
+
+  // Degraded-dispatch recovery wave (burst-load resilience). When the primary
+  // wave leaves fewer than half the DISPATCHED primary engines healthy — the
+  // burst-collapse signal — run ONE recovery wave that force-probes the engines
+  // the primary wave did NOT use: the held-back probe-only roster plus any
+  // primary engine whose breaker tripped mid-burst (recorded as skipped). This
+  // lets the pool recover within the burst rather than being hostage to a full
+  // breaker cooldown. Gated PER-DISPATCH on the observed healthy count of THIS
+  // wave (never a query-wide boolean, never an engine name); a healthy pool
+  // never enters here so good results are never re-dispatched away. Runs once
+  // per dispatch (guarded by `_isFallback` staying false on this path — the
+  // recovery wave itself does not recurse). Skipped for empty verticals, which
+  // the query-wide degraded fallback handles.
+  const primaryHealthy = outcomes.filter((o) => o.ok && o.results.length > 0).length;
+  const skippedPrimary = outcomes
+    .filter((o) => o.skipped)
+    .map((o) => o.engine);
+  const recoveryEntries = [
+    ...probeEntries,
+    ...entries.filter((e) => skippedPrimary.includes(e.engine.name)),
+  ];
+  if (
+    outcomes.length > 0 &&
+    primaryHealthy < poolHealthFloor(outcomes.length) &&
+    recoveryEntries.length > 0
+  ) {
+    log.info('pool degraded below floor, running recovery wave', {
+      vertical,
+      primaryHealthy,
+      dispatched: outcomes.length,
+      recoveryEngines: recoveryEntries.map((e) => e.engine.name),
+    });
+    const recoveryOutcomes = await runEnginesParallel(
+      recoveryEntries,
+      primaryDispatchQuery,
+      options,
+      runOptions,
+    );
+    allOutcomes.push(...recoveryOutcomes);
+    wavedEntries.push(...recoveryEntries);
+    merged = scoreOutcomes(allOutcomes, wavedEntries);
+    merged = applyDomainFilters(merged, input.includeDomains, input.excludeDomains);
+    merged = applyFreshnessWindow(merged, effectiveFromDate, effectiveToDate);
+    if (exactPhrase) {
+      merged = merged.filter((r) => {
+        const key = canonKey(r.url);
+        if (urlExactMatchHit.has(key)) return true;
+        const hay = `${r.title} ${r.snippet}`.toLowerCase();
+        return hay.includes(exactPhrase);
+      });
+    }
+    const healthy = allOutcomes.filter((o) => o.ok && o.results.length > 0).length;
+    poolDegraded = {
+      healthy,
+      total: allOutcomes.length,
+      degraded: true,
+      reasons: ['degraded_recovery'],
+    };
+  }
+
   // Per-result starvation re-dispatch: a non-general/non-images vertical that
   // fused fewer than STARVATION_FLOOR (and below the requested max) has a pool
   // too thin for the query. Pull the general pool with the SAME query+options
   // and RRF-merge its results in per-result (re-run the score map over the
   // combined outcomes). Gated on post-fusion COUNT, distinct from the query-
   // wide degraded fallback below (which only fires at zero results).
-  let poolDegraded: EnginePoolHealth | undefined;
   const starvationFloor = Math.min(requestedMax, STARVATION_FLOOR);
   // Partial-starvation only: the vertical returned SOME results but fewer than
   // the floor. A zero-result vertical is left to the query-wide degraded
@@ -616,11 +692,12 @@ export async function runV1Search(
         });
       }
       const healthy = allOutcomes.filter((o) => o.ok && o.results.length > 0).length;
+      const reasons = poolDegraded?.reasons ?? [];
       poolDegraded = {
         healthy,
         total: allOutcomes.length,
         degraded: true,
-        reasons: ['starvation_redispatch'],
+        reasons: [...reasons, 'starvation_redispatch'],
       };
     }
   }

@@ -48,6 +48,15 @@ export interface EngineEntry {
    * intentionally parked pending a rewrite — the slice spec calls this
    * out as a soft-disable so the adapter file isn't deleted (CEO call). */
   disabled?: boolean;
+  /** When true, the engine is NOT dispatched in the primary wave — it is held
+   * back and dispatched only by the orchestrator's degraded-recovery wave (see
+   * orchestrator.ts) when the primary pool collapses below the health floor.
+   * Used for an engine that is a per-call latency/failure tax on the happy path
+   * (e.g. a source that reputation-blocks this network most of the time) but
+   * still contributes an independent lexical signal when the pool is starved
+   * and needs every engine it can get. Generic — no engine name is inspected
+   * by the dispatch logic; the roster decides via this flag. */
+  probeOnly?: boolean;
 }
 
 export interface EngineOutcome {
@@ -138,6 +147,37 @@ const RETRY_BACKOFF_BASE_MS = 100;
 const DEFAULT_RETRY_ATTEMPTS = 2;
 const MAX_RETRY_BACKOFF_MS = 5_000;
 const MAX_LAST_ERROR_LEN = 300;
+/** A 429 / rate-limit block is TRANSIENT — the engine is up but throttling
+ * this caller for a short window. It must recover FAST so a burst that
+ * momentarily over-drives one engine doesn't lose it for a full minute. A 403
+ * (reputational / forbidden) block is PERSISTENT and keeps the full cooldown.
+ * The class is read from the error text — keyed on error class, never on an
+ * engine name. Kept well above a single burst's inter-call gap so a genuinely
+ * rate-limited engine still gets breathing room. */
+const TRANSIENT_COOLDOWN_MS = 5_000;
+
+export type FailureClass = 'rate-limit' | 'forbidden' | 'other';
+
+/** Classify an engine failure by its error text. `rate-limit` (429 / "rate
+ * limit" / "too many requests") is transient; `forbidden` (403 / "forbidden")
+ * is a reputational block; everything else is `other`. Pure + engine-agnostic. */
+export function classifyFailure(err: unknown): FailureClass {
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (/\b429\b/.test(message) || /rate.?limit|too many requests/.test(message)) {
+    return 'rate-limit';
+  }
+  if (/\b403\b/.test(message) || /forbidden/.test(message)) return 'forbidden';
+  return 'other';
+}
+
+/** Class-scaled cooldown: a transient (rate-limit) failure recovers on the
+ * short window; a forbidden / other failure keeps the caller-supplied
+ * cooldown. Never exceeds the base cooldown, so this can only SHORTEN a
+ * cooldown, never extend it beyond what the caller configured. */
+function cooldownForFailure(cls: FailureClass, baseCooldownMs: number): number {
+  if (cls === 'rate-limit') return Math.min(TRANSIENT_COOLDOWN_MS, baseCooldownMs);
+  return baseCooldownMs;
+}
 
 /** Upstream error bodies can echo hostile content into Error.message —
  * strip control chars (terminal escapes) and cap length before the string
@@ -157,17 +197,24 @@ function getState(name: string): BreakerState {
   return s;
 }
 
-function recordFailure(name: string, threshold: number, cooldownMs: number): void {
+function recordFailure(
+  name: string,
+  threshold: number,
+  cooldownMs: number,
+  failureClass: FailureClass,
+): void {
   const state = getState(name);
   state.failures += 1;
   if (state.failures >= threshold && state.tripUntil === 0) {
-    state.tripUntil = Date.now() + cooldownMs;
+    const effectiveCooldown = cooldownForFailure(failureClass, cooldownMs);
+    state.tripUntil = Date.now() + effectiveCooldown;
     state.trips = 1;
     state.sessionTrips += 1;
     log.warn('breaker tripped', {
       engine: name,
       failures: state.failures,
-      cooldownMs,
+      cooldownMs: effectiveCooldown,
+      failureClass,
       sessionTrips: state.sessionTrips,
     });
   }
@@ -328,7 +375,7 @@ export function wrapWithRetryAndBreaker(
           cooldownMs: backoffMs,
         });
       } else {
-        recordFailure(engine.name, threshold, cooldownMs);
+        recordFailure(engine.name, threshold, cooldownMs, classifyFailure(lastErr));
       }
       throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
     },

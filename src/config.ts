@@ -30,6 +30,14 @@ export interface Config {
    * hydration fetch doesn't pay the browser cold-start inline. Latency-only —
    * no change to results. Defaults on; set false to disable. */
   searchPrewarmBrowser: boolean;
+  /** Hold mojeek out of the primary search dispatch wave (probe-only). mojeek
+   * reputation-blocks (403) most callers, contributing 0 results while burning
+   * retry latency and tripping its breaker — a per-call tax that cascades the
+   * pool toward bing-only under burst. Probe-only keeps it available to the
+   * degraded-recovery wave (when the pool collapses and needs every signal)
+   * without paying its cost on the happy path. Defaults on; set false
+   * (WIGOLO_MOJEEK_PROBE_ONLY=false) to restore it to the primary wave. */
+  searchMojeekProbeOnly: boolean;
   validateTimeoutMs: number;
   maxBrowsers: number;
   browserIdleTimeoutMs: number;
@@ -248,6 +256,7 @@ export function getConfig(): Config {
     searchTotalTimeoutMs: envInt('SEARCH_TOTAL_TIMEOUT_MS', 30000, settings, 'searchTotalTimeoutMs'),
     searchNarrowSetBudgetMs: envInt('SEARCH_NARROW_SET_BUDGET_MS', 8000, settings, 'searchNarrowSetBudgetMs'),
     searchPrewarmBrowser: envBool('SEARCH_PREWARM_BROWSER', true, settings, 'searchPrewarmBrowser'),
+    searchMojeekProbeOnly: envBool('WIGOLO_MOJEEK_PROBE_ONLY', true, settings, 'searchMojeekProbeOnly'),
     validateTimeoutMs: envInt('VALIDATE_TIMEOUT_MS', 5000, settings, 'validateTimeoutMs'),
     maxBrowsers: envInt('MAX_BROWSERS', 3, settings, 'maxBrowsers'),
     browserIdleTimeoutMs: envInt('BROWSER_IDLE_TIMEOUT', 60000, settings, 'browserIdleTimeoutMs'),
