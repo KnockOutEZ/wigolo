@@ -253,14 +253,16 @@ describe('synthesizeLocal with a local-model tier', () => {
     expect(body.model).toBe('qwen2.5:7b-instruct');
   });
 
-  it('restores the caller WIGOLO_LLM_PROVIDER env after the tier call', async () => {
+  it('never touches WIGOLO_LLM_PROVIDER env — routes via the backend param', async () => {
     process.env['WIGOLO_LLM_PROVIDER'] = 'gemini';
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(
+    let providerDuringCall: string | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      providerDuringCall = process.env['WIGOLO_LLM_PROVIDER'];
+      return new Response(
         JSON.stringify({ choices: [{ message: { content: 'ok [1].' } }] }),
         { status: 200 },
-      ),
-    );
+      );
+    });
 
     await synthesizeLocal(
       'q',
@@ -268,10 +270,13 @@ describe('synthesizeLocal with a local-model tier', () => {
       { tier: { endpoint: 'http://localhost:9999', model: 'm1' } },
     );
 
+    // The ambient provider is untouched DURING and after the call — routing is
+    // via the additive backend param, not an env bridge.
+    expect(providerDuringCall).toBe('gemini');
     expect(process.env['WIGOLO_LLM_PROVIDER']).toBe('gemini');
   });
 
-  it('restores env even when the tier call throws', async () => {
+  it('env is untouched even when the tier call throws', async () => {
     process.env['WIGOLO_LLM_PROVIDER'] = 'gemini';
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('boom', { status: 500 }));
 
@@ -284,6 +289,47 @@ describe('synthesizeLocal with a local-model tier', () => {
     ).rejects.toThrow(/500/);
 
     expect(process.env['WIGOLO_LLM_PROVIDER']).toBe('gemini');
+  });
+
+  // Concurrency regression: an env-bridge (set/restore process.env around the
+  // call) corrupts a shared WIGOLO_LLM_PROVIDER when two tier calls overlap —
+  // the second captures the first's mutated 'http://...' as its baseline and
+  // restores THAT, durably rerouting the process cloud->local. The additive
+  // backend param mutates nothing, so the ambient provider survives untouched.
+  it('two overlapping tier calls do not corrupt a shared WIGOLO_LLM_PROVIDER', async () => {
+    process.env['WIGOLO_LLM_PROVIDER'] = 'anthropic';
+
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    let inFlight = 0;
+    let bothOverlapped = false;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      inFlight++;
+      if (inFlight === 2) bothOverlapped = true;
+      // Park inside the call so both calls' windows overlap before either ends.
+      await gate;
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: 'ok [1].' } }] }),
+        { status: 200 },
+      );
+    });
+
+    const call = () =>
+      synthesizeLocal(
+        'q',
+        [{ url: 'u', title: 't', markdown: 'm' }],
+        { tier: { endpoint: 'http://localhost:9999', model: 'm1' } },
+      );
+
+    const p1 = call();
+    const p2 = call();
+    // Let both reach the parked fetch, then release.
+    await vi.waitFor(() => expect(bothOverlapped).toBe(true));
+    releaseGate();
+    await Promise.all([p1, p2]);
+
+    expect(process.env['WIGOLO_LLM_PROVIDER']).toBe('anthropic');
   });
 });
 

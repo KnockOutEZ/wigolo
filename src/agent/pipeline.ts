@@ -332,7 +332,12 @@ async function synthesizeResult(
   const tier = await resolveLocalModelTier();
   if (tier) {
     try {
-      const result = await synthesizeViaLocalTier(prompt, fetchedSources, tier);
+      // Route via the additive backend override — a single-call endpoint that
+      // reads/mutates NO process.env, so concurrent syntheses can never corrupt
+      // a shared WIGOLO_LLM_PROVIDER.
+      const result = await synthesizeViaLlmRunner(prompt, fetchedSources, {
+        backend: { url: tier.endpoint, model: tier.model },
+      });
       if (result) return { result, samplingUsed: false, llmUsed: true };
     } catch (err) {
       log.warn('local-tier synthesis failed, using evidence fallback', {
@@ -344,28 +349,10 @@ async function synthesizeResult(
   return { result: buildFallbackSynthesis(prompt, fetchedSources), samplingUsed: false };
 }
 
-// runLlmText resolves its backend from process.env.WIGOLO_LLM_PROVIDER; point
-// it at the tier's OpenAI-compatible endpoint for the scope of the call and
-// restore after (success OR failure) so a caller's env is never mutated.
-async function synthesizeViaLocalTier(
-  prompt: string,
-  sources: AgentSource[],
-  tier: { endpoint: string; model: string },
-): Promise<string | null> {
-  const prevProvider = process.env.WIGOLO_LLM_PROVIDER;
-  process.env.WIGOLO_LLM_PROVIDER = tier.endpoint;
-  try {
-    return await synthesizeViaLlmRunner(prompt, sources, tier.model);
-  } finally {
-    if (prevProvider === undefined) delete process.env.WIGOLO_LLM_PROVIDER;
-    else process.env.WIGOLO_LLM_PROVIDER = prevProvider;
-  }
-}
-
 async function synthesizeViaLlmRunner(
   prompt: string,
   sources: AgentSource[],
-  modelOverride?: string,
+  opts: { backend?: { url: string; model: string } } = {},
 ): Promise<string | null> {
   const maxCharsPerSource = 3000;
   const sourceBlocks = sources.map((s, i) => {
@@ -378,7 +365,11 @@ async function synthesizeViaLlmRunner(
     'synthesize a clear, well-organized response. Cite sources as [1], [2], etc.\n\n' +
     `User request: ${prompt}\n\n` +
     `Sources:\n${truncated}`;
-  const r = await runLlmText({ prompt: fullPrompt, maxTokens: 2000, modelOverride });
+  const r = await runLlmText({
+    prompt: fullPrompt,
+    maxTokens: 2000,
+    ...(opts.backend ? { backend: opts.backend } : {}),
+  });
   return r.text && r.text.trim().length > 0 ? r.text.trim() : null;
 }
 

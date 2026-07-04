@@ -71,7 +71,8 @@ describe('agent tool boundary — local-model tier synthesis', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const callOpts = vi.mocked(runLlmModule.runLlmText).mock.calls[0]![0];
-    expect(callOpts.modelOverride).toBe('qwen2.5:7b-instruct');
+    // Routed via the additive backend override, not an env bridge.
+    expect(callOpts.backend).toEqual({ url: 'http://localhost:11434', model: 'qwen2.5:7b-instruct' });
     expect(typeof res.data.result === 'string' ? res.data.result : '').toContain('Developer $19');
     expect(process.env.WIGOLO_LLM_PROVIDER).toBeUndefined();
   });

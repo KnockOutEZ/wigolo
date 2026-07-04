@@ -78,8 +78,9 @@ describe('agent synthesis fires via the local-model tier', () => {
     vi.restoreAllMocks();
   });
 
-  it('routes runLlmText at the tier endpoint/model when tier present, no keystore, no sampling', async () => {
+  it('routes runLlmText at the tier via the backend param when tier present, no keystore, no sampling', async () => {
     vi.mocked(localTierModule.resolveLocalModelTier).mockResolvedValue(TIER);
+    process.env.WIGOLO_LLM_PROVIDER = 'anthropic';
 
     let providerDuringCall: string | undefined;
     vi.mocked(runLlmModule.runLlmText).mockImplementation(async (opts) => {
@@ -87,7 +88,7 @@ describe('agent synthesis fires via the local-model tier', () => {
       return {
         text: 'Local tier synthesis: pgEdge $19/$25/$35 [1].',
         provider: 'custom' as const,
-        model: opts.modelOverride ?? 'unknown',
+        model: opts.backend?.model ?? opts.modelOverride ?? 'unknown',
         latencyMs: 5,
       };
     });
@@ -98,13 +99,41 @@ describe('agent synthesis fires via the local-model tier', () => {
     expect(result.error).toBeUndefined();
     expect(vi.mocked(runLlmModule.runLlmText)).toHaveBeenCalledTimes(1);
     const callOpts = vi.mocked(runLlmModule.runLlmText).mock.calls[0]![0];
-    expect(callOpts.modelOverride).toBe('qwen2.5:7b-instruct');
-    expect(providerDuringCall).toBe('http://localhost:11434');
+    // Routed via the additive backend override — url + model, no env bridge.
+    expect(callOpts.backend).toEqual({ url: 'http://localhost:11434', model: 'qwen2.5:7b-instruct' });
     expect(typeof result.result === 'string' ? result.result : '').toContain('Local tier synthesis');
-    // Env restored after the call.
-    expect(process.env.WIGOLO_LLM_PROVIDER).toBeUndefined();
+    // Ambient provider is untouched DURING and after the call.
+    expect(providerDuringCall).toBe('anthropic');
+    expect(process.env.WIGOLO_LLM_PROVIDER).toBe('anthropic');
     const synthStep = result.steps.find((s) => s.action === 'synthesize');
     expect(synthStep?.detail).toContain('via configured LLM');
+  });
+
+  // Concurrency regression: an env-bridge corrupts a shared WIGOLO_LLM_PROVIDER
+  // when two agent syntheses overlap. The backend param mutates nothing.
+  it('two overlapping agent tier syntheses do not corrupt a shared WIGOLO_LLM_PROVIDER', async () => {
+    vi.mocked(localTierModule.resolveLocalModelTier).mockResolvedValue(TIER);
+    process.env.WIGOLO_LLM_PROVIDER = 'anthropic';
+
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    let inFlight = 0;
+    let bothOverlapped = false;
+    vi.mocked(runLlmModule.runLlmText).mockImplementation(async () => {
+      inFlight++;
+      if (inFlight === 2) bothOverlapped = true;
+      await gate;
+      return { text: 'ok [1].', provider: 'custom' as const, model: 'm', latencyMs: 1 };
+    });
+
+    const run = () => runAgentPipeline({ prompt: 'find pgEdge pricing' }, [createStubEngine(SOURCES)], createStubRouter());
+    const p1 = run();
+    const p2 = run();
+    await vi.waitFor(() => expect(bothOverlapped).toBe(true));
+    releaseGate();
+    await Promise.all([p1, p2]);
+
+    expect(process.env.WIGOLO_LLM_PROVIDER).toBe('anthropic');
   });
 
   it('prefers host sampling over the tier when sampling is supported', async () => {

@@ -72,38 +72,22 @@ export async function synthesizeLocal(
     `Sources:\n${sourceBlocks.join('\n\n')}`;
 
   try {
-    const result = await runViaTierOrConfigured(prompt, opts);
+    // A tier routes via the additive `backend` override — a single-call endpoint
+    // that reads/mutates NO process.env, so concurrent synthesis calls can never
+    // corrupt a shared WIGOLO_LLM_PROVIDER. Without a tier, the existing
+    // env/keystore resolution is preserved exactly.
+    const result = await runLlmText({
+      prompt,
+      maxTokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+      modelOverride: opts.tier?.model ?? opts.modelOverride,
+      timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      ...(opts.tier ? { backend: { url: opts.tier.endpoint, model: opts.tier.model } } : {}),
+    });
     log.info('local synthesis ok', { provider: result.provider, model: result.model, latencyMs: result.latencyMs });
     return { text: result.text, citations: extractCitations(result.text) };
   } catch (err) {
     log.error('local synthesis request failed', { error: err instanceof Error ? err.message : String(err) });
     throw err;
-  }
-}
-
-// runLlmText resolves its backend from process.env.WIGOLO_LLM_PROVIDER (via
-// resolveCustomBackend). When a local-model tier is supplied it may be the ONLY
-// signal that a model is reachable — no WIGOLO_LLM_PROVIDER set — so point that
-// env at the tier's OpenAI-compatible endpoint for the scope of the call and
-// restore it after (success OR failure), so a caller's env is never mutated.
-async function runViaTierOrConfigured(prompt: string, opts: LocalSynthesisOptions) {
-  const call = () =>
-    runLlmText({
-      prompt,
-      maxTokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
-      modelOverride: opts.tier?.model ?? opts.modelOverride,
-      timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    });
-
-  if (!opts.tier) return call();
-
-  const prevProvider = process.env.WIGOLO_LLM_PROVIDER;
-  process.env.WIGOLO_LLM_PROVIDER = opts.tier.endpoint;
-  try {
-    return await call();
-  } finally {
-    if (prevProvider === undefined) delete process.env.WIGOLO_LLM_PROVIDER;
-    else process.env.WIGOLO_LLM_PROVIDER = prevProvider;
   }
 }
 
