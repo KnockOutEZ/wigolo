@@ -26,6 +26,13 @@ export interface Config {
    * always clamped to the stage budget. `0`/undefined preserves the legacy
    * small per-URL budget regardless of candidate count. */
   searchNarrowSetBudgetMs: number;
+  /** Max candidate count for which a domain-narrowed (`include_domains`) search
+   * forces the browser-render path during enrichment. JS-heavy documentation
+   * SPAs hand back an empty shell over the HTTP tier; rendering recovers real
+   * content. Bounded to a FEW URLs so latency/cost stays controlled — broad
+   * (non-domain-narrowed, many-URL) searches never escalate. `0` disables the
+   * escalation entirely. */
+  searchNarrowRenderMaxCandidates: number;
   /** Pre-launch the browser engine before search enrichment so the first
    * hydration fetch doesn't pay the browser cold-start inline. Latency-only —
    * no change to results. Defaults on; set false to disable. */
@@ -272,6 +279,7 @@ export function getConfig(): Config {
     searchStageBudgetDeepMs: envInt('SEARCH_STAGE_BUDGET_DEEP_MS', 10000, settings, 'searchStageBudgetDeepMs'),
     searchTotalTimeoutMs: envInt('SEARCH_TOTAL_TIMEOUT_MS', 30000, settings, 'searchTotalTimeoutMs'),
     searchNarrowSetBudgetMs: envInt('SEARCH_NARROW_SET_BUDGET_MS', 8000, settings, 'searchNarrowSetBudgetMs'),
+    searchNarrowRenderMaxCandidates: envInt('SEARCH_NARROW_RENDER_MAX_CANDIDATES', 3, settings, 'searchNarrowRenderMaxCandidates'),
     searchPrewarmBrowser: envBool('SEARCH_PREWARM_BROWSER', true, settings, 'searchPrewarmBrowser'),
     searchMojeekProbeOnly: envBool('WIGOLO_MOJEEK_PROBE_ONLY', true, settings, 'searchMojeekProbeOnly'),
     validateTimeoutMs: envInt('VALIDATE_TIMEOUT_MS', 5000, settings, 'validateTimeoutMs'),

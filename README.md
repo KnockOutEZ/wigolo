@@ -183,6 +183,7 @@ For repeated interactive use, run `wigolo serve` so the browser pool, embeddings
 | `WIGOLO_MULTI_QUERY_CONCURRENCY` | `5` | Max parallel (query × engine) tasks. |
 | `WIGOLO_MULTI_QUERY_MAX` | `10` | Max unique queries after normalization. |
 | `WIGOLO_QUERY_EXPAND_VARIANTS` | `5` | Heuristic query-expansion variants. |
+| `SEARCH_NARROW_RENDER_MAX_CANDIDATES` | `3` | Max candidates for which a domain-scoped (`include_domains`) search renders result pages in the browser engine during enrichment — recovers real content from JS-heavy documentation sites. Bounded to a few URLs; broad searches never escalate. `0` disables. |
 
 </details>
 

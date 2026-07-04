@@ -133,6 +133,35 @@ describe('core-provider tier budget wiring', () => {
     expect(ctx.snippetFallback).toBe(true);
   });
 
+  // --- Narrow-set browser-render escalation wiring ---
+  //
+  // WHY: a domain-narrowed (include_domains) search over JS-heavy documentation
+  // SPAs needs the browser-render path to recover real content. The provider
+  // threads renderNarrowSet ONLY when include_domains is present, so broad
+  // searches keep the fast auto path. The narrow BOUND itself
+  // (candidateCount <= maxCandidates) lives in the fetcher, not here.
+  it('threads renderNarrowSet into the fetch context when include_domains is present', async () => {
+    runV1Search.mockResolvedValue(dispatch('https://docs.example.com/x'));
+    const provider = new CoreSearchProvider();
+    await provider.search(
+      { query: 'hooks', search_depth: 'balanced', include_content: true, include_domains: ['docs.example.com'] },
+      { router: warmableRouter } as never,
+    );
+    const ctx = mockFetchContent.mock.calls[0][2] as Record<string, unknown>;
+    expect(ctx.renderNarrowSet).toEqual({ maxCandidates: 3 });
+  });
+
+  it('does NOT thread renderNarrowSet for a broad (no include_domains) search — fast path unchanged', async () => {
+    runV1Search.mockResolvedValue(dispatch('https://a.com'));
+    const provider = new CoreSearchProvider();
+    await provider.search(
+      { query: 'hello world', search_depth: 'balanced', include_content: true },
+      { router: warmableRouter } as never,
+    );
+    const ctx = mockFetchContent.mock.calls[0][2] as Record<string, unknown>;
+    expect(ctx.renderNarrowSet).toBeUndefined();
+  });
+
   it('does not throw when the router has no prewarmBrowser method (back-compat)', async () => {
     runV1Search.mockResolvedValue(dispatch('https://a.com'));
     const provider = new CoreSearchProvider();
