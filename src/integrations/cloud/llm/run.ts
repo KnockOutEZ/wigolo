@@ -12,7 +12,7 @@
 import { TEXT_ADAPTERS, type TextCallResult } from './text-adapters.js';
 import { selectProvider, selectProviderWithKeyStore, providerEnvVar } from './select.js';
 import { resolveModel } from './model-select.js';
-import { resolveCustomBackend, pickOllamaModel } from './custom-backend.js';
+import { resolveCustomBackend, pickOllamaModel, type CustomBackend } from './custom-backend.js';
 import type { LLMProvider } from './types.js';
 import { createLogger } from '../../../logger.js';
 import { resolveProviderKey } from '../../../security/key-store.js';
@@ -22,12 +22,31 @@ const log = createLogger('providers');
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
+/**
+ * Explicit OpenAI-compatible backend override for a single call. When set, it
+ * takes precedence over `resolveCustomBackend(process.env)` and routes to the
+ * given `url` + `model` for THAT call only — reading nothing from process.env.
+ * This is the concurrency-safe way to route a call to a resolved endpoint (e.g.
+ * the local-model tier) without mutating ambient env. Omitting it preserves the
+ * existing behavior exactly.
+ */
+export interface LlmBackendOverride {
+  /** Base URL or full /chat/completions URL of an OpenAI-compatible server. */
+  url: string;
+  /** Model to request; falls back to modelOverride > WIGOLO_LLM_MODEL > 'local'. */
+  model?: string;
+  /** When true, auto-pick an installed model from /api/tags if none is given. */
+  isOllama?: boolean;
+}
+
 export interface RunLlmTextOpts {
   prompt: string;
   maxTokens?: number;
   modelOverride?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Route this call to an explicit backend, bypassing process.env resolution. */
+  backend?: LlmBackendOverride;
 }
 
 export interface RunLlmTextResult {
@@ -115,15 +134,24 @@ export async function runLlmText(opts: RunLlmTextOpts): Promise<RunLlmTextResult
   const ksOpts = { dataDir: cfg.dataDir };
   const signal = buildSignal(opts);
 
-  // Custom URL backend (Ollama, vLLM, LM Studio) — no key needed
-  const custom = resolveCustomBackend(process.env);
+  // Custom URL backend (Ollama, vLLM, LM Studio) — no key needed. An explicit
+  // per-call `backend` override wins over the process.env resolution: it routes
+  // to the given url+model without reading env, so a concurrent caller can never
+  // corrupt a shared WIGOLO_LLM_PROVIDER.
+  const custom: CustomBackend | null = opts.backend
+    ? { url: opts.backend.url, isOllama: opts.backend.isOllama ?? false }
+    : resolveCustomBackend(process.env);
   if (custom) {
     const endpoint = custom.url.includes('/chat/completions')
       ? custom.url
       : custom.url.replace(/\/+$/, '') + '/v1/chat/completions';
-    // Model precedence: caller override > WIGOLO_LLM_MODEL > (ollama only)
-    // auto-pick from /api/tags > 'local'. Auto-pick resolves once per request.
-    let model = opts.modelOverride ?? process.env.WIGOLO_LLM_MODEL;
+    // Model precedence: explicit backend.model > caller override >
+    // WIGOLO_LLM_MODEL > (ollama only) auto-pick from /api/tags > 'local'.
+    // Auto-pick resolves once per request. When an explicit backend is given we
+    // never fall back to WIGOLO_LLM_MODEL — the override is self-contained.
+    let model = opts.backend
+      ? (opts.backend.model ?? opts.modelOverride)
+      : (opts.modelOverride ?? process.env.WIGOLO_LLM_MODEL);
     if (!model && custom.isOllama) {
       model = await pickOllamaModel(custom.url, fetch, signal);
     }

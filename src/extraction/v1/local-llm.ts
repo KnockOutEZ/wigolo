@@ -99,23 +99,21 @@ async function buildPrompt(request: LocalLlmRequest): Promise<string> {
  * timeout, non-200, invalid JSON, transport error — this returns `null` so the
  * caller falls back to the deterministic path. Never throws.
  *
- * Endpoint bridge: runLlmJson routes to its endpoint via WIGOLO_LLM_PROVIDER.
- * The resolved tier's endpoint/model are the source of truth here (a keyless
- * run sets only WIGOLO_LOCAL_LLM), so the tier endpoint is applied to
- * WIGOLO_LLM_PROVIDER for exactly this one call and restored afterward — no
- * ambient env mutation survives, keeping every downstream path byte-for-byte.
+ * The resolved tier's endpoint/model are threaded to runLlmJson via the
+ * per-call `backend` override — NOT process.env. That keeps the call routed to
+ * the local server without ever mutating ambient env, so concurrent extract
+ * calls can never corrupt a shared WIGOLO_LLM_PROVIDER (which would silently
+ * reroute cloud→local for every other subsystem for the rest of the process).
  */
 export async function extractWithLocalLlm(
   request: LocalLlmRequest,
 ): Promise<Record<string, unknown> | null> {
   const prompt = await buildPrompt(request);
-  const prevProvider = process.env.WIGOLO_LLM_PROVIDER;
-  process.env.WIGOLO_LLM_PROVIDER = request.tier.endpoint;
   try {
     const r = await runLlmJson({
       prompt,
       jsonSchema: request.schema,
-      modelOverride: request.tier.model,
+      backend: { url: request.tier.endpoint, model: request.tier.model },
       timeoutMs: REQUEST_TIMEOUT_MS,
     });
     return r.values;
@@ -124,8 +122,5 @@ export async function extractWithLocalLlm(
       error: err instanceof Error ? err.message : String(err),
     });
     return null;
-  } finally {
-    if (prevProvider === undefined) delete process.env.WIGOLO_LLM_PROVIDER;
-    else process.env.WIGOLO_LLM_PROVIDER = prevProvider;
   }
 }

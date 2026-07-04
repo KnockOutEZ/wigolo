@@ -119,6 +119,47 @@ describe('extractWithLocalLlm — pre-extraction prompt over the local tier', ()
     expect(process.env['WIGOLO_LLM_PROVIDER']).toBe('anthropic');
   });
 
+  it('does not corrupt WIGOLO_LLM_PROVIDER under two concurrent calls', async () => {
+    // WHY: threading the endpoint through process.env is not concurrency-safe.
+    // With two calls in flight, call B captures A's already-mutated env as its
+    // baseline; B's restore then leaves WIGOLO_LLM_PROVIDER durably pointing at
+    // the local endpoint, silently rerouting cloud→local for every downstream
+    // subsystem (search answer synthesis, research/agent synthesis) for the rest
+    // of the process. The tier endpoint MUST be threaded per-call so no ambient
+    // env is ever mutated — this asserts the value is unchanged after BOTH
+    // concurrent calls resolve.
+    process.env['WIGOLO_LLM_PROVIDER'] = 'anthropic';
+
+    // A stalling fetch keeps both calls in flight simultaneously so the
+    // set/restore windows overlap — the exact race the env bridge lost.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      await gate;
+      return jsonResponse('{"plan":"Pro"}');
+    });
+
+    const a = extractWithLocalLlm({
+      schema: { type: 'object', properties: { plan: { type: 'string' } } },
+      html: HTML,
+      url: 'a',
+      tier: TIER,
+    });
+    const b = extractWithLocalLlm({
+      schema: { type: 'object', properties: { plan: { type: 'string' } } },
+      html: HTML,
+      url: 'b',
+      tier: TIER,
+    });
+    // Both are parked on the gate — env, if mutated, is currently corrupt.
+    release();
+    await Promise.all([a, b]);
+
+    expect(process.env['WIGOLO_LLM_PROVIDER']).toBe('anthropic');
+  });
+
   it('trims the page markdown to a bounded budget', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')

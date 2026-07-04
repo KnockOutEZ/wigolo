@@ -324,6 +324,12 @@ export async function handleExtract(
           (k) => raw[k] !== undefined && raw[k] !== null && raw[k] !== '',
         );
         if (modelFilled.length > 0) {
+          // Note: applyEvidenceFilter verifies string/number/boolean fields
+          // against source but accepts array/object fields by default (see
+          // schema-truth.ts). Model-filled nested array/object fields are thus
+          // grounded by the prompt (verbatim-facts instruction over the
+          // deterministic pre-extraction), not structurally verified here.
+          // Array-level evidence verification is out of scope this round.
           const filtered = applyEvidenceFilter({
             values: raw,
             provenance: {},
