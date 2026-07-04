@@ -120,6 +120,106 @@ function salvageDegenerate(bodyRows: Element[]): TableData | null {
   return { headers: ['item'], rows: items };
 }
 
+// The lead cell of a listing record: a rank ordinal like "1", "1.", "12)".
+// Legacy nested-table listings (HN-class front pages) start each story with
+// this and spread the story's title/meta across the FOLLOWING sparse rows.
+const RANK_ORDINAL_RE = /^\d{1,4}[.)]?$/;
+
+function cellTexts(row: Element): string[] {
+  return directCells(row).map((c) => (c.textContent ?? '').replace(/\s+/g, ' ').trim());
+}
+
+function firstNonEmpty(cells: string[]): string {
+  for (const c of cells) if (c) return c;
+  return '';
+}
+
+// A row starts a new listing record when its first non-empty cell is a rank
+// ordinal — the canonical, layout-agnostic marker of a per-story listing row.
+function isRecordStart(row: Element): boolean {
+  return RANK_ORDINAL_RE.test(firstNonEmpty(cellTexts(row)));
+}
+
+// A header-less multi-row-per-record listing lays out ONE logical record as a
+// cycle of rows: a rank+title row, then meta/continuation rows, then a spacer.
+// Emitting each physical <tr> as its own row yields an interleaved col_N dump
+// that is useless to an agent and matches no schema field. Detect the pattern
+// — several rank-started record groups, with the majority of rows being sparse
+// continuation/empty rows — so a DENSE data grid (every row fully populated,
+// no rank cycle) is never touched.
+function isInterleavedListing(bodyRows: Element[], columnCount: number): boolean {
+  if (columnCount < 2) return false;
+  const starts = bodyRows.filter(isRecordStart);
+  // At least three records and, since every record spans >1 physical row, the
+  // record-start rows must be a strict minority of the rows.
+  if (starts.length < 3) return false;
+  if (starts.length >= bodyRows.length) return false;
+  // Sparsity gate: a real dense grid fills (near) every cell of its column
+  // grid. An interleaved listing leaves most of the grid empty — spacer rows
+  // with no cells, colspan gaps, single-field meta rows. Measure filled cells
+  // against the full rows×columns grid so a zero-cell spacer still counts as
+  // empty. Require over half the grid to be empty.
+  let filled = 0;
+  for (const row of bodyRows) {
+    for (const c of cellTexts(row)) if (c) filled++;
+  }
+  const gridCells = bodyRows.length * columnCount;
+  if (gridCells === 0) return false;
+  return filled / gridCells < 0.5;
+}
+
+// Collapse an interleaved listing into ONE row per record: the rank cell, the
+// longest non-empty cell as the title/primary, and the remaining non-empty
+// cell text folded into a meta column. Spacer/empty rows contribute nothing.
+function segmentInterleavedListing(bodyRows: Element[]): TableData | null {
+  const groups: Element[][] = [];
+  let current: Element[] | null = null;
+  for (const row of bodyRows) {
+    if (isRecordStart(row)) {
+      current = [row];
+      groups.push(current);
+    } else if (current) {
+      current.push(row);
+    }
+  }
+  if (groups.length < 3) return null;
+
+  const rows: Record<string, string>[] = [];
+  for (const group of groups) {
+    const texts: string[] = [];
+    for (const row of group) {
+      for (const c of cellTexts(row)) if (c) texts.push(c);
+    }
+    if (texts.length === 0) continue;
+
+    const obj: Record<string, string> = {};
+    // The rank ordinal leads a record; strip it into its own column so the
+    // remaining text is clean title/meta content.
+    let rest = texts;
+    if (RANK_ORDINAL_RE.test(texts[0])) {
+      obj.rank = texts[0];
+      rest = texts.slice(1);
+    }
+    if (rest.length > 0) {
+      // The longest remaining cell is the record's primary field (the title
+      // line on a listing); the rest is metadata (points / author / comments).
+      let titleIdx = 0;
+      for (let i = 1; i < rest.length; i++) {
+        if (rest[i].length > rest[titleIdx].length) titleIdx = i;
+      }
+      obj.title = rest[titleIdx];
+      const meta = rest.filter((_, i) => i !== titleIdx).join(' ').trim();
+      if (meta) obj.meta = meta;
+    }
+    if (Object.keys(obj).length > 0) rows.push(obj);
+  }
+  if (rows.length < 3) return null;
+
+  const headerSet = new Set<string>();
+  for (const r of rows) for (const k of Object.keys(r)) headerSet.add(k);
+  return { headers: Array.from(headerSet), rows };
+}
+
 export function extractTables(html: string): TableData[] {
   const { document: doc } = parseHTML(html);
   const allTables = Array.from(doc.querySelectorAll('table'));
@@ -138,6 +238,9 @@ export function extractTables(html: string): TableData[] {
     const thElements = ownHeaderCells(table, 'thead th');
     let headers: string[];
     let bodyRows: Element[];
+    // True only when headers were synthesised (no <th> anywhere): the sole
+    // case where an interleaved multi-row-per-record listing can hide.
+    let headerless = false;
 
     if (thElements.length > 0) {
       headers = thElements.map((th) => (th.textContent ?? '').trim());
@@ -165,6 +268,7 @@ export function extractTables(html: string): TableData[] {
         const cellCount = firstRow ? directCells(firstRow).length : 0;
         headers = Array.from({ length: cellCount }, (_, i) => `col_${i + 1}`);
         bodyRows = allRows;
+        headerless = true;
       }
     }
 
@@ -190,6 +294,20 @@ export function extractTables(html: string): TableData[] {
           salvaged.caption = caption;
           out.push(salvaged);
         }
+        continue;
+      }
+    }
+
+    // Interleaved multi-row-per-record listing (HN-class front page): a
+    // header-less table whose stories each span a sparse cycle of rows. Collapse
+    // to one row per record so callers (and schema fuzzy-match) read one story
+    // per row instead of an interleaved col_N dump. Header-less + rank-cycle +
+    // sparse gates keep a dense data grid untouched.
+    if (headerless && isInterleavedListing(bodyRows, headers.length)) {
+      const segmented = segmentInterleavedListing(bodyRows);
+      if (segmented) {
+        segmented.caption = caption;
+        out.push(segmented);
         continue;
       }
     }

@@ -489,3 +489,142 @@ describe('extractTables', () => {
     ]);
   });
 });
+
+// --- interleaved multi-row-per-record listing segmentation ---
+//
+// WHY: legacy nested-table listings (HN-class front pages) lay out each story
+// as a CYCLE of rows — a rank+title row, a points/comments meta row, then a
+// spacer — inside one header-less <table>. extractTables synthesised col_1..3
+// and emitted every physical <tr> as its own row, so a 30-story page became an
+// interleaved run-on dump ({col_1:"1.",col_3:"Title"} then {col_2:"342 points
+// ..."} then an all-empty spacer). That dump is useless to an agent AND, having
+// only col_N headers, matches no schema field so schema mode returns {}. The
+// listing must segment to ONE clean row per story with the title + meta
+// co-located, so a caller (and schema fuzzy-match) can read one record per row.
+//
+// The segmentation is PER-STRUCTURE: it fires only for a header-less listing
+// whose rows are sparse and cycle on a record-start signal (a leading rank
+// ordinal), NEVER for a well-formed dense data grid. Negative tests below lock
+// that boundary so a future change can't over-fire it onto real tables.
+describe('interleaved multi-row-per-record listing (HN-class)', () => {
+  const athingStory = (
+    rank: number,
+    id: number,
+    title: string,
+    site: string,
+    points: number,
+    user: string,
+    comments: number,
+  ): string => `
+    <tr class="athing submission" id="${id}">
+      <td class="title"><span class="rank">${rank}.</span></td>
+      <td class="votelinks"><center><a href="vote?id=${id}"><div class="votearrow"></div></a></center></td>
+      <td class="title"><span class="titleline"><a href="https://${site}/a/${id}">${title}</a><span class="sitebit comhead"> (<a href="from?site=${site}"><span class="sitestr">${site}</span></a>)</span></span></td>
+    </tr>
+    <tr>
+      <td colspan="2"></td>
+      <td class="subtext"><span class="subline"><span class="score" id="score_${id}">${points} points</span> by <a href="user?id=${user}" class="hnuser">${user}</a> <span class="age"><a href="item?id=${id}">3 hours ago</a></span> | <a href="item?id=${id}">${comments} comments</a></span></td>
+    </tr>
+    <tr class="spacer" style="height:5px"></tr>`;
+
+  const listingHtml = `<html><body><center>
+    <table id="hnmain"><tr><td>
+      <table class="itemlist">
+        ${athingStory(1, 40001, 'A local-first search engine in Rust', 'example.com', 342, 'alice', 128)}
+        ${athingStory(2, 40002, 'The hidden cost of microservices', 'blog.example.org', 211, 'bob', 87)}
+        ${athingStory(3, 40003, 'Migrating from Postgres to SQLite', 'devblog.io', 189, 'carol', 64)}
+        ${athingStory(4, 40004, 'How do you stay productive remotely?', 'ask.test', 156, 'dave', 203)}
+      </table>
+    </td></tr></table>
+  </center></body></html>`;
+
+  it('segments each story into ONE row instead of an interleaved col_1..3 dump', () => {
+    const result = extractTables(listingHtml);
+
+    // Find the listing table: the one carrying the story titles.
+    const listing = result.find((t) =>
+      t.rows.some((r) => Object.values(r).some((v) => v.includes('local-first search engine'))),
+    );
+    expect(listing).toBeDefined();
+
+    // Exactly one row per story — not one row per physical <tr>.
+    expect(listing!.rows).toHaveLength(4);
+
+    // Each story's title and its own points/comments meta land in the SAME row,
+    // so a reader sees one record per row rather than a scattered dump.
+    const first = listing!.rows[0];
+    const firstText = Object.values(first).join(' ');
+    expect(firstText).toContain('A local-first search engine in Rust');
+    expect(firstText).toContain('342 points');
+    expect(firstText).toContain('128 comments');
+
+    const second = listing!.rows[1];
+    const secondText = Object.values(second).join(' ');
+    expect(secondText).toContain('The hidden cost of microservices');
+    expect(secondText).toContain('211 points');
+    // Story 1's data must NOT bleed into story 2's row.
+    expect(secondText).not.toContain('local-first search engine');
+    expect(secondText).not.toContain('342 points');
+  });
+
+  it('emits no all-empty rows and no header-less col_N dump for the listing', () => {
+    const result = extractTables(listingHtml);
+    const listing = result.find((t) =>
+      t.rows.some((r) => Object.values(r).some((v) => v.includes('local-first search engine'))),
+    );
+    expect(listing).toBeDefined();
+
+    // No spacer/all-empty rows survive segmentation.
+    for (const row of listing!.rows) {
+      const nonEmpty = Object.values(row).filter((v) => v.trim().length > 0);
+      expect(nonEmpty.length).toBeGreaterThan(0);
+    }
+    // The segmented rows carry the actual record fields — not the useless
+    // header-less col_N shape whose keys match no schema field.
+    expect(listing!.rows.length).toBe(4);
+  });
+
+  it('NEGATIVE: a well-formed dense multi-column data table is NOT segmented', () => {
+    // Every row is fully populated and there is no leading-ordinal record-start
+    // cycle: this is real tabular data and must pass through untouched.
+    const html = `<html><body>
+      <table>
+        <thead><tr><th>City</th><th>Population</th><th>Country</th></tr></thead>
+        <tbody>
+          <tr><td>Paris</td><td>2.1M</td><td>France</td></tr>
+          <tr><td>Berlin</td><td>3.6M</td><td>Germany</td></tr>
+          <tr><td>Madrid</td><td>3.2M</td><td>Spain</td></tr>
+          <tr><td>Rome</td><td>2.8M</td><td>Italy</td></tr>
+        </tbody>
+      </table>
+    </body></html>`;
+    const result = extractTables(html);
+    expect(result).toHaveLength(1);
+    expect(result[0].headers).toEqual(['City', 'Population', 'Country']);
+    expect(result[0].rows).toEqual([
+      { City: 'Paris', Population: '2.1M', Country: 'France' },
+      { City: 'Berlin', Population: '3.6M', Country: 'Germany' },
+      { City: 'Madrid', Population: '3.2M', Country: 'Spain' },
+      { City: 'Rome', Population: '2.8M', Country: 'Italy' },
+    ]);
+  });
+
+  it('NEGATIVE: a header-less col_N table with dense rows and no rank cycle is NOT merged', () => {
+    // No <th>, so headers synthesise to col_N — but every row is fully
+    // populated and none starts with a rank ordinal. This is a plain no-header
+    // data table (row-per-record already); it must stay one row per <tr>.
+    const html = `<html><body>
+      <table>
+        <tr><td>Alice</td><td>Engineer</td><td>NYC</td></tr>
+        <tr><td>Bob</td><td>Designer</td><td>LA</td></tr>
+        <tr><td>Carol</td><td>PM</td><td>SF</td></tr>
+        <tr><td>Dave</td><td>QA</td><td>Austin</td></tr>
+      </table>
+    </body></html>`;
+    const result = extractTables(html);
+    expect(result).toHaveLength(1);
+    expect(result[0].headers).toEqual(['col_1', 'col_2', 'col_3']);
+    expect(result[0].rows).toHaveLength(4);
+    expect(result[0].rows[0]).toEqual({ col_1: 'Alice', col_2: 'Engineer', col_3: 'NYC' });
+  });
+});
