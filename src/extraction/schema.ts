@@ -70,8 +70,18 @@ export function extractWithSchemaDetailed(
   // consulted extractStructured. Fuzzy = token overlap / substring /
   // snake↔space↔camel folding; provenance = 'structured'.
   const structured = extractStructured(html);
-  for (const fieldName of Object.keys(schema.properties)) {
+  for (const [fieldName, fieldSchema] of Object.entries(schema.properties)) {
     if (values[fieldName] !== undefined) continue;
+    // An array-of-objects field (e.g. tiers:[{name,price,key_features}]) maps
+    // to a whole grid: one item object per row, each item property fuzzy-matched
+    // to a header. Try this first so `wigolo agent` gets clean structured rows
+    // instead of falling through to the run-on class-name heuristic.
+    const rows = matchArrayOfObjectsFromStructures(fieldSchema, structured);
+    if (rows !== undefined) {
+      values[fieldName] = rows;
+      provenance[fieldName] = 'structured';
+      continue;
+    }
     const v = matchFieldFromStructures(fieldName, structured);
     if (v !== undefined) {
       values[fieldName] = v;
@@ -160,6 +170,85 @@ function matchFieldFromStructures(
         if (cell !== undefined && cell !== '') return cell;
       }
     }
+  }
+
+  return undefined;
+}
+
+// Map an array-of-objects schema field (e.g. tiers:[{name,price,key_features}])
+// onto the best-matching extracted grid: one item object per row, each item
+// property fuzzy-matched to a table header. Shared by the extract tool and the
+// agent pipeline; this is why the agent used to return prose for pricing pages
+// whose tiers lived in a <table> or div-grid.
+//
+// No-false-positive gate: a grid only qualifies when at least MIN_ITEM_MATCHES
+// (or all, for a 1-property item schema) of the item properties fuzzy-match a
+// header — an unrelated grid (weather / SERP) whose headers match nothing
+// yields undefined, never an array of junk rows.
+const MIN_ITEM_MATCHES = 2;
+
+// Header prefix the div-grid detector emits for a card's list items — the
+// natural source for an array-typed item property (e.g. key_features).
+const FEATURE_HEADER_RE = /^feature[_-]?\d+$/i;
+
+function matchArrayOfObjectsFromStructures(
+  fieldSchema: JsonSchema,
+  structured: StructuredData,
+): Array<Record<string, string | string[]>> | undefined {
+  if (fieldSchema.type !== 'array') return undefined;
+  const items = fieldSchema.items;
+  if (!items || items.type !== 'object' || !items.properties) return undefined;
+
+  const itemProps = Object.entries(items.properties);
+  if (itemProps.length === 0) return undefined;
+
+  for (const table of structured.tables) {
+    if (table.headers.length === 0 || table.rows.length === 0) continue;
+
+    // Resolve each scalar item property to the first header it fuzzy-matches.
+    // Array-typed item properties (e.g. key_features) collect the card's
+    // feature_* columns instead, so a div-grid's per-item list surfaces as an
+    // array rather than being dropped.
+    const scalarProps = new Map<string, string>();
+    const arrayProps: string[] = [];
+    const claimedHeaders = new Set<string>();
+    for (const [prop, propSchema] of itemProps) {
+      const header = table.headers.find((h) => labelsMatch(prop, h));
+      if (header) {
+        scalarProps.set(prop, header);
+        claimedHeaders.add(header);
+      } else if (propSchema.type === 'array') {
+        arrayProps.push(prop);
+      }
+    }
+
+    const featureHeaders = table.headers.filter(
+      (h) => FEATURE_HEADER_RE.test(h) && !claimedHeaders.has(h),
+    );
+
+    // The scalar matches are the no-false-positive gate; an array property that
+    // only harvests generic feature_* columns is NOT sufficient on its own.
+    const required = Math.min(itemProps.length, MIN_ITEM_MATCHES);
+    if (scalarProps.size < required) continue;
+
+    const rows: Array<Record<string, string | string[]>> = [];
+    for (const row of table.rows) {
+      const obj: Record<string, string | string[]> = {};
+      for (const [prop, header] of scalarProps) {
+        const cell = row[header];
+        if (cell !== undefined && cell !== '') obj[prop] = cell;
+      }
+      if (featureHeaders.length > 0) {
+        const features = featureHeaders
+          .map((h) => row[h])
+          .filter((v): v is string => v !== undefined && v !== '');
+        if (features.length > 0) {
+          for (const prop of arrayProps) obj[prop] = features;
+        }
+      }
+      if (Object.keys(obj).length > 0) rows.push(obj);
+    }
+    if (rows.length > 0) return rows;
   }
 
   return undefined;

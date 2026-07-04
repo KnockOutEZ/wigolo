@@ -357,3 +357,168 @@ describe('detectDivGridTables', () => {
     expect(detectDivGridTables(blog)).toEqual([]);
   });
 });
+
+// WHY (Part B): the card-shape gate accepted a card only via a [class*=price]
+// element OR >=2 numeric/currency cells. Real pricing grids whose TOP tiers
+// carry a NON-NUMERIC price ("Custom", "Contact sales", "Talk to us") with
+// non-numeric feature bullets were missed entirely. The relax adds a third
+// signal — a short price-cue phrase in a descendant node — WITHOUT weakening
+// the footer/nav/header/blog/FAQ protection.
+describe('detectDivGridTables non-numeric price cues (Part B)', () => {
+  it('fires on a pricing grid whose cards carry a NON-numeric price cue', () => {
+    // No [class*=price], no numeric <li> cells — the only data signal is the
+    // "Custom"/"Contact sales"/"Talk to us" price cue. This is the render-class
+    // miss the relax targets.
+    const grid = `
+      <main>
+      <h2>Plans</h2>
+      <div class="plans">
+        <div class="plan"><h3>Team</h3><div class="cost">Custom</div><ul><li>Unlimited seats</li><li>SSO</li></ul></div>
+        <div class="plan"><h3>Business</h3><div class="cost">Contact sales</div><ul><li>Advanced security</li><li>SLA</li></ul></div>
+        <div class="plan"><h3>Enterprise</h3><div class="cost">Talk to us</div><ul><li>On-prem option</li><li>White glove</li></ul></div>
+      </div>
+      </main>
+    `;
+    const tables = detectDivGridTables(grid);
+    expect(tables).toHaveLength(1);
+    expect(tables[0].rows).toHaveLength(3);
+    expect(tables[0].rows[0].name).toBe('Team');
+    expect(tables[0].rows[1].name).toBe('Business');
+    expect(tables[0].rows[2].name).toBe('Enterprise');
+  });
+
+  it('fires on a mixed grid: numeric top tiers + a non-numeric "Custom" tier', () => {
+    // The common real shape: paid tiers show $/mo, the top tier shows "Custom".
+    // Before the relax only the [class*=price] element saved this; a card whose
+    // price lives in a non-price-classed node with a cue must still qualify.
+    const grid = `
+      <main>
+      <h2>Pricing</h2>
+      <div class="pricing">
+        <div class="tier"><h3>Starter</h3><div class="amount">$0/mo</div><ul><li>1 project</li><li>Community support</li></ul></div>
+        <div class="tier"><h3>Growth</h3><div class="amount">$49/mo</div><ul><li>10 projects</li><li>Email support</li></ul></div>
+        <div class="tier"><h3>Enterprise</h3><div class="amount">Contact sales</div><ul><li>Unlimited projects</li><li>Dedicated support</li></ul></div>
+      </div>
+      </main>
+    `;
+    const tables = detectDivGridTables(grid);
+    expect(tables).toHaveLength(1);
+    expect(tables[0].rows).toHaveLength(3);
+    const names = tables[0].rows.map((r) => r.name);
+    expect(names).toEqual(['Starter', 'Growth', 'Enterprise']);
+  });
+
+  it('fires on per-seat pricing cues ("$X per seat" / "/user/month")', () => {
+    const grid = `
+      <main>
+      <div class="tiers">
+        <div class="tier"><h3>Solo</h3><div class="rate">Custom</div><ul><li>Single user</li></ul></div>
+        <div class="tier"><h3>Team</h3><div class="rate">$8 per seat</div><ul><li>Shared workspace</li></ul></div>
+        <div class="tier"><h3>Scale</h3><div class="rate">$16 per user / month</div><ul><li>Advanced roles</li></ul></div>
+      </div>
+      </main>
+    `;
+    const tables = detectDivGridTables(grid);
+    expect(tables).toHaveLength(1);
+    expect(tables[0].rows).toHaveLength(3);
+    // Per-seat cue is recovered into the price column.
+    expect(tables[0].rows[1].price).toContain('per seat');
+  });
+
+  // ---- NEGATIVE over-fire probes: the relax must NOT open these up. ----
+
+  it('OVER-FIRE GUARD: a plain nav grid stays ZERO after the relax', () => {
+    // Nav link columns say things like "Pricing" / "Contact" as menu items.
+    // "Pricing" and "Contact" are NOT price cues; the chrome-landmark guard AND
+    // the phrase list (only true call-to-action price phrases) keep this at 0.
+    const nav = `
+      <nav>
+        <div class="menu">
+          <div class="group"><h3>Product</h3><ul><li>Pricing</li><li>Features</li><li>Contact</li></ul></div>
+          <div class="group"><h3>Company</h3><ul><li>About</li><li>Careers</li><li>Contact us</li></ul></div>
+          <div class="group"><h3>Legal</h3><ul><li>Terms</li><li>Privacy</li><li>Cookies</li></ul></div>
+        </div>
+      </nav>
+    `;
+    expect(detectDivGridTables(nav)).toEqual([]);
+  });
+
+  it('OVER-FIRE GUARD: a footer link grid mentioning "Contact sales" stays ZERO', () => {
+    // Footer columns are chrome even if a link literally reads "Contact sales".
+    // The <footer> landmark guard must win regardless of the phrase list.
+    const footer = `
+      <footer>
+        <div class="cols">
+          <div class="col"><h3>Product</h3><ul><li>Pricing</li><li>Contact sales</li><li>Docs</li></ul></div>
+          <div class="col"><h3>Company</h3><ul><li>About</li><li>Blog</li><li>Careers</li></ul></div>
+          <div class="col"><h3>Support</h3><ul><li>Help</li><li>Status</li><li>Contact sales</li></ul></div>
+        </div>
+      </footer>
+    `;
+    expect(detectDivGridTables(footer)).toEqual([]);
+  });
+
+  it('OVER-FIRE GUARD: a blog/FAQ card grid with prose stays ZERO', () => {
+    // FAQ/blog cards carry a heading and prose. A price cue must be a SHORT
+    // standalone cell, not any prose that happens to contain the words — a FAQ
+    // answer that says "contact sales for a custom quote" must not qualify.
+    const faq = `
+      <div class="faq">
+        <div class="q"><h3>How do I upgrade?</h3><p>Open settings and choose a new plan; you can also contact sales for a custom quote at any time.</p></div>
+        <div class="q"><h3>Can I cancel?</h3><p>Yes, cancel anytime from the billing page. Talk to us if you need help migrating your data.</p></div>
+        <div class="q"><h3>Is there a trial?</h3><p>Every plan includes a free trial. Custom onboarding is available on request.</p></div>
+      </div>
+    `;
+    expect(detectDivGridTables(faq)).toEqual([]);
+  });
+
+  it('strips inline <style>/<script> from a price cell (web-component number counter)', () => {
+    // Animated number web-components inline a <style> block inside the price
+    // node; a naive textContent read leaks that CSS into the price column.
+    const grid = `
+      <main>
+      <div class="pricing">
+        <div class="tier"><h3>Free</h3><div class="price">$0<style>:host{display:inline-block}span{will-change:transform}</style></div><ul><li>1 seat</li><li>Community</li></ul></div>
+        <div class="tier"><h3>Pro</h3><div class="price">$10<style>:host{display:inline-block}span{will-change:transform}</style></div><ul><li>10 seats</li><li>Email support</li></ul></div>
+        <div class="tier"><h3>Scale</h3><div class="price">$40<style>:host{display:inline-block}span{will-change:transform}</style></div><ul><li>Unlimited</li><li>SLA</li></ul></div>
+      </div>
+      </main>
+    `;
+    const tables = detectDivGridTables(grid);
+    expect(tables).toHaveLength(1);
+    expect(tables[0].rows[0].price).toBe('$0');
+    expect(tables[0].rows[1].price).toBe('$10');
+    for (const r of tables[0].rows) {
+      expect(r.price).not.toContain('display');
+      expect(r.price).not.toContain('will-change');
+    }
+  });
+
+  it('OVER-FIRE GUARD: a "per month" cadence WITHOUT a currency does not fire', () => {
+    // "posts per month" / "3 times per month" is publishing cadence, not a
+    // price. A billing period only counts as a price cue alongside a currency
+    // amount, so a card-grid of content stats must stay ZERO.
+    const stats = `
+      <main>
+      <div class="channels">
+        <div class="channel"><h3>Newsletter</h3><div class="cadence">4 posts per month</div><ul><li>Curated links</li></ul></div>
+        <div class="channel"><h3>Podcast</h3><div class="cadence">2 episodes per month</div><ul><li>Deep dives</li></ul></div>
+        <div class="channel"><h3>Blog</h3><div class="cadence">8 articles per month</div><ul><li>How-tos</li></ul></div>
+      </div>
+      </main>
+    `;
+    expect(detectDivGridTables(stats)).toEqual([]);
+  });
+
+  it('OVER-FIRE GUARD: repeated doc/SERP sections stay ZERO', () => {
+    // Re-assert the original doc-section / SERP guard survives the relax.
+    const docSections = `
+      <div class="content">
+        <section><h2>Try it</h2><p>Some example prose here.</p></section>
+        <section><h2>Syntax</h2><p>More prose describing syntax.</p></section>
+        <section><h2>Parameters</h2><p>Even more descriptive prose.</p></section>
+      </div>
+    `;
+    expect(detectDivGridTables(docSections)).toEqual([]);
+  });
+});

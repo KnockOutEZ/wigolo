@@ -68,6 +68,57 @@ const CHROME_LANDMARKS = new Set(['nav', 'footer', 'header']);
 // symbol, count. (A bare "Docs" / "About" nav label has neither.)
 const DATA_CELL_RE = /\d|[$€£¥₹]/;
 
+// Unambiguous "no listed number" pricing cues — call-to-action phrases and
+// per-headcount units that only appear on pricing cells. This is a principled,
+// small synonym set, NOT generic nav words: it deliberately excludes bare
+// "pricing"/"price"/"contact" (footer/nav menu items) so the relax cannot open
+// chrome. Per-headcount units (seat/user/member/agent) are pricing-specific on
+// their own; a billing PERIOD (month/mo) is too generic ("3 times per month")
+// so it is only accepted alongside a currency amount (see PRICE_PERIOD_RE).
+const PRICE_CUE_RE =
+  /\b(?:custom|contact sales|contact us for pricing|talk to (?:us|sales)|get (?:a )?(?:quote|demo)|request (?:a )?(?:quote|demo|pricing)|call (?:us|sales)|let'?s talk|by request|on request)\b|(?:\bper\s+|\/\s*)(?:seat|user|member|agent)s?\b/i;
+
+// A billing period ("/month", "per mo") is a price cue ONLY when the same short
+// cell also carries a currency amount — "$16/month" is a price, "posts per
+// month" is blog cadence. Both conditions must hold in one node.
+const PRICE_PERIOD_RE = /(?:\bper\s+|\/\s*)(?:month|mo|year|yr|annum)\b/i;
+const CURRENCY_AMOUNT_RE = /[$€£¥₹]\s*\d|\b\d+(?:[.,]\d+)?\s*(?:usd|eur|gbp)\b/i;
+
+// A price cue only counts as a DATA signal when it sits in a SHORT, standalone
+// node (a price cell / small heading), never inside prose. A FAQ answer that
+// says "contact sales for a custom quote" is not a price cell; capping the
+// node's text length keeps such prose from qualifying a card.
+const MAX_PRICE_CUE_NODE_LEN = 40;
+
+function isPriceCueText(text: string): boolean {
+  if (PRICE_CUE_RE.test(text)) return true;
+  // Billing period requires a co-located currency amount to qualify.
+  return PRICE_PERIOD_RE.test(text) && CURRENCY_AMOUNT_RE.test(text);
+}
+
+// True when a card has a short descendant node whose text reads as a
+// non-numeric price cue. Scoped to leaf-ish small nodes (headings, spans,
+// divs, dt/dd, p, strong/em) so we probe price-cell candidates, not the whole
+// card's flattened prose.
+function hasPriceCueCell(el: Element): boolean {
+  return firstPriceCueCell(el) !== null;
+}
+
+// The text of the first short leaf-ish node that reads as a price cue, or null.
+function firstPriceCueCell(el: Element): string | null {
+  for (const node of el.querySelectorAll(
+    'span, div, p, strong, em, b, h1, h2, h3, h4, h5, h6, dt, dd, li',
+  )) {
+    // Only consider leaf-ish nodes: a wrapper div containing the whole card
+    // would trivially "contain" the cue; we want the price cell itself.
+    if (node.children.length > 1) continue;
+    const text = (node.textContent ?? '').replace(/\s+/g, ' ').trim();
+    if (!text || text.length > MAX_PRICE_CUE_NODE_LEN) continue;
+    if (isPriceCueText(text)) return text;
+  }
+  return null;
+}
+
 // True when the element sits inside a <nav>/<footer>/<header> landmark.
 function inChromeLandmark(el: Element): boolean {
   let cur: Element | null = el.parentElement;
@@ -94,9 +145,11 @@ function numericCellCount(el: Element): number {
 // A "card" must carry a genuine DATA signal, not just a heading + list.
 // heading+list alone matched footer link columns, blog/team/FAQ grids — page
 // chrome, not tabular data. A card qualifies only when it (a) carries a
-// [class*=price] element, or (b) has >=2 numeric/currency-bearing cells
-// (a spec / comparison / pricing grid). Cards under a <nav>/<footer>/<header>
-// landmark are chrome and never qualify.
+// [class*=price] element, (b) has >=2 numeric/currency-bearing cells (a spec /
+// comparison / pricing grid), or (c) has a short non-numeric price-cue cell
+// ("Custom", "Contact sales", "$X/user/month"). Cards under a
+// <nav>/<footer>/<header> landmark are chrome and never qualify — the landmark
+// guard runs FIRST so the price-cue relax can never open footer/nav chrome.
 function hasCardShape(el: Element): boolean {
   // A table row/cell is not a card — those are extractTables' job.
   if (TABLE_TAGS.has(tag(el))) return false;
@@ -106,7 +159,9 @@ function hasCardShape(el: Element): boolean {
   const hasPriceish = el.querySelector(`[class*="${PRICE_CLASS}"]`) !== null;
   if (hasPriceish) return true;
 
-  return numericCellCount(el) >= 2;
+  if (numericCellCount(el) >= 2) return true;
+
+  return hasPriceCueCell(el);
 }
 
 // Do two elements look like siblings from the same repeated group? Same tag,
@@ -156,27 +211,66 @@ function truncate(text: string): string {
   return collapsed.length <= MAX_CELL_LEN ? collapsed : collapsed.slice(0, MAX_CELL_LEN - 1) + '…';
 }
 
+// Non-visible tags whose text must never bleed into a cell value. Web
+// components (e.g. animated number counters) inline a <style> block inside the
+// price element; a naive textContent read dumps that CSS into the price cell.
+const NON_TEXT_TAGS = new Set(['style', 'script', 'template', 'noscript']);
+
+// textContent for a cell, minus any <style>/<script>/<template>/<noscript>
+// descendant text — so a price cell rendered by a web component with an inline
+// stylesheet yields "$10 per user/month", not the CSS that follows it.
+function cellText(el: Element): string {
+  // Fast path: no non-visible descendants, so a plain textContent read is safe.
+  if (!el.querySelector('style, script, template, noscript')) {
+    return (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  const parts: string[] = [];
+  const walk = (node: Element): void => {
+    for (const child of node.childNodes) {
+      const anyChild = child as { nodeType: number; textContent?: string | null };
+      if (anyChild.nodeType === 3) {
+        parts.push(anyChild.textContent ?? '');
+      } else if (anyChild.nodeType === 1) {
+        const childEl = child as Element;
+        if (NON_TEXT_TAGS.has(tag(childEl))) continue;
+        walk(childEl);
+      }
+    }
+  };
+  walk(el);
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
+}
+
 // Derive one row per card: a heading becomes the plan/name, a [class*=price]
 // element becomes the price, and list items become numbered feature columns.
 function cardToRow(card: Element): Record<string, string> {
   const row: Record<string, string> = {};
 
   const heading = card.querySelector('h1, h2, h3, h4, h5, h6');
-  if (heading) row.name = truncate(heading.textContent ?? '');
+  if (heading) row.name = truncate(cellText(heading));
 
   const priceEl = card.querySelector(`[class*="${PRICE_CLASS}"]`);
-  if (priceEl) row.price = truncate(priceEl.textContent ?? '');
+  if (priceEl) {
+    row.price = truncate(cellText(priceEl));
+  } else {
+    // Non-numeric price ("Custom" / "Contact sales") lives in a node that
+    // carries no price class; recover it from the first short price-cue cell so
+    // the tier's price column isn't dropped.
+    const cue = firstPriceCueCell(card);
+    if (cue) row.price = truncate(cue);
+  }
 
   const items = Array.from(card.querySelectorAll('li')).slice(0, MAX_FEATURE_ITEMS);
   items.forEach((li, i) => {
-    const text = truncate(li.textContent ?? '');
+    const text = truncate(cellText(li));
     if (text) row[`feature_${i + 1}`] = text;
   });
 
   // Fallback: if no structured columns surfaced, keep the whole card text so
   // the row is never empty.
   if (Object.keys(row).length === 0) {
-    const text = truncate(card.textContent ?? '');
+    const text = truncate(cellText(card));
     if (text) row.text = text;
   }
   return row;
