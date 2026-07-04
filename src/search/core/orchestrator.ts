@@ -15,6 +15,7 @@ import {
   runEnginesParallel,
   type EngineEntry,
   type EngineOutcome,
+  type RunEnginesOptions,
 } from './engine-base.js';
 import { recencyMultiplier, hasTemporalIntent } from './recency-boost.js';
 import { applyAuthorityBoost } from '../reranker/authority-boost.js';
@@ -79,6 +80,19 @@ const log = createLogger('search');
 const RRF_K = 60;
 const DEFAULT_MAX_RESULTS = 10;
 const DEFAULT_TIMEOUT_MS = 10_000;
+// Overall soft deadline for a dispatch wave. The per-engine abort budget
+// (options.timeoutMs, 10s) still bounds each engine, but a single straggler
+// hanging toward that 10s dragged the whole Promise.all response. This soft
+// deadline lets fast + slow-but-real engines return (observed healthy engines
+// settle in <1s) while capping the tail: once it elapses, engines still in
+// flight are recorded as timed-out and no longer awaited (their request keeps
+// running and may still populate cache). Kept well under DEFAULT_TIMEOUT_MS.
+const ENGINE_POOL_SOFT_DEADLINE_MS = 3_500;
+// Tighter budget applied ONLY to engines the breaker has marked chronically
+// unhealthy this session (repeated trips). Stops the pool from paying a
+// perma-failing engine's straggler cost on every call while a healthy or
+// transiently-slow engine keeps the full pool deadline. Generic + data-driven.
+const ENGINE_POOL_CHRONIC_SOFT_DEADLINE_MS = 1_200;
 // A non-general vertical returning fewer than this after fusion is starved:
 // its engine pool is too thin for the query. We backfill from the general
 // pool rather than shipping a near-empty set.
@@ -332,6 +346,15 @@ export async function runV1Search(
     category: vertical === 'general' ? undefined : vertical,
   };
 
+  // Soft deadline shared by every dispatch wave: bound the overall wait so one
+  // slow/hung engine can't drag the response to its 10s abort budget; a
+  // chronically-tripped engine gets the tighter budget. Same config across the
+  // primary + backfill + starvation waves so latency is bounded uniformly.
+  const runOptions: RunEnginesOptions = {
+    softDeadlineMs: ENGINE_POOL_SOFT_DEADLINE_MS,
+    chronicSoftDeadlineMs: ENGINE_POOL_CHRONIC_SOFT_DEADLINE_MS,
+  };
+
   log.info('orchestrator dispatching engines', {
     vertical,
     engineCount: entries.length,
@@ -343,7 +366,7 @@ export async function runV1Search(
   // so engines that honour it narrow at the source; applyDomainFilters below is
   // still the hard post-filter safety net.
   const primaryDispatchQuery = engineQuery + siteScopeSuffix(input.includeDomains);
-  const outcomes = await runEnginesParallel(entries, primaryDispatchQuery, options);
+  const outcomes = await runEnginesParallel(entries, primaryDispatchQuery, options, runOptions);
 
   const wantsRecency =
     vertical === 'news' || hasDateBound || hasTemporalIntent(query);
@@ -521,7 +544,7 @@ export async function runV1Search(
       input.excludeDomains,
     );
     if (preBackfill.length < requestedMax) {
-      const backfillOutcomes = await runEnginesParallel(entries, engineQuery, options);
+      const backfillOutcomes = await runEnginesParallel(entries, engineQuery, options, runOptions);
       allOutcomes.push(...backfillOutcomes);
       wavedEntries.push(...entries);
     }
@@ -577,6 +600,7 @@ export async function runV1Search(
         generalEntries,
         engineQuery,
         options,
+        runOptions,
       );
       allOutcomes.push(...generalOutcomes);
       wavedEntries.push(...generalEntries);

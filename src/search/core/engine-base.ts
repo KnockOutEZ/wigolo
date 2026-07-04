@@ -60,6 +60,26 @@ export interface EngineOutcome {
   skipped?: boolean;
   /** Remaining breaker cooldown in ms, set only when skipped. */
   cooldownRemainingMs?: number;
+  /** True when the engine was still in flight at the pool's soft deadline
+   * (or its tighter chronic budget) and was abandoned so a straggler could
+   * not drag the overall response. Its underlying request keeps running and
+   * its own abort timeout still fires; a late result may populate cache but
+   * is not awaited. */
+  timedOut?: boolean;
+}
+
+/** Options for {@link runEnginesParallel} that bound how long the pool waits. */
+export interface RunEnginesOptions {
+  /** Overall soft deadline in ms. Once elapsed, engines still in flight are
+   * recorded as `timedOut` outcomes and no longer awaited. Undefined =
+   * legacy Promise.all behaviour (wait for the slowest engine). */
+  softDeadlineMs?: number;
+  /** Tighter per-engine soft deadline applied ONLY to engines whose session
+   * trip count is at/above the chronic threshold. Lets the pool stop paying a
+   * chronically-failing engine's straggler cost every call while a healthy or
+   * transiently-slow-once engine keeps the full pool deadline. Generic and
+   * data-driven — keyed on observed session trips, never an engine name. */
+  chronicSoftDeadlineMs?: number;
 }
 
 export interface BreakerConfig {
@@ -94,6 +114,10 @@ interface BreakerState {
   probeStartedAt: number;
   /** Consecutive opens without an intervening success — drives backoff. */
   trips: number;
+  /** Cumulative trips over the process/session that do NOT reset on a
+   * recovery. A single trip is transient; a high count marks an engine as
+   * chronically unhealthy so the pool can give it a tighter wait budget. */
+  sessionTrips: number;
   /** Last engine error, surfaced via getBreakerSnapshot() for doctor. */
   lastError?: string;
 }
@@ -101,6 +125,13 @@ interface BreakerState {
 const DEFAULT_THRESHOLD = 3;
 const DEFAULT_COOLDOWN_MS = 60_000;
 const MAX_COOLDOWN_MS = 600_000;
+/** Session trips at/above this count mark an engine as chronically unhealthy.
+ * The pool then applies the tighter `chronicSoftDeadlineMs` budget to it so a
+ * repeatedly-failing engine stops draining wall-clock every call. A trip
+ * happens at most once per cooldown window, so this many trips means the
+ * engine has failed across several distinct recovery attempts — not a one-off
+ * blip. Generic + data-driven; no engine name is special-cased. */
+export const CHRONIC_TRIP_THRESHOLD = 3;
 /** Base in-call retry backoff; grows exponentially per attempt (100ms, 300ms,
  * 900ms, …) so a rate-limited engine is not hammered on retry. */
 const RETRY_BACKOFF_BASE_MS = 100;
@@ -120,7 +151,7 @@ const breakers = new Map<string, BreakerState>();
 function getState(name: string): BreakerState {
   let s = breakers.get(name);
   if (!s) {
-    s = { failures: 0, tripUntil: 0, probing: false, probeStartedAt: 0, trips: 0 };
+    s = { failures: 0, tripUntil: 0, probing: false, probeStartedAt: 0, trips: 0, sessionTrips: 0 };
     breakers.set(name, s);
   }
   return s;
@@ -132,10 +163,12 @@ function recordFailure(name: string, threshold: number, cooldownMs: number): voi
   if (state.failures >= threshold && state.tripUntil === 0) {
     state.tripUntil = Date.now() + cooldownMs;
     state.trips = 1;
+    state.sessionTrips += 1;
     log.warn('breaker tripped', {
       engine: name,
       failures: state.failures,
       cooldownMs,
+      sessionTrips: state.sessionTrips,
     });
   }
 }
@@ -143,6 +176,7 @@ function recordFailure(name: string, threshold: number, cooldownMs: number): voi
 /** Reopen after a failed (or stuck) probe: exponential backoff, capped. */
 function reopenWithBackoff(state: BreakerState, cooldownMs: number): number {
   state.trips += 1;
+  state.sessionTrips += 1;
   const backoffMs = Math.min(cooldownMs * 2 ** (state.trips - 1), MAX_COOLDOWN_MS);
   state.tripUntil = Date.now() + backoffMs;
   state.probing = false;
@@ -160,6 +194,22 @@ function recordSuccess(name: string): void {
 
 export function _resetBreakersForTest(): void {
   breakers.clear();
+}
+
+/**
+ * Cumulative breaker trips for an engine over the life of this process.
+ * Unlike the per-cooldown `trips` counter, this does NOT reset when the
+ * engine recovers — so a flaky engine that trips, recovers, and trips again
+ * is recognised as chronically unhealthy. Pure read; 0 for an engine that
+ * has never tripped (or never dispatched). */
+export function getEngineSessionTrips(name: string): number {
+  return breakers.get(name)?.sessionTrips ?? 0;
+}
+
+/** True when an engine has tripped enough times this session to be treated as
+ * chronically unhealthy (see {@link CHRONIC_TRIP_THRESHOLD}). */
+export function isEngineChronicallyUnhealthy(name: string): boolean {
+  return getEngineSessionTrips(name) >= CHRONIC_TRIP_THRESHOLD;
 }
 
 export type BreakerSnapshotState = 'closed' | 'open' | 'half-open';
@@ -285,34 +335,87 @@ export function wrapWithRetryAndBreaker(
   };
 }
 
+/** Unique sentinel so a soft-deadline win is distinguishable from a real
+ * engine result — a plain value could collide with an engine's payload. */
+const SOFT_DEADLINE = Symbol('soft-deadline');
+
 export async function runEnginesParallel(
   entries: EngineEntry[],
   query: string,
   options?: SearchEngineOptions,
+  runOptions?: RunEnginesOptions,
 ): Promise<EngineOutcome[]> {
-  const promises = entries.map(async (entry): Promise<EngineOutcome> => {
+  const softDeadlineMs = runOptions?.softDeadlineMs;
+  const chronicSoftDeadlineMs = runOptions?.chronicSoftDeadlineMs;
+
+  const promises = entries.map((entry): Promise<EngineOutcome> => {
+    const name = entry.engine.name;
     const start = Date.now();
-    try {
-      const results = await entry.engine.search(query, options);
-      return {
-        engine: entry.engine.name,
-        ok: true,
-        results,
-        latencyMs: Date.now() - start,
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        engine: entry.engine.name,
-        ok: false,
-        results: [],
-        error: message,
-        latencyMs: Date.now() - start,
-        ...(err instanceof BreakerOpenError
-          ? { skipped: true, cooldownRemainingMs: err.cooldownRemainingMs }
-          : {}),
-      };
-    }
+    const settled = entry.engine
+      .search(query, options)
+      .then(
+        (results): EngineOutcome => ({
+          engine: name,
+          ok: true,
+          results,
+          latencyMs: Date.now() - start,
+        }),
+        (err): EngineOutcome => {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            engine: name,
+            ok: false,
+            results: [],
+            error: message,
+            latencyMs: Date.now() - start,
+            ...(err instanceof BreakerOpenError
+              ? { skipped: true, cooldownRemainingMs: err.cooldownRemainingMs }
+              : {}),
+          };
+        },
+      );
+
+    // No soft deadline (or a zero/negative one): legacy behaviour — await the
+    // engine directly so we wait for the slowest.
+    if (!softDeadlineMs || softDeadlineMs <= 0) return settled;
+
+    // A chronically-unhealthy engine gets the tighter budget; everyone else
+    // gets the full pool deadline. Data-driven — no engine name is inspected.
+    const budget =
+      chronicSoftDeadlineMs !== undefined && isEngineChronicallyUnhealthy(name)
+        ? Math.min(chronicSoftDeadlineMs, softDeadlineMs)
+        : softDeadlineMs;
+
+    // Prevent the abandoned engine promise from becoming an unhandled
+    // rejection: its late error is swallowed here (the outcome is already
+    // recorded as timedOut). A late SUCCESS still resolves and any cache
+    // side-effects in the adapter already ran.
+    settled.catch(() => {});
+
+    let deadlineTimer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<typeof SOFT_DEADLINE>((resolve) => {
+      deadlineTimer = setTimeout(() => resolve(SOFT_DEADLINE), budget);
+    });
+
+    return Promise.race([settled, deadline]).then((r): EngineOutcome => {
+      // Clear the deadline timer when the engine wins the race so a fast pool
+      // doesn't leave dangling timers keeping the event loop (and a short-
+      // lived CLI process) alive to the budget.
+      clearTimeout(deadlineTimer);
+      return r === SOFT_DEADLINE
+        ? {
+            engine: name,
+            ok: false,
+            results: [],
+            error: 'soft-deadline timeout: engine did not respond within the pool budget',
+            // latencyMs here is the pool's observed WAIT (≈ the budget), not
+            // the engine's true response time — the request was abandoned in
+            // flight and may still be running.
+            latencyMs: Date.now() - start,
+            timedOut: true,
+          }
+        : (r as EngineOutcome);
+    });
   });
 
   return Promise.all(promises);
