@@ -1,13 +1,46 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   extractWithLocalLlm,
-  isLocalLlmEnabled,
+  MAX_MARKDOWN_CHARS,
 } from '../../../../../src/extraction/v1/local-llm.js';
+import type { LocalModelTier } from '../../../../../src/integrations/cloud/llm/local-tier.js';
+
+const TIER: LocalModelTier = {
+  available: true,
+  endpoint: 'http://localhost:1234',
+  model: 'test-model',
+  source: 'auto',
+};
+
+// A page whose pricing lives in a real <table>: extractStructured surfaces it as
+// a structured table, and the pre-extraction (NOT raw HTML) is what must reach
+// the model. The raw markup carries a boilerplate marker string that must NOT
+// leak into the prompt when the deterministic brief is sent instead.
+const HTML = `
+<!doctype html>
+<html><body>
+<nav>RAW_HTML_NAV_MARKER</nav>
+<h1>Acme Pricing</h1>
+<table>
+  <tr><th>Plan</th><th>Price</th></tr>
+  <tr><td>Starter</td><td>$10</td></tr>
+  <tr><td>Pro</td><td>$30</td></tr>
+</table>
+<p>Choose the plan that fits your team.</p>
+</body></html>
+`;
 
 const ORIGINAL_PROVIDER = process.env['WIGOLO_LLM_PROVIDER'];
 const ORIGINAL_MODEL = process.env['WIGOLO_LLM_MODEL'];
 
-describe('extractWithLocalLlm', () => {
+function jsonResponse(content: string): Response {
+  return new Response(
+    JSON.stringify({ choices: [{ message: { content } }] }),
+    { status: 200, headers: { 'content-type': 'application/json' } },
+  );
+}
+
+describe('extractWithLocalLlm — pre-extraction prompt over the local tier', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     delete process.env['WIGOLO_LLM_PROVIDER'];
@@ -15,99 +48,146 @@ describe('extractWithLocalLlm', () => {
   });
 
   afterEach(() => {
-    if (ORIGINAL_PROVIDER === undefined) {
-      delete process.env['WIGOLO_LLM_PROVIDER'];
-    } else {
-      process.env['WIGOLO_LLM_PROVIDER'] = ORIGINAL_PROVIDER;
-    }
-    if (ORIGINAL_MODEL === undefined) {
-      delete process.env['WIGOLO_LLM_MODEL'];
-    } else {
-      process.env['WIGOLO_LLM_MODEL'] = ORIGINAL_MODEL;
-    }
+    if (ORIGINAL_PROVIDER === undefined) delete process.env['WIGOLO_LLM_PROVIDER'];
+    else process.env['WIGOLO_LLM_PROVIDER'] = ORIGINAL_PROVIDER;
+    if (ORIGINAL_MODEL === undefined) delete process.env['WIGOLO_LLM_MODEL'];
+    else process.env['WIGOLO_LLM_MODEL'] = ORIGINAL_MODEL;
   });
 
-  it('returns null when env is unset', async () => {
-    expect(isLocalLlmEnabled()).toBe(false);
+  it('builds the prompt from the deterministic pre-extraction + markdown, NOT raw HTML', async () => {
+    // WHY: the core bug this slice fixes — the model used to receive a ~50KB raw
+    // HTML slice. It must instead receive the structured brief (tables/lists/kv)
+    // plus trimmed page markdown, so the model reasons over already-extracted
+    // structure and never re-parses noisy markup.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonResponse('{"plan":"Pro"}'));
+
+    await extractWithLocalLlm({
+      schema: { type: 'object', properties: { plan: { type: 'string' } } },
+      html: HTML,
+      url: 'https://acme.example/pricing',
+      tier: TIER,
+    });
+
+    const body = JSON.parse(String((fetchSpy.mock.calls[0]![1] as RequestInit).body));
+    const promptText = body.messages.map((m: { content: string }) => m.content).join('\n');
+    // Structured facts from extractStructured are present …
+    expect(promptText).toContain('Starter');
+    expect(promptText).toContain('$10');
+    expect(promptText).toContain('Pro');
+    // … but the raw HTML tags / boilerplate nav marker are NOT.
+    expect(promptText).not.toContain('RAW_HTML_NAV_MARKER');
+    expect(promptText).not.toContain('<table>');
+    expect(promptText).not.toContain('<!doctype');
+  });
+
+  it('routes to the tier endpoint + model (not the WIGOLO_LLM_PROVIDER env)', async () => {
+    // WHY: the endpoint/model come from the C0 resolveLocalModelTier result, so
+    // a keyless run with only WIGOLO_LOCAL_LLM=auto reaches the local server even
+    // though WIGOLO_LLM_PROVIDER is unset.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonResponse('{"plan":"Pro"}'));
+
+    await extractWithLocalLlm({
+      schema: { type: 'object', properties: { plan: { type: 'string' } } },
+      html: HTML,
+      url: 'u',
+      tier: TIER,
+    });
+
+    expect(fetchSpy.mock.calls[0]![0]).toBe('http://localhost:1234/v1/chat/completions');
+    const body = JSON.parse(String((fetchSpy.mock.calls[0]![1] as RequestInit).body));
+    expect(body.model).toBe('test-model');
+  });
+
+  it('does not leak WIGOLO_LLM_PROVIDER into the ambient env after the call', async () => {
+    // WHY: the endpoint bridge sets WIGOLO_LLM_PROVIDER for the single runLlmJson
+    // call; it MUST restore the prior value so no other code path sees a mutated
+    // provider (byte-for-byte guarantee for everything downstream).
+    process.env['WIGOLO_LLM_PROVIDER'] = 'anthropic';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse('{"plan":"Pro"}'));
+
+    await extractWithLocalLlm({
+      schema: { type: 'object', properties: { plan: { type: 'string' } } },
+      html: HTML,
+      url: 'u',
+      tier: TIER,
+    });
+
+    expect(process.env['WIGOLO_LLM_PROVIDER']).toBe('anthropic');
+  });
+
+  it('trims the page markdown to a bounded budget', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonResponse('{"plan":"Pro"}'));
+    const bigParagraph = '<p>' + 'x'.repeat(MAX_MARKDOWN_CHARS * 3) + '</p>';
+    const bigHtml = `<html><body><h1>Big</h1>${bigParagraph}</body></html>`;
+
+    await extractWithLocalLlm({
+      schema: { type: 'object', properties: { plan: { type: 'string' } } },
+      html: bigHtml,
+      url: 'u',
+      tier: TIER,
+    });
+
+    const body = JSON.parse(String((fetchSpy.mock.calls[0]![1] as RequestInit).body));
+    const promptText = body.messages.map((m: { content: string }) => m.content).join('\n');
+    // The whole prompt (brief + budgeted markdown + instructions) is bounded; a
+    // 3×-budget paragraph cannot dump the entire page into the context.
+    expect(promptText.length).toBeLessThan(MAX_MARKDOWN_CHARS * 2);
+  });
+
+  it('returns the parsed+validated JSON object on success', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(JSON.stringify({ plan: 'Pro', price: '$30' })),
+    );
     const result = await extractWithLocalLlm({
-      schema: { type: 'object' },
-      html: '<html></html>',
-      url: 'https://e.com',
+      schema: {
+        type: 'object',
+        properties: { plan: { type: 'string' }, price: { type: 'string' } },
+      },
+      html: HTML,
+      url: 'u',
+      tier: TIER,
+    });
+    expect(result).toEqual({ plan: 'Pro', price: '$30' });
+  });
+
+  it('returns null (does NOT throw) on invalid JSON so the caller falls back deterministically', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse('this is not json'),
+    );
+    const result = await extractWithLocalLlm({
+      schema: { type: 'object', properties: { plan: { type: 'string' } } },
+      html: HTML,
+      url: 'u',
+      tier: TIER,
     });
     expect(result).toBeNull();
   });
 
-  it('calls the endpoint with correct payload and returns parsed JSON', async () => {
-    process.env['WIGOLO_LLM_PROVIDER'] = 'http://localhost:1234';
-    process.env['WIGOLO_LLM_MODEL'] = 'my-model';
-
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          choices: [
-            { message: { content: JSON.stringify({ title: 'Hello', count: 1 }) } },
-          ],
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      ),
-    );
-
+  it('returns null on a non-200 endpoint response', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('boom', { status: 500 }));
     const result = await extractWithLocalLlm({
-      schema: { type: 'object', properties: { title: { type: 'string' } } },
-      html: '<html></html>',
-      url: 'https://e.com',
+      schema: { type: 'object', properties: { plan: { type: 'string' } } },
+      html: HTML,
+      url: 'u',
+      tier: TIER,
     });
-
-    expect(result).toEqual({ title: 'Hello', count: 1 });
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchSpy.mock.calls[0]!;
-    expect(url).toBe('http://localhost:1234/v1/chat/completions');
-    const body = JSON.parse(String((init as RequestInit).body));
-    expect(body.model).toBe('my-model');
-    expect(Array.isArray(body.messages)).toBe(true);
-    expect(body.messages[0].content).toContain('JSON');
+    expect(result).toBeNull();
   });
 
-  it('accepts a full endpoint URL', async () => {
-    process.env['WIGOLO_LLM_PROVIDER'] = 'http://localhost:1234/v1/chat/completions';
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(
-        JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }),
-        { status: 200 },
-      ),
-    );
-    await extractWithLocalLlm({ schema: {}, html: '<html/>', url: 'u' });
-    expect(fetchSpy.mock.calls[0]![0]).toBe('http://localhost:1234/v1/chat/completions');
-  });
-
-  it('throws on non-200', async () => {
-    process.env['WIGOLO_LLM_PROVIDER'] = 'http://localhost:1234';
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response('boom', { status: 500 }),
-    );
-    await expect(
-      extractWithLocalLlm({ schema: {}, html: '<html/>', url: 'u' }),
-    ).rejects.toThrow(/500/);
-  });
-
-  it('throws on invalid JSON content', async () => {
-    process.env['WIGOLO_LLM_PROVIDER'] = 'http://localhost:1234';
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(
-        JSON.stringify({ choices: [{ message: { content: 'not json' } }] }),
-        { status: 200 },
-      ),
-    );
-    await expect(
-      extractWithLocalLlm({ schema: {}, html: '<html/>', url: 'u' }),
-    ).rejects.toThrow(/invalid JSON/);
-  });
-
-  it('throws on fetch transport error', async () => {
-    process.env['WIGOLO_LLM_PROVIDER'] = 'http://localhost:1234';
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('econnrefused'));
-    await expect(
-      extractWithLocalLlm({ schema: {}, html: '<html/>', url: 'u' }),
-    ).rejects.toThrow(/econnrefused/);
+  it('returns null on a transport error / timeout', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('aborted'));
+    const result = await extractWithLocalLlm({
+      schema: { type: 'object', properties: { plan: { type: 'string' } } },
+      html: HTML,
+      url: 'u',
+      tier: TIER,
+    });
+    expect(result).toBeNull();
   });
 });
