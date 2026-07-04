@@ -3,6 +3,7 @@ import { getRerankProvider } from '../providers/rerank-provider.js';
 import { applyRecencyBoost } from './reranker/recency-boost.js';
 import { applyAuthorityBoost } from './reranker/authority-boost.js';
 import { applyConsensusBoost } from './reranker/consensus-boost.js';
+import { rerankInputText } from './core/rerank-fold.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 
@@ -22,7 +23,7 @@ export async function rerankResults(
       const provider = await getRerankProvider();
       const candidates = results.map((r, i) => ({
         id: String(i),
-        text: `${r.title}\n${r.snippet}`,
+        text: rerankInputText(r.title, r.snippet, r.url),
       }));
       const ranked = await provider.rerank(query, candidates);
       const reordered = ranked.map((s) => ({

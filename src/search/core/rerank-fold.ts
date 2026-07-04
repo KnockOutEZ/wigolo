@@ -1,13 +1,38 @@
 import type { RawSearchResult, EvidenceScore } from '../../types.js';
 import { getRerankProvider } from '../../providers/rerank-provider.js';
+import { detectRareTerms, isRareTermMiss } from './rare-terms.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('search');
 
 export const RERANK_WINDOW = 20;
 export const RERANK_RELEVANCE_THRESHOLD = 0;
+// A cross-encoder logit at ~0 is the sigmoid midpoint (p≈0.5) — the model is
+// UNCERTAIN, not confidently relevant. Tier-1 (the [0.5,1.0] confidently-
+// relevant band) requires a logit meaningfully ABOVE zero by this margin, so a
+// bare-zero/near-zero logit falls to tier-0 instead of being promoted. Without
+// this, an all-near-zero (all-junk) batch — where the normaliser returns the
+// neutral 0.5 — mapped every result to 0.5 + 0.5*0.5 = 0.75 (junk saturation).
+export const RERANK_TIER_MARGIN = 0.5;
 export const RERANK_BLEND_COMPOSITE = 0.5;
 export const RERANK_BLEND_RERANK = 0.5;
+
+// Build the cross-encoder input for one result. Title + snippet ALONE let a
+// short off-topic snippet game the reranker into a high logit (the junk-
+// saturation bug); appending the host gives the model the domain as an extra
+// relevance signal (a dictionary/glossary host reads differently from a docs
+// host). Shared by the fold path and the legacy path so both encode identically.
+export function rerankInputText(title: string, snippet: string | undefined, url: string): string {
+  let host = '';
+  try {
+    host = new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    host = '';
+  }
+  const parts = [title ?? '', snippet ?? ''];
+  if (host) parts.push(host);
+  return parts.join('\n').trim();
+}
 
 /** Injectable: given a query + candidates, return id -> raw logit. */
 export type RerankFn = (
@@ -60,7 +85,7 @@ export async function foldRerankIntoOrdering(
 
   const candidates = windowResults.map((res, i) => ({
     id: String(i),
-    text: `${res.title}\n${res.snippet ?? ''}`.trim(),
+    text: rerankInputText(res.title, res.snippet, res.url),
   }));
 
   const rerankFn = opts.rerank ?? defaultRerankFn();
@@ -89,8 +114,37 @@ export async function foldRerankIntoOrdering(
   const normComposite = makeNormaliser(windowResults.map((res) => res.relevance_score));
   const normRerank = makeNormaliser(logits);
 
+  // Junk-floor guard: a result that shares NONE of the query's rare COMPOUND
+  // terms cannot ride the cross-encoder ALONE into the confidently-relevant
+  // tier-1 band. Reranker logits are miscalibrated per-query, so a short junk
+  // snippet can game a high logit; without a shared high-IDF compound token
+  // (hyphenated / snake_case / digit-suffixed — genuinely rare by shape) that
+  // logit is not trustworthy evidence of relevance. Per-result (keyed on the
+  // rare-term hit/miss predicate) and expressed on the relative TIER band, not
+  // an absolute logit cut (reranker logits are miscalibrated per-query).
+  //
+  // COMPOUND-only on purpose: the concept-phrase branch fires for nearly every
+  // multi-word query and a legitimate paraphrased result shares none of its
+  // literal tokens — gating on it would suppress exactly the semantic-match
+  // cases the cross-encoder exists to catch. Compound tokens are high-precision:
+  // a result lacking the query's compound is almost certainly off-topic. A
+  // no-op when no query variant carries a compound token, so ordinary queries
+  // are untouched. Detected per-variant + unioned: a result matching ANY
+  // variant's compound is a HIT and stays ungated.
+  const rareCompoundPerQuery = queries.map((q) => {
+    const rare = detectRareTerms(q);
+    // Zero out the concept phrase so isRareTermMiss keys ONLY on compounds.
+    return { compoundTokens: rare.compoundTokens, conceptPhrase: null };
+  });
+  const queryHasCompound = rareCompoundPerQuery.some((r) => r.compoundTokens.length > 0);
+
   const scored = windowResults.map((res, i) => {
-    const tier = logits[i] >= RERANK_RELEVANCE_THRESHOLD ? 1 : 0;
+    const logitTier = logits[i] > RERANK_RELEVANCE_THRESHOLD + RERANK_TIER_MARGIN ? 1 : 0;
+    // Guarded to tier-0 only when the query carries a compound token AND this
+    // result matches NONE of them across every query variant (a true miss).
+    const rareMiss =
+      queryHasCompound && rareCompoundPerQuery.every((r) => isRareTermMiss(res, r));
+    const tier = rareMiss ? 0 : logitTier;
     const nr = normRerank(logits[i]);
     const blend =
       RERANK_BLEND_COMPOSITE * normComposite(res.relevance_score) +

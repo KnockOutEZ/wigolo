@@ -27,6 +27,7 @@ import {
   detectEntityCollision,
   detectLexicalCollision,
   entityQualifiedRewrite,
+  topCollisionRewrite,
 } from './brand-collision.js';
 import { computeFreshnessSignal } from './freshness.js';
 import { buildQueryUnderstanding } from './query-understanding.js';
@@ -317,6 +318,22 @@ export class CoreSearchProvider implements SearchProvider {
         detectEntityCollision(queries[0]) !== null
           ? entityQualifiedRewrite(queries[0])
           : null;
+      // Brand/lexical-collision dual-dispatch: a QUERY-ONLY collision the
+      // entity path does NOT already handle — a short common-noun brand
+      // collision ("next", "apple mint") or a single-token dev-term lexical
+      // collision ("useState"). Anchors the top disambiguating rewrite from
+      // detectBrandCollision/detectLexicalCollision so the correct-entity
+      // results RRF-merge with the plain query rather than being crowded out.
+      // Same concurrent one-extra-dispatch budget the entityVariant uses;
+      // suppressed when the entity variant already fired (no triple dispatch),
+      // when error-intent owns the query, and on multi-query/image callers.
+      const collisionVariant =
+        category !== 'images' &&
+        queries.length === 1 &&
+        errorTokens.length === 0 &&
+        entityVariant === null
+          ? topCollisionRewrite(queries[0])
+          : null;
       const dispatchQueries = [...queries];
       if (rareVariant && rareVariant.trim() !== queries[0]?.trim()) {
         dispatchQueries.push(rareVariant);
@@ -328,6 +345,14 @@ export class CoreSearchProvider implements SearchProvider {
       ) {
         dispatchQueries.push(entityVariant);
         log.debug('entity-collision variant firing', { original: queries[0], variant: entityVariant });
+      }
+      if (
+        collisionVariant &&
+        collisionVariant.trim().toLowerCase() !== queries[0]?.trim().toLowerCase() &&
+        !dispatchQueries.some((q) => q.trim().toLowerCase() === collisionVariant.trim().toLowerCase())
+      ) {
+        dispatchQueries.push(collisionVariant);
+        log.debug('brand/lexical-collision variant firing', { original: queries[0], variant: collisionVariant });
       }
       // Error-token bare-token variant: recovers the on-target results engines
       // return for the atomic token alone but miss on the long natural-language
@@ -385,6 +410,9 @@ export class CoreSearchProvider implements SearchProvider {
       }
       if (entityVariant && dispatchQueries.includes(entityVariant)) {
         autoRewrites.push(entityVariant);
+      }
+      if (collisionVariant && dispatchQueries.includes(collisionVariant)) {
+        autoRewrites.push(collisionVariant);
       }
       queriesExecuted.length = 0;
       queriesExecuted.push(...dispatchQueries);
@@ -617,7 +645,13 @@ export class CoreSearchProvider implements SearchProvider {
       // keeps the single best result so the set is never emptied.
       const configuredThreshold = getConfig().relevanceThreshold;
       const floor = Math.max(DEFAULT_SEARCH_SCORE_FLOOR, configuredThreshold);
-      const floored = applyScoreFloor(processed, floor);
+      // Per-engine keep guarantee: a dominant vertical whose pages share the
+      // query's doc-phrase tokens scores high on lexical alignment and
+      // monopolises the kept set, flooring out ANOTHER engine's correct-entity
+      // results entirely (the kept-0 case). Rescue each engine's best result
+      // when the query-wide floor would leave it with none — keeps cross-engine
+      // keep like-for-like. Per-result on `engine`, one rescue per engine.
+      const floored = applyScoreFloor(processed, floor, { perEngineKeep: 1 });
       processed = floored.kept;
 
       const maxResults = input.max_results ?? processed.length;

@@ -54,6 +54,20 @@ const DEV_TERM_COLLISION_LEXICON = new Set([
   'docker', 'kubernetes', 'helm',
 ]);
 
+// The SUBSET of the lexicon for which the generated "<term> React hook" rewrite
+// is semantically valid — the React-hook-name family. Only these may be
+// AUTO-DISPATCHED (topCollisionRewrite case 2): dual-dispatching "useState
+// React hook" for a downcased "usestate" query genuinely anchors the intent.
+// The rest of the lexicon (library/tool/ORM names — docker, vite, prisma,
+// redux, webpack, …) is WARNING-ONLY: `detectLexicalCollision` still advises on
+// them (harmless when wrong), but auto-dispatching "docker React hook" would
+// RRF-merge React-hooks docs into a clean tool query — actively harmful. So the
+// auto-dispatch gate is this narrow set, not the whole lexicon.
+const REACT_HOOK_TERMS: ReadonlySet<string> = new Set([
+  'usestate', 'useeffect', 'usememo', 'usereducer', 'usecallback', 'useref',
+  'usecontext', 'usestore',
+]);
+
 function hostOf(url: string): string | undefined {
   try {
     return new URL(url).hostname.toLowerCase();
@@ -271,6 +285,62 @@ export function detectEntityCollision(query: string): BrandCollisionWarning | nu
   };
 }
 
+/**
+ * The single top disambiguating rewrite for a query that is QUERY-ONLY
+ * collision-prone — i.e. detectable without looking at any result URLs. Two
+ * cases, both mirroring an existing detector's rewrites:
+ *
+ *   1. A short common-noun brand collision (`isBrandCollisionProne` case 1,
+ *      e.g. "next", "apple mint") → the top of `suggestRewrites` — the same
+ *      rewrites `detectBrandCollision` emits once a brand TLD is seen in the
+ *      top-3. Anchored here on the query alone so it can dispatch CONCURRENTLY
+ *      with the primary wave (the warning still gates on the top-3 as before).
+ *   2. A single-token React-HOOK-name lexical collision (e.g. "useState") →
+ *      the "<term> React hook" rewrite. Gated on the React-hook SUBSET of the
+ *      lexicon (`REACT_HOOK_TERMS`), NOT the full lexicon: the "<term> React
+ *      hook" rewrite is only semantically valid for hook names. Library/tool/
+ *      ORM terms (docker, vite, prisma, redux, webpack, …) stay warning-only —
+ *      auto-dispatching "docker React hook" would RRF-merge React-hooks docs
+ *      into a clean tool query, which is actively harmful.
+ *
+ * Excluded on purpose (handled elsewhere or not query-only):
+ *   - the proper-noun-head + generic-tail case (`detectEntityCollision`) —
+ *     already auto-dispatched via `entityQualifiedRewrite`; returning null here
+ *     avoids a duplicate third dispatch;
+ *   - any error-token query (`isBrandCollisionProne` already rejects these).
+ *
+ * Returns null when the query is not query-only collision-prone or the rewrite
+ * would be identical to the query.
+ */
+export function topCollisionRewrite(query: string): string | null {
+  const q = query.trim();
+  if (!q) return null;
+
+  const tokens = q.split(/\s+/).filter(Boolean);
+  // Case 1: short (<=2 token) all-common-noun brand collision. Skip the
+  // proper-noun-head case — detectEntityCollision owns its dispatch.
+  const shortCommonNoun =
+    tokens.length <= 2 &&
+    tokens.length > 0 &&
+    tokens.every((t) => COMMON_NOUNS.has(t.toLowerCase())) &&
+    !queryHasErrorToken(q);
+  if (shortCommonNoun) {
+    const rewrite = suggestRewrites(q)[0];
+    if (rewrite && rewrite.trim() !== q) return rewrite;
+  }
+
+  // Case 2: single-token React-hook-name lexical collision ONLY. Restricted to
+  // REACT_HOOK_TERMS so a library/tool term (docker/vite/prisma/…) — for which
+  // "<term> React hook" is nonsense — is never auto-dispatched (warning-only).
+  const hookTerm = matchLexiconTerm(q, REACT_HOOK_TERMS);
+  if (hookTerm) {
+    const rewrite = `${hookTerm} React hook`;
+    if (rewrite.trim() !== q) return rewrite;
+  }
+
+  return null;
+}
+
 // Cheap normalised-edit-distance bounded at maxDist+1. Caller only cares
 // whether the distance is <= maxDist; abort early once the dp row min
 // exceeds the budget. Avoids the full O(m*n) when most queries are far
@@ -312,30 +382,32 @@ function withinEditDistance(a: string, b: string, maxDist: number): boolean {
  * so the caller can re-query with a clearer phrase. Returns null when the
  * query is not collision-prone or doesn't match any lexicon entry.
  */
-export function detectLexicalCollision(query: string): BrandCollisionWarning | null {
+// Match a single-token query against a lexicon (exact or within a small typo
+// budget), returning the matched lexicon term or null. Shared by the warning
+// detector (full lexicon) and the auto-dispatch gate (React-hook subset) so the
+// two use identical matching semantics.
+function matchLexiconTerm(query: string, lexicon: ReadonlySet<string>): string | null {
   const trimmed = query.trim();
   if (!trimmed) return null;
-  // Single-token guard — multi-word queries usually disambiguate themselves.
   const tokens = trimmed.split(/\s+/).filter(Boolean);
   if (tokens.length !== 1) return null;
   const candidate = tokens[0].toLowerCase().replace(/[^a-z0-9]/g, '');
   if (candidate.length < 4 || candidate.length > 24) return null;
 
-  let matchedTerm: string | null = null;
-  for (const term of DEV_TERM_COLLISION_LEXICON) {
-    if (term === candidate) {
-      matchedTerm = term;
-      break;
-    }
+  for (const term of lexicon) {
+    if (term === candidate) return term;
     // Allow a single edit for short typos; longer terms get one error
     // budget per ~8 chars (capped at 2) — keeps "us state" out while
     // accepting "usestaste".
     const budget = Math.min(2, Math.floor(term.length / 8) + 1);
-    if (withinEditDistance(candidate, term, budget)) {
-      matchedTerm = term;
-      break;
-    }
+    if (withinEditDistance(candidate, term, budget)) return term;
   }
+  return null;
+}
+
+export function detectLexicalCollision(query: string): BrandCollisionWarning | null {
+  const trimmed = query.trim();
+  const matchedTerm = matchLexiconTerm(query, DEV_TERM_COLLISION_LEXICON);
   if (!matchedTerm) return null;
 
   return {

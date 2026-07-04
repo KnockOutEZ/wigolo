@@ -85,7 +85,7 @@ describe('rerank-fold wiring', () => {
     rerankScores['ONTOPIC'] = 5;
     seedEngines();
     const provider = new CoreSearchProvider();
-    const out = await provider.search({ query: 'balanced rerank fold uniq-q', include_content: false }, ctx);
+    const out = await provider.search({ query: 'balanced rerank fold uniqq', include_content: false }, ctx);
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     expect(out.data.results[0].url).toBe('https://on.example.com'); // fold flipped it to top
@@ -97,7 +97,7 @@ describe('rerank-fold wiring', () => {
     rerankScores['ONTOPIC'] = 5;
     seedEngines();
     const provider = new CoreSearchProvider();
-    const out = await provider.search({ query: 'fast tier no fold uniq-q', search_depth: 'fast' }, ctx);
+    const out = await provider.search({ query: 'fast tier no fold uniqq', search_depth: 'fast' }, ctx);
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     expect(out.data.results[0].url).toBe('https://off.example.com'); // composite order preserved
@@ -112,7 +112,7 @@ describe('rerank-fold wiring', () => {
     rerankScores['ONTOPIC'] = 5;
     seedEngines();
     const provider = new CoreSearchProvider();
-    const out = await provider.search({ query: 'reranker none gate uniq-q', include_content: false }, ctx);
+    const out = await provider.search({ query: 'reranker none gate uniqq', include_content: false }, ctx);
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     expect(out.data.results[0].url).toBe('https://off.example.com'); // fold skipped

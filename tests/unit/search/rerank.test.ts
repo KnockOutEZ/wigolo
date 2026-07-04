@@ -99,13 +99,14 @@ describe('rerankResults with provider', () => {
     expect(out[0].relevance_score).toBe(0.88);
   });
 
-  it('passes the query and {id,text} candidates to the provider', async () => {
+  it('passes the query and {id,text} candidates to the provider, with domain context', async () => {
     vi.mocked(getConfig).mockReturnValue(cfg({ rerankerModel: 'minilm-l12' }));
     rerankMock.mockResolvedValue(scored([[0, 0.8]]));
     await rerankResults('q', [makeResult('A', 0.5)]);
+    // Domain is appended so a short snippet cannot game the reranker.
     expect(rerankMock).toHaveBeenCalledWith(
       'q',
-      [{ id: '0', text: 'A\nSnippet about A' }],
+      [{ id: '0', text: 'A\nSnippet about A\na.com' }],
     );
   });
 
