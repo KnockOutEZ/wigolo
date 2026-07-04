@@ -60,6 +60,44 @@ describe('foldRerankIntoOrdering — rerank input includes URL/domain context', 
   });
 });
 
+describe('foldRerankIntoOrdering — bare-zero logit does not saturate to the tier-1 band', () => {
+  it('an all-near-zero-logit (uncertain) batch stays out of [0.75,1.0]', async () => {
+    // The junk-saturation case: every result has a logit at ~0 (sigmoid 0.5 =
+    // "uncertain"), and the min-max normaliser returns the neutral 0.5. The old
+    // tier gate (logit >= 0 -> tier 1) mapped these to 0.5 + 0.5*0.5 = 0.75.
+    // A merely-uncertain result must NOT be promoted into the confidently-
+    // relevant band.
+    const results = [r('A', 0.5), r('B', 0.5)];
+    const out = await foldRerankIntoOrdering(results, {
+      queries: ['q'], rerank: fakeRerank({ A: 0.0001, B: 0.0001 }),
+    });
+    for (const x of out) {
+      expect(x.relevance_score).toBeLessThan(0.75);
+    }
+  });
+
+  it('a bare-zero logit ranks below a genuinely positive-logit result', async () => {
+    const results = [r('good', 0.5), r('bare', 0.9)];
+    const out = await foldRerankIntoOrdering(results, {
+      queries: ['q'], rerank: fakeRerank({ good: 4, bare: 0.0001 }),
+    });
+    expect(out[0].url).toBe('good');
+    expect(out[0].relevance_score).toBeGreaterThanOrEqual(0.5);
+    // The bare-zero result is uncertain, not confidently relevant.
+    expect(out.find((x) => x.url === 'bare')!.relevance_score).toBeLessThan(0.5);
+  });
+
+  it('a clearly-positive logit still lands in the tier-1 band [0.5,1.0]', async () => {
+    // Guard the fix does not over-suppress: a real positive logit stays tier-1.
+    const results = [r('A', 0.5), r('B', 0.5)];
+    const out = await foldRerankIntoOrdering(results, {
+      queries: ['q'], rerank: fakeRerank({ A: 5, B: -5 }),
+    });
+    const a = out.find((x) => x.url === 'A')!;
+    expect(a.relevance_score).toBeGreaterThanOrEqual(0.5);
+  });
+});
+
 describe('foldRerankIntoOrdering', () => {
   it('a negative-logit result cannot outrank a positive-logit result even with max composite', async () => {
     const results = [r('A', 1.0), r('B', 0.01)];

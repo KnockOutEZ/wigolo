@@ -6,6 +6,13 @@ const log = createLogger('search');
 
 export const RERANK_WINDOW = 20;
 export const RERANK_RELEVANCE_THRESHOLD = 0;
+// A cross-encoder logit at ~0 is the sigmoid midpoint (p≈0.5) — the model is
+// UNCERTAIN, not confidently relevant. Tier-1 (the [0.5,1.0] confidently-
+// relevant band) requires a logit meaningfully ABOVE zero by this margin, so a
+// bare-zero/near-zero logit falls to tier-0 instead of being promoted. Without
+// this, an all-near-zero (all-junk) batch — where the normaliser returns the
+// neutral 0.5 — mapped every result to 0.5 + 0.5*0.5 = 0.75 (junk saturation).
+export const RERANK_TIER_MARGIN = 0.5;
 export const RERANK_BLEND_COMPOSITE = 0.5;
 export const RERANK_BLEND_RERANK = 0.5;
 
@@ -107,7 +114,7 @@ export async function foldRerankIntoOrdering(
   const normRerank = makeNormaliser(logits);
 
   const scored = windowResults.map((res, i) => {
-    const tier = logits[i] >= RERANK_RELEVANCE_THRESHOLD ? 1 : 0;
+    const tier = logits[i] > RERANK_RELEVANCE_THRESHOLD + RERANK_TIER_MARGIN ? 1 : 0;
     const nr = normRerank(logits[i]);
     const blend =
       RERANK_BLEND_COMPOSITE * normComposite(res.relevance_score) +
