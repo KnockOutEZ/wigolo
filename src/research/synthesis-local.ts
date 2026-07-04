@@ -58,7 +58,16 @@ export async function synthesizeLocal(
   });
 
   const prompt =
-    'You answer questions using ONLY the provided sources. Cite each fact with [N] where N is the source number.\n\n' +
+    'You are a research assistant. Answer the question in flowing prose using ONLY ' +
+    'the numbered sources below.\n' +
+    'FORMAT + CITATION RULES (mandatory):\n' +
+    '- Do NOT write a numbered or bulleted list, do NOT use section headings, and ' +
+    'do NOT restate the source titles.\n' +
+    '- Support every sentence with a citation: append the supporting source ' +
+    'number(s) in square brackets at the END of each sentence, e.g. "Tokio uses a ' +
+    'work-stealing scheduler [1]." A single sentence may cite multiple sources, ' +
+    'e.g. [1][2].\n' +
+    '- Never write a factual sentence without a trailing [N] citation.\n\n' +
     `Question: ${question}\n\n` +
     `Sources:\n${sourceBlocks.join('\n\n')}`;
 

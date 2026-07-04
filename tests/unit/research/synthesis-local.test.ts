@@ -75,6 +75,24 @@ describe('synthesizeLocal', () => {
     expect(body.response_format).toBeUndefined();
   });
 
+  it('instructs the model to place an inline [N] citation after EVERY claim', async () => {
+    process.env['WIGOLO_LLM_PROVIDER'] = 'http://localhost:1234';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: 'ok [1].' } }] }),
+        { status: 200 },
+      ),
+    );
+    await synthesizeLocal('q', [{ url: 'u', title: 't', markdown: 'm' }]);
+    const body = JSON.parse(String((fetchSpy.mock.calls[0]![1] as RequestInit).body));
+    const prompt = body.messages[0].content as string;
+    // A weak/terse citation instruction lets small local models drop markers
+    // entirely (live qwen2.5:7b emitted a citation-free brief). The prompt must
+    // demand a marker on every sentence and show the exact [N] shape.
+    expect(prompt).toMatch(/every (sentence|claim|fact)/i);
+    expect(prompt).toContain('[1]');
+  });
+
   it('extracts multiple citation markers (1-based -> 0-based)', async () => {
     process.env['WIGOLO_LLM_PROVIDER'] = 'http://localhost:1234';
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
