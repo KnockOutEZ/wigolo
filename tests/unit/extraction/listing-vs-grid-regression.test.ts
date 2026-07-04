@@ -78,6 +78,35 @@ describe('legacy nested-table listing → per-story rows (round-1 win)', () => {
     expect(listing!.headers).toContain('title');
     expect(listing!.rows.every((r) => (r.title ?? '').length > 0)).toBe(true);
   });
+
+  it('SPARSITY GATE: a DENSE ordinal leaderboard is NOT collapsed to rank/title/meta', () => {
+    // The fixture is tuned so the SPARSITY gate is the deciding gate: most rows
+    // are rank-led (1./2./3.…) but two are non-ordinal, so the record-start
+    // rows are a MINORITY (the `starts < bodyRows` and `>=3 records` checks both
+    // pass). Every cell is populated (no empty cells, no spacer rows), so
+    // filled/gridCells ≈ 1.0 — well above the < 0.5 bar. Only the sparsity gate
+    // rejects segmentation here. This is real tabular data and must stay one row
+    // per <tr> (col_N), never folded. Without this test, loosening the 0.5
+    // threshold would silently over-fire on dense leaderboards.
+    const leaderboard = fixture('dense-ordinal-leaderboard.html');
+    const tables = extractTables(leaderboard);
+    expect(tables).toHaveLength(1);
+    const table = tables[0];
+
+    // Dense per-row shape survives: synthesized col_N headers, one row per team.
+    expect(table.headers).toEqual(['col_1', 'col_2', 'col_3', 'col_4']);
+    expect(table.rows).toHaveLength(8);
+    expect(table.rows[0]).toEqual({
+      col_1: '1.',
+      col_2: 'Northwind United',
+      col_3: '34',
+      col_4: '+41',
+    });
+
+    // It must NOT have been folded into the segmenter's rank/title/meta shape.
+    expect(table.headers).not.toContain('title');
+    expect(table.headers).not.toContain('meta');
+  });
 });
 
 describe('div/flex pricing grid → tier capture (round-2 win)', () => {
