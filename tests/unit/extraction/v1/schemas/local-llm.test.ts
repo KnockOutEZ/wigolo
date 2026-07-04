@@ -140,6 +140,51 @@ describe('extractWithLocalLlm — pre-extraction prompt over the local tier', ()
     expect(promptText.length).toBeLessThan(MAX_MARKDOWN_CHARS * 2);
   });
 
+  it('keeps substantive content that sits past a large boilerplate block in the prompt', async () => {
+    // WHY: real pages bury the schema-relevant content (pricing) under a large
+    // nav/hero block that easily exceeds a raw-markdown char budget. A naive
+    // slice-from-the-top drops the pricing entirely and the model hallucinates.
+    // The prompt must use main-content extraction so the substantive region
+    // survives the budget even when it appears late in the raw document.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonResponse('{"plan":"Pro"}'));
+    const bigNav =
+      '<ul>' +
+      Array.from(
+        { length: 150 },
+        (_, i) => `<li><a href="/docs/${i}">Documentation section ${i}</a></li>`,
+      ).join('') +
+      '</ul>';
+    const article =
+      '<article><h1>Pricing Plans</h1>' +
+      Array.from(
+        { length: 8 },
+        (_, i) =>
+          `<p>Our pricing is designed for teams of every size and this is descriptive paragraph number ${i} explaining the value proposition in detail.</p>`,
+      ).join('') +
+      '<section><h2>Pro</h2><p>PRICESIGNAL2999 per month for growing teams that need advanced analytics and priority support.</p></section></article>';
+    const buriedHtml = `<!doctype html><html><body>
+      <header><nav>${bigNav}</nav></header>
+      <main>${article}</main>
+      <footer>copyright</footer>
+    </body></html>`;
+
+    await extractWithLocalLlm({
+      schema: { type: 'object', properties: { plan: { type: 'string' } } },
+      html: buriedHtml,
+      url: 'https://x.test/pricing',
+      tier: TIER,
+    });
+
+    const body = JSON.parse(String((fetchSpy.mock.calls[0]![1] as RequestInit).body));
+    const promptText = body.messages.map((m: { content: string }) => m.content).join('\n');
+    // The buried pricing signal reaches the model despite the giant nav block …
+    expect(promptText).toContain('PRICESIGNAL2999');
+    // … and the boilerplate nav links do NOT flood the bounded context.
+    expect(promptText).not.toContain('Documentation section 0');
+  });
+
   it('returns the parsed+validated JSON object on success', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       jsonResponse(JSON.stringify({ plan: 'Pro', price: '$30' })),

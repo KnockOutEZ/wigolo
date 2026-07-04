@@ -2,6 +2,7 @@ import { createLogger } from '../../logger.js';
 import { runLlmJson } from '../../integrations/cloud/llm/run.js';
 import type { LocalModelTier } from '../../integrations/cloud/llm/local-tier.js';
 import { extractStructured } from '../structured.js';
+import { extractContent } from '../pipeline.js';
 import { htmlToMarkdown } from '../markdown.js';
 import type { StructuredData } from '../../types.js';
 
@@ -57,14 +58,33 @@ function serializeStructured(data: StructuredData): string {
   return out.length > MAX_STRUCTURED_CHARS ? out.slice(0, MAX_STRUCTURED_CHARS) : out;
 }
 
-function buildPrompt(request: LocalLlmRequest): string {
+// Main-content markdown for the page-text portion of the prompt. Real pages
+// bury the schema-relevant content (e.g. pricing) under a large nav/hero block
+// that easily exceeds the char budget, so a raw slice-from-the-top drops the
+// substantive region and the model hallucinates. The content extractor strips
+// boilerplate so the substantive region survives the budget even when it sits
+// late in the raw document. Falls back to raw markdown if extraction yields
+// nothing (never throws the extraction path into the model call).
+async function pageMarkdown(request: LocalLlmRequest): Promise<string> {
+  try {
+    const r = await extractContent(request.html, request.url || 'about:blank');
+    if (r.markdown && r.markdown.trim().length > 0) return r.markdown;
+  } catch {
+    // fall through to raw markdown
+  }
+  return htmlToMarkdown(request.html);
+}
+
+async function buildPrompt(request: LocalLlmRequest): Promise<string> {
   const structured = serializeStructured(extractStructured(request.html));
-  const md = htmlToMarkdown(request.html);
+  const md = await pageMarkdown(request);
   const markdown = md.length > MAX_MARKDOWN_CHARS ? md.slice(0, MAX_MARKDOWN_CHARS) : md;
 
   return (
     'Extract data matching the JSON schema from the page below. ' +
-    'Use ONLY facts present in the extracted structure and page text. ' +
+    'Use ONLY facts (names, prices, features) that appear verbatim in the ' +
+    'extracted structure or page text — never invent, round, or substitute ' +
+    'placeholder values. If a field is not present, omit it. ' +
     'Return only the JSON object — no prose, no markdown fences.\n\n' +
     `URL: ${request.url}\n\n` +
     (structured ? `Extracted structure:\n${structured}\n\n` : '') +
@@ -88,7 +108,7 @@ function buildPrompt(request: LocalLlmRequest): string {
 export async function extractWithLocalLlm(
   request: LocalLlmRequest,
 ): Promise<Record<string, unknown> | null> {
-  const prompt = buildPrompt(request);
+  const prompt = await buildPrompt(request);
   const prevProvider = process.env.WIGOLO_LLM_PROVIDER;
   process.env.WIGOLO_LLM_PROVIDER = request.tier.endpoint;
   try {
