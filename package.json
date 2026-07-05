@@ -1,6 +1,6 @@
 {
   "name": "wigolo",
-  "version": "0.1.40-beta.0",
+  "version": "0.1.40-beta.1",
   "description": "Local-first web intelligence MCP server for AI coding agents",
   "type": "module",
   "main": "dist/index.js",
