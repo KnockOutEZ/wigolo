@@ -87,10 +87,10 @@ export default function Feedback() {
             <a href={FEEDBACK_LINKS.bug} className="btn btn-primary" target="_blank" rel="noreferrer">
               Report a bug
             </a>
-            <a href={FEEDBACK_LINKS.feature} className="btn btn-ghost" target="_blank" rel="noreferrer">
+            <a href={FEEDBACK_LINKS.feature} className={styles.secondary} target="_blank" rel="noreferrer">
               Request a feature
             </a>
-            <a href={FEEDBACK_LINKS.discussions} className="btn btn-ghost" target="_blank" rel="noreferrer">
+            <a href={FEEDBACK_LINKS.discussions} className={styles.secondary} target="_blank" rel="noreferrer">
               Ask a question
             </a>
           </div>

@@ -19,16 +19,10 @@ export default function StartShipping() {
           </p>
           <div className={styles.ctas}>
             <a href="#quickstart" className="btn btn-primary">
-              Get started
+              Install in two minutes
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <path d="M3 8h9M8 3l5 5-5 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-            </a>
-            <a
-              href="https://github.com/KnockOutEZ/wigolo"
-              className="btn btn-ghost"
-            >
-              ★ Star on GitHub
             </a>
           </div>
         </div>

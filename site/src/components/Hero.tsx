@@ -6,7 +6,7 @@ import styles from "./Hero.module.css";
 
 function CopyField() {
   const [copied, setCopied] = useState(false);
-  const cmd = "npx wigolo init --non-interactive --agents=claude-code";
+  const cmd = "npx wigolo init --non-interactive --agents=<your-agent>";
   return (
     <button
       className={styles.copy}
@@ -36,15 +36,17 @@ export default function Hero() {
           <h1 className={styles.title}>
             The web, wired
             <br />
-            into your
-            <br />
-            local agent.
+            into your local agent.
           </h1>
           <p className={styles.lede}>
             wigolo is a local-first MCP server that hands any coding agent the
             whole web — search, fetch, crawl, extract, cache, and research.
             Built to stand with the best tools in the lane. No API keys. No
             cloud. No metered bill.
+          </p>
+          <p className={styles.agents}>
+            claude code · cursor · codex · gemini cli · vs code · windsurf ·
+            zed · antigravity
           </p>
         </div>
 
@@ -56,12 +58,6 @@ export default function Hero() {
             </svg>
           </a>
           <CopyField />
-          <a
-            href="https://github.com/KnockOutEZ/wigolo"
-            className="btn btn-ghost"
-          >
-            ★ Star on GitHub
-          </a>
         </div>
 
         <HeroMockup />
@@ -78,7 +74,7 @@ function HeroMockup() {
           <span className={styles.dots}>
             <i /> <i /> <i />
           </span>
-          <span className={styles.winTitle}>claude — wigolo mcp · no API keys</span>
+          <span className={styles.winTitle}>your agent — wigolo mcp · no API keys</span>
         </div>
         <video
           className={styles.heroVideo}
@@ -88,7 +84,7 @@ function HeroMockup() {
           loop
           playsInline
           preload="metadata"
-          aria-label="Claude Code answering a live web question through wigolo, with no API keys"
+          aria-label="A coding agent answering a live web question through wigolo, with no API keys"
         >
           <source src={asset("/wigolo/wigolo-demo.webm")} type="video/webm" />
           <source src={asset("/wigolo/wigolo-demo.mp4")} type="video/mp4" />

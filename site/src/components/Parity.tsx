@@ -94,9 +94,18 @@ export default function Parity() {
             </tbody>
           </table>
           <p className={styles.foot}>
-            Feature standing as of July 2026 — check each vendor&apos;s docs for
-            current state. One cold query, four tools, judged on the evidence
-            alone: the run is above.
+            Feature standing as of July 2026 — check each vendor&apos;s docs
+            for current state. One cold query, four tools, judged on the
+            evidence alone —{" "}
+            <a
+              href="https://github.com/KnockOutEZ/wigolo#benchmark"
+              target="_blank"
+              rel="noreferrer"
+              style={{ textDecoration: "underline" }}
+            >
+              watch the full run
+            </a>
+            .
           </p>
           <img
             className={styles.meter}

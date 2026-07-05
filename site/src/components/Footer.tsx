@@ -1,50 +1,40 @@
-import { asset, FEEDBACK_LINKS } from "@/lib/site";
+import { asset, GH, BASE_PATH, FEEDBACK_LINKS } from "@/lib/site";
 import styles from "./Footer.module.css";
 
-const COLS: { title: string; links: { label: string; href?: string; ext?: boolean }[] }[] = [
+const COLS: { title: string; links: { label: string; href: string; ext?: boolean }[] }[] = [
   {
     title: "Product",
     links: [
       { label: "Tools", href: "#tools" },
       { label: "Parity", href: "#parity" },
-      { label: "How it works", href: "#how" },
       { label: "Quickstart", href: "#quickstart" },
-      { label: "Pricing (free)", href: "#quickstart" },
-    ],
-  },
-  {
-    title: "Resources",
-    links: [
-      { label: "Docs", href: "https://github.com/KnockOutEZ/wigolo", ext: true },
-      { label: "README", href: "https://github.com/KnockOutEZ/wigolo#readme", ext: true },
-      { label: "Contributing", href: "https://github.com/KnockOutEZ/wigolo/blob/main/CONTRIBUTING.md", ext: true },
-      { label: "Changelog", href: "https://github.com/KnockOutEZ/wigolo/releases", ext: true },
+      { label: "Feedback", href: "#feedback" },
     ],
   },
   {
     title: "Project",
     links: [
-      { label: "GitHub", href: "https://github.com/KnockOutEZ/wigolo", ext: true },
+      { label: "GitHub", href: GH, ext: true },
       { label: "npm", href: "https://www.npmjs.com/package/wigolo", ext: true },
-      { label: "Report a bug", href: "https://github.com/KnockOutEZ/wigolo/issues/new?template=bug_report.yml", ext: true },
-      { label: "Feedback", href: "#feedback" },
-      { label: "@KnockOutEZ", href: "https://github.com/KnockOutEZ", ext: true },
+      { label: "Changelog", href: `${GH}/releases`, ext: true },
+      { label: "Contributing", href: `${GH}/blob/main/CONTRIBUTING.md`, ext: true },
+      { label: "Report a bug", href: FEEDBACK_LINKS.bug, ext: true },
+    ],
+  },
+  {
+    title: "Support",
+    links: [
+      { label: "Star on GitHub", href: GH, ext: true },
+      { label: "Buy me a coffee", href: "https://buymeacoffee.com/knockoutez", ext: true },
+      { label: "Email the maintainer", href: "mailto:ktowhid20@gmail.com" },
     ],
   },
   {
     title: "Legal",
     links: [
-      { label: "License (AGPL-3.0)", href: "https://github.com/KnockOutEZ/wigolo/blob/main/LICENSE", ext: true },
-      { label: "Trademark", href: "https://github.com/KnockOutEZ/wigolo/blob/main/TRADEMARK.md", ext: true },
-      { label: "Security", href: "https://github.com/KnockOutEZ/wigolo/blob/main/SECURITY.md", ext: true },
-    ],
-  },
-  {
-    title: "Connect",
-    links: [
-      { label: "GitHub", href: "https://github.com/KnockOutEZ/wigolo", ext: true },
-      { label: "npm", href: "https://www.npmjs.com/package/wigolo", ext: true },
-      { label: "Buy a coffee", href: "https://buymeacoffee.com/knockoutez", ext: true },
+      { label: "License (AGPL-3.0)", href: `${GH}/blob/main/LICENSE`, ext: true },
+      { label: "Trademark", href: `${GH}/blob/main/TRADEMARK.md`, ext: true },
+      { label: "Security", href: `${GH}/blob/main/SECURITY.md`, ext: true },
     ],
   },
 ];
@@ -69,7 +59,7 @@ export default function Footer() {
                 {c.links.map((l) => (
                   <li key={l.label}>
                     <a
-                      href={l.href ?? "#"}
+                      href={l.href}
                       className={styles.link}
                       {...(l.ext ? { target: "_blank", rel: "noreferrer" } : {})}
                     >
@@ -84,7 +74,7 @@ export default function Footer() {
         </div>
 
         <div className={styles.bottom}>
-          <a href="/" className={styles.brand} aria-label="wigolo home">
+          <a href={`${BASE_PATH}/`} className={styles.brand} aria-label="wigolo home">
             <img src={asset("/wigolo/wigolo-icon.png")} alt="" width={26} height={26} />
             <span>wigolo</span>
           </a>

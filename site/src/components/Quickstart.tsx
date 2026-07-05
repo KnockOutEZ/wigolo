@@ -29,8 +29,8 @@ const STEPS = [
   {
     n: "1",
     title: "Install & wire your agent",
-    note: "Swap in yours (comma-separated): claude-code · cursor · codex · gemini-cli · vscode · windsurf · zed · antigravity",
-    cmd: "npx wigolo init --non-interactive --agents=claude-code",
+    note: "Any of these, comma-separated: claude-code · cursor · codex · gemini-cli · vscode · windsurf · zed · antigravity",
+    cmd: "npx wigolo init --non-interactive --agents=<your-agent>",
     foot: "That's the whole setup — search, fetch, crawl, extract & cache need no API key.",
   },
   {

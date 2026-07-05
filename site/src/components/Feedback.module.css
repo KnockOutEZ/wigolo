@@ -31,6 +31,24 @@
   gap: 14px;
   align-items: center;
 }
+.secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  padding: 12px 20px;
+  border: 1.5px solid var(--ink);
+  border-radius: 4px;
+  transition: background 0.18s var(--ease), color 0.18s var(--ease);
+  white-space: nowrap;
+}
+.secondary:hover {
+  background: var(--ink);
+  color: #fff;
+}
 .form {
   background: var(--surface);
   border: 1px solid var(--line);
