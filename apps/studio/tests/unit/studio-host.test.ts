@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { DebuggerLike } from '../../src/main/cdp-transport';
 import { createDriveEngine } from '../../src/main/drive-engine';
 import { createStudioHost, stageForActResult, type HostTab, type ParkedApprovalNotice } from '../../src/main/studio-host';
+import { makeFakeBroker } from '../helpers/fake-broker';
 import type { StudioActOutput, StudioToolError, StudioMarksOutput, StudioGeneralizeOutput, MarkPayload } from 'wigolo/studio';
 
 /** A fake webContents.debugger answering the CDP calls observe/act/nav make on an empty page. */
@@ -96,6 +97,7 @@ function makeHost(config?: { sessionCap?: number }, dbg: () => DebuggerLike = fa
   let n = 0;
   const host = createStudioHost({
     config,
+    broker: makeFakeBroker(),
     onParked: (notice) => parked.push(notice),
     createTab: async ({ initialHolder, grant }) => {
       const tabId = `t${++n}`;

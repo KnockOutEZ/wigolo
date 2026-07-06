@@ -37,7 +37,10 @@ import {
   type StudioMarksOutput,
   type StudioMarkView,
   type StudioGeneralizeOutput,
+  type StudioCaptureInput,
   type StudioCaptureOutput,
+  type CaptureResult,
+  type FieldSemantics,
   type MarkPayload,
   type StructuredTarget,
   type HealCandidate,
@@ -51,6 +54,7 @@ import {
   type RiskTier,
 } from 'wigolo/studio';
 import type { TabDrive } from './drive-engine';
+import type { BrokerClient } from './broker-client';
 
 // The Electron main process IS the studio session host (spec §2). This module composes
 // the salvaged domain layer (perception → observe, act, session-drive) over the per-tab
@@ -103,6 +107,12 @@ export interface StudioHostDeps {
   closeTab: (tabId: string) => void;
   /** Surface a parked risky act to the human approval card (never auto-allowed). */
   onParked: (notice: ParkedApprovalNotice) => void;
+  /**
+   * The DB broker RPC seam (P3, spec §13.9). Persistence + find_similar run in a plain-Node child so the
+   * Electron main never loads a native module; the host supplies the security-gate inputs per call. Only
+   * `call` is needed here — the app boots the full client (spawn/ready/teardown) in index.ts.
+   */
+  broker: Pick<BrokerClient, 'call'>;
   config?: StudioHostConfig;
 }
 
@@ -166,6 +176,14 @@ interface SessionContext {
   resolvePicked: (path: number[]) => Promise<StructuredTarget | null>;
   /** The shared credential-context probe (same one observe/marks use) for the push-path guard. */
   isCredentialPage: () => Promise<boolean>;
+  /**
+   * Live nav-epoch getters (the drive's NavEpoch) + the fresh credential signal — supplied to the broker
+   * so the salvaged capture handler's TOCTOU + credential gates stay the single source of truth. The
+   * agent supplies none of these; the host computes them from live session state at call time.
+   */
+  currentNavEpoch: () => number;
+  lastObserveEpoch: () => number;
+  credentialSignal: () => Promise<{ pageUrl?: string; fields?: FieldSemantics[] }>;
   /** studio_marks: list (heal each mark) | generalize a mark (preview). Credential-excluded. */
   marksTool: (input: StudioMarksInput) => Promise<StudioMarksOutput | StudioGeneralizeOutput | StudioToolError>;
   createdAt: number;
@@ -278,12 +296,13 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       grant: tab.drive.grant,
       currentUrl: tab.currentUrl,
       readHtml: tab.readHtml,
-      // P3 wires the real cache capture; until then a session-targeted fetch that would persist
-      // fails CLOSED (never silently drops content). CaptureRefusedError only carries the two
-      // salvaged reason literals, so a P1 stub raises a plain, explicit error instead.
-      insert: async () => {
-        throw new Error('studio session capture is not available yet (arrives in a later release)');
-      },
+      // P3 — a session-targeted fetch persists through the DB broker (native module stays out of the
+      // Electron main). Return-shape is CaptureResult (what insertTrusted0 consumes). The fresh credential
+      // signal rides along so the broker re-gates (a session fetch of a login page never persists).
+      insert: async ({ url, title, markdown }) =>
+        deps.broker.call<CaptureResult>('persistSessionFetch', {
+          sessionId, url, title, markdown, credentialSignal: await credentialSignal(),
+        }),
     });
 
     // ── P2 marking (in-memory per session; DB persistence is P3, native cache can't load in Electron) ──
@@ -350,6 +369,16 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     const isCredentialPage = async (): Promise<boolean> => {
       const snap = await snapshot();
       return isCredentialContext({ pageUrl: tab.currentUrl(), fields: snap.domByRef?.values() });
+    };
+
+    // Broker gate inputs (P3): the live nav-epoch (drive's NavEpoch — sentinel lastObserve=-1 refuses a
+    // pre-observe capture) and the fresh credential signal (SAME source isCredentialPage uses). Array-ify
+    // domByRef.values() — the Iterable can't cross the JSON-RPC boundary and the broker types fields[].
+    const currentNavEpoch = (): number => tab.drive.navEpoch.current;
+    const lastObserveEpoch = (): number => tab.drive.navEpoch.lastObserve;
+    const credentialSignal = async (): Promise<{ pageUrl?: string; fields?: FieldSemantics[] }> => {
+      const snap = await snapshot();
+      return { pageUrl: tab.currentUrl(), fields: [...(snap.domByRef?.values() ?? [])] };
     };
 
     // studio_marks list: each mark's page-derived descriptor (neutralized, trusted:false) + its CURRENT
@@ -425,6 +454,9 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       comments,
       resolvePicked,
       isCredentialPage,
+      currentNavEpoch,
+      lastObserveEpoch,
+      credentialSignal,
       marksTool,
       createdAt: Date.now(),
       lastActiveAt: Date.now(),
@@ -489,7 +521,26 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       ctx.lastActiveAt = Date.now();
       return ctx.marksTool(input);
     },
-    capture: async () => notImplemented('Capture', 'P3') as StudioCaptureOutput | StudioToolError,
+    capture: async (input: StudioCaptureInput): Promise<StudioCaptureOutput | StudioToolError> => {
+      const ctx = targetContext();
+      if (!ctx) return noActive();
+      ctx.lastActiveAt = Date.now();
+      // The agent supplies NO gate inputs; the host computes session id + nav-epoch + a FRESH credential
+      // signal from live session state and passes them to the broker, where the salvaged handler is the
+      // single source of truth for the TOCTOU + credential + trust gates. Broker down → fail-fast refusal
+      // (never throws, never hangs — §11), not a crash.
+      try {
+        return await deps.broker.call<StudioCaptureOutput | StudioToolError>('capture', {
+          input,
+          sessionId: ctx.sessionId,
+          currentNavEpoch: ctx.currentNavEpoch(),
+          lastObserveEpoch: ctx.lastObserveEpoch(),
+          credentialSignal: await ctx.credentialSignal(),
+        });
+      } catch {
+        return { error_reason: 'capture_unavailable', hint: 'The local library service is not available — captures cannot be saved right now.' };
+      }
+    },
     spawn: open,
     close: async (input: StudioCloseInput): Promise<StudioCloseOutput | StudioToolError> => {
       const id = typeof input.session_id === 'string' ? input.session_id : '';

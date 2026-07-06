@@ -5,6 +5,7 @@ import { SessionRegistry } from './session-registry';
 import { registerIpc, registerMarksIpc } from './ipc-host';
 import { createDriveEngine } from './drive-engine';
 import { createStudioHost, type HostTab } from './studio-host';
+import { createBrokerClient } from './broker-client';
 import { startGateway, type Gateway } from './gateway';
 import type { DebuggerLike } from './cdp-transport';
 import { IPC, type PendingApprovalDto } from '../shared/ipc';
@@ -79,7 +80,13 @@ async function createWindow(): Promise<void> {
   const sessionTabWc = new Map<string, Electron.WebContents>();
   let lastSessionTabId: string | null = null;
 
+  // P3 — the DB broker: a plain-Node child owns the cache DB so this Electron main never loads a native
+  // module (spec §13.7/§13.9). It inherits WIGOLO_DATA_DIR from this process, so captures land in the
+  // same local library the agent's cache/find_similar read. The host calls it for capture + find_similar.
+  const broker = createBrokerClient();
+
   const studioHost = createStudioHost({
+    broker,
     onParked: (notice) => {
       const dto: PendingApprovalDto = { id: notice.approval_id, action: notice.action, risk: notice.risk };
       win.webContents.send(IPC.approvalParked, dto);
@@ -186,6 +193,7 @@ async function createWindow(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     try { await studioHost.shutdown(); } catch { /* best-effort */ }
     try { await gateway?.stop(); } catch { /* best-effort */ }
+    try { await broker.stop(); } catch { /* best-effort */ }
   };
   app.on('before-quit', () => { void shutdown(); });
 
