@@ -75,6 +75,33 @@ function detectComponent(el: Element): { component: string | null; source: MarkP
   }
 }
 
+const QUOTE_TEXT_CAP = 2000;
+const QUOTE_CONTEXT_CAP = 4000;
+// Nearest block-level container of a selection — its text is the "surrounding context" (spec §4 State 4).
+// A tag allowlist (jsdom has no getComputedStyle display), falling back to the closest element.
+const BLOCK_SELECTOR = 'p, li, td, th, blockquote, article, section, aside, figure, main, div';
+
+export interface QuotePayload {
+  /** The selected text, trimmed + whitespace-collapsed, capped. */
+  text: string;
+  url: string;
+  /** The enclosing block's text — cited context. All page-derived (host-neutralized on the way out). */
+  context: string;
+}
+
+/**
+ * Build a cited-quote payload from a text selection (⌘⇧C). Pure over the selection's text + anchor node
+ * so it is jsdom-testable. Returns null on an empty selection (nothing to capture).
+ */
+export function serializeQuote(input: { text: string; anchorNode: Node | null }, url: string): QuotePayload | null {
+  const text = (input.text ?? '').trim().replace(/\s+/g, ' ').slice(0, QUOTE_TEXT_CAP);
+  if (!text) return null;
+  const startEl = input.anchorNode instanceof Element ? input.anchorNode : input.anchorNode?.parentElement ?? null;
+  const block = startEl?.closest(BLOCK_SELECTOR) ?? startEl;
+  const context = (block?.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, QUOTE_CONTEXT_CAP);
+  return { text, url, context };
+}
+
 export function serializePayload(el: Element): MarkPayload {
   const attrs: Record<string, string> = {};
   for (const a of Array.from(el.attributes)) attrs[a.name] = a.value;

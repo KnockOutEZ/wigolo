@@ -11,12 +11,13 @@
  * (kept in sync with shared/ipc.ts's IPC.overlay* entries — the e2e exercises the real wire).
  */
 import { ipcRenderer } from 'electron';
-import { elementPath, serializePayload, whiskerLabel, ancestorWalk, type MarkPayload } from './overlay-core';
+import { elementPath, serializePayload, whiskerLabel, ancestorWalk, serializeQuote, type MarkPayload } from './overlay-core';
 
 // Channel strings — MUST equal shared/ipc.ts IPC.overlay* (not imported to keep this bundle self-contained).
 const CH = {
   mark: 'studio:overlay-mark',
   generalize: 'studio:overlay-generalize',
+  quote: 'studio:overlay-quote',
   arm: 'studio:overlay-arm',
   assigned: 'studio:overlay-mark-assigned',
 } as const;
@@ -116,6 +117,13 @@ function installOverlay(): void {
   };
 
   const onKeyDown = (e: KeyboardEvent): void => {
+    // ⌘⇧C — capture the current text selection as a cited quote (independent of hover/mark mode, §4 State 4).
+    if (e.metaKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+      const sel = window.getSelection();
+      const q = serializeQuote({ text: sel?.toString() ?? '', anchorNode: sel?.anchorNode ?? null }, location.href);
+      if (q) { e.preventDefault(); ipcRenderer.send(CH.quote, q); }
+      return;
+    }
     if (e.key === 'Alt' && mode === 'idle') { armedByAlt = true; arm(); return; }
     if (e.key === 'Escape' && mode !== 'idle') { disarm(); return; }
     if (e.shiftKey && e.key === 'ArrowUp' && mode === 'hover' && current) {

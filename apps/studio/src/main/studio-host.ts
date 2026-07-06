@@ -55,6 +55,7 @@ import {
 } from 'wigolo/studio';
 import type { TabDrive } from './drive-engine';
 import type { BrokerClient } from './broker-client';
+import type { QuoteMsg } from '../shared/ipc';
 
 // The Electron main process IS the studio session host (spec §2). This module composes
 // the salvaged domain layer (perception → observe, act, session-drive) over the per-tab
@@ -139,6 +140,12 @@ export interface StudioHost {
   markElement(input: { tabId: string; path: number[]; payload: MarkPayload }): Promise<MarkCreated | StudioToolError>;
   /** Human pinned a comment on a mark → stored + a trusted `comment` event (dropped at source on a credential page). */
   addComment(input: { markId: string; text: string }): Promise<{ ok: true } | StudioToolError>;
+  /**
+   * Human captured a text selection (⌘⇧C) → a cited clip artifact via the broker. Credential-gated at
+   * source (refused on a login page — a quote there can be a displayed secret). NOT on StudioHostHandlers
+   * (human-only Electron-IPC seam; the agent surface stays the sealed set).
+   */
+  captureQuote(tabId: string, quote: QuoteMsg): Promise<StudioCaptureOutput | StudioToolError>;
   /** The active session's marks for the rail (host-internal mirror of studio_marks list). */
   listMarks(): Promise<StudioMarksOutput | StudioGeneralizeOutput | StudioToolError>;
   /** Cleanly detach every session's tab (app quit). */
@@ -634,6 +641,24 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
         ctx.eventQueue.enqueue({ type: 'comment', tab_id: ctx.tab.tabId, markId, text, author: 'human', trusted: true });
       }
       return { ok: true };
+    },
+    async captureQuote(tabId: string, quote: QuoteMsg): Promise<StudioCaptureOutput | StudioToolError> {
+      const sid = tabToSession.get(tabId);
+      const ctx = sid ? contexts.get(sid) : undefined;
+      if (!ctx || ctx.status !== 'live') return { error_reason: 'no_active_session', hint: 'That tab has no live session.' };
+      // Credential-gated at source (mirrors markElement/addComment): a quote on a login page can be a secret.
+      if (await ctx.isCredentialPage()) return { error_reason: 'credential_context', hint: 'Quote capture is disabled on login/credential pages.' };
+      try {
+        return await deps.broker.call<StudioCaptureOutput | StudioToolError>('capture', {
+          input: { type: 'clip', content: `> ${quote.text}\n\n${quote.context}`, url: quote.url },
+          sessionId: ctx.sessionId,
+          currentNavEpoch: ctx.currentNavEpoch(),
+          lastObserveEpoch: ctx.lastObserveEpoch(),
+          credentialSignal: await ctx.credentialSignal(),
+        });
+      } catch {
+        return { error_reason: 'capture_unavailable', hint: 'The local library service is not available right now.' };
+      }
     },
     async listMarks(): Promise<StudioMarksOutput | StudioGeneralizeOutput | StudioToolError> {
       const ctx = targetContext();

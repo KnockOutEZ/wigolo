@@ -1,5 +1,5 @@
 import { ipcMain, type BrowserWindow } from 'electron';
-import { IPC, type StudioState, type OverlayMarkMsg } from '../shared/ipc';
+import { IPC, type StudioState, type OverlayMarkMsg, type QuoteMsg } from '../shared/ipc';
 import type { TabManager } from './tab-manager';
 import type { SessionRegistry } from './session-registry';
 import type { StudioHost } from './studio-host';
@@ -35,8 +35,8 @@ interface IpcMainLike {
 
 export interface MarksIpcDeps {
   ipcMain: IpcMainLike;
-  /** Mark creation / comments live on the StudioHost object (human seam); reads via handlers.marks. */
-  host: Pick<StudioHost, 'markElement' | 'addComment'> & { handlers: Pick<StudioHostHandlers, 'marks'> };
+  /** Mark creation / comments / quote capture live on the StudioHost object (human seam); reads via handlers.marks. */
+  host: Pick<StudioHost, 'markElement' | 'addComment' | 'captureQuote'> & { handlers: Pick<StudioHostHandlers, 'marks'> };
   /** Correlate the sending tab's webContents → its session tabId (null if not a session tab). */
   resolveTab(sender: unknown): string | undefined;
   /** main → a specific tab's overlay preload. */
@@ -78,6 +78,16 @@ export function registerMarksIpc(deps: MarksIpcDeps): void {
       const { markId } = raw as { markId: string };
       const preview = await host.handlers.marks({ op: 'generalize', markId });
       sendToRenderer(IPC.generalizePreview, preview);
+    })();
+  });
+
+  // overlay(tab) → main: the human captured a text selection as a cited quote (⌘⇧C). Persists via the
+  // broker as a clip; the captures panel updates through the broker's artifact delta (index.ts).
+  ipc.on(IPC.overlayQuote, (event, raw) => {
+    void (async () => {
+      const tabId = resolveTab(event.sender);
+      if (!tabId) return; // not a session tab → nowhere to route
+      await host.captureQuote(tabId, raw as QuoteMsg);
     })();
   });
 

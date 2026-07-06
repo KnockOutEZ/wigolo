@@ -118,3 +118,38 @@ describe('studio-host — studio_capture wiring (P3)', () => {
     expect(r).toMatchObject({ error_reason: 'capture_unavailable' });
   });
 });
+
+describe('studio-host — captureQuote (human ⌘⇧C)', () => {
+  const quote = { text: 'the pricing tiers', url: 'https://ex.com/pricing', context: 'Free · Pro · Enterprise' };
+
+  it('persists a cited clip via the broker on a non-credential page', async () => {
+    const broker = gateBroker();
+    const { host } = makeHost(broker);
+    await host.handlers.spawn({ startUrl: 'https://ex.com/pricing' });
+    await host.handlers.observe({});
+    const r = await host.captureQuote('t1', quote);
+    expect(r).toMatchObject({ inserted: true });
+    const call = broker.call.mock.calls.find(([m]) => m === 'capture')!;
+    expect((call[1] as { input: { type: string; content: string } }).input.type).toBe('clip');
+    expect((call[1] as { input: { content: string } }).input.content).toContain('the pricing tiers');
+  });
+
+  it('REFUSES on a credential page (no broker capture call — quote can be a secret)', async () => {
+    const broker = gateBroker();
+    const { host } = makeHost(broker);
+    await host.handlers.spawn({ startUrl: 'https://accounts.example.com/login' });
+    await host.handlers.observe({});
+    const r = await host.captureQuote('t1', { ...quote, url: 'https://accounts.example.com/login' });
+    expect(r).toMatchObject({ error_reason: 'credential_context' });
+    expect(broker.call.mock.calls.some(([m]) => m === 'capture')).toBe(false);
+  });
+
+  it('broker down → capture_unavailable (never throws)', async () => {
+    const broker = gateBroker({ call: () => { throw new Error('timed out'); } });
+    const { host } = makeHost(broker);
+    await host.handlers.spawn({ startUrl: 'https://ex.com/pricing' });
+    await host.handlers.observe({});
+    const r = await host.captureQuote('t1', quote);
+    expect(r).toMatchObject({ error_reason: 'capture_unavailable' });
+  });
+});

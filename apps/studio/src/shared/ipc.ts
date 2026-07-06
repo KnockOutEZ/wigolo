@@ -1,4 +1,7 @@
-import type { MarkPayload } from '../preload/overlay-core';
+import type { MarkPayload, QuotePayload } from '../preload/overlay-core';
+
+/** overlay(tab) → main: the human captured a text selection as a cited quote (⌘⇧C). */
+export type QuoteMsg = QuotePayload;
 
 export interface TabInfo {
   id: string;
@@ -54,6 +57,7 @@ export const IPC = {
   // overlay(tab) → main
   overlayMark: 'studio:overlay-mark',
   overlayGeneralize: 'studio:overlay-generalize',
+  overlayQuote: 'studio:overlay-quote',
   // main → overlay(tab)
   overlayArm: 'studio:overlay-arm',
   overlayMarkAssigned: 'studio:overlay-mark-assigned',

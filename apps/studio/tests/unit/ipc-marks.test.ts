@@ -21,6 +21,7 @@ function setup(over: Partial<MarksIpcDeps> = {}) {
   const f = fakeIpc();
   const markElement = vi.fn(async () => ({ markId: 'm1', role: 'button', name: 'Buy' }));
   const addComment = vi.fn(async () => ({ ok: true as const }));
+  const captureQuote = vi.fn(async () => ({ artifact_id: 1, inserted: true, content_hash: 'h' }));
   const marks = vi.fn(async () => ({ markId: 'm1', refs: ['e1', 'e2', 'e3'], confidence: 'high' as const, requires_confirmation: true as const }));
   const sendToTab = vi.fn();
   const sendToRenderer = vi.fn();
@@ -28,7 +29,7 @@ function setup(over: Partial<MarksIpcDeps> = {}) {
   const sender = { id: 'wc-1' };
   const deps: MarksIpcDeps = {
     ipcMain: f.ipcMain,
-    host: { markElement, addComment, handlers: { marks } } as unknown as MarksIpcDeps['host'],
+    host: { markElement, addComment, captureQuote, handlers: { marks } } as unknown as MarksIpcDeps['host'],
     resolveTab: (s) => (s === sender ? 't1' : undefined),
     sendToTab,
     sendToRenderer,
@@ -37,7 +38,7 @@ function setup(over: Partial<MarksIpcDeps> = {}) {
     ...over,
   };
   registerMarksIpc(deps);
-  return { f, deps, markElement, addComment, marks, sendToTab, sendToRenderer, broadcastMarks, sender };
+  return { f, deps, markElement, addComment, captureQuote, marks, sendToTab, sendToRenderer, broadcastMarks, sender };
 }
 
 describe('registerMarksIpc — overlay↔main↔renderer marks routing', () => {
@@ -75,6 +76,19 @@ describe('registerMarksIpc — overlay↔main↔renderer marks routing', () => {
     await t.f.fireOn(IPC.overlayGeneralize, { sender: t.sender }, { markId: 'm1' });
     expect(t.marks).toHaveBeenCalledWith({ op: 'generalize', markId: 'm1' });
     expect(t.sendToRenderer).toHaveBeenCalledWith(IPC.generalizePreview, expect.objectContaining({ requires_confirmation: true }));
+  });
+
+  it('overlayQuote: sender→tabId→host.captureQuote (host applies the credential gate)', async () => {
+    const t = setup();
+    const quote = { text: 'a quote', url: 'https://ex.com/a', context: 'the surrounding paragraph' };
+    await t.f.fireOn(IPC.overlayQuote, { sender: t.sender }, quote);
+    expect(t.captureQuote).toHaveBeenCalledWith('t1', quote);
+  });
+
+  it('overlayQuote from an UNKNOWN sender (no session tab) does not capture', async () => {
+    const t = setup();
+    await t.f.fireOn(IPC.overlayQuote, { sender: { id: 'stranger' } }, { text: 'q', url: 'u', context: 'c' });
+    expect(t.captureQuote).not.toHaveBeenCalled();
   });
 
   it('armMarkMode arms the focused session tab overlay', async () => {
