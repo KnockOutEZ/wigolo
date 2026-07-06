@@ -45,6 +45,7 @@ describe('studio-db-broker — transport (spawned process)', () => {
       stdio: ['pipe', 'pipe', 'inherit'],
       env: { ...process.env, WIGOLO_STUDIO_BROKER_MAIN: '1', WIGOLO_DATA_DIR: dir, LOG_LEVEL: 'error' },
     });
+    child.unref(); // don't let the child keep the test runner alive if a kill is slow
     child.stdout!.setEncoding('utf8');
     child.stdout!.on('data', (c: string) => {
       buf += c;
@@ -59,7 +60,7 @@ describe('studio-db-broker — transport (spawned process)', () => {
   }, 40_000);
 
   afterAll(() => {
-    try { child.kill(); } catch { /* ignore */ }
+    try { child.kill('SIGKILL'); } catch { /* ignore */ } // force — the broker loads onnxruntime; SIGTERM teardown can hang
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 

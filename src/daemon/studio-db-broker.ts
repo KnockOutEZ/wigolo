@@ -98,6 +98,13 @@ function send(msg: unknown): void {
 }
 
 async function main(): Promise<void> {
+  // No-orphan (spec §11): die IMMEDIATELY when the parent kills us (SIGTERM from broker.stop) or closes the
+  // stdio pipe (app exit/crash). A graceful shutdown can hang on the onnxruntime-node teardown mutex race
+  // (see the init-exit-crash history), so we hard-exit — the process is being reaped, exit-code niceties
+  // don't matter, and a zombie broker (holding the DB + a model) is far worse.
+  const bail = (): never => process.exit(0);
+  process.on('SIGTERM', bail);
+  process.on('SIGINT', bail);
   const subsystems = await initSubsystems();
   const handlers = createBrokerHandlers({
     db: getDatabase(),
@@ -106,7 +113,9 @@ async function main(): Promise<void> {
     backendStatus: subsystems.backendStatus,
     onArtifact: (delta) => send({ notify: 'artifact', delta }),
   });
-  createInterface({ input: process.stdin }).on('line', (line) => {
+  const rl = createInterface({ input: process.stdin });
+  rl.on('close', bail); // parent closed the stdin pipe (app exited/crashed) → don't linger
+  rl.on('line', (line) => {
     void (async () => {
       let req: RpcRequest | undefined;
       try {
