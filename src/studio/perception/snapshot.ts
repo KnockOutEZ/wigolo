@@ -30,6 +30,8 @@ export interface AxNode {
 
 export interface DomNode {
   backendNodeId?: number;
+  /** CDP node type (1=element, 3=text, 9=document, 10=doctype). The mark node-path bridge (pick.ts) filters element children by this. */
+  nodeType?: number;
   localName?: string;
   nodeName?: string;
   attributes?: string[];

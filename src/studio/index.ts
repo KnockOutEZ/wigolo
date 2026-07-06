@@ -56,6 +56,19 @@ export { PageSnapshotter, buildSnapshot, flattenDom } from './perception/snapsho
 export type { PageSnapshot, SnapshotElement, PerceptionCdp, AxNode, DomNode, DomInfo } from './perception/snapshot.js';
 export { createResolver, isResolveError } from './perception/resolve.js';
 export type { ResolveDeps, ResolveResult, ResolvedTarget, ResolveErrorReason } from './perception/resolve.js';
+export { computeFingerprint } from './perception/id.js';
+
+// Marking domain (P2) — structured target + self-heal + generalize + in-memory store + node-path bridge.
+// Pure/perception-only (no better-sqlite3) so the barrel stays loadable in the Electron main.
+export { buildTarget, buildTargetFromFlat, indexAxByBackendNode } from './mark/target.js';
+export type { StructuredTarget } from './mark/target.js';
+export { heal } from './mark/heal.js';
+export type { HealResult, HealCandidate, HealConfidence } from './mark/heal.js';
+export { generalize, applyGeometry, segEditDistance } from './mark/generalize.js';
+export type { GeneralizeResult, GeneralizeMatch, GeneralizeStructural, GenBox, GeneralizeConfidence } from './mark/generalize.js';
+export { MarkStore } from './mark/store.js';
+export type { StudioMark } from './mark/store.js';
+export { resolveNodePath } from './mark/pick.js';
 
 // Observe orchestration (fenced untrusted snapshot + event drain)
 export { createObserver } from './observe.js';
