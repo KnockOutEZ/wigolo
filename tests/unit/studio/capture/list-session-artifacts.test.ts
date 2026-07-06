@@ -85,7 +85,9 @@ describe('studio/capture/listSessionArtifacts — Phase 7e S2 (value-flip pins, 
 
   // ─── PIN-D — cap = most-recent `limit` ───────────────────────────────────────
   it('D: with >limit captured items returns EXACTLY the most-recent limit (slice(-limit))', () => {
-    for (let i = 1; i <= 250; i++) clip(db, 'sess', i);
+    // Batch the 250 inserts in ONE outer transaction (each captureFromPage txn becomes a savepoint) — 250
+    // separate WAL commits otherwise took >20s under a loaded windows CI runner and timed the test out.
+    db.transaction(() => { for (let i = 1; i <= 250; i++) clip(db, 'sess', i); })();
     const items = listSessionArtifacts(db, 'sess', 200);
     expect(items.length).toBe(200);                       // capped (unbounded → 250, RED)
     expect(items[0].url).toBe('https://x.example/51');    // most-recent 200 = 51..250 (oldest slice(0,200) → 1, RED)
