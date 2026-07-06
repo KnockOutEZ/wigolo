@@ -451,7 +451,7 @@ export async function runV1Search(
         const base = weight / (RRF_K + rank);
         const recMul = wantsRecency ? recencyMultiplier(r.published_date) : 1.0;
         const key = canonKey(r.url);
-        const engineUrlKey = `${engineName} ${key}`;
+        const engineUrlKey = `${engineName}\0${key}`;
         if (countedByEngine.has(engineUrlKey)) {
           // Same engine already contributed this URL in an earlier wave —
           // still record first-seen result/exact-phrase, but don't re-sum.

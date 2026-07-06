@@ -74,9 +74,13 @@ jobs:
 
       - run: npm test
 
-  studio:
-    name: studio (${{ matrix.os }})
+  # Studio unit tests are pure (no Electron binary launched) — run on all 3 OS
+  # and skip the ~150MB electron binary download to avoid its install flakiness.
+  studio-unit:
+    name: studio unit (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     strategy:
       fail-fast: false
       matrix:
@@ -89,7 +93,6 @@ jobs:
           node-version: 20
           cache: npm
 
-      # Full install here (no skip env) — the studio e2e launches the real app.
       - name: Install dependencies
         shell: bash
         run: npm ci
@@ -102,17 +105,35 @@ jobs:
         shell: bash
         run: npm test -w apps/studio
 
-      # Electron needs GUI system libraries on Linux runners; install via
-      # Playwright's dep installer (Playwright is already a devDependency).
+  # Studio e2e launches the real app (Electron GUI) — run on Linux with a virtual
+  # display. Cross-OS GUI-launch flakiness gives little signal before packaging;
+  # macOS/Windows app-launch coverage returns with signing/notarization in P8.
+  studio-e2e:
+    name: studio e2e (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Full install (no skip env) — e2e needs the real electron binary.
+      - name: Install dependencies
+        shell: bash
+        run: npm ci
+
+      # npm ci's electron postinstall can extract partially / race the exec;
+      # re-run the installer as a dedicated step so the binary is complete + settled
+      # before Playwright launches it (fixes ETXTBSY / "failed to install correctly").
+      - name: Ensure Electron binary is fully installed
+        run: |
+          node node_modules/electron/install.js
+          node -p "require('electron')"
+
       - name: Install Linux GUI libs for Electron
-        if: runner.os == 'Linux'
         run: npx playwright install-deps
 
-      - name: E2E (Linux, virtual display)
-        if: runner.os == 'Linux'
+      - name: E2E (virtual display)
         run: xvfb-run -a npm run test:e2e -w apps/studio
-
-      - name: E2E (macOS / Windows)
-        if: runner.os != 'Linux'
-        shell: bash
-        run: npm run test:e2e -w apps/studio

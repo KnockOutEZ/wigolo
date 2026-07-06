@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { _electron as electron, chromium, type ElectronApplication, type Browser } from 'playwright';
+import { chromium, type ElectronApplication, type Browser } from 'playwright';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer, type AddressInfo } from 'node:net';
+import { launchStudio } from './launch';
 
 const APP_MAIN = join(import.meta.dirname, '../../out/main/index.js');
 const FIXTURE = pathToFileURL(join(import.meta.dirname, 'fixtures/spike.html')).href;
@@ -24,7 +25,7 @@ describe('SPIKE: connectOverCDP drives a studio tab', () => {
 
   beforeAll(async () => {
     port = await freePort();
-    app = await electron.launch({
+    app = await launchStudio({
       args: [APP_MAIN],
       env: { ...process.env, WIGOLO_STUDIO_CDP_PORT: String(port) },
     });
@@ -41,7 +42,7 @@ describe('SPIKE: connectOverCDP drives a studio tab', () => {
 
   afterAll(async () => {
     await cdp?.close();
-    await app.close();
+    await app?.close();
   });
 
   it('GO-1: an external Playwright can attach over CDP', async () => {

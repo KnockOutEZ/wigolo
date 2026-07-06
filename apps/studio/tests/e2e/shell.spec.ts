@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright';
+import { type ElectronApplication, type Page } from 'playwright';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { launchStudio } from './launch';
 
 const APP_MAIN = join(import.meta.dirname, '../../out/main/index.js');
 const FIXTURE = pathToFileURL(join(import.meta.dirname, 'fixtures/spike.html')).href;
@@ -11,13 +12,13 @@ describe('studio shell', () => {
   let chrome: Page;
 
   beforeAll(async () => {
-    app = await electron.launch({ args: [APP_MAIN] });
+    app = await launchStudio({ args: [APP_MAIN] });
     chrome = await app.firstWindow();
     await chrome.waitForSelector('[data-testid="new-tab"]');
   });
 
   afterAll(async () => {
-    await app.close();
+    await app?.close();
   });
 
   it('boots with the chrome renderer and no tabs', async () => {
