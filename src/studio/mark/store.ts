@@ -15,9 +15,18 @@ export class MarkStore {
   private readonly marks: StudioMark[] = [];
   private seq = 0;
 
+  /**
+   * `mintId` (optional) lets the host supply a HOST-WIDE unique id generator so markIds do not collide
+   * across concurrent sessions (each store's own counter would otherwise restart at `m1`, and a stale
+   * cross-session markId could resolve to a different session's identically-numbered mark). Default: a
+   * per-store `m{n}` counter (single-session / test use).
+   */
+  constructor(private readonly mintId?: () => string) {}
+
   /** Record a marked element; returns the stored mark (with its new id). */
   add(target: StructuredTarget): StudioMark {
-    const mark: StudioMark = { markId: 'm' + ++this.seq, target };
+    const markId = this.mintId ? this.mintId() : 'm' + ++this.seq;
+    const mark: StudioMark = { markId, target };
     this.marks.push(mark);
     return mark;
   }

@@ -126,10 +126,21 @@ function installOverlay(): void {
   };
   const onKeyUp = (e: KeyboardEvent): void => { if (e.key === 'Alt' && armedByAlt) disarm(); };
 
+  // The page must see NONE of the marking gesture — not just the synthetic `click`. A real click fires
+  // pointerdown→mousedown→pointerup→mouseup→click; a page that side-effects on a PRESS event (mousedown
+  // navigation, pointerdown analytics/drag) would otherwise run from a pure marking gesture. Swallow the
+  // whole sequence in capture phase while armed; the browser still generates `click` (default-prevented
+  // press events do not cancel it), so `commit` below still fires to create the mark.
+  const swallowPress = (e: Event): void => {
+    if (mode !== 'hover') return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  };
+
   const commit = (e: MouseEvent): void => {
     if (mode !== 'hover' || !current) return;
-    // The page must never see the marking click: capture-phase, and stopImmediatePropagation blocks
-    // same-node/sibling capture listeners too (this preload registers before page scripts, so it is first).
+    // capture-phase; stopImmediatePropagation blocks same-node/sibling capture listeners too (this preload
+    // registers before page scripts, so it is first). Together with swallowPress the page sees no marking input.
     e.preventDefault();
     e.stopImmediatePropagation();
     if (current.getRootNode() instanceof ShadowRoot) { // shadow-internal pick — the path bridge can't express it
@@ -171,6 +182,9 @@ function installOverlay(): void {
   document.addEventListener('wheel', onWheel, { capture: true, passive: false });
   document.addEventListener('keydown', onKeyDown, true);
   document.addEventListener('keyup', onKeyUp, true);
+  for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'dblclick', 'contextmenu']) {
+    document.addEventListener(t, swallowPress, true);
+  }
   document.addEventListener('click', commit, true);
 
   ipcRenderer.on(CH.arm, () => arm());

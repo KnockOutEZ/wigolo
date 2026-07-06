@@ -208,6 +208,10 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
   const tabToSession = new Map<string, string>();
   const parked = new Map<string, ParkedRecord>();
   let activeSessionId: string | null = null;
+  // HOST-WIDE mark id sequence so ids are unique across concurrent sessions — a stale cross-session
+  // markId then resolves to nothing (clean no_such_mark) instead of silently hitting another session's `m1`.
+  let markSeq = 0;
+  const mintMarkId = (): string => 'm' + ++markSeq;
 
   // Serialize acts per session so the park-id correlation window (park callback → return) cannot
   // interleave with a second concurrent act on the same session.
@@ -283,7 +287,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     });
 
     // ── P2 marking (in-memory per session; DB persistence is P3, native cache can't load in Electron) ──
-    const markStore = new MarkStore();
+    const markStore = new MarkStore(mintMarkId); // host-wide unique ids (no cross-session m1 collision)
     const payloads = new Map<string, MarkPayload>();
     const comments = new Map<string, MarkComment[]>();
 
@@ -551,18 +555,19 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       if (!ctx || ctx.status !== 'live') return { error_reason: 'no_active_session', hint: 'That tab has no live session.' };
       // DR-1: an empty path would resolve to <html> — never a real mark intent (e.g. a shadow-broken path).
       if (path.length === 0) return { error_reason: 'mark_unresolved', hint: 'That element could not be resolved (empty path — likely a shadow boundary).' };
+      // Credential-arc: NEVER resolve or STORE a mark made on a credential context — the element's role/name
+      // can be a displayed secret (a 2FA/recovery code). Refusing at CREATION is what makes it un-leakable:
+      // a current-page-only exclusion on the pull path (marksView) still leaks a stored credential mark once
+      // the page leaves the credential context. Nothing is stored, so nothing can surface to the agent later.
+      if (await ctx.isCredentialPage()) return { error_reason: 'credential_context', hint: 'Marking is disabled on login/credential pages (a marked element there can be a displayed secret).' };
       const target = await ctx.resolvePicked(path);
       if (!target) return { error_reason: 'mark_unresolved', hint: 'That element could not be resolved on the current page.' };
       const mark = ctx.markStore.add(target);
       ctx.payloads.set(mark.markId, payload);
       const role = neutralizeMarkers(target.role);
       const name = neutralizeMarkers(target.name);
-      // DR-3 push-path guard: drop the content event AT SOURCE on a credential context (a buffered event
-      // would leak the secret role/name on the next post-credential observe). The mark is still STORED
-      // (the human sees it in the rail); only the agent-facing event is withheld. marksView guards the pull.
-      if (!(await ctx.isCredentialPage())) {
-        ctx.eventQueue.enqueue({ type: 'mark', tab_id: tabId, markId: mark.markId, role, name, trusted: false });
-      }
+      // Not on a credential page (guarded above) → surface the neutralized mark event for studio_observe.
+      ctx.eventQueue.enqueue({ type: 'mark', tab_id: tabId, markId: mark.markId, role, name, trusted: false });
       return { markId: mark.markId, role, name };
     },
     async addComment({ markId, text }): Promise<{ ok: true } | StudioToolError> {
