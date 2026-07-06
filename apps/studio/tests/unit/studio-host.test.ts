@@ -90,14 +90,14 @@ function markDebugger(opts: { hostileName?: boolean; overlay?: boolean; credRef?
 }
 
 /** Build a host wired to fake driven tabs; returns the host plus the parked-approval sink + navigate spies. */
-function makeHost(config?: { sessionCap?: number }, dbg: () => DebuggerLike = fakeDebugger) {
+function makeHost(config?: { sessionCap?: number }, dbg: () => DebuggerLike = fakeDebugger, broker = makeFakeBroker()) {
   const engine = createDriveEngine();
   const parked: ParkedApprovalNotice[] = [];
   const tabs = new Map<string, { navigate: ReturnType<typeof vi.fn>; closed: boolean; url: string }>();
   let n = 0;
   const host = createStudioHost({
     config,
-    broker: makeFakeBroker(),
+    broker,
     onParked: (notice) => parked.push(notice),
     createTab: async ({ initialHolder, grant }) => {
       const tabId = `t${++n}`;
@@ -116,7 +116,7 @@ function makeHost(config?: { sessionCap?: number }, dbg: () => DebuggerLike = fa
     },
     closeTab: (tabId) => { const t = tabs.get(tabId); if (t) t.closed = true; void engine.detachTab(tabId); },
   });
-  return { host, parked, tabs };
+  return { host, parked, tabs, broker };
 }
 
 describe('createStudioHost — session lifecycle', () => {
@@ -319,6 +319,44 @@ describe('createStudioHost — marking (P2)', () => {
     await host.handlers.spawn({});
     const r = await host.addComment({ markId: 'nope', text: 'x' });
     expect((r as { error_reason?: string }).error_reason).toBe('no_such_mark');
+  });
+
+  // ── P3 write-through: marks + comments also persist to the local library ──
+  it('markElement write-through: also persists the mark to the library (fire-and-forget)', async () => {
+    const broker = makeFakeBroker();
+    const { host } = makeHost(undefined, () => markDebugger(), broker);
+    await host.handlers.spawn({});
+    const created = await host.markElement({ tabId: 't1', path: [0, 0], payload: samplePayload });
+    expect(created).toMatchObject({ markId: 'm1' }); // the in-memory mark loop still succeeds
+    await vi.waitFor(() => expect(broker.call.mock.calls.some(([m]) => m === 'persistMark')).toBe(true));
+  });
+
+  it('markElement still returns the mark even if the library persist rejects (a miss never breaks the loop)', async () => {
+    const broker = makeFakeBroker({ persistMark: () => { throw new Error('library down'); } });
+    const { host } = makeHost(undefined, () => markDebugger(), broker);
+    await host.handlers.spawn({});
+    const created = await host.markElement({ tabId: 't1', path: [0, 0], payload: samplePayload });
+    expect(created).toMatchObject({ markId: 'm1' });
+  });
+
+  it('a mark on a CREDENTIAL page is refused and NEVER persisted to the library (un-leakable)', async () => {
+    const broker = makeFakeBroker();
+    const { host } = makeHost(undefined, () => markDebugger({ credRef: { v: true } }), broker);
+    await host.handlers.spawn({});
+    const r = await host.markElement({ tabId: 't1', path: [0, 0], payload: samplePayload });
+    expect((r as { error_reason?: string }).error_reason).toBe('credential_context');
+    await new Promise((res) => setTimeout(res, 20)); // let any (wrongly-fired) detached persist run
+    expect(broker.call.mock.calls.some(([m]) => m === 'persistMark')).toBe(false);
+  });
+
+  it('addComment write-through: persists a note; a broker rejection does not change the ok result', async () => {
+    const broker = makeFakeBroker({ persistComment: () => { throw new Error('down'); } });
+    const { host } = makeHost(undefined, () => markDebugger(), broker);
+    await host.handlers.spawn({});
+    await host.markElement({ tabId: 't1', path: [0, 0], payload: samplePayload });
+    const r = await host.addComment({ markId: 'm1', text: 'the CTA' });
+    expect(r).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(broker.call.mock.calls.some(([m]) => m === 'persistComment')).toBe(true));
   });
 
   it('marks({op:generalize}) returns a confirm-gated preview of the repeating set (never acts)', async () => {

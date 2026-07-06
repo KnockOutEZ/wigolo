@@ -648,6 +648,15 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       const name = neutralizeMarkers(target.name);
       // Not on a credential page (guarded above) → surface the neutralized mark event for studio_observe.
       ctx.eventQueue.enqueue({ type: 'mark', tab_id: tabId, markId: mark.markId, role, name, trusted: false });
+      // Write-through persist (P3): the mark also lands in the local library (type='mark'). Fire-and-forget
+      // + error-swallowed — a persistence miss must NEVER break the in-memory mark loop (P2's proven path).
+      // Guarded non-credential above; the fresh signal still gives the broker its own defense. Detached so
+      // markElement returns without awaiting the extra snapshot.
+      void (async () => {
+        try {
+          await deps.broker.call('persistMark', { sessionId: ctx.sessionId, url: ctx.tab.currentUrl(), target, credentialSignal: await ctx.credentialSignal() });
+        } catch { /* persist miss ≠ mark failure */ }
+      })();
       return { markId: mark.markId, role, name };
     },
     async addComment({ markId, text }): Promise<{ ok: true } | StudioToolError> {
@@ -661,6 +670,10 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       // trusted:true — but still credential-gated at source (a comment on a login screen may quote a secret).
       if (!(await ctx.isCredentialPage())) {
         ctx.eventQueue.enqueue({ type: 'comment', tab_id: ctx.tab.tabId, markId, text, author: 'human', trusted: true });
+        // Write-through persist (P3): a human comment lands as a note (type='note', content_trusted=1).
+        void (async () => {
+          try { await deps.broker.call('persistComment', { sessionId: ctx.sessionId, text }); } catch { /* persist miss ≠ comment failure */ }
+        })();
       }
       return { ok: true };
     },
