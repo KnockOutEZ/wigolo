@@ -31,6 +31,11 @@ export type { AuditOutcome, AuditRecordInput, AuditEntry, AuditDb, AuditDeps } f
 export { StudioEventQueue } from './event-queue.js';
 export type { StudioEvent, DrainedEvents } from './event-queue.js';
 
+// Input channel seam (the app's debuggerInputSink implements InputSink; SessionController wraps it)
+export { SessionController } from './session-control.js';
+export type { InputSink } from './session-control.js';
+export type { MouseButton, MouseInput, KeyInput, AgentMouseInput, AgentInputEvent } from './input.js';
+
 // Handle file (~/.wigolo/studio/current.json)
 export {
   writeHandle,
