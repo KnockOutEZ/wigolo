@@ -53,9 +53,18 @@ describe('MCP description token budgets', () => {
         // eslint-disable-next-line no-console
         console.log(`  ${a.tool}.${a.path}  ${a.tokens} / ${ARG_DESC_BUDGET}`);
       });
-    // All 10 tools ship with descriptions so they count toward the
-    // per-tool token budget walk.
-    expect(toolEntries.length).toBe(10);
+    // The 10 core tools each ship a description and count toward the per-tool
+    // token budget walk. On the studio branch additional transitional studio_*
+    // proxy tools are also registered (reshaped to the §5 surface in P1), so we
+    // assert the core set is present rather than a hard total that churns.
+    const CORE_TOOLS: ToolName[] = [
+      'search', 'fetch', 'crawl', 'cache', 'extract',
+      'find_similar', 'research', 'agent', 'diff', 'watch',
+    ] as ToolName[];
+    for (const t of CORE_TOOLS) {
+      expect(toolEntries.some((e) => e.name === t), `core tool '${t}' registered with a description`).toBe(true);
+    }
+    expect(toolEntries.length).toBeGreaterThanOrEqual(CORE_TOOLS.length);
     expect(argEntries.length).toBeGreaterThan(0); // sanity: walker actually walked
   });
 

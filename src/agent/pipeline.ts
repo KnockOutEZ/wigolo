@@ -9,6 +9,7 @@ import {
 } from '../search/sampling.js';
 import { isLlmConfiguredWithKeyStore, runLlmText } from '../integrations/cloud/llm/run.js';
 import { resolveLocalModelTier } from '../integrations/cloud/llm/local-tier.js';
+import { wrapUntrusted } from '../security/untrusted.js';
 import type {
   AgentInput,
   AgentOutput,
@@ -27,6 +28,10 @@ const log = createLogger('agent');
 // while letting callers opt in to more via input.max_pages.
 const DEFAULT_MAX_PAGES = 3;
 const DEFAULT_MAX_TIME_MS = 60000;
+
+// Per-source body cap and the total source-text budget shared by both synthesis sinks.
+const MAX_CHARS_PER_SOURCE = 3000;
+const MAX_SYNTHESIS_SOURCE_CHARS = 40000;
 
 // Test-only accessor — keeps the constant out of the public surface while
 // letting unit tests pin the value.
@@ -349,17 +354,42 @@ async function synthesizeResult(
   return { result: buildFallbackSynthesis(prompt, fetchedSources), samplingUsed: false };
 }
 
+// D8a-2: build the fenced source blocks under a total budget with truncate-then-wrap, so an
+// over-budget body is trimmed BEFORE wrapping and the fence we emit always carries its closing
+// END marker. The prior code wrapped each block then sliced the joined string to the budget,
+// which severed the trailing block's END (open fence) once the sources overflowed. P6-a: the page
+// body stays INSIDE the untrusted-data fence so an injected directive reads as quoted data, never
+// an instruction; embedded markers are neutralized pre-wrap by wrapUntrusted.
+export function buildUntrustedSourceBlocks(
+  sources: AgentSource[],
+  perSourceChars: number,
+  totalChars: number,
+): string {
+  const sep = '\n\n';
+  const wrapOverhead = wrapUntrusted('').length; // content-independent fence cost (preamble + markers)
+  const blocks: string[] = [];
+  let used = 0;
+  for (let i = 0; i < sources.length; i++) {
+    const s = sources[i];
+    const header = `[${i + 1}] ${s.title} (${s.url})\n`;
+    const sepLen = blocks.length > 0 ? sep.length : 0;
+    const fixed = sepLen + header.length + wrapOverhead;
+    if (used + fixed >= totalChars) break; // no room left for even an empty fenced block
+    const contentBudget = Math.min(perSourceChars, totalChars - used - fixed);
+    const content = s.markdown_content.slice(0, contentBudget);
+    const block = `${header}${wrapUntrusted(content)}`;
+    blocks.push(block);
+    used += sepLen + block.length;
+  }
+  return blocks.join(sep);
+}
+
 async function synthesizeViaLlmRunner(
   prompt: string,
   sources: AgentSource[],
   opts: { backend?: { url: string; model: string } } = {},
 ): Promise<string | null> {
-  const maxCharsPerSource = 3000;
-  const sourceBlocks = sources.map((s, i) => {
-    const content = s.markdown_content.slice(0, maxCharsPerSource);
-    return `[${i + 1}] ${s.title} (${s.url})\n${content}`;
-  });
-  const truncated = sourceBlocks.join('\n\n').slice(0, 40000);
+  const truncated = buildUntrustedSourceBlocks(sources, MAX_CHARS_PER_SOURCE, MAX_SYNTHESIS_SOURCE_CHARS);
   const fullPrompt =
     'You are a data gathering assistant. Based on the user request and the gathered sources, ' +
     'synthesize a clear, well-organized response. Cite sources as [1], [2], etc.\n\n' +
@@ -379,14 +409,13 @@ async function synthesizeWithSampling(
   server: SamplingCapableServer,
 ): Promise<string | null> {
   try {
-    const maxCharsPerSource = 3000;
-    const sourceBlocks = sources.map((s, i) => {
-      const content = s.markdown_content.slice(0, maxCharsPerSource);
-      return `[${i + 1}] ${s.title} (${s.url})\n${content}`;
-    });
-
-    const totalSourceText = sourceBlocks.join('\n\n');
-    const truncatedSourceText = totalSourceText.slice(0, 40000);
+    // D8a-2: truncate-then-wrap so the fence survives the total-budget cap (see
+    // buildUntrustedSourceBlocks). P6-a: page body fenced as untrusted data inside the prompt.
+    const truncatedSourceText = buildUntrustedSourceBlocks(
+      sources,
+      MAX_CHARS_PER_SOURCE,
+      MAX_SYNTHESIS_SOURCE_CHARS,
+    );
 
     const samplingPrompt = `You are a data gathering assistant. Based on the user's request and the gathered sources, synthesize a comprehensive result.
 
@@ -436,14 +465,18 @@ function buildFallbackSynthesis(prompt: string, sources: AgentSource[]): string 
     result += sourceHeader;
     remaining -= sourceHeader.length;
 
-    const contentBudget = Math.min(remaining - 10, source.markdown_content.length, 1500);
+    // P6-a: reserve room for the untrusted-data fence so the content is truncated before
+    // wrapping and the fence stays well-formed within the budget.
+    const wrapOverhead = wrapUntrusted('').length;
+    const contentBudget = Math.min(remaining - 10 - wrapOverhead, source.markdown_content.length, 1500);
     if (contentBudget > 0) {
       let content = source.markdown_content.slice(0, contentBudget);
       if (content.length < source.markdown_content.length) {
         content = content.slice(0, Math.max(contentBudget - 3, 0)) + '...';
       }
-      result += content + '\n\n';
-      remaining -= content.length + 2;
+      const wrapped = wrapUntrusted(content);
+      result += wrapped + '\n\n';
+      remaining -= wrapped.length + 2;
     }
   }
 

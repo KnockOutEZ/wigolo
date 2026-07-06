@@ -17,6 +17,7 @@ import { getEmbeddingService } from '../embedding/embed.js';
 import { checkSamplingSupport, type SamplingCapableServer } from '../search/sampling.js';
 import { isLlmConfiguredWithKeyStore } from '../integrations/cloud/llm/run.js';
 import { resolveLocalModelTier } from '../integrations/cloud/llm/local-tier.js';
+import { searchStudioArtifactKeys, getStudioArtifactByEmbedKey, studioEmbedKey } from '../studio/capture/artifacts.js';
 import type {
   ResearchInput,
   ResearchOutput,
@@ -210,7 +211,13 @@ export async function runResearchPipeline(
       }
     }
 
-    if (urlKept.length === 0) {
+    // C3 local-rescue: collect LOCAL studio sources ONCE here — BEFORE the no-sources
+    // decision — so a web-empty run can still synthesize from studio (slice-1 injected
+    // post-fetch, which the early-return below skipped). Single FTS call per run; this same
+    // result feeds BOTH the no-sources guard and the post-fetch merge below.
+    const studioSources = await collectStudioSources(input.question, maxSources);
+
+    if (urlKept.length === 0 && studioSources.length === 0) {
       return {
         report: `## Research: ${input.question}\n\nNo sources could be found for this query.`,
         citations: [],
@@ -254,13 +261,15 @@ export async function runResearchPipeline(
     }
     // Fail open — never let the content gate empty the result; mediocre
     // sources beat no sources (rerank already ordered them).
-    let sources: ResearchSource[];
-    if (gated.length > 0) {
-      sources = gated.slice(0, maxSources);
-      rejected_sources.push(...contentRejects);
-    } else {
-      sources = fetched.slice(0, maxSources);
-    }
+    const webPool: ResearchSource[] = gated.length > 0 ? gated : fetched;
+    if (gated.length > 0) rejected_sources.push(...contentRejects);
+    // C3: merge the LOCAL studio sources (collected ONCE above) with web — sort the union by
+    // relevance and cap together (rank-fair; no reserved quota; studio dedup-inert vs web by
+    // its studio:// identity → C1b). web-empty + studio-present lands here with webPool=[] →
+    // sources = studioSources; web-empty + studio-empty already returned no_sources above.
+    const sources: ResearchSource[] = [...webPool, ...studioSources]
+      .sort((a, b) => b.relevance_score - a.relevance_score)
+      .slice(0, maxSources);
     applySourceBudget(sources, PER_SOURCE_CHAR_CAP, TOTAL_SOURCES_CHAR_CAP);
     log.info('fetch phase complete', {
       fetched: sources.filter((s) => s.fetched).length,
@@ -294,7 +303,7 @@ export async function runResearchPipeline(
       try {
         const localSources = sources
           .filter((s) => s.fetched && s.markdown_content.length > 0)
-          .map((s) => ({ url: s.url, title: s.title, markdown: s.markdown_content }));
+          .map((s) => ({ url: s.url, title: s.title, markdown: s.markdown_content, trusted: s.trusted }));
         if (localSources.length > 0) {
           const local = await synthesizeLocal(
             input.question,
@@ -313,6 +322,7 @@ export async function runResearchPipeline(
                 url: s.url,
                 title: s.title,
                 snippet: s.markdown.slice(0, 200),
+                trusted: s.trusted, // mirror source trust (C3 slice-2: note=true; web/clip/qa=false)
               };
             });
           log.info('local synthesis succeeded', { reportLength: finalReport.length });
@@ -430,6 +440,7 @@ async function fetchSources(
         markdown_content: truncated,
         relevance_score: result.relevance_score,
         fetched: true,
+        trusted: false, // web/page-derived (C4); studio sources arrive with C3
       };
     } catch (err) {
       log.debug('failed to fetch research source', {
@@ -442,12 +453,68 @@ async function fetchSources(
         markdown_content: result.snippet,
         relevance_score: result.relevance_score,
         fetched: false,
+        trusted: false, // web/page-derived (C4)
         fetch_error: err instanceof Error ? err.message : String(err),
       };
     }
   });
 
   return Promise.all(fetchPromises);
+}
+
+// C3 slice-1 — local studio artifacts as research sources. The shared studio read
+// (searchStudioArtifactKeys / getStudioArtifactByEmbedKey / studioEmbedKey) is reused
+// VERBATIM — no re-derived query. clip + qa + note (note is the ONLY content_trusted=1 type;
+// mark is excluded — it has null markdown). Identity = studio://<type>|<id> (a non-null url
+// even for url-less qa/note; dedup-inert vs web → honors C1b; re-resolvable). trusted MIRRORS
+// content_trusted (true for note, false for clip/qa). Content is local → fetched:true, never
+// hits fetchSources/the network. Candidates are reranked onto the SAME cross-encoder scale as
+// web so the merged cap is rank-fair. RESILIENT: any throw or miss logs and yields [] — a
+// studio-read failure never aborts research (web sources stand).
+const STUDIO_RESEARCH_TYPES = new Set(['clip', 'qa', 'note']);
+
+async function collectStudioSources(question: string, limit: number): Promise<ResearchSource[]> {
+  try {
+    const keys = searchStudioArtifactKeys(question, limit);
+    if (keys.length === 0) return [];
+    const candidates: MergedResult[] = [];
+    const byUrl = new Map<string, { title: string; markdown: string; trusted: boolean }>();
+    for (const key of keys) {
+      const art = getStudioArtifactByEmbedKey(key);
+      if (!art) continue;
+      if (!STUDIO_RESEARCH_TYPES.has(art.type)) {
+        // non-research types (e.g. mark — null markdown) match FTS but are excluded here.
+        log.debug('studio research source skipped: non-research artifact type', { type: art.type });
+        continue;
+      }
+      if (art.markdown === null || art.markdown.length === 0) continue;
+      const url = studioEmbedKey(art.type, art.id); // studio://<type>|<id>
+      const title = art.title ?? '';
+      candidates.push({ title, url, snippet: art.markdown, relevance_score: 0, engines: ['studio'] });
+      byUrl.set(url, { title, markdown: art.markdown, trusted: art.contentTrusted });
+    }
+    if (candidates.length === 0) return [];
+    const reranked = await rerankResults(question, candidates);
+    const sources: ResearchSource[] = [];
+    for (const r of reranked) {
+      const meta = byUrl.get(r.url);
+      if (!meta) continue;
+      sources.push({
+        url: r.url,
+        title: meta.title,
+        markdown_content: meta.markdown,
+        relevance_score: r.relevance_score,
+        fetched: true, // local content — already hydrated, no network fetch
+        trusted: meta.trusted, // mirrors content_trusted (true for note, false for clip/qa)
+      });
+    }
+    return sources;
+  } catch (err) {
+    log.warn('studio source read failed; continuing web-only', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
 }
 
 // Cap total returned markdown_content across sources in relevance order.
