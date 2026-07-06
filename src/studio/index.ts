@@ -120,6 +120,9 @@ export type {
 export { DaemonHttpServer } from '../daemon/http-server.js';
 export type { DaemonOptions, DaemonAuthConfig, UpgradeHandler } from '../daemon/http-server.js';
 
+// The bearer-authed MCP client for the gateway (the same client the stdio proxy uses; the e2e drives with it).
+export { DaemonProxy } from '../daemon/proxy.js';
+
 // Per-launch bearer + Origin/Host guard for the gateway.
 export { mintHostToken, resolveHostToken, checkOriginHost, checkAuth, checkAuthSubprotocol } from './auth.js';
 export type { HostTokenResolution } from './auth.js';

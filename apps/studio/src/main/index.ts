@@ -71,7 +71,7 @@ async function createWindow(): Promise<void> {
       const dto: PendingApprovalDto = { id: notice.approval_id, action: notice.action, risk: notice.risk };
       win.webContents.send(IPC.approvalParked, dto);
     },
-    createTab: ({ startUrl, initialHolder, grant }: { startUrl?: string; initialHolder: ControlParty; grant: NavGrant }): HostTab => {
+    createTab: async ({ initialHolder, grant }: { initialHolder: ControlParty; grant: NavGrant }): Promise<HostTab> => {
       const view = new WebContentsView({
         webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
       });
@@ -92,16 +92,20 @@ async function createWindow(): Promise<void> {
       };
       const tabId = tabs.adopt(tabView);
       sessions.addTab(sessions.current().id, tabId);
-      void wc.loadURL(startUrl ?? 'about:blank');
-      const drive = driveEngine.attachTab(tabId, {
+      // Arm the SSRF/redirect fence FIRST (awaited) — attachTab resolves only once Fetch.enable is acked.
+      const drive = await driveEngine.attachTab(tabId, {
         debugger: wc.debugger as unknown as DebuggerLike,
         viewport: () => { const b = bounds(); return { width: b.width, height: b.height }; },
         grant,
         initialHolder,
       });
-      // Native OS input to this tab preempts the agent instantly (agent CDP input injects below this
-      // hook, so it does not self-preempt). Best-effort P1 signal; the co-drive polish is P4.
-      wc.on('before-input-event', () => studioHost.onHumanInput(tabId));
+      // Only THEN load — and only the safe blank page. The agent's startUrl is navigated by studio_open
+      // through the GATED path (guardNavigation), never a raw ungated load. NOTE: native-OS-input
+      // preemption detection is deferred to P4 (co-drive polish): Electron's before-input-event fires for
+      // BOTH native input AND the agent's own CDP-injected keystrokes (indistinguishable at that hook), so
+      // a naive wire self-preempts the agent mid-type. The FSM preemption LOGIC (drive.fsm.onHumanInput,
+      // unit/property-tested) is ready for a source-distinguishing signal in P4.
+      void wc.loadURL('about:blank');
       return {
         tabId,
         drive,
@@ -127,9 +131,11 @@ async function createWindow(): Promise<void> {
       sessions: studioHost.sessions,
       sessionId: `studio-${process.pid}`,
     });
-  } catch {
-    // The gateway is the agent endpoint; if it cannot bind, the human UI still works. Surface via logs
-    // (stderr) rather than crashing the window — the agent simply cannot discover this host.
+  } catch (err) {
+    // The gateway is the agent endpoint; if it cannot bind, the human UI still works. Surface the
+    // failure on stderr (never stdout) rather than crashing the window — the agent simply cannot
+    // discover this host until it is fixed.
+    process.stderr.write(`[studio] agent gateway failed to start: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
   }
 
   const shutdown = async (): Promise<void> => {

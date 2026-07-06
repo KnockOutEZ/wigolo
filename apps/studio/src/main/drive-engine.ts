@@ -46,7 +46,7 @@ export interface TabDrive {
 }
 
 export interface DriveEngine {
-  attachTab(tabId: string, deps: AttachDeps): TabDrive;
+  attachTab(tabId: string, deps: AttachDeps): Promise<TabDrive>;
   getDrive(tabId: string): TabDrive | undefined;
   detachTab(tabId: string): Promise<void>;
 }
@@ -55,7 +55,7 @@ export function createDriveEngine(): DriveEngine {
   const tabs = new Map<string, TabDrive>();
 
   return {
-    attachTab(tabId: string, deps: AttachDeps): TabDrive {
+    async attachTab(tabId: string, deps: AttachDeps): Promise<TabDrive> {
       const transport = webContentsDebuggerTransport(deps.debugger);
       transport.attach();
 
@@ -72,11 +72,17 @@ export function createDriveEngine(): DriveEngine {
         () => policyForHolder(controlToken.holder, deps.grant),
         () => navEpoch.bumpNavigation(),
       );
-      // FAIL-CLOSED: start() enables Fetch scoped to Document requests; a rejection means
-      // the fence is not armed, so surface it rather than leaving a tab drivable unguarded.
-      void navInterceptor.start(transport).catch(() => {
-        void this.detachTab(tabId);
-      });
+      // FAIL-CLOSED, ARMED-BEFORE-DRIVABLE: AWAIT the fence arm (Fetch.enable, scoped to Document
+      // requests) BEFORE the drive is returned/registered — so the tab is never drivable, and no
+      // initial navigation is ever issued, while the SSRF/redirect fence is disarmed. If arming
+      // rejects, detach and throw so the caller REFUSES the session rather than exposing an
+      // unguarded tab (matches the salvaged nav.ts fail-closed contract).
+      try {
+        await navInterceptor.start(transport);
+      } catch (err) {
+        transport.detach();
+        throw err;
+      }
 
       const drive: TabDrive = { transport, controlToken, fsm, navEpoch, navInterceptor, channel, grant: deps.grant };
       tabs.set(tabId, drive);

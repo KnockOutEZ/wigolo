@@ -71,8 +71,12 @@ export interface StudioHostConfig {
 }
 
 export interface StudioHostDeps {
-  /** Stand up a driven tab for a new session (host-side: create WebContentsView + driveEngine.attachTab). */
-  createTab: (opts: { startUrl?: string; initialHolder: ControlParty; grant: NavGrant }) => HostTab | Promise<HostTab>;
+  /**
+   * Stand up a driven tab for a new session (host-side: create WebContentsView + await driveEngine.attachTab).
+   * The tab MUST come back with its SSRF/redirect fence already armed and loaded to a SAFE blank page — the
+   * agent's requested startUrl is navigated separately through the GATED path, never a raw ungated load.
+   */
+  createTab: (opts: { initialHolder: ControlParty; grant: NavGrant }) => HostTab | Promise<HostTab>;
   /** Tear a session's tab down. */
   closeTab: (tabId: string) => void;
   /** Surface a parked risky act to the human approval card (never auto-allowed). */
@@ -261,11 +265,17 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     // An agent-opened session starts under AGENT control (a background lane with no human attached),
     // per the control-token S5 rule — so the agent can drive its own session without a human grant.
     const grant: NavGrant = { humanAllowPrivate: true, agentAllowPrivate: false };
-    const tab = await deps.createTab({ startUrl: input.startUrl, initialHolder: 'agent', grant });
+    const tab = await deps.createTab({ initialHolder: 'agent', grant });
     const ctx = buildContext(sessionId, name, tab);
     contexts.set(sessionId, ctx);
     tabToSession.set(tab.tabId, sessionId);
     activeSessionId = sessionId;
+    // The agent's requested startUrl is navigated through the GATED path (guardNavigation under agent
+    // policy — cloud-metadata/RFC1918 fenced), NEVER a raw ungated tab load. A blocked/failed nav still
+    // opens the session (on the safe blank page); the agent sees the outcome on its next observe/act.
+    if (typeof input.startUrl === 'string' && input.startUrl.trim()) {
+      await ctx.drive.gatedNavigate(input.startUrl);
+    }
     return { session_id: sessionId };
   }
 
@@ -295,6 +305,10 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       deps.closeTab(ctx.tab.tabId);
       tabToSession.delete(ctx.tab.tabId);
       actChains.delete(id);
+      // Reclaim every map keyed on this session — else a long-lived host leaks a full SessionContext
+      // (+ its snapshotter/queue/closures) and any never-resolved parked approval, per open/close cycle.
+      for (const [aid, rec] of parked) if (rec.sessionId === id) parked.delete(aid);
+      contexts.delete(id);
       if (activeSessionId === id) activeSessionId = targetContext()?.sessionId ?? null;
       return { closed: true, session_id: id };
     },
@@ -349,6 +363,9 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       }
       contexts.clear();
       tabToSession.clear();
+      parked.clear();
+      actChains.clear();
+      activeSessionId = null;
     },
   };
 }

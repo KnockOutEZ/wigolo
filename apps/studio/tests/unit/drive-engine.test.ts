@@ -35,21 +35,20 @@ const viewport = () => ({ width: 800, height: 600 });
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe('createDriveEngine.attachTab', () => {
-  it('attaches the debugger AND arms the nav interceptor (Fetch.enable on Document) — a tab must never be drivable with SSRF fence disarmed', async () => {
+  it('arms the nav interceptor (Fetch.enable on Document) BEFORE returning the drive — a tab is never drivable with the SSRF fence disarmed', async () => {
     const dbg = fakeDebugger();
     const engine = createDriveEngine();
-    engine.attachTab('t1', { debugger: dbg, viewport, grant: { humanAllowPrivate: true, agentAllowPrivate: false } });
+    // attachTab resolves ONLY after Fetch.enable is acked — the drive is not drivable until then.
+    await engine.attachTab('t1', { debugger: dbg, viewport, grant: { humanAllowPrivate: true, agentAllowPrivate: false } });
     expect(dbg.attach).toHaveBeenCalledWith('1.3');
-    // The interceptor enables the Fetch domain scoped to Document requests — the redirect-SSRF fence.
     const enable = dbg.commands.find((c) => c.method === 'Fetch.enable');
     expect(enable).toBeTruthy();
-    await flush();
   });
 
-  it('getDrive returns the per-tab record (token, fsm, navEpoch, agent input channel); default holder is human', () => {
+  it('getDrive returns the per-tab record (token, fsm, navEpoch, agent input channel); default holder is human', async () => {
     const dbg = fakeDebugger();
     const engine = createDriveEngine();
-    engine.attachTab('t1', { debugger: dbg, viewport, grant: { humanAllowPrivate: true, agentAllowPrivate: false } });
+    await engine.attachTab('t1', { debugger: dbg, viewport, grant: { humanAllowPrivate: true, agentAllowPrivate: false } });
     const drive = engine.getDrive('t1');
     expect(drive).toBeTruthy();
     expect(drive!.fsm.state()).toBe('human');
@@ -58,10 +57,10 @@ describe('createDriveEngine.attachTab', () => {
     expect(drive!.channel.viewportCenter()).toEqual({ x: 400, y: 300 });
   });
 
-  it('an agent-spawned tab starts under agent control (background-lane drive with no human attached)', () => {
+  it('an agent-spawned tab starts under agent control (background-lane drive with no human attached)', async () => {
     const dbg = fakeDebugger();
     const engine = createDriveEngine();
-    engine.attachTab('bg', {
+    await engine.attachTab('bg', {
       debugger: dbg,
       viewport,
       grant: { humanAllowPrivate: true, agentAllowPrivate: false },
@@ -73,7 +72,7 @@ describe('createDriveEngine.attachTab', () => {
   it('allowed Document hop is continued AND bumps the nav epoch; blocked cloud-metadata hop is failed and does NOT bump', async () => {
     const dbg = fakeDebugger();
     const engine = createDriveEngine();
-    engine.attachTab('t1', { debugger: dbg, viewport, grant: { humanAllowPrivate: true, agentAllowPrivate: false } });
+    await engine.attachTab('t1', { debugger: dbg, viewport, grant: { humanAllowPrivate: true, agentAllowPrivate: false } });
     const drive = engine.getDrive('t1')!;
 
     dbg.emitMessage('Fetch.requestPaused', { requestId: 'r1', request: { url: 'https://example.com/' }, resourceType: 'Document' });
@@ -94,7 +93,7 @@ describe('createDriveEngine.attachTab', () => {
   it('the FSM and the agent input channel share ONE control token: a human preempt fences the in-flight agent unit', async () => {
     const dbg = fakeDebugger();
     const engine = createDriveEngine();
-    engine.attachTab('t1', { debugger: dbg, viewport, grant: { humanAllowPrivate: true, agentAllowPrivate: false } });
+    await engine.attachTab('t1', { debugger: dbg, viewport, grant: { humanAllowPrivate: true, agentAllowPrivate: false } });
     const drive = engine.getDrive('t1')!;
     const epoch = drive.fsm.agentAcquire();
     drive.fsm.onHumanInput(); // native human input preempts
@@ -109,7 +108,7 @@ describe('createDriveEngine.attachTab', () => {
   it('detachTab disarms the interceptor (Fetch.disable) and detaches the debugger; getDrive returns undefined', async () => {
     const dbg = fakeDebugger();
     const engine = createDriveEngine();
-    engine.attachTab('t1', { debugger: dbg, viewport, grant: { humanAllowPrivate: true, agentAllowPrivate: false } });
+    await engine.attachTab('t1', { debugger: dbg, viewport, grant: { humanAllowPrivate: true, agentAllowPrivate: false } });
     await engine.detachTab('t1');
     expect(dbg.commands.some((c) => c.method === 'Fetch.disable')).toBe(true);
     expect(dbg.detach).toHaveBeenCalled();

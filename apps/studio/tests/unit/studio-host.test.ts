@@ -36,10 +36,11 @@ function makeHost(config?: { sessionCap?: number }) {
   const host = createStudioHost({
     config,
     onParked: (notice) => parked.push(notice),
-    createTab: ({ initialHolder, grant, startUrl }) => {
+    createTab: async ({ initialHolder, grant }) => {
       const tabId = `t${++n}`;
-      const drive = engine.attachTab(tabId, { debugger: fakeDebugger(), viewport, grant, initialHolder });
-      const state = { navigate: vi.fn(async (u: string) => { state.url = u; }), closed: false, url: startUrl ?? 'about:blank' };
+      // attachTab is async + fail-closed: it resolves only once the SSRF fence is armed.
+      const drive = await engine.attachTab(tabId, { debugger: fakeDebugger(), viewport, grant, initialHolder });
+      const state = { navigate: vi.fn(async (u: string) => { state.url = u; }), closed: false, url: 'about:blank' };
       tabs.set(tabId, state);
       const tab: HostTab = {
         tabId,
@@ -105,6 +106,20 @@ describe('createStudioHost — observe fences page content as untrusted', () => 
   });
 });
 
+describe('createStudioHost — studio_open startUrl is SSRF-gated (never a raw ungated load)', () => {
+  it('a cloud-metadata startUrl never loads the tab — it is navigated through the gated path and blocked', async () => {
+    const { host, tabs } = makeHost();
+    await host.handlers.spawn({ startUrl: 'http://169.254.169.254/latest/meta-data/iam/security-credentials/' });
+    // the gated navigate refused the SSRF target → browser.navigate was never called with it
+    expect([...tabs.values()][0].navigate).not.toHaveBeenCalledWith('http://169.254.169.254/latest/meta-data/iam/security-credentials/');
+  });
+  it('a public startUrl IS navigated (gated-allow) — the tab loads it through the fenced path', async () => {
+    const { host, tabs } = makeHost();
+    await host.handlers.spawn({ startUrl: 'https://example.com/' });
+    expect([...tabs.values()][0].navigate).toHaveBeenCalledWith('https://example.com/');
+  });
+});
+
 describe('createStudioHost — D19 session-drive accessor SSRF contract', () => {
   it('gatedNavigate blocks cloud-metadata for the agent (never reachable) and allows a public URL', async () => {
     const { host, tabs } = makeHost();
@@ -150,6 +165,14 @@ describe('stageForActResult — pure P1 stage discriminant', () => {
   it('a reclaim-during-act becomes a preempted stage, carrying charsLanded when present', () => {
     const r = stageForActResult({ error_reason: 'aborted_reclaimed', hint: 'x', charsLanded: 3 }, 'type', undefined);
     expect(r).toEqual({ ok: true, action: 'type', stage: 'preempted', charsLanded: 3 });
+  });
+  it('preserves charsLanded:0 (a zero-char preempt is distinct from an absent field — guarded !== undefined, not truthy)', () => {
+    // A reclaim that fences the FIRST keystroke returns charsLanded:0 (act.ts standDown(0)); the agent
+    // must be able to tell "nothing landed" from "no char count reported". Reds if the guard weakens to truthy.
+    const zero = stageForActResult({ error_reason: 'aborted_reclaimed', hint: 'x', charsLanded: 0 }, 'type', undefined);
+    expect(zero).toEqual({ ok: true, action: 'type', stage: 'preempted', charsLanded: 0 });
+    const absent = stageForActResult({ error_reason: 'aborted_reclaimed', hint: 'x' }, 'type', undefined);
+    expect(absent).toEqual({ ok: true, action: 'type', stage: 'preempted' });
   });
   it('a parked error WITHOUT an approval id passes through as the raw error (fail-loud, no fake stage)', () => {
     const err: StudioToolError = { error_reason: 'parked_for_review', hint: 'x' };
