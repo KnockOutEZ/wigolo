@@ -1,5 +1,5 @@
 {
-  "//": "Safety-surface type-check gate (Studio). The include-set is IMPORT-DRIVEN, not directory-based: every test listed here imports a safety-critical module — NavInterceptor/navigateSession (nav), the act handler + resolver, the single input channel (InputForwarder/SessionController), the control token/epoch, SessionHandle, or the studio dispatch seam — so a test referencing a removed/changed production symbol fails this gate (the cheap check that would have caught setPolicy + the missing instanceId). scripts/check-typecheck-gate.mjs FAILS if any of those modules is imported from a file NOT in this list. Full-tests/ debt is ratcheted separately by scripts/typecheck-debt-ratchet.mjs.",
+  "//": "Safety-surface type-check gate (Studio). The include-set is IMPORT-DRIVEN, not directory-based: every test listed here imports a safety-critical module — NavInterceptor/navigateSession (nav), the act handler + resolver, the agent input channel (SessionController), the control token/epoch, SessionHandle, or the studio dispatch seam — so a test referencing a removed/changed production symbol fails this gate (the cheap check that would have caught setPolicy + the missing instanceId). scripts/check-typecheck-gate.mjs FAILS if any of those modules is imported from a file NOT in this list. Full-tests/ debt is ratcheted separately by scripts/typecheck-debt-ratchet.mjs.",
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
@@ -14,7 +14,6 @@
     "tests/unit/studio/session-drive.test.ts",
     "tests/unit/studio/perception/resolve.test.ts",
     "tests/unit/studio/control-token.test.ts",
-    "tests/unit/studio/input.test.ts",
     "tests/unit/studio/session-control.test.ts",
     "tests/unit/studio/handle.test.ts",
     "tests/unit/studio/observe.test.ts",
@@ -30,10 +29,10 @@
     "tests/unit/cli/studio.test.ts",
     "tests/unit/cli/config-prune-audit.test.ts",
     "tests/unit/daemon/studio-dispatch.test.ts",
+    "tests/unit/daemon/studio-mcp-server.test.ts",
     "tests/unit/server/tool-audit.test.ts",
     "tests/integration/tool-audit-dispatch.test.ts",
     "tests/unit/daemon/proxy-roundtrip.test.ts",
-    "tests/integration/studio-bridge.test.ts",
     "tests/integration/studio-session-target.test.ts",
     "tests/integration/studio-observe-seam.test.ts",
     "tests/security-regression.test.ts"

@@ -8,13 +8,10 @@ import { SessionRegistry, SessionLimitError, startIdleSweeper, type IdleSweeper 
 import { sessionMeta, type Session, type SessionMeta } from '../studio/session.js';
 import { SessionBrowser, type SessionBrowserLauncher, type StorageStateInput } from '../studio/session-browser.js';
 import { ProfileStore } from '../studio/profile-store.js';
-import { ScreencastBridge } from '../studio/screencast.js';
-import { InputForwarder } from '../studio/input.js';
-import { SessionController } from '../studio/session-control.js';
+import { SessionController, type InputSink } from '../studio/session-control.js';
 import { NavInterceptor, navigateSession } from '../studio/nav.js';
 import { policyForHolder, type NavGrant } from '../studio/nav-policy.js';
-import { StudioWsHub } from '../studio/ws-hub.js';
-import { writeHandle, removeHandle, studioHandlePath, setMyInstanceId, type SessionHandle } from '../studio/handle.js';
+import { writeHandle, removeHandle, setMyInstanceId, type SessionHandle } from '../studio/handle.js';
 import { closeDaemonBrowser } from '../fetch/playwright-tier.js';
 import { PageSnapshotter, buildSnapshot, flattenDom, type AxNode, type DomNode } from '../studio/perception/snapshot.js';
 import { createResolver } from '../studio/perception/resolve.js';
@@ -56,15 +53,20 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { NonceStore } from '../studio/nonce.js';
 
 /**
- * The built Studio web-app shell dir the daemon serves (S1). Resolved relative to THIS module so it points
- * at the package's `dist/webapp` from both the built CLI (`dist/cli/studio.js`) and the dev entry
- * (`src/cli/studio.ts`) — both are two levels under the package root. Absent in a not-yet-built dev tree;
- * the static route then simply 404s its assets (non-fatal — the studio command is internal/unadvertised).
+ * Headless broadcast sink. The v1 WS hub delivered these to a connected browser tab; the Electron app is now
+ * the real UI host (it wires human events over IPC), so the daemon-side host — which survives ONLY to back the
+ * D19 integration test + the cli unit suite — drops every broadcast on the floor. The call sites stay
+ * unchanged so the domain wiring (approvals/audit/marks/parked/artifact/narration/error deltas) is exercised
+ * end-to-end up to the sink boundary (and a per-host spy can still assert a delta fired).
  */
-const STUDIO_WEBAPP_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'webapp');
+interface HostBroadcastSink {
+  broadcast(sessionId: string, msg: Record<string, unknown>): void;
+  broadcastAll(msg: Record<string, unknown>): void;
+  broadcastFrame(sessionId: string, frame: unknown): void;
+  closeAll(): void;
+}
 
 /** Bounded human-event buffer; overflow is fail-loud (drained events surface a dropped count → resync). */
 const STUDIO_EVENT_QUEUE_MAX = 256;
@@ -145,11 +147,6 @@ export interface StudioHostOptions extends StudioArgs {
   /** 5eb1: host-level surface for a profile↔origin binding MISMATCH (refuse-persist). Defaults to a host log.
    *  Receives origins/profileId only — never any storageState/cookie. */
   onLoginOriginMismatch?: (info: OriginMismatch) => void;
-  /** Inject the nonce store (tests). Defaults to a fresh store; backs the S2 token handshake. */
-  nonceStore?: NonceStore;
-  /** Open the web-app tab at the given (nonce-bearing, token-FREE) URL. Defaults to logging the URL (safe
-   *  for non-interactive/test boots); the CLI entry passes a real spawning opener. */
-  openTab?: (url: string) => void;
 }
 
 export interface StudioHost {
@@ -161,7 +158,6 @@ export interface StudioHost {
   sessionMetrics: SessionMetrics;
   session: Session;
   sessionBrowser: SessionBrowser;
-  bridge: ScreencastBridge;
   controller: SessionController;
   navInterceptor: NavInterceptor;
   /** Navigate the session as the human (holder-gated + guarded); broadcasts {t:'error'} on a non-holder or blocked target. */
@@ -204,13 +200,13 @@ export interface StudioHost {
   sessionDrive: ReturnType<typeof createSessionDrive>;
   /** Slice 5e-a: the login-wall handoff machine — wall-detect → human-holding → completing/aborted/vanished. Exposed for the host-boundary/headed tests. */
   handoff: LoginHandoff;
-  hub: StudioWsHub;
+  hub: HostBroadcastSink;
   handle: SessionHandle;
   endpoint: string;
-  /** The web-app tab URL opened on launch — carries the one-time nonce, NEVER the bearer. */
-  webappUrl: string;
-  /** The nonce store backing the S2 token handshake (exposed for the host-boundary tests). */
-  nonceStore: NonceStore;
+  /** Human-channel comment ingress (was the WS {t:'comment'}; now Electron IPC / test driver). Persists trusted=1 + enqueues the agent event. */
+  onComment: (msg: Record<string, unknown>) => void;
+  /** Human-channel pre-grant ingress (was the WS {t:'grant'}; now Electron IPC / test driver). Host-stamps party='human'; rejects party='agent'. */
+  onGrant: (msg: Record<string, unknown>) => void;
 }
 
 /**
@@ -273,98 +269,32 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // Cadence + threshold both track the configured idle timeout; a live (client-attached)
   // session is never evicted regardless of age.
   const idleSweeper = startIdleSweeper(registry, idleTimeoutMs);
-  // Late-bound: the screencast bridge is created once the session browser is up,
-  // but the hub (which routes client frame-acks to it) must exist before the daemon.
-  // Late-bound: bridge + controller are created once the session browser is up,
-  // but the hub (which routes client ack/input/control to them) precedes the daemon.
-  let bridge: ScreencastBridge | undefined;
+  // Late-bound: the controller is created once the session browser is up. The v1 WS hub that routed client
+  // ack/input/control to it is gone (the Electron app is the real UI host now); the daemon-side host survives
+  // headless to back tests, so broadcasts land in a per-host no-op sink (`hub`, defined below).
   let controller: SessionController | undefined;
-  // Late-bound like controller: the login-wall handoff machine is created once the session
-  // browser + perception are up, but the hub's onDetach (which routes a client disconnect to
-  // it for the LOCKED vanish) must be wired before the daemon.
+  // Late-bound like controller: the login-wall handoff machine is created once the session browser + perception
+  // are up. Its onClientGone LOCKED-vanish path was driven by the WS onDetach (gone); the machine itself stays
+  // (control-token flips still drive it) and is exposed on the host for the Electron/test drivers.
   let handoff: LoginHandoff | undefined;
-  let onNavHandler: ((msg: Record<string, unknown>) => void) | undefined;
-  let onMarkHandler: ((msg: Record<string, unknown>) => void) | undefined;
-  let onApprovalHandler: ((msg: Record<string, unknown>) => void) | undefined;
+  // Human-channel ingress closures (were the WS {t:'comment'|'grant'} handlers). Nav/mark/approval ingress is
+  // the host's navigate()/mark()/approvals.handleWire() directly; comment + grant have no other entry, so they
+  // are exposed on the returned host for the Electron main (IPC) + the unit tests. Defined below.
   let onCommentHandler: ((msg: Record<string, unknown>) => void) | undefined;
   let onGrantHandler: ((msg: Record<string, unknown>) => void) | undefined;
-  // The WS hub fans frames/input over the host's WebSocket; the daemon authorizes
-  // each upgrade (Origin/Host + subprotocol bearer) before handing it here. WS
-  // clients are session viewers, so onAttach/onDetach keep the Session's client
-  // count accurate (it backs idle-eviction) for connect AND every disconnect
-  // (graceful close, error, or heartbeat reap); onAck paces the screencast;
-  // onInput/onControl drive the token-gated input channel (WS = the human party).
-  const hub = new StudioWsHub({
-    onAttach: (id) => registry.get(id)?.attach(),
-    onDetach: (id) => {
-      registry.get(id)?.detach();
-      // A disconnect (graceful, error, or heartbeat reap of a half-open client)
-      // releases any input the holder left pressed — no stranded drag/modifier.
-      controller?.onClientGone();
-      // If a client vanishes mid-login-handoff, LOCK the handoff (no auto re-grant to the agent).
-      handoff?.onClientGone();
-    },
-    onAck: () => bridge?.onClientAck(),
-    onInput: (_id, msg) => {
-      void controller?.handleWireInput(msg);
-    },
-    onControl: (_id, msg) => controller?.handleWireControl(msg),
-    onNav: (_id, msg) => onNavHandler?.(msg),
-    onMark: (_id, msg) => onMarkHandler?.(msg),
-    // The human's answer to a held risky action ({t:'approval'}). The WS is the human channel, so
-    // an approval can only originate from the human (the agent drives via studio_act, never the WS).
-    onApproval: (_id, msg) => onApprovalHandler?.(msg),
-    // The human's comment/annotation ({t:'comment', text}). The WS is the human channel, so the comment is
-    // human-authored → captured trusted=1 (the agent's MCP capture path can never reach this writer).
-    onComment: (_id, msg) => onCommentHandler?.(msg),
-    // S7: the human's pre-grant ({t:'grant', ...}). The WS is the human channel (bearer-authed upgrade); the
-    // host stamps party='human' and rejects a client claiming party='agent' — the agent can never write the
-    // scope store (no agent/MCP path reaches it).
-    onGrant: (_id, msg) => onGrantHandler?.(msg),
-    // Tell a connecting client the current {holder, epoch} so it stamps valid input
-    // even if it joins after a flip (defaults before the controller exists).
-    helloExtras: () => controller?.controlSnapshot() ?? { holder: 'human', epoch: 0 },
-    // 7c S2 + 7d S3 + 7b-notes S2 + 7e S2: backfill a connecting human client with this session's read state
-    // (own messages, after hello): marks, audit timeline, comments, and captured items. Each producer is
-    // defined below; the closure defers the calls until a client connects. 7e S2 hardening: EVERY read is
-    // wrapped in safeSnapshot, so one read throwing (e.g. a corrupt mark store) yields its EMPTY fallback +
-    // a logged warning instead of rejecting the whole array — which ws-hub's single catch would turn into
-    // ALL snapshots suppressed (the no-silent-failure gap the per-read isolation closes).
-    postHello: async () => {
-      const safeSnapshot = async <T extends { t: string }>(label: string, produce: () => T | Promise<T>, fallback: T): Promise<T> => {
-        try {
-          return await produce();
-        } catch (e) {
-          logger.warn('postHello snapshot read failed', { label, sessionId: session.id, error: e instanceof Error ? e.message : String(e) });
-          return fallback;
-        }
-      };
-      return [
-        await safeSnapshot('marks', marksSnapshot, { t: 'marks_snapshot', marks: [] }),
-        await safeSnapshot('audit', auditSnapshot, { t: 'audit_snapshot', entries: [] }),
-        await safeSnapshot('comment', commentSnapshot, { t: 'comment_snapshot', comments: [] }),
-        await safeSnapshot('artifact', artifactSnapshot, { t: 'artifact_snapshot', items: [] }),
-        await safeSnapshot('sessions', sessionsSnapshot, { t: 'sessions_snapshot', sessions: [] }),
-      ];
-    },
-  });
-  // 7f B2: push a metadata-only {t:'sessions'} switcher delta to ALL connected clients whenever the live
-  // session set changes (registry create/close). Wired now that the hub exists; the same sessionMeta
-  // projection as the post-hello backfill, so a switcher applies snapshot + delta uniformly (never a token).
-  registry.onChange = () => hub.broadcastAll({ t: 'sessions', sessions: registry.list().map(sessionMeta) });
-  // S2: the nonce store backs the one-time bearer handshake. A nonce is minted per launch and passed in the
-  // tab URL; the page redeems it (POST /studio/token) for the bearer, which then rides the WS subprotocol —
-  // so the bearer never touches a URL/query.
-  const nonceStore = opts.nonceStore ?? new NonceStore();
-  const handshakeNonce = nonceStore.mint();
+  // Per-host no-op broadcast sink. The v1 WS hub delivered these to a browser tab; the Electron app now owns
+  // the UI, so the daemon-side host drops them. A fresh object per host keeps a test's spy isolated.
+  const hub: HostBroadcastSink = {
+    broadcast: () => {},
+    broadcastAll: () => {},
+    broadcastFrame: () => {},
+    closeAll: () => {},
+  };
   const daemon = new DaemonHttpServer({
     port: opts.port,
     host: opts.host,
     auth: { token, host: opts.host },
     requestTimeoutMs: getConfig().studioRequestTimeoutMs,
-    onUpgrade: (req, socket, head) => hub.handleUpgrade(req, socket, head),
-    webappRoot: STUDIO_WEBAPP_ROOT,
-    nonceStore,
   });
 
   const endpoint = await daemon.start();
@@ -380,19 +310,11 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   );
 
   const session = registry.create({ endpoint, token });
-  // Per-session observability gauges (read-only): token-spend from the observe path,
-  // frame counters from the screencast bridge, process memory sampled on read.
+  // Per-session observability gauges (read-only): token-spend from the observe path, process memory on read.
   const sessionMetrics = new SessionMetrics();
 
-  // Open the web-app tab at the shell, carrying the one-time NONCE (never the bearer) + the session id in
-  // the URL. Default opener just logs the URL (safe for non-interactive/test boots); the CLI entry passes a
-  // spawning opener.
-  const webappUrl = `${endpoint}/?n=${handshakeNonce}&s=${session.id}`;
-  (opts.openTab ?? ((u: string) => logger.info('Studio web app ready', { url: u })))(webappUrl);
-
-  // Bring up the session's dedicated headed browser, then the screencast bridge,
-  // before publishing the handle — so the session is fully live (streamable) by
-  // the time a client can discover it.
+  // Bring up the session's dedicated headed browser before publishing the handle — so the session is fully
+  // live by the time an agent can discover it.
   // Slice 5d: when the session opts into a named profile, resolve its storageState FRESH per launch
   // (start + crash recovery) via the 5c store. profile_absent (opted-in but not-yet-persisted) ⇒
   // undefined ⇒ a clean session (5e's first login persists it). No profile content is logged.
@@ -449,39 +371,41 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   await sessionBrowser.start();
 
   const cfg = getConfig();
-  // Control token + input forwarder + their coordinator. The forwarder maps
-  // normalized client coords to true page CSS px from the latest frame metadata
-  // (so the configured viewport is only the pre-first-frame fallback).
+  // Control token + its coordinator.
   // S5: the token is OWNED by the session (created at registry.create → Session → ControlToken init), so an
   // agent-spawned session starts holder='agent'. The host's primary session is human-spawned → holder='human'.
   const controlToken = session.controlToken;
-  const forwarder = new InputForwarder({
-    cdp: sessionBrowser.cdp,
-    viewport: { width: cfg.studioScreencastMaxWidth, height: cfg.studioScreencastMaxHeight },
-  });
-  controller = new SessionController(controlToken, forwarder, (msg) => hub.broadcast(session.id, msg));
+  // The daemon-side host does not drive real synthetic input — the Electron app's debuggerInputSink does. This
+  // no-op agent InputSink satisfies the SessionController contract (act's gating/audit still runs; no click/type
+  // LANDS here, which is why the click/type/preempt-on-a-live-page e2e is the app's, not this host's).
+  const noopInputSink: InputSink = {
+    key: async () => {},
+    neutralizeHeld: async () => {},
+    agentMouseAt: async () => {},
+    viewportCenter: () => ({ x: 0, y: 0 }),
+  };
+  controller = new SessionController(controlToken, noopInputSink, (msg) => hub.broadcast(session.id, msg));
 
-  // Phase 6c approval gate: hold a risky agent action until the human answers over the WS. The
-  // {t:'approval_request'} goes out via the same per-session broadcast the controller uses; the
-  // human's {t:'approval', id, decision} routes back through the hub's onApproval below. A human
-  // reclaim aborts every pending request (onChange below) so a held action does not survive a
-  // takeover — and the act handler layers the epoch fence on top.
+  // Phase 6c approval gate: hold a risky agent action until the human answers. The {t:'approval_request'} goes
+  // out via the per-session broadcast (a no-op sink here; the Electron app renders the card). The human's answer
+  // routes back through approvals.handleWire (exposed via host.approvals — Electron IPC / tests). A human reclaim
+  // aborts every pending request (onChange below) so a held action does not survive a takeover — and the act
+  // handler layers the epoch fence on top.
   const approvals = new SessionApprovals({ broadcast: (msg) => hub.broadcast(session.id, msg) });
-  onApprovalHandler = (msg) => approvals.handleWire(msg);
 
   // S7: the pre-grant authorization scope store — CLOSURE-LOCAL (mirroring NavGrant), OFF the session object,
-  // EMPTY by default. The act gate reads it pull-at-eval; the ONLY writer is onGrantHandler below (the human WS
-  // channel). A risky action with no matching grant PARKS: enqueued for the human's batch review and surfaced
-  // as a {t:'parked'} broadcast (the agent is not blocked; the action does not execute).
+  // EMPTY by default. The act gate reads it pull-at-eval; the ONLY writer is onGrantHandler below (the human
+  // channel, exposed via host.onGrant). A risky action with no matching grant PARKS: enqueued for the human's
+  // batch review and surfaced as a {t:'parked'} broadcast (the agent is not blocked; the action does not execute).
   const preGrant = new PreGrantStore();
   const park = (item: ParkedAction): void => {
     hub.broadcast(session.id, { t: 'parked', action: item.action, risk: item.risk, ...(item.domain ? { domain: item.domain } : {}), ...(item.ref ? { ref: item.ref } : {}) });
   };
-  // S7: the human's pre-grant ingress. The WS is the human channel (bearer-authed upgrade), so the host STAMPS
-  // party='human' and REJECTS a client claiming party='agent' — the agent can never write the scope store. The
-  // message carries {entries:[{domain, actionType, riskTier}]}; each well-formed entry is added (idempotent).
+  // S7: the human's pre-grant ingress (exposed via host.onGrant — Electron IPC / tests). The host STAMPS
+  // party='human' and REJECTS a caller claiming party='agent' — the agent (MCP dispatch only) can never reach
+  // this. The message carries {entries:[{domain, actionType, riskTier}]}; each well-formed entry is added (idempotent).
   onGrantHandler = (msg) => {
-    if (msg.party === 'agent') return; // reject a client claiming to be the agent — grants are human-only
+    if (msg.party === 'agent') return; // reject a caller claiming to be the agent — grants are human-only
     const entries = Array.isArray(msg.entries) ? msg.entries : [];
     for (const raw of entries) {
       if (!raw || typeof raw !== 'object') continue;
@@ -492,21 +416,21 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     }
   };
 
-  // 7b-notes S1: the human comment/annotation sink. A {t:'comment', text} the human pushes over the WS is
-  // human-authored, so it persists via captureHumanNote — the SOLE content_trusted=1 writer (the agent's
+  // 7b-notes S1: the human comment/annotation sink (exposed via host.onComment — Electron IPC / tests). A
+  // human-authored comment persists via captureHumanNote — the SOLE content_trusted=1 writer (the agent's
   // studio_capture path is hardcoded trusted=0 and can never reach this). Server-authoritative: the echo
   // broadcasts ONLY AFTER a successful capture, so a comment the human sees is ALWAYS a captured comment — a
   // failed cache write surfaces as no echo (logged), never an optimistic phantom. The db is resolved lazily
   // (getDatabase() throws until the cache is up); a throw is caught here and yields no echo.
   onCommentHandler = (msg) => {
     const text = msg.text;
-    if (typeof text !== 'string' || text.trim() === '') return; // ignore empty/garbage; never throw on client input
+    if (typeof text !== 'string' || text.trim() === '') return; // ignore empty/garbage; never throw on caller input
     try {
       const result = captureHumanNote({ sessionId: session.id, text }, { db: getDatabase() });
       // S2a: dual-emit. The comment is persisted trusted=1 above (sole writer), then enqueued as a DISTINCTLY-
       // TYPED trusted=1 human event the agent drains via studio_observe — distinguishable, in the same observe
       // response, from the trusted=0 page-snapshot envelope. Enqueued ONLY after a successful capture (a shown/
-      // drained comment is always a captured one). Ingress stays human-WS-only: no agent/MCP path reaches here.
+      // drained comment is always a captured one). Ingress stays human-only: no agent/MCP path reaches here.
       eventQueue.enqueue({ type: 'comment', commentId: result.id, text, trusted: true });
       hub.broadcast(session.id, { t: 'comment', id: result.id, text, trusted: true });
     } catch (e) {
@@ -548,8 +472,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   await navInterceptor.start(sessionBrowser.cdp);
   // Finding A: rebind the nav interceptor on the FRESH cdp BEFORE the crash-recovery
   // re-navigation (awaited pre-nav hook), so a redirect hop during recovery is
-  // re-validated on the agent path too. Screencast/input rebinds stay in onRecovered
-  // (post-goto) — they don't gate navigation, so their order vs the re-nav is moot.
+  // re-validated on the agent path too.
   sessionBrowser.onBeforeReNav(async (cdp) => {
     await navInterceptor.rebind(cdp);
   });
@@ -642,9 +565,6 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       await loginHandoff.checkCompletion();
     } else hub.broadcast(session.id, { t: 'error', reason: r.reason });
   };
-  onNavHandler = (msg) => {
-    void navigate(typeof msg.url === 'string' ? msg.url : '');
-  };
 
   // Mark-to-action (Phase 3a). The human arms inspect mode via {t:'mark'} on the WS (the
   // host-stamped HUMAN channel), holder-gated like {t:'nav'} so a pick cannot hijack the
@@ -698,9 +618,6 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       return;
     }
     await inspector.enable();
-  };
-  onMarkHandler = () => {
-    void mark().catch((e) => logger.debug('inspect enable failed', { error: e instanceof Error ? e.message : String(e) }));
   };
 
   // Heal a stored mark against the CURRENT page (3b): re-resolve the structured target through
@@ -808,34 +725,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     return input.op === 'generalize' ? generalizeMark(input.markId) : marksView();
   };
 
-  bridge = new ScreencastBridge({
-    cdp: sessionBrowser.cdp,
-    // Feed the forwarder the live page dimensions for input mapping, then fan the frame out.
-    sink: (frame) => {
-      forwarder.updateViewport(frame.metadata);
-      hub.broadcastFrame(session.id, frame);
-    },
-    quality: cfg.studioScreencastQuality,
-    maxWidth: cfg.studioScreencastMaxWidth,
-    maxHeight: cfg.studioScreencastMaxHeight,
-    everyNthFrame: cfg.studioScreencastEveryNthFrame,
-    ackTimeoutMs: cfg.studioFrameAckTimeoutMs,
-    onForward: () => sessionMetrics.recordFrameForwarded(),
-    onDrop: () => sessionMetrics.recordFrameDropped(),
-  });
-  // On a browser-crash recovery, rebind the screencast + input channel to the FRESH
-  // cdp (each resets its stale state); the control token persists. The nav interceptor
-  // rebinds earlier, via onBeforeReNav above, so it is live before the recovery goto.
-  sessionBrowser.onRecovered(() => {
-    forwarder.rebind(sessionBrowser.cdp);
-    void bridge!.restart(sessionBrowser.cdp).catch((e) =>
-      logger.debug('screencast restart after recovery failed', { error: e instanceof Error ? e.message : String(e) }),
-    );
-  });
-  // If bounded recovery is exhausted, tell connected clients the session died
-  // instead of silently going dark.
+  // If bounded recovery is exhausted, surface that the session died (broadcast into the no-op sink here; the
+  // Electron app renders it) instead of silently going dark. The nav interceptor rebinds via onBeforeReNav
+  // above, so it is live before the recovery goto (the screencast/input rebinds are gone with the v1 layer).
   sessionBrowser.onFailed(() => hub.broadcast(session.id, { t: 'error', reason: 'session_failed' }));
-  await bridge.start();
 
   // Wire studio_observe + studio_act to the live session and inject them into the
   // daemon's shared dispatcher BEFORE the handle is published — closing the self-loop
@@ -1103,28 +996,13 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, bridge, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, preGrant, studioSessions, sessionDrive, handoff: loginHandoff, hub, handle, endpoint, webappUrl, nonceStore };
-}
-
-/** Open the web-app tab in the platform browser; the logged URL is the fallback if no opener is present. */
-function openStudioTab(url: string): void {
-  log(`Studio web app: ${url}`);
-  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
-  const cmdArgs = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
-  try {
-    const child = spawn(cmd, cmdArgs, { stdio: 'ignore', detached: true });
-    child.on('error', () => { /* no opener available — the logged URL is the fallback */ });
-    child.unref();
-  } catch {
-    /* non-fatal — the human can open the logged URL manually */
-  }
+  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, preGrant, studioSessions, sessionDrive, handoff: loginHandoff, hub, handle, endpoint, onComment: (m) => onCommentHandler?.(m), onGrant: (m) => onGrantHandler?.(m) };
 }
 
 /** The teardown-relevant slice of a StudioHost (structural — StudioHost satisfies it). */
 export interface StudioTeardownTarget {
   idleSweeper: { stop(): void };
   hub: { closeAll(): void };
-  bridge: { stop(): Promise<void> };
   navInterceptor: { stop(): Promise<void> };
   sessionBrowser: { close(): Promise<void> };
   registry: { closeAll(): void };
@@ -1133,12 +1011,12 @@ export interface StudioTeardownTarget {
 
 /**
  * Ordered, fault-isolated teardown of a studio host. ORDER is load-bearing where a stage
- * needs a LIVE CDP: the screencast bridge and nav interceptor issue CDP calls against the
- * session browser, so BOTH must stop while it is still open → both precede sessionBrowser.close.
- * ISOLATION (like postHello's safeSnapshot): each fallible async stage is .catch/try-wrapped so
- * one failure cannot abort the rest — an unwrapped throw would leak the still-open sockets/browsers
- * of every later stage. `removeHandle`/`closeDaemonBrowser` are injectable so tests never touch the
- * real ~/.wigolo handle or the shared browser.
+ * needs a LIVE CDP: the nav interceptor issues CDP calls against the session browser, so it
+ * must stop while the browser is still open → it precedes sessionBrowser.close.
+ * ISOLATION: each fallible async stage is .catch/try-wrapped so one failure cannot abort the
+ * rest — an unwrapped throw would leak the still-open sockets/browsers of every later stage.
+ * `removeHandle`/`closeDaemonBrowser` are injectable so tests never touch the real ~/.wigolo
+ * handle or the shared browser.
  */
 export async function teardownStudioHost(
   host: StudioTeardownTarget,
@@ -1150,9 +1028,6 @@ export async function teardownStudioHost(
   host.idleSweeper.stop();
   removeH();
   host.hub.closeAll();
-  await host.bridge.stop().catch((e) =>
-    logger.debug('screencast stop failed', { error: e instanceof Error ? e.message : String(e) }),
-  );
   await host.navInterceptor.stop().catch((e) =>
     logger.debug('nav interceptor stop failed', { error: e instanceof Error ? e.message : String(e) }),
   );
@@ -1170,27 +1045,20 @@ export async function teardownStudioHost(
   );
 }
 
-export function runStudio(args: string[]): void {
-  const parsed = parseStudioArgs(args);
-  log(`Starting studio host on ${parsed.host}:${parsed.port}…`);
-
-  startStudioHost({ ...parsed, openTab: openStudioTab })
-    .then((host) => {
-      log(`Studio host running at ${host.endpoint} (session ${host.session.id})`);
-      log(`Session handle: ${studioHandlePath()}`);
-      log('Press Ctrl+C to stop.');
-
-      const shutdown = async () => {
-        log('Shutting down studio host…');
-        await teardownStudioHost(host, { log });
-        process.exit(0);
-      };
-
-      process.on('SIGINT', () => void shutdown());
-      process.on('SIGTERM', () => void shutdown());
-    })
-    .catch((err) => {
-      log(`Failed to start studio host: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
-    });
+/**
+ * Launch the Studio desktop app (dev). Packaging + a `wigolo studio` that focuses an installed binary is P8;
+ * for now this spawns the app's dev process from the repo checkout (the `studio` command is internal/unadvertised).
+ * The daemon-side headless host (startStudioHost) survives only to back tests; the app is the real session host.
+ */
+export function runStudio(_args: string[]): void {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  log('Launching Studio app (dev)…');
+  try {
+    const child = spawn('npm', ['run', 'dev', '-w', 'apps/studio'], { cwd: repoRoot, stdio: 'inherit' });
+    child.on('error', (e) =>
+      log(`Failed to launch Studio app: ${e instanceof Error ? e.message : String(e)} (run \`npm run dev -w apps/studio\` from the repo).`),
+    );
+  } catch (e) {
+    log(`Failed to launch Studio app: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }

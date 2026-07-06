@@ -11,7 +11,6 @@ vi.mock('../../../src/daemon/http-server.js', () => ({
         host: string;
         auth?: { token: string; host: string };
         requestTimeoutMs?: number;
-        onUpgrade?: unknown;
       },
     ) {}
     start = vi.fn().mockImplementation(async () => {
@@ -46,47 +45,12 @@ import { MarkStore } from '../../../src/studio/mark/store.js';
 import { ProfileStore } from '../../../src/studio/profile-store.js';
 import { scopeStorageStateToOrigin } from '../../../src/studio/login-capture.js';
 import { readFileSync } from 'node:fs';
-import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
-import WebSocket from 'ws';
 import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
 import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import { createCaptureHandler, type StudioCaptureInput } from '../../../src/studio/capture/handler.js';
-import { captureHumanNote, captureFromPage } from '../../../src/studio/capture/artifacts.js';
 import { STUDIO_ACT_TOOL_SCHEMA, STUDIO_OBSERVE_TOOL_SCHEMA, TOOL_SCHEMAS } from '../../../src/server/tool-schemas.js';
 import { dispatchStudioTool } from '../../../src/daemon/studio-dispatch.js';
 import { SessionRegistry } from '../../../src/studio/registry.js';
-
-/** Attach the host's REAL ws hub to a loopback server and connect a real client — exercises handleUpgrade end-to-end. */
-async function connectToHostHub(host: Awaited<ReturnType<typeof startStudioHost>>) {
-  const server = createServer();
-  server.on('upgrade', (req, socket, head) => host.hub.handleUpgrade(req, socket, head));
-  const port = await new Promise<number>((res) => server.listen(0, '127.0.0.1', () => res((server.address() as AddressInfo).port)));
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/studio/${host.session.id}/stream`);
-  // Collect ALL frames — hello and the unprompted post-hello snapshot arrive back-to-back, so a one-shot
-  // listener would race past the second. `at(i)` waits until that index exists.
-  const msgs: Array<Record<string, unknown>> = [];
-  ws.on('message', (d: WebSocket.RawData) => msgs.push(JSON.parse(d.toString())));
-  const at = (i: number): Promise<Record<string, unknown>> =>
-    new Promise((resolve, reject) => {
-      const t0 = Date.now();
-      const iv = setInterval(() => {
-        if (msgs.length > i) { clearInterval(iv); resolve(msgs[i]); }
-        else if (Date.now() - t0 > 1500) { clearInterval(iv); reject(new Error(`no message at index ${i} within 1500ms`)); }
-      }, 5);
-    });
-  const waitForType = (t: string): Promise<Record<string, unknown>> =>
-    new Promise((resolve, reject) => {
-      const t0 = Date.now();
-      const iv = setInterval(() => {
-        const hit = msgs.find((m) => m.t === t);
-        if (hit) { clearInterval(iv); resolve(hit); }
-        else if (Date.now() - t0 > 1500) { clearInterval(iv); reject(new Error(`no message of type ${t} within 1500ms`)); }
-      }, 5);
-    });
-  const close = async () => { ws.close(); await new Promise<void>((r) => server.close(() => r())); };
-  return { ws, msgs, at, waitForType, close };
-}
 
 // Slice 5e-a — a session-browser launcher whose live page URL + storageState are MUTABLE, so a test
 // can drive the login-handoff window: an agent act lands on a credential URL (wall), then the human
@@ -117,8 +81,8 @@ const fakeBrowserLauncher = async (): Promise<LaunchedSessionBrowser> =>
   }) as unknown as LaunchedSessionBrowser;
 
 // A launcher whose page can be crashed and which hands out a fresh, send-recording
-// cdp per (re)launch — so the HOST wiring (onRecovered→bridge.restart(fresh cdp),
-// onFailed→session_failed) is testable at the startStudioHost boundary.
+// cdp per (re)launch — so the HOST wiring (onBeforeReNav→nav-interceptor rebind before
+// the recovery goto, onFailed→session_failed) is testable at the startStudioHost boundary.
 function makeCrashableHostLauncher() {
   const state = {
     cdps: [] as Array<{ sends: Array<{ method: string }> }>,
@@ -178,29 +142,6 @@ describe('cli/studio startStudioHost', () => {
     expect(events).toContain('start'); // endpoint bound…
     expect(events).toContain('handle'); // …and handle published — startup completed despite the hanging warm
     await host.daemon.stop();
-  }, 5000);
-
-  it('S2: opens the tab with a one-time nonce (never the bearer), and that nonce is live in the shared store', async () => {
-    // DaemonHttpServer is mocked here (no real listener) — the real /studio/token exchange dispatch is
-    // proven in tests/unit/daemon/token-exchange.test.ts. This is the WIRING pin: the tab URL carries the
-    // nonce and NOT the bearer, and the nonce minted into the tab URL is the very nonce the (shared) store
-    // the daemon was handed will redeem — single-use.
-    let opened: string | undefined;
-    const host = await startStudioHost({
-      port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher,
-      openTab: (u) => { opened = u; },
-    });
-    try {
-      expect(opened).toBeDefined();
-      expect(opened).toBe(host.webappUrl);
-      expect(opened).toContain('?n=');
-      expect(opened).not.toContain(host.handle.token); // the bearer never rides the URL
-      const nonce = new URL(opened!).searchParams.get('n')!;
-      expect(host.nonceStore.redeem(nonce).ok).toBe(true); // the minted nonce is live in the store the daemon holds
-      expect(host.nonceStore.redeem(nonce).ok).toBe(false); // single-use — second redeem fails
-    } finally {
-      await host.daemon.stop();
-    }
   }, 5000);
 
   it('still kicks off the embedding warm in the background (after the endpoint is live, not before)', async () => {
@@ -333,25 +274,6 @@ describe('cli/studio startStudioHost', () => {
     }
   });
 
-  it('S2 PIN-A: a connecting client backfills the marks snapshot after hello — through the real host hub upgrade', async () => {
-    const ms = new MarkStore();
-    ms.add({ backendNodeId: 1, role: 'button', name: 'Add to cart', trusted: false, fingerprint: 'fp', ancestorPath: 'html/body/button', attrs: {} });
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher, markStore: ms });
-    const conn = await connectToHostHub(host);
-    try {
-      const hello = await conn.at(0);
-      expect(hello).toMatchObject({ t: 'hello' });
-      expect(hello.marks).toBeUndefined(); // LOCKED: hello stays control-only — marks ride a separate snapshot
-      const snap = await conn.at(1);
-      expect(snap.t).toBe('marks_snapshot'); // the backfill the human read-surface (S4) hydrates from
-      expect(Array.isArray(snap.marks)).toBe(true);
-      expect((snap.marks as Array<Record<string, unknown>>)[0]).toMatchObject({ markId: 'm1', role: 'button', name: 'Add to cart', trusted: false });
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-
   // PIN-B (confidence is REAL, not stubbed). The snapshot reuses the studio_marks builder (marksView → heal),
   // so the backfill confidence for a mark state is byte-identical to what the agent reads via studio_marks.
   // NAMED mutation that REDs: build marksSnapshot's marks with a hardcoded confidence (e.g. 'high') instead of
@@ -372,101 +294,6 @@ describe('cli/studio startStudioHost', () => {
 
   // ── 7c S3: marks live delta — dual-emit at the real mark sink (onMarkResolved, the fn the inspector calls) ──
   const seedTarget = (name: string) => ({ backendNodeId: 1, role: 'button', name, trusted: false as const, fingerprint: 'fp', ancestorPath: 'html/body/button', attrs: {} });
-
-  // PIN-A (delta exists). NAMED mutation that REDs: remove the hub.broadcast in the mark sink → a human mark
-  // produces no {t:'mark'} delta, so a connected client never sees it and waitForType times out.
-  it('S3 PIN-A: a human mark broadcasts a live {t:mark} delta to connected clients (delta exists)', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher, markStore: new MarkStore() });
-    const conn = await connectToHostHub(host);
-    try {
-      await conn.at(1); // hello + initial (empty) marks snapshot
-      host.onMarkResolved(seedTarget('Add to cart')); // enter through the REAL action site
-      const delta = await conn.waitForType('mark');
-      expect(delta).toMatchObject({ t: 'mark', role: 'button', name: 'Add to cart', trusted: false });
-      expect(typeof delta.markId).toBe('string');
-      expect(typeof delta.confidence).toBe('string'); // a StudioMarkView — confidence rides the delta
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-
-  // 7d S2 PIN-A (audit live delta exists). NAMED mutation that REDs: remove the hub.broadcast in the audit
-  // onRecord wiring → a recorded agent action produces no {t:'audit'} delta and waitForType times out.
-  it('7d S2 PIN-A: a recorded agent action broadcasts a live {t:audit} delta through the real record+broadcast site', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    const conn = await connectToHostHub(host);
-    try {
-      await conn.at(0); // hello
-      host.controller.handleControl({ op: 'grant', to: 'agent' }); // the agent holds the token, so the act fires
-      await host.act({ action: 'navigate', url: 'https://example.com/' }); // the REAL record site: act → audit.record → onRecord
-      const delta = await conn.waitForType('audit');
-      expect(delta).toMatchObject({ t: 'audit', action: 'navigate', outcome: { ok: true } });
-      expect(typeof delta.seq).toBe('number'); // the stamped, replay-ordered entry rides the delta
-      expect(typeof delta.ts).toBe('number');
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-
-  // 7d S3 PIN-A (audit backfill exists, through the real handleUpgrade). NAMED mutation that REDs: drop the
-  // auditSnapshot from the host's postHello → a connecting client never backfills the timeline and
-  // waitForType('audit_snapshot') times out.
-  it('7d S3 PIN-A: a connecting client backfills the audit timeline via post-hello {t:audit_snapshot}', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    // Seed the session's audit log BEFORE the client connects — the backfill must carry prior actions.
-    host.audit.record({ action: 'navigate', epoch: 0, target: { url: 'https://a/' }, outcome: { ok: true } });
-    host.audit.record({ action: 'click', epoch: 1, target: { ref: 'e1' }, outcome: { ok: false, error_reason: 'not_holder' } });
-    const conn = await connectToHostHub(host);
-    try {
-      const snap = await conn.waitForType('audit_snapshot');
-      expect(Array.isArray(snap.entries)).toBe(true);
-      const entries = snap.entries as Array<Record<string, unknown>>;
-      expect(entries.map((e) => e.action)).toEqual(['navigate', 'click']); // the prior session sequence, in order
-      expect(entries.map((e) => e.seq)).toEqual([1, 2]);
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-
-  // 7d S3 PIN-B (the cap is real — decision #8: most-recent N=200). NAMED mutation that REDs: cap to
-  // unbounded / a wrong N / the OLDEST 200 → the snapshot's count or selection diverges from the most-recent
-  // 200, so either the length or the boundary seq below fails.
-  it('7d S3 PIN-B: with >200 entries the audit snapshot is EXACTLY the most-recent 200', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    for (let i = 0; i < 250; i++) host.audit.record({ action: 'scroll', epoch: 0, outcome: { ok: true } });
-    const conn = await connectToHostHub(host);
-    try {
-      const snap = await conn.waitForType('audit_snapshot');
-      const entries = snap.entries as Array<Record<string, unknown>>;
-      expect(entries.length).toBe(200); // capped — not the full 250, not a wrong N
-      expect(entries[0].seq).toBe(51); // the most-recent 200 = seq 51..250 (NOT the oldest, which would start at 1)
-      expect(entries[199].seq).toBe(250);
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-
-  // 7f B1 PIN-A (sessions backfill exists, through the real handleUpgrade). NAMED mutation that REDs against
-  // present+correct code: drop the `sessions` safeSnapshot from the host's postHello array → a connecting
-  // client never backfills the session list and waitForType('sessions_snapshot') times out (diverging value:
-  // a sessions_snapshot frame present → absent).
-  it('7f B1 PIN-A: a connecting client backfills the session list via post-hello {t:sessions_snapshot}', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    const conn = await connectToHostHub(host);
-    try {
-      const snap = await conn.waitForType('sessions_snapshot');
-      expect(Array.isArray(snap.sessions)).toBe(true);
-      const sessions = snap.sessions as Array<Record<string, unknown>>;
-      expect(sessions.map((s) => s.id)).toContain(host.session.id); // the live session is enumerated
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
 
   // 7f B1 PIN-B (TRUST — metadata-only; the load-bearing pin). NAMED mutation that REDs against present+correct
   // code: add the session token (or endpoint) to the sessionMeta projection → a bearer token leaks into the
@@ -507,55 +334,6 @@ describe('cli/studio startStudioHost', () => {
     }
   });
 
-  // 7f B2 PIN-create (delta through the real registry.create site → hub broadcast). NAMED mutation that REDs
-  // against present+correct code: remove the `this.onChange?.()` call from registry.create (or unwire
-  // registry.onChange in the host) → creating a session no longer pushes a {t:'sessions'} delta to a
-  // connected client and waitForType('sessions') times out (diverging value: a sessions delta present →
-  // absent; a client on another session never learns the new session exists).
-  it('7f B2 PIN-create: creating a session broadcasts a {t:sessions} delta to a connected client (metadata-only)', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    const conn = await connectToHostHub(host);
-    try {
-      await conn.waitForType('sessions_snapshot'); // initial post-hello backfill (B1) — distinct from the live delta
-      const second = host.registry.create({ endpoint: host.endpoint, token: 'second-token' });
-      const delta = await conn.waitForType('sessions'); // the live delta only fires on create/close, never at hello
-      const sessions = delta.sessions as Array<Record<string, unknown>>;
-      const ids = sessions.map((s) => s.id);
-      expect(ids).toContain(host.session.id);
-      expect(ids).toContain(second.id);
-      for (const s of sessions) expect('token' in s).toBe(false); // metadata-only — no bearer leak in the delta
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-
-  // 7f B2 PIN-close (delta through the real registry.close site). NAMED mutation that REDs against
-  // present+correct code: remove the `this.onChange?.()` call from registry.close → closing a session no
-  // longer updates a connected client's switcher (diverging value: a post-close delta that drops the closed
-  // id never arrives — the stale session lingers in the switcher forever).
-  it('7f B2 PIN-close: closing a session broadcasts a {t:sessions} delta that drops the closed session', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    const conn = await connectToHostHub(host);
-    try {
-      await conn.waitForType('sessions_snapshot'); // ensure the client is fully connected before mutating the set
-      const second = host.registry.create({ endpoint: host.endpoint, token: 'second-token' });
-      await conn.waitForType('sessions'); // the create delta
-      host.registry.close(second.id);
-      const t0 = Date.now();
-      let dropped = false;
-      while (Date.now() - t0 < 1500) {
-        const m = [...conn.msgs].reverse().find((x) => x.t === 'sessions');
-        if (m && Array.isArray(m.sessions) && !(m.sessions as Array<Record<string, unknown>>).some((s) => s.id === second.id)) { dropped = true; break; }
-        await new Promise((r) => setTimeout(r, 5));
-      }
-      expect(dropped).toBe(true); // the switcher learned the session closed
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-
   // PIN-B (agent path intact — DUAL-emit, not replace). NAMED mutation that REDs: replace the enqueue with the
   // broadcast (drop loginHandoff.enqueueContentEvent) → the agent's observe-drain no longer receives the mark.
   it('S3 PIN-B: a human mark STILL enqueues the agent content event (dual-emit, not replace)', async () => {
@@ -574,27 +352,23 @@ describe('cli/studio startStudioHost', () => {
     }
   });
 
-  // PIN-C (handoff bypass — the LOCKED default). NAMED mutation that REDs: gate the human broadcast behind
-  // `loginHandoff.active` → during the login-handoff window the human delta is suppressed too, so the human
-  // misses their own mark while it is exactly what they must still see.
-  it('S3 PIN-C: during a login-handoff window the human mark delta STILL broadcasts while the agent enqueue stays suppressed', async () => {
+  // PIN-C (handoff suppression — the LOCKED default). During a login-handoff window a human mark can be a
+  // displayed secret (a mark made on the credential screen), so the AGENT enqueue is dropped at source and
+  // observe drains NO mark. NAMED mutation that REDs: stop suppressing the enqueue during the window → the
+  // credential-screen mark reaches the agent's observe. (The human still sees their own mark; that delivery
+  // is the Electron app's UI now, covered there.)
+  it('S3 PIN-C: during a login-handoff window the human mark is suppressed from the agent observe-drain', async () => {
     const wall = makeWallLauncher({ url: 'https://acme.example/login' });
     const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: wall.launch, markStore: new MarkStore() });
-    const conn = await connectToHostHub(host);
     try {
-      await conn.at(1); // hello + snapshot
       await host.handoff.detectWall(); // open the human-holding window
       expect(host.handoff.active).toBe(true);
       host.onMarkResolved(seedTarget('Submit'));
-      // the human delta BYPASSES the suppression — it must arrive
-      const delta = await conn.waitForType('mark');
-      expect(delta).toMatchObject({ t: 'mark', role: 'button', name: 'Submit' });
-      // …while the agent enqueue is dropped at source during the window — observe drains NO mark
+      // the agent enqueue is dropped at source during the window — observe drains NO mark
       const obs = await host.observe({});
       if ('events' in obs) expect(obs.events.find((e) => e.type === 'mark')).toBeFalsy();
     } finally {
       host.handoff.onClientGone(); // settle the window → clears the armed deadline timer
-      await conn.close();
       await host.daemon.stop();
     }
   });
@@ -651,19 +425,14 @@ describe('cli/studio startStudioHost', () => {
     ).rejects.toThrow(/allow-remote/i);
   });
 
-  it('wires the websocket hub (onUpgrade) into the daemon and starts the session browser', async () => {
+  it('starts the session browser before publishing the handle', async () => {
     const host = await startStudioHost({
       port: 0,
       host: '127.0.0.1',
       allowRemote: false,
       browserLauncher: fakeBrowserLauncher,
     });
-    expect(typeof host.daemon.options.onUpgrade).toBe('function'); // hub wired to the upgrade seam
-    expect(host.hub).toBeDefined();
-    expect(host.hub.clientCount(host.session.id)).toBe(0);
     expect(host.sessionBrowser.running).toBe(true); // session browser live before the handle is published
-    expect(host.bridge).toBeDefined(); // screencast bridge constructed + started
-    await host.bridge.stop();
     await host.sessionBrowser.close();
     await host.daemon.stop();
   });
@@ -674,7 +443,6 @@ describe('cli/studio startStudioHost', () => {
     expect(host.navInterceptor).toBeDefined();
     expect(launcher.state.cdps[0].sends.some((s) => s.method === 'Fetch.enable')).toBe(true);
     await host.navInterceptor.stop();
-    await host.bridge.stop();
     await host.daemon.stop();
   });
 
@@ -687,7 +455,6 @@ describe('cli/studio startStudioHost', () => {
     await host.navigate('https://example.com/'); // public → allowed, no error
     expect(broadcastSpy).not.toHaveBeenCalled();
     await host.navInterceptor.stop();
-    await host.bridge.stop();
     await host.daemon.stop();
   });
 
@@ -714,7 +481,6 @@ describe('cli/studio startStudioHost', () => {
     expect(cdp0.sends.filter((s) => s.method === 'goto').length).toBe(gotosAfterHuman + 1);
 
     await host.navInterceptor.stop();
-    await host.bridge.stop();
     await host.daemon.stop();
   });
 
@@ -732,7 +498,6 @@ describe('cli/studio startStudioHost', () => {
     expect(cdp0.sends.some((s) => s.method === 'Page.stopLoading')).toBe(true); // …stops the agent's in-flight nav
 
     await host.navInterceptor.stop();
-    await host.bridge.stop();
     await host.daemon.stop();
   });
 
@@ -761,7 +526,6 @@ describe('cli/studio startStudioHost', () => {
     expect(reason(await host.act({ action: 'navigate', url: 'http://169.254.169.254/' }))).toBe('navigation_blocked');
 
     await host.navInterceptor.stop();
-    await host.bridge.stop();
     await host.daemon.stop();
   });
 
@@ -773,7 +537,6 @@ describe('cli/studio startStudioHost', () => {
     expect(() => host.grantAgentPrivateNav(true)).not.toThrow();
     expect(() => host.grantAgentPrivateNav(false)).not.toThrow();
     await host.navInterceptor.stop();
-    await host.bridge.stop();
     await host.daemon.stop();
   });
 
@@ -794,7 +557,6 @@ describe('cli/studio startStudioHost', () => {
     expect(enableIdx).toBeLessThan(gotoIdx); // …and the guard was live BEFORE the navigation
 
     await host.navInterceptor.stop();
-    await host.bridge.stop();
     await host.daemon.stop();
   });
 
@@ -961,7 +723,9 @@ describe('cli/studio startStudioHost', () => {
     }
   });
 
-  it('wires crash recovery: rebinds the screencast to the fresh cdp, and notifies clients on exhaustion', async () => {
+  // The nav-interceptor rebind-on-recovery is covered by the Finding A test above; the v1 screencast/input
+  // rebinds are gone. What remains distinct here: exhausting crash-recovery surfaces session_failed (not silent).
+  it('notifies (session_failed) when browser crash-recovery is exhausted (not silent)', async () => {
     process.env.WIGOLO_STUDIO_BROWSER_CRASH_MAX_RESTARTS = '1';
     resetConfig();
     const launcher = makeCrashableHostLauncher();
@@ -969,24 +733,13 @@ describe('cli/studio startStudioHost', () => {
     delete process.env.WIGOLO_STUDIO_BROWSER_CRASH_MAX_RESTARTS; // already baked into the SessionBrowser
     const broadcastSpy = vi.spyOn(host.hub, 'broadcast');
 
-    // crash 1 → recover → bridge.restart(fresh cdp): the NEW session gets a startScreencast
-    await launcher.fireCrash();
+    await launcher.fireCrash(); // crash 1 → recovers (within maxRestarts)
     await flush();
     expect(launcher.state.cdps.length).toBe(2); // relaunched
-    expect(launcher.state.cdps[1].sends.some((s) => s.method === 'Page.startScreencast')).toBe(true);
-    expect(launcher.state.cdps[1].sends.some((s) => s.method === 'Fetch.enable')).toBe(true); // nav interceptor rebound on the fresh cdp
 
-    // ...and the INPUT forwarder rebound too: post-recovery human input dispatches to the FRESH cdp, not the dead one.
-    await host.controller.handleWireInput({ kind: 'mouse', epoch: 0, type: 'mouseMoved', nx: 0.5, ny: 0.5 });
-    expect(launcher.state.cdps[1].sends.some((s) => s.method === 'Input.dispatchMouseEvent')).toBe(true);
-    expect(launcher.state.cdps[0].sends.some((s) => s.method === 'Input.dispatchMouseEvent')).toBe(false);
-
-    // crash 2 → exceeds maxRestarts(1) → onFailed → clients told the session died (not silent)
-    await launcher.fireCrash();
+    await launcher.fireCrash(); // crash 2 → exceeds maxRestarts(1) → onFailed
     await flush();
-    expect(broadcastSpy).toHaveBeenCalledWith(host.session.id, { t: 'error', reason: 'session_failed' });
-
-    await host.bridge.stop();
+    expect(broadcastSpy).toHaveBeenCalledWith(host.session.id, { t: 'error', reason: 'session_failed' }); // clients told (not silent)
     await host.daemon.stop();
   });
 });
@@ -1380,14 +1133,12 @@ describe('cli/studio D2/B — durable profile↔origin binding (M2 + anti-rebind
 });
 
 /**
- * Phase 7b-notes S1 — the human comment round-trip on the REAL host path. A {t:'comment',text} the human
- * pushes over the WS persists via captureHumanNote (the SOLE content_trusted=1 writer) and, only on a
- * successful capture, echoes a server-authoritative {t:'comment'} back. The agent's studio_capture path
- * stays trusted=0-forced — the trusted=1 writer is unreachable from the agent. Real cache DB so the persist
- * + trust land via the real path (captureHumanNote → real insert), real hub upgrade so the comment routes
- * through onMessage → onComment (not a bare call).
+ * Phase 7b-notes S1 — the human comment path on the REAL host. A comment driven through the human-channel
+ * ingress (host.onComment — Electron IPC / tests) persists via captureHumanNote (the SOLE content_trusted=1
+ * writer). The agent's studio_capture path stays trusted=0-forced — the trusted=1 writer is unreachable from
+ * the agent. Real cache DB so the persist + trust land via the real path (captureHumanNote → real insert).
  */
-describe('cli/studio startStudioHost — 7b-notes S1 comment round-trip', () => {
+describe('cli/studio startStudioHost — 7b-notes S1 comment persistence', () => {
   beforeEach(() => {
     events.length = 0;
     resetConfig();
@@ -1404,27 +1155,20 @@ describe('cli/studio startStudioHost — 7b-notes S1 comment round-trip', () => 
       .prepare("SELECT id, markdown, content_trusted, curated_by_human FROM studio_artifacts WHERE session_id = ? AND artifact_type = 'note' ORDER BY id")
       .all(sessionId) as Array<{ id: number; markdown: string; content_trusted: number; curated_by_human: number }>;
 
-  // PIN-A(i) — the load-bearing trust pin, HUMAN half, through real dispatch (WS onMessage → onComment →
-  // capture dispatch, not a bare call). A human comment persists via captureHumanNote → content_trusted=1,
-  // and echoes back. NAMED mutation that REDs: route the comment through captureFromPage (trusted=0) instead
-  // of captureHumanNote → the persisted note lands content_trusted=0 → this REDs.
-  it('S1 PIN-A(i): a human comment persists trusted=1 and echoes {t:comment} — through the real WS dispatch', async () => {
+  // PIN-A(i) — the load-bearing trust pin, HUMAN half, through the exposed ingress (host.onComment — the seam
+  // the Electron main drives over IPC now that the v1 WS transport is gone). A human comment persists via
+  // captureHumanNote → content_trusted=1. NAMED mutation that REDs: route the comment through captureFromPage
+  // (trusted=0) instead of captureHumanNote → the persisted note lands content_trusted=0 → this REDs.
+  it('S1 PIN-A(i): a human comment persists trusted=1 via the host comment ingress', async () => {
     const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    const conn = await connectToHostHub(host);
     try {
-      await conn.at(0); // hello
-      conn.ws.send(JSON.stringify({ t: 'comment', text: 'renew the cert' }));
-      const echo = await conn.waitForType('comment');
-      expect(echo).toMatchObject({ t: 'comment', text: 'renew the cert', trusted: true }); // server-authoritative echo
-      expect(typeof echo.id).toBe('number');
+      host.onComment({ text: 'renew the cert' }); // the human-channel ingress (captureHumanNote runs synchronously)
       const rows = noteRows(host.session.id);
       expect(rows.length).toBe(1); // persisted exactly once
       expect(rows[0].markdown).toBe('renew the cert');
       expect(rows[0].content_trusted).toBe(1); // the SOLE trusted writer — mutation→captureFromPage flips this to 0 (RED)
       expect(rows[0].curated_by_human).toBe(1);
-      expect(echo.id).toBe(rows[0].id); // the echo carries the persisted artifact id
     } finally {
-      await conn.close();
       await host.daemon.stop();
     }
   });
@@ -1451,167 +1195,15 @@ describe('cli/studio startStudioHost — 7b-notes S1 comment round-trip', () => 
     expect(row.content_trusted).toBe(0); // mutation→captureHumanNote / trusted param flips this to 1 (RED)
   });
 
-  // PIN-B (delta exists + post-capture ordering, no-silent-failure). Two halves:
-  //  (1) "remove the broadcast" → PIN-A(i)'s echo never arrives → that test REDs (proven there).
-  //  (2) HERE: the echo broadcasts ONLY AFTER a successful capture. With the cache DB unavailable the capture
-  //      write throws, so NO echo must arrive — a shown comment is ALWAYS a captured comment. NAMED mutation
-  //      that REDs: broadcast before/regardless of the capture result → the echo fires despite the failed write.
-  it('S1 PIN-B: on a capture-write failure (cache unavailable) NO {t:comment} echo is broadcast', async () => {
-    closeDatabase(); // the cache write now fails — getDatabase() throws inside the comment capture
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    const conn = await connectToHostHub(host);
-    try {
-      await conn.at(0); // hello
-      conn.ws.send(JSON.stringify({ t: 'comment', text: 'never captured' }));
-      await new Promise((r) => setTimeout(r, 250)); // give the server room to (wrongly) echo
-      expect(conn.msgs.find((m) => m.t === 'comment')).toBeUndefined(); // mutation→echo-regardless makes this defined (RED)
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-      initDatabase(':memory:'); // restore for afterEach's closeDatabase()
-    }
-  });
-
-  // ── 7b-notes S2: comment snapshot (post-hello backfill of this session's comments) ──
-  const seedComment = (sessionId: string, text: string) =>
-    captureHumanNote({ sessionId, text }, { db: getDatabase(), enqueue: () => undefined });
-
-  // PIN-A (backfill exists, through the real handleUpgrade). NAMED mutation that REDs: remove the comment
-  // snapshot from the host's postHello → a connecting client never receives {t:comment_snapshot} and
-  // waitForType times out.
-  it('S2 PIN-A: a connecting client backfills this session’s comments via post-hello {t:comment_snapshot}', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    seedComment(host.session.id, 'first note'); // both stored BEFORE the client connects — the backfill must carry them
-    seedComment(host.session.id, 'second note');
-    const conn = await connectToHostHub(host);
-    try {
-      const snap = await conn.waitForType('comment_snapshot');
-      expect(Array.isArray(snap.comments)).toBe(true);
-      const comments = snap.comments as Array<Record<string, unknown>>;
-      expect(comments.map((c) => c.text)).toEqual(['first note', 'second note']); // this session, append-order
-      expect(typeof comments[0].id).toBe('number'); // each carries its persisted artifact id (the panel's key)
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-
-  // PIN-B (ISOLATION — the load-bearing pin for the new session-scoped read; 7e generalizes it). NAMED
-  // mutation that REDs: drop/widen the WHERE session_id filter in listSessionComments → another session's
-  // comment leaks into this session's snapshot.
-  it('S2 PIN-B: the comment snapshot returns ONLY this session’s comments (session isolation)', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    seedComment(host.session.id, 'mine');
-    seedComment('a-different-session', 'theirs'); // a foreign session's note in the SAME cache db
-    const conn = await connectToHostHub(host);
-    try {
-      const snap = await conn.waitForType('comment_snapshot');
-      const texts = (snap.comments as Array<Record<string, unknown>>).map((c) => c.text);
-      expect(texts).toEqual(['mine']); // 'theirs' must NOT leak across the session boundary
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-
-  // PIN-C (cap selection + count — decision: most-recent N=200; the 7d-S3 two-mutation style). NAMED mutations
-  // that RED: (a) oldest-200 → slice(0,200) → count stays 200 but the boundary diverges (note 1, not note 51);
-  // (b) unbounded → slice() → count diverges (250 ≠ 200).
-  it('S2 PIN-C: with >200 comments the snapshot is EXACTLY the most-recent 200', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    for (let i = 1; i <= 250; i++) seedComment(host.session.id, `note ${i}`);
-    const conn = await connectToHostHub(host);
-    try {
-      const snap = await conn.waitForType('comment_snapshot');
-      const comments = snap.comments as Array<Record<string, unknown>>;
-      expect(comments.length).toBe(200); // capped — not the full 250, not a wrong N
-      expect(comments[0].text).toBe('note 51'); // most-recent 200 = note 51..250 (oldest-200 would start at note 1)
-      expect(comments[199].text).toBe('note 250');
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
 });
 
 /**
- * Phase 7e S2 — captured-items snapshot (post-hello backfill) + postHello failure-isolation hardening.
- * Real cache DB so listSessionArtifacts runs the real session-scoped read; real hub upgrade so the snapshot
- * routes through handleUpgrade → postHello (not a bare call).
- */
-describe('cli/studio startStudioHost — 7e S2 captured snapshot + postHello isolation', () => {
-  beforeEach(() => {
-    events.length = 0;
-    resetConfig();
-    _resetMigrationGuard();
-    initDatabase(':memory:');
-  });
-  afterEach(() => {
-    try { closeDatabase(); } catch { /* already closed by a fault-injection test */ }
-    resetConfig();
-  });
-
-  const seedClip = (sessionId: string, n: number) =>
-    captureFromPage(
-      { type: 'clip', sessionId, url: `https://x.example/${n}`, title: `clip ${n}`, markdown: `body ${n}` },
-      { db: getDatabase(), enqueue: () => undefined, credentialContext: {} },
-    );
-
-  // PIN-A (backfill exists, through the real handleUpgrade). NAMED mutation that REDs: drop artifact_snapshot
-  // from the host's postHello → a connecting client never receives {t:artifact_snapshot} and waitForType times out.
-  it('S2 PIN-A: a connecting client backfills this session’s captured items via post-hello {t:artifact_snapshot}', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    seedClip(host.session.id, 1); // stored BEFORE the client connects — the backfill must carry them
-    seedClip(host.session.id, 2);
-    const conn = await connectToHostHub(host);
-    try {
-      const snap = await conn.waitForType('artifact_snapshot');
-      expect(Array.isArray(snap.items)).toBe(true);
-      const items = snap.items as Array<Record<string, unknown>>;
-      expect(items.map((i) => i.url)).toEqual(['https://x.example/1', 'https://x.example/2']); // this session, append-order
-      expect(typeof items[0].id).toBe('number');         // the panel's upsert key
-      expect(items[0].markdown).toBeUndefined();          // light projection — no body
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-
-  // PIN-F (postHello failure-isolation — the robustness pin). A throwing markStore makes the marks snapshot read
-  // REJECT. With each read isolated, the OTHER snapshots (incl artifact) STILL deliver AND the failure is logged.
-  // NAMED mutation that REDs: un-isolate postHello (one read's throw rejects the whole array) → ws-hub's single
-  // catch suppresses ALL snapshots → waitForType('artifact_snapshot') times out.
-  it('S2 PIN-F: one snapshot read throwing does NOT suppress the siblings, and the failure is logged', async () => {
-    const ms = new MarkStore();
-    ms.list = () => { throw new Error('marks read boom'); }; // make ONLY the marks snapshot read reject
-    const writes: string[] = [];
-    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => { writes.push(String(chunk)); return true; }) as typeof process.stderr.write);
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher, markStore: ms });
-    seedClip(host.session.id, 1);
-    const conn = await connectToHostHub(host);
-    try {
-      const snap = await conn.waitForType('artifact_snapshot'); // a sibling still delivers despite marks throwing
-      expect((snap.items as Array<unknown>).length).toBe(1);
-      await conn.waitForType('comment_snapshot'); // and the other isolated siblings too
-      await conn.waitForType('audit_snapshot');
-      spy.mockRestore();
-      expect(writes.some((w) => /snapshot/i.test(w) && /"level":"warn"/.test(w))).toBe(true); // swallowed failure surfaced
-    } finally {
-      spy.mockRestore();
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-});
-
-/**
- * S2 — agent dialogue. Two halves, both through the REAL host path:
- *  (a) comment→agent: a human {t:'comment'} WS message persists trusted=1 (sole writer) AND dual-emits a
- *      DISTINCTLY-TYPED trusted=1 human event the agent drains via studio_observe — distinguishable, in the
- *      same observe response, from the trusted=0 page-snapshot envelope. Ingress stays human-WS-only.
- *  (b) agent→human narration: an optional agent-authored `narration` on studio_act AND studio_observe is
- *      broadcast to attended human WS clients as {t:'narration',text,trusted:false} (agent can never author
- *      trusted=1), rendered inert via SafeText on the tab. No new MCP verb; broadcast-only, never persisted.
+ * S2 — agent dialogue, through the REAL host path:
+ *  comment→agent: a human comment (driven through host.onComment — the human-channel ingress) persists
+ *  trusted=1 (sole writer) AND dual-emits a DISTINCTLY-TYPED trusted=1 human event the agent drains via
+ *  studio_observe — distinguishable, in the same observe response, from the trusted=0 page-snapshot envelope.
+ *  Ingress stays human-only (no agent/MCP path reaches it). Agent→human narration delivery is the Electron
+ *  app's UI (P4); here narration stays a FIELD on the act/observe schemas, not a new MCP verb (PIN-4).
  */
 type ObserveLike = { events: Array<Record<string, unknown>>; trusted: boolean };
 
@@ -1634,11 +1226,8 @@ describe('cli/studio startStudioHost — S2 agent dialogue', () => {
   // with trusted:false / no trusted → the trust diverges.
   it('S2a PIN-1: a human comment surfaces in studio_observe as a trusted=1 human event (envelope stays trusted=0)', async () => {
     const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    const conn = await connectToHostHub(host);
     try {
-      await conn.at(0); // hello
-      conn.ws.send(JSON.stringify({ t: 'comment', text: 'click the blue button' }));
-      await conn.waitForType('comment'); // echo fires only AFTER a successful capture → comment is persisted + enqueued
+      host.onComment({ text: 'click the blue button' }); // human-channel ingress → persist trusted=1 + enqueue the event
       const obs = (await host.observe({ since: 0 })) as unknown as ObserveLike;
       const commentEv = obs.events.find((e) => e.type === 'comment');
       expect(commentEv, `comment event present in observe drain; got ${JSON.stringify(obs.events)}`).toBeTruthy();
@@ -1646,7 +1235,6 @@ describe('cli/studio startStudioHost — S2 agent dialogue', () => {
       expect(commentEv!.trusted).toBe(true); // DISTINCTLY-TYPED trusted=1 human event (mutation flip→false REDs)
       expect(obs.trusted).toBe(false); // PIN-3: page-snapshot envelope in the same observe stays trusted=0
     } finally {
-      await conn.close();
       await host.daemon.stop();
     }
   });
@@ -1655,58 +1243,19 @@ describe('cli/studio startStudioHost — S2 agent dialogue', () => {
   // Agent-reachable verbs create NO comment event; only the human WS path does. NAMED mutation that REDs: add an
   // agent-reachable comment writer (e.g. enqueue a comment event from act/observe or a new agent verb) → an agent
   // op produces a comment event and the first assertion REDs.
-  it('S2a PIN-2: comment ingress is human-WS-only — agent verbs create no comment event, only the WS path does', async () => {
+  it('S2a PIN-2: comment ingress is human-only — agent verbs create no comment event, only the ingress does', async () => {
     const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    const conn = await connectToHostHub(host);
     try {
-      await conn.at(0);
       // Drive agent-reachable verbs — none may enqueue a comment.
       await host.observe({});
       await host.act({ action: 'scroll' });
       const afterAgent = (await host.observe({ since: 0 })) as unknown as ObserveLike;
       expect(afterAgent.events.some((e) => e.type === 'comment')).toBe(false); // no agent/MCP path creates a comment
-      // The human WS path IS the producer.
-      conn.ws.send(JSON.stringify({ t: 'comment', text: 'human authored' }));
-      await conn.waitForType('comment');
+      // The human-channel ingress IS the producer (host.onComment — not reachable from any agent/MCP path).
+      host.onComment({ text: 'human authored' });
       const afterHuman = (await host.observe({ since: 0 })) as unknown as ObserveLike;
       expect(afterHuman.events.filter((e) => e.type === 'comment').length).toBe(1);
     } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-
-  // ── S2b PIN-3a (positive — narration on studio_act reaches the human) + PIN-2 (trusted=0) ──
-  // NAMED mutation that REDs: drop the narration broadcast in actWithHandoff → no {t:'narration'} arrives
-  // (waitForType times out); OR stamp trusted:true → the trust diverges (agent can never author trusted=1).
-  it('S2b PIN-3a: narration on studio_act reaches human WS clients as {t:narration,trusted:false}', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    const conn = await connectToHostHub(host);
-    try {
-      await conn.at(0);
-      await host.act({ action: 'scroll', narration: 'scrolling to the reviews' });
-      const n = await conn.waitForType('narration');
-      expect(n.text).toBe('scrolling to the reviews');
-      expect(n.trusted).toBe(false); // agent-authored → ALWAYS trusted=0 (mutation flip→true REDs)
-    } finally {
-      await conn.close();
-      await host.daemon.stop();
-    }
-  });
-
-  // ── S2b PIN-3b (positive — narration on studio_observe reaches the human) ──
-  // NAMED mutation that REDs: drop the narration broadcast in the observe wrapper → no {t:'narration'} arrives.
-  it('S2b PIN-3b: narration on studio_observe reaches human WS clients as {t:narration,trusted:false}', async () => {
-    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    const conn = await connectToHostHub(host);
-    try {
-      await conn.at(0);
-      await host.observe({ narration: 'reading the page to plan the next step' });
-      const n = await conn.waitForType('narration');
-      expect(n.text).toBe('reading the page to plan the next step');
-      expect(n.trusted).toBe(false);
-    } finally {
-      await conn.close();
       await host.daemon.stop();
     }
   });
@@ -1851,45 +1400,32 @@ describe('cli/studio startStudioHost — S7 pre-grant ingress (bright-line)', ()
     resetConfig();
   });
 
-  const waitFor = async (pred: () => boolean, ms = 1000) => {
-    const t0 = Date.now();
-    while (!pred() && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 5));
-  };
   const s6Dir = '/tmp/wigolo-s7-unused';
 
-  // ── S7 PIN — {t:'grant'} over the REAL WS (human channel) writes the scope store ──
-  it('S7: a {t:grant} WS message from the human writes the pre-grant scope store', async () => {
+  // ── S7 PIN — a grant from the human ingress (host.onGrant — Electron IPC / tests) writes the scope store ──
+  it('S7: a grant from the human ingress writes the pre-grant scope store', async () => {
     const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    const conn = await connectToHostHub(host);
     try {
-      await conn.at(0);
       expect(host.preGrant.size).toBe(0); // empty by default
-      conn.ws.send(JSON.stringify({ t: 'grant', entries: [{ domain: 'shop.example', actionType: 'click', riskTier: 'money' }] }));
-      await waitFor(() => host.preGrant.size === 1);
+      host.onGrant({ entries: [{ domain: 'shop.example', actionType: 'click', riskTier: 'money' }] });
       expect(host.preGrant.size).toBe(1);
       expect(host.preGrant.matches({ domain: 'shop.example', actionType: 'click', riskTier: 'money' })).toBe(true);
     } finally {
-      await conn.close();
       await host.daemon.stop();
     }
   });
 
-  // ── S7 PIN — party host-stamped human: a client CLAIMING party='agent' is REJECTED ──
+  // ── S7 PIN — party host-stamped human: a caller CLAIMING party='agent' is REJECTED ──
   // Mutation that REDs: drop the `if (msg.party === 'agent') return` rejection → the agent-claimed grant writes the store.
-  it('S7 PIN(party-stamp): a {t:grant} claiming party=agent is rejected — the store is not written', async () => {
+  it('S7 PIN(party-stamp): a grant claiming party=agent is rejected — the store is not written', async () => {
     const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
-    const conn = await connectToHostHub(host);
     try {
-      await conn.at(0);
-      conn.ws.send(JSON.stringify({ t: 'grant', party: 'agent', entries: [{ domain: 'shop.example', actionType: 'click', riskTier: 'money' }] }));
-      await new Promise((r) => setTimeout(r, 150)); // give the host room to (wrongly) write
+      host.onGrant({ party: 'agent', entries: [{ domain: 'shop.example', actionType: 'click', riskTier: 'money' }] });
       expect(host.preGrant.size).toBe(0); // rejected — agent-claimed grants never write
       // a legitimate human grant (no agent claim) DOES write — proves the path works, only the claim is rejected
-      conn.ws.send(JSON.stringify({ t: 'grant', entries: [{ domain: 'shop.example', actionType: 'click', riskTier: 'money' }] }));
-      await waitFor(() => host.preGrant.size === 1);
+      host.onGrant({ entries: [{ domain: 'shop.example', actionType: 'click', riskTier: 'money' }] });
       expect(host.preGrant.size).toBe(1);
     } finally {
-      await conn.close();
       await host.daemon.stop();
     }
   });

@@ -9,7 +9,6 @@ function makeHost(order: string[], overrides: Partial<StudioTeardownTarget> = {}
   return {
     idleSweeper: { stop: () => void order.push('idleSweeper.stop') },
     hub: { closeAll: () => void order.push('hub.closeAll') },
-    bridge: { stop: async () => void order.push('bridge.stop') },
     navInterceptor: { stop: async () => void order.push('navInterceptor.stop') },
     sessionBrowser: { close: async () => void order.push('sessionBrowser.close') },
     registry: { closeAll: () => void order.push('registry.closeAll') },
@@ -19,15 +18,14 @@ function makeHost(order: string[], overrides: Partial<StudioTeardownTarget> = {}
 }
 
 describe('teardownStudioHost', () => {
-  it('PIN A (load-bearing order): bridge.stop and navInterceptor.stop run BEFORE sessionBrowser.close', async () => {
-    // Both issue CDP calls against the session browser, so they must stop while it is still
-    // open. Reordering sessionBrowser.close ahead of either is a dirty teardown → this pin REDs.
+  it('PIN A (load-bearing order): navInterceptor.stop runs BEFORE sessionBrowser.close', async () => {
+    // The nav interceptor issues CDP calls against the session browser, so it must stop while the browser is
+    // still open. Reordering sessionBrowser.close ahead of it is a dirty teardown → this pin REDs.
     const order: string[] = [];
     await teardownStudioHost(makeHost(order), noopDeps);
     const browserClose = order.indexOf('sessionBrowser.close');
     expect(browserClose).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf('bridge.stop')).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf('bridge.stop')).toBeLessThan(browserClose);
+    expect(order.indexOf('navInterceptor.stop')).toBeGreaterThanOrEqual(0);
     expect(order.indexOf('navInterceptor.stop')).toBeLessThan(browserClose);
   });
 
@@ -35,10 +33,9 @@ describe('teardownStudioHost', () => {
     // Remove a stage's .catch wrap and its rejection aborts the chain, leaking every later
     // stage's resources → this pin REDs.
     const order: string[] = [];
-    const host = makeHost(order, { bridge: { stop: async () => { throw new Error('boom'); } } });
+    const host = makeHost(order, { navInterceptor: { stop: async () => { throw new Error('boom'); } } });
     await teardownStudioHost(host, noopDeps);
-    expect(order).toContain('navInterceptor.stop');
-    expect(order).toContain('sessionBrowser.close');
+    expect(order).toContain('sessionBrowser.close'); // a throwing navInterceptor.stop does not abort the later stages
     expect(order).toContain('registry.closeAll');
     expect(order).toContain('daemon.stop');
   });

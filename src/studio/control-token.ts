@@ -9,8 +9,8 @@ import { createLogger } from '../logger.js';
  * is dropped, not applied. Human reclaim is absolute (instant takeover); the
  * agent never seizes control, it is only ever granted.
  *
- * Pure state — no browser, no I/O. The InputForwarder consults it before
- * dispatching CDP input; Phase 2's `studio_act` consults `assertCanDrive`.
+ * Pure state — no browser, no I/O. The SessionController consults it before
+ * dispatching agent input; `studio_act` consults `assertCanDrive`.
  */
 
 const log = createLogger('studio');

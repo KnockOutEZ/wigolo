@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
-import http, { type IncomingMessage } from 'node:http';
+import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { resetConfig } from '../../../src/config.js';
-import { NonceStore } from '../../../src/studio/nonce.js';
 
 // Same network-free subsystem mocks the sibling daemon suites use.
 vi.mock('../../../src/cache/db.js', () => ({ initDatabase: vi.fn(), closeDatabase: vi.fn(), getDatabase: vi.fn(() => ({})) }));
@@ -20,140 +19,9 @@ vi.mock('../../../src/searxng/docker.js', () => ({ DockerSearxng: vi.fn().mockIm
 const TOKEN = 'phase7a-s2-session-bearer-abcdefghij1234567890';
 const AUTH = { token: TOKEN, host: '127.0.0.1' };
 
-describe('DaemonHttpServer — S2 nonce→bearer exchange (POST /studio/token)', () => {
-  beforeEach(() => { resetConfig(); vi.clearAllMocks(); });
-  afterEach(() => { resetConfig(); });
-
-  it('redeems a valid nonce for the session bearer (200 + {token}), never bearer-gated', async () => {
-    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
-    const nonces = new NonceStore();
-    const nonce = nonces.mint();
-    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', auth: AUTH, nonceStore: nonces });
-    try {
-      const url = await daemon.start();
-      const resp = await fetch(`${url}/studio/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nonce }),
-      });
-      expect(resp.status).toBe(200);
-      expect((await resp.json()).token).toBe(TOKEN);
-    } finally {
-      await daemon.stop();
-    }
-  });
-
-  it('rejects an unknown nonce (401) and leaks no token', async () => {
-    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
-    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', auth: AUTH, nonceStore: new NonceStore() });
-    try {
-      const url = await daemon.start();
-      const resp = await fetch(`${url}/studio/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nonce: 'not-a-real-nonce' }) });
-      expect(resp.status).toBe(401);
-      expect(await resp.text()).not.toContain(TOKEN);
-    } finally {
-      await daemon.stop();
-    }
-  });
-
-  // PIN-S2c (SINGLE-USE), through real /studio/token dispatch. NAMED mutation that REDs: in NonceStore.redeem,
-  // stop deleting the matched nonce (allow reuse) → the second redeem succeeds and this assertion fails.
-  it('PIN-S2c: a nonce is single-use — the second redeem of the same nonce is 401', async () => {
-    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
-    const nonces = new NonceStore();
-    const nonce = nonces.mint();
-    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', auth: AUTH, nonceStore: nonces });
-    try {
-      const url = await daemon.start();
-      const first = await fetch(`${url}/studio/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nonce }) });
-      expect(first.status).toBe(200);
-      const second = await fetch(`${url}/studio/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nonce }) });
-      expect(second.status).toBe(401);
-    } finally {
-      await daemon.stop();
-    }
-  });
-
-  // PIN-S2c (TTL), through real dispatch. NAMED mutation that REDs: remove the `now()-issuedAt > ttlMs`
-  // expiry check in NonceStore.redeem → an expired nonce redeems 200.
-  it('PIN-S2c: an expired nonce is rejected (401)', async () => {
-    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
-    let clock = 1_000_000;
-    const nonces = new NonceStore({ ttlMs: 5_000, now: () => clock });
-    const nonce = nonces.mint();
-    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', auth: AUTH, nonceStore: nonces });
-    try {
-      const url = await daemon.start();
-      clock += 6_000; // advance past the 5s TTL
-      const resp = await fetch(`${url}/studio/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nonce }) });
-      expect(resp.status).toBe(401);
-    } finally {
-      await daemon.stop();
-    }
-  });
-
-  it('applies the Origin/Host rebind guard to the exchange (cross-origin → 403)', async () => {
-    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
-    const nonces = new NonceStore();
-    const nonce = nonces.mint();
-    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', auth: AUTH, nonceStore: nonces });
-    try {
-      const url = await daemon.start();
-      const resp = await fetch(`${url}/studio/token`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'http://evil.com' }, body: JSON.stringify({ nonce }) });
-      expect(resp.status).toBe(403);
-    } finally {
-      await daemon.stop();
-    }
-  });
-
-  // R0 PIN-COMPLETION (security, the DNS-rebind half). The exchange's Origin/Host guard exists in
-  // handleTokenExchange; the sibling test above pins the ORIGIN vector, but the HOST-header vector — the
-  // actual DNS-rebinding case the guard documents (a victim browser resolves attacker.com → 127.0.0.1 and
-  // sends `Host: attacker.com` with NO cross-origin Origin) — was unpinned. `fetch`/undici forbids setting
-  // `Host`, so this drives a raw node:http POST through the SAME real /studio/token dispatch (handleRequest →
-  // handleTokenExchange), sending a foreign Host and NO Origin so ONLY the Host branch can reject it.
-  // NAMED mutation that REDs (and that the Origin-only test above does NOT catch): delete the
-  // `host && !isAllowedHost(...)` block in studio/auth.ts::checkOriginHost → the foreign-Host POST redeems
-  // the valid nonce → 200 (token leaked), so this assertion fails.
-  it('R0: a foreign-Host nonce-exchange POST is rejected (403) — the DNS-rebind half', async () => {
-    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
-    const nonces = new NonceStore();
-    const nonce = nonces.mint();
-    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', auth: AUTH, nonceStore: nonces });
-    try {
-      const url = new URL(await daemon.start());
-      const resp = await rawPostToken(url, { Host: 'evil.com' }, JSON.stringify({ nonce }));
-      expect(resp.status).toBe(403);
-      expect(resp.body).not.toContain(TOKEN);
-    } finally {
-      await daemon.stop();
-    }
-  });
-});
-
-/** Raw HTTP POST to /studio/token so a forbidden header (Host) can be set verbatim — undici/fetch strips it. */
-function rawPostToken(base: URL, headers: Record<string, string>, body: string): Promise<{ status: number; body: string }> {
-  return new Promise((resolve, reject) => {
-    const req = http.request(
-      {
-        hostname: base.hostname,
-        port: base.port,
-        path: '/studio/token',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...headers },
-      },
-      (res) => {
-        let data = '';
-        res.on('data', (c) => (data += c));
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }));
-      },
-    );
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
-}
-
+// The v1 nonce→bearer exchange (POST /studio/token) was deleted with the served webapp. What survives here is
+// the WS-upgrade bearer guard (PIN-S2a/S2b) — the studio host's onUpgrade path still authorizes upgrades via
+// Origin/Host + subprotocol bearer, independent of the deleted nonce route.
 describe('DaemonHttpServer — S2 WS upgrade carries the bearer ONLY via subprotocol', () => {
   beforeEach(() => { resetConfig(); vi.clearAllMocks(); });
   afterEach(() => { resetConfig(); });

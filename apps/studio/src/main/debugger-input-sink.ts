@@ -1,4 +1,4 @@
-import type { InputSink, MouseInput, KeyInput, AgentMouseInput, MouseButton } from 'wigolo/studio';
+import type { InputSink, KeyInput, AgentMouseInput, MouseButton } from 'wigolo/studio';
 import type { CdpTransport } from './cdp-transport';
 
 // The AGENT synthetic-input channel: dispatches balanced Input.* CDP events via
@@ -41,11 +41,6 @@ export function debuggerInputSink(transport: CdpTransport, viewport: Viewport): 
   };
 
   return {
-    // Human normalized-frame path is gone in the Electron model — no-op kept only
-    // to satisfy the InputSink shape (the human touches the tab natively).
-    async mouse(_ev: MouseInput): Promise<void> {
-      // intentionally empty
-    },
     async key(ev: KeyInput): Promise<void> {
       await transport.send('Input.dispatchKeyEvent', keyParams(ev));
       if (ev.type === 'keyDown' || ev.type === 'rawKeyDown') heldKeys.set(ev.code ?? ev.key, ev);

@@ -13,19 +13,6 @@ describe('studio/SessionMetrics', () => {
     expect(m.read().tokensSpent).toBe(15);
   });
 
-  it('frame gauges reflect forwarded/dropped frames and diverge as frames drop', () => {
-    const m = new SessionMetrics();
-    m.recordFrameForwarded();
-    m.recordFrameForwarded();
-    m.recordFrameForwarded();
-    m.recordFrameDropped();
-    expect(m.read().framesForwarded).toBe(3);
-    expect(m.read().framesDropped).toBe(1);
-    m.recordFrameDropped(); // drop another → dropped gauge diverges
-    expect(m.read().framesDropped).toBe(2);
-    expect(m.read().framesForwarded).toBe(3); // forwarded unchanged by a drop
-  });
-
   it('memory is a PROCESS gauge sourced from process.memoryUsage', () => {
     const m = new SessionMetrics();
     const fixed = m.read(() => ({ rss: 1234, heapTotal: 9, heapUsed: 567, external: 0, arrayBuffers: 0 }));
@@ -38,13 +25,9 @@ describe('studio/SessionMetrics', () => {
   it('INVARIANT: a read does not mutate the gauges (idempotent reads)', () => {
     const m = new SessionMetrics();
     m.recordTokens(7);
-    m.recordFrameForwarded();
-    m.recordFrameDropped();
     const a = m.read(() => ({ rss: 1, heapTotal: 1, heapUsed: 1, external: 0, arrayBuffers: 0 }));
     const b = m.read(() => ({ rss: 1, heapTotal: 1, heapUsed: 1, external: 0, arrayBuffers: 0 }));
     expect(b).toEqual(a); // reading twice yields identical counters — read is pure
     expect(m.read().tokensSpent).toBe(7);
-    expect(m.read().framesForwarded).toBe(1);
-    expect(m.read().framesDropped).toBe(1);
   });
 });
