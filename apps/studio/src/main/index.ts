@@ -2,7 +2,7 @@ import { app, BrowserWindow, WebContentsView, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { TabManager, type TabView, type Rect } from './tab-manager';
 import { SessionRegistry } from './session-registry';
-import { registerIpc } from './ipc-host';
+import { registerIpc, registerMarksIpc } from './ipc-host';
 import { createDriveEngine } from './drive-engine';
 import { createStudioHost, type HostTab } from './studio-host';
 import { startGateway, type Gateway } from './gateway';
@@ -74,6 +74,11 @@ async function createWindow(): Promise<void> {
   // ── Agent line: drive engine + session host + loopback MCP gateway (spec §2/§7) ──
   const driveEngine = createDriveEngine();
 
+  // P2 marking: correlate a session tab's webContents ↔ tabId (the overlay preload posts marks via
+  // ipcMain; resolveTab maps event.sender → the session so mark creation reaches the right host session).
+  const sessionTabWc = new Map<string, Electron.WebContents>();
+  let lastSessionTabId: string | null = null;
+
   const studioHost = createStudioHost({
     onParked: (notice) => {
       const dto: PendingApprovalDto = { id: notice.approval_id, action: notice.action, risk: notice.risk };
@@ -105,6 +110,8 @@ async function createWindow(): Promise<void> {
         },
       };
       const tabId = tabs.adopt(tabView);
+      sessionTabWc.set(tabId, wc);
+      lastSessionTabId = tabId;
       sessions.addTab(sessions.current().id, tabId);
       // Arm the SSRF/redirect fence FIRST (awaited) — attachTab resolves only once Fetch.enable is acked.
       const drive = await driveEngine.attachTab(tabId, {
@@ -130,8 +137,27 @@ async function createWindow(): Promise<void> {
     },
     closeTab: (tabId: string) => {
       void driveEngine.detachTab(tabId);
+      sessionTabWc.delete(tabId);
+      if (lastSessionTabId === tabId) lastSessionTabId = null;
       try { tabs.closeTab(tabId); } catch { /* already gone */ }
     },
+  });
+
+  // P2 marking IPC: overlay(tab) ↔ main ↔ chrome renderer. Mark creation reaches the host ONLY here
+  // (human seam), never the agent gateway — the agent handler surface stays the sealed 7-key set.
+  const broadcastMarks = async (): Promise<void> => {
+    const r = await studioHost.listMarks();
+    const marks = 'marks' in r ? r.marks.map((m) => ({ markId: m.markId, role: m.role, name: m.name, confidence: m.confidence, ...(m.ref ? { ref: m.ref } : {}) })) : [];
+    win.webContents.send(IPC.marksChanged, marks);
+  };
+  registerMarksIpc({
+    ipcMain,
+    host: studioHost,
+    resolveTab: (sender) => { for (const [id, wc] of sessionTabWc) if (wc === sender) return id; return undefined; },
+    sendToTab: (tabId, channel, payload) => sessionTabWc.get(tabId)?.send(channel, payload),
+    sendToRenderer: (channel, payload) => win.webContents.send(channel, payload),
+    broadcastMarks,
+    focusedSessionTab: () => lastSessionTabId ?? undefined,
   });
 
   ipcMain.handle(IPC.approvalDecide, (_e, id: string, decision: 'allow' | 'deny') => {

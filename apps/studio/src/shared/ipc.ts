@@ -14,18 +14,20 @@ export interface OverlayMarkMsg {
   payload: MarkPayload;
 }
 
-/** main → renderer: one mark for the Marks rail pane. role/name/payload are page-derived (untrusted, host-neutralized). */
-export interface MarkCommentDto {
-  text: string;
-  author: 'human' | 'agent';
-}
+/** main → renderer: one mark for the Marks rail pane. role/name are page-derived (untrusted, host-neutralized). */
 export interface MarkDto {
   markId: string;
   role: string;
   name: string;
   confidence: 'high' | 'medium' | 'low' | 'none';
   ref?: string;
-  comments: MarkCommentDto[];
+}
+
+/** renderer → main → overlay echo: assigns the committed mark its number + id (chip stamp). */
+export interface MarkAssignedDto {
+  nonce: string;
+  markId: string;
+  number: number;
 }
 
 export interface StudioState {

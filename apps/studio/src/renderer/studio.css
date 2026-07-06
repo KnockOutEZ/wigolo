@@ -206,3 +206,51 @@ button { font-family: inherit; }
 .btn--allow { background: var(--human); border-color: var(--human); color: #08210f; }
 .btn--allow:hover { filter: brightness(1.08); background: var(--human); }
 .btn--deny:hover { border-color: var(--blocked); color: var(--blocked); }
+
+/* ── P2 marking: rail tab switcher + Marks pane ── */
+.rail__tabs { display: flex; gap: 2px; }
+.rail__tab {
+  all: unset; cursor: pointer; font-family: var(--chrome-font); font-size: 13px; font-weight: 600;
+  color: var(--text-faint); padding: 3px 9px; border-radius: var(--r-pill); letter-spacing: .01em;
+}
+.rail__tab:hover { color: var(--text-dim); }
+.rail__tab.is-active { color: var(--agent); background: var(--agent-dim); }
+
+.marks-panel { display: flex; flex-direction: column; gap: 10px; }
+.marks-arm {
+  all: unset; cursor: pointer; text-align: center; font-family: var(--chrome-font); font-size: 13px; font-weight: 600;
+  color: var(--agent); background: var(--agent-dim); border-radius: var(--r-md); padding: 8px 10px;
+}
+.marks-arm:hover { background: rgba(139, 124, 246, 0.24); }
+
+.mark-card {
+  background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--r-md); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.mark-card__head { display: flex; align-items: center; gap: 8px; }
+.mark-chip {
+  font-size: 11px; font-weight: 700; color: #fff; background: var(--agent);
+  border-radius: var(--r-pill); padding: 2px 9px; white-space: nowrap;
+}
+.mark-card__name { flex: 1; min-width: 0; font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mark-card__label { color: var(--text); }
+.mark-conf { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.mark-conf--high { background: var(--human); box-shadow: 0 0 6px var(--human); }
+.mark-conf--medium { background: var(--working); box-shadow: 0 0 6px var(--working); }
+.mark-conf--low { background: var(--working); }
+.mark-conf--none { background: var(--blocked); }
+
+.mark-comment {
+  font-size: 12px; color: var(--text-dim); background: var(--surface-2);
+  border-left: 2px solid var(--agent); border-radius: var(--r-sm); padding: 5px 8px;
+}
+.mark-card__row { display: flex; gap: 6px; align-items: center; }
+.mark-comment__input {
+  flex: 1; min-width: 0; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm);
+  color: var(--text); font-family: var(--chrome-font); font-size: 12px; padding: 5px 8px;
+}
+.mark-comment__input::placeholder { color: var(--text-faint); }
+.mark-comment__input:focus { outline: none; border-color: var(--agent); }
+.mark-card__grab { all: unset; cursor: pointer; color: var(--text-faint); padding: 4px 7px; border-radius: var(--r-sm); }
+.mark-card__grab:hover { color: var(--agent); background: var(--agent-dim); }
+.mark-preview { font-size: 11px; color: var(--working); }
