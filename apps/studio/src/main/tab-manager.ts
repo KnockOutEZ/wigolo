@@ -26,13 +26,22 @@ export class TabManager {
   ) {}
 
   createTab(url: string): string {
+    const id = this.adopt(this.makeView());
+    void this.tabs.get(id)!.loadURL(url);
+    return id;
+  }
+
+  /**
+   * Adopt a pre-built view (e.g. one the studio host created so it can attach a CDP drive to its
+   * webContents) into the tab set — same registration/bounds/focus as createTab, minus the initial
+   * load (the caller owns navigation). Returns the assigned tab id.
+   */
+  adopt(view: TabView): string {
     const id = randomUUID();
-    const view = this.makeView();
     this.tabs.set(id, view);
     this.order.push(id);
     view.onStateChange(() => this.emit());
     view.setBounds(this.contentBounds());
-    void view.loadURL(url);
     this.focusTab(id);
     return id;
   }

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, type StudioState } from '../shared/ipc';
+import { IPC, type StudioState, type PendingApprovalDto } from '../shared/ipc';
 
 const studio = {
   getState: (): Promise<StudioState> => ipcRenderer.invoke(IPC.getState),
@@ -10,6 +10,10 @@ const studio = {
   onState: (cb: (s: StudioState) => void): void => {
     ipcRenderer.on(IPC.stateChanged, (_e, s: StudioState) => cb(s));
   },
+  onApprovalParked: (cb: (a: PendingApprovalDto) => void): void => {
+    ipcRenderer.on(IPC.approvalParked, (_e, a: PendingApprovalDto) => cb(a));
+  },
+  decideApproval: (id: string, decision: 'allow' | 'deny'): Promise<void> => ipcRenderer.invoke(IPC.approvalDecide, id, decision),
 };
 
 export type StudioApi = typeof studio;

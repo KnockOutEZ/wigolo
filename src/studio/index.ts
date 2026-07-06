@@ -50,3 +50,76 @@ export {
   studioHandlePath,
 } from './handle.js';
 export type { SessionHandle } from './handle.js';
+
+// Perception — a11y snapshot + live ref resolution (host binds these to the CDP transport)
+export { PageSnapshotter, buildSnapshot, flattenDom } from './perception/snapshot.js';
+export type { PageSnapshot, SnapshotElement, PerceptionCdp, AxNode, DomNode, DomInfo } from './perception/snapshot.js';
+export { createResolver, isResolveError } from './perception/resolve.js';
+export type { ResolveDeps, ResolveResult, ResolvedTarget, ResolveErrorReason } from './perception/resolve.js';
+
+// Observe orchestration (fenced untrusted snapshot + event drain)
+export { createObserver } from './observe.js';
+export type { ObserverDeps } from './observe.js';
+
+// Act orchestration (gated navigate/click/type/scroll; risk gate + park)
+export { createActHandler, keystrokeEvents } from './act.js';
+export type { ActHandlerDeps, ActControlToken, AgentInputChannel, ParkedAction, AuthSource } from './act.js';
+
+// Pre-grant scope store (human-authorized risky-action classes)
+export { PreGrantStore, deriveDomain } from './pre-grant.js';
+export type { PreGrantEntry } from './pre-grant.js';
+
+// Credential arc primitives (agent never types/perceives credentials)
+export { isCredentialContext, isCredentialField, refuseAgentType, CREDENTIAL_URL } from './credential.js';
+export type { FieldSemantics } from './credential.js';
+
+// Session-drive seam (D19 — session-targeted fetch/extract/crawl)
+export { createSessionDrive } from './session-drive.js';
+export type {
+  SessionDrive,
+  SessionDriveDeps,
+  StudioSessionsAccessor,
+  DriveControlToken,
+  GatedNavResult,
+} from './session-drive.js';
+
+// Capture pipeline (P3 wires studio_capture; the seam + trusted-0 insert are salvaged now)
+export { createCaptureHandler } from './capture/handler.js';
+export type { CaptureHandlerDeps } from './capture/handler.js';
+export { captureFromPage, CaptureRefusedError } from './capture/artifacts.js';
+export type { CaptureResult } from './capture/artifacts.js';
+
+// ── Cross-package surface the Electron host + gateway need through the one `wigolo/studio` subpath ──
+
+// Untrusted-data boundary (page text is data, never instructions) — lives in security/, re-exported here.
+export { UNTRUSTED_STUDIO_NOTICE, neutralizeMarkers, wrapUntrusted } from '../security/untrusted.js';
+
+// The MCP dispatch contract the host implements + the studio tool I/O types.
+export { isStudioToolError } from '../daemon/studio-dispatch.js';
+export type {
+  StudioHostHandlers,
+  StudioObserveInput,
+  StudioObserveOutput,
+  StudioActInput,
+  StudioActOutput,
+  StudioMarksInput,
+  StudioMarksOutput,
+  StudioGeneralizeOutput,
+  StudioCaptureInput,
+  StudioCaptureOutput,
+  StudioSpawnInput,
+  StudioSpawnOutput,
+  StudioCloseInput,
+  StudioCloseOutput,
+  StudioListOutput,
+  StudioSessionView,
+  StudioToolError,
+} from '../daemon/studio-dispatch.js';
+
+// The embedded loopback MCP gateway (the app boots this in-process as the agent endpoint).
+export { DaemonHttpServer } from '../daemon/http-server.js';
+export type { DaemonOptions, DaemonAuthConfig, UpgradeHandler } from '../daemon/http-server.js';
+
+// Per-launch bearer + Origin/Host guard for the gateway.
+export { mintHostToken, resolveHostToken, checkOriginHost, checkAuth, checkAuthSubprotocol } from './auth.js';
+export type { HostTokenResolution } from './auth.js';
