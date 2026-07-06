@@ -8,7 +8,7 @@ import { createStudioHost, type HostTab } from './studio-host';
 import { createBrokerClient } from './broker-client';
 import { startGateway, type Gateway } from './gateway';
 import type { DebuggerLike } from './cdp-transport';
-import { IPC, type PendingApprovalDto } from '../shared/ipc';
+import { IPC, type PendingApprovalDto, type CaptureDto } from '../shared/ipc';
 import type { ControlParty, NavGrant } from 'wigolo/studio';
 
 const CHROME_HEIGHT = 88; // titlebar (40) + toolbar (48)
@@ -175,6 +175,15 @@ async function createWindow(): Promise<void> {
     broadcastMarks,
     focusedSessionTab: () => lastSessionTabId ?? undefined,
   });
+
+  // P3 capture rail: a live captured-item delta (agent clip / human quote / region screenshot) → the
+  // Captures pane; on-open list + knowledge rail read through the host (→ broker, degrade to [] when down).
+  broker.onArtifact((d) => {
+    const dto: CaptureDto = { id: d.id, type: d.type, title: d.title, url: d.url, trusted: d.trusted, createdAt: d.created_at };
+    win.webContents.send(IPC.captureAdded, dto);
+  });
+  ipcMain.handle(IPC.listCaptures, () => studioHost.listCaptures());
+  ipcMain.handle(IPC.knowledgeSimilar, (_e, concept: string) => studioHost.knowledgeSimilar(String(concept ?? '')));
 
   ipcMain.handle(IPC.approvalDecide, (_e, id: string, decision: 'allow' | 'deny') => {
     studioHost.resolveApproval(id, decision);

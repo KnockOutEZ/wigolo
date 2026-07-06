@@ -7,9 +7,13 @@ import { TabStrip } from './TabStrip';
 import { Toolbar } from './Omnibox';
 import { ApprovalCards } from './ApprovalCard';
 import { MarksPanel } from './MarksPanel';
+import { CapturesPanel } from './CapturesPanel';
+import { KnowledgeRail } from './KnowledgeRail';
 import { IconSpark, IconSend } from './icons';
 import { createApprovalStore, type PendingApproval, type ApprovalVerdict } from './approval-store';
 import { createMarksStore, type Mark } from './marks-store';
+import { createCapturesStore } from './captures-store';
+import type { CaptureDto, KnowledgeHit } from '../shared/ipc';
 
 declare global {
   interface Window { studio: StudioApi }
@@ -17,12 +21,15 @@ declare global {
 
 const approvalStore = createApprovalStore();
 const marksStore = createMarksStore();
-type RailTab = 'agent' | 'marks';
+const capturesStore = createCapturesStore();
+type RailTab = 'agent' | 'marks' | 'captures';
 
 export function App() {
   const [state, setState] = useState<StudioState>({ sessionName: '', tabs: [] });
   const [pending, setPending] = useState<PendingApproval[]>([]);
   const [marks, setMarks] = useState<Mark[]>([]);
+  const [captures, setCaptures] = useState<CaptureDto[]>([]);
+  const [knowledge, setKnowledge] = useState<KnowledgeHit[]>([]);
   const [preview, setPreview] = useState<StudioGeneralizeOutput | null>(null);
   const [railTab, setRailTab] = useState<RailTab>('agent');
   const [railOpen, setRailOpen] = useState(true);
@@ -37,7 +44,14 @@ export function App() {
     marksStore.subscribe(() => setMarks(marksStore.list()));
     window.studio.onMarksChanged((dtos) => { marksStore.set(dtos); });
     window.studio.onGeneralizePreview((p) => setPreview(p));
+    capturesStore.subscribe(() => setCaptures(capturesStore.list()));
+    window.studio.onCaptureAdded((c) => capturesStore.add(c));
   }, []);
+
+  // Session change → (re)load the captured items for the Captures rail (degrades to [] when the library is down).
+  useEffect(() => {
+    void window.studio.listCaptures().then((c) => capturesStore.set(c));
+  }, [state.sessionName]);
 
   const comment = (markId: string, text: string) => {
     marksStore.appendComment(markId, text); // optimistic local render
@@ -56,6 +70,13 @@ export function App() {
   };
 
   const active = state.tabs.find((t) => t.active);
+  // Knowledge rail: find_similar on the current page against the local corpus, refreshed on tab/nav change.
+  const activeKey = active ? `${active.url}\n${active.title}` : '';
+  useEffect(() => {
+    if (!active) { setKnowledge([]); return; }
+    void window.studio.knowledgeSimilar(active.title || active.url).then(setKnowledge);
+  }, [activeKey]);
+
   const navigate = (url: string) => {
     if (active) void window.studio.navigate(active.id, url);
     else void window.studio.createTab(url);
@@ -97,6 +118,9 @@ export function App() {
                 <button className={`rail__tab ${railTab === 'marks' ? 'is-active' : ''}`} onClick={() => setRailTab('marks')}>
                   Marks{marks.length ? ` · ${marks.length}` : ''}
                 </button>
+                <button className={`rail__tab ${railTab === 'captures' ? 'is-active' : ''}`} onClick={() => setRailTab('captures')}>
+                  Captures{captures.length ? ` · ${captures.length}` : ''}
+                </button>
               </span>
               <span className="rail__badge">{state.sessionName || 'session'}</span>
               <span className="rail__spacer" />
@@ -120,7 +144,7 @@ export function App() {
                   </div>
                 </div>
               </>
-            ) : (
+            ) : railTab === 'marks' ? (
               <div className="rail__body">
                 <MarksPanel
                   marks={marks}
@@ -130,7 +154,12 @@ export function App() {
                   onGeneralize={generalize}
                 />
               </div>
+            ) : (
+              <div className="rail__body">
+                <CapturesPanel captures={captures} />
+              </div>
             )}
+            <KnowledgeRail hits={knowledge} />
           </aside>
         )}
       </div>

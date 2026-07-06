@@ -58,7 +58,7 @@ import {
 } from 'wigolo/studio';
 import type { TabDrive } from './drive-engine';
 import type { BrokerClient } from './broker-client';
-import type { QuoteMsg, RegionMsg } from '../shared/ipc';
+import type { QuoteMsg, RegionMsg, CaptureDto, KnowledgeHit } from '../shared/ipc';
 
 // The Electron main process IS the studio session host (spec §2). This module composes
 // the salvaged domain layer (perception → observe, act, session-drive) over the per-tab
@@ -163,6 +163,10 @@ export interface StudioHost {
   captureRegion(tabId: string, rect: RegionMsg['rect']): Promise<StudioCaptureOutput | StudioToolError>;
   /** The active session's marks for the rail (host-internal mirror of studio_marks list). */
   listMarks(): Promise<StudioMarksOutput | StudioGeneralizeOutput | StudioToolError>;
+  /** The active session's captured items for the Captures rail (broker down → [] — the panel degrades quietly). */
+  listCaptures(): Promise<CaptureDto[]>;
+  /** find_similar on the current page against the LOCAL studio corpus (knowledge rail; broker down → []). */
+  knowledgeSimilar(concept: string): Promise<KnowledgeHit[]>;
   /** Cleanly detach every session's tab (app quit). */
   shutdown(): Promise<void>;
 }
@@ -712,6 +716,25 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       const ctx = targetContext();
       if (!ctx) return { error_reason: 'no_active_session', hint: 'No session is open.' };
       return ctx.marksTool({});
+    },
+    async listCaptures(): Promise<CaptureDto[]> {
+      const ctx = targetContext();
+      if (!ctx) return [];
+      try {
+        const rows = await deps.broker.call<Array<{ id: number; type: string; title: string | null; url: string | null; trusted: boolean; created_at: string }>>(
+          'listArtifacts', { sessionId: ctx.sessionId, limit: 200 },
+        );
+        return rows.map((r) => ({ id: r.id, type: r.type, title: r.title, url: r.url, trusted: r.trusted, createdAt: r.created_at }));
+      } catch { return []; } // broker down → the panel shows nothing rather than erroring
+    },
+    async knowledgeSimilar(concept: string): Promise<KnowledgeHit[]> {
+      if (!concept.trim()) return [];
+      try {
+        const out = await deps.broker.call<{ results?: Array<{ url: string; title: string; relevance_score: number; source: string }> }>(
+          'findSimilar', { input: { concept, include_web: false, include_cache: true, max_results: 3 } },
+        );
+        return (out.results ?? []).map((r) => ({ url: r.url, title: r.title, score: r.relevance_score, source: r.source }));
+      } catch { return []; } // broker down → the rail degrades quietly (never errors the UI)
     },
     async shutdown(): Promise<void> {
       for (const ctx of contexts.values()) {

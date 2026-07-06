@@ -254,3 +254,34 @@ button { font-family: inherit; }
 .mark-card__grab { all: unset; cursor: pointer; color: var(--text-faint); padding: 4px 7px; border-radius: var(--r-sm); }
 .mark-card__grab:hover { color: var(--agent); background: var(--agent-dim); }
 .mark-preview { font-size: 11px; color: var(--working); }
+
+/* ── P3 Captures pane ── */
+.caps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.caps__item {
+  display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 6px;
+  padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: var(--r-sm);
+}
+.caps__type {
+  font: 10px var(--chrome-font); text-transform: uppercase; letter-spacing: .04em;
+  color: var(--agent); background: var(--agent-dim); border-radius: var(--r-pill); padding: 1px 7px;
+}
+.caps__title { color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.caps__url {
+  grid-column: 2; color: var(--text-faint); font-size: 11px; text-decoration: none;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── P3 ambient knowledge rail (rail foot) ── */
+.knowledge { margin-top: auto; border-top: 1px solid var(--border-soft); padding: 6px 12px; }
+.knowledge__line {
+  all: unset; cursor: pointer; display: flex; align-items: center; gap: 6px;
+  color: var(--text-dim); font: 12px var(--chrome-font); width: 100%;
+}
+.knowledge__line:hover { color: var(--text); }
+.knowledge__caret { color: var(--agent); }
+.knowledge__hits { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.knowledge__hit a {
+  color: var(--text-dim); font-size: 12px; text-decoration: none;
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.knowledge__hit a:hover { color: var(--agent); }

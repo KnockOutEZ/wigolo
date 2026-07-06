@@ -43,6 +43,25 @@ export interface StudioState {
   tabs: TabInfo[];
 }
 
+/** main → renderer: one captured item for the Captures rail pane (light projection — no body). */
+export interface CaptureDto {
+  id: number;
+  type: string;
+  title: string | null;
+  url: string | null;
+  trusted: boolean;
+  createdAt: string;
+}
+
+/** A knowledge-rail hit: a related item from the local studio corpus (find_similar on the current page). */
+export interface KnowledgeHit {
+  url: string;
+  title: string;
+  score: number;
+  /** 'studio' = a captured session artifact; 'cache' = a fetched page. */
+  source: string;
+}
+
 /** A parked risky agent action awaiting the human's Allow/Deny in the approval card (P1 placeholder). */
 export interface PendingApprovalDto {
   id: string;
@@ -71,9 +90,12 @@ export const IPC = {
   armMarkMode: 'studio:arm-mark-mode',
   markComment: 'studio:mark-comment',
   markGeneralize: 'studio:mark-generalize',
+  listCaptures: 'studio:list-captures',
+  knowledgeSimilar: 'studio:knowledge-similar',
   // main → renderer
   stateChanged: 'studio:state-changed',
   approvalParked: 'studio:approval-parked',
   marksChanged: 'studio:marks-changed',
   generalizePreview: 'studio:generalize-preview',
+  captureAdded: 'studio:capture-added',
 } as const;

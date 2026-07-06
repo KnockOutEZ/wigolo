@@ -218,3 +218,32 @@ describe('studio-host — captureRegion (human drag → screenshot)', () => {
     expect(r).toMatchObject({ error_reason: 'capture_unavailable' });
   });
 });
+
+describe('studio-host — listCaptures + knowledgeSimilar (rail reads)', () => {
+  it('listCaptures maps the active session artifacts to CaptureDto', async () => {
+    const broker = gateBroker({ call: (m) => (m === 'listArtifacts' ? [{ id: 5, type: 'clip', title: 't', url: 'u', trusted: false, created_at: '2026-07-07' }] : {}) });
+    const { host } = makeHost(broker);
+    await host.handlers.spawn({});
+    expect(await host.listCaptures()).toEqual([{ id: 5, type: 'clip', title: 't', url: 'u', trusted: false, createdAt: '2026-07-07' }]);
+  });
+
+  it('listCaptures → [] on broker down (panel degrades, never errors) and with no active session', async () => {
+    const down = makeHost(gateBroker({ call: () => { throw new Error('down'); } }));
+    await down.host.handlers.spawn({});
+    expect(await down.host.listCaptures()).toEqual([]);
+    const noSession = makeHost(gateBroker());
+    expect(await noSession.host.listCaptures()).toEqual([]);
+  });
+
+  it('knowledgeSimilar maps find_similar results to KnowledgeHit', async () => {
+    const broker = gateBroker({ call: (m) => (m === 'findSimilar' ? { results: [{ url: 'u1', title: 'T1', relevance_score: 0.9, source: 'studio' }] } : {}) });
+    const { host } = makeHost(broker);
+    expect(await host.knowledgeSimilar('pricing table')).toEqual([{ url: 'u1', title: 'T1', score: 0.9, source: 'studio' }]);
+  });
+
+  it('knowledgeSimilar → [] on an empty concept or broker down (rail degrades quietly)', async () => {
+    expect(await makeHost(gateBroker()).host.knowledgeSimilar('   ')).toEqual([]);
+    const down = makeHost(gateBroker({ call: () => { throw new Error('down'); } }));
+    expect(await down.host.knowledgeSimilar('x')).toEqual([]);
+  });
+});

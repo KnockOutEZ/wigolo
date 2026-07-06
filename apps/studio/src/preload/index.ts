@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, type StudioState, type PendingApprovalDto, type MarkDto } from '../shared/ipc';
+import { IPC, type StudioState, type PendingApprovalDto, type MarkDto, type CaptureDto, type KnowledgeHit } from '../shared/ipc';
 import type { StudioGeneralizeOutput } from 'wigolo/studio';
 
 const studio = {
@@ -33,6 +33,15 @@ const studio = {
   onGeneralizePreview: (cb: (preview: StudioGeneralizeOutput) => void): void => {
     ipcRenderer.on(IPC.generalizePreview, (_e, p: StudioGeneralizeOutput) => cb(p));
   },
+  // ── P3 capture ──
+  /** The active session's captured items (Captures rail; on session open). */
+  listCaptures: (): Promise<CaptureDto[]> => ipcRenderer.invoke(IPC.listCaptures),
+  /** A newly captured item pushed live (agent clip / human quote / region screenshot). */
+  onCaptureAdded: (cb: (c: CaptureDto) => void): void => {
+    ipcRenderer.on(IPC.captureAdded, (_e, c: CaptureDto) => cb(c));
+  },
+  /** find_similar on the current page against the local studio corpus (knowledge rail). */
+  knowledgeSimilar: (concept: string): Promise<KnowledgeHit[]> => ipcRenderer.invoke(IPC.knowledgeSimilar, concept),
 };
 
 export type StudioApi = typeof studio;
