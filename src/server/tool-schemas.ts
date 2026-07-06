@@ -710,12 +710,28 @@ export const STUDIO_SPAWN_TOOL_SCHEMA = {
   additionalProperties: false,
 };
 
+export const STUDIO_OPEN_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    name: {
+      type: 'string',
+      description: 'Optional friendly name for the session (shown in the workspace session switcher).',
+    },
+    startUrl: {
+      type: 'string',
+      description: 'Optional URL the session should open first. Subject to the same navigation safety as studio_act.',
+    },
+  },
+  required: [],
+  additionalProperties: false,
+};
+
 export const STUDIO_CLOSE_TOOL_SCHEMA = {
   type: 'object' as const,
   properties: {
     session_id: {
       type: 'string',
-      description: 'The id of the session to close (from studio_spawn or studio_list).',
+      description: 'The id of the session to close (from studio_open, studio_spawn, or studio_list).',
     },
   },
   required: ['session_id'],
@@ -740,6 +756,7 @@ export const TOOL_SCHEMAS: Record<ToolName, ToolSchema> = {
   agent: AGENT_TOOL_SCHEMA,
   diff: DIFF_TOOL_SCHEMA,
   watch: WATCH_TOOL_SCHEMA,
+  studio_open: STUDIO_OPEN_TOOL_SCHEMA,
   studio_observe: STUDIO_OBSERVE_TOOL_SCHEMA,
   studio_act: STUDIO_ACT_TOOL_SCHEMA,
   studio_marks: STUDIO_MARKS_TOOL_SCHEMA,

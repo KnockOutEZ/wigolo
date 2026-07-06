@@ -56,6 +56,7 @@ import {
   AGENT_TOOL_SCHEMA,
   DIFF_TOOL_SCHEMA,
   WATCH_TOOL_SCHEMA,
+  STUDIO_OPEN_TOOL_SCHEMA,
   STUDIO_OBSERVE_TOOL_SCHEMA,
   STUDIO_ACT_TOOL_SCHEMA,
   STUDIO_MARKS_TOOL_SCHEMA,
@@ -393,6 +394,11 @@ export function createMcpServer(subsystems: Subsystems): Server {
         inputSchema: WATCH_TOOL_SCHEMA,
       },
       {
+        name: 'studio_open',
+        description: TOOL_DESCRIPTIONS.studio_open,
+        inputSchema: STUDIO_OPEN_TOOL_SCHEMA,
+      },
+      {
         name: 'studio_observe',
         description: TOOL_DESCRIPTIONS.studio_observe,
         inputSchema: STUDIO_OBSERVE_TOOL_SCHEMA,
@@ -641,7 +647,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
       };
     }
 
-    if (name === 'studio_observe' || name === 'studio_act' || name === 'studio_marks' || name === 'studio_capture' || name === 'studio_spawn' || name === 'studio_close' || name === 'studio_list') {
+    if (name === 'studio_open' || name === 'studio_observe' || name === 'studio_act' || name === 'studio_marks' || name === 'studio_capture' || name === 'studio_spawn' || name === 'studio_close' || name === 'studio_list') {
       // Route through the shared seam: execute-on-host (studioHost set) or proxy/refuse on stdio.
       // studio_act's control-token gate runs inside the host handler — host-authoritative.
       const result = await dispatchStudioTool(name, (args ?? {}) as Record<string, unknown>, subsystems.studioHost, getConfig().dataDir);

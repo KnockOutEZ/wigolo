@@ -129,6 +129,8 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(keys).toContain('agent');
     expect(keys).toContain('diff');
     expect(keys).toContain('watch');
+    // P1 (§5): the public entry verb — open/focus the workspace and start a drivable session.
+    expect(keys).toContain('studio_open');
     // Phase 2H: the first studio_* tool — the agent's read-only perception of the session.
     expect(keys).toContain('studio_observe');
     // Phase 2I: the agent's acting verb in the session (navigate; click/type/scroll later).
@@ -141,7 +143,7 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(keys).toContain('studio_spawn');
     expect(keys).toContain('studio_close');
     expect(keys).toContain('studio_list');
-    expect(keys.length).toBe(17);
+    expect(keys.length).toBe(18);
   });
 
   it('studio_act description covers navigation, the control token, and the private/metadata block', () => {

@@ -152,15 +152,15 @@ describe('diff + watch tool registration', () => {
     try { rmSync(tmpDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  it('tools/list exposes 17 tools including diff, watch, and the seven studio tools', async () => {
+  it('tools/list exposes 18 tools including diff, watch, and the eight studio tools', async () => {
     const { client, teardown } = await connectClient();
     try {
       const res = await client.listTools();
       const names = res.tools.map((t) => t.name).sort();
       expect(names).toEqual(
-        ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'studio_act', 'studio_capture', 'studio_close', 'studio_list', 'studio_marks', 'studio_observe', 'studio_spawn', 'watch']
+        ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'studio_act', 'studio_capture', 'studio_close', 'studio_list', 'studio_marks', 'studio_observe', 'studio_open', 'studio_spawn', 'watch']
       );
-      expect(res.tools).toHaveLength(17);
+      expect(res.tools).toHaveLength(18);
     } finally {
       await teardown();
     }

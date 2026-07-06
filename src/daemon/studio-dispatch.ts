@@ -114,6 +114,15 @@ export interface StudioActOutput {
   url?: string;
   /** For `type`: how many characters actually landed (full length on success). */
   charsLanded?: number;
+  /**
+   * P1: a non-error act STAGE (spec §5/§11 — a stage, not a failure, so `isError` stays false).
+   *  - `pending_approval`: a risky act was parked for the human's Allow/Deny; the decision arrives in the
+   *    next `studio_observe` drain. The act did NOT execute. Do not retry — continue other work.
+   *  - `preempted`: the human took the wheel during the act; the in-flight step stood down. Re-observe.
+   */
+  stage?: 'pending_approval' | 'preempted';
+  /** The approval id assigned to a parked act (present with `stage: 'pending_approval'`), echoed back in the observe drain's decision event. */
+  approval_id?: string;
 }
 
 /** A typed failure from a host handler (e.g. an evicted spill fetch, a refused action) — surfaced as a tool error, NOT a bare null a caller could read as "no content". */
@@ -207,6 +216,8 @@ export interface StudioCaptureOutput {
 export interface StudioSpawnInput {
   /** Optional URL the new background session should open first. */
   startUrl?: string;
+  /** Optional friendly session name (studio_open sets this; studio_spawn's schema omits it). */
+  name?: string;
 }
 
 export interface StudioSpawnOutput {
@@ -307,7 +318,9 @@ export async function dispatchStudioTool(
       if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
     }
-    if (name === 'studio_spawn') {
+    if (name === 'studio_open' || name === 'studio_spawn') {
+      // studio_open is the §5 public entry verb; it routes to the SAME `spawn` host-handler key
+      // (PIN-SPLIT(a) handler-key set is byte-unchanged — no new key). studio_spawn stays too.
       const data = await studioHost.spawn(args as StudioSpawnInput);
       if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };

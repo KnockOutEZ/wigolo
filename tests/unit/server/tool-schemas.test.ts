@@ -5,7 +5,7 @@ describe('TOOL_SCHEMAS export', () => {
   it('exports a schema for every supported tool', () => {
     const expected = [
       'fetch', 'search', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent',
-      'diff', 'watch', 'studio_observe', 'studio_act', 'studio_marks', 'studio_capture',
+      'diff', 'watch', 'studio_open', 'studio_observe', 'studio_act', 'studio_marks', 'studio_capture',
       'studio_spawn', 'studio_close', 'studio_list',
     ] as const;
     for (const name of expected) {

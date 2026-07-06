@@ -146,6 +146,43 @@ describe('dispatchStudioTool — L3-1 surface: the bounded inversion (S6) admits
     expect(JSON.parse(r.content[0].text)).toMatchObject({ session_id: 'bg-1' });
     expect(proxyCalls).toEqual([]);
   });
+
+  // studio_open (§5 public entry verb) is an ALIAS over the existing `spawn` host-handler key — it must
+  // add NO new handler key (PIN-SPLIT(a) above stays byte-identical) yet still be agent-reachable and route
+  // to spawn. Mutation: drop the studio_open dispatch case → unknown_studio_tool → RED.
+  it('studio_open routes to the spawn host handler (public alias of the inversion verb, no new handler key)', async () => {
+    const r = await dispatchStudioTool('studio_open', { name: 'work', startUrl: 'https://example.com/' }, hostHandlers(), dir, { proxyFactory: proxyReturning({}) });
+    expect(r.isError).toBe(false);
+    expect(JSON.parse(r.content[0].text)).toMatchObject({ session_id: 'bg-1' });
+    expect(proxyCalls).toEqual([]);
+    // still exactly the 7 handler keys — studio_open reused `spawn`, it is NOT a new key
+    expect(Object.keys(hostHandlers()).sort()).toEqual(['act', 'capture', 'close', 'list', 'marks', 'observe', 'spawn']);
+  });
+});
+
+describe('dispatchStudioTool — studio_act pending_approval / preempted stage (P1)', () => {
+  // A parked risky act / a preempted act is an informational STAGE, not an error: the host returns a
+  // StudioActOutput with a `stage` field and NO error_reason, so dispatch serializes it isError:false and
+  // the fields survive verbatim. Mutation: mark a stage output as isError / drop the field → RED.
+  it('a stage:pending_approval act output serializes as a NON-error tool result, fields intact', async () => {
+    const handlers: StudioHostHandlers = {
+      ...hostHandlers(),
+      act: async (input) => ({ ok: true as const, action: input.action, stage: 'pending_approval' as const, approval_id: 'ap-1' }),
+    };
+    const r = await dispatchStudioTool('studio_act', { action: 'click', ref: 'e1' }, handlers, dir, { proxyFactory: proxyReturning({}) });
+    expect(r.isError).toBe(false); // a stage is not a failure
+    expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, action: 'click', stage: 'pending_approval', approval_id: 'ap-1' });
+  });
+
+  it('a stage:preempted act output serializes as a NON-error tool result', async () => {
+    const handlers: StudioHostHandlers = {
+      ...hostHandlers(),
+      act: async (input) => ({ ok: true as const, action: input.action, stage: 'preempted' as const }),
+    };
+    const r = await dispatchStudioTool('studio_act', { action: 'type', ref: 'e1', text: 'hi' }, handlers, dir, { proxyFactory: proxyReturning({}) });
+    expect(r.isError).toBe(false);
+    expect(JSON.parse(r.content[0].text)).toMatchObject({ stage: 'preempted' });
+  });
 });
 
 describe('dispatchStudioTool — studio_marks routing', () => {
