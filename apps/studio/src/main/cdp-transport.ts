@@ -16,9 +16,14 @@ export interface DebuggerLike {
 
 export interface CdpTransport {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
-  /** Subscribe to a CDP event by method name (payload is the raw CDP params). */
-  on(event: string, cb: (payload: unknown) => void): void;
-  off(event: string, cb: (payload: unknown) => void): void;
+  /**
+   * Subscribe to a CDP event by method name (payload is the raw CDP params). Generic
+   * over the payload type (default `unknown`) so this transport structurally satisfies
+   * the salvaged typed consumers (e.g. NavCdp's `(NavRequestPaused) => void`) without a
+   * cast at the call site — a generic signature is assignable to any specific one.
+   */
+  on<T = unknown>(event: string, cb: (payload: T) => void): void;
+  off<T = unknown>(event: string, cb: (payload: T) => void): void;
   attach(): void;
   detach(): void;
 }
@@ -51,16 +56,16 @@ export function webContentsDebuggerTransport(dbg: DebuggerLike): CdpTransport {
       if (!attached) throw new Error(`CDP transport detached: cannot send ${method}`);
       return dbg.sendCommand(method, params);
     },
-    on(event: string, cb: (payload: unknown) => void): void {
+    on<T = unknown>(event: string, cb: (payload: T) => void): void {
       let set = listeners.get(event);
       if (!set) {
         set = new Set();
         listeners.set(event, set);
       }
-      set.add(cb);
+      set.add(cb as (payload: unknown) => void);
     },
-    off(event: string, cb: (payload: unknown) => void): void {
-      listeners.get(event)?.delete(cb);
+    off<T = unknown>(event: string, cb: (payload: T) => void): void {
+      listeners.get(event)?.delete(cb as (payload: unknown) => void);
     },
   };
 }

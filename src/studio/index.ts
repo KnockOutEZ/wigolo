@@ -17,6 +17,10 @@ export { policyForHolder } from './nav-policy.js';
 export type { NavGrant } from './nav-policy.js';
 export { NavEpoch } from './nav-epoch.js';
 
+// Per-hop navigation guard (SSRF-via-redirect fence) + initial-URL gate
+export { NavInterceptor, navigateSession } from './nav.js';
+export type { NavCdp, NavPolicy, NavigableBrowser, NavigateSessionOptions } from './nav.js';
+
 // Deterministic risk classifier
 export { classifyRisk, DEFAULT_RISK_PATTERNS } from './risk.js';
 export type { RiskTier, TierPatterns, RiskPatterns, RiskSignals } from './risk.js';
