@@ -195,6 +195,26 @@ button { font-family: inherit; }
 .chat__onmark { font-size: 11px; color: var(--text-faint); }
 .chat__msg--agent .chat__onmark { color: var(--agent); }
 
+/* ── P4 localhost grant card (§13.8c) ── */
+.grant-card {
+  margin: 0 12px 8px; padding: 10px 12px;
+  background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: var(--r-md);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.grant-card--on { border-color: rgba(74, 222, 128, .35); background: rgba(74, 222, 128, .06); }
+.grant-card__title { font-size: 11px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--text-dim); }
+.grant-card--on .grant-card__title { color: var(--human); }
+.grant-card__body { font-size: 12.5px; line-height: 1.45; color: var(--text-dim); }
+.grant-card__body b { color: var(--text); font-weight: 600; }
+.grant-card__btn {
+  align-self: flex-start; height: 26px; padding: 0 12px; border-radius: var(--r-pill); cursor: default;
+  border: 1px solid var(--agent); background: var(--agent-dim); color: var(--agent); font: 600 12px var(--chrome-font);
+  transition: background .12s;
+}
+.grant-card__btn:hover { background: rgba(139, 124, 246, .24); }
+.grant-card__btn--revoke { border-color: var(--border); background: transparent; color: var(--text-dim); }
+.grant-card__btn--revoke:hover { border-color: var(--blocked); color: var(--blocked); background: transparent; }
+
 .composer {
   margin: 8px 12px 14px; padding: 10px 12px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-lg);

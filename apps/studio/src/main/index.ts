@@ -111,6 +111,12 @@ async function createWindow(): Promise<void> {
       const dto: ChatMsgDto = { author: 'agent', text: m.text, ...(m.markId ? { markId: m.markId } : {}), ts: m.ts };
       win.webContents.send(IPC.chatMessage, dto);
     },
+    // P4: the active session changed (open/close) → the renderer re-backfills captures + resets the grant/chat
+    // UI for the new session. Also push the fresh grant state (a new session starts un-granted).
+    onActiveSessionChange: (sessionId) => {
+      win.webContents.send(IPC.sessionChanged, { sessionId });
+      win.webContents.send(IPC.grantState, { granted: studioHost.localhostGranted() });
+    },
     createTab: async ({ initialHolder, grant }: { initialHolder: ControlParty; grant: NavGrant }): Promise<HostTab> => {
       const view = new WebContentsView({
         // The per-tab marking overlay runs in this sandboxed, context-isolated tab's isolated world (P2).
@@ -240,6 +246,10 @@ async function createWindow(): Promise<void> {
   });
   // P4: the human's chat composer → a trusted `chat` event on the active session (agent drains it in observe).
   ipcMain.on(IPC.chatSend, (_e, text: string) => { void studioHost.postHumanChat(String(text ?? '')); });
+  // §13.8c: one-click localhost/private-net grant for the agent on the active session (revocable). Echo the
+  // resulting state so the grant card reflects it. link_local/cloud-metadata stays hard-blocked regardless.
+  ipcMain.handle(IPC.grantLocalhost, () => { const ok = studioHost.grantLocalhost(); win.webContents.send(IPC.grantState, { granted: studioHost.localhostGranted() }); return ok; });
+  ipcMain.handle(IPC.revokeLocalhost, () => { const ok = studioHost.revokeLocalhost(); win.webContents.send(IPC.grantState, { granted: studioHost.localhostGranted() }); return ok; });
 
   let gateway: Gateway | null = null;
   try {

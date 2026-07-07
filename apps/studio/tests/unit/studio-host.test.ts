@@ -94,6 +94,7 @@ function makeHost(config?: { sessionCap?: number }, dbg: () => DebuggerLike = fa
   const engine = createDriveEngine();
   const parked: ParkedApprovalNotice[] = [];
   const said: Array<{ text: string; markId?: string; ts: number; sessionId: string }> = [];
+  const sessionChanges: Array<string | null> = [];
   const tabs = new Map<string, { navigate: ReturnType<typeof vi.fn>; closed: boolean; url: string }>();
   let n = 0;
   const host = createStudioHost({
@@ -101,6 +102,7 @@ function makeHost(config?: { sessionCap?: number }, dbg: () => DebuggerLike = fa
     broker,
     onParked: (notice) => parked.push(notice),
     onSay: (m) => said.push(m),
+    onActiveSessionChange: (sid) => sessionChanges.push(sid),
     createTab: async ({ initialHolder, grant }) => {
       const tabId = `t${++n}`;
       // attachTab is async + fail-closed: it resolves only once the SSRF fence is armed.
@@ -118,7 +120,7 @@ function makeHost(config?: { sessionCap?: number }, dbg: () => DebuggerLike = fa
     },
     closeTab: (tabId) => { const t = tabs.get(tabId); if (t) t.closed = true; void engine.detachTab(tabId); },
   });
-  return { host, parked, said, tabs, broker };
+  return { host, parked, said, sessionChanges, tabs, broker };
 }
 
 describe('createStudioHost — session lifecycle', () => {
@@ -526,5 +528,46 @@ describe('createStudioHost — studio_say + human chat (P4)', () => {
     const obs = await host.handlers.observe({ since: 0 });
     const events = ('events' in obs ? obs.events : []) as Array<Record<string, unknown>>;
     expect(events.some((e) => e.type === 'chat')).toBe(false);
+  });
+});
+
+describe('createStudioHost — localhost grant (§13.8c human-control-flip)', () => {
+  it('grantLocalhost flips agent private-nav ON for the active session (pull-at-eval); revoke flips it back', async () => {
+    const { host } = makeHost();
+    const opened = await host.handlers.spawn({}) as { session_id: string };
+    const drive = host.sessions.getSessionDrive(opened.session_id)!;
+    expect(host.localhostGranted()).toBe(false);
+    const before = await drive.gatedNavigate('http://localhost:3000/');
+    expect(before.ok).toBe(false); // agent cannot reach localhost by default
+    expect(host.grantLocalhost()).toBe(true);
+    expect(host.localhostGranted()).toBe(true);
+    const after = await drive.gatedNavigate('http://localhost:3000/');
+    expect(after.ok).toBe(true); // the SAME nav now passes — the grant took effect on the next hop
+    expect(host.revokeLocalhost()).toBe(true);
+    expect(host.localhostGranted()).toBe(false);
+    const revoked = await drive.gatedNavigate('http://127.0.0.1:5173/');
+    expect(revoked.ok).toBe(false);
+  });
+
+  it('NEGATIVE: cloud-metadata / link-local is NEVER grantable, even after grantLocalhost (at the act/nav layer)', async () => {
+    const { host } = makeHost();
+    const opened = await host.handlers.spawn({}) as { session_id: string };
+    const drive = host.sessions.getSessionDrive(opened.session_id)!;
+    host.grantLocalhost();
+    const meta = await drive.gatedNavigate('http://169.254.169.254/latest/meta-data/');
+    expect(meta.ok).toBe(false); // link_local blocked BEFORE allowPrivate — grant can't open it
+    const alias = await drive.gatedNavigate('http://metadata.google.internal/');
+    expect(alias.ok).toBe(false); // the metadata alias too
+  });
+
+  it('getActiveSessionId + onActiveSessionChange track open/close', async () => {
+    const { host, sessionChanges } = makeHost();
+    expect(host.getActiveSessionId()).toBeNull();
+    const a = await host.handlers.spawn({}) as { session_id: string };
+    expect(host.getActiveSessionId()).toBe(a.session_id);
+    expect(sessionChanges.at(-1)).toBe(a.session_id);
+    await host.handlers.close({ session_id: a.session_id });
+    expect(host.getActiveSessionId()).toBeNull();
+    expect(sessionChanges.at(-1)).toBeNull();
   });
 });

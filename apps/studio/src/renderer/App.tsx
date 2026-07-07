@@ -10,6 +10,7 @@ import { ApprovalCards } from './ApprovalCard';
 import { MarksPanel } from './MarksPanel';
 import { CapturesPanel } from './CapturesPanel';
 import { ChatPanel } from './ChatPanel';
+import { GrantCard } from './GrantCard';
 import { KnowledgeRail } from './KnowledgeRail';
 import { IconSpark, IconSend } from './icons';
 import { createApprovalStore, type PendingApproval, type ApprovalVerdict } from './approval-store';
@@ -41,6 +42,7 @@ export function App() {
   const [railOpen, setRailOpen] = useState(true);
   const [, setControlTick] = useState(0); // re-render on any per-tab control change (provenance dots / banner)
   const [chat, setChat] = useState<ChatMsgDto[]>([]);
+  const [granted, setGranted] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -64,6 +66,15 @@ export function App() {
     // P4 chat rail: agent messages (studio_say) arrive live; the composer posts human messages.
     const unsubChat = chatStore.subscribe(() => setChat(chatStore.list()));
     window.studio.onChatMessage((m) => chatStore.add(m));
+    // P4 localhost grant (§13.8c): reflect the agent's per-session grant state.
+    window.studio.onGrantState((g) => setGranted(g.granted));
+    // P4: on an active-session change (open/close), reset the grant UI, re-backfill that session's captures,
+    // and clear the chat for the new session (within-run multi-session; cross-boot restore stays deferred).
+    window.studio.onSessionChanged(() => {
+      setGranted(false);
+      chatStore.clear();
+      void window.studio.listCaptures().then((c) => capturesStore.set(c));
+    });
     // ⌘J focuses the chat composer (spec §3).
     const onKey = (ev: KeyboardEvent) => { if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'j') { ev.preventDefault(); setRailTab('agent'); composerRef.current?.focus(); } };
     window.addEventListener('keydown', onKey);
@@ -181,6 +192,11 @@ export function App() {
                     </p>
                   ) : null}
                 </div>
+                <GrantCard
+                  granted={granted}
+                  onGrant={() => void window.studio.grantLocalhost()}
+                  onRevoke={() => void window.studio.revokeLocalhost()}
+                />
                 <div className="composer">
                   <textarea
                     ref={composerRef}

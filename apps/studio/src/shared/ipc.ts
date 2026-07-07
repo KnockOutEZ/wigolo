@@ -86,6 +86,12 @@ export interface OverlayCursorMsg { x: number; y: number; caption: string }
 /** A chat rail message — the agent via studio_say, or the human's composer. Agent text renders inert. */
 export interface ChatMsgDto { author: 'agent' | 'human'; text: string; markId?: string; ts: number }
 
+/** main → renderer: the agent's localhost/private-net grant state for the active session (§13.8c). */
+export interface GrantStateDto { granted: boolean }
+
+/** main → renderer: the active session changed (open/close) — the renderer re-backfills per-session UI. */
+export interface SessionChangedDto { sessionId: string | null }
+
 // renderer → main
 export const IPC = {
   tabCreate: 'studio:tab-create',
@@ -100,6 +106,8 @@ export const IPC = {
   armClip: 'studio:arm-clip',
   setBannerOpen: 'studio:set-banner-open',
   chatSend: 'studio:chat-send',
+  grantLocalhost: 'studio:grant-localhost',
+  revokeLocalhost: 'studio:revoke-localhost',
   // overlay(tab) → main
   overlayMark: 'studio:overlay-mark',
   overlayGeneralize: 'studio:overlay-generalize',
@@ -124,4 +132,6 @@ export const IPC = {
   captureAdded: 'studio:capture-added',
   driveEvent: 'studio:drive-event',
   chatMessage: 'studio:chat-message',
+  grantState: 'studio:grant-state',
+  sessionChanged: 'studio:session-changed',
 } as const;

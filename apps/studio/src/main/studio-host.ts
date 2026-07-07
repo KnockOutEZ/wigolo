@@ -116,6 +116,8 @@ export interface StudioHostDeps {
   onParked: (notice: ParkedApprovalNotice) => void;
   /** P4: the agent posted a chat message (studio_say) → push it to the human's chat rail. */
   onSay?: (msg: { text: string; markId?: string; ts: number; sessionId: string }) => void;
+  /** P4: the active session changed (open/close) → the renderer re-backfills captures + resets per-session UI. */
+  onActiveSessionChange?: (sessionId: string | null) => void;
   /**
    * The DB broker RPC seam (P3, spec §13.9). Persistence + find_similar run in a plain-Node child so the
    * Electron main never loads a native module; the host supplies the security-gate inputs per call. Only
@@ -143,6 +145,16 @@ export interface StudioHost {
   sessions: StudioSessionsAccessor;
   /** Native human input landed on a tab → preempt the agent instantly (fsm → paused). */
   onHumanInput(tabId: string): void;
+  /**
+   * §13.8c one-click human grant — allow the agent onto loopback/RFC1918 for the ACTIVE session (the
+   * DOM-to-code flow's "allow agent on localhost this session"). Revocable. link_local/cloud-metadata stays
+   * hard-blocked in guardNavigation regardless of this grant. Human-only (Electron-IPC seam; PIN-SPLIT(b)).
+   */
+  grantLocalhost(): boolean;
+  revokeLocalhost(): boolean;
+  localhostGranted(): boolean;
+  /** The active session id (null when none) — for host→renderer session-change signalling. */
+  getActiveSessionId(): string | null;
   /**
    * P4: the human typed in the chat rail composer → a trusted `chat` human event on the active session
    * (the agent drains it in studio_observe). Credential-gated at source (dropped on a login page, like a
@@ -533,6 +545,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     contexts.set(sessionId, ctx);
     tabToSession.set(tab.tabId, sessionId);
     activeSessionId = sessionId;
+    deps.onActiveSessionChange?.(activeSessionId); // P4: renderer re-backfills captures / resets per-session UI
     // The agent's requested startUrl is navigated through the GATED path (guardNavigation under agent
     // policy — cloud-metadata/RFC1918 fenced), NEVER a raw ungated tab load. A blocked/failed nav still
     // opens the session (on the safe blank page); the agent sees the outcome on its next observe/act.
@@ -596,7 +609,10 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       // (+ its snapshotter/queue/closures) and any never-resolved parked approval, per open/close cycle.
       for (const [aid, rec] of parked) if (rec.sessionId === id) parked.delete(aid);
       contexts.delete(id);
-      if (activeSessionId === id) activeSessionId = targetContext()?.sessionId ?? null;
+      if (activeSessionId === id) {
+        activeSessionId = targetContext()?.sessionId ?? null;
+        deps.onActiveSessionChange?.(activeSessionId); // P4: the active session switched (or went to none)
+      }
       return { closed: true, session_id: id };
     },
     list: async (): Promise<StudioListOutput> => ({
@@ -637,6 +653,27 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       if (!sessionId) return;
       const ctx = contexts.get(sessionId);
       if (ctx && ctx.status === 'live') ctx.tab.drive.fsm.onHumanInput();
+    },
+    // §13.8c: mutate the active session's shared NavGrant (read pull-at-eval by NavInterceptor + act.ts's
+    // navigate → effective on the very next hop, no re-arm window). guardNavigation still hard-blocks
+    // link_local/cloud-metadata BEFORE the allowPrivate check, so this can never open cloud-internal.
+    grantLocalhost(): boolean {
+      const ctx = targetContext();
+      if (!ctx) return false;
+      ctx.tab.drive.grant.agentAllowPrivate = true;
+      return true;
+    },
+    revokeLocalhost(): boolean {
+      const ctx = targetContext();
+      if (!ctx) return false;
+      ctx.tab.drive.grant.agentAllowPrivate = false;
+      return true;
+    },
+    localhostGranted(): boolean {
+      return targetContext()?.tab.drive.grant.agentAllowPrivate ?? false;
+    },
+    getActiveSessionId(): string | null {
+      return activeSessionId;
     },
     resolveApproval(approvalId: string, decision: 'allow' | 'deny'): void {
       const rec = parked.get(approvalId);

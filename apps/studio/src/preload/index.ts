@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, type StudioState, type PendingApprovalDto, type MarkDto, type CaptureDto, type KnowledgeHit, type DriveEventDto, type ChatMsgDto } from '../shared/ipc';
+import { IPC, type StudioState, type PendingApprovalDto, type MarkDto, type CaptureDto, type KnowledgeHit, type DriveEventDto, type ChatMsgDto, type GrantStateDto, type SessionChangedDto } from '../shared/ipc';
 import type { StudioGeneralizeOutput } from 'wigolo/studio';
 
 const studio = {
@@ -59,6 +59,17 @@ const studio = {
   },
   /** The human typed in the chat composer → deliver it to the agent (drained in its next studio_observe). */
   sendChat: (text: string): void => { ipcRenderer.send(IPC.chatSend, text); },
+  /** §13.8c: allow / revoke the agent on localhost + private-network pages for the active session. */
+  grantLocalhost: (): Promise<boolean> => ipcRenderer.invoke(IPC.grantLocalhost),
+  revokeLocalhost: (): Promise<boolean> => ipcRenderer.invoke(IPC.revokeLocalhost),
+  /** The agent's localhost-grant state for the active session (pushed on grant/revoke/session change). */
+  onGrantState: (cb: (g: GrantStateDto) => void): void => {
+    ipcRenderer.on(IPC.grantState, (_e, g: GrantStateDto) => cb(g));
+  },
+  /** The active session changed (open/close) — re-backfill captures + reset per-session UI. */
+  onSessionChanged: (cb: (s: SessionChangedDto) => void): void => {
+    ipcRenderer.on(IPC.sessionChanged, (_e, s: SessionChangedDto) => cb(s));
+  },
 };
 
 export type StudioApi = typeof studio;
