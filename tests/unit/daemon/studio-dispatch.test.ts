@@ -300,6 +300,7 @@ describe('dispatchStudioTool — studio_capture qa gate (C5, through dispatch, r
     spawn: async () => ({ session_id: 'bg' }),
     close: async (input) => ({ closed: true as const, session_id: input.session_id ?? '' }),
     list: async () => ({ sessions: [] }),
+    say: async () => ({ posted: true, posted_at: 0 }),
   });
   const rowById = (id: number) => db.prepare('SELECT * FROM studio_artifacts WHERE id = ?').get(id) as Record<string, unknown>;
 
