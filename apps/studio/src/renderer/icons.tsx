@@ -16,6 +16,8 @@ export const IconLink = ({ size = 16 }: { size?: number }) => (<svg {...base(siz
 export const IconReader = ({ size = 16 }: { size?: number }) => (<svg {...base(size)}><path d="M4 6h16M4 10h16M4 14h11M4 18h11" /></svg>);
 export const IconClose = ({ size = 13 }: { size?: number }) => (<svg {...base(size)}><path d="M6 6l12 12M18 6L6 18" /></svg>);
 export const IconSend = ({ size = 15 }: { size?: number }) => (<svg {...base(size)}><path d="M12 19V5M6 11l6-6 6 6" /></svg>);
+export const IconPause = ({ size = 14 }: { size?: number }) => (<svg {...base(size)}><path d="M8 5v14M16 5v14" /></svg>);
+export const IconClip = ({ size = 16 }: { size?: number }) => (<svg {...base(size)}><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" /></svg>);
 
 /** The agent mark — a four-point spark (violet in use), the studio's identity glyph. */
 export const IconSpark = ({ size = 15 }: { size?: number }) => (

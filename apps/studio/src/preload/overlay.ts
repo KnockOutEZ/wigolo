@@ -22,6 +22,7 @@ const CH = {
   arm: 'studio:overlay-arm',
   assigned: 'studio:overlay-mark-assigned',
   cursor: 'studio:overlay-cursor',
+  clipArm: 'studio:clip-arm',
 } as const;
 
 interface OverlayMarkMsg { nonce: string; path: number[]; payload: MarkPayload }
@@ -257,6 +258,8 @@ function installOverlay(): void {
   });
 
   ipcRenderer.on(CH.arm, () => arm());
+  // P4 toolbar ✂ → arm region clip (same as the ⌘⇧X keyboard arm; the next drag draws the rectangle).
+  ipcRenderer.on(CH.clipArm, () => setClip(true));
   ipcRenderer.on(CH.assigned, (_e, data: { nonce: string; markId: string; number: number }) => {
     const chip = pendingChips.get(data.nonce);
     if (chip) { chip.textContent = `◈ ${data.number}`; pendingChips.delete(data.nonce); }

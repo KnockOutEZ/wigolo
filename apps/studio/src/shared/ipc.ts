@@ -92,6 +92,10 @@ export const IPC = {
   getState: 'studio:get-state',
   approvalDecide: 'studio:approval-decide',
   setRailOpen: 'studio:set-rail-open',
+  // P4 co-drive: human seams (Electron-IPC only — never the agent gateway)
+  driveReclaim: 'studio:drive-reclaim',
+  armClip: 'studio:arm-clip',
+  setBannerOpen: 'studio:set-banner-open',
   // overlay(tab) → main
   overlayMark: 'studio:overlay-mark',
   overlayGeneralize: 'studio:overlay-generalize',
@@ -101,6 +105,7 @@ export const IPC = {
   overlayArm: 'studio:overlay-arm',
   overlayMarkAssigned: 'studio:overlay-mark-assigned',
   overlayCursor: 'studio:overlay-cursor',
+  clipArm: 'studio:clip-arm',
   // renderer(chrome) → main
   armMarkMode: 'studio:arm-mark-mode',
   markComment: 'studio:mark-comment',

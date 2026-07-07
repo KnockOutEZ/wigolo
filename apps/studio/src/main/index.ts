@@ -63,9 +63,14 @@ async function createWindow(): Promise<void> {
   // The Agent rail occupies a fixed right column; the WebContentsView stage is everything left of it,
   // below the chrome. Toggling the rail (from the renderer) reflows the stage to reclaim/yield the column.
   let railOpen = true;
+  // P4: the drive banner is a chrome strip over the stage; when shown it insets the WebContentsView (like
+  // the rail) so it never covers the driven page.
+  let bannerOpen = false;
+  const BANNER_H = 36; // keep in sync with .drive-banner height in studio.css
   const bounds = (): Rect => {
     const [width, height] = win.getContentSize();
-    return { x: 0, y: CHROME_HEIGHT, width: width - (railOpen ? RAIL_WIDTH : 0), height: height - CHROME_HEIGHT };
+    const top = CHROME_HEIGHT + (bannerOpen ? BANNER_H : 0);
+    return { x: 0, y: top, width: width - (railOpen ? RAIL_WIDTH : 0), height: height - top };
   };
   const tabs = new TabManager(makeViewFactory(win), bounds);
   const sessions = new SessionRegistry();
@@ -210,6 +215,22 @@ async function createWindow(): Promise<void> {
   ipcMain.handle(IPC.setRailOpen, (_e, open: boolean) => {
     railOpen = !!open;
     tabs.relayout(); // reflow the WebContentsView stage to match the new rail state
+  });
+
+  // P4 co-drive human seams (Electron-IPC only — NOT the agent gateway; PIN-SPLIT(b)).
+  ipcMain.handle(IPC.driveReclaim, (_e, tabId: string) => {
+    // Pause / take-over: an EXPLICIT human signal preempts the agent on this tab (token.reclaim → the
+    // in-flight agent unit is fenced). This is the deliberate takeover, distinct from the deferred native
+    // before-input-event hook (which cannot tell the agent's own CDP input apart from a human keystroke).
+    studioHost.onHumanInput(String(tabId));
+  });
+  ipcMain.on(IPC.armClip, () => {
+    const id = lastSessionTabId;
+    if (id) sessionTabWc.get(id)?.send(IPC.clipArm);
+  });
+  ipcMain.handle(IPC.setBannerOpen, (_e, open: boolean) => {
+    bannerOpen = !!open;
+    tabs.relayout(); // reflow the WebContentsView stage to make room for / reclaim the banner
   });
 
   let gateway: Gateway | null = null;

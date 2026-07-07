@@ -143,6 +143,23 @@ button { font-family: inherit; }
 .assistant-toggle:hover { background: var(--surface-hover); color: var(--text); }
 .assistant-toggle--on { background: var(--agent-dim); color: var(--agent); }
 
+/* ── Drive banner (spec §3): shown only while the agent drives the visible tab; the takeover affordance ── */
+.drive-banner {
+  height: 36px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 14px;
+  background: var(--agent-dim); border-bottom: 1px solid var(--border-soft);
+  color: var(--text); font-size: 12.5px;
+}
+.drive-banner__dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--agent); box-shadow: 0 0 6px var(--agent); animation: dot-pulse 1.6s ease-in-out infinite; }
+.drive-banner__step { font-family: var(--serif); font-size: 14px; color: var(--text); }
+.drive-banner__hint { color: var(--text-faint); font-size: 11.5px; margin-left: auto; }
+.drive-banner__pause {
+  flex: none; display: flex; align-items: center; gap: 5px; height: 24px; padding: 0 12px;
+  border: none; border-radius: var(--r-pill); cursor: default;
+  background: var(--agent); color: #12101f; font: 600 12px var(--chrome-font);
+  transition: filter .12s;
+}
+.drive-banner__pause:hover { filter: brightness(1.1); }
+
 /* ── Right Agent rail ──────────────────────────────────────────────────── */
 .rail {
   width: 380px; flex: none; display: flex; flex-direction: column;

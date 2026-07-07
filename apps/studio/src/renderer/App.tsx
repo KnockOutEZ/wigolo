@@ -5,6 +5,7 @@ import type { StudioApi } from '../preload/index';
 import type { StudioGeneralizeOutput } from 'wigolo/studio';
 import { TabStrip } from './TabStrip';
 import { Toolbar } from './Omnibox';
+import { DriveBanner } from './DriveBanner';
 import { ApprovalCards } from './ApprovalCard';
 import { MarksPanel } from './MarksPanel';
 import { CapturesPanel } from './CapturesPanel';
@@ -86,6 +87,10 @@ export function App() {
     void window.studio.knowledgeSimilar(active.title || active.url).then(setKnowledge);
   }, [activeKey]);
 
+  // P4 drive banner: shown only while the AGENT holds the visible tab. Tell main so it insets the stage.
+  const bannerShow = active ? controlStore.holder(active.id) === 'agent' : false;
+  useEffect(() => { void window.studio.setBannerOpen(bannerShow); }, [bannerShow]);
+
   const navigate = (url: string) => {
     if (active) void window.studio.navigate(active.id, url);
     else void window.studio.createTab(url);
@@ -115,6 +120,12 @@ export function App() {
         onReload={() => { if (active) void window.studio.navigate(active.id, active.url); }}
         railOpen={railOpen}
         onToggleRail={toggleRail}
+        onClip={() => window.studio.armClip()}
+      />
+      <DriveBanner
+        show={bannerShow}
+        step={active ? controlStore.step(active.id) : ''}
+        onPause={() => { if (active) void window.studio.reclaimDrive(active.id); }}
       />
       <div className="studio__body">
         {/* the real Chromium WebContentsView is composited by the OS over this region */}
