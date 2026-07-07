@@ -221,6 +221,7 @@ async function createWindow(): Promise<void> {
     await win.loadFile(join(import.meta.dirname, '../renderer/index.html'));
   }
   win.show();
+  win.focus(); // take foreground on launch (a background/CLI launch otherwise leaves the window unfocused)
 }
 
 app.whenReady().then(createWindow);
