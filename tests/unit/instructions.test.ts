@@ -51,7 +51,7 @@ describe('WIGOLO_DOCS_URI', () => {
 describe('TOOL_DESCRIPTIONS', () => {
   it('has one description per public tool', () => {
     expect(Object.keys(TOOL_DESCRIPTIONS).sort()).toEqual(
-      ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'studio_open', 'studio_observe', 'studio_act', 'studio_marks', 'studio_capture', 'studio_say', 'studio_spawn', 'studio_close', 'studio_list', 'watch'].sort(),
+      ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'studio_open', 'studio_observe', 'studio_act', 'studio_marks', 'studio_capture', 'studio_extract_set', 'studio_say', 'studio_spawn', 'studio_close', 'studio_list', 'watch'].sort(),
     );
   });
 });

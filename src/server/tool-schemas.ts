@@ -714,6 +714,20 @@ export const STUDIO_SAY_TOOL_SCHEMA = {
   additionalProperties: false,
 };
 
+export const STUDIO_EXTRACT_SET_TOOL_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    tab_id: { type: 'string', description: 'The session tab whose page holds the marked pattern.' },
+    mark_id: { type: 'string', description: 'The mark (from studio_marks) whose repeating set to extract into rows.' },
+    exclude_refs: { type: 'array', items: { type: 'string' }, description: 'Refs from the matched set to drop before extracting.' },
+    follow_pagination: { type: 'boolean', description: 'Follow a same-site next-page control and accumulate rows (bounded, gated).' },
+    max_pages: { type: 'number', description: 'Max pages to follow (clamped to a host ceiling).' },
+    max_rows: { type: 'number', description: 'Max rows to collect (clamped to a host ceiling).' },
+  },
+  required: ['tab_id', 'mark_id'],
+  additionalProperties: false,
+};
+
 export const STUDIO_SPAWN_TOOL_SCHEMA = {
   type: 'object' as const,
   properties: {
@@ -777,6 +791,7 @@ export const TOOL_SCHEMAS: Record<ToolName, ToolSchema> = {
   studio_act: STUDIO_ACT_TOOL_SCHEMA,
   studio_marks: STUDIO_MARKS_TOOL_SCHEMA,
   studio_capture: STUDIO_CAPTURE_TOOL_SCHEMA,
+  studio_extract_set: STUDIO_EXTRACT_SET_TOOL_SCHEMA,
   studio_say: STUDIO_SAY_TOOL_SCHEMA,
   studio_spawn: STUDIO_SPAWN_TOOL_SCHEMA,
   studio_close: STUDIO_CLOSE_TOOL_SCHEMA,

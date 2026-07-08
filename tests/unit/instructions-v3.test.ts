@@ -145,7 +145,8 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(keys).toContain('studio_spawn');
     expect(keys).toContain('studio_close');
     expect(keys).toContain('studio_list');
-    expect(keys.length).toBe(19);
+    expect(keys).toContain('studio_extract_set');
+    expect(keys.length).toBe(20);
   });
 
   it('studio_act description covers navigation, the control token, and the private/metadata block', () => {

@@ -6,7 +6,7 @@ describe('TOOL_SCHEMAS export', () => {
     const expected = [
       'fetch', 'search', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent',
       'diff', 'watch', 'studio_open', 'studio_observe', 'studio_act', 'studio_marks', 'studio_capture',
-      'studio_say', 'studio_spawn', 'studio_close', 'studio_list',
+      'studio_extract_set', 'studio_say', 'studio_spawn', 'studio_close', 'studio_list',
     ] as const;
     for (const name of expected) {
       expect(TOOL_SCHEMAS[name]).toBeDefined();
