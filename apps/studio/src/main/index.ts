@@ -10,6 +10,7 @@ import { startGateway, type Gateway } from './gateway';
 import { readStorageState, applyStorageState, type CookieJar } from './electron-storage';
 import type { DebuggerLike } from './cdp-transport';
 import { IPC, type PendingApprovalDto, type CaptureDto, type ChatMsgDto } from '../shared/ipc';
+import { ProfileStore } from 'wigolo/studio';
 import type { ControlParty, NavGrant } from 'wigolo/studio';
 
 const CHROME_HEIGHT = 88; // titlebar (40) + toolbar (48)
@@ -95,6 +96,10 @@ async function createWindow(): Promise<void> {
     broker,
     // The host writes region-clip media under the SAME data dir the broker uses (both honor WIGOLO_DATA_DIR).
     config: process.env.WIGOLO_DATA_DIR ? { dataDir: process.env.WIGOLO_DATA_DIR } : undefined,
+    // P5: the encrypted origin-scoped profile store (keychain-KEK'd AES-256-GCM; defaults dataDir to getConfig()).
+    profileStore: new ProfileStore(process.env.WIGOLO_DATA_DIR ? { dataDir: process.env.WIGOLO_DATA_DIR } : {}),
+    // P5: push the login-wall handoff state to the human's login card (only {state, origin?}).
+    onLoginHandoff: (msg) => win.webContents.send(IPC.loginHandoff, msg),
     // Region clip: capture a viewport rect of the session tab as PNG bytes (the host hashes + persists).
     capturePage: async (tabId, rect) => {
       const wc = sessionTabWc.get(tabId);

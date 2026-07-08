@@ -134,4 +134,5 @@ export const IPC = {
   chatMessage: 'studio:chat-message',
   grantState: 'studio:grant-state',
   sessionChanged: 'studio:session-changed',
+  loginHandoff: 'studio:login-handoff',
 } as const;

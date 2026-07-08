@@ -70,6 +70,10 @@ const studio = {
   onSessionChanged: (cb: (s: SessionChangedDto) => void): void => {
     ipcRenderer.on(IPC.sessionChanged, (_e, s: SessionChangedDto) => cb(s));
   },
+  /** P5: the login-wall handoff state (in_progress / completed / failed) for the login card. Only {state, origin?}. */
+  onLoginHandoff: (cb: (msg: { sessionId: string; state: 'in_progress' | 'completed' | 'failed'; origin?: string }) => void): void => {
+    ipcRenderer.on(IPC.loginHandoff, (_e, msg) => cb(msg));
+  },
 };
 
 export type StudioApi = typeof studio;

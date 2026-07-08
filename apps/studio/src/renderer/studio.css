@@ -215,6 +215,21 @@ button { font-family: inherit; }
 .grant-card__btn--revoke { border-color: var(--border); background: transparent; color: var(--text-dim); }
 .grant-card__btn--revoke:hover { border-color: var(--blocked); color: var(--blocked); background: transparent; }
 
+/* P5 login-wall handoff card — violet=active (agent-paused, human action needed), green=done, amber=failed. */
+.login-card {
+  margin: 0 12px 10px; padding: 11px 13px;
+  background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: var(--r-md);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.login-card--active { border-color: var(--agent); background: var(--agent-dim); }
+.login-card--done { border-color: rgba(74, 222, 128, .35); background: rgba(74, 222, 128, .06); }
+.login-card--failed { border-color: rgba(245, 179, 90, .38); background: rgba(245, 179, 90, .07); }
+.login-card__title { font-size: 11px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--text-dim); }
+.login-card--active .login-card__title { color: var(--agent); }
+.login-card--done .login-card__title { color: var(--human); }
+.login-card__body { font-size: 12.5px; line-height: 1.45; color: var(--text-dim); }
+.login-card__body strong { color: var(--text); font-weight: 600; }
+
 .composer {
   margin: 8px 12px 14px; padding: 10px 12px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-lg);

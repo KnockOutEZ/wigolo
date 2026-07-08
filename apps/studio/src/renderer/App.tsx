@@ -11,6 +11,7 @@ import { MarksPanel } from './MarksPanel';
 import { CapturesPanel } from './CapturesPanel';
 import { ChatPanel } from './ChatPanel';
 import { GrantCard } from './GrantCard';
+import { LoginCard } from './LoginCard';
 import { KnowledgeRail } from './KnowledgeRail';
 import { IconSpark, IconSend } from './icons';
 import { createApprovalStore, type PendingApproval, type ApprovalVerdict } from './approval-store';
@@ -18,6 +19,7 @@ import { createMarksStore, type Mark } from './marks-store';
 import { createCapturesStore } from './captures-store';
 import { createControlStore } from './control-store';
 import { createChatStore } from './chat-store';
+import { createLoginStore, type LoginHandoffState } from './login-store';
 import type { CaptureDto, KnowledgeHit, ChatMsgDto } from '../shared/ipc';
 
 declare global {
@@ -29,6 +31,7 @@ const marksStore = createMarksStore();
 const capturesStore = createCapturesStore();
 const controlStore = createControlStore();
 const chatStore = createChatStore();
+const loginStore = createLoginStore();
 type RailTab = 'agent' | 'marks' | 'captures';
 
 export function App() {
@@ -43,6 +46,7 @@ export function App() {
   const [, setControlTick] = useState(0); // re-render on any per-tab control change (provenance dots / banner)
   const [chat, setChat] = useState<ChatMsgDto[]>([]);
   const [granted, setGranted] = useState(false);
+  const [login, setLogin] = useState<LoginHandoffState | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -68,11 +72,15 @@ export function App() {
     window.studio.onChatMessage((m) => chatStore.add(m));
     // P4 localhost grant (§13.8c): reflect the agent's per-session grant state.
     window.studio.onGrantState((g) => setGranted(g.granted));
+    // P5 login-wall handoff: the host pushes {state, origin?}; the login card shows it (in_progress → settled).
+    const unsubLogin = loginStore.subscribe(() => setLogin(loginStore.current()));
+    window.studio.onLoginHandoff((msg) => loginStore.apply({ state: msg.state, origin: msg.origin }));
     // P4: on an active-session change (open/close), reset the grant UI, re-backfill that session's captures,
     // and clear the chat for the new session (within-run multi-session; cross-boot restore stays deferred).
     window.studio.onSessionChanged(() => {
       setGranted(false);
       chatStore.clear();
+      loginStore.reset();
       void window.studio.listCaptures().then((c) => capturesStore.set(c));
     });
     // ⌘J focuses the chat composer (spec §3).
@@ -82,7 +90,7 @@ export function App() {
     // the onCaptureAdded delta). Degrades to [] when the library is down. Per-session re-backfill (reading
     // a resumed session's prior captures) lands with session restore (P4+).
     void window.studio.listCaptures().then((c) => capturesStore.set(c));
-    return () => { unsubControl(); unsubChat(); window.removeEventListener('keydown', onKey); };
+    return () => { unsubControl(); unsubChat(); unsubLogin(); window.removeEventListener('keydown', onKey); };
   }, []);
 
   // Post the chat composer's text to the agent (optimistic local echo + deliver via the observe drain).
@@ -181,6 +189,7 @@ export function App() {
             {railTab === 'agent' ? (
               <>
                 <div className="rail__body">
+                  <LoginCard login={login} />
                   <ApprovalCards pending={pending} onDecide={decide} />
                   {chat.length > 0 ? (
                     <ChatPanel messages={chat} />
