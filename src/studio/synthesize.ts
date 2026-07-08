@@ -6,7 +6,7 @@
  * SHAPES rows: NO network, NO decomposition→search→fetch. Broker-side (real-Node) — the research + embed
  * code lives there; nothing native is pulled into the Electron main.
  */
-import type { ResearchSource } from '../types.js';
+import type { ResearchSource, ResearchBrief } from '../types.js';
 import type { ArtifactFullRow } from './capture/artifacts.js';
 
 /** Where source[i] came from — resolved from a brief's 0-based source index back to the capturing artifact. */
@@ -21,6 +21,15 @@ export interface SourcesWithProvenance {
   sources: ResearchSource[];
   provenance: ProvenanceEntry[];
 }
+
+/**
+ * The synthesis result the broker returns + the renderer renders. Either an HONEST empty state (a
+ * zero-capture session → no fabricated brief) or a real brief plus the index-aligned provenance so each
+ * `key_finding_sources[i]` resolves to `provenance[i]` (the capturing artifact).
+ */
+export type ResearchBriefDto =
+  | { empty: true }
+  | { brief: ResearchBrief; provenance: ProvenanceEntry[] };
 
 /**
  * Map captured artifacts → research sources, index-aligned with a parallel provenance array (sources[i] ↔

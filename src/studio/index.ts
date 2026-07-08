@@ -30,6 +30,8 @@ export { SessionApprovals } from './approvals.js';
 export type { ApprovalDecision, ApprovalRequest, ApprovalDeps } from './approvals.js';
 export { SessionAuditLog } from './audit.js';
 export type { AuditOutcome, AuditRecordInput, AuditEntry, AuditDb, AuditDeps, AuditDto } from './audit.js';
+// P6 F3 cross-tab synthesis (type-only — the value adapter lives broker-side; the app renders the DTO)
+export type { ResearchBriefDto, ProvenanceEntry } from './synthesize.js';
 
 // Human-event drain
 export { StudioEventQueue } from './event-queue.js';

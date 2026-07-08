@@ -219,4 +219,40 @@ describe('studio-db-broker — createBrokerHandlers (dispatch, real in-memory DB
     expect(methods).toContain('persistAudit');
     expect(methods).toContain('listAudit');
   });
+
+  // ─── P6 F3: cross-tab synthesis (brief-shaping over the local corpus, no network) ───
+  it('P6 F3: synthesizeSession shapes captured clips into a brief + persists a qa artifact', async () => {
+    // Two clips across the session (observe stamps the epoch so the capture TOCTOU passes).
+    await handlers.capture(clip({ input: { type: 'clip', content: 'Wigolo is a local-first web intelligence tool for agents.', url: 'https://ex.com/1' } }));
+    await handlers.capture(clip({ input: { type: 'clip', content: 'It runs search, fetch, crawl, and extract with no API keys.', url: 'https://ex.com/2' } }));
+    const before = artifactCount();
+
+    const out = await handlers.synthesizeSession({ sessionId: 's1' });
+    expect('brief' in out).toBe(true);
+    if ('brief' in out) {
+      expect(out.provenance.length).toBeGreaterThanOrEqual(2);
+      // a key_finding_sources index (if any) resolves back into the provenance array (never out of range)
+      for (const i of out.brief.key_finding_sources ?? []) {
+        expect(out.provenance[i]).toBeDefined();
+      }
+    }
+    // the synthesis persisted a qa artifact (save-as-research) — one more row than before
+    expect(artifactCount()).toBe(before + 1);
+    const qa = db().prepare("SELECT COUNT(*) AS n FROM studio_artifacts WHERE session_id='s1' AND artifact_type='qa'").get() as { n: number };
+    expect(qa.n).toBe(1);
+  });
+
+  it('P6 F3: a zero-capture session synthesizes to an HONEST empty (no fabricated brief, no qa row)', async () => {
+    const out = await handlers.synthesizeSession({ sessionId: 'empty-sess' });
+    expect(out).toEqual({ empty: true });
+    expect(artifactCount()).toBe(0);
+  });
+
+  it('P6 F3: synthesis does NOT recursively feed a prior qa synthesis back in', async () => {
+    await handlers.capture(clip({ input: { type: 'clip', content: 'A first captured page body about pricing tiers.', url: 'https://ex.com/1' } }));
+    await handlers.synthesizeSession({ sessionId: 's1' }); // writes a qa row
+    // a second synthesis must not treat the qa row as a source (listSessionArtifactsFull excludes qa)
+    const out2 = await handlers.synthesizeSession({ sessionId: 's1' });
+    if ('brief' in out2) expect(out2.provenance.every((p) => p.url !== null)).toBe(true); // only the real clip, no url-less qa
+  });
 });

@@ -24,6 +24,9 @@ import {
 } from '../studio/capture/artifacts.js';
 import { findSimilar } from '../search/find-similar.js';
 import { SessionAuditLog, listSessionAudit, type AuditRecordInput, type AuditDto } from '../studio/audit.js';
+import { listSessionArtifactsFull } from '../studio/capture/artifacts.js';
+import { artifactsToSources, type ResearchBriefDto } from '../studio/synthesize.js';
+import { buildResearchBrief } from '../research/brief.js';
 import type { IndexJobInput } from '../embedding/background-queue.js';
 import type { FieldSemantics } from '../studio/credential.js';
 import type { StudioCaptureInput } from './studio-dispatch.js';
@@ -107,6 +110,22 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
       listSessionAudit(deps.db, p.sessionId, p.limit, p.before),
     // M2 (sealed): studio_audit is append-only. NO prune/delete broker method — the ONLY sanctioned
     // deletion is the operator-CLI pruneStudioAudit (audit-retention.ts), unreachable from here + the agent.
+    // P6 F3 cross-tab synthesis — shape the session's captured bodies into a research brief over the LOCAL
+    // corpus. Invokes the brief-shaping stage ONLY (buildResearchBrief) — never decomposition→search→fetch,
+    // so there is NO network. Persists the result as a qa artifact (save-as-research, findable via
+    // find_similar). Zero captures → an honest empty DTO, never a fabricated brief.
+    synthesizeSession: async (p: { sessionId: string }): Promise<ResearchBriefDto> => {
+      const rows = listSessionArtifactsFull(deps.db, p.sessionId);
+      if (rows.length === 0) return { empty: true };
+      const { sources, provenance } = artifactsToSources(rows);
+      // Caps mirror the research pipeline (PER_SOURCE=3000, TOTAL=40000); 'general' shaping, no comparison.
+      const brief = await buildResearchBrief('Session summary', sources, [], 3000, 40000, 'general', []);
+      captureFromPage(
+        { type: 'qa', sessionId: p.sessionId, question: 'Session synthesis', answer: JSON.stringify(brief) },
+        { db: deps.db, enqueue: deps.enqueue, credentialContext: { fields: [] }, onArtifact: deps.onArtifact },
+      );
+      return { brief, provenance };
+    },
   };
 }
 export type BrokerHandlers = ReturnType<typeof createBrokerHandlers>;

@@ -22,6 +22,7 @@ export function makeFakeBroker(
     findSimilar: () => ({ results: [], method: 'fts5' }),
     persistAudit: () => ({ seq: 1 }),
     listAudit: () => [],
+    synthesizeSession: () => ({ empty: true }),
   };
   const merged = { ...defaults, ...handlers };
   const call = vi.fn(async (method: string, params?: unknown) => {
