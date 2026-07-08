@@ -23,6 +23,8 @@ import {
   resolveNodePath,
   neutralizeMarkers,
   isCredentialContext,
+  LoginHandoff,
+  createLoginCapture,
   UNTRUSTED_STUDIO_NOTICE,
   type StudioHostHandlers,
   type StudioSessionsAccessor,
@@ -59,6 +61,7 @@ import {
   type ParkedAction,
   type RiskTier,
   type StorageStateOut,
+  type HandoffCompletionContext,
 } from 'wigolo/studio';
 import type { TabDrive } from './drive-engine';
 import type { BrokerClient } from './broker-client';
@@ -106,6 +109,9 @@ export interface StudioHostConfig {
   inlineBudget?: number;
   spillMaxBytes?: number;
   dataDir?: string;
+  /** P5: injectable login-handoff completion-poll timing (tests set small values for determinism). Defaults to LoginHandoff's built-ins (2s × 60). */
+  handoffPollIntervalMs?: number;
+  handoffMaxPolls?: number;
 }
 
 export interface StudioHostDeps {
@@ -136,6 +142,16 @@ export interface StudioHostDeps {
    */
   capturePage?: (tabId: string, rect: RegionMsg['rect']) => Promise<{ png: Buffer; url: string; title: string }>;
   config?: StudioHostConfig;
+  /** P5: push the login-handoff state to the human renderer (login card). NEVER carries content/storageState — only {state, origin?}. */
+  onLoginHandoff?: (msg: { sessionId: string; state: 'in_progress' | 'completed' | 'failed'; origin?: string }) => void;
+  /**
+   * P5: the encrypted origin-scoped profile store (keychain-KEK'd AES-256-GCM). Injectable for tests; index.ts
+   * supplies the real ProfileStore. Absent ⇒ the handoff still works but persists/loads nothing (clean session).
+   */
+  profileStore?: {
+    get(id: string): Promise<{ ok: true; boundOrigin: string; storageState: string } | { ok: false; reason: string }>;
+    set(id: string, boundOrigin: string, storageStateJson: string): Promise<void>;
+  };
 }
 
 /** What markElement returns to the human IPC layer for the rail chip (role/name already neutralized). */
@@ -240,6 +256,10 @@ interface SessionContext {
   credentialSignal: () => Promise<{ pageUrl?: string; fields?: FieldSemantics[] }>;
   /** studio_marks: list (heal each mark) | generalize a mark (preview). Credential-excluded. */
   marksTool: (input: StudioMarksInput) => Promise<StudioMarksOutput | StudioGeneralizeOutput | StudioToolError>;
+  /** P5: the login-wall handoff machine for this session (close() LOCKs it). */
+  handoff: LoginHandoff;
+  /** P5: apply a matching-origin profile's cookies into the session before its first nav (no-op when no bound origin / no stored profile / origin mismatch). */
+  loadProfile: () => Promise<void>;
   createdAt: number;
   lastActiveAt: number;
   status: 'live' | 'closed';
@@ -292,13 +312,26 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
   // interleave with a second concurrent act on the same session.
   const actChains = new Map<string, Promise<unknown>>();
 
-  function buildContext(sessionId: string, name: string, tab: HostTab): SessionContext {
+  function buildContext(sessionId: string, name: string, tab: HostTab, profileOrigin: string | undefined): SessionContext {
     const transport = tab.drive.transport;
     const snapshotter = new PageSnapshotter({ tokenBudget: inlineBudget });
     const snapshot = () => snapshotter.snapshot(transport);
     const resolve = createResolver({ snapshot, cdp: transport });
     const eventQueue = new StudioEventQueue(512);
     const preGrant = new PreGrantStore();
+
+    // HOISTED (P5): the shared credential-context probe — the SAME one observe/marks use. The login-handoff
+    // needs it (pageContext), and observe/marksTool read it below; it depends only on snapshot + tab, so it
+    // is declared here at the top of buildContext. drives both the pull-path exclusion (marksView) and the
+    // push-path drop-at-source (markElement/addComment enqueue).
+    const isCredentialPage = async (): Promise<boolean> => {
+      const snap = await snapshot();
+      return isCredentialContext({ pageUrl: tab.currentUrl(), fields: snap.domByRef?.values() });
+    };
+
+    // P5: late-bound so the observer's handoffSignal thunk (read at observe-time) + the act wrapper can both
+    // reference it; ASSIGNED below once isCredentialPage/eventQueue/controlToken exist.
+    let handoff: LoginHandoff;
 
     const observe = createObserver({
       snapshot,
@@ -308,6 +341,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       dataDir: cfg.dataDir,
       currentUrl: tab.currentUrl,
       markObserved: () => tab.drive.navEpoch.markObserved(),
+      handoffSignal: () => handoff.signal(), // P5: the agent PULLS login_handoff here (thunk — handoff assigned below)
     });
 
     // A container reset via a FUNCTION call (not a direct `= undefined`, which would let control-flow
@@ -421,13 +455,6 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       }
     };
 
-    // The shared credential-context probe — the SAME one observe uses; drives both the pull-path
-    // exclusion (marksView) and the push-path drop-at-source (markElement/addComment enqueue).
-    const isCredentialPage = async (): Promise<boolean> => {
-      const snap = await snapshot();
-      return isCredentialContext({ pageUrl: tab.currentUrl(), fields: snap.domByRef?.values() });
-    };
-
     // Broker gate inputs (P3): the live nav-epoch (drive's NavEpoch — sentinel lastObserve=-1 refuses a
     // pre-observe capture) and the fresh credential signal (SAME source isCredentialPage uses). Array-ify
     // domByRef.values() — the Iterable can't cross the JSON-RPC boundary and the broker types fields[].
@@ -436,6 +463,72 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     const credentialSignal = async (): Promise<{ pageUrl?: string; fields?: FieldSemantics[] }> => {
       const snap = await snapshot();
       return { pageUrl: tab.currentUrl(), fields: [...(snap.domByRef?.values() ?? [])] };
+    };
+
+    // ── P5 login-wall handoff + encrypted origin-scoped profile (salvaged arc, Electron-backed) ──
+    // On an agent act that lands in a credential context, afterAgentAct() reclaims to the human + signals
+    // in_progress; the bounded poll detects completion (left credential context + a meaningful storageState
+    // delta); onComplete persists origin-scoped; the machine re-grants. handoffSignal (above) feeds the
+    // agent's studio_observe; onSignalChange pushes to the human renderer. storageState() is HOST-ONLY.
+    const controlToken = tab.drive.controlToken;
+    const profileId = profileOrigin ? createHash('sha256').update(profileOrigin).digest('hex') : undefined;
+    const onLoginComplete =
+      profileOrigin && profileId && deps.profileStore
+        ? (async (hc: HandoffCompletionContext): Promise<void> => {
+            const capture = createLoginCapture({
+              profilePersist: deps.profileStore!,
+              profileId,
+              expectedOrigin: profileOrigin,
+              onOriginMismatch: () => {
+                /* confused-deputy refusal — never log the storageState; refuse-persist is the salvaged default */
+              },
+            });
+            try {
+              await capture(hc);
+            } catch {
+              /* keychain-unavailable / persist failure must not strand the re-grant (settleCompleted grants in
+                 finally); the completed card claims NO persistence (D-P5-7), so a silent non-persist is honest */
+            }
+          })
+        : undefined;
+
+    handoff = new LoginHandoff({
+      controlToken,
+      eventQueue,
+      pageContext: isCredentialPage,
+      storageState: () => tab.storageState(),
+      currentUrl: tab.currentUrl,
+      onComplete: onLoginComplete,
+      onSignalChange: (s) => deps.onLoginHandoff?.({ sessionId, state: s?.state ?? 'failed', origin: profileOrigin }),
+      ...(cfg.handoffPollIntervalMs !== undefined ? { pollIntervalMs: cfg.handoffPollIntervalMs } : {}),
+      ...(cfg.handoffMaxPolls !== undefined ? { maxPolls: cfg.handoffMaxPolls } : {}),
+    });
+    // A control-token flip TO the agent during the window can only be an explicit human grant — end the
+    // window (the machine never grants itself; the agent can't self-grant).
+    controlToken.onChange((s) => handoff.onControlChange(s.holder));
+
+    // The act wrapper: run the EXISTING serialized `act`, then afterAgentAct() for page-changing verbs (a
+    // scroll cannot surface a wall). Mirrors src/cli/studio.ts:864; does NOT re-wrap the actChains chain.
+    const actWithHandoff = async (input: StudioActInput): Promise<StudioActOutput | StudioToolError> => {
+      const r = await act(input);
+      const action = typeof input.action === 'string' ? input.action : '';
+      if (action === 'navigate' || action === 'click' || action === 'type') await handoff.afterAgentAct();
+      return r;
+    };
+
+    // Apply a matching-origin profile's cookies into the fresh in-memory partition BEFORE the first nav.
+    // profile_absent / malformed → clean session (D-P5-10); r.boundOrigin re-check = defense-in-depth on the
+    // confused-deputy (the sha256(origin) key already implies it, but keep the last barrier explicit).
+    const loadProfile = async (): Promise<void> => {
+      if (!profileId || !profileOrigin || !deps.profileStore) return;
+      const r = await deps.profileStore.get(profileId);
+      if (!r.ok) return;
+      if (r.boundOrigin !== profileOrigin) return;
+      try {
+        await tab.applyStorageState(JSON.parse(r.storageState) as StorageStateOut);
+      } catch {
+        /* corrupt/unparseable blob → clean session (the human re-logs in) */
+      }
     };
 
     // studio_marks list: each mark's page-derived descriptor (neutralized, trusted:false) + its CURRENT
@@ -504,7 +597,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       preGrant,
       eventQueue,
       observe,
-      act,
+      act: actWithHandoff, // P5: the SessionContext.act slot runs afterAgentAct after page-changing verbs
       drive,
       markStore,
       payloads,
@@ -515,6 +608,8 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       lastObserveEpoch,
       credentialSignal,
       marksTool,
+      handoff,
+      loadProfile,
       createdAt: Date.now(),
       lastActiveAt: Date.now(),
       status: 'live',
@@ -545,12 +640,23 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     // An agent-opened session starts under AGENT control (a background lane with no human attached),
     // per the control-token S5 rule — so the agent can drive its own session without a human grant.
     const grant: NavGrant = { humanAllowPrivate: true, agentAllowPrivate: false };
+    // P5: the origin the session's encrypted profile binds to (the startUrl origin). Undefined ⇒ no binding ⇒
+    // the handoff still reclaims/waits/resumes but persists/loads nothing (a clean session).
+    let profileOrigin: string | undefined;
+    if (typeof input.startUrl === 'string' && input.startUrl.trim()) {
+      try {
+        profileOrigin = new URL(input.startUrl).origin;
+      } catch {
+        profileOrigin = undefined;
+      }
+    }
     const tab = await deps.createTab({ initialHolder: 'agent', grant, partition: `studio-${sessionId}` });
-    const ctx = buildContext(sessionId, name, tab);
+    const ctx = buildContext(sessionId, name, tab, profileOrigin);
     contexts.set(sessionId, ctx);
     tabToSession.set(tab.tabId, sessionId);
     activeSessionId = sessionId;
     deps.onActiveSessionChange?.(activeSessionId); // P4: renderer re-backfills captures / resets per-session UI
+    await ctx.loadProfile(); // P5: apply a matching-origin profile's cookies into the fresh partition BEFORE the gated nav
     // The agent's requested startUrl is navigated through the GATED path (guardNavigation under agent
     // policy — cloud-metadata/RFC1918 fenced), NEVER a raw ungated tab load. A blocked/failed nav still
     // opens the session (on the safe blank page); the agent sees the outcome on its next observe/act.
@@ -607,6 +713,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
         return { error_reason: 'no_such_session', hint: 'That session is unknown or already closed.' };
       }
       ctx.status = 'closed';
+      ctx.handoff.onClientGone(); // P5: LOCK an in-flight handoff (clear timers; no re-grant after teardown)
       deps.closeTab(ctx.tab.tabId);
       tabToSession.delete(ctx.tab.tabId);
       actChains.delete(id);
