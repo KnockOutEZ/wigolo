@@ -23,6 +23,7 @@ import {
   type CaptureResult,
 } from '../studio/capture/artifacts.js';
 import { findSimilar } from '../search/find-similar.js';
+import { SessionAuditLog, listSessionAudit, type AuditRecordInput, type AuditDto } from '../studio/audit.js';
 import type { IndexJobInput } from '../embedding/background-queue.js';
 import type { FieldSemantics } from '../studio/credential.js';
 import type { StudioCaptureInput } from './studio-dispatch.js';
@@ -94,6 +95,18 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
       listSessionComments(deps.db, p.sessionId, p.limit),
     findSimilar: async (p: { input: FindSimilarInput }) =>
       findSimilar({ ...p.input, include_web: false }, deps.engines, deps.router, deps.backendStatus),
+    // P6 F4 timeline — persist one agent action to the per-session append-only audit log. Reuse the
+    // salvaged SessionAuditLog (sole writer, INSERT-only, hydrates the seq from the db) so the
+    // (session_id, seq) monotonic invariant holds across broker calls.
+    persistAudit: async (p: { sessionId: string; entry: AuditRecordInput }): Promise<{ seq: number }> => {
+      const log = new SessionAuditLog({ db: deps.db, sessionId: p.sessionId });
+      return { seq: log.record(p.entry).seq };
+    },
+    // Reverse-chronological read for the timeline (backfill + paging). Metadata columns only.
+    listAudit: async (p: { sessionId: string; limit: number; before?: number }): Promise<AuditDto[]> =>
+      listSessionAudit(deps.db, p.sessionId, p.limit, p.before),
+    // M2 (sealed): studio_audit is append-only. NO prune/delete broker method — the ONLY sanctioned
+    // deletion is the operator-CLI pruneStudioAudit (audit-retention.ts), unreachable from here + the agent.
   };
 }
 export type BrokerHandlers = ReturnType<typeof createBrokerHandlers>;

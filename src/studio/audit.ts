@@ -107,6 +107,27 @@ function rowToEntry(r: AuditRow): AuditEntry {
   });
 }
 
+/**
+ * A read-back audit row for display/forensics (the Phase-7 timeline). Same metadata-only shape as a
+ * recorded entry — there is no raw-typed-text column to read back, so a DTO cannot leak page content.
+ */
+export type AuditDto = AuditEntry;
+
+/**
+ * Bounded, reverse-chronological read of a session's audit trail (display/forensics + timeline backfill —
+ * never re-execution). `before` pages by seq (`WHERE seq < before`). Metadata columns only. A pure
+ * injected-leaf read (mirrors the audit.ts hydrate SELECT); the broker owns the real db handle.
+ */
+export function listSessionAudit(db: AuditDb, sessionId: string, limit: number, before?: number): AuditDto[] {
+  const cols =
+    `seq, action, epoch, target_url, target_ref, target_direction, target_amount,
+     outcome_ok, outcome_error_reason, outcome_chars_landed, risk, approval, ts`;
+  const rows = (before != null
+    ? db.prepare(`SELECT ${cols} FROM studio_audit WHERE session_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?`).all(sessionId, before, limit)
+    : db.prepare(`SELECT ${cols} FROM studio_audit WHERE session_id = ? ORDER BY seq DESC LIMIT ?`).all(sessionId, limit)) as AuditRow[];
+  return rows.map(rowToEntry);
+}
+
 export class SessionAuditLog {
   private readonly entries: AuditEntry[] = [];
   private seq = 0;

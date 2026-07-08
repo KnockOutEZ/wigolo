@@ -29,7 +29,7 @@ export type { RiskTier, TierPatterns, RiskPatterns, RiskSignals } from './risk.j
 export { SessionApprovals } from './approvals.js';
 export type { ApprovalDecision, ApprovalRequest, ApprovalDeps } from './approvals.js';
 export { SessionAuditLog } from './audit.js';
-export type { AuditOutcome, AuditRecordInput, AuditEntry, AuditDb, AuditDeps } from './audit.js';
+export type { AuditOutcome, AuditRecordInput, AuditEntry, AuditDb, AuditDeps, AuditDto } from './audit.js';
 
 // Human-event drain
 export { StudioEventQueue } from './event-queue.js';

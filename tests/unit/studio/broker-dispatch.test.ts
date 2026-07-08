@@ -182,4 +182,41 @@ describe('studio-db-broker — createBrokerHandlers (dispatch, real in-memory DB
     await handlers.capture(clip());
     expect(deltas.filter((d) => d.type === 'clip')).toHaveLength(1);
   });
+
+  // ─── P6 F4: audit persistence (append-only, no prune — M2) ───
+  const rec = (over: Record<string, unknown> = {}) => ({ action: 'click', epoch: 1, outcome: { ok: true as const }, ...over });
+
+  it('P6 F4: persistAudit inserts an audit row + returns a monotonic seq; a second persist appends (append-only)', async () => {
+    const a = await handlers.persistAudit({ sessionId: 's1', entry: rec({ target: { ref: 'r1' } }) });
+    expect(a.seq).toBe(1);
+    const b = await handlers.persistAudit({ sessionId: 's1', entry: rec({ action: 'type', outcome: { ok: true, charsLanded: 5 } }) });
+    expect(b.seq).toBe(2);
+    const n = (db().prepare('SELECT COUNT(*) AS n FROM studio_audit WHERE session_id=?').get('s1') as { n: number }).n;
+    expect(n).toBe(2);
+    const row = db().prepare('SELECT action, target_ref FROM studio_audit WHERE session_id=? AND seq=1').get('s1') as { action: string; target_ref: string };
+    expect(row).toEqual({ action: 'click', target_ref: 'r1' });
+  });
+
+  it('P6 F4: listAudit returns rows reverse-chronological, bounded by limit, paged by before', async () => {
+    for (let i = 0; i < 5; i++) await handlers.persistAudit({ sessionId: 's1', entry: rec({ action: `a${i}` }) });
+    const top = await handlers.listAudit({ sessionId: 's1', limit: 2 });
+    expect(top.map((r) => r.seq)).toEqual([5, 4]);
+    const next = await handlers.listAudit({ sessionId: 's1', limit: 2, before: 4 });
+    expect(next.map((r) => r.seq)).toEqual([3, 2]);
+    expect(next[0].action).toBe('a2');
+  });
+
+  it('P6 F4: listAudit is session-scoped — never bleeds another session', async () => {
+    await handlers.persistAudit({ sessionId: 's1', entry: rec() });
+    await handlers.persistAudit({ sessionId: 's2', entry: rec() });
+    expect(await handlers.listAudit({ sessionId: 's1', limit: 50 })).toHaveLength(1);
+    expect(await handlers.listAudit({ sessionId: 's2', limit: 50 })).toHaveLength(1);
+  });
+
+  it('P6 F4: audit is append-only — the broker exposes NO update/delete/prune method (M2 sealed)', () => {
+    const methods = Object.keys(handlers);
+    expect(methods.some((m) => /delete|update|prune|remove|clear/i.test(m))).toBe(false);
+    expect(methods).toContain('persistAudit');
+    expect(methods).toContain('listAudit');
+  });
 });
