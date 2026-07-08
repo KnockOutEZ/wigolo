@@ -147,6 +147,7 @@ export const IPC = {
   extractSet: 'studio:extract-set',
   listCaptures: 'studio:list-captures',
   listAudit: 'studio:list-audit',
+  synthesize: 'studio:synthesize',
   knowledgeSimilar: 'studio:knowledge-similar',
   // main → renderer
   stateChanged: 'studio:state-changed',

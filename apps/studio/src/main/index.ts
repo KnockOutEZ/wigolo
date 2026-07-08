@@ -242,6 +242,7 @@ async function createWindow(): Promise<void> {
   });
   ipcMain.handle(IPC.listCaptures, () => studioHost.listCaptures());
   ipcMain.handle(IPC.listAudit, () => studioHost.listAudit());
+  ipcMain.handle(IPC.synthesize, () => studioHost.synthesizeSession());
   ipcMain.handle(IPC.knowledgeSimilar, (_e, concept: string) => studioHost.knowledgeSimilar(String(concept ?? '')));
 
   ipcMain.handle(IPC.approvalDecide, (_e, id: string, decision: 'allow' | 'deny') => {

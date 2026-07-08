@@ -346,6 +346,28 @@ button { font-family: inherit; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* ── P6 F3 synthesis (captures foot) ── */
+.caps__synth { margin-top: 10px; border-top: 1px solid var(--border-soft); padding-top: 10px; }
+.caps__synth-btn {
+  all: unset; cursor: pointer; box-sizing: border-box; width: 100%; text-align: center;
+  font: 12px var(--chrome-font); color: var(--agent); background: var(--agent-dim);
+  border: 1px solid color-mix(in srgb, var(--agent) 30%, transparent); border-radius: var(--r-sm); padding: 7px 10px;
+}
+.caps__synth-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--agent) 24%, transparent); }
+.caps__synth-btn:disabled { opacity: .5; cursor: default; }
+.brief { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.brief__topics { display: flex; flex-wrap: wrap; gap: 4px; }
+.brief__topic { font: 10px var(--chrome-font); color: var(--text-dim); background: var(--surface-2); border-radius: var(--r-pill); padding: 1px 7px; }
+.brief__findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.brief__finding { font-family: var(--serif); font-size: 14px; line-height: 1.5; color: var(--text); }
+.brief__text { display: block; }
+.brief__chip {
+  display: inline-block; margin-top: 2px; font: 10px var(--chrome-font); color: var(--agent);
+  text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+.brief__label { font: 10px var(--chrome-font); text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); }
+.brief__gaps ul { margin: 4px 0 0; padding-left: 16px; color: var(--text-dim); font-size: 13px; }
+
 /* ── P6 F4 timeline rail ── */
 .tl { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .tl__item { background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: var(--r-sm); }

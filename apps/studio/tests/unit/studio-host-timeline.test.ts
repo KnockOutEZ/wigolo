@@ -117,6 +117,19 @@ describe('studio-host — P6 F4 audit → broker persist + live broadcast', () =
     expect(await host.listAudit()).toEqual([]);
   });
 
+  it('synthesizeSession routes to the broker for the active session + returns its DTO (F3)', async () => {
+    const dto = { brief: { topics: ['t'], highlights: [], key_findings: [], per_source_char_cap: 3000, total_sources_char_cap: 40000, sections: { overview: { key_findings: [], cross_references: [] }, gaps: [] }, query_type: 'general' as const }, provenance: [] };
+    const { host } = makeHost([], { synthesizeSession: () => dto });
+    await host.handlers.spawn({ startUrl: 'https://ex.com/page' });
+    expect(await host.synthesizeSession()).toEqual(dto);
+  });
+
+  it('synthesizeSession degrades to an honest empty when the broker is down (never errors the UI)', async () => {
+    const { host } = makeHost([], { synthesizeSession: () => { throw new Error('broker down'); } });
+    await host.handlers.spawn({ startUrl: 'https://ex.com/page' });
+    expect(await host.synthesizeSession()).toEqual({ empty: true });
+  });
+
   it('a non-credential navigate keeps the full url in the persisted row (forensic value)', async () => {
     const broadcasts: Record<string, unknown>[] = [];
     const { host, broker } = makeHost(broadcasts);

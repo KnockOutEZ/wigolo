@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC, type StudioState, type PendingApprovalDto, type MarkDto, type CaptureDto, type KnowledgeHit, type DriveEventDto, type ChatMsgDto, type GrantStateDto, type SessionChangedDto, type AuditDto } from '../shared/ipc';
-import type { StudioGeneralizeOutput } from 'wigolo/studio';
+import type { StudioGeneralizeOutput, ResearchBriefDto } from 'wigolo/studio';
 
 const studio = {
   getState: (): Promise<StudioState> => ipcRenderer.invoke(IPC.getState),
@@ -44,6 +44,8 @@ const studio = {
   },
   /** find_similar on the current page against the local studio corpus (knowledge rail). */
   knowledgeSimilar: (concept: string): Promise<KnowledgeHit[]> => ipcRenderer.invoke(IPC.knowledgeSimilar, concept),
+  /** P6 F3: synthesize the session's captured artifacts into a research brief (or an honest empty state). */
+  synthesize: (): Promise<ResearchBriefDto> => ipcRenderer.invoke(IPC.synthesize),
   // ── P6 F4 timeline ──
   /** The active session's audit trail (Timeline rail; on session open + per-session reset). */
   listAudit: (): Promise<AuditDto[]> => ipcRenderer.invoke(IPC.listAudit),

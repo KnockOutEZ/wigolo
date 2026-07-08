@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import './studio.css';
 import type { StudioState } from '../shared/ipc';
 import type { StudioApi } from '../preload/index';
-import type { StudioGeneralizeOutput } from 'wigolo/studio';
+import type { StudioGeneralizeOutput, ResearchBriefDto } from 'wigolo/studio';
 import { TabStrip } from './TabStrip';
 import { Toolbar } from './Omnibox';
 import { DriveBanner } from './DriveBanner';
@@ -43,6 +43,8 @@ export function App() {
   const [marks, setMarks] = useState<Mark[]>([]);
   const [captures, setCaptures] = useState<CaptureDto[]>([]);
   const [timeline, setTimeline] = useState<AuditDto[]>([]);
+  const [brief, setBrief] = useState<ResearchBriefDto | null>(null);
+  const [synthesizing, setSynthesizing] = useState(false);
   const [knowledge, setKnowledge] = useState<KnowledgeHit[]>([]);
   const [preview, setPreview] = useState<StudioGeneralizeOutput | null>(null);
   const [railTab, setRailTab] = useState<RailTab>('agent');
@@ -90,6 +92,7 @@ export function App() {
       loginStore.reset();
       void window.studio.listCaptures().then((c) => capturesStore.set(c));
       void window.studio.listAudit().then((a) => timelineStore.set(a));
+      setBrief(null); // a synthesis belongs to the session it was run in
     });
     // ⌘J focuses the chat composer (spec §3).
     const onKey = (ev: KeyboardEvent) => { if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'j') { ev.preventDefault(); setRailTab('agent'); composerRef.current?.focus(); } };
@@ -110,6 +113,13 @@ export function App() {
     chatStore.add({ author: 'human', text, ts: Date.now() });
     window.studio.sendChat(text);
     if (el) el.value = '';
+  };
+
+  const synthesize = (): void => {
+    setSynthesizing(true);
+    void window.studio.synthesize()
+      .then(setBrief)
+      .finally(() => setSynthesizing(false));
   };
 
   const comment = (markId: string, text: string) => {
@@ -244,7 +254,7 @@ export function App() {
               </div>
             ) : railTab === 'captures' ? (
               <div className="rail__body">
-                <CapturesPanel captures={captures} />
+                <CapturesPanel captures={captures} onSynthesize={synthesize} synthesizing={synthesizing} brief={brief} />
               </div>
             ) : (
               <div className="rail__body">

@@ -70,6 +70,7 @@ import {
   type HandoffCompletionContext,
   type AuditEntry,
   type AuditRecordInput,
+  type ResearchBriefDto,
 } from 'wigolo/studio';
 import type { TabDrive } from './drive-engine';
 import type { BrokerClient } from './broker-client';
@@ -246,6 +247,8 @@ export interface StudioHost {
   listCaptures(): Promise<CaptureDto[]>;
   /** P6 F4: the active session's audit trail (timeline backfill), reverse-chronological, host-summarized. */
   listAudit(): Promise<AuditDto[]>;
+  /** P6 F3: synthesize the active session's captured artifacts into a research brief (or an honest empty). */
+  synthesizeSession(): Promise<ResearchBriefDto>;
   /** find_similar on the current page against the LOCAL studio corpus (knowledge rail; broker down → []). */
   knowledgeSimilar(concept: string): Promise<KnowledgeHit[]>;
   /** Cleanly detach every session's tab (app quit). */
@@ -1142,6 +1145,13 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
         const rows = await deps.broker.call<AuditEntry[]>('listAudit', { sessionId: ctx.sessionId, limit: 200 });
         return rows.map(auditToWire);
       } catch { return []; } // broker down → the timeline degrades to empty, never errors the UI
+    },
+    async synthesizeSession(): Promise<ResearchBriefDto> {
+      const ctx = targetContext();
+      if (!ctx) return { empty: true };
+      try {
+        return await deps.broker.call<ResearchBriefDto>('synthesizeSession', { sessionId: ctx.sessionId });
+      } catch { return { empty: true }; } // broker down → honest empty, never errors the UI
     },
     async knowledgeSimilar(concept: string): Promise<KnowledgeHit[]> {
       if (!concept.trim()) return [];
