@@ -7,6 +7,7 @@ import { createDriveEngine } from './drive-engine';
 import { createStudioHost, type HostTab } from './studio-host';
 import { createBrokerClient } from './broker-client';
 import { startGateway, type Gateway } from './gateway';
+import { readStorageState, applyStorageState, type CookieJar } from './electron-storage';
 import type { DebuggerLike } from './cdp-transport';
 import { IPC, type PendingApprovalDto, type CaptureDto, type ChatMsgDto } from '../shared/ipc';
 import type { ControlParty, NavGrant } from 'wigolo/studio';
@@ -117,7 +118,7 @@ async function createWindow(): Promise<void> {
       win.webContents.send(IPC.sessionChanged, { sessionId });
       win.webContents.send(IPC.grantState, { granted: studioHost.localhostGranted() });
     },
-    createTab: async ({ initialHolder, grant }: { initialHolder: ControlParty; grant: NavGrant }): Promise<HostTab> => {
+    createTab: async ({ initialHolder, grant, partition }: { initialHolder: ControlParty; grant: NavGrant; partition: string }): Promise<HostTab> => {
       const view = new WebContentsView({
         // The per-tab marking overlay runs in this sandboxed, context-isolated tab's isolated world (P2).
         webPreferences: {
@@ -125,6 +126,9 @@ async function createWindow(): Promise<void> {
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: true,
+          // P5 (D-P5-2): an IN-MEMORY per-session partition (NO `persist:` prefix) — storage is isolated
+          // per session and lives only in RAM; the only disk state is the AES-256-GCM ProfileStore blob.
+          partition,
         },
       });
       win.contentView.addChildView(view);
@@ -184,6 +188,15 @@ async function createWindow(): Promise<void> {
         browser: { navigate: (url: string) => wc.loadURL(url) },
         currentUrl: () => wc.getURL(),
         readHtml: async () => String(await wc.executeJavaScript('document.documentElement.outerHTML')),
+        // P5: HOST-ONLY session storage read/apply (never agent-facing, never logged). `wc.session` is the
+        // per-session in-memory partition; cookies R/W via its Cookies API, localStorage read via executeJS.
+        storageState: () =>
+          readStorageState(
+            wc.session.cookies as unknown as CookieJar,
+            ((code: string) => wc.executeJavaScript(code)) as never,
+            wc.getURL() || undefined,
+          ),
+        applyStorageState: (state) => applyStorageState(wc.session.cookies as unknown as CookieJar, state),
       };
     },
     closeTab: (tabId: string) => {

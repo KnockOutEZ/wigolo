@@ -75,6 +75,8 @@ function makeHost(broker: { call: ReturnType<typeof vi.fn> }, opts: HostOpts = {
         browser: { navigate: async (u: string) => { state.url = u; } },
         currentUrl: () => state.url,
         readHtml: async () => '<html></html>',
+        storageState: async () => ({ cookies: [], origins: [] }),
+        applyStorageState: async () => {},
       };
       return tab;
     },

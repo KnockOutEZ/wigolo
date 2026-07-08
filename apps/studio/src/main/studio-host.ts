@@ -58,6 +58,7 @@ import {
   type NavigableBrowser,
   type ParkedAction,
   type RiskTier,
+  type StorageStateOut,
 } from 'wigolo/studio';
 import type { TabDrive } from './drive-engine';
 import type { BrokerClient } from './broker-client';
@@ -94,6 +95,10 @@ export interface HostTab {
   currentUrl: () => string | undefined;
   /** Live outer HTML for the session-targeted extract/read path (D19). */
   readHtml: () => Promise<string>;
+  /** P5: HOST-ONLY read-back of the tab's session storage (cookies + current-origin localStorage) for the login-handoff completion delta + profile capture. Never agent-facing, never logged. */
+  storageState: () => Promise<StorageStateOut>;
+  /** P5: apply a stored profile's COOKIES into the tab's session BEFORE its first navigation (D-P5-8 cookie-only restore). */
+  applyStorageState: (state: StorageStateOut) => Promise<void>;
 }
 
 export interface StudioHostConfig {
@@ -109,7 +114,7 @@ export interface StudioHostDeps {
    * The tab MUST come back with its SSRF/redirect fence already armed and loaded to a SAFE blank page — the
    * agent's requested startUrl is navigated separately through the GATED path, never a raw ungated load.
    */
-  createTab: (opts: { initialHolder: ControlParty; grant: NavGrant }) => HostTab | Promise<HostTab>;
+  createTab: (opts: { initialHolder: ControlParty; grant: NavGrant; partition: string }) => HostTab | Promise<HostTab>;
   /** Tear a session's tab down. */
   closeTab: (tabId: string) => void;
   /** Surface a parked risky act to the human approval card (never auto-allowed). */
@@ -540,7 +545,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     // An agent-opened session starts under AGENT control (a background lane with no human attached),
     // per the control-token S5 rule — so the agent can drive its own session without a human grant.
     const grant: NavGrant = { humanAllowPrivate: true, agentAllowPrivate: false };
-    const tab = await deps.createTab({ initialHolder: 'agent', grant });
+    const tab = await deps.createTab({ initialHolder: 'agent', grant, partition: `studio-${sessionId}` });
     const ctx = buildContext(sessionId, name, tab);
     contexts.set(sessionId, ctx);
     tabToSession.set(tab.tabId, sessionId);

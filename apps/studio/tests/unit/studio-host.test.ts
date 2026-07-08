@@ -115,6 +115,8 @@ function makeHost(config?: { sessionCap?: number }, dbg: () => DebuggerLike = fa
         browser: { navigate: (u) => state.navigate(u) },
         currentUrl: () => state.url,
         readHtml: async () => '<html></html>',
+        storageState: async () => ({ cookies: [], origins: [] }),
+        applyStorageState: async () => {},
       };
       return tab;
     },
