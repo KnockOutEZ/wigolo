@@ -75,6 +75,8 @@ export interface LoginHandoffDeps {
   currentUrl?: () => string | undefined;
   /** The onComplete HOOK — 5e-b (persist origin-scoped) + 5e-c (re-grant + authenticated resume) fill it. Invoked ONLY on completion. */
   onComplete?: (ctx: HandoffCompletionContext) => void | Promise<void>;
+  /** Optional PUSH seam (P5): fired on every login_handoff signal change (host → human renderer). The agent still PULLS the signal via studio_observe; this NEVER carries content/storageState — only {state, doNotRetry?}. */
+  onSignalChange?: (signal: LoginHandoffSignal | null) => void;
   /** Abort deadline: no completion by then ⇒ aborted (LOCKED). */
   timeoutMs?: number;
   /** Bounded completion poll (for a no-navigation SPA login): interval + max ticks. */
@@ -184,6 +186,12 @@ export class LoginHandoff {
     return this._signal;
   }
 
+  /** Single sink for every _signal mutation — mirrors the agent's PULL to the host's PUSH seam (P5). */
+  private setSignal(signal: LoginHandoffSignal | null): void {
+    this._signal = signal;
+    this.deps.onSignalChange?.(signal);
+  }
+
   /**
    * Mediate a human content event (a mark, a navigation). DROP it while the login window is
    * open — a credential-context mark name can be a displayed secret, and the agent must not
@@ -211,7 +219,7 @@ export class LoginHandoff {
     if (this._state !== 'idle') return;
     this.deps.controlToken.reclaim(); // instant human takeover — the only token op the machine performs in 5e-a
     this._state = 'human-holding';
-    this._signal = { state: 'in_progress', doNotRetry: true };
+    this.setSignal({ state: 'in_progress', doNotRetry: true });
     this.wallOrigin = originOf(this.deps.currentUrl?.());
     this.baseline = await this.deps.storageState(); // host-only read-back; never logged
     this.arm();
@@ -253,7 +261,7 @@ export class LoginHandoff {
     if (this._state === 'human-holding' && holder === 'agent') {
       this.clearTimers();
       this._state = 'idle';
-      this._signal = null;
+      this.setSignal(null);
       this.baseline = null;
     }
   }
@@ -261,7 +269,7 @@ export class LoginHandoff {
   private async settleCompleted(current: StorageStateOut): Promise<void> {
     this.clearTimers();
     this._state = 'completed';
-    this._signal = { state: 'completed' };
+    this.setSignal({ state: 'completed' });
     // 5e-b: persist the captured session origin-scoped (FUTURE reuse). 5e-c: re-grant the agent so it
     // resumes driving the LIVE, now-authenticated session (the signal above is the login_handoff:completed
     // the agent observes). The grant is in `finally`: the live context is authenticated regardless of the
@@ -278,7 +286,7 @@ export class LoginHandoff {
   private settleFailed(state: 'aborted' | 'vanished'): void {
     this.clearTimers();
     this._state = state;
-    this._signal = { state: 'failed' };
+    this.setSignal({ state: 'failed' });
     // LOCKED: no grant, no onComplete — a disconnect/timeout must never resume the agent.
   }
 
