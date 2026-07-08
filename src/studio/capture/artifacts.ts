@@ -30,7 +30,10 @@ export interface MarkSelectors {
 export type PageCapture =
   | { type: 'mark'; sessionId: string; url: string; target: MarkSelectors }
   | { type: 'clip'; sessionId: string; url: string; title: string; markdown: string }
-  | { type: 'qa'; sessionId: string; question: string; answer: string };
+  | { type: 'qa'; sessionId: string; question: string; answer: string }
+  // P6 F1 grab-all: generalized structured rows from a marked repeating pattern. Page-derived
+  // (content_trusted=0). Dedup identity = url + columns + rows (a re-grab with new data is a new artifact).
+  | { type: 'extraction'; sessionId: string; url: string; columns: string[]; rows: Record<string, string>[] };
 
 export interface NoteCapture {
   sessionId: string;
@@ -131,6 +134,9 @@ function contentParts(input: HashableArtifact): string[] {
       return [input.markdown];
     case 'qa':
       return [input.question, input.answer];
+    case 'extraction':
+      // url + column set + the row payload = the dedup identity (same page, same shape, same data → dedup).
+      return [input.url, input.columns.join(''), JSON.stringify(input.rows)];
     case 'note':
       return [input.text];
   }
@@ -287,6 +293,15 @@ export function captureFromPage(input: PageCapture, deps: PageCaptureDeps): Capt
       markdown = input.answer;
       metadata = null;
       embed = { text: input.answer };
+      break;
+    case 'extraction':
+      url = input.url;
+      // Title is host-derived COUNTS only — never page text (no untrusted content in the display title).
+      title = `${input.rows.length} rows · ${input.columns.length} columns`;
+      markdown = JSON.stringify({ columns: input.columns, rows: input.rows });
+      metadata = null;
+      // Embed the row values so the extraction is findable via find_similar over the studio corpus (F1 AC #6).
+      embed = { text: input.rows.map((r) => Object.values(r).join(' ')).join('\n') };
       break;
   }
 

@@ -346,6 +346,16 @@ describe('studio/capture/artifacts — Phase 4b-3 capture pipeline (RED)', () =>
     expect(r.contentHash).toBe(contentHashFor(m));
   });
 
+  it('P6 F1: an extraction artifact hashes by its columns + rows (dedup identity) and is stable', () => {
+    const a = { type: 'extraction' as const, sessionId: 's', url: 'https://x.test', columns: ['name', 'price'], rows: [{ name: 'A', price: '$1' }] };
+    const h1 = contentHashFor(a);
+    // Different rows → different hash (a re-grab with new data is a new artifact, not a dedup no-op).
+    const h2 = contentHashFor({ ...a, rows: [{ name: 'B', price: '$2' }] });
+    expect(h1).not.toBe(h2);
+    expect(contentHashFor(a)).toBe(h1); // stable
+    expect(h1).toBe(hashArtifact('extraction', 'https://x.test', 'nameprice', JSON.stringify([{ name: 'A', price: '$1' }])));
+  });
+
   // ─── Completeness — every NOT NULL / deliberate constraint the path supplies ──
 
   it('P-rowshape a page clip writes all NOT NULL columns the path owns', () => {
