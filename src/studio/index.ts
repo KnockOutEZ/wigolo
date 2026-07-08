@@ -86,6 +86,26 @@ export type { PreGrantEntry } from './pre-grant.js';
 export { isCredentialContext, isCredentialField, refuseAgentType, CREDENTIAL_URL } from './credential.js';
 export type { FieldSemantics } from './credential.js';
 
+// Login-wall handoff + encrypted origin-scoped profiles (P5 — Auth). Pure/security-only (no better-sqlite3;
+// profile-store pulls only src/security/*), so the barrel stays loadable in the Electron main. `ControlParty`
+// is already re-exported above (control-token.js) — handoff.ts's identical union is NOT re-exported.
+export { LoginHandoff, meaningfulStorageDelta } from './handoff.js';
+export type {
+  LoginHandoffSignal,
+  LoginHandoffDeps,
+  HandoffControlToken,
+  HandoffEventQueue,
+  HandoffCompletionContext,
+  HandoffState,
+} from './handoff.js';
+export { createLoginCapture, scopeStorageStateToOrigin, isEmptyStorageState } from './login-capture.js';
+export type { ProfilePersist, OriginMismatch } from './login-capture.js';
+export { ProfileStore, ProfileKeychainUnavailableError } from './profile-store.js';
+export type { ProfileGetResult, ProfileStoreOptions, ProfileKeychain } from './profile-store.js';
+// StorageStateOut/In live in session-browser.ts (which imports Playwright) — TYPE-ONLY re-export; tsc erases
+// it, so NO Playwright runtime import lands in the Electron main (same pattern as ArtifactDelta/CaptureResult).
+export type { StorageStateOut, StorageStateInput } from './session-browser.js';
+
 // Session-drive seam (D19 — session-targeted fetch/extract/crawl)
 export { createSessionDrive } from './session-drive.js';
 export type {
