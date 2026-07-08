@@ -26,6 +26,7 @@ import {
   isCredentialContext,
   LoginHandoff,
   createLoginCapture,
+  SessionAuditLog,
   UNTRUSTED_STUDIO_NOTICE,
   type StudioHostHandlers,
   type StudioSessionsAccessor,
@@ -67,6 +68,8 @@ import {
   type RiskTier,
   type StorageStateOut,
   type HandoffCompletionContext,
+  type AuditEntry,
+  type AuditRecordInput,
 } from 'wigolo/studio';
 import type { TabDrive } from './drive-engine';
 import type { BrokerClient } from './broker-client';
@@ -84,6 +87,33 @@ const DEFAULT_SPILL_MAX_BYTES = 64 * 1024 * 1024;
 const DEFAULT_SESSION_CAP = 8;
 
 export type ApprovalRisk = 'money' | 'credential' | 'destructive';
+
+/** Origin (scheme+host+port) of a URL — drops path/query/hash so no query-string secret rides the wire. */
+function originOnly(url: string): string {
+  try { return new URL(url).origin; } catch { return url; }
+}
+
+/**
+ * P6 F4: host-derived, page-text-FREE summary of one audit entry for the live timeline broadcast (M3).
+ * Carries the structured columns only — the agent's verb, the host-assigned ref/direction/amount, the
+ * origin-only url, the risk tier + resolved outcome + approval — NEVER raw typed text or page content.
+ */
+function auditToWire(e: AuditEntry): Record<string, unknown> {
+  return {
+    seq: e.seq,
+    action: e.action,
+    ...(e.target?.url ? { url: originOnly(e.target.url) } : {}),
+    ...(e.target?.ref ? { ref: e.target.ref } : {}),
+    ...(e.target?.direction ? { direction: e.target.direction } : {}),
+    ...(e.target?.amount != null ? { amount: e.target.amount } : {}),
+    ...(e.risk ? { risk: e.risk } : {}),
+    ok: e.outcome.ok,
+    ...(e.outcome.ok ? {} : { error_reason: e.outcome.error_reason }),
+    ...(e.outcome.charsLanded != null ? { charsLanded: e.outcome.charsLanded } : {}),
+    ...(e.approval ? { approval: e.approval } : {}),
+    ts: e.ts,
+  };
+}
 
 /** A parked risky act surfaced to the human's approval card (the host mints the id). */
 export interface ParkedApprovalNotice {
@@ -357,6 +387,10 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     // plain local cannot see — the opaque reset keeps the read typed `ParkedRecord | undefined`.
     const parkBox: { rec: ParkedRecord | undefined } = { rec: undefined };
     const clearPark = (): void => { parkBox.rec = undefined; };
+    // P6 F4: the per-session append-only audit log. In-memory here (no db) — the act handler records every
+    // action + resolved outcome into it (act.ts:409), and each record is (a) broadcast to the live timeline
+    // and (b) forwarded to the broker for durable, append-only persistence (the broker owns the native db).
+    const audit = new SessionAuditLog({});
     const actHandler = createActHandler({
       browser: tab.browser,
       controlToken: tab.drive.controlToken,
@@ -365,6 +399,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       channel: tab.drive.channel,
       currentUrl: tab.currentUrl,
       preGrant,
+      audit,
       park: (item: ParkedAction) => {
         const approvalId = randomUUID();
         const rec: ParkedRecord = { approvalId, sessionId, domain: item.domain, actionType: item.action, riskTier: item.risk };
@@ -372,6 +407,22 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
         parked.set(approvalId, rec);
         deps.onParked({ approval_id: approvalId, action: item.action, risk: item.risk as ApprovalRisk, session_id: sessionId });
       },
+    });
+    // Live broadcast (page-text-free) + durable persist, chained in record order so the broker's monotonic
+    // (session_id, seq) stays intact regardless of the credential-probe's async timing. A credential-context
+    // step stores `target.url` ORIGIN-ONLY (M3) before it reaches the row; a broker outage degrades the
+    // timeline only (the session is unaffected — the persist is fire-and-forget off the act's return path).
+    let auditPersist: Promise<unknown> = Promise.resolve();
+    audit.onRecord((entry) => {
+      tab.drive.channel.announce?.({ t: 'audit', ...auditToWire(entry) });
+      auditPersist = auditPersist
+        .then(async () => {
+          const cred = entry.target?.url ? await isCredentialPage() : false;
+          const toPersist: AuditRecordInput =
+            cred && entry.target ? { ...entry, target: { ...entry.target, url: originOnly(entry.target.url!) } } : entry;
+          await deps.broker.call('persistAudit', { sessionId, entry: toPersist });
+        })
+        .catch(() => { /* broker down → timeline degrades; session + agent line unaffected */ });
     });
 
     const actImpl = async (input: StudioActInput): Promise<StudioActOutput | StudioToolError> => {
