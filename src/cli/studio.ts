@@ -998,6 +998,9 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
       hub.broadcast(session.id, { t: 'say', text, ...(typeof input.markId === 'string' ? { markId: input.markId } : {}), trusted: false });
       return { posted: true as const, posted_at: Date.now() };
     },
+    // P6 F1: grab-all requires the desktop studio's live DOM (generalize over a WebContentsView); the headless
+    // CLI host has no such surface, so it declines with a typed refusal (never as-any, never a throw).
+    extractSet: async () => ({ error_reason: 'not_implemented', hint: 'Grab-all runs in the desktop studio.' }),
   };
   daemon.setStudioHost(studioHandlers);
   daemon.setStudioSessions(studioSessions);

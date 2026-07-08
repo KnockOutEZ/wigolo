@@ -748,6 +748,8 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       deps.onSay?.({ text, ...(typeof input.markId === 'string' ? { markId: input.markId } : {}), ts, sessionId: ctx.sessionId });
       return { posted: true, posted_at: ts };
     },
+    // P6 F1 — placeholder (F1.7 replaces with the tab-scoped, generalize-backed implementation).
+    extractSet: async () => ({ error_reason: 'not_implemented', hint: 'Grab-all is not wired yet.' }),
   };
 
   const sessions: StudioSessionsAccessor = {

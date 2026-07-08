@@ -14,6 +14,7 @@ const hostHandlers = (): StudioHostHandlers => ({
   close: async (i) => ({ closed: true as const, session_id: i.session_id ?? '' }),
   list: async () => ({ sessions: [] }),
   say: async () => ({ posted: true, posted_at: 0 }),
+  extractSet: async () => ({ columns: [], rows: [], pages_followed: 0 }),
 });
 
 async function connect() {

@@ -227,6 +227,30 @@ export interface StudioCaptureOutput {
   content_hash: string;
 }
 
+// P6 F1 grab-all: generalize a marked repeating pattern into structured rows. Agent-reachable; credential-
+// refused at source, SSRF-fenced pagination (Document-class only). `mark_id` is required (dispatch casts).
+export interface StudioExtractSetInput {
+  tab_id: string;
+  mark_id: string;
+  exclude_refs?: string[];
+  follow_pagination?: boolean;
+  max_pages?: number;
+  max_rows?: number;
+}
+
+export interface StudioExtractSetOutput {
+  columns: string[];
+  rows: Record<string, string>[];
+  pages_followed: number;
+  truncated?: boolean;
+  excluded?: number;
+  artifact_id?: number;
+  /** Non-error StageResult stages (like studio_act): a pagination hop needing a grant, or a credential-page refusal. */
+  stage?: 'pending_approval' | 'refused';
+  approval_id?: string;
+  reason?: string;
+}
+
 // P4 co-drive: the agent posts a message to the human's chat rail (optionally threaded on a mark). This is
 // agent→human communication — it confers NO control/approval/grant power, so it is a legitimate agent verb.
 export interface StudioSayInput {
@@ -282,7 +306,7 @@ export interface StudioListOutput {
 }
 
 export function isStudioToolError(
-  x: StudioObserveOutput | StudioActOutput | StudioMarksOutput | StudioGeneralizeOutput | StudioCaptureOutput | StudioSayOutput | StudioSpawnOutput | StudioCloseOutput | StudioListOutput | StudioToolError,
+  x: StudioObserveOutput | StudioActOutput | StudioMarksOutput | StudioGeneralizeOutput | StudioCaptureOutput | StudioSayOutput | StudioExtractSetOutput | StudioSpawnOutput | StudioCloseOutput | StudioListOutput | StudioToolError,
 ): x is StudioToolError {
   return typeof (x as StudioToolError).error_reason === 'string';
 }
@@ -299,6 +323,8 @@ export interface StudioHostHandlers {
   list(): Promise<StudioListOutput | StudioToolError>;
   // P4: agent→human chat post. New agent-reachable verb (8th key); confers no control/approval (PIN-SPLIT(b)).
   say(input: StudioSayInput): Promise<StudioSayOutput | StudioToolError>;
+  // P6 F1: generalize a marked repeating pattern into structured rows (9th key; credential-refused, SSRF-fenced).
+  extractSet(input: StudioExtractSetInput): Promise<StudioExtractSetOutput | StudioToolError>;
 }
 
 export interface McpToolResult {
@@ -372,6 +398,12 @@ export async function dispatchStudioTool(
     }
     if (name === 'studio_say') {
       const data = await studioHost.say(args as unknown as StudioSayInput);
+      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
+    }
+    if (name === 'studio_extract_set') {
+      // mark_id + tab_id are required → structural cast (mirrors studio_act's action). Host validates.
+      const data = await studioHost.extractSet(args as unknown as StudioExtractSetInput);
       if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
     }

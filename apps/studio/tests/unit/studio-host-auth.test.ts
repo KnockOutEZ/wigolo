@@ -280,6 +280,6 @@ describe('studio host login-handoff wiring (P5)', () => {
     expect(keys).not.toContain('loginAs');
     expect(keys).not.toContain('login');
     expect(keys).not.toContain('credential');
-    expect(keys.sort()).toEqual(['act', 'capture', 'close', 'list', 'marks', 'observe', 'say', 'spawn']);
+    expect(keys.sort()).toEqual(['act', 'capture', 'close', 'extractSet', 'list', 'marks', 'observe', 'say', 'spawn']);
   });
 });

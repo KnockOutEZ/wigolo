@@ -27,6 +27,7 @@ const hostHandlers = (): StudioHostHandlers => ({
   close: async (input) => ({ closed: true as const, session_id: input.session_id ?? '' }),
   list: async () => ({ sessions: [] }),
   say: async () => ({ posted: true, posted_at: 0 }),
+  extractSet: async () => ({ columns: ['name'], rows: [{ name: 'A' }], pages_followed: 0, artifact_id: 1 }),
 });
 const reason = (r: McpToolResult) => JSON.parse(r.content[0].text).error_reason as string;
 
@@ -117,7 +118,7 @@ describe('dispatchStudioTool — L3-1 surface: the bounded inversion (S6) admits
   // ONLY to these handler keys; that set IS the agent's reachable surface. Mutation: drop a lifecycle verb
   // here and this RED-flags the inversion regressing.
   it('PIN-SPLIT(a): the agent-reachable host surface is EXACTLY observe/act/marks/capture/say/spawn/close/list', () => {
-    expect(Object.keys(hostHandlers()).sort()).toEqual(['act', 'capture', 'close', 'list', 'marks', 'observe', 'say', 'spawn']);
+    expect(Object.keys(hostHandlers()).sort()).toEqual(['act', 'capture', 'close', 'extractSet', 'list', 'marks', 'observe', 'say', 'spawn']);
   });
 
   // PIN-SPLIT (b) — the LOAD-BEARING structural half that MUST stay: control/grant/reclaim/approve are NOT in
@@ -157,7 +158,7 @@ describe('dispatchStudioTool — L3-1 surface: the bounded inversion (S6) admits
     expect(JSON.parse(r.content[0].text)).toMatchObject({ session_id: 'bg-1' });
     expect(proxyCalls).toEqual([]);
     // still exactly the 8 handler keys — studio_open reused `spawn`, it is NOT a new key (say is the 8th, added by P4)
-    expect(Object.keys(hostHandlers()).sort()).toEqual(['act', 'capture', 'close', 'list', 'marks', 'observe', 'say', 'spawn']);
+    expect(Object.keys(hostHandlers()).sort()).toEqual(['act', 'capture', 'close', 'extractSet', 'list', 'marks', 'observe', 'say', 'spawn']);
   });
 });
 
@@ -183,6 +184,31 @@ describe('dispatchStudioTool — studio_act pending_approval / preempted stage (
     const r = await dispatchStudioTool('studio_act', { action: 'type', ref: 'e1', text: 'hi' }, handlers, dir, { proxyFactory: proxyReturning({}) });
     expect(r.isError).toBe(false);
     expect(JSON.parse(r.content[0].text)).toMatchObject({ stage: 'preempted' });
+  });
+});
+
+describe('dispatchStudioTool — studio_extract_set routing (P6 F1)', () => {
+  it('EXECUTE studio_extract_set on the host returns rows + columns serialized', async () => {
+    const handlers: StudioHostHandlers = {
+      ...hostHandlers(),
+      extractSet: async (input) => {
+        expect(input.mark_id).toBe('m1'); // mark_id survives the structural cast
+        return { columns: ['name', 'price'], rows: [{ name: 'Pro', price: '$20' }], pages_followed: 0, artifact_id: 7 };
+      },
+    };
+    const r = await dispatchStudioTool('studio_extract_set', { tab_id: 't1', mark_id: 'm1' }, handlers, dir, { proxyFactory: proxyReturning({}) });
+    expect(r.isError).toBe(false);
+    expect(JSON.parse(r.content[0].text)).toEqual({ columns: ['name', 'price'], rows: [{ name: 'Pro', price: '$20' }], pages_followed: 0, artifact_id: 7 });
+  });
+
+  it('a typed extractSet error (no_such_mark) becomes a tool refusal', async () => {
+    const handlers: StudioHostHandlers = {
+      ...hostHandlers(),
+      extractSet: async () => ({ error_reason: 'no_such_mark', hint: 're-mark' }),
+    };
+    const r = await dispatchStudioTool('studio_extract_set', { tab_id: 't1', mark_id: 'gone' }, handlers, dir, { proxyFactory: proxyReturning({}) });
+    expect(r.isError).toBe(true);
+    expect(reason(r)).toBe('no_such_mark');
   });
 });
 
@@ -301,6 +327,7 @@ describe('dispatchStudioTool — studio_capture qa gate (C5, through dispatch, r
     close: async (input) => ({ closed: true as const, session_id: input.session_id ?? '' }),
     list: async () => ({ sessions: [] }),
     say: async () => ({ posted: true, posted_at: 0 }),
+    extractSet: async () => ({ columns: [], rows: [], pages_followed: 0 }),
   });
   const rowById = (id: number) => db.prepare('SELECT * FROM studio_artifacts WHERE id = ?').get(id) as Record<string, unknown>;
 

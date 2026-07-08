@@ -104,6 +104,7 @@ describe('studio_observe wiring → seam (createMcpServer dispatch)', () => {
       close: async (input) => ({ closed: true as const, session_id: input.session_id ?? '' }),
       list: async () => ({ sessions: [] }),
       say: async () => ({ posted: true, posted_at: 0 }),
+      extractSet: async () => ({ columns: [], rows: [], pages_followed: 0 }),
     };
     const { res, parsed } = await callStudioObserve(stubSubsystems(studioHost));
     expect(observed).toBe(true); // routed through the arm → dispatchStudioTool → studioHost.observe (not dead code)

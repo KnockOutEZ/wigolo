@@ -402,7 +402,7 @@ describe('createStudioHost — marking (P2)', () => {
 
   it('PIN-SPLIT(a): mark creation is NOT on the agent surface — handler keys stay the sealed set (+say, the P4 8th agent verb)', async () => {
     const { host } = makeHost(undefined, () => markDebugger());
-    expect(Object.keys(host.handlers).sort()).toEqual(['act', 'capture', 'close', 'list', 'marks', 'observe', 'say', 'spawn']);
+    expect(Object.keys(host.handlers).sort()).toEqual(['act', 'capture', 'close', 'extractSet', 'list', 'marks', 'observe', 'say', 'spawn']);
     expect('markElement' in host.handlers).toBe(false);
     expect(typeof host.markElement).toBe('function'); // on the StudioHost object, not the agent handlers
   });
