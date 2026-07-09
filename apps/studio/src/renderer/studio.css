@@ -125,6 +125,8 @@ button { font-family: inherit; }
 }
 .omnibox:focus-within { border-color: var(--agent); background: var(--surface-2); }
 .omnibox__lead { color: var(--text-faint); display: grid; place-items: center; flex: none; }
+.omnibox__lead--search { color: var(--text-dim); } /* magnifier — Enter will search */
+.omnibox__lead--intent { color: var(--agent); }   /* spark — ⇥ will hand it to the agent */
 .omnibox__input {
   flex: 1; background: transparent; border: none; outline: none;
   color: var(--text); font: 13px var(--chrome-font); min-width: 0;

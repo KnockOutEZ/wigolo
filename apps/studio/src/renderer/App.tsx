@@ -105,13 +105,18 @@ export function App() {
     return () => { unsubControl(); unsubChat(); unsubLogin(); window.removeEventListener('keydown', onKey); };
   }, []);
 
-  // Post the chat composer's text to the agent (optimistic local echo + deliver via the observe drain).
+  // Post text to the agent (optimistic local echo + deliver via the observe drain). The host credential-gates
+  // the delivery, so a secret never reaches the agent even if typed here. Shared by the chat composer AND the
+  // omnibox ⇥ intent (P6 F2 open decision #4 — reuse the chat channel, no wrapper).
+  const postToAgent = (text: string): void => {
+    const t = text.trim();
+    if (!t) return;
+    chatStore.add({ author: 'human', text: t, ts: Date.now() });
+    window.studio.sendChat(t);
+  };
   const sendChat = (): void => {
     const el = composerRef.current;
-    const text = el?.value.trim() ?? '';
-    if (!text) return;
-    chatStore.add({ author: 'human', text, ts: Date.now() });
-    window.studio.sendChat(text);
+    postToAgent(el?.value ?? '');
     if (el) el.value = '';
   };
 
@@ -180,6 +185,7 @@ export function App() {
         railOpen={railOpen}
         onToggleRail={toggleRail}
         onClip={() => window.studio.armClip()}
+        onIntent={postToAgent}
       />
       <DriveBanner
         show={bannerShow}

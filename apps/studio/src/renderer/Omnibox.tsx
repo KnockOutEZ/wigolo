@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { parseOmnibox } from './omnibox-parse';
-import { IconBack, IconForward, IconReload, IconGlobe, IconStar, IconLink, IconReader, IconSpark, IconClip } from './icons';
+import { parseOmnibox, omniboxLeadHint } from './omnibox-parse';
+import { IconBack, IconForward, IconReload, IconGlobe, IconSearch, IconStar, IconLink, IconReader, IconSpark, IconClip } from './icons';
 
 /**
- * The toolbar row: nav controls · a centered dual-mode omnibox pill (Enter = navigate/search) ·
- * verb cluster · the Agent-rail toggle. The `data-testid="omnibox"` input is preserved for e2e.
+ * The toolbar row: nav controls · a centered dual-mode omnibox pill (Enter = navigate/search, ⇥ = hand the
+ * text to the agent as intent) · verb cluster · the Agent-rail toggle. The `data-testid="omnibox"` input is
+ * preserved for e2e. The lead glyph reflects what the box will DO — globe=nav, magnifier=search, spark=intent.
  */
 export function Toolbar(props: {
   currentUrl: string;
@@ -16,9 +17,14 @@ export function Toolbar(props: {
   onToggleRail: () => void;
   /** Arm region-clip on the focused session tab (✂ — same as ⌘⇧X). */
   onClip: () => void;
+  /** ⇥ hands the typed text to the agent as intent (reuses the P4 chat channel). Absent ⇒ Tab does nothing. */
+  onIntent?: (text: string) => void;
 }) {
   const [text, setText] = useState(props.currentUrl);
   useEffect(() => setText(props.currentUrl), [props.currentUrl]);
+
+  const hint = omniboxLeadHint(text, false);
+  const LeadIcon = hint === 'search' ? IconSearch : IconGlobe;
 
   return (
     <div className="toolbar">
@@ -29,13 +35,24 @@ export function Toolbar(props: {
       </div>
 
       <div className="omnibox">
-        <span className="omnibox__lead"><IconGlobe /></span>
+        <span className={`omnibox__lead omnibox__lead--${hint}`} data-hint={hint}>
+          <LeadIcon />
+        </span>
         <input
           data-testid="omnibox"
           className="omnibox__input"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && text.trim()) props.onNavigate(parseOmnibox(text)); }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && text.trim()) { props.onNavigate(parseOmnibox(text)); return; }
+            // ⇥ = hand the typed text to the agent as intent (reuse the chat channel), then restore the url.
+            // NEVER navigates. The host credential-gates postHumanChat, so a secret typed here is dropped there.
+            if (e.key === 'Tab' && !e.shiftKey && text.trim() && props.onIntent) {
+              e.preventDefault();
+              props.onIntent(text.trim());
+              setText(props.currentUrl);
+            }
+          }}
           placeholder="Search or type a URL — ⇥ to hand it to the agent"
           spellCheck={false}
         />

@@ -14,6 +14,7 @@ export const IconGlobe = ({ size = 15 }: { size?: number }) => (<svg {...base(si
 export const IconStar = ({ size = 16 }: { size?: number }) => (<svg {...base(size)}><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 17l-5.2 2.6 1-5.8L3.5 9.7l5.9-.9z" /></svg>);
 export const IconLink = ({ size = 16 }: { size?: number }) => (<svg {...base(size)}><path d="M9 15l6-6M10.5 6.5l1-1a3.5 3.5 0 0 1 5 5l-1 1M13.5 17.5l-1 1a3.5 3.5 0 0 1-5-5l1-1" /></svg>);
 export const IconReader = ({ size = 16 }: { size?: number }) => (<svg {...base(size)}><path d="M4 6h16M4 10h16M4 14h11M4 18h11" /></svg>);
+export const IconSearch = ({ size = 15 }: { size?: number }) => (<svg {...base(size)}><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></svg>);
 export const IconClose = ({ size = 13 }: { size?: number }) => (<svg {...base(size)}><path d="M6 6l12 12M18 6L6 18" /></svg>);
 export const IconSend = ({ size = 15 }: { size?: number }) => (<svg {...base(size)}><path d="M12 19V5M6 11l6-6 6 6" /></svg>);
 export const IconPause = ({ size = 14 }: { size?: number }) => (<svg {...base(size)}><path d="M8 5v14M16 5v14" /></svg>);
