@@ -13,7 +13,10 @@ import type { MarkPayload, StudioExtractSetOutput, StudioToolError } from 'wigol
  * the choke's endpoint — an ungranted private next-target never reaches it).
  */
 const viewport = () => ({ width: 800, height: 600 });
-const samplePayload: MarkPayload = { role: 'link', name: 'plan', box: { x: 10, y: 20, width: 100, height: 20 } };
+const samplePayload: MarkPayload = {
+  tag: 'a', id: '', classes: ['card'], attrs: { href: '/plan' }, dataset: {},
+  text: 'plan', component: null, source: null,
+};
 
 const attrsArr = (o: Record<string, string> = {}): string[] => Object.entries(o).flat();
 const txt = (be: number, v: string) => ({ backendNodeId: be, nodeType: 3, nodeName: '#text', nodeValue: v, children: [] });
