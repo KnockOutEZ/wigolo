@@ -91,6 +91,10 @@ export function App() {
       chatStore.clear();
       loginStore.reset();
       void window.studio.listCaptures().then((c) => capturesStore.set(c));
+      // KNOWN MINOR (deferred, shared class): a live audit `add()` that lands during this backfill RPC's
+      // async gap is clobbered by set()'s clear() — UI-only, non-corrupting (the DB row persists + the next
+      // backfill recovers it); the same clear()-based pattern predates F4 (capturesStore above). A session-
+      // guarded merge would close the window; out of P6 scope.
       void window.studio.listAudit().then((a) => timelineStore.set(a));
       setBrief(null); // a synthesis belongs to the session it was run in
     });

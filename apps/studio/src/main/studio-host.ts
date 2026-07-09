@@ -414,19 +414,18 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       },
     });
     // Live broadcast (page-text-free) + durable persist, chained in record order so the broker's monotonic
-    // (session_id, seq) stays intact regardless of the credential-probe's async timing. A credential-context
-    // step stores `target.url` ORIGIN-ONLY (M3) before it reaches the row; a broker outage degrades the
+    // (session_id, seq) stays intact. `target.url` is stripped to its ORIGIN UNCONDITIONALLY before it reaches
+    // the durable row (and the wire) — the timeline only needs the origin for forensics/replay, NEVER the
+    // query string, which can carry a secret (reset/SSO token, session id) on ANY page, credential-classified
+    // or not (do not trust the classifier to catch every secret-bearing URL). A broker outage degrades the
     // timeline only (the session is unaffected — the persist is fire-and-forget off the act's return path).
     let auditPersist: Promise<unknown> = Promise.resolve();
     audit.onRecord((entry) => {
       tab.drive.channel.announce?.({ t: 'audit', ...auditToWire(entry) });
+      const toPersist: AuditRecordInput =
+        entry.target?.url ? { ...entry, target: { ...entry.target, url: originOnly(entry.target.url) } } : entry;
       auditPersist = auditPersist
-        .then(async () => {
-          const cred = entry.target?.url ? await isCredentialPage() : false;
-          const toPersist: AuditRecordInput =
-            cred && entry.target ? { ...entry, target: { ...entry.target, url: originOnly(entry.target.url!) } } : entry;
-          await deps.broker.call('persistAudit', { sessionId, entry: toPersist });
-        })
+        .then(() => deps.broker.call('persistAudit', { sessionId, entry: toPersist }))
         .catch(() => { /* broker down → timeline degrades; session + agent line unaffected */ });
     });
 

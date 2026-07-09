@@ -130,14 +130,20 @@ describe('studio-host — P6 F4 audit → broker persist + live broadcast', () =
     expect(await host.synthesizeSession()).toEqual({ empty: true });
   });
 
-  it('a non-credential navigate keeps the full url in the persisted row (forensic value)', async () => {
+  it('a NON-credential navigate is ALSO persisted origin-only — a query-string secret never lands in the audit row', async () => {
+    // Security (adversarial finding): the strip must be UNCONDITIONAL, not gated on the credential
+    // classifier — a reset/SSO/session token in a query string leaks on ANY page the classifier misses.
     const broadcasts: Record<string, unknown>[] = [];
     const { host, broker } = makeHost(broadcasts);
-    await host.handlers.spawn({ startUrl: 'https://ex.com/page' });
-    await host.handlers.act({ action: 'navigate', url: 'https://ex.com/deep/path?q=1' });
+    await host.handlers.spawn({ startUrl: 'https://ex.com/page' }); // a plain, non-credential page
+    await host.handlers.act({ action: 'navigate', url: 'https://ex.com/reset?token=SECRET_RESET_TOKEN' });
 
     await vi.waitFor(() => expect(persistedEntries(broker).some((e) => e.action === 'navigate')).toBe(true));
     const nav = persistedEntries(broker).find((e) => e.action === 'navigate')!;
-    expect(nav.target?.url).toBe('https://ex.com/deep/path?q=1');
+    expect(nav.target?.url).toBe('https://ex.com');
+    expect(nav.target?.url).not.toContain('SECRET_RESET_TOKEN');
+    // the live broadcast is likewise origin-only (never the token)
+    const wire = broadcasts.find((b) => b.t === 'audit' && b.action === 'navigate') as { url?: string } | undefined;
+    expect(wire?.url).toBe('https://ex.com');
   });
 });
