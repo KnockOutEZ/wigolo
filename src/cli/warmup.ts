@@ -321,7 +321,7 @@ async function runVerify(dataDir: string, reporter: WarmupReporter): Promise<voi
   await runVerifyTui(dataDir, reporter);
   reporter.note('');
   reporter.note('✓ Done. Connect to your AI tool:');
-  reporter.note('  claude mcp add wigolo -- npx wigolo');
+  reporter.note('  claude mcp add wigolo --scope user -- npx wigolo');
 }
 
 export async function runWarmup(

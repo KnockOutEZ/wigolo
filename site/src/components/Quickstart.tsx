@@ -29,7 +29,7 @@ const STEPS = [
   {
     n: "1",
     title: "Install & wire your agent",
-    note: "Any of these, comma-separated: claude-code · cursor · codex · gemini-cli · vscode · windsurf · zed · antigravity",
+    note: "Auto-wires the agent for you — comma-separated: claude-code · cursor · codex · gemini-cli · vscode · windsurf · zed · antigravity. Using any other MCP client? Drop --agents — the engine still installs and you point it at wigolo yourself.",
     cmd: "npx wigolo init --non-interactive --agents=<your-agent>",
     foot: "That's the whole setup — search, fetch, crawl, extract & cache need no API key.",
   },
@@ -43,9 +43,9 @@ const STEPS = [
   {
     n: "3",
     title: "Optional — answer synthesis",
-    note: "research, agent, and answer-format search use an LLM to write the final text. Any provider works — or stay fully local.",
-    cmd: "export WIGOLO_LLM_PROVIDER=ollama",
-    foot: "A free-tier key is plenty — or keyless with a local model server.",
+    note: "research, agent, and answer-format search use an LLM. Easiest is a free Gemini key (no local setup). Set the provider plus its key — a provider alone isn't enough.",
+    cmd: "export WIGOLO_LLM_PROVIDER=gemini GEMINI_API_KEY=<your-free-key>",
+    foot: "Grab a free key at aistudio.google.com. Prefer fully local & keyless? Run Ollama: export WIGOLO_LLM_PROVIDER=ollama WIGOLO_LLM_MODEL=llama3.1",
   },
 ];
 

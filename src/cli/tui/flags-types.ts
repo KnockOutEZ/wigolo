@@ -7,6 +7,7 @@ export const KNOWN_AGENT_IDS: readonly string[] = [
   'windsurf',
   'codex',
   'opencode',
+  'antigravity',
 ];
 
 export interface InitFlags {

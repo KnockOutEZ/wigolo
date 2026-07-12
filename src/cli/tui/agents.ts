@@ -89,6 +89,16 @@ const opencode: AgentDescriptor = {
   configPath: ({ home }) => join(home, '.config', 'opencode', 'config.json'),
 };
 
+const antigravity: AgentDescriptor = {
+  id: 'antigravity',
+  displayName: 'Antigravity',
+  installType: 'config-file',
+  detect: ({ home }) =>
+    binaryInPath('antigravity') !== null ||
+    dirExists(join(home, '.antigravity')),
+  configPath: ({ home }) => join(home, '.antigravity', 'mcp.json'),
+};
+
 export const AGENTS: readonly AgentDescriptor[] = [
   claudeCode,
   cursor,
@@ -98,6 +108,7 @@ export const AGENTS: readonly AgentDescriptor[] = [
   windsurf,
   codex,
   opencode,
+  antigravity,
 ];
 
 export interface DetectAgentsOptions {

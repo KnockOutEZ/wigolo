@@ -45,7 +45,7 @@ export async function installViaClaudeCli(args: InstallViaClaudeCliArgs = {}): P
   try {
     r = await runCommand(
       'claude',
-      ['mcp', 'add', 'wigolo', '--', SERVER_CMD, ...SERVER_ARGS],
+      ['mcp', 'add', 'wigolo', '--scope', 'user', '--', SERVER_CMD, ...SERVER_ARGS],
       { timeout: 15000 },
     );
   } catch (err) {

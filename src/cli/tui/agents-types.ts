@@ -6,7 +6,8 @@ export type AgentId =
   | 'gemini-cli'
   | 'windsurf'
   | 'codex'
-  | 'opencode';
+  | 'opencode'
+  | 'antigravity';
 
 export type InstallType = 'cli-command' | 'config-file' | 'config-toml';
 

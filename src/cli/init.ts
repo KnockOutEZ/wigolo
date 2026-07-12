@@ -33,7 +33,7 @@ const INIT_USAGE = [
   '',
   'Options:',
   '  --non-interactive, -y   Skip interactive prompts (uses plain text flow)',
-  '  --agents=<csv>          Comma-separated agent ids (required with --non-interactive)',
+  '  --agents=<csv>          Comma-separated agent ids to auto-wire (optional; omit to set up the engine only and point any MCP client at wigolo yourself)',
   '  --skip-verify           Skip the post-install verify step',
   '  --plain                 Force plain (non-TUI) output',
   '  --provider=<name>       LLM provider for research/agent: anthropic|openai|gemini|ollama',
@@ -61,12 +61,6 @@ export async function runInit(args: string[]): Promise<number> {
   if (flags.help) {
     process.stderr.write(INIT_USAGE);
     return 0;
-  }
-
-  if (flags.nonInteractive && flags.agents.length === 0) {
-    process.stderr.write('--non-interactive requires --agents=<csv>\n');
-    process.stderr.write(INIT_USAGE);
-    return 2;
   }
 
   const isTTY = Boolean(process.stdout.isTTY);
@@ -223,24 +217,34 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
     }
   }
 
-  if (selected.length === 0) {
+  // In non-interactive mode an empty agent list is a valid choice: warmup above
+  // has already set up the engine (on-device models, browser, cache), so we skip
+  // agent wiring and let a user whose agent has no built-in installer point it at
+  // wigolo's MCP server by hand. In interactive mode an empty selection means the
+  // user picked nothing, so there is genuinely nothing left to do.
+  if (selected.length === 0 && !flags.nonInteractive) {
     process.stderr.write('No agents selected — nothing to do.\n');
     return 0;
   }
 
   const config = getConfig();
-  try {
-    await applyConfigs(detected, selected, {});
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`Writing configs failed: ${message}\n`);
-    return 1;
-  }
 
-  // Install instructions, skills, and commands for agents that support them.
-  // Each step has its own try/catch so a failure in one step does not cause
-  // the others to be reported as "skipped".
-  {
+  if (selected.length === 0) {
+    out();
+    out(`  ${info('Engine ready — no agent wiring requested.')}`);
+    out(`  ${chalk.gray('Point your MCP client at:  npx wigolo mcp')}`);
+  } else {
+    try {
+      await applyConfigs(detected, selected, {});
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`Writing configs failed: ${message}\n`);
+      return 1;
+    }
+
+    // Install instructions, skills, and commands for agents that support them.
+    // Each step has its own try/catch so a failure in one step does not cause
+    // the others to be reported as "skipped".
     const { getAgentHandler } = await import('./agents/registry.js');
 
     for (const id of selected) {

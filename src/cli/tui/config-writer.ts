@@ -18,6 +18,7 @@ const JSON_SPECS: Record<Exclude<AgentId, 'claude-code' | 'codex'>, JsonAgentSpe
   'gemini-cli': { keyPath: ['mcpServers', 'wigolo'] },
   windsurf:     { keyPath: ['mcpServers', 'wigolo'] },
   opencode:     { keyPath: ['mcp', 'wigolo'], extraEntryFields: { type: 'local' } },
+  antigravity:  { keyPath: ['mcpServers', 'wigolo'] },
 };
 
 const CODEX_TABLE_PATH = ['mcp_servers', 'wigolo'];

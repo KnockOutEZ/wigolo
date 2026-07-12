@@ -30,13 +30,14 @@ wigolo runs on your machine as an MCP server and gives an AI coding agent one du
 
 Requires **Node ≥ 20** and ~1.5 GB of free disk. macOS, Linux, and Windows.
 
-One command installs the local engine (search, browser, on-device models), wires it into your agent, and sets up the MCP connection:
+One command installs the local engine (search, browser, on-device models), auto-wires it into your agent, and sets up the MCP connection:
 
 ```bash
 npx wigolo init --non-interactive --agents=<your-agent>
 ```
 
-- **`<your-agent>`** — one or more of `claude-code` · `cursor` · `codex` · `gemini-cli` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated).
+- **`<your-agent>`** — one or more of `claude-code` · `cursor` · `codex` · `gemini-cli` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated). wigolo writes the MCP config and instructions for you — nothing else to set up.
+- **Any other MCP-capable agent?** Omit `--agents` — the engine still installs headlessly, and you point your agent at wigolo's MCP server (`npx wigolo mcp`) yourself.
 
 That's the whole setup — **search, fetch, crawl, extract, cache, and find-similar work with no API key.** Check it's healthy:
 
@@ -45,6 +46,73 @@ npx wigolo doctor
 ```
 
 Not for you? `npx wigolo config --uninstall --yes` removes everything, cleanly.
+
+### Manual MCP setup (any other agent)
+
+The `--agents` flag has a built-in installer for each agent listed above — but it can't cover every agent in the world. For **anything else — your own custom or in-house agent, or any MCP-capable client we don't wire automatically yet** — set wigolo up by hand: it's just another MCP server. Install the engine once, then register it:
+
+```bash
+npx wigolo init --non-interactive        # engine only: models, browser, cache — no agent wiring
+```
+
+Most clients use an `mcpServers` block in a JSON config file:
+
+```json
+{
+  "mcpServers": {
+    "wigolo": {
+      "command": "npx",
+      "args": ["-y", "wigolo"]
+    }
+  }
+}
+```
+
+`wigolo` with no subcommand starts the MCP stdio server (that is the default). If you installed it globally, use `"command": "wigolo", "args": []` instead.
+
+**The file location — and the exact key — vary by client:**
+
+| Agent | Config file | Servers key |
+|-------|-------------|-------------|
+| Cursor | `~/.cursor/mcp.json` | `mcpServers` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` |
+| Gemini CLI | `~/.gemini/settings.json` | `mcpServers` |
+| Antigravity | `~/.antigravity/mcp.json` | `mcpServers` |
+| VS Code | user `mcp.json` (Command Palette → *MCP: Open User Configuration*) | `servers` |
+| Zed | `~/.config/zed/settings.json` | `context_servers` |
+| Claude Code | *(no file)* run `claude mcp add wigolo --scope user -- npx -y wigolo` (`--scope user` = global; drop it for project-only) | — |
+| Codex | `~/.codex/config.toml` (TOML, not JSON) | `[mcp_servers.wigolo]` |
+| Any other | wherever it registers MCP servers | its MCP-servers key |
+
+Codex uses TOML instead of JSON:
+
+```toml
+[mcp_servers.wigolo]
+command = "npx"
+args = ["-y", "wigolo"]
+```
+
+To enable answer synthesis (below) for a hand-wired agent, add the provider and key to the server's `env`:
+
+```json
+{
+  "mcpServers": {
+    "wigolo": {
+      "command": "npx",
+      "args": ["-y", "wigolo"],
+      "env": { "WIGOLO_LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "<your-free-key>" }
+    }
+  }
+}
+```
+
+### Let an AI set it up for you
+
+Setup is simple enough to hand off to an AI. Ask your coding agent (Claude Code, Cursor, …) — or any chat assistant (ChatGPT, Claude, Gemini) — to do it, and it can follow the steps above. Paste a prompt like:
+
+> Set up the **wigolo** MCP server for my agent. wigolo is a local-first MCP server installed with `npx wigolo init --non-interactive` (engine only — no API keys). Then register it in my agent's MCP config as an `mcpServers` entry `{ "command": "npx", "args": ["-y", "wigolo"] }`. Note the per-client differences: **VS Code** uses the `servers` key with `"type": "stdio"`; **Zed** uses `context_servers`; **Codex** uses TOML `[mcp_servers.wigolo]`; **Claude Code** uses the CLI `claude mcp add wigolo --scope user -- npx -y wigolo`. My agent is **<name>** and its MCP config is at **<path, or "wherever it registers MCP servers">**.
+
+That prompt is self-contained, so even an assistant with no web access can act on it. If the assistant *can* browse, point it at this README (the **Manual MCP setup** section above has every client's exact config path) or the project's machine-readable **`llms.txt`** — both carry the full procedure, including the optional LLM-synthesis `env` below.
 
 ### Optional — enable answer synthesis
 

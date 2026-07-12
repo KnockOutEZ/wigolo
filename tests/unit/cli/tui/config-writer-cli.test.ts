@@ -25,12 +25,16 @@ afterEach(() => {
 describe('installViaClaudeCli', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('runs `claude mcp add wigolo -- npx -y wigolo` on success', async () => {
+  it('runs `claude mcp add wigolo --scope user -- npx -y wigolo` on success', async () => {
     vi.mocked(runCommand).mockResolvedValue({ code: 0, stdout: 'added', stderr: '', timedOut: false });
     const r = await installViaClaudeCli();
+    // --scope user is load-bearing: without it `claude mcp add` defaults to the
+    // project/local scope, so wigolo only registers for the cwd where init ran
+    // (missing from the user's global MCP list). Must match the fallback, which
+    // writes to ~/.claude.json top-level (user scope).
     expect(runCommand).toHaveBeenCalledWith(
       'claude',
-      ['mcp', 'add', 'wigolo', '--', 'npx', '-y', 'wigolo'],
+      ['mcp', 'add', 'wigolo', '--scope', 'user', '--', 'npx', '-y', 'wigolo'],
       expect.any(Object),
     );
     expect(r.ok).toBe(true);

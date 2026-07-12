@@ -242,6 +242,24 @@ describe('OpenCode descriptor', () => {
   });
 });
 
+describe('Antigravity descriptor', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('detects when `antigravity` binary is on PATH', () => {
+    vi.mocked(binaryInPath).mockImplementation((n) => (n === 'antigravity' ? '/usr/local/bin/antigravity' : null));
+    expect(getDescriptor('antigravity').detect(ENV)).toBe(true);
+  });
+
+  it('detects when ~/.antigravity dir exists', () => {
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.antigravity'));
+    expect(getDescriptor('antigravity').detect(ENV)).toBe(true);
+  });
+
+  it('configPath returns ~/.antigravity/mcp.json', () => {
+    expect(getDescriptor('antigravity').configPath(ENV)).toBe(join('/home/test', '.antigravity', 'mcp.json'));
+  });
+});
+
 describe('detectAgents()', () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -249,10 +267,10 @@ describe('detectAgents()', () => {
     vi.mocked(binaryInPath).mockReturnValue(null);
     vi.mocked(dirExists).mockReturnValue(false);
     const agents = detectAgents();
-    expect(agents).toHaveLength(8);
+    expect(agents).toHaveLength(9);
     const ids = agents.map((a) => a.id).sort();
     expect(ids).toEqual([
-      'claude-code', 'codex', 'cursor', 'gemini-cli',
+      'antigravity', 'claude-code', 'codex', 'cursor', 'gemini-cli',
       'opencode', 'vscode', 'windsurf', 'zed',
     ]);
   });
