@@ -32,6 +32,7 @@ export default function TrustedBy() {
         <Row />
         <Row />
       </div>
+      <p className={styles.caption}>+ any other agent, through MCP</p>
     </section>
   );
 }

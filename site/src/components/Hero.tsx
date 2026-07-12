@@ -46,7 +46,7 @@ export default function Hero() {
           </p>
           <p className={styles.agents}>
             claude code · cursor · codex · gemini cli · vs code · windsurf ·
-            zed · antigravity
+            zed · antigravity — and any other agent, through MCP
           </p>
         </div>
 
