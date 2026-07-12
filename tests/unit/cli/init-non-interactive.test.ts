@@ -205,6 +205,27 @@ describe('runInit --non-interactive', () => {
     expect(runWarmupMock).not.toHaveBeenCalled();
   });
 
+  it('--non-interactive with NO --agents sets up the engine only (no gatekeeping)', async () => {
+    // Marketing contract: wigolo works for ANY MCP-capable agent, so a user whose
+    // agent has no built-in installer (e.g. Hermes) must still install the engine
+    // headlessly. --agents is optional: warmup runs, agent wiring is skipped, exit 0.
+    const code = await runInit(['--non-interactive', '--skip-verify']);
+    expect(code).toBe(0);
+    expect(runWarmupMock).toHaveBeenCalledTimes(1); // engine setup still happens
+    expect(selectAgentsMock).not.toHaveBeenCalled(); // no interactive prompt
+    expect(applyConfigsMock).not.toHaveBeenCalled(); // no agent wiring
+  });
+
+  it('--non-interactive with no agents but --provider still persists the provider', async () => {
+    // Engine-only install must not drop LLM configuration: a user can set up the
+    // engine + their provider in one headless call, then wire their own agent.
+    await runInit(['--non-interactive', '--skip-verify', '--provider=anthropic']);
+    expect(applyConfigsMock).not.toHaveBeenCalled();
+    expect(applyHeadlessSetMock).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'WIGOLO_LLM_PROVIDER', value: 'anthropic' }),
+    );
+  });
+
   it('returns 2 on unknown flag', async () => {
     const code = await runInit(['--bogus']);
     expect(code).toBe(2);

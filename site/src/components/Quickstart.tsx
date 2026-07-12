@@ -28,9 +28,9 @@ function Cmd({ text }: { text: string }) {
 const STEPS = [
   {
     n: "1",
-    title: "Install & wire your agent",
-    note: "Any of these, comma-separated: claude-code · cursor · codex · gemini-cli · vscode · windsurf · zed · antigravity",
-    cmd: "npx wigolo init --non-interactive --agents=<your-agent>",
+    title: "Install the engine",
+    note: "Add --agents to auto-wire a supported agent (comma-separated): claude-code · cursor · codex · gemini-cli · vscode · windsurf · zed · antigravity. Any other agent? Omit the flag and point it at wigolo's MCP server yourself.",
+    cmd: "npx wigolo init --non-interactive",
     foot: "That's the whole setup — search, fetch, crawl, extract & cache need no API key.",
   },
   {
@@ -43,9 +43,9 @@ const STEPS = [
   {
     n: "3",
     title: "Optional — answer synthesis",
-    note: "research, agent, and answer-format search use an LLM to write the final text. Any provider works — or stay fully local.",
-    cmd: "export WIGOLO_LLM_PROVIDER=ollama",
-    foot: "A free-tier key is plenty — or keyless with a local model server.",
+    note: "research, agent, and answer-format search use an LLM. Set the provider AND its model — plus an API key for a cloud provider, or a running local server for ollama.",
+    cmd: "export WIGOLO_LLM_PROVIDER=ollama WIGOLO_LLM_MODEL=llama3.1",
+    foot: "Provider alone isn't enough — pick the model too. A free-tier key is plenty, or stay keyless with a local model server.",
   },
 ];
 

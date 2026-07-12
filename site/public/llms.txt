@@ -2,8 +2,9 @@
 
 > Free, open-source (AGPL-3.0) MCP server that gives any AI coding agent local-first web intelligence: multi-engine search (18 engines, rank fusion, on-device ML reranking with explainable per-result scores), tiered page fetching (HTTP → TLS-impersonation → headless browser), whole-site crawling, structured extraction, a persistent local cache with keyword + semantic re-query, find-similar, multi-step research briefs, and an autonomous gather agent. Runs entirely on the user's machine: no API keys, no cloud, no metered billing. Currently in public beta (v0.1.x).
 
-Install (non-interactive): `npx wigolo init --non-interactive --agents=claude-code`
-Supported agents: Claude Code, Cursor, Codex, Gemini CLI, VS Code, Windsurf, Zed, Antigravity.
+Install (non-interactive): `npx wigolo init --non-interactive` (engine only). Add `--agents=<csv>` to auto-wire a supported agent, or wire any other MCP client by hand.
+Supported agents (auto-wire): Claude Code, Cursor, Codex, Gemini CLI, VS Code, Windsurf, Zed, Antigravity. Any MCP-capable agent works via manual config.
+Optional answer synthesis: set `WIGOLO_LLM_PROVIDER` AND its model (`WIGOLO_LLM_MODEL`), plus an API key for a cloud provider or a running local server for ollama.
 Requirements: Node.js >= 20, ~1.5 GB disk, macOS/Linux/Windows.
 Keyless core tools: search, fetch, crawl, extract, cache, find_similar (plus diff and watch).
 Optional LLM (for research/agent answer synthesis): any of Anthropic/OpenAI/Gemini/Groq keys, or a fully local model server.

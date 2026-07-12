@@ -6,7 +6,7 @@ import styles from "./Hero.module.css";
 
 function CopyField() {
   const [copied, setCopied] = useState(false);
-  const cmd = "npx wigolo init --non-interactive --agents=<your-agent>";
+  const cmd = "npx wigolo init --non-interactive";
   return (
     <button
       className={styles.copy}

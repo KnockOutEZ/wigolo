@@ -30,13 +30,14 @@ wigolo runs on your machine as an MCP server and gives an AI coding agent one du
 
 Requires **Node ≥ 20** and ~1.5 GB of free disk. macOS, Linux, and Windows.
 
-One command installs the local engine (search, browser, on-device models), wires it into your agent, and sets up the MCP connection:
+One command installs the local engine (search, browser, on-device models) and sets up the MCP connection:
 
 ```bash
-npx wigolo init --non-interactive --agents=<your-agent>
+npx wigolo init --non-interactive
 ```
 
-- **`<your-agent>`** — one or more of `claude-code` · `cursor` · `codex` · `gemini-cli` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated).
+- Add **`--agents=<your-agent>`** to auto-wire a supported agent — one or more of `claude-code` · `cursor` · `codex` · `gemini-cli` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated).
+- Using any other MCP-capable agent? Omit the flag — the engine still installs, and you point your agent at wigolo's MCP server (`npx wigolo mcp`) yourself.
 
 That's the whole setup — **search, fetch, crawl, extract, cache, and find-similar work with no API key.** Check it's healthy:
 
