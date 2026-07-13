@@ -139,7 +139,7 @@ The `-i` flag keeps stdin open for the MCP protocol, and the volume persists the
 claude mcp add wigolo --scope user -- docker run -i --rm -v wigolo-data:/data ghcr.io/knockoutez/wigolo
 ```
 
-Any MCP client works the same way — set `command` to `docker` and `args` to the run flags above. The image is also published to Docker Hub as `knockoutez/wigolo`.
+Any MCP client works the same way: set `command` to `docker` and `args` to the run flags above. The image is also on Docker Hub as `towhid69420/wigolo`.
 
 ## The tools
 
