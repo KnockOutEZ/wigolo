@@ -18,7 +18,19 @@
     "entry_point": "server/index.cjs",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/server/index.cjs"]
+      "args": ["${__dirname}/server/index.cjs"],
+      "env": {
+        "WIGOLO_SEARCH": "${user_config.search_backend}"
+      }
+    }
+  },
+  "user_config": {
+    "search_backend": {
+      "type": "string",
+      "title": "Search backend",
+      "description": "Search backend: core (direct engines + local reranking, default), hybrid (adds an automatic fallback aggregator), or searxng (legacy aggregator only).",
+      "default": "core",
+      "required": false
     }
   },
   "keywords": [
