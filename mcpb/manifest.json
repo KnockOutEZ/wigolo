@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "wigolo",
   "display_name": "wigolo",
-  "version": "0.1.43-beta.1",
+  "version": "0.1.43-beta.2",
   "description": "Local-first web intelligence over MCP: search, fetch, crawl, extract, cache, find-similar, and research. No API keys; everything stays on your machine.",
   "author": {
     "name": "Towhid Khan"
