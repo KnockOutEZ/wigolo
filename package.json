@@ -1,6 +1,6 @@
 {
   "name": "wigolo",
-  "version": "0.1.43-beta.0",
+  "version": "0.1.43-beta.1",
   "mcpName": "io.github.knockoutez/wigolo",
   "description": "Local-first web intelligence MCP server for AI coding agents",
   "type": "module",
