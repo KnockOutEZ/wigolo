@@ -12,7 +12,7 @@ Local-first web intelligence over MCP — **no keys, no cloud, no metered bill.*
 [![license](https://img.shields.io/badge/license-AGPL--3.0-2563eb)](#license)
 [![status](https://img.shields.io/badge/status-public%20beta-b7791f)](#beta--feedback)
 
-[Quickstart](#quickstart) · [Tools](#the-tools) · [Why wigolo](#why-its-different) · [Benchmark](#benchmark) · [Architecture](#architecture) · [Configuration](#configuration) · [Feedback](#beta--feedback) · [FAQ](#faq) · [Contribute](#contributing)
+[Quickstart](#quickstart) · [Tools](#tools) · [Why wigolo](#why-its-different) · [Benchmark](#benchmark) · [Architecture](#architecture) · [Configuration](#configuration) · [Feedback](#beta--feedback) · [FAQ](#faq) · [Contribute](#contributing)
 
 </div>
 
@@ -141,7 +141,7 @@ claude mcp add wigolo --scope user -- docker run -i --rm -v wigolo-data:/data gh
 
 Any MCP client works the same way: set `command` to `docker` and `args` to the run flags above. The image is also on Docker Hub as `towhid69420/wigolo`.
 
-## The tools
+## Tools
 
 | Tool | What it does |
 |------|--------------|
