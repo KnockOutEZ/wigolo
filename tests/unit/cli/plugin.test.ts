@@ -34,6 +34,9 @@ describe('runPluginAdd', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     process.env.WIGOLO_PLUGINS_DIR = '/tmp/test-plugins';
+    // Bypass the interactive confirm prompt introduced in #171 so the
+    // existing happy-path / error-path assertions stay in scope.
+    process.env.WIGOLO_PLUGIN_AUTO_YES = '1';
     resetConfig();
     vi.clearAllMocks();
   });
@@ -42,12 +45,12 @@ describe('runPluginAdd', () => {
     resetConfig();
   });
 
-  it('clones a git repo into the plugins directory', () => {
+  it('clones a git repo into the plugins directory', async () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(mkdirSync).mockReturnValue(undefined);
     vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
 
-    runPluginAdd('https://github.com/user/wigolo-plugin-example.git');
+    await runPluginAdd('https://github.com/user/wigolo-plugin-example.git');
 
     expect(mkdirSync).toHaveBeenCalledWith('/tmp/test-plugins', { recursive: true });
     expect(execFileSync).toHaveBeenCalledWith(
@@ -57,12 +60,12 @@ describe('runPluginAdd', () => {
     );
   });
 
-  it('extracts repo name from git URL for the clone directory', () => {
+  it('extracts repo name from git URL for the clone directory', async () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(mkdirSync).mockReturnValue(undefined);
     vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
 
-    runPluginAdd('https://github.com/user/my-plugin.git');
+    await runPluginAdd('https://github.com/user/my-plugin.git');
 
     expect(execFileSync).toHaveBeenCalledWith(
       'git',
@@ -71,12 +74,12 @@ describe('runPluginAdd', () => {
     );
   });
 
-  it('extracts repo name from URL without .git suffix', () => {
+  it('extracts repo name from URL without .git suffix', async () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(mkdirSync).mockReturnValue(undefined);
     vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
 
-    runPluginAdd('https://github.com/user/no-git-suffix');
+    await runPluginAdd('https://github.com/user/no-git-suffix');
 
     expect(execFileSync).toHaveBeenCalledWith(
       'git',
@@ -85,44 +88,74 @@ describe('runPluginAdd', () => {
     );
   });
 
-  it('throws if plugin directory already exists', () => {
+  it('throws if plugin directory already exists', async () => {
     vi.mocked(existsSync).mockReturnValue(true);
 
-    expect(() => runPluginAdd('https://github.com/user/my-plugin.git')).toThrow(
+    await expect(runPluginAdd('https://github.com/user/my-plugin.git')).rejects.toThrow(
       /already exists/i,
     );
   });
 
-  it('throws on git clone failure', () => {
+  it('throws on git clone failure', async () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(mkdirSync).mockReturnValue(undefined);
     vi.mocked(execFileSync).mockImplementation(() => {
       throw new Error('fatal: repository not found');
     });
 
-    expect(() => runPluginAdd('https://github.com/user/nonexistent.git')).toThrow(
+    await expect(runPluginAdd('https://github.com/user/nonexistent.git')).rejects.toThrow(
       /clone failed/i,
     );
   });
 
-  it('throws on empty git URL', () => {
-    expect(() => runPluginAdd('')).toThrow(/url/i);
+  it('throws on empty git URL', async () => {
+    await expect(runPluginAdd('')).rejects.toThrow(/url/i);
   });
 
-  it('throws on malformed git URL without path segments', () => {
-    expect(() => runPluginAdd('not-a-url')).toThrow();
+  it('throws on malformed git URL without path segments', async () => {
+    await expect(runPluginAdd('not-a-url')).rejects.toThrow();
   });
 
-  it('handles SSH-style git URLs (git@github.com:user/repo.git)', () => {
+  it('handles SSH-style git URLs (git@github.com:user/repo.git)', async () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(mkdirSync).mockReturnValue(undefined);
     vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
 
-    runPluginAdd('git@github.com:user/ssh-plugin.git');
+    await runPluginAdd('git@github.com:user/ssh-plugin.git');
 
     expect(execFileSync).toHaveBeenCalledWith(
       'git',
       expect.arrayContaining(['ssh-plugin']),
+      expect.anything(),
+    );
+  });
+
+  it('refuses to install when stdin is not a TTY and no --yes flag is set', async () => {
+    delete process.env.WIGOLO_PLUGIN_AUTO_YES;
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    vi.mocked(existsSync).mockReturnValue(false);
+    try {
+      await expect(
+        runPluginAdd('https://github.com/user/evil-plugin.git'),
+      ).rejects.toThrow(/non-interactively/i);
+      expect(execFileSync).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+      process.env.WIGOLO_PLUGIN_AUTO_YES = '1';
+    }
+  });
+
+  it('skips the confirm prompt when --yes is passed', async () => {
+    delete process.env.WIGOLO_PLUGIN_AUTO_YES;
+    vi.mocked(existsSync).mockReturnValue(false);
+    vi.mocked(mkdirSync).mockReturnValue(undefined);
+    vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
+
+    await runPluginAdd('https://github.com/user/trusted-plugin.git', { assumeYes: true });
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['clone']),
       expect.anything(),
     );
   });
@@ -286,6 +319,8 @@ describe('runPluginCommand -- dispatcher', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     process.env.WIGOLO_PLUGINS_DIR = '/tmp/test-plugins';
+    // Bypass the interactive confirm prompt introduced in #171.
+    process.env.WIGOLO_PLUGIN_AUTO_YES = '1';
     resetConfig();
     vi.clearAllMocks();
     stderrOutput = '';
@@ -300,12 +335,12 @@ describe('runPluginCommand -- dispatcher', () => {
     vi.restoreAllMocks();
   });
 
-  it('routes "add" subcommand', () => {
+  it('routes "add" subcommand', async () => {
     vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(mkdirSync).mockReturnValue(undefined);
     vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
 
-    runPluginCommand(['add', 'https://github.com/user/repo.git']);
+    await runPluginCommand(['add', 'https://github.com/user/repo.git']);
 
     expect(execFileSync).toHaveBeenCalledWith(
       'git',
@@ -314,31 +349,31 @@ describe('runPluginCommand -- dispatcher', () => {
     );
   });
 
-  it('routes "list" subcommand', () => {
+  it('routes "list" subcommand', async () => {
     vi.mocked(existsSync).mockReturnValue(false);
 
-    runPluginCommand(['list']);
+    await runPluginCommand(['list']);
 
     expect(stderrOutput).toContain('no plugins');
   });
 
-  it('routes "remove" subcommand', () => {
+  it('routes "remove" subcommand', async () => {
     vi.mocked(existsSync).mockReturnValue(true);
     vi.mocked(rmSync).mockReturnValue(undefined);
 
-    runPluginCommand(['remove', 'my-plugin']);
+    await runPluginCommand(['remove', 'my-plugin']);
 
     expect(rmSync).toHaveBeenCalled();
   });
 
-  it('shows usage for unknown subcommand', () => {
-    runPluginCommand(['unknown']);
+  it('shows usage for unknown subcommand', async () => {
+    await runPluginCommand(['unknown']);
 
     expect(stderrOutput).toContain('Usage');
   });
 
-  it('shows usage when no args provided', () => {
-    runPluginCommand([]);
+  it('shows usage when no args provided', async () => {
+    await runPluginCommand([]);
 
     expect(stderrOutput).toContain('Usage');
   });

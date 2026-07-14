@@ -14,6 +14,8 @@ import {
 } from '../search/evidence.js';
 import { countTokens } from '../search/tokens.js';
 import { createLogger } from '../logger.js';
+import { guardFetchUrl } from '../watch/ssrf.js';
+import { getConfig } from '../config.js';
 
 const log = createLogger('crawl');
 
@@ -35,6 +37,22 @@ export async function handleCrawl(
 ): Promise<CrawlOutput | (MapOutput & { crawled: number })> {
   const _start = Date.now();
   try {
+    // SSRF guard on the seed URL — same policy as `fetch`. The downstream
+    // per-page fetches inherit protection because they route through
+    // handleFetch which already guards.
+    const seedGuard = guardFetchUrl(input.url, 'url', {
+      allowPrivate: getConfig().fetchAllowPrivate,
+    });
+    if (!seedGuard.ok) {
+      return {
+        pages: [],
+        total_found: 0,
+        crawled: 0,
+        response_time_ms: Date.now() - _start,
+        error: seedGuard.reason,
+      };
+    }
+
     // Map strategy: lightweight URL-only discovery, skip full crawl pipeline
     if (input.strategy === 'map') {
       return handleMapStrategy(input, router);

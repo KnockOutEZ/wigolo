@@ -9,12 +9,15 @@ vi.mock('node:os', async (importOriginal) => {
   return { ...actual, homedir: vi.fn(() => tmpHome) };
 });
 
-// Mock node:child_process execSync
+// Mock node:child_process execSync + execFileSync. installMcp and uninstall
+// now use execFileSync (argv array) instead of execSync (shell string) for
+// safer argument handling.
 vi.mock('node:child_process', () => ({
   execSync: vi.fn(),
+  execFileSync: vi.fn(),
 }));
 
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 
 let tmpHome: string;
@@ -46,27 +49,36 @@ describe('claudeCodeHandler.detect', () => {
 
 describe('claudeCodeHandler.installMcp', () => {
   it('calls claude mcp add with --scope user so the entry lives once in ~/.claude.json', async () => {
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
     await claudeCodeHandler.installMcp({ command: 'wigolo', args: [] });
-    const cmd = vi.mocked(execSync).mock.calls[0][0] as string;
-    expect(cmd).toContain('claude mcp add wigolo');
-    expect(cmd).toContain('--scope user');
-    // The -- separator before the executable must still be present.
-    expect(cmd).toMatch(/--scope user .*-- wigolo/);
+    const call = vi.mocked(execFileSync).mock.calls[0];
+    const cmd = call[0] as string;
+    const args = call[1] as string[];
+    expect(cmd).toBe('claude');
+    expect(args).toContain('mcp');
+    expect(args).toContain('add');
+    expect(args).toContain('wigolo');
+    expect(args).toContain('--scope');
+    expect(args).toContain('user');
+    // The -- separator before the executable must still be present, and
+    // the executable + its args must follow.
+    const sepIdx = args.indexOf('--');
+    expect(sepIdx).toBeGreaterThan(-1);
+    expect(args.slice(sepIdx + 1)).toEqual(['wigolo']);
   });
 
   it('tolerates "already exists" errors', async () => {
-    vi.mocked(execSync).mockImplementation(() => { throw new Error('already exists'); });
+    vi.mocked(execFileSync).mockImplementation(() => { throw new Error('already exists'); });
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
     await expect(claudeCodeHandler.installMcp({ command: 'wigolo', args: [] })).resolves.not.toThrow();
   });
 
   it('falls back to writing ~/.claude.json directly when the claude CLI is absent (ENOENT)', async () => {
-    // execSync('which claude') throws → detect returns false; execSync('claude mcp add ...')
-    // would also throw ENOENT. We expect the handler to NOT propagate the error and
-    // to instead drop the MCP entry into ~/.claude.json so the user is still wired up.
-    vi.mocked(execSync).mockImplementation((cmd: string) => {
+    // execFileSync('claude', [...]) throws ENOENT. We expect the handler to NOT
+    // propagate the error and to instead drop the MCP entry into ~/.claude.json
+    // so the user is still wired up.
+    vi.mocked(execFileSync).mockImplementation(() => {
       const err = Object.assign(new Error(`spawn claude ENOENT`), { code: 'ENOENT' });
       throw err;
     });
@@ -82,8 +94,8 @@ describe('claudeCodeHandler.installMcp', () => {
     expect(parsed.mcpServers.wigolo.args).toEqual(['-y', 'wigolo']);
   });
 
-  it('falls back when execSync reports "command not found" (shell stderr) instead of ENOENT', async () => {
-    vi.mocked(execSync).mockImplementation(() => {
+  it('falls back when execFileSync reports "command not found" (shell stderr) instead of ENOENT', async () => {
+    vi.mocked(execFileSync).mockImplementation(() => {
       throw new Error('/bin/sh: claude: command not found');
     });
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
@@ -210,14 +222,18 @@ describe('claudeCodeHandler.uninstall', () => {
   });
 
   it('calls claude mcp remove with --scope user matching the install path', async () => {
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
     await claudeCodeHandler.uninstall();
-    const mcpRemoveCall = vi.mocked(execSync).mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).includes('mcp remove'),
+    const mcpRemoveCall = vi.mocked(execFileSync).mock.calls.find(
+      (c) => c[0] === 'claude' && Array.isArray(c[1]) && (c[1] as string[]).includes('remove'),
     );
     expect(mcpRemoveCall).toBeDefined();
-    expect(mcpRemoveCall![0] as string).toContain('--scope user');
+    const args = mcpRemoveCall![1] as string[];
+    expect(args).toContain('remove');
+    expect(args).toContain('wigolo');
+    expect(args).toContain('--scope');
+    expect(args).toContain('user');
   });
 
   it('removes skill directories', async () => {

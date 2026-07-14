@@ -1,0 +1,17 @@
+node_modules
+dist
+.git
+.github
+docs
+benchmarks
+tests
+apps
+.superpowers
+*.log
+npm-debug.log*
+.DS_Store
+coverage
+.vscode
+.idea
+CLAUDE.md
+Makefile

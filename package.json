@@ -1,6 +1,7 @@
 {
   "name": "wigolo",
-  "version": "0.1.43-beta.0",
+  "version": "0.1.43-beta.2",
+  "mcpName": "io.github.KnockOutEZ/wigolo",
   "description": "Local-first web intelligence MCP server for AI coding agents",
   "type": "module",
   "main": "dist/index.js",
@@ -135,5 +136,8 @@
   "optionalDependencies": {
     "@napi-rs/keyring": "^1.3.0",
     "wreq-js": "^2.3.1"
+  },
+  "overrides": {
+    "hono": "^4.12.25"
   }
 }

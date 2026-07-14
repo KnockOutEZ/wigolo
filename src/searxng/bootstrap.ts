@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { isProcessAlive } from './process.js';
@@ -156,7 +157,13 @@ export function setBootstrapState(dataDir: string, state: BootstrapState): void 
   writeFileSync(join(dataDir, 'state.json'), JSON.stringify(state));
 }
 
-export function generateSettings(port: number): string {
+export function generateSettings(port: number, secretKey?: string): string {
+  // Use a per-install random secret unless the caller pins one. The
+  // hardcoded "wigolo-local-only" was discoverable via a settings.yml read;
+  // with bind_address locked to 127.0.0.1 the risk was low, but a future
+  // bind to a non-loopback interface or a misconfigured port-forward would
+  // make a known secret an immediate auth-bypass vector.
+  const secret = secretKey ?? randomBytes(32).toString('hex');
   return `use_default_settings: true
 
 general:
@@ -166,7 +173,7 @@ general:
 server:
   port: ${port}
   bind_address: "127.0.0.1"
-  secret_key: "wigolo-local-only"
+  secret_key: "${secret}"
 
 search:
   safe_search: 0

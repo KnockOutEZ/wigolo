@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { mergeBlock, removeBlock, readAsset, readSkillDir, mergeMcpJson } from './utils.js';
 
 function claudeDir(): string {
@@ -42,7 +42,7 @@ function fallbackToClaudeJson(cmd: { command: string; args: string[] }): string 
 async function installMcp(cmd: { command: string; args: string[] }): Promise<void> {
   const args = buildMcpArgs(cmd);
   try {
-    execSync(`claude ${args.join(' ')}`, {
+    execFileSync('claude', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 15000,
     });
@@ -138,7 +138,10 @@ async function uninstall(): Promise<{ removed: string[] }> {
 
   // Remove MCP — match the scope used at install time (--scope user).
   try {
-    execSync('claude mcp remove wigolo --scope user', { stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 });
+    execFileSync('claude', ['mcp', 'remove', 'wigolo', '--scope', 'user'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 10000,
+    });
     removed.push('MCP server (claude mcp remove)');
   } catch {
     // already gone or claude not found

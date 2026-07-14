@@ -22,6 +22,8 @@ import { extractWithLocalLlm } from '../extraction/v1/local-llm.js';
 import { resolveLocalModelTier } from '../integrations/cloud/llm/local-tier.js';
 import { extractBrandAsync } from '../extraction/brand.js';
 import { applyEvidenceFilter, getSourceText } from '../extraction/schema-truth.js';
+import { guardFetchUrl } from '../watch/ssrf.js';
+import { getConfig } from '../config.js';
 
 const log = createLogger('extract');
 
@@ -195,6 +197,19 @@ async function resolveHtml(
   }
 
   if (input.url) {
+    // SSRF guard — same policy as `fetch`: loopback ok, private LANs blocked
+    // by default. Set WIGOLO_FETCH_ALLOW_PRIVATE=1 to opt into permissive.
+    const ssrf = guardFetchUrl(input.url, 'url', {
+      allowPrivate: getConfig().fetchAllowPrivate,
+    });
+    if (!ssrf.ok) {
+      throw Object.assign(new Error(ssrf.reason), {
+        code: 'invalid_url',
+        reason: ssrf.reason,
+        hint: ssrf.hint,
+      });
+    }
+
     const cached = getCachedContent(input.url);
     if (cached && !isExpired(cached)) {
       log.info('Using cached HTML', { url: input.url });

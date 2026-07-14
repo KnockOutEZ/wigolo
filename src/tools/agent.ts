@@ -16,6 +16,8 @@ import type {
 } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
+import { guardFetchUrl } from '../watch/ssrf.js';
+import { getConfig } from '../config.js';
 
 const log = createLogger('agent');
 
@@ -59,6 +61,15 @@ export async function handleAgent(
           new URL(url);
         } catch {
           return invalidInput(`Invalid url in urls array: "${url}"`);
+        }
+        // SSRF guard — same policy as `fetch`. The agent pipeline will
+        // fetch these URLs through the router, so the guard must run before
+        // they enter the queue.
+        const ssrf = guardFetchUrl(url, 'url', {
+          allowPrivate: getConfig().fetchAllowPrivate,
+        });
+        if (!ssrf.ok) {
+          return invalidInput(`url blocked by SSRF guard: ${url} (${ssrf.reason})`);
         }
       }
     }

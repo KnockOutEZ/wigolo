@@ -11,6 +11,7 @@ import { truncateSmartly, applyOutputBudget } from '../search/truncate.js';
 import { buildEvidenceFromMarkdown } from '../search/evidence.js';
 import { resolveMode } from '../util/mode.js';
 import { createLogger } from '../logger.js';
+import { guardFetchUrl } from '../watch/ssrf.js';
 
 const log = createLogger('fetch');
 
@@ -169,6 +170,24 @@ export async function handleFetch(
       error_reason: urlValidation.reason,
       stage: 'fetch',
       hint: urlValidation.hint,
+    };
+  }
+
+  // SSRF guard — same gate the `watch` tool uses, but with loopback exempted
+  // for fetch/crawl. Blocks private LAN ranges, link-local (incl. cloud
+  // metadata endpoints like 169.254.169.254), and metadata hostnames.
+  // Set WIGOLO_FETCH_ALLOW_PRIVATE=1 to opt into the old permissive
+  // behaviour for home LAN devices.
+  const ssrf = guardFetchUrl(input.url!, 'url', {
+    allowPrivate: getConfig().fetchAllowPrivate,
+  });
+  if (!ssrf.ok) {
+    return {
+      ok: false,
+      error: 'invalid_url',
+      error_reason: ssrf.reason,
+      stage: 'fetch',
+      hint: ssrf.hint,
     };
   }
 

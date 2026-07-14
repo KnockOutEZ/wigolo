@@ -88,9 +88,17 @@ export class DockerSearxng {
     stopContainer(CONTAINER_NAME);
 
     try {
-      execSync(`${cli} run -d --name ${CONTAINER_NAME} -p ${this.port}:8080 ${IMAGE}`, {
-        stdio: 'pipe',
-      });
+      execFileSync(
+        cli,
+        [
+          'run',
+          '-d',
+          '--name', CONTAINER_NAME,
+          '-p', `${this.port}:8080`,
+          IMAGE,
+        ],
+        { stdio: 'pipe' },
+      );
     } catch (err) {
       log.error('failed to start SearXNG container', { cli, error: String(err) });
       this.port = null;

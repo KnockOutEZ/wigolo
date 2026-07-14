@@ -167,3 +167,150 @@ export function guardUrl(raw: string, fieldLabel: string): SsrfResult {
 
   return { ok: true, url: parsed };
 }
+
+/**
+ * Fetch/crawl-friendly URL guard. Same as `guardUrl` but EXEMPTS loopback
+ * (127.0.0.0/8, ::1) and link-local IPv6 (fe80::/10) so local dev servers
+ * (localhost:3000) keep working — the `fetch` tool explicitly documents this.
+ *
+ * Still blocks:
+ *   - non-http(s) schemes (file://, ftp://, gopher://, data:, javascript:, ...)
+ *   - 0.0.0.0/8 (unspecified / commonly routes to local)
+ *   - RFC 1918 private ranges (10/8, 172.16/12, 192.168/16)
+ *   - CGN (100.64/10) — ISP-grade NAT, often used by ISPs to share IPv4
+ *   - link-local IPv4 (169.254/16) — covers AWS/GCP/Azure metadata endpoints
+ *   - IPv6 unique-local (fc00::/7)
+ *   - IPv6 IPv4-mapped / IPv4-compatible forms of any of the above
+ *
+ * When `allowPrivate` is true (e.g. WIGOLO_FETCH_ALLOW_PRIVATE=1), private
+ * LAN ranges are permitted so home users can still fetch NAS / IoT / dev
+ * boxes on 192.168.x.x. Metadata IPs (169.254/16) remain blocked in all
+ * modes because they're never a legitimate target for a generic fetch.
+ */
+export function guardFetchUrl(
+  raw: string,
+  fieldLabel: string,
+  opts: { allowPrivate?: boolean } = {},
+): SsrfResult {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return {
+      ok: false,
+      reason: `${fieldLabel} is required and must be a non-empty string`,
+      hint: 'Pass a fully qualified http(s) URL.',
+    };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return {
+      ok: false,
+      reason: `${fieldLabel} is not a valid URL`,
+      hint: 'Pass a fully qualified http(s) URL (e.g. "https://example.com/path").',
+    };
+  }
+
+  if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
+    return {
+      ok: false,
+      reason: `${fieldLabel} uses a forbidden protocol (${parsed.protocol})`,
+      hint: 'Only http: and https: are allowed.',
+    };
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (PRIVATE_HOSTNAMES.has(host)) {
+    // Loopback aliases (localhost, localhost.localdomain) are exempted
+    // for fetch/crawl — the docs promise local dev servers work. Metadata
+    // hostnames (metadata.google.internal etc.) stay blocked unconditionally.
+    if (
+      host === 'localhost' ||
+      host === 'localhost.localdomain'
+    ) {
+      return { ok: true, url: parsed };
+    }
+    return {
+      ok: false,
+      reason: `${fieldLabel} hostname is a private / metadata alias (${host})`,
+      hint: 'Use a public hostname; cloud-metadata aliases are blocked.',
+    };
+  }
+
+  // 0.0.0.0 — unspecified address. Always blocked (binds to all local
+  // interfaces and commonly routes to localhost when used client-side).
+  if (host === '0.0.0.0') {
+    return {
+      ok: false,
+      reason: `${fieldLabel} resolves to an unspecified IPv4 (${host})`,
+      hint: 'Specify a real host; 0.0.0.0 is the unspecified address.',
+    };
+  }
+
+  // Loopback 127.0.0.0/8 — explicitly allowed for fetch/crawl (local dev).
+  // We can't reuse isLoopbackIpv4 here because it also matches private +
+  // link-local ranges; check just the 127/8 octet ourselves.
+  if (/^127\./.test(host)) {
+    return { ok: true, url: parsed };
+  }
+
+  // Link-local IPv4 (169.254/16) — ALWAYS blocked. Covers AWS / GCP / Azure
+  // instance metadata endpoints (169.254.169.254). Never a legitimate
+  // target for a generic fetch — even when allowPrivate=true.
+  if (/^169\.254\./.test(host)) {
+    return {
+      ok: false,
+      reason: `${fieldLabel} resolves to a link-local IPv4 (${host})`,
+      hint: 'Link-local addresses (169.254/16, incl. cloud metadata endpoints) are always blocked.',
+    };
+  }
+
+  if (!opts.allowPrivate) {
+    // RFC 1918 + CGN.
+    const m = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+    if (m) {
+      const o1 = Number(m[1]);
+      const o2 = Number(m[2]);
+      if (o1 === 10) {
+        return {
+          ok: false,
+          reason: `${fieldLabel} resolves to a private IPv4 (${host}, 10/8)`,
+          hint: 'Private LAN addresses are blocked by default. Set WIGOLO_FETCH_ALLOW_PRIVATE=1 if you need to fetch a home LAN device.',
+        };
+      }
+      if (o1 === 192 && o2 === 168) {
+        return {
+          ok: false,
+          reason: `${fieldLabel} resolves to a private IPv4 (${host}, 192.168/16)`,
+          hint: 'Private LAN addresses are blocked by default. Set WIGOLO_FETCH_ALLOW_PRIVATE=1 if you need to fetch a home LAN device.',
+        };
+      }
+      if (o1 === 172 && o2 >= 16 && o2 <= 31) {
+        return {
+          ok: false,
+          reason: `${fieldLabel} resolves to a private IPv4 (${host}, 172.16/12)`,
+          hint: 'Private LAN addresses are blocked by default. Set WIGOLO_FETCH_ALLOW_PRIVATE=1 if you need to fetch a home LAN device.',
+        };
+      }
+      if (o1 === 100 && o2 >= 64 && o2 <= 127) {
+        return {
+          ok: false,
+          reason: `${fieldLabel} resolves to a CGN IPv4 (${host}, 100.64/10)`,
+          hint: 'Carrier-grade NAT addresses are blocked by default. Set WIGOLO_FETCH_ALLOW_PRIVATE=1 if you need to fetch a CGN address.',
+        };
+      }
+    }
+  }
+
+  if (host.includes(':') || /^\[/.test(parsed.host)) {
+    if (isPrivateIpv6(host)) {
+      return {
+        ok: false,
+        reason: `${fieldLabel} resolves to a loopback / private IPv6 (${host})`,
+        hint: 'Public IPv6 addresses only — ::1, fe80::/10, fc00::/7 are blocked.',
+      };
+    }
+  }
+
+  return { ok: true, url: parsed };
+}

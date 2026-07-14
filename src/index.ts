@@ -78,7 +78,7 @@ switch (command) {
     break;
 
   case 'plugin':
-    runPluginCommand(args);
+    await runPluginCommand(args);
     await exitCli(0);
     break;
 

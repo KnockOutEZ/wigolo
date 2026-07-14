@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { guardUrl } from '../../../src/watch/ssrf.js';
+import { guardUrl, guardFetchUrl } from '../../../src/watch/ssrf.js';
 
 /**
  * WHY this matters: the `watch` tool fetches `url` on an interval AND, when
@@ -222,6 +222,112 @@ describe('guardUrl SSRF', () => {
       const r = guardUrl('http://localhost', 'notification');
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.reason).toContain('notification');
+    });
+  });
+});
+
+/**
+ * guardFetchUrl is the loopback-permissive variant used by `fetch`/`crawl`
+ * /`extract`/`agent`. Same threat model as guardUrl but loopback (127/8, ::1)
+ * is exempt because the docs explicitly allow local dev servers.
+ *
+ * Link-local (169.254/16) is ALWAYS blocked — covers cloud metadata endpoints
+ * (AWS / GCP / Azure use 169.254.169.254). There's no legitimate reason for
+ * a generic fetch tool to hit a metadata endpoint.
+ */
+describe('guardFetchUrl SSRF', () => {
+  describe('loopback is allowed by default', () => {
+    it('accepts http://localhost:3000', () => {
+      const r = guardFetchUrl('http://localhost:3000/', 'url');
+      expect(r.ok).toBe(true);
+    });
+
+    it('accepts http://127.0.0.1:8080', () => {
+      const r = guardFetchUrl('http://127.0.0.1:8080/health', 'url');
+      expect(r.ok).toBe(true);
+    });
+
+    it('accepts http://127.5.4.3 (loopback, weird octet)', () => {
+      const r = guardFetchUrl('http://127.5.4.3/', 'url');
+      expect(r.ok).toBe(true);
+    });
+
+    it('blocks 0.0.0.0 (unspecified address)', () => {
+      const r = guardFetchUrl('http://0.0.0.0:8080/', 'url');
+      expect(r.ok).toBe(false);
+    });
+  });
+
+  describe('link-local is ALWAYS blocked (even with allowPrivate)', () => {
+    it('rejects 169.254.169.254 (cloud metadata) by default', () => {
+      const r = guardFetchUrl('http://169.254.169.254/latest/meta-data/', 'url');
+      expect(r.ok).toBe(false);
+    });
+
+    it('rejects 169.254.169.254 even when allowPrivate=true', () => {
+      const r = guardFetchUrl('http://169.254.169.254/latest/meta-data/', 'url', {
+        allowPrivate: true,
+      });
+      expect(r.ok).toBe(false);
+    });
+
+    it('rejects metadata.google.internal by name', () => {
+      const r = guardFetchUrl('http://metadata.google.internal/computeMetadata/v1/', 'url');
+      expect(r.ok).toBe(false);
+    });
+  });
+
+  describe('private LAN ranges are blocked by default', () => {
+    it('rejects 10.x.x.x', () => {
+      expect(guardFetchUrl('http://10.0.0.1/admin', 'url').ok).toBe(false);
+    });
+
+    it('rejects 192.168.x.x', () => {
+      expect(guardFetchUrl('http://192.168.1.1/admin', 'url').ok).toBe(false);
+    });
+
+    it('rejects 172.16-31.x.x', () => {
+      expect(guardFetchUrl('http://172.20.5.10/', 'url').ok).toBe(false);
+    });
+
+    it('rejects CGN (100.64-127.x.x)', () => {
+      expect(guardFetchUrl('http://100.70.1.1/', 'url').ok).toBe(false);
+    });
+  });
+
+  describe('allowPrivate=true lifts LAN blocks', () => {
+    it('accepts 192.168.x.x when allowPrivate=true', () => {
+      const r = guardFetchUrl('http://192.168.1.1/admin', 'url', { allowPrivate: true });
+      expect(r.ok).toBe(true);
+    });
+
+    it('accepts 10.x.x.x when allowPrivate=true', () => {
+      const r = guardFetchUrl('http://10.0.0.1/', 'url', { allowPrivate: true });
+      expect(r.ok).toBe(true);
+    });
+  });
+
+  describe('public addresses always pass', () => {
+    it('accepts a public IPv4', () => {
+      expect(guardFetchUrl('https://1.1.1.1/', 'url').ok).toBe(true);
+    });
+
+    it('accepts a public hostname', () => {
+      expect(guardFetchUrl('https://news.ycombinator.com/', 'url').ok).toBe(true);
+    });
+  });
+
+  describe('forbidden schemes always rejected', () => {
+    it('rejects file://', () => {
+      expect(guardFetchUrl('file:///etc/passwd', 'url').ok).toBe(false);
+    });
+
+    it('rejects ftp://', () => {
+      expect(guardFetchUrl('ftp://example.com/', 'url').ok).toBe(false);
+    });
+
+    it('rejects gopher://', () => {
+      expect(guardFetchUrl('gopher://example.com/', 'url').ok).toBe(false);
     });
   });
 });

@@ -12,7 +12,7 @@ Local-first web intelligence over MCP — **no keys, no cloud, no metered bill.*
 [![license](https://img.shields.io/badge/license-AGPL--3.0-2563eb)](#license)
 [![status](https://img.shields.io/badge/status-public%20beta-b7791f)](#beta--feedback)
 
-[Quickstart](#quickstart) · [Tools](#the-tools) · [Why wigolo](#why-its-different) · [Benchmark](#benchmark) · [Architecture](#architecture) · [Configuration](#configuration) · [Feedback](#beta--feedback) · [FAQ](#faq) · [Contribute](#contributing)
+[Quickstart](#quickstart) · [Tools](#tools) · [Why wigolo](#why-its-different) · [Benchmark](#benchmark) · [Architecture](#architecture) · [Configuration](#configuration) · [Feedback](#beta--feedback) · [FAQ](#faq) · [Available on](#available-on) · [Contribute](#contributing)
 
 </div>
 
@@ -125,7 +125,23 @@ export GEMINI_API_KEY=<your-key>      # free from https://aistudio.google.com/ap
 
 Any provider works — use `anthropic` + `ANTHROPIC_API_KEY`, `openai` + `OPENAI_API_KEY`, or `groq` + `GROQ_API_KEY`. To stay fully local and keyless, set `WIGOLO_LLM_PROVIDER=ollama` (or a local server URL) instead. Gemini is suggested because its free tier is more than enough for wigolo.
 
-## The tools
+### Run with Docker
+
+A prebuilt image runs the MCP server without installing Node yourself. It bundles the browser engine and on-device models, and the default command is the stdio MCP server.
+
+```bash
+docker run -i --rm -v wigolo-data:/data ghcr.io/knockoutez/wigolo
+```
+
+The `-i` flag keeps stdin open for the MCP protocol, and the volume persists the local cache and models across runs (first run downloads the models). Wire it into Claude Code:
+
+```bash
+claude mcp add wigolo --scope user -- docker run -i --rm -v wigolo-data:/data ghcr.io/knockoutez/wigolo
+```
+
+Any MCP client works the same way: set `command` to `docker` and `args` to the run flags above. The image is also on Docker Hub as `towhid69420/wigolo`.
+
+## Tools
 
 | Tool | What it does |
 |------|--------------|
@@ -514,6 +530,15 @@ Yes, freely, company-wide. The license only bites if you *modify wigolo and run 
 That's the on-device brain: a full browser engine plus the ranking and embedding models the cloud services run on their side and bill you for. Disk is cheap; meters aren't.
 
 </details>
+
+## Available on
+
+Grab wigolo wherever you manage packages or MCP servers:
+
+- **npm** — [`wigolo`](https://www.npmjs.com/package/wigolo)
+- **Docker** — [`ghcr.io/knockoutez/wigolo`](https://github.com/KnockOutEZ/wigolo/pkgs/container/wigolo) · [`towhid69420/wigolo`](https://hub.docker.com/r/towhid69420/wigolo)
+- **Official MCP Registry** — `io.github.KnockOutEZ/wigolo`
+- **Directories** — [Glama](https://glama.ai/mcp/servers/KnockOutEZ/wigolo) · [Smithery](https://smithery.ai/server/ktowhid20/wigolo) · [mcp.so](https://mcp.so/server/wigolo/KnockOutEZ) · [LobeHub](https://lobehub.com/mcp/knockoutez-wigolo)
 
 ## Contributing
 

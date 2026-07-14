@@ -175,7 +175,11 @@ describe('SearXNG Docker', () => {
       const url = await instance.start();
 
       expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-      expect(execSync).toHaveBeenCalledWith(expect.stringMatching(/^podman run -d/), expect.anything());
+      expect(execFileSync).toHaveBeenCalledWith(
+        'podman',
+        expect.arrayContaining(['run', '-d', '--name', 'wigolo-searxng']),
+        expect.anything(),
+      );
     });
   });
 });
