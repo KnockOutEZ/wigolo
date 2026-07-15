@@ -148,7 +148,8 @@ Usage:
   wigolo <tool> <args>    Run a tool once (headless). See Tools below.
 
 Subcommands:
-  init                    Set up wigolo: install components, wire into agents
+  init [--wizard] [--json] Set up wigolo headlessly; wires agents. Components
+                          download on first use (--warmup pre-caches)
   doctor [--fix] [--json] Diagnose installation; --fix repairs known failures
   config                  Manage settings (TUI or --set K=V headless)
   setup mcp               Wire wigolo into MCP clients
