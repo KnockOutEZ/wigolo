@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>is/source/index.ts at main · sindresorhus/is</title>
+  <meta charset="utf-8">
+</head>
+<body>
+  <div id="js-repo-pjax-container">
+    <div class="react-app">
+      <div class="Box-sc-abc" data-hpc="true">
+        <!-- Modern GitHub blob view renders code cells client-side from the embedded payload below. -->
+        <div id="read-only-cursor-text-area"></div>
+      </div>
+    </div>
+  </div>
+  <script type="application/json" data-target="react-app.embeddedData">{"payload":{"codeViewBlobLayoutRoute":{"blob":{"displayName":"index.ts","language":"TypeScript","rawBlobUrl":"https://github.com/sindresorhus/is/raw/refs/heads/main/source/index.ts","truncated":false,"viewable":true}},"codeViewBlobLayoutRoute.StyledBlob":{"rawLines":["import type {","\tArrayLike,","\tClass,","\tEvenInteger,","\tFalsy,","\tFiniteNumber,","\tInteger,","\tNaN as NaNType,","\tNegativeInfinity,","\tNegativeInteger,","\tNegativeNumber,","\tNodeStream,","\tNonEmptyString,","\tNonNegativeInteger,","\tNonNegativeNumber,","\tObservableLike,","\tOddInteger,","\tPredicate,","\tPrimitive,","\tPositiveInfinity,","\tPositiveInteger,","\tPositiveNumber,","\tSafeInteger,","\tTypedArray,","\tUrlString,","\tValidLength,","\tWeakRef,","\tWhitespace,","} from './types.ts';","import {keysOf} from './utilities.ts';","","// From type-fest.","type ExtractFromGlobalConstructors<Name extends string> =","\tName extends string","\t\t? typeof globalThis extends Record<Name, new (...arguments_: any[]) => infer T> ? T : never","\t\t: never;","","type NodeBuffer = ExtractFromGlobalConstructors<'Buffer'>;","","type NumericGuardResult<Input, Branded extends number> =","\t(","\t\tunknown extends Input","\t\t\t? Branded","\t\t\t: Input extends number","\t\t\t\t? Branded & Input","\t\t\t\t: number","\t) & Input;","","const typedArrayTypeNames = [","\t'Int8Array',","\t'Uint8Array',","\t'Uint8ClampedArray',","\t'Int16Array',","\t'Uint16Array',","\t'Int32Array',","\t'Uint32Array',","\t'Float32Array',","\t'Float64Array',","\t'BigInt64Array',","\t'BigUint64Array',","] as const;","","type TypedArrayTypeName = typeof typedArrayTypeNames[number];","","function isTypedArrayName(name: unknown): name is TypedArrayTypeName {","\treturn typedArrayTypeNames.includes(name as TypedArrayTypeName);","}","","const objectTypeNames = [","\t'Function',","\t'Generator',","\t'AsyncGenerator',","\t'GeneratorFunction',","\t'AsyncGeneratorFunction',","\t'AsyncFunction',","\t'Observable',","\t'Array',","\t'Buffer',","\t'Blob',","\t'Object',","\t'RegExp',","\t'Date',","\t'Error',","\t'Map',","\t'Set',","\t'WeakMap',","\t'WeakSet',","\t'WeakRef',","\t'ArrayBuffer',","\t'SharedArrayBuffer',","\t'DataView',","\t'Promise',","\t'URL',","\t'FormData',","\t'URLSearchParams',","\t'HTMLElement',","\t'NaN',","\t...typedArrayTypeNames,","] as const;","","type ObjectTypeName = typeof objectTypeNames[number];","","function isObjectTypeName(name: unknown): name is ObjectTypeName {","\treturn objectTypeNames.includes(name as ObjectTypeName);","}","","const primitiveTypeNames = [","\t'null',","\t'undefined',","\t'string',","\t'number',","\t'bigint',","\t'boolean',","\t'symbol',","] as const;","","type PrimitiveTypeName = typeof primitiveTypeNames[number];","","function isPrimitiveTypeName(name: unknown): name is PrimitiveTypeName {","\treturn primitiveTypeNames.includes(name as PrimitiveTypeName);"]}},"title":"is/source/index.ts at main"}</script>
+</body>
+</html>
