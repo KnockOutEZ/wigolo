@@ -5,6 +5,8 @@ on:
     tags:
       - 'v*.*.*'        # stable, e.g. v1.2.3
       - 'v*.*.*-*'      # pre-release, e.g. v0.1.43-beta.0
+  # Manual runs BUILD ONLY (multi-arch build validation) and never push. The
+  # only path that pushes/tags an image is a version tag on `push` above.
   workflow_dispatch:
 
 permissions:
@@ -16,12 +18,19 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      # Push ONLY on a version tag. A manual workflow_dispatch resolves this to
+      # false, so the build runs multi-arch but no image is pushed or tagged.
+      PUSH_ENABLED: ${{ github.ref_type == 'tag' }}
     steps:
       - uses: actions/checkout@v4
 
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
 
+      # Registry logins run only when an image will actually be pushed.
       - name: Log in to GitHub Container Registry
+        if: ${{ env.PUSH_ENABLED == 'true' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -30,13 +39,14 @@ jobs:
 
       # Docker Hub is optional: only runs when the DOCKERHUB_* secrets are set.
       - name: Log in to Docker Hub
-        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        if: ${{ env.PUSH_ENABLED == 'true' && env.DOCKERHUB_USERNAME != '' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Compute image tags
+      # Default (slim) variant tags: latest, semver, sha.
+      - name: Compute image tags (default)
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -47,14 +57,40 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' }}
             type=sha
 
-      - name: Build and push
+      # Full variant tags: same semantics, `-full` suffix (e.g. latest-full).
+      - name: Compute image tags (full)
+        id: meta-full
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+            name=docker.io/${{ env.DOCKERHUB_USERNAME }}/wigolo,enable=${{ env.DOCKERHUB_USERNAME != '' }}
+          flavor: |
+            suffix=-full,onlatest=true
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            type=sha
+
+      - name: Build default (slim) variant
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
-          push: true
+          target: default
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.PUSH_ENABLED == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Build full variant
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: full
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.PUSH_ENABLED == 'true' }}
+          tags: ${{ steps.meta-full.outputs.tags }}
+          labels: ${{ steps.meta-full.outputs.labels }}
