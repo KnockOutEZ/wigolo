@@ -9,6 +9,8 @@ import type {
   FindSimilarOutput,
   ResearchOutput,
   AgentOutput,
+  DiffOutput,
+  WatchJobOutput,
   TableData,
   MetadataData,
 } from '../types.js';
@@ -335,6 +337,72 @@ export function formatAgentResult(output: AgentOutput): string {
     if (text.split('\n').length > 10) {
       lines.push(chalk.dim(`  ... (${text.length} chars total)`));
     }
+  }
+
+  return lines.join('\n');
+}
+
+export function formatDiffResult(output: DiffOutput & { error?: string }): string {
+  const lines: string[] = [];
+
+  if (output.error) {
+    lines.push(chalk.red(`Diff error: ${output.error}`));
+    return lines.join('\n');
+  }
+
+  lines.push(`Diff: ${output.changed ? chalk.yellow('changed') : chalk.green('unchanged')}${output.truncated ? chalk.dim(' (truncated)') : ''}`);
+
+  if (output.notice) {
+    lines.push(chalk.dim(`  ${output.notice}`));
+  }
+
+  if (output.summary) {
+    const s = output.summary;
+    lines.push('');
+    lines.push(`  ${chalk.green(`+${s.added_lines}`)} ${chalk.red(`-${s.removed_lines}`)} ${chalk.yellow(`~${s.modified_lines}`)} (${s.total_changed_chars} chars)`);
+  } else if (output.unified_diff) {
+    lines.push('');
+    const preview = output.unified_diff.split('\n').slice(0, 40).map(l => `  ${l}`).join('\n');
+    lines.push(preview);
+  } else if (output.hunks && output.hunks.length > 0) {
+    lines.push('');
+    for (const h of output.hunks) {
+      const title = h.section_title ? `${chalk.bold(h.section_title)} ` : '';
+      lines.push(`  ${title}${chalk.dim(`[${h.change_type}]`)}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+export function formatWatchResult(output: WatchJobOutput & { error?: string }): string {
+  const lines: string[] = [];
+
+  if (output.error) {
+    lines.push(chalk.red(`Watch error: ${output.error}`));
+    return lines.join('\n');
+  }
+
+  if (output.jobs.length === 0) {
+    lines.push(chalk.dim('No watch jobs'));
+  } else {
+    lines.push(`Watch: ${output.jobs.length} job${output.jobs.length === 1 ? '' : 's'}`);
+    for (const job of output.jobs) {
+      const status = job.status === 'active' ? chalk.green(job.status) : chalk.yellow(job.status);
+      lines.push(`  ${chalk.bold(job.id)} ${chalk.cyan(job.url)} ${chalk.dim(`(every ${job.interval_seconds}s, `)}${status}${chalk.dim(')')}`);
+    }
+  }
+
+  if (output.changes_since_last && output.changes_since_last.length > 0) {
+    lines.push('');
+    for (const c of output.changes_since_last) {
+      lines.push(`  ${c.changed ? chalk.yellow('changed') : chalk.green('unchanged')} ${chalk.cyan(c.url)}`);
+    }
+  }
+
+  if (output.notice) {
+    lines.push('');
+    lines.push(chalk.dim(`  Note: ${output.notice}`));
   }
 
   return lines.join('\n');

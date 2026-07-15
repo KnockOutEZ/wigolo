@@ -14,6 +14,8 @@ import {
   formatFindSimilarResult,
   formatResearchResult,
   formatAgentResult,
+  formatDiffResult,
+  formatWatchResult,
   formatJson,
 } from './formatters.js';
 import { executeSearch } from './commands/search.js';
@@ -24,6 +26,8 @@ import { executeCache } from './commands/cache.js';
 import { executeFindSimilar } from './commands/find-similar.js';
 import { executeResearch } from './commands/research.js';
 import { executeAgent } from './commands/agent.js';
+import { executeDiff } from './commands/diff.js';
+import { executeWatch } from './commands/watch.js';
 import type { ReplDeps } from './commands/types.js';
 import type { CrawlOutput, MapOutput } from '../types.js';
 
@@ -47,6 +51,8 @@ function getHelpText(): string {
     '  find-similar <url-or-concept> [--limit=N] [--domains=a,b] [--no-cache] [--no-web]',
     '  research <question> [--depth=quick|standard|comprehensive] [--max-sources=N] [--domains=a,b]',
     '  agent <prompt> [--urls=u1,u2] [--max-pages=N] [--max-time=MS]',
+    '  diff <url> [--output=unified|hunks|summary] [--granularity=line|word|section]',
+    '  watch add <url> [--interval=SECONDS] | watch list | watch rm <id> | watch run <id>',
     '',
     '  help       Show this help',
     '  exit       Exit the shell',
@@ -193,6 +199,16 @@ export async function startShell(deps: ReplDeps, options: ShellOptions = {}): Pr
         case 'agent': {
           const result = await executeAgent(parsed, deps);
           write(useJson ? formatJson(result) : formatAgentResult(result));
+          break;
+        }
+        case 'diff': {
+          const result = await executeDiff(parsed, deps);
+          write(useJson ? formatJson(result) : formatDiffResult(result));
+          break;
+        }
+        case 'watch': {
+          const result = await executeWatch(parsed, deps);
+          write(useJson ? formatJson(result) : formatWatchResult(result));
           break;
         }
         default:
