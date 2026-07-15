@@ -14,7 +14,7 @@ export default function StartShipping() {
         <div className={styles.text}>
           <h2 className={styles.title}>Give your agent the whole web.</h2>
           <p className={styles.body}>
-            One command installs the local engine and wires it into your agent —
+            One instant command wires the local engine into your agent —
             search, fetch, crawl, extract, cache, and research, with no API key.
           </p>
           <div className={styles.ctas}>

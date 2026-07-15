@@ -29,7 +29,7 @@ const STEPS = [
   {
     n: "1",
     title: "Install & wire your agent",
-    note: "Auto-wires the agent for you — comma-separated: claude-code · cursor · codex · gemini-cli · vscode · windsurf · zed · antigravity. Using any other MCP client? Drop --agents — the engine still installs and you point it at wigolo yourself.",
+    note: "Auto-wires the agent for you — comma-separated: claude-code · cursor · codex · gemini-cli · vscode · windsurf · zed · antigravity. Using any other MCP client? Drop --agents — init still sets everything up and you point it at wigolo yourself. Setup is instant: components download automatically on first use.",
     cmd: "npx wigolo init --non-interactive --agents=<your-agent>",
     foot: "That's the whole setup — search, fetch, crawl, extract & cache need no API key.",
   },
