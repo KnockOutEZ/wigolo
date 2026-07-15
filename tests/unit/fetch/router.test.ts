@@ -11,6 +11,7 @@ import { SmartRouter } from '../../../src/fetch/router.js';
 import type { HttpClient, BrowserPoolInterface, TlsFetcher } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 import { getAuthOptions } from '../../../src/fetch/auth.js';
+import { ChallengeBlockedError } from '../../../src/fetch/browser-pool.js';
 
 const FULL_HTML = `
 <html><head><title>Test</title></head>
@@ -492,5 +493,57 @@ describe('SmartRouter --- signal forwarding', () => {
       else process.env.WIGOLO_TLS_TIER = originalTlsTier;
       resetConfig();
     }
+  });
+});
+
+describe('SmartRouter: browser-tier challenge → blocked_by_challenge StageError', () => {
+  const originalEnv = process.env;
+  beforeEach(() => {
+    process.env = { ...originalEnv, BROWSER_FALLBACK_THRESHOLD: '3' };
+    resetConfig();
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+    resetConfig();
+    vi.clearAllMocks();
+  });
+
+  function build(browserFetcher: BrowserPoolInterface['fetchWithBrowser']) {
+    const httpClient: HttpClient = { fetch: vi.fn(async () => makeHttpResult()) };
+    const browserPool: BrowserPoolInterface = { fetchWithBrowser: vi.fn(browserFetcher) };
+    return new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+  }
+
+  it('maps a ChallengeBlockedError from the render_js:always path to a blocked_by_challenge stage error', async () => {
+    const router = build(async (url: string) => {
+      throw new ChallengeBlockedError(url);
+    });
+    const result = await router.fetch('https://blocked.example/', { renderJs: 'always' });
+    expect('error' in result).toBe(true);
+    const err = result as { error: string; error_reason: string; stage: string; hint?: string };
+    expect(err.error).toBe('blocked_by_challenge');
+    expect(err.stage).toBe('fetch');
+    // Capability language — names the site's bot protection.
+    expect(err.error_reason.toLowerCase()).toMatch(/bot protection|challenge page/);
+    expect(err.hint).toMatch(/use_auth/);
+  });
+
+  it('maps a ChallengeBlockedError from the auto/SPA-shell escalation path', async () => {
+    // HTTP returns an empty SPA shell → escalates to the browser, which throws.
+    const httpClient: HttpClient = {
+      fetch: vi.fn(async () => makeHttpResult(SPA_SHELL_HTML)),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string) => { throw new ChallengeBlockedError(url); }),
+    };
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+    const result = await router.fetch('https://blocked.example/');
+    expect('error' in result).toBe(true);
+    expect((result as { error: string }).error).toBe('blocked_by_challenge');
+  });
+
+  it('does NOT swallow non-challenge browser errors (they still throw)', async () => {
+    const router = build(async () => { throw new Error('some other browser crash'); });
+    await expect(router.fetch('https://x.example/', { renderJs: 'always' })).rejects.toThrow('some other browser crash');
   });
 });

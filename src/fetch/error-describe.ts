@@ -31,6 +31,22 @@ function extractCode(err: unknown, depth = 0): string | null {
 }
 
 export function describeFetchError(err: unknown): DescribedError {
+  // A hard bot-protection challenge (ChallengeBlockedError from the browser
+  // tier) carries a stable `code` + `hint`. Duck-type it here — rather than
+  // importing the class — so this lightweight helper never pulls the heavy
+  // browser-pool (playwright) module into its graph. Surface it in capability
+  // language.
+  if (
+    err instanceof Error &&
+    (err as Error & { code?: unknown }).code === 'blocked_by_challenge'
+  ) {
+    const hint = (err as Error & { hint?: unknown }).hint;
+    return {
+      reason: err.message,
+      ...(typeof hint === 'string' ? { hint } : {}),
+    };
+  }
+
   const code = extractCode(err);
   if (code && CODE_DESCRIPTIONS[code]) return CODE_DESCRIPTIONS[code];
 

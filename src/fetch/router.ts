@@ -19,6 +19,7 @@ import {
   getDomainRouting,
   recordTlsImpersonationSuccess,
 } from '../cache/store.js';
+import { ChallengeBlockedError } from './browser-pool.js';
 import { anySignal } from '../util/abort.js';
 import type { RawFetchResult, BrowserAction, Mode, StageError } from '../types.js';
 
@@ -392,7 +393,7 @@ export class SmartRouter {
     domain: string,
     opts: { headers?: Record<string, string>; screenshot?: boolean; conditionalHeaders?: RouterFetchOptions['conditionalHeaders']; signal?: AbortSignal },
     logger: ReturnType<typeof createLogger>,
-  ): Promise<RawFetchResult> {
+  ): Promise<RawFetchResult | StageError> {
     const { headers, screenshot, conditionalHeaders, signal } = opts;
     // An extension-typed binary already routed to HTTP upstream, so this probe
     // only fires for extensionless URLs about to hit the browser.
@@ -412,7 +413,34 @@ export class SmartRouter {
       }
     }
     if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
-    return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
+    return this.browserFetch(url, { headers, screenshot, signal });
+  }
+
+  /**
+   * Invoke the browser tier and map a hard bot-protection challenge
+   * (ChallengeBlockedError, thrown by the browser pool's anti-bot fast-fail)
+   * to a structured `blocked_by_challenge` stage error instead of letting it
+   * propagate as an unhandled throw. All other errors propagate unchanged.
+   * Every browser-tier call site routes through here so the mapping is uniform.
+   */
+  private async browserFetch(
+    url: string,
+    options: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string; screenshot?: boolean; actions?: BrowserAction[]; cdpUrl?: string; signal?: AbortSignal },
+  ): Promise<RawFetchResult | StageError> {
+    if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
+    try {
+      return await this.browserPool.fetchWithBrowser(url, options);
+    } catch (err) {
+      if (err instanceof ChallengeBlockedError) {
+        return {
+          error: err.code,
+          error_reason: err.message,
+          stage: 'fetch',
+          hint: err.hint,
+        };
+      }
+      throw err;
+    }
   }
 
   async fetch(url: string, options: RouterFetchOptions & { mode: 'stealth' }): Promise<RawFetchResult | StageError>;
@@ -503,7 +531,7 @@ export class SmartRouter {
       if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
       const authOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
       logger.debug('routing to playwright', { url, reason: 'actions present' });
-      return this.browserPool.fetchWithBrowser(url, { headers, screenshot, actions, ...authOptions, signal });
+      return this.browserFetch(url, { headers, screenshot, actions, ...authOptions, signal });
     }
 
     // Always Playwright for auth or explicit override
@@ -511,7 +539,7 @@ export class SmartRouter {
       if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
       const authOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
       logger.debug('routing to playwright', { url, reason: useAuth ? 'auth' : 'render_js=always' });
-      return this.browserPool.fetchWithBrowser(url, { headers, screenshot, ...authOptions, signal });
+      return this.browserFetch(url, { headers, screenshot, ...authOptions, signal });
     }
 
     // HTTP only, no fallback
@@ -633,7 +661,7 @@ export class SmartRouter {
           tlsReason: tlsTry.reason,
         });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
+        return this.browserFetch(url, { headers, screenshot, signal });
       }
 
       // With TLS tier disabled, escalate to Playwright
@@ -654,7 +682,7 @@ export class SmartRouter {
           signal: describeAntiBot(result.statusCode, result.html),
         });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
+        return this.browserFetch(url, { headers, screenshot, signal });
       }
 
       // SPA-shell detection is only meaningful for 2xx
@@ -668,7 +696,7 @@ export class SmartRouter {
         if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
         logger.info('SPA shell detected, marking domain for playwright', { url, domain });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
+        return this.browserFetch(url, { headers, screenshot, signal });
       }
 
       // A known-SPA domain (pre-marked preferPlaywright
@@ -715,7 +743,7 @@ export class SmartRouter {
         if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
         logger.info('failure threshold reached, marking domain for playwright', { url, domain, threshold });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
+        return this.browserFetch(url, { headers, screenshot, signal });
       }
 
       throw err;
