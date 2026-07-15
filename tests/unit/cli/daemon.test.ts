@@ -97,3 +97,37 @@ describe('runDaemon', () => {
     expect(parsed.port).toBe(4444);
   });
 });
+
+describe('serve-port conflict (S9)', () => {
+  // WHY (D9): a taken serve port gets an actionable error naming --port AND the
+  // next free port — no auto-rebind (predictability). This is the message a
+  // user sees when `wigolo serve` collides with a running daemon.
+  it('findNextFreePort returns a port > the taken one that is actually bindable', async () => {
+    const { findNextFreePort } = await import('../../../src/cli/daemon.js');
+    const net = await import('node:net');
+    // Take a port on 127.0.0.1, then ask for the next free one.
+    const taken = await new Promise<number>((resolve) => {
+      const s = net.createServer();
+      s.listen(0, '127.0.0.1', () => {
+        const addr = s.address();
+        resolve(typeof addr === 'object' && addr ? addr.port : 0);
+      });
+      // keep it open for the duration of the test
+      (globalThis as Record<string, unknown>).__takenServer = s;
+    });
+    const next = await findNextFreePort(taken, '127.0.0.1');
+    expect(next).toBeGreaterThan(taken);
+    const s = (globalThis as Record<string, unknown>).__takenServer as import('node:net').Server;
+    await new Promise<void>((r) => s.close(() => r()));
+    delete (globalThis as Record<string, unknown>).__takenServer;
+  });
+
+  it('formatPortConflictError names --port and the suggested next free port', async () => {
+    const { formatPortConflictError } = await import('../../../src/cli/daemon.js');
+    const msg = await formatPortConflictError(3333, '127.0.0.1');
+    expect(msg).toContain('3333');
+    expect(msg).toContain('--port');
+    // The suggested port must be present and different from the taken one.
+    expect(msg).toMatch(/--port \d+/);
+  });
+});

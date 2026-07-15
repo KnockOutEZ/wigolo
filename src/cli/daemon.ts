@@ -1,3 +1,4 @@
+import { createServer } from 'node:net';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { DaemonHttpServer } from '../daemon/http-server.js';
@@ -35,6 +36,40 @@ export function parseDaemonArgs(args: string[]): DaemonArgs {
   return { port, host };
 }
 
+/** Whether a TCP port is bindable on `host` right now. Resolves false on any
+ * bind error (EADDRINUSE / EACCES / etc.). */
+function isPortFree(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.once('error', () => resolve(false));
+    probe.once('listening', () => probe.close(() => resolve(true)));
+    probe.listen(port, host);
+  });
+}
+
+/**
+ * Find the next bindable port at or above `from + 1`, scanning up to `limit`
+ * ports. Returns the taken port + 1 as a best-effort fallback if the scan finds
+ * nothing (the message is a hint, not a guarantee).
+ */
+export async function findNextFreePort(from: number, host: string, limit = 50): Promise<number> {
+  for (let p = from + 1; p <= from + limit && p <= 65535; p++) {
+    if (await isPortFree(p, host)) return p;
+  }
+  return Math.min(from + 1, 65535);
+}
+
+/** Build the actionable serve-port-conflict message. Names the taken port,
+ * `--port`, and a concrete next-free port to retry with. No auto-rebind —
+ * predictability over convenience (D9). */
+export async function formatPortConflictError(port: number, host: string): Promise<string> {
+  const next = await findNextFreePort(port, host);
+  return (
+    `Port ${port} on ${host} is already in use (another wigolo serve, or a different process). ` +
+    `Not auto-rebinding — retry with a free port, e.g.: wigolo serve --port ${next}`
+  );
+}
+
 export function runDaemon(args: string[]): void {
   const parsed = parseDaemonArgs(args);
 
@@ -54,8 +89,14 @@ export function runDaemon(args: string[]): void {
       log('');
       log('Press Ctrl+C to stop.');
     })
-    .catch((err) => {
-      log(`Failed to start daemon: ${err instanceof Error ? err.message : String(err)}`);
+    .catch(async (err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      const code = (err as { code?: string } | null)?.code;
+      if (code === 'EADDRINUSE' || message.includes('EADDRINUSE')) {
+        log(await formatPortConflictError(parsed.port, parsed.host));
+      } else {
+        log(`Failed to start daemon: ${message}`);
+      }
       process.exit(1);
     });
 
