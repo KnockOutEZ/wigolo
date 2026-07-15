@@ -17,7 +17,9 @@ export function suggestionFor(id: VerifyCheckId): string {
 
 export function suggestionsFromResult(result: VerifyResult): string[] {
   const out: string[] = [];
-  if (result.searxng !== 'ok') out.push(suggestionFor('searxng'));
+  // 'skipped' means the core backend is in use (sidecar opt-in) — that is not a
+  // failure, so no fix suggestion is emitted for it.
+  if (result.searxng !== 'ok' && result.searxng !== 'skipped') out.push(suggestionFor('searxng'));
   if (result.reranker !== 'ok') out.push(suggestionFor('reranker'));
   if (result.embeddings !== 'ok') out.push(suggestionFor('embeddings'));
   return out;
