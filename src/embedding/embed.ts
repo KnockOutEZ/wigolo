@@ -40,6 +40,15 @@ export interface IndexView {
  * research/pipeline.ts, search/find-similar.ts, and the legacy SearXNG
  * orchestrator continue to work without modification.
  */
+/**
+ * Lazy-provider policy (design D2): the ONNX provider is probed on FIRST USE,
+ * never at boot. A failed load memoizes for RETRY_MEMO_MS so an immediate
+ * retry is cheap; after MAX_LOAD_ATTEMPTS failures the provider latches off for
+ * the process with an actionable error.
+ */
+const RETRY_MEMO_MS = 60_000;
+const MAX_LOAD_ATTEMPTS = 3;
+
 export class EmbeddingService {
   private provider: EmbedProvider;
   private store: VectorStore | null = null;
@@ -47,10 +56,22 @@ export class EmbeddingService {
   private available = false;
   private providerVerified = false;
 
+  // Lazy provider-load state.
+  private readyPromise: Promise<boolean> | null = null;
+  private loadAttempts = 0;
+  private lastFailureAt = 0;
+  private latchedOff = false;
+
   constructor(provider?: EmbedProvider) {
     this.provider = provider ?? new FastembedEmbedProvider();
   }
 
+  /**
+   * Boot init: provisions the vector store, runs the legacy-embedding
+   * migration, and surfaces sqlite-vec init failures — WITHOUT touching the
+   * ONNX runtime. The provider is probed lazily on first use via
+   * ensureProviderReady(); this is the ~150-200MB idle-footprint win.
+   */
   async init(): Promise<void> {
     try {
       this.store = await getVectorStore();
@@ -74,21 +95,6 @@ export class EmbeddingService {
         });
       }
 
-      // Probe the provider so we know up front whether ONNX init works.
-      try {
-        await this.provider.embed(['embedding service probe']);
-        this.providerVerified = true;
-        log.info('embedding provider verified', {
-          modelId: this.provider.modelId,
-          dim: this.provider.dim,
-        });
-      } catch (err) {
-        log.warn('embedding provider probe failed — embeddings disabled', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        this.providerVerified = false;
-      }
-
       this.available = true;
     } catch (err) {
       log.error('EmbeddingService init failed', { error: String(err) });
@@ -96,8 +102,64 @@ export class EmbeddingService {
     }
   }
 
+  /**
+   * Load the embedding provider on first use. Memoized: concurrent callers
+   * share one in-flight probe, and a verified provider never re-probes.
+   * A failed load memoizes for RETRY_MEMO_MS (immediate retries are cheap);
+   * after MAX_LOAD_ATTEMPTS failures the provider latches off for the process.
+   * Returns true when the provider is ready to embed.
+   */
+  async ensureProviderReady(): Promise<boolean> {
+    if (this.providerVerified) return true;
+    if (this.latchedOff) return false;
+    if (this.readyPromise) return this.readyPromise;
+
+    // Within the memo window after a failure, do not re-probe.
+    if (this.loadAttempts > 0 && Date.now() - this.lastFailureAt < RETRY_MEMO_MS) {
+      return false;
+    }
+
+    this.readyPromise = this.loadProvider().finally(() => {
+      this.readyPromise = null;
+    });
+    return this.readyPromise;
+  }
+
+  private async loadProvider(): Promise<boolean> {
+    this.loadAttempts += 1;
+    log.info('loading embedding model (first use — downloads ~30MB if not cached)', {
+      attempt: this.loadAttempts,
+    });
+    try {
+      await this.provider.embed(['embedding service probe']);
+      this.providerVerified = true;
+      log.info('embedding provider verified', {
+        modelId: this.provider.modelId,
+        dim: this.provider.dim,
+      });
+      return true;
+    } catch (err) {
+      this.lastFailureAt = Date.now();
+      const message = err instanceof Error ? err.message : String(err);
+      if (this.loadAttempts >= MAX_LOAD_ATTEMPTS) {
+        this.latchedOff = true;
+        this.available = false;
+        log.error(
+          'embedding provider failed to load after repeated attempts — embeddings disabled; run `wigolo warmup --embeddings` to install the model',
+          { error: message, attempts: this.loadAttempts },
+        );
+      } else {
+        log.warn('embedding provider load failed — will retry on next use', {
+          error: message,
+          attempt: this.loadAttempts,
+        });
+      }
+      return false;
+    }
+  }
+
   isAvailable(): boolean {
-    return this.available;
+    return this.available && !this.latchedOff;
   }
 
   setAvailable(value: boolean): void {
@@ -134,6 +196,13 @@ export class EmbeddingService {
   async embedAndStore(url: string, markdown: string): Promise<void> {
     if (!this.available) {
       log.debug('embedding skipped: service not available', { url });
+      return;
+    }
+
+    // Lazy provider load on first use (hoisted here so fetch/research/search
+    // callers get it without a per-call-site change).
+    if (!(await this.ensureProviderReady())) {
+      log.debug('embedding skipped: provider not ready', { url });
       return;
     }
 
@@ -203,6 +272,8 @@ export class EmbeddingService {
       if (this.cachedSize === 0) return [];
     }
 
+    if (!(await this.ensureProviderReady())) return [];
+
     try {
       const [queryVector] = await this.provider.embed([queryText]);
       if (!queryVector || queryVector.length === 0) {
@@ -235,6 +306,10 @@ export class EmbeddingService {
       this.store = null;
       this.available = false;
       this.providerVerified = false;
+      this.readyPromise = null;
+      this.loadAttempts = 0;
+      this.lastFailureAt = 0;
+      this.latchedOff = false;
       log.info('EmbeddingService shut down');
     } catch (err) {
       log.error('EmbeddingService shutdown error', { error: String(err) });
