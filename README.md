@@ -161,6 +161,31 @@ docker compose -f packaging/compose.serve.yml up
 
 **Bind-mount caveat.** The container runs as an unprivileged user (uid/gid `1000`). A named volume (as above) just works. If you bind-mount a host directory instead (`-v "$PWD/wigolo-data:/data"`), that directory must be writable by uid `1000` or the container hits `EACCES` — either `chown 1000:1000` the host path first, or prefer the named volume.
 
+## Install channels
+
+wigolo ships on five channels. **npm is the primary channel and works today** (`npx wigolo …` — the Quickstart above). The other four are packaging for release: their published artifacts (the `install.sh` URL, the Homebrew tap, and the container registries) go live **at first release** — see [`packaging/RELEASE-RUNBOOK.md`](packaging/RELEASE-RUNBOOK.md).
+
+Pick the channel that matches how you run things, then wire the MCP command from the last column. **Wire wigolo with the absolute command shown — never rely on a `PATH` export.** MCP clients launch the server as a child process and do not read your shell profile, so a bare `wigolo` on `PATH` is invisible to them; use `npx`, or the channel's absolute binary path.
+
+| Channel | Install | Upgrade | Uninstall | Recommended MCP command | Status |
+|---------|---------|---------|-----------|-------------------------|--------|
+| **npm** *(primary)* | `npm i -g wigolo` — or no install at all, just `npx wigolo` | `npm i -g wigolo@latest` (or nothing — `npx` always fetches latest) | `npx wigolo config --uninstall --yes` | `command: "npx"`, `args: ["-y", "wigolo"]` | **Verified** — macOS arm64; Windows covered by npm (CI matrix) |
+| **curl \| sh** | `curl -fsSL https://wigolo.dev/install.sh \| sh` | re-run the same `curl … \| sh` (idempotent; reuses the bundled runtime) | `sh install.sh --uninstall` (keeps your cache/config) | `command: "$HOME/.wigolo/bin/wigolo"`, `args: []` | **Verified** — macOS arm64; URL live at first release |
+| **Homebrew** | `brew install <org>/wigolo/wigolo` | `brew upgrade wigolo` | `brew uninstall wigolo` | `command: "$(brew --prefix)/bin/wigolo"`, `args: []` | **Verified** — macOS arm64; tap live at first release |
+| **Docker** | `docker pull ghcr.io/knockoutez/wigolo` (see [Run with Docker](#run-with-docker)) | `docker pull ghcr.io/knockoutez/wigolo` (re-pull `latest`) | `docker rmi ghcr.io/knockoutez/wigolo` (+ `docker volume rm wigolo-data` to drop data) | `command: "docker"`, `args: ["run", "-i", "--rm", "-v", "wigolo-data:/data", "ghcr.io/knockoutez/wigolo"]` | **Verified** — linux-docker (arm64 native, amd64 emulated); registry live at first release |
+| **Single-file binary** | download the release asset, `chmod +x wigolo` | download the new release asset (versionless `latest` URL) | `rm <path>/wigolo` (+ `rm -rf ~/.wigolo` to drop data) | `command: "/absolute/path/to/wigolo"`, `args: []` | macOS arm64 **verified**; linux-x64 / linux-arm64 / win-x64 **documented — unverified until CI**; **no Windows-native installer (documented gap — use npm on Windows)** |
+
+**One channel at a time.** All channels share one data directory (`~/.wigolo` by default, `/data` in Docker). Running two different wigolo versions against the same data dir is undefined — pick one channel per machine and let it own the data dir.
+
+**First-use downloads (every channel).** A fresh install is instant and downloads nothing. The embedding model and the browser engine binary download **on first use** into the data dir — a one-time few-hundred-MB download. To pre-cache them ahead of time, run `wigolo warmup --all` (or add `--warmup` to `init`).
+
+### Channel caveats
+
+- **curl \| sh and binary are headless-first.** They run every tool and the flag-driven `wigolo init`, but the **interactive setup wizard is not available** in the standalone binary — for a guided setup, use npm (`npx wigolo init --wizard`).
+- **macOS binary signing.** Prebuilt macOS binaries are code-signed + notarized at release time and are safe to `curl`-download. If Gatekeeper still blocks a locally-copied binary (the quarantine attribute), clear it with `xattr -d com.apple.quarantine <binary>`. `curl` downloads set no quarantine attribute, so the curl channel is unaffected.
+- **Versionless URLs.** The `install.sh` URL and the binary release-asset URLs are unversioned — they always resolve to the latest release. Upgrading is re-running the same command.
+- **Docker data volume is mandatory.** The `-v wigolo-data:/data` mount holds the cache, models, browser engine binary, and encrypted keys. Without it, every run re-downloads them.
+
 ## Tools
 
 | Tool | What it does |
@@ -565,6 +590,8 @@ Grab wigolo wherever you manage packages or MCP servers:
 ## Contributing
 
 Bug reports, feature requests, and PRs are all welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)**. Keep tool handlers thin (business logic lives in the domain modules), add tests, and run the suite before opening a PR. wigolo also has a plugin system for custom extractors and search engines: `wigolo plugin add <git-url>`.
+
+The single-file binary channel (`npm run build:binary`) uses two build-only devDependencies — `@yao-pkg/pkg` (packages the CJS bundle into a standalone executable) and `esbuild` (bundles the dist to CommonJS). They are needed only for that build; the npm package and all runtime tools do not depend on them.
 
 ## License
 
