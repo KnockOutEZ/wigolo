@@ -13,12 +13,29 @@ import { mergeResults } from './merge.js';
 
 const log = createLogger('hybrid');
 
+/**
+ * Actionable message surfaced per-request when a fallback signal fires in
+ * hybrid mode but the search-engine sidecar is not available. Names BOTH fixes
+ * because stderr boot lines are invisible to MCP callers (D1). Capability
+ * language only.
+ */
+const SIDECAR_UNAVAILABLE_WARNING =
+  'A stronger fallback search was wanted but the search engine sidecar is not available. ' +
+  'To enable it, set WIGOLO_SEARXNG_URL to an external instance, or run `wigolo warmup --searxng` to install it.';
+
 export class HybridSearchProvider implements SearchProvider {
   readonly name = 'hybrid' as const;
 
   constructor(
     private readonly core: SearchProvider,
     private readonly searxng: SearchProvider,
+    /**
+     * Whether the sidecar can actually serve the fallback (external URL or an
+     * installed, ready process). Defaults true so the merge path is exercised
+     * unchanged; when false and a signal fires, the fallback is SKIPPED and a
+     * per-request warning is attached instead (D1 degrade).
+     */
+    private readonly searxngAvailable: boolean = true,
   ) {}
 
   async search(
@@ -45,6 +62,19 @@ export class HybridSearchProvider implements SearchProvider {
     }
 
     const signalLabel = fired.join('+');
+
+    // D1 degrade: a signal fired but the sidecar can't serve the fallback. Skip
+    // it and surface a per-request, actionable warning rather than searching
+    // with empty engines (which returns junk).
+    if (!this.searxngAvailable) {
+      log.warn('fallback signal fired but search engine sidecar unavailable; skipping fallback', {
+        signals: fired,
+      });
+      const data: SearchOutput = { ...coreResult.data, fallback_signal: signalLabel };
+      if (!data.warning) data.warning = SIDECAR_UNAVAILABLE_WARNING;
+      return { ok: true, data };
+    }
+
     log.info('fallback signal fired; running searxng', { signals: fired });
 
     let searxngResult: StageResult<SearchOutput>;
