@@ -6,6 +6,8 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { initSubsystems, createMcpServer, type Subsystems } from '../server.js';
 import { probeHealth } from './health-check.js';
+import { getConfig } from '../config.js';
+import { searxngConfigured } from '../searxng/enabled.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('server');
@@ -114,6 +116,7 @@ export class DaemonHttpServer {
         backendStatus: this.subsystems?.backendStatus ?? null,
         browserPool: this.subsystems?.browserPool ?? null,
         startedAt: this.startedAt,
+        searxngConfigured: searxngConfigured(getConfig()),
       });
 
       const statusCode = report.status === 'down' ? 503 : 200;

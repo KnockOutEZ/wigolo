@@ -55,4 +55,27 @@ describe('runHealthCheck', () => {
     await runHealthCheck();
     expect(stderrOutput.length).toBeGreaterThan(0);
   });
+
+  it('exits 0 against a default core daemon (D1: core is healthy, not degraded)', async () => {
+    // WHY (D1 review BLOCKER): a default core daemon must report healthy so
+    // `wigolo health` exits 0 — before the backend-aware mapping it would have
+    // been permanently degraded (exit 1) because health required searxng active.
+    delete process.env.WIGOLO_SEARCH; // default core backend, sidecar not configured
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1' });
+    const url = await daemon.start();
+    const port = parseInt(new URL(url).port, 10);
+    process.env.WIGOLO_DAEMON_PORT = String(port);
+    process.env.WIGOLO_DAEMON_HOST = '127.0.0.1';
+    resetConfig();
+    try {
+      const { runHealthCheck } = await import('../../../src/cli/health.js');
+      const exitCode = await runHealthCheck();
+      expect(exitCode).toBe(0);
+      expect(stderrOutput).toContain('not_configured');
+    } finally {
+      delete process.env.WIGOLO_DAEMON_HOST;
+      await daemon.stop();
+    }
+  });
 });

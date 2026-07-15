@@ -7,11 +7,12 @@ function makeInput(overrides?: Partial<HealthProbeInput>): HealthProbeInput {
     backendStatus: null,
     browserPool: null,
     startedAt: Date.now() - 60000,
+    searxngConfigured: true,
     ...overrides,
   };
 }
 
-describe('probeHealth', () => {
+describe('probeHealth — sidecar configured (searxng/hybrid backend or external URL)', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('returns status=healthy when backend is active and browser pool exists', () => {
@@ -130,5 +131,57 @@ describe('probeHealth', () => {
       startedAt: 0,
     }));
     expect(report.uptime_seconds).toBeGreaterThan(0);
+  });
+});
+
+describe('probeHealth — sidecar NOT configured (default core backend, D1)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('reports searxng="not_configured" instead of a failure state', () => {
+    // WHY (D1): on the default core backend the sidecar is intentionally absent.
+    // Reporting it as unavailable/not_initialized would wrongly imply a broken
+    // component.
+    const report = probeHealth(makeInput({
+      searxngConfigured: false,
+      backendStatus: null,
+      browserPool: {} as any,
+    }));
+    expect(report.searxng).toBe('not_configured');
+  });
+
+  it('a default core daemon (browsers ready) reports status=healthy', () => {
+    // WHY (D1 review BLOCKER): before this change a core daemon was PERMANENTLY
+    // degraded because health required searxng==='active'. `wigolo health` must
+    // exit 0 for a healthy core daemon.
+    const report = probeHealth(makeInput({
+      searxngConfigured: false,
+      backendStatus: null,
+      browserPool: {} as any,
+    }));
+    expect(report.status).toBe('healthy');
+  });
+
+  it('health derives from browsers when the sidecar is not configured (down if no browser pool)', () => {
+    // Overall health ignores the (absent) sidecar and derives from the browser
+    // pool + cache; with no browser pool the daemon is still down.
+    const report = probeHealth(makeInput({
+      searxngConfigured: false,
+      backendStatus: null,
+      browserPool: null,
+    }));
+    expect(report.status).toBe('down');
+    expect(report.searxng).toBe('not_configured');
+  });
+
+  it('a healthy core daemon is never gated on backendStatus being active', () => {
+    // Even if backendStatus exists but is inactive (fallback engines), a
+    // not-configured sidecar must not drag overall health to degraded.
+    const report = probeHealth(makeInput({
+      searxngConfigured: false,
+      backendStatus: { isActive: false } as any,
+      browserPool: {} as any,
+    }));
+    expect(report.status).toBe('healthy');
+    expect(report.searxng).toBe('not_configured');
   });
 });
