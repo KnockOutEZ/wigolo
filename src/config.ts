@@ -14,6 +14,12 @@ export interface Config {
   fetchAllowPrivate: boolean;
   playwrightLoadTimeoutMs: number;
   playwrightNavTimeoutMs: number;
+  /** How long the browser tier waits after detecting a hard challenge page
+   * (bot-protection interstitial) before RE-checking status + body. An
+   * auto-passing challenge that navigates to a real 200 within this window
+   * proceeds normally; a still-blocked page fast-fails. Bounds the total
+   * challenged-page budget well under the nav timeout. */
+  challengeSettleMs: number;
   searxngQueryTimeoutMs: number;
   searchFetchTimeoutMs: number;
   searchFetchTimeoutBalancedMs: number;
@@ -273,6 +279,7 @@ export function getConfig(): Config {
     fetchAllowPrivate: envBool('WIGOLO_FETCH_ALLOW_PRIVATE', false, settings, 'fetchAllowPrivate'),
     playwrightLoadTimeoutMs: envInt('PLAYWRIGHT_LOAD_TIMEOUT_MS', 15000, settings, 'playwrightLoadTimeoutMs'),
     playwrightNavTimeoutMs: envInt('PLAYWRIGHT_NAV_TIMEOUT_MS', 30000, settings, 'playwrightNavTimeoutMs'),
+    challengeSettleMs: envInt('WIGOLO_CHALLENGE_SETTLE_MS', 5000, settings, 'challengeSettleMs'),
     searxngQueryTimeoutMs: envInt('SEARXNG_QUERY_TIMEOUT_MS', 8000, settings, 'searxngQueryTimeoutMs'),
     searchFetchTimeoutMs: envInt('SEARCH_FETCH_TIMEOUT_MS', 15000, settings, 'searchFetchTimeoutMs'),
     searchFetchTimeoutBalancedMs: envInt('SEARCH_FETCH_TIMEOUT_BALANCED_MS', 3000, settings, 'searchFetchTimeoutBalancedMs'),
