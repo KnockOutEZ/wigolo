@@ -20,6 +20,21 @@ function writeErr(line: string): void {
   process.stderr.write(`${line}\n`);
 }
 
+/**
+ * Machine-readable setup summary emitted under --json. `status` drives the exit
+ * code: 'ok' → 0, 'error' → 1. `agents` mirrors the per-agent write results so a
+ * caller can see exactly what was registered and where.
+ */
+interface SetupJsonSummary {
+  status: 'ok' | 'error';
+  agents: Array<{ id: string; displayName: string; ok: boolean; code: string; configPath: string | null; message?: string }>;
+  message?: string;
+}
+
+function emitSetupJson(summary: SetupJsonSummary): void {
+  process.stdout.write(`${JSON.stringify(summary)}\n`);
+}
+
 export async function runSetupMcp(args: string[]): Promise<number> {
   const sub = args[0];
   if (!sub) {
@@ -57,6 +72,7 @@ export async function runSetupMcp(args: string[]): Promise<number> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     writeErr(`Agent detection failed: ${message}`);
+    if (flags.json) emitSetupJson({ status: 'error', agents: [], message: `Agent detection failed: ${message}` });
     return 1;
   }
 
@@ -64,6 +80,7 @@ export async function runSetupMcp(args: string[]): Promise<number> {
     writeErr('No supported AI tools detected on this machine.');
     writeErr('Supported: Claude Code, Cursor, VS Code, Zed, Gemini CLI, Windsurf, Codex, OpenCode.');
     writeErr('Install one of them, then re-run: npx wigolo setup mcp');
+    if (flags.json) emitSetupJson({ status: 'ok', agents: [], message: 'no supported AI tools detected' });
     return 0;
   }
 
@@ -72,6 +89,7 @@ export async function runSetupMcp(args: string[]): Promise<number> {
     if (flags.agents.length === 0) {
       writeErr('--non-interactive requires --agents=<csv>');
       writeErr(USAGE);
+      if (flags.json) emitSetupJson({ status: 'error', agents: [], message: '--non-interactive requires --agents=<csv>' });
       return 2;
     }
     selected = [...flags.agents] as AgentId[];
@@ -82,16 +100,19 @@ export async function runSetupMcp(args: string[]): Promise<number> {
       if (err instanceof NotTtyError) {
         writeErr('setup mcp requires an interactive terminal.');
         writeErr('Use --non-interactive --agents=<comma-list> in scripts or CI.');
+        if (flags.json) emitSetupJson({ status: 'error', agents: [], message: 'requires an interactive terminal' });
         return 2;
       }
       const message = err instanceof Error ? err.message : String(err);
       writeErr(`Selection failed: ${message}`);
+      if (flags.json) emitSetupJson({ status: 'error', agents: [], message: `Selection failed: ${message}` });
       return 1;
     }
   }
 
   if (selected.length === 0) {
     writeErr('No agents selected — nothing to do.');
+    if (flags.json) emitSetupJson({ status: 'ok', agents: [], message: 'no agents selected' });
     return 0;
   }
 
@@ -101,6 +122,7 @@ export async function runSetupMcp(args: string[]): Promise<number> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     writeErr(`Writing configs failed: ${message}`);
+    if (flags.json) emitSetupJson({ status: 'error', agents: [], message: `Writing configs failed: ${message}` });
     return 1;
   }
 
@@ -118,6 +140,20 @@ export async function runSetupMcp(args: string[]): Promise<number> {
     }
   }
   writeErr('');
+
+  if (flags.json) {
+    emitSetupJson({
+      status: hadError ? 'error' : 'ok',
+      agents: results.map(r => ({
+        id: r.id,
+        displayName: r.displayName,
+        ok: r.ok,
+        code: r.code,
+        configPath: r.configPath,
+        ...(r.message ? { message: r.message } : {}),
+      })),
+    });
+  }
 
   return hadError ? 1 : 0;
 }
