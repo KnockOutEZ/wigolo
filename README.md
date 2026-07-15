@@ -30,14 +30,15 @@ wigolo runs on your machine as an MCP server and gives an AI coding agent one du
 
 Requires **Node ≥ 20** and ~1.5 GB of free disk. macOS, Linux, and Windows.
 
-One command installs the local engine (search, browser, on-device models), auto-wires it into your agent, and sets up the MCP connection:
+One command wires the local engine into your agent and sets up the MCP connection. It runs headlessly with no prompts — components (the browser engine and on-device models) download automatically on first use, so init itself is instant and downloads nothing:
 
 ```bash
 npx wigolo init --non-interactive --agents=<your-agent>
 ```
 
 - **`<your-agent>`** — one or more of `claude-code` · `cursor` · `codex` · `gemini-cli` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated). wigolo writes the MCP config and instructions for you — nothing else to set up.
-- **Any other MCP-capable agent?** Omit `--agents` — the engine still installs headlessly, and you point your agent at wigolo's MCP server (`npx wigolo mcp`) yourself.
+- **Any other MCP-capable agent?** Omit `--agents` — init still runs headlessly, and you point your agent at wigolo's MCP server (`npx wigolo mcp`) yourself.
+- **Want the components ahead of time?** Add `--warmup` to pre-cache the browser engine and on-device models during init instead of on first use, or run `npx wigolo warmup --all` anytime. **Prefer a guided setup?** Add `--wizard` for the interactive terminal wizard.
 
 That's the whole setup — **search, fetch, crawl, extract, cache, and find-similar work with no API key.** Check it's healthy:
 
@@ -52,7 +53,7 @@ Not for you? `npx wigolo config --uninstall --yes` removes everything, cleanly.
 The `--agents` flag has a built-in installer for each agent listed above — but it can't cover every agent in the world. For **anything else — your own custom or in-house agent, or any MCP-capable client we don't wire automatically yet** — set wigolo up by hand: it's just another MCP server. Install the engine once, then register it:
 
 ```bash
-npx wigolo init --non-interactive        # engine only: models, browser, cache — no agent wiring
+npx wigolo init --non-interactive        # headless setup, no agent wiring (components download on first use)
 ```
 
 Most clients use an `mcpServers` block in a JSON config file:
@@ -301,7 +302,7 @@ For repeated interactive use, run `wigolo serve` so the browser pool, embeddings
 | Command | What it does |
 |---------|--------------|
 | `wigolo` / `wigolo mcp` | Start the MCP stdio server (the default command). |
-| `wigolo init` | Set up wigolo: install components, wire into detected agents. `--non-interactive --agents=<csv> --provider=<name> --search=<backend>` for CI. |
+| `wigolo init` | Set up wigolo headlessly: wire into detected agents, persist settings (components download on first use). `--non-interactive --agents=<csv> --provider=<name> --search=<backend>` for CI; `--warmup` to pre-cache components; `--wizard` for the interactive TUI; `--json` for a machine-readable summary. |
 | `wigolo setup mcp` | Re-write just the MCP server entries, without the full wizard. |
 | `wigolo doctor` | Cold-start health check — no network fetches. |
 | `wigolo verify` | End-to-end smoke test (fetch, crawl, extract, search, rerank, embed). |
