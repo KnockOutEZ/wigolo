@@ -10,6 +10,9 @@
 # Shell scripts must stay LF for POSIX shells.
 *.sh text eol=lf
 
+# Ruby (Homebrew formula) must stay LF for portability.
+*.rb text eol=lf
+
 # Binary file types — never apply line-ending conversion.
 *.png binary
 *.jpg binary
