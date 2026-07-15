@@ -288,3 +288,47 @@ describe('runConfig --help', () => {
     expect(computeStorageMock).not.toHaveBeenCalled();
   });
 });
+
+describe('runConfig --plain --json (machine-readable settings)', () => {
+  let tmpDir: string;
+  let cfgPath: string;
+  let prevConfigPath: string | undefined;
+
+  beforeEach(() => {
+    const { mkdtempSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
+    const { tmpdir } = require('node:os') as typeof import('node:os');
+    const { join } = require('node:path') as typeof import('node:path');
+    tmpDir = mkdtempSync(join(tmpdir(), 'wigolo-cfg-json-'));
+    cfgPath = join(tmpDir, 'config.json');
+    writeFileSync(cfgPath, JSON.stringify({ version: 1, settings: { searchBackend: 'hybrid' } }), { mode: 0o600 });
+    prevConfigPath = process.env.WIGOLO_CONFIG_PATH;
+    process.env.WIGOLO_CONFIG_PATH = cfgPath;
+  });
+
+  afterEach(() => {
+    if (prevConfigPath === undefined) delete process.env.WIGOLO_CONFIG_PATH;
+    else process.env.WIGOLO_CONFIG_PATH = prevConfigPath;
+    const { rmSync } = require('node:fs') as typeof import('node:fs');
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('emits a single parseable JSON object on stdout with settings and dataDir', async () => {
+    // WHY (D8): the --plain companion must be AI-drivable. --json turns the
+    // human settings dump into one parseable object; the human table must not
+    // be printed to stdout.
+    const outLines: string[] = [];
+    stdoutWrite.mockImplementation((s: string | Uint8Array) => {
+      outLines.push(typeof s === 'string' ? s : Buffer.from(s).toString('utf-8'));
+      return true;
+    });
+    const code = await runConfig(['--plain', '--json']);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(outLines.join('').trim());
+    expect(parsed.dataDir).toBe('/tmp/wigolo-test-datadir');
+    expect(parsed.settings).toBeDefined();
+    // Persisted value surfaces in the machine output.
+    expect(parsed.settings.searchBackend).toBe('hybrid');
+    // The human ASCII table header must NOT be on stdout.
+    expect(outLines.join('')).not.toContain('Wigolo current settings');
+  });
+});
