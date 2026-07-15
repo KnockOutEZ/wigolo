@@ -128,19 +128,38 @@ Any provider works — use `anthropic` + `ANTHROPIC_API_KEY`, `openai` + `OPENAI
 
 ### Run with Docker
 
-A prebuilt image runs the MCP server without installing Node yourself. It bundles the browser engine and on-device models, and the default command is the stdio MCP server.
+A prebuilt image runs the MCP server without installing Node yourself. The default command is the stdio MCP server. Two variants are published:
+
+- **`latest`** (default) — a slim image. The OS libraries for the browser engine are baked in, but the browser engine binary and the on-device models download on first use into the data volume. Smallest download; ideal for long-lived MCP setups.
+- **`latest-full`** — the browser engine binary is preinstalled at build time. Larger image; ideal for JS-render-heavy work or ephemeral `--rm` runs with no persistent volume.
+
+The data volume is **mandatory** in every run line — it holds the local cache, the on-device models, the browser engine binary, and your encrypted keys, and persists them across runs. Without it, every run re-downloads those components:
 
 ```bash
 docker run -i --rm -v wigolo-data:/data ghcr.io/knockoutez/wigolo
 ```
 
-The `-i` flag keeps stdin open for the MCP protocol, and the volume persists the local cache and models across runs (first run downloads the models). Wire it into Claude Code:
+The `-i` flag keeps stdin open for the MCP protocol. On first use the slim image downloads the browser engine binary and the models into the volume (a one-time few-hundred-MB download); later runs reuse them. To skip the first-use browser-engine download, use the full variant:
 
 ```bash
-claude mcp add wigolo --scope user -- docker run -i --rm -v wigolo-data:/data ghcr.io/knockoutez/wigolo
+docker run -i --rm -v wigolo-data:/data ghcr.io/knockoutez/wigolo:full
+```
+
+Wire either variant into Claude Code:
+
+```bash
+claude mcp add wigolo -- docker run -i --rm -v wigolo-data:/data ghcr.io/knockoutez/wigolo
 ```
 
 Any MCP client works the same way: set `command` to `docker` and `args` to the run flags above. The image is also on Docker Hub as `towhid69420/wigolo`.
+
+**HTTP serve mode.** For a remote or multi-client setup, run the HTTP daemon instead with the [`packaging/compose.serve.yml`](packaging/compose.serve.yml) snippet, which publishes port `3333` and adds a health check:
+
+```bash
+docker compose -f packaging/compose.serve.yml up
+```
+
+**Bind-mount caveat.** The container runs as an unprivileged user (uid/gid `1000`). A named volume (as above) just works. If you bind-mount a host directory instead (`-v "$PWD/wigolo-data:/data"`), that directory must be writable by uid `1000` or the container hits `EACCES` — either `chown 1000:1000` the host path first, or prefer the named volume.
 
 ## Tools
 
