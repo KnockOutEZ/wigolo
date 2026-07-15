@@ -4,6 +4,10 @@ node_modules/
 dist/
 *.tgz
 
+# Single-file binary build (build:binary) — artifacts never committed
+packaging/binary/dist/
+/pkg.build.json
+
 # Database files
 *.db
 *.db-journal
