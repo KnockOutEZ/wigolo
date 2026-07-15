@@ -20,6 +20,7 @@ import {
   recordTlsImpersonationSuccess,
 } from '../cache/store.js';
 import { ChallengeBlockedError } from './browser-pool.js';
+import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
 import type { RawFetchResult, BrowserAction, Mode, StageError } from '../types.js';
 
@@ -161,6 +162,13 @@ export interface SmartRouterOptions {
   tlsPersistence?: TlsRoutingPersistence;
   /** Overrides the default HEAD/magic-bytes PDF probe (tests inject a stub). */
   pdfProbe?: PdfProbe;
+  /**
+   * Coordinates lazy browser-engine acquisition when the browser tier is
+   * entered on a machine without the browser installed. Injectable so router
+   * tests can control the acquisition outcome without touching the installer.
+   * Defaults to a shared {@link BrowserAcquirer}.
+   */
+  browserAcquirer?: BrowserAcquirer;
 }
 
 interface DomainStats {
@@ -325,6 +333,7 @@ export class SmartRouter {
   private readonly tlsFetcher: TlsFetcher;
   private readonly tlsPersistence: TlsRoutingPersistence;
   private readonly pdfProbe: PdfProbe;
+  private readonly browserAcquirer: BrowserAcquirer;
 
   constructor(httpClient: HttpClient, browserPool: BrowserPoolInterface);
   constructor(options: SmartRouterOptions);
@@ -357,6 +366,7 @@ export class SmartRouter {
       this.tlsFetcher = opts.tlsFetcher ?? tlsFetch;
       this.tlsPersistence = opts.tlsPersistence ?? defaultTlsPersistence();
       this.pdfProbe = opts.pdfProbe ?? defaultPdfProbe;
+      this.browserAcquirer = opts.browserAcquirer ?? new BrowserAcquirer();
       return;
     } else {
       // Backwards-compat: single HttpClient positional (unusual but safe)
@@ -367,6 +377,7 @@ export class SmartRouter {
     this.tlsFetcher = tlsFetch;
     this.tlsPersistence = defaultTlsPersistence();
     this.pdfProbe = defaultPdfProbe;
+    this.browserAcquirer = new BrowserAcquirer();
   }
 
   private makeDefaultHttpFetcher(): HttpFetcher {
@@ -422,14 +433,40 @@ export class SmartRouter {
    * to a structured `blocked_by_challenge` stage error instead of letting it
    * propagate as an unhandled throw. All other errors propagate unchanged.
    * Every browser-tier call site routes through here so the mapping is uniform.
+   *
+   * This is ALSO the single lazy-acquisition choke point (D3): before touching
+   * the browser pool we ensure the browser engine is installed. When it is not,
+   * a memoized background install is joined for a bounded budget; if it hasn't
+   * finished in time we DON'T block the tool call for minutes — we fall back to
+   * the best lower-tier content the caller already has (`fallback`, when the
+   * escalation site captured an HTTP/TLS response) with an actionable note, or,
+   * when no lower-tier content exists, return an actionable stage error.
    */
   private async browserFetch(
     url: string,
-    options: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string; screenshot?: boolean; actions?: BrowserAction[]; cdpUrl?: string; signal?: AbortSignal },
+    options: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string; screenshot?: boolean; actions?: BrowserAction[]; cdpUrl?: string; signal?: AbortSignal; fallback?: RawFetchResult },
   ): Promise<RawFetchResult | StageError> {
     if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
+
+    const { fallback, ...browserOptions } = options;
+    const acquired = await this.browserAcquirer.ensureBrowser();
+    if (acquired !== 'ready') {
+      const logger = createLogger('fetch');
+      if (fallback) {
+        logger.info('browser engine not ready within budget — returning lower-tier content with note', { url });
+        return { ...fallback, warning: BROWSER_INSTALLING_NOTE };
+      }
+      logger.info('browser engine not ready within budget and no lower-tier content — failing with actionable error', { url });
+      return {
+        error: 'browser_engine_unavailable',
+        error_reason: BROWSER_UNAVAILABLE_ERROR,
+        stage: 'fetch',
+        hint: 'run `wigolo warmup --browser` to install the browser engine now, then retry',
+      };
+    }
+
     try {
-      return await this.browserPool.fetchWithBrowser(url, options);
+      return await this.browserPool.fetchWithBrowser(url, browserOptions);
     } catch (err) {
       if (err instanceof ChallengeBlockedError) {
         return {
@@ -469,6 +506,26 @@ export class SmartRouter {
           statusCode: 200,
           method: 'http',
           headers: {},
+        };
+      }
+      // The stealth escalation uses the daemon browser helper
+      // (playwright-tier.ts), which is a browser-tier entry outside browserFetch.
+      // Thread lazy acquisition here too so no escalation call site is left
+      // unthreaded — when the browser can't be acquired within budget, return the
+      // static content already in hand with the actionable note rather than a
+      // hard failure or a minutes-long block.
+      const acquired = await this.browserAcquirer.ensureBrowser();
+      if (acquired !== 'ready') {
+        logger.info('stealth escalation: browser engine not ready within budget — returning static content with note', { url });
+        return {
+          url: staticResult.url,
+          finalUrl: staticResult.url,
+          html: staticResult.html,
+          contentType: 'text/html',
+          statusCode: 200,
+          method: 'http',
+          headers: {},
+          warning: BROWSER_INSTALLING_NOTE,
         };
       }
       try {
@@ -661,7 +718,7 @@ export class SmartRouter {
           tlsReason: tlsTry.reason,
         });
         stats.preferPlaywright = true;
-        return this.browserFetch(url, { headers, screenshot, signal });
+        return this.browserFetch(url, { headers, screenshot, signal, fallback: this.toRawFetchResult(result) });
       }
 
       // With TLS tier disabled, escalate to Playwright
@@ -682,7 +739,7 @@ export class SmartRouter {
           signal: describeAntiBot(result.statusCode, result.html),
         });
         stats.preferPlaywright = true;
-        return this.browserFetch(url, { headers, screenshot, signal });
+        return this.browserFetch(url, { headers, screenshot, signal, fallback: this.toRawFetchResult(result) });
       }
 
       // SPA-shell detection is only meaningful for 2xx
@@ -696,7 +753,7 @@ export class SmartRouter {
         if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
         logger.info('SPA shell detected, marking domain for playwright', { url, domain });
         stats.preferPlaywright = true;
-        return this.browserFetch(url, { headers, screenshot, signal });
+        return this.browserFetch(url, { headers, screenshot, signal, fallback: this.toRawFetchResult(result) });
       }
 
       // A known-SPA domain (pre-marked preferPlaywright
