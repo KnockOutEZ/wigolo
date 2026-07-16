@@ -105,9 +105,10 @@ function applySkillDirsAction(action: PlanAction, result: ApplyResult): void {
 function applyOwnedOrFencedAction(action: PlanAction, result: ApplyResult): void {
   const content = action.ownedContent ?? '';
   if (action.kind === 'fenced-block') {
-    // mergeBlock is idempotent; only counts as written if bytes change.
+    // ownedContent is already wrapped in wigolo:start/end markers by the
+    // planner. mergeBlock replaces/inserts the marked block idempotently.
     const before = existsSync(action.path) ? readFileSync(action.path, 'utf-8') : '';
-    mergeBlock(action.path, stripFence(content));
+    mergeBlock(action.path, content);
     const after = readFileSync(action.path, 'utf-8');
     if (before !== after) result.written.push(action.path);
   } else {
@@ -115,21 +116,6 @@ function applyOwnedOrFencedAction(action: PlanAction, result: ApplyResult): void
     if (writeIfChanged(action.path, content)) result.written.push(action.path);
   }
   recordReceipt(action, WINDSURF_DIGEST_PACK);
-}
-
-/** Strip our START/END fence wrapper so mergeBlock re-applies its own markers. */
-function stripFence(block: string): string {
-  const START = '<!-- wigolo:start';
-  const END = '<!-- wigolo:end -->';
-  let body = block;
-  const s = body.indexOf(START);
-  if (s !== -1) {
-    const nl = body.indexOf('\n', s);
-    body = nl === -1 ? '' : body.slice(nl + 1);
-  }
-  const e = body.indexOf(END);
-  if (e !== -1) body = body.slice(0, e);
-  return body.trim();
 }
 
 function recordReceipt(action: PlanAction, packName: string): void {
@@ -341,6 +327,9 @@ function removeSkillDirPack(
     }
   }
 
+  // Prune now-empty subdirs (e.g. rules/) so a pack with no survivors collapses.
+  pruneEmptySubdirs(packDir);
+
   // Remove pack dir only if empty; else list survivors.
   if (existsSync(packDir)) {
     const survivors = safeReaddir(packDir);
@@ -448,6 +437,27 @@ function safeReaddir(dir: string): string[] {
     return readdirSync(dir);
   } catch {
     return [];
+  }
+}
+
+/** Depth-first remove empty descendant dirs (not the root itself). */
+function pruneEmptySubdirs(root: string): void {
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.isDirectory()) {
+      const sub = join(root, e.name);
+      pruneEmptySubdirs(sub);
+      try {
+        if (readdirSync(sub).length === 0) rmdirSync(sub);
+      } catch {
+        // leave non-empty / unremovable
+      }
+    }
   }
 }
 
