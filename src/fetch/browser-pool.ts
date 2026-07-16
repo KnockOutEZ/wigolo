@@ -6,6 +6,7 @@ import { BrowserSelector, type SelectionStrategy } from './browser-selector.js';
 import { executeActions } from './action-executor.js';
 import { HYDRATION_PROBE_SOURCE } from './hydration-probe.js';
 import { abortRejection } from '../util/abort.js';
+import { sanitizedChildEnv } from '../util/child-env.js';
 import { isAntiBotStatus, hasBrowserChallengeBody, isChallengeShell } from './tls-tier.js';
 import type { RawFetchResult, BrowserType, ActionResult, BrowserAction } from '../types.js';
 
@@ -206,7 +207,7 @@ export class MultiBrowserPool {
     if (!typePool.browser) {
       const launcher = getLauncher(type);
       log.debug('launching browser', { type });
-      typePool.browser = await launcher.launch({ headless: true });
+      typePool.browser = await launcher.launch({ headless: true, env: sanitizedChildEnv() });
     }
     return typePool.browser;
   }

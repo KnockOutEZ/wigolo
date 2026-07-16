@@ -43,6 +43,7 @@ vi.mock('playwright', () => {
 });
 
 import { MultiBrowserPool } from '../../../src/fetch/browser-pool.js';
+import { chromium } from 'playwright';
 import type { BrowserType } from '../../../src/types.js';
 
 describe('MultiBrowserPool', () => {
@@ -70,6 +71,25 @@ describe('MultiBrowserPool', () => {
   it('constructs with all three browser types', () => {
     const pool = new MultiBrowserPool({ browserTypes: ['chromium', 'firefox', 'webkit'] });
     expect(pool.getConfiguredTypes()).toEqual(['chromium', 'firefox', 'webkit']);
+  });
+
+  it('launches the browser engine with an environment stripped of the API token', async () => {
+    process.env.WIGOLO_API_TOKEN = 'daemon-secret';
+    process.env.WIGOLO_API_TOKEN_FILE = '/run/secrets/api-token';
+
+    const pool = new MultiBrowserPool({ browserTypes: ['chromium'] });
+    await pool.fetchWithBrowser('https://example.com');
+
+    expect(chromium.launch).toHaveBeenCalled();
+    const launchOpts = vi.mocked(chromium.launch).mock.calls[0]?.[0] as
+      | { headless?: boolean; env?: NodeJS.ProcessEnv }
+      | undefined;
+    expect(launchOpts).toBeDefined();
+    expect(launchOpts!.headless).toBe(true);
+    expect(launchOpts!.env).toBeDefined();
+    expect(launchOpts!.env!.WIGOLO_API_TOKEN).toBeUndefined();
+    expect(launchOpts!.env!.WIGOLO_API_TOKEN_FILE).toBeUndefined();
+    await pool.shutdown();
   });
 
   it('fetchWithBrowser uses default type when none specified', async () => {
