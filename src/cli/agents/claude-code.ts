@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, writeFileSync, rmSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync, execSync } from 'node:child_process';
-import { mergeBlock, removeBlock, readAsset, readSkillDir, mergeMcpJson } from './utils.js';
+import { mergeBlock, removeBlock, readAsset, mergeMcpJson } from './utils.js';
+import { installSkills as installSkillsEngine } from './skills/index.js';
 
 function claudeDir(): string {
   return join(homedir(), '.claude');
@@ -67,63 +68,11 @@ async function installInstructions(): Promise<void> {
   mergeBlock(target, block);
 }
 
-const SKILL_DIRS = [
-  'wigolo',
-  'wigolo-search',
-  'wigolo-fetch',
-  'wigolo-crawl',
-  'wigolo-extract',
-  'wigolo-find-similar',
-  'wigolo-research',
-  'wigolo-agent',
-];
-
 async function installSkills(): Promise<void> {
-  const skillsBase = join(claudeDir(), 'skills');
-
-  const plan = SKILL_DIRS.map((dirName) => ({
-    dirName,
-    dest: join(skillsBase, dirName),
-    files: readSkillDir(dirName),
-  }));
-
-  // Pre-flight: a regular file at any skill dest would cause mkdir to throw
-  // mid-loop and leave a partial install. Detect before any writes.
-  for (const { dest } of plan) {
-    if (existsSync(dest) && !statSync(dest).isDirectory()) {
-      throw new Error(
-        `wigolo install: ${dest} exists but is not a directory — refuse to overwrite`,
-      );
-    }
-  }
-
-  mkdirSync(skillsBase, { recursive: true });
-
-  // Track which top-level skill dirs we created so a mid-loop write failure
-  // can be rolled back without touching pre-existing user content.
-  const createdDirs: string[] = [];
-  try {
-    for (const { dest, files } of plan) {
-      const dirExistedBefore = existsSync(dest);
-      mkdirSync(dest, { recursive: true });
-      if (!dirExistedBefore) createdDirs.push(dest);
-
-      for (const [relPath, content] of Object.entries(files)) {
-        const target = join(dest, relPath);
-        mkdirSync(dirname(target), { recursive: true });
-        writeFileSync(target, content, 'utf-8');
-      }
-    }
-  } catch (err) {
-    for (const dir of createdDirs) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best-effort rollback
-      }
-    }
-    throw err;
-  }
+  // Delegate to the skills engine: global scope, ALL catalog packs (11, incl.
+  // cache/diff/watch), for claude-code. The engine handles receipts, adopt /
+  // upgrade / refuse resolution, and rollback.
+  installSkillsEngine({ scope: 'global', agents: ['claude-code'], cwd: process.cwd() });
 }
 
 async function installCommand(): Promise<void> {
@@ -153,15 +102,9 @@ async function uninstall(): Promise<{ removed: string[] }> {
     removed.push('~/.claude/CLAUDE.md block');
   }
 
-  // Remove skill directories
-  const skillsBase = join(claudeDir(), 'skills');
-  for (const dirName of SKILL_DIRS) {
-    const skillDir = join(skillsBase, dirName);
-    if (existsSync(skillDir)) {
-      rmSync(skillDir, { recursive: true, force: true });
-      removed.push(`~/.claude/skills/${dirName}`);
-    }
-  }
+  // NOTE: skill-dir teardown is owned by the skills engine's uninstall sweep
+  // (wired in a later slice). Intentionally NOT reimplemented here — a naive
+  // recursive rm would ignore receipts and user-modified files.
 
   // Remove command
   const commandFile = join(claudeDir(), 'commands', 'wigolo.md');

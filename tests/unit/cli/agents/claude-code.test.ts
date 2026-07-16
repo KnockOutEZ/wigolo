@@ -17,19 +17,30 @@ vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
 }));
 
+// installSkills now delegates to the skills engine, which writes receipts under
+// getConfig().dataDir — point it at a temp dir so tests never touch ~/.wigolo.
+vi.mock('../../../../src/config.js', () => ({
+  getConfig: vi.fn(() => ({ dataDir: tmpData })),
+}));
+
 import { execSync, execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 
 let tmpHome: string;
+let tmpData: string;
 
 beforeEach(() => {
-  tmpHome = join(tmpdir(), `wigolo-cc-test-${Date.now()}`);
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  tmpHome = join(tmpdir(), `wigolo-cc-test-${stamp}`);
+  tmpData = join(tmpdir(), `wigolo-cc-data-${stamp}`);
   mkdirSync(tmpHome, { recursive: true });
+  mkdirSync(tmpData, { recursive: true });
   vi.mocked(homedir).mockReturnValue(tmpHome);
 });
 
 afterEach(() => {
   rmSync(tmpHome, { recursive: true, force: true });
+  rmSync(tmpData, { recursive: true, force: true });
   vi.clearAllMocks();
 });
 
@@ -121,18 +132,19 @@ describe('claudeCodeHandler.installInstructions', () => {
   });
 });
 
-describe('claudeCodeHandler.installSkills', () => {
-  it('creates all 8 skill directories in ~/.claude/skills/', async () => {
+describe('claudeCodeHandler.installSkills (engine-delegated)', () => {
+  it('installs ALL 11 canonical packs (incl. cache/diff/watch) into ~/.claude/skills/', async () => {
     vi.mocked(execSync).mockReturnValue(Buffer.from(''));
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
     await claudeCodeHandler.installSkills();
     const skillsDir = join(tmpHome, '.claude', 'skills');
     const expected = [
-      'wigolo', 'wigolo-search', 'wigolo-fetch', 'wigolo-crawl',
+      'wigolo', 'wigolo-search', 'wigolo-fetch', 'wigolo-crawl', 'wigolo-cache',
       'wigolo-extract', 'wigolo-find-similar', 'wigolo-research', 'wigolo-agent',
+      'wigolo-diff', 'wigolo-watch',
     ];
     for (const dir of expected) {
-      expect(existsSync(join(skillsDir, dir, 'SKILL.md'))).toBe(true);
+      expect(existsSync(join(skillsDir, dir, 'SKILL.md')), dir).toBe(true);
     }
   });
 
@@ -144,41 +156,27 @@ describe('claudeCodeHandler.installSkills', () => {
     expect(existsSync(join(tmpHome, '.claude', 'skills', 'wigolo', 'rules', 'synthesis.md'))).toBe(true);
   });
 
-  it('aborts before any writes when a skill dest path exists as a regular file', async () => {
-    // A path collision (file where we want a directory) used to throw mid-loop
-    // and leave skills installed up to that point. Pre-flight should detect
-    // the collision and refuse to start.
+  it('writes a receipt store under the configured dataDir', async () => {
+    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
+    await claudeCodeHandler.installSkills();
+    expect(existsSync(join(tmpData, 'skills', 'receipts.json'))).toBe(true);
+  });
+
+  it('refuses (does NOT throw, does NOT overwrite) when a pack-dir slot is a regular file', async () => {
+    // The engine surfaces this as a refused action rather than throwing; the
+    // colliding file is left intact and other packs still install.
     vi.mocked(execSync).mockReturnValue(Buffer.from(''));
     const skillsBase = join(tmpHome, '.claude', 'skills');
     mkdirSync(skillsBase, { recursive: true });
     writeFileSync(join(skillsBase, 'wigolo-extract'), 'I am a file, not a dir', 'utf-8');
 
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
-    await expect(claudeCodeHandler.installSkills()).rejects.toThrow();
+    await expect(claudeCodeHandler.installSkills()).resolves.toBeUndefined();
 
-    // No other skill dirs should have been touched.
-    expect(existsSync(join(skillsBase, 'wigolo', 'SKILL.md'))).toBe(false);
-    expect(existsSync(join(skillsBase, 'wigolo-search', 'SKILL.md'))).toBe(false);
-    expect(existsSync(join(skillsBase, 'wigolo-fetch', 'SKILL.md'))).toBe(false);
-  });
-
-  it('rolls back freshly-created skill dirs when a mid-install write fails', async () => {
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
-    const skillsBase = join(tmpHome, '.claude', 'skills');
-    mkdirSync(skillsBase, { recursive: true });
-
-    // Force a mid-install failure: claim wigolo-research as a read-only file.
-    // The pre-flight collision check catches this AND rejects before any
-    // writes — exactly the desired behavior. Verify no partial install.
-    writeFileSync(join(skillsBase, 'wigolo-research'), 'collision', 'utf-8');
-
-    const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
-    await expect(claudeCodeHandler.installSkills()).rejects.toThrow();
-
-    // None of the other skill dirs should have been left behind.
-    for (const d of ['wigolo', 'wigolo-search', 'wigolo-fetch', 'wigolo-crawl', 'wigolo-extract', 'wigolo-find-similar', 'wigolo-agent']) {
-      expect(existsSync(join(skillsBase, d, 'SKILL.md'))).toBe(false);
-    }
+    // Colliding file untouched; a non-colliding pack still installed.
+    expect(readFileSync(join(skillsBase, 'wigolo-extract'), 'utf-8')).toBe('I am a file, not a dir');
+    expect(existsSync(join(skillsBase, 'wigolo', 'SKILL.md'))).toBe(true);
   });
 });
 
@@ -236,11 +234,13 @@ describe('claudeCodeHandler.uninstall', () => {
     expect(args).toContain('user');
   });
 
-  it('removes skill directories', async () => {
+  it('does NOT tear down skill directories (sweep is owned by the engine, wired later)', async () => {
     vi.mocked(execSync).mockReturnValue(Buffer.from(''));
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
     await claudeCodeHandler.installSkills();
     await claudeCodeHandler.uninstall();
-    expect(existsSync(join(tmpHome, '.claude', 'skills', 'wigolo'))).toBe(false);
+    // Skill dirs must remain — a naive recursive rm was removed on purpose so
+    // receipts + user-modified files are respected by the future sweep.
+    expect(existsSync(join(tmpHome, '.claude', 'skills', 'wigolo', 'SKILL.md'))).toBe(true);
   });
 });

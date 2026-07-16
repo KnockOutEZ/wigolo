@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync, lstatSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, lstatSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
@@ -22,28 +22,6 @@ export function getVersion(): string {
 export function readAsset(relPath: string): string {
   const full = join(getPackageRoot(), 'assets', relPath);
   return readFileSync(full, 'utf-8').replace(/\{version\}/g, getVersion());
-}
-
-/** Returns { 'SKILL.md': content, 'rules/cache-first.md': content, ... } */
-export function readSkillDir(name: string): Record<string, string> {
-  const dir = join(getPackageRoot(), 'skills', name);
-  const result: Record<string, string> = {};
-
-  const mainPath = join(dir, 'SKILL.md');
-  if (existsSync(mainPath)) {
-    result['SKILL.md'] = readFileSync(mainPath, 'utf-8');
-  }
-
-  const rulesDir = join(dir, 'rules');
-  if (existsSync(rulesDir)) {
-    for (const file of readdirSync(rulesDir)) {
-      if (file.endsWith('.md')) {
-        result[`rules/${file}`] = readFileSync(join(rulesDir, file), 'utf-8');
-      }
-    }
-  }
-
-  return result;
 }
 
 /**
