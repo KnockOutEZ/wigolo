@@ -303,6 +303,45 @@ describe('DaemonHttpServer', () => {
     }
   });
 
+  it('sets server-level request + headers timeouts after start() (slow-loris guard, L2)', async () => {
+    // WHY: without explicit server.requestTimeout / headersTimeout a slow-drip
+    // client stays under the byte cap yet holds a connection (and, since /v1
+    // acquires a slot before the body read, a slot) for Node's ~300s default.
+    // These bounded values cut a slow body/headers off. A revert to the Node
+    // defaults (0 for requestTimeout) fails this.
+    delete process.env.WIGOLO_SERVE_REQUEST_TIMEOUT_MS;
+    delete process.env.WIGOLO_SERVE_HEADERS_TIMEOUT_MS;
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1' });
+    try {
+      await daemon.start();
+      const server = (daemon as unknown as { httpServer: import('node:http').Server }).httpServer;
+      expect(server.requestTimeout).toBe(120000);
+      expect(server.headersTimeout).toBe(60000);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('honours env overrides for the server-level timeouts (L2)', async () => {
+    process.env.WIGOLO_SERVE_REQUEST_TIMEOUT_MS = '45000';
+    process.env.WIGOLO_SERVE_HEADERS_TIMEOUT_MS = '15000';
+    resetConfig();
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1' });
+    try {
+      await daemon.start();
+      const server = (daemon as unknown as { httpServer: import('node:http').Server }).httpServer;
+      expect(server.requestTimeout).toBe(45000);
+      expect(server.headersTimeout).toBe(15000);
+    } finally {
+      await daemon.stop();
+      delete process.env.WIGOLO_SERVE_REQUEST_TIMEOUT_MS;
+      delete process.env.WIGOLO_SERVE_HEADERS_TIMEOUT_MS;
+      resetConfig();
+    }
+  });
+
   it('rejects second instance on same port with EADDRINUSE', async () => {
     const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
     const daemon1 = new DaemonHttpServer({ port: 0, host: '127.0.0.1' });

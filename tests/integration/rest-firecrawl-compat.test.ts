@@ -210,6 +210,114 @@ describe('Firecrawl-compat — auth applies (token mode)', () => {
   }, 30000);
 });
 
+describe('Firecrawl-compat — shim shares the /v1 concurrency cap + deadline (D7/D11)', () => {
+  // WHY: the shim rides the SAME router pipeline as /v1, so it MUST take a
+  // concurrency slot and run under a per-route deadline. Before the fix the
+  // shim branch called handleCompatRequest directly — no slot, no deadline —
+  // making it an unbounded escape hatch. Each row below fails if the wrapper is
+  // removed (asserts 429 / 504, not merely 200).
+  let daemon: DaemonHttpServer;
+  let port: number;
+  // A slow origin the shim's scrape blocks on for ~2s, so the two in-flight
+  // scrapes reliably hold both slots while a third arrives. The delay stays
+  // under the 10s fetch timeout so the HTTP tier completes normally (no
+  // browser-engine escalation) and each scrape returns 200.
+  let slowServer: http.Server;
+  let slowPort: number;
+  const SLOW_MS = 2000;
+
+  beforeAll(async () => {
+    process.env.WIGOLO_FIRECRAWL_COMPAT = '1';
+    process.env.WIGOLO_SERVE_MAX_CONCURRENCY = '2';
+    delete process.env.WIGOLO_API_TOKEN;
+    slowServer = http.createServer((_req, res) => {
+      setTimeout(() => {
+        if (res.writableEnded) return;
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html><body><p>slow body with enough words to extract cleanly here</p></body></html>');
+      }, SLOW_MS);
+    });
+    await new Promise<void>((r) => slowServer.listen(0, '127.0.0.1', () => r()));
+    slowPort = (slowServer.address() as { port: number }).port;
+    daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', apiToken: null });
+    const url = await daemon.start();
+    port = parseInt(new URL(url).port, 10);
+  }, 30000);
+
+  afterAll(async () => {
+    await daemon.stop();
+    await new Promise<void>((r) => slowServer.close(() => r()));
+    delete process.env.WIGOLO_FIRECRAWL_COMPAT;
+    delete process.env.WIGOLO_SERVE_MAX_CONCURRENCY;
+  }, 30000);
+
+  it('over-cap in-flight shim scrapes → 429 with Retry-After; releasing frees capacity', async () => {
+    // Fill both slots with scrapes that block on the slow origin for ~2s.
+    const inflight = [
+      post(port, `${PREFIX}/v1/scrape`, { url: `http://127.0.0.1:${slowPort}/a` }, {}, 30000),
+      post(port, `${PREFIX}/v1/scrape`, { url: `http://127.0.0.1:${slowPort}/b` }, {}, 30000),
+    ];
+    // Give both a moment to acquire slots + reach the blocking origin fetch.
+    await new Promise((r) => setTimeout(r, 400));
+
+    // Third request cannot get a slot → 429 (property that fails without the wrapper).
+    const over = await post(port, `${PREFIX}/v1/scrape`, { url: `http://127.0.0.1:${slowPort}/c` }, {}, 30000);
+    expect(over.status).toBe(429);
+    expect(over.headers['retry-after']).toBe('5');
+
+    // The in-flight scrapes settle once the origin responds, freeing both slots.
+    const settled = await Promise.all(inflight);
+    expect(settled.every((r) => r.status === 200)).toBe(true);
+
+    // Capacity restored — a fresh scrape succeeds (slot was released on settle).
+    const after = await post(port, `${PREFIX}/v1/scrape`, { url: `http://127.0.0.1:${slowPort}/d` }, {}, 30000);
+    expect(after.status).toBe(200);
+  }, 40000);
+});
+
+describe('Firecrawl-compat — shim deadline (504) holds the slot until settle', () => {
+  // WHY: a shim request that exceeds its per-route deadline must yield a 504 AND
+  // keep its slot until the underlying work settles — identical to /v1. This
+  // fails if the shim skips the deadline wrapper (it would 200/hang, never 504).
+  let daemon: DaemonHttpServer;
+  let port: number;
+  let hangServer: http.Server;
+  let hangPort: number;
+  const openResponses: http.ServerResponse[] = [];
+
+  beforeAll(async () => {
+    process.env.WIGOLO_FIRECRAWL_COMPAT = '1';
+    process.env.WIGOLO_SERVE_MAX_CONCURRENCY = '1';
+    process.env.WIGOLO_SERVE_TIMEOUT_SCALE = '0.001'; // fetch route 120s → ~120ms
+    delete process.env.WIGOLO_API_TOKEN;
+    hangServer = http.createServer((_req, res) => { openResponses.push(res); });
+    await new Promise<void>((r) => hangServer.listen(0, '127.0.0.1', () => r()));
+    hangPort = (hangServer.address() as { port: number }).port;
+    daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', apiToken: null });
+    const url = await daemon.start();
+    port = parseInt(new URL(url).port, 10);
+  }, 30000);
+
+  afterAll(async () => {
+    for (const res of openResponses) { try { res.destroy(); } catch { /* ignore */ } }
+    await daemon.stop();
+    await new Promise<void>((r) => hangServer.close(() => r()));
+    delete process.env.WIGOLO_FIRECRAWL_COMPAT;
+    delete process.env.WIGOLO_SERVE_MAX_CONCURRENCY;
+    delete process.env.WIGOLO_SERVE_TIMEOUT_SCALE;
+  }, 30000);
+
+  it('slow shim scrape → 504 route_timeout; slot stays held (next request → 429)', async () => {
+    const first = await post(port, `${PREFIX}/v1/scrape`, { url: `http://127.0.0.1:${hangPort}/hang` }, {}, 30000);
+    expect(first.status).toBe(504);
+    expect((first.body as { error_reason?: string }).error_reason).toBe('route_timeout');
+
+    // The underlying fetch is still hanging → the slot is held → next request 429.
+    const second = await post(port, `${PREFIX}/v1/scrape`, { url: `http://127.0.0.1:${hangPort}/hang2` }, {}, 30000);
+    expect(second.status).toBe(429);
+  }, 40000);
+});
+
 describe('Firecrawl-compat — SSRF escape-hatch closed (override / non-loopback bind)', () => {
   let daemon: DaemonHttpServer;
   let port: number;

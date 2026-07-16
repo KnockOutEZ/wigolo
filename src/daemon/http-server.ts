@@ -16,6 +16,26 @@ import type { RestRouter } from './rest/router.js';
 
 const log = createLogger('server');
 
+/**
+ * Server-level slow-loris guards. Without these, a slow-drip client stays under
+ * the per-request byte cap yet holds a connection (and, since /v1 acquires a
+ * concurrency slot before the body read, a slot) for Node's ~300s default
+ * requestTimeout. These bounded defaults cut a slow body/headers off well
+ * before that while leaving legit large crawls-over-REST room. Both are
+ * env-overridable.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+const DEFAULT_HEADERS_TIMEOUT_MS = 60_000;
+
+function envTimeoutMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return fallback;
+}
+
 export interface DaemonOptions {
   port: number;
   host: string;
@@ -129,6 +149,10 @@ export class DaemonHttpServer {
         }
       });
     });
+
+    // Slow-loris guards (env-overridable). See DEFAULT_*_TIMEOUT_MS above.
+    this.httpServer.requestTimeout = envTimeoutMs('WIGOLO_SERVE_REQUEST_TIMEOUT_MS', DEFAULT_REQUEST_TIMEOUT_MS);
+    this.httpServer.headersTimeout = envTimeoutMs('WIGOLO_SERVE_HEADERS_TIMEOUT_MS', DEFAULT_HEADERS_TIMEOUT_MS);
 
     return new Promise<string>((resolve, reject) => {
       this.httpServer!.on('error', (err) => {

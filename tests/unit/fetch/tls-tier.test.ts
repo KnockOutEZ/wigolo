@@ -564,6 +564,100 @@ describe('tls-tier: profile rotation on Cloudflare challenge', () => {
   });
 });
 
+describe('tls-tier: redirect SSRF re-guard (manual hop loop)', () => {
+  // WHY: guardedBackendFetch drives redirect:'manual' and re-guards every
+  // resolved Location with guardFetchUrl, throwing "Redirect blocked: …" on a
+  // private/metadata target. This is the THIRD re-guard site (alongside
+  // http-client + defaultPdfProbe) and had NO negative test — a silent revert
+  // to redirect:'follow' would reopen SSRF-via-redirect on the TLS tier with
+  // every other test still green. These rows pin the guard at this tier.
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    resetConfig();
+    _setTlsBackendForTests(null);
+    _resetTlsBackend();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    resetConfig();
+    _setTlsBackendForTests(null);
+    _resetTlsBackend();
+  });
+
+  // A backend whose responses are keyed by requested URL: a 3xx with a Location
+  // header per `redirects`, else a terminal 200. Records the URLs it was asked
+  // to fetch so a blocked hop can be shown to NEVER reach the backend.
+  function redirectingBackend(
+    redirects: Record<string, string>,
+    fetched: string[],
+  ) {
+    _setTlsBackendForTests({
+      fetch: async (url, init) => {
+        fetched.push(url);
+        // The guarded loop MUST drive redirects itself.
+        expect(init?.redirect).toBe('manual');
+        const loc = redirects[url];
+        if (loc) {
+          return {
+            status: 302,
+            url,
+            headers: { entries: function* () { yield ['location', loc]; } },
+            text: async () => '',
+          };
+        }
+        return {
+          status: 200,
+          url,
+          headers: { entries: function* () { yield ['content-type', 'text/html']; } },
+          text: async () => `<html><body>arrived at ${url}</body></html>`,
+        };
+      },
+    });
+  }
+
+  it('refuses a 302 into a link-local metadata address (169.254.169.254)', async () => {
+    const fetched: string[] = [];
+    redirectingBackend(
+      { 'https://public.example.net/start': 'http://169.254.169.254/latest/meta-data/' },
+      fetched,
+    );
+    await expect(tlsFetch('https://public.example.net/start')).rejects.toThrow(
+      /blocked|metadata|link-local|private/i,
+    );
+    // The metadata target must NEVER be fetched — the guard fires before the hop.
+    expect(fetched).not.toContain('http://169.254.169.254/latest/meta-data/');
+  });
+
+  it('refuses a 302 into a private RFC1918 address by default', async () => {
+    const fetched: string[] = [];
+    redirectingBackend(
+      { 'https://public.example.net/start': 'http://10.0.0.5/internal' },
+      fetched,
+    );
+    await expect(tlsFetch('https://public.example.net/start')).rejects.toThrow(
+      /blocked|private|link-local|metadata/i,
+    );
+    expect(fetched).not.toContain('http://10.0.0.5/internal');
+  });
+
+  it('follows a benign public 302 through to a 200 destination', async () => {
+    const fetched: string[] = [];
+    redirectingBackend(
+      { 'https://public.example.net/start': 'https://public.example.org/final' },
+      fetched,
+    );
+    const result = await tlsFetch('https://public.example.net/start');
+    expect(result.statusCode).toBe(200);
+    expect(result.html).toContain('arrived at https://public.example.org/final');
+    // Proves the guarded loop actually followed the hop to the public target.
+    expect(fetched).toEqual([
+      'https://public.example.net/start',
+      'https://public.example.org/final',
+    ]);
+  });
+});
+
 describe('tls-tier: MCP-stdio safety', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };

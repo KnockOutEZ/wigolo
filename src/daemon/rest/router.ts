@@ -38,6 +38,23 @@ const TOOLS = new Set([
 
 const SHIM_PREFIX = '/compat/firecrawl';
 
+/**
+ * Deadline the shim shares with the mapped native tool (D7/D11). scrape→fetch,
+ * search→search, map→crawl; the crawl-START POST returns immediately (the
+ * background crawl self-limits via runningCrawlJobs, NOT a router slot) and the
+ * crawl-STATUS GET is a cheap store lookup — both get a SHORT deadline for the
+ * request work itself. Any other/unknown subpath falls back to the short
+ * deadline. `sub` is the path after the `/compat/firecrawl` prefix.
+ */
+const SHIM_SHORT_DEADLINE_MS = 15_000;
+function shimTimeoutTool(sub: string): string | null {
+  const s = sub.replace(/\/+$/, '') || '/';
+  if (s === '/v1/scrape') return 'fetch';
+  if (s === '/v1/search') return 'search';
+  if (s === '/v1/map') return 'crawl';
+  return null; // crawl-start, crawl-status, unknown → SHORT deadline
+}
+
 export interface RestRouterOptions {
   subsystems: Subsystems;
   bindHost: string;
@@ -103,12 +120,22 @@ export class RestRouter {
           this.sendError(res, notFound());
           return;
         }
-        const { handleCompatRequest } = await import('./firecrawl-compat.js');
-        await handleCompatRequest(req, res, {
-          subsystems: this.opts.subsystems,
-          bindIsLoopback: this.bindIsLoopback,
-          subPath: pathname.slice(SHIM_PREFIX.length) || '/',
-          respond: (status, body, headers) => this.respond(res, status, body, headers),
+        const subPath = pathname.slice(SHIM_PREFIX.length) || '/';
+        // The shim shares the SAME slot+deadline discipline as /v1 (D7/D11) —
+        // it is NOT an escape hatch. A slot is acquired before the compat work
+        // and released only when it settles; a deadline (mapped tool for the
+        // synchronous routes, short otherwise) yields a 504 while the slot is
+        // held until the work settles.
+        const mappedTool = shimTimeoutTool(subPath);
+        const deadline = mappedTool ? deadlineFor(mappedTool) : SHIM_SHORT_DEADLINE_MS;
+        await this.runUnderSlotAndDeadline(res, deadline, mappedTool ?? 'compat', async () => {
+          const { handleCompatRequest } = await import('./firecrawl-compat.js');
+          await handleCompatRequest(req, res, {
+            subsystems: this.opts.subsystems,
+            bindIsLoopback: this.bindIsLoopback,
+            subPath,
+            respond: (status, body, headers) => this.respond(res, status, body, headers),
+          });
         });
         return;
       }
@@ -159,8 +186,25 @@ export class RestRouter {
     }
   }
 
-  private async handleToolRequest(tool: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    // Concurrency slot — acquired pre-dispatch, released ONLY on handler settle.
+  /**
+   * Run one unit of request work under the shared slot + deadline discipline
+   * (D7). Acquires a concurrency slot BEFORE `work()` runs (→ 429 if the cap is
+   * exhausted) and runs `work()` under a per-route `deadline` (→ 504
+   * `route_timeout`). The slot is released ONLY when `work()` settles — never
+   * when the 504 is written — so stranded work cannot accumulate past the cap.
+   * A late settle/rejection after a 504 releases the slot and logs; the shared
+   * `respond()` guards the double-write. `work(releaseSlot)` writes its own
+   * success/failure response, and may call `releaseSlot` early to free the slot
+   * on a pre-dispatch reject (e.g. a body-cap 413) before it resolves. Used by
+   * both `/v1/{tool}` dispatch and the Firecrawl-compat shim so the two share
+   * identical bounds (D11 — the shim is not an escape hatch).
+   */
+  private async runUnderSlotAndDeadline(
+    res: ServerResponse,
+    deadline: number,
+    label: string,
+    work: (releaseSlot: () => void) => Promise<void>,
+  ): Promise<void> {
     if (!this.slots.tryAcquire()) {
       this.sendError(res, tooManyRequests());
       return;
@@ -173,7 +217,32 @@ export class RestRouter {
       }
     };
 
-    try {
+    const workPromise = work(releaseSlot)
+      .then(() => {
+        releaseSlot();
+      })
+      .catch((err) => {
+        releaseSlot();
+        log.error('REST request work threw', { tool: label, error: String(err) });
+        this.sendError(res, internalError());
+      });
+
+    let timer: NodeJS.Timeout;
+    const timeoutPromise = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        // Deadline hit: respond 504 but keep the slot until the work settles.
+        this.sendError(res, routeTimeout(label));
+        resolve();
+      }, deadline);
+    });
+
+    await Promise.race([workPromise.finally(() => clearTimeout(timer)), timeoutPromise]);
+    // Detach so a late rejection cannot become an unhandled rejection.
+    workPromise.catch(() => { /* already handled above */ });
+  }
+
+  private async handleToolRequest(tool: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    await this.runUnderSlotAndDeadline(res, deadlineFor(tool), tool, async (releaseSlot) => {
       // Body cap read.
       let body: unknown;
       try {
@@ -212,39 +281,10 @@ export class RestRouter {
         return;
       }
 
-      // Dispatch under a deadline. The slot is released ONLY when the dispatch
-      // promise settles — never when the 504 is written. A late settle after a
-      // 504 releases the slot + logs; respond() guards the double-write.
+      // Dispatch — the slot is released when this settles (see helper).
       const ctx: DispatchContext = { subsystems: this.opts.subsystems, bindIsLoopback: this.bindIsLoopback };
-      const deadline = deadlineFor(tool);
-
-      const dispatchPromise = dispatchTool(tool, body, ctx)
-        .then((result) => {
-          releaseSlot();
-          this.respond(res, result.status, result.body, result.headers ?? {});
-        })
-        .catch((err) => {
-          releaseSlot();
-          log.error('REST dispatch threw', { tool, error: String(err) });
-          this.sendError(res, internalError());
-        });
-
-      let timer: NodeJS.Timeout;
-      const timeoutPromise = new Promise<void>((resolve) => {
-        timer = setTimeout(() => {
-          // Deadline hit: respond 504 but keep the slot until dispatch settles.
-          this.sendError(res, routeTimeout(tool));
-          resolve();
-        }, deadline);
-      });
-
-      await Promise.race([dispatchPromise.finally(() => clearTimeout(timer)), timeoutPromise]);
-      // Detach the dispatch promise so a late rejection cannot become unhandled.
-      dispatchPromise.catch(() => { /* already handled above */ });
-    } catch (err) {
-      releaseSlot();
-      log.error('REST tool request failed', { tool, error: String(err) });
-      this.sendError(res, internalError());
-    }
+      const result = await dispatchTool(tool, body, ctx);
+      this.respond(res, result.status, result.body, result.headers ?? {});
+    });
   }
 }
