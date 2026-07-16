@@ -17,6 +17,7 @@
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
+import { guardFetchUrl } from '../watch/ssrf.js';
 
 const log = createLogger('fetch');
 
@@ -265,15 +266,45 @@ export async function tlsFetch(url: string, options: TlsFetchOptions = {}): Prom
   }
 
   const profiles = buildProfileRotation(config.tlsBrowser);
+  const allowPrivate = config.fetchAllowPrivate;
+  const maxHops = config.maxRedirects;
+
+  // Manual, SSRF-re-guarded redirect follower for the TLS-impersonation tier.
+  // The backend would otherwise follow 3xx internally with no per-hop guard,
+  // so a public URL could be redirected onto a private/metadata target. We
+  // follow hops ourselves (redirect:'manual') and re-guard every resolved
+  // Location under the same policy the input URL got.
+  const guardedBackendFetch = async (browser: string): Promise<WreqResponse> => {
+    let current = url;
+    const seen = new Set<string>();
+    for (let hop = 0; hop <= maxHops; hop++) {
+      if (seen.has(current)) throw new Error(`redirect loop at ${current}`);
+      seen.add(current);
+      const resp = await backend.fetch(current, {
+        headers: options.headers,
+        browser,
+        signal,
+        redirect: 'manual',
+      });
+      if (resp.status >= 300 && resp.status < 400) {
+        const loc = headersToRecord(resp.headers)['location'];
+        if (!loc) return resp;
+        current = new URL(loc, current).toString();
+        const guard = guardFetchUrl(current, 'redirect location', { allowPrivate });
+        if (!guard.ok) {
+          throw new Error(`Redirect blocked: ${guard.reason}. ${guard.hint}`);
+        }
+        continue;
+      }
+      return resp;
+    }
+    throw new Error(`too many redirects from ${url}`);
+  };
 
   try {
     let last: TlsFetchResult | undefined;
     for (const browser of profiles) {
-      const response = await backend.fetch(url, {
-        headers: options.headers,
-        browser,
-        signal,
-      });
+      const response = await guardedBackendFetch(browser);
       const result = await readResponse(url, response);
 
       // Healthy response — return immediately. No rotation on a first-try win.

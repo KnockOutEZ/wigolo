@@ -1,6 +1,7 @@
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
+import { guardFetchUrl } from '../watch/ssrf.js';
 
 export interface HttpFetchOptions {
   headers?: Record<string, string>;
@@ -10,6 +11,13 @@ export interface HttpFetchOptions {
     ifModifiedSince?: string;
   };
   signal?: AbortSignal;
+  /**
+   * Whether private/LAN redirect targets are permitted. Defaults to the
+   * resolved `WIGOLO_FETCH_ALLOW_PRIVATE` config so the redirect re-guard uses
+   * the same policy the input URL was guarded under. Link-local / metadata
+   * targets stay blocked regardless.
+   */
+  allowPrivate?: boolean;
 }
 
 export interface HttpFetchResult {
@@ -73,6 +81,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
   const maxRetries = config.fetchMaxRetries;
   const timeoutMs = options.timeoutMs ?? config.fetchTimeoutMs;
   const maxRedirects = config.maxRedirects;
+  const allowPrivate = options.allowPrivate ?? config.fetchAllowPrivate;
   const external = options.signal;
 
   let lastError: unknown;
@@ -87,7 +96,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
     }
 
     try {
-      const result = await fetchWithRedirects(url, options, timeoutMs, maxRedirects, logger);
+      const result = await fetchWithRedirects(url, options, timeoutMs, maxRedirects, allowPrivate, logger);
       return result;
     } catch (err) {
       if (external?.aborted) throw external.reason;
@@ -127,6 +136,7 @@ async function fetchWithRedirects(
   options: HttpFetchOptions,
   timeoutMs: number,
   maxRedirects: number,
+  allowPrivate: boolean,
   logger: ReturnType<typeof createLogger>,
 ): Promise<HttpFetchResult> {
   const visited = new Set<string>();
@@ -205,6 +215,17 @@ async function fetchWithRedirects(
 
       // Resolve relative redirects
       currentUrl = new URL(location, currentUrl).toString();
+
+      // SSRF re-guard on EVERY resolved redirect target — a public URL must
+      // not be able to 302 the fetch onto a private/LAN host or a cloud
+      // metadata endpoint. Same policy the input URL was guarded under.
+      const redirectGuard = guardFetchUrl(currentUrl, 'redirect location', { allowPrivate });
+      if (!redirectGuard.ok) {
+        throw new HttpFetchError(
+          `Redirect blocked: ${redirectGuard.reason}. ${redirectGuard.hint}`,
+          false,
+        );
+      }
       continue;
     }
 

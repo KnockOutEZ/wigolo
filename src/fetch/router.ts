@@ -23,6 +23,7 @@ import {
 import { ChallengeBlockedError } from './browser-pool.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
+import { guardFetchUrl } from '../watch/ssrf.js';
 import type { RawFetchResult, BrowserAction, Mode, StageError } from '../types.js';
 
 // Domains we know up-front are heavily client-rendered. HTTP-first detection
@@ -231,19 +232,50 @@ export async function defaultPdfProbe(url: string, signal?: AbortSignal): Promis
   const probeTimeoutMs = 3000;
   const timeout = AbortSignal.timeout(probeTimeoutMs);
   const combined = signal ? anySignal([signal, timeout]) : { signal: timeout, cleanup: () => {} };
+  const allowPrivate = getConfig().fetchAllowPrivate;
+  const maxHops = getConfig().maxRedirects;
+
+  // Manual, SSRF-re-guarded redirect follower. `redirect:'follow'` would let a
+  // public URL 302 the probe onto a private/metadata target; instead we follow
+  // hops ourselves and re-guard every resolved Location. A blocked hop resolves
+  // to `null` so the caller treats it as a probe failure (non-fatal by
+  // contract) rather than issuing the request.
+  const guardedFetch = async (
+    target: string,
+    init: { method: string; headers?: Record<string, string> },
+  ): Promise<Response | null> => {
+    let current = target;
+    const seen = new Set<string>();
+    for (let hop = 0; hop <= maxHops; hop++) {
+      if (seen.has(current)) return null;
+      seen.add(current);
+      const resp = await fetch(current, { ...init, redirect: 'manual', signal: combined.signal });
+      if (resp.status >= 300 && resp.status < 400) {
+        const loc = resp.headers.get('location');
+        if (!loc) return resp;
+        try { await resp.arrayBuffer(); } catch { /* drain */ }
+        current = new URL(loc, current).toString();
+        if (!guardFetchUrl(current, 'redirect location', { allowPrivate }).ok) return null;
+        continue;
+      }
+      return resp;
+    }
+    return null;
+  };
+
   try {
-    const head = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: combined.signal });
+    const head = await guardedFetch(url, { method: 'HEAD' });
+    if (!head) return false;
     const ct = head.headers.get('content-type')?.toLowerCase() ?? '';
     if (ct.includes('application/pdf')) return true;
     // HEAD returned a definitive non-PDF content-type → trust it, skip the GET.
     if (ct && !ct.includes('application/octet-stream')) return false;
     // No / ambiguous content-type: sniff the first bytes with a ranged GET.
-    const ranged = await fetch(url, {
+    const ranged = await guardedFetch(url, {
       method: 'GET',
-      redirect: 'follow',
       headers: { Range: 'bytes=0-15' },
-      signal: combined.signal,
     });
+    if (!ranged) return false;
     const rangedCt = ranged.headers.get('content-type')?.toLowerCase() ?? '';
     if (rangedCt.includes('application/pdf')) return true;
     // Read only the first chunk from the stream — a server that ignores the
