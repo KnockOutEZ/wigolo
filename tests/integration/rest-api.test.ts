@@ -176,10 +176,12 @@ describe('REST API — open loopback mode', () => {
     expect([200, 503]).toContain(r.status);
   });
 
-  it('a stub tool route reaches 501 when the request is otherwise valid', async () => {
+  it('an implemented tool route reaches its handler when the request is valid (diff → 200)', async () => {
+    // diff was a T1 stub (501); T2 filled it. A valid request now reaches the
+    // handler and returns the plain diff output.
     const r = await post(port, '/v1/diff', { old: { markdown: 'a' }, new: { markdown: 'b' } });
-    expect(r.status).toBe(501);
-    expect((r.body as { error_reason: string }).error_reason).toBe('not_implemented');
+    expect(r.status).toBe(200);
+    expect((r.body as { changed?: boolean }).changed).toBeDefined();
   });
 });
 

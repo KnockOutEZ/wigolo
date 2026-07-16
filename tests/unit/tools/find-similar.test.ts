@@ -204,6 +204,30 @@ describe('handleFindSimilar', () => {
     }
   });
 
+  it('refuses an SSRF url seed (metadata target) before the pipeline runs', async () => {
+    // WHY: the url seed is fetched raw downstream (bypassing handleFetch's
+    // guard). A metadata/private seed must be refused at the handler top.
+    const guardRouter = {
+      fetch: vi.fn().mockResolvedValue({
+        url: 'x', finalUrl: 'x', html: '', contentType: 'text/html',
+        statusCode: 200, method: 'http' as const, headers: {},
+      }),
+    } as unknown as SmartRouter;
+
+    const r = await handleFindSimilar(
+      { url: 'http://169.254.169.254/latest/meta-data/' },
+      [mockEngine],
+      guardRouter,
+    );
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error_reason).toMatch(/link-local|metadata|blocked/i);
+      expect(r.stage).toBe('find_similar');
+    }
+    expect(guardRouter.fetch).not.toHaveBeenCalled();
+  });
+
   it('max_results is capped at 50', async () => {
     const __r_result = await handleFindSimilar(
       { concept: 'test', max_results: 1000 },

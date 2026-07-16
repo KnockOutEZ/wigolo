@@ -410,6 +410,51 @@ describe('crawlRank', () => {
     expect(result.results).toHaveLength(1);
   });
 
+  it('refuses an SSRF seed (metadata target) before fetching', async () => {
+    // WHY: crawl-rank fetches the seed URL raw via router.fetch — a
+    // metadata/private seed must be refused by the guard, never fetched.
+    const seedUrl = 'http://169.254.169.254/latest/meta-data/';
+    const router = makeRouter(new Map());
+    const input: FindSimilarInput = { url: seedUrl };
+    const result = await crawlRank(seedUrl, input, router);
+
+    expect(result.results).toEqual([]);
+    expect(result.error).toMatch(/link-local|metadata|blocked/i);
+    expect(router.fetch).not.toHaveBeenCalled();
+  });
+
+  it('skips a discovered 1-hop link that fails the SSRF guard (others still ranked)', async () => {
+    const seedUrl = 'https://example.com/seed';
+    const good = 'https://example.com/a';
+    // A same-host-shaped-but-private discovered link — guard must skip it.
+    const bad = 'http://169.254.169.254/internal';
+
+    const router = makeRouter(new Map([
+      [seedUrl, makeRaw(seedUrl, '<html></html>')],
+      [good, makeRaw(good, '<html></html>')],
+    ]));
+
+    mockExtract
+      .mockResolvedValueOnce(makeExtraction('Seed', 'body', [good, bad]))
+      .mockResolvedValueOnce(makeExtraction('Good', 'good body'));
+
+    mockEmbed.mockResolvedValueOnce([
+      makeVec([1, 0, 0, 0]),
+      makeVec([0.9, 0.1, 0, 0]),
+    ]);
+
+    const input: FindSimilarInput = {
+      url: seedUrl,
+      include_domains: ['example.com', '169.254.169.254'],
+    };
+    const result = await crawlRank(seedUrl, input, router);
+
+    expect(result.error).toBeUndefined();
+    // Only the good link was fetched + ranked; the metadata link was skipped.
+    expect(result.results.map(r => r.url)).toEqual([good]);
+    expect(router.fetch).not.toHaveBeenCalledWith(bad, expect.anything());
+  });
+
   it('drops invalid URLs from extracted links', async () => {
     const seedUrl = 'https://example.com/seed';
     const valid = 'https://example.com/ok';
