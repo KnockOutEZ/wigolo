@@ -26,8 +26,12 @@ def _have_build() -> bool:
         return False
 
 
-@pytest.mark.skipif(not _have_build(), reason="dev-only 'build' module not installed")
 def test_wheel_contains_py_typed_and_modules():
+    if not _have_build():
+        pytest.fail(
+            "the 'build' module is missing from the SDK venv — bootstrap it with "
+            "'sdks/python/.venv/bin/pip install pytest build' (this gate must never be skipped)"
+        )
     with tempfile.TemporaryDirectory() as out:
         subprocess.run(
             [sys.executable, "-m", "build", "--wheel", "--outdir", out],
