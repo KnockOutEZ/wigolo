@@ -1,0 +1,64 @@
+{
+  "_comment": "Legacy skill-pack content hashes (sha256 over EOL-normalized bytes), union of all historical byte-sets. Regenerate with: node scripts/gen-legacy-skill-hashes.mjs",
+  "wigolo-agent/SKILL.md": [
+    "3b7c615237e07d1e2e48f0a23eaba8cd437e8f2254ed5dbc3a6230ff144c0734",
+    "b906411203b7cf1cd027266df8c985741ceb9f5fd21ad720e98cee264e168bc2",
+    "d32d2294c02ef0a385a41878be5dd3a47bfcf59d435580422e074fa2636914e1"
+  ],
+  "wigolo-cache/SKILL.md": [
+    "cde29e3e3d7ab7623b77336e2493ad1da41a17dca54307d2521ad16d72767331"
+  ],
+  "wigolo-crawl/SKILL.md": [
+    "7664730db606a368c999bde54e751603cc93f5fe63c48655c9da7fab5e71aee1",
+    "a5b58555677a126051b3b534a92e4962ee7954863ab9a4aee7d503bc1f5e86c4",
+    "c0a79506a326299fe0182364d5b64f0edfb3ec34efc08700ffa054e907811e60"
+  ],
+  "wigolo-diff/SKILL.md": [
+    "9edd77e27048136975550c0b2af9e3037d6ce985c58f3d1dd58487af437b7694"
+  ],
+  "wigolo-extract/SKILL.md": [
+    "a33c1f119afb7d7e4c61e4633c826d0cf5ff7a7c9678eb5157cfe5abb4d112ae",
+    "af8eb9e5ce4333a68f95070ee24ac8ada5431f161f4a62ae7ae138505cf5b642",
+    "cb4091631dbae578a28b4ea91f143b6de35e1f436809e2c6c58e540280686c1c"
+  ],
+  "wigolo-fetch/SKILL.md": [
+    "4df9452d89874da7aca8f3a9e19bad5e80a0c757a935c5e3c999b9fbf71004e3",
+    "5230b1bac37a941075d2904dc5f0ae0e24f1e883970f22f8c1f16a0353817e9d",
+    "bc3833452d5b8db9115dcd18399e8c2327370954f00aadbd92fd234469445796",
+    "d60593f8393f752eab2dbc46ff7dd81b3ac49ac4ef735b9d7c0171acb79f77f0"
+  ],
+  "wigolo-find-similar/SKILL.md": [
+    "512a8a43d5d782eebc9ed9a6547b9c550cb478617d698dce6a92805887792d38",
+    "794ebf7778b12ff14e21e37b06c354627f39ef4eee195733ebe22a5197959a38",
+    "b057366618ef139ac368136192b3aee9e1dae9946881dacd090b5a430d56262b",
+    "c14faa4b3df08668a1800e1a94d827459ee85845f76c6270c603b40ce1b6d43d"
+  ],
+  "wigolo-research/SKILL.md": [
+    "20952dfa0bcc9dc4e5e84705edc9e3c75a8cd3e8f3b04ceb00f71c5d11092d21",
+    "451730927f6064532389ab593c5a3bb3c4344700ce01c3fa4a572ccfca73e36f",
+    "c41751806ba941b12d0aba54c645f94cdcdc133263b3ad778ce4efc0dc6a322b"
+  ],
+  "wigolo-search/SKILL.md": [
+    "61870801071ab6a63e15a491cf2a72c0ac772dc536cbcb36ad161538cd0710d2",
+    "7157952005932d9a322029dfdabd23a5e9fe180ca6f52f64c60eca4bafe30563",
+    "7ef3af9671992dcbec1bea41810e1bc0b2e6c5c27e40d29aafdf28b9fafa2b34",
+    "d8eba82de2dc9e68aa9818d6fcfdd15b6d1a308253b6918214c264a9721c5a65"
+  ],
+  "wigolo-watch/SKILL.md": [
+    "84710dc69b7d9f9b585664af3325854b1aab0b5b32b3de54aa4f0f0c862491cf"
+  ],
+  "wigolo/SKILL.md": [
+    "150aeeaa321e46a53c2c5b1bb19525858e5b8b58c5535bb3a397a6dcb043d68e",
+    "c8d399be3a2d52e4b371a407e9c44782468108a1062ef99d4b17540d03e6bb87",
+    "cc9b628cab7a9d4ec25fd61a740fcea4b3a3987523866a0ec00e1d2b29d4538c"
+  ],
+  "wigolo/rules/cache-first.md": [
+    "114ec5c28c68f3880afc8ac60bdd40fb8efbd4d00ca71129e6bca36ea885ff30",
+    "4dff6ef33b9b61a12857270fec7b70beffa993551498130ea6cb5711a2815aea"
+  ],
+  "wigolo/rules/synthesis.md": [
+    "23e9cdc2ef437ae96f4b1e5f9e46a87ef5d1e71dbf84be1b9e44b1974ba14ad3",
+    "33403e7b2f8e8f568db1e8930f6f9984d2bba089f717a619de2e7965403cdd00",
+    "951d58816eb6c7de564d37237f5ecded08cbf48aa3d4b59f271c67695cb907f6"
+  ]
+}

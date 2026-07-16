@@ -22,7 +22,8 @@
   "files": [
     "dist",
     "assets/blocks",
-    "assets/skills",
+    "assets/legacy-skill-hashes.json",
+    "skills",
     "README.md",
     "LICENSE",
     "SKILL.md"

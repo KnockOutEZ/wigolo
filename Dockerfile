@@ -52,6 +52,7 @@ WORKDIR /app
 COPY --chown=node:node --from=deps /app/node_modules ./node_modules
 COPY --chown=node:node --from=builder /app/dist ./dist
 COPY --chown=node:node package.json ./
+COPY --chown=node:node skills/ ./skills/
 # Bake the browser engine's OS libraries via the LOCAL playwright CLI (already in
 # node_modules) so the version matches the runtime and no throwaway playwright is
 # downloaded. install-deps runs apt-get itself (we are root at build time).
