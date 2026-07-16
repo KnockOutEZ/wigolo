@@ -13,6 +13,7 @@ import { runConfig } from './cli/config.js';
 import { runMcp } from './cli/mcp.js';
 import { runUninstall } from './cli/uninstall.js';
 import { runSetupMcp } from './cli/setup-mcp.js';
+import { runSkills } from './cli/skills.js';
 import { runStatus } from './cli/status.js';
 import { runBackfill } from './cli/backfill.js';
 import { runVerifyE2E } from './cli/verify.js';
@@ -116,6 +117,12 @@ export async function main(): Promise<void> {
 
     case 'setup': {
       const code = await runSetupMcp(args);
+      await exitCli(code);
+      break;
+    }
+
+    case 'skills': {
+      const code = await runSkills(args);
       await exitCli(code);
       break;
     }

@@ -132,6 +132,26 @@ describe('parseCommand — one-shot tools', () => {
   });
 });
 
+describe('parseCommand — skills', () => {
+  it('parses "skills add" into command=skills, args=[add]', () => {
+    const parsed = parseCommand(['skills', 'add']);
+    expect(parsed.command).toBe('skills');
+    expect(parsed.args).toEqual(['add']);
+  });
+
+  it('parses "skills" alone into command=skills, args=[]', () => {
+    const parsed = parseCommand(['skills']);
+    expect(parsed.command).toBe('skills');
+    expect(parsed.args).toEqual([]);
+  });
+
+  it('forwards packs + flags on "skills add"', () => {
+    const parsed = parseCommand(['skills', 'add', 'wigolo-search', '--agent', 'cline', '--json']);
+    expect(parsed.command).toBe('skills');
+    expect(parsed.args).toEqual(['add', 'wigolo-search', '--agent', 'cline', '--json']);
+  });
+});
+
 describe('parseCommand — setup', () => {
   it('parses "setup mcp" into command=setup, args=[mcp]', () => {
     const parsed = parseCommand(['setup', 'mcp']);

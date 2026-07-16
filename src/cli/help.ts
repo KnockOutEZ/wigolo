@@ -153,6 +153,8 @@ Subcommands:
   doctor [--fix] [--json] Diagnose installation; --fix repairs known failures
   config                  Manage settings (TUI or --set K=V headless)
   setup mcp               Wire wigolo into MCP clients
+  skills <add|list|remove> [packs] [--global] [--agent id,...] [--dry-run] [--json]
+                          Install/manage wigolo skill packs for coding agents
   shell                   Interactive REPL
   serve [--port N]        Start HTTP daemon
   health [--json]         Health check (exit code = status)

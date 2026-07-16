@@ -15,6 +15,7 @@ export type Command =
   | 'status'
   | 'backfill'
   | 'verify'
+  | 'skills'
   // One-shot tool commands (D7) — thin over the REPL executors.
   | 'search'
   | 'fetch'
@@ -53,6 +54,7 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'status',
   'backfill',
   'verify',
+  'skills',
   // One-shot tool commands (D7).
   'search',
   'fetch',

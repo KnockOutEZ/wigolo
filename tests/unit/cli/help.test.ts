@@ -43,6 +43,7 @@ describe('printHelp', () => {
     expect(text).toContain('init');
     expect(text).toContain('uninstall');
     expect(text).toContain('setup');
+    expect(text).toContain('skills');
     expect(text).toContain('status');
     expect(text).toContain('--help');
     expect(text).toContain('--version');
