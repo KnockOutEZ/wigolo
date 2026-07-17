@@ -6,15 +6,15 @@
  * exit code 1 on any hard failure.
  *
  * Flags:
- *   --plain / -y / --non-interactive   force non-interactive plain output
- *   --help / -h                        print usage
+ *   --plain / -y   force plain (non-TUI) output
+ *   --help / -h    print usage
  */
 
 const VERIFY_USAGE = [
   'Usage: wigolo verify [options]',
   '',
   'Options:',
-  '  --plain, --non-interactive, -y   Force plain text output (no TUI)',
+  '  --plain, -y                      Force plain text output (no TUI)',
   '  --json                           Emit a machine-readable result on stdout',
   '  --help, -h                       Show this message',
   '',

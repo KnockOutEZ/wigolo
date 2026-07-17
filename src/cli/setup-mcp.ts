@@ -13,7 +13,7 @@ const USAGE = [
   '',
   'Examples:',
   '  npx wigolo setup mcp',
-  '  npx wigolo setup mcp --non-interactive --agents=claude-code,cursor',
+  '  npx wigolo setup mcp -y --agents=claude-code,cursor',
 ].join('\n');
 
 function writeErr(line: string): void {
@@ -87,9 +87,9 @@ export async function runSetupMcp(args: string[]): Promise<number> {
   let selected: AgentId[] = [];
   if (flags.nonInteractive) {
     if (flags.agents.length === 0) {
-      writeErr('--non-interactive requires --agents=<csv>');
+      writeErr('-y requires --agents=<csv>');
       writeErr(USAGE);
-      if (flags.json) emitSetupJson({ status: 'error', agents: [], message: '--non-interactive requires --agents=<csv>' });
+      if (flags.json) emitSetupJson({ status: 'error', agents: [], message: '-y requires --agents=<csv>' });
       return 2;
     }
     selected = [...flags.agents] as AgentId[];
@@ -99,7 +99,7 @@ export async function runSetupMcp(args: string[]): Promise<number> {
     } catch (err) {
       if (err instanceof NotTtyError) {
         writeErr('setup mcp requires an interactive terminal.');
-        writeErr('Use --non-interactive --agents=<comma-list> in scripts or CI.');
+        writeErr('Use -y --agents=<comma-list> in scripts or CI.');
         if (flags.json) emitSetupJson({ status: 'error', agents: [], message: 'requires an interactive terminal' });
         return 2;
       }

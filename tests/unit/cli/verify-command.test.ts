@@ -59,6 +59,17 @@ describe('runVerifyE2E — exit-code contract', () => {
     expect(stderrSpy).toHaveBeenCalled();
   });
 
+  it('--help does not advertise the retired --non-interactive alias', async () => {
+    // The alias still PARSES (see parseVerifyFlags above) but is a silent
+    // no-op — unattended is the default — so help must not resurrect it.
+    const { runVerifyE2E } = await import('../../../src/cli/verify.js');
+    await runVerifyE2E(['--help']);
+    const written = stderrSpy.mock.calls.map((c) => c[0]).join('');
+    expect(written).toContain('Usage: wigolo verify');
+    expect(written).toContain('--plain');
+    expect(written).not.toContain('--non-interactive');
+  });
+
   it('returns 0 when verifyEndToEnd reports allPassed=true', async () => {
     vi.doMock('../../../src/cli/tui/actions/verify-e2e.js', () => ({
       buildDefaultDeps: vi.fn().mockResolvedValue({}),
