@@ -1,16 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### License change (BREAKING for commercial users)
-
-wigolo is now distributed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0), replacing the previous Business Source License 1.1 (root) and AGPL-3.0-or-later (`wigolo-ai-sdk` subpackage). The repository is now a single license everywhere.
-
-- **Noncommercial users** (personal, research, education, hobby, charity, government): no action required. Continue using wigolo freely.
-- **Commercial users** (any company, sole proprietorship, or organization using wigolo for the benefit of a commercial entity): you now require a separate commercial license or sponsorship arrangement. Contact <ktowhid20@gmail.com>.
-
-The new license removes the previous BUSL change-date conversion to AGPL — there is no longer a scheduled open-source transition. The change is intentional: wigolo's commercial-rights model is now a single, plain-English license rather than a multi-layered time-bombed structure.
-
 ## v0.2.0 — 2026-07-17
 
 Zero-config onboarding, full distribution surface, and a headless-first control plane — matching and going past the ergonomics of the paid tools without shedding the local semantic brain. All ten tools (search, fetch, crawl, extract, cache, find_similar, research, agent, diff, watch) keep working throughout; everything below is additive and keyless-by-default.
@@ -25,7 +14,7 @@ Zero-config onboarding, full distribution surface, and a headless-first control 
 - Ships on npm (primary), a `curl … | sh` installer, a Homebrew formula, a Docker image, and a standalone single-file binary — no new native-dependency landmine. Each channel's install/upgrade/uninstall and the exact MCP wiring command are documented, with any CI-unverifiable target called out rather than left silent.
 
 ### HTTP/REST API + self-host
-- `wigolo serve` exposes a plain-JSON REST surface (`POST /v1/{tool}` for all ten tools) alongside the MCP transport, plus `GET /openapi.json` (OpenAPI 3.1) and `GET /v1/tools`. Optional bearer auth (`WIGOLO_API_TOKEN` / `_FILE`); the server refuses a non-loopback bind without a token unless explicitly opted out. Transport-level body caps, per-route deadlines, and a concurrency limiter. An optional, flag-gated Firecrawl-compatible shim eases drop-in migration.
+- `wigolo serve` exposes a plain-JSON REST surface (`POST /v1/{tool}` for all ten tools) alongside the MCP transport, plus `GET /openapi.json` (OpenAPI 3.1) and `GET /v1/tools`. Optional bearer auth (`WIGOLO_API_TOKEN` / `_FILE`); the server refuses a non-loopback bind without a token unless explicitly opted out. Transport-level body caps, per-route deadlines, and a concurrency limiter. An optional, flag-gated compatibility shim eases drop-in migration from a common hosted-scraper API.
 - Redirect-following is SSRF-re-guarded on every fetch tier; the MCP-over-HTTP transport rejects cross-origin (DNS-rebinding) requests.
 
 ### SDKs

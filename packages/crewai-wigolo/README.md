@@ -69,4 +69,4 @@ are honored by the underlying SDK when the corresponding argument is left unset.
 
 ## License
 
-PolyForm-Noncommercial-1.0.0
+GNU AGPL-3.0-only — see the root LICENSE.

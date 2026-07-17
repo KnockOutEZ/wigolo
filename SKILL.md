@@ -421,4 +421,4 @@ Full list: see `src/config.ts`.
 
 - Repository: https://github.com/KnockOutEZ/wigolo
 - npm: https://www.npmjs.com/package/wigolo
-- License: PolyForm Noncommercial 1.0.0 — free for noncommercial use; commercial use requires a separate license (contact ktowhid20@gmail.com)
+- License: GNU AGPL-3.0-only — free to use, modify, and self-host; see the root LICENSE

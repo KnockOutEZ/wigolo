@@ -1,6 +1,6 @@
 {
   "name": "wigolo-ai-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Vercel AI SDK tools for wigolo — local-first web search MCP server",
   "type": "module",
   "main": "dist/index.js",
@@ -30,7 +30,7 @@
     "tools",
     "agent"
   ],
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "https://github.com/KnockOutEZ/wigolo",

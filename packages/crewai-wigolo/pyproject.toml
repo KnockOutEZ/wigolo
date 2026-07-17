@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "crewai-wigolo"
-version = "0.1.0"
+version = "0.2.0"
 description = "CrewAI integration for wigolo — local-first web intelligence tools"
 readme = "README.md"
-license = "PolyForm-Noncommercial-1.0.0"
+license = "AGPL-3.0-only"
 requires-python = ">=3.10"
 authors = [{ name = "KnockOutEZ" }]
 keywords = ["crewai", "mcp", "web-search", "agent-tools", "research"]

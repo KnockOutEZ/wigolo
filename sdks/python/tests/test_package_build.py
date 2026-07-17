@@ -39,7 +39,7 @@ def test_wheel_contains_py_typed_and_modules():
             check=True,
             capture_output=True,
         )
-        wheels = list(Path(out).glob("wigolo-0.1.0-*.whl"))
+        wheels = list(Path(out).glob("wigolo-*.whl"))
         assert wheels, "no wheel produced"
         with zipfile.ZipFile(wheels[0]) as zf:
             names = set(zf.namelist())

@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langchain-wigolo"
-version = "0.1.0"
+version = "0.2.0"
 description = "LangChain integration for wigolo — local-first web search MCP server"
 readme = "README.md"
-license = "PolyForm-Noncommercial-1.0.0"
+license = "AGPL-3.0-only"
 requires-python = ">=3.10"
 authors = [{ name = "KnockOutEZ" }]
 keywords = ["langchain", "mcp", "web-search", "retriever", "agent-tools"]
