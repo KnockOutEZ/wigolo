@@ -73,11 +73,12 @@ wigolo carries registry manifests at the repo root — `smithery.yaml`, `glama.j
 | Windsurf | `windsurf` |
 | Codex | `codex` |
 | Antigravity | `antigravity` |
-| Cline | `cline` |
 
 ```bash
 npx wigolo init --agents=claude-code,cursor
 ```
+
+Cline isn't an `--agents` target — wire its MCP entry by hand (next section) and it still gets the full [skill packs](./skills.md) via `wigolo skills add`.
 
 ### Any other MCP host
 
