@@ -409,4 +409,30 @@ describe('runPluginCommand -- dispatcher', () => {
     const code = await runPluginCommand(['validate']);
     expect(code).toBe(1);
   });
+
+  it('routes "validate --json" on a bad plugin → exit 1 + exactly one {status:"error"} JSON doc on stdout', async () => {
+    vi.mocked(existsSync).mockImplementation((p) => {
+      const s = String(p);
+      return s.endsWith('/test-plugins') || s.endsWith('package.json');
+    });
+    vi.mocked(readdirSync).mockReturnValue(['bad'] as never);
+    vi.mocked(statSync).mockReturnValue({ isDirectory: () => true, isSymbolicLink: () => false } as never);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ name: 'bad', version: '1.0.0', main: 'missing.mjs' }) as never);
+
+    // Capture stdout: under --json the whole result is ONE JSON document there.
+    const stdoutChunks: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdoutChunks.push(String(chunk));
+      return true;
+    });
+
+    const code = await runPluginCommand(['validate', '--json']);
+    expect(code).toBe(1);
+
+    const lines = stdoutChunks.join('').trim().split('\n').filter((l) => l.trim().length > 0);
+    expect(lines).toHaveLength(1);
+    const doc = JSON.parse(lines[0]) as { status: string; plugins: Array<{ valid: boolean }> };
+    expect(doc.status).toBe('error');
+    expect(doc.plugins[0].valid).toBe(false);
+  });
 });
