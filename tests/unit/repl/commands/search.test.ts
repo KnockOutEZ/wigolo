@@ -71,6 +71,44 @@ describe('executeSearch', () => {
     );
   });
 
+  it('rejects an invalid --category via the flag-bridge (allowed-values error)', async () => {
+    // WHY: category/time-range must flow through the bridge so a bogus enum is
+    // caught with an allowed-values message, not silently cast and passed on.
+    const result = await executeSearch(
+      { command: 'search', positional: ['foo'], flags: { category: 'bogus' } },
+      deps,
+    );
+    expect(result.error).toBeTruthy();
+    expect(String(result.error)).toContain('allowed');
+    expect(String(result.error)).toContain('news');
+    // The invalid input never reached the handler.
+    expect(handleSearch).not.toHaveBeenCalled();
+  });
+
+  it('accepts a valid --category=news via the flag-bridge', async () => {
+    vi.mocked(handleSearch).mockResolvedValue({ ok: true, data: baseOutput });
+    await executeSearch(
+      { command: 'search', positional: ['foo'], flags: { category: 'news' } },
+      deps,
+    );
+    expect(handleSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ category: 'news' }),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('rejects an invalid --time-range via the flag-bridge', async () => {
+    const result = await executeSearch(
+      { command: 'search', positional: ['foo'], flags: { 'time-range': 'decade' } },
+      deps,
+    );
+    expect(result.error).toBeTruthy();
+    expect(String(result.error)).toContain('allowed');
+    expect(handleSearch).not.toHaveBeenCalled();
+  });
+
   it('returns error output when no query provided', async () => {
     const result = await executeSearch({ command: 'search', positional: [], flags: {} }, deps);
     expect(result.error).toContain('query');

@@ -51,14 +51,6 @@ export async function executeSearch(args: ParsedArgs, deps: ReplDeps): Promise<S
       input.to_date = args.flags['to-date'];
       consumed.add('to-date');
     }
-    if (args.flags.category) {
-      input.category = args.flags.category as SearchInput['category'];
-      consumed.add('category');
-    }
-    if (args.flags['time-range']) {
-      input.time_range = args.flags['time-range'] as SearchInput['time_range'];
-      consumed.add('time-range');
-    }
     if (args.flags['no-content'] === 'true') {
       input.include_content = false;
       consumed.add('no-content');
