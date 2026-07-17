@@ -367,14 +367,46 @@ describe('runPluginCommand -- dispatcher', () => {
   });
 
   it('shows usage for unknown subcommand', async () => {
-    await runPluginCommand(['unknown']);
+    const code = await runPluginCommand(['unknown']);
 
     expect(stderrOutput).toContain('Usage');
+    expect(code).toBe(1);
   });
 
   it('shows usage when no args provided', async () => {
-    await runPluginCommand([]);
+    const code = await runPluginCommand([]);
 
     expect(stderrOutput).toContain('Usage');
+    expect(code).toBe(1);
+  });
+
+  it('routes "validate" and exits 0 when every installed plugin is well-formed', async () => {
+    // pluginsDir exists, one plugin dir with a package.json whose main file exists.
+    vi.mocked(existsSync).mockImplementation((p) => {
+      const s = String(p);
+      return s.endsWith('/test-plugins') || s.endsWith('package.json') || s.endsWith('index.mjs');
+    });
+    vi.mocked(readdirSync).mockReturnValue(['good'] as never);
+    vi.mocked(statSync).mockReturnValue({ isDirectory: () => true, isSymbolicLink: () => false } as never);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ name: 'good', version: '1.0.0', main: 'index.mjs' }) as never);
+
+    const code = await runPluginCommand(['validate']);
+    expect(code).toBe(0);
+  });
+
+  it('routes "validate" and exits 1 when a plugin fails validation (missing main file)', async () => {
+    // The "main" file does NOT exist on disk — a broken plugin the CLI must
+    // surface as a non-zero exit so `plugin validate --json` scripting works.
+    vi.mocked(existsSync).mockImplementation((p) => {
+      const s = String(p);
+      // dir + package.json present, but the referenced main file is absent.
+      return s.endsWith('/test-plugins') || s.endsWith('package.json');
+    });
+    vi.mocked(readdirSync).mockReturnValue(['bad'] as never);
+    vi.mocked(statSync).mockReturnValue({ isDirectory: () => true, isSymbolicLink: () => false } as never);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ name: 'bad', version: '1.0.0', main: 'missing.mjs' }) as never);
+
+    const code = await runPluginCommand(['validate']);
+    expect(code).toBe(1);
   });
 });

@@ -158,24 +158,27 @@ export async function runPluginAdd(gitUrl: string, opts: { assumeYes?: boolean }
   }
 }
 
-export function runPluginList(): void {
+interface InstalledPlugin {
+  name: string;
+  version: string;
+  dir: string;
+}
+
+/** Scan the plugins dir into a structured list. Never throws. */
+function collectPlugins(): InstalledPlugin[] {
   const config = getConfig();
   const pluginsDir = config.pluginsDir;
 
-  if (!existsSync(pluginsDir)) {
-    log('no plugins installed');
-    return;
-  }
+  if (!existsSync(pluginsDir)) return [];
 
   let entries: string[];
   try {
     entries = readdirSync(pluginsDir);
   } catch {
-    log('no plugins installed (could not read plugins directory)');
-    return;
+    return [];
   }
 
-  const plugins: Array<{ name: string; version: string; dir: string }> = [];
+  const plugins: InstalledPlugin[] = [];
 
   for (const entry of entries) {
     const dir = join(pluginsDir, entry);
@@ -204,6 +207,18 @@ export function runPluginList(): void {
     plugins.push({ name, version, dir });
   }
 
+  return plugins;
+}
+
+export function runPluginList(useJson = false): void {
+  const plugins = collectPlugins();
+
+  if (useJson) {
+    // Single JSON document on stdout; nothing human on stdout.
+    process.stdout.write(`${JSON.stringify({ plugins })}\n`);
+    return;
+  }
+
   if (plugins.length === 0) {
     log('no plugins installed');
     return;
@@ -214,6 +229,64 @@ export function runPluginList(): void {
     process.stderr.write(`  ${p.name} (${p.version})\n`);
     process.stderr.write(`    ${p.dir}\n\n`);
   }
+}
+
+interface PluginValidation {
+  name: string;
+  dir: string;
+  valid: boolean;
+  issues: string[];
+}
+
+/**
+ * Static validation of every installed plugin: confirms each has a package.json
+ * with a `main` field pointing at a file that exists on disk. Deliberately does
+ * NOT import the plugin (that would run its code) — this is a lint, not a load.
+ */
+function validatePlugins(): PluginValidation[] {
+  const plugins = collectPlugins();
+  return plugins.map((p) => {
+    const issues: string[] = [];
+    const pkgPath = join(p.dir, 'package.json');
+    if (!existsSync(pkgPath)) {
+      issues.push('missing package.json');
+      return { name: p.name, dir: p.dir, valid: false, issues };
+    }
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { main?: string };
+      if (!pkg.main) {
+        issues.push('package.json has no "main" field');
+      } else if (!existsSync(join(p.dir, pkg.main))) {
+        issues.push(`"main" entry (${pkg.main}) does not exist`);
+      }
+    } catch {
+      issues.push('package.json is not valid JSON');
+    }
+    return { name: p.name, dir: p.dir, valid: issues.length === 0, issues };
+  });
+}
+
+export function runPluginValidate(useJson = false): number {
+  const results = validatePlugins();
+  const allValid = results.every((r) => r.valid);
+
+  if (useJson) {
+    process.stdout.write(`${JSON.stringify({ status: allValid ? 'ok' : 'error', plugins: results })}\n`);
+    return allValid ? 0 : 1;
+  }
+
+  if (results.length === 0) {
+    log('no plugins installed');
+    return 0;
+  }
+  for (const r of results) {
+    if (r.valid) {
+      process.stderr.write(`  ✓ ${r.name}\n`);
+    } else {
+      process.stderr.write(`  ✗ ${r.name}: ${r.issues.join('; ')}\n`);
+    }
+  }
+  return allValid ? 0 : 1;
 }
 
 export function runPluginRemove(name: string): void {
@@ -238,40 +311,45 @@ export function runPluginRemove(name: string): void {
   log(`plugin "${name}" removed successfully`);
 }
 
-export async function runPluginCommand(args: string[]): Promise<void> {
-  const subcommand = args[0];
+export async function runPluginCommand(args: string[]): Promise<number> {
+  const useJson = args.includes('--json');
+  const subcommand = args.find((a) => !a.startsWith('-'));
 
   switch (subcommand) {
     case 'add': {
       const assumeYes = args.includes('--yes') || args.includes('-y');
-      const positional = args.filter((a) => a !== '--yes' && a !== '-y');
+      const positional = args.filter((a) => !a.startsWith('-'));
       const gitUrl = positional[1];
       if (!gitUrl) {
         process.stderr.write('Usage: wigolo plugin add <git-url> [--yes]\n');
-        return;
+        return 1;
       }
       await runPluginAdd(gitUrl, { assumeYes });
-      break;
+      return 0;
     }
     case 'list':
-      runPluginList();
-      break;
+      runPluginList(useJson);
+      return 0;
+    case 'validate':
+      return runPluginValidate(useJson);
     case 'remove': {
-      const name = args[1];
+      const positional = args.filter((a) => !a.startsWith('-'));
+      const name = positional[1];
       if (!name) {
         process.stderr.write('Usage: wigolo plugin remove <name>\n');
-        return;
+        return 1;
       }
       runPluginRemove(name);
-      break;
+      return 0;
     }
     default:
       process.stderr.write(
-        'Usage: wigolo plugin <add|list|remove>\n\n' +
+        'Usage: wigolo plugin <add|list|validate|remove>\n\n' +
         '  add <git-url> [--yes]   Clone a plugin repository (prompts to confirm)\n' +
-        '  list                    List installed plugins\n' +
+        '  list [--json]           List installed plugins\n' +
+        '  validate [--json]       Check installed plugins load correctly\n' +
         '  remove <name>           Remove an installed plugin\n',
       );
-      break;
+      return 1;
   }
 }

@@ -13,6 +13,7 @@ export type Command =
   | 'uninstall'
   | 'setup'
   | 'status'
+  | 'tune'
   | 'backfill'
   | 'verify'
   | 'skills'
@@ -52,6 +53,7 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'uninstall',
   'setup',
   'status',
+  'tune',
   'backfill',
   'verify',
   'skills',

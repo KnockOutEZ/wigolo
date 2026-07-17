@@ -174,3 +174,73 @@ describe('runUninstall cleanup guidance', () => {
     expect(out).toContain('rm -rf');
   });
 });
+
+describe('runUninstall --json', () => {
+  it('requires --yes: --json without --yes errors and exits 1 without touching anything', async () => {
+    const cap = captureOutput();
+    let code: number;
+    try {
+      code = await runUninstall(['--json']);
+    } finally {
+      cap.restore();
+    }
+    expect(code).toBe(1);
+    // Destructive consent gate — the sweep must NOT have run.
+    expect(removeAllSkillsMock).not.toHaveBeenCalled();
+    // Error surfaces on stdout as a single JSON doc (so scripts can read it).
+    const doc = JSON.parse(cap.stdout.join('').trim());
+    expect(doc.error).toBeTruthy();
+    expect(String(doc.error).toLowerCase()).toContain('--yes');
+  });
+
+  it('--json --yes emits exactly one JSON plan+result doc on stdout', async () => {
+    removeAllSkillsMock.mockReturnValue({
+      written: [],
+      removed: ['/h/.claude/skills/wigolo/SKILL.md'],
+      refused: [],
+      notices: [],
+    });
+    const cap = captureOutput();
+    let code: number;
+    try {
+      code = await runUninstall(['--json', '--yes']);
+    } finally {
+      cap.restore();
+    }
+    expect(code).toBe(0);
+    const stdout = cap.stdout.join('').trim();
+    const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
+    // Exactly one JSON document — human progress must be on stderr.
+    expect(lines).toHaveLength(1);
+    const doc = JSON.parse(lines[0]) as {
+      skills: { removed: number; left: number };
+      handlers: unknown[];
+      removed: number;
+    };
+    expect(doc.skills.removed).toBe(1);
+    expect(Array.isArray(doc.handlers)).toBe(true);
+  });
+
+  it('--json --yes runs the skills sweep BEFORE the no-handlers early return', async () => {
+    // The critical ordering: even under --json with no agent handlers detected,
+    // the receipt-driven sweep must still execute (it is not gated by handler
+    // detection). Assert the sweep ran and the result doc reflects it.
+    vi.mocked(detectInstalledHandlers).mockReturnValue([]);
+    removeAllSkillsMock.mockReturnValue({
+      written: [],
+      removed: ['/h/.claude/skills/wigolo/SKILL.md', '/h/.claude/skills/wigolo-search/SKILL.md'],
+      refused: [],
+      notices: [],
+    });
+    const cap = captureOutput();
+    try {
+      await runUninstall(['--json', '--yes']);
+    } finally {
+      cap.restore();
+    }
+    expect(removeAllSkillsMock).toHaveBeenCalledTimes(1);
+    const doc = JSON.parse(cap.stdout.join('').trim()) as { skills: { removed: number }; handlers: unknown[] };
+    expect(doc.skills.removed).toBe(2);
+    expect(doc.handlers).toHaveLength(0);
+  });
+});

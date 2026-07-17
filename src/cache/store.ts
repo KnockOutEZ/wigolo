@@ -839,6 +839,110 @@ export function getBackoff(host: string): number | null {
   }
 }
 
+/**
+ * Read-only projection of a domain_routing row for the `wigolo tune` surface.
+ *
+ * Deliberately OMITS the live clearance cookie value (`cf_clearance`) and the
+ * user-agent it was minted against (`clearance_ua`): both are session-bearing
+ * credentials that must never surface in an inspection command. Only the
+ * PRESENCE of a clearance and its expiry are reported.
+ */
+export interface DomainRoutingSummary {
+  domain: string;
+  /** Whether wigolo prefers the browser engine for this domain. */
+  preferBrowser: boolean;
+  preferTlsImpersonation: boolean;
+  tlsSuccessCount: number;
+  httpFailures: number;
+  backoffUntil?: string;
+  last403At?: string;
+  clearancePresent: boolean;
+  clearanceExpiresAt?: string;
+}
+
+interface DomainRoutingSummaryRawRow {
+  domain: string;
+  prefer_playwright: number | null;
+  prefer_tls_impersonation: number | null;
+  tls_success_count: number | null;
+  http_failures: number | null;
+  backoff_until: string | null;
+  last_403_at: string | null;
+  cf_clearance: string | null;
+  clearance_expires_at: string | null;
+}
+
+/**
+ * Every tracked domain's routing summary, ordered by domain. Follows the
+ * read-swallow convention of the other routing getters: a DB read failure
+ * degrades to an empty list rather than crashing an inspection command.
+ */
+export function listDomainRouting(): DomainRoutingSummary[] {
+  try {
+    const db = getDatabase();
+    const rows = db.prepare(
+      `SELECT domain, prefer_playwright, prefer_tls_impersonation, tls_success_count,
+              http_failures, backoff_until, last_403_at, cf_clearance, clearance_expires_at
+       FROM domain_routing
+       ORDER BY domain`,
+    ).all() as DomainRoutingSummaryRawRow[];
+    return rows.map((row) => ({
+      domain: row.domain,
+      preferBrowser: (row.prefer_playwright ?? 0) === 1,
+      preferTlsImpersonation: (row.prefer_tls_impersonation ?? 0) === 1,
+      tlsSuccessCount: row.tls_success_count ?? 0,
+      httpFailures: row.http_failures ?? 0,
+      backoffUntil: row.backoff_until ?? undefined,
+      last403At: row.last_403_at ?? undefined,
+      clearancePresent: row.cf_clearance != null,
+      clearanceExpiresAt: row.clearance_expires_at ?? undefined,
+    }));
+  } catch (err) {
+    log.warn('listDomainRouting failed', { error: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
+}
+
+const RESET_ROUTING_COLUMNS = `
+  prefer_playwright = 0,
+  prefer_tls_impersonation = 0,
+  tls_success_count = 0,
+  http_failures = 0,
+  backoff_until = NULL,
+  last_403_at = NULL,
+  cf_clearance = NULL,
+  clearance_ua = NULL,
+  clearance_tier = NULL,
+  clearance_expires_at = NULL,
+  last_updated = datetime('now')
+`;
+
+/**
+ * Clear all learned routing prefs, backoff windows and clearance state for one
+ * host, returning the number of rows changed (0 when the host is unknown).
+ * Intentionally does NOT swallow errors — a busy/locked DB must surface to the
+ * caller so the CLI can report it, rather than silently leaving stale routing.
+ */
+export function resetDomainRouting(host: string): number {
+  const db = getDatabase();
+  const info = db.prepare(
+    `UPDATE domain_routing SET ${RESET_ROUTING_COLUMNS} WHERE domain = ?`,
+  ).run(host);
+  return info.changes;
+}
+
+/**
+ * Clear learned routing state for EVERY tracked host, returning the total rows
+ * changed. Like {@link resetDomainRouting}, throws on failure.
+ */
+export function resetAllDomainRouting(): number {
+  const db = getDatabase();
+  const info = db.prepare(
+    `UPDATE domain_routing SET ${RESET_ROUTING_COLUMNS}`,
+  ).run();
+  return info.changes;
+}
+
 export function getAllEmbeddings(modelId?: string): StoredEmbedding[] {
   try {
     const db = getDatabase();

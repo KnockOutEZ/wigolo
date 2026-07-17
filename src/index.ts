@@ -15,6 +15,7 @@ import { runUninstall } from './cli/uninstall.js';
 import { runSetupMcp } from './cli/setup-mcp.js';
 import { runSkills } from './cli/skills.js';
 import { runStatus } from './cli/status.js';
+import { runTune } from './cli/tune.js';
 import { runBackfill } from './cli/backfill.js';
 import { runVerifyE2E } from './cli/verify.js';
 import { printHelp, printVersion, printUnknownCommand } from './cli/help.js';
@@ -91,10 +92,11 @@ export async function main(): Promise<void> {
       await exitCli(0);
       break;
 
-    case 'plugin':
-      await runPluginCommand(args);
-      await exitCli(0);
+    case 'plugin': {
+      const pluginCode = await runPluginCommand(args);
+      await exitCli(pluginCode);
       break;
+    }
 
     case 'init': {
       const initCode = await runInit(args);
@@ -129,6 +131,12 @@ export async function main(): Promise<void> {
 
     case 'status': {
       const code = await runStatus(args);
+      await exitCli(code);
+      break;
+    }
+
+    case 'tune': {
+      const code = await runTune(args);
       await exitCli(code);
       break;
     }

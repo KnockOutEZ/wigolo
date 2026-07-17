@@ -44,7 +44,24 @@ function cleanupGuidance(dataDir: string): string[] {
 
 export async function runUninstall(args: string[]): Promise<number> {
   const help = args.includes('--help') || args.includes('-h');
+  const useJson = args.includes('--json');
+  const assumeYes = args.includes('--yes') || args.includes('-y');
   const dataDir = getConfig().dataDir;
+
+  // --json is machine-consumed and destructive; require explicit consent so a
+  // script cannot wipe integrations without opting in. Gate FIRST, before any
+  // side effect (including the skills sweep) runs.
+  if (useJson && !assumeYes) {
+    process.stdout.write(`${JSON.stringify({
+      error: 'refusing to uninstall non-interactively without --yes. Re-run with: wigolo uninstall --json --yes',
+    })}\n`);
+    return 1;
+  }
+
+  if (useJson) {
+    return runUninstallJson(dataDir);
+  }
+
   if (help) {
     process.stderr.write([
       'Usage: wigolo uninstall',
@@ -117,6 +134,60 @@ export async function runUninstall(args: string[]): Promise<number> {
   process.stdout.write(`\nDone. ${totalRemoved} item(s) removed.\n`);
   process.stdout.write(`Note: ${dataDir} data (cache, search engine) preserved.\n`);
   process.stdout.write(cleanupGuidance(dataDir).join('\n') + '\n');
+
+  return 0;
+}
+
+/**
+ * --json variant: same sequence as the human path (skills sweep FIRST, then
+ * handler removal — the sweep runs regardless of whether any handlers are
+ * detected) but every progress line goes to stderr and a single plan+result
+ * JSON document is written to stdout at the end.
+ */
+async function runUninstallJson(dataDir: string): Promise<number> {
+  // Skills sweep — same position as the human path: BEFORE any handler check,
+  // so receipt-driven skill packs are cleaned up even when no agent binary is
+  // detected. Only the write channel differs (stderr, not stdout).
+  let skillsRemoved = 0;
+  let skillsLeft = 0;
+  try {
+    const { removeAllSkills } = await import('./agents/skills/index.js');
+    const skills = removeAllSkills({ cwd: process.cwd() });
+    skillsRemoved = skills.removed.length;
+    skillsLeft = skills.refused.length;
+    if (skillsRemoved > 0 || skillsLeft > 0) {
+      process.stderr.write(`Skills: ${skillsRemoved} removed${skillsLeft > 0 ? `, ${skillsLeft} left in place.` : '.'}\n`);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`  ! Skills sweep failed: ${message}\n`);
+  }
+
+  const handlers = detectInstalledHandlers();
+  const handlerResults: Array<{ handler: string; removed: string[]; error?: string }> = [];
+  let totalRemoved = 0;
+
+  for (const handler of handlers) {
+    process.stderr.write(`Removing ${handler.displayName}...\n`);
+    try {
+      const { removed } = await handler.uninstall();
+      totalRemoved += removed.length;
+      handlerResults.push({ handler: handler.displayName, removed });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`  ! Failed: ${message}\n`);
+      handlerResults.push({ handler: handler.displayName, removed: [], error: message });
+    }
+  }
+
+  process.stdout.write(`${JSON.stringify({
+    status: 'ok',
+    dataDir,
+    dataPreserved: true,
+    skills: { removed: skillsRemoved, left: skillsLeft },
+    handlers: handlerResults,
+    removed: totalRemoved,
+  })}\n`);
 
   return 0;
 }
