@@ -2,7 +2,7 @@ import { createLogger } from '../logger.js';
 import { decomposeQuestion, detectQueryType, extractComparisonEntities, type QueryType } from './decompose.js';
 import { synthesizeReport } from './synthesize.js';
 import { synthesizeLocal } from './synthesis-local.js';
-import { buildResearchBrief } from './brief.js';
+import { buildResearchBrief, stripResearchChrome } from './brief.js';
 import { renderBriefReport } from './render-brief.js';
 import { deduplicateResults } from '../search/dedup.js';
 import { rerankResults } from '../search/rerank.js';
@@ -312,7 +312,7 @@ export async function runResearchPipeline(
                 index: idx + 1,
                 url: s.url,
                 title: s.title,
-                snippet: s.markdown.slice(0, 200),
+                snippet: stripResearchChrome(s.markdown).slice(0, 200),
               };
             });
           log.info('local synthesis succeeded', { reportLength: finalReport.length });

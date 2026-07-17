@@ -31,7 +31,7 @@ export async function buildResearchBrief(
   const searchItems: SearchResultItem[] = fetched.map((s) => ({
     title: s.title,
     url: s.url,
-    snippet: s.markdown_content.slice(0, 200),
+    snippet: stripResearchChrome(s.markdown_content).slice(0, 200),
     markdown_content: s.markdown_content,
     relevance_score: s.relevance_score,
   }));
@@ -167,7 +167,9 @@ export function detectCrossReferences(sources: ResearchSource[]): CrossReference
   const phraseMap = new Map<string, Set<number>>();
 
   for (let idx = 0; idx < sources.length; idx++) {
-    const content = sources[idx].markdown_content.toLowerCase();
+    // Strip link/image/caption chrome first so shared boilerplate (avatar URLs,
+    // byline links, "view image in full size") can't masquerade as agreement.
+    const content = stripResearchChrome(sources[idx].markdown_content).toLowerCase();
     const words = content
       .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
@@ -412,6 +414,13 @@ export function stripMarkdownLinks(text: string): string {
     .replace(/\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)/g, '')
     // Inline link: `[label](url)` → `label`
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    // Orphan link-close: `](url)` whose opening `[label]` was chopped upstream
+    // (Medium wraps its avatar byline link across blank lines, so the closing
+    // half becomes a standalone paragraph — `](/@user?source=post_page--…)`).
+    // Runs AFTER the inline flatten so it only ever hits genuine orphans, never
+    // the `(url)` half of a well-formed link. Catches relative URLs the bare-http
+    // stripper below misses.
+    .replace(/\]\([^)]*\)/g, '')
     // Reference-style link: `[label][id]` → `label`. Must come AFTER the
     // inline replace so we don't strip the `(url)` half of a real link.
     .replace(/\[([^\]]+)\]\[[^\]]*\]/g, '$1')
@@ -427,6 +436,30 @@ export function stripMarkdownLinks(text: string): string {
     // reads naturally instead of "X  Y".
     .replace(/\s{2,}/g, ' ')
     .trim();
+}
+
+// Image-viewer / figure caption UI chrome that survives link-flattening as
+// plain text (Medium injects "Press enter or click to view image in full size"
+// under every embedded image). Left in, it tokenizes to junk 3-grams
+// ("press enter click", "click view image", "image full size") that recur
+// across sibling articles and masquerade as cross-source agreement.
+const IMAGE_CAPTION_CHROME: ReadonlyArray<RegExp> = [
+  /press enter or click to view image in full size/gi,
+  /click to view image(?: in full size)?/gi,
+  /view image in full size/gi,
+];
+
+/**
+ * Strip presentation chrome from source markdown BEFORE phrase/snippet use:
+ * flatten links + images (removes avatar/byline URLs like miro.medium.com and
+ * `](/@user?source=post_page…)` orphans) then drop image-caption UI text. Used
+ * by cross-reference phrase extraction and citation snippets so neither reports
+ * boilerplate as content. Article prose is untouched.
+ */
+export function stripResearchChrome(text: string): string {
+  let out = stripMarkdownLinks(text);
+  for (const re of IMAGE_CAPTION_CHROME) out = out.replace(re, ' ');
+  return out.replace(/\s{2,}/g, ' ').trim();
 }
 
 function dedupe(list: string[]): string[] {

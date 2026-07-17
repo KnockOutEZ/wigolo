@@ -5,6 +5,7 @@ import {
   checkSamplingSupport,
 } from '../search/sampling.js';
 import type { ResearchSource, Citation } from '../types.js';
+import { stripResearchChrome } from './brief.js';
 
 const log = createLogger('research');
 
@@ -41,7 +42,7 @@ export async function synthesizeReport(
     index: i + 1,
     url: s.url,
     title: s.title,
-    snippet: s.markdown_content.slice(0, 200),
+    snippet: stripResearchChrome(s.markdown_content).slice(0, 200),
   }));
 
   if (server) {

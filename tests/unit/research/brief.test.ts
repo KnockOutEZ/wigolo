@@ -215,6 +215,29 @@ describe('buildResearchBrief', () => {
     expect(brief.key_findings[0]).toContain('NASA confirmed the Artemis mission');
   });
 
+  // WHY: Medium wraps its author avatar+name in a link that spans several lines
+  // (`[\n\n![avatar](img)\n\n](/@user?source=post_page---byline--HASH----)`).
+  // Split on blank lines, the CLOSING half becomes a standalone paragraph —
+  // `](/@user?source=post_page---byline--<hash>------)`. Its opening `[label]`
+  // is in a prior paragraph, so the `[label](url)` flattener can't match it, and
+  // the URL is a RELATIVE `/@…` path so the bare-http stripper misses it too. The
+  // dash-run pushes it past 80 chars, so it leaked verbatim into key_findings AND
+  // the synthesized report. Observed live on Medium articles (2026-07-17). The
+  // finding must be the article body, not the orphan link fragment.
+  it('skips an orphan byline link-close fragment and surfaces the article body', async () => {
+    const md = [
+      '](/@sharmaakhil.work?source=post_page---byline--7b8ac89bfaae---------------------------------------)',
+      '',
+      'Node.js 24 ships with the V8 13.6 engine and npm 11, bringing explicit resource management, a global URLPattern, and a stabilized permission model that together modernize the server-side runtime for production workloads.',
+    ].join('\n');
+    const sources = [mkSource({ markdown_content: md })];
+    const brief = await buildResearchBrief('node 24 features', sources, [], 3000, 40000);
+    expect(brief.key_findings.length).toBe(1);
+    expect(brief.key_findings[0]).not.toContain('source=post_page');
+    expect(brief.key_findings[0]).not.toContain('](/@');
+    expect(brief.key_findings[0]).toContain('Node.js 24 ships with the V8 13.6');
+  });
+
   // WHY: an author byline ("By Jane Smith, Senior Correspondent … 5 min read")
   // can clear the 80-char substantive-paragraph threshold and leak into
   // key_findings as if it were a finding. It is provenance chrome, not evidence.
@@ -568,6 +591,32 @@ describe('detectCrossReferences', () => {
     const sources = [mkSource()];
     const refs = detectCrossReferences(sources);
     expect(refs).toEqual([]);
+  });
+
+  // WHY: Medium articles share identical image/byline CHROME — avatar embeds
+  // (`![x](https://miro.medium.com/v2/resize:fill:64:64/…)`), byline links
+  // (`](/@user?source=post_page--…)`), and the image-viewer caption "Press
+  // enter or click to view image in full size". Across several Medium sources
+  // these tokenize to junk 3-grams ("https miro medium", "source post page",
+  // "press enter click", "click view image", "image full size", "medium resize
+  // fill") that surfaced in the brief's "Where Sources Agree" as high-confidence
+  // agreement. Chrome is not corroboration — it must be stripped before phrase
+  // extraction. Observed live via the MCP research tool (2026-07-17).
+  it('does NOT surface shared image/byline CHROME as cross-references', () => {
+    const chrome =
+      '[\n\n![Akhil](https://miro.medium.com/v2/resize:fill:64:64/0*bhgL.png)\n\n]' +
+      '(/@sharmaakhil.work?source=post_page---byline--7b8ac89bfaae----)\n\n' +
+      'Press enter or click to view image in full size\n\n';
+    const sources: ResearchSource[] = [
+      mkSource({ url: 'https://m1.com', markdown_content: chrome + 'Node.js 24 ships the V8 13.6 engine and npm 11.' }),
+      mkSource({ url: 'https://m2.com', markdown_content: chrome + 'Node.js 24 adds explicit resource management via using.' }),
+      mkSource({ url: 'https://m3.com', markdown_content: chrome + 'Node.js 24 stabilizes the permission model.' }),
+    ];
+    const refs = detectCrossReferences(sources);
+    const findings = refs.map((r) => r.finding).join(' | ');
+    for (const junk of ['miro', 'resize fill', 'source post page', 'press enter', 'click view image', 'image full size', 'post_page']) {
+      expect(findings).not.toContain(junk);
+    }
   });
 
   it('sets confidence high for 3+ sources', () => {
