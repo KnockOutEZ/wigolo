@@ -162,6 +162,32 @@ export interface WarmupResult {
 }
 
 /**
+ * Map the internal WarmupResult to the machine-facing --json shape, renaming the
+ * implementation-library keys to capability names (`playwright` → `browserEngine`,
+ * `searxng` → `searchSidecar`) so the JSON contract carries no library names —
+ * the same rule the OpenAPI surface enforces. The internal type keeps its field
+ * names; the rename happens only at this serialization boundary. Optional fields
+ * are copied through unchanged.
+ */
+export function warmupResultToJson(result: WarmupResult): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    browserEngine: result.playwright,
+    searchSidecar: result.searxng,
+  };
+  if (result.playwrightError !== undefined) out.browserEngineError = result.playwrightError;
+  if (result.searxngError !== undefined) out.searchSidecarError = result.searxngError;
+  if (result.reranker !== undefined) out.reranker = result.reranker;
+  if (result.rerankerError !== undefined) out.rerankerError = result.rerankerError;
+  if (result.firefox !== undefined) out.firefox = result.firefox;
+  if (result.firefoxError !== undefined) out.firefoxError = result.firefoxError;
+  if (result.webkit !== undefined) out.webkit = result.webkit;
+  if (result.webkitError !== undefined) out.webkitError = result.webkitError;
+  if (result.embeddings !== undefined) out.embeddings = result.embeddings;
+  if (result.embeddingsError !== undefined) out.embeddingsError = result.embeddingsError;
+  return out;
+}
+
+/**
  * Format the opt-in local-model tier (`WIGOLO_LOCAL_LLM`) summary line for
  * warmup. Pure so the branching is asserted without a live server. warmup does
  * not install models — it only reports the resolved state. Component names
@@ -423,8 +449,9 @@ export async function runWarmup(
   reporterImpl.finish();
 
   if (json) {
-    // Machine shape on stdout; the progress/summary lines stay on stderr.
-    process.stdout.write(`${JSON.stringify(result)}\n`);
+    // Machine shape on stdout (capability-named keys, no library names); the
+    // progress/summary lines stay on stderr.
+    process.stdout.write(`${JSON.stringify(warmupResultToJson(result))}\n`);
   }
 
   return result;

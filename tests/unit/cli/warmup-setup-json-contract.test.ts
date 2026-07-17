@@ -90,9 +90,31 @@ describe('warmup --json single-doc contract', () => {
     } finally {
       cap.restore();
     }
-    const doc = expectSingleJsonDoc(cap.stdout.join('')) as { playwright?: string };
-    // The warmup result always carries a browser phase outcome.
-    expect(doc).toHaveProperty('playwright');
+    const doc = expectSingleJsonDoc(cap.stdout.join('')) as { browserEngine?: string };
+    // The warmup result always carries a browser phase outcome — under the
+    // capability-named key, not the library name.
+    expect(doc).toHaveProperty('browserEngine');
+  });
+
+  it('emits capability-named keys, not implementation library names', async () => {
+    // WHY (A1): the --json output is a machine-facing contract. Library names
+    // (playwright/searxng) leak the implementation and violate the
+    // capability-language rule the OpenAPI surface already enforces. The JSON
+    // must carry `browserEngine`/`searchSidecar` and must not mention the libs.
+    const cap = capture();
+    try {
+      await runWarmup(['--all', '--json']);
+    } finally {
+      cap.restore();
+    }
+    const raw = cap.stdout.join('').trim();
+    expect(raw).not.toMatch(/playwright|searxng/i);
+    const doc = expectSingleJsonDoc(raw) as Record<string, unknown>;
+    expect(doc).toHaveProperty('browserEngine');
+    expect(doc).toHaveProperty('searchSidecar');
+    // Old library-named keys must be gone from the machine contract.
+    expect(doc).not.toHaveProperty('playwright');
+    expect(doc).not.toHaveProperty('searxng');
   });
 });
 

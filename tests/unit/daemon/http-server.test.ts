@@ -432,6 +432,150 @@ describe('DaemonHttpServer', () => {
   });
 });
 
+describe('DaemonHttpServer — MCP transport DNS-rebinding / Origin guard (MED-1)', () => {
+  // WHY (MED-1): /mcp, /sse, /messages previously gated only through the bearer
+  // check, which allows through in open mode (no token). In that mode they
+  // applied NO Host allowlist and NO Origin reject — unlike the REST router and
+  // the admin route. A malicious web page resolving an attacker domain to
+  // 127.0.0.1 could POST JSON-RPC to /mcp with a browser Origin and drive the
+  // local MCP server. These guards run BEFORE the transport, in both open and
+  // token modes: a browser always sets Origin, a legitimate MCP client never
+  // does; a spoofed Host is a rebinding attempt.
+  beforeEach(() => {
+    delete process.env.WIGOLO_API_TOKEN;
+    delete process.env.WIGOLO_API_TOKEN_FILE;
+    resetConfig();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    delete process.env.WIGOLO_API_TOKEN;
+    resetConfig();
+  });
+
+  it('NEGATIVE: POST /mcp with a browser Origin → 403 (open mode)', async () => {
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1' });
+    try {
+      const url = await daemon.start();
+      const resp = await fetch(`${url}/mcp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example.com' },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: {} }),
+      });
+      expect(resp.status).toBe(403);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('NEGATIVE: POST /mcp with a browser Origin → 403 (token mode)', async () => {
+    process.env.WIGOLO_API_TOKEN = 'secret-token';
+    resetConfig();
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', apiToken: 'secret-token' });
+    try {
+      const url = await daemon.start();
+      const resp = await fetch(`${url}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer secret-token',
+          Origin: 'https://evil.example.com',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: {} }),
+      });
+      expect(resp.status).toBe(403);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('NEGATIVE: GET /sse with a browser Origin → 403 (open mode)', async () => {
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const http = await import('node:http');
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1' });
+    try {
+      const url = await daemon.start();
+      const parsed = new URL(`${url}/sse`);
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = http.get(
+          {
+            hostname: parsed.hostname,
+            port: parsed.port,
+            path: parsed.pathname,
+            headers: { Accept: 'text/event-stream', Origin: 'https://evil.example.com' },
+          },
+          (res) => {
+            resolve(res.statusCode ?? 0);
+            res.destroy();
+          },
+        );
+        req.on('error', reject);
+        setTimeout(() => { req.destroy(); reject(new Error('timeout')); }, 3000);
+      });
+      expect(status).toBe(403);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('NEGATIVE: POST /mcp with a non-loopback spoofed Host → 403', async () => {
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const http = await import('node:http');
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1' });
+    try {
+      const url = await daemon.start();
+      const parsed = new URL(url);
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: parsed.hostname,
+            port: parsed.port,
+            path: '/mcp',
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Host: 'attacker.example.com' },
+          },
+          (res) => {
+            resolve(res.statusCode ?? 0);
+            res.destroy();
+          },
+        );
+        req.on('error', reject);
+        req.end(JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: {} }));
+      });
+      expect(status).toBe(403);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('POSITIVE: a normal no-Origin MCP client request still passes (open mode)', async () => {
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1' });
+    try {
+      const url = await daemon.start();
+      const resp = await fetch(`${url}/mcp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'initialize',
+          id: 1,
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'test', version: '1.0' },
+          },
+        }),
+      });
+      expect(resp.status).not.toBe(403);
+      expect(resp.status).not.toBe(404);
+    } finally {
+      await daemon.stop();
+    }
+  });
+});
+
 describe('DaemonHttpServer — POST /admin/reset-breakers auth (D9)', () => {
   // WHY (D9 review BLOCKER): the admin reset route is a privileged control
   // surface. Loopback source-IP is NOT the control — cloudflared remote-serve

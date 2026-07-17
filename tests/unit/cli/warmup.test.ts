@@ -382,13 +382,16 @@ describe('warmup --json (S9)', () => {
     stdoutSpy.mockRestore();
   });
 
-  it('emits the WarmupResult as a single JSON object on stdout', async () => {
+  it('emits the WarmupResult as a single JSON object on stdout with capability-named keys', async () => {
     const result = await runWarmup(['--json']);
     const parsed = JSON.parse(stdoutBuf);
-    expect(parsed.playwright).toBe(result.playwright);
-    expect(parsed.searxng).toBe(result.searxng);
-    expect(parsed).toHaveProperty('playwright');
-    expect(parsed).toHaveProperty('searxng');
+    // Machine contract uses capability names, not library names (A1).
+    expect(parsed.browserEngine).toBe(result.playwright);
+    expect(parsed.searchSidecar).toBe(result.searxng);
+    expect(parsed).toHaveProperty('browserEngine');
+    expect(parsed).toHaveProperty('searchSidecar');
+    expect(parsed).not.toHaveProperty('playwright');
+    expect(parsed).not.toHaveProperty('searxng');
   });
 
   it('still returns the structured WarmupResult from the function', async () => {

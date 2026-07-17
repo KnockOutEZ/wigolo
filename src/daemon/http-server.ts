@@ -99,9 +99,40 @@ export class DaemonHttpServer {
     return this.restRouterPromise;
   }
 
-  /** Whether a token-configured daemon should bearer-gate the MCP transport
-   * routes (/mcp, /sse, /messages). 401 envelope on failure. */
-  private mcpBearerRejected(req: IncomingMessage, res: ServerResponse): boolean {
+  /**
+   * Gate the MCP transport routes (/mcp, /sse, /messages). Returns true when the
+   * request was rejected (a response was written). Order — matching the admin
+   * route and the REST Origin guard:
+   *   1. Host allowlist (DNS-rebinding guard) — a browser resolving an attacker
+   *      domain to 127.0.0.1 sends the attacker's Host, not a loopback one → 403.
+   *   2. No `Origin` header allowed — a browser always sets it, a CLI/MCP client
+   *      never does. Applied in BOTH open and token modes so a token cannot be
+   *      probed from a page and DNS-rebinding is blocked before the transport
+   *      even in token mode → 403.
+   *   3. Bearer token (token mode only) must match → else 401.
+   * A legitimate MCP client (no Origin, loopback Host, valid/absent token) passes.
+   */
+  private mcpTransportRejected(req: IncomingMessage, res: ServerResponse): boolean {
+    if (!this.isAllowedHost(req.headers.host)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: 'Forbidden: host not allowed',
+        error_reason: 'host_not_allowed',
+        hint: 'Request Host is not on the loopback allowlist.',
+      }));
+      return true;
+    }
+    if (req.headers.origin !== undefined) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: 'Forbidden: browser origin not allowed',
+        error_reason: 'origin_not_allowed',
+        hint: 'Browser-origin requests are not supported on the MCP transport. Use a server-side or CLI client.',
+      }));
+      return true;
+    }
     if (!this.apiToken) return false;
     const auth = req.headers.authorization ?? '';
     const provided = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : null;
@@ -195,27 +226,27 @@ export class DaemonHttpServer {
     }
 
     if (pathname === '/mcp' && method === 'POST') {
-      if (this.mcpBearerRejected(req, res)) return;
+      if (this.mcpTransportRejected(req, res)) return;
       return this.handleStreamableHttpRequest(req, res);
     }
 
     if (pathname === '/mcp' && method === 'GET') {
-      if (this.mcpBearerRejected(req, res)) return;
+      if (this.mcpTransportRejected(req, res)) return;
       return this.handleStreamableHttpGet(req, res);
     }
 
     if (pathname === '/mcp' && method === 'DELETE') {
-      if (this.mcpBearerRejected(req, res)) return;
+      if (this.mcpTransportRejected(req, res)) return;
       return this.handleStreamableHttpDelete(req, res);
     }
 
     if (pathname === '/sse' && method === 'GET') {
-      if (this.mcpBearerRejected(req, res)) return;
+      if (this.mcpTransportRejected(req, res)) return;
       return this.handleSseRequest(req, res);
     }
 
     if (pathname === '/messages' && method === 'POST') {
-      if (this.mcpBearerRejected(req, res)) return;
+      if (this.mcpTransportRejected(req, res)) return;
       const sessionId = url.searchParams.get('sessionId');
       return this.handleSseMessageRequest(req, res, sessionId);
     }

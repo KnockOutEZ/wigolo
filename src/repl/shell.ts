@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline';
-import { existsSync, readFileSync, mkdirSync, appendFileSync, chmodSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
@@ -108,10 +108,11 @@ function loadHistory(historyPath: string): string[] {
 function appendHistory(historyPath: string, line: string): void {
   try {
     mkdirSync(dirname(historyPath), { recursive: true });
-    const fresh = !existsSync(historyPath);
-    appendFileSync(historyPath, line + '\n');
-    // History can contain typed queries/URLs — keep it owner-only.
-    if (fresh) chmodSync(historyPath, 0o600);
+    // History can contain typed queries/URLs — create it owner-only. The `mode`
+    // applies at creation, so the file is never briefly world/group-readable
+    // under a loose umask (no create-then-chmod TOCTOU window). On an existing
+    // file the mode is ignored and the line is appended as before.
+    appendFileSync(historyPath, line + '\n', { mode: 0o600 });
   } catch (err) {
     log.warn('failed to save shell history', { error: String(err) });
   }
