@@ -79,6 +79,17 @@ describe('parseCommand', () => {
     });
   });
 
+  it('returns "tune" for tune argument', () => {
+    expect(parseCommand(['tune'])).toEqual({ command: 'tune', args: [] });
+  });
+
+  it('routes "tune show <domain>" preserving the subcommand + domain + flags', () => {
+    expect(parseCommand(['tune', 'show', 'example.com', '--json'])).toEqual({
+      command: 'tune',
+      args: ['show', 'example.com', '--json'],
+    });
+  });
+
   it('passes --plain flag through to warmup args', () => {
     expect(parseCommand(['warmup', '--plain'])).toEqual({
       command: 'warmup',
