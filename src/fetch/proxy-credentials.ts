@@ -18,6 +18,40 @@ export function credentialKeychainUser(settingsKey: string): string {
   return `${settingsKey}-cred`;
 }
 
+/** Playwright's structured proxy launch option. */
+export interface PlaywrightProxyOption {
+  server: string;
+  username?: string;
+  password?: string;
+}
+
+/**
+ * Build Playwright's structured `proxy` launch option from the resolved proxy
+ * URL. Credentials are passed as `username`/`password` fields — NEVER inline in
+ * the `server` string — so they don't leak into the browser child's process
+ * args / environment. Returns undefined when the proxy is off, unset, or
+ * unparseable (fail-safe: no proxy rather than a broken launch).
+ */
+export function playwrightProxyOption(
+  proxyUrl: string | null,
+  useProxy: boolean,
+): PlaywrightProxyOption | undefined {
+  if (!useProxy || !proxyUrl) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(proxyUrl);
+  } catch {
+    return undefined;
+  }
+  const { username, password } = parsed;
+  parsed.username = '';
+  parsed.password = '';
+  const opt: PlaywrightProxyOption = { server: parsed.toString() };
+  if (username) opt.username = decodeURIComponent(username);
+  if (password) opt.password = decodeURIComponent(password);
+  return opt;
+}
+
 export interface SplitResult {
   /** The URL with any inline userinfo removed. Unchanged input if unparseable. */
   bareUrl: string;

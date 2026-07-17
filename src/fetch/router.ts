@@ -225,6 +225,19 @@ export interface SmartRouterOptions {
    * Defaults to a shared {@link BrowserAcquirer}.
    */
   browserAcquirer?: BrowserAcquirer;
+  /**
+   * Opt-in Tier-B escape-hatch fetchers (challenge-solver + hosted reader).
+   * Injectable so router tests exercise the ladder without the real network
+   * rungs. Defaults to a lazy `import('./escape-hatch.js')` so a default
+   * install never loads the module.
+   */
+  escapeHatch?: EscapeHatchFetchers;
+}
+
+/** The two escape-hatch rung fetchers, injectable for tests. */
+export interface EscapeHatchFetchers {
+  solverFetch: typeof import('./escape-hatch.js').solverFetch;
+  hostedReaderFetch: typeof import('./escape-hatch.js').hostedReaderFetch;
 }
 
 interface DomainStats {
@@ -450,6 +463,7 @@ export class SmartRouter {
   private readonly pdfProbe: PdfProbe;
   private readonly browserAcquirer: BrowserAcquirer;
   private readonly clearanceStore: ClearanceStore;
+  private readonly escapeHatchOverride: EscapeHatchFetchers | undefined;
 
   constructor(httpClient: HttpClient, browserPool: BrowserPoolInterface);
   constructor(options: SmartRouterOptions);
@@ -470,7 +484,8 @@ export class SmartRouter {
         'tlsFetcher' in httpClientOrOptions ||
         'tlsPersistence' in httpClientOrOptions ||
         'clearanceStore' in httpClientOrOptions ||
-        'pdfProbe' in httpClientOrOptions)
+        'pdfProbe' in httpClientOrOptions ||
+        'escapeHatch' in httpClientOrOptions)
     ) {
       const opts = httpClientOrOptions as SmartRouterOptions;
       if (!opts.httpFetcher && !opts.httpClient) {
@@ -485,6 +500,7 @@ export class SmartRouter {
       this.pdfProbe = opts.pdfProbe ?? defaultPdfProbe;
       this.browserAcquirer = opts.browserAcquirer ?? new BrowserAcquirer();
       this.clearanceStore = opts.clearanceStore ?? defaultClearanceStore();
+      this.escapeHatchOverride = opts.escapeHatch;
       return;
     } else {
       // Backwards-compat: single HttpClient positional (unusual but safe)
@@ -684,6 +700,11 @@ export class SmartRouter {
       return await this.browserPool.fetchWithBrowser(url, browserOptions);
     } catch (err) {
       if (err instanceof ChallengeBlockedError) {
+        // Terminal browser challenge-block. Before returning the fast-fail, try
+        // the opt-in escape-hatch rungs (solver → hosted reader) IF configured.
+        // Unconfigured rungs no-op and never load the module (default path).
+        const cleared = await this.tryEscapeHatch(url, browserOptions.signal);
+        if (cleared) return cleared;
         return {
           error: err.code,
           error_reason: err.message,
@@ -693,6 +714,41 @@ export class SmartRouter {
       }
       throw err;
     }
+  }
+
+  /**
+   * Opt-in Tier-B escape-hatch ladder, tried only after the browser tier hits a
+   * hard challenge-block. Rungs are attempted in order: challenge-solver, then
+   * hosted reader. Each is OFF unless its URL is configured; when neither is
+   * configured this returns null WITHOUT loading the escape-hatch module, so a
+   * default install never pays for it. Any rung that clears the page wins.
+   */
+  private async tryEscapeHatch(
+    url: string,
+    signal: AbortSignal | undefined,
+  ): Promise<RawFetchResult | null> {
+    const cfg = getConfig();
+    if (!cfg.solverUrl && !cfg.hostedReaderUrl) return null;
+
+    const fetchers =
+      this.escapeHatchOverride ?? (await import('./escape-hatch.js'));
+    const hatchCfg = {
+      solverUrl: cfg.solverUrl,
+      hostedReaderUrl: cfg.hostedReaderUrl,
+      fetchAllowPrivate: cfg.fetchAllowPrivate,
+      maxRedirects: cfg.maxRedirects,
+      fetchTimeoutMs: cfg.fetchTimeoutMs,
+    };
+
+    if (cfg.solverUrl) {
+      const solved = await fetchers.solverFetch(url, hatchCfg, { signal });
+      if (solved) return solved;
+    }
+    if (cfg.hostedReaderUrl) {
+      const read = await fetchers.hostedReaderFetch(url, hatchCfg, { signal });
+      if (read) return read;
+    }
+    return null;
   }
 
   /**

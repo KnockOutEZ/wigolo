@@ -4,6 +4,7 @@ import {
   recomposeWithUserinfo,
   credentialKeychainUser,
   CREDENTIAL_URL_KEYS,
+  playwrightProxyOption,
 } from '../../../src/fetch/proxy-credentials.js';
 
 describe('splitUserinfo', () => {
@@ -64,6 +65,39 @@ describe('credentialKeychainUser', () => {
     expect(credentialKeychainUser('proxyUrl')).toBe('proxyUrl-cred');
     expect(credentialKeychainUser('solverUrl')).toBe('solverUrl-cred');
     expect(credentialKeychainUser('hostedReaderUrl')).toBe('hostedReaderUrl-cred');
+  });
+});
+
+describe('playwrightProxyOption', () => {
+  it('returns undefined when useProxy is false', () => {
+    expect(playwrightProxyOption('http://p:1', false)).toBeUndefined();
+  });
+
+  it('returns undefined when proxyUrl is null', () => {
+    expect(playwrightProxyOption(null, true)).toBeUndefined();
+  });
+
+  it('splits credentials into structured server/username/password (not the server string)', () => {
+    const opt = playwrightProxyOption('http://alice:s3cret@proxy.example.com:8080', true);
+    expect(opt).toBeDefined();
+    expect(opt!.username).toBe('alice');
+    expect(opt!.password).toBe('s3cret');
+    // The server must NOT carry the credentials inline.
+    expect(opt!.server).not.toContain('alice');
+    expect(opt!.server).not.toContain('s3cret');
+    expect(opt!.server).toContain('proxy.example.com:8080');
+  });
+
+  it('returns a server-only option for a credential-free proxy', () => {
+    const opt = playwrightProxyOption('http://proxy.example.com:8080', true);
+    expect(opt).toBeDefined();
+    expect(opt!.username).toBeUndefined();
+    expect(opt!.password).toBeUndefined();
+    expect(opt!.server).toContain('proxy.example.com:8080');
+  });
+
+  it('returns undefined for an unparseable proxy URL (fail-safe)', () => {
+    expect(playwrightProxyOption('not a url', true)).toBeUndefined();
   });
 });
 

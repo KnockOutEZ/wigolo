@@ -7,6 +7,8 @@ import { executeActions } from './action-executor.js';
 import { HYDRATION_PROBE_SOURCE } from './hydration-probe.js';
 import { abortRejection } from '../util/abort.js';
 import { sanitizedChildEnv } from '../util/child-env.js';
+import { playwrightProxyOption } from './proxy-credentials.js';
+import { redactUrl } from '../util/redact-url.js';
 import { isAntiBotStatus, hasBrowserChallengeBody, isChallengeShell } from './tls-tier.js';
 import { pollUntilCleared } from './challenge-completion.js';
 import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, STEALTH_INIT_SCRIPT } from './stealth.js';
@@ -265,8 +267,14 @@ export class MultiBrowserPool {
     const typePool = this.pools.get(type)!;
     if (!typePool.browser) {
       const launcher = getLauncher(type);
-      log.debug('launching browser', { type });
-      typePool.browser = await launcher.launch({ headless: true, env: sanitizedChildEnv({ stripProxy: true }) });
+      const cfg = getConfig();
+      const proxy = playwrightProxyOption(cfg.proxyUrl, cfg.useProxy);
+      log.debug('launching browser', { type, proxied: proxy !== undefined });
+      typePool.browser = await launcher.launch({
+        headless: true,
+        env: sanitizedChildEnv({ stripProxy: true }),
+        ...(proxy ? { proxy } : {}),
+      });
     }
     return typePool.browser;
   }
@@ -408,13 +416,13 @@ export class MultiBrowserPool {
       // CDP is always Chromium
       resolvedType = 'chromium';
       try {
-        log.info('connecting via CDP', { cdpUrl: options.cdpUrl });
+        log.info('connecting via CDP', { cdpUrl: redactUrl(options.cdpUrl) });
         cdpBrowser = await chromium.connectOverCDP(options.cdpUrl);
         const contexts = cdpBrowser.contexts();
         ctx = contexts.length > 0 ? contexts[0] : await cdpBrowser.newContext();
       } catch (err) {
         log.warn('CDP connection failed, falling back to launch', {
-          cdpUrl: options.cdpUrl,
+          cdpUrl: redactUrl(options.cdpUrl),
           error: err instanceof Error ? err.message : String(err),
         });
         ctx = await this.acquireForType(resolvedType);
@@ -431,10 +439,13 @@ export class MultiBrowserPool {
       // its default launch). The dedicated context + browser are closed in the
       // finally.
       const launcher = getLauncher(resolvedType);
+      const cfgProxy = getConfig();
+      const proxy = playwrightProxyOption(cfgProxy.proxyUrl, cfgProxy.useProxy);
       dedicatedBrowser = await launcher.launch({
         headless: true,
         args: stealthLaunchArgs(resolvedType),
         env: sanitizedChildEnv({ stripProxy: true }),
+        ...(proxy ? { proxy } : {}),
       });
       advertisedUa = resolveStealthUA();
       ctx = await dedicatedBrowser.newContext(stealthContextOptions(advertisedUa));
