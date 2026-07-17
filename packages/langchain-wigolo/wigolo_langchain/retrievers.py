@@ -11,7 +11,7 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from pydantic import ConfigDict, Field
 
-from langchain_wigolo.client import WigoloMcpClient
+from wigolo_langchain.client import WigoloMcpClient
 
 logger = logging.getLogger(__name__)
 

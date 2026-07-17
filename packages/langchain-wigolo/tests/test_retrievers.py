@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.documents import Document
 
-from langchain_wigolo.retrievers import WigoloSearchRetriever
-from langchain_wigolo.client import WigoloMcpClient
+from wigolo_langchain.retrievers import WigoloSearchRetriever
+from wigolo_langchain.client import WigoloMcpClient
 
 
 def _make_search_result(

@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from langchain_wigolo.tools import WigoloSearchTool, WigoloFetchTool
-from langchain_wigolo.types import SearchInput, FetchInput
-from langchain_wigolo.client import WigoloMcpClient
+from wigolo_langchain.tools import WigoloSearchTool, WigoloFetchTool
+from wigolo_langchain.types import SearchInput, FetchInput
+from wigolo_langchain.client import WigoloMcpClient
 
 
 def _make_search_output(query: str = "test", n_results: int = 1) -> dict:

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "langchain-wigolo"
+name = "wigolo-langchain"
 version = "0.2.0"
 description = "LangChain integration for wigolo — local-first web search MCP server"
 readme = "README.md"

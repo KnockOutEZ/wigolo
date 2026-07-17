@@ -13,8 +13,8 @@ from langchain_core.callbacks import (
 from langchain_core.tools import BaseTool
 from pydantic import ConfigDict, Field
 
-from langchain_wigolo.client import WigoloMcpClient
-from langchain_wigolo.types import FetchInput, SearchInput
+from wigolo_langchain.client import WigoloMcpClient
+from wigolo_langchain.types import FetchInput, SearchInput
 
 logger = logging.getLogger(__name__)
 

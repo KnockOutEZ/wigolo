@@ -1,4 +1,4 @@
-"""Shared Pydantic models for langchain-wigolo."""
+"""Shared Pydantic models for wigolo-langchain."""
 
 from __future__ import annotations
 

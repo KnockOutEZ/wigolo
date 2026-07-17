@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from langchain_wigolo.client import WigoloMcpClient, WigoloClientError
+from wigolo_langchain.client import WigoloMcpClient, WigoloClientError
 from tests.conftest import (
     MOCK_INITIALIZE_RESPONSE,
     MOCK_SEARCH_RESPONSE,

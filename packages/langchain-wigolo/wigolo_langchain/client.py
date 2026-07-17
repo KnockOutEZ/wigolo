@@ -71,7 +71,7 @@ class WigoloMcpClient:
                 "initialize",
                 {
                     "protocolVersion": "2025-03-26",
-                    "clientInfo": {"name": "langchain-wigolo", "version": "0.1.0"},
+                    "clientInfo": {"name": "wigolo-langchain", "version": "0.2.0"},
                     "capabilities": {},
                 },
             )

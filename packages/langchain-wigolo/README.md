@@ -1,11 +1,11 @@
-# langchain-wigolo
+# wigolo-langchain
 
 LangChain integration for [wigolo](https://github.com/KnockOutEZ/wigolo) — a local-first web search MCP server for AI coding agents.
 
 ## Installation
 
 ```bash
-pip install langchain-wigolo
+pip install wigolo-langchain
 ```
 
 Requires wigolo to be available via npx:
@@ -19,7 +19,7 @@ npm install -g wigolo
 ### As a Retriever
 
 ```python
-from langchain_wigolo import WigoloMcpClient, WigoloSearchRetriever
+from wigolo_langchain import WigoloMcpClient, WigoloSearchRetriever
 
 async def main():
     async with WigoloMcpClient() as client:
@@ -36,7 +36,7 @@ async def main():
 ### As LangChain Tools (for Agents)
 
 ```python
-from langchain_wigolo import WigoloMcpClient, WigoloSearchTool, WigoloFetchTool
+from wigolo_langchain import WigoloMcpClient, WigoloSearchTool, WigoloFetchTool
 
 async def main():
     async with WigoloMcpClient() as client:

@@ -1,9 +1,9 @@
 """LangChain integration for wigolo — local-first web search MCP server."""
 
-from langchain_wigolo.client import WigoloMcpClient
-from langchain_wigolo.retrievers import WigoloSearchRetriever
-from langchain_wigolo.tools import WigoloFetchTool, WigoloSearchTool
-from langchain_wigolo.types import FetchInput, FetchOutput, SearchInput, SearchOutput
+from wigolo_langchain.client import WigoloMcpClient
+from wigolo_langchain.retrievers import WigoloSearchRetriever
+from wigolo_langchain.tools import WigoloFetchTool, WigoloSearchTool
+from wigolo_langchain.types import FetchInput, FetchOutput, SearchInput, SearchOutput
 
 __all__ = [
     "WigoloMcpClient",

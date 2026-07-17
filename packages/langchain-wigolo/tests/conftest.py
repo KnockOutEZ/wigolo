@@ -1,4 +1,4 @@
-"""Shared test fixtures for langchain-wigolo."""
+"""Shared test fixtures for wigolo-langchain."""
 
 from __future__ import annotations
 
