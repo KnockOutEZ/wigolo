@@ -145,7 +145,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm install --no-audit --no-fund
+          npm ci
           npm run build
           VER="$(node -p "require('./package.json').version")"
           if npm view "wigolo-vercel-ai-sdk@$VER" version >/dev/null 2>&1; then
