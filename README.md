@@ -46,16 +46,17 @@ wigolo went public in early July 2026. It found its audience fast — **most of 
 
 Requires **Node ≥ 20** and ~1.5 GB of free disk. macOS, Linux, and Windows.
 
-One command wires the local engine into your agent and sets up the MCP connection. It runs headlessly with no prompts. `init` does the **complete setup** — it downloads the browser engine and on-device models, runs a health check, and prints a clear per-component summary — so any setup problem surfaces right here, not silently on your agent's first call:
+One command wires the local engine into your agent and sets up the MCP connection. `init` is **unattended by default** — no prompts, safe in scripts and CI — and does the **complete setup**: it downloads the browser engine and on-device models, runs a health check, and prints a clear per-component summary, so any setup problem surfaces right here, not silently on your agent's first call:
 
 ```bash
-npx wigolo init --non-interactive --agents=<your-agent>
+npx wigolo init --agents=<your-agent>
 ```
 
 - **`<your-agent>`** — one or more of `claude-code` · `cursor` · `codex` · `gemini-cli` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated). wigolo writes the MCP config and instructions for you — nothing else to set up.
-- **Any other MCP-capable agent?** Omit `--agents` — init still runs headlessly, and you point your agent at wigolo's MCP server (`npx wigolo mcp`) yourself.
+- **Any other MCP-capable agent?** Omit `--agents` — init still sets up the engine, and you point your agent at wigolo's MCP server (`npx wigolo mcp`) yourself.
+- **Prefer a guided setup?** `--interactive` gives a plain-text prompt flow (pick your agents step by step); `--wizard` gives the richer terminal TUI. Both need a real terminal.
 - **Skipping `init`?** You can wire the MCP server directly (below) without ever running `init` — the browser engine and models then download automatically on first use.
-- **Fast / offline / CI setup?** Add `--no-warmup` to skip the downloads (components lazy-load on first use instead). **Prefer a guided setup?** Add `--wizard` for the interactive terminal wizard.
+- **Fast / offline / CI setup?** Add `--no-warmup` to skip the downloads (components lazy-load on first use instead). *(`--non-interactive` still works — it's just the default now.)*
 - A component download failing (offline, disk, network block) never fails the setup: `init` reports what's not ready with the exact fix and still wires your agent — the component retries on first use.
 
 That's the whole setup — **search, fetch, crawl, extract, cache, and find-similar work with no API key.** Check it's healthy:
@@ -71,7 +72,7 @@ Not for you? `npx wigolo config --uninstall --yes` removes everything, cleanly.
 The `--agents` flag has a built-in installer for each agent listed above — but it can't cover every agent in the world. For **anything else — your own custom or in-house agent, or any MCP-capable client we don't wire automatically yet** — set wigolo up by hand: it's just another MCP server. Install the engine once, then register it:
 
 ```bash
-npx wigolo init --non-interactive        # headless full setup, no agent wiring (add --no-warmup to defer downloads)
+npx wigolo init                          # unattended full setup, no agent wiring (add --no-warmup to defer downloads)
 ```
 
 Most clients use an `mcpServers` block in a JSON config file:
@@ -129,7 +130,7 @@ To enable answer synthesis (below) for a hand-wired agent, add the provider and 
 
 Setup is simple enough to hand off to an AI. Ask your coding agent (Claude Code, Cursor, …) — or any chat assistant (ChatGPT, Claude, Gemini) — to do it, and it can follow the steps above. Paste a prompt like:
 
-> Set up the **wigolo** MCP server for my agent. wigolo is a local-first MCP server installed with `npx wigolo init --non-interactive` (engine only — no API keys). Then register it in my agent's MCP config as an `mcpServers` entry `{ "command": "npx", "args": ["-y", "wigolo"] }`. Note the per-client differences: **VS Code** uses the `servers` key with `"type": "stdio"`; **Zed** uses `context_servers`; **Codex** uses TOML `[mcp_servers.wigolo]`; **Claude Code** uses the CLI `claude mcp add wigolo --scope user -- npx -y wigolo`. My agent is **<name>** and its MCP config is at **<path, or "wherever it registers MCP servers">**.
+> Set up the **wigolo** MCP server for my agent. wigolo is a local-first MCP server installed with `npx wigolo init` (engine only — no API keys). Then register it in my agent's MCP config as an `mcpServers` entry `{ "command": "npx", "args": ["-y", "wigolo"] }`. Note the per-client differences: **VS Code** uses the `servers` key with `"type": "stdio"`; **Zed** uses `context_servers`; **Codex** uses TOML `[mcp_servers.wigolo]`; **Claude Code** uses the CLI `claude mcp add wigolo --scope user -- npx -y wigolo`. My agent is **<name>** and its MCP config is at **<path, or "wherever it registers MCP servers">**.
 
 That prompt is self-contained, so even an assistant with no web access can act on it. If the assistant *can* browse, point it at this README (the **Manual MCP setup** section above has every client's exact config path) or the project's machine-readable **`llms.txt`** — both carry the full procedure, including the optional LLM-synthesis `env` below.
 
@@ -540,7 +541,7 @@ For repeated interactive use, run `wigolo serve` so the browser pool, embeddings
 |---------|--------------|
 | `wigolo` / `wigolo mcp` | Start the MCP stdio server (the default command). |
 | `wigolo <tool> <args>` | Run any tool once, headlessly — `search`, `fetch`, `crawl`, `extract`, `cache`, `find-similar`, `research`, `agent`, `diff`, `watch`. Add `--json` for machine-readable output (results on stdout, logs on stderr, exit code 0/1); `--help` on each tool lists its flags. Example: `wigolo search "rust async runtimes" --limit 5 --json`. |
-| `wigolo init` | Full headless setup: wire into detected agents, persist settings, download the browser engine + models, run a health check, and print a per-component summary (so failures surface at setup, not on first agent call). `--non-interactive --agents=<csv> --provider=<name> --search=<backend>` for CI; `--no-warmup` to skip the downloads (lazy first-use instead); `--wizard` for the interactive TUI; `--json` for a machine-readable summary (components + doctor). |
+| `wigolo init` | Full headless setup: wire into detected agents, persist settings, download the browser engine + models, run a health check, and print a per-component summary (so failures surface at setup, not on first agent call). `--agents=<csv> --provider=<name> --search=<backend>` (unattended by default — safe in CI); `--interactive` for plain-text prompts; `--no-warmup` to skip the downloads (lazy first-use instead); `--wizard` for the interactive TUI; `--json` for a machine-readable summary (components + doctor). |
 | `wigolo setup mcp` | Re-write just the MCP server entries, without the full wizard (`--json`). |
 | `wigolo doctor` | Cold-start health check — no network fetches. `--fix` auto-repairs known failures (re-download missing models, install the browser engine, clear stale sidecar state, reset engine breakers — including on a running daemon); `--json` for a machine-readable report. |
 | `wigolo verify` | End-to-end smoke test (fetch, crawl, extract, search, rerank, embed) (`--json`). |
