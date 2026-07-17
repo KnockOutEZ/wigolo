@@ -447,3 +447,17 @@ export function coerceFlags(
 
   return { input, errors };
 }
+
+/**
+ * Merge schema-derived bridge output into a curated tool-input object. Keys the
+ * executor already set (curated mappings) WIN over bridge-derived values. The
+ * one cast-through-unknown lives here so executors stay `as`-free; every tool
+ * input is a plain object literal, so this widening is sound.
+ */
+export function mergeBridged<T>(curated: T, bridged: Record<string, unknown>): T {
+  const target = curated as unknown as Record<string, unknown>;
+  for (const [k, v] of Object.entries(bridged)) {
+    if (!(k in target)) target[k] = v;
+  }
+  return curated;
+}

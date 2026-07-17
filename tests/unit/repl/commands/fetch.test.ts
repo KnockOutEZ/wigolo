@@ -54,6 +54,38 @@ describe('executeFetch', () => {
     );
   });
 
+  it('maps --mode=stealth to the schema mode property (not render_js)', async () => {
+    vi.mocked(handleFetch).mockResolvedValue({ ok: true, data: baseOutput });
+    await executeFetch({ command: 'fetch', positional: ['https://example.com'], flags: { mode: 'stealth' } }, deps);
+    expect(handleFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'stealth' }),
+      expect.anything(),
+    );
+    const passed = vi.mocked(handleFetch).mock.calls[0][0];
+    expect(passed.render_js).toBeUndefined();
+  });
+
+  it('maps --mode=cache and --mode=default to the schema mode property', async () => {
+    vi.mocked(handleFetch).mockResolvedValue({ ok: true, data: baseOutput });
+    await executeFetch({ command: 'fetch', positional: ['https://example.com'], flags: { mode: 'cache' } }, deps);
+    expect(vi.mocked(handleFetch).mock.calls[0][0].mode).toBe('cache');
+    vi.clearAllMocks();
+    vi.mocked(handleFetch).mockResolvedValue({ ok: true, data: baseOutput });
+    await executeFetch({ command: 'fetch', positional: ['https://example.com'], flags: { mode: 'default' } }, deps);
+    expect(vi.mocked(handleFetch).mock.calls[0][0].mode).toBe('default');
+  });
+
+  it('rejects an unknown --mode value with an error listing all five accepted values', async () => {
+    // WHY: --mode is value-dispatched across two schemas (render_js + mode);
+    // an invalid value must fail loudly rather than silently no-op.
+    const result = await executeFetch({ command: 'fetch', positional: ['https://example.com'], flags: { mode: 'bogus' } }, deps);
+    expect(result.error).toBeDefined();
+    for (const v of ['raw', 'markdown', 'cache', 'default', 'stealth']) {
+      expect(result.error).toContain(v);
+    }
+    expect(handleFetch).not.toHaveBeenCalled();
+  });
+
   it('returns error when no URL provided', async () => {
     const result = await executeFetch({ command: 'fetch', positional: [], flags: {} }, deps);
     expect(result.error).toContain('URL');
