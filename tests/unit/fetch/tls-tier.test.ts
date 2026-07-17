@@ -6,6 +6,8 @@ import {
   hasChallengeBody,
   isAntiBotSignal,
   isChallengeShell,
+  hasChallengeHeader,
+  isChallengeResponse,
   looksJsRequired,
   describeAntiBot,
   tlsFetch,
@@ -230,6 +232,90 @@ describe('tls-tier: isChallengeShell (status-agnostic challenge classifier)', ()
     // A substantive admin 403 page must pass through — not a challenge shell.
     const admin403 = '<html><body><h1>403 Forbidden</h1><p>' + 'You do not have permission to view this resource. '.repeat(20) + '</p></body></html>';
     expect(isChallengeShell(403, admin403)).toBe(false);
+  });
+});
+
+describe('tls-tier: modern-CF challenge (header + guarded body marker)', () => {
+  // The exact header Cloudflare sets on a modern challenge-platform response.
+  it('hasChallengeHeader: true when cf-mitigated marks a challenge', () => {
+    expect(hasChallengeHeader({ 'cf-mitigated': 'challenge' })).toBe(true);
+  });
+
+  it('hasChallengeHeader: case-insensitive on the header KEY', () => {
+    // Header casing varies across fetch tiers — the lookup must not care.
+    expect(hasChallengeHeader({ 'CF-Mitigated': 'challenge' })).toBe(true);
+    expect(hasChallengeHeader({ 'Cf-Mitigated': 'CHALLENGE' })).toBe(true);
+  });
+
+  it('hasChallengeHeader: also treats a block mitigation as a challenge', () => {
+    expect(hasChallengeHeader({ 'cf-mitigated': 'block' })).toBe(true);
+  });
+
+  it('hasChallengeHeader: false for absent / unrelated / empty values', () => {
+    expect(hasChallengeHeader(undefined)).toBe(false);
+    expect(hasChallengeHeader({})).toBe(false);
+    expect(hasChallengeHeader({ 'content-type': 'text/html' })).toBe(false);
+    expect(hasChallengeHeader({ 'cf-mitigated': '' })).toBe(false);
+    expect(hasChallengeHeader({ 'cf-mitigated': 'pass' })).toBe(false);
+  });
+
+  it('isChallengeResponse: Upwork-shaped 403 (cf-mitigated header, NO legacy body markers) → true', () => {
+    // Modern challenge body: challenge-platform + __cf_chl, no legacy markers.
+    const upworkBody =
+      '<html><head><title>Just a moment...</title></head><body>' +
+      '<div id="challenge-error-text">Enable JavaScript and cookies to continue</div>' +
+      '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1?ray=x"></script>' +
+      '<script>window.__cf_chl_opt={};</script></body></html>';
+    // Header alone must be sufficient even without any body markers at all.
+    expect(isChallengeResponse(403, '<html><body>no markers here</body></html>', { 'cf-mitigated': 'challenge' })).toBe(true);
+    // Full Upwork shape (header + modern body) → true.
+    expect(isChallengeResponse(403, upworkBody, { 'cf-mitigated': 'challenge', server: 'cloudflare' })).toBe(true);
+  });
+
+  it('isChallengeResponse: 403 with /cdn-cgi/challenge-platform/ body (no header) → true', () => {
+    const body =
+      '<html><body>Verifying you are human.' +
+      '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script></body></html>';
+    expect(isChallengeResponse(403, body, undefined)).toBe(true);
+    expect(isChallengeResponse(429, body, {})).toBe(true);
+    expect(isChallengeResponse(503, body, {})).toBe(true);
+  });
+
+  it('isChallengeResponse: still fires for legacy body markers (parity with hasChallengeBody)', () => {
+    expect(isChallengeResponse(403, '<html>cf-browser-verification</html>', undefined)).toBe(true);
+    expect(isChallengeResponse(200, '<title>Just a moment...</title>', undefined)).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: a 200 article whose body contains /cdn-cgi/challenge-platform/ → FALSE', () => {
+    // A blog post ABOUT Cloudflare, or a page that legitimately loads a CF
+    // script, is a real 200 — the challenge-platform marker is STATUS-gated so
+    // it can never trip here.
+    const article =
+      '<html><body><h1>How Cloudflare challenge-platform works</h1>' +
+      '<p>The script lives at /cdn-cgi/challenge-platform/ and does the check. ' +
+      'Here is a lot of real article prose so this is unmistakably content. '.repeat(10) +
+      '</p></body></html>';
+    expect(isChallengeResponse(200, article, undefined)).toBe(false);
+    // Even with a benign header that is NOT cf-mitigated.
+    expect(isChallengeResponse(200, article, { server: 'cloudflare' })).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: a real 403 admin/error page with NO cf-mitigated header and NO CF markers → FALSE', () => {
+    const admin403 =
+      '<html><body><h1>403 Forbidden</h1><p>' +
+      'You do not have permission to view this resource. '.repeat(20) +
+      '</p></body></html>';
+    expect(isChallengeResponse(403, admin403, undefined)).toBe(false);
+    expect(isChallengeResponse(403, admin403, { server: 'nginx' })).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: isRateLimit / isChallengeShell are UNCHANGED by the new signal', async () => {
+    const { isRateLimit, isChallengeShell: shell } = await import('../../../src/fetch/tls-tier.js');
+    // A bare 429 with a modern header is still a challenge? isRateLimit only
+    // looks at the legacy body scan — it must NOT shift because of the header.
+    expect(isRateLimit(429, '')).toBe(true);
+    // isChallengeShell is body-only and must not see the new header/marker path.
+    expect(shell(403, '<html><body>no markers</body></html>')).toBe(false);
   });
 });
 

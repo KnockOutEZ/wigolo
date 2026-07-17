@@ -374,6 +374,61 @@ export function isAntiBotStatus(status: number): boolean {
   return ANTI_BOT_STATUS.has(status);
 }
 
+// The modern Cloudflare challenge-platform script path. Present in modern
+// interstitial bodies AND already used as a skeleton marker below — but here it
+// only counts as a challenge signal when it co-occurs with an anti-bot STATUS
+// (see isChallengeResponse), so a 200 page that merely links a `/cdn-cgi/...`
+// script can never trip it.
+const MODERN_CHALLENGE_PLATFORM_MARKER = '/cdn-cgi/challenge-platform/';
+
+/**
+ * Header-driven challenge signal. Cloudflare sets `cf-mitigated: challenge`
+ * (or `block`) specifically to mark a challenge/block response, so it carries
+ * ZERO over-fire risk — a real article response never sends it. Header casing
+ * varies across tiers, so the lookup is case-insensitive.
+ */
+export function hasChallengeHeader(headers: Record<string, string> | undefined): boolean {
+  if (!headers) return false;
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== 'cf-mitigated') continue;
+    const v = (value ?? '').toLowerCase();
+    if (v.includes('challenge') || v.includes('block')) return true;
+  }
+  return false;
+}
+
+/**
+ * Combined challenge classifier that recognises BOTH legacy and modern
+ * Cloudflare challenge shapes without widening the shared CHALLENGE_MARKERS
+ * list (which drives isRateLimit / isChallengeShell — those must not shift).
+ *
+ * Fires when ANY of:
+ *   - the `cf-mitigated` response header marks a challenge/block (zero
+ *     over-fire — the primary modern signal), OR
+ *   - the existing status-agnostic shell classifier fires (isChallengeShell:
+ *     anti-bot-status + legacy body markers, OR a 2xx legacy shell with the
+ *     skeleton gate), OR
+ *   - an anti-bot STATUS (403/429/503) co-occurs with the modern
+ *     `/cdn-cgi/challenge-platform/` script marker.
+ *
+ * The challenge-platform marker is STATUS-gated and the legacy body path keeps
+ * its skeleton gate (via isChallengeShell), so a 200 article that merely quotes
+ * challenge markers or references `/cdn-cgi/...` can never trip it.
+ */
+export function isChallengeResponse(
+  statusCode: number,
+  html: string | null | undefined,
+  headers?: Record<string, string> | undefined,
+): boolean {
+  if (hasChallengeHeader(headers)) return true;
+  if (isChallengeShell(statusCode, html)) return true;
+  if (isAntiBotStatus(statusCode) && html) {
+    const slice = html.length > 32768 ? html.slice(0, 32768) : html;
+    if (slice.includes(MODERN_CHALLENGE_PLATFORM_MARKER)) return true;
+  }
+  return false;
+}
+
 export function hasChallengeBody(html: string | null | undefined): boolean {
   if (!html) return false;
   // Bound the scan to the first 32KB — challenge pages are tiny and we don't
