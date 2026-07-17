@@ -74,6 +74,38 @@ describe('config', () => {
     expect(config.dataDir).toContain('.wigolo');
   });
 
+  describe('stealth (anti-bot fingerprint hardening) configuration', () => {
+    it('defaults WIGOLO_STEALTH to auto', () => {
+      delete process.env.WIGOLO_STEALTH;
+      resetConfig();
+      expect(getConfig().stealth).toBe('auto');
+    });
+
+    it('reads WIGOLO_STEALTH=on', () => {
+      process.env.WIGOLO_STEALTH = 'on';
+      resetConfig();
+      expect(getConfig().stealth).toBe('on');
+    });
+
+    it('reads WIGOLO_STEALTH=off', () => {
+      process.env.WIGOLO_STEALTH = 'off';
+      resetConfig();
+      expect(getConfig().stealth).toBe('off');
+    });
+
+    it('normalizes an unknown WIGOLO_STEALTH value to the safe auto default', () => {
+      process.env.WIGOLO_STEALTH = 'aggressive';
+      resetConfig();
+      expect(getConfig().stealth).toBe('auto');
+    });
+
+    it('is case-insensitive for WIGOLO_STEALTH', () => {
+      process.env.WIGOLO_STEALTH = 'ON';
+      resetConfig();
+      expect(getConfig().stealth).toBe('on');
+    });
+  });
+
   describe('reranker configuration', () => {
     it('respects explicit WIGOLO_RERANKER=none to disable reranking', () => {
       process.env.WIGOLO_RERANKER = 'none';

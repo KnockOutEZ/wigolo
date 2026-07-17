@@ -148,6 +148,19 @@ export interface Config {
    *   - 'on'   : tried first for cold domains, then HTTP, then Playwright
    */
   tlsTier: 'off' | 'auto' | 'on';
+  /**
+   * Anti-bot fingerprint hardening / challenge-handling mode for the browser
+   * tier:
+   *   - 'off'  : never harden — the browser tier always uses the pooled default
+   *              fingerprint.
+   *   - 'auto' : harden ONLY when a browser fetch is an anti-bot / challenge
+   *              escalation (DEFAULT). A plain SPA-shell render or an explicit
+   *              browser request (render_js:'always' / auth / actions) is
+   *              unaffected.
+   *   - 'on'   : harden every browser fetch.
+   * Any other value normalizes to 'auto' (the safe default).
+   */
+  stealth: 'off' | 'auto' | 'on';
   /** Browser fingerprint profile passed to the TLS-impersonation backend. */
   tlsBrowser: string;
   /** Successes required before a domain is auto-promoted to TLS-first routing. */
@@ -393,6 +406,10 @@ export function getConfig(): Config {
     tlsTier: (() => {
       const raw = (envStr('WIGOLO_TLS_TIER', 'off', settings, 'tlsTier') ?? 'off').toLowerCase();
       return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
+    })(),
+    stealth: (() => {
+      const raw = (envStr('WIGOLO_STEALTH', 'auto', settings, 'stealth') ?? 'auto').toLowerCase();
+      return raw === 'off' || raw === 'on' ? (raw as 'off' | 'on') : 'auto';
     })(),
     // The TLS-impersonation backend accepts a `<browser>_<version>` profile
     // string and forwards it into a Rust napi binding. Passing an unvalidated
