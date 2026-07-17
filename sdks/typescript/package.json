@@ -1,5 +1,5 @@
 {
-  "name": "@wigolo/sdk",
+  "name": "wigolo-sdk",
   "version": "0.2.0",
   "description": "Thin TypeScript client for a local-first wigolo web-intelligence daemon (search, fetch, crawl, extract, research, and more) over its REST API.",
   "type": "module",

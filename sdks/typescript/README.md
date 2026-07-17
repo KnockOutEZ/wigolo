@@ -1,11 +1,7 @@
-# @wigolo/sdk
+# wigolo-sdk
 
-> **Pre-publish preview.** This package is **not yet published** to any registry.
-> The name `@wigolo/sdk` is a proposal. Install from a local tarball built with
-> `npm pack`:
->
 > ```bash
-> npm i /path/to/wigolo-sdk-0.1.0.tgz
+> npm i wigolo-sdk
 > ```
 
 A thin TypeScript client for a local-first wigolo web-intelligence daemon. It
@@ -17,7 +13,7 @@ knowledge cache) lives in the daemon.
 
 - **Zero runtime dependencies.** Uses the platform `fetch`.
 - **Edge-safe core.** The main entry point imports no Node built-ins, so it runs
-  on browsers, edge runtimes, Deno, and Node. The optional `@wigolo/sdk/local`
+  on browsers, edge runtimes, Deno, and Node. The optional `wigolo-sdk/local`
   subpath is Node-only (it can spawn a daemon).
 - **Node `>=18`.** `require(esm)` works on Node `>=22.12`.
 
@@ -26,7 +22,7 @@ knowledge cache) lives in the daemon.
 Point the client at a running daemon (start one with `wigolo serve`):
 
 ```ts
-import { WigoloClient } from '@wigolo/sdk';
+import { WigoloClient } from 'wigolo-sdk';
 
 const client = new WigoloClient({
   // baseUrl defaults to http://127.0.0.1:3333 (or WIGOLO_BASE_URL)
@@ -43,7 +39,7 @@ No daemon running? `createLocalClient` reuses one on the port or spawns
 `wigolo serve` for you, and hands back a lifecycle you own:
 
 ```ts
-import { createLocalClient } from '@wigolo/sdk/local';
+import { createLocalClient } from 'wigolo-sdk/local';
 
 const { client, owned, close } = await createLocalClient();
 try {

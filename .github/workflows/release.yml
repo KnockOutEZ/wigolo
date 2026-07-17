@@ -59,6 +59,113 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release create "$GITHUB_REF_NAME" --generate-notes
 
+      # ---------------------------------------------------------------------
+      # Sub-package publish (SDKs + framework integrations).
+      #
+      # Ordering: these run AFTER the root `wigolo` npm publish and the GitHub
+      # Release so the critical root artifacts land first. They are NOT
+      # continue-on-error — a sub-package failure fails the release loudly so a
+      # partial publish is visible, rather than being silently skipped like the
+      # best-effort registry/Smithery steps that follow.
+      #
+      # Every sub-package version is guarded against the tag the same way the
+      # root package is, so a version drift stops the publish before it starts.
+      # ---------------------------------------------------------------------
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python build tooling
+        run: pip install build twine
+
+      - name: Verify sub-package versions match tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          fail=0
+          check_npm() {
+            local dir="$1"
+            local ver
+            ver="$(node -p "require('./$dir/package.json').version")"
+            if [ "$ver" != "$TAG_VERSION" ]; then
+              echo "::error::$dir version $ver does not match tag $TAG_VERSION"
+              fail=1
+            fi
+          }
+          check_py() {
+            local dir="$1"
+            local ver
+            ver="$(python -c "import tomllib,sys; print(tomllib.load(open('$dir/pyproject.toml','rb'))['project']['version'])")"
+            if [ "$ver" != "$TAG_VERSION" ]; then
+              echo "::error::$dir version $ver does not match tag $TAG_VERSION"
+              fail=1
+            fi
+          }
+          check_npm sdks/typescript
+          check_npm packages/wigolo-ai-sdk
+          check_py sdks/python
+          check_py packages/wigolo-langchain
+          check_py packages/wigolo-crewai
+          check_py packages/wigolo-llamaindex
+          if [ "$fail" != "0" ]; then exit 1; fi
+          echo "All sub-package versions agree on $TAG_VERSION"
+
+      # npm sub-packages: wigolo-sdk and wigolo-ai-sdk.
+      - name: Publish wigolo-sdk (npm)
+        working-directory: sdks/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm ci
+          npm run build
+          npm publish --provenance --access public
+
+      - name: Publish wigolo-ai-sdk (npm)
+        working-directory: packages/wigolo-ai-sdk
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm ci
+          npm run build
+          npm publish --provenance --access public
+
+      # PyPI packages: wigolo (SDK) + the three framework integrations.
+      - name: Publish wigolo (PyPI)
+        working-directory: sdks/python
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          python -m build --wheel --sdist
+          twine upload dist/*
+
+      - name: Publish wigolo-langchain (PyPI)
+        working-directory: packages/wigolo-langchain
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          python -m build --wheel --sdist
+          twine upload dist/*
+
+      - name: Publish wigolo-crewai (PyPI)
+        working-directory: packages/wigolo-crewai
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          python -m build --wheel --sdist
+          twine upload dist/*
+
+      - name: Publish wigolo-llamaindex (PyPI)
+        working-directory: packages/wigolo-llamaindex
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          python -m build --wheel --sdist
+          twine upload dist/*
+
       # Publish metadata to the Official MCP Registry. GitHub OIDC (id-token: write
       # above) authenticates the io.github.KnockOutEZ/* namespace with no secrets.
       # server.json is regenerated from package.json each run so the version stays

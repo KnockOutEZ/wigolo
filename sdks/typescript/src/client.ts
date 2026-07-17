@@ -234,7 +234,7 @@ export class WigoloClient {
     if (looksRefused) {
       return new WigoloConnectionError(
         `Could not reach a wigolo daemon at ${this.baseUrl} (${message}). ` +
-          'Start one with `wigolo serve`, or use `createLocalClient` from "@wigolo/sdk/local" ' +
+          'Start one with `wigolo serve`, or use `createLocalClient` from "wigolo-sdk/local" ' +
           'to launch and manage a local daemon automatically.',
         err,
       );

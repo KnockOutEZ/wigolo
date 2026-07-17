@@ -5,7 +5,7 @@
  * {@link WigoloClient} plus lifecycle controls. This is the zero-setup path a
  * connection-refused error points at.
  *
- * Exposed at the "@wigolo/sdk/local" subpath. It imports `node:*` builtins, so
+ * Exposed at the "wigolo-sdk/local" subpath. It imports `node:*` builtins, so
  * it is intentionally NOT part of the edge-safe barrel.
  */
 import { spawn, type ChildProcess } from 'node:child_process';

@@ -345,7 +345,7 @@ Pick the channel that matches how you run things, then wire the MCP command from
 
 Thin, typed clients for the [REST API](#rest-api--self-host) live in this repo — **TypeScript** (`sdks/typescript/`: zero runtime dependencies, plain `fetch`, runs on Node ≥18 / Bun / Deno / edge runtimes) and **Python** (`sdks/python/`: standard library only, sync `Client` + `AsyncClient`, Python ≥3.10). One method per tool across all ten tools, env-driven configuration (`WIGOLO_BASE_URL`, `WIGOLO_API_TOKEN`), and an embedded local mode that finds or starts a local `wigolo serve` for you (`WIGOLO_LOCAL=1` in Python; `createLocalClient()` from the TypeScript local entry).
 
-**Package names are pending and nothing is published yet** — until then, build and install from this repo: each SDK's README (`sdks/typescript/README.md`, `sdks/python/README.md`) has the pack/build install line and a runnable quickstart. Both SDKs are contract-locked to the server's live `/openapi.json` by drift tests (`npm run test:sdk:ts`, `npm run test:sdk:py`).
+Published as `wigolo-sdk` on npm and `wigolo` on PyPI — each SDK's README (`sdks/typescript/README.md`, `sdks/python/README.md`) has the install line and a runnable quickstart. Both SDKs are contract-locked to the server's live `/openapi.json` by drift tests (`npm run test:sdk:ts`, `npm run test:sdk:py`).
 
 ## Framework integrations
 
@@ -353,12 +353,12 @@ Drop wigolo's tools into the agent framework you already use — opt-in wrappers
 
 | Framework | Package | What you get |
 |-----------|---------|--------------|
-| **LangChain** | `packages/langchain-wigolo` | Each tool as a LangChain `BaseTool`, plus a `BaseRetriever` backed by search/find_similar for RAG chains. |
-| **CrewAI** | `packages/crewai-wigolo` | wigolo tools as CrewAI `BaseTool`s via `wigolo_tools()`, ready to hand to any crew. |
-| **LlamaIndex** | `packages/llama-index-readers-wigolo` | A `BaseReader` that loads fetched / crawled / searched pages as LlamaIndex documents. |
+| **LangChain** | `packages/wigolo-langchain` | Each tool as a LangChain `BaseTool`, plus a `BaseRetriever` backed by search/find_similar for RAG chains. |
+| **CrewAI** | `packages/wigolo-crewai` | wigolo tools as CrewAI `BaseTool`s via `wigolo_tools()`, ready to hand to any crew. |
+| **LlamaIndex** | `packages/wigolo-llamaindex` | A `BaseReader` that loads fetched / crawled / searched pages as LlamaIndex documents. |
 | **Vercel AI SDK** | `packages/wigolo-ai-sdk` | Tool factories for `generateText` / `streamText` `tools`, edge-friendly. |
 
-Each package is pre-release (names pending, nothing published yet); build from the repo and see its own README for the import-and-call quickstart. They're opt-in extras — the core MCP server never depends on any framework.
+Published as `wigolo-langchain`, `wigolo-crewai`, and `wigolo-llamaindex` on PyPI and `wigolo-ai-sdk` on npm; see each package's README for the import-and-call quickstart. They're opt-in extras — the core MCP server never depends on any framework.
 
 ## Tools
 

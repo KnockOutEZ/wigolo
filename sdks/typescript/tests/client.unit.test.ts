@@ -214,6 +214,6 @@ describe('connection error naming', () => {
     const err = (await client.search({ query: 'x' }).catch((e: unknown) => e)) as WigoloConnectionError;
     expect(err).toBeInstanceOf(WigoloConnectionError);
     expect(err.message).toContain('createLocalClient');
-    expect(err.message).toContain('@wigolo/sdk/local');
+    expect(err.message).toContain('wigolo-sdk/local');
   });
 });
