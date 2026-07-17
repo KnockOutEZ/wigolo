@@ -19,9 +19,9 @@ const mono = Azeret_Mono({
   variable: "--font-mono",
 });
 
-const TITLE = "wigolo — local-first web intelligence for AI coding agents";
+const TITLE = "wigolo — local-first web intelligence for AI agents";
 const DESCRIPTION =
-  "Free, open-source MCP server that gives any AI coding agent real web powers — search across 18 engines, fetch, crawl, extract, cache, and research. Runs on your machine: no API keys, no cloud, no metered bill. Public beta.";
+  "Free, open-source server that gives any AI agent real web powers — search across 18 engines, fetch, crawl, extract, cache, and research. In your editor over MCP, in your framework through an SDK, or in your self-hosted stack over REST. Runs on your machine: no API keys, no cloud, no metered bill. Public beta.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
