@@ -18,7 +18,12 @@ export interface InitFlags {
   help: boolean;
   /** Opt into the Ink wizard. Default init is the plain path on TTY and non-TTY alike. */
   wizard: boolean;
-  /** Opt back into pre-caching components (`runWarmup(['--all'])`). No warmup runs by default. */
+  /**
+   * Whether init pre-caches every component (`runWarmup(['--all'])`). Defaults
+   * to TRUE: a manual init is a complete, diagnosable setup. `--no-warmup` sets
+   * it false — the download-nothing escape hatch (components lazy-load on first
+   * use). `--warmup` is accepted as an explicit-on alias for back-compat.
+   */
   warmup: boolean;
   /** Emit a machine-readable JSON summary on stdout instead of the human report. */
   json: boolean;

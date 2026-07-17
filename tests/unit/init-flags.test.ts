@@ -78,13 +78,24 @@ describe('parseInitFlags --wizard / --warmup / --json (headless-first)', () => {
     expect(parseInitFlags(['--non-interactive', '--agents=cursor']).wizard).toBe(false);
   });
 
-  it('--warmup is parsed (opts back into pre-caching)', () => {
-    // WHY: mandatory warmup is gone; --warmup is the only way to re-run it.
+  it('--warmup is parsed (explicit-on alias, back-compat no-op)', () => {
+    // WHY: full setup is now the default; --warmup stays accepted as an
+    // explicit-on alias so existing scripts/docs that pass it keep working.
     expect(parseInitFlags(['--warmup']).warmup).toBe(true);
   });
 
-  it('warmup defaults to false when absent', () => {
-    expect(parseInitFlags(['--non-interactive', '--agents=cursor']).warmup).toBe(false);
+  it('warmup defaults to TRUE when absent (full setup is the default)', () => {
+    // WHY: a manual init is a complete, diagnosable setup — it downloads every
+    // component so setup failures surface loudly. The inversion of the old
+    // opt-in behaviour is load-bearing; this test fails if the default flips.
+    expect(parseInitFlags(['--non-interactive', '--agents=cursor']).warmup).toBe(true);
+  });
+
+  it('--no-warmup sets warmup false (download-nothing escape hatch)', () => {
+    // WHY: --no-warmup is the only way to skip ALL downloads; components then
+    // lazy-load on first use. This is the key correctness lever tested live.
+    expect(parseInitFlags(['--no-warmup']).warmup).toBe(false);
+    expect(parseInitFlags(['--non-interactive', '--agents=cursor', '--no-warmup']).warmup).toBe(false);
   });
 
   it('--json is parsed (machine-readable summary)', () => {

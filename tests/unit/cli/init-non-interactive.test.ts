@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const {
-  runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, runVerifyMock,
+  runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, runDoctorColdChecksMock,
   systemCheckMock, getAgentHandlerMock, probeSetupStatusMock, summarizeSetupMock,
   applyHeadlessSetMock, saveMock, createSettingsStoreMock, fakeStoreSetMock, storeKeyMock, configState,
   installSkillsMock,
@@ -30,7 +30,7 @@ const {
     detectAgentsMock: vi.fn(),
     selectAgentsMock: vi.fn(),
     applyConfigsMock: vi.fn(),
-    runVerifyMock: vi.fn(),
+    runDoctorColdChecksMock: vi.fn(() => []),
     systemCheckMock: vi.fn(),
     getAgentHandlerMock: vi.fn(),
     probeSetupStatusMock: vi.fn(),
@@ -60,8 +60,8 @@ vi.mock('../../../src/cli/tui/select-agents.js', () => ({
 vi.mock('../../../src/cli/tui/config-writer.js', () => ({
   applyConfigs: applyConfigsMock,
 }));
-vi.mock('../../../src/cli/tui/verify.js', () => ({
-  runVerify: runVerifyMock,
+vi.mock('../../../src/cli/doctor.js', () => ({
+  runDoctorColdChecks: runDoctorColdChecksMock,
 }));
 vi.mock('../../../src/cli/tui/system-check.js', () => ({
   runSystemCheck: systemCheckMock,
@@ -124,7 +124,7 @@ vi.mock('../../../src/security/key-store.js', () => ({
 import { runInit } from '../../../src/cli/init.js';
 
 beforeEach(() => {
-  runWarmupMock.mockReset().mockResolvedValue(undefined);
+  runWarmupMock.mockReset().mockResolvedValue({ playwright: 'ok', searxng: 'skipped', embeddings: 'ok', reranker: 'ok' });
   detectAgentsMock.mockReset().mockReturnValue([
     { id: 'cursor', displayName: 'Cursor', detected: true, installType: 'config-file', configPath: '/h/.cursor/mcp.json' },
     { id: 'claude-code', displayName: 'Claude Code', detected: true, installType: 'cli-command', configPath: null },
@@ -133,7 +133,10 @@ beforeEach(() => {
   applyConfigsMock.mockReset().mockResolvedValue([
     { id: 'cursor', displayName: 'Cursor', ok: true, code: 'OK', configPath: '/h/.cursor/mcp.json' },
   ]);
-  runVerifyMock.mockReset().mockResolvedValue({ allPassed: true });
+  runDoctorColdChecksMock.mockReset().mockReturnValue([
+    { name: 'browser', status: 'ok', fixable: true, detail: 'chromium launchable' },
+    { name: 'data-dir', status: 'ok', fixable: false, detail: 'writable (/tmp/data)' },
+  ]);
   systemCheckMock.mockReset().mockResolvedValue({
     node: { ok: true, version: '22.0.0' },
     python: { ok: true, binary: 'python3', version: '3.12.0' },
@@ -278,14 +281,17 @@ describe('runInit --non-interactive', () => {
     expect(code).toBe(1);
   });
 
-  it('skips runVerify when --skip-verify is set', async () => {
-    await runInit(['--non-interactive', '--agents=cursor', '--skip-verify']);
-    expect(runVerifyMock).not.toHaveBeenCalled();
+  it('runs doctor cold checks (not a live verify) after setup', async () => {
+    // init replaced the live-network verify with doctor cold checks — presence
+    // probes only, no download, no searxng spin. This runs on the default path.
+    await runInit(['--non-interactive', '--agents=cursor']);
+    expect(runDoctorColdChecksMock).toHaveBeenCalledTimes(1);
   });
 
-  it('runs runVerify when --skip-verify is not set', async () => {
-    await runInit(['--non-interactive', '--agents=cursor']);
-    expect(runVerifyMock).toHaveBeenCalledTimes(1);
+  it('runs doctor cold checks even under --no-warmup (presence-only, no download)', async () => {
+    await runInit(['--non-interactive', '--agents=cursor', '--no-warmup']);
+    expect(runDoctorColdChecksMock).toHaveBeenCalledTimes(1);
+    expect(runWarmupMock).not.toHaveBeenCalled();
   });
 
   it('returns 2 on unknown agent id', async () => {
@@ -352,21 +358,22 @@ describe('runInit --non-interactive', () => {
     expect(parsed.status === 'ok').toBe(code === 0);
   });
 
-  it('--non-interactive with NO --agents sets up config only, no downloads (no gatekeeping)', async () => {
+  it('--non-interactive --no-warmup with NO --agents sets up config only, no downloads (no gatekeeping)', async () => {
     // Marketing contract: wigolo works for ANY MCP-capable agent, so a user whose
     // agent has no built-in installer (e.g. Hermes) must still complete init
     // headlessly. --agents is optional: agent wiring is skipped, exit 0.
-    // INVERTED (D8): engine setup is now lazy — components download on first use,
-    // so a default init runs NO warmup. --warmup opts back in (covered below).
-    const code = await runInit(['--non-interactive', '--skip-verify']);
+    // --no-warmup is the download-nothing escape hatch: runWarmup NEVER fires.
+    const code = await runInit(['--non-interactive', '--no-warmup']);
     expect(code).toBe(0);
-    expect(runWarmupMock).not.toHaveBeenCalled(); // headless-first: no download
+    expect(runWarmupMock).not.toHaveBeenCalled(); // --no-warmup: zero downloads
     expect(selectAgentsMock).not.toHaveBeenCalled(); // no interactive prompt
     expect(applyConfigsMock).not.toHaveBeenCalled(); // no agent wiring
   });
 
-  it('--non-interactive --warmup runs runWarmup(["--all"]) exactly once (opt-in pre-cache)', async () => {
-    const code = await runInit(['--non-interactive', '--skip-verify', '--warmup']);
+  it('--non-interactive (default) runs runWarmup(["--all"]) exactly once (full setup)', async () => {
+    // Full setup is the default: even engine-only mode (no --agents) downloads
+    // every component so setup failures surface loudly.
+    const code = await runInit(['--non-interactive']);
     expect(code).toBe(0);
     expect(runWarmupMock).toHaveBeenCalledTimes(1);
     expect(runWarmupMock.mock.calls[0]?.[0]).toEqual(['--all']);

@@ -62,9 +62,9 @@ describe('parseInitFlags — flags', () => {
       skipVerify: true,
       plain: true,
       help: false,
-      // Headless-first (D8) additions — default false when absent.
       wizard: false,
-      warmup: false,
+      // Full setup is the default: warmup is TRUE unless --no-warmup is passed.
+      warmup: true,
       json: false,
       provider: undefined,
       search: undefined,

@@ -19,6 +19,7 @@ const INIT_KNOWN = new Set([
   '--search',
   '--wizard',
   '--warmup',
+  '--no-warmup',
   '--json',
 ]);
 
@@ -145,7 +146,11 @@ function parseInitOnlyFlags(args: readonly string[]): { provider?: string; searc
   let provider: string | undefined;
   let search: string | undefined;
   let wizard = false;
-  let warmup = false;
+  // Full setup is the DEFAULT: a manual init downloads every component so
+  // failures surface loudly. `--no-warmup` is the download-nothing escape hatch;
+  // `--warmup` is kept as an explicit-on alias for back-compat (a no-op given
+  // the new default).
+  let warmup = true;
 
   let i = 0;
   while (i < args.length) {
@@ -160,6 +165,12 @@ function parseInitOnlyFlags(args: readonly string[]): { provider?: string; searc
 
     if (token === '--warmup') {
       warmup = true;
+      i++;
+      continue;
+    }
+
+    if (token === '--no-warmup') {
+      warmup = false;
       i++;
       continue;
     }

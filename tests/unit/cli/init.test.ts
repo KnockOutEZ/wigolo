@@ -8,7 +8,7 @@ const {
   detectAgentsMock,
   selectAgentsMock,
   applyConfigsMock,
-  runVerifyMock,
+  runDoctorColdChecksMock,
   probeSetupStatusMock,
   summarizeSetupMock,
   runConfigMock,
@@ -24,7 +24,7 @@ const {
   detectAgentsMock: vi.fn(),
   selectAgentsMock: vi.fn(),
   applyConfigsMock: vi.fn(),
-  runVerifyMock: vi.fn(),
+  runDoctorColdChecksMock: vi.fn(() => []),
   probeSetupStatusMock: vi.fn(),
   summarizeSetupMock: vi.fn(),
   runConfigMock: vi.fn(),
@@ -59,8 +59,8 @@ vi.mock('../../../src/cli/tui/select-agents.js', () => ({
 vi.mock('../../../src/cli/tui/config-writer.js', () => ({
   applyConfigs: applyConfigsMock,
 }));
-vi.mock('../../../src/cli/tui/verify.js', () => ({
-  runVerify: runVerifyMock,
+vi.mock('../../../src/cli/doctor.js', () => ({
+  runDoctorColdChecks: runDoctorColdChecksMock,
 }));
 vi.mock('../../../src/config.js', () => ({
   getConfig: () => ({ dataDir: '/tmp/data' }),
@@ -121,13 +121,19 @@ function primeHappyPath(): void {
     disk: { ok: true, freeMb: 50000 },
     hardFailure: false,
   });
-  runWarmupMock.mockResolvedValue(undefined);
+  // A full setup resolves a WarmupResult with every component ready (default
+  // path downloads browser + embeddings + reranker).
+  runWarmupMock.mockResolvedValue({ playwright: 'ok', searxng: 'skipped', embeddings: 'ok', reranker: 'ok' });
   detectAgentsMock.mockReturnValue([
     { id: 'cursor', displayName: 'Cursor', detected: true, installType: 'config-file', configPath: '/h/.cursor/mcp.json' },
   ]);
   selectAgentsMock.mockResolvedValue([]);
   applyConfigsMock.mockResolvedValue([]);
-  runVerifyMock.mockResolvedValue({ allPassed: true });
+  runDoctorColdChecksMock.mockReturnValue([
+    { name: 'browser', status: 'ok', fixable: true, detail: 'chromium launchable' },
+    { name: 'embeddings', status: 'ok', fixable: true, detail: 'model cached' },
+    { name: 'data-dir', status: 'ok', fixable: false, detail: 'writable (/tmp/data)' },
+  ]);
   probeSetupStatusMock.mockResolvedValue([]);
   summarizeSetupMock.mockReturnValue({
     lines: ['Setup: 6/6 ready'],
@@ -145,6 +151,10 @@ describe('runInit', () => {
     getPackageVersionMock.mockReturnValue('0.6.3');
     installSkillsMock.mockReturnValue({ written: [], removed: [], refused: [], notices: [] });
     readInitConfigMock.mockReturnValue({});
+    runDoctorColdChecksMock.mockReturnValue([
+      { name: 'browser', status: 'ok', fixable: true, detail: 'chromium launchable' },
+      { name: 'data-dir', status: 'ok', fixable: false, detail: 'writable (/tmp/data)' },
+    ]);
     probeSetupStatusMock.mockResolvedValue([]);
     summarizeSetupMock.mockReturnValue({
       lines: ['Setup: 6/6 ready'],
@@ -275,27 +285,15 @@ describe('runInit', () => {
     }
   });
 
-  it('non-interactive path does NOT run warmup by default (headless-first: zero downloads)', async () => {
-    // INVERTED (D8): mandatory warmup is gone. Components download on first use,
-    // so a default init must not pre-download anything. The interactive delegate
-    // must also not be reached on the non-interactive path.
+  it('non-interactive path runs the full setup (runWarmup(["--all"])) by DEFAULT', async () => {
+    // Full setup is the default: a manual init downloads every component so
+    // setup failures surface loudly. runWarmup(['--all']) is the single gate
+    // that pulls browser + embeddings + reranker. The interactive delegate must
+    // NOT be reached on the non-interactive path.
     primeHappyPath();
     const cap = capture();
     try {
       await runInit(['--non-interactive', '--agents=cursor']);
-      expect(runWarmupMock).not.toHaveBeenCalled();
-      expect(runConfigMock).not.toHaveBeenCalled();
-    } finally {
-      cap.restore();
-    }
-  });
-
-  it('non-interactive path with --warmup runs runWarmup(["--all"]) exactly once', async () => {
-    // --warmup is the opt-in back into pre-caching. When set, warmup runs once.
-    primeHappyPath();
-    const cap = capture();
-    try {
-      await runInit(['--non-interactive', '--agents=cursor', '--warmup']);
       expect(runWarmupMock).toHaveBeenCalledTimes(1);
       expect(runWarmupMock.mock.calls[0]?.[0]).toEqual(['--all']);
       expect(runConfigMock).not.toHaveBeenCalled();
@@ -304,15 +302,95 @@ describe('runInit', () => {
     }
   });
 
-  it('non-interactive path prints the components-on-first-use hint', async () => {
-    // Both paths tell the user how to pre-cache instead of silently deferring.
+  it('non-interactive path runs doctor cold checks after setup and exits 0', async () => {
     primeHappyPath();
     const cap = capture();
     try {
-      await runInit(['--non-interactive', '--agents=cursor']);
+      const code = await runInit(['--non-interactive', '--agents=cursor']);
+      expect(code).toBe(0);
+      expect(runDoctorColdChecksMock).toHaveBeenCalledTimes(1);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('non-interactive path with --no-warmup runs NO warmup and does NOT invoke doctor download probes', async () => {
+    // --no-warmup is the download-nothing escape hatch. runWarmup is the single
+    // installer gate; not calling it proves zero model/browser bytes are
+    // written. Doctor cold checks still run (presence-only, no download).
+    primeHappyPath();
+    const cap = capture();
+    try {
+      const code = await runInit(['--non-interactive', '--agents=cursor', '--no-warmup']);
+      expect(code).toBe(0);
+      expect(runWarmupMock).not.toHaveBeenCalled();
+      expect(runConfigMock).not.toHaveBeenCalled();
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('--warmup is an explicit-on alias — still runs the full setup once', async () => {
+    primeHappyPath();
+    const cap = capture();
+    try {
+      await runInit(['--non-interactive', '--agents=cursor', '--warmup']);
+      expect(runWarmupMock).toHaveBeenCalledTimes(1);
+      expect(runWarmupMock.mock.calls[0]?.[0]).toEqual(['--all']);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('--no-warmup prints the components-on-first-use hint', async () => {
+    // The download-nothing path tells the user how to pre-cache later.
+    primeHappyPath();
+    const cap = capture();
+    try {
+      await runInit(['--non-interactive', '--agents=cursor', '--no-warmup']);
       const all = cap.stdout.join('') + cap.stderr.join('');
       expect(all).toMatch(/components download on first use/i);
       expect(all).toMatch(/wigolo warmup --all/);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('component-download failure still wires the agent, persists config, and exits 0', async () => {
+    // Exit 0 even on component-download failure: log the failure with the fix,
+    // still register the agent + persist config. The component lazy-retries.
+    primeHappyPath();
+    runWarmupMock.mockResolvedValue({
+      playwright: 'failed', playwrightError: 'network blocked',
+      searxng: 'skipped', embeddings: 'ok', reranker: 'ok',
+    });
+    const cap = capture();
+    try {
+      const code = await runInit(['--non-interactive', '--agents=cursor']);
+      expect(code).toBe(0);
+      // Agent wiring + config persist still happened.
+      expect(applyConfigsMock).toHaveBeenCalledTimes(1);
+      expect(saveInitConfigMock).toHaveBeenCalledTimes(1);
+      // The degraded report names the component and its fix.
+      const all = cap.stdout.join('') + cap.stderr.join('');
+      expect(all).toMatch(/Browser engine: failed/i);
+      expect(all).toMatch(/network blocked/);
+      expect(all).toMatch(/Fix:/);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('a thrown warmup (not a per-component failure) is swallowed — init still exits 0', async () => {
+    primeHappyPath();
+    runWarmupMock.mockRejectedValue(new Error('disk read-only'));
+    const cap = capture();
+    try {
+      const code = await runInit(['--non-interactive', '--agents=cursor']);
+      expect(code).toBe(0);
+      expect(applyConfigsMock).toHaveBeenCalledTimes(1);
+      const all = cap.stdout.join('') + cap.stderr.join('');
+      expect(all).toMatch(/Component setup failed: disk read-only/);
     } finally {
       cap.restore();
     }
@@ -323,13 +401,14 @@ describe('runInit', () => {
       primeHappyPath();
       const cap = capture();
       try {
-        const code = await runInit(['--non-interactive', '--agents=cursor', '--skip-verify', '--json']);
+        const code = await runInit(['--non-interactive', '--agents=cursor', '--json']);
         expect(code).toBe(0);
         // The ENTIRE stdout must parse as JSON — no banner / report lines mixed in.
         const parsed = JSON.parse(cap.stdout.join('').trim());
         expect(parsed.status).toBe('ok');
         expect(parsed.path).toBe('plain');
-        expect(parsed.warmup).toBe(false);
+        // Full setup is the default → warmup ran.
+        expect(parsed.warmup).toBe(true);
         expect(Array.isArray(parsed.agentsRegistered)).toBe(true);
         expect(parsed.agentsRegistered).toEqual(['cursor']);
         expect(parsed.configPersisted).toBe(true);
@@ -341,29 +420,67 @@ describe('runInit', () => {
       }
     });
 
-    it('reports status=error and exit 1 when a required component failed', async () => {
+    it('--json carries per-component status (capability-language keys) + doctor + agents/config', async () => {
       primeHappyPath();
-      summarizeSetupMock.mockReturnValue({
-        lines: ['Setup: 5/6 ready'],
-        readyCount: 5,
-        total: 6,
-        requiredFailed: true,
-        exitCode: 1,
+      runWarmupMock.mockResolvedValue({
+        playwright: 'ok', searxng: 'skipped', embeddings: 'ok', reranker: 'failed', rerankerError: 'download 503',
       });
       const cap = capture();
       try {
-        const code = await runInit(['--non-interactive', '--agents=cursor', '--skip-verify', '--json']);
-        expect(code).toBe(1);
+        await runInit(['--non-interactive', '--agents=cursor', '--json']);
         const parsed = JSON.parse(cap.stdout.join('').trim());
-        expect(parsed.status).toBe('error');
-        expect(parsed.requiredFailed).toBe(true);
+        // Capability-language keys — NOT playwright/searxng.
+        expect(parsed.components.browserEngine).toBe('ready');
+        expect(parsed.components.embeddings).toBe('ready');
+        expect(parsed.components.reranker).toBe('failed');
+        expect(parsed.components.rerankerError).toBe('download 503');
+        expect(parsed).not.toHaveProperty('playwright');
+        // Doctor cold-check results are included.
+        expect(Array.isArray(parsed.doctor)).toBe(true);
+        expect(parsed.doctor.length).toBeGreaterThan(0);
+        expect(parsed.agentsRegistered).toEqual(['cursor']);
+        expect(parsed.configPersisted).toBe(true);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('--no-warmup --json marks every component skipped (lazy) and exits 0', async () => {
+      primeHappyPath();
+      const cap = capture();
+      try {
+        const code = await runInit(['--non-interactive', '--agents=cursor', '--no-warmup', '--json']);
+        expect(code).toBe(0);
+        const parsed = JSON.parse(cap.stdout.join('').trim());
+        expect(parsed.warmup).toBe(false);
+        expect(parsed.components.browserEngine).toBe('skipped');
+        expect(parsed.components.embeddings).toBe('skipped');
+        expect(parsed.components.reranker).toBe('skipped');
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('--json still exits 0 (status ok) even when a component download failed', async () => {
+      primeHappyPath();
+      runWarmupMock.mockResolvedValue({
+        playwright: 'failed', playwrightError: 'blocked', searxng: 'skipped', embeddings: 'ok', reranker: 'ok',
+      });
+      const cap = capture();
+      try {
+        const code = await runInit(['--non-interactive', '--agents=cursor', '--json']);
+        expect(code).toBe(0);
+        const parsed = JSON.parse(cap.stdout.join('').trim());
+        expect(parsed.status).toBe('ok');
+        expect(parsed.components.browserEngine).toBe('failed');
+        expect(parsed.components.browserEngineError).toBe('blocked');
       } finally {
         cap.restore();
       }
     });
   });
 
-  describe('zero-download on BOTH init paths (headless-first)', () => {
+  describe('full setup on BOTH init paths by default; --no-warmup skips downloads', () => {
     let prevTTY: boolean | undefined;
     let prevCI: string | undefined;
     let prevGha: string | undefined;
@@ -376,7 +493,7 @@ describe('runInit', () => {
       delete process.env.CI;
       delete process.env.GITHUB_ACTIONS;
       runConfigMock.mockResolvedValue(0);
-      runWarmupMock.mockResolvedValue(undefined);
+      runWarmupMock.mockResolvedValue({ playwright: 'ok', searxng: 'skipped', embeddings: 'ok', reranker: 'ok' });
       wasUninstalledMock.mockReturnValue(false);
     });
 
@@ -387,38 +504,72 @@ describe('runInit', () => {
     });
 
     // MEMORY TRAP (binding): every behavior change is verified on BOTH init paths.
-    // runWarmup is the single gate that would invoke the browser / embedding
-    // installers (installBrowser / installEmbeddings live behind runWarmup, which
-    // is fully mocked here) — so runWarmup NOT-called proves no component download
-    // is triggered on either path.
-    it('plain (non-interactive) default: runWarmup — the installer gate — is never called', async () => {
+    // runWarmup(['--all']) is the single gate that invokes the browser / embedding
+    // / reranker installers — so runWarmup CALLED with ['--all'] proves the full
+    // setup fires on that path; NOT-called under --no-warmup proves zero bytes.
+    it('plain (non-interactive) default: runWarmup(["--all"]) — the installer gate — fires', async () => {
       primeHappyPath();
       const cap = capture();
       try {
-        await runInit(['--non-interactive', '--agents=cursor', '--skip-verify']);
-        expect(runWarmupMock).not.toHaveBeenCalled();
+        await runInit(['--non-interactive', '--agents=cursor']);
+        expect(runWarmupMock).toHaveBeenCalledTimes(1);
+        expect(runWarmupMock.mock.calls[0]?.[0]).toEqual(['--all']);
       } finally {
         cap.restore();
       }
     });
 
-    it('plain default on a bare TTY: runWarmup never called', async () => {
+    it('plain default on a bare TTY: runWarmup(["--all"]) fires', async () => {
       primeHappyPath();
       selectAgentsMock.mockResolvedValue([]);
       const cap = capture();
       try {
         await runInit([]);
+        expect(runWarmupMock).toHaveBeenCalledTimes(1);
+        expect(runWarmupMock.mock.calls[0]?.[0]).toEqual(['--all']);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('plain --no-warmup: runWarmup — the installer gate — is NEVER called (zero bytes)', async () => {
+      primeHappyPath();
+      const cap = capture();
+      try {
+        await runInit(['--non-interactive', '--agents=cursor', '--no-warmup']);
         expect(runWarmupMock).not.toHaveBeenCalled();
       } finally {
         cap.restore();
       }
     });
 
-    it('--wizard default: runWarmup — the installer gate — is never called', async () => {
+    it('--wizard default: runWarmup(["--all"]) fires after the wizard unmounts', async () => {
       const cap = capture();
       try {
         await runInit(['--wizard']);
+        expect(runWarmupMock).toHaveBeenCalledTimes(1);
+        expect(runWarmupMock.mock.calls[0]?.[0]).toEqual(['--all']);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('--wizard --no-warmup: runWarmup is NEVER called (zero bytes)', async () => {
+      const cap = capture();
+      try {
+        await runInit(['--wizard', '--no-warmup']);
         expect(runWarmupMock).not.toHaveBeenCalled();
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('--wizard default runs doctor cold checks after setup and exits 0', async () => {
+      const cap = capture();
+      try {
+        const code = await runInit(['--wizard']);
+        expect(code).toBe(0);
+        expect(runDoctorColdChecksMock).toHaveBeenCalledTimes(1);
       } finally {
         cap.restore();
       }
@@ -438,7 +589,7 @@ describe('runInit', () => {
       delete process.env.CI;
       delete process.env.GITHUB_ACTIONS;
       runConfigMock.mockResolvedValue(0);
-      runWarmupMock.mockResolvedValue(undefined);
+      runWarmupMock.mockResolvedValue({ playwright: 'ok', searxng: 'skipped', embeddings: 'ok', reranker: 'ok' });
       wasUninstalledMock.mockReturnValue(false);
     });
 
@@ -501,7 +652,7 @@ describe('runInit', () => {
       delete process.env.CI;
       delete process.env.GITHUB_ACTIONS;
       runConfigMock.mockResolvedValue(0);
-      runWarmupMock.mockResolvedValue(undefined);
+      runWarmupMock.mockResolvedValue({ playwright: 'ok', searxng: 'skipped', embeddings: 'ok', reranker: 'ok' });
       wasUninstalledMock.mockReturnValue(false);
     });
 
@@ -569,7 +720,7 @@ describe('runInit', () => {
       delete process.env.CI;
       delete process.env.GITHUB_ACTIONS;
       runConfigMock.mockResolvedValue(0);
-      runWarmupMock.mockResolvedValue(undefined);
+      runWarmupMock.mockResolvedValue({ playwright: 'ok', searxng: 'skipped', embeddings: 'ok', reranker: 'ok' });
       wasUninstalledMock.mockReturnValue(false);
     });
 
@@ -597,13 +748,14 @@ describe('runInit', () => {
       }
     });
 
-    it('default init on a TTY does NOT run warmup (headless-first)', async () => {
+    it('default init on a TTY runs the full setup (warmup fires)', async () => {
       primeHappyPath();
       selectAgentsMock.mockResolvedValue([]);
       const cap = capture();
       try {
         await runInit([]);
-        expect(runWarmupMock).not.toHaveBeenCalled();
+        expect(runWarmupMock).toHaveBeenCalledTimes(1);
+        expect(runWarmupMock.mock.calls[0]?.[0]).toEqual(['--all']);
       } finally {
         cap.restore();
       }
@@ -623,7 +775,7 @@ describe('runInit', () => {
       delete process.env.CI;
       delete process.env.GITHUB_ACTIONS;
       runConfigMock.mockResolvedValue(0);
-      runWarmupMock.mockResolvedValue(undefined);
+      runWarmupMock.mockResolvedValue({ playwright: 'ok', searxng: 'skipped', embeddings: 'ok', reranker: 'ok' });
       wasUninstalledMock.mockReturnValue(false);
     });
 
@@ -633,26 +785,15 @@ describe('runInit', () => {
       if (prevGha === undefined) delete process.env.GITHUB_ACTIONS; else process.env.GITHUB_ACTIONS = prevGha;
     });
 
-    it('--wizard mounts the Ink wizard via runConfig(["--force-wizard"]) and runs NO warmup by default', async () => {
+    it('--wizard mounts the Ink wizard via runConfig(["--force-wizard"]) and runs the full setup by DEFAULT', async () => {
       const cap = capture();
       try {
         const code = await runInit(['--wizard']);
         expect(code).toBe(0);
         expect(runConfigMock).toHaveBeenCalledTimes(1);
         expect(runConfigMock.mock.calls[0]?.[0]).toEqual(['--force-wizard']);
-        // Headless-first: no mandatory warmup even on the wizard path.
-        expect(runWarmupMock).not.toHaveBeenCalled();
-      } finally {
-        cap.restore();
-      }
-    });
-
-    it('--wizard --warmup runs runWarmup(["--all"]) exactly once after the wizard', async () => {
-      const cap = capture();
-      try {
-        const code = await runInit(['--wizard', '--warmup']);
-        expect(code).toBe(0);
-        expect(runConfigMock).toHaveBeenCalledTimes(1);
+        // Full setup is the default on the wizard path too — warmup fires after
+        // the Ink shell unmounts.
         expect(runWarmupMock).toHaveBeenCalledTimes(1);
         expect(runWarmupMock.mock.calls[0]?.[0]).toEqual(['--all']);
       } finally {
@@ -660,10 +801,22 @@ describe('runInit', () => {
       }
     });
 
-    it('--wizard prints the components-on-first-use hint', async () => {
+    it('--wizard --no-warmup runs the wizard but NO warmup (zero bytes)', async () => {
       const cap = capture();
       try {
-        await runInit(['--wizard']);
+        const code = await runInit(['--wizard', '--no-warmup']);
+        expect(code).toBe(0);
+        expect(runConfigMock).toHaveBeenCalledTimes(1);
+        expect(runWarmupMock).not.toHaveBeenCalled();
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('--wizard --no-warmup prints the components-on-first-use hint', async () => {
+      const cap = capture();
+      try {
+        await runInit(['--wizard', '--no-warmup']);
         const all = cap.stdout.join('') + cap.stderr.join('');
         expect(all).toMatch(/components download on first use/i);
         expect(all).toMatch(/wigolo warmup --all/);
@@ -676,7 +829,7 @@ describe('runInit', () => {
       runConfigMock.mockResolvedValue(1);
       const cap = capture();
       try {
-        const code = await runInit(['--wizard', '--warmup']);
+        const code = await runInit(['--wizard']);
         expect(code).toBe(1);
         expect(runWarmupMock).not.toHaveBeenCalled();
       } finally {
@@ -684,13 +837,16 @@ describe('runInit', () => {
       }
     });
 
-    it('returns 1 and reports when --warmup warmup fails', async () => {
+    it('a warmup throw is swallowed on the wizard path — exit 0 + logged fix', async () => {
+      // Exit 0 even on component-download failure: log the failure, the
+      // component lazy-retries. A thrown warmup must NOT fail init.
       runWarmupMock.mockRejectedValue(new Error('browser download blocked'));
       const cap = capture();
       try {
-        const code = await runInit(['--wizard', '--warmup']);
-        expect(code).toBe(1);
+        const code = await runInit(['--wizard']);
+        expect(code).toBe(0);
         expect(cap.stderr.join('')).toMatch(/browser download blocked/);
+        expect(cap.stderr.join('')).toMatch(/Fix:/);
       } finally {
         cap.restore();
       }
@@ -702,7 +858,7 @@ describe('runInit', () => {
       wasUninstalledMock.mockReturnValue(true);
       const cap = capture();
       try {
-        const code = await runInit(['--wizard', '--warmup']);
+        const code = await runInit(['--wizard']);
         expect(code).toBe(0);
         expect(runConfigMock).toHaveBeenCalledTimes(1);
         expect(runWarmupMock).not.toHaveBeenCalled();

@@ -27,9 +27,9 @@ export async function maybePrintOllamaHint(print: (line: string) => void): Promi
 const KEYSTORE_PROVIDERS: readonly LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq'];
 
 /**
- * One-line hint printed on BOTH init paths: components are acquired lazily on
- * first use, so init downloads nothing by default. `--warmup` (or the named
- * command) pre-caches them ahead of time.
+ * One-line hint printed on a `--no-warmup` init: nothing was pre-downloaded, so
+ * components are acquired lazily on first use. The default init pre-caches them,
+ * so this hint is only shown on the download-nothing path.
  */
 const PRECACHE_HINT =
   'components download on first use — run `wigolo warmup --all` to pre-cache';
@@ -37,16 +37,19 @@ const PRECACHE_HINT =
 const INIT_USAGE = [
   'Usage: wigolo init [options]',
   '',
-  'Sets up wigolo headlessly: detects and wires your agents, persists settings.',
-  'Components (browser engine, on-device models) download on first use — nothing',
-  'is pre-downloaded unless you pass --warmup.',
+  'Sets up wigolo: detects and wires your agents, persists settings, and by',
+  'default performs a COMPLETE setup — downloads the browser engine + on-device',
+  'models, verifies them, and prints a per-component report so failures surface',
+  'loudly. Pass --no-warmup to skip all downloads (components then lazy-load on',
+  'first use).',
   '',
   'By default init uses the plain text flow. Pass --wizard to launch the',
   'interactive setup wizard (requires a terminal).',
   '',
   'Options:',
   '  --wizard                Launch the interactive setup wizard (Ink TUI)',
-  '  --warmup                Pre-cache all components now (browser + on-device models)',
+  '  --no-warmup             Skip ALL component downloads (lazy-load on first use)',
+  '  --warmup                Explicit-on alias (full setup is the default; no-op)',
   '  --json                  Emit a machine-readable JSON summary on stdout',
   '  --non-interactive, -y   Skip interactive prompts (uses plain text flow)',
   '  --agents=<csv>          Comma-separated agent ids to auto-wire (optional; omit to set up the engine only and point any MCP client at wigolo yourself)',
@@ -60,6 +63,141 @@ const INIT_USAGE = [
   '  WIGOLO_LLM_API_KEY      LLM API key (never passed as a flag; read from env only)',
   '',
 ].join('\n');
+
+/**
+ * Per-component setup status for the --json summary. Capability-language keys
+ * (browserEngine / embeddings / reranker) — no library names — matching the
+ * warmup --json contract's rename boundary. `ready` when the component was
+ * downloaded and verified; `failed` (with `error`) when the download failed;
+ * `skipped` under --no-warmup (lazy-loads on first use, never a failure).
+ */
+type ComponentSetupStatus = 'ready' | 'failed' | 'skipped';
+
+interface ComponentSummary {
+  browserEngine: ComponentSetupStatus;
+  browserEngineError?: string;
+  embeddings: ComponentSetupStatus;
+  embeddingsError?: string;
+  reranker: ComponentSetupStatus;
+  rerankerError?: string;
+}
+
+/**
+ * One doctor cold-check result surfaced in the --json summary. Mirrors
+ * doctor's DoctorCheck (name/status/detail) but drops the internal `fixable`
+ * flag — the JSON consumer only needs to know each component's state.
+ */
+interface DoctorSummaryCheck {
+  name: string;
+  status: 'ok' | 'failed' | 'skipped';
+  detail?: string;
+}
+
+/**
+ * Map warmup's internal WarmupResult to the init --json per-component shape.
+ * Under --no-warmup no warmup ran, so every component is `skipped` (lazy). A
+ * failed download becomes `failed` + its error; anything else is `ready`.
+ */
+function componentSummaryFromWarmup(
+  result: import('./warmup.js').WarmupResult | null,
+): ComponentSummary {
+  if (!result) {
+    return { browserEngine: 'skipped', embeddings: 'skipped', reranker: 'skipped' };
+  }
+  const summary: ComponentSummary = {
+    browserEngine: result.playwright === 'ok' ? 'ready' : 'failed',
+    embeddings: result.embeddings === 'ok' ? 'ready' : 'failed',
+    reranker: result.reranker === 'ok' ? 'ready' : 'failed',
+  };
+  if (summary.browserEngine === 'failed' && result.playwrightError) {
+    summary.browserEngineError = result.playwrightError;
+  }
+  if (summary.embeddings === 'failed' && result.embeddingsError) {
+    summary.embeddingsError = result.embeddingsError;
+  }
+  if (summary.reranker === 'failed' && result.rerankerError) {
+    summary.rerankerError = result.rerankerError;
+  }
+  return summary;
+}
+
+/**
+ * Run the full component setup (`runWarmup(['--all'])`) and NEVER throw: a
+ * transient download failure must not fail init (the component lazy-retries on
+ * first use). Returns the WarmupResult so the caller can build the per-component
+ * report, or null when warmup itself threw (the whole result is then `failed`
+ * with the thrown message applied to every component).
+ *
+ * `print` routes the actionable failure line + fix to the caller's own stderr
+ * writer (no raw console.log).
+ */
+async function runFullSetup(
+  reporter: import('./tui/reporter.js').WarmupReporter,
+  print: (line: string) => void,
+): Promise<import('./warmup.js').WarmupResult | null> {
+  const { runWarmup } = await import('./warmup.js');
+  try {
+    return await runWarmup(['--all'], reporter);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Exit 0 even here: log the failure with the retry path, let the caller
+    // still wire the agent + persist config. Components lazy-retry on first use.
+    print(`Component setup failed: ${message}`);
+    print('Fix: re-run `wigolo warmup --all` — components also lazy-retry on first use.');
+    return null;
+  }
+}
+
+/**
+ * Print the per-component setup report + fixes for any failed download, then
+ * run doctor cold checks and append their summary. Returns the doctor check
+ * results for the --json summary. No live network verify — every doctor check
+ * here is presence/snapshot-only (see runDoctorColdChecks).
+ */
+async function reportSetupAndDoctor(
+  components: ComponentSummary,
+  dataDir: string,
+  print: (line: string) => void,
+): Promise<DoctorSummaryCheck[]> {
+  const label: Record<keyof Pick<ComponentSummary, 'browserEngine' | 'embeddings' | 'reranker'>, string> = {
+    browserEngine: 'Browser engine',
+    embeddings: 'Embeddings model',
+    reranker: 'ML reranker',
+  };
+  const fix: Record<'browserEngine' | 'embeddings' | 'reranker', string> = {
+    browserEngine: 're-run `wigolo warmup --all`, or `npx playwright install chromium`',
+    embeddings: 're-run `wigolo warmup --all` (embeddings lazy-retry on first use)',
+    reranker: 're-run `wigolo warmup --all` (reranker lazy-retries on first use)',
+  };
+  print('');
+  print('  Component setup:');
+  for (const key of ['browserEngine', 'embeddings', 'reranker'] as const) {
+    const status = components[key];
+    if (status === 'ready') {
+      print(`  ✓ ${label[key]}: ready`);
+    } else if (status === 'skipped') {
+      print(`  ○ ${label[key]}: skipped (lazy — downloads on first use)`);
+    } else {
+      const err = key === 'browserEngine' ? components.browserEngineError
+        : key === 'embeddings' ? components.embeddingsError
+          : components.rerankerError;
+      print(`  ✗ ${label[key]}: failed${err ? ` — ${err}` : ''}`);
+      print(`    Fix: ${fix[key]}`);
+    }
+  }
+
+  const { runDoctorColdChecks } = await import('./doctor.js');
+  const checks = await runDoctorColdChecks(dataDir);
+  print('');
+  print('  Diagnostics (doctor cold checks):');
+  const summary: DoctorSummaryCheck[] = [];
+  for (const c of checks) {
+    const glyph = c.status === 'ok' ? '✓' : c.status === 'skipped' ? '○' : '✗';
+    print(`  ${glyph} ${c.name}: ${c.status}${c.detail ? ` — ${c.detail}` : ''}`);
+    summary.push({ name: c.name, status: c.status, detail: c.detail });
+  }
+  return summary;
+}
 
 /**
  * Install skill packs for the selected agents through the shared skills engine.
@@ -150,6 +288,11 @@ export async function runInit(args: string[]): Promise<number> {
 /**
  * Machine-readable init summary emitted under --json. `status` drives the
  * exit code: 'ok' → 0, 'error' → non-zero.
+ *
+ * A component-download failure does NOT set status=error — init still wires the
+ * agent + persists config and exits 0 (the component lazy-retries). status=error
+ * is reserved for a genuine system hard-failure (Node too old, disk full).
+ * `components` + `doctor` carry the per-component + diagnostic detail.
  */
 interface InitJsonSummary {
   status: 'ok' | 'error';
@@ -157,6 +300,8 @@ interface InitJsonSummary {
   warmup: boolean;
   agentsRegistered: string[];
   configPersisted: boolean;
+  components?: ComponentSummary;
+  doctor?: DoctorSummaryCheck[];
   readyCount?: number;
   total?: number;
   requiredFailed?: boolean;
@@ -196,17 +341,20 @@ async function runInitWizard(flags: InitFlagsResolved): Promise<number> {
     return 0;
   }
 
+  const { getConfig } = await import('../config.js');
+  const dataDir = getConfig().dataDir;
+
   // Install skills for the agents the wizard selected. The wizard's finish step
   // persists `configuredAgents` into the SAME init-config the plain path writes;
   // read it back here (after the Ink shell has unmounted) and route it through
   // the identical shared engine call the plain path uses. Precedent: warmup runs
   // after the Ink shell unmounts too, for the same clean-terminal reason.
+  let wizardAgents: string[] = [];
   try {
-    const { getConfig } = await import('../config.js');
     const { readInitConfig } = await import('./tui/utils/config-writer.js');
-    const persisted = readInitConfig(getConfig().dataDir);
+    const persisted = readInitConfig(dataDir);
     const configured = persisted['configuredAgents'];
-    const wizardAgents = Array.isArray(configured)
+    wizardAgents = Array.isArray(configured)
       ? configured.filter((a): a is string => typeof a === 'string')
       : [];
     if (wizardAgents.length > 0) {
@@ -224,31 +372,37 @@ async function runInitWizard(flags: InitFlagsResolved): Promise<number> {
     process.stderr.write(`Skills skipped: ${message}\n`);
   }
 
-  // Pre-cache hint: components download on first use. Print on BOTH paths so a
-  // user always knows how to warm the cache ahead of time.
-  process.stderr.write(`${PRECACHE_HINT}\n`);
-
-  // Headless-first (D8): NO mandatory warmup. Only pre-cache when the user opts
-  // in with --warmup. Run it AFTER the Ink shell has unmounted (runConfig has
-  // returned) so warmup's own progress output owns the terminal cleanly.
+  // Full setup (default): download every component, then run doctor cold checks
+  // and print a per-component report. `--no-warmup` skips ALL downloads (the
+  // component then lazy-loads on first use). Run AFTER the Ink shell has
+  // unmounted (runConfig has returned) so the progress output owns the terminal
+  // cleanly. A component-download failure NEVER fails init — exit 0, log the
+  // fix, and let the component lazy-retry on first use.
+  const print = (line: string): void => { process.stderr.write(`${line}\n`); };
+  let components: ComponentSummary;
   if (flags.warmup) {
-    const { runWarmup } = await import('./warmup.js');
     const { autoReporter } = await import('./tui/reporter-auto.js');
     const reporter = autoReporter({ command: 'init' });
-    try {
-      await runWarmup(['--all'], reporter);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`Warmup failed: ${message}\n`);
-      if (flags.json) {
-        emitInitJson({ status: 'error', path: 'wizard', warmup: true, agentsRegistered: [], configPersisted: true, message });
-      }
-      return 1;
-    }
+    const warmupResult = await runFullSetup(reporter, print);
+    components = componentSummaryFromWarmup(warmupResult);
+  } else {
+    // Download-nothing escape hatch: every component lazy-loads on first use.
+    print(PRECACHE_HINT);
+    components = componentSummaryFromWarmup(null);
   }
 
+  const doctor = await reportSetupAndDoctor(components, dataDir, print);
+
   if (flags.json) {
-    emitInitJson({ status: 'ok', path: 'wizard', warmup: flags.warmup, agentsRegistered: [], configPersisted: true });
+    emitInitJson({
+      status: 'ok',
+      path: 'wizard',
+      warmup: flags.warmup,
+      agentsRegistered: wizardAgents,
+      configPersisted: true,
+      components,
+      doctor,
+    });
   }
   return 0;
 }
@@ -272,10 +426,8 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
   const { runSystemCheck } = await import('./tui/system-check.js');
   const { ok, fail, warn, info } = await import('./tui/format.js');
   const { default: chalk } = await import('chalk');
-  const { runWarmup } = await import('./warmup.js');
   const { detectAgents } = await import('./tui/agents.js');
   const { applyConfigs } = await import('./tui/config-writer.js');
-  const { runVerify } = await import('./tui/verify.js');
   const { autoReporter } = await import('./tui/reporter-auto.js');
   const { getConfig } = await import('../config.js');
   const { saveInitConfig } = await import('./tui/utils/config-writer.js');
@@ -330,25 +482,23 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
   out(`  ${info('System check passed.')}`);
   out();
 
-  // Pre-cache hint: components download on first use. Print on BOTH paths.
-  process.stderr.write(`${PRECACHE_HINT}\n`);
+  const print = (line: string): void => { process.stderr.write(`${line}\n`); };
 
-  const reporter = autoReporter({ plain: flags.plain, command: 'init' });
-
-  // Headless-first (D8): NO mandatory warmup. Only pre-cache when --warmup is
-  // set. A default init downloads nothing — components are acquired lazily on
-  // first use.
+  // Full setup (default): download every component up front so setup failures
+  // surface loudly. `--no-warmup` skips ALL downloads — components then lazy-load
+  // on first use. A component-download failure NEVER fails init (runFullSetup
+  // swallows + logs the fix); agent wiring + config persist still proceed and
+  // init exits 0. The per-component report + doctor summary are printed AFTER
+  // wiring so the failure detail sits with the diagnostics at the end.
+  let components: ComponentSummary;
   if (flags.warmup) {
-    try {
-      await runWarmup(['--all'], reporter);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`Warmup failed: ${message}\n`);
-      if (flags.json) {
-        emitInitJson({ status: 'error', path: 'plain', warmup: true, agentsRegistered: [], configPersisted: false, message });
-      }
-      return 1;
-    }
+    const reporter = autoReporter({ plain: flags.plain, command: 'init' });
+    const warmupResult = await runFullSetup(reporter, print);
+    components = componentSummaryFromWarmup(warmupResult);
+  } else {
+    // Download-nothing escape hatch: every component lazy-loads on first use.
+    print(PRECACHE_HINT);
+    components = componentSummaryFromWarmup(null);
   }
 
   let detected;
@@ -459,18 +609,6 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
     }
   }
 
-  if (!flags.skipVerify) {
-    try {
-      const verifyResult = await runVerify(config.dataDir, reporter);
-      if (!verifyResult.allPassed) {
-        reporter.note('Some checks failed. The CLI will still continue.');
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`Verify failed: ${message}\n`);
-    }
-  }
-
   // Persist provider/search selections and the LLM API key when supplied.
   // Provider/search are non-secret selects → applyHeadlessSet handles validation + fan-out.
   // The API key is a masked/secret field → applyHeadlessSet refuses it; use save() directly.
@@ -546,6 +684,14 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
   out();
   for (const line of summary.lines) out(`  ${line}`);
 
+  // Per-component setup report + doctor cold checks (presence/snapshot only, no
+  // live network verify). A failed component download is reported here with its
+  // fix but does NOT change the exit code — a missing/failed component is 'lazy'
+  // in the honest probe (self-installs on first use), so it never sets
+  // requiredFailed. The exit code stays driven by the honest setup summary: a
+  // genuinely-failed REQUESTED agent registration is still an exit-1 failure.
+  const doctor = await reportSetupAndDoctor(components, config.dataDir, print);
+
   if (flags.json) {
     emitInitJson({
       status: summary.exitCode === 0 ? 'ok' : 'error',
@@ -553,6 +699,8 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
       warmup: flags.warmup,
       agentsRegistered: [...selected],
       configPersisted: true,
+      components,
+      doctor,
       readyCount: summary.readyCount,
       total: summary.total,
       requiredFailed: summary.requiredFailed,

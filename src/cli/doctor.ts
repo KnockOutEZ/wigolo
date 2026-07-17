@@ -505,8 +505,14 @@ async function postDaemonBreakerReset(dataDir: string): Promise<{ ok: boolean; e
  * Collect the checks `--fix` knows how to repair. Each returns `ok`/`failed`
  * with a fixable flag. Pure snapshots — no side effects — so they can be run
  * before AND after a repair to build the before/after record.
+ *
+ * Exported as the shared cold-check surface: `init` reuses it after a full
+ * warmup to append a doctor summary (component presence, browser installed,
+ * data-dir writable, breakers) WITHOUT a live network verify. Every check here
+ * is presence/snapshot-only — none downloads a model or spawns a browser — so
+ * it is safe to run on a `--no-warmup` init too (writes zero bytes).
  */
-async function collectFixableChecks(dataDir: string): Promise<DoctorCheck[]> {
+export async function runDoctorColdChecks(dataDir: string): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
 
   const pw = await checkPlaywright();
@@ -672,7 +678,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   out(`  Docker:        ${dk.ok ? `available (${dk.cli}, ${dk.version})` : 'not available'}`);
   // python/docker are prerequisites ONLY for the opt-in search-engine sidecar
   // (bootstrap + --fix repair). On the default core backend their absence is
-  // healthy — same gate the searxng section and collectFixableChecks use.
+  // healthy — same gate the searxng section and runDoctorColdChecks use.
   if (searxngConfigured(getConfig()) && !py.ok && !dk.ok) { degraded = true; nonFixableDegraded = true; }
 
   out('');
@@ -875,7 +881,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
 
   // The search-engine sidecar sections only apply when the sidecar backend is
   // opted into. On the default core backend an absent bootstrap is EXPECTED,
-  // not a failure — skip the whole section (same gate collectFixableChecks
+  // not a failure — skip the whole section (same gate runDoctorColdChecks
   // uses at the top of this file) instead of degrading on a missing state.json.
   const state = getBootstrapState(dataDir) as BootstrapState | null;
   if (searxngConfigured(getConfig())) {
@@ -950,13 +956,13 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   // --fix the original `degraded` verdict is authoritative (preserves the
   // report-only exit-code contract).
   let fixes: DoctorFix[] = [];
-  let fixableChecks = await collectFixableChecks(dataDir);
+  let fixableChecks = await runDoctorColdChecks(dataDir);
   if (opts?.fix) {
     out('');
     fixes = await applyDoctorFixes(dataDir, fixableChecks);
     if (fixes.length === 0) out('[wigolo doctor] --fix: nothing to repair');
     // Re-collect so the report + status reflect the repaired state.
-    fixableChecks = await collectFixableChecks(dataDir);
+    fixableChecks = await runDoctorColdChecks(dataDir);
     const anyFixableStillFailed = fixableChecks.some((c) => c.status === 'failed');
     degraded = nonFixableDegraded || anyFixableStillFailed;
   }
