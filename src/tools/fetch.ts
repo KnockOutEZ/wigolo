@@ -192,7 +192,10 @@ export async function handleFetch(
   }
 
   try {
-    if (!input.force_refresh) {
+    // Stealth mode is the retry-past-a-block escape hatch: it must always
+    // fetch fresh, never replay a stale cached row (which may carry a
+    // previously-cached anti-bot 403 body). Treat it like force_refresh.
+    if (!input.force_refresh && mode !== 'stealth') {
       const cached = getCachedContent(input.url);
       if (cached && (!input.actions || input.actions.length === 0)) {
         const staleMaxSeconds = mode === 'cache' ? getConfig().fastStaleMaxHours * 3600 : 0;
