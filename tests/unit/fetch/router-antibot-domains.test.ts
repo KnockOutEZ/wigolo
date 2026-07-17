@@ -24,7 +24,7 @@ const FULL_HTML = `
 
 function makeHttpResult(
   url: string,
-  opts: Partial<{ html: string; statusCode: number }> = {},
+  opts: Partial<{ html: string; statusCode: number; headers: Record<string, string> }> = {},
 ): Awaited<ReturnType<HttpClient['fetch']>> {
   return {
     url,
@@ -32,7 +32,7 @@ function makeHttpResult(
     html: opts.html ?? FULL_HTML,
     contentType: 'text/html',
     statusCode: opts.statusCode ?? 200,
-    headers: {},
+    headers: opts.headers ?? {},
   };
 }
 
@@ -315,6 +315,110 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       expect(tlsFetcher).not.toHaveBeenCalled();
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(result.method).toBe('http');
+    });
+  });
+
+  describe('modern-CF challenge escalation (TLS off, domain NOT in allowlist)', () => {
+    // The headline churn case: Upwork returns HTTP 403 with a
+    // `cf-mitigated: challenge` response header and a modern challenge-platform
+    // body that carries NONE of the legacy markers. Pre-fix, hasChallengeBody
+    // was false and upwork.com is not in the TLS allowlist, so neither
+    // escalation gate fired and the 403 shell leaked to the caller as content.
+    const UPWORK_CHALLENGE_BODY =
+      '<html><head><title>Just a moment...</title></head><body>' +
+      '<div id="challenge-error-text">Enable JavaScript and cookies to continue</div>' +
+      '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1?ray=abc"></script>' +
+      '</body></html>';
+
+    it('escalates a 403 + cf-mitigated:challenge to the browser tier (antiBotEscalation stealth)', async () => {
+      process.env.WIGOLO_TLS_TIER = 'off';
+      resetConfig();
+
+      const { router, httpClient, browserPool, tlsFetcher } = build();
+      vi.mocked(httpClient.fetch).mockResolvedValue(
+        makeHttpResult('https://www.upwork.com/freelancers/foo', {
+          statusCode: 403,
+          html: UPWORK_CHALLENGE_BODY,
+          headers: { 'cf-mitigated': 'challenge', server: 'cloudflare' },
+        }),
+      );
+
+      const result = await router.fetch('https://www.upwork.com/freelancers/foo');
+
+      // upwork.com is NOT in the allowlist and TLS is off → the TLS tier must
+      // never run; the escalation must go straight to the browser.
+      expect(tlsFetcher).not.toHaveBeenCalled();
+      expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
+      // Escalation carries anti-bot-hardening stealth.
+      const opts = vi.mocked(browserPool.fetchWithBrowser).mock.calls[0][1];
+      expect(opts?.stealth).toBe(true);
+      // The browser cleared it → real content, not the challenge shell.
+      expect(result.method).toBe('playwright');
+    });
+
+    it('MUST-NOT-FIRE: a bare 403 admin page (no header, no CF markers) does NOT escalate', async () => {
+      process.env.WIGOLO_TLS_TIER = 'off';
+      resetConfig();
+
+      const admin403 =
+        '<html><body><h1>403 Forbidden</h1><p>' +
+        'You do not have permission to view this resource. '.repeat(20) +
+        '</p></body></html>';
+
+      const { router, httpClient, browserPool } = build();
+      // Both the original and the UA-rotation retry return the same bare 403.
+      vi.mocked(httpClient.fetch).mockResolvedValue(
+        makeHttpResult('https://example.com/private', { statusCode: 403, html: admin403 }),
+      );
+
+      const result = await router.fetch('https://example.com/private');
+
+      // A substantive 403 error page passes through as content — no browser.
+      expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
+      expect(result.method).toBe('http');
+      expect(result.statusCode).toBe(403);
+    });
+  });
+
+  describe('guardChallengeShell recognises a modern-CF header challenge', () => {
+    it('maps a modern-CF header result to blocked_by_challenge, never content', () => {
+      const { router } = build();
+
+      // A body with NO legacy markers — the header is the only signal. Pre-fix
+      // this passed straight through as HTTP-403 content.
+      const guarded = (router as unknown as {
+        guardChallengeShell: (raw: RawFetchResult) => RawFetchResult | { error: string };
+      }).guardChallengeShell({
+        url: 'https://www.upwork.com/x',
+        finalUrl: 'https://www.upwork.com/x',
+        html: '<html><body>no legacy markers at all here, just a short shell</body></html>',
+        contentType: 'text/html',
+        statusCode: 403,
+        method: 'http',
+        headers: { 'cf-mitigated': 'challenge' },
+      });
+
+      expect('error' in guarded).toBe(true);
+      if ('error' in guarded) {
+        expect(guarded.error).toBe('blocked_by_challenge');
+      }
+    });
+
+    it('a clean result with no challenge header/markers passes through untouched', () => {
+      const { router } = build();
+      const clean: RawFetchResult = {
+        url: 'https://example.com/',
+        finalUrl: 'https://example.com/',
+        html: FULL_HTML,
+        contentType: 'text/html',
+        statusCode: 200,
+        method: 'http',
+        headers: { server: 'nginx' },
+      };
+      const out = (router as unknown as {
+        guardChallengeShell: (raw: RawFetchResult) => RawFetchResult | { error: string };
+      }).guardChallengeShell(clean);
+      expect('error' in out).toBe(false);
     });
   });
 });
