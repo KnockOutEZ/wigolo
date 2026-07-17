@@ -9,8 +9,8 @@ import {
   isAntiBotSignal,
   isAntiBotStatus,
   isChallengeShell,
+  isChallengeResponse,
   isRateLimit,
-  hasChallengeBody,
   looksJsRequired,
   describeAntiBot,
   TlsTierUnavailableError,
@@ -761,7 +761,7 @@ export class SmartRouter {
    * interstitial markdown. A clean result passes through untouched.
    */
   private guardChallengeShell(raw: RawFetchResult): RawFetchResult | StageError {
-    if (isChallengeShell(raw.statusCode, raw.html)) {
+    if (isChallengeResponse(raw.statusCode, raw.html, raw.headers)) {
       const err = new ChallengeBlockedError(raw.url);
       return {
         error: err.code,
@@ -1030,7 +1030,7 @@ export class SmartRouter {
       // Restricted to a BARE 403 (no challenge markers): a Cloudflare/DataDome
       // challenge-body 403 is a strong wall a UA rotation cannot clear, so it
       // escalates directly without paying for a doomed retry.
-      if (result.statusCode === 403 && !hasChallengeBody(result.html)) {
+      if (result.statusCode === 403 && !isChallengeResponse(result.statusCode, result.html, result.headers)) {
         const rotatedUa = resolveStealthUA();
         const currentUa = headers?.['User-Agent'] ?? config.userAgent;
         if (rotatedUa !== currentUa) {
@@ -1154,9 +1154,13 @@ export class SmartRouter {
       // on small challenge bodies, but we now gate that on 2xx-only — so
       // the bot-wall escalation must be made explicit, and the same body-
       // marker check we use elsewhere keeps it from over-firing.
-      if (!tlsTierEnabled && hasChallengeBody(result.html) && isAntiBotStatus(result.statusCode)) {
+      if (
+        !tlsTierEnabled &&
+        isAntiBotStatus(result.statusCode) &&
+        isChallengeResponse(result.statusCode, result.html, result.headers)
+      ) {
         if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
-        logger.info('anti-bot challenge body: escalating to playwright (tls tier disabled)', {
+        logger.info('anti-bot challenge: escalating to browser (tls tier disabled)', {
           url,
           domain,
           httpStatus: result.statusCode,
