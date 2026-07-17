@@ -35,7 +35,7 @@ import { searxngConfigured, searxngBackendAvailable } from './searxng/enabled.js
 import { SearxngProcess } from './searxng/process.js';
 import { DockerSearxng } from './searxng/docker.js';
 import { BackendStatus } from './server/backend-status.js';
-import { maybeEagerWarmup } from './server/warmup-on-start.js';
+import { maybeEagerWarmup, warmEngines } from './server/warmup-on-start.js';
 import { getEmbeddingService, resetEmbeddingService } from './embedding/embed.js';
 import { getConfig } from './config.js';
 import { createLogger } from './logger.js';
@@ -559,6 +559,7 @@ export async function startServer(): Promise<void> {
   log.info('MCP server started');
 
   maybeEagerWarmup();
+  warmEngines();
 
   subs.bootstrapSearxng().catch((err) => {
     log.warn('search engine bootstrap failed', { error: String(err) });
