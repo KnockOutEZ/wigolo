@@ -32,7 +32,7 @@ function makeBrowserResult(url: string): RawFetchResult {
     html: '<html><body><p>real content here</p></body></html>',
     contentType: 'text/html',
     statusCode: 200,
-    method: 'playwright',
+    method: 'browser',
     headers: {},
   };
 }

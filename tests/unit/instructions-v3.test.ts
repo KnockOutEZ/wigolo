@@ -66,6 +66,39 @@ describe('WIGOLO_INSTRUCTIONS v3 routing patterns (per-session)', () => {
     expect(WIGOLO_INSTRUCTIONS).not.toMatch(/ollama/i);
   });
 
+  it('teaches honest research/agent degradation — host LLM synthesizes when no key is set', () => {
+    // WHY: research/agent are LLM-optional. Without a synthesis LLM they return a
+    // brief / evidence / step log, and the host model must write the final answer
+    // ITSELF rather than dump the raw structure as a weak result. If this guidance
+    // is dropped, hosts hand users the raw brief and research/agent read as broken.
+    expect(WIGOLO_INSTRUCTIONS).toMatch(/LLM-optional/i);
+    expect(WIGOLO_INSTRUCTIONS).toMatch(/YOU write the final answer/i);
+    expect(WIGOLO_INSTRUCTIONS).toMatch(/raw structure/i);
+  });
+
+  it('recommends the free Gemini key as the research/agent quality unlock (honest, keyless-core-preserving)', () => {
+    // WHY: the honest UX is "core stays keyless; research/agent synthesis unlocks
+    // with a (free) key." The instruction names the exact env config a user sets
+    // (provider name Gemini is allowed — it is user config, not an internal dep)
+    // and reaffirms that the core tools stay keyless so we never undercut that.
+    expect(WIGOLO_INSTRUCTIONS).toMatch(/free Gemini API key/i);
+    expect(WIGOLO_INSTRUCTIONS).toContain('WIGOLO_LLM_PROVIDER=gemini');
+    expect(WIGOLO_INSTRUCTIONS).toContain('GEMINI_API_KEY');
+    expect(WIGOLO_INSTRUCTIONS).toMatch(/core .*(search|fetch).*keyless/i);
+  });
+
+  it('never routes users to a competing browser-automation MCP (off-brand + inaccurate)', () => {
+    // WHY: wigolo drives interactive page actions itself (fetch `actions` +
+    // `use_auth`), so "when NOT to use wigolo → use a dedicated browser-automation
+    // MCP" is both off-brand and factually wrong. This negative guard fails if that
+    // competitor-routing marketing is ever reintroduced into any user-facing surface.
+    const surfaces = [WIGOLO_INSTRUCTIONS, WIGOLO_INSTRUCTIONS_FULL, ...Object.values(TOOL_DESCRIPTIONS)].join('\n');
+    expect(surfaces).not.toMatch(/browser[- ]automation MCP/i);
+    expect(surfaces).not.toMatch(/dedicated .{0,40}\bMCP\b/i);
+    expect(surfaces).not.toMatch(/defer to a browser/i);
+    expect(WIGOLO_INSTRUCTIONS).not.toMatch(/when NOT to use wigolo/i);
+  });
+
   it('is a non-empty string of reasonable length', () => {
     expect(typeof WIGOLO_INSTRUCTIONS).toBe('string');
     expect(WIGOLO_INSTRUCTIONS.length).toBeGreaterThan(500);
@@ -160,6 +193,18 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(desc).toMatch(/sub.?quer|decompos/i);
   });
 
+  it('research description degrades honestly — host writes the answer + free-key recommendation', () => {
+    // WHY: with no synthesis LLM, research returns a structured brief, not prose.
+    // The description must tell the caller to synthesize from the brief (not hand
+    // over the raw structure) and recommend a free key for best quality — without
+    // this, the tool reads as a poor result whenever no LLM is configured.
+    const desc = TOOL_DESCRIPTIONS.research;
+    expect(desc).toMatch(/LLM-optional/i);
+    expect(desc).toMatch(/without one/i);
+    expect(desc).toMatch(/key_findings|brief/);
+    expect(desc).toMatch(/free Gemini API key/i);
+  });
+
   it('agent description mentions prompt-driven workflow', () => {
     const desc = TOOL_DESCRIPTIONS.agent;
     expect(desc).toContain('prompt');
@@ -179,6 +224,18 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     const desc = TOOL_DESCRIPTIONS.agent;
     expect(desc).toContain('max_pages');
     expect(desc).toContain('max_time_ms');
+  });
+
+  it('agent description degrades honestly — host writes the summary + free-key recommendation', () => {
+    // WHY: with no synthesis LLM, agent returns gathered evidence + a step log,
+    // not a written summary. The description must tell the caller to write the
+    // summary from the evidence itself and recommend a free LLM key — otherwise
+    // the raw step log gets surfaced as a weak result.
+    const desc = TOOL_DESCRIPTIONS.agent;
+    expect(desc).toMatch(/LLM-optional/i);
+    expect(desc).toMatch(/without one/i);
+    expect(desc).toMatch(/evidence/i);
+    expect(desc).toMatch(/free LLM key|Gemini/i);
   });
 
   it('search description mentions format: answer', () => {
@@ -212,6 +269,19 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
     expect(TOOL_DESCRIPTIONS.crawl).toContain('sitemap');
     expect(TOOL_DESCRIPTIONS.cache).toContain('AND, OR, NOT');
     expect(TOOL_DESCRIPTIONS.extract).toContain('schema');
+  });
+
+  it('fetch description advertises its OWN interactive capability (actions + use_auth), not a competitor', () => {
+    // WHY: fetch handles click/scroll/login pages itself via the `actions` input
+    // (click/type/scroll/wait, verified in the fetch schema) and `use_auth`. The
+    // old text deferred these flows to a browser-automation MCP — off-brand and
+    // wrong. This asserts the positive capability replaced it and the deferral is gone.
+    const desc = TOOL_DESCRIPTIONS.fetch;
+    expect(desc).toContain('actions');
+    expect(desc).toContain('use_auth');
+    expect(desc).toMatch(/click/i);
+    expect(desc).not.toMatch(/browser[- ]automation MCP/i);
+    expect(desc).not.toMatch(/defer to a browser/i);
   });
 });
 

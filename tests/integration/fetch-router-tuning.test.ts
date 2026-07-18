@@ -42,7 +42,7 @@ function makeBrowserResult(url: string): RawFetchResult {
     html: SSR_BODY_WITH_DEFENSIVE_NOSCRIPT,
     contentType: 'text/html; charset=utf-8',
     statusCode: 200,
-    method: 'playwright',
+    method: 'browser',
     headers: {},
   };
 }

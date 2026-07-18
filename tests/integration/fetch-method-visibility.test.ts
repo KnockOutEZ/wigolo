@@ -33,7 +33,7 @@ function makeBrowserResult(url = 'https://method-test.example/page'): RawFetchRe
     html: FULL_HTML,
     contentType: 'text/html; charset=utf-8',
     statusCode: 200,
-    method: 'playwright',
+    method: 'browser',
     headers: {},
   };
 }
@@ -83,7 +83,7 @@ describe('handleFetch: fetch_method visibility', () => {
     expect(second.data.fetch_method).toBe('cache');
   });
 
-  it('tags fetch_method="playwright" when a fetch routes through the browser', async () => {
+  it('tags fetch_method="browser" when a fetch routes through the browser', async () => {
     const httpClient: HttpClient = {
       fetch: vi.fn(async () => { throw new Error('should not call http'); }),
     };
@@ -96,6 +96,6 @@ describe('handleFetch: fetch_method visibility', () => {
     const out = await handleFetch({ url, render_js: 'always', force_refresh: true } as any, router);
     expect(out.ok).toBe(true);
     if (!out.ok) return;
-    expect(out.data.fetch_method).toBe('playwright');
+    expect(out.data.fetch_method).toBe('browser');
   });
 });

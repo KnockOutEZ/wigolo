@@ -69,7 +69,7 @@ function makeBrowserResult(url = 'https://example.com/page'): RawFetchResult {
     html: SUBSTANTIVE_ARTICLE,
     contentType: 'text/html',
     statusCode: 200,
-    method: 'playwright',
+    method: 'browser',
     headers: {},
   };
 }
@@ -134,7 +134,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
       const result = await router.fetch('https://true-spa.example/');
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
 
     it('keeps HTTP path when <noscript> contains a "javascript" warning BUT the article body has 500+ chars of visible text', async () => {
@@ -188,7 +188,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
       const result = await router.fetch('https://empty.example/');
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
   });
 
@@ -216,7 +216,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
       });
       const result = await router.fetch('https://cf-protected.example/');
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
 
     it('escalates to Playwright on a 503 with a Cloudflare challenge body', async () => {
@@ -227,7 +227,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
       });
       const result = await router.fetch('https://cf-503.example/');
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
   });
 

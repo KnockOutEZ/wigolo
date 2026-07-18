@@ -57,9 +57,9 @@ export interface FetchInput {
  *   - 'cache'             : served from the local cache (no tier touched)
  *   - 'http'              : vanilla HTTP tier
  *   - 'tls-impersonation' : TLS-fingerprinted HTTP tier (opt-in)
- *   - 'playwright'        : full browser tier
+ *   - 'browser'           : full browser tier
  */
-export type FetchMethod = 'cache' | 'http' | 'tls-impersonation' | 'playwright';
+export type FetchMethod = 'cache' | 'http' | 'tls-impersonation' | 'browser';
 
 export interface FetchOutput {
   /** Compatibility alias of how long the request took, ms. */
@@ -143,9 +143,9 @@ export interface RawFetchResult {
    * Which fetch tier produced the bytes:
    *   - 'http'              : default httpFetch via node fetch
    *   - 'tls-impersonation' : TLS-fingerprinted HTTP tier (opt-in)
-   *   - 'playwright'        : full browser fallback
+   *   - 'browser'           : full browser fallback
    */
-  method: 'http' | 'tls-impersonation' | 'playwright';
+  method: 'http' | 'tls-impersonation' | 'browser';
   headers: Record<string, string>;
   rawBuffer?: Buffer;
   screenshot?: string;
@@ -215,7 +215,7 @@ export interface CachedContent {
   metadata: string;
   links: string;
   images: string;
-  fetchMethod: 'http' | 'playwright';
+  fetchMethod: 'http' | 'browser';
   extractorUsed: ExtractorType;
   contentHash: string;
   fetchedAt: string;

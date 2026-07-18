@@ -57,7 +57,7 @@ function makeBrowserResult(url: string): RawFetchResult {
     html: FULL_HTML,
     contentType: 'text/html',
     statusCode: 200,
-    method: 'playwright',
+    method: 'browser',
     headers: {},
   };
 }
@@ -367,7 +367,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       const opts = vi.mocked(browserPool.fetchWithBrowser).mock.calls[0][1];
       expect(opts?.stealth).toBe(true);
       // The browser cleared it → real content, not the challenge shell.
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
 
     it('MUST-NOT-FIRE: a bare 403 admin page (no header, no CF markers) does NOT escalate', async () => {

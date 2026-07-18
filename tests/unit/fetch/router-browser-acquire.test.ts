@@ -38,7 +38,7 @@ function makeHttpResult(html = FULL_HTML, statusCode = 200): Awaited<ReturnType<
 }
 
 function makeBrowserResult(url = 'https://example.com/page'): RawFetchResult {
-  return { url, finalUrl: url, html: FULL_HTML, contentType: 'text/html', statusCode: 200, method: 'playwright', headers: {} };
+  return { url, finalUrl: url, html: FULL_HTML, contentType: 'text/html', statusCode: 200, method: 'browser', headers: {} };
 }
 
 /** A test double for the acquirer whose outcome + call count we control. */
@@ -102,7 +102,7 @@ describe('SmartRouter — lazy browser acquisition threading (D3)', () => {
     const result = await router.fetch('https://example.com/page', { renderJs: 'always' });
     expect(ensure).toHaveBeenCalledOnce();
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   describe('call-site sweep: every escalation path routes through the acquirer', () => {
@@ -246,7 +246,7 @@ describe('SmartRouter — lazy browser acquisition threading (D3)', () => {
 
       expect(ensure).toHaveBeenCalledOnce();
       expect(playwrightFetcher).toHaveBeenCalledOnce();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
       expect(result.escalated).toBe(true);
     });
 

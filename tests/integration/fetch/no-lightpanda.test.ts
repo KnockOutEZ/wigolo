@@ -90,7 +90,7 @@ describe('SP1 — Lightpanda removed, Chromium-only fetch path', () => {
     const result = await pool.fetchWithBrowser(url);
 
     expect(result.html).toContain('Chromium only');
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
     // No lightpanda file imported at all: the result must come from Playwright Chromium
     expect(result.statusCode).toBe(200);
 
@@ -120,7 +120,7 @@ describe('SP1 — Lightpanda removed, Chromium-only fetch path', () => {
 
     for (const r of results) {
       expect(r.html).toContain('concurrent ok');
-      expect(r.method).toBe('playwright');
+      expect(r.method).toBe('browser');
     }
   }, 60000);
 
