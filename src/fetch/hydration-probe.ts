@@ -272,9 +272,15 @@ export const APP_SHELL_ONLY_SOURCE = `(() => {
 
 // Content metrics snapshot for the stability poller: text length OUTSIDE nav
 // chrome + content node count. Cheap enough to run every poll tick.
+//
+// textLen measures body text with the nav chrome text subtracted, NOT raw
+// body.innerText — a nav-only SPA shell (react.dev's sidebar, 40 stable link
+// descriptions) otherwise reads as a large STABLE textLen, and the stability
+// gate locks onto it before the article body mounts. Netting out chrome makes a
+// pure shell read textLen≈0, which isStable() (ratio guard on prev.textLen>0)
+// never accepts as stable, so only the probe or the budget can end that wait.
 export const CONTENT_METRICS_SOURCE = `(() => {
   const NAV_CHROME_SELECTORS = ${JSON.stringify(NAV_CHROME_SELECTORS)};
-  let textLen = 0;
   let nodes = 0;
   const els = document.querySelectorAll('p, pre, code, article, main, h1, h2, h3, li, td');
   for (let i = 0; i < els.length; i++) {
@@ -282,7 +288,10 @@ export const CONTENT_METRICS_SOURCE = `(() => {
     if (typeof el.closest === 'function' && el.closest(NAV_CHROME_SELECTORS)) continue;
     nodes += 1;
   }
-  const body = document.body;
-  textLen = body ? ((body.innerText || '').trim().length) : 0;
+  const bodyText = (document.body && document.body.innerText ? document.body.innerText : '').trim().length;
+  let chromeText = 0;
+  const chrome = document.querySelectorAll(NAV_CHROME_SELECTORS);
+  for (let i = 0; i < chrome.length; i++) chromeText += ((chrome[i].innerText || '')).length;
+  const textLen = Math.max(0, bodyText - chromeText);
   return { textLen, nodes };
 })()`;

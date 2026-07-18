@@ -191,4 +191,20 @@ describe('settlePage — hybrid probe + stability gate', () => {
     expect(result.settledBy).toBe('stability');
     expect(result.lastMetrics?.textLen).toBe(1065);
   });
+
+  it('a zero-content shell (textLen 0, flat) never settles via stability — only budget', async () => {
+    vi.useFakeTimers();
+    // A nav-only SPA shell: CONTENT_METRICS_SOURCE nets out chrome text, so a
+    // pure shell reports textLen 0 forever. isStable's ratio guard treats a
+    // prev.textLen of 0 as "not stable" (ratio = 1), so the stability gate can
+    // never fire on a shell — only the probe (never here) or the budget ends it.
+    // This is the unit-level guard for what the delayed-mount corpus proves e2e.
+    const page = makeFakePage({
+      metrics: Array.from({ length: 50 }, () => ({ textLen: 0, nodes: 0 })),
+    });
+    const p = settlePage(page, {});
+    await vi.advanceTimersByTimeAsync(POST_GOTO_CAP_MS + 100);
+    const result = await p;
+    expect(result.settledBy).toBe('budget');
+  });
 });

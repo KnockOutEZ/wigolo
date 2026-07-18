@@ -99,16 +99,6 @@ export async function settlePage(
         const cur = (await page.evaluate(CONTENT_METRICS_SOURCE).catch(() => null)) as ContentMetrics | null;
         if (!cur) continue;
         metricsRef.last = cur;
-        // A page with zero content nodes OUTSIDE nav chrome is a bare shell,
-        // not settled content — a nav-only SPA shell whose 40 link texts are
-        // perfectly stable would otherwise satisfy the growth gate before the
-        // article body mounts. Stability may only fire once real article
-        // content exists; until then the probe or the budget ends the wait.
-        if (cur.nodes === 0) {
-          stableTicks = 0;
-          prev = cur;
-          continue;
-        }
         if (prev && isStable(prev, cur)) {
           stableTicks += 1;
           if (stableTicks >= STABILITY_TICKS_REQUIRED) return 'stability';
