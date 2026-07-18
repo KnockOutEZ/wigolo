@@ -23,13 +23,20 @@ describe('getCodeEngines', () => {
     _resetCodeEnginesForTest();
   });
 
-  it('returns five entries by default (github-code, stackoverflow, devdocs, duckduckgo, mdn)', () => {
-    expect(getCodeEngines()).toHaveLength(5);
+  it('returns six entries by default (github-code, stackoverflow, devdocs, duckduckgo, npm-registry, mdn)', () => {
+    expect(getCodeEngines()).toHaveLength(6);
   });
 
-  it('lists github-code, stackoverflow, devdocs, duckduckgo, mdn (preserving names)', () => {
+  it('lists github-code, stackoverflow, devdocs, duckduckgo, npm-registry, mdn (preserving names)', () => {
     const names = getCodeEngines().map((e) => e.engine.name).sort();
-    expect(names).toEqual(['devdocs', 'duckduckgo', 'github-code', 'mdn', 'stackoverflow']);
+    expect(names).toEqual([
+      'devdocs',
+      'duckduckgo',
+      'github-code',
+      'mdn',
+      'npm-registry',
+      'stackoverflow',
+    ]);
   });
 
   it('adds brave when BRAVE_API_KEY is set', async () => {
