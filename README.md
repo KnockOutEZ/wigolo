@@ -161,14 +161,82 @@ That last row is the one that compounds — agents don't ask once, they ask in b
 
 </div>
 
-## Beyond your laptop
+## Beyond your editor
 
-The same ten tools serve every kind of agent, over whichever surface fits:
+The same ten tools serve every kind of agent, over whichever surface fits — MCP for coding agents, REST for everything else, SDKs to embed, framework wrappers to drop in.
 
-- **`wigolo serve`** exposes a plain-JSON **REST API** (`POST /v1/{tool}`, OpenAPI 3.1 contract) and a remote **MCP endpoint** from one process — token-authenticated, fail-closed on public binds. Point n8n, a Hermes-style assistant, or any self-hosted agent at it. → [REST API](docs/rest-api.md) · [self-hosting guide](docs/self-hosting.md)
-- **SDKs**: `wigolo-sdk` (TypeScript, zero-dep, edge-safe) and `wigolo` (Python, stdlib-only, sync + async) — both with an embedded local mode that finds or starts the daemon for you. Framework wrappers for **LangChain, CrewAI, LlamaIndex, and the Vercel AI SDK** are published too. → [SDKs & integrations](docs/sdks.md)
-- **Docker / compose / binary / Homebrew** install channels for servers and homelabs. → [installation](docs/installation.md)
-- **Agent skills**: an 11-pack skill catalog teaches your coding agent to drive each tool well — installed by `init`, managed with `wigolo skills add|list|remove`. → [skills](docs/skills.md)
+### REST API — `wigolo serve`
+
+One process exposes a plain-JSON REST API next to the MCP transport. No MCP client needed — just curl:
+
+```bash
+wigolo serve                          # 127.0.0.1:3333 — loopback is open; off-loopback requires a token
+
+curl -sX POST http://127.0.0.1:3333/v1/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"local-first software","max_results":5}'
+```
+
+`POST /v1/{tool}` covers all ten tools, `GET /openapi.json` is the OpenAPI 3.1 contract, and `/mcp` + `/sse` serve remote MCP clients from the same port. Bind past loopback and a bearer token is required — the server fails closed rather than opening wide by accident. Point n8n, a Hermes-style assistant, or any self-hosted agent at it. → [REST API](docs/rest-api.md)
+
+### SDKs — TypeScript & Python
+
+Thin, typed clients with an embedded local mode that finds or starts the daemon for you — no separate `serve` step.
+
+**TypeScript** — `npm install wigolo-sdk` (zero-dep; Node / Bun / Deno / edge):
+
+```ts
+import { createLocalClient } from 'wigolo-sdk/local';
+
+const { client, close } = await createLocalClient();   // reuse a running daemon, or spawn one
+const res = await client.search({ query: 'local-first web search', max_results: 5 });
+console.log(res.results.map((r) => r.title));
+await close();                                          // stops the daemon only if this call spawned it
+```
+
+**Python** — `pip install wigolo` (standard library only; sync + async):
+
+```python
+from wigolo import local_client
+
+with local_client() as client:                          # reuse a healthy daemon, or spawn one
+    res = client.search(query="local-first web search", max_results=5)
+    for r in res["results"]:
+        print(r["title"], r["url"])
+```
+
+→ [SDKs & embedded mode](docs/sdks.md)
+
+### Framework integrations
+
+Drop wigolo's tools into the framework you already use — the full ten-tool surface, including the cache / find_similar / research / agent that most framework web-tools don't ship:
+
+| Framework | Package | What you get |
+|-----------|---------|--------------|
+| **LangChain** | `wigolo-langchain` | each tool as a `BaseTool`, plus a `BaseRetriever` over search / find_similar for RAG |
+| **CrewAI** | `wigolo-crewai` | `wigolo_tools()` → hand the set to any crew |
+| **LlamaIndex** | `wigolo-llamaindex` | a `BaseReader` that loads fetched / crawled / searched pages as documents |
+| **Vercel AI SDK** | `wigolo-vercel-ai-sdk` | tool factories for `generateText` / `streamText`, edge-friendly |
+
+→ [Framework integrations](docs/sdks.md)
+
+### Docker
+
+```bash
+# stdio MCP — wire it into any MCP client as command: docker
+docker run -i --rm -v wigolo-data:/data ghcr.io/knockoutez/wigolo
+
+# HTTP server for remote / multi-client use
+docker run -p 3333:3333 -v wigolo-data:/data \
+  -e WIGOLO_API_TOKEN=a-long-random-secret \
+  ghcr.io/knockoutez/wigolo serve --host 0.0.0.0
+```
+
+The slim image lazy-loads models into the volume; `:full` preinstalls the browser engine. Also on Docker Hub as `towhid69420/wigolo`. → [installation & all channels](docs/installation.md)
+
+### Agent skills
+
+An 11-pack skill catalog teaches your coding agent to drive each tool well — installed by `init`, managed with `wigolo skills add|list|remove`. → [skills](docs/skills.md)
 
 One honest note for self-hosters: some challenge-protected sites score IP reputation, so a datacenter IP won't clear walls a home connection would. wigolo labels those failures instead of faking them, and the [self-hosting guide](docs/self-hosting.md) covers the opt-in proxy answer.
 
