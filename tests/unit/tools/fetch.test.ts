@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import type { FetchInput, RawFetchResult, CachedContent, ExtractionResult } from '../../../src/types.js';
 
 vi.mock('../../../src/cache/store.js', () => ({
@@ -471,6 +472,96 @@ describe('handleFetch --- force_refresh', () => {
 
     expect(router.fetch).not.toHaveBeenCalled();
     expect(result.cached).toBe(true);
+  });
+});
+
+// content_hash is a stable fingerprint of the FULL extracted body, computed
+// BEFORE any presentation reshaping. The `watch` scheduler and url-mode
+// `diff` key off it so a change beyond the returned markdown's truncation
+// point is never silently missed. These tests pin that contract at the fetch
+// tool boundary: the hash must NOT move when view flags reshape `markdown`.
+describe('handleFetch --- content_hash (view-flag-independent fingerprint)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getCachedContent).mockReturnValue(null);
+    vi.mocked(isCacheUsable).mockReturnValue({ usable: true, stale: false });
+  });
+
+  it('is the sha256 of the FULL extracted markdown on a fresh fetch', async () => {
+    const fullBody = '# Title\n\n' + 'word '.repeat(2000);
+    extractMock.mockResolvedValue(makeExtraction({ markdown: fullBody }));
+    const expected = createHash('sha256').update(fullBody).digest('hex');
+
+    const router = mockRouter();
+    const r = await handleFetch({ url: 'https://example.com', include_full_markdown: true }, router);
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data.content_hash).toBe(expected);
+  });
+
+  it('stays identical whether include_full_markdown is true or false', async () => {
+    const fullBody = '# Same body\n\n' + 'alpha '.repeat(1500);
+    extractMock.mockResolvedValue(makeExtraction({ markdown: fullBody }));
+
+    const router1 = mockRouter();
+    const withFull = await handleFetch(
+      { url: 'https://example.com', include_full_markdown: true },
+      router1,
+    );
+    const router2 = mockRouter();
+    const withoutFull = await handleFetch(
+      { url: 'https://example.com', include_full_markdown: false },
+      router2,
+    );
+
+    expect(withFull.ok && withoutFull.ok).toBe(true);
+    if (!withFull.ok || !withoutFull.ok) return;
+    // include_full_markdown:false empties the returned markdown …
+    expect(withoutFull.data.markdown).toBe('');
+    // … but the content fingerprint is unchanged.
+    expect(withoutFull.data.content_hash).toBe(withFull.data.content_hash);
+    expect(withFull.data.content_hash).toBeTruthy();
+  });
+
+  it('stays identical regardless of a tight max_tokens_out budget that truncates the body', async () => {
+    // Body large enough that a tiny token budget clips the returned markdown.
+    const fullBody = '# Big\n\n' + 'lorem ipsum dolor sit amet '.repeat(4000);
+    extractMock.mockResolvedValue(makeExtraction({ markdown: fullBody }));
+    const expected = createHash('sha256').update(fullBody).digest('hex');
+
+    const routerA = mockRouter();
+    const budgeted = await handleFetch(
+      { url: 'https://example.com', include_full_markdown: true, max_tokens_out: 50 },
+      routerA,
+    );
+    const routerB = mockRouter();
+    const unbudgeted = await handleFetch(
+      { url: 'https://example.com', include_full_markdown: true },
+      routerB,
+    );
+
+    expect(budgeted.ok && unbudgeted.ok).toBe(true);
+    if (!budgeted.ok || !unbudgeted.ok) return;
+    // The returned body WAS truncated by the budget …
+    expect(budgeted.data.markdown.length).toBeLessThan(unbudgeted.data.markdown.length);
+    // … yet both fingerprints equal the hash of the full untruncated body.
+    expect(budgeted.data.content_hash).toBe(expected);
+    expect(unbudgeted.data.content_hash).toBe(expected);
+  });
+
+  it('surfaces the cached row content_hash on a cache hit', async () => {
+    const cached = makeCached({ contentHash: 'deadbeefcafe' });
+    vi.mocked(getCachedContent).mockReturnValue(cached);
+    vi.mocked(isCacheUsable).mockReturnValue({ usable: true, stale: false });
+
+    const router = mockRouter();
+    const r = await handleFetch({ url: 'https://example.com' }, router);
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(router.fetch).not.toHaveBeenCalled();
+    expect(r.data.content_hash).toBe('deadbeefcafe');
   });
 });
 

@@ -20,7 +20,9 @@ describe('wigolo init (E2E)', () => {
 
     expect(r.status).toBe(0);
     expect(r.stderr).toContain('Usage: wigolo init');
-    expect(r.stderr).toContain('--non-interactive');
+    // The retired --non-interactive alias still parses but is no longer
+    // advertised — unattended IS the default, so the help must not resurrect it.
+    expect(r.stderr).not.toContain('--non-interactive');
     expect(r.stderr).toContain('--agents');
     expect(r.stderr).toContain('--skip-verify');
     // Headless-first surface: --wizard opts into Ink, --warmup opts into pre-cache.

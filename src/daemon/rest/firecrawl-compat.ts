@@ -29,8 +29,8 @@ import { guardServeTarget } from './target-guard.js';
  * a Firecrawl SDK pointed at `http://host:3333/compat/firecrawl` gets a
  * drop-in. Auth, resource limits, and the SSRF target guard all run BEFORE this
  * handler in the router pipeline (or are re-applied here for the URL guard);
- * the shim is NOT an escape hatch. Shapes verified against the harness driver
- * (docs/competitive/harness/crw.py) + Firecrawl docs.
+ * the shim is NOT an escape hatch. Shapes verified against the public
+ * Firecrawl API docs.
  *
  * Out of scope (documented, not silently missing): batch, screenshot /
  * changeTracking / html / rawHtml formats, v2 surface, webhooks, extract, agent.

@@ -139,7 +139,7 @@ describe('browser-pool dedicated stealth context', () => {
     const releaseSpy = vi.spyOn(proto, 'releaseForType');
 
     const result = await pool.fetchWithBrowser('https://blocked.example', { stealth: true });
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
 
     // The dedicated context was created, patched with the init script, then closed.
     expect(state.addInitScriptCalls).toBe(1);
@@ -218,7 +218,7 @@ describe('browser-pool dedicated stealth context', () => {
     const releaseSpy = vi.spyOn(proto, 'releaseForType');
 
     const result = await pool.fetchWithBrowser('https://plain.example', {});
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
 
     // Pooled path: the context is RELEASED (kept warm), never init-scripted,
     // and the dedicated close path is not taken.
@@ -249,7 +249,7 @@ describe('browser-pool dedicated stealth context', () => {
     // leaked slot. Let it succeed this time.
     state.launchThrows = false;
     const result = await pool.fetchWithBrowser('https://ok.example', { stealth: true });
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
     expect(state.contextsCreated).toBe(1);
 
     delete process.env.MAX_BROWSERS;
@@ -272,7 +272,7 @@ describe('browser-pool dedicated stealth context', () => {
     // The pool is still usable after N failures.
     state.launchThrows = false;
     const result = await pool.fetchWithBrowser('https://ok.example', { stealth: true });
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
 
     delete process.env.MAX_BROWSERS;
     await pool.shutdown();
@@ -294,7 +294,7 @@ describe('browser-pool dedicated stealth context', () => {
     // Slot is free — a subsequent stealth fetch proceeds.
     state.newContextThrows = false;
     const result = await pool.fetchWithBrowser('https://ok.example', { stealth: true });
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
 
     delete process.env.MAX_BROWSERS;
     await pool.shutdown();

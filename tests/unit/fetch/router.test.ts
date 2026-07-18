@@ -57,7 +57,7 @@ function makeBrowserResult(url = 'https://example.com/page'): RawFetchResult {
     html: FULL_HTML,
     contentType: 'text/html',
     statusCode: 200,
-    method: 'playwright',
+    method: 'browser',
     headers: {},
   };
 }
@@ -119,7 +119,7 @@ describe('SmartRouter', () => {
 
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('routes to HTTP only when render_js is "never"', async () => {
@@ -149,7 +149,7 @@ describe('SmartRouter', () => {
 
     // threshold-th call should trigger fallback to Playwright
     const result = await router.fetch('https://failing.com/final');
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
   });
 
@@ -160,7 +160,7 @@ describe('SmartRouter', () => {
 
     expect(httpClient.fetch).toHaveBeenCalledOnce();
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('marks domain for Playwright after SPA shell detection', async () => {
@@ -176,7 +176,7 @@ describe('SmartRouter', () => {
     const result = await router.fetch('https://spa-domain.com/page2');
 
     // Second call should go straight to Playwright without HTTP
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
     // httpClient was only used on first call (SPA detection)
     expect(httpClient.fetch).toHaveBeenCalledTimes(1);
   });
@@ -195,7 +195,7 @@ describe('SmartRouter', () => {
 
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   describe('binary-download pre-sniff (PDF routing)', () => {
@@ -233,7 +233,7 @@ describe('SmartRouter', () => {
 
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
       expect(httpClient.fetch).not.toHaveBeenCalled();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
 
     it('an extensionless PDF (application/pdf, empty html + rawBuffer) does NOT escalate to the browser as an SPA shell', async () => {
@@ -319,7 +319,7 @@ describe('SmartRouter', () => {
 
       const result = await probingRouter.fetch(url);
 
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     });
   });
@@ -347,7 +347,7 @@ describe('SmartRouter', () => {
     // This call should hit threshold, mark domain, and return playwright result
     const result = await router.fetch('https://fallback.com/final');
 
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
     expect(result.url).toBe('https://fallback.com/final');
   });
 });
@@ -385,7 +385,7 @@ describe('SmartRouter --- actions routing', () => {
     const result = await router.fetch('https://example.com/page', { actions });
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('routes to Playwright when actions are present, even with renderJs=never', async () => {
@@ -393,7 +393,7 @@ describe('SmartRouter --- actions routing', () => {
     const result = await router.fetch('https://example.com/page', { renderJs: 'never', actions });
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('does not force Playwright when actions array is empty', async () => {
@@ -427,7 +427,7 @@ describe('SmartRouter --- actions routing', () => {
     const result = await router.fetch('https://example.com/page', { useAuth: true, actions });
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('passes actions alongside screenshot option', async () => {
@@ -449,7 +449,7 @@ describe('SmartRouter --- actions routing', () => {
     ];
     const result = await router.fetch('https://example.com/page', { actions });
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('routes known-SPA domains straight to Playwright on first visit', async () => {
@@ -459,7 +459,7 @@ describe('SmartRouter --- actions routing', () => {
     const result = await router.fetch('https://react.dev/learn');
     expect(httpClient.fetch).not.toHaveBeenCalled();
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('routes SPA subdomains (docs.react.dev) the same way', async () => {
@@ -468,7 +468,7 @@ describe('SmartRouter --- actions routing', () => {
     );
     const result = await router.fetch('https://docs.react.dev/intro');
     expect(httpClient.fetch).not.toHaveBeenCalled();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('does NOT pre-mark unrelated domains', async () => {
@@ -590,7 +590,7 @@ describe('SmartRouter: browser-tier challenge → blocked_by_challenge StageErro
       html: modernCfShell,
       contentType: 'text/html',
       statusCode: 403,
-      method: 'playwright',
+      method: 'browser',
       headers: { 'cf-mitigated': 'challenge' },
     }));
     const result = await router.fetch('https://blocked.example/', { renderJs: 'always' });
@@ -607,12 +607,12 @@ describe('SmartRouter: browser-tier challenge → blocked_by_challenge StageErro
       html: FULL_HTML,
       contentType: 'text/html',
       statusCode: 200,
-      method: 'playwright',
+      method: 'browser',
       headers: { server: 'cloudflare' },
     }));
     const result = await router.fetch('https://blocked.example/', { renderJs: 'always' });
     expect('error' in result).toBe(false);
-    expect((result as RawFetchResult).method).toBe('playwright');
+    expect((result as RawFetchResult).method).toBe('browser');
     expect((result as RawFetchResult).html).toContain('real content');
   });
 
@@ -620,7 +620,7 @@ describe('SmartRouter: browser-tier challenge → blocked_by_challenge StageErro
     const router = build(async (url: string) => makeBrowserResult(url));
     const result = await router.fetch('https://ok.example/', { renderJs: 'always' });
     expect('error' in result).toBe(false);
-    expect((result as RawFetchResult).method).toBe('playwright');
+    expect((result as RawFetchResult).method).toBe('browser');
   });
 });
 
@@ -661,7 +661,7 @@ describe('SmartRouter: 200 challenge shell (P0 long-tail #5)', () => {
     // Escalated to the browser and returned the browser's real content.
     expect(browserPool.fetchWithBrowser).toHaveBeenCalled();
     expect('error' in result).toBe(false);
-    expect((result as RawFetchResult).method).toBe('playwright');
+    expect((result as RawFetchResult).method).toBe('browser');
   });
 
   it('MUST-FIRE: auto mode, HTTP 200 shell that persists in the browser → blocked_by_challenge', async () => {
@@ -721,7 +721,7 @@ describe('SmartRouter: 200 challenge shell (P0 long-tail #5)', () => {
     // SPA escalation returns the browser's real content, NOT a challenge error.
     expect(browserPool.fetchWithBrowser).toHaveBeenCalled();
     expect('error' in result).toBe(false);
-    expect((result as RawFetchResult).method).toBe('playwright');
+    expect((result as RawFetchResult).method).toBe('browser');
   });
 });
 

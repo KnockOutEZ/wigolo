@@ -113,7 +113,7 @@ describe('router threads stealth per escalation kind (auto)', () => {
           html: FULL_HTML,
           contentType: 'text/html',
           statusCode: 200,
-          method: 'playwright',
+          method: 'browser',
           headers: {},
         };
       }),
@@ -172,7 +172,7 @@ describe('router stealth under off / on', () => {
     return {
       fetchWithBrowser: vi.fn(async (url: string, opts?: BrowserFetchArgs): Promise<RawFetchResult> => {
         browserCalls.push({ stealth: opts?.stealth });
-        return { url, finalUrl: url, html: FULL_HTML, contentType: 'text/html', statusCode: 200, method: 'playwright', headers: {} };
+        return { url, finalUrl: url, html: FULL_HTML, contentType: 'text/html', statusCode: 200, method: 'browser', headers: {} };
       }),
     };
   }

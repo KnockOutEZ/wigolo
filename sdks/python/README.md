@@ -1,10 +1,7 @@
 # wigolo — Python client
 
-> **Pre-publish.** This package is **not on PyPI yet**. Install it from the
-> locally built wheel:
->
 > ```bash
-> pip install dist/wigolo-0.1.0-py3-none-any.whl
+> pip install wigolo
 > ```
 
 A thin, dependency-free Python client for the [wigolo](https://github.com/KnockOutEZ/wigolo)
@@ -149,4 +146,4 @@ defaults do not — pass an explicit `timeout` to match.
 
 ## License
 
-AGPL-3.0-or-later. See `LICENSE`.
+AGPL-3.0-only. See `LICENSE`.

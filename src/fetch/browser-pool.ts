@@ -595,7 +595,7 @@ export class MultiBrowserPool {
                 html: '',
                 contentType: 'application/pdf',
                 statusCode: 200,
-                method: 'playwright',
+                method: 'browser',
                 headers: {},
                 rawBuffer: buf,
               };
@@ -839,7 +839,7 @@ export class MultiBrowserPool {
         html,
         contentType,
         statusCode,
-        method: 'playwright',
+        method: 'browser',
         headers: responseHeaders,
         screenshot: screenshotBase64,
         actionResults,

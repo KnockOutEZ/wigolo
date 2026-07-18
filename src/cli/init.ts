@@ -56,7 +56,6 @@ const INIT_USAGE = [
   '  --no-warmup             Skip ALL component downloads (lazy-load on first use)',
   '  --warmup                Explicit-on alias (full setup is the default; no-op)',
   '  --json                  Emit a machine-readable JSON summary on stdout',
-  '  --non-interactive, -y   Accepted no-op — unattended is now the default',
   '  --agents=<csv>          Comma-separated agent ids to auto-wire (optional; omit to set up the engine only and point any MCP client at wigolo yourself)',
   '  --skip-verify           Skip the post-install verify step',
   '  --plain                 Force plain (non-TUI) output',

@@ -48,7 +48,7 @@ function makeBrowserResult(url = 'https://example.com/page'): RawFetchResult {
     html: FULL_HTML,
     contentType: 'text/html',
     statusCode: 200,
-    method: 'playwright',
+    method: 'browser',
     headers: {},
   };
 }
@@ -202,7 +202,7 @@ describe('SmartRouter — TLS tier', () => {
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(tlsFetcher).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
       // TLS returned anti-bot → no success recorded.
       expect(recordedDomains).not.toContain('hard.com');
     });
@@ -218,7 +218,7 @@ describe('SmartRouter — TLS tier', () => {
       vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(makeBrowserResult('https://hard.com/page'));
 
       const result = await router.fetch('https://hard.com/page');
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     });
 
@@ -232,7 +232,7 @@ describe('SmartRouter — TLS tier', () => {
       vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(makeBrowserResult('https://x.com/page'));
 
       const result = await router.fetch('https://x.com/page');
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
 
     it('uses TLS tier first when domain has prefer_tls_impersonation=1', async () => {

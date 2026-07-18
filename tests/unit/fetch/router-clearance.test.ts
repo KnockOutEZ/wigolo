@@ -58,7 +58,7 @@ function makeHttpResult(): Awaited<ReturnType<HttpClient['fetch']>> {
   };
 }
 function makeBrowserResult(url = 'https://example.com/page'): RawFetchResult {
-  return { url, finalUrl: url, html: FULL_HTML, contentType: 'text/html', statusCode: 200, method: 'playwright', headers: {} };
+  return { url, finalUrl: url, html: FULL_HTML, contentType: 'text/html', statusCode: 200, method: 'browser', headers: {} };
 }
 function makeTlsResult(url = 'https://example.com/page'): TlsFetchResult {
   return { url, finalUrl: url, html: FULL_HTML, contentType: 'text/html', statusCode: 200, headers: {} };

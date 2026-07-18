@@ -1,0 +1,249 @@
+/* Rendered-markdown typography for docs pages. Matches the site's warm-light
+   surface with dark code panels (mirrors Tools.module.css .code) and a violet
+   accent (#7c3aed) for links. */
+
+.prose {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  max-width: 76ch;
+}
+
+/* ---- headings ---- */
+.prose :global(h1) {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(32px, 4.2vw, 46px);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  margin-bottom: 8px;
+}
+.prose :global(h2) {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(24px, 2.6vw, 30px);
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  margin-top: 52px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.prose :global(h3) {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 20px;
+  color: var(--ink);
+  margin-top: 34px;
+}
+.prose :global(h4) {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 28px;
+}
+
+/* Anchor offset so in-page #links don't hide under the sticky nav. */
+.prose :global(h1),
+.prose :global(h2),
+.prose :global(h3),
+.prose :global(h4) {
+  scroll-margin-top: calc(var(--nav-h) + 24px);
+}
+
+/* ---- flow ---- */
+.prose :global(p),
+.prose :global(ul),
+.prose :global(ol),
+.prose :global(blockquote) {
+  margin-top: 18px;
+}
+.prose :global(ul),
+.prose :global(ol) {
+  padding-left: 1.4em;
+}
+.prose :global(ul) {
+  list-style: disc;
+}
+.prose :global(ol) {
+  list-style: decimal;
+}
+.prose :global(li) {
+  margin-top: 7px;
+}
+.prose :global(li)::marker {
+  color: var(--muted-2);
+}
+.prose :global(li) > :global(ul),
+.prose :global(li) > :global(ol) {
+  margin-top: 7px;
+}
+.prose :global(strong) {
+  font-weight: 600;
+  color: var(--ink);
+}
+.prose :global(hr) {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 40px 0;
+}
+.prose :global(blockquote) {
+  border-left: 3px solid var(--accent-purple);
+  padding: 2px 0 2px 18px;
+  color: var(--muted);
+}
+
+/* ---- links ---- */
+.link {
+  color: #7c3aed;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(124, 58, 237, 0.3);
+  transition: border-color 0.15s var(--ease), color 0.15s var(--ease);
+  word-break: break-word;
+}
+.link:hover {
+  color: #6425d0;
+  border-bottom-color: #7c3aed;
+}
+
+/* ---- inline code ---- */
+.prose :global(code) {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: #ece9f6;
+  color: #4a3a6b;
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid #e0daf0;
+  word-break: break-word;
+}
+.link :global(code) {
+  color: #6425d0;
+  background: #ece9f6;
+}
+
+/* ---- fenced code blocks (dark panel, mirrors Tools .code) ---- */
+.prose :global(pre) {
+  margin-top: 22px;
+  background: #101012;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 18px 20px;
+  overflow-x: auto;
+  box-shadow: 0 18px 44px rgba(40, 20, 70, 0.16);
+}
+.prose :global(pre) :global(code) {
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 1.7;
+  background: none;
+  border: none;
+  padding: 0;
+  color: #e9e6df;
+  word-break: normal;
+  white-space: pre;
+}
+
+/* ---- tables ---- */
+.tableWrap {
+  margin-top: 22px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.prose :global(table) {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14.5px;
+}
+.prose :global(th) {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--bg-warm);
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.prose :global(td) {
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--line-2);
+  vertical-align: top;
+}
+.prose :global(tr):last-child :global(td) {
+  border-bottom: none;
+}
+.prose :global(td) :global(code),
+.prose :global(th) :global(code) {
+  font-size: 0.92em;
+  white-space: nowrap;
+}
+
+/* ---- images (docs currently ship none, but be safe) ---- */
+.prose :global(img) {
+  max-width: 100%;
+  border-radius: 10px;
+  margin-top: 22px;
+}
+
+/* ============ highlight.js theme (build-time tokens) ============
+   Palette matched to the site's evidence code panels: blue keys, green
+   strings, amber numbers, ember accents on a #101012 ground. */
+.prose :global(.hljs-comment),
+.prose :global(.hljs-quote) {
+  color: #7d786f;
+  font-style: italic;
+}
+.prose :global(.hljs-keyword),
+.prose :global(.hljs-selector-tag),
+.prose :global(.hljs-built_in),
+.prose :global(.hljs-name),
+.prose :global(.hljs-section) {
+  color: #c678dd;
+}
+.prose :global(.hljs-string),
+.prose :global(.hljs-attr),
+.prose :global(.hljs-template-tag),
+.prose :global(.hljs-addition),
+.prose :global(.hljs-meta-string) {
+  color: #98c379;
+}
+.prose :global(.hljs-number),
+.prose :global(.hljs-literal),
+.prose :global(.hljs-symbol),
+.prose :global(.hljs-bullet) {
+  color: #e5c07b;
+}
+.prose :global(.hljs-title),
+.prose :global(.hljs-function .hljs-title),
+.prose :global(.hljs-class .hljs-title),
+.prose :global(.hljs-type) {
+  color: #61afef;
+}
+.prose :global(.hljs-attribute),
+.prose :global(.hljs-variable),
+.prose :global(.hljs-property) {
+  color: #d19a66;
+}
+.prose :global(.hljs-meta),
+.prose :global(.hljs-comment .hljs-doctag) {
+  color: #ff8a50;
+}
+.prose :global(.hljs-deletion) {
+  color: #e06c75;
+}
+.prose :global(.hljs-emphasis) {
+  font-style: italic;
+}
+.prose :global(.hljs-strong) {
+  font-weight: 700;
+}

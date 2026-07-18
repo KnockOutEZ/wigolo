@@ -169,10 +169,10 @@ describe('cacheContent + getCachedContent', () => {
 
   it('stores fetchMethod from RawFetchResult', () => {
     const raw = makeRaw('https://example.com/method');
-    raw.method = 'playwright';
+    raw.method = 'browser';
     cacheContent(raw, makeExtraction());
     const result = getCachedContent('https://example.com/method');
-    expect(result!.fetchMethod).toBe('playwright');
+    expect(result!.fetchMethod).toBe('browser');
   });
 
   it('stores extractorUsed from ExtractionResult', () => {

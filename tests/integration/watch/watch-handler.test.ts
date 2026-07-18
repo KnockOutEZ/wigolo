@@ -50,6 +50,40 @@ function mockRouter(markdown: string): SmartRouter {
   } as unknown as SmartRouter;
 }
 
+// Router that serves a caller-supplied raw HTML body verbatim. Used when a
+// test needs to control the *size* of the extracted body (not just a short
+// paragraph) — e.g. to prove change detection is not silently truncated by
+// the fetch tool's presentation budget.
+function mockRouterRawHtml(html: string): SmartRouter {
+  return {
+    fetch: vi.fn(async (url: string) => ({
+      url,
+      finalUrl: url,
+      html,
+      contentType: 'text/html',
+      statusCode: 200,
+      headers: {},
+      method: 'http' as const,
+    })),
+    getDomainStats: vi.fn(),
+  } as unknown as SmartRouter;
+}
+
+// Build an HTML article whose extracted markdown comfortably exceeds the
+// fetch tool's default body budget (DEFAULT_FETCH_BODY_TOKENS = 16000
+// cl100k tokens ≈ 60k+ chars of prose), with the ONLY difference between
+// versions living in the final paragraph — i.e. past the truncation point.
+function largeArticleHtml(tailMarker: string): string {
+  // ~120k chars of stable head prose: far beyond the 16k-token budget so the
+  // fetch tool's applyOutputBudget() clips everything after it, tailMarker
+  // included, from the returned `markdown`.
+  const paragraph =
+    'The quick brown fox jumps over the lazy dog while the diligent engineer ' +
+    'documents every edge case discovered during the systematic investigation. ';
+  const head = `<p>${paragraph.repeat(30)}</p>`.repeat(60);
+  return `<html><body><article>${head}<p>final marker: ${tailMarker}</p></article></body></html>`;
+}
+
 describe('watch handler', () => {
   beforeEach(() => {
     _resetMigrationGuard();
@@ -312,6 +346,37 @@ describe('watch handler', () => {
       expect(r.changes_since_last?.[0].previous_hash).toBeTruthy();
       expect(r.changes_since_last?.[0].current_hash).toBeTruthy();
       expect(r.changes_since_last?.[0].previous_hash).not.toBe(r.changes_since_last?.[0].current_hash);
+    });
+
+    // WHY: the watch scheduler runs handleFetch({ include_full_markdown:true,
+    // force_refresh:true }) and hashes what comes back. If it hashes the
+    // *presentation-shaped* body (which the fetch tool clips to its
+    // DEFAULT_FETCH_BODY_TOKENS budget), any change that lives past the
+    // truncation point is invisible and `changed` never fires — the watch
+    // tool goes quietly blind on long pages. Change detection must key off
+    // the FULL extracted content, independent of any view/budget flag.
+    it('detects a change that lives past the fetch body-budget truncation point', async () => {
+      const routerV1 = mockRouterRawHtml(largeArticleHtml('alpha-one'));
+      const created = mustOk(await handleWatch(
+        { action: 'create', url: 'https://example.com/long-doc', interval_seconds: 60 },
+        routerV1,
+      ));
+      // Baseline over version 1.
+      mustOk(await handleWatch(
+        { action: 'check', job_id: created.jobs[0].id },
+        routerV1,
+      ));
+      // Version 2 is byte-identical for ~120k chars and differs ONLY in the
+      // trailing marker — which sits well beyond the 16k-token body budget.
+      const routerV2 = mockRouterRawHtml(largeArticleHtml('omega-two'));
+      const r = mustOk(await handleWatch(
+        { action: 'check', job_id: created.jobs[0].id },
+        routerV2,
+      ));
+      expect(r.changes_since_last?.[0].changed).toBe(true);
+      expect(r.changes_since_last?.[0].previous_hash).not.toBe(
+        r.changes_since_last?.[0].current_hash,
+      );
     });
 
     it('rejects when job_id is missing', async () => {

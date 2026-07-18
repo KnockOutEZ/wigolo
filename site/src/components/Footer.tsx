@@ -6,6 +6,7 @@ const COLS: { title: string; links: { label: string; href: string; ext?: boolean
     title: "Product",
     links: [
       { label: "Tools", href: "#tools" },
+      { label: "Docs", href: `${BASE_PATH}/docs` },
       { label: "Parity", href: "#parity" },
       { label: "Quickstart", href: "#quickstart" },
       { label: "Feedback", href: "#feedback" },
@@ -16,6 +17,7 @@ const COLS: { title: string; links: { label: string; href: string; ext?: boolean
     links: [
       { label: "GitHub", href: GH, ext: true },
       { label: "npm", href: "https://www.npmjs.com/package/wigolo", ext: true },
+      { label: "Examples", href: `${GH}/tree/main/examples`, ext: true },
       { label: "Changelog", href: `${GH}/releases`, ext: true },
       { label: "Contributing", href: `${GH}/blob/main/CONTRIBUTING.md`, ext: true },
       { label: "Report a bug", href: FEEDBACK_LINKS.bug, ext: true },

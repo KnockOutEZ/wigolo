@@ -87,7 +87,7 @@ function build(opts: {
   const httpClient = { fetch: httpFetch };
   const browserPool = {
     fetchWithBrowser: vi.fn(async (url: string): Promise<RawFetchResult> => ({
-      url, finalUrl: url, html: FULL_HTML, contentType: 'text/html', statusCode: 200, method: 'playwright', headers: {},
+      url, finalUrl: url, html: FULL_HTML, contentType: 'text/html', statusCode: 200, method: 'browser', headers: {},
     })),
   };
   const tlsFetcher = vi.fn(async (url: string) => ({

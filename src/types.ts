@@ -57,9 +57,9 @@ export interface FetchInput {
  *   - 'cache'             : served from the local cache (no tier touched)
  *   - 'http'              : vanilla HTTP tier
  *   - 'tls-impersonation' : TLS-fingerprinted HTTP tier (opt-in)
- *   - 'playwright'        : full browser tier
+ *   - 'browser'           : full browser tier
  */
-export type FetchMethod = 'cache' | 'http' | 'tls-impersonation' | 'playwright';
+export type FetchMethod = 'cache' | 'http' | 'tls-impersonation' | 'browser';
 
 export interface FetchOutput {
   /** Compatibility alias of how long the request took, ms. */
@@ -90,6 +90,16 @@ export interface FetchOutput {
   changed?: boolean;
   previous_hash?: string;
   diff_summary?: string;
+  /**
+   * SHA-256 of the FULL extracted markdown, computed before any
+   * presentation reshaping (include_full_markdown / max_tokens_out /
+   * max_chars). This is the same content hash the cache and change-detector
+   * key off. Consumers that need a stable content fingerprint (the `watch`
+   * scheduler, url-mode `diff`) MUST hash this rather than the returned
+   * `markdown`, which the view budget may truncate — otherwise a change
+   * beyond the truncation point is silently invisible.
+   */
+  content_hash?: string;
   evidence?: EvidenceItem[];
   /**
    * Per-site structured JSON, present only when a site extractor matched the
@@ -161,9 +171,9 @@ export interface RawFetchResult {
    * Which fetch tier produced the bytes:
    *   - 'http'              : default httpFetch via node fetch
    *   - 'tls-impersonation' : TLS-fingerprinted HTTP tier (opt-in)
-   *   - 'playwright'        : full browser fallback
+   *   - 'browser'           : full browser fallback
    */
-  method: 'http' | 'tls-impersonation' | 'playwright';
+  method: 'http' | 'tls-impersonation' | 'browser';
   headers: Record<string, string>;
   rawBuffer?: Buffer;
   screenshot?: string;
@@ -240,7 +250,7 @@ export interface CachedContent {
   metadata: string;
   links: string;
   images: string;
-  fetchMethod: 'http' | 'playwright';
+  fetchMethod: 'http' | 'browser';
   extractorUsed: ExtractorType;
   contentHash: string;
   fetchedAt: string;

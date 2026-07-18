@@ -100,7 +100,7 @@ describe('MultiBrowserPool', () => {
     const pool = new MultiBrowserPool({ browserTypes: ['chromium'] });
     const result = await pool.fetchWithBrowser('https://example.com');
     expect(result.html).toContain('chromium page');
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
     await pool.shutdown();
   });
 
@@ -238,7 +238,7 @@ describe('MultiBrowserPool', () => {
   it('stores the used browser type in the result metadata', async () => {
     const pool = new MultiBrowserPool({ browserTypes: ['chromium', 'firefox'] });
     const result = await pool.fetchWithBrowser('https://example.com', { browserType: 'firefox' });
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
     await pool.shutdown();
   });
 });

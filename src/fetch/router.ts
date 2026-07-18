@@ -854,7 +854,7 @@ export class SmartRouter {
           html: pw.html,
           contentType: 'text/html',
           statusCode: 200,
-          method: 'playwright',
+          method: 'browser',
           headers: {},
           escalated: true,
           contentCompleteness: pw.completeness,

@@ -4,9 +4,13 @@ import { useEffect, useState } from "react";
 import { asset, GH, BASE_PATH } from "@/lib/site";
 import styles from "./Nav.module.css";
 
-const LINKS = [
+const EXAMPLES_URL = `${GH}/tree/main/examples`;
+
+const LINKS: { label: string; href: string; ext?: boolean }[] = [
   { label: "Tools", href: "#tools" },
   { label: "Parity", href: "#parity" },
+  { label: "Docs", href: `${BASE_PATH}/docs` },
+  { label: "Examples", href: EXAMPLES_URL, ext: true },
   { label: "Quickstart", href: "#quickstart" },
   { label: "Feedback", href: "#feedback" },
 ];
@@ -31,7 +35,12 @@ export default function Nav() {
 
         <nav className={styles.menu}>
           {LINKS.map((l) => (
-            <a key={l.label} href={l.href} className={styles.menuItem}>
+            <a
+              key={l.label}
+              href={l.href}
+              className={styles.menuItem}
+              {...(l.ext ? { target: "_blank", rel: "noreferrer" } : {})}
+            >
               {l.label}
             </a>
           ))}

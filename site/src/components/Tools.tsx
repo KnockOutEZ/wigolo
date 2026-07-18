@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { BASE_PATH } from "@/lib/site";
 import styles from "./Tools.module.css";
 
 type Feature = {
@@ -197,6 +198,18 @@ export default function Tools() {
         <h2 className={styles.title}>
           Your agent is smart. Its web access isn&apos;t.
         </h2>
+        <a href={`${BASE_PATH}/docs/tools`} className={styles.headLink}>
+          Full tool reference
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path
+              d="M3 8h9M8 3l5 5-5 5"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </a>
       </div>
 
       <div className={`container ${styles.grid}`}>
