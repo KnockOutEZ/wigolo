@@ -1,9 +1,9 @@
-import { existsSync, cpSync, mkdtempSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { discoverSessions, isCDPReachable } from './cdp-client.js';
+import { copyProfileToTemp } from './profile-copy.js';
 import type { CDPSession } from '../types.js';
 
 export interface AuthOptions {
@@ -30,10 +30,10 @@ export async function getAuthOptions(): Promise<AuthOptions | null> {
         profilePath: config.chromeProfilePath,
       });
     }
-    const tempDir = mkdtempSync(join(tmpdir(), 'wigolo-chrome-'));
-    cpSync(config.chromeProfilePath, tempDir, { recursive: true });
-    logger.debug('copied Chrome profile to temp directory', { from: config.chromeProfilePath, to: tempDir });
-    return { userDataDir: tempDir };
+    // Single-use temp copy: consumed by the browser tier's persistent-context
+    // launch and removed by the router (removeTempProfile) once the fetch
+    // settles — success, failure, or abort.
+    return { userDataDir: copyProfileToTemp(config.chromeProfilePath) };
   }
 
   if (config.cdpUrl) {
