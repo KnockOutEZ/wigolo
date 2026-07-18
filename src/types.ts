@@ -90,6 +90,16 @@ export interface FetchOutput {
   changed?: boolean;
   previous_hash?: string;
   diff_summary?: string;
+  /**
+   * SHA-256 of the FULL extracted markdown, computed before any
+   * presentation reshaping (include_full_markdown / max_tokens_out /
+   * max_chars). This is the same content hash the cache and change-detector
+   * key off. Consumers that need a stable content fingerprint (the `watch`
+   * scheduler, url-mode `diff`) MUST hash this rather than the returned
+   * `markdown`, which the view budget may truncate — otherwise a change
+   * beyond the truncation point is silently invisible.
+   */
+  content_hash?: string;
   evidence?: EvidenceItem[];
   /**
    * Per-site structured JSON, present only when a site extractor matched the

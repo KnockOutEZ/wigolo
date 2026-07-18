@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { FetchInput, FetchOutput, CachedContent, StageResult } from '../types.js';
 import { describeFetchError } from '../fetch/error-describe.js';
 import type { SmartRouter } from '../fetch/router.js';
@@ -139,6 +140,11 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     cached: true,
     cached_at: cached.fetchedAt,
     fetch_method: 'cache',
+    // Full-body fingerprint from the cached row (sha256 of the full
+    // markdown at cache-write time). Matches the fresh-fetch content_hash so
+    // change-detection consumers get a stable value on cache hits too. Guard
+    // against a legacy row with an empty hash.
+    ...(cached.contentHash ? { content_hash: cached.contentHash } : {}),
     // Surface the recorded HTTP status when available. Null
     // means the row predates the column; we simply omit the field.
     ...(typeof cached.httpStatus === 'number' ? { http_status: cached.httpStatus } : {}),
@@ -348,6 +354,11 @@ export async function handleFetch(
       // 5xx pages that may extract to a usable HTML body.
       ...(typeof raw.statusCode === 'number' ? { http_status: raw.statusCode } : {}),
       ...(raw.jsRequired ? { js_required: true } : {}),
+      // Stable fingerprint of the FULL extracted body — computed on
+      // extraction.markdown BEFORE the presentation budget clips the returned
+      // `markdown`. Change-detection consumers (watch scheduler, diff) key off
+      // this so a change past the truncation point is never silently missed.
+      content_hash: createHash('sha256').update(extraction.markdown).digest('hex'),
       ...(changeResult?.changed ? {
         changed: true,
         previous_hash: changeResult.previousHash,

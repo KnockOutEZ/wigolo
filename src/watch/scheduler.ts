@@ -69,8 +69,16 @@ export async function runCheck(
       return report;
     }
 
+    // Prefer the fetch tool's full-body fingerprint. The returned `markdown`
+    // is presentation-shaped — the fetch tool clips it to its body-token
+    // budget — so hashing it here would go blind to any change past the
+    // truncation point. `content_hash` is sha256 of the FULL extracted body
+    // (fresh or from cache), independent of view flags. Fall back to hashing
+    // the markdown only when the field is absent (defensive: older cache
+    // rows / test doubles that don't populate it).
     const markdown = fetched.data.markdown ?? '';
-    const currentHash = createHash('sha256').update(markdown).digest('hex');
+    const currentHash = fetched.data.content_hash
+      ?? createHash('sha256').update(markdown).digest('hex');
     report.current_hash = currentHash;
 
     const previousHash = job.last_content_hash;
