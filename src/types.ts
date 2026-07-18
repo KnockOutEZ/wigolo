@@ -253,6 +253,13 @@ export interface CachedContent {
    * to hash identically.
    */
   httpStatus?: number | null;
+  /**
+   * Render-completeness label captured at fetch time (browser tier only).
+   * Absent on rows persisted before migration 009 added the columns, and on
+   * HTTP/TLS-tier rows. The cache staleness gate treats a `shell` level as
+   * stale so a shell capture is re-fetched once rather than replayed.
+   */
+  contentCompleteness?: ContentCompleteness;
 }
 
 export interface Extractor {
