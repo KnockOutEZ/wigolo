@@ -144,7 +144,7 @@ describe('llm-fallback e2e per provider', () => {
     const w = out.warnings.join(' ');
     expect(w).toMatch(/ANTHROPIC_API_KEY/);
     expect(w).toMatch(/OPENAI_API_KEY/);
-    expect(w).toMatch(/GOOGLE_API_KEY/);
+    expect(w).toMatch(/GEMINI_API_KEY/);
     expect(w).toMatch(/GROQ_API_KEY/);
   });
 

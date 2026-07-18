@@ -69,11 +69,11 @@ describe('selectProvider', () => {
     ).toBe('gemini');
   });
 
-  it('accepts GEMINI_API_KEY as an alias for the gemini key (auto-detect)', () => {
+  it('auto-detects gemini from the canonical GEMINI_API_KEY', () => {
     expect(selectProvider({ GEMINI_API_KEY: 'x' })).toBe('gemini');
   });
 
-  it('accepts GEMINI_API_KEY with an explicit gemini provider', () => {
+  it('accepts the canonical GEMINI_API_KEY with an explicit gemini provider', () => {
     expect(
       selectProvider({ WIGOLO_LLM_PROVIDER: 'gemini', GEMINI_API_KEY: 'x' }),
     ).toBe('gemini');
@@ -83,20 +83,21 @@ describe('selectProvider', () => {
 describe('providerKeyFromEnv', () => {
   it('reads the canonical var per provider', () => {
     expect(providerKeyFromEnv('anthropic', { ANTHROPIC_API_KEY: 'a' })).toBe('a');
-    expect(providerKeyFromEnv('gemini', { GOOGLE_API_KEY: 'g' })).toBe('g');
+    expect(providerKeyFromEnv('gemini', { GEMINI_API_KEY: 'g' })).toBe('g');
   });
 
-  it('accepts GEMINI_API_KEY as an alias for gemini', () => {
-    expect(providerKeyFromEnv('gemini', { GEMINI_API_KEY: 'k' })).toBe('k');
+  it('still accepts the legacy GOOGLE_API_KEY alias for gemini (back-compat)', () => {
+    expect(providerKeyFromEnv('gemini', { GOOGLE_API_KEY: 'k' })).toBe('k');
   });
 
-  it('canonical GOOGLE_API_KEY wins over the GEMINI_API_KEY alias', () => {
+  it('canonical GEMINI_API_KEY wins over the legacy GOOGLE_API_KEY alias', () => {
     expect(
-      providerKeyFromEnv('gemini', { GOOGLE_API_KEY: 'g', GEMINI_API_KEY: 'k' }),
-    ).toBe('g');
+      providerKeyFromEnv('gemini', { GEMINI_API_KEY: 'k', GOOGLE_API_KEY: 'g' }),
+    ).toBe('k');
   });
 
-  it('the alias is gemini-only — GEMINI_API_KEY does not satisfy other providers', () => {
+  it('the gemini keys are gemini-only — neither satisfies another provider', () => {
     expect(providerKeyFromEnv('openai', { GEMINI_API_KEY: 'k' })).toBeUndefined();
+    expect(providerKeyFromEnv('openai', { GOOGLE_API_KEY: 'k' })).toBeUndefined();
   });
 });
