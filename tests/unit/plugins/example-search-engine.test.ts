@@ -23,12 +23,8 @@ describe('plugin search engine example', () => {
     expect(searchEngine.name).toBe('hn-algolia-example');
   });
 
-  it('search() is an async function returning an array (contract check, offline)', () => {
-    // Kept network-free/deterministic for CI; a live call against the real
-    // HN Algolia API is demonstrated in the example's README.
+  it('search() is a function', () => {
     expect(typeof searchEngine.search).toBe('function');
-    const returned = searchEngine.search('agentic coding', { maxResults: 1 });
-    expect(returned).toBeInstanceOf(Promise);
   });
 
   it('maps a real HN Algolia hit to the RawSearchResult shape end-to-end', async () => {

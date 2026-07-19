@@ -26,7 +26,7 @@ function toRawSearchResult(hit) {
     snippet,
     // Algolia doesn't return a normalized relevance score for the public
     // search endpoint; points count is a reasonable proxy, clamped to [0, 1].
-    relevance_score: Math.min(1, (hit.points ?? 0) / 100),
+    relevance_score: Math.max(0, Math.min(1, (hit.points ?? 0) / 100)),
     engine: 'hn-algolia-example',
     published_date: hit.created_at,
   };
