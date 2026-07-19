@@ -194,6 +194,28 @@ describe('writeJsonConfig', () => {
     expect(r.code).toBe('PARSE_ERROR');
   });
 
+  it.skipIf(process.platform === 'win32')('returns code=PERMISSION_DENIED when an existing file cannot be read', async () => {
+    const path = join(dir, 'opencode.json');
+    writeFileSync(path, '{"theme":"system"}\n');
+    chmodSync(path, 0o000);
+
+    try {
+      const r = await writeJsonConfig({
+        path,
+        keyPath: ['mcp', 'wigolo'],
+        entry: { type: 'local', command: ['npx', '-y', 'wigolo'], enabled: true },
+        allowJsonc: true,
+        requireBackup: true,
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.code).toBe('PERMISSION_DENIED');
+      expect(r.message).toContain('unable to read existing JSON');
+    } finally {
+      chmodSync(path, 0o600);
+    }
+  });
+
   it('honors dryRun: returns ok=true and writes nothing', async () => {
     const path = join(dir, 'mcp.json');
     const r = await writeJsonConfig({
@@ -321,5 +343,27 @@ describe('removeJsonConfigEntry', () => {
 
     expect(r.ok).toBe(false);
     expect(r.code).toBe('PARSE_ERROR');
+  });
+
+  it.skipIf(process.platform === 'win32')('returns code=PERMISSION_DENIED when the file to clean cannot be read', async () => {
+    const path = join(dir, 'config.json');
+    writeFileSync(path, '{"mcp":{"wigolo":{"type":"local"}}}\n');
+    chmodSync(path, 0o000);
+
+    try {
+      const r = await removeJsonConfigEntry({
+        path,
+        keyPath: ['mcp', 'wigolo'],
+        allowJsonc: true,
+        requireBackup: true,
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.code).toBe('PERMISSION_DENIED');
+      expect(r.removed).toBe(false);
+      expect(r.message).toContain('unable to read existing JSON');
+    } finally {
+      chmodSync(path, 0o600);
+    }
   });
 });

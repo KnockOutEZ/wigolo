@@ -153,6 +153,14 @@ export function parseJsonObject(raw: string, allowJsonc: boolean): Record<string
   return parsed as Record<string, unknown>;
 }
 
+function isPermissionError(err: unknown): boolean {
+  const code = typeof err === 'object' && err !== null && 'code' in err
+    ? String((err as { code?: unknown }).code)
+    : '';
+  const message = err instanceof Error ? err.message : String(err);
+  return code === 'EACCES' || code === 'EPERM' || /EACCES|EPERM/.test(message);
+}
+
 async function fileReadable(path: string): Promise<boolean> {
   try {
     await fs.access(path);
@@ -172,7 +180,7 @@ async function writeJsonFile(
     await fs.mkdir(dirname(path), { recursive: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (/EACCES|EPERM/.test(message)) {
+    if (isPermissionError(err)) {
       return { ok: false, code: 'PERMISSION_DENIED', message };
     }
     return { ok: false, code: 'MKDIR_FAILED', message };
@@ -197,7 +205,7 @@ async function writeJsonFile(
       backupPath = undefined;
       if (requireBackup) {
         const message = err instanceof Error ? err.message : String(err);
-        const code = /EACCES|EPERM/.test(message) ? 'PERMISSION_DENIED' : 'WRITE_FAILED';
+        const code = isPermissionError(err) ? 'PERMISSION_DENIED' : 'WRITE_FAILED';
         return { ok: false, code, message: `unable to back up existing config: ${message}` };
       }
     }
@@ -217,7 +225,7 @@ async function writeJsonFile(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     try { await fs.unlink(tmpPath); } catch {}
-    if (/EACCES|EPERM/.test(message)) {
+    if (isPermissionError(err)) {
       return { ok: false, code: 'PERMISSION_DENIED', message };
     }
     return { ok: false, code: 'WRITE_FAILED', message };
@@ -238,7 +246,9 @@ export async function writeJsonConfig(args: WriteJsonConfigArgs): Promise<WriteJ
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, code: 'PARSE_ERROR', message: `unable to parse existing JSON: ${message}` };
+      const code = isPermissionError(err) ? 'PERMISSION_DENIED' : 'PARSE_ERROR';
+      const action = code === 'PERMISSION_DENIED' ? 'read' : 'parse';
+      return { ok: false, code, message: `unable to ${action} existing JSON: ${message}` };
     }
   }
 
@@ -266,7 +276,9 @@ export async function removeJsonConfigEntry(
     existing = trimmed.length > 0 ? parseJsonObject(trimmed, allowJsonc) : {};
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, code: 'PARSE_ERROR', message: `unable to parse existing JSON: ${message}`, removed: false };
+    const code = isPermissionError(err) ? 'PERMISSION_DENIED' : 'PARSE_ERROR';
+    const action = code === 'PERMISSION_DENIED' ? 'read' : 'parse';
+    return { ok: false, code, message: `unable to ${action} existing JSON: ${message}`, removed: false };
   }
 
   const removed = removeAtPath(existing, keyPath);
