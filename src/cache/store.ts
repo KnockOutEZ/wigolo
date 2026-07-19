@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { getDatabase } from './db.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
-import type { RawFetchResult, ExtractionResult, CachedContent, SearchResultItem, CacheStats } from '../types.js';
+import type { RawFetchResult, ExtractionResult, CachedContent, SearchResultItem, CacheStats, ContentCompleteness } from '../types.js';
 
 const log = createLogger('cache');
 
@@ -97,15 +97,18 @@ export function cacheContent(result: RawFetchResult, extraction: ExtractionResul
       INSERT OR REPLACE INTO url_cache (
         url, normalized_url, title, markdown, raw_html,
         metadata, links, images, fetch_method, extractor_used,
-        content_hash, fetched_at, expires_at, http_status
+        content_hash, fetched_at, expires_at, http_status,
+        content_completeness_level, content_completeness_reason, content_completeness_settled_by
       )
       VALUES (
         @url, @normalizedUrl, @title, @markdown, @rawHtml,
         @metadata, @links, @images, @fetchMethod, @extractorUsed,
-        @contentHash, @fetchedAt, @expiresAt, @httpStatus
+        @contentHash, @fetchedAt, @expiresAt, @httpStatus,
+        @completenessLevel, @completenessReason, @completenessSettledBy
       )
     `);
 
+    const completeness = result.contentCompleteness;
     stmt.run({
       url: result.url,
       normalizedUrl,
@@ -123,6 +126,11 @@ export function cacheContent(result: RawFetchResult, extraction: ExtractionResul
       // Persist upstream status so cache lookups can branch
       // on 200 vs 404 vs 5xx instead of trusting body-hash alone.
       httpStatus: typeof result.statusCode === 'number' ? result.statusCode : null,
+      // Render-completeness label (browser tier only). Null when the tier
+      // produced no label, so a legacy/HTTP-tier row reads back as unknown.
+      completenessLevel: completeness?.level ?? null,
+      completenessReason: completeness?.reason ?? null,
+      completenessSettledBy: completeness?.settled_by ?? null,
     });
   } catch (err) {
     log.warn('cacheContent failed', {
@@ -151,9 +159,26 @@ interface DbRow {
   // Nullable so legacy rows from before the column existed
   // still hydrate cleanly. Migration 006 adds the column without a default.
   http_status: number | null;
+  // Nullable content-completeness columns (migration 009). Undefined on a
+  // SELECT * over a legacy row whose table predates the columns; null when the
+  // row exists but the tier produced no label.
+  content_completeness_level?: string | null;
+  content_completeness_reason?: string | null;
+  content_completeness_settled_by?: string | null;
 }
 
 function rowToCachedContent(row: DbRow): CachedContent {
+  // Reconstruct the completeness label only when a level was persisted. A
+  // legacy row (columns absent → undefined) or a label-less row (null) yields
+  // an undefined contentCompleteness, matching the "unknown" HTTP/TLS shape.
+  const level = row.content_completeness_level ?? null;
+  const contentCompleteness: ContentCompleteness | undefined = level
+    ? {
+        level: level as ContentCompleteness['level'],
+        reason: (row.content_completeness_reason ?? 'empty') as ContentCompleteness['reason'],
+        settled_by: (row.content_completeness_settled_by ?? 'budget') as ContentCompleteness['settled_by'],
+      }
+    : undefined;
   return {
     id: row.id,
     url: row.url,
@@ -170,6 +195,7 @@ function rowToCachedContent(row: DbRow): CachedContent {
     fetchedAt: row.fetched_at,
     expiresAt: row.expires_at,
     httpStatus: row.http_status ?? null,
+    ...(contentCompleteness ? { contentCompleteness } : {}),
   };
 }
 

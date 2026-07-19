@@ -19,6 +19,10 @@ vi.mock('playwright', () => {
           headers: () => ({ 'content-type': 'text/html' }),
         }),
         waitForLoadState: vi.fn().mockResolvedValue(undefined),
+        // settlePage's hybrid gate: probe resolves immediately so settle exits
+        // fast, then the content()-retry path under test runs on capture.
+        waitForFunction: vi.fn().mockResolvedValue(undefined),
+        evaluate: vi.fn().mockResolvedValue({ textLen: 1000, nodes: 20 }),
         content: vi.fn().mockImplementation(() => {
           state.contentCallCount += 1;
           if (state.contentCallCount === 1) {

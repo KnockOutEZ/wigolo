@@ -148,6 +148,9 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
     // Surface the recorded HTTP status when available. Null
     // means the row predates the column; we simply omit the field.
     ...(typeof cached.httpStatus === 'number' ? { http_status: cached.httpStatus } : {}),
+    // Carry the cached render-completeness label so a served shell row (e.g. in
+    // cache-only mode, where no live refetch is possible) still warns the caller.
+    ...(cached.contentCompleteness ? { content_completeness: cached.contentCompleteness } : {}),
   };
   capAuxFields(out, input.max_content_chars);
   return out;
@@ -206,13 +209,24 @@ export async function handleFetch(
       if (cached && (!input.actions || input.actions.length === 0)) {
         const staleMaxSeconds = mode === 'cache' ? getConfig().fastStaleMaxHours * 3600 : 0;
         const { usable, stale } = isCacheUsable(cached, { staleMaxSeconds });
-        if (usable) {
-          log.info('Serving from cache', { url: input.url, stale });
+        // A cached capture that only rendered a shell is treated stale so it is
+        // re-fetched once — BUT only when a live refetch is possible. In
+        // cache-only mode there is no live path, so we still serve the shell row
+        // (labeled) rather than falling through to a cache_miss. The refetch is
+        // served + cached by the fresh path below, which never re-consults the
+        // cache → exactly one refetch, no loop.
+        const shellCached = cached.contentCompleteness?.level === 'shell';
+        const shellStale = shellCached && mode !== 'cache';
+        if (usable && !shellStale) {
+          log.info('Serving from cache', { url: input.url, stale, shellCached });
           const out = formatCachedResponse(cached, input);
           if (stale) out.stale = true;
           const fullMarkdown = out.markdown;
           await attachEvidence(out, input, fullMarkdown);
           return { ok: true, data: stampTime(out) };
+        }
+        if (shellStale) {
+          log.info('Cached capture is a shell — refetching once', { url: input.url });
         }
       }
     }
@@ -349,6 +363,9 @@ export async function handleFetch(
       // Propagate the router-chosen tier name onto the public response so
       // callers can audit which path served the bytes (P2 visibility).
       fetch_method: raw.method,
+      // Render-completeness label from the browser tier (absent on HTTP/TLS
+      // results), so callers can distinguish a genuine page from a shell.
+      ...(raw.contentCompleteness ? { content_completeness: raw.contentCompleteness } : {}),
       // Always surface the upstream status code on fresh
       // fetches so callers / cache consumers can distinguish 200 / 404 /
       // 5xx pages that may extract to a usable HTML body.

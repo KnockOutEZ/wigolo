@@ -25,6 +25,11 @@ vi.mock('playwright', () => {
           calls.waitForFunction += 1;
           return Promise.resolve(undefined);
         }),
+        // settlePage reads content metrics + the final DOM verdict via evaluate.
+        evaluate: vi.fn().mockImplementation((src: string) =>
+          typeof src === 'string' && src.includes('hasContent')
+            ? Promise.resolve({ hasContent: true, hasSpaRoot: false, nearEmpty: false })
+            : Promise.resolve({ textLen: 1000, nodes: 8 })),
         content: vi.fn().mockResolvedValue(
           '<html><body><main>hydrated article text many many words enough to count as content</main></body></html>',
         ),

@@ -106,6 +106,36 @@ describe('Crawler — BFS', () => {
     expect(result.pages[0].url).toBe('https://docs.example.com');
   });
 
+  it('threads content_completeness from the page fetch onto the crawl page item', async () => {
+    const shellFetch: FetchFn = vi.fn(async (url: string) => ({
+      ...makeFetchOutput(url, 'Shell', '# Shell', []),
+      content_completeness: { level: 'shell' as const, reason: 'app_shell' as const, settled_by: 'budget' as const },
+    }));
+    const crawler = new Crawler(shellFetch, rawFetchFn);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'bfs',
+      max_depth: 0,
+      max_pages: 1,
+    });
+    expect(result.pages[0].content_completeness).toEqual({
+      level: 'shell',
+      reason: 'app_shell',
+      settled_by: 'budget',
+    });
+  });
+
+  it('leaves content_completeness absent on the page item when the fetch lacks it', async () => {
+    const crawler = new Crawler(fetchFn, rawFetchFn);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'bfs',
+      max_depth: 0,
+      max_pages: 1,
+    });
+    expect(result.pages[0].content_completeness).toBeUndefined();
+  });
+
   it('respects max_pages', async () => {
     const crawler = new Crawler(fetchFn, rawFetchFn);
     const result = await crawler.crawl({

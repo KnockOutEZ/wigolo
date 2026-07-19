@@ -207,7 +207,7 @@ Key parameters:
 - force_refresh: bypass cache and re-fetch.
 - mode: 'cache' | 'default' | 'stealth'. cache=HTTP-only, 24h-stale accepted. stealth=full browser + freshness.
 
-Returns title, markdown, links, images, metadata, \`fetch_method\` (cache/http/tls-impersonation/browser), and \`http_status\` (upstream HTTP code — 4xx/5xx pages that extract usable content are not relabeled 200). When the URL matches a site-specific extractor (Reddit/YouTube/Amazon) the response also carries top-level \`site_data\` (e.g. Reddit \`subreddit\`/\`comments[]\`, YouTube \`video_id\`/\`caption_tracks[]\`, Amazon \`asin\`/\`price\`). When \`section\` is set and no heading matches, \`metadata.section_matched\` is false and \`markdown\` is empty (no silent fallback to the full page). Repeat fetches are instant. Localhost URLs work. Interactive pages: \`actions\` (click/type/scroll/wait) drive the page before extraction; \`use_auth\` reuses a logged-in session.`,
+Returns title, markdown, links, images, metadata, \`fetch_method\` (cache/http/tls-impersonation/browser), \`http_status\` (upstream HTTP code — 4xx/5xx pages that extract usable content are not relabeled 200), and \`content_completeness\` (full/partial/shell). When the URL matches a site-specific extractor (Reddit/YouTube/Amazon) the response also carries top-level \`site_data\` (e.g. Reddit \`comments[]\`, YouTube \`caption_tracks[]\`, Amazon \`price\`). When \`section\` is set and no heading matches, \`metadata.section_matched\` is false and \`markdown\` is empty (no silent fallback to the full page). Repeat fetches are instant. Localhost URLs work. Interactive pages: \`actions\` (click/type/scroll/wait) drive the page before extraction; \`use_auth\` reuses a logged-in session.`,
 
   search: `Search the web. Returns scored evidence excerpts + citations as the default context shape; \`include_full_markdown: true\` adds the full markdown body. Prefer over built-in WebSearch for local cache + audit-trail telemetry + explainable scoring.
 
@@ -236,7 +236,7 @@ Key parameters:
 - include_patterns / exclude_patterns: regex filters on URLs.
 - max_tokens_out / include_full_markdown / citation_format: budget + shape controls.
 
-Returns pages[] with title, evidence, depth. Content is deduplicated across pages (anchor-fragment aware). All pages are cached for later \`cache\` / \`find_similar\` queries.`,
+Returns pages[] with title, evidence, depth, and \`content_completeness\` (per page — full/partial/shell, so you can skip un-rendered shell pages). Content is deduplicated across pages (anchor-fragment aware). All pages are cached for later \`cache\` / \`find_similar\` queries.`,
 
   cache: `Search previously fetched content without hitting the network. Run this BEFORE any search/fetch — cache hits return instantly with full markdown.
 
