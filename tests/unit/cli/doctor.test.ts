@@ -46,6 +46,17 @@ vi.mock('../../../src/search/core/rss/feed-config.js', () => ({
   loadFeedConfig: vi.fn(() => ({ feeds: [], sources: [] })),
 }));
 
+// Force the keystore to report no stored key, so the LLM-section tests depend
+// ONLY on env vars. Otherwise a gemini key in the developer's OS keychain masks
+// the "no key" cases (the documented machine-env flakiness) and hides the env
+// alias-detection path that CI exercises on a clean box.
+vi.mock('../../../src/security/key-store.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/security/key-store.js')>(
+    '../../../src/security/key-store.js',
+  );
+  return { ...actual, readKey: vi.fn().mockResolvedValue(null) };
+});
+
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { runDoctor } from '../../../src/cli/doctor.js';
@@ -202,6 +213,7 @@ describe('runDoctor', () => {
       process.env = { ...originalEnv };
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.OPENAI_API_KEY;
+      delete process.env.GEMINI_API_KEY;
       delete process.env.GOOGLE_API_KEY;
       delete process.env.GROQ_API_KEY;
       delete process.env.WIGOLO_LLM_PROVIDER;

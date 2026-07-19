@@ -200,7 +200,7 @@ export async function resolveProviderKey(
 
   // 3: provider-specific env var (read-only, ALWAYS live — never memoized so
   // env changes and per-test env teardown are respected). Accepts the canonical
-  // var or an alias (e.g. GEMINI_API_KEY as well as GOOGLE_API_KEY).
+  // canonical var or an alias (GEMINI_API_KEY canonical; GOOGLE_API_KEY still accepted).
   const envValue = providerKeyFromEnv(provider, process.env);
   if (envValue) return envValue;
 

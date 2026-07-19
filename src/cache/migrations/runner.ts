@@ -161,6 +161,17 @@ const ANTIBOT_CLEARANCE_COLUMNS = [
   'last_403_at',
 ];
 
+// Nullable content-completeness columns on url_cache so a cache hit can be
+// re-classified stale when the cached capture was only a shell. Empty SQL —
+// the whole effect is the guarded ADD COLUMNs in the postStep (mirrors 006).
+const MIGRATION_009_CONTENT_COMPLETENESS = '';
+
+const CONTENT_COMPLETENESS_COLUMNS = [
+  'content_completeness_level',
+  'content_completeness_reason',
+  'content_completeness_settled_by',
+];
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -229,6 +240,27 @@ export const MIGRATIONS: Migration[] = [
       for (const col of ANTIBOT_CLEARANCE_COLUMNS) {
         if (!names.has(col)) {
           db.exec(`ALTER TABLE domain_routing ADD COLUMN ${col} TEXT`);
+        }
+      }
+    },
+  },
+  {
+    name: '009-content-completeness',
+    sql: MIGRATION_009_CONTENT_COMPLETENESS,
+    /**
+     * Adds the nullable content-completeness columns to url_cache, skipping any
+     * that already exist (idempotent) — mirrors the 006 postStep. url_cache is
+     * created inline by initDatabase(); the runner-only harness skips that, so
+     * guard on an empty table_info (no table → no-op, column arrives with the
+     * table on the next initDatabase).
+     */
+    postStep: (db) => {
+      const cols = db.pragma('table_info(url_cache)') as Array<{ name: string }>;
+      if (cols.length === 0) return;
+      const names = new Set(cols.map((c) => c.name));
+      for (const col of CONTENT_COMPLETENESS_COLUMNS) {
+        if (!names.has(col)) {
+          db.exec(`ALTER TABLE url_cache ADD COLUMN ${col} TEXT`);
         }
       }
     },

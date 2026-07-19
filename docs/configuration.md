@@ -100,7 +100,7 @@ Core tools never need an LLM. Configuring one adds answer synthesis (`format: "a
 | Env var | Default | What it does |
 | --- | --- | --- |
 | `WIGOLO_LLM_PROVIDER` | unset | `anthropic`, `openai`, `gemini`, `groq`, or `ollama` (any local OpenAI-compatible server). |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` / `GROQ_API_KEY` | unset | Per-provider keys, read from env. |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `GROQ_API_KEY` | unset | Per-provider keys, read from env. |
 | `WIGOLO_LLM_API_KEY` | unset | Generic key slot (used by `init --provider=...`; stored in the OS keychain, never passed as a flag). |
 | `WIGOLO_LLM_MODEL` | provider default | Override the model name. |
 | `WIGOLO_LLM_BASE_URL` | `http://localhost:11434` | Custom base URL for the `ollama` provider — point it at any OpenAI-compatible endpoint. |

@@ -484,9 +484,10 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
   if (sysResult.python.ok) {
     out(`  ${ok(`Python ${sysResult.python.version} (${sysResult.python.binary})`)}`);
   } else {
-    out(`  ${fail('Python 3 not found')}`);
-    if (sysResult.python.message) out(`    ${chalk.gray(sysResult.python.message)}`);
-    out(`    ${chalk.gray('Install: https://python.org/downloads or `brew install python3`')}`);
+    // Python is optional — it powers only the opt-in search-engine sidecar; the
+    // default core install needs none. Report it as a soft warning, never a
+    // blocker (this used to be a red failure that aborted init).
+    out(`  ${warn(`Python not found ${chalk.gray('(optional — only for the search engine sidecar; core search works without it)')}`)}`);
   }
   if (sysResult.docker.ok) {
     out(`  ${ok(`Docker ${sysResult.docker.version ?? ''} ${chalk.gray('(optional)')}`)}`.trim());

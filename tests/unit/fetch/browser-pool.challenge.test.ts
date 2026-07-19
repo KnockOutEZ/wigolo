@@ -45,6 +45,17 @@ vi.mock('playwright', () => {
         }),
         waitForLoadState: vi.fn().mockResolvedValue(undefined),
         waitForFunction: vi.fn().mockResolvedValue(undefined),
+        // settlePage reads content metrics (stability poller) and, after the
+        // gate, the DOM verdict. Branch on the injected source: the verdict
+        // source is the only one containing 'hasContent'. These tests assert
+        // challenge classification over the final html, not the verdict values,
+        // so a permissive default verdict is fine.
+        evaluate: vi.fn().mockImplementation((src: string) => {
+          if (typeof src === 'string' && src.includes('hasContent')) {
+            return Promise.resolve({ hasContent: true, hasSpaRoot: false, nearEmpty: false });
+          }
+          return Promise.resolve({ textLen: 1000, nodes: 8 });
+        }),
         content: vi.fn().mockImplementation(() => {
           const idx = Math.min(state.contentCalls, state.bodies.length - 1);
           state.contentCalls += 1;
@@ -378,6 +389,40 @@ describe('browser-pool anti-bot fast-fail (D6)', () => {
     const err = await captured;
     expect(err).not.toBeInstanceOf(ChallengeBlockedError);
     expect((err as Error).name).toBe('AbortError');
+    await pool.shutdown();
+  });
+
+  it('challenge_shell BOUNDARY: a 200 challenge shell that slips the throw-gates is labeled contentCompleteness=challenge_shell', async () => {
+    // The ONLY place challenge_shell is asserted. Construct a case that bypasses
+    // both throw-gates: the INITIAL read is a clean article (no challenge markers
+    // → no completion poll entered), but the FINAL captured html is a challenge
+    // interstitial that carries a "Just a moment" title AND substantial body
+    // text (so isNearEmptyBody is false → the near-empty throw does NOT fire).
+    // The browser-pool override keys on isChallengeShell over the final html and
+    // must relabel the returned result rather than trust it as content.
+    state.status = 200;
+    const cleanInitial =
+      '<html><head><title>Docs</title></head><body><article>' +
+      'A perfectly normal first read with no anti-bot markers at all. '.repeat(20) +
+      '</article></body></html>';
+    // Title matches CHALLENGE_TITLE_PATTERN → skeleton=true; "Just a moment"
+    // marker → hasChallengeBody=true → isChallengeShell(200)=true. Long body →
+    // NOT near-empty, so the challenge poll's near-empty throw cannot fire.
+    const challengeWithBody =
+      '<html><head><title>Just a moment...</title></head><body>' +
+      '<div class="cf-browser-verification">Just a moment while we verify your browser. ' +
+      'This interstitial carries enough visible text that it is not near-empty. '.repeat(12) +
+      '</div></body></html>';
+    state.bodies = [cleanInitial, challengeWithBody];
+
+    const pool = new MultiBrowserPool();
+    const res = await pool.fetchWithBrowser('https://blocked.example/');
+    // It did NOT throw (slipped the gates) but is labeled a challenge shell.
+    expect(res.contentCompleteness).toEqual({
+      level: 'shell',
+      reason: 'challenge_shell',
+      settled_by: expect.any(String),
+    });
     await pool.shutdown();
   });
 });

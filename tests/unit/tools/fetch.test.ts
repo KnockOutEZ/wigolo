@@ -160,6 +160,36 @@ describe('handleFetch', () => {
     expect(router.fetch).toHaveBeenCalledOnce();
   });
 
+  it('surfaces content_completeness on the output when the router result carries it (browser tier)', async () => {
+    extractMock.mockResolvedValue(makeExtraction());
+    const router = mockRouter({
+      method: 'browser',
+      contentCompleteness: { level: 'shell', reason: 'app_shell', settled_by: 'budget' },
+    });
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const __r_result = await handleFetch(input, router);
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(result.content_completeness).toEqual({
+      level: 'shell',
+      reason: 'app_shell',
+      settled_by: 'budget',
+    });
+  });
+
+  it('leaves content_completeness absent when the router result lacks it (HTTP tier)', async () => {
+    extractMock.mockResolvedValue(makeExtraction());
+    // Default mockRouter is an http-tier result with no contentCompleteness.
+    const router = mockRouter({ method: 'http' });
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const __r_result = await handleFetch(input, router);
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(result.content_completeness).toBeUndefined();
+  });
+
   it('returns error response for empty URL', async () => {
     const router = mockRouter();
     router.fetch.mockRejectedValue(new Error('Invalid URL'));
