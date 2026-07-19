@@ -114,6 +114,14 @@ export interface FetchOutput {
    * successful responses; absent only on StageError replies. */
   fetch_method?: FetchMethod;
   /**
+   * How completely a browser-tier capture rendered its real content (level
+   * full/partial/shell + reason). Present only when the browser tier served
+   * the bytes; absent on HTTP/TLS-tier responses and on cache hits whose row
+   * predates completeness persistence. Lets callers tell a genuine page from
+   * an un-rendered shell without re-parsing the HTML.
+   */
+  content_completeness?: ContentCompleteness;
+  /**
    * Upstream HTTP status code. Surfaced so callers can branch on 404 / 403 /
    * 5xx pages that still render usable HTML (a missing-docs landing page is
    * legitimately fetchable but should not be confused with a successful 200
@@ -131,6 +139,29 @@ export interface FetchOutput {
    * as a real site_data payload.
    */
   fetch_failed?: string;
+}
+
+/**
+ * Post-settle assessment of how completely a browser-tier capture rendered.
+ * `level` is the coarse verdict; `reason` names the specific class (closed
+ * 8-value taxonomy); `settled_by` records which settle gate ended the wait.
+ * Only produced by the browser tiers (playwright / stealth) — HTTP/TLS captures
+ * leave `contentCompleteness` absent.
+ */
+export interface ContentCompleteness {
+  level: 'full' | 'partial' | 'shell';
+  reason:
+    | 'content_verified'
+    | 'stable_content'
+    | 'nav_shell'
+    | 'app_shell'
+    | 'challenge_shell'
+    | 'never_settled'
+    // A rendered-but-thin page with no frame evidence (no nav chrome, no SPA
+    // root) — thin/unstructured, NOT an un-rendered shell, so not shell-gated.
+    | 'thin_content'
+    | 'empty';
+  settled_by: 'probe' | 'stability' | 'budget';
 }
 
 export interface RawFetchResult {
@@ -153,6 +184,13 @@ export interface RawFetchResult {
   jsRequired?: boolean;
   escalated?: boolean;
   warning?: string;
+  /**
+   * How completely a browser-tier capture rendered — set by the playwright /
+   * stealth paths from the shared settle. Absent on HTTP/TLS captures and cache
+   * rows that predate the field. Downstream (cache staleness, research source
+   * filtering) branches on `level`/`reason` to avoid trusting shell captures.
+   */
+  contentCompleteness?: ContentCompleteness;
 }
 
 export interface ExtractionResult {
@@ -228,6 +266,13 @@ export interface CachedContent {
    * to hash identically.
    */
   httpStatus?: number | null;
+  /**
+   * Render-completeness label captured at fetch time (browser tier only).
+   * Absent on rows persisted before migration 009 added the columns, and on
+   * HTTP/TLS-tier rows. The cache staleness gate treats a `shell` level as
+   * stale so a shell capture is re-fetched once rather than replayed.
+   */
+  contentCompleteness?: ContentCompleteness;
 }
 
 export interface Extractor {
@@ -652,12 +697,15 @@ export interface ResearchSource {
   relevance_score: number;
   fetched: boolean;
   fetch_error?: string;
+  /** Render-completeness label from the fetch (browser tier only). A `shell`
+   * level excludes the source from the evidence set before synthesis. */
+  content_completeness?: ContentCompleteness;
 }
 
 export interface RejectedSource {
   url: string;
-  reason: 'homepage' | 'serp' | 'social-promo' | 'low-content' | 'low-overlap' | 'negative-score';
-  stage: 'url-shape' | 'content-gate' | 'score-floor';
+  reason: 'homepage' | 'serp' | 'social-promo' | 'low-content' | 'low-overlap' | 'negative-score' | 'shell-content';
+  stage: 'url-shape' | 'content-gate' | 'score-floor' | 'shell-content';
 }
 
 export interface ResearchOutput {
@@ -892,6 +940,9 @@ export interface CrawlResultItem {
   depth: number;
   evidence?: EvidenceItem[];
   excerpt?: string;
+  /** Per-page render completeness, carried through from the page's fetch.
+   * Absent when the page was served by a non-browser tier. */
+  content_completeness?: ContentCompleteness;
 }
 
 export interface LinkEdge {

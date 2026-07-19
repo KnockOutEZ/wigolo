@@ -208,21 +208,27 @@ describe('runInit', () => {
     }
   });
 
-  it('exits 1 when Python 3 is missing', async () => {
+  it('warns but exits 0 when only Python 3 is missing (optional — search-engine sidecar)', async () => {
+    // WHY: Python powers only the opt-in search-engine sidecar; the default core
+    // install needs none. Missing Python must NOT abort init — it used to print
+    // "Setup cannot continue" and return 1, blocking Python-less machines.
+    primeHappyPath();
     runSystemCheckMock.mockResolvedValue({
       node: { ok: true, version: '22.14.0' },
       python: { ok: false, message: 'Python 3 not found.' },
       docker: { ok: false },
       disk: { ok: true, freeMb: 50000 },
-      hardFailure: true,
+      hardFailure: false,
     });
     const cap = capture();
     try {
       const code = await runInit(['--non-interactive', '--agents=cursor']);
-      expect(code).toBe(1);
+      expect(code).toBe(0);
       const out = cap.stdout.join('');
-      expect(out).toMatch(/python/i);
-      expect(out).toMatch(/python\.org|brew install/i);
+      // The Python line itself must read as optional and name the sidecar — not
+      // the old scary "install Python to continue" blocker hint.
+      expect(out).toMatch(/search engine sidecar/i);
+      expect(out).not.toMatch(/python\.org|brew install/i);
     } finally {
       cap.restore();
     }

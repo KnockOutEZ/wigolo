@@ -12,6 +12,11 @@ function makePage() {
     }),
     waitForLoadState: vi.fn().mockResolvedValue(undefined),
     waitForFunction: vi.fn().mockResolvedValue(undefined),
+    // settlePage reads content metrics + the final DOM verdict via evaluate.
+    evaluate: vi.fn().mockImplementation((src: string) =>
+      typeof src === 'string' && src.includes('hasContent')
+        ? Promise.resolve({ hasContent: true, hasSpaRoot: false, nearEmpty: false })
+        : Promise.resolve({ textLen: 1000, nodes: 8 })),
     content: vi.fn().mockResolvedValue('<html><body>ok content long enough to pass</body></html>'),
     setExtraHTTPHeaders: vi.fn().mockResolvedValue(undefined),
     on: vi.fn(),

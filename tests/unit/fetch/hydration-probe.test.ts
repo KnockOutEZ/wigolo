@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseHTML } from 'linkedom';
-import { isHydrated, isAppShellOnly, HYDRATION_PROBE_SOURCE, APP_SHELL_ONLY_SOURCE } from '../../../src/fetch/hydration-probe.js';
+import { isHydrated, isAppShellOnly, classifyDom, HYDRATION_PROBE_SOURCE, APP_SHELL_ONLY_SOURCE, DOM_VERDICT_SOURCE } from '../../../src/fetch/hydration-probe.js';
 
 // linkedom doesn't implement innerText, so we patch HTMLElement.prototype
 // before running predicates that depend on text length.
@@ -195,4 +195,249 @@ describe('HYDRATION_PROBE_SOURCE', () => {
     // role="main" appears either with escaped or unescaped quotes — accept both.
     expect(HYDRATION_PROBE_SOURCE).toMatch(/\[role=(?:\\?")main(?:\\?")\]/);
   });
+});
+
+describe('classifyDom — completeness verdict primitives', () => {
+  it('full hydrated article → hasContent true, nearEmpty false', () => {
+    const para = '<p>' + 'word '.repeat(40) + '</p>';
+    withInnerText(`<html><body><article>${para}${para}${para}</article></body></html>`, (doc) => {
+      const v = classifyDom(doc as never);
+      expect(v.hasContent).toBe(true);
+      expect(v.nearEmpty).toBe(false);
+    });
+  });
+
+  it('nav-only shell with NO SPA root → hasContent false, hasSpaRoot false, hasNavChrome true', () => {
+    const nav = '<nav>' + '<a>section link description text</a>'.repeat(30) + '</nav>';
+    withInnerText(`<html><body>${nav}</body></html>`, (doc) => {
+      const v = classifyDom(doc as never);
+      expect(v.hasContent).toBe(false);
+      expect(v.hasSpaRoot).toBe(false);
+      // <nav> IS shell evidence — this stays a nav_shell (safety property).
+      expect(v.hasNavChrome).toBe(true);
+    });
+  });
+
+  it('thin FRAMELESS page (rendered text, no nav/main/aside/header, no SPA root) → no shell evidence', () => {
+    // example.com / Hacker News shape: real content but no frame. Must report
+    // hasNavChrome false + hasSpaRoot false so toCompleteness labels it
+    // partial/thin_content, NOT a shell.
+    withInnerText(
+      `<html><body><h1>Example Domain</h1><p>${'This domain is for illustrative use. '.repeat(4)}</p></body></html>`,
+      (doc) => {
+        const v = classifyDom(doc as never);
+        expect(v.hasNavChrome).toBe(false);
+        expect(v.hasSpaRoot).toBe(false);
+      },
+    );
+  });
+
+  it('<aside> sidebar counts as nav chrome (hasNavChrome true)', () => {
+    withInnerText(
+      `<html><body><aside class="sidebar">${'<a>link</a>'.repeat(20)}</aside></body></html>`,
+      (doc) => {
+        expect(classifyDom(doc as never).hasNavChrome).toBe(true);
+      },
+    );
+  });
+
+  it('nav-only shell WITH #root → hasSpaRoot true, hasContent false', () => {
+    const nav = '<nav>' + '<a>section link description text</a>'.repeat(30) + '</nav>';
+    withInnerText(`<html><body><div id="root">${nav}</div></body></html>`, (doc) => {
+      const v = classifyDom(doc as never);
+      expect(v.hasSpaRoot).toBe(true);
+      expect(v.hasContent).toBe(false);
+    });
+  });
+
+  it('near-empty body (< 80 chars) → nearEmpty true', () => {
+    withInnerText('<html><body><div id="root"></div></body></html>', (doc) => {
+      const v = classifyDom(doc as never);
+      expect(v.nearEmpty).toBe(true);
+    });
+  });
+
+  it('substantial body → nearEmpty false', () => {
+    withInnerText(`<html><body><p>${'x'.repeat(200)}</p></body></html>`, (doc) => {
+      expect(classifyDom(doc as never).nearEmpty).toBe(false);
+    });
+  });
+
+  // NEGATIVE / MUST-NOT-FIRE: real content pages must classify hasContent=true.
+  // These are the shapes most likely to be mis-flagged as shells.
+  it('code-heavy docs (few <p>, many <pre>/<code>) → hasContent true (NOT a shell)', () => {
+    const intro = '<p>' + 'words about the API '.repeat(20) + '</p>';
+    const code = '<pre><code>' + 'const x = 1;\n'.repeat(40) + '</code></pre>';
+    withInnerText(`<html><body><main>${intro}${code}${code}${code}</main></body></html>`, (doc) => {
+      expect(classifyDom(doc as never).hasContent).toBe(true);
+    });
+  });
+
+  it('long single-<p> blog → hasContent true (NOT a shell)', () => {
+    const longP = '<p>' + 'sentence of prose content here. '.repeat(60) + '</p>';
+    withInnerText(`<html><body>${longP}</body></html>`, (doc) => {
+      expect(classifyDom(doc as never).hasContent).toBe(true);
+    });
+  });
+
+  it('<td>-table-dominant page → hasContent true (NOT a shell)', () => {
+    const rows = Array.from({ length: 20 }, () =>
+      '<tr><td>' + 'cell value data '.repeat(6) + '</td><td>' + 'more cell data '.repeat(6) + '</td></tr>').join('');
+    const p = '<p>' + 'intro paragraph text for the table. '.repeat(10) + '</p>';
+    withInnerText(`<html><body><main>${p}<table>${rows}</table></main></body></html>`, (doc) => {
+      expect(classifyDom(doc as never).hasContent).toBe(true);
+    });
+  });
+
+  it('.prose container page → hasContent true (NOT a shell)', () => {
+    const para = '<p>' + 'meaningful article prose word '.repeat(20) + '</p>';
+    withInnerText(`<html><body><div class="prose">${para}${para}${para}</div></body></html>`, (doc) => {
+      expect(classifyDom(doc as never).hasContent).toBe(true);
+    });
+  });
+
+  // MUST-NOT-FIRE: table rows only count toward hydration when co-present PROSE
+  // exists. A table with rows but NO <p> is a nav-as-table or a still-mounting
+  // skeleton — it must NEVER read as hydrated, or the render gate would leak a
+  // shell as content. These pin the over-fire fix (dropped the standalone
+  // row-count disjunct; rows require p>=1).
+  it('MUST-NOT-FIRE: <main><table> of link rows (nav-as-table, no prose) → NOT hydrated', () => {
+    const rows = Array.from({ length: 10 }, (_v, i) =>
+      `<tr><td><a href="/p${i}">navigation link label number ${i} with some descriptive text</a></td></tr>`).join('');
+    withInnerText(`<html><body><main><table>${rows}</table></main></body></html>`, (doc) => {
+      expect(isHydrated(doc as never)).toBe(false);
+    });
+  });
+
+  it('MUST-NOT-FIRE: <main><table> of "Loading…" skeleton rows (no prose) → NOT hydrated', () => {
+    const rows = Array.from({ length: 8 }, () =>
+      '<tr><td>Loading placeholder row content that occupies space while mounting</td></tr>').join('');
+    withInnerText(`<html><body><main><table>${rows}</table></main></body></html>`, (doc) => {
+      expect(isHydrated(doc as never)).toBe(false);
+    });
+  });
+
+  it('MUST-NOT-FIRE: table-nav inside <div id="root"><main> (no prose) → NOT hydrated', () => {
+    const rows = Array.from({ length: 10 }, (_v, i) =>
+      `<tr><td><a href="/s${i}">section navigation entry ${i} with descriptive link text here</a></td></tr>`).join('');
+    withInnerText(
+      `<html><body><div id="root"><main><table>${rows}</table></main></div></body></html>`,
+      (doc) => {
+        expect(isHydrated(doc as never)).toBe(false);
+      },
+    );
+  });
+
+  it('BOUNDARY: a bare data-table with ZERO prose → NOT hydrated (conservative)', () => {
+    // No prose co-signal, so the row credit does not apply. A pure table with
+    // no surrounding paragraphs settles via stability and, if unrecognized,
+    // labels shell — this test documents that intended boundary.
+    const rows = Array.from({ length: 20 }, () =>
+      '<tr><td>' + 'cell value data '.repeat(6) + '</td><td>' + 'more cell data '.repeat(6) + '</td></tr>').join('');
+    withInnerText(`<html><body><main><table>${rows}</table></main></body></html>`, (doc) => {
+      expect(isHydrated(doc as never)).toBe(false);
+    });
+  });
+
+  // App-root branch parity: a data-table article that mounts DIRECTLY into the
+  // SPA root (no <main>/<article> wrapper — common for direct-into-#root SPAs)
+  // must classify the same as one inside <main>. The prose-gated row credit +
+  // chrome exclusion now live in the app-root branch too.
+  it('data-table + intro <p> mounted DIRECTLY in <div id="root"> (no <main>) → hydrated', () => {
+    const rows = Array.from({ length: 30 }, () =>
+      '<tr><td>' + 'cell value data '.repeat(6) + '</td><td>' + 'more cell data '.repeat(6) + '</td></tr>').join('');
+    const p = '<p>' + 'intro paragraph text for the table. '.repeat(10) + '</p>';
+    withInnerText(`<html><body><div id="root">${p}<table>${rows}</table></div></body></html>`, (doc) => {
+      expect(isHydrated(doc as never)).toBe(true);
+    });
+  });
+
+  it('MUST-NOT-FIRE: nav-table (rows of <a>, no prose) DIRECTLY in <div id="root"> → NOT hydrated', () => {
+    const rows = Array.from({ length: 12 }, (_v, i) =>
+      `<tr><td><a href="/p${i}">navigation entry ${i} with descriptive link text here for length</a></td></tr>`).join('');
+    withInnerText(`<html><body><div id="root"><table>${rows}</table></div></body></html>`, (doc) => {
+      expect(isHydrated(doc as never)).toBe(false);
+    });
+  });
+});
+
+describe('DOM_VERDICT_SOURCE', () => {
+  it('is a self-contained expression with no module references', () => {
+    expect(DOM_VERDICT_SOURCE.startsWith('(() => {')).toBe(true);
+    expect(DOM_VERDICT_SOURCE.endsWith('})()')).toBe(true);
+    expect(DOM_VERDICT_SOURCE).not.toMatch(/import\s/);
+    expect(DOM_VERDICT_SOURCE).not.toMatch(/require\(/);
+  });
+
+  it('returns all four verdict keys', () => {
+    for (const key of ['hasContent', 'hasSpaRoot', 'hasNavChrome', 'nearEmpty']) {
+      expect(DOM_VERDICT_SOURCE).toContain(key);
+    }
+  });
+});
+
+// classifyDom (TS) ⇄ DOM_VERDICT_SOURCE (inlined string) parity: the verdict
+// primitives feed toCompleteness, so a drift between the two implementations
+// would silently mislabel completeness in the browser vs. the linkedom tests.
+describe('classifyDom ⇄ DOM_VERDICT_SOURCE lockstep', () => {
+  const runVerdict = (doc: Document): Record<string, boolean> =>
+    new Function('document', `return ${DOM_VERDICT_SOURCE}`)(doc) as Record<string, boolean>;
+
+  const para = '<p>' + 'genuine article prose word '.repeat(30) + '</p>';
+  const verdictFixtures: Array<[string, string]> = [
+    ['full article', `<html><body><article>${para}${para}${para}</article></body></html>`],
+    ['nav shell (no root)', `<html><body><nav>${'<a>link text here for length</a>'.repeat(30)}</nav></body></html>`],
+    ['app shell (#root, no content)', `<html><body><div id="root"><nav>${'<a>link</a>'.repeat(20)}</nav></div></body></html>`],
+    ['thin frameless', `<html><body><h1>Tiny</h1><p>${'a short rendered sentence. '.repeat(4)}</p></body></html>`],
+    ['near-empty', `<html><body><div id="root"></div></body></html>`],
+  ];
+
+  for (const [name, html] of verdictFixtures) {
+    it(`string verdict matches classifyDom: ${name}`, () => {
+      withInnerText(html, (doc) => {
+        const ts = classifyDom(doc as never);
+        const str = runVerdict(doc as unknown as Document);
+        expect(str.hasContent).toBe(ts.hasContent);
+        expect(str.hasSpaRoot).toBe(ts.hasSpaRoot);
+        expect(str.hasNavChrome).toBe(ts.hasNavChrome);
+        expect(str.nearEmpty).toBe(ts.nearEmpty);
+      });
+    });
+  }
+});
+
+// LOCKSTEP DRIFT GUARD: isHydrated (TS) and its inlined-string twin
+// HYDRATION_PROBE_SOURCE must stay logically identical, but the string is only
+// exercised indirectly (mocked page.evaluate), so nothing FAILS if they drift.
+// This predicate has now been edited several times (tr add, prose gate,
+// app-root parity). Run the REAL string predicate against a linkedom DOM (the
+// injected `document` param shadows the global inside the IIFE) and assert it
+// matches isHydrated for fixtures that exercise every touched branch.
+describe('isHydrated ⇄ HYDRATION_PROBE_SOURCE lockstep (string/TS parity)', () => {
+  const runStringPredicate = (doc: Document): boolean =>
+    // HYDRATION_PROBE_SOURCE is a `(()=>{...})()` IIFE; `return <source>` runs it.
+    new Function('document', `return ${HYDRATION_PROBE_SOURCE}`)(doc) as boolean;
+
+  const para = '<p>' + 'genuine article prose word '.repeat(30) + '</p>';
+  const tableRows = Array.from({ length: 30 }, () =>
+    '<tr><td>' + 'cell value data '.repeat(6) + '</td><td>' + 'more cell data '.repeat(6) + '</td></tr>').join('');
+  const navRows = Array.from({ length: 12 }, (_v, i) =>
+    `<tr><td><a href="/p${i}">navigation entry ${i} descriptive link text for length here</a></td></tr>`).join('');
+  const codeBlock = '<pre><code>' + 'const x = 1;\n'.repeat(40) + '</code></pre>';
+
+  const fixtures: Array<[string, string]> = [
+    ['data-table + prose in <main>', `<html><body><main><p>${'intro text here. '.repeat(20)}</p><table>${tableRows}</table></main></body></html>`],
+    ['data-table + prose direct in #root', `<html><body><div id="root"><p>${'intro text here. '.repeat(20)}</p><table>${tableRows}</table></div></body></html>`],
+    ['nav-table shell, no prose', `<html><body><main><table>${navRows}</table></main></body></html>`],
+    ['plain 3-paragraph article', `<html><body><article>${para}${para}${para}</article></body></html>`],
+    ['code-heavy docs page', `<html><body><main><p>intro paragraph about the API here for context.</p>${codeBlock}${codeBlock}</main></body></html>`],
+  ];
+
+  for (const [name, html] of fixtures) {
+    it(`string predicate matches isHydrated: ${name}`, () => {
+      withInnerText(html, (doc) => {
+        expect(runStringPredicate(doc)).toBe(isHydrated(doc as never));
+      });
+    });
+  }
 });

@@ -137,6 +137,9 @@ export class Crawler {
         title: fetchResult.title,
         markdown: fetchResult.markdown,
         depth,
+        // Carry the per-page render-completeness through from the fetch so
+        // crawl consumers can skip shell pages. Absent for non-browser tiers.
+        ...(fetchResult.content_completeness ? { content_completeness: fetchResult.content_completeness } : {}),
       };
       pages.push(item);
 

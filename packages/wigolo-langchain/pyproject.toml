@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wigolo-langchain"
-version = "0.2.0"
+version = "0.2.1"
 description = "LangChain integration for wigolo — local-first web search MCP server"
 readme = "README.md"
 license = "AGPL-3.0-only"

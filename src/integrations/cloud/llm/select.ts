@@ -8,15 +8,15 @@ const PROVIDER_ORDER: LLMProvider[] = ['anthropic', 'openai', 'gemini', 'groq'];
 const PROVIDER_ENV: Record<LLMProvider, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
-  gemini: 'GOOGLE_API_KEY',
+  gemini: 'GEMINI_API_KEY',
   groq: 'GROQ_API_KEY',
 };
 
 // Extra env var names accepted for a provider's key, beyond the canonical one
-// above. Gemini keys are commonly named GEMINI_API_KEY, so accept both — users
-// shouldn't have to guess which name wigolo reads.
+// above. GEMINI_API_KEY is the canonical name wigolo advertises (it matches
+// Google AI Studio); GOOGLE_API_KEY is still accepted for backward compatibility.
 const PROVIDER_ENV_ALIASES: Partial<Record<LLMProvider, readonly string[]>> = {
-  gemini: ['GEMINI_API_KEY'],
+  gemini: ['GOOGLE_API_KEY'],
 };
 
 /** Read a provider's API key from env, accepting the canonical var or an alias. */

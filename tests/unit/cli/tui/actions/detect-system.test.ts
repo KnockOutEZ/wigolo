@@ -39,10 +39,13 @@ describe('detectSystem', () => {
     expect(r.nodeMessage).toBe('too old');
   });
 
-  it('returns hardFailure=true when python fails', async () => {
+  it('does NOT hard-fail when python is missing (optional — search-engine sidecar only)', async () => {
+    // WHY: Python is not required for wigolo's core; only the opt-in search-engine
+    // sidecar uses it, and warmup degrades to core without it. A missing Python
+    // must not block the setup wizard.
     checkPythonMock.mockReturnValue({ ok: false, message: 'not found' });
     const r = await detectSystem();
-    expect(r.hardFailure).toBe(true);
+    expect(r.hardFailure).toBe(false);
     expect(r.pythonOk).toBe(false);
   });
 

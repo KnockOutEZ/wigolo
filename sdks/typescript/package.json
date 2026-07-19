@@ -1,6 +1,6 @@
 {
   "name": "wigolo-sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Thin TypeScript client for a local-first wigolo web-intelligence daemon (search, fetch, crawl, extract, research, and more) over its REST API.",
   "type": "module",
   "license": "AGPL-3.0-only",

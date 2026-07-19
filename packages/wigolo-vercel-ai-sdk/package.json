@@ -1,6 +1,6 @@
 {
   "name": "wigolo-vercel-ai-sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Vercel AI SDK tools for wigolo — local-first web search MCP server",
   "type": "module",
   "main": "dist/index.js",

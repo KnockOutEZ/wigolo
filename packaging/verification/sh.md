@@ -66,7 +66,7 @@ first). All pass.
 ## Baseline noise (not caused by this slice)
 
 `tests/unit/cli/doctor.test.ts` "LLM fallback section" — 2 failures
-(GOOGLE_API_KEY / provider-listing) reproduce identically on the clean base
+(GEMINI_API_KEY / provider-listing) reproduce identically on the clean base
 SHA `2dd47764` without this slice's changes. Pre-existing machine-env noise
 per MEMORY (documented 4-6 LLM-provider baseline failures). `tsc --noEmit`
 clean; the rest of the `tests/unit/cli` lane (1324 tests) passes.

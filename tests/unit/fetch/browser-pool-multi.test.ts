@@ -20,6 +20,10 @@ vi.mock('playwright', () => {
                 headers: () => ({ 'content-type': 'text/html' }),
               }),
               waitForLoadState: vi.fn().mockResolvedValue(undefined),
+              // settlePage's hybrid gate: probe resolves immediately (recognized
+              // content) so settle exits fast without the stability poller.
+              waitForFunction: vi.fn().mockResolvedValue(undefined),
+              evaluate: vi.fn().mockResolvedValue({ textLen: 1000, nodes: 20 }),
               content: vi.fn().mockResolvedValue(`<html><body>${type} page</body></html>`),
               screenshot: vi.fn().mockResolvedValue(Buffer.from('fake-screenshot')),
               setExtraHTTPHeaders: vi.fn().mockResolvedValue(undefined),
