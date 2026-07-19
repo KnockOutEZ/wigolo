@@ -64,7 +64,7 @@ export class NpmRegistryEngine implements SearchEngine {
     const total = objects.length;
 
     for (let i = 0; i < total; i++) {
-      const pkg = objects[i].package;
+      const pkg = objects[i]?.package;
       const name = asString(pkg?.name);
       const npmUrl = asString(pkg?.links?.npm);
       if (!name || !npmUrl) continue;
