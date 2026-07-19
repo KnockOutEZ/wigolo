@@ -345,6 +345,19 @@ That makes your feedback the whole game right now. Every report is read, usually
 
 And if wigolo earns a place in your setup, the ways to keep it alive: a ⭐ **star** (it's how open source gets found), a **[☕ coffee](https://buymeacoffee.com/knockoutez)** (there's no paid tier and never will be), or just **[an email](mailto:ktowhid20@gmail.com)** — it goes straight to the one developer who wrote the code.
 
+## Troubleshooting
+
+`wigolo doctor` names any broken component and the exact env var or command that fixes it; `wigolo doctor --fix` repairs the common cases. A component failing during `init` **doesn't** break wigolo — `init` still exits 0, and core search / fetch / crawl / extract / cache work with no models and no browser.
+
+Quick hits:
+
+- **Slow or failed downloads** — re-run `wigolo warmup --all` (or `--browser` / `--embeddings` / `--reranker`); they resume and retry.
+- **Browser won't launch on Linux** — `wigolo warmup --browser` installs the OS libraries (or prints the exact command).
+- **Native build error / unusual Node** — use an LTS: **Node 20, 22, or 24**.
+- **Behind a proxy** — `USE_PROXY=true` + `PROXY_URL`; add `NODE_EXTRA_CA_CERTS` for TLS-inspecting proxies.
+
+Full guide — per-symptom fixes, a "what still works when X fails" map, platform notes (incl. linux-arm64), and offline installs: **[docs/troubleshooting.md](docs/troubleshooting.md)**.
+
 ## FAQ
 
 <details>
