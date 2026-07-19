@@ -77,9 +77,6 @@ jobs:
   clean-machine-smoke:
     name: clean-machine smoke (${{ matrix.os }}, node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
-    # linux-arm64 is non-blocking: its native embedding tokenizer is still being
-    # validated on real ARM hardware, so it reports without gating a merge.
-    continue-on-error: ${{ matrix.os == 'ubuntu-22.04-arm' }}
     # Bound the job: a stuck browser/model download on a bad runner should fail
     # in minutes, not ride the 6h default.
     timeout-minutes: 30
@@ -92,7 +89,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         node: ['20', '22', '24']
         include:
-          # Extra linux-arm64 coverage on one Node version (non-blocking above).
+          # linux-arm64 coverage — gating now that the embeddings tokenizer is
+          # fixed via the @anush008/tokenizers override (arm64 binary at 0.6.0).
           - os: ubuntu-22.04-arm
             node: '20'
     env:

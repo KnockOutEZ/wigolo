@@ -146,6 +146,7 @@
     "wreq-js": "^2.3.1"
   },
   "overrides": {
-    "hono": "^4.12.25"
+    "hono": "^4.12.25",
+    "@anush008/tokenizers": "0.6.0"
   }
 }
