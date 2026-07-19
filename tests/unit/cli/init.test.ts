@@ -189,6 +189,29 @@ describe('runInit', () => {
     }
   });
 
+  it('exits 1 and does not persist configured agents when a config result fails', async () => {
+    primeHappyPath();
+    applyConfigsMock.mockResolvedValue([{
+      id: 'opencode',
+      displayName: 'OpenCode',
+      configPath: '/home/test/.config/opencode/opencode.json',
+      ok: false,
+      code: 'PARSE_ERROR',
+      message: 'legacy OpenCode config migration failed: invalid JSONC',
+    }]);
+    const cap = capture();
+    try {
+      const code = await runInit(['--non-interactive', '--agents=opencode']);
+      expect(code).toBe(1);
+      expect(cap.stderr.join('')).toContain('Writing OpenCode config failed');
+      expect(cap.stderr.join('')).toContain('legacy OpenCode config migration failed');
+      expect(saveInitConfigMock).not.toHaveBeenCalled();
+      expect(installSkillsMock).not.toHaveBeenCalled();
+    } finally {
+      cap.restore();
+    }
+  });
+
   it('exits 1 when Node is too old', async () => {
     runSystemCheckMock.mockResolvedValue({
       node: { ok: false, version: '18.0.0', message: 'requires Node 20+' },

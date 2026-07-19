@@ -579,11 +579,22 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
     out(`  ${info('Engine ready — no agent wiring requested.')}`);
     out(`  ${chalk.gray('Point your MCP client at:  npx wigolo mcp')}`);
   } else {
+    let configResults;
     try {
-      await applyConfigs(detected, selected, {});
+      configResults = await applyConfigs(detected, selected, {});
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`Writing configs failed: ${message}\n`);
+      return 1;
+    }
+    const configFailures = configResults.filter((result) => !result.ok);
+    if (configFailures.length > 0) {
+      for (const failure of configFailures) {
+        const location = failure.configPath ? ` (${failure.configPath})` : '';
+        process.stderr.write(
+          `Writing ${failure.displayName} config failed: ${failure.message ?? failure.code}${location}\n`,
+        );
+      }
       return 1;
     }
 
@@ -744,4 +755,3 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
   }
   return summary.exitCode;
 }
-

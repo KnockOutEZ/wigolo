@@ -4,7 +4,7 @@
 
 Local-first web intelligence for AI agents — **no keys, no cloud, no metered bill.**
 
-<sub>works with&nbsp;&nbsp;**Claude Code · Cursor · Codex · Gemini CLI · VS Code · Windsurf · Zed · Antigravity**</sub>
+<sub>works with&nbsp;&nbsp;**Claude Code · Cursor · Codex · Gemini CLI · OpenCode · VS Code · Windsurf · Zed · Antigravity**</sub>
 <br>
 <sub>and beyond&nbsp;&nbsp;**LangChain · CrewAI · LlamaIndex · Vercel AI SDK · n8n & self-hosted agents · any MCP client · plain REST**</sub>
 
@@ -43,7 +43,7 @@ One command wires the local engine into your agent. `init` is **unattended by de
 npx wigolo init --agents=<your-agent>
 ```
 
-- **`<your-agent>`** — one or more of `claude-code` · `cursor` · `codex` · `gemini-cli` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated). wigolo writes the MCP config and instructions for you.
+- **`<your-agent>`** — one or more of `claude-code` · `cursor` · `codex` · `gemini-cli` · `opencode` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated). wigolo writes the MCP config and, where supported, instructions for you.
 - **Any other MCP client?** Omit `--agents` and register `npx -y wigolo` yourself — the [installation guide](docs/installation.md) has the exact config block for every client, plus Docker, Homebrew, and single-file-binary channels.
 - **Prefer prompts?** `--interactive` is a plain-text flow; `--wizard` is the full terminal TUI.
 - **Skip the downloads?** `--no-warmup` defers everything to first use. A failed component download never fails setup — init reports what's not ready with the exact fix and still wires your agent.

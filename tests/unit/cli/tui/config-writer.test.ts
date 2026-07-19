@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../../src/cli/tui/config-writer-json.js', () => ({
   writeJsonConfig: vi.fn(),
+  removeJsonConfigEntry: vi.fn(),
 }));
 vi.mock('../../../../src/cli/tui/config-writer-toml.js', () => ({
   writeTomlConfig: vi.fn(),
@@ -10,7 +11,7 @@ vi.mock('../../../../src/cli/tui/config-writer-cli.js', () => ({
   installViaClaudeCli: vi.fn(),
 }));
 
-import { writeJsonConfig } from '../../../../src/cli/tui/config-writer-json.js';
+import { removeJsonConfigEntry, writeJsonConfig } from '../../../../src/cli/tui/config-writer-json.js';
 import { writeTomlConfig } from '../../../../src/cli/tui/config-writer-toml.js';
 import { installViaClaudeCli } from '../../../../src/cli/tui/config-writer-cli.js';
 import { applyConfigs } from '../../../../src/cli/tui/config-writer.js';
@@ -24,13 +25,14 @@ const all: DetectedAgent[] = [
   { id: 'gemini-cli', displayName: 'Gemini CLI', detected: false, configPath: '/home/test/.gemini/settings.json', installType: 'config-file' },
   { id: 'windsurf', displayName: 'Windsurf', detected: false, configPath: '/home/test/.codeium/windsurf/mcp_config.json', installType: 'config-file' },
   { id: 'codex', displayName: 'Codex (OpenAI CLI)', detected: false, configPath: '/home/test/.codex/config.toml', installType: 'config-toml' },
-  { id: 'opencode', displayName: 'OpenCode', detected: false, configPath: '/home/test/.config/opencode/config.json', installType: 'config-file' },
+  { id: 'opencode', displayName: 'OpenCode', detected: false, configPath: '/home/test/.config/opencode/opencode.json', installType: 'config-file' },
 ];
 
 describe('applyConfigs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(writeJsonConfig).mockResolvedValue({ ok: true, code: 'OK' });
+    vi.mocked(removeJsonConfigEntry).mockResolvedValue({ ok: true, code: 'OK', removed: false });
     vi.mocked(writeTomlConfig).mockResolvedValue({ ok: true, code: 'OK' });
     vi.mocked(installViaClaudeCli).mockResolvedValue({ ok: true, code: 'OK' });
   });
@@ -88,12 +90,24 @@ describe('applyConfigs', () => {
     }));
   });
 
-  it('routes OpenCode with type:local in entry and keyPath=mcp.wigolo', async () => {
+  it('routes OpenCode with its local MCP command-array schema', async () => {
     await applyConfigs(all, ['opencode']);
     expect(writeJsonConfig).toHaveBeenCalledWith(expect.objectContaining({
+      path: '/home/test/.config/opencode/opencode.json',
       keyPath: ['mcp', 'wigolo'],
-      entry: expect.objectContaining({ type: 'local' }),
+      entry: {
+        type: 'local',
+        command: ['npx', '-y', 'wigolo'],
+        enabled: true,
+      },
     }));
+    expect(removeJsonConfigEntry).toHaveBeenCalledWith({
+      path: '/home/test/.config/opencode/config.json',
+      keyPath: ['mcp', 'wigolo'],
+      dryRun: undefined,
+      allowJsonc: true,
+      requireBackup: true,
+    });
   });
 
   it('returns one ConfigApplyResult per selected id, in order', async () => {

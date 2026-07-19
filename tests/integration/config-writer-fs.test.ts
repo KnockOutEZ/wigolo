@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseToml } from '@iarna/toml';
@@ -69,6 +69,57 @@ describe('applyConfigs round-trip', () => {
     expect(content.servers.wigolo.type).toBe('stdio');
   });
 
+  it('writes OpenCode opencode.json and removes the legacy config.json entry', async () => {
+    const configDir = join(dir, 'opencode');
+    const currentPath = join(configDir, 'opencode.json');
+    const legacyPath = join(configDir, 'config.json');
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(legacyPath, `{
+      // valid OpenCode JSONC
+      "theme": "system",
+      "mcp": {
+        "other": { "type": "remote", "url": "https://example.com/mcp" },
+        "wigolo": { "type": "local", "command": "npx", "args": ["-y", "wigolo"] },
+      },
+    }`);
+    const agents: DetectedAgent[] = [{
+      id: 'opencode', displayName: 'OpenCode', detected: true,
+      configPath: currentPath, installType: 'config-file',
+    }];
+
+    const results = await applyConfigs(agents, ['opencode']);
+
+    expect(results[0].ok).toBe(true);
+    const current = JSON.parse(readFileSync(currentPath, 'utf-8'));
+    expect(current.mcp.wigolo).toEqual({
+      type: 'local', command: ['npx', '-y', 'wigolo'], enabled: true,
+    });
+    const legacy = JSON.parse(readFileSync(legacyPath, 'utf-8'));
+    expect(legacy.theme).toBe('system');
+    expect(legacy.mcp.other).toBeDefined();
+    expect(legacy.mcp.wigolo).toBeUndefined();
+  });
+
+  it('reports a failed OpenCode legacy migration instead of silent success', async () => {
+    const configDir = join(dir, 'opencode-invalid-legacy');
+    const currentPath = join(configDir, 'opencode.json');
+    const legacyPath = join(configDir, 'config.json');
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(legacyPath, '{ "mcp": { "wigolo": nope } }');
+    const agents: DetectedAgent[] = [{
+      id: 'opencode', displayName: 'OpenCode', detected: true,
+      configPath: currentPath, installType: 'config-file',
+    }];
+
+    const results = await applyConfigs(agents, ['opencode']);
+
+    expect(results[0].ok).toBe(false);
+    expect(results[0].code).toBe('PARSE_ERROR');
+    expect(results[0].message).toContain('legacy OpenCode config');
+    const current = JSON.parse(readFileSync(currentPath, 'utf-8'));
+    expect(current.mcp.wigolo.command).toEqual(['npx', '-y', 'wigolo']);
+  });
+
   it('dryRun does not touch the filesystem', async () => {
     const path = join(dir, 'cursor', 'mcp.json');
     const agents: DetectedAgent[] = [{
@@ -78,5 +129,26 @@ describe('applyConfigs round-trip', () => {
     expect(results[0].ok).toBe(true);
     expect(results[0].dryRun).toBe(true);
     expect(() => readFileSync(path)).toThrow();
+  });
+
+  it('dryRun does not migrate an OpenCode legacy entry', async () => {
+    const configDir = join(dir, 'opencode-dry-run');
+    const currentPath = join(configDir, 'opencode.json');
+    const legacyPath = join(configDir, 'config.json');
+    mkdirSync(configDir, { recursive: true });
+    const original = JSON.stringify({
+      mcp: { wigolo: { type: 'local', command: 'npx', args: ['-y', 'wigolo'] } },
+    }, null, 2) + '\n';
+    writeFileSync(legacyPath, original);
+    const agents: DetectedAgent[] = [{
+      id: 'opencode', displayName: 'OpenCode', detected: true,
+      configPath: currentPath, installType: 'config-file',
+    }];
+
+    const results = await applyConfigs(agents, ['opencode'], { dryRun: true });
+
+    expect(results[0].ok).toBe(true);
+    expect(readFileSync(legacyPath, 'utf-8')).toBe(original);
+    expect(() => readFileSync(currentPath)).toThrow();
   });
 });

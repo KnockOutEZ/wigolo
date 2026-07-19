@@ -1,5 +1,10 @@
 import type { AgentId, DetectedAgent } from './agents.js';
-import { writeJsonConfig, type WriteJsonConfigResult } from './config-writer-json.js';
+import { dirname, join } from 'node:path';
+import {
+  removeJsonConfigEntry,
+  writeJsonConfig,
+  type WriteJsonConfigResult,
+} from './config-writer-json.js';
 import { writeTomlConfig, type WriteTomlConfigResult } from './config-writer-toml.js';
 import { installViaClaudeCli, type InstallViaClaudeCliResult } from './config-writer-cli.js';
 
@@ -8,6 +13,7 @@ const SERVER_ARGS = ['-y', 'wigolo'];
 
 interface JsonAgentSpec {
   keyPath: string[];
+  entry?: Record<string, unknown>;
   extraEntryFields?: Record<string, unknown>;
 }
 
@@ -17,7 +23,10 @@ const JSON_SPECS: Record<Exclude<AgentId, 'claude-code' | 'codex'>, JsonAgentSpe
   zed:          { keyPath: ['context_servers', 'wigolo'] },
   'gemini-cli': { keyPath: ['mcpServers', 'wigolo'] },
   windsurf:     { keyPath: ['mcpServers', 'wigolo'] },
-  opencode:     { keyPath: ['mcp', 'wigolo'], extraEntryFields: { type: 'local' } },
+  opencode:     {
+    keyPath: ['mcp', 'wigolo'],
+    entry: { type: 'local', command: [SERVER_COMMAND, ...SERVER_ARGS], enabled: true },
+  },
   antigravity:  { keyPath: ['mcpServers', 'wigolo'] },
 };
 
@@ -80,9 +89,27 @@ async function applyOne(agent: DetectedAgent, opts: ApplyConfigsOptions): Promis
   const r = await writeJsonConfig({
     path: agent.configPath,
     keyPath: spec.keyPath,
-    entry: buildEntry(spec.extraEntryFields),
+    entry: spec.entry ?? buildEntry(spec.extraEntryFields),
     dryRun: opts.dryRun,
+    allowJsonc: agent.id === 'opencode',
+    requireBackup: agent.id === 'opencode',
   });
+  if (agent.id === 'opencode' && r.ok) {
+    const legacy = await removeJsonConfigEntry({
+      path: join(dirname(agent.configPath), 'config.json'),
+      keyPath: spec.keyPath,
+      dryRun: opts.dryRun,
+      allowJsonc: true,
+      requireBackup: true,
+    });
+    if (!legacy.ok) {
+      return mapJsonResult(base, {
+        ...legacy,
+        message: `legacy OpenCode config migration failed: ${legacy.message ?? legacy.code}`,
+        backupPath: r.backupPath ?? legacy.backupPath,
+      });
+    }
+  }
   return mapJsonResult(base, r);
 }
 

@@ -50,6 +50,12 @@ describe('agent support seams stay consistent', () => {
     expect('antigravity' in JSON_SPECS).toBe(true);
   });
 
+  it('every detectable agent has uninstall ownership', () => {
+    const handlerIds = new Set(agentHandlers.map((handler) => handler.id));
+    const missing = AGENTS.map((agent) => agent.id).filter((id) => !handlerIds.has(id));
+    expect(missing).toEqual([]);
+  });
+
   it('cline is deliberately absent from TUI flags/detection/config-writer (skills-only)', () => {
     // Explicit exception record: cline is a skills-engine-only agent. If a future
     // slice adds cline MCP support, remove it from TUI_ABSENT_BY_DESIGN and wire

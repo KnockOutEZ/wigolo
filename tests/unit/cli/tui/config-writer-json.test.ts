@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeJsonConfig } from '../../../../src/cli/tui/config-writer-json.js';
+import { removeJsonConfigEntry, writeJsonConfig } from '../../../../src/cli/tui/config-writer-json.js';
 
 let dir: string;
 
@@ -74,6 +74,33 @@ describe('writeJsonConfig', () => {
     expect(content.mcpServers.wigolo.command).toBe('npx');
   });
 
+  it('accepts JSONC when explicitly enabled and preserves semantic content', async () => {
+    const path = join(dir, 'opencode.json');
+    const original = `{
+  // OpenCode accepts comments and trailing commas.
+  "theme": "system",
+  "mcp": {
+    "other": { "type": "remote", "url": "https://example.com/mcp" },
+  },
+}\n`;
+    writeFileSync(path, original);
+
+    const r = await writeJsonConfig({
+      path,
+      keyPath: ['mcp', 'wigolo'],
+      entry: { type: 'local', command: ['npx', '-y', 'wigolo'], enabled: true },
+      allowJsonc: true,
+      requireBackup: true,
+    });
+
+    expect(r.ok).toBe(true);
+    const content = JSON.parse(readFileSync(path, 'utf-8'));
+    expect(content.theme).toBe('system');
+    expect(content.mcp.other).toBeDefined();
+    expect(content.mcp.wigolo.command).toEqual(['npx', '-y', 'wigolo']);
+    expect(readFileSync(`${path}.bak`, 'utf-8')).toBe(original);
+  });
+
   it('writes a .bak file when the target already exists', async () => {
     const path = join(dir, 'mcp.json');
     const original = JSON.stringify({ mcpServers: { other: { command: 'x', args: [] } } }, null, 2);
@@ -95,6 +122,49 @@ describe('writeJsonConfig', () => {
       entry: { command: 'npx', args: [] },
     });
     expect(existsSync(`${path}.bak`)).toBe(false);
+  });
+
+  it('does not replace an existing config when a required backup fails', async () => {
+    const path = join(dir, 'opencode.json');
+    const original = '{"theme":"system"}\n';
+    writeFileSync(path, original);
+    mkdirSync(`${path}.bak`);
+
+    const r = await writeJsonConfig({
+      path,
+      keyPath: ['mcp', 'wigolo'],
+      entry: { type: 'local', command: ['npx', '-y', 'wigolo'], enabled: true },
+      allowJsonc: true,
+      requireBackup: true,
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('WRITE_FAILED');
+    expect(r.message).toContain('back up existing config');
+    expect(readFileSync(path, 'utf-8')).toBe(original);
+  });
+
+  it.skipIf(process.platform === 'win32')('preserves existing file permissions during atomic replacement', async () => {
+    const path = join(dir, 'opencode.json');
+    writeFileSync(path, '{"theme":"system"}\n');
+    chmodSync(path, 0o660);
+
+    const previousUmask = process.umask(0o027);
+    let r;
+    try {
+      r = await writeJsonConfig({
+        path,
+        keyPath: ['mcp', 'wigolo'],
+        entry: { type: 'local', command: ['npx', '-y', 'wigolo'], enabled: true },
+        allowJsonc: true,
+        requireBackup: true,
+      });
+    } finally {
+      process.umask(previousUmask);
+    }
+
+    expect(r.ok).toBe(true);
+    expect(statSync(path).mode & 0o777).toBe(0o660);
   });
 
   it.skipIf(process.platform === 'win32')('returns code=PERMISSION_DENIED when target dir is not writable', async () => {
@@ -158,5 +228,98 @@ describe('writeJsonConfig', () => {
     expect(r.ok).toBe(true);
     const content = JSON.parse(readFileSync(path, 'utf-8'));
     expect(content.wigolo.command).toBe('npx');
+  });
+});
+
+describe('removeJsonConfigEntry', () => {
+  it('removes an entry from JSONC and preserves other semantic content', async () => {
+    const path = join(dir, 'config.json');
+    const original = `{
+  // legacy OpenCode config
+  "theme": "system",
+  "mcp": {
+    "other": { "type": "remote", "url": "https://example.com/mcp" },
+    "wigolo": { "type": "local", "command": "npx", "args": ["-y", "wigolo"] },
+  },
+}\n`;
+    writeFileSync(path, original);
+
+    const r = await removeJsonConfigEntry({
+      path,
+      keyPath: ['mcp', 'wigolo'],
+      allowJsonc: true,
+      requireBackup: true,
+    });
+
+    expect(r).toMatchObject({ ok: true, code: 'OK', removed: true });
+    const content = JSON.parse(readFileSync(path, 'utf-8'));
+    expect(content.theme).toBe('system');
+    expect(content.mcp.other).toBeDefined();
+    expect(content.mcp.wigolo).toBeUndefined();
+    expect(readFileSync(`${path}.bak`, 'utf-8')).toBe(original);
+  });
+
+  it('does not remove an entry when a required backup fails', async () => {
+    const path = join(dir, 'config.json');
+    const original = '{"mcp":{"wigolo":{"type":"local"}}}\n';
+    writeFileSync(path, original);
+    mkdirSync(`${path}.bak`);
+
+    const r = await removeJsonConfigEntry({
+      path,
+      keyPath: ['mcp', 'wigolo'],
+      allowJsonc: true,
+      requireBackup: true,
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.removed).toBe(false);
+    expect(r.message).toContain('back up existing config');
+    expect(readFileSync(path, 'utf-8')).toBe(original);
+  });
+
+  it('does not rewrite or back up a file when the entry is absent', async () => {
+    const path = join(dir, 'opencode.json');
+    const original = '{\n  // keep this comment\n  "theme": "system",\n}\n';
+    writeFileSync(path, original);
+
+    const r = await removeJsonConfigEntry({
+      path,
+      keyPath: ['mcp', 'wigolo'],
+      allowJsonc: true,
+    });
+
+    expect(r).toMatchObject({ ok: true, code: 'OK', removed: false });
+    expect(readFileSync(path, 'utf-8')).toBe(original);
+    expect(existsSync(`${path}.bak`)).toBe(false);
+  });
+
+  it('treats an empty config as an object with no matching entry', async () => {
+    const path = join(dir, 'empty.json');
+    writeFileSync(path, '');
+
+    const r = await removeJsonConfigEntry({
+      path,
+      keyPath: ['mcp', 'wigolo'],
+      allowJsonc: true,
+    });
+
+    expect(r).toMatchObject({ ok: true, code: 'OK', removed: false });
+    expect(readFileSync(path, 'utf-8')).toBe('');
+    expect(existsSync(`${path}.bak`)).toBe(false);
+  });
+
+  it('reports a JSONC parse error instead of silently skipping migration', async () => {
+    const path = join(dir, 'config.json');
+    writeFileSync(path, '{ "mcp": { "wigolo": nope } }');
+
+    const r = await removeJsonConfigEntry({
+      path,
+      keyPath: ['mcp', 'wigolo'],
+      allowJsonc: true,
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('PARSE_ERROR');
   });
 });

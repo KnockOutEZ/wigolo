@@ -72,10 +72,25 @@ wigolo carries registry manifests at the repo root — `smithery.yaml`, `glama.j
 | Zed | `zed` |
 | Windsurf | `windsurf` |
 | Codex | `codex` |
+| OpenCode | `opencode` |
 | Antigravity | `antigravity` |
 
 ```bash
 npx wigolo init --agents=claude-code,cursor
+```
+
+For OpenCode, wigolo writes the global `~/.config/opencode/opencode.json` entry in OpenCode's local MCP format:
+
+```json
+{
+  "mcp": {
+    "wigolo": {
+      "type": "local",
+      "command": ["npx", "-y", "wigolo"],
+      "enabled": true
+    }
+  }
+}
 ```
 
 Cline isn't an `--agents` target — wire its MCP entry by hand (next section) and it still gets the full [skill packs](./skills.md) via `wigolo skills add`.
