@@ -85,3 +85,14 @@ export function tickerPage(): string {
   setInterval(() => { document.getElementById('ticker').textContent = 't' + (++n); }, 300);
 </script></body></html>`;
 }
+
+// 8. Thin frameless page: real rendered text (~150 chars, above the near-empty
+//    floor) but NO nav/main/aside/header/footer chrome and NO SPA root — the
+//    example.com / Hacker News shape. It is thin/unstructured, not an
+//    un-rendered shell, so completeness must be partial/thin_content, NOT shell.
+export function thinFrameless(): string {
+  return `<!doctype html><html><head><title>Example Domain</title></head><body>
+<h1>Example Domain</h1>
+<p>This domain is for use in illustrative examples in documents. You may use this domain in literature without prior coordination or asking for permission.</p>
+</body></html>`;
+}

@@ -44,6 +44,7 @@ function labelingRouter(): SmartRouter {
       let completeness: ContentCompleteness | undefined;
       if (url.includes('/shell')) completeness = { level: 'shell', reason: 'app_shell', settled_by: 'budget' };
       else if (url.includes('/full')) completeness = { level: 'full', reason: 'content_verified', settled_by: 'probe' };
+      else if (url.includes('/thin')) completeness = { level: 'partial', reason: 'thin_content', settled_by: 'stability' };
       return {
         url,
         finalUrl: url,
@@ -111,5 +112,28 @@ describe('research pipeline shell-completeness exclusion', () => {
     const shellRejects = (result.rejected_sources ?? []).filter((r) => r.stage === 'shell-content');
     expect(shellRejects).toHaveLength(0);
     expect(result.sources.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('does NOT exclude a partial/thin_content source — only level shell filters', async () => {
+    // The refinement guard: a thin-but-rendered page is partial, not shell, and
+    // must survive into the evidence set (regression guard against a future
+    // change broadening the gate from level==='shell' to include partial).
+    const results: RawSearchResult[] = [
+      { title: 'Thin page', url: 'https://example.com/articles/thin-page', snippet: 'x', relevance_score: 0.99, engine: 'stub' },
+      ...Array.from({ length: 5 }, (_, i) => ({
+        title: `FTS5 vs vector DB article ${i}`,
+        url: `https://content${i}.example.com/articles/fts5-vs-vector-${i}`,
+        snippet: 'SQLite FTS5 versus a dedicated vector database tradeoffs.',
+        relevance_score: 0.9 - i * 0.01,
+        engine: 'stub' as const,
+      })),
+    ];
+    const input: ResearchInput = { question: QUESTION, depth: 'quick' };
+
+    const result = await runResearchPipeline(input, [createStubEngine(results)], labelingRouter());
+
+    expect(result.sources.map((s) => s.url)).toContain('https://example.com/articles/thin-page');
+    const shellRejects = (result.rejected_sources ?? []).filter((r) => r.stage === 'shell-content');
+    expect(shellRejects).toHaveLength(0);
   });
 });

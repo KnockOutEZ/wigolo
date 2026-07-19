@@ -36,8 +36,11 @@ export interface SettleResult {
 //      any growth/content signal — even a probe/budget with content flags).
 //   2. hasContent → full (content_verified via probe, else stable_content),
 //      unless a budget exit cut off active growth → partial/never_settled.
-//   3. no content → partial/never_settled when a budget exit cut off growth,
-//      else shell (app_shell when an SPA root exists, else nav_shell).
+//   3. no content → partial/never_settled when a budget exit cut off growth;
+//      else a shell ONLY with frame evidence — app_shell when an SPA root
+//      exists, nav_shell when site chrome exists; a page with NEITHER frame
+//      signal is thin/frameless (rendered but unstructured) → partial/
+//      thin_content, NOT a shell (so it is not cache-stale / research-excluded).
 // challenge_shell is NOT produced here — it is a browser-pool override keyed on
 // the challenge classifiers over the final captured html.
 export function toCompleteness(
@@ -52,7 +55,11 @@ export function toCompleteness(
     return { level: 'full', reason: 'stable_content', settled_by: settledBy };
   }
   if (settledBy === 'budget' && stillGrowing) return { level: 'partial', reason: 'never_settled', settled_by: settledBy };
-  return { level: 'shell', reason: v.hasSpaRoot ? 'app_shell' : 'nav_shell', settled_by: settledBy };
+  // A shell REQUIRES actual shell evidence (an app frame). SPA root wins over
+  // nav chrome when both are present.
+  if (v.hasSpaRoot) return { level: 'shell', reason: 'app_shell', settled_by: settledBy };
+  if (v.hasNavChrome) return { level: 'shell', reason: 'nav_shell', settled_by: settledBy };
+  return { level: 'partial', reason: 'thin_content', settled_by: settledBy };
 }
 
 interface SettlePageHandle {

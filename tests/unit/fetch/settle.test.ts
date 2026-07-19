@@ -40,7 +40,7 @@ function makeFakePage(script: {
     evaluate: vi.fn().mockImplementation((src: string) => {
       if (src === DOM_VERDICT_SOURCE) {
         return Promise.resolve(
-          script.verdict ?? { hasContent: true, hasSpaRoot: false, nearEmpty: false },
+          script.verdict ?? { hasContent: true, hasSpaRoot: false, hasNavChrome: false, nearEmpty: false },
         );
       }
       // CONTENT_METRICS_SOURCE (stability poller).
@@ -230,7 +230,7 @@ describe('settlePage — hybrid probe + stability gate', () => {
     const page = makeFakePage({
       probeResolvesAtMs: 0,
       metrics: [{ textLen: 1000, nodes: 20 }],
-      verdict: { hasContent: true, hasSpaRoot: false, nearEmpty: false },
+      verdict: { hasContent: true, hasSpaRoot: false, hasNavChrome: false, nearEmpty: false },
     });
     const p = settlePage(page, {});
     await vi.advanceTimersByTimeAsync(10);
@@ -252,7 +252,7 @@ describe('settlePage — hybrid probe + stability gate', () => {
     const grow = Array.from({ length: 50 }, (_v, i) => ({ textLen: 200 + i * 300, nodes: 1 }));
     const page = makeFakePage({
       metrics: grow,
-      verdict: { hasContent: false, hasSpaRoot: true, nearEmpty: false },
+      verdict: { hasContent: false, hasSpaRoot: true, hasNavChrome: false, nearEmpty: false },
     });
     const p = settlePage(page, {});
     await vi.advanceTimersByTimeAsync(POST_GOTO_CAP_MS + 100);
@@ -281,7 +281,7 @@ describe('settlePage — hybrid probe + stability gate', () => {
         return new Promise(() => {});
       }),
       evaluate: vi.fn().mockImplementation((src: string) => {
-        if (src === DOM_VERDICT_SOURCE) return Promise.resolve({ hasContent: false, hasSpaRoot: false, nearEmpty: true });
+        if (src === DOM_VERDICT_SOURCE) return Promise.resolve({ hasContent: false, hasSpaRoot: false, hasNavChrome: false, nearEmpty: true });
         gateEntered = true;
         return Promise.resolve({ textLen: 0, nodes: 0 });
       }),
@@ -302,10 +302,11 @@ describe('settlePage — hybrid probe + stability gate', () => {
   });
 });
 
-describe('toCompleteness — closed 6-reason mapping (challenge_shell is browser-pool only)', () => {
+describe('toCompleteness — closed reason mapping (challenge_shell is browser-pool only)', () => {
   const V = (o: Partial<DomVerdict>): DomVerdict => ({
     hasContent: false,
     hasSpaRoot: false,
+    hasNavChrome: false,
     nearEmpty: false,
     ...o,
   });
@@ -358,7 +359,7 @@ describe('toCompleteness — closed 6-reason mapping (challenge_shell is browser
     });
   });
 
-  it('no content + SPA root → shell/app_shell', () => {
+  it('no content + SPA root → shell/app_shell (app_shell REQUIRES an SPA root)', () => {
     expect(toCompleteness('budget', V({ hasSpaRoot: true }), false)).toEqual({
       level: 'shell',
       reason: 'app_shell',
@@ -366,11 +367,30 @@ describe('toCompleteness — closed 6-reason mapping (challenge_shell is browser
     });
   });
 
-  it('no content + no SPA root → shell/nav_shell', () => {
-    expect(toCompleteness('stability', V({ hasSpaRoot: false }), false)).toEqual({
+  it('no content + nav chrome (no SPA root) → shell/nav_shell (nav_shell REQUIRES nav chrome)', () => {
+    expect(toCompleteness('stability', V({ hasNavChrome: true }), false)).toEqual({
       level: 'shell',
       reason: 'nav_shell',
       settled_by: 'stability',
+    });
+  });
+
+  it('no content + NO frame evidence (no SPA root, no nav chrome) → partial/thin_content', () => {
+    // The refinement: a rendered-but-thin frameless page (example.com, HN) is
+    // NOT an un-rendered shell — it has no chrome/root to BE a shell. It must
+    // not be shell-excluded from research / marked cache-stale.
+    expect(toCompleteness('stability', V({ hasContent: false, hasSpaRoot: false, hasNavChrome: false }), false)).toEqual({
+      level: 'partial',
+      reason: 'thin_content',
+      settled_by: 'stability',
+    });
+  });
+
+  it('SPA root takes precedence over nav chrome when both present → app_shell', () => {
+    expect(toCompleteness('budget', V({ hasSpaRoot: true, hasNavChrome: true }), false)).toEqual({
+      level: 'shell',
+      reason: 'app_shell',
+      settled_by: 'budget',
     });
   });
 });

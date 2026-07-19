@@ -114,6 +114,22 @@ describe('fetch cache gate — shell captures are cache-stale', () => {
     if (r.ok) expect(r.data.cached).toBe(true);
   });
 
+  it('partial/thin_content-cached row is served from cache (NOT stale) — regression guard', async () => {
+    // The refinement's thin_content is level:partial → must be served from
+    // cache like any non-shell, never treated stale (guards against a future
+    // change broadening the stale gate beyond level==='shell').
+    const url = 'https://example.com/thin';
+    seedCache(url, { level: 'partial', reason: 'thin_content', settled_by: 'stability' });
+    const { router, calls } = countingRouter(SHELL);
+    const r = await handleFetch({ url }, router);
+    expect(calls()).toBe(0);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data.cached).toBe(true);
+      expect(r.data.content_completeness?.reason).toBe('thin_content');
+    }
+  });
+
   it('force_refresh bypasses the cache entirely (one live fetch regardless of label)', async () => {
     const url = 'https://example.com/full-forced';
     seedCache(url, FULL);

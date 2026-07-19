@@ -144,7 +144,7 @@ export interface FetchOutput {
 /**
  * Post-settle assessment of how completely a browser-tier capture rendered.
  * `level` is the coarse verdict; `reason` names the specific class (closed
- * 7-value taxonomy); `settled_by` records which settle gate ended the wait.
+ * 8-value taxonomy); `settled_by` records which settle gate ended the wait.
  * Only produced by the browser tiers (playwright / stealth) — HTTP/TLS captures
  * leave `contentCompleteness` absent.
  */
@@ -157,6 +157,9 @@ export interface ContentCompleteness {
     | 'app_shell'
     | 'challenge_shell'
     | 'never_settled'
+    // A rendered-but-thin page with no frame evidence (no nav chrome, no SPA
+    // root) — thin/unstructured, NOT an un-rendered shell, so not shell-gated.
+    | 'thin_content'
     | 'empty';
   settled_by: 'probe' | 'stability' | 'budget';
 }

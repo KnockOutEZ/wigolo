@@ -123,15 +123,25 @@ describe('SPA settle corpus → handleFetch content_completeness', () => {
     closeDatabase();
   });
 
-  it('nav-shell page → content_completeness.level === "shell"', async () => {
+  it('nav-shell page → content_completeness shell/app_shell (has #root → genuine shell stays excluded)', async () => {
     const r = await handleFetch({ url: `${hfSrv.baseUrl}/nav-shell`, render_js: 'always' }, router);
     const out = r.ok ? r.data : ({ ...r } as never);
     expect(out.content_completeness?.level).toBe('shell');
+    expect(out.content_completeness?.reason).toBe('app_shell');
   }, 30000);
 
   it('instant static page → content_completeness.level === "full"', async () => {
     const r = await handleFetch({ url: `${hfSrv.baseUrl}/instant`, render_js: 'always' }, router);
     const out = r.ok ? r.data : ({ ...r } as never);
     expect(out.content_completeness?.level).toBe('full');
+  }, 30000);
+
+  it('thin FRAMELESS page → content_completeness partial/thin_content (NOT shell)', async () => {
+    // The refinement: a rendered-but-thin page with no frame (example.com / HN
+    // shape) must NOT be labeled shell — it is not an un-rendered shell.
+    const r = await handleFetch({ url: `${hfSrv.baseUrl}/thin-frameless`, render_js: 'always' }, router);
+    const out = r.ok ? r.data : ({ ...r } as never);
+    expect(out.content_completeness?.level).toBe('partial');
+    expect(out.content_completeness?.reason).toBe('thin_content');
   }, 30000);
 });

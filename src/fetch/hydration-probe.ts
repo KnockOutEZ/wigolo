@@ -190,15 +190,18 @@ export function isAppShellOnly(doc: ProbeDocument): boolean {
 // essentially nothing rendered at all.
 const NEAR_EMPTY_BODY_CHARS = 80;
 
-// The three primitives the completeness taxonomy is derived from, read once
-// after the settle gate exits. `hasContent` is the same predicate the render
-// gate waits on (isHydrated), so a page that settled via the probe is
-// hasContent=true by construction; `hasSpaRoot` distinguishes an app-shell
-// (client app that never mounted) from a plain nav shell; `nearEmpty` flags a
-// page with essentially no rendered body.
+// The primitives the completeness taxonomy is derived from, read once after the
+// settle gate exits. `hasContent` is the same predicate the render gate waits on
+// (isHydrated), so a page that settled via the probe is hasContent=true by
+// construction; `hasSpaRoot` marks a client-app frame; `hasNavChrome` marks
+// site chrome (nav/header/aside/footer). A page with neither frame signal AND
+// no content is thin/frameless (rendered but unstructured), NOT a shell —
+// nav_shell/app_shell REQUIRE their frame evidence. `nearEmpty` flags a page
+// with essentially no rendered body.
 export interface DomVerdict {
   hasContent: boolean;
   hasSpaRoot: boolean;
+  hasNavChrome: boolean;
   nearEmpty: boolean;
 }
 
@@ -208,6 +211,7 @@ export function classifyDom(doc: ProbeDocument): DomVerdict {
   return {
     hasContent: isHydrated(doc),
     hasSpaRoot: doc.querySelector(SPA_APP_ROOT_SELECTORS) !== null,
+    hasNavChrome: doc.querySelector(NAV_CHROME_SELECTORS) !== null,
     nearEmpty: bodyLen < NEAR_EMPTY_BODY_CHARS,
   };
 }
@@ -289,16 +293,18 @@ export const APP_SHELL_ONLY_SOURCE = `(() => {
 })()`;
 
 // Browser-side companion to classifyDom(): returns the {hasContent, hasSpaRoot,
-// nearEmpty} verdict in one page.evaluate after the settle gate exits. Reuses
-// HYDRATED_PREDICATE_BODY for hasContent so the verdict and the render gate can
-// never disagree on "is the body present?".
+// hasNavChrome, nearEmpty} verdict in one page.evaluate after the settle gate
+// exits. Reuses HYDRATED_PREDICATE_BODY for hasContent so the verdict and the
+// render gate can never disagree on "is the body present?".
 export const DOM_VERDICT_SOURCE = `(() => {
   const hasContent = (() => {${HYDRATED_PREDICATE_BODY}})();
   const SPA_APP_ROOT_SELECTORS = ${JSON.stringify(SPA_APP_ROOT_SELECTORS)};
+  const NAV_CHROME_SELECTORS = ${JSON.stringify(NAV_CHROME_SELECTORS)};
   const hasSpaRoot = document.querySelector(SPA_APP_ROOT_SELECTORS) !== null;
+  const hasNavChrome = document.querySelector(NAV_CHROME_SELECTORS) !== null;
   const bodyLen = (document.body && document.body.innerText ? document.body.innerText : '').trim().length;
   const nearEmpty = bodyLen < ${NEAR_EMPTY_BODY_CHARS};
-  return { hasContent, hasSpaRoot, nearEmpty };
+  return { hasContent, hasSpaRoot, hasNavChrome, nearEmpty };
 })()`;
 
 // Content metrics snapshot for the stability poller: text length + node count

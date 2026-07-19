@@ -26,6 +26,7 @@ export function startCorpusServer(): Promise<CorpusServer> {
         : route === '/challenge' ? fx.challengeShell()
         : route === '/code-docs' ? fx.codeHeavyDocs()
         : route === '/ticker' ? fx.tickerPage()
+        : route === '/thin-frameless' ? fx.thinFrameless()
         : null;
       if (html === null) {
         res.writeHead(404);

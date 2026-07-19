@@ -207,13 +207,38 @@ describe('classifyDom — completeness verdict primitives', () => {
     });
   });
 
-  it('nav-only shell with NO SPA root → hasContent false, hasSpaRoot false', () => {
+  it('nav-only shell with NO SPA root → hasContent false, hasSpaRoot false, hasNavChrome true', () => {
     const nav = '<nav>' + '<a>section link description text</a>'.repeat(30) + '</nav>';
     withInnerText(`<html><body>${nav}</body></html>`, (doc) => {
       const v = classifyDom(doc as never);
       expect(v.hasContent).toBe(false);
       expect(v.hasSpaRoot).toBe(false);
+      // <nav> IS shell evidence — this stays a nav_shell (safety property).
+      expect(v.hasNavChrome).toBe(true);
     });
+  });
+
+  it('thin FRAMELESS page (rendered text, no nav/main/aside/header, no SPA root) → no shell evidence', () => {
+    // example.com / Hacker News shape: real content but no frame. Must report
+    // hasNavChrome false + hasSpaRoot false so toCompleteness labels it
+    // partial/thin_content, NOT a shell.
+    withInnerText(
+      `<html><body><h1>Example Domain</h1><p>${'This domain is for illustrative use. '.repeat(4)}</p></body></html>`,
+      (doc) => {
+        const v = classifyDom(doc as never);
+        expect(v.hasNavChrome).toBe(false);
+        expect(v.hasSpaRoot).toBe(false);
+      },
+    );
+  });
+
+  it('<aside> sidebar counts as nav chrome (hasNavChrome true)', () => {
+    withInnerText(
+      `<html><body><aside class="sidebar">${'<a>link</a>'.repeat(20)}</aside></body></html>`,
+      (doc) => {
+        expect(classifyDom(doc as never).hasNavChrome).toBe(true);
+      },
+    );
   });
 
   it('nav-only shell WITH #root → hasSpaRoot true, hasContent false', () => {
@@ -344,11 +369,41 @@ describe('DOM_VERDICT_SOURCE', () => {
     expect(DOM_VERDICT_SOURCE).not.toMatch(/require\(/);
   });
 
-  it('returns the three verdict keys', () => {
-    for (const key of ['hasContent', 'hasSpaRoot', 'nearEmpty']) {
+  it('returns all four verdict keys', () => {
+    for (const key of ['hasContent', 'hasSpaRoot', 'hasNavChrome', 'nearEmpty']) {
       expect(DOM_VERDICT_SOURCE).toContain(key);
     }
   });
+});
+
+// classifyDom (TS) ⇄ DOM_VERDICT_SOURCE (inlined string) parity: the verdict
+// primitives feed toCompleteness, so a drift between the two implementations
+// would silently mislabel completeness in the browser vs. the linkedom tests.
+describe('classifyDom ⇄ DOM_VERDICT_SOURCE lockstep', () => {
+  const runVerdict = (doc: Document): Record<string, boolean> =>
+    new Function('document', `return ${DOM_VERDICT_SOURCE}`)(doc) as Record<string, boolean>;
+
+  const para = '<p>' + 'genuine article prose word '.repeat(30) + '</p>';
+  const verdictFixtures: Array<[string, string]> = [
+    ['full article', `<html><body><article>${para}${para}${para}</article></body></html>`],
+    ['nav shell (no root)', `<html><body><nav>${'<a>link text here for length</a>'.repeat(30)}</nav></body></html>`],
+    ['app shell (#root, no content)', `<html><body><div id="root"><nav>${'<a>link</a>'.repeat(20)}</nav></div></body></html>`],
+    ['thin frameless', `<html><body><h1>Tiny</h1><p>${'a short rendered sentence. '.repeat(4)}</p></body></html>`],
+    ['near-empty', `<html><body><div id="root"></div></body></html>`],
+  ];
+
+  for (const [name, html] of verdictFixtures) {
+    it(`string verdict matches classifyDom: ${name}`, () => {
+      withInnerText(html, (doc) => {
+        const ts = classifyDom(doc as never);
+        const str = runVerdict(doc as unknown as Document);
+        expect(str.hasContent).toBe(ts.hasContent);
+        expect(str.hasSpaRoot).toBe(ts.hasSpaRoot);
+        expect(str.hasNavChrome).toBe(ts.hasNavChrome);
+        expect(str.nearEmpty).toBe(ts.nearEmpty);
+      });
+    });
+  }
 });
 
 // LOCKSTEP DRIFT GUARD: isHydrated (TS) and its inlined-string twin
