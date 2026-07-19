@@ -44,7 +44,7 @@ import { ChallengeBlockedError } from './browser-pool.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
 import { guardFetchUrl } from '../watch/ssrf.js';
-import type { RawFetchResult, BrowserAction, Mode, StageError } from '../types.js';
+import type { RawFetchResult, BrowserAction, Mode, StageError, ContentCompleteness } from '../types.js';
 
 // Domains we know up-front are heavily client-rendered. HTTP-first detection
 // keeps mis-classifying these (react.dev SSRs enough nav text to clear the
@@ -164,7 +164,7 @@ export type HttpFetcher = (
 export type PlaywrightFetcher = (
   url: string,
   options?: { timeoutMs?: number; signal?: AbortSignal },
-) => Promise<{ html: string; text: string }>;
+) => Promise<{ html: string; text: string; completeness: ContentCompleteness }>;
 
 /**
  * Injectable TLS-impersonation fetcher. Same shape as `tlsFetch`
@@ -858,6 +858,7 @@ export class SmartRouter {
           method: 'browser',
           headers: {},
           escalated: true,
+          contentCompleteness: pw.completeness,
         };
       } catch (err) {
         if (err instanceof Error && err.message === 'playwright_not_installed') {

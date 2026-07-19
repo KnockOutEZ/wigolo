@@ -21,6 +21,25 @@ wigolo doctor --fix  # repairs the known failure classes automatically
 | Everything fails behind a corporate proxy | Set `USE_PROXY=true` and `PROXY_URL` (credentials go to the OS keychain, not disk). See [configuration](./configuration.md#fetch-and-browser-engine). |
 | A domain that used to work is misbehaving | wigolo learns per-domain fetch routing; a site redesign can invalidate what it learned. `wigolo tune show <domain>` to inspect, `wigolo tune reset <domain>` to relearn. |
 | A watch job never fires | Watch checks run only while a daemon (`wigolo serve`) or MCP session is alive — a one-shot CLI call registers jobs but can't schedule them. |
+| Browser engine download is slow or times out | Common on throttled or region-restricted links. Re-run `wigolo warmup --browser` — it retries and resumes. If the default download CDN is slow where you are, point the browser engine at a mirror: set `PLAYWRIGHT_DOWNLOAD_HOST=<mirror-url>` before warmup. |
+| Embeddings model download fails (`TAR_BAD_ARCHIVE` / "unrecognized archive") | A truncated or corrupt download. wigolo now auto-clears the partial file and re-downloads once; if it still fails, `wigolo config --cleanup` and re-run `wigolo warmup --embeddings`. |
+| Ranking model download fails (`fetch failed`) | A transient network blip. Re-run `wigolo warmup --reranker` — it retries with backoff. |
+| A download fails with `self signed certificate in certificate chain` | You're behind a TLS-inspecting (corporate) proxy. Point Node at your organization's CA bundle — `NODE_EXTRA_CA_CERTS=/path/to/corp-ca.pem` — then re-run warmup. |
+| `npm install` fails compiling a native dependency (often on Windows) | Your Node version has no prebuilt binary, so npm falls back to a source build. Use a supported LTS — **Node 20, 22, or 24** — where prebuilts exist, or install a C/C++ toolchain (Visual Studio Build Tools on Windows). |
+| Downloads stall or fail on low disk | Components need ~1 GB free. Free space, point `WIGOLO_DATA_DIR` at a larger volume, or `wigolo config --cleanup` to reclaim a previous install. |
+
+## A component failed during setup — is wigolo broken?
+
+No. `init` exits 0 even when a download fails, and the **core** (search, HTTP fetch, crawl, extract, cache) needs no models and no browser at all. Failed components degrade gracefully — here is exactly what each one costs:
+
+| If this failed… | What you lose | What still works |
+| --- | --- | --- |
+| Browser engine | JS-rendered pages fall back to plain HTTP fetch (some single-page-app content may be missing) | search, HTTP fetch, crawl, extract, cache, models |
+| Embeddings model | semantic discovery — `find_similar` and semantic cache ranking fall back to keyword matching | search, fetch, crawl, extract, keyword cache |
+| Ranking model | the ML re-rank pass (multi-engine rank fusion still applies) | everything else — results are just less finely ordered |
+| No LLM key | `research` / `agent` / `search --format answer` return structured evidence instead of written prose | every keyless tool, which is the default |
+
+Re-run `wigolo warmup --all` any time to retry the downloads, or just let each component lazy-load on first use.
 
 ## blocked_by_challenge
 
@@ -31,9 +50,23 @@ Two honest facts to calibrate expectations:
 - **IP reputation is scored.** From datacenter IPs (VPS, CI, cloud), some challenge-protected sites will not clear even though the identical request works from a residential connection. That's a property of where you're running, not a knob wigolo forgot.
 - **The opt-in lever is a proxy** whose IP reputation matches your legitimate-research use — see [self-hosting](./self-hosting.md#the-datacenter-ip-reality). Credentials are keychain-stored, and politeness (robots.txt, per-domain rate limits) still applies.
 
-## Windows notes
+## Platform notes
 
-wigolo supports Windows (Node 20+). The data dir is `%USERPROFILE%\.wigolo`. Set env vars with your shell's syntax (`$env:WIGOLO_SEARCH="hybrid"` in PowerShell); everything else — commands, flags, ports — is identical to the Unix docs.
+**Node version.** wigolo runs on **Node 20, 22, or 24** (LTS). Very new or unusual Node builds may not have prebuilt native binaries yet and will try to compile from source (which needs a C/C++ toolchain) — stick to an LTS to avoid that.
+
+**Windows.** Supported on Node 20+. The data dir is `%USERPROFILE%\.wigolo`. Set env vars with your shell's syntax (`$env:WIGOLO_SEARCH="hybrid"` in PowerShell); everything else — commands, flags, ports — is identical to the Unix docs.
+
+**Linux (minimal images / containers).** The browser engine needs a handful of OS libraries; `wigolo warmup --browser` installs them (with sudo where available) and otherwise prints the exact command to run. **Python is _not_ required** — it is used only by the optional search-engine sidecar, so a "Python 3 not found" note is safe to ignore for core use.
+
+**macOS (Apple Silicon / Intel).** Fully supported — models and browser included.
+
+**Linux on ARM (arm64).** Core search, fetch, crawl, extract, and cache work normally. **Semantic features are currently unavailable on linux-arm64** — the embeddings model's tokenizer has no prebuilt ARM binary yet, so `find_similar`, embeddings, and semantic cache ranking fall back to keyword matching. If you need semantic features on Linux today, run on an x64 host; this is tracked for a future release.
+
+## Slow, proxied, or offline networks
+
+- **Slow or region-restricted link.** The model and browser downloads are the slow part, and they resume on re-run. `wigolo init --no-warmup` skips all downloads up front — each component then lazy-loads on first use. For a throttled browser-engine CDN, set a `PLAYWRIGHT_DOWNLOAD_HOST` mirror before warmup.
+- **Corporate proxy.** Set `USE_PROXY=true` and `PROXY_URL` (credentials go to the OS keychain, not disk). Behind a TLS-inspecting proxy, also set `NODE_EXTRA_CA_CERTS` to your CA bundle so downloads validate.
+- **Air-gapped / offline.** Run `wigolo warmup --all` on a connected machine, then copy its `~/.wigolo` to the target to seed the models and browser. Note that search and fetch still reach the live web at query time — only the model/browser _downloads_ can be pre-seeded.
 
 ## Where logs live
 

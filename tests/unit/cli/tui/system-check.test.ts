@@ -219,12 +219,16 @@ describe('runSystemCheck', () => {
     }
   });
 
-  it('sets hardFailure=true when Python 3 is missing', async () => {
+  it('does NOT hard-fail when Python 3 is missing (Python is only for the optional search-engine sidecar)', async () => {
+    // WHY: the default core backend + fetch/crawl/extract/cache/embeddings/rerank
+    // are all Python-free. Python is used ONLY by the opt-in search-engine sidecar,
+    // and warmup degrades to core when it is absent — so a missing Python must
+    // never block setup (it used to abort `wigolo init` with "cannot continue").
     vi.mocked(spawnSync).mockReturnValue({
       status: 127, stdout: '', stderr: '', error: new Error('ENOENT'),
     } as any);
     const r = await runSystemCheck();
-    expect(r.hardFailure).toBe(true);
+    expect(r.hardFailure).toBe(false);
     expect(r.python.ok).toBe(false);
   });
 

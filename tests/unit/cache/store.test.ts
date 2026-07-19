@@ -202,6 +202,29 @@ describe('cacheContent + getCachedContent', () => {
     expect(result!.expiresAt).not.toBeNull();
     expect(new Date(result!.expiresAt!).getTime()).toBeGreaterThan(Date.now());
   });
+
+  it('roundtrips content_completeness from RawFetchResult through the cache', () => {
+    const url = 'https://example.com/completeness';
+    const raw = makeRaw(url);
+    raw.method = 'playwright';
+    raw.contentCompleteness = { level: 'shell', reason: 'app_shell', settled_by: 'budget' };
+    cacheContent(raw, makeExtraction());
+    const result = getCachedContent(url);
+    expect(result!.contentCompleteness).toEqual({
+      level: 'shell',
+      reason: 'app_shell',
+      settled_by: 'budget',
+    });
+  });
+
+  it('leaves contentCompleteness undefined when the RawFetchResult lacks it (HTTP tier)', () => {
+    const url = 'https://example.com/no-completeness';
+    // Default makeRaw is an http-tier result with no contentCompleteness — the
+    // same shape a legacy row (written before migration 009) reads back as.
+    cacheContent(makeRaw(url), makeExtraction());
+    const result = getCachedContent(url);
+    expect(result!.contentCompleteness).toBeUndefined();
+  });
 });
 
 describe('isExpired', () => {

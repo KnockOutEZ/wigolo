@@ -126,6 +126,10 @@ export async function runSystemCheck(): Promise<SystemCheckResult> {
   const python = checkPython();
   const docker = checkDocker();
   const disk = await checkDiskSpace();
-  const hardFailure = !node.ok || !python.ok;
+  // Only Node is a hard requirement. Python powers the opt-in search-engine
+  // sidecar alone — core search + fetch/crawl/extract/cache/embeddings/rerank are
+  // all Python-free, and warmup degrades to core without it — so a missing Python
+  // is a soft warning, never a setup blocker.
+  const hardFailure = !node.ok;
   return { node, python, docker, disk, hardFailure };
 }

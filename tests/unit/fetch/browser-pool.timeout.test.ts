@@ -23,6 +23,10 @@ vi.mock('playwright', () => {
           });
         }),
         waitForLoadState: vi.fn().mockResolvedValue(undefined),
+        // settlePage's hybrid gate: probe resolves immediately so the
+        // goto-success case settles fast without the stability poller.
+        waitForFunction: vi.fn().mockResolvedValue(undefined),
+        evaluate: vi.fn().mockResolvedValue({ textLen: 1000, nodes: 20 }),
         content: vi.fn().mockResolvedValue('<html><body>partial shell content</body></html>'),
         screenshot: vi.fn().mockResolvedValue(Buffer.from('x')),
         setExtraHTTPHeaders: vi.fn().mockResolvedValue(undefined),

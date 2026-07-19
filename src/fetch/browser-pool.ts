@@ -4,8 +4,10 @@ import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { BrowserSelector, type SelectionStrategy } from './browser-selector.js';
 import { executeActions } from './action-executor.js';
-import { HYDRATION_PROBE_SOURCE } from './hydration-probe.js';
 import { abortRejection } from '../util/abort.js';
+import { settlePage, toCompleteness } from './settle.js';
+import { DOM_VERDICT_SOURCE, type DomVerdict } from './hydration-probe.js';
+import type { ContentCompleteness } from '../types.js';
 import { sanitizedChildEnv } from '../util/child-env.js';
 import { playwrightProxyOption } from './proxy-credentials.js';
 import { redactUrl } from '../util/redact-url.js';
@@ -399,7 +401,6 @@ export class MultiBrowserPool {
     const fetchStartMs = Date.now();
     const config = getConfig();
     const navTimeoutMs = options.timeoutMs ?? config.playwrightNavTimeoutMs;
-    const loadTimeoutMs = config.playwrightLoadTimeoutMs;
 
     let ctx: BrowserContext;
     let cdpBrowser: Browser | null = null;
@@ -808,39 +809,16 @@ export class MultiBrowserPool {
       // can't hold the slot past the stage budget.
       if (options.signal?.aborted) throw options.signal.reason;
 
-      try {
-        // Race the networkidle wait against abort so an abort DURING the wait
-        // is honored deterministically (not via page.close-propagation timing).
-        // The normal timeout still resolves through waitForLoadState; only the
-        // abort reason propagates out (rethrown below).
-        await Promise.race([
-          page.waitForLoadState('networkidle', { timeout: loadTimeoutMs }),
-          abortRejection(options.signal),
-        ]);
-      } catch (err) {
-        if (options.signal?.aborted) throw err;
-        log.debug('networkidle timeout, using page content as-is', { url, type: resolvedType });
-      }
-
-      // SPAs (React Router, VitePress, Docusaurus, ...) ship a populated
-      // nav-shell that clears networkidle while the article body is empty.
-      // Wait briefly for hydrated content per the shared probe so search +
-      // crawl + find_similar fetches don't leak nav-only shells. See
-      // src/fetch/hydration-probe.ts for the predicate + selector set.
-      if (typeof page.waitForFunction === 'function') {
-        const hydrationBudget = Math.min(8000, Math.max(1500, Math.floor(navTimeoutMs / 4)));
-        // Swallow the normal hydration-probe timeout (best-effort wait), but
-        // race against abort so an abort here rejects promptly. Re-throw only
-        // when the signal aborted.
-        await Promise.race([
-          page.waitForFunction(HYDRATION_PROBE_SOURCE, undefined, {
-            timeout: hydrationBudget,
-          }).catch(() => undefined),
-          abortRejection(options.signal),
-        ]).catch((err) => {
-          if (options.signal?.aborted) throw err;
-        });
-      }
+      // One shared post-goto settle (network idle + hybrid hydration gate)
+      // drawn from the caller's REMAINING fetch budget, mirroring the challenge
+      // poll's budget math above. Its completeness label is threaded onto the
+      // returned result below (re-derived if actions mutate the DOM after).
+      const remainingBudgetMs =
+        options.timeoutMs !== undefined
+          ? Math.max(0, options.timeoutMs - (Date.now() - fetchStartMs))
+          : undefined;
+      const settle = await settlePage(page, { budgetMs: remainingBudgetMs, signal: options.signal, url });
+      if (options.signal?.aborted) throw options.signal.reason;
 
       let actionResults: ActionResult[] | undefined;
       if (options.actions && options.actions.length > 0) {
@@ -862,6 +840,24 @@ export class MultiBrowserPool {
       if (enteredChallengePoll && isNearEmptyBody(html)) {
         log.warn('challenge auto-passed but hydrated body is near-empty — labeling blocked', { url });
         throw new ChallengeBlockedError(url);
+      }
+
+      // Completeness label for the returned capture. Base is the settle verdict;
+      // if actions ran, the DOM changed AFTER settle so re-derive from a fresh
+      // verdict read. Then, if the FINAL html still looks like a challenge shell
+      // that did NOT throw ChallengeBlockedError above (a 2xx interstitial with
+      // real body length that slipped the near-empty gate), override to
+      // challenge_shell so downstream never trusts it as content.
+      let completeness: ContentCompleteness = settle.completeness;
+      if (options.actions && options.actions.length > 0) {
+        const v = (await page.evaluate(DOM_VERDICT_SOURCE).catch(() => null)) as DomVerdict | null;
+        if (v) completeness = toCompleteness(settle.settledBy, v, settle.stillGrowing);
+      }
+      const looksLikeChallenge = isAntiBotStatus(statusCode)
+        ? isChallengeResponse(statusCode, html, responseHeaders)
+        : isChallengeShell(statusCode, html);
+      if (looksLikeChallenge) {
+        completeness = { level: 'shell', reason: 'challenge_shell', settled_by: settle.settledBy };
       }
 
       let screenshotBase64: string | undefined;
@@ -886,6 +882,7 @@ export class MultiBrowserPool {
         headers: responseHeaders,
         screenshot: screenshotBase64,
         actionResults,
+        contentCompleteness: completeness,
         ...(gotoTimedOut ? { warning: 'goto_timeout_partial_content' } : {}),
       };
     } finally {

@@ -233,7 +233,24 @@ export async function runResearchPipeline(
     const toFetch = urlKept.slice(0, maxSources + buffer);
 
     // Phase 4: Fetch the buffered candidate set in parallel
-    const fetched: ResearchSource[] = await fetchSources(router, toFetch);
+    const fetchedAll: ResearchSource[] = await fetchSources(router, toFetch);
+
+    // Shell-completeness exclusion — a capture the fetch tier labeled a shell
+    // (nav-only / app-shell / challenge interstitial that never rendered real
+    // content) must never become a cited research source. Runs BEFORE the
+    // content gate: the shell label is an explicit render verdict, more
+    // authoritative than the extracted-text heuristic. Only an explicit `shell`
+    // level excludes — an unlabeled source (HTTP/TLS tier, no browser verdict)
+    // is left for the content gate to judge, so non-browser sources are never
+    // over-filtered here.
+    const fetched: ResearchSource[] = [];
+    for (const s of fetchedAll) {
+      if (s.content_completeness?.level === 'shell') {
+        rejected_sources.push({ url: s.url, reason: 'shell-content', stage: 'shell-content' });
+        continue;
+      }
+      fetched.push(s);
+    }
 
     // Content gate — drop empty/off-topic shells (thin AND off-topic). Only
     // successfully-fetched content is gated: a fetch failure keeps the search
@@ -430,6 +447,10 @@ async function fetchSources(
         markdown_content: truncated,
         relevance_score: result.relevance_score,
         fetched: true,
+        // Carry the render-completeness label so the pipeline can exclude a
+        // shell capture from the evidence set before synthesis. Absent on
+        // non-browser (HTTP/TLS) results, which are never shell-excluded.
+        ...(raw.contentCompleteness ? { content_completeness: raw.contentCompleteness } : {}),
       };
     } catch (err) {
       log.debug('failed to fetch research source', {

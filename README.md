@@ -9,11 +9,15 @@ Local-first web intelligence for AI agents — **no keys, no cloud, no metered b
 <sub>and beyond&nbsp;&nbsp;**LangChain · CrewAI · LlamaIndex · Vercel AI SDK · n8n & self-hosted agents · any MCP client · plain REST**</sub>
 
 [![npm](https://img.shields.io/npm/v/wigolo?color=cb3837&logo=npm)](https://www.npmjs.com/package/wigolo)
+[![npm downloads](https://img.shields.io/npm/dm/wigolo?color=cb3837&logo=npm&label=downloads)](https://www.npmjs.com/package/wigolo)
 [![GitHub stars](https://img.shields.io/github/stars/KnockOutEZ/wigolo?style=flat&logo=github&color=e3b341)](https://github.com/KnockOutEZ/wigolo/stargazers)
+[![CI](https://img.shields.io/github/actions/workflow/status/KnockOutEZ/wigolo/ci.yml?branch=main&logo=github&label=CI)](https://github.com/KnockOutEZ/wigolo/actions/workflows/ci.yml)
 [![node](https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed)](https://modelcontextprotocol.io)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-2563eb)](#license)
 [![status](https://img.shields.io/badge/status-public%20beta-b7791f)](#beta--feedback)
+
+<a href="https://trendshift.io/repositories/79424?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-79424" target="_blank"><img src="https://trendshift.io/api/badge/repositories/79424" alt="wigolo on Trendshift" width="250" height="55"/></a>
 
 [Quickstart](#quickstart) · [Tools](#tools) · [Why wigolo](#why-its-different) · [Benchmark](#benchmark) · [Docs](docs/README.md) · [Examples](examples/README.md) · [Feedback](#beta--feedback) · [FAQ](#faq)
 
@@ -344,6 +348,19 @@ That makes your feedback the whole game right now. Every report is read, usually
 - 💬 **[Ask anything](https://github.com/KnockOutEZ/wigolo/discussions)** — questions, setups, show & tell
 
 And if wigolo earns a place in your setup, the ways to keep it alive: a ⭐ **star** (it's how open source gets found), a **[☕ coffee](https://buymeacoffee.com/knockoutez)** (there's no paid tier and never will be), or just **[an email](mailto:ktowhid20@gmail.com)** — it goes straight to the one developer who wrote the code.
+
+## Troubleshooting
+
+`wigolo doctor` names any broken component and the exact env var or command that fixes it; `wigolo doctor --fix` repairs the common cases. A component failing during `init` **doesn't** break wigolo — `init` still exits 0, and core search / fetch / crawl / extract / cache work with no models and no browser.
+
+Quick hits:
+
+- **Slow or failed downloads** — re-run `wigolo warmup --all` (or `--browser` / `--embeddings` / `--reranker`); they resume and retry.
+- **Browser won't launch on Linux** — `wigolo warmup --browser` installs the OS libraries (or prints the exact command).
+- **Native build error / unusual Node** — use an LTS: **Node 20, 22, or 24**.
+- **Behind a proxy** — `USE_PROXY=true` + `PROXY_URL`; add `NODE_EXTRA_CA_CERTS` for TLS-inspecting proxies.
+
+Full guide — per-symptom fixes, a "what still works when X fails" map, platform notes (incl. linux-arm64), and offline installs: **[docs/troubleshooting.md](docs/troubleshooting.md)**.
 
 ## FAQ
 

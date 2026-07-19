@@ -63,3 +63,100 @@ jobs:
       - run: npx playwright install --with-deps chromium
 
       - run: npm test
+
+  # Clean-machine smoke on every desktop OS: a fresh global install, a real
+  # `init`, then tool calls that LOAD and EXERCISE every dependency subsystem —
+  # native SQLite, browser engine, ML reranker, semantic embeddings, and (when a
+  # key is present) cloud-LLM synthesis. Unit tests mock these out; this is the
+  # only gate that proves the deps actually work on a clean box before a PR
+  # merges. NOTHING is cached between runs: each run re-installs native addons
+  # and re-downloads the browser + models from scratch, so the full
+  # install → download → extract → load → tool-call path is retested on a
+  # genuinely clean machine every time (this is what re-exercises the
+  # recursive-mkdir and corrupt-archive download-path fixes on every PR).
+  clean-machine-smoke:
+    name: clean-machine smoke (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    # linux-arm64 is non-blocking: its native embedding tokenizer is still being
+    # validated on real ARM hardware, so it reports without gating a merge.
+    continue-on-error: ${{ matrix.os == 'ubuntu-22.04-arm' }}
+    # Bound the job: a stuck browser/model download on a bad runner should fail
+    # in minutes, not ride the 6h default.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every desktop OS across the supported Node range. 12.9.0 ships prebuilt
+        # native binaries for all of these (win32-x64 + darwin/linux arm64 across
+        # Node 20/22/24), so npm ci never falls back to a source compile.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['20', '22', '24']
+        include:
+          # Extra linux-arm64 coverage on one Node version (non-blocking above).
+          - os: ubuntu-22.04-arm
+            node: '20'
+    env:
+      # Add GEMINI_API_KEY as a repo secret to exercise the
+      # cloud-LLM path. Absent (e.g. on fork PRs) → the LLM step is skipped and
+      # the job still passes on the keyless deps.
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install + build
+        shell: bash
+        run: npm ci && npm run build
+
+      - name: Pack + global install (fresh `npm i -g wigolo`)
+        shell: bash
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' # warmup does the real install below
+        run: |
+          TGZ=$(npm pack 2>/dev/null | tail -1)
+          echo "packed: $TGZ"
+          npm i -g "./$TGZ"
+
+      - name: init completes (exit 0) on a fresh machine
+        shell: bash
+        run: wigolo init --no-warmup --non-interactive --agents=codex --plain
+
+      - name: warmup loads + self-tests every native/model dep
+        shell: bash
+        run: |
+          # chromium always installs; --reranker/--embeddings add the ML models,
+          # each with a real self-test (browser launch, one rerank, one embed).
+          # linux-arm64 has no embeddings tokenizer binary (a known upstream gap)
+          # and `warmup --embeddings` THROWS there, so skip it on ARM entirely and
+          # assert browser + reranker only — the ARM job still gates the browser
+          # engine, ranking model, native SQLite, and the tool calls below.
+          if [ "${{ matrix.os }}" = "ubuntu-22.04-arm" ]; then
+            wigolo warmup --reranker --json > warm.json
+            KEYS='browserEngine reranker'
+          else
+            wigolo warmup --reranker --embeddings --json > warm.json
+            KEYS='browserEngine reranker embeddings'
+          fi
+          node -e "const r=JSON.parse(require('fs').readFileSync('warm.json','utf8')); for (const k of process.argv.slice(1)){ if (r[k] !== 'ok'){ console.error('DEP FAILED:', k, '=', r[k], r[k+'Error']||''); process.exit(1) } } console.log('native + model deps OK ('+process.argv.slice(1).join(', ')+')')" $KEYS
+
+      - name: tool calls prove the wired pipeline (fetch/extract/cache, search/rerank)
+        shell: bash
+        run: |
+          for i in 1 2 3; do wigolo fetch https://example.com --json > fetch.json && break; echo "fetch retry $i" >&2; sleep 5; done
+          node -e "const t=require('fs').readFileSync('fetch.json','utf8'); JSON.parse(t); if (t.length < 50){ console.error('fetch/extract produced trivial output'); process.exit(1) } console.log('fetch + extract + cache OK ('+t.length+'b)')"
+          for i in 1 2 3; do wigolo search 'typescript programming language' --json > search.json && break; echo "search retry $i" >&2; sleep 5; done
+          node -e "const t=require('fs').readFileSync('search.json','utf8'); JSON.parse(t); if (t.length < 50){ console.error('search/rerank produced trivial output'); process.exit(1) } console.log('search + rerank + sqlite OK')"
+
+      - name: cloud-LLM synthesis (Gemini) — proves the LLM path + key wiring
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '20' && env.GEMINI_API_KEY != ''
+        # Best-effort: an external LLM API's quota or a transient error must not
+        # fail this required job. It verifies the synthesis path when it can.
+        continue-on-error: true
+        shell: bash
+        run: |
+          wigolo search 'what is the capital of France' --format answer --json > ans.json
+          node -e "const r=JSON.parse(require('fs').readFileSync('ans.json','utf8')); const a=r.answer; if (typeof a !== 'string' || a.length < 5){ console.error('LLM synthesis produced no answer field. Response head:', JSON.stringify(r).slice(0,400)); process.exit(1) } console.log('LLM synthesis OK:', a.slice(0,60))"

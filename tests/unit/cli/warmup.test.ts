@@ -67,7 +67,7 @@ vi.mock('../../../src/embedding/fastembed-provider.js', () => {
 import { existsSync } from 'node:fs';
 import { rmSync } from 'node:fs';
 import { runCommand } from '../../../src/cli/tui/run-command.js';
-import { runWarmup, installBrowser, installEmbeddings, wipeSearxngState } from '../../../src/cli/warmup.js';
+import { runWarmup, installBrowser, installEmbeddings, wipeSearxngState, sanitizeBrowserInstallError } from '../../../src/cli/warmup.js';
 import { checkPythonAvailable, bootstrapNativeSearxng, getBootstrapState } from '../../../src/searxng/bootstrap.js';
 import { checkVenvModule } from '../../../src/python-env.js';
 import { getConfig } from '../../../src/config.js';
@@ -79,6 +79,20 @@ import { getConfig } from '../../../src/config.js';
 
 const ok = { code: 0, stdout: '', stderr: '', timedOut: false };
 const failWith = (msg: string) => ({ code: 1, stdout: '', stderr: msg, timedOut: false });
+
+// The exact ASCII-box warning Playwright prints when its CLI is resolved from an
+// npx cache path (`process.argv[1]` contains `_npx`). Under `npx wigolo` the
+// bundled playwright cli.js lives at `~/.npm/_npx/<hash>/node_modules/...`, so
+// this banner ALWAYS fires — it is a harmless warning, never the real failure.
+const NPX_BANNER = [
+  '╔═══════════════════════════════════════════════════════════════════════════════╗',
+  "║ WARNING: It looks like you are running 'npx playwright install' without first  ║",
+  "║ installing your project's dependencies.                                        ║",
+  '║                                                                               ║',
+  '║     npm install                                                                ║',
+  '║     npx playwright install                                                     ║',
+  '╚═══════════════════════════════════════════════════════════════════════════════╝',
+].join('\n');
 
 const argsOf = (call: unknown[]): string[] => (call[1] as string[]) ?? [];
 const includesArg = (call: unknown[], needle: string): boolean =>
@@ -486,5 +500,127 @@ describe('warmup --reranker', () => {
 
     expect(result.reranker).toBe('failed');
     expect(result.rerankerError).toContain('model load failed');
+  });
+});
+
+describe('sanitizeBrowserInstallError (A1: surface real browser errors, not the npx banner)', () => {
+  it('drops the npx-global ASCII banner and surfaces the real stderr error', () => {
+    const stderr = `${NPX_BANNER}\nError: Download failure, code 403`;
+    expect(sanitizeBrowserInstallError('', stderr, 1)).toBe('Error: Download failure, code 403');
+  });
+
+  it('surfaces a real error that landed on STDOUT even when stderr holds only the banner', () => {
+    // WHY (field bug): the old `(r.stderr || r.stdout)` dropped stdout entirely,
+    // so a download error printed to stdout was masked by the harmless banner.
+    expect(
+      sanitizeBrowserInstallError('Error: connect ETIMEDOUT cdn.playwright.dev', NPX_BANNER, 1),
+    ).toBe('Error: connect ETIMEDOUT cdn.playwright.dev');
+  });
+
+  it('never returns a box-drawing border or banner text as the message', () => {
+    const out = sanitizeBrowserInstallError('', `${NPX_BANNER}\nreal boom`, 1);
+    expect(out).toBe('real boom');
+    expect(out.includes('╔')).toBe(false);
+    expect(out.includes('║')).toBe(false);
+    expect(out.includes('npx playwright install')).toBe(false);
+  });
+
+  it('falls back to the exit code when only the banner was printed', () => {
+    expect(sanitizeBrowserInstallError('', NPX_BANNER, 7)).toBe('exit 7');
+  });
+
+  it('passes a plain error through unchanged when no banner is present', () => {
+    expect(sanitizeBrowserInstallError('', 'install failed', 1)).toBe('install failed');
+  });
+});
+
+describe('installBrowser hardening (3a: slow/flaky network resilience)', () => {
+  const installCallsOf = (browser: string) =>
+    vi.mocked(runCommand).mock.calls.filter((c) => {
+      const a = (c[1] as string[]) ?? [];
+      return a.includes('install') && a.includes(browser);
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getConfig).mockReturnValue(coreConfig as never);
+    vi.mocked(existsSync).mockReturnValue(true);
+  });
+
+  it('retries the install once when the first attempt fails, then succeeds', async () => {
+    // WHY: browser downloads over a slow/flaky link fail transiently (resets,
+    // timeouts); a single attempt turns a blip into a hard failure.
+    vi.mocked(runCommand)
+      .mockResolvedValueOnce(failWith('ECONNRESET'))
+      .mockResolvedValue(ok);
+
+    const r = await installBrowser('chromium');
+
+    expect(r.ok).toBe(true);
+    expect(installCallsOf('chromium').length).toBe(2);
+  });
+
+  it('gives a slow download more than the old 180s budget', async () => {
+    vi.mocked(runCommand).mockResolvedValue(ok);
+
+    await installBrowser('chromium');
+
+    const opts = (installCallsOf('chromium')[0]?.[2] ?? {}) as { timeout?: number };
+    expect(opts.timeout).toBeGreaterThanOrEqual(300_000);
+  });
+
+  it('reports a clear timeout + mirror hint on a timed-out download (not a progress fragment)', () => {
+    const msg = sanitizeBrowserInstallError('|■■■ 40% of 92 MiB', '', -1, true);
+    expect(msg).toMatch(/timed out/i);
+    expect(msg).toMatch(/PLAYWRIGHT_DOWNLOAD_HOST|mirror/i);
+    expect(msg).not.toContain('■');
+  });
+
+  it('does NOT retry a timed-out install (a timeout already spent the full budget)', async () => {
+    // WHY (review): retrying a timeout re-downloads from zero and almost always
+    // times out again, doubling the wait. Fail fast with the mirror hint instead.
+    vi.mocked(runCommand).mockResolvedValue({ code: -1, stdout: '', stderr: '', timedOut: true });
+
+    const r = await installBrowser('chromium');
+
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/timed out/i);
+    expect(installCallsOf('chromium').length).toBe(1);
+  });
+
+  it('gives up after both attempts fail and surfaces the real error', async () => {
+    vi.mocked(runCommand).mockResolvedValue(failWith('boom'));
+
+    const r = await installBrowser('chromium');
+
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('boom');
+    expect(installCallsOf('chromium').length).toBe(2);
+  });
+});
+
+describe('runWarmup browser-failure surfacing (A1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getConfig).mockReturnValue(coreConfig as never);
+    vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
+  });
+
+  it('surfaces the real download error, not the npx-global banner, when install fails', async () => {
+    // WHY: field installs on macOS/Linux reported `Browser: failed (╔═══╗)` — the
+    // banner border, not the actual cause. The real error must reach the user.
+    vi.mocked(runCommand).mockResolvedValue({
+      code: 1,
+      stdout: '',
+      stderr: `${NPX_BANNER}\nError: self signed certificate in certificate chain`,
+      timedOut: false,
+    });
+
+    const result = await runWarmup();
+
+    expect(result.playwright).toBe('failed');
+    expect(result.playwrightError).toBe('Error: self signed certificate in certificate chain');
+    expect(result.playwrightError).not.toContain('╔');
+    expect(result.playwrightError).not.toContain('npx playwright install');
   });
 });

@@ -21,7 +21,7 @@ import {
 } from '../search/core/engine-health.js';
 import type { EngineEntry } from '../search/core/engine-base.js';
 import { isTelemetryEnabled } from './telemetry.js';
-import { allProviders, providerEnvVar, selectProvider } from '../integrations/cloud/llm/select.js';
+import { allProviders, providerEnvVar, providerKeyFromEnv, selectProvider } from '../integrations/cloud/llm/select.js';
 import { resolveModel, providerDefaultModel, providerModelEnvVar } from '../integrations/cloud/llm/model-select.js';
 import { readKey } from '../security/key-store.js';
 import { setLogSuppression } from '../logger.js';
@@ -740,7 +740,11 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   const active = selectProvider(process.env);
   for (const p of allProviders()) {
     const envVar = providerEnvVar(p);
-    const envSet = !!process.env[envVar];
+    // Alias-aware: accept the canonical var OR a back-compat alias (e.g. gemini's
+    // GOOGLE_API_KEY), matching how synthesis actually resolves the key — else
+    // doctor would report "no key" for a key that synthesis happily uses.
+    const envKey = providerKeyFromEnv(p, process.env);
+    const envSet = !!envKey;
     // Check keystore for this provider (async — use readKey)
     let keyLocation: 'keychain' | 'file' | 'env' | 'none' = 'none';
     let maskedKey: string | undefined;
@@ -751,13 +755,13 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
         maskedKey = maskApiKey(ksResult.value);
       } else if (envSet) {
         keyLocation = 'env';
-        maskedKey = maskApiKey(process.env[envVar] ?? '');
+        maskedKey = maskApiKey(envKey ?? '');
       }
     } catch {
       // keystore read failure — fall back to env-only display
       if (envSet) {
         keyLocation = 'env';
-        maskedKey = maskApiKey(process.env[envVar] ?? '');
+        maskedKey = maskApiKey(envKey ?? '');
       }
     }
     const configured = keyLocation !== 'none';

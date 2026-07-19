@@ -169,4 +169,63 @@ describe('applyMigrations', () => {
     writable.close();
     rmSync(fresh, { recursive: true, force: true });
   });
+
+  it('migration 009 adds content_completeness columns to an existing url_cache', () => {
+    // url_cache is created inline by initDatabase(), not by the runner — mirror
+    // that here so the 009 postStep's table_info guard has a table to ALTER.
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE url_cache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT UNIQUE NOT NULL,
+        normalized_url TEXT NOT NULL,
+        fetched_at TEXT NOT NULL
+      );
+    `);
+
+    applyMigrations(db, { vecLoaded: false });
+
+    const applied = (db.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>)
+      .map((r) => r.name);
+    expect(applied).toContain('009-content-completeness');
+
+    const cols = (db.prepare("PRAGMA table_info('url_cache')").all() as Array<{ name: string }>)
+      .map((c) => c.name);
+    expect(cols).toContain('content_completeness_level');
+    expect(cols).toContain('content_completeness_reason');
+    expect(cols).toContain('content_completeness_settled_by');
+    db.close();
+  });
+
+  it('migration 009 is idempotent against a url_cache that already has the columns', () => {
+    // Hand-patched install: the completeness columns already exist.
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE url_cache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT UNIQUE NOT NULL,
+        normalized_url TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        content_completeness_level TEXT,
+        content_completeness_reason TEXT,
+        content_completeness_settled_by TEXT
+      );
+    `);
+    expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
+    const applied = (db.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>)
+      .map((r) => r.name);
+    expect(applied).toContain('009-content-completeness');
+    db.close();
+  });
+
+  it('migration 009 is a no-op on a bare runner DB with no url_cache table', () => {
+    // The runner-only harness never creates url_cache; the guarded postStep
+    // must apply cleanly (recorded, no throw) rather than ALTER a missing table.
+    const db = new Database(dbPath);
+    expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
+    const applied = (db.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>)
+      .map((r) => r.name);
+    expect(applied).toContain('009-content-completeness');
+    db.close();
+  });
 });
