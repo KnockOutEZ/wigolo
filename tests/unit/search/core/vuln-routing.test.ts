@@ -26,6 +26,16 @@ describe('intent-router — vulnerabilities', () => {
     expect(classifyIntentDetailed('some completely unrelated query', { hint: 'vulnerabilities' }).vertical).toBe('vulnerabilities');
   });
   
+  it('routes embedded GHSA ID to vulnerabilities', () => {
+    expect(classifyIntentDetailed('explain GHSA-abcd-1234-efgh').vertical).toBe('vulnerabilities');
+    expect(classifyIntentDetailed('GHSA-abcd-1234-efgh details').vertical).toBe('vulnerabilities');
+  });
+
+  it('routes embedded CVE ID to vulnerabilities', () => {
+    expect(classifyIntentDetailed('fix CVE-2024-1234 in python').vertical).toBe('vulnerabilities');
+    expect(classifyIntentDetailed('CVE-2024-1234 details').vertical).toBe('vulnerabilities');
+  });
+
   it('prioritizes vulnerability over code for CVE + python', () => {
     // "CVE" is a vuln word, "python" is a code word. 
     // The router checks VULN_RE before CODE_HARD_RE or LANG_TOKEN_RE.

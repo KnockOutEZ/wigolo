@@ -67,7 +67,7 @@ export class NvdEngine implements SearchEngine {
 
     for (let i = 0; i < total; i++) {
       const cveObj = vulns[i].cve;
-      if (!cveObj || !cveObj.id) continue;
+      if (!cveObj?.id) continue;
 
       const title = cveObj.id;
       const url = `https://nvd.nist.gov/vuln/detail/${cveObj.id}`;

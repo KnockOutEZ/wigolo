@@ -31,7 +31,7 @@ export interface DetailedClassification {
 
 const PAPERS_RE = /\b(arxiv|paper|cite|citation|doi|preprint|whitepaper|journal|pubmed|proceedings)\b/i;
 
-const VULN_RE = /\b(cve|vulnerability|vulnerabilities|nvd|exploit|advisory|cwe|patch tuesday|security advisory|osv)\b/i;
+const VULN_RE = /\b(cve|ghsa|vulnerability|vulnerabilities|nvd|exploit|advisory|cwe|patch tuesday|security advisory|osv)\b/i;
 
 const CODE_HARD_RE = /\b(github|pull request|pr #|commit|stack overflow|stackoverflow|compile error|typeerror|traceback|exception)\b/i;
 
@@ -246,7 +246,7 @@ export function classifyIntentDetailed(
   let vertical: Vertical;
   if (PAPERS_RE.test(trimmed)) {
     vertical = 'papers';
-  } else if (VULN_RE.test(trimmed) || /^CVE-\d+-\d+$/i.test(trimmed) || /^GHSA(-[a-zA-Z0-9]{4}){3}$/i.test(trimmed)) {
+  } else if (VULN_RE.test(trimmed) || /\bCVE-\d+-\d+\b/i.test(trimmed) || /\bGHSA(-[a-zA-Z0-9]{4}){3}\b/i.test(trimmed)) {
     vertical = 'vulnerabilities';
   } else if (CODE_HARD_RE.test(trimmed)) {
     vertical = 'code';
