@@ -18,6 +18,7 @@ import { getCodeEngines } from './verticals/code.js';
 import { getDocsEngines } from './verticals/docs.js';
 import { getPapersEngines } from './verticals/papers.js';
 import { getImageEngines } from './verticals/images.js';
+import { getVulnerabilitiesEngines } from './verticals/vulnerabilities.js';
 import type { Vertical } from './intent-router.js';
 
 export type EngineHealthStatus = 'ok' | 'needs-key' | 'disabled';
@@ -99,6 +100,7 @@ function verticalPools(): Array<[Vertical, EngineEntry[]]> {
     ['docs', getDocsEngines()],
     ['papers', getPapersEngines()],
     ['images', getImageEngines()],
+    ['vulnerabilities', getVulnerabilitiesEngines()],
   ];
 }
 

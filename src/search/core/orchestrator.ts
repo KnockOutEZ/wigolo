@@ -74,6 +74,7 @@ import { getCodeEngines, _resetCodeEnginesForTest } from './verticals/code.js';
 import { getDocsEngines, _resetDocsEnginesForTest } from './verticals/docs.js';
 import { getPapersEngines, _resetPapersEnginesForTest } from './verticals/papers.js';
 import { getImageEngines, _resetImageEnginesForTest } from './verticals/images.js';
+import { getVulnerabilitiesEngines, _resetVulnerabilitiesEnginesForTest } from './verticals/vulnerabilities.js';
 
 const log = createLogger('search');
 
@@ -231,6 +232,8 @@ function getEntriesForVertical(vertical: Vertical): EngineEntry[] {
       return getPapersEngines();
     case 'images':
       return getImageEngines();
+    case 'vulnerabilities':
+      return getVulnerabilitiesEngines();
   }
 }
 
