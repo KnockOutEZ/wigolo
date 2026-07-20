@@ -182,21 +182,21 @@ function renderSvg({ points, total, now }, theme) {
       const gy = y(val);
       return (
         `<line x1="${padL}" y1="${gy.toFixed(1)}" x2="${(padL + plotW).toFixed(1)}" y2="${gy.toFixed(1)}" stroke="${gridColor}" stroke-width="1"/>` +
-        `<text x="${padL - 10}" y="${(gy + 4).toFixed(1)}" text-anchor="end" font-size="12" fill="${textColor}">${val}</text>`
+        `<text x="${padL - 10}" y="${(gy + 4).toFixed(1)}" text-anchor="end" font-size="14" fill="${textColor}">${val}</text>`
       );
     })
     .join('\n  ');
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${FONT}">
   <rect width="${W}" height="${H}" fill="${bg}"/>
-  <text x="${padL}" y="32" font-size="17" font-weight="600" fill="${textColor}">wigolo — GitHub stars over time</text>
-  <text x="${W - padR}" y="30" text-anchor="end" font-size="22" font-weight="700" fill="${line}">${total} ★</text>
-  <text x="${W - padR}" y="48" text-anchor="end" font-size="11" fill="${textColor}" opacity="0.7">updated ${fmtDate(now)}</text>
+  <text x="${padL}" y="32" font-size="20" font-weight="600" fill="${textColor}">wigolo — GitHub stars over time</text>
+  <text x="${W - padR}" y="30" text-anchor="end" font-size="26" font-weight="700" fill="${line}">${total} ★</text>
+  <text x="${W - padR}" y="48" text-anchor="end" font-size="13" fill="${textColor}" opacity="0.7">updated ${fmtDate(now)}</text>
   ${grid}
   <path d="${areaPath}" fill="${line}" fill-opacity="0.12" stroke="none"/>
   <path d="${linePath}" fill="none" stroke="${line}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-  <text x="${padL}" y="${H - 16}" text-anchor="start" font-size="12" fill="${textColor}">${fmtDate(t0)}</text>
-  <text x="${padL + plotW}" y="${H - 16}" text-anchor="end" font-size="12" fill="${textColor}">${fmtDate(t1)}</text>
+  <text x="${padL}" y="${H - 16}" text-anchor="start" font-size="14" fill="${textColor}">${fmtDate(t0)}</text>
+  <text x="${padL + plotW}" y="${H - 16}" text-anchor="end" font-size="14" fill="${textColor}">${fmtDate(t1)}</text>
 </svg>
 `;
 }

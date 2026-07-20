@@ -22,7 +22,7 @@ Local-first web intelligence for AI agents — **no keys, no cloud, no metered b
 
 [Quickstart](#quickstart) · [Tools](#tools) · [Why wigolo](#why-its-different) · [Benchmark](#benchmark) · [Docs](docs/README.md) · [Examples](examples/README.md) · [Feedback](#beta--feedback) · [FAQ](#faq)
 
-<sub>New features and updates ship steadily. Follow <a href="https://x.com/yourtowhid"><b>@yourtowhid on X</b></a> for all of it and new ways to use wigolo, and reach out there for collaborations or feedback · also on <a href="https://www.linkedin.com/in/yourtowhid/">LinkedIn</a></sub>
+New features and updates ship steadily. Follow <a href="https://x.com/yourtowhid"><b>@yourtowhid on X</b></a> for all of it and new ways to use wigolo, and reach out there for collaborations or feedback · also on <a href="https://www.linkedin.com/in/yourtowhid/">LinkedIn</a>
 
 </div>
 
@@ -252,7 +252,7 @@ One note for self-hosters: some challenge-protected sites score IP reputation, s
 <a href="https://www.star-history.com/#KnockOutEZ/wigolo&Date">
 <picture>
 <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/KnockOutEZ/wigolo/star-chart/star-history-dark.svg">
-<img alt="wigolo GitHub stars over time" src="https://raw.githubusercontent.com/KnockOutEZ/wigolo/star-chart/star-history.svg" width="720">
+<img alt="wigolo GitHub stars over time" src="https://raw.githubusercontent.com/KnockOutEZ/wigolo/star-chart/star-history.svg" width="880">
 </picture>
 </a>
 
