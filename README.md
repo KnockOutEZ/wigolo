@@ -245,7 +245,7 @@ One note for self-hosters: some challenge-protected sites score IP reputation, s
 <div align="center">
 
 <a href="https://star-history.com/#KnockOutEZ/wigolo&Date">
-<img alt="wigolo GitHub star history" src="https://api.star-history.com/svg?repos=KnockOutEZ/wigolo&type=Date" width="720">
+<img alt="wigolo GitHub star history" src="https://api.star-history.com/svg?repos=knockoutez/wigolo&type=Date" width="720">
 </a>
 
 <sub>Live chart. <a href="https://github.com/KnockOutEZ/wigolo">Add a ⭐</a> if it's useful to you.</sub>
