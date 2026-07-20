@@ -4,13 +4,16 @@ import { MdnEngine } from '../../engines/mdn.js';
 import { DevDocsEngine } from '../../engines/devdocs.js';
 import { DuckDuckGoEngine } from '../../engines/duckduckgo.js';
 import { BraveEngine } from '../../engines/brave.js';
+import { NpmRegistryEngine } from '../../engines/npm-registry.js';
 import { wrapWithRetryAndBreaker, type EngineEntry } from '../engine-base.js';
 import { getConfig } from '../../../config.js';
 
 // Code-focused vertical. GitHub-code + StackOverflow are the canonical
 // code-intent engines; DuckDuckGo + DevDocs + Brave (when configured) add
 // general developer-search breadth so database/library queries like
-// "pgvector HNSW ef_search tuning" reach blog posts and vendor docs.
+// "pgvector HNSW ef_search tuning" reach blog posts and vendor docs. npm
+// registry adds a package-name signal (free, no API key) so library queries
+// resolve directly to the canonical npm package page.
 //
 // MDN is admitted as a SECONDARY engine — it still runs, but the orchestrator
 // demotes results contributed only by secondary engines when their lexical
@@ -44,6 +47,12 @@ export function getCodeEngines(): EngineEntry[] {
     {
       engine: wrapWithRetryAndBreaker(new DuckDuckGoEngine()),
       weight: 0.8,
+      supportsDateFilter: false,
+      quality: 'medium',
+    },
+    {
+      engine: wrapWithRetryAndBreaker(new NpmRegistryEngine()),
+      weight: 0.9,
       supportsDateFilter: false,
       quality: 'medium',
     },
