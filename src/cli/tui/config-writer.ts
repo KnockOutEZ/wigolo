@@ -1,12 +1,12 @@
 import type { AgentId, DetectedAgent } from './agents.js';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import {
-  removeJsonConfigEntry,
   writeJsonConfig,
   type WriteJsonConfigResult,
 } from './config-writer-json.js';
 import { writeTomlConfig, type WriteTomlConfigResult } from './config-writer-toml.js';
 import { installViaClaudeCli, type InstallViaClaudeCliResult } from './config-writer-cli.js';
+import { syncOpencodeConfig } from '../agents/opencode.js';
 
 const SERVER_COMMAND = 'npx';
 const SERVER_ARGS = ['-y', 'wigolo'];
@@ -17,16 +17,12 @@ interface JsonAgentSpec {
   extraEntryFields?: Record<string, unknown>;
 }
 
-const JSON_SPECS: Record<Exclude<AgentId, 'claude-code' | 'codex'>, JsonAgentSpec> = {
+const JSON_SPECS: Record<Exclude<AgentId, 'claude-code' | 'codex' | 'opencode'>, JsonAgentSpec> = {
   cursor:       { keyPath: ['mcpServers', 'wigolo'] },
   vscode:       { keyPath: ['servers', 'wigolo'], extraEntryFields: { type: 'stdio' } },
   zed:          { keyPath: ['context_servers', 'wigolo'] },
   'gemini-cli': { keyPath: ['mcpServers', 'wigolo'] },
   windsurf:     { keyPath: ['mcpServers', 'wigolo'] },
-  opencode:     {
-    keyPath: ['mcp', 'wigolo'],
-    entry: { type: 'local', command: [SERVER_COMMAND, ...SERVER_ARGS], enabled: true },
-  },
   antigravity:  { keyPath: ['mcpServers', 'wigolo'] },
 };
 
@@ -82,6 +78,15 @@ async function applyOne(agent: DetectedAgent, opts: ApplyConfigsOptions): Promis
   if (!agent.configPath) {
     return { ...base, ok: false, code: 'NO_CONFIG_PATH', message: 'no configPath for JSON agent' };
   }
+  if (agent.id === 'opencode') {
+    const sync = await syncOpencodeConfig({
+      command: { command: SERVER_COMMAND, args: SERVER_ARGS },
+      dryRun: opts.dryRun,
+      configPath: agent.configPath,
+      legacyConfigPath: join(agent.configPath, '..', 'config.json'),
+    });
+    return mapOpencodeResult(base, sync);
+  }
   const spec = JSON_SPECS[agent.id as keyof typeof JSON_SPECS];
   if (!spec) {
     return { ...base, ok: false, code: 'UNKNOWN_AGENT', message: `no JSON spec for ${agent.id}` };
@@ -91,26 +96,24 @@ async function applyOne(agent: DetectedAgent, opts: ApplyConfigsOptions): Promis
     keyPath: spec.keyPath,
     entry: spec.entry ?? buildEntry(spec.extraEntryFields),
     dryRun: opts.dryRun,
-    allowJsonc: agent.id === 'opencode',
-    requireBackup: agent.id === 'opencode',
+    allowJsonc: false,
+    requireBackup: false,
   });
-  if (agent.id === 'opencode' && r.ok) {
-    const legacy = await removeJsonConfigEntry({
-      path: join(dirname(agent.configPath), 'config.json'),
-      keyPath: spec.keyPath,
-      dryRun: opts.dryRun,
-      allowJsonc: true,
-      requireBackup: true,
-    });
-    if (!legacy.ok) {
-      return mapJsonResult(base, {
-        ...legacy,
-        message: `legacy OpenCode config migration failed: ${legacy.message ?? legacy.code}`,
-        backupPath: r.backupPath ?? legacy.backupPath,
-      });
-    }
-  }
   return mapJsonResult(base, r);
+}
+
+function mapOpencodeResult(
+  base: ResultBase,
+  r: { ok: boolean; code: string; message?: string; dryRun?: boolean; backupPath?: string; removed: string[] },
+): ConfigApplyResult {
+  return {
+    ...base,
+    ok: r.ok,
+    code: r.code,
+    message: r.message,
+    dryRun: r.dryRun,
+    backupPath: r.backupPath,
+  };
 }
 
 function mapJsonResult(base: ResultBase, r: WriteJsonConfigResult): ConfigApplyResult {

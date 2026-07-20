@@ -8,12 +8,12 @@ vi.mock('node:os', async (importOriginal) => {
   return { ...actual, homedir: vi.fn(() => tmpHome) };
 });
 
-vi.mock('node:child_process', () => ({
-  execSync: vi.fn(),
-}));
-
-import { execSync } from 'node:child_process';
 import { homedir } from 'node:os';
+import { binaryInPath } from '../../../../src/cli/tui/detect-helpers.js';
+
+vi.mock('../../../../src/cli/tui/detect-helpers.js', () => ({
+  binaryInPath: vi.fn(),
+}));
 
 let tmpHome: string;
 
@@ -36,7 +36,7 @@ describe('opencodeHandler.detect', () => {
   });
 
   it('returns true when `opencode` is on PATH', async () => {
-    vi.mocked(execSync).mockReturnValue(Buffer.from('/usr/local/bin/opencode'));
+    vi.mocked(binaryInPath).mockReturnValue('/usr/local/bin/opencode');
     const { opencodeHandler } = await import('../../../../src/cli/agents/opencode.js');
     expect(opencodeHandler.detect()).toBe(true);
   });
@@ -91,22 +91,24 @@ describe('opencodeHandler lifecycle', () => {
     const configPath = join(configDir, 'opencode.json');
     const legacyPath = join(configDir, 'config.json');
     mkdirSync(configDir, { recursive: true });
-    writeFileSync(configPath, `{
+    const currentOriginal = `{
       // current OpenCode JSONC
       "theme": "opencode",
       "mcp": {
         "other": { "type": "remote", "url": "https://example.com/mcp" },
         "wigolo": { "type": "local", "command": ["npx", "-y", "wigolo"], "enabled": true },
       },
-    }`);
-    writeFileSync(legacyPath, `{
+    }`;
+    const legacyOriginal = `{
       // legacy OpenCode JSONC
       "formatter": { "prettier": { "command": ["prettier", "--write", "$FILE"] } },
       "mcp": {
         "other": { "type": "remote", "url": "https://example.com/legacy" },
         "wigolo": { "type": "local", "command": "npx", "args": ["-y", "wigolo"] },
       },
-    }`);
+    }`;
+    writeFileSync(configPath, currentOriginal);
+    writeFileSync(legacyPath, legacyOriginal);
 
     const { opencodeHandler } = await import('../../../../src/cli/agents/opencode.js');
     const result = await opencodeHandler.uninstall();
@@ -123,6 +125,8 @@ describe('opencodeHandler lifecycle', () => {
       '~/.config/opencode/opencode.json (wigolo mcp entry)',
       '~/.config/opencode/config.json (legacy wigolo mcp entry)',
     ]);
+    expect(readFileSync(`${configPath}.bak`, 'utf-8')).toBe(currentOriginal);
+    expect(readFileSync(`${legacyPath}.bak`, 'utf-8')).toBe(legacyOriginal);
   });
 
   it('does not rewrite or report configs without a wigolo entry', async () => {

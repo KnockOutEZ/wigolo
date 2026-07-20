@@ -21,10 +21,11 @@ const TUI_ABSENT_BY_DESIGN = new Set(['cline']);
 // dead code. So for an agent to REALLY work, three lists must agree:
 //   1. KNOWN_AGENT_IDS  — what `--agents=<id>` accepts (flags-types.ts)
 //   2. AGENTS ids       — what detectAgents() returns (agents.ts)
-//   3. a config-writer path — JSON_SPECS entry, or the CLI (claude-code) / TOML (codex) branch
+//   3. a config-writer path — JSON_SPECS entry, or the CLI (claude-code),
+//      TOML (codex), or special shared helper paths.
 // Drift between them = an agent that is offered but silently does nothing.
 
-const CONFIG_WRITER_SPECIAL = new Set(['claude-code', 'codex']); // handled by CLI / TOML branches, not JSON_SPECS
+const CONFIG_WRITER_SPECIAL = new Set(['claude-code', 'codex', 'opencode']); // handled by CLI / TOML / helper path, not JSON_SPECS
 
 describe('agent support seams stay consistent', () => {
   it('every flag-accepted id (KNOWN_AGENT_IDS) is also a detection descriptor, and vice versa', () => {

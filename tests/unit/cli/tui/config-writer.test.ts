@@ -100,6 +100,8 @@ describe('applyConfigs', () => {
         command: ['npx', '-y', 'wigolo'],
         enabled: true,
       },
+      allowJsonc: true,
+      requireBackup: true,
     }));
     expect(removeJsonConfigEntry).toHaveBeenCalledWith({
       path: '/home/test/.config/opencode/config.json',
