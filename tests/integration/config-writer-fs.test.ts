@@ -1,9 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  writeFileSync,
+  symlinkSync,
+  lstatSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseToml } from '@iarna/toml';
 import { applyConfigs } from '../../src/cli/tui/config-writer.js';
+import { parseJsonObject } from '../../src/cli/tui/config-writer-json.js';
 import type { DetectedAgent } from '../../src/cli/tui/agents.js';
 
 let dir: string;
@@ -90,17 +100,17 @@ describe('applyConfigs round-trip', () => {
     const results = await applyConfigs(agents, ['opencode']);
 
     expect(results[0].ok).toBe(true);
-    const current = JSON.parse(readFileSync(currentPath, 'utf-8'));
+    const current = parseJsonObject(readFileSync(currentPath, 'utf-8'), true);
     expect(current.mcp.wigolo).toEqual({
       type: 'local', command: ['npx', '-y', 'wigolo'], enabled: true,
     });
-    const legacy = JSON.parse(readFileSync(legacyPath, 'utf-8'));
+    const legacy = parseJsonObject(readFileSync(legacyPath, 'utf-8'), true);
     expect(legacy.theme).toBe('system');
     expect(legacy.mcp.other).toBeDefined();
     expect(legacy.mcp.wigolo).toBeUndefined();
   });
 
-  it('reports a failed OpenCode legacy migration instead of silent success', async () => {
+  it('rolls back the current OpenCode config when legacy migration fails', async () => {
     const configDir = join(dir, 'opencode-invalid-legacy');
     const currentPath = join(configDir, 'opencode.json');
     const legacyPath = join(configDir, 'config.json');
@@ -116,8 +126,28 @@ describe('applyConfigs round-trip', () => {
     expect(results[0].ok).toBe(false);
     expect(results[0].code).toBe('PARSE_ERROR');
     expect(results[0].message).toContain('legacy OpenCode config');
-    const current = JSON.parse(readFileSync(currentPath, 'utf-8'));
-    expect(current.mcp.wigolo.command).toEqual(['npx', '-y', 'wigolo']);
+    expect(existsSync(currentPath)).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a symlinked OpenCode config without changing its topology', async () => {
+    const configDir = join(dir, 'opencode-symlink');
+    const currentPath = join(configDir, 'opencode.json');
+    const currentTarget = join(configDir, 'managed-by-dotfiles.json');
+    const original = '{"theme":"system"}\n';
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(currentTarget, original);
+    symlinkSync(currentTarget, currentPath);
+    const agents: DetectedAgent[] = [{
+      id: 'opencode', displayName: 'OpenCode', detected: true,
+      configPath: currentPath, installType: 'config-file',
+    }];
+
+    const results = await applyConfigs(agents, ['opencode']);
+
+    expect(results[0]).toMatchObject({ ok: false, code: 'WRITE_FAILED' });
+    expect(results[0].message).toContain('symbolic link');
+    expect(lstatSync(currentPath).isSymbolicLink()).toBe(true);
+    expect(readFileSync(currentTarget, 'utf-8')).toBe(original);
   });
 
   it('dryRun does not touch the filesystem', async () => {

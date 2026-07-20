@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { KNOWN_AGENT_IDS } from '../../../../src/cli/tui/flags-types.js';
 import { AGENTS } from '../../../../src/cli/tui/agents.js';
 import { JSON_SPECS } from '../../../../src/cli/tui/config-writer.js';
@@ -73,5 +75,20 @@ describe('agent support seams stay consistent', () => {
     const registryIds = new Set(agentHandlers.map((h) => h.id));
     const orphans = SUPPORTED_AGENTS.filter((a) => !registryIds.has(a));
     expect(orphans).toEqual([]);
+  });
+
+  it('markets OpenCode consistently across the public support lists', () => {
+    const surfaces = [
+      'README.md',
+      'docs/installation.md',
+      'site/src/components/Quickstart.tsx',
+      'site/src/components/TrustedBy.tsx',
+      'site/public/llms.txt',
+      'examples/quickstart-claude-code/README.md',
+    ];
+    const missing = surfaces.filter((path) => (
+      !/opencode/i.test(readFileSync(join(process.cwd(), path), 'utf-8'))
+    ));
+    expect(missing).toEqual([]);
   });
 });

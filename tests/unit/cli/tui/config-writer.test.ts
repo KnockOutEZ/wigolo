@@ -102,14 +102,15 @@ describe('applyConfigs', () => {
       },
       allowJsonc: true,
       requireBackup: true,
+      refuseSymlink: true,
     }));
-    expect(removeJsonConfigEntry).toHaveBeenCalledWith({
+    expect(removeJsonConfigEntry).toHaveBeenCalledWith(expect.objectContaining({
       path: '/home/test/.config/opencode/config.json',
       keyPath: ['mcp', 'wigolo'],
-      dryRun: undefined,
       allowJsonc: true,
       requireBackup: true,
-    });
+      refuseSymlink: true,
+    }));
   });
 
   it('returns one ConfigApplyResult per selected id, in order', async () => {
@@ -122,6 +123,23 @@ describe('applyConfigs', () => {
     const results = await applyConfigs(all, ['cursor', 'zed']);
     expect(results[0].ok).toBe(false);
     expect(results[1].ok).toBe(true);
+  });
+
+  it('turns a thrown writer error into a result and preserves prior successes', async () => {
+    vi.mocked(writeJsonConfig)
+      .mockResolvedValueOnce({ ok: true, code: 'OK' })
+      .mockRejectedValueOnce(new Error('writer exploded'));
+
+    const results = await applyConfigs(all, ['cursor', 'zed']);
+
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ id: 'cursor', ok: true });
+    expect(results[1]).toMatchObject({
+      id: 'zed',
+      ok: false,
+      code: 'UNEXPECTED_ERROR',
+      message: 'writer exploded',
+    });
   });
 
   it('skips ids not present in detected[]', async () => {

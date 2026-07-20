@@ -1,7 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  promises as fs,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { parseJsonObject } from '../../../../src/cli/tui/config-writer-json.js';
 
 vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:os')>();
@@ -69,7 +80,7 @@ describe('opencodeHandler lifecycle', () => {
     const { opencodeHandler } = await import('../../../../src/cli/agents/opencode.js');
     await opencodeHandler.installMcp({ command: 'npx', args: ['-y', 'wigolo'] });
 
-    const parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
+    const parsed = parseJsonObject(readFileSync(configPath, 'utf-8'), true);
     expect(parsed.theme).toBe('opencode');
     expect(parsed.mcp.current).toBeDefined();
     expect(parsed.mcp.wigolo).toEqual({
@@ -78,7 +89,7 @@ describe('opencodeHandler lifecycle', () => {
       enabled: true,
     });
 
-    const legacy = JSON.parse(readFileSync(legacyPath, 'utf-8'));
+    const legacy = parseJsonObject(readFileSync(legacyPath, 'utf-8'), true);
     expect(legacy.theme).toBe('opencode');
     expect(legacy.mcp.other).toBeDefined();
     expect(legacy.mcp.wigolo).toBeUndefined();
@@ -112,8 +123,8 @@ describe('opencodeHandler lifecycle', () => {
 
     const { opencodeHandler } = await import('../../../../src/cli/agents/opencode.js');
     const result = await opencodeHandler.uninstall();
-    const parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
-    const legacy = JSON.parse(readFileSync(legacyPath, 'utf-8'));
+    const parsed = parseJsonObject(readFileSync(configPath, 'utf-8'), true);
+    const legacy = parseJsonObject(readFileSync(legacyPath, 'utf-8'), true);
 
     expect(parsed.theme).toBe('opencode');
     expect(parsed.mcp.other).toBeDefined();
@@ -155,6 +166,101 @@ describe('opencodeHandler lifecycle', () => {
       .rejects.toThrow('legacy OpenCode config migration failed');
   });
 
+  it('rolls back current cleanup when legacy cleanup fails', async () => {
+    const configDir = join(tmpHome, '.config', 'opencode');
+    const configPath = join(configDir, 'opencode.json');
+    const legacyPath = join(configDir, 'config.json');
+    mkdirSync(configDir, { recursive: true });
+    const currentOriginal = `{
+      // keep this current config intact on rollback
+      "mcp": {
+        "wigolo": { "type": "local", "command": ["npx", "-y", "wigolo"], "enabled": true },
+      },
+    }\n`;
+    writeFileSync(configPath, currentOriginal);
+    writeFileSync(legacyPath, '{ "mcp": { "wigolo": nope } }');
+
+    const { opencodeHandler } = await import('../../../../src/cli/agents/opencode.js');
+    await expect(opencodeHandler.uninstall())
+      .rejects.toThrow('legacy OpenCode config cleanup failed');
+    expect(readFileSync(configPath, 'utf-8')).toBe(currentOriginal);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not write through a symlink planted before rollback', async () => {
+    const configDir = join(tmpHome, '.config', 'opencode');
+    const configPath = join(configDir, 'opencode.json');
+    const legacyPath = join(configDir, 'config.json');
+    const victimPath = join(configDir, 'victim.txt');
+    const currentOriginal = '{"theme":"system"}\n';
+    const victimOriginal = 'do not overwrite\n';
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(configPath, currentOriginal);
+    writeFileSync(legacyPath, '{"mcp":{"wigolo":{"type":"local"}}}\n');
+    writeFileSync(victimPath, victimOriginal);
+
+    const realCopyFile = fs.copyFile.bind(fs);
+    const copySpy = vi.spyOn(fs, 'copyFile').mockImplementation(async (source, destination, mode) => {
+      if (String(destination) === `${legacyPath}.bak`) {
+        unlinkSync(configPath);
+        symlinkSync(victimPath, configPath);
+        throw new Error('simulated legacy backup failure');
+      }
+      if (mode === undefined) return realCopyFile(source, destination);
+      return realCopyFile(source, destination, mode);
+    });
+
+    try {
+      const { syncOpencodeConfig } = await import('../../../../src/cli/agents/opencode.js');
+      const result = await syncOpencodeConfig({
+        command: { command: 'npx', args: ['-y', 'wigolo'] },
+        configPath,
+        legacyConfigPath: legacyPath,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.message).toContain('rollback failed: refused symbolic link config');
+      expect(lstatSync(configPath).isSymbolicLink()).toBe(true);
+      expect(readFileSync(victimPath, 'utf-8')).toBe(victimOriginal);
+      expect(readFileSync(`${configPath}.bak`, 'utf-8')).toBe(currentOriginal);
+    } finally {
+      copySpy.mockRestore();
+    }
+  });
+
+  it('preserves a concurrent regular-file replacement instead of rolling it back', async () => {
+    const configDir = join(tmpHome, '.config', 'opencode');
+    const configPath = join(configDir, 'opencode.json');
+    const legacyPath = join(configDir, 'config.json');
+    const concurrentConfig = '{"theme":"concurrent-update"}\n';
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(legacyPath, '{"mcp":{"wigolo":{"type":"local"}}}\n');
+
+    const realCopyFile = fs.copyFile.bind(fs);
+    const copySpy = vi.spyOn(fs, 'copyFile').mockImplementation(async (source, destination, mode) => {
+      if (String(destination) === `${legacyPath}.bak`) {
+        writeFileSync(configPath, concurrentConfig);
+        throw new Error('simulated legacy backup failure');
+      }
+      if (mode === undefined) return realCopyFile(source, destination);
+      return realCopyFile(source, destination, mode);
+    });
+
+    try {
+      const { syncOpencodeConfig } = await import('../../../../src/cli/agents/opencode.js');
+      const result = await syncOpencodeConfig({
+        command: { command: 'npx', args: ['-y', 'wigolo'] },
+        configPath,
+        legacyConfigPath: legacyPath,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.message).toContain('rollback failed: config changed after Wigolo update');
+      expect(readFileSync(configPath, 'utf-8')).toBe(concurrentConfig);
+    } finally {
+      copySpy.mockRestore();
+    }
+  });
+
   it('is idempotent when opencode.json is absent', async () => {
     const { opencodeHandler } = await import('../../../../src/cli/agents/opencode.js');
     await expect(opencodeHandler.uninstall()).resolves.toEqual({ removed: [] });
@@ -168,6 +274,7 @@ describe('opencodeHandler metadata', () => {
     expect(opencodeHandler.id).toBe('opencode');
     expect(opencodeHandler.supportsSkills).toBe(false);
     expect(opencodeHandler.supportsCommands).toBe(false);
+    expect(opencodeHandler.supportsInstructions).toBe(false);
     await expect(opencodeHandler.installInstructions()).resolves.toBeUndefined();
   });
 });

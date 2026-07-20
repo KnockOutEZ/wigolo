@@ -318,7 +318,7 @@ export async function runInit(args: string[]): Promise<number> {
  *
  * A component-download failure does NOT set status=error — init still wires the
  * agent + persists config and exits 0 (the component lazy-retries). status=error
- * is reserved for a genuine system hard-failure (Node too old, disk full).
+ * is reserved for a genuine system or requested-agent configuration failure.
  * `components` + `doctor` carry the per-component + diagnostic detail.
  */
 interface InitJsonSummary {
@@ -590,7 +590,7 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
           status: 'error',
           path: 'plain',
           warmup: flags.warmup,
-          agentsRegistered: [...selected],
+          agentsRegistered: [],
           configPersisted: false,
           message: `Writing configs failed: ${message}`,
         });
@@ -610,7 +610,7 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
           status: 'error',
           path: 'plain',
           warmup: flags.warmup,
-          agentsRegistered: [...selected],
+          agentsRegistered: configResults.filter((result) => result.ok).map((result) => result.id),
           configPersisted: false,
           message: `Writing configs failed for: ${configFailures.map((f) => f.id).join(', ')}`,
         });
@@ -629,12 +629,16 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
       if (!handler) continue;
       out(`  Configuring ${handler.displayName}...`);
 
-      try {
-        await handler.installInstructions();
-        out(`  ${ok('Global instructions updated')}`);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        out(`  ${warn(`Instructions skipped: ${message}`)}`);
+      if (handler.supportsInstructions === false) {
+        out(`  ${ok('MCP configuration updated')}`);
+      } else {
+        try {
+          await handler.installInstructions();
+          out(`  ${ok('Global instructions updated')}`);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          out(`  ${warn(`Instructions skipped: ${message}`)}`);
+        }
       }
 
       if (handler.supportsCommands && handler.installCommand) {

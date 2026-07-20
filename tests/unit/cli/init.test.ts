@@ -189,7 +189,7 @@ describe('runInit', () => {
     }
   });
 
-  it('exits 1 and does not persist configured agents when a config result fails', async () => {
+  it('exits 1 and reports no registered agents in JSON when a config result fails', async () => {
     primeHappyPath();
     applyConfigsMock.mockResolvedValue([{
       id: 'opencode',
@@ -201,12 +201,68 @@ describe('runInit', () => {
     }]);
     const cap = capture();
     try {
-      const code = await runInit(['--non-interactive', '--agents=opencode']);
+      const code = await runInit(['--non-interactive', '--agents=opencode', '--json']);
       expect(code).toBe(1);
       expect(cap.stderr.join('')).toContain('Writing OpenCode config failed');
       expect(cap.stderr.join('')).toContain('legacy OpenCode config migration failed');
+      const summary = JSON.parse(cap.stdout.join('').trim());
+      expect(summary.status).toBe('error');
+      expect(summary.agentsRegistered).toEqual([]);
       expect(saveInitConfigMock).not.toHaveBeenCalled();
       expect(installSkillsMock).not.toHaveBeenCalled();
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('keeps earlier successful agents in JSON when a later config fails', async () => {
+    primeHappyPath();
+    applyConfigsMock.mockResolvedValue([
+      {
+        id: 'cursor',
+        displayName: 'Cursor',
+        configPath: '/home/test/.cursor/mcp.json',
+        ok: true,
+        code: 'OK',
+      },
+      {
+        id: 'opencode',
+        displayName: 'OpenCode',
+        configPath: '/home/test/.config/opencode/opencode.json',
+        ok: false,
+        code: 'UNEXPECTED_ERROR',
+        message: 'writer exploded',
+      },
+    ]);
+    const cap = capture();
+    try {
+      const code = await runInit(['--non-interactive', '--agents=cursor,opencode', '--json']);
+      expect(code).toBe(1);
+      const summary = JSON.parse(cap.stdout.join('').trim());
+      expect(summary.status).toBe('error');
+      expect(summary.agentsRegistered).toEqual(['cursor']);
+      expect(saveInitConfigMock).not.toHaveBeenCalled();
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('does not claim global instructions were updated for MCP-only OpenCode', async () => {
+    primeHappyPath();
+    applyConfigsMock.mockResolvedValue([{
+      id: 'opencode',
+      displayName: 'OpenCode',
+      configPath: '/home/test/.config/opencode/opencode.json',
+      ok: true,
+      code: 'OK',
+    }]);
+    const cap = capture();
+    try {
+      const code = await runInit(['--non-interactive', '--agents=opencode', '--no-warmup']);
+      expect(code).toBe(0);
+      const output = cap.stdout.join('') + cap.stderr.join('');
+      expect(output).not.toContain('Global instructions updated');
+      expect(output).toContain('MCP configuration updated');
     } finally {
       cap.restore();
     }

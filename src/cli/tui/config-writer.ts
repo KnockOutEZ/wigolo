@@ -13,7 +13,6 @@ const SERVER_ARGS = ['-y', 'wigolo'];
 
 interface JsonAgentSpec {
   keyPath: string[];
-  entry?: Record<string, unknown>;
   extraEntryFields?: Record<string, unknown>;
 }
 
@@ -94,7 +93,7 @@ async function applyOne(agent: DetectedAgent, opts: ApplyConfigsOptions): Promis
   const r = await writeJsonConfig({
     path: agent.configPath,
     keyPath: spec.keyPath,
-    entry: spec.entry ?? buildEntry(spec.extraEntryFields),
+    entry: buildEntry(spec.extraEntryFields),
     dryRun: opts.dryRun,
     allowJsonc: false,
     requireBackup: false,
@@ -162,8 +161,19 @@ export async function applyConfigs(
   for (const id of selected) {
     const agent = byId.get(id);
     if (!agent) continue;
-    const r = await applyOne(agent, opts);
-    results.push(r);
+    try {
+      const r = await applyOne(agent, opts);
+      results.push(r);
+    } catch (err) {
+      results.push({
+        id: agent.id,
+        displayName: agent.displayName,
+        configPath: agent.configPath,
+        ok: false,
+        code: 'UNEXPECTED_ERROR',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
   return results;
 }

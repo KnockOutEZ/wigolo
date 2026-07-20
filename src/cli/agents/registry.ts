@@ -14,6 +14,7 @@ export type AgentSkillHandler = {
   displayName: string;
   supportsSkills: boolean;
   supportsCommands: boolean;
+  supportsInstructions?: boolean;
   detect(): boolean;
   installMcp(cmd: { command: string; args: string[] }): Promise<void>;
   installInstructions(): Promise<void>;
