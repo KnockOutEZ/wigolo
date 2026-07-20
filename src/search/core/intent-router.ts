@@ -246,7 +246,7 @@ export function classifyIntentDetailed(
   let vertical: Vertical;
   if (PAPERS_RE.test(trimmed)) {
     vertical = 'papers';
-  } else if (VULN_RE.test(trimmed) || /\bCVE-\d+-\d+\b/i.test(trimmed) || /\bGHSA(-[a-zA-Z0-9]{4}){3}\b/i.test(trimmed)) {
+  } else if (VULN_RE.test(trimmed) || /\bCVE-\d+-\d+\b/i.test(trimmed) || /\bGHSA(-[a-z0-9]{4}){3}\b/i.test(trimmed)) {
     vertical = 'vulnerabilities';
   } else if (CODE_HARD_RE.test(trimmed)) {
     vertical = 'code';

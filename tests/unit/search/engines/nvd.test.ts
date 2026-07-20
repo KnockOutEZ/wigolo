@@ -105,6 +105,20 @@ describe('NvdEngine', () => {
     expect(calls[0].url).toContain('resultsPerPage=4');
   });
 
+  it('uses cveId param for bare CVE ID queries', async () => {
+    const { calls } = captureFetch({ vulnerabilities: [] });
+    await new NvdEngine().search('CVE-2024-0001');
+    expect(calls[0].url).toContain('cveId=CVE-2024-0001');
+    expect(calls[0].url).not.toContain('keywordSearch');
+  });
+
+  it('falls back to keywordSearch for non-CVE queries', async () => {
+    const { calls } = captureFetch({ vulnerabilities: [] });
+    await new NvdEngine().search('linux kernel vulnerability');
+    expect(calls[0].url).toContain('keywordSearch=');
+    expect(calls[0].url).not.toContain('cveId=');
+  });
+
   it('passes AbortSignal to fetch', async () => {
     const { calls } = captureFetch({ vulnerabilities: [] });
     await new NvdEngine().search('q');

@@ -30,8 +30,11 @@ export class NvdEngine implements SearchEngine {
     const timeoutMs = options.timeoutMs ?? 10000;
     const maxResults = options.maxResults ?? 10;
 
+    // Use cveId param for bare CVE IDs (more precise than keywordSearch).
+    // keywordSearch is used for all other queries.
+    const bareCve = /^CVE-\d+-\d+$/i.test(query.trim());
     const params = new URLSearchParams({
-      keywordSearch: query,
+      [bareCve ? 'cveId' : 'keywordSearch']: query,
       resultsPerPage: String(maxResults),
     });
 

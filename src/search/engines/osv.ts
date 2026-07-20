@@ -117,14 +117,14 @@ export class OsvEngine implements SearchEngine {
     if (!trimmed) return null;
 
     // 1. Check for specific IDs (CVE or GHSA)
-    const idMatch = trimmed.match(/(CVE-\d{4}-\d+|GHSA(?:-[a-zA-Z0-9]{4}){3})/i);
+    const idMatch = trimmed.match(/(CVE-\d{4}-\d+|GHSA(?:-[a-z0-9]{4}){3})/i);
     if (idMatch) {
       return { id: idMatch[1].toUpperCase() };
     }
 
     // 2. Heuristic package + ecosystem extraction
-    // Remove common vulnerability words to isolate the package name
-    const noiseRe = /\b(cve|vulnerability|vulnerabilities|nvd|exploit|advisory|security|bug|issue)\b/gi;
+    // Remove common vulnerability/noise words to isolate the package name
+    const noiseRe = /\b(cve|vulnerability|vulnerabilities|nvd|exploit|advisory|security|bug|issue|in|the|what|is|for|about|recent|latest|this|that|with|from)\b/gi;
     const cleaned = trimmed.replace(noiseRe, ' ').replace(/\s+/g, ' ').trim();
     
     if (!cleaned) return null;
@@ -141,6 +141,10 @@ export class OsvEngine implements SearchEngine {
         packageTokens.push(token);
       }
     }
+
+    // If no ecosystem was detected and the remaining text is >2 tokens,
+    // it's likely a general question, not a package name. Bail out.
+    if (!ecosystem && packageTokens.length > 2) return null;
 
     const packageName = packageTokens.join(' ');
     if (!packageName) return null;

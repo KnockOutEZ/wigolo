@@ -37,6 +37,22 @@ describe('OsvEngine', () => {
       expect(calls).toHaveLength(0); // Did not dispatch
     });
 
+    it('bails out when query has no ecosystem and >2 remaining tokens', async () => {
+      const { calls } = captureFetch({});
+      const results = await new OsvEngine().search('what is this vulnerability about');
+      expect(results).toEqual([]);
+      expect(calls).toHaveLength(0);
+    });
+    
+    it('still extracts package when ecosystem is present despite >2 tokens', async () => {
+      const { calls } = captureFetch({ vulns: [] });
+      const results = await new OsvEngine().search('recent python vulnerability in flask');
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe('https://api.osv.dev/v1/query');
+      expect(calls[0].init?.body).toContain('"ecosystem":"PyPI"');
+      expect(calls[0].init?.body).toContain('"name":"flask"');
+    });
+
     it('extracts CVE and fetches by ID', async () => {
       const { calls } = captureFetch({
         id: 'CVE-2024-1234',
