@@ -585,6 +585,16 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`Writing configs failed: ${message}\n`);
+      if (flags.json) {
+        emitInitJson({
+          status: 'error',
+          path: 'plain',
+          warmup: flags.warmup,
+          agentsRegistered: [...selected],
+          configPersisted: false,
+          message: `Writing configs failed: ${message}`,
+        });
+      }
       return 1;
     }
     const configFailures = configResults.filter((result) => !result.ok);
@@ -594,6 +604,16 @@ async function runInitPlain(flags: InitFlagsResolved): Promise<number> {
         process.stderr.write(
           `Writing ${failure.displayName} config failed: ${failure.message ?? failure.code}${location}\n`,
         );
+      }
+      if (flags.json) {
+        emitInitJson({
+          status: 'error',
+          path: 'plain',
+          warmup: flags.warmup,
+          agentsRegistered: [...selected],
+          configPersisted: false,
+          message: `Writing configs failed for: ${configFailures.map((f) => f.id).join(', ')}`,
+        });
       }
       return 1;
     }
