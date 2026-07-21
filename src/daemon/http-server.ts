@@ -101,28 +101,12 @@ export class DaemonHttpServer {
 
   /**
    * Gate the MCP transport routes (/mcp, /sse, /messages). Returns true when the
-   * request was rejected (a response was written). Order — matching the admin
-   * route and the REST Origin guard:
-   *   1. Host allowlist (DNS-rebinding guard) — a browser resolving an attacker
-   *      domain to 127.0.0.1 sends the attacker's Host, not a loopback one → 403.
-   *   2. No `Origin` header allowed — a browser always sets it, a CLI/MCP client
-   *      never does. Applied in BOTH open and token modes so a token cannot be
-   *      probed from a page and DNS-rebinding is blocked before the transport
-   *      even in token mode → 403.
-   *   3. Bearer token (token mode only) must match → else 401.
-   * A legitimate MCP client (no Origin, loopback Host, valid/absent token) passes.
+   * request was rejected (a response was written). A browser `Origin` is always
+   * rejected, including in token mode, so a page cannot drive the transport.
+   * In token mode the bearer token authorizes remote MCP clients, so Host is not
+   * restricted. In open mode, the loopback Host allowlist blocks DNS rebinding.
    */
   private mcpTransportRejected(req: IncomingMessage, res: ServerResponse): boolean {
-    if (!this.isAllowedHost(req.headers.host)) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        ok: false,
-        error: 'Forbidden: host not allowed',
-        error_reason: 'host_not_allowed',
-        hint: 'Request Host is not on the loopback allowlist.',
-      }));
-      return true;
-    }
     if (req.headers.origin !== undefined) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -133,16 +117,26 @@ export class DaemonHttpServer {
       }));
       return true;
     }
-    if (!this.apiToken) return false;
-    const auth = req.headers.authorization ?? '';
-    const provided = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : null;
-    if (tokenMatches(this.apiToken, provided)) return false;
-    res.writeHead(401, { 'Content-Type': 'application/json' });
+    if (this.apiToken) {
+      const auth = req.headers.authorization ?? '';
+      const provided = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : null;
+      if (tokenMatches(this.apiToken, provided)) return false;
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: 'Missing or invalid bearer token',
+        error_reason: 'unauthorized',
+        hint: 'Provide a valid "Authorization: Bearer <token>" header (set via WIGOLO_API_TOKEN).',
+      }));
+      return true;
+    }
+    if (this.isAllowedHost(req.headers.host)) return false;
+    res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       ok: false,
-      error: 'Missing or invalid bearer token',
-      error_reason: 'unauthorized',
-      hint: 'Provide a valid "Authorization: Bearer <token>" header (set via WIGOLO_API_TOKEN).',
+      error: 'Forbidden: host not allowed',
+      error_reason: 'host_not_allowed',
+      hint: 'Request Host is not on the loopback allowlist.',
     }));
     return true;
   }
