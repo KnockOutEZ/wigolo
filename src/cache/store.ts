@@ -74,6 +74,32 @@ function toIsoSeconds(date: Date): string {
   return date.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
 }
 
+/**
+ * Parse a timestamp string produced by toIsoSeconds() or SQLite's
+ * datetime('now') — both emit zone-less UTC as "YYYY-MM-DD HH:MM:SS".
+ *
+ * The ES spec treats a space-separated, zone-less date/time literal as
+ * *local time*, so bare `new Date(str)` silently shifts every expiry
+ * comparison by the host's UTC offset:
+ *   - West of UTC: stale content served as fresh (TTL extended)
+ *   - East of UTC: cache evicted early (hit rate drops)
+ *
+ * This helper re-attaches the UTC marker when the string matches the
+ * zone-less format, and falls through unchanged for any value that already
+ * carries a zone (Z-suffix or +HH:MM). Existing stored rows parse
+ * correctly immediately — no schema or migration required.
+ */
+export function parseUtcTimestamp(str: string): Date {
+  // Match "YYYY-MM-DD HH:MM:SS" (with optional fractional seconds) — the
+  // format produced by toIsoSeconds() and SQLite datetime('now').
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(str)) {
+    return new Date(str.replace(' ', 'T') + 'Z');
+  }
+  // Already has a timezone designator (Z, +HH:MM, -HH:MM) or is an ISO
+  // date-only string — pass through unchanged.
+  return new Date(str);
+}
+
 export function cacheContent(result: RawFetchResult, extraction: ExtractionResult): void {
   try {
     const db = getDatabase();
@@ -282,7 +308,7 @@ export function getMarkdownForNormalizedUrl(normalizedUrl: string): string | nul
 
 export function isExpired(cached: CachedContent): boolean {
   if (!cached.expiresAt) return false;
-  return new Date(cached.expiresAt).getTime() < Date.now();
+  return parseUtcTimestamp(cached.expiresAt).getTime() < Date.now();
 }
 
 export interface CacheLookupOptions {
@@ -294,7 +320,7 @@ export function isCacheUsable(
   opts: CacheLookupOptions = {},
 ): { usable: boolean; stale: boolean } {
   if (!cached.expiresAt) return { usable: true, stale: false };
-  const expiresMs = new Date(cached.expiresAt).getTime();
+  const expiresMs = parseUtcTimestamp(cached.expiresAt).getTime();
   const now = Date.now();
   if (expiresMs >= now) return { usable: true, stale: false };
   const staleMaxMs = (opts.staleMaxSeconds ?? 0) * 1000;
@@ -387,7 +413,7 @@ export function buildSearchCacheKey(
     search_depth: filters!.search_depth ?? null,
     reranker: filters!.reranker ?? null,
   };
-  return `${query} ${JSON.stringify(fingerprint)}`;
+  return `${query}\0${JSON.stringify(fingerprint)}`;
 }
 
 export function cacheSearchResults(
@@ -433,7 +459,7 @@ export function getCachedSearchResults(
   if (!row) return null;
 
   if (row.expires_at) {
-    const expiresMs = new Date(row.expires_at).getTime();
+    const expiresMs = parseUtcTimestamp(row.expires_at).getTime();
     const now = Date.now();
     if (expiresMs < now) {
       const staleMaxMs = (opts.staleMaxSeconds ?? 0) * 1000;
