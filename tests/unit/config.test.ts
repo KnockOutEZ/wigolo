@@ -158,6 +158,43 @@ describe('config', () => {
     });
   });
 
+  describe('stealthDriver (driver-level hardening) configuration', () => {
+    it('defaults WIGOLO_STEALTH_DRIVER to auto', () => {
+      delete process.env.WIGOLO_STEALTH_DRIVER;
+      resetConfig();
+      expect(getConfig().stealthDriver).toBe('auto');
+    });
+
+    it('reads WIGOLO_STEALTH_DRIVER=patchright', () => {
+      process.env.WIGOLO_STEALTH_DRIVER = 'patchright';
+      resetConfig();
+      expect(getConfig().stealthDriver).toBe('patchright');
+    });
+
+    it('reads WIGOLO_STEALTH_DRIVER=playwright', () => {
+      process.env.WIGOLO_STEALTH_DRIVER = 'playwright';
+      resetConfig();
+      expect(getConfig().stealthDriver).toBe('playwright');
+    });
+
+    it('normalizes an unknown WIGOLO_STEALTH_DRIVER value to the safe auto default', () => {
+      process.env.WIGOLO_STEALTH_DRIVER = 'undetected';
+      resetConfig();
+      expect(getConfig().stealthDriver).toBe('auto');
+    });
+
+    it('is case-insensitive for WIGOLO_STEALTH_DRIVER', () => {
+      process.env.WIGOLO_STEALTH_DRIVER = 'PatchRight';
+      resetConfig();
+      expect(getConfig().stealthDriver).toBe('patchright');
+    });
+
+    afterEach(() => {
+      delete process.env.WIGOLO_STEALTH_DRIVER;
+      resetConfig();
+    });
+  });
+
   describe('reranker configuration', () => {
     it('respects explicit WIGOLO_RERANKER=none to disable reranking', () => {
       process.env.WIGOLO_RERANKER = 'none';

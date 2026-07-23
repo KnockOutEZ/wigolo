@@ -13,7 +13,7 @@ import { playwrightProxyOption } from './proxy-credentials.js';
 import { redactUrl } from '../util/redact-url.js';
 import { isAntiBotStatus, hasBrowserChallengeBody, isChallengeShell, isChallengeResponse, stillShowingChallenge, hasChallengeHeader, isNearEmptyBody } from './tls-tier.js';
 import { pollUntilCleared } from './challenge-completion.js';
-import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, parseChromeMajor, STEALTH_INIT_SCRIPT } from './stealth.js';
+import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, parseChromeMajor, resolveStealthLauncher, STEALTH_INIT_SCRIPT } from './stealth.js';
 import { recordDomainClearance, clearDomainClearance } from '../cache/store.js';
 import { CLEARANCE_COOKIE_NAME, clearanceExpiresIso } from './clearance-reuse.js';
 import { guardResolvedHost } from '../watch/ssrf.js';
@@ -407,10 +407,19 @@ export class MultiBrowserPool {
    * Chromium-only for the authentic-channel path — the concept does not apply
    * to firefox/webkit, which always launch bundled. Returns the launched
    * browser; the caller owns closing it.
+   *
+   * Driver selection (T2-E): on chromium, when `stealthDriver` is auto/patchright
+   * and the optional driver-hardened launcher is present, that launcher replaces
+   * the standard one — it patches the CDP `Runtime.enable`-class automation leak
+   * at the driver level. It accepts the SAME launch options (incl. channel:
+   * 'chrome'), so the authentic-channel probe + headful + graceful fallback below
+   * apply on top unchanged — patched driver + real installed Chrome combine. The
+   * optional dep absent (or `stealthDriver: 'playwright'`, or firefox/webkit)
+   * falls back to the standard launcher silently.
    */
   private async launchDedicatedStealthBrowser(type: BrowserType): Promise<Browser> {
-    const launcher = getLauncher(type);
     const cfg = getConfig();
+    const launcher = await resolveStealthLauncher(type, cfg.stealthDriver, getLauncher(type));
     const proxy = playwrightProxyOption(cfg.proxyUrl, cfg.useProxy);
     // headless:false = a real visible window (opt-in). Default headless:true is
     // the engine's windowless new headless — headful-grade fingerprint, no
