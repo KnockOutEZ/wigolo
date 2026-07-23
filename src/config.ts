@@ -78,6 +78,12 @@ export interface Config {
   crawlDelayMs: number;
   crawlPrivateConcurrency: number;
   crawlPrivateDelayMs: number;
+  /** Randomized jitter fraction applied to each crawl inter-request wait (0..1). Breaks the fixed-metronome bot signal. */
+  crawlJitterPct: number;
+  /** Multiplier applied to a domain's crawl wait on each 403/429 (adaptive back-off). */
+  crawlCooldownFactor: number;
+  /** Ceiling for the adaptive per-domain crawl cooldown wait, in ms. */
+  crawlCooldownMaxMs: number;
   useProxy: boolean;
   proxyUrl: string | null;
   /** Opt-in challenge-solver service URL (Tier-B escape hatch). Off unless set. */
@@ -244,6 +250,27 @@ function envInt(
   return fallback;
 }
 
+function envFloat(
+  key: string,
+  fallback: number,
+  settings: Record<string, unknown>,
+  settingsKey?: string,
+): number {
+  const envVal = process.env[key];
+  if (envVal !== undefined) {
+    const parsed = parseFloat(envVal);
+    return isNaN(parsed) ? fallback : parsed;
+  }
+  const sk = settingsKey ?? key;
+  const persisted = settings[sk];
+  if (typeof persisted === 'number' && !isNaN(persisted)) return persisted;
+  return fallback;
+}
+
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
+}
+
 function envIntArray(
   key: string,
   fallback: number[],
@@ -371,6 +398,9 @@ export function getConfig(): Config {
     crawlDelayMs: envInt('CRAWL_DELAY_MS', 500, settings, 'crawlDelayMs'),
     crawlPrivateConcurrency: envInt('CRAWL_PRIVATE_CONCURRENCY', 10, settings, 'crawlPrivateConcurrency'),
     crawlPrivateDelayMs: envInt('CRAWL_PRIVATE_DELAY_MS', 0, settings, 'crawlPrivateDelayMs'),
+    crawlJitterPct: clamp01(envFloat('WIGOLO_CRAWL_JITTER_PCT', 0.3, settings, 'crawlJitterPct')),
+    crawlCooldownFactor: envFloat('WIGOLO_CRAWL_COOLDOWN_FACTOR', 2, settings, 'crawlCooldownFactor'),
+    crawlCooldownMaxMs: envInt('WIGOLO_CRAWL_COOLDOWN_MAX_MS', 300000, settings, 'crawlCooldownMaxMs'),
     useProxy: envBool('USE_PROXY', false, settings, 'useProxy'),
     proxyUrl: resolveCredentialUrl(envStr('PROXY_URL', null, settings, 'proxyUrl'), 'proxyUrl'),
     solverUrl: resolveCredentialUrl(

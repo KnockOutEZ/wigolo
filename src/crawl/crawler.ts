@@ -127,6 +127,12 @@ export class Crawler {
 
       release();
 
+      // Feed the response status back so the limiter adapts pace per-domain:
+      // 403/429 back off, sustained success decays toward the base delay.
+      if (typeof fetchResult.http_status === 'number') {
+        this.rateLimiter.recordResponse(new URL(url).hostname, fetchResult.http_status);
+      }
+
       if (fetchResult.error) {
         log.warn('Fetch returned error', { url, error: fetchResult.error });
         continue;
@@ -271,6 +277,10 @@ export class Crawler {
       try {
         const result = await this.fetchFn(url);
         release();
+
+        if (typeof result.http_status === 'number') {
+          this.rateLimiter.recordResponse(new URL(url).hostname, result.http_status);
+        }
 
         if (!result.error) {
           const item: CrawlResultItem = { url: canonicalForOutput(result.url), title: result.title, markdown: result.markdown, depth: 0 };

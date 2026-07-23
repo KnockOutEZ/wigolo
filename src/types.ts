@@ -11,6 +11,9 @@ export interface StageError {
   error_reason: string;
   stage: string;
   hint?: string;
+  /** Upstream HTTP status when the stage failure carries one (e.g. anti-bot 403/429).
+   * Lets the crawl rate-limiter adapt pace per-domain. Absent when no status exists. */
+  http_status?: number;
 }
 
 export type StageResult<T> =
