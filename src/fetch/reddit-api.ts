@@ -27,8 +27,6 @@ import type { RedditThread, RedditComment } from '../extraction/site-extractors/
 import { guardFetchUrl } from '../watch/ssrf.js';
 import { createLogger } from '../logger.js';
 
-const logger = createLogger('fetch');
-
 /** Fixed OAuth token endpoint — app-only (client-credentials) grant. */
 const TOKEN_URL = 'https://www.reddit.com/api/v1/access_token';
 /** Fixed data host. All listing / comments / user endpoints hang off this. */
@@ -190,7 +188,15 @@ export class RedditTokenManager {
         'User-Agent': this.creds.userAgent,
       },
       body: 'grant_type=client_credentials',
+      // The token endpoint is a fixed host and must never legitimately
+      // redirect. `redirect: 'manual'` disables the auto-follower so a hostile
+      // 3xx (e.g. to an internal address) is never followed with the Basic
+      // credentials attached; we reject any 3xx below.
+      redirect: 'manual',
     });
+    if (res.status >= 300 && res.status < 400) {
+      throw new Error(`reddit token endpoint returned an unexpected redirect (HTTP ${res.status})`);
+    }
     if (!res.ok) {
       throw new Error(`reddit token request failed with HTTP ${res.status}`);
     }
@@ -203,7 +209,9 @@ export class RedditTokenManager {
       token: json.access_token,
       expiresAt: this.now() + expiresInSec * 1000,
     };
-    logger.debug('minted reddit app-only token', { expiresInSec });
+    // Logger built per-call so it honours the current config log level. NEVER
+    // include the secret or the minted token in the log data.
+    createLogger('fetch').debug('minted reddit app-only token', { expiresInSec });
     return this.cached.token;
   }
 }
@@ -431,8 +439,17 @@ export async function fetchViaRedditApi(
       Authorization: `Bearer ${token}`,
       'User-Agent': creds.userAgent,
     },
+    // The OAuth data host is fixed and must never legitimately redirect.
+    // `redirect: 'manual'` disables the auto-follower (default: follow, up to
+    // 20 hops) so a hostile 3xx to an internal address is never followed with
+    // the bearer token attached. Any 3xx is rejected below, which makes the
+    // router fall through to the normal fetch ladder.
+    redirect: 'manual',
   });
 
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error(`reddit oauth endpoint returned an unexpected redirect (HTTP ${res.status})`);
+  }
   if (res.status === 429) {
     const retryHeader = res.headers.get('retry-after');
     const retryAfter = retryHeader && /^\d+$/.test(retryHeader.trim()) ? parseInt(retryHeader.trim(), 10) : null;

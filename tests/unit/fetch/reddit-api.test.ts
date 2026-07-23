@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { resetConfig } from '../../../src/config.js';
 import {
   isRedditUrl,
   mapRedditUrlToEndpoint,
@@ -15,6 +16,12 @@ const CREDS: RedditCredentials = {
   clientSecret: 'super-secret-value',
   userAgent: 'web:wigolo:test',
 };
+
+// Guard against config/env bleed between tests (the secret-leak test toggles
+// WIGOLO_LOG_LEVEL and calls resetConfig).
+afterEach(() => {
+  resetConfig();
+});
 
 /** Build a minimal Response-like object for the injected fetch. */
 function jsonResponse(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}): Response {
@@ -124,9 +131,17 @@ describe('RedditTokenManager', () => {
   });
 
   it('sends a correct Basic auth header and never leaks the secret in a logged line', async () => {
+    // The mint logs at debug; force debug-level logging so a secret leak on the
+    // debug line is actually OBSERVABLE (default level is info, which would
+    // silently swallow the line and make this assertion vacuous).
+    const prevLevel = process.env.LOG_LEVEL;
+    const prevTui = process.env.WIGOLO_TUI_MODE;
+    process.env.LOG_LEVEL = 'debug';
+    delete process.env.WIGOLO_TUI_MODE; // ensure logs go to stderr, not a file
+    resetConfig();
     const logSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
     const fetchFn = vi.fn<FetchFn>().mockResolvedValue(
-      jsonResponse({ access_token: 'tok-1', expires_in: 3600 }),
+      jsonResponse({ access_token: 'tok-leak-check', expires_in: 3600 }),
     );
     const mgr = new RedditTokenManager(CREDS, fetchFn as unknown as FetchFn, () => 0);
     await mgr.getToken();
@@ -138,16 +153,64 @@ describe('RedditTokenManager', () => {
     expect(headers.Authorization).toBe(`Basic ${expectedBasic}`);
     expect((opts as RequestInit).body).toBe('grant_type=client_credentials');
 
-    // No stderr line contains the raw secret.
+    // A debug line WAS emitted (proves the assertion below is non-vacuous).
     const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logged).toContain('minted reddit app-only token');
+    // Neither the raw client secret nor the minted bearer token appears in it.
     expect(logged).not.toContain('super-secret-value');
+    expect(logged).not.toContain('tok-leak-check');
+
     logSpy.mockRestore();
+    if (prevLevel === undefined) delete process.env.LOG_LEVEL;
+    else process.env.LOG_LEVEL = prevLevel;
+    if (prevTui === undefined) delete process.env.WIGOLO_TUI_MODE;
+    else process.env.WIGOLO_TUI_MODE = prevTui;
+    resetConfig();
   });
 
   it('throws when the token response is not ok', async () => {
     const fetchFn = vi.fn<FetchFn>().mockResolvedValue(jsonResponse({}, { status: 401 }));
     const mgr = new RedditTokenManager(CREDS, fetchFn as unknown as FetchFn, () => 0);
     await expect(mgr.getToken()).rejects.toThrow(/HTTP 401/);
+  });
+
+  it('does not follow a 3xx redirect from the token endpoint (SSRF)', async () => {
+    // A hostile 3xx pointing at an internal address must NOT be auto-followed
+    // with the Basic credentials attached — the mint fails instead, and the
+    // fetch is issued with redirect: 'manual' so undici never follows it.
+    const fetchFn = vi.fn<FetchFn>().mockResolvedValue(
+      jsonResponse({}, { status: 302, headers: { location: 'http://169.254.169.254/' } }),
+    );
+    const mgr = new RedditTokenManager(CREDS, fetchFn as unknown as FetchFn, () => 0);
+
+    await expect(mgr.getToken()).rejects.toThrow(/redirect/i);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    const opts = fetchFn.mock.calls[0][1] as RequestInit;
+    expect(opts.redirect).toBe('manual');
+    // The private host was never fetched directly.
+    const fetchedUrls = fetchFn.mock.calls.map((c) => String(c[0]));
+    expect(fetchedUrls).not.toContain('http://169.254.169.254/');
+  });
+
+  it('mints only once under concurrent getToken() calls (inflight dedup)', async () => {
+    // Two overlapping callers must share the single in-flight mint, so the
+    // underlying token fetch fires exactly once. Each fetch call resolves on a
+    // microtask tick so the second overlapping call would issue its own fetch
+    // if the `inflight` guard were removed — the call-count assertion then
+    // fails (verified by mutation).
+    let mintCount = 0;
+    const fetchFn = vi.fn<FetchFn>().mockImplementation(async () => {
+      const n = ++mintCount;
+      await Promise.resolve();
+      return jsonResponse({ access_token: `tok-${n}`, expires_in: 3600 });
+    });
+    const mgr = new RedditTokenManager(CREDS, fetchFn as unknown as FetchFn, () => 0);
+
+    const [a, b] = await Promise.all([mgr.getToken(), mgr.getToken()]);
+    // Both callers observe the SAME single-minted token.
+    expect(a).toBe('tok-1');
+    expect(b).toBe('tok-1');
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -284,6 +347,29 @@ describe('fetchViaRedditApi', () => {
     const err = await fetchViaRedditApi('https://www.reddit.com/r/rust', mgr, CREDS, fetchFn).catch((e) => e);
     expect(err).toBeInstanceOf(RedditRateLimitError);
     expect((err as RedditRateLimitError).retryAfterSeconds).toBeNull();
+  });
+
+  it('does not follow a 3xx redirect from the data endpoint (SSRF)', async () => {
+    // The data fetch returns a 302 aimed at an internal address. With
+    // redirect: 'manual' undici never follows it; the reddit path surfaces an
+    // error (which makes the router fall through the ladder) rather than
+    // silently fetching the private host with the bearer token attached.
+    const fetchFn = tokenThen(
+      jsonResponse({}, { status: 302, headers: { location: 'http://169.254.169.254/' } }),
+    );
+    const mgr = new RedditTokenManager(CREDS, fetchFn, () => 0);
+
+    const err = await fetchViaRedditApi('https://www.reddit.com/r/rust', mgr, CREDS, fetchFn).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/redirect/i);
+
+    const calls = (fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    // The data call was issued with manual redirect handling...
+    const dataOpts = calls[1][1] as RequestInit;
+    expect(dataOpts.redirect).toBe('manual');
+    // ...and the private host was never fetched directly.
+    const fetchedUrls = calls.map((c) => String(c[0]));
+    expect(fetchedUrls).not.toContain('http://169.254.169.254/');
   });
 
   it('constructs an oauth.reddit.com endpoint host regardless of input path trickery (SSRF)', async () => {
