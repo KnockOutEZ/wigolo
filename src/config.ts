@@ -298,6 +298,14 @@ function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
 }
 
+// The cooldown factor multiplies the per-domain wait on an anti-bot block. A
+// factor <= 1 would leave pace unchanged (=1) or, if the decay ever divides by
+// it, degenerate. Floor it at 1 so a misconfigured value never disables the
+// adaptive cooldown.
+function atLeast1(n: number): number {
+  return n >= 1 ? n : 1;
+}
+
 function envIntArray(
   key: string,
   fallback: number[],
@@ -426,7 +434,7 @@ export function getConfig(): Config {
     crawlPrivateConcurrency: envInt('CRAWL_PRIVATE_CONCURRENCY', 10, settings, 'crawlPrivateConcurrency'),
     crawlPrivateDelayMs: envInt('CRAWL_PRIVATE_DELAY_MS', 0, settings, 'crawlPrivateDelayMs'),
     crawlJitterPct: clamp01(envFloat('WIGOLO_CRAWL_JITTER_PCT', 0.3, settings, 'crawlJitterPct')),
-    crawlCooldownFactor: envFloat('WIGOLO_CRAWL_COOLDOWN_FACTOR', 2, settings, 'crawlCooldownFactor'),
+    crawlCooldownFactor: atLeast1(envFloat('WIGOLO_CRAWL_COOLDOWN_FACTOR', 2, settings, 'crawlCooldownFactor')),
     crawlCooldownMaxMs: envInt('WIGOLO_CRAWL_COOLDOWN_MAX_MS', 300000, settings, 'crawlCooldownMaxMs'),
     useProxy: envBool('USE_PROXY', false, settings, 'useProxy'),
     proxyUrl: resolveCredentialUrl(envStr('PROXY_URL', null, settings, 'proxyUrl'), 'proxyUrl'),
