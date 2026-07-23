@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Crawler, type FetchFn, type RawFetchFn } from '../../../src/crawl/crawler.js';
+import { RateLimiter } from '../../../src/crawl/rate-limiter.js';
 import type { FetchOutput } from '../../../src/types.js';
 
 vi.mock('../../../src/config.js', () => ({
@@ -8,6 +9,9 @@ vi.mock('../../../src/config.js', () => ({
     crawlDelayMs: 0,
     crawlPrivateConcurrency: 10,
     crawlPrivateDelayMs: 0,
+    crawlJitterPct: 0,
+    crawlCooldownFactor: 2,
+    crawlCooldownMaxMs: 300000,
     respectRobotsTxt: false,
     logLevel: 'error',
     logFormat: 'json',
@@ -600,5 +604,69 @@ describe('Crawler — canonical output URLs', () => {
 
     expect(result.pages).toHaveLength(1);
     expect(result.pages[0].url).toBe('https://docs.example.com/intro');
+  });
+});
+
+describe('Crawler — adaptive cooldown wiring', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it('feeds a 429 failure result into the limiter (recordResponse fires with 429)', async () => {
+    const recordSpy = vi.spyOn(RateLimiter.prototype, 'recordResponse');
+
+    // Simulate what tools/crawl.ts builds on a handleFetch failure that carries
+    // an upstream status: an error result WITH http_status. Before the fix this
+    // status was dropped, so recordResponse never fired on a block.
+    const blockedFetch: FetchFn = vi.fn(async (url: string): Promise<FetchOutput> => ({
+      url,
+      title: '',
+      markdown: '',
+      metadata: {},
+      links: [],
+      images: [],
+      cached: false,
+      error: 'http_429',
+      http_status: 429,
+    }));
+    const rawFetch: RawFetchFn = vi.fn(async () => ({
+      url: '', finalUrl: '', html: '', contentType: 'text/plain',
+      statusCode: 200, method: 'http' as const, headers: {},
+    }));
+
+    const crawler = new Crawler(blockedFetch, rawFetch);
+    await crawler.crawl({ url: 'https://blocked.example.com', strategy: 'bfs', max_depth: 0, max_pages: 1 });
+
+    expect(recordSpy).toHaveBeenCalledWith('blocked.example.com', 429);
+  });
+
+  it('does not call recordResponse when the failure carries no status', async () => {
+    const recordSpy = vi.spyOn(RateLimiter.prototype, 'recordResponse');
+
+    // e.g. an SSRF/validation failure legitimately has no numeric status.
+    const noStatusFetch: FetchFn = vi.fn(async (url: string): Promise<FetchOutput> => ({
+      url, title: '', markdown: '', metadata: {}, links: [], images: [],
+      cached: false, error: 'blocked_by_challenge',
+    }));
+    const rawFetch: RawFetchFn = vi.fn(async () => ({
+      url: '', finalUrl: '', html: '', contentType: 'text/plain',
+      statusCode: 200, method: 'http' as const, headers: {},
+    }));
+
+    const crawler = new Crawler(noStatusFetch, rawFetch);
+    await crawler.crawl({ url: 'https://nostatus.example.com', strategy: 'bfs', max_depth: 0, max_pages: 1 });
+
+    expect(recordSpy).not.toHaveBeenCalled();
+  });
+
+  it('a recorded 429 grows the domain next wait (end-to-end effect)', () => {
+    // Proves the limiter method the crawler wires into actually raises pace.
+    const limiter = new RateLimiter({ jitterPct: 0, cooldownFactor: 2, cooldownMaxMs: 300000 });
+    // base delay comes from the mocked config (crawlDelayMs 0), so use a real
+    // delay via robots floor to make the multiplier observable.
+    limiter.setRobotsCrawlDelay('blocked.example.com', 0.1); // 100ms floor
+    limiter.registerDomain('https://blocked.example.com/a');
+    const before = limiter.nextWaitMs('blocked.example.com', () => 0.5);
+    limiter.recordResponse('blocked.example.com', 429);
+    const after = limiter.nextWaitMs('blocked.example.com', () => 0.5);
+    expect(after).toBeGreaterThan(before);
   });
 });

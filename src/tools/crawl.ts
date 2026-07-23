@@ -72,6 +72,9 @@ export async function handleCrawl(
           images: [],
           cached: false,
           error: r.error_reason,
+          // Carry the upstream status through when the failure exposes one
+          // (anti-bot 403/429) so the crawl limiter can adapt pace per-domain.
+          ...(typeof r.http_status === 'number' ? { http_status: r.http_status } : {}),
         };
       }
       return r.data;

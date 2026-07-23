@@ -263,12 +263,16 @@ export async function handleFetch(
     // stealth mode can return a StageError (e.g., playwright_not_installed,
     // playwright_fetch_failed). Surface it directly.
     if ('error' in raw && typeof (raw as { error?: unknown }).error === 'string') {
-      const stageErr = raw as unknown as { error: string; error_reason?: string; stage?: string; hint?: string };
+      const stageErr = raw as unknown as { error: string; error_reason?: string; stage?: string; hint?: string; statusCode?: number };
       return {
         ok: false,
         error: stageErr.error,
         error_reason: stageErr.error_reason ?? stageErr.error,
         stage: stageErr.stage ?? 'fetch',
+        // Surface the upstream status when the stage error carries one (e.g. an
+        // anti-bot 403/429) so the crawl limiter can adapt pace. Never invented:
+        // stage errors without a known status (SSRF/validation) stay unset.
+        ...(typeof stageErr.statusCode === 'number' ? { http_status: stageErr.statusCode } : {}),
         ...(stageErr.hint ? { hint: stageErr.hint } : {}),
       };
     }
@@ -288,6 +292,7 @@ export async function handleFetch(
         error: `http_${raw.statusCode}`,
         error_reason: `Upstream returned HTTP ${raw.statusCode}${snippet ? `: ${snippet}` : ''}`,
         stage: 'fetch',
+        ...(typeof raw.statusCode === 'number' ? { http_status: raw.statusCode } : {}),
         hint: raw.statusCode === 404
           ? 'Check the URL — file/branch may have been removed or renamed'
           : 'Retry later or check upstream status',
