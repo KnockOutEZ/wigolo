@@ -1,4 +1,8 @@
+import type { BrowserType as PwBrowserType } from 'playwright';
 import type { BrowserType } from '../types.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('fetch');
 
 /**
  * Anti-bot fingerprint hardening for the dedicated browser-tier stealth path.
@@ -84,6 +88,19 @@ export function parseChromeMajor(version: string | undefined | null): number | n
  * empty array for those engines. Chosen to be safe for headless rendering:
  * none of these disable the compositor or GPU paths that a page needs to lay
  * out and paint.
+ *
+ * WebGL/canvas coherence (T2-F): a windowless-headless chromium reports its
+ * unmasked WebGL renderer as "Google SwiftShader" — a software rasterizer that
+ * is itself a high-signal automation tell. We do NOT JS-spoof canvas/WebGL
+ * (piecemeal spoofing de-coheres from the rest of the fingerprint and is
+ * separately detected). Instead we select the ANGLE GL backend and let ANGLE
+ * choose the platform's real GPU renderer where one exists — on an Apple/NVIDIA/
+ * Intel GPU this yields a plausible `ANGLE (Apple, ... Metal Renderer ...)` style
+ * string; on a genuinely GPU-less host it falls back to SwiftShader, which is
+ * the honest answer there. Verified safe for headless rendering: layout, canvas
+ * draw, and screenshot output are byte-identical with these flags on/off. We
+ * deliberately do NOT pin `--use-angle=swiftshader-webgl` (that would force the
+ * tell back in) and we do NOT `--disable-gpu` (that would kill the GL path).
  */
 export function stealthLaunchArgs(type: BrowserType): string[] {
   if (type !== 'chromium') return [];
@@ -93,7 +110,28 @@ export function stealthLaunchArgs(type: BrowserType): string[] {
     '--disable-infobars',
     `--window-size=${STEALTH_VIEWPORT.width},${STEALTH_VIEWPORT.height}`,
     '--lang=en-US',
+    // Route WebGL through ANGLE → real GPU renderer instead of SwiftShader.
+    '--use-gl=angle',
+    '--enable-webgl',
+    // Some hosts blocklist the GPU for headless; without this ANGLE silently
+    // reverts to SwiftShader on a machine that actually has a usable GPU.
+    '--ignore-gpu-blocklist',
   ];
+}
+
+/**
+ * Coherence self-check: does an unmasked WebGL renderer string look like a
+ * software rasterizer (the obvious-headless GL tell)? Matches Chromium's
+ * SwiftShader ("SwiftShader driver") and the Linux Mesa software path
+ * ("llvmpipe"). Case-insensitive; a null/empty/unknown renderer is treated as
+ * NOT-a-tell (we only flag a positive software-renderer signal, never guess).
+ * Callers can log/flag when this fires so a residual SwiftShader fingerprint is
+ * observable rather than silent.
+ */
+export function isSwiftShaderRenderer(renderer: string | null | undefined): boolean {
+  if (!renderer) return false;
+  const r = renderer.toLowerCase();
+  return r.includes('swiftshader') || r.includes('llvmpipe');
 }
 
 /**
@@ -165,3 +203,99 @@ try {
   }
 } catch (e) { /* ignore */ }
 `;
+
+/**
+ * Optional driver-level stealth launcher (T2-E).
+ *
+ * The dominant 2026 automation tell is the CDP `Runtime.enable` leak that the
+ * standard browser driver emits. `patchright` is an optional, drop-in patched
+ * driver that closes that leak at the driver level. It is a self-contained fork
+ * (its own patched core + its own browser binary) that does NOT touch the pinned
+ * standard browser driver, so it is safe as an OPTIONAL dependency: absent, we
+ * fall back to the standard launcher and nothing breaks. Chromium-only — the
+ * firefox/webkit engines never use it.
+ *
+ * Lazy-loaded on first use (mirrors the TLS tier's `wreq-js` pattern): the
+ * module specifier is held as a `string` (not a literal) so `tsc --noEmit` does
+ * not require the optional package to be installed, and the import is memoized
+ * so the cost is paid at most once. `null` when the package is absent.
+ */
+
+/** The subset of the driver launcher we consume: a Playwright-shaped `launch`. */
+export interface StealthDriverLauncher {
+  launch(options?: Parameters<PwBrowserType['launch']>[0]): ReturnType<PwBrowserType['launch']>;
+}
+
+interface PatchrightModuleShape {
+  chromium?: StealthDriverLauncher;
+  default?: { chromium?: StealthDriverLauncher };
+}
+
+// Held as a non-literal string so the compiler skips module resolution — the
+// package lives in optionalDependencies and may be absent (keyless installs,
+// `npm install --omit=optional`, or a platform with no patched browser).
+const PATCHRIGHT_MODULE_ID: string = 'patchright';
+
+let _driverPromise: Promise<StealthDriverLauncher | null> | null = null;
+let _driverCached: StealthDriverLauncher | null = null;
+let _driverResolved = false;
+
+/** Test-only override: bypass the real dynamic import. */
+let _testDriverOverride: StealthDriverLauncher | null | undefined;
+export function _setStealthDriverForTests(
+  launcher: StealthDriverLauncher | null | undefined,
+): void {
+  _testDriverOverride = launcher;
+  _driverPromise = null;
+  _driverCached = null;
+  _driverResolved = false;
+}
+
+/**
+ * Resolve the optional driver-hardened chromium launcher, or `null` when it is
+ * not installed. Never throws — an absent/broken optional package resolves to
+ * `null` and the caller falls back to the standard launcher. Memoized: a
+ * negative result is cached too, so a missing package is probed only once.
+ */
+export async function loadStealthDriver(): Promise<StealthDriverLauncher | null> {
+  if (_testDriverOverride !== undefined) return _testDriverOverride;
+  if (_driverResolved) return _driverCached;
+  if (_driverPromise) return _driverPromise;
+  _driverPromise = (async () => {
+    try {
+      const mod = (await import(PATCHRIGHT_MODULE_ID)) as PatchrightModuleShape;
+      const chromium = mod.chromium ?? mod.default?.chromium;
+      if (!chromium || typeof chromium.launch !== 'function') {
+        log.debug('stealth driver present but missing a chromium launcher, falling back');
+        _driverCached = null;
+      } else {
+        _driverCached = chromium;
+        log.debug('driver-hardened stealth launcher available');
+      }
+    } catch {
+      // Optional dep absent (or its browser not installed) — silent fallback.
+      _driverCached = null;
+    }
+    _driverResolved = true;
+    _driverPromise = null;
+    return _driverCached;
+  })();
+  return _driverPromise;
+}
+
+/**
+ * Pick the launcher for the dedicated stealth path given the resolved driver
+ * mode and the standard fallback launcher. Chromium-only: for firefox/webkit,
+ * or when the mode is `playwright`, or when the optional driver is absent, this
+ * returns the standard `fallback` launcher unchanged. Only `auto`/`patchright`
+ * on chromium WITH the optional driver present returns the hardened launcher.
+ */
+export async function resolveStealthLauncher(
+  type: BrowserType,
+  mode: 'auto' | 'patchright' | 'playwright',
+  fallback: StealthDriverLauncher,
+): Promise<StealthDriverLauncher> {
+  if (type !== 'chromium' || mode === 'playwright') return fallback;
+  const driver = await loadStealthDriver();
+  return driver ?? fallback;
+}

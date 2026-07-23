@@ -197,6 +197,23 @@ export interface Config {
    * Applies to the stealth path only.
    */
   browserHeadful: boolean;
+  /**
+   * Driver selection for the DEDICATED browser-tier stealth launch:
+   *   - 'auto'       : use the driver-hardened stealth launcher (patches the
+   *                    CDP `Runtime.enable`-class automation leak at the driver
+   *                    level) for the dedicated stealth path WHEN its optional
+   *                    package + browser are present; otherwise fall back to the
+   *                    standard browser driver (DEFAULT).
+   *   - 'patchright' : same as 'auto' — prefer the hardened driver when present,
+   *                    fall back gracefully when absent (the dep is optional, so
+   *                    this never hard-fails a keyless install).
+   *   - 'playwright' : always use the standard browser driver; never load the
+   *                    hardened driver even when installed.
+   * Only affects the dedicated stealth launch. The pooled fast path and the
+   * firefox/webkit engines are unaffected (the hardened driver is Chromium-only).
+   * Any other value normalizes to 'auto'.
+   */
+  stealthDriver: 'auto' | 'patchright' | 'playwright';
   /** Browser fingerprint profile passed to the TLS-impersonation backend. */
   tlsBrowser: string;
   /** Successes required before a domain is auto-promoted to TLS-first routing. */
@@ -498,6 +515,12 @@ export function getConfig(): Config {
       return raw === 'chrome' || raw === 'chromium' ? (raw as 'chrome' | 'chromium') : 'auto';
     })(),
     browserHeadful: envBool('WIGOLO_BROWSER_HEADFUL', false, settings, 'browserHeadful'),
+    stealthDriver: (() => {
+      const raw = (envStr('WIGOLO_STEALTH_DRIVER', 'auto', settings, 'stealthDriver') ?? 'auto').toLowerCase();
+      return raw === 'patchright' || raw === 'playwright'
+        ? (raw as 'patchright' | 'playwright')
+        : 'auto';
+    })(),
     // The TLS-impersonation backend accepts a `<browser>_<version>` profile
     // string and forwards it into a Rust napi binding. Passing an unvalidated
     // value risks a panic / abort in native code if the env var is a typo

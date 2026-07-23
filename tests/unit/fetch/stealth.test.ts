@@ -4,6 +4,7 @@ import {
   stealthLaunchArgs,
   stealthContextOptions,
   parseChromeMajor,
+  isSwiftShaderRenderer,
   STEALTH_INIT_SCRIPT,
   STEALTH_CHROME_MAJOR,
 } from '../../../src/fetch/stealth.js';
@@ -84,6 +85,48 @@ describe('stealthLaunchArgs', () => {
   it('returns [] for non-chromium engines (args are chromium-specific)', () => {
     expect(stealthLaunchArgs('webkit')).toEqual([]);
     expect(stealthLaunchArgs('firefox')).toEqual([]);
+  });
+
+  it('routes WebGL through ANGLE so a real GPU renderer is exposed rather than the obvious-headless SwiftShader tell', () => {
+    // A windowless-headless chromium defaults its unmasked WebGL renderer to
+    // "SwiftShader" — itself a high-signal automation fingerprint. Selecting the
+    // ANGLE GL backend lets ANGLE pick the platform's real GPU renderer where
+    // one exists (falling back to SwiftShader only on a genuinely GPU-less host,
+    // where SwiftShader is the honest answer). Verified safe for headless paint:
+    // layout, canvas, and screenshot bytes are byte-identical with these flags.
+    const args = stealthLaunchArgs('chromium');
+    expect(args).toContain('--use-gl=angle');
+    expect(args).toContain('--enable-webgl');
+    // Do NOT pin a specific ANGLE backend (e.g. swiftshader-webgl) — that would
+    // FORCE SwiftShader and re-introduce the exact tell we are removing.
+    expect(args.some((a) => a.includes('swiftshader'))).toBe(false);
+  });
+});
+
+describe('isSwiftShaderRenderer', () => {
+  it('flags a SwiftShader unmasked renderer string (the obvious-headless GL tell)', () => {
+    expect(
+      isSwiftShaderRenderer(
+        'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)',
+      ),
+    ).toBe(true);
+    // Also matches the bare llvmpipe software rasterizer (Linux headless).
+    expect(isSwiftShaderRenderer('Mesa/X.org llvmpipe (LLVM 15.0.0, 256 bits)')).toBe(true);
+  });
+
+  it('does NOT flag a plausible hardware GPU renderer', () => {
+    expect(
+      isSwiftShaderRenderer('ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)'),
+    ).toBe(false);
+    expect(
+      isSwiftShaderRenderer('ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0, D3D11)'),
+    ).toBe(false);
+  });
+
+  it('handles null / empty (unknown renderer is not flagged)', () => {
+    expect(isSwiftShaderRenderer(null)).toBe(false);
+    expect(isSwiftShaderRenderer('')).toBe(false);
+    expect(isSwiftShaderRenderer(undefined)).toBe(false);
   });
 });
 
