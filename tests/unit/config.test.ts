@@ -106,6 +106,58 @@ describe('config', () => {
     });
   });
 
+  describe('browser identity (channel + headful) configuration', () => {
+    it('defaults WIGOLO_BROWSER_CHANNEL to auto', () => {
+      delete process.env.WIGOLO_BROWSER_CHANNEL;
+      resetConfig();
+      expect(getConfig().browserChannel).toBe('auto');
+    });
+
+    it('reads WIGOLO_BROWSER_CHANNEL=chrome', () => {
+      process.env.WIGOLO_BROWSER_CHANNEL = 'chrome';
+      resetConfig();
+      expect(getConfig().browserChannel).toBe('chrome');
+    });
+
+    it('reads WIGOLO_BROWSER_CHANNEL=chromium', () => {
+      process.env.WIGOLO_BROWSER_CHANNEL = 'chromium';
+      resetConfig();
+      expect(getConfig().browserChannel).toBe('chromium');
+    });
+
+    it('normalizes an unknown WIGOLO_BROWSER_CHANNEL to auto', () => {
+      // A typo must not silently pick a real installed-Chrome preference — the
+      // safe default is auto (probe-then-fallback).
+      process.env.WIGOLO_BROWSER_CHANNEL = 'firefox';
+      resetConfig();
+      expect(getConfig().browserChannel).toBe('auto');
+    });
+
+    it('is case-insensitive for WIGOLO_BROWSER_CHANNEL', () => {
+      process.env.WIGOLO_BROWSER_CHANNEL = 'Chrome';
+      resetConfig();
+      expect(getConfig().browserChannel).toBe('chrome');
+    });
+
+    it('defaults WIGOLO_BROWSER_HEADFUL to false (never pop a window)', () => {
+      delete process.env.WIGOLO_BROWSER_HEADFUL;
+      resetConfig();
+      expect(getConfig().browserHeadful).toBe(false);
+    });
+
+    it('reads WIGOLO_BROWSER_HEADFUL=1 as true', () => {
+      process.env.WIGOLO_BROWSER_HEADFUL = '1';
+      resetConfig();
+      expect(getConfig().browserHeadful).toBe(true);
+    });
+
+    it('reads WIGOLO_BROWSER_HEADFUL=false as false', () => {
+      process.env.WIGOLO_BROWSER_HEADFUL = 'false';
+      resetConfig();
+      expect(getConfig().browserHeadful).toBe(false);
+    });
+  });
+
   describe('reranker configuration', () => {
     it('respects explicit WIGOLO_RERANKER=none to disable reranking', () => {
       process.env.WIGOLO_RERANKER = 'none';

@@ -169,6 +169,28 @@ export interface Config {
    * Any other value normalizes to 'auto' (the safe default).
    */
   stealth: 'off' | 'auto' | 'on';
+  /**
+   * Which browser build the DEDICATED stealth path launches:
+   *   - 'auto'     : prefer an authentic installed browser (real TLS + version),
+   *                  falling back to the bundled browser engine when none is
+   *                  installed (DEFAULT).
+   *   - 'chrome'   : force the authentic installed browser; still falls back to
+   *                  bundled if the launch fails.
+   *   - 'chromium' : always use the bundled browser engine (never probe for an
+   *                  installed browser).
+   * Any other value normalizes to 'auto'. Applies to the stealth path only —
+   * the pooled fast path is unaffected.
+   */
+  browserChannel: 'auto' | 'chrome' | 'chromium';
+  /**
+   * When true, the DEDICATED stealth path launches with a visible-window
+   * (headful) browser for the strongest fingerprint. Default false: the stealth
+   * path uses the browser engine's windowless headless mode (headful-grade
+   * fingerprint, no visible window) so a background server never pops a window.
+   * Enable only on a machine with a display (or CI with a virtual display).
+   * Applies to the stealth path only.
+   */
+  browserHeadful: boolean;
   /** Browser fingerprint profile passed to the TLS-impersonation backend. */
   tlsBrowser: string;
   /** Successes required before a domain is auto-promoted to TLS-first routing. */
@@ -441,6 +463,11 @@ export function getConfig(): Config {
       const raw = (envStr('WIGOLO_STEALTH', 'auto', settings, 'stealth') ?? 'auto').toLowerCase();
       return raw === 'off' || raw === 'on' ? (raw as 'off' | 'on') : 'auto';
     })(),
+    browserChannel: (() => {
+      const raw = (envStr('WIGOLO_BROWSER_CHANNEL', 'auto', settings, 'browserChannel') ?? 'auto').toLowerCase();
+      return raw === 'chrome' || raw === 'chromium' ? (raw as 'chrome' | 'chromium') : 'auto';
+    })(),
+    browserHeadful: envBool('WIGOLO_BROWSER_HEADFUL', false, settings, 'browserHeadful'),
     // The TLS-impersonation backend accepts a `<browser>_<version>` profile
     // string and forwards it into a Rust napi binding. Passing an unvalidated
     // value risks a panic / abort in native code if the env var is a typo
