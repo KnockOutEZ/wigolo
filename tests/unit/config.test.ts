@@ -120,6 +120,42 @@ describe('config', () => {
     });
   });
 
+  describe('humanize (behavioral realism) configuration', () => {
+    it('defaults WIGOLO_HUMANIZE to auto', () => {
+      delete process.env.WIGOLO_HUMANIZE;
+      resetConfig();
+      expect(getConfig().humanize).toBe('auto');
+    });
+
+    it('reads WIGOLO_HUMANIZE=on', () => {
+      process.env.WIGOLO_HUMANIZE = 'on';
+      resetConfig();
+      expect(getConfig().humanize).toBe('on');
+    });
+
+    it('reads WIGOLO_HUMANIZE=off', () => {
+      process.env.WIGOLO_HUMANIZE = 'off';
+      resetConfig();
+      expect(getConfig().humanize).toBe('off');
+    });
+
+    it('normalizes an unknown WIGOLO_HUMANIZE value to the safe auto default', () => {
+      process.env.WIGOLO_HUMANIZE = 'aggressive';
+      resetConfig();
+      expect(getConfig().humanize).toBe('auto');
+    });
+
+    it('is case-insensitive for WIGOLO_HUMANIZE', () => {
+      process.env.WIGOLO_HUMANIZE = 'ON';
+      resetConfig();
+      expect(getConfig().humanize).toBe('on');
+    });
+
+    afterEach(() => {
+      delete process.env.WIGOLO_HUMANIZE;
+    });
+  });
+
   describe('browser identity (channel + headful) configuration', () => {
     it('defaults WIGOLO_BROWSER_CHANNEL to auto', () => {
       delete process.env.WIGOLO_BROWSER_CHANNEL;

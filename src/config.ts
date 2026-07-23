@@ -224,6 +224,21 @@ export interface Config {
    * Any other value normalizes to 'auto'.
    */
   stealthDriver: 'auto' | 'patchright' | 'playwright';
+  /**
+   * Opt-in HUMAN-LIKE INTERACTION layer on the browser tier. 2026 anti-bot
+   * walls (Cloudflare, DataDome) score SESSION BEHAVIOR — mouse movement,
+   * scroll, timing — not just fingerprint/TLS. When engaged, a bounded,
+   * dependency-free behavioral pass (curved mouse traversal + small randomized
+   * scroll + randomized delays, hard time-capped) runs on the browser tier
+   * AFTER navigation settles and BEFORE content extraction.
+   *   - 'off'  : never engage; browser fetches pay zero behavioral cost.
+   *   - 'auto' : engage ONLY on the anti-bot / stealth escalation path
+   *              (DEFAULT) — a benign, non-escalated browser fetch does NOT
+   *              pay the cost.
+   *   - 'on'   : engage on every browser fetch.
+   * Any other value normalizes to 'auto' (the safe default).
+   */
+  humanize: 'off' | 'auto' | 'on';
   /** Browser fingerprint profile passed to the TLS-impersonation backend. */
   tlsBrowser: string;
   /** Successes required before a domain is auto-promoted to TLS-first routing. */
@@ -539,6 +554,10 @@ export function getConfig(): Config {
       return raw === 'patchright' || raw === 'playwright'
         ? (raw as 'patchright' | 'playwright')
         : 'auto';
+    })(),
+    humanize: (() => {
+      const raw = (envStr('WIGOLO_HUMANIZE', 'auto', settings, 'humanize') ?? 'auto').toLowerCase();
+      return raw === 'off' || raw === 'on' ? (raw as 'off' | 'on') : 'auto';
     })(),
     // The TLS-impersonation backend accepts a `<browser>_<version>` profile
     // string and forwards it into a Rust napi binding. Passing an unvalidated
