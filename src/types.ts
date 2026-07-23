@@ -599,7 +599,10 @@ export interface SearchOutput {
    * dispatched, `healthy` = engines that returned ≥1 result, `degraded` =
    * healthy < total. `reasons` names the events that degraded the pool
    * (e.g. `starvation_redispatch` when a thin vertical fell back to the
-   * general pool). Single surface for "pool degraded to N engines". */
+   * general pool; `thin_pool` when some dispatched engine contributed no
+   * results so cross-engine ranking ran on a thinned pool; `pool_collapsed`
+   * when the pool fell below the collapse floor). Single surface for "pool
+   * degraded to N engines". */
   engine_pool?: EnginePoolHealth;
 }
 

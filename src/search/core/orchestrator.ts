@@ -108,6 +108,15 @@ const STARVATION_FLOOR = 3;
 function poolHealthFloor(dispatchedCount: number): number {
   return Math.ceil(dispatchedCount / 2);
 }
+// Absolute contributing-engine count at/below which the pool is THIN (paired
+// with a "some engine dropped out" check at the use site): so few engines
+// returned results that cross-engine RRF voting can no longer outvote a
+// single-engine off-topic hit on an ambiguous head token (the reproduced
+// runtime.tv leak). Keyed on absolute contributors, NOT `< dispatched` alone,
+// so a routinely-empty engine (Wikipedia on a multi-word query → 7 of 8
+// healthy) never trips it. Advisory only — surfaced as the 'thin_pool' reason,
+// never gates ranking or the junk-floor emptying.
+const THIN_POOL_MAX_CONTRIBUTORS = 2;
 // Undated results on a recency-bound query are kept but demoted so dated,
 // in-window pages win the top slots without collapsing recall.
 const UNDATED_DEMOTION = 0.3;
@@ -731,6 +740,35 @@ export async function runV1Search(
       total: poolDegraded?.total ?? outcomes.length,
       degraded: true,
       reasons: reasons.includes('pool_collapsed') ? reasons : [...reasons, 'pool_collapsed'],
+    };
+  } else if (
+    outcomes.length > 0 &&
+    primaryHealthy <= THIN_POOL_MAX_CONTRIBUTORS &&
+    primaryHealthy < outcomes.length
+  ) {
+    // THIN-pool signal (advisory only, distinct from collapse). Two conditions,
+    // both required:
+    //   (a) ABSOLUTE contributors <= THIN_POOL_MAX_CONTRIBUTORS — so few engines
+    //       returned results that cross-engine RRF voting can no longer outvote
+    //       a single-engine off-topic hit on an ambiguous head token (the
+    //       reproduced runtime.tv leak). Keyed on absolute count, NOT
+    //       `< dispatched` alone: a single routinely-empty engine (Wikipedia on
+    //       a multi-word query) leaving 7 of 8 healthy is an excellent pool.
+    //   (b) at least one dispatched engine dropped out (`< dispatched`) — the
+    //       pool is thin BECAUSE engines went dark, not because the vertical's
+    //       roster is small by design. A fully-healthy 1-engine vertical (e.g. a
+    //       code vertical whose lone engine returned a rich set) is its normal
+    //       state, not a degradation, so it must not be flagged.
+    // Purely informational so the caller/agent knows results came from a thin
+    // pool; deliberately NOT the 'pool_collapsed' string, so it never engages
+    // the downstream zero-lexical junk-floor emptying gate (reserved for a
+    // genuine collapse).
+    const reasons = poolDegraded?.reasons ?? [];
+    poolDegraded = {
+      healthy: poolDegraded?.healthy ?? primaryHealthy,
+      total: poolDegraded?.total ?? outcomes.length,
+      degraded: true,
+      reasons: reasons.includes('thin_pool') ? reasons : [...reasons, 'thin_pool'],
     };
   }
   if (results.length > 0) {
