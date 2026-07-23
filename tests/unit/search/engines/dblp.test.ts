@@ -40,6 +40,7 @@ describe('DblpEngine', () => {
   it('maps a successful response into RawSearchResult fields', async () => {
     const body = dblpBody([
       {
+        authors: { author: [{ text: 'Ashish Vaswani' }, { text: 'Noam Shazeer' }] },
         title: 'Attention Is All You Need',
         venue: 'NeurIPS',
         year: '2017',
@@ -47,6 +48,7 @@ describe('DblpEngine', () => {
         url: 'https://dblp.org/rec/conf/nips/VaswaniSPUJGKP17',
       },
       {
+        authors: { author: [{ text: 'Jacob Devlin' }] },
         title: 'BERT: Pre-training of Deep Bidirectional Transformers',
         venue: 'NAACL-HLT',
         year: '2019',
@@ -60,8 +62,9 @@ describe('DblpEngine', () => {
     expect(results[0].title).toBe('Attention Is All You Need');
     // ee is preferred over the dblp record url.
     expect(results[0].url).toBe('https://doi.org/10.5555/3295222.3295349');
-    // Snippet is assembled from venue + year, since DBLP returns no abstract.
-    expect(results[0].snippet).toBe('NeurIPS 2017');
+    // Snippet is assembled from the text-bearing fields DBLP returns — authors,
+    // then venue + year — since it carries no abstract.
+    expect(results[0].snippet).toBe('Ashish Vaswani, Noam Shazeer — NeurIPS 2017');
     expect(results[0].engine).toBe('dblp');
     expect(results[0].relevance_score).toBe(1);
     expect(results[0].published_date).toBe('2017-01-01T00:00:00.000Z');
@@ -100,11 +103,50 @@ describe('DblpEngine', () => {
     expect(results[0].title).toBe('real');
   });
 
-  it('builds a venue-only snippet when year is missing', async () => {
+  it('builds a venue-only snippet when authors and year are missing', async () => {
     const body = dblpBody([{ title: 't', venue: 'ICML', url: 'https://dblp.org/rec/a' }]);
     captureFetch(body);
     const results = await new DblpEngine().search('q');
     expect(results[0].snippet).toBe('ICML');
+  });
+
+  // DBLP returns a single-author paper's author as a bare object, not an array.
+  // The parser must handle both without crashing.
+  it('handles the single-author object shape', async () => {
+    const body = dblpBody([
+      {
+        authors: { author: { text: 'Donald E. Knuth' } },
+        title: 'Literate Programming',
+        venue: 'Comput. J.',
+        year: '1984',
+        url: 'https://dblp.org/rec/x',
+      },
+    ]);
+    captureFetch(body);
+    const results = await new DblpEngine().search('q');
+    expect(results[0].snippet).toBe('Donald E. Knuth — Comput. J. 1984');
+  });
+
+  it('caps the byline at three authors with an et al. marker', async () => {
+    const body = dblpBody([
+      {
+        authors: {
+          author: [
+            { text: 'A One' },
+            { text: 'B Two' },
+            { text: 'C Three' },
+            { text: 'D Four' },
+          ],
+        },
+        title: 'Many hands',
+        venue: 'ICML',
+        year: '2020',
+        url: 'https://dblp.org/rec/y',
+      },
+    ]);
+    captureFetch(body);
+    const results = await new DblpEngine().search('q');
+    expect(results[0].snippet).toBe('A One, B Two, C Three et al. — ICML 2020');
   });
 
   it('omits published_date when year is not a 4-digit value', async () => {
