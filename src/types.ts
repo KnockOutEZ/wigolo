@@ -62,7 +62,7 @@ export interface FetchInput {
  *   - 'tls-impersonation' : TLS-fingerprinted HTTP tier (opt-in)
  *   - 'browser'           : full browser tier
  */
-export type FetchMethod = 'cache' | 'http' | 'tls-impersonation' | 'browser';
+export type FetchMethod = 'cache' | 'http' | 'tls-impersonation' | 'browser' | 'reddit-api';
 
 export interface FetchOutput {
   /** Compatibility alias of how long the request took, ms. */
@@ -178,8 +178,9 @@ export interface RawFetchResult {
    *   - 'http'              : default httpFetch via node fetch
    *   - 'tls-impersonation' : TLS-fingerprinted HTTP tier (opt-in)
    *   - 'browser'           : full browser fallback
+   *   - 'reddit-api'        : opt-in Reddit OAuth API path (credential-gated)
    */
-  method: 'http' | 'tls-impersonation' | 'browser';
+  method: 'http' | 'tls-impersonation' | 'browser' | 'reddit-api';
   headers: Record<string, string>;
   rawBuffer?: Buffer;
   screenshot?: string;

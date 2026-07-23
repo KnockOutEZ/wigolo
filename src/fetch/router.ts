@@ -43,6 +43,14 @@ import { ChallengeBlockedError } from './browser-pool.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
 import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
+import {
+  isRedditUrl,
+  fetchViaRedditApi,
+  RedditTokenManager,
+  RedditRateLimitError,
+  type RedditCredentials,
+} from './reddit-api.js';
+import { redditApiConfigured } from '../config.js';
 import type { RawFetchResult, BrowserAction, Mode, StageError, ContentCompleteness } from '../types.js';
 
 // Domains we know up-front are heavily client-rendered. HTTP-first detection
@@ -486,6 +494,10 @@ export class SmartRouter {
   private readonly browserAcquirer: BrowserAcquirer;
   private readonly clearanceStore: ClearanceStore;
   private readonly escapeHatchOverride: EscapeHatchFetchers | undefined;
+  /** Lazily-minted Reddit OAuth token manager. Created on the first Reddit-API
+   * route and reused so the app-only token is minted at most once per window.
+   * Keyed on the resolved client id so a credential change re-mints. */
+  private redditTokenManager: { key: string; mgr: RedditTokenManager } | null = null;
 
   constructor(httpClient: HttpClient, browserPool: BrowserPoolInterface);
   constructor(options: SmartRouterOptions);
@@ -865,6 +877,46 @@ export class SmartRouter {
     return raw;
   }
 
+  /**
+   * Try the opt-in Reddit OAuth-API path. Returns the mapped RawFetchResult on
+   * success, or null when the URL shape is unsupported by the API (caller falls
+   * through to the normal ladder). On a token/network/rate-limit failure it also
+   * returns null so the caller degrades gracefully to the honest normal ladder
+   * rather than hard-failing the whole fetch.
+   */
+  private async tryRedditApi(url: string, config: Config): Promise<RawFetchResult | null> {
+    const logger = createLogger('fetch');
+    const creds: RedditCredentials = {
+      // redditApiConfigured() guaranteed both are non-null before this call.
+      clientId: config.redditClientId as string,
+      clientSecret: config.redditClientSecret as string,
+      userAgent: config.redditUserAgent,
+    };
+    // Reuse a token manager keyed on the client id so the app-only token is
+    // minted once per validity window; re-mint if the credential changed.
+    if (!this.redditTokenManager || this.redditTokenManager.key !== creds.clientId) {
+      this.redditTokenManager = { key: creds.clientId, mgr: new RedditTokenManager(creds) };
+    }
+    try {
+      return await fetchViaRedditApi(url, this.redditTokenManager.mgr, creds);
+    } catch (err) {
+      if (err instanceof RedditRateLimitError) {
+        logger.info('reddit-api rate limited — falling through to normal ladder', {
+          url,
+          retryAfterSeconds: err.retryAfterSeconds,
+        });
+        return null;
+      }
+      // Never log the error object verbatim (could echo an auth header from a
+      // fetch impl); log only the message string.
+      logger.warn('reddit-api fetch failed — falling through to normal ladder', {
+        url,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
   async fetch(url: string, options: RouterFetchOptions & { mode: 'stealth' }): Promise<RawFetchResult | StageError>;
   async fetch(url: string, options?: RouterFetchOptions): Promise<RawFetchResult>;
   async fetch(
@@ -876,6 +928,23 @@ export class SmartRouter {
     const logger = createLogger('fetch');
     const threshold = config.browserFallbackThreshold;
     const domain = new URL(url).hostname;
+
+    // Opt-in Reddit OAuth-API escape hatch. reddit.com blocks wigolo at the
+    // IP-reputation edge, so when Reddit app credentials are configured AND this
+    // is a Reddit URL, fetch via the sanctioned API instead of the normal ladder
+    // (which honestly hits the block). Credentials absent → this never fires and
+    // the normal ladder runs. A screenshot/actions request can't be served by
+    // the API, so those fall through to the browser tier.
+    if (
+      isRedditUrl(url) &&
+      redditApiConfigured(config) &&
+      !screenshot &&
+      !(actions && actions.length > 0)
+    ) {
+      const redditResult = await this.tryRedditApi(url, config);
+      if (redditResult !== null) return redditResult;
+      logger.debug('reddit-api path did not apply — falling through to normal ladder', { url });
+    }
 
     // Stealth mode: static fetch first, escalate to Playwright when content is thin.
     if (mode === 'stealth') {
