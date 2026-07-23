@@ -86,6 +86,16 @@ export interface Config {
   crawlCooldownMaxMs: number;
   useProxy: boolean;
   proxyUrl: string | null;
+  /**
+   * When a managed bot-protection challenge blocks the browser tier WHILE a
+   * proxy is in use, attempt ONE additional direct (no-proxy) browser fetch
+   * before returning blocked_by_challenge. A datacenter proxy converts many
+   * managed-challenge passes into blocks, whereas direct residential-grade
+   * egress often clears — and wigolo cannot know the proxy's ASN type. Default
+   * true. No-op when no proxy is configured (no double-fetch). Off via
+   * WIGOLO_PROXY_BYPASS_ON_CHALLENGE=false.
+   */
+  proxyBypassOnChallenge: boolean;
   /** Opt-in challenge-solver service URL (Tier-B escape hatch). Off unless set. */
   solverUrl: string | null;
   /** Opt-in hosted reader-service URL (Tier-B escape hatch). Off unless set. */
@@ -420,6 +430,7 @@ export function getConfig(): Config {
     crawlCooldownMaxMs: envInt('WIGOLO_CRAWL_COOLDOWN_MAX_MS', 300000, settings, 'crawlCooldownMaxMs'),
     useProxy: envBool('USE_PROXY', false, settings, 'useProxy'),
     proxyUrl: resolveCredentialUrl(envStr('PROXY_URL', null, settings, 'proxyUrl'), 'proxyUrl'),
+    proxyBypassOnChallenge: envBool('WIGOLO_PROXY_BYPASS_ON_CHALLENGE', true, settings, 'proxyBypassOnChallenge'),
     solverUrl: resolveCredentialUrl(
       envStr('WIGOLO_SOLVER_URL', null, settings, 'solverUrl'),
       'solverUrl',

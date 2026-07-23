@@ -74,6 +74,20 @@ describe('config', () => {
     expect(config.dataDir).toContain('.wigolo');
   });
 
+  describe('proxyBypassOnChallenge configuration', () => {
+    it('defaults to true', () => {
+      delete process.env.WIGOLO_PROXY_BYPASS_ON_CHALLENGE;
+      resetConfig();
+      expect(getConfig().proxyBypassOnChallenge).toBe(true);
+    });
+
+    it('reads WIGOLO_PROXY_BYPASS_ON_CHALLENGE=false', () => {
+      process.env.WIGOLO_PROXY_BYPASS_ON_CHALLENGE = 'false';
+      resetConfig();
+      expect(getConfig().proxyBypassOnChallenge).toBe(false);
+    });
+  });
+
   describe('stealth (anti-bot fingerprint hardening) configuration', () => {
     it('defaults WIGOLO_STEALTH to auto', () => {
       delete process.env.WIGOLO_STEALTH;
