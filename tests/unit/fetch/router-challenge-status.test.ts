@@ -155,6 +155,36 @@ describe('SmartRouter — Part 2: proxy-bypass direct-retry on managed challenge
     expect(fetchWithBrowser).toHaveBeenCalledTimes(2);
   });
 
+  it('non-thrown guarded still-challenge shell + proxy retry that also reblocks preserves http_status from raw.statusCode', async () => {
+    proxyEnv();
+    // Both browser attempts RETURN (never throw) a 403 challenge shell. The
+    // SUCCESS-return path guards the shell into a blocked_by_challenge StageError,
+    // the proxy direct-retry runs and reblocks (returns null), and control falls
+    // through to `return guarded`. http_status must survive from raw.statusCode —
+    // this is the non-thrown reblock path (the thrown path is covered above).
+    const shell = (url: string): RawFetchResult => ({
+      url,
+      finalUrl: url,
+      html: '<html><body>Checking your browser before accessing</body><script src="/cdn-cgi/challenge-platform/x"></script></html>',
+      contentType: 'text/html',
+      statusCode: 403,
+      method: 'browser',
+      headers: { 'cf-mitigated': 'challenge' },
+    });
+    const fetchWithBrowser = vi.fn(async (url: string): Promise<RawFetchResult> => shell(url));
+    const router = new SmartRouter({
+      httpClient,
+      browserPool: { fetchWithBrowser } as unknown as BrowserPoolInterface,
+      pdfProbe: async () => false,
+    });
+    const result = await router.fetch('https://blocked.example.com/x', { renderJs: 'always' });
+    const err = result as StageError;
+    expect(err.error).toBe('blocked_by_challenge');
+    expect(err.http_status).toBe(403);
+    // original (proxied) + one forceNoProxy direct retry, both reblocked.
+    expect(fetchWithBrowser).toHaveBeenCalledTimes(2);
+  });
+
   it('knob off (WIGOLO_PROXY_BYPASS_ON_CHALLENGE=false) → NO direct retry', async () => {
     proxyEnv();
     process.env.WIGOLO_PROXY_BYPASS_ON_CHALLENGE = 'false';

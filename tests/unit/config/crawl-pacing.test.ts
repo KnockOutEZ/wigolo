@@ -49,4 +49,24 @@ describe('crawl pacing config', () => {
     resetConfig();
     expect(getConfig().crawlJitterPct).toBe(0);
   });
+
+  // The cooldown factor multiplies the per-domain wait on a block; a value <= 1
+  // would leave pace unchanged and risks a degenerate decay divide. Floor at 1.
+  it('clamps cooldown factor of 0 up to 1', () => {
+    process.env.WIGOLO_CRAWL_COOLDOWN_FACTOR = '0';
+    resetConfig();
+    expect(getConfig().crawlCooldownFactor).toBe(1);
+  });
+
+  it('clamps cooldown factor of 0.5 up to 1', () => {
+    process.env.WIGOLO_CRAWL_COOLDOWN_FACTOR = '0.5';
+    resetConfig();
+    expect(getConfig().crawlCooldownFactor).toBe(1);
+  });
+
+  it('accepts a cooldown factor of 1 unchanged', () => {
+    process.env.WIGOLO_CRAWL_COOLDOWN_FACTOR = '1';
+    resetConfig();
+    expect(getConfig().crawlCooldownFactor).toBe(1);
+  });
 });
