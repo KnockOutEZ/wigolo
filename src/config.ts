@@ -239,6 +239,27 @@ export interface Config {
    * Any other value normalizes to 'auto' (the safe default).
    */
   humanize: 'off' | 'auto' | 'on';
+  /**
+   * Opt-in Reddit OAuth app client id (non-secret). Paired with
+   * `redditClientSecret`, enables the credential-gated Reddit OAuth-API fetch
+   * path: when both are present AND a fetch targets a Reddit URL, the router
+   * fetches via the official API instead of hitting the IP-reputation block.
+   * `null` (default) leaves the path off — Reddit fetches go through the normal
+   * ladder (which honestly hits the block). WIGOLO_REDDIT_CLIENT_ID.
+   */
+  redditClientId: string | null;
+  /**
+   * Opt-in Reddit OAuth app client SECRET. Keychain-backed: added to
+   * SETTINGS_SECRETS_DENYLIST so it is never persisted to config.json in
+   * cleartext; the config resolve path recomposes it from the OS keychain (or
+   * reads it from WIGOLO_REDDIT_CLIENT_SECRET). `null` when unset.
+   */
+  redditClientSecret: string | null;
+  /**
+   * User-agent Reddit requires on both the token and data requests. Non-secret.
+   * Defaults to a generic capability-clean UA. WIGOLO_REDDIT_USER_AGENT.
+   */
+  redditUserAgent: string;
   /** Browser fingerprint profile passed to the TLS-impersonation backend. */
   tlsBrowser: string;
   /** Successes required before a domain is auto-promoted to TLS-first routing. */
@@ -392,6 +413,31 @@ function resolveCredentialUrl(raw: string | null, settingsKey: string): string |
   const stored = readCredentialFromKeychain(credentialKeychainUser(settingsKey));
   if (!stored) return raw;
   return recomposeWithUserinfo(raw, stored);
+}
+
+/**
+ * Resolve a plain-string secret (no URL wrapper): env var > OS keychain entry
+ * stored under `credentialKeychainUser(settingsKey)`. The value is NEVER read
+ * from persisted config.json (the denylist strips it on the write path), so a
+ * disk config never holds the cleartext secret. `null` when unset everywhere.
+ */
+function resolveKeychainSecret(envKey: string, settingsKey: string): string | null {
+  const envVal = process.env[envKey];
+  if (envVal !== undefined && envVal !== '') return envVal;
+  return readCredentialFromKeychain(credentialKeychainUser(settingsKey));
+}
+
+/** Default user-agent for the opt-in Reddit OAuth-API path. Generic +
+ * capability-clean; overridable via WIGOLO_REDDIT_USER_AGENT. */
+export const DEFAULT_REDDIT_USER_AGENT = 'web:wigolo:v1.0 (web intelligence agent)';
+
+/**
+ * True when the opt-in Reddit OAuth-API path is fully configured: both the
+ * client id and the (keychain-backed) client secret are present. When false the
+ * router never routes to the API — Reddit fetches use the normal ladder.
+ */
+export function redditApiConfigured(cfg: Config = getConfig()): boolean {
+  return !!cfg.redditClientId && !!cfg.redditClientSecret;
 }
 
 let cachedConfig: Config | null = null;
@@ -565,6 +611,12 @@ export function getConfig(): Config {
     // (`chrme_142`) or hostile input. Restrict to the documented wreq-js
     // browser families; on mismatch we warn (to stderr via the logger) and
     // fall back to the safe default.
+    redditClientId: envStr('WIGOLO_REDDIT_CLIENT_ID', null, settings, 'redditClientId'),
+    // Keychain-backed secret — resolved from env or OS keychain, never from
+    // the (denylist-stripped) config.json.
+    redditClientSecret: resolveKeychainSecret('WIGOLO_REDDIT_CLIENT_SECRET', 'redditClientSecret'),
+    redditUserAgent:
+      envStr('WIGOLO_REDDIT_USER_AGENT', null, settings, 'redditUserAgent') ?? DEFAULT_REDDIT_USER_AGENT,
     tlsBrowser: validateTlsBrowser(envStr('WIGOLO_TLS_BROWSER', null, settings, 'tlsBrowser'), 'chrome_142'),
     tlsSuccessThreshold: envInt('WIGOLO_TLS_SUCCESS_THRESHOLD', 3, settings, 'tlsSuccessThreshold'),
     tlsDomains: (() => {

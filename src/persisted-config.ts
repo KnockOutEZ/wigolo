@@ -43,7 +43,7 @@ export type PersistedConfigPatch = Partial<Omit<PersistedConfig, 'version'>>;
  * without this guard a caller could round-trip an API key onto disk in plain
  * text. Strip them on the write path. Keys go to the keychain/env only.
  */
-export const SETTINGS_SECRETS_DENYLIST = new Set<string>(['braveApiKey', 'githubToken']);
+export const SETTINGS_SECRETS_DENYLIST = new Set<string>(['braveApiKey', 'githubToken', 'redditClientSecret']);
 
 // ---------------------------------------------------------------------------
 // Credential keychain adapter (injectable for tests)
