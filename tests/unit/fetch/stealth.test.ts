@@ -103,6 +103,15 @@ describe('stealthContextOptions', () => {
     expect(opts.acceptDownloads).toBe(true);
   });
 
+  it('OMITS userAgent when ua is undefined so the browser native UA stands', () => {
+    // A real headed / new-headless browser presents a coherent native UA;
+    // overriding it would re-introduce the very mismatch this path avoids.
+    const opts = stealthContextOptions(undefined);
+    expect('userAgent' in opts).toBe(false);
+    expect(opts.locale).toBe('en-US');
+    expect(opts.acceptDownloads).toBe(true);
+  });
+
   it('merges caller overrides without dropping the stealth defaults', () => {
     const ua = resolveStealthUA();
     const opts = stealthContextOptions(ua, { storageState: '/tmp/state.json' });

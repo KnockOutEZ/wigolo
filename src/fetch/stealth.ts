@@ -102,13 +102,19 @@ export function stealthLaunchArgs(type: BrowserType): string[] {
  * (auth storage state, extra headers) merge on top without dropping the
  * stealth defaults. `acceptDownloads` mirrors the pooled path so a PDF response
  * is still buffered rather than turning into a hard navigation error.
+ *
+ * When `ua` is undefined the `userAgent` key is OMITTED so the launched
+ * browser's NATIVE user agent stands — coherent by construction (correct
+ * platform token + real Chrome major, no "HeadlessChrome" in the new headless
+ * mode or a real installed browser). A synthesized UA is only passed on the
+ * fallback path where the native UA is unavailable or must be pinned.
  */
 export function stealthContextOptions(
-  ua: string,
+  ua: string | undefined,
   opts?: Record<string, unknown>,
 ): Record<string, unknown> {
   return {
-    userAgent: ua,
+    ...(ua !== undefined ? { userAgent: ua } : {}),
     locale: 'en-US',
     timezoneId: 'America/New_York',
     viewport: { ...STEALTH_VIEWPORT },
