@@ -34,6 +34,14 @@ function makePage() {
     }),
     waitForLoadState: vi.fn().mockResolvedValue(undefined),
     waitForFunction: vi.fn().mockResolvedValue(undefined),
+    // settlePage reads content metrics + the final DOM verdict via evaluate;
+    // a content-bearing verdict keeps the settle gate on its instant path.
+    evaluate: vi.fn().mockResolvedValue({
+      hasContent: true,
+      hasSpaRoot: false,
+      hasNavChrome: false,
+      nearEmpty: false,
+    }),
     content: vi.fn().mockResolvedValue('<html><body>ok</body></html>'),
     screenshot: vi.fn().mockResolvedValue(Buffer.from('x')),
     setExtraHTTPHeaders: vi.fn().mockResolvedValue(undefined),
