@@ -13,7 +13,7 @@ import { playwrightProxyOption } from './proxy-credentials.js';
 import { redactUrl } from '../util/redact-url.js';
 import { isAntiBotStatus, hasBrowserChallengeBody, isChallengeShell, isChallengeResponse, stillShowingChallenge, hasChallengeHeader, isNearEmptyBody } from './tls-tier.js';
 import { pollUntilCleared } from './challenge-completion.js';
-import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, STEALTH_INIT_SCRIPT } from './stealth.js';
+import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, parseChromeMajor, STEALTH_INIT_SCRIPT } from './stealth.js';
 import { recordDomainClearance, clearDomainClearance } from '../cache/store.js';
 import { CLEARANCE_COOKIE_NAME, clearanceExpiresIso } from './clearance-reuse.js';
 import { guardResolvedHost } from '../watch/ssrf.js';
@@ -202,6 +202,13 @@ export class MultiBrowserPool {
   // launching and releases it after close.
   private stealthActive = 0;
   private readonly stealthWaitQueue: Array<() => void> = [];
+  // Cached outcome of the ONE-per-process authentic-browser probe on the
+  // dedicated stealth path (T1-A). 'chrome' means an installed browser launched
+  // successfully; 'bundled' means we fell back (or were forced) to the bundled
+  // browser engine. null = not probed yet. Caching avoids paying the failed
+  // channel:'chrome' launch cost on every stealth fetch. Chromium-only — the
+  // authentic-channel concept does not apply to firefox/webkit.
+  private resolvedStealthChannel: 'chrome' | 'bundled' | null = null;
 
   constructor(options?: MultiBrowserPoolOptions) {
     let types = options?.browserTypes ?? ['chromium'];
@@ -387,6 +394,70 @@ export class MultiBrowserPool {
     this.stealthActive = Math.max(0, this.stealthActive - 1);
   }
 
+  /**
+   * Launch the DEDICATED stealth browser (T1-A + T1-B). Prefers an authentic
+   * installed browser (real TLS + version) via the browser engine's `chrome`
+   * channel and falls back to the bundled engine when none is installed
+   * (channel launch throws → relaunch without it). The probe outcome is cached
+   * for the process so a machine without an installed browser does not repay
+   * the failed-launch cost on every stealth fetch. Headless-by-default uses the
+   * engine's windowless headless mode (headful-grade fingerprint, no visible
+   * window); `browserHeadful` opts into a true visible window.
+   *
+   * Chromium-only for the authentic-channel path — the concept does not apply
+   * to firefox/webkit, which always launch bundled. Returns the launched
+   * browser; the caller owns closing it.
+   */
+  private async launchDedicatedStealthBrowser(type: BrowserType): Promise<Browser> {
+    const launcher = getLauncher(type);
+    const cfg = getConfig();
+    const proxy = playwrightProxyOption(cfg.proxyUrl, cfg.useProxy);
+    // headless:false = a real visible window (opt-in). Default headless:true is
+    // the engine's windowless new headless — headful-grade fingerprint, no
+    // window ever pops for a background server.
+    const headless = !cfg.browserHeadful;
+    const baseOpts = {
+      headless,
+      args: stealthLaunchArgs(type),
+      env: sanitizedChildEnv({ stripProxy: true }),
+      ...(proxy ? { proxy } : {}),
+    };
+
+    // Only chromium supports the authentic installed-browser channel. For
+    // firefox/webkit (or a 'chromium'-forced config) launch bundled directly.
+    const wantChannel = type === 'chromium' && cfg.browserChannel !== 'chromium';
+    if (!wantChannel) {
+      this.resolvedStealthChannel = 'bundled';
+      return launcher.launch(baseOpts);
+    }
+
+    // Cached probe: never re-attempt channel:'chrome' once we know it fails on
+    // this machine, and never drop back to bundled once we know chrome works.
+    if (this.resolvedStealthChannel === 'bundled') {
+      return launcher.launch(baseOpts);
+    }
+    if (this.resolvedStealthChannel === 'chrome') {
+      return launcher.launch({ ...baseOpts, channel: 'chrome' });
+    }
+
+    // First probe this process. Try the authentic browser; on ANY launch
+    // failure (not installed / spawn error) fall back to the bundled engine and
+    // cache the outcome so later fetches skip the failed attempt.
+    try {
+      const browser = await launcher.launch({ ...baseOpts, channel: 'chrome' });
+      this.resolvedStealthChannel = 'chrome';
+      log.info('anti-bot stealth launch using authentic installed browser', { type });
+      return browser;
+    } catch (err) {
+      this.resolvedStealthChannel = 'bundled';
+      log.info('authentic browser unavailable, using bundled browser engine for stealth', {
+        type,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return launcher.launch(baseOpts);
+    }
+  }
+
   async fetchWithBrowser(url: string, options: BrowserFetchOptions = {}): Promise<RawFetchResult> {
     // Bail out immediately if the caller's budget is already exhausted.
     if (options.signal?.aborted) throw options.signal.reason;
@@ -448,16 +519,27 @@ export class MultiBrowserPool {
       // success path the catch never runs, so the finally below stays the sole
       // releaser — no double-release.
       try {
-        const launcher = getLauncher(resolvedType);
-        const cfgProxy = getConfig();
-        const proxy = playwrightProxyOption(cfgProxy.proxyUrl, cfgProxy.useProxy);
-        dedicatedBrowser = await launcher.launch({
-          headless: true,
-          args: stealthLaunchArgs(resolvedType),
-          env: sanitizedChildEnv({ stripProxy: true }),
-          ...(proxy ? { proxy } : {}),
-        });
-        advertisedUa = resolveStealthUA();
+        dedicatedBrowser = await this.launchDedicatedStealthBrowser(resolvedType);
+        // UA/platform coherence (T1-C). The advertised UA MUST match the actual
+        // runtime: its platform token reflects the real OS (process.platform)
+        // and its Chrome major reflects the ACTUAL launched browser's version
+        // (read via browser.version()), never a hardcoded Windows/142 mismatch.
+        // On chromium this synthesized UA is byte-identical to the browser's
+        // native desktop UA (so it stays coherent while remaining known for
+        // clearance recording); the new-headless / authentic-browser path
+        // guarantees no "HeadlessChrome" token. firefox/webkit keep the pinned
+        // synthesized UA.
+        // Guard version() for browser stubs without it (unit-test mocks) — a
+        // missing/unparseable version falls back to the pinned Chrome major.
+        const launchedVersion =
+          typeof (dedicatedBrowser as { version?: unknown }).version === 'function'
+            ? dedicatedBrowser.version()
+            : null;
+        const launchedMajor = parseChromeMajor(launchedVersion);
+        advertisedUa =
+          launchedMajor !== null
+            ? resolveStealthUA(process.platform, launchedMajor)
+            : resolveStealthUA();
         ctx = await dedicatedBrowser.newContext(stealthContextOptions(advertisedUa));
         // Guard for context stubs without addInitScript (unit-test mocks).
         if (typeof (ctx as { addInitScript?: unknown }).addInitScript === 'function') {
