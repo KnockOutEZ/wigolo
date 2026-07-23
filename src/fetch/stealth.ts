@@ -18,22 +18,64 @@ import type { BrowserType } from '../types.js';
  */
 export const STEALTH_CHROME_MAJOR = 142;
 
-const CHROME_FULL_VERSION = `${STEALTH_CHROME_MAJOR}.0.0.0`;
-
 /** Default desktop viewport for the dedicated stealth context. */
 const STEALTH_VIEWPORT = { width: 1280, height: 800 } as const;
 
 /**
- * A pinned modern Chrome desktop UA string. The Chrome major matches
- * {@link STEALTH_CHROME_MAJOR} so the browser tier and the TLS-impersonation
- * tier advertise the same Chrome identity.
+ * The desktop OS platform token a Chrome desktop UA carries, keyed by Node's
+ * `process.platform`. This MUST match the runtime OS: a synthesized UA whose
+ * platform token contradicts the real `navigator.platform` /
+ * `navigator.userAgentData` reported by the browser is the single highest-signal
+ * cross-layer inconsistency modern detectors score. darwin→Macintosh,
+ * linux→X11 Linux, win32→Windows. Anything else falls back to the Linux token
+ * (the safest generic desktop identity for an unknown platform).
  */
-export function resolveStealthUA(): string {
+function platformToken(platform: NodeJS.Platform | string): string {
+  switch (platform) {
+    case 'darwin':
+      return 'Macintosh; Intel Mac OS X 10_15_7';
+    case 'win32':
+      return 'Windows NT 10.0; Win64; x64';
+    default:
+      return 'X11; Linux x86_64';
+  }
+}
+
+/**
+ * Synthesize a coherent modern Chrome desktop UA for the FALLBACK path only —
+ * when a real browser's native UA is unavailable (e.g. a unit stub, or an
+ * engine that does not expose one). The platform token matches the actual
+ * runtime OS and the Chrome major matches the ACTUAL launched browser's major
+ * version (read via `browser.version()` and passed here), so the advertised UA
+ * never contradicts the runtime it runs on. Never emits a "HeadlessChrome"
+ * token.
+ *
+ * @param platform Node `process.platform` (or an explicit value in tests);
+ *   defaults to the current runtime OS.
+ * @param major Chrome major version; defaults to the shared TLS-tier pin so the
+ *   browser and TLS tiers still present one Chrome identity when the real major
+ *   is unknown.
+ */
+export function resolveStealthUA(
+  platform: NodeJS.Platform | string = process.platform,
+  major: number = STEALTH_CHROME_MAJOR,
+): string {
   return (
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+    `Mozilla/5.0 (${platformToken(platform)}) ` +
     'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-    `Chrome/${CHROME_FULL_VERSION} Safari/537.36`
+    `Chrome/${major}.0.0.0 Safari/537.36`
   );
+}
+
+/** Extract the major version from a browser `version()` string ("142.0.7444.0"
+ * → 142). Returns null when the string carries no leading integer, so callers
+ * fall back to the pinned major rather than an incoherent UA. */
+export function parseChromeMajor(version: string | undefined | null): number | null {
+  if (!version) return null;
+  const m = /^(\d+)\./.exec(version.trim());
+  if (m) return parseInt(m[1], 10);
+  const n = parseInt(version.trim(), 10);
+  return Number.isNaN(n) ? null : n;
 }
 
 /**

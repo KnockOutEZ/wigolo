@@ -3,21 +3,72 @@ import {
   resolveStealthUA,
   stealthLaunchArgs,
   stealthContextOptions,
+  parseChromeMajor,
   STEALTH_INIT_SCRIPT,
   STEALTH_CHROME_MAJOR,
 } from '../../../src/fetch/stealth.js';
 
 describe('resolveStealthUA', () => {
-  it('returns a modern Chrome desktop UA pinned to the TLS-tier Chrome major', () => {
-    const ua = resolveStealthUA();
-    // Must be a coherent Chrome identity — same major as the TLS default
-    // (chrome_142) so browser + TLS present one identity for clearance reuse.
+  // The synthesized UA (fallback path only) MUST carry a platform token that
+  // matches the ACTUAL runtime OS — a Windows token on a mac/Linux host is the
+  // top cross-layer inconsistency a modern detector scores (UA says Windows,
+  // navigator.platform says the real OS). Table-driven across the 3 platforms.
+  it.each([
+    ['darwin', 'Macintosh; Intel Mac OS X', 142],
+    ['linux', 'X11; Linux x86_64', 130],
+    ['win32', 'Windows NT 10.0; Win64; x64', 138],
+  ] as const)(
+    'for %s emits the matching platform token and the given Chrome major',
+    (platform, token, major) => {
+      const ua = resolveStealthUA(platform, major);
+      expect(ua).toContain(token);
+      expect(ua).toContain(`Chrome/${major}.`);
+      expect(ua).toMatch(/^Mozilla\/5\.0 /);
+      expect(ua).toContain('Safari/537.36');
+      expect(ua).not.toContain('Mobile');
+    },
+  );
+
+  it('NEVER emits a UA containing the HeadlessChrome token', () => {
+    // A "HeadlessChrome" token is an unconditional automation tell; the
+    // synthesized UA must never carry it regardless of platform/major.
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
+      expect(resolveStealthUA(platform, 142)).not.toContain('HeadlessChrome');
+    }
+  });
+
+  it('falls back to the pinned Chrome major when none is given', () => {
+    // No major → the shared TLS-tier pin, so browser + TLS still present one
+    // Chrome identity for clearance reuse.
+    const ua = resolveStealthUA('darwin');
     expect(ua).toContain(`Chrome/${STEALTH_CHROME_MAJOR}.`);
     expect(STEALTH_CHROME_MAJOR).toBe(142);
-    expect(ua).toMatch(/^Mozilla\/5\.0 /);
-    expect(ua).toContain('Safari/537.36');
-    // Desktop, not mobile.
-    expect(ua).not.toContain('Mobile');
+  });
+
+  it('defaults to the runtime OS platform token when none is given', () => {
+    const ua = resolveStealthUA();
+    const expected =
+      process.platform === 'darwin'
+        ? 'Macintosh; Intel Mac OS X'
+        : process.platform === 'win32'
+          ? 'Windows NT 10.0; Win64; x64'
+          : 'X11; Linux x86_64';
+    expect(ua).toContain(expected);
+  });
+});
+
+describe('parseChromeMajor', () => {
+  it('extracts the leading major from a Playwright version string', () => {
+    expect(parseChromeMajor('142.0.7444.0')).toBe(142);
+    expect(parseChromeMajor('130.0.0.0')).toBe(130);
+    expect(parseChromeMajor('99')).toBe(99);
+  });
+
+  it('returns null for an unparseable version (caller falls back to the pin)', () => {
+    expect(parseChromeMajor('')).toBeNull();
+    expect(parseChromeMajor(undefined)).toBeNull();
+    expect(parseChromeMajor(null)).toBeNull();
+    expect(parseChromeMajor('nope')).toBeNull();
   });
 });
 
