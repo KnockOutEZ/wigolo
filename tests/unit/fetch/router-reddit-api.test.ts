@@ -30,6 +30,7 @@ vi.mock('../../../src/fetch/reddit-api.js', async (importOriginal) => {
 import { SmartRouter } from '../../../src/fetch/router.js';
 import type { HttpClient, BrowserPoolInterface } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
+import { RedditRateLimitError } from '../../../src/fetch/reddit-api.js';
 
 function httpResult(url = 'https://www.reddit.com/r/rust'): Awaited<ReturnType<HttpClient['fetch']>> {
   return {
@@ -148,6 +149,21 @@ describe('SmartRouter — reddit-api routing', () => {
     fetchViaRedditApiMock.mockRejectedValue(new Error('token failed'));
 
     const result = await router.fetch('https://www.reddit.com/r/rust');
+    expect(httpClient.fetch).toHaveBeenCalled();
+    expect(result.method).not.toBe('reddit-api');
+  });
+
+  it('falls through to the normal ladder when the API path rate-limits (429)', async () => {
+    process.env.WIGOLO_REDDIT_CLIENT_ID = 'cid';
+    process.env.WIGOLO_REDDIT_CLIENT_SECRET = 'secret';
+    resetConfig();
+    // Distinct from the generic-Error case: a RedditRateLimitError should be
+    // info-logged and swallowed by tryRedditApi (returns null), so the router
+    // continues down the normal ladder rather than surfacing the rate limit.
+    fetchViaRedditApiMock.mockRejectedValue(new RedditRateLimitError(120));
+
+    const result = await router.fetch('https://www.reddit.com/r/rust');
+    expect(fetchViaRedditApiMock).toHaveBeenCalledOnce();
     expect(httpClient.fetch).toHaveBeenCalled();
     expect(result.method).not.toBe('reddit-api');
   });
