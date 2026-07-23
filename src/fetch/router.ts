@@ -1,7 +1,8 @@
 import { getConfig, type Config } from '../config.js';
 import { createLogger } from '../logger.js';
 import { contentAppearsEmpty } from './content-check.js';
-import { getAuthOptions } from './auth.js';
+import { getAuthOptions, type AuthOptions } from './auth.js';
+import { removeTempProfile } from './profile-copy.js';
 import { fetchWithPlaywright, shouldEscalate } from './playwright-tier.js';
 import { describeFetchError } from './error-describe.js';
 import {
@@ -920,32 +921,44 @@ export class SmartRouter {
     // Actions always force Playwright --- actions need a live browser page
     if (actions && actions.length > 0) {
       if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
-      const authOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
+      const authOptions: AuthOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
       logger.debug('routing to playwright', { url, reason: 'actions present' });
-      return this.browserFetch(url, {
-        headers,
-        screenshot,
-        actions,
-        ...authOptions,
-        signal,
-        stealth: stealthForBrowser(config, { antiBotEscalation: false }),
-      });
+      try {
+        return await this.browserFetch(url, {
+          headers,
+          screenshot,
+          actions,
+          ...authOptions,
+          signal,
+          stealth: stealthForBrowser(config, { antiBotEscalation: false }),
+        });
+      } finally {
+        // The temp Chrome-profile copy (if getAuthOptions made one) is
+        // single-use — remove it once the fetch settles (success, failure, or
+        // abort) so no full-profile copy survives in tmp.
+        removeTempProfile(authOptions.userDataDir);
+      }
     }
 
     // Always Playwright for auth or explicit override
     if (renderJs === 'always' || useAuth) {
       if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
-      const authOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
+      const authOptions: AuthOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
       logger.debug('routing to playwright', { url, reason: useAuth ? 'auth' : 'render_js=always' });
       // Explicit browser request (auth / render_js:always) — not an anti-bot
       // escalation, so 'auto' leaves it unhardened; 'on' still hardens.
-      return this.browserFetch(url, {
-        headers,
-        screenshot,
-        ...authOptions,
-        signal,
-        stealth: stealthForBrowser(config, { antiBotEscalation: false }),
-      });
+      try {
+        return await this.browserFetch(url, {
+          headers,
+          screenshot,
+          ...authOptions,
+          signal,
+          stealth: stealthForBrowser(config, { antiBotEscalation: false }),
+        });
+      } finally {
+        // Single-use temp Chrome-profile copy — see the actions path above.
+        removeTempProfile(authOptions.userDataDir);
+      }
     }
 
     // HTTP only, no fallback

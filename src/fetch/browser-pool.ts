@@ -73,6 +73,13 @@ export class ChallengeBlockedError extends Error {
 export interface BrowserFetchOptions {
   timeoutMs?: number;
   storageStatePath?: string;
+  /**
+   * Temp Chrome-profile copy (made by getAuthOptions via profile-copy.ts).
+   * Consumed as a DEDICATED `launchPersistentContext` so the profile's
+   * cookies/logins are presented to the site. The context is closed at
+   * end-of-fetch; the CALLER owns the copy and removes it afterwards.
+   * `cdpUrl` takes precedence when both are set.
+   */
   userDataDir?: string;
   headers?: Record<string, string>;
   screenshot?: boolean;
@@ -411,8 +418,9 @@ export class MultiBrowserPool {
     let advertisedUa: string | null = null;
 
     // Stealth applies only to the launch path — the CDP path connects to an
-    // external browser that owns its own fingerprint.
-    const useStealth = options.stealth === true && !options.cdpUrl;
+    // external browser that owns its own fingerprint, and the persistent-profile
+    // path must present the profile's own fingerprint, not a hardened one.
+    const useStealth = options.stealth === true && !options.cdpUrl && !options.userDataDir;
 
     if (options.cdpUrl) {
       // CDP is always Chromium
@@ -428,6 +436,37 @@ export class MultiBrowserPool {
           error: err instanceof Error ? err.message : String(err),
         });
         ctx = await this.acquireForType(resolvedType);
+      }
+    } else if (options.userDataDir) {
+      // Authenticated profile fetch (WIGOLO_CHROME_PROFILE_PATH): launch a
+      // DEDICATED persistent context from the temp profile copy so the
+      // profile's cookies/logins are actually presented to the site. A
+      // Chrome-format profile is Chromium-only. launchPersistentContext owns
+      // its browser process (no separate Browser handle), so closing the
+      // context in the finally tears everything down; the CALLER owns the temp
+      // copy and removes it after this fetch settles (see profile-copy.ts).
+      // Bounded by the same dedicated-path semaphore as stealth so a burst of
+      // authenticated fetches cannot exceed the browser cap.
+      resolvedType = 'chromium';
+      await this.acquireStealthSlot();
+      stealthSlotHeld = true;
+      dedicated = true;
+      log.debug('fetching with browser (persistent profile context)', { url, userDataDir: options.userDataDir });
+      try {
+        const cfgProfile = getConfig();
+        const proxy = playwrightProxyOption(cfgProfile.proxyUrl, cfgProfile.useProxy);
+        ctx = await chromium.launchPersistentContext(options.userDataDir, {
+          headless: true,
+          acceptDownloads: true,
+          env: sanitizedChildEnv({ stripProxy: true }),
+          ...(proxy ? { proxy } : {}),
+        });
+      } catch (err) {
+        // Free the slot before rethrowing so N launch failures cannot exhaust
+        // the semaphore (mirrors the stealth setup error path below).
+        this.releaseStealthSlot();
+        stealthSlotHeld = false;
+        throw err;
       }
     } else if (useStealth) {
       resolvedType = this.resolveType(options.browserType, url);
