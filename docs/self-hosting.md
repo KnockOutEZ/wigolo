@@ -91,6 +91,6 @@ The daemon serves plain HTTP and does not terminate TLS. The recommended remote 
 2. Terminate TLS in front — a reverse proxy on the same box, or an outbound tunnel.
 3. **Keep the bearer token anyway.** A tunnel delivers remote requests from 127.0.0.1, so loopback-source is deliberately not trusted as authentication; the token is what actually gates callers.
 
-If the proxy rewrites the `Host` header, make sure it forwards one on the daemon's allowlist (loopback names or the configured bind host) — the DNS-rebinding guard rejects unknown hosts.
+With a configured bearer token, a proxy may forward its normal public `Host` header. The MCP transport still rejects browser-originated requests; open-mode loopback deployments retain the Host allowlist as a DNS-rebinding guard.
 
 [← Docs index](./README.md) · [Next: Skills](./skills.md)
