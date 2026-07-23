@@ -1,6 +1,6 @@
 # wigolo
 
-> wigolo is a local-first web-intelligence server for AI agents: web search, page fetch, site crawl, structured extraction, hybrid semantic discovery, multi-step research, autonomous data gathering, page diffing, change watching, and a persistent local knowledge cache. It runs on the user's machine (Node.js 20+), needs no API keys for core work, and speaks MCP over stdio for local coding agents, MCP over HTTP + a REST API for remote/self-hosted agents, and a plain CLI for scripts. Results are transparent: per-result evidence scores, citations with source spans, per-engine telemetry, honestly labeled failures. All data stays in ~/.wigolo. License: AGPL-3.0-only.
+> wigolo is a local-first web-intelligence server for AI agents: web search, page fetch, site crawl, structured extraction, hybrid semantic discovery, multi-step research, autonomous data gathering, page diffing, change watching, and a persistent local knowledge cache. It runs on the user's machine (Node.js 20, 22, or 24 LTS), needs no API keys for core work, and speaks MCP over stdio for local coding agents, MCP over HTTP + a REST API for remote/self-hosted agents, and a plain CLI for scripts. Results are transparent: per-result evidence scores, citations with source spans, per-engine telemetry, honestly labeled failures. Persistent state stays under ~/.wigolo by default; live searches and fetches contact the selected public engines and sites directly. License: AGPL-3.0-only.
 
 Install: `npx wigolo init` (unattended full setup; `--agents=claude-code` wires an agent)
 

@@ -6,7 +6,7 @@
 #   WIGOLO="wigolo" ./watch.sh          # or any wigolo entry point
 #   URL=https://your-site/changelog ./watch.sh
 #
-# Requires: node >= 20, jq.
+# Requires: Node 20, 22, or 24 LTS; jq.
 set -euo pipefail
 
 WIGOLO="${WIGOLO:-npx wigolo}"

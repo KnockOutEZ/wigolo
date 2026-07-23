@@ -38,7 +38,7 @@ const STEPS = [
     title: "Check it's healthy",
     note: "Verifies the local engine — search, browser, on-device models.",
     cmd: "npx wigolo doctor",
-    foot: "Node ≥ 20 · macOS / Linux / Windows · no account, no key.",
+    foot: "Node 20 / 22 / 24 LTS · macOS / Linux / Windows · no account or key for core tools.",
   },
   {
     n: "3",

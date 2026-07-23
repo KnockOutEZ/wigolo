@@ -11,7 +11,7 @@ moves — inline, or POSTed to a webhook.
 URL=https://your-site/changelog ./watch.sh  # or any changelog you care about
 ```
 
-Requires node >= 20 and `jq`.
+Requires Node 20, 22, or 24 LTS and `jq`.
 
 ## What you'll see (real output)
 

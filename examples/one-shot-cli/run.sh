@@ -5,7 +5,7 @@
 #   ./run.sh                  # uses `npx wigolo` (or `wigolo` if installed globally)
 #   WIGOLO="wigolo" ./run.sh  # point at any wigolo binary/entry you prefer
 #
-# Requires: node >= 20, jq (for the JSON moment at the end).
+# Requires: Node 20, 22, or 24 LTS; jq (for the JSON moment at the end).
 set -euo pipefail
 
 WIGOLO="${WIGOLO:-npx wigolo}"

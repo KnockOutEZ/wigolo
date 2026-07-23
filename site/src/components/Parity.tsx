@@ -14,12 +14,11 @@ const FIGHT: Row[] = [
 ];
 
 const PHYSICS: Row[] = [
-  { label: "Verbatim excerpts pinned to byte-offset source spans", cells: [true, false, false, false] },
+  { label: "Verbatim excerpts with character offsets in extracted Markdown", cells: [true, false, false, false] },
   { label: "Explainable per-result score decomposition", cells: [true, false, false, false] },
   { label: "Persistent local memory — instant, offline re-query", cells: [true, false, false, false] },
-  { label: "Query data stays on your machine", cells: [true, false, false, false] },
-  { label: "API key / account", cells: ["none", "required", "required", "required"] },
-  { label: "Cost per query", cells: ["$0", "metered", "metered", "metered"] },
+  { label: "Default/core access", cells: ["keyless", "key for full API", "free tier / x402", "keyless Search / Extract"] },
+  { label: "Paid usage", cells: ["no Wigolo fee", "after allowance", "after allowance", "after allowance"] },
 ];
 
 function Mark({ v }: { v: Cell }) {
@@ -57,16 +56,17 @@ export default function Parity() {
     <section className={styles.section}>
       <div className={`container ${styles.inner}`}>
         <Reveal className={styles.head}>
-          <span className="eyebrow">Parity</span>
+          <span className="eyebrow">Feature snapshot</span>
           <h2 className={styles.title}>
-            Same fight.
+            Same category.
             <br />
-            Different physics.
+            Different architecture.
           </h2>
           <p className={styles.lede}>
-            The paid tools in this lane are genuinely good — that&apos;s what
-            makes the parity interesting. What still separates wigolo isn&apos;t
-            quality. It&apos;s where the work happens.
+            One recorded query showed all four tools converging on the same core
+            answer. That is a useful demonstration, not a general quality
+            benchmark. Wigolo&apos;s durable distinction is where its state and
+            ranking work live.
           </p>
         </Reveal>
 
@@ -94,9 +94,9 @@ export default function Parity() {
             </tbody>
           </table>
           <p className={styles.foot}>
-            Feature standing as of July 2026 — check each vendor&apos;s docs
-            for current state. One cold query, four tools, judged on the
-            evidence alone —{" "}
+            Feature standing as of July 2026. Access modes and allowances
+            change; check each vendor&apos;s current docs. One cold query, four
+            tools, judged on the evidence alone —{" "}
             <a
               href="https://github.com/KnockOutEZ/wigolo#benchmark"
               target="_blank"
@@ -110,7 +110,7 @@ export default function Parity() {
           <img
             className={styles.meter}
             src={asset("/promo/meter.svg")}
-            alt="The meter: a metered cloud API's cost climbs with every query while wigolo stays flat at zero dollars — illustrative pricing"
+            alt="Illustrative comparison: a metered cloud API's cost rises with usage while Wigolo itself charges no API usage fee"
             loading="lazy"
           />
         </Reveal>

@@ -6,7 +6,7 @@
 #   ./demo.sh                              # open mode on 127.0.0.1
 #   WIGOLO_API_TOKEN=wigolo-demo-token ./demo.sh   # bearer-token mode
 #
-# Requires: node >= 20, curl, jq.
+# Requires: Node 20, 22, or 24 LTS; curl; jq.
 set -euo pipefail
 
 WIGOLO="${WIGOLO:-npx wigolo}"

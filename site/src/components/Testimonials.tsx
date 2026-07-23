@@ -9,31 +9,31 @@ type Receipt = {
   detail: string;
 };
 
-// Real findings from wigolo's parity benchmark — one cold query, four web
+// Real findings from wigolo's recorded comparison — one cold query, four web
 // tools on equal footing, judged by the agent on the evidence alone.
 const RECEIPTS: Receipt[] = [
   {
     tag: "Provenance",
     quote:
-      "Verbatim quoted excerpts, pinned to byte-offset source spans with citation IDs.",
+      "Verbatim quoted excerpts, pinned to character offsets in extracted Markdown with citation IDs.",
     detail: "wigolo · the only tool of four to return this",
   },
   {
     tag: "Explainable scoring",
     quote:
       "A score decomposition per result — semantic, lexical, and engine consensus, shown, not asserted.",
-    detail: "wigolo · parity benchmark",
+    detail: "wigolo · recorded comparison",
   },
   {
     tag: "Telemetry",
     quote: "Live per-engine telemetry, on-screen, for every single query.",
-    detail: "wigolo · parity benchmark",
+    detail: "wigolo · recorded comparison",
   },
   {
     tag: "Honesty by contract",
     quote:
       "Self-flagged junk — when two of its results were weak, its own scorer said so.",
-    detail: "wigolo · parity benchmark",
+    detail: "wigolo · recorded comparison",
   },
 ];
 

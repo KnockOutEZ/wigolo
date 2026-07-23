@@ -13,7 +13,7 @@ npm install
 npm run demo     # tsc && node dist/tools.js
 ```
 
-Requires node >= 20. No LLM key needed for this demo — it connects, registers
+Requires Node 20, 22, or 24 LTS. No LLM key needed for this demo — it connects, registers
 the tools, prints them, and disconnects.
 
 ## What you'll see (real output)

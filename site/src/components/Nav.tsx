@@ -8,7 +8,7 @@ const EXAMPLES_URL = `${GH}/tree/main/examples`;
 
 const LINKS: { label: string; href: string; ext?: boolean }[] = [
   { label: "Tools", href: "#tools" },
-  { label: "Parity", href: "#parity" },
+  { label: "Comparison", href: "#parity" },
   { label: "Docs", href: `${BASE_PATH}/docs` },
   { label: "Examples", href: EXAMPLES_URL, ext: true },
   { label: "Quickstart", href: "#quickstart" },

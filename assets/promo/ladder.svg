@@ -85,6 +85,6 @@
 
   <!-- footer -->
   <line x1="36" y1="400" x2="844" y2="400" stroke="#dbdfe0"/>
-  <text x="36" y="422" class="mono small">Zero-key installs pay nothing for tiers they never use.</text>
+  <text x="36" y="422" class="mono small">Keyless core; no Wigolo fee for fetch tiers you use.</text>
   <text x="844" y="422" text-anchor="end" class="mono tiny">wigolo — local-first web intelligence over MCP</text>
 </svg>

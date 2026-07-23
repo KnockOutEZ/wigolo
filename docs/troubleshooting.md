@@ -54,7 +54,7 @@ Two honest facts to calibrate expectations:
 
 **Node version.** wigolo runs on **Node 20, 22, or 24** (LTS). Very new or unusual Node builds may not have prebuilt native binaries yet and will try to compile from source (which needs a C/C++ toolchain) — stick to an LTS to avoid that.
 
-**Windows.** Supported on Node 20+. The data dir is `%USERPROFILE%\.wigolo`. Set env vars with your shell's syntax (`$env:WIGOLO_SEARCH="hybrid"` in PowerShell); everything else — commands, flags, ports — is identical to the Unix docs.
+**Windows.** Supported on Node 20, 22, and 24 LTS. The data dir is `%USERPROFILE%\.wigolo`. Set env vars with your shell's syntax (`$env:WIGOLO_SEARCH="hybrid"` in PowerShell); everything else — commands, flags, ports — is identical to the Unix docs.
 
 **Linux (minimal images / containers).** The browser engine needs a handful of OS libraries; `wigolo warmup --browser` installs them (with sudo where available) and otherwise prints the exact command to run. **Python is _not_ required** — it is used only by the optional search-engine sidecar, so a "Python 3 not found" note is safe to ignore for core use.
 
@@ -80,18 +80,18 @@ wigolo writes **all** logs to stderr (structured JSON by default; `LOG_FORMAT=te
 ## FAQ
 
 **What's the business model? Will this start charging me?**
-wigolo is free, open-source software under AGPL-3.0. There's no hosted tier, no metered API, no key to buy — it's local software; your machine does the work. That's the point of it.
+wigolo is free, open-source software under AGPL-3.0. Wigolo has no hosted tier or usage fee; the default core path needs no vendor key. Your machine, storage, and network do the work, and optional providers may charge.
 
 **What does AGPL mean for me, plainly?**
-Using wigolo as a tool — personally, in your company, wired into every agent you run — carries zero obligation. The license's share-alike clause applies only if you *modify wigolo itself and run the modified version as a network service for others*: then you share those modifications. Building products that merely call wigolo is not that.
+Unmodified internal use generally does not require publishing your own code. If you modify Wigolo and let users interact with that modified version over a network, AGPL source-offer obligations apply. Distribution and combined-work questions can add obligations, so review the license or consult counsel for your deployment. This is not legal advice.
 
 **Is scraping with this ethical?**
 wigolo defaults are built around being a polite client: robots.txt respected by default, per-domain rate limits and crawl delays, page budgets sized for research rather than bulk harvesting, and honest labeled failures instead of hammering at walls. Reliability work here means reading pages the way a real browser does — it is not a cloaking toolkit, and the docs won't teach you to build one.
 
 **How stable is this?**
-Public beta at 0.2.0. The documented surface is held to a test suite of roughly 7,600 automated tests; beta is about the polish bar and API-shape confidence, not known instability. Real limitations that exist are written down here rather than discovered in production — see the challenge ceiling above.
+Public beta at 0.2.x. The repository contains more than 7,600 automated tests, and supported runtime and operating-system combinations are exercised in CI. Beta reflects remaining compatibility, API-shape, and polish work. Known limitations are documented here — see the challenge ceiling above.
 
 **Why is the install so big?**
-Because the intelligence is local. The download is dominated by the on-device embedding + ranking models (~250 MB) and the optional browser engine binary (~0.5–1 GB) that JS-rendered fetching needs. That's the trade for keyless, private, no-per-call-cost operation. `init --no-warmup` defers all of it; `wigolo config --cleanup` reclaims it.
+Because the ranking and cache are local. The download is dominated by the on-device embedding + ranking models (~250 MB) and the optional browser engine binary (~0.5–1 GB) that JS-rendered fetching needs. That's the trade for keyless core access, local processing, and no Wigolo usage fee. `init --no-warmup` defers all of it; `wigolo config --cleanup` reclaims it.
 
 [← Docs index](./README.md) · [Next: Privacy & security](./privacy-security.md)
