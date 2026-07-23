@@ -59,14 +59,24 @@ async function readAdvertisedUa(page: { evaluate?: unknown }): Promise<string | 
 export class ChallengeBlockedError extends Error {
   readonly code = 'blocked_by_challenge' as const;
   readonly hint: string;
+  /**
+   * The underlying anti-bot HTTP status (403/429/503) that triggered the
+   * challenge, when one is known. Threaded onto the router's stage error as
+   * `http_status` so a hard challenge-block reaches the crawl adaptive-cooldown
+   * (which only saw bare 403/429 before). Undefined when no reliable status
+   * exists (e.g. a goto-timeout, or a 2xx interstitial shell) — never invented.
+   */
+  readonly httpStatus?: number;
   constructor(
     public readonly targetUrl: string,
     message = "The site's bot protection served a challenge page that could not be cleared automatically",
     hint = 'Retry with use_auth: true using a real browser session, or fetch an alternate source for this content',
+    httpStatus?: number,
   ) {
     super(message);
     this.name = 'ChallengeBlockedError';
     this.hint = hint;
+    this.httpStatus = httpStatus;
   }
 }
 
@@ -97,6 +107,14 @@ export interface BrowserFetchOptions {
    * challenge is replayed instead of re-solved.
    */
   injectedCookies?: Array<{ name: string; value: string; domain: string; path?: string }>;
+  /**
+   * Force a direct (no-proxy) launch for THIS fetch even when a proxy is
+   * configured. Used by the router's managed-challenge direct-retry: a
+   * datacenter proxy converts many managed challenges into blocks, so one
+   * proxy-free browser attempt is made before returning blocked_by_challenge.
+   * Only affects the dedicated stealth launch path (the escalation target).
+   */
+  forceNoProxy?: boolean;
 }
 
 export interface BrowserPoolOptions {
@@ -417,10 +435,12 @@ export class MultiBrowserPool {
    * optional dep absent (or `stealthDriver: 'playwright'`, or firefox/webkit)
    * falls back to the standard launcher silently.
    */
-  private async launchDedicatedStealthBrowser(type: BrowserType): Promise<Browser> {
+  private async launchDedicatedStealthBrowser(type: BrowserType, forceNoProxy = false): Promise<Browser> {
     const cfg = getConfig();
     const launcher = await resolveStealthLauncher(type, cfg.stealthDriver, getLauncher(type));
-    const proxy = playwrightProxyOption(cfg.proxyUrl, cfg.useProxy);
+    // A managed-challenge direct-retry forces a proxy-free launch even when a
+    // proxy is configured (a datacenter proxy blocks many managed challenges).
+    const proxy = forceNoProxy ? undefined : playwrightProxyOption(cfg.proxyUrl, cfg.useProxy);
     // headless:false = a real visible window (opt-in). Default headless:true is
     // the engine's windowless new headless — headful-grade fingerprint, no
     // window ever pops for a background server.
@@ -528,7 +548,7 @@ export class MultiBrowserPool {
       // success path the catch never runs, so the finally below stays the sole
       // releaser — no double-release.
       try {
-        dedicatedBrowser = await this.launchDedicatedStealthBrowser(resolvedType);
+        dedicatedBrowser = await this.launchDedicatedStealthBrowser(resolvedType, options.forceNoProxy);
         // UA/platform coherence (T1-C). The advertised UA MUST match the actual
         // runtime: its platform token reflects the real OS (process.platform)
         // and its Chrome major reflects the ACTUAL launched browser's version
@@ -836,7 +856,13 @@ export class MultiBrowserPool {
               }
             }
             log.warn('bot-protection challenge did not clear within completion window, fast-failing', { url, statusCode });
-            throw new ChallengeBlockedError(url);
+            // Thread the triggering anti-bot status (403/429/503) so the router
+            // surfaces it as http_status for the crawl cooldown. A 2xx shell
+            // carries no anti-bot status, so leave it unset there.
+            throw new ChallengeBlockedError(
+              url, undefined, undefined,
+              isAntiBotStatus(statusCode) ? statusCode : undefined,
+            );
           }
           // Auto-passed: the challenge navigated to a real page. The captured
           // nav statusCode/responseHeaders are STALE — they still describe the

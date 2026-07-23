@@ -142,6 +142,8 @@ export interface BrowserFetchArgs {
   signal?: AbortSignal;
   stealth?: boolean;
   injectedCookies?: Array<{ name: string; value: string; domain: string; path?: string }>;
+  /** Force a proxy-free browser launch for this fetch (managed-challenge direct-retry). */
+  forceNoProxy?: boolean;
 }
 
 export interface BrowserPoolInterface {
@@ -378,6 +380,11 @@ export async function defaultPdfProbe(url: string, signal?: AbortSignal): Promis
   } finally {
     combined.cleanup();
   }
+}
+
+/** A fetch outcome is a StageError (not content) when it carries a string `error`. */
+function isStageError(x: RawFetchResult | StageError): x is StageError {
+  return 'error' in x && typeof (x as { error?: unknown }).error === 'string';
 }
 
 function isKnownSpaDomain(host: string): boolean {
@@ -720,9 +727,22 @@ export class SmartRouter {
       // safe here: the browser pool normalises a cleared result to 200 and drops
       // the stale cf-mitigated header, so the guard only fires on a genuine
       // still-challenge; normal content passes through unchanged.
-      return this.guardChallengeShell(await this.browserPool.fetchWithBrowser(url, browserOptions));
+      const guarded = this.guardChallengeShell(await this.browserPool.fetchWithBrowser(url, browserOptions));
+      // A guarded still-challenge (StageError) is a managed-challenge block just
+      // like a thrown ChallengeBlockedError — give it the same direct-retry.
+      if (isStageError(guarded) && guarded.error === 'blocked_by_challenge') {
+        const retried = await this.retryDirectOnChallenge(url, browserOptions);
+        if (retried) return retried;
+      }
+      return guarded;
     } catch (err) {
       if (err instanceof ChallengeBlockedError) {
+        // Managed-challenge direct-retry (T3-H): a datacenter proxy converts
+        // many managed-challenge passes into blocks; direct residential-grade
+        // egress often clears. When a proxy is in use, try ONE proxy-free
+        // browser fetch before the escape-hatch/fast-fail below.
+        const retried = await this.retryDirectOnChallenge(url, browserOptions);
+        if (retried) return retried;
         // Terminal browser challenge-block. Before returning the fast-fail, try
         // the opt-in escape-hatch rungs (solver → hosted reader) IF configured.
         // Unconfigured rungs no-op and never load the module (default path).
@@ -733,9 +753,54 @@ export class SmartRouter {
           error_reason: err.message,
           stage: 'fetch',
           hint: err.hint,
+          // Surface the underlying anti-bot status (403/429/503) when known so a
+          // hard challenge-block reaches the crawl adaptive-cooldown. Undefined
+          // when no reliable status exists — never invented.
+          ...(err.httpStatus !== undefined ? { http_status: err.httpStatus } : {}),
         };
       }
       throw err;
+    }
+  }
+
+  /**
+   * Managed-challenge direct-retry (T3-H). When a proxy IS in use and the
+   * browser tier hit a managed-challenge block, attempt ONE additional direct
+   * (no-proxy) browser fetch — a datacenter proxy often blocks a managed
+   * challenge that direct residential-grade egress would clear, and wigolo
+   * cannot know the proxy's ASN type. Returns the cleared content on success,
+   * or null to fall through to the normal fast-fail. No-op (returns null,
+   * NO extra fetch) when: the knob is off, no proxy is configured, or this call
+   * is already a no-proxy attempt.
+   */
+  private async retryDirectOnChallenge(
+    url: string,
+    browserOptions: BrowserFetchArgs,
+  ): Promise<RawFetchResult | null> {
+    const cfg = getConfig();
+    if (
+      !this.browserPool ||
+      browserOptions.forceNoProxy ||
+      !cfg.proxyBypassOnChallenge ||
+      !cfg.useProxy ||
+      !cfg.proxyUrl ||
+      browserOptions.cdpUrl
+    ) {
+      return null;
+    }
+    const logger = createLogger('fetch');
+    logger.info('managed-challenge block behind a proxy — retrying once with direct egress', { url });
+    try {
+      const direct = this.guardChallengeShell(
+        await this.browserPool.fetchWithBrowser(url, { ...browserOptions, forceNoProxy: true }),
+      );
+      if (isStageError(direct)) return null; // still blocked — fall through to fast-fail
+      logger.info('direct-egress retry cleared the managed challenge', { url });
+      return direct;
+    } catch {
+      // A direct retry that itself errors (incl. another ChallengeBlockedError)
+      // falls through to the normal fast-fail path — never surface a new throw.
+      return null;
     }
   }
 
@@ -791,6 +856,10 @@ export class SmartRouter {
         error_reason: err.message,
         stage: 'fetch',
         hint: err.hint,
+        // Carry the anti-bot status of the shell result (403/429/503) so the
+        // crawl cooldown sees it. A challenge served at 2xx has no anti-bot
+        // status to thread, so leave it unset there.
+        ...(isAntiBotStatus(raw.statusCode) ? { http_status: raw.statusCode } : {}),
       };
     }
     return raw;
