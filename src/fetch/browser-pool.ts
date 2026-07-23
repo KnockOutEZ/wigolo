@@ -14,6 +14,7 @@ import { redactUrl } from '../util/redact-url.js';
 import { isAntiBotStatus, hasBrowserChallengeBody, isChallengeShell, isChallengeResponse, stillShowingChallenge, hasChallengeHeader, isNearEmptyBody } from './tls-tier.js';
 import { pollUntilCleared } from './challenge-completion.js';
 import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, parseChromeMajor, resolveStealthLauncher, STEALTH_INIT_SCRIPT } from './stealth.js';
+import { humanizePage } from './behavior.js';
 import { recordDomainClearance, clearDomainClearance } from '../cache/store.js';
 import { CLEARANCE_COOKIE_NAME, clearanceExpiresIso } from './clearance-reuse.js';
 import { guardResolvedHost } from '../watch/ssrf.js';
@@ -115,6 +116,15 @@ export interface BrowserFetchOptions {
    * Only affects the dedicated stealth launch path (the escalation target).
    */
   forceNoProxy?: boolean;
+  /**
+   * Explicitly force the human-like INTERACTION pass on (true) or off (false)
+   * for THIS fetch, overriding the config-derived default. When omitted, the
+   * pool derives engagement from config: engage when `humanize === 'on'`, or
+   * `humanize === 'auto' && stealth === true` (the escalation path). A benign
+   * non-stealth fetch under the default `auto` performs NO interaction. The
+   * router may later pass an explicit flag; today it is derived here.
+   */
+  humanize?: boolean;
 }
 
 export interface BrowserPoolOptions {
@@ -924,6 +934,29 @@ export class MultiBrowserPool {
           : undefined;
       const settle = await settlePage(page, { budgetMs: remainingBudgetMs, signal: options.signal, url });
       if (options.signal?.aborted) throw options.signal.reason;
+
+      // Human-like INTERACTION pass (behavioral realism). Runs AFTER the page
+      // settles and BEFORE extraction so a behavioral-scoring anti-bot wall
+      // sees session mouse movement + scroll + timing. Engagement is derived
+      // from config unless the caller forces it via options.humanize:
+      //   'on'   → every browser fetch; 'off' → never;
+      //   'auto' → only on the stealth/escalation path (useStealth).
+      // Bounded by a hard time cap drawn from the REMAINING budget so it never
+      // blows the per-fetch budget, and it no-ops on a non-interactive page.
+      const humanizeEngaged =
+        options.humanize !== undefined
+          ? options.humanize
+          : config.humanize === 'on' || (config.humanize === 'auto' && useStealth);
+      if (humanizeEngaged && !options.signal?.aborted) {
+        const behaviorBudgetMs =
+          options.timeoutMs !== undefined
+            ? Math.max(0, Math.min(1500, options.timeoutMs - (Date.now() - fetchStartMs)))
+            : 1200;
+        if (behaviorBudgetMs > 0) {
+          await humanizePage(page, { maxMs: behaviorBudgetMs, signal: options.signal });
+        }
+        if (options.signal?.aborted) throw options.signal.reason;
+      }
 
       let actionResults: ActionResult[] | undefined;
       if (options.actions && options.actions.length > 0) {
