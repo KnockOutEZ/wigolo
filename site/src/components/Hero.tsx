@@ -42,8 +42,9 @@ export default function Hero() {
             wigolo is a local-first server that hands any AI agent the whole
             web — search, fetch, crawl, extract, cache, and research. In your
             editor over MCP, in your framework through an SDK, or in your
-            self-hosted stack over REST. No API keys. No cloud. No metered
-            bill.
+            self-hosted stack over REST. Core tools need no vendor API key,
+            persistent state stays local, and Wigolo charges no usage fee.
+            Live requests still contact the public engines and sites you choose.
           </p>
           <p className={styles.agents}>
             claude code · cursor · codex · gemini cli · vs code · windsurf ·

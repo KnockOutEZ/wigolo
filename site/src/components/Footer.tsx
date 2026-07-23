@@ -7,7 +7,7 @@ const COLS: { title: string; links: { label: string; href: string; ext?: boolean
     links: [
       { label: "Tools", href: "#tools" },
       { label: "Docs", href: `${BASE_PATH}/docs` },
-      { label: "Parity", href: "#parity" },
+      { label: "Comparison", href: "#parity" },
       { label: "Quickstart", href: "#quickstart" },
       { label: "Feedback", href: "#feedback" },
     ],
@@ -82,7 +82,7 @@ export default function Footer() {
           </a>
           <div className={styles.bottomRight}>
             <span className={styles.status}>
-              <span className={styles.dot} /> All systems local
+              <span className={styles.dot} /> Local engine active
             </span>
             <span className={styles.copy}>
               public beta · AGPL-3.0 · built by @KnockOutEZ

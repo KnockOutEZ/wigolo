@@ -12,7 +12,7 @@ const ACTIONS = [
   {
     glyph: "☕",
     title: "Sponsor it",
-    body: "No paid tier, ever. If wigolo saves you a metered search bill, a coffee keeps it maintained.",
+    body: "Wigolo has no paid tier. If it saves you a metered search bill, a coffee keeps it maintained.",
     cta: "Buy me a coffee",
     href: "https://buymeacoffee.com/knockoutez",
   },
@@ -45,8 +45,9 @@ export default function OpenSource() {
           </h2>
           <p className={styles.body}>
             wigolo is AGPL-3.0 — free to use, modify, and self-host, including
-            inside a company. The license keeps it open: nobody can close it up
-            and sell it back to you. Maintained, not paywalled.
+            inside a company. Released versions stay open, and covered modified
+            network deployments carry source-availability obligations.
+            Maintained, not paywalled.
           </p>
           <p className={styles.byline}>
             built and maintained by{" "}

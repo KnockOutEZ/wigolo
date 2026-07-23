@@ -132,9 +132,10 @@ export default function HowItWorks() {
               <span className={styles.pillarName}>search</span>
             </div>
             <p className={styles.pillarBody}>
-              <b>18 search-engine adapters</b> fan out in parallel, then rank
-              fusion and an on-device <b>ML reranker</b> settle the order — with
-              an explainable score behind every single result.
+              Up to <b>18 search sources</b>, selected by mode and availability,
+              fan out in parallel. Rank fusion and an on-device{" "}
+              <b>ML reranker</b> settle the order with inspectable score
+              components.
             </p>
             <div className={styles.steps}>
               <div className={styles.step}>
@@ -160,9 +161,10 @@ export default function HowItWorks() {
               <span className={styles.pillarName}>cache</span>
             </div>
             <p className={styles.pillarBody}>
-              Everything fetched lands in a <b>local index</b> — keyword search
-              paired with on-device vectors. Re-asking is <b>instant and free</b>
-              , and it still answers when you&apos;re offline.
+              Successfully fetched content lands in a <b>local index</b> —
+              keyword search paired with on-device vectors. Re-asking is{" "}
+              <b>local and fast</b>, and cached content remains available when
+              you&apos;re offline.
             </p>
             <div className={styles.steps}>
               <div className={styles.step}>
@@ -183,8 +185,9 @@ export default function HowItWorks() {
 
         <Reveal className={styles.closer} as="div" delay={80}>
           Models and cache live under <code>~/.wigolo</code> on your machine —
-          no keys, nothing metered, and nothing leaves unless you opt into an
-          LLM.
+          core tools need no vendor key or Wigolo usage fee. Live requests go
+          directly to selected public engines and sites; external LLM
+          synthesis is opt-in.
         </Reveal>
       </div>
     </section>

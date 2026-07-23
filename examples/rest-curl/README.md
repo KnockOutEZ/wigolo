@@ -14,7 +14,7 @@ WIGOLO="wigolo" PORT=4000 ./demo.sh            # global install, custom port
 ```
 
 The script starts a daemon on `127.0.0.1:3477`, exercises the endpoints, and
-tears the daemon down on exit. Requires node >= 20, curl, jq.
+tears the daemon down on exit. Requires Node 20, 22, or 24 LTS; curl; and jq.
 
 ## What you'll see
 

@@ -76,7 +76,7 @@
     <rect x="566" y="238" width="120" height="76" rx="10" fill="#523c79"/>
     <text x="626" y="266" text-anchor="middle" class="mono" font-size="12" fill="#ffffff" font-weight="700">cross-encoder</text>
     <text x="626" y="282" text-anchor="middle" class="mono" font-size="10.5" fill="#cbb0f7">on-device rerank</text>
-    <text x="626" y="297" text-anchor="middle" class="mono" font-size="10.5" fill="#cbb0f7">$0 · private</text>
+    <text x="626" y="297" text-anchor="middle" class="mono" font-size="10.5" fill="#cbb0f7">$0 fee · local</text>
   </g>
 
   <!-- ranked output: bars right of rerank, real scores from the live capture -->

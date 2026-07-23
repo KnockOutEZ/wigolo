@@ -21,7 +21,7 @@ const mono = Azeret_Mono({
 
 const TITLE = "wigolo — local-first web intelligence for AI agents";
 const DESCRIPTION =
-  "Free, open-source server that gives any AI agent real web powers — search across 18 engines, fetch, crawl, extract, cache, and research. In your editor over MCP, in your framework through an SDK, or in your self-hosted stack over REST. Runs on your machine: no API keys, no cloud, no metered bill. Public beta.";
+  "Free, open-source server that gives any AI agent real web powers — search across 18 engines, fetch, crawl, extract, cache, and research. In your editor over MCP, in your framework through an SDK, or in your self-hosted stack over REST. Keyless core, local persistent state, and no Wigolo usage fee. Public beta.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -59,7 +59,7 @@ export const metadata: Metadata = {
     siteName: "wigolo",
     title: TITLE,
     description:
-      "Local-first web intelligence over MCP. No keys, no cloud, no metered bill. Public beta.",
+      "Local-first web intelligence over MCP. Keyless core, local memory, no Wigolo usage fee. Public beta.",
     // Plain public path: metadataBase already carries the base path —
     // asset() here would double-prefix it.
     images: [{ url: "/wigolo/wigolo-social.png", width: 1200, height: 630 }],
@@ -68,7 +68,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: TITLE,
     description:
-      "Local-first web intelligence over MCP. No keys, no cloud, no metered bill. Public beta.",
+      "Local-first web intelligence over MCP. Keyless core, local memory, no Wigolo usage fee. Public beta.",
     images: ["/wigolo/wigolo-social.png"],
   },
 };

@@ -50,7 +50,7 @@ function ResearchIcon() {
 /* ---- panel visuals (wigolo's real evidence surfaces) ---- */
 function EvidenceVisual() {
   return (
-    <pre className={styles.code} aria-label="Evidence object with score breakdown and byte-offset source span">
+    <pre className={styles.code} aria-label="Evidence object with score breakdown and character-offset source span">
       <span className={styles.dim}>{"// every result explains itself"}</span>
       {"\n{"}
       {"\n  "}<span className={styles.key}>&quot;excerpt&quot;</span>: <span className={styles.str}>&quot;Logical replication replicates data…&quot;</span>,
@@ -129,7 +129,7 @@ const FEATURES: Feature[] = [
     tab: "Search & Evidence",
     icon: <SearchIcon />,
     heading: "Evidence, not blue links",
-    body: "One MCP call fans a query array across many engines in parallel. Every result comes back with a transparent score breakdown, byte-offset source spans, and citation IDs — output your agent can quote.",
+    body: "One MCP call fans a query array across many engines in parallel. Every result can include an inspectable score breakdown, character offsets into extracted Markdown, and citation IDs — output your agent can quote.",
     cta: "See the receipts",
     href: "#parity",
     visual: <EvidenceVisual />,
@@ -148,8 +148,8 @@ const FEATURES: Feature[] = [
     id: "cache",
     tab: "Local Cache",
     icon: <CacheIcon />,
-    heading: "Everything it sees, it keeps",
-    body: "Every response lands in a local store under ~/.wigolo/ — full text, keyword index, and on-device vectors. Asking again is instant and costs nothing; find_similar and change detection build on it.",
+    heading: "Successfully cached, locally reusable",
+    body: "Successfully fetched content lands in a local store under ~/.wigolo/ — full text, keyword index, and on-device vectors. Asking again avoids another network round trip and Wigolo usage fee; find_similar and change detection build on it.",
     cta: "Get started",
     href: "#quickstart",
     visual: <CacheVisual />,

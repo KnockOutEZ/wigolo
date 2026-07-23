@@ -81,7 +81,7 @@ html,body{width:1280px;height:640px}
 .social .wm{font-family:Inter;font-weight:${WEIGHT};letter-spacing:-0.055em;color:${OFFWHITE};font-size:210px;line-height:1}
 .social .tag{font-family:Inter;font-weight:700;letter-spacing:-0.015em;color:${OFFWHITE};font-size:44px}
 .social .sub{font-family:Inter;font-weight:500;color:${MUTED};font-size:27px}
-</style><div class="social"><div class="wm">wigolo</div><div class="tag">The go-to web for your agent</div><div class="sub">Local-first web intelligence over MCP · no keys, no cloud</div></div>`;
+</style><div class="social"><div class="wm">wigolo</div><div class="tag">The go-to web for your agent</div><div class="sub">Keyless core · local memory · no Wigolo usage fee</div></div>`;
   const p4 = await browser.newPage({ viewport: { width: 1280, height: 640 }, deviceScaleFactor: 2 });
   await p4.setContent(socialHtml, { waitUntil: 'load' });
   await p4.evaluate(() => document.fonts.ready);

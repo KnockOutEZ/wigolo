@@ -79,9 +79,10 @@ export default function Feedback() {
             Say it.
           </h2>
           <p className={styles.lede}>
-            wigolo is in public beta — everything shipped works, and it&apos;s
-            held to a 6,000-test suite, but beta means the polish is still
-            being sanded. Every report is read, usually the same day.
+            wigolo is in public beta, and the repository contains more than
+            7,600 automated tests. Supported runtime and operating-system
+            combinations run in CI; beta marks remaining compatibility,
+            API-shape, and polish work. Every report is read, usually the same day.
           </p>
           <div className={styles.ctas}>
             <a href={FEEDBACK_LINKS.bug} className="btn btn-primary" target="_blank" rel="noreferrer">

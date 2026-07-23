@@ -1,6 +1,6 @@
 # Installation
 
-wigolo runs anywhere Node.js 20+ runs. npm is the primary channel; Docker images are published for container setups. A few more channels (single-file binary, Homebrew, hosted install script) are packaged in the repo and publish with an upcoming release — they're listed at the bottom so you don't chase an artifact that isn't live yet.
+wigolo supports Node.js 20, 22, and 24 LTS. npm is the primary channel; Docker images are published for container setups. A few more channels (single-file binary, Homebrew, hosted install script) are packaged in the repo and publish with an upcoming release — they're listed at the bottom so you don't chase an artifact that isn't live yet.
 
 ## npm / npx (primary)
 

@@ -2,7 +2,7 @@
 
 <img alt="wigolo — the go-to web for your agent" src="assets/brand/wigolo-banner.png" width="640">
 
-Local-first web intelligence for AI agents — **no keys, no cloud, no metered bill.**
+Local-first web intelligence for AI agents — **keyless core, local memory, no Wigolo usage fees.**
 
 <sub>works with&nbsp;&nbsp;**Claude Code · Cursor · Codex · Gemini CLI · VS Code · Windsurf · Zed · Antigravity**</sub>
 <br>
@@ -12,7 +12,7 @@ Local-first web intelligence for AI agents — **no keys, no cloud, no metered b
 [![npm downloads](https://img.shields.io/npm/dm/wigolo?color=cb3837&logo=npm&label=downloads)](https://www.npmjs.com/package/wigolo)
 [![GitHub stars](https://img.shields.io/github/stars/KnockOutEZ/wigolo?style=flat&logo=github&color=e3b341)](https://github.com/KnockOutEZ/wigolo/stargazers)
 [![CI](https://img.shields.io/github/actions/workflow/status/KnockOutEZ/wigolo/ci.yml?branch=main&logo=github&label=CI)](https://github.com/KnockOutEZ/wigolo/actions/workflows/ci.yml)
-[![node](https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![node](https://img.shields.io/badge/node-20%20%7C%2022%20%7C%2024-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed)](https://modelcontextprotocol.io)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-2563eb)](#license)
 [![status](https://img.shields.io/badge/status-public%20beta-b7791f)](#beta--feedback)
@@ -29,7 +29,7 @@ New features and updates ship steadily. Follow <a href="https://x.com/yourtowhid
 
 ---
 
-wigolo gives an AI agent one surface for everything web-related: **search, fetch, crawl, extract, cache, find-similar, research,** and autonomous gather loops. It runs wherever your agent runs — as an MCP server next to your coding agent, as a REST/MCP endpoint on the box where your self-hosted agents live, or embedded through an SDK inside your own app. The core tools need no API keys, nothing it touches leaves `~/.wigolo/`, and no bill grows with how much your agent thinks.
+wigolo gives an AI agent one surface for everything web-related: **search, fetch, crawl, extract, cache, find-similar, research,** and autonomous gather loops. It runs wherever your agent runs — as an MCP server next to your coding agent, as a REST/MCP endpoint on the box where your self-hosted agents live, or embedded through an SDK inside your own app. Persistent state stays under `~/.wigolo/` by default, and the core tools need no vendor API key or Wigolo usage fee. Live searches and fetches still contact the public engines and websites you select; optional external LLM synthesis sends data to the provider you configure.
 
 <div align="center">
 
@@ -44,7 +44,7 @@ npx wigolo init                              # set up the local engine — any s
 npx wigolo init --agents=claude-code,cursor  # …or set up + wire your day-to-day agents in one command
 ```
 
-Requires **Node ≥ 20** and ~1.5 GB of free disk on macOS, Linux, or Windows. Bare `init` sets up the local engine: it downloads the browser engine and on-device models, runs a health check, and reports each component. Adding `--agents` wires the named agents in the same run, so a coding agent you use daily is ready in one command.
+Requires **Node 20, 22, or 24 LTS** and ~1.5 GB of free disk on macOS, Linux, or Windows. Bare `init` sets up the local engine: it downloads the browser engine and on-device models, runs a health check, and reports each component. Adding `--agents` wires the named agents in the same run, so a coding agent you use daily is ready in one command.
 
 - **Supported agents** — `--agents` takes any of `claude-code` · `cursor` · `codex` · `gemini-cli` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated); wigolo writes the MCP config and instructions for each.
 - **Any other setup** — any MCP client, agent framework, or self-hosted agent registers `npx -y wigolo` in its own MCP config. The [installation guide](docs/installation.md) has the exact config block for every client, plus Docker, Homebrew, and single-file-binary channels.
@@ -73,7 +73,7 @@ Any provider works (`anthropic` · `openai` · `groq`), or stay fully local and 
 
 ## What your agent gets back
 
-Every search result is evidence the agent can act on. It carries a verbatim excerpt pinned to its exact position in the source, a citation ID the agent can quote, and a score it can inspect (abridged real shape):
+Every search result can carry a verbatim excerpt pinned to character offsets in Wigolo's extracted Markdown, a citation ID the agent can quote, and a score it can inspect (abridged real shape):
 
 ```jsonc
 {
@@ -82,7 +82,7 @@ Every search result is evidence the agent can act on. It carries a verbatim exce
     "url": "https://www.postgresql.org/docs/current/logical-replication.html",
     "excerpt": "Logical replication is a method of replicating data objects…",
     "citation_id": "src-1",
-    "source_span": { "start": 1042, "end": 1305 },          // byte-exact provenance
+    "source_span": { "start": 1042, "end": 1305 },          // character offsets in extracted Markdown
     "evidence_score": { "final": 0.86, "semantic": 0.91, "lexical": 0.78, "engine_consensus": 3 }
   }],
   "citations": [{ "id": "src-1", "url": "…" }],
@@ -100,7 +100,7 @@ Weak results get flagged as junk by wigolo's own scorer. Failed engines are repo
 | 📄 `fetch` | Load one URL through a tiered router that auto-escalates from plain HTTP to a headless browser engine on anti-bot challenges or SPA shells. Clean markdown + metadata + links. Handles PDFs, a single-heading `section`, authenticated sessions, and page actions (click / type / scroll / screenshot). |
 | 🕸️ `crawl` | Multi-page crawl — BFS, DFS, sitemap, or map-only. Per-domain rate limits, robots.txt respect, boilerplate dedup. |
 | 🧩 `extract` | Structured data from a page: tables, metadata, JSON-LD, brand identity, named schemas (Article / Recipe / Product / …), or any custom JSON Schema. |
-| 💾 `cache` | Query everything already seen — keyword or hybrid semantic. Plus stats, clear, and change detection. |
+| 💾 `cache` | Query successfully cached content — keyword or hybrid semantic. Plus stats, clear, and change detection. |
 | 🧲 `find_similar` | Pages similar to a URL or a concept, via 3-way fusion of keyword + semantic + live web. |
 | 🧠 `research` | Decompose a question → fan out sub-queries → fetch sources → synthesize a cited report (or a structured brief the host LLM writes from). |
 | 🤖 `agent` | Autonomous gather loop: plan → search → fetch → extract → synthesize, with a step log, time budget, and optional output schema. |
@@ -110,12 +110,14 @@ Every tool also runs from the terminal (`wigolo search "…" --json`), from an i
 
 ## Why it's different
 
-wigolo isn't a free stand-in for the paid tools — it's built to match them. It's a focused web layer for your agents: an MCP and REST surface they call directly, with the search and extraction quality the paid services charge for. What separates it:
+wigolo isn't a thin free wrapper around one hosted search API. It is a local-first web layer with inspectable evidence and operational receipts. What separates it:
 
 - **Built for agents.** One MCP call fans out many queries across many engines in parallel, which a serial host tool-loop can't replicate. Every result carries transparent per-result scoring, and output is budget-aware.
 - **Honest output.** Stale cache, failed fetches, degraded backends, and truncation are surfaced in the result. When a bot-protected page can't be read, you get a labeled `blocked_by_challenge` failure, not a challenge shell returned as content.
-- **$0 per query, free to re-query.** Default search talks to public engines through direct adapters; the reranker and embeddings run on-device. Every response is cached, so asking again is instant and costs nothing.
-- **Private by default.** Cache, embeddings, models, and config live under `~/.wigolo/`. Nothing reaches a third party unless you explicitly opt into an LLM for synthesis.
+- **No Wigolo usage fee; local re-query.** Default search talks to public engines through direct adapters; the reranker and embeddings run on-device. Successfully cached content can be queried again without another network round trip. You provide the machine, network, storage, and any optional paid provider.
+- **Local-first storage and processing.** Cache, embeddings, models, and config live under `~/.wigolo/`. Live search and fetch requests go directly to the selected engines and websites, not through a Wigolo vendor backend. External LLM synthesis is opt-in.
+
+wigolo is a focused web layer for your agents — not a hosted SaaS, a vector database other apps query, or a scale-scraping platform. Ranking, embeddings, cache, and configuration stay local; live web requests go straight to the public services you choose. The default path has no Wigolo meter or vendor key.
 
 Here's what one real result looks like, dissected. It includes the failed engine and the weak result, because those are part of the answer too:
 
@@ -130,9 +132,9 @@ Here's what one real result looks like, dissected. It includes the failed engine
 
 ## Benchmark
 
-> **All four tools converged on the same core answer, and only one of them handed back verbatim, byte-pinned evidence while doing it.**
+> **One illustrative four-tool run, not a general benchmark. All four tools converged on the same core answer in this recorded query.**
 
-One cold query ran live inside a single **Claude Fable 5** session, fanned out to four web tools on equal footing (built-in **WebSearch**, **wigolo**, **Tavily**, **Exa**), and was judged by the agent on the evidence alone. All four converged on the same answer and the same top source, so the parity is demonstrated on-screen. wigolo alone returned verbatim excerpts pinned to byte-offset source spans, an explainable score decomposition, and live per-engine telemetry, and its own scorer flagged two weak results as junk. The cloud tools earn their place too: Exa rendered the official docs' comparison matrix in full. Run your own query and you'll see the same shape.
+One cold query ran live inside a single **Claude Fable 5** session, fanned out to four web tools on equal footing (built-in **WebSearch**, **wigolo**, **Tavily**, **Exa**), and was judged by the agent on the evidence alone. In this run, all four converged on the same answer and top source. wigolo also returned verbatim excerpts with character offsets into its extracted Markdown, inspectable scoring components, and live per-engine telemetry; when two results were weak, its scorer flagged them on-screen. Exa rendered the official docs' comparison matrix in full. This is a reproducible product demonstration, not evidence of broad quality parity; a multi-query, repeated-trial evaluation has not yet been published.
 
 <div align="center">
 
@@ -147,14 +149,13 @@ One cold query ran live inside a single **Claude Fable 5** session, fanned out t
 | Multi-engine web search | ✅ | ✅ | ✅ | ✅ |
 | Fetch & structured extraction | ✅ | ✅ | ✅ | ✅ |
 | Whole-site crawl & map | ✅ | ✅ | — | ✅ |
-| Verbatim excerpts pinned to byte-offset source spans | ✅ | — | — | — |
+| Verbatim excerpts with character offsets in extracted Markdown | ✅ | — | — | — |
 | Explainable per-result score decomposition | ✅ | — | — | — |
 | Persistent local memory — re-query instantly, offline | ✅ | — | — | — |
-| Query data stays on your machine | ✅ | — | — | — |
-| API key / account | none | required | required | required |
-| Cost per query | $0 | metered | metered | metered |
+| Default/core access | keyless | account/key for full API | free tier or x402 | keyless Search & Extract |
+| Paid usage | no Wigolo API fee | metered after allowance | metered after allowance | metered after allowance |
 
-<sub>Feature standing as of July 2026 — check each vendor's docs for current state.</sub>
+<sub>Feature standing as of July 2026. Access modes and allowances change; check each vendor's current docs.</sub>
 
 That last row compounds, because agents ask in bursts:
 
@@ -162,7 +163,7 @@ That last row compounds, because agents ask in bursts:
 
 <picture>
 <source media="(prefers-color-scheme: dark)" srcset="assets/promo/meter-dark.svg">
-<img alt="The meter: a metered cloud API's cost climbs with every query while wigolo stays flat at zero dollars — illustrative pricing" src="assets/promo/meter.svg" width="880">
+<img alt="Illustrative comparison: a metered cloud API's cost rises with usage while Wigolo itself charges no API usage fee" src="assets/promo/meter.svg" width="880">
 </picture>
 
 </div>
@@ -325,13 +326,13 @@ export WIGOLO_EAGER_WARMUP=1                        # pay the ~1s model load up 
 
 ## Beta & feedback
 
-wigolo is in **public beta**. Everything documented here works and is held to a 7,600-test suite; it's stable, and beta is about the polish bar. It stays beta until enough people have used it, kicked it, and starred it that calling it v1 means something. Your feedback shapes what comes next, and every report is read, usually the same day:
+wigolo is in **public beta**, and the repository contains more than 7,600 automated tests. Supported runtime and operating-system combinations are exercised in CI; beta reflects remaining compatibility, API-shape, and polish work. It stays beta until enough people have used it, kicked it, and starred it that calling it v1 means something. Your feedback shapes what comes next, and every report is read, usually the same day:
 
 - 🐛 **[Report a bug](https://github.com/KnockOutEZ/wigolo/issues/new?template=bug_report.yml)** — broke, misbehaved, surprised you
 - 💡 **[Request a feature](https://github.com/KnockOutEZ/wigolo/issues/new?template=feature_request.yml)** — something it should do
 - 💬 **[Ask anything](https://github.com/KnockOutEZ/wigolo/discussions)** — questions, setups, show & tell
 
-If wigolo earns a place in your setup, three things keep it going: a ⭐ **star** (it's how open source gets found), a **[☕ coffee](https://buymeacoffee.com/knockoutez)** (there's no paid tier and never will be), or **[an email](mailto:ktowhid20@gmail.com)** that goes straight to the one developer who wrote the code.
+If wigolo earns a place in your setup, three things keep it going: a ⭐ **star** (it's how open source gets found), a **[☕ coffee](https://buymeacoffee.com/knockoutez)** (Wigolo has no paid tier), or **[an email](mailto:ktowhid20@gmail.com)** that goes straight to the one developer who wrote the code.
 
 ## Troubleshooting
 
@@ -349,21 +350,21 @@ The full guide covers per-symptom fixes, a "what still works when X fails" map, 
 <details>
 <summary><b>Free? What's the catch?</b></summary>
 
-No catch by design. The expensive parts (ranking, embeddings, the browser engine) run on *your* hardware, so there's no per-query cost to recover and no reason for a meter. It's sustained by donations, and the AGPL license legally prevents a switch into a closed hosted product.
+No catch by design. The expensive parts (ranking, embeddings, the browser engine) run on *your* hardware, so Wigolo has no per-query API fee. You still provide the machine, storage, bandwidth, and any optional paid provider. Released versions remain available under AGPL-3.0-only, including its source-availability requirements for covered modified network deployments.
 
 </details>
 
 <details>
-<summary><b>Is the quality really on par with the paid services?</b></summary>
+<summary><b>How does quality compare with paid services?</b></summary>
 
-The benchmark section above is a live 4-way run you can reproduce: everyday agent queries land at parity, the paid tools still win some deep-extraction edge cases, and crawling is where wigolo is strongest. Every result shows its scoring, so you don't have to take anyone's word for it.
+The benchmark section above records one live four-tool query. All four tools converged in that example, and Wigolo exposed useful evidence and telemetry, but no broad cross-vendor quality benchmark has been published yet. Run it on your own workload and judge the raw results; Wigolo's score components and failure metadata make that inspection easier.
 
 </details>
 
 <details>
 <summary><b>Won't public search engines block or rot?</b></summary>
 
-It's engineered for exactly that: 18 engines fused with rank fusion (any one failing barely moves results), a tiered fetch ladder with per-domain learning, and an optional aggregator fallback. Degraded backends are *reported in the output*, and the local cache means everything already seen keeps working regardless.
+It's engineered for exactly that: up to 18 search sources selected by mode and availability, fused with rank fusion; a tiered fetch ladder with per-domain learning; and an optional aggregator fallback. Degraded backends are reported in the output, and successfully cached content remains locally searchable if an upstream later fails.
 
 </details>
 
@@ -377,14 +378,14 @@ wigolo reads the public web the way a browser does: robots.txt respected by defa
 <details>
 <summary><b>AGPL — can I use this at work?</b></summary>
 
-Yes, freely, company-wide. The license only bites if you *modify wigolo and run it as a network service*, in which case you must publish those modifications; using it as a local dev tool carries zero obligation. For commercial-licensing questions, reach out.
+Unmodified internal use generally does not require publishing your own code. If you modify Wigolo and let users interact with that modified version over a network, AGPL source-offer obligations apply. Distribution and combined-work questions can add obligations, so review the license or consult counsel for your deployment. For commercial-licensing questions, reach out.
 
 </details>
 
 <details>
 <summary><b>Why 1.5 GB of disk?</b></summary>
 
-That's the on-device brain: a full browser engine plus the ranking and embedding models the cloud services run on their side and bill you for. Once it's on disk, every query uses it for free.
+That's the on-device brain: a full browser engine plus the ranking and embedding models cloud services run on their side. Once installed, Wigolo charges no API usage fee; you provide the machine, storage, and network.
 
 </details>
 
@@ -404,7 +405,7 @@ Bug reports, feature requests, and PRs are all welcome; see **[CONTRIBUTING.md](
 
 ## License
 
-**[GNU AGPL-3.0-only](LICENSE).** Free to use, modify, and self-host, including inside a company. The one obligation: if you run a **modified** version as a network service, you must publish your modified source under the same license. That keeps wigolo open while preventing a closed, hosted fork. See **[SECURITY.md](SECURITY.md)** to report a vulnerability and **[TRADEMARK.md](TRADEMARK.md)** for use of the name. For commercial-licensing questions, reach out.
+**[GNU AGPL-3.0-only](LICENSE).** Free to use, modify, and self-host, including inside a company. AGPL keeps released versions open and requires source availability for covered modified network deployments. Distribution and combined-work obligations depend on how Wigolo is deployed; review the license or consult counsel for your use case. See **[SECURITY.md](SECURITY.md)** to report a vulnerability and **[TRADEMARK.md](TRADEMARK.md)** for use of the name. For commercial-licensing questions, reach out.
 
 <div align="center">
 <br>
