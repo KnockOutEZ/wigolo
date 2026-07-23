@@ -611,7 +611,7 @@ export interface EnginePoolHealth {
 }
 
 export interface QueryUnderstanding {
-  intent: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
+  intent: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images' | 'vulnerabilities';
   entities: string[];
   date_hint: { fromDate?: string; toDate?: string } | null;
   language: string;
@@ -905,7 +905,7 @@ export interface SearchEngineOptions {
   excludeDomains?: string[];
   fromDate?: string;
   toDate?: string;
-  category?: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
+  category?: 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images' | 'vulnerabilities';
   /** ISO 3166-1 alpha-2 country code. Passed to engines that support a
    * geographic boost (Bing `cc=`, DDG `kl=`, Brave `country=`). Lower-case. */
   country?: string;

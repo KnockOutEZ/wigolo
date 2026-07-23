@@ -63,6 +63,8 @@ const ENGINE_QUALITY: Record<string, EngineQualityTier> = {
   'semantic-scholar': 'medium',
   lobsters: 'low',
   devdocs: 'low',
+  nvd: 'high',
+  osv: 'medium',
   // RSS feed engine (news vertical, conditional on config). Curated by the
   // user — treat the per-item content as medium quality by default.
   'rss-feed': 'medium',

@@ -1,4 +1,4 @@
-export type Vertical = 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images';
+export type Vertical = 'general' | 'news' | 'code' | 'docs' | 'papers' | 'images' | 'vulnerabilities';
 
 export const VERTICALS: readonly Vertical[] = [
   'general',
@@ -7,6 +7,7 @@ export const VERTICALS: readonly Vertical[] = [
   'docs',
   'papers',
   'images',
+  'vulnerabilities',
 ] as const;
 
 export interface ClassifyOptions {
@@ -29,6 +30,8 @@ export interface DetailedClassification {
 }
 
 const PAPERS_RE = /\b(arxiv|paper|cite|citation|doi|preprint|whitepaper|journal|pubmed|proceedings)\b/i;
+
+const VULN_RE = /\b(cve|ghsa|vulnerability|vulnerabilities|nvd|exploit|advisory|cwe|patch tuesday|security advisory|osv)\b/i;
 
 const CODE_HARD_RE = /\b(github|pull request|pr #|commit|stack overflow|stackoverflow|compile error|typeerror|traceback|exception)\b/i;
 
@@ -243,6 +246,8 @@ export function classifyIntentDetailed(
   let vertical: Vertical;
   if (PAPERS_RE.test(trimmed)) {
     vertical = 'papers';
+  } else if (VULN_RE.test(trimmed) || /\bCVE-\d+-\d+\b/i.test(trimmed) || /\bGHSA(-[a-z0-9]{4}){3}\b/i.test(trimmed)) {
+    vertical = 'vulnerabilities';
   } else if (CODE_HARD_RE.test(trimmed)) {
     vertical = 'code';
   } else if (LANG_TOKEN_RE.test(trimmed) && HOWTO_VERB_RE.test(trimmed)) {
