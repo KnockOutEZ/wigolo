@@ -31,7 +31,7 @@ export interface DetailedClassification {
 
 const PAPERS_RE = /\b(arxiv|paper|cite|citation|doi|preprint|whitepaper|journal|pubmed|proceedings)\b/i;
 
-const VULN_RE = /\b(cve|ghsa|vulnerability|vulnerabilities|nvd|exploit|advisory|cwe|patch tuesday|security advisory|osv)\b/i;
+const VULN_RE = /\b(cve|ghsa|nvd|cwe|osv|patch tuesday|security advisory)\b/i;
 
 const CODE_HARD_RE = /\b(github|pull request|pr #|commit|stack overflow|stackoverflow|compile error|typeerror|traceback|exception)\b/i;
 
