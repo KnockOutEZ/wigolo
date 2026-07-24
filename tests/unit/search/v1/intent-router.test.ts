@@ -287,6 +287,7 @@ describe('classifyIntent', () => {
         'docs',
         'papers',
         'images',
+        'vulnerabilities',
       ]);
     });
   });
