@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyChallenge } from '../../../src/fetch/challenge-classify.js';
+import { classifyChallenge, classifyImageSubType } from '../../../src/fetch/challenge-classify.js';
 
 // A minimal challenge-page skeleton: near-empty prose + the modern CF platform
 // script + interstitial title. Used to gate contextual widget markers so a real
@@ -172,6 +172,94 @@ describe('classifyChallenge', () => {
         <iframe src="https://www.google.com/recaptcha/api2/bframe?k=abc"></iframe>
       </body></html>`;
       expect(classifyChallenge(html)).toBe('behavioral');
+    });
+  });
+});
+
+describe('classifyImageSubType', () => {
+  describe('grid — the common reCAPTCHA / hCaptcha image-select', () => {
+    it('classifies a reCAPTCHA bframe image-select as grid', () => {
+      const html = `<iframe src="https://www.google.com/recaptcha/api2/bframe?hl=en&k=abc"
+                title="recaptcha challenge"></iframe>`;
+      expect(classifyImageSubType(html)).toBe('grid');
+    });
+
+    it('classifies an hCaptcha image-grid challenge iframe as grid', () => {
+      const html = `<iframe src="https://newassets.hcaptcha.com/captcha/v1/challenge?sitekey=x"></iframe>`;
+      expect(classifyImageSubType(html)).toBe('grid');
+    });
+
+    it('defaults an ambiguous / benign page to grid', () => {
+      const html = `<!doctype html><html><head><title>Home</title></head><body>
+        <article><p>${'Some ordinary prose. '.repeat(30)}</p></article></body></html>`;
+      expect(classifyImageSubType(html)).toBe('grid');
+    });
+
+    it('defaults empty html to grid', () => {
+      expect(classifyImageSubType('')).toBe('grid');
+    });
+  });
+
+  describe('slider — a drag-puzzle challenge', () => {
+    it('classifies a GeeTest slide-puzzle as slider', () => {
+      const html = `<!doctype html><html><body>
+        <div class="geetest_slider_button"></div>
+        <div class="geetest_slice_bg" style="background:url(slideBg.png)"></div>
+      </body></html>`;
+      expect(classifyImageSubType(html)).toBe('slider');
+    });
+
+    it('classifies a generic slideBg / drag puzzle as slider', () => {
+      const html = `<!doctype html><html><body>
+        <canvas id="slideBg"></canvas>
+        <div class="slider-drag-handle" aria-label="drag to complete the puzzle"></div>
+      </body></html>`;
+      expect(classifyImageSubType(html)).toBe('slider');
+    });
+  });
+
+  describe('text — an image captcha with a text input to type the answer', () => {
+    it('classifies a captcha <img> + text <input> (no grid / no slider) as text', () => {
+      const html = `<!doctype html><html><body>
+        <form action="/verify">
+          <img src="/captcha.php?id=8213" alt="captcha image" />
+          <input type="text" name="captcha_code" />
+        </form>
+      </body></html>`;
+      expect(classifyImageSubType(html)).toBe('text');
+    });
+  });
+
+  describe('precedence — grid / slider markers win over a bare text-captcha', () => {
+    it('a slider marker co-present with a captcha img+input still classifies slider', () => {
+      const html = `<!doctype html><html><body>
+        <div class="geetest_slider_button"></div>
+        <img src="/captcha.png" alt="captcha" />
+        <input type="text" name="captcha" />
+      </body></html>`;
+      expect(classifyImageSubType(html)).toBe('slider');
+    });
+
+    it('a grid frame co-present with a captcha img+input still classifies grid', () => {
+      const html = `<!doctype html><html><body>
+        <iframe src="https://www.google.com/recaptcha/api2/bframe?k=abc"></iframe>
+        <img src="/captcha.png" alt="captcha" />
+        <input type="text" name="captcha" />
+      </body></html>`;
+      expect(classifyImageSubType(html)).toBe('grid');
+    });
+  });
+
+  describe('must-not-misfire — a normal image page is grid, not text', () => {
+    it('a page with a plain <img> + a search text input does not classify as text', () => {
+      const html = `<!doctype html><html><head><title>Gallery</title></head><body>
+        <header><input type="text" name="q" placeholder="Search" /></header>
+        <img src="/photos/sunset.jpg" alt="A sunset over the sea" />
+        <p>${'Photo gallery copy. '.repeat(30)}</p>
+      </body></html>`;
+      // No captcha marker on the img/input → the text sub-type must NOT fire; the
+      // conservative default is grid.
+      expect(classifyImageSubType(html)).toBe('grid');
     });
   });
 });

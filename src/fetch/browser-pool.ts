@@ -13,11 +13,12 @@ import { playwrightProxyOption } from './proxy-credentials.js';
 import { redactUrl } from '../util/redact-url.js';
 import { isAntiBotStatus, hasBrowserChallengeBody, isChallengeShell, isChallengeResponse, stillShowingChallenge, hasChallengeHeader, isNearEmptyBody } from './tls-tier.js';
 import { pollUntilCleared, type ClearanceCookie } from './challenge-completion.js';
-import { classifyChallenge } from './challenge-classify.js';
+import { classifyChallenge, classifyImageSubType } from './challenge-classify.js';
 import { runSolveLadder, type SolveLadderResult } from './solve-ladder.js';
 import { autoPassChallenge } from './auto-pass.js';
 import { aiSolveChallenge, type ImageSolveSubType, type WidgetImage } from './ai-solve.js';
 import { humanSolveChallenge } from './human-solve.js';
+import { connectScrapingBrowser } from './scraping-browser.js';
 import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, parseChromeMajor, resolveStealthLauncher, STEALTH_INIT_SCRIPT } from './stealth.js';
 import { humanizePage } from './behavior.js';
 import { recordDomainClearance, clearDomainClearance } from '../cache/store.js';
@@ -548,9 +549,18 @@ export class MultiBrowserPool {
     // from the live page below when we actually mint a clearance.
     let advertisedUa: string | null = null;
 
+    // OFF by default: only reach the hosted scraping-browser rung when it is
+    // explicitly configured (`scrapingBrowserWss`) AND the caller did not already
+    // pin an explicit CDP endpoint. When null, this is a hard no-op — the default
+    // acquire/launch path below is entirely unchanged. The connector itself
+    // owns the P8 scheme-guard + credential redaction; a bad scheme / connect
+    // failure returns null so we fall through to the normal browser tier.
+    const scrapingWss = !options.cdpUrl ? config.scrapingBrowserWss : null;
+
     // Stealth applies only to the launch path — the CDP path connects to an
-    // external browser that owns its own fingerprint.
-    const useStealth = options.stealth === true && !options.cdpUrl;
+    // external browser that owns its own fingerprint. The hosted scraping-browser
+    // rung is likewise external, so it also disables the local stealth launch.
+    const useStealth = options.stealth === true && !options.cdpUrl && !scrapingWss;
 
     if (options.cdpUrl) {
       // CDP is always Chromium
@@ -565,6 +575,27 @@ export class MultiBrowserPool {
           cdpUrl: redactUrl(options.cdpUrl),
           error: err instanceof Error ? err.message : String(err),
         });
+        ctx = await this.acquireForType(resolvedType);
+      }
+    } else if (scrapingWss) {
+      // Hosted scraping-browser rung (opt-in). Reuse the P8 connector: it
+      // validates the ws:/wss: scheme, redacts credentials in every log line,
+      // and connects over CDP. On success it hands back a live Browser we drive
+      // exactly like the pinned-CDP path; on null (bad scheme / connect failure)
+      // we fall back to the normal browser tier — a fetch is NEVER hard-failed.
+      resolvedType = 'chromium';
+      const scrapingHandle = await connectScrapingBrowser({
+        wss: scrapingWss,
+        signal: options.signal,
+      }).catch(() => null);
+      if (scrapingHandle) {
+        // Treat the hosted browser like the pinned-CDP browser so the shared
+        // finally closes it (never released to the local pool).
+        cdpBrowser = scrapingHandle.browser;
+        const contexts = cdpBrowser.contexts();
+        ctx = contexts.length > 0 ? contexts[0] : await cdpBrowser.newContext();
+      } else {
+        // Off / bad scheme / connect failed → graceful fall back to launch.
         ctx = await this.acquireForType(resolvedType);
       }
     } else if (useStealth) {
@@ -1215,7 +1246,10 @@ export class MultiBrowserPool {
 
     // --- ai-vision (image): in-band vision solve ------------------------------
     const tryAiSolve = async () => {
-      const subType = this.imageSubTypeFor(challengeClass);
+      // Refine the image sub-type from the live challenge HTML (grid / slider /
+      // text). Read best-effort; an empty read falls back to the grid default.
+      const challengeHtml = await readContent(page);
+      const subType = this.imageSubTypeFor(challengeClass, challengeHtml);
       const res = await aiSolveChallenge({
         page,
         subType,
@@ -1343,10 +1377,12 @@ export class MultiBrowserPool {
   }
 
   /** Which image sub-type the ai-vision driver should attempt for an image-class
-   *  challenge. We default to the grid solver (reCAPTCHA/hCaptcha common case);
-   *  slider/text are future refinements gated by richer classification. */
-  private imageSubTypeFor(_challengeClass: ChallengeClass): ImageSolveSubType {
-    return 'grid';
+   *  challenge. Refines the challenge HTML into the concrete solver sub-type
+   *  (grid / slider / text) via the pure classifier; conservative — defaults to
+   *  the grid solver (reCAPTCHA/hCaptcha common case) on any ambiguity or when no
+   *  html could be read. */
+  private imageSubTypeFor(_challengeClass: ChallengeClass, html: string): ImageSolveSubType {
+    return classifyImageSubType(html);
   }
 
   /** A clipped screenshot of the challenge widget for the vision model. Falls
