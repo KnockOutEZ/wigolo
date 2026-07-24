@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { join } from 'node:path';
 
 vi.mock('../../../../src/cli/tui/config-writer-json.js', () => ({
   writeJsonConfig: vi.fn(),
@@ -105,7 +106,7 @@ describe('applyConfigs', () => {
       refuseSymlink: true,
     }));
     expect(removeJsonConfigEntry).toHaveBeenCalledWith(expect.objectContaining({
-      path: '/home/test/.config/opencode/config.json',
+      path: join('/home/test/.config/opencode/opencode.json', '..', 'config.json'),
       keyPath: ['mcp', 'wigolo'],
       allowJsonc: true,
       requireBackup: true,

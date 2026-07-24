@@ -297,7 +297,8 @@ ${unrelated}
     });
 
     expect(r.ok).toBe(false);
-    expect(r.code).toBe('WRITE_FAILED');
+    // copyFile-to-directory is EISDIR on POSIX and EPERM on Windows.
+    expect(['WRITE_FAILED', 'PERMISSION_DENIED']).toContain(r.code);
     expect(r.message).toContain('back up existing config');
     expect(readFileSync(path, 'utf-8')).toBe(original);
   });
