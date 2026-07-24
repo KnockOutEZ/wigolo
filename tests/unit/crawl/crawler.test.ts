@@ -161,6 +161,35 @@ describe('Crawler — BFS', () => {
     expect(result.pages[0].content_completeness).toBeUndefined();
   });
 
+  it('threads challenge_class/solve_method from a cleared-via-solve page fetch onto the crawl item', async () => {
+    const solvedFetch: FetchFn = vi.fn(async (url: string) => ({
+      ...makeFetchOutput(url, 'Cleared', '# Cleared\n\nBehind a challenge.', []),
+      challenge_class: 'interactive' as const,
+      solve_method: 'auto-pass' as const,
+    }));
+    const crawler = new Crawler(solvedFetch, rawFetchFn);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'bfs',
+      max_depth: 0,
+      max_pages: 1,
+    });
+    expect(result.pages[0].challenge_class).toBe('interactive');
+    expect(result.pages[0].solve_method).toBe('auto-pass');
+  });
+
+  it('leaves challenge_class/solve_method absent on a normal page (no challenge)', async () => {
+    const crawler = new Crawler(fetchFn, rawFetchFn);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'bfs',
+      max_depth: 0,
+      max_pages: 1,
+    });
+    expect(result.pages[0].challenge_class).toBeUndefined();
+    expect(result.pages[0].solve_method).toBeUndefined();
+  });
+
   it('respects max_pages', async () => {
     const crawler = new Crawler(fetchFn, rawFetchFn);
     const result = await crawler.crawl({
@@ -459,6 +488,36 @@ describe('Crawler — Sitemap', () => {
 
     expect(result.crawled).toBeLessThanOrEqual(5);
     expect(result.total_found).toBe(50);
+  });
+
+  it('threads challenge_class/solve_method through the sitemap/explicit-urls path', async () => {
+    const sitemapXml = `<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://docs.example.com/page1</loc></url>
+</urlset>`;
+
+    const rawFetch: RawFetchFn = vi.fn(async (url: string) => {
+      if (url.endsWith('/sitemap.xml')) {
+        return { url, finalUrl: url, html: sitemapXml, contentType: 'text/xml', statusCode: 200, method: 'http' as const, headers: {} };
+      }
+      return { url, finalUrl: url, html: '', contentType: 'text/plain', statusCode: 404, method: 'http' as const, headers: {} };
+    });
+
+    const fetch: FetchFn = vi.fn(async (url) => ({
+      ...makeFetchOutput(url, 'Cleared', '# Content', []),
+      challenge_class: 'interactive' as const,
+      solve_method: 'auto-pass' as const,
+    }));
+
+    const crawler = new Crawler(fetch, rawFetch);
+    const result = await crawler.crawl({
+      url: 'https://docs.example.com',
+      strategy: 'sitemap',
+      max_pages: 10,
+    });
+
+    expect(result.pages).toHaveLength(1);
+    expect(result.pages[0].challenge_class).toBe('interactive');
+    expect(result.pages[0].solve_method).toBe('auto-pass');
   });
 });
 
