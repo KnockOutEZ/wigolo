@@ -12,13 +12,18 @@ import { sanitizedChildEnv } from '../util/child-env.js';
 import { playwrightProxyOption } from './proxy-credentials.js';
 import { redactUrl } from '../util/redact-url.js';
 import { isAntiBotStatus, hasBrowserChallengeBody, isChallengeShell, isChallengeResponse, stillShowingChallenge, hasChallengeHeader, isNearEmptyBody } from './tls-tier.js';
-import { pollUntilCleared } from './challenge-completion.js';
+import { pollUntilCleared, type ClearanceCookie } from './challenge-completion.js';
+import { classifyChallenge } from './challenge-classify.js';
+import { runSolveLadder, type SolveLadderResult } from './solve-ladder.js';
+import { autoPassChallenge } from './auto-pass.js';
+import { aiSolveChallenge, type ImageSolveSubType, type WidgetImage } from './ai-solve.js';
+import { humanSolveChallenge } from './human-solve.js';
 import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, parseChromeMajor, resolveStealthLauncher, STEALTH_INIT_SCRIPT } from './stealth.js';
 import { humanizePage } from './behavior.js';
 import { recordDomainClearance, clearDomainClearance } from '../cache/store.js';
 import { CLEARANCE_COOKIE_NAME, clearanceExpiresIso } from './clearance-reuse.js';
 import { guardResolvedHost } from '../watch/ssrf.js';
-import type { RawFetchResult, BrowserType, ActionResult, BrowserAction } from '../types.js';
+import type { RawFetchResult, BrowserType, ActionResult, BrowserAction, ChallengeClass, SolveMethod } from '../types.js';
 
 /**
  * Host of a fetched URL, or null on a malformed URL. Used to key the anti-bot
@@ -51,6 +56,16 @@ async function readAdvertisedUa(page: { evaluate?: unknown }): Promise<string | 
 }
 
 /**
+ * Extract the cf_clearance cookie (value + expiry) from a cookie list harvested
+ * by a solve rung, so a ladder-cleared challenge persists its clearance exactly
+ * like the auto-poll pass path. Returns null when no clearance cookie is present.
+ */
+function findCfClearance(cookies: ClearanceCookie[]): { value: string; expires: number } | null {
+  const c = cookies.find((k) => k.name === CLEARANCE_COOKIE_NAME && k.value.length > 0);
+  return c ? { value: c.value, expires: c.expires } : null;
+}
+
+/**
  * Thrown when the browser tier lands on a hard bot-protection challenge page
  * that does not clear within the settle window. Carries a structured code so
  * the router can map it to a `blocked_by_challenge` stage error instead of
@@ -68,16 +83,29 @@ export class ChallengeBlockedError extends Error {
    * exists (e.g. a goto-timeout, or a 2xx interstitial shell) — never invented.
    */
   readonly httpStatus?: number;
+  /**
+   * Provenance the solve ladder threads onto the honest blocked path: the coarse
+   * challenge class the classifier assigned, and the solve method (always
+   * `null` on a block — no rung cleared it). The router copies these onto the
+   * `blocked_by_challenge` stage error so the fetch result carries them.
+   * Optional so the existing positional throws (goto-timeout, near-empty body)
+   * still construct without them.
+   */
+  challengeClass?: ChallengeClass;
+  solveMethod?: SolveMethod | null;
   constructor(
     public readonly targetUrl: string,
     message = "The site's bot protection served a challenge page that could not be cleared automatically",
     hint = 'Retry with use_auth: true using a real browser session, or fetch an alternate source for this content',
     httpStatus?: number,
+    provenance?: { challengeClass?: ChallengeClass; solveMethod?: SolveMethod | null },
   ) {
     super(message);
     this.name = 'ChallengeBlockedError';
     this.hint = hint;
     this.httpStatus = httpStatus;
+    this.challengeClass = provenance?.challengeClass;
+    this.solveMethod = provenance?.solveMethod ?? null;
   }
 }
 
@@ -668,6 +696,14 @@ export class MultiBrowserPool {
     // hydration below, a still-empty body means the wall never really let us
     // through, so it's a labeled block, not a pass.
     let enteredChallengePoll = false;
+    // Solve-ladder provenance, threaded onto the eventual RawFetchResult so the
+    // fetch surface can audit which challenge class was hit and which rung (if
+    // any) cleared it. `challengeClass` is set once the classifier runs on a
+    // detected challenge; `solveMethod` is set by a rung that cleared, or left
+    // undefined when no challenge was involved / the short auto-poll cleared it
+    // without engaging the ladder.
+    let detectedChallengeClass: ChallengeClass | undefined;
+    let laddderSolveMethod: SolveMethod | null | undefined;
 
     try {
       // Pre-navigation fetch-time SSRF re-check. `guardFetchUrl` (applied
@@ -853,26 +889,86 @@ export class MultiBrowserPool {
             signal: options.signal,
           });
           if (!outcome.cleared) {
-            // Re-validation: if we SEEDED a reused clearance and it still landed
-            // on a challenge, the stored clearance is dead. Purge it so it isn't
-            // replayed next time, then fast-fail into the normal escalation
-            // ladder (never serve the shell as content).
-            if (options.injectedCookies && options.injectedCookies.length > 0) {
-              const host = hostOf(finalUrl) ?? hostOf(url);
-              if (host) {
-                try {
-                  clearDomainClearance(host);
-                } catch { /* best-effort — never block the fetch */ }
+            // The short auto-poll did not clear. Before fast-failing, engage the
+            // in-band solve ladder: classify the challenge shape and run the
+            // applicable rung(s) IN THIS LIVE CONTEXT (the in-band constraint).
+            // Only rungs whose knob is on engage; behavioral/none run nothing.
+            const ladderHtml = await readContentWithRetry(page, url).catch(() => '');
+            detectedChallengeClass = classifyChallenge(ladderHtml);
+            const stillChallenge = (html: string) =>
+              isAntiBotStatus(statusCode) ? stillShowingChallenge(html) : isChallengeShell(statusCode, html);
+            const ladderRemainingMs = () =>
+              options.timeoutMs !== undefined
+                ? Math.max(0, options.timeoutMs - (Date.now() - fetchStartMs))
+                : config.challengeCompletionTimeoutMs;
+            const ladder = await this.runChallengeSolveLadder({
+              page,
+              url,
+              config,
+              challengeClass: detectedChallengeClass,
+              isStillChallenge: stillChallenge,
+              remainingMs: ladderRemainingMs,
+              signal: options.signal,
+            });
+            if (ladder.solved) {
+              laddderSolveMethod = ladder.solveMethod;
+              // Normalise the stale challenge response the same way the auto-poll
+              // pass path does, so the cleared page is not re-classified as
+              // blocked downstream.
+              if (isAntiBotStatus(statusCode)) statusCode = 200;
+              if (hasChallengeHeader(responseHeaders)) {
+                const normalized: Record<string, string> = {};
+                for (const [k, v] of Object.entries(responseHeaders)) {
+                  if (k.toLowerCase() === 'cf-mitigated') continue;
+                  normalized[k] = v;
+                }
+                responseHeaders = normalized;
               }
+              // Harvest a minted clearance the same way the auto-poll path does.
+              const cf = findCfClearance(ladder.cookies);
+              if (cf) {
+                const host = hostOf(finalUrl) ?? hostOf(url);
+                const ua = advertisedUa ?? (await readAdvertisedUa(page));
+                if (host && ua) {
+                  try {
+                    recordDomainClearance(host, {
+                      cookie: `${CLEARANCE_COOKIE_NAME}=${cf.value}`,
+                      ua,
+                      tier: 'browser',
+                      expiresAt: clearanceExpiresIso(cf.expires),
+                      solvedRoute: getConfig().proxyUrl ?? 'direct',
+                    });
+                  } catch { /* best-effort — never block the fetch */ }
+                }
+              }
+              log.info('bot-protection challenge cleared by solve ladder', { url, solveMethod: ladder.solveMethod });
+              // Fall through to the normal post-goto hydration + final read.
+            } else {
+              // Re-validation: if we SEEDED a reused clearance and it still landed
+              // on a challenge, the stored clearance is dead. Purge it so it isn't
+              // replayed next time, then fast-fail into the normal escalation
+              // ladder (never serve the shell as content).
+              if (options.injectedCookies && options.injectedCookies.length > 0) {
+                const host = hostOf(finalUrl) ?? hostOf(url);
+                if (host) {
+                  try {
+                    clearDomainClearance(host);
+                  } catch { /* best-effort — never block the fetch */ }
+                }
+              }
+              laddderSolveMethod = null;
+              log.warn('bot-protection challenge did not clear within completion window, fast-failing', { url, statusCode });
+              // Thread the triggering anti-bot status (403/429/503) so the router
+              // surfaces it as http_status for the crawl cooldown. A 2xx shell
+              // carries no anti-bot status, so leave it unset there. Carry the
+              // classified challenge class so the honest blocked_by_challenge path
+              // reports it.
+              throw new ChallengeBlockedError(
+                url, undefined, undefined,
+                isAntiBotStatus(statusCode) ? statusCode : undefined,
+                { challengeClass: detectedChallengeClass, solveMethod: null },
+              );
             }
-            log.warn('bot-protection challenge did not clear within completion window, fast-failing', { url, statusCode });
-            // Thread the triggering anti-bot status (403/429/503) so the router
-            // surfaces it as http_status for the crawl cooldown. A 2xx shell
-            // carries no anti-bot status, so leave it unset there.
-            throw new ChallengeBlockedError(
-              url, undefined, undefined,
-              isAntiBotStatus(statusCode) ? statusCode : undefined,
-            );
           }
           // Auto-passed: the challenge navigated to a real page. The captured
           // nav statusCode/responseHeaders are STALE — they still describe the
@@ -980,7 +1076,12 @@ export class MultiBrowserPool {
       // cleared page (slow SPA included) has real content and is unaffected.
       if (enteredChallengePoll && isNearEmptyBody(html)) {
         log.warn('challenge auto-passed but hydrated body is near-empty — labeling blocked', { url });
-        throw new ChallengeBlockedError(url);
+        throw new ChallengeBlockedError(
+          url, undefined, undefined, undefined,
+          // A "pass" that hydrated to a near-empty stub never really cleared —
+          // report the detected class with a null solve_method (honest block).
+          { challengeClass: detectedChallengeClass, solveMethod: null },
+        );
       }
 
       // Completeness label for the returned capture. Base is the settle verdict;
@@ -1025,6 +1126,10 @@ export class MultiBrowserPool {
         actionResults,
         contentCompleteness: completeness,
         ...(gotoTimedOut ? { warning: 'goto_timeout_partial_content' } : {}),
+        // Solve-ladder provenance: the challenge class detected (if any) and the
+        // rung that cleared it. Absent when no challenge was involved.
+        ...(detectedChallengeClass !== undefined ? { challenge_class: detectedChallengeClass } : {}),
+        ...(laddderSolveMethod !== undefined ? { solve_method: laddderSolveMethod } : {}),
       };
     } finally {
       // Detach the abort listener before closing so we don't trigger a
@@ -1049,6 +1154,277 @@ export class MultiBrowserPool {
         // Always release the slot — even on abort — so the pool is not leaked.
         this.releaseForType(resolvedType, ctx);
       }
+    }
+  }
+
+  /**
+   * Build the concrete injected rung callbacks and run the pure solve ladder in
+   * the LIVE browser context (the in-band constraint — same session that owns
+   * the challenge). Everything Playwright/CDP/LLM-specific lives here; the ladder
+   * itself stays pure. Returns the ladder outcome; never throws for a solve
+   * failure (the caller decides the block), but DOES propagate an abort.
+   */
+  private async runChallengeSolveLadder(args: {
+    page: import('playwright').Page;
+    url: string;
+    config: ReturnType<typeof getConfig>;
+    challengeClass: ChallengeClass;
+    isStillChallenge: (html: string) => boolean;
+    remainingMs: () => number;
+    signal?: AbortSignal;
+  }): Promise<SolveLadderResult> {
+    const { page, url, config, challengeClass, isStillChallenge, remainingMs, signal } = args;
+    const readContent = (p: unknown) =>
+      readContentWithRetry(p as import('playwright').Page, url).catch(() => '');
+    const readCookies = (p: unknown): Promise<ClearanceCookie[]> => {
+      const pg = p as import('playwright').Page;
+      if (typeof pg.context !== 'function') return Promise.resolve([]);
+      return Promise.resolve(pg.context().cookies() as Promise<ClearanceCookie[]>).catch(() => []);
+    };
+
+    // --- auto-pass (interactive): trusted CDP gesture over the widget ---------
+    const tryAutoPass = async () => {
+      // A lazily-created extra CDP client (never the driver connection) drives
+      // trusted Input.dispatchMouseEvent — isTrusted-true events a WAF cannot
+      // tell from a real hand. Guard for page stubs without a context/CDP.
+      const cdp = await this.newCdpSession(page).catch(() => null);
+      const locateWidget = () => this.locateChallengeWidget(page).catch(() => null);
+      const dispatchTrustedMove = async (x: number, y: number) => {
+        if (!cdp) return;
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }).catch(() => {});
+      };
+      const dispatchTrustedClick = async (x: number, y: number) => {
+        if (!cdp) return;
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }).catch(() => {});
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 }).catch(() => {});
+      };
+      const res = await autoPassChallenge({
+        page,
+        locateWidget,
+        dispatchTrustedMove,
+        dispatchTrustedClick,
+        readContent,
+        readCookies,
+        isStillChallenge,
+        deadlineMs: remainingMs(),
+        signal,
+      });
+      await cdp?.detach().catch(() => {});
+      return { passed: res.passed, cookies: res.cookies ?? [] };
+    };
+
+    // --- ai-vision (image): in-band vision solve ------------------------------
+    const tryAiSolve = async () => {
+      const subType = this.imageSubTypeFor(challengeClass);
+      const res = await aiSolveChallenge({
+        page,
+        subType,
+        screenshotWidget: () => this.screenshotChallengeWidget(page),
+        readInstruction: () => this.readChallengeInstruction(page),
+        solveWithVision: async ({ image, prompt, schema }) => {
+          const { runLlmJson } = await import('../integrations/cloud/llm/run.js');
+          const r = await runLlmJson({
+            prompt,
+            jsonSchema: schema,
+            image: { data: image.data, mediaType: image.mediaType },
+            signal,
+          });
+          return r.values;
+        },
+        clickTiles: (indices) => this.clickChallengeTiles(page, indices),
+        dragSlider: (offsetPx) => this.dragChallengeSlider(page, offsetPx),
+        typeText: (text) => this.typeChallengeText(page, text),
+        submit: () => this.submitChallenge(page),
+        readContent,
+        readCookies,
+        isStillChallenge,
+        maxAttempts: config.aiSolveMaxAttempts,
+        intervalMs: 500,
+        deadlineMs: remainingMs(),
+        signal,
+      });
+      return { solved: res.solved, cookies: res.cookies };
+    };
+
+    // --- human (last): visible-surface fallback -------------------------------
+    const tryHuman = async () => {
+      const res = await humanSolveChallenge({
+        page,
+        info: { url, challengeClass },
+        // A visible surface exists only on the headful browser path; headless
+        // hard-no-ops in the human module.
+        hasVisibleSurface: config.browserHeadful,
+        consent: config.humanSolveConsent,
+        onNeedHuman: async () => {
+          await this.bringToFront(page).catch(() => {});
+          log.warn('a challenge needs you to solve it in the browser window', { url });
+        },
+        readContent,
+        readCookies,
+        isStillChallenge,
+        humanSolveTimeoutMs: config.humanSolveTimeoutMs,
+        intervalMs: 1000,
+        signal,
+      });
+      return { solved: res.solved, cookies: res.solved ? res.cookies : [] };
+    };
+
+    // Vision availability: a vision-capable cloud provider (anthropic / openai /
+    // gemini) must be configured; the text-only custom/Ollama backend and Groq
+    // are not used for image solves, so ai-solve is skipped cleanly otherwise.
+    const visionAvailable = await this.visionProviderAvailable();
+
+    return runSolveLadder({
+      challengeClass,
+      gates: { autoPass: config.autoPass, aiSolve: config.aiSolve, humanSolve: config.humanSolve },
+      visionAvailable,
+      tryAutoPass,
+      tryAiSolve,
+      tryHuman,
+      signal,
+    });
+  }
+
+  /** True when a vision-capable cloud provider (anthropic/openai/gemini) is
+   *  configured. Groq (weak vision) and the text-only custom backend don't
+   *  count, so ai-solve is skipped cleanly when only those are present. */
+  private async visionProviderAvailable(): Promise<boolean> {
+    try {
+      const { selectProviderWithKeyStore } = await import('../integrations/cloud/llm/select.js');
+      const resolved = await selectProviderWithKeyStore(process.env, { dataDir: getConfig().dataDir });
+      if (!resolved) return false;
+      return resolved.provider === 'anthropic' || resolved.provider === 'openai' || resolved.provider === 'gemini';
+    } catch {
+      return false;
+    }
+  }
+
+  /** Open an additional CDP client on the page (never the driver connection) for
+   *  trusted input dispatch. Guarded for page stubs without a context. */
+  private async newCdpSession(page: import('playwright').Page): Promise<import('playwright').CDPSession | null> {
+    const ctx = typeof page.context === 'function' ? page.context() : null;
+    if (!ctx || typeof ctx.newCDPSession !== 'function') return null;
+    return ctx.newCDPSession(page);
+  }
+
+  /** Locate the interactive challenge checkbox/widget and its viewport centre,
+   *  frame-aware (the reCAPTCHA anchor + hCaptcha checkbox live in iframes; the
+   *  Turnstile widget is same-document). Returns null when no widget is found. */
+  private async locateChallengeWidget(page: import('playwright').Page): Promise<{ x: number; y: number } | null> {
+    // Same-document Turnstile widget first.
+    const docSelectors = ['.cf-turnstile', '#challenge-form', 'input[type="checkbox"]'];
+    for (const sel of docSelectors) {
+      const box = await page.locator(sel).first().boundingBox().catch(() => null);
+      if (box) return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    }
+    // Cross-origin checkbox iframes (reCAPTCHA anchor / hCaptcha checkbox): the
+    // iframe element's box is enough to aim the trusted click at the checkbox.
+    const frameSelectors = [
+      'iframe[src*="api2/anchor"]',
+      'iframe[src*="recaptcha"]',
+      'iframe[src*="hcaptcha.com"]',
+      'iframe[title*="challenge" i]',
+    ];
+    for (const sel of frameSelectors) {
+      const box = await page.locator(sel).first().boundingBox().catch(() => null);
+      // Aim at the left-side checkbox region of the widget iframe, not its centre.
+      if (box) return { x: box.x + Math.min(28, box.width / 2), y: box.y + box.height / 2 };
+    }
+    return null;
+  }
+
+  /** Which image sub-type the ai-vision driver should attempt for an image-class
+   *  challenge. We default to the grid solver (reCAPTCHA/hCaptcha common case);
+   *  slider/text are future refinements gated by richer classification. */
+  private imageSubTypeFor(_challengeClass: ChallengeClass): ImageSolveSubType {
+    return 'grid';
+  }
+
+  /** A clipped screenshot of the challenge widget for the vision model. Falls
+   *  back to a full-page shot when the widget frame can't be located. */
+  private async screenshotChallengeWidget(page: import('playwright').Page): Promise<WidgetImage> {
+    const box = await this.locateChallengeWidget(page).catch(() => null);
+    const clip = box
+      ? { x: Math.max(0, box.x - 160), y: Math.max(0, box.y - 160), width: 400, height: 500 }
+      : undefined;
+    const buf = clip
+      ? await page.screenshot({ clip }).catch(() => page.screenshot())
+      : await page.screenshot();
+    return { data: buf.toString('base64'), mediaType: 'image/png' };
+  }
+
+  /** Best-effort challenge instruction text (e.g. "select all traffic lights").
+   *  Empty string when none can be read. */
+  private async readChallengeInstruction(page: import('playwright').Page): Promise<string> {
+    for (const sel of ['.rc-imageselect-desc-no-canonical', '.rc-imageselect-instructions', '.prompt-text']) {
+      const txt = await page.locator(sel).first().innerText().catch(() => '');
+      if (txt && txt.trim().length > 0) return txt.trim();
+    }
+    return '';
+  }
+
+  /** The cross-origin reCAPTCHA image-select (bframe) / hCaptcha challenge frame
+   *  a vision solve drives into, or null when it can't be resolved. */
+  private challengeSolveFrame(page: import('playwright').Page) {
+    if (typeof page.frameLocator !== 'function') return null;
+    for (const sel of ['iframe[src*="api2/bframe"]', 'iframe[src*="hcaptcha.com"]', 'iframe[title*="challenge" i]']) {
+      try {
+        return page.frameLocator(sel).first();
+      } catch { /* try next selector */ }
+    }
+    return null;
+  }
+
+  /** Click the vision-selected image tiles inside the challenge frame. Tiles are
+   *  0-based left-to-right, top-to-bottom; the frame exposes them as a table of
+   *  cells. Best-effort per tile so one un-clickable index never aborts the set. */
+  private async clickChallengeTiles(page: import('playwright').Page, indices: number[]): Promise<void> {
+    const frame = this.challengeSolveFrame(page);
+    if (!frame) return;
+    for (const idx of indices) {
+      const cell = frame.locator('table td, .task-image').nth(idx);
+      await cell.click({ timeout: 2000 }).catch(() => {});
+    }
+  }
+
+  /** Drag the slider handle by `offsetPx` via a trusted mouse gesture. */
+  private async dragChallengeSlider(page: import('playwright').Page, offsetPx: number): Promise<void> {
+    const box = await this.locateChallengeWidget(page).catch(() => null);
+    if (!box || typeof page.mouse === 'undefined') return;
+    await page.mouse.move(box.x, box.y).catch(() => {});
+    await page.mouse.down().catch(() => {});
+    await page.mouse.move(box.x + offsetPx, box.y, { steps: 12 }).catch(() => {});
+    await page.mouse.up().catch(() => {});
+  }
+
+  /** Type the vision-read text-captcha answer into the answer field. */
+  private async typeChallengeText(page: import('playwright').Page, text: string): Promise<void> {
+    for (const sel of ['input[name*="captcha" i]', 'input[type="text"]']) {
+      const input = page.locator(sel).first();
+      const ok = await input.fill(text, { timeout: 2000 }).then(() => true).catch(() => false);
+      if (ok) return;
+    }
+  }
+
+  /** Press the verify/submit control of the challenge (grid + text captchas). */
+  private async submitChallenge(page: import('playwright').Page): Promise<void> {
+    const frame = this.challengeSolveFrame(page);
+    if (frame) {
+      const verify = frame.locator('#recaptcha-verify-button, .button-submit');
+      const clicked = await verify.first().click({ timeout: 2000 }).then(() => true).catch(() => false);
+      if (clicked) return;
+    }
+    for (const sel of ['button[type="submit"]', 'input[type="submit"]', '.challenge-submit']) {
+      const clicked = await page.locator(sel).first().click({ timeout: 2000 }).then(() => true).catch(() => false);
+      if (clicked) return;
+    }
+  }
+
+  /** Bring the browser window to the foreground (best-effort) for a human solve.
+   *  A no-op on headless / stubbed pages. */
+  private async bringToFront(page: import('playwright').Page): Promise<void> {
+    if (typeof page.bringToFront === 'function') {
+      await page.bringToFront();
     }
   }
 

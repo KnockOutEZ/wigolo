@@ -234,3 +234,59 @@ describe('SmartRouter — Part 2: proxy-bypass direct-retry on managed challenge
     expect(fetchWithBrowser).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('SmartRouter — Part 3: solve-ladder provenance on the blocked path', () => {
+  let httpClient: HttpClient;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    resetConfig();
+    httpClient = { fetch: vi.fn() };
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+    resetConfig();
+    vi.clearAllMocks();
+  });
+
+  it('propagates the ChallengeBlockedError challengeClass onto result.challenge_class (+ solve_method null)', async () => {
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string) => {
+        // The pool threads the classifier verdict + a null solve method onto the
+        // error when the ladder failed to clear a behavioral challenge.
+        throw new ChallengeBlockedError(url, undefined, undefined, 403, {
+          challengeClass: 'behavioral',
+          solveMethod: null,
+        });
+      }),
+    };
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+    const result = await router.fetch('https://blocked.example.com/x', { renderJs: 'always' });
+    const err = result as StageError;
+    expect(err.error).toBe('blocked_by_challenge');
+    expect(err.challenge_class).toBe('behavioral');
+    expect(err.solve_method).toBeNull();
+  });
+
+  it('a guarded still-challenge shell classifies the body → challenge_class populated, solve_method null', async () => {
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string): Promise<RawFetchResult> => ({
+        url,
+        finalUrl: url,
+        // A managed "Just a moment" shell with the challenge-platform script and
+        // no interactive widget → classifier resolves 'behavioral'.
+        html: '<html><head><title>Just a moment...</title></head><body>Checking your browser before accessing</body><script src="/cdn-cgi/challenge-platform/x"></script></html>',
+        contentType: 'text/html',
+        statusCode: 403,
+        method: 'browser',
+        headers: { 'cf-mitigated': 'challenge' },
+      })),
+    };
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+    const result = await router.fetch('https://blocked.example.com/x', { renderJs: 'always' });
+    const err = result as StageError;
+    expect(err.error).toBe('blocked_by_challenge');
+    expect(err.challenge_class).toBe('behavioral');
+    expect(err.solve_method).toBeNull();
+  });
+});

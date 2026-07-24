@@ -14,6 +14,14 @@ export interface StageError {
   /** Upstream HTTP status when the stage failure carries one (e.g. anti-bot 403/429).
    * Lets the crawl rate-limiter adapt pace per-domain. Absent when no status exists. */
   http_status?: number;
+  /**
+   * Solve-ladder provenance on a `blocked_by_challenge` stage error: the coarse
+   * challenge class the classifier assigned, and the solve method — always
+   * `null` on a block (no rung cleared it). Absent on non-challenge stage errors.
+   * Lets a caller audit the honest ceiling (which challenge class blocked).
+   */
+  challenge_class?: ChallengeClass;
+  solve_method?: SolveMethod | null;
 }
 
 export type StageResult<T> =
@@ -142,6 +150,19 @@ export interface FetchOutput {
    * as a real site_data payload.
    */
   fetch_failed?: string;
+  /**
+   * Solve-ladder provenance surfaced from the browser tier: the coarse
+   * challenge class the classifier assigned when a bot-protection challenge was
+   * detected on this fetch. Absent when no challenge was involved.
+   */
+  challenge_class?: ChallengeClass;
+  /**
+   * Which solve rung cleared the challenge, or `null` when a challenge was
+   * detected but no rung passed it (the honest, but recovered-to-content case is
+   * rare here — a hard block surfaces as a `blocked_by_challenge` stage error).
+   * Absent when no challenge was involved.
+   */
+  solve_method?: SolveMethod | null;
 }
 
 /**
