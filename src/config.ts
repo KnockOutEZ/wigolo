@@ -240,6 +240,58 @@ export interface Config {
    */
   humanize: 'off' | 'auto' | 'on';
   /**
+   * "Hardcore" umbrella preset. When `'on'`, a pure resolver flips the anti-bot
+   * / solve knobs to their most aggressive settings (stealth on, chrome channel,
+   * headful, patchright driver, humanize on, cdpDirect auto, autoPass/aiSolve/
+   * humanSolve on, raised challenge timeout) — UNLESS an individual knob was
+   * explicitly provided (env or persisted). Precedence: explicit knob > hardcore
+   * preset > default. `'off'` (default) leaves every knob at its own default.
+   * Any other value normalizes to `'off'`. WIGOLO_HARDCORE.
+   */
+  hardcore: 'off' | 'on';
+  /**
+   * Automated interactive-challenge pass (trusted-input gesture on a checkbox /
+   * Turnstile widget). 'off' | 'auto' (engage on the escalation path, DEFAULT) |
+   * 'on'. Any other value normalizes to 'auto'. WIGOLO_AUTO_PASS.
+   */
+  autoPass: 'off' | 'auto' | 'on';
+  /**
+   * Raw control-plane fetch rung (Layer-B, P0-gated). 'off' (DEFAULT) | 'auto'
+   * (engage on escalation when a real installed browser is present) | 'on'. Any
+   * other value normalizes to 'off'. WIGOLO_CDP_DIRECT.
+   */
+  cdpDirect: 'off' | 'auto' | 'on';
+  /**
+   * In-band vision solve for visible-image challenges. Off by default (pointing
+   * a model at a security-control captcha may breach a provider AUP; opt-in +
+   * labeled). 'off' (DEFAULT) | 'auto' | 'on'. Any other value normalizes to
+   * 'off'. WIGOLO_AI_SOLVE.
+   */
+  aiSolve: 'off' | 'auto' | 'on';
+  /** Bounded vision-solve attempts (each = one vision call). Clamped to >= 1.
+   * Default 2. WIGOLO_AI_SOLVE_MAX_ATTEMPTS. */
+  aiSolveMaxAttempts: number;
+  /**
+   * Human-solve last rung. Engages ONLY with consent + a visible surface; a hard
+   * no-op on headless/hosted. 'off' (DEFAULT) | 'auto' | 'on'. Any other value
+   * normalizes to 'off'. WIGOLO_HUMAN_SOLVE.
+   */
+  humanSolve: 'off' | 'auto' | 'on';
+  /** Poll budget (ms) for the human-solve rung. Default 120000.
+   * WIGOLO_HUMAN_SOLVE_MS. */
+  humanSolveTimeoutMs: number;
+  /** Explicit consent gate for the human-solve rung. Default false.
+   * WIGOLO_HUMAN_SOLVE_CONSENT. */
+  humanSolveConsent: boolean;
+  /**
+   * Opt-in hosted-CDP (Bright-Data-style) websocket endpoint. When set, an
+   * escape rung connects over this CDP endpoint (built-in IP + solver +
+   * fingerprint server-side) instead of launching locally. Credential-gated,
+   * keychain-backed (denylisted so it never persists cleartext). `null` (default)
+   * leaves the rung off. WIGOLO_SCRAPING_BROWSER_WSS.
+   */
+  scrapingBrowserWss: string | null;
+  /**
    * Opt-in Reddit OAuth app client id (non-secret). Paired with
    * `redditClientSecret`, enables the credential-gated Reddit OAuth-API fetch
    * path: when both are present AND a fetch targets a Reddit URL, the router
@@ -374,6 +426,66 @@ function envBool(
   const persisted = settings[sk];
   if (typeof persisted === 'boolean') return persisted;
   return fallback;
+}
+
+/**
+ * True when a knob was EXPLICITLY provided — an env var is present OR the
+ * persisted `settings` map carries its key. Used by the hardcore preset to
+ * honour the precedence rule (explicit knob > hardcore preset > default): a
+ * preset value is only applied to knobs the operator did not set themselves.
+ */
+function isExplicit(envKey: string, settingsKey: string, settings: Record<string, unknown>): boolean {
+  return process.env[envKey] !== undefined || settings[settingsKey] !== undefined;
+}
+
+/**
+ * The knobs the hardcore preset flips, each with the env + persisted key that
+ * marks it "explicitly set". Kept as data so `applyHardcorePreset` stays a pure,
+ * exhaustively-tested transform. NOT included: `proxyBypassOnChallenge` — its
+ * default is already `true`, so a preset entry would be a no-op the resolver
+ * test would falsely assert (spec §3.7 / review A4).
+ */
+interface HardcoreKnob {
+  envKey: string;
+  settingsKey: string;
+  apply: (cfg: Config) => void;
+}
+
+const HARDCORE_KNOBS: HardcoreKnob[] = [
+  { envKey: 'WIGOLO_STEALTH', settingsKey: 'stealth', apply: (c) => { c.stealth = 'on'; } },
+  { envKey: 'WIGOLO_BROWSER_CHANNEL', settingsKey: 'browserChannel', apply: (c) => { c.browserChannel = 'chrome'; } },
+  { envKey: 'WIGOLO_BROWSER_HEADFUL', settingsKey: 'browserHeadful', apply: (c) => { c.browserHeadful = true; } },
+  { envKey: 'WIGOLO_STEALTH_DRIVER', settingsKey: 'stealthDriver', apply: (c) => { c.stealthDriver = 'patchright'; } },
+  { envKey: 'WIGOLO_HUMANIZE', settingsKey: 'humanize', apply: (c) => { c.humanize = 'on'; } },
+  { envKey: 'WIGOLO_CDP_DIRECT', settingsKey: 'cdpDirect', apply: (c) => { c.cdpDirect = 'auto'; } },
+  { envKey: 'WIGOLO_AUTO_PASS', settingsKey: 'autoPass', apply: (c) => { c.autoPass = 'on'; } },
+  { envKey: 'WIGOLO_AI_SOLVE', settingsKey: 'aiSolve', apply: (c) => { c.aiSolve = 'on'; } },
+  { envKey: 'WIGOLO_HUMAN_SOLVE', settingsKey: 'humanSolve', apply: (c) => { c.humanSolve = 'on'; } },
+];
+
+/** Minimum challenge-completion budget the hardcore preset guarantees (ms). */
+export const HARDCORE_CHALLENGE_COMPLETION_MIN_MS = 30000;
+
+/**
+ * Apply the hardcore preset in place. When `cfg.hardcore === 'on'`, flip each
+ * preset knob to its aggressive value UNLESS the operator explicitly set that
+ * knob (env or persisted). Also raise the challenge-completion budget to at
+ * least the hardcore floor without ever lowering a caller-supplied larger value.
+ *
+ * Pure w.r.t. the passed `settings` snapshot + current `process.env`; a no-op
+ * when hardcore is off. Exported for direct unit testing.
+ */
+export function applyHardcorePreset(cfg: Config, settings: Record<string, unknown>): void {
+  if (cfg.hardcore !== 'on') return;
+  for (const knob of HARDCORE_KNOBS) {
+    if (!isExplicit(knob.envKey, knob.settingsKey, settings)) knob.apply(cfg);
+  }
+  // Raise the challenge-completion budget to the hardcore floor, but never lower
+  // an explicit/default value the caller already set higher.
+  cfg.challengeCompletionTimeoutMs = Math.max(
+    cfg.challengeCompletionTimeoutMs,
+    HARDCORE_CHALLENGE_COMPLETION_MIN_MS,
+  );
 }
 
 /**
@@ -605,6 +717,33 @@ export function getConfig(): Config {
       const raw = (envStr('WIGOLO_HUMANIZE', 'auto', settings, 'humanize') ?? 'auto').toLowerCase();
       return raw === 'off' || raw === 'on' ? (raw as 'off' | 'on') : 'auto';
     })(),
+    hardcore: (() => {
+      const raw = (envStr('WIGOLO_HARDCORE', 'off', settings, 'hardcore') ?? 'off').toLowerCase();
+      return raw === 'on' ? 'on' : 'off';
+    })(),
+    autoPass: (() => {
+      const raw = (envStr('WIGOLO_AUTO_PASS', 'auto', settings, 'autoPass') ?? 'auto').toLowerCase();
+      return raw === 'off' || raw === 'on' ? (raw as 'off' | 'on') : 'auto';
+    })(),
+    cdpDirect: (() => {
+      const raw = (envStr('WIGOLO_CDP_DIRECT', 'off', settings, 'cdpDirect') ?? 'off').toLowerCase();
+      return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
+    })(),
+    aiSolve: (() => {
+      const raw = (envStr('WIGOLO_AI_SOLVE', 'off', settings, 'aiSolve') ?? 'off').toLowerCase();
+      return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
+    })(),
+    aiSolveMaxAttempts: atLeast1(envInt('WIGOLO_AI_SOLVE_MAX_ATTEMPTS', 2, settings, 'aiSolveMaxAttempts')),
+    humanSolve: (() => {
+      const raw = (envStr('WIGOLO_HUMAN_SOLVE', 'off', settings, 'humanSolve') ?? 'off').toLowerCase();
+      return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
+    })(),
+    humanSolveTimeoutMs: envInt('WIGOLO_HUMAN_SOLVE_MS', 120000, settings, 'humanSolveTimeoutMs'),
+    humanSolveConsent: envBool('WIGOLO_HUMAN_SOLVE_CONSENT', false, settings, 'humanSolveConsent'),
+    scrapingBrowserWss: resolveCredentialUrl(
+      envStr('WIGOLO_SCRAPING_BROWSER_WSS', null, settings, 'scrapingBrowserWss'),
+      'scrapingBrowserWss',
+    ),
     // The TLS-impersonation backend accepts a `<browser>_<version>` profile
     // string and forwards it into a Rust napi binding. Passing an unvalidated
     // value risks a panic / abort in native code if the env var is a typo
@@ -628,6 +767,11 @@ export function getConfig(): Config {
         .filter((s) => s.length > 0);
     })(),
   };
+
+  // Apply the hardcore umbrella preset last: it flips the anti-bot / solve
+  // knobs to their aggressive values, but only for knobs the operator did not
+  // explicitly set (precedence: explicit knob > hardcore preset > default).
+  applyHardcorePreset(cachedConfig, settings);
 
   return cachedConfig;
 }

@@ -167,6 +167,32 @@ export interface ContentCompleteness {
   settled_by: 'probe' | 'stability' | 'budget';
 }
 
+/**
+ * Coarse taxonomy of a bot-protection challenge, produced by the challenge
+ * classifier. Drives which solve rung (if any) the ladder engages:
+ *   - 'image'       : a visible-image challenge (grid/slider/text) — pixels to
+ *                     reason about, so in-band AI-vision-solvable.
+ *   - 'interactive' : a checkbox/Turnstile-style widget — a trusted gesture can
+ *                     pass it (no image to read).
+ *   - 'behavioral'  : an invisible/managed challenge (reCAPTCHA v3, managed
+ *                     Turnstile, DataDome/Akamai) — no image, not "solvable",
+ *                     only avoidable via fingerprint/IP/behavior.
+ *   - 'none'        : real content, no challenge markers.
+ */
+export type ChallengeClass = 'image' | 'interactive' | 'behavioral' | 'none';
+
+/**
+ * Which rung of the solve ladder actually cleared (or attempted) a challenge.
+ * Surfaced on the fetch result for audit + honesty:
+ *   - 'reuse'     : a stored, route-gated clearance was injected.
+ *   - 'auto-pass' : a trusted-input gesture passed an interactive widget.
+ *   - 'cdp-direct': the raw control-plane rung.
+ *   - 'ai-vision' : an in-band vision model solved a visible-image challenge.
+ *   - 'solver'    : an opt-in external solver/reader escape rung.
+ *   - 'human'     : a human solved it in a visible browser surface.
+ */
+export type SolveMethod = 'reuse' | 'auto-pass' | 'cdp-direct' | 'ai-vision' | 'solver' | 'human';
+
 export interface RawFetchResult {
   url: string;
   finalUrl: string;
@@ -195,6 +221,19 @@ export interface RawFetchResult {
    * filtering) branches on `level`/`reason` to avoid trusting shell captures.
    */
   contentCompleteness?: ContentCompleteness;
+  /**
+   * Coarse challenge class the classifier assigned to this fetch, when the
+   * browser tier detected a bot-protection challenge. Absent on captures that
+   * never hit a challenge. Set by the solve-ladder path (slice PL); optional so
+   * existing construction sites compile unchanged.
+   */
+  challenge_class?: ChallengeClass;
+  /**
+   * Which solve rung cleared the challenge (or `null` when a challenge was
+   * detected but no rung passed it — the honest `blocked_by_challenge` path).
+   * Absent when no challenge was involved. Set by the solve-ladder path.
+   */
+  solve_method?: SolveMethod | null;
 }
 
 export interface ExtractionResult {
