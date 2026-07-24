@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <rect width="880" height="360" fill="#0d1117"/>
+  <text x="64" y="32" font-size="20" font-weight="600" fill="#94a3b8">wigolo — GitHub stars over time</text>
+  <text x="848" y="30" text-anchor="end" font-size="26" font-weight="700" fill="#7c3aed">3540 ★</text>
+  <text x="848" y="48" text-anchor="end" font-size="13" fill="#94a3b8" opacity="0.7">updated 2026-07-24</text>
+  <line x1="64" y1="316.0" x2="848.0" y2="316.0" stroke="#1e293b" stroke-width="1"/><text x="54" y="320.0" text-anchor="end" font-size="14" fill="#94a3b8">0</text>
+  <line x1="64" y1="251.0" x2="848.0" y2="251.0" stroke="#1e293b" stroke-width="1"/><text x="54" y="255.0" text-anchor="end" font-size="14" fill="#94a3b8">1000</text>
+  <line x1="64" y1="186.0" x2="848.0" y2="186.0" stroke="#1e293b" stroke-width="1"/><text x="54" y="190.0" text-anchor="end" font-size="14" fill="#94a3b8">2000</text>
+  <line x1="64" y1="121.0" x2="848.0" y2="121.0" stroke="#1e293b" stroke-width="1"/><text x="54" y="125.0" text-anchor="end" font-size="14" fill="#94a3b8">3000</text>
+  <line x1="64" y1="56.0" x2="848.0" y2="56.0" stroke="#1e293b" stroke-width="1"/><text x="54" y="60.0" text-anchor="end" font-size="14" fill="#94a3b8">4000</text>
+  <path d="M64.0 315.9 L97.6 315.7 L332.9 315.6 L366.6 315.5 L400.2 315.3 L433.8 313.7 L467.4 310.6 L501.0 309.8 L534.7 308.9 L568.3 287.5 L601.9 261.0 L635.5 237.7 L669.1 200.4 L702.7 152.7 L736.4 112.9 L770.0 92.9 L803.6 87.4 L837.2 85.9 L848.0 85.9 L848.0 316.0 L64.0 316.0 Z" fill="#7c3aed" fill-opacity="0.12" stroke="none"/>
+  <path d="M64.0 315.9 L97.6 315.7 L332.9 315.6 L366.6 315.5 L400.2 315.3 L433.8 313.7 L467.4 310.6 L501.0 309.8 L534.7 308.9 L568.3 287.5 L601.9 261.0 L635.5 237.7 L669.1 200.4 L702.7 152.7 L736.4 112.9 L770.0 92.9 L803.6 87.4 L837.2 85.9 L848.0 85.9" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+  <text x="64" y="344" text-anchor="start" font-size="14" fill="#94a3b8">2026-07-01</text>
+  <text x="848" y="344" text-anchor="end" font-size="14" fill="#94a3b8">2026-07-24</text>
+</svg>
