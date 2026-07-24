@@ -55,7 +55,7 @@ async function createWindow(): Promise<void> {
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     backgroundColor: '#0c0c10',
     webPreferences: {
-      preload: join(import.meta.dirname, '../preload/index.mjs'),
+      preload: join(import.meta.dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -127,7 +127,7 @@ async function createWindow(): Promise<void> {
       const view = new WebContentsView({
         // The per-tab marking overlay runs in this sandboxed, context-isolated tab's isolated world (P2).
         webPreferences: {
-          preload: join(import.meta.dirname, '../preload/overlay.mjs'),
+          preload: join(import.meta.dirname, '../preload/overlay.cjs'),
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: true,

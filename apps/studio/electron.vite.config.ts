@@ -14,7 +14,10 @@ export default defineConfig({
           index: resolve(__dirname, 'src/preload/index.ts'),
           overlay: resolve(__dirname, 'src/preload/overlay.ts'),
         },
-        output: { manualChunks: undefined },
+          // A sandboxed WebContentsView preload (the overlay) MUST be CommonJS — Electron cannot load an
+        // ESM preload in a sandboxed context, so it would silently fail to install. Emit both preloads
+        // as .cjs (the chrome window loads CJS fine too) rather than downgrade the tab's sandbox.
+        output: { format: 'cjs', entryFileNames: '[name].cjs', manualChunks: undefined },
       },
     },
   },
