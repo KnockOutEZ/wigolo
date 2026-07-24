@@ -1,4 +1,5 @@
 import type { ChallengeClass } from '../types.js';
+import type { ImageSolveSubType } from './ai-solve.js';
 import { isChallengeSkeleton, isNearEmptyBody } from './tls-tier.js';
 
 /**
@@ -158,6 +159,67 @@ function hasTextCaptcha(lower: string, raw: string): boolean {
     // A name/id hint is enough when the type attribute is omitted.
     /<input\b[^>]*(?:name|id)\s*=\s*["'][^"']*captcha[^"']*["'][^>]*>/i.test(raw);
   return captchaImg && textInput && lower.includes('captcha');
+}
+
+/**
+ * Refine an 'image'-class challenge into the concrete solver sub-type the
+ * ai-vision rung should drive. Pure; conservative — DEFAULTS to 'grid' (the
+ * common reCAPTCHA / hCaptcha image-select, and the safe majority case) on any
+ * ambiguity so we never mis-drive a grid solve as a slider drag / text type.
+ *
+ * Precedence:
+ *   1. slider  — a drag-puzzle (GeeTest `slideBg` / `slider` / a `drag` puzzle
+ *      marker). Wins over a co-present text-captcha (a slide puzzle can carry a
+ *      decorative captcha image + input).
+ *   2. grid    — a reCAPTCHA `api2/bframe` / hCaptcha challenge-grid frame. Wins
+ *      over a bare text-captcha for the same reason.
+ *   3. text    — a captcha `<img>` + a text `<input>` and NO grid / slider.
+ *   4. grid    — default (reCAPTCHA / hCaptcha common case; ambiguity-safe).
+ *
+ * Marker vocabulary is reused from this module's image detectors (`hasImageMarker`
+ * / `hasTextCaptcha`) so the sub-type never disagrees with the 'image' class.
+ */
+export function classifyImageSubType(html: string): ImageSolveSubType {
+  if (!html) return 'grid';
+  const slice = html.length > 32768 ? html.slice(0, 32768) : html;
+  const lower = slice.toLowerCase();
+
+  // (1) A drag-puzzle marker → slider (out-ranks a co-present text-captcha).
+  if (hasSliderMarker(lower)) return 'slider';
+  // (2) A reCAPTCHA/hCaptcha image-grid frame → grid (the common case).
+  if (hasGridMarker(lower)) return 'grid';
+  // (3) A standalone text-captcha (img + text input) and nothing grid/slider.
+  if (hasTextCaptcha(lower, slice)) return 'text';
+  // (4) Ambiguity-safe default.
+  return 'grid';
+}
+
+/**
+ * A drag/slide puzzle: GeeTest slide-puzzle markers (`geetest_slider`,
+ * `slidebg`), a generic `slidebg` / `slider` element, or an explicit drag-to-
+ * complete puzzle hint. Kept conservative — a lone `slider` token would be too
+ * broad (a range input, a carousel), so require a puzzle-shaped signal: GeeTest,
+ * a `slidebg` background image, or a `slider`/`drag` marker co-present with a
+ * puzzle/verify hint.
+ */
+function hasSliderMarker(lower: string): boolean {
+  if (lower.includes('geetest')) return true;
+  if (lower.includes('slidebg')) return true;
+  const sliderish = lower.includes('slider') || lower.includes('drag');
+  if (sliderish && (lower.includes('puzzle') || lower.includes('slide'))) return true;
+  return false;
+}
+
+/**
+ * A reCAPTCHA / hCaptcha image-grid frame — the common image-select puzzle. The
+ * grid markers from `hasImageMarker` (the `api2/bframe` iframe, the hCaptcha
+ * `/captcha/v1/challenge` frame), EXCLUDING the standalone text-captcha shape
+ * (that is the `text` sub-type, not a grid).
+ */
+function hasGridMarker(lower: string): boolean {
+  if (lower.includes('api2/bframe')) return true;
+  if (isHcaptchaChallengeFrame(lower)) return true;
+  return false;
 }
 
 // --- interactive: a clickable widget, no image -------------------------------
