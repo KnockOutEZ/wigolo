@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { join } from 'node:path';
 
 vi.mock('../../../../src/cli/tui/config-writer-json.js', () => ({
   writeJsonConfig: vi.fn(),
+  removeJsonConfigEntry: vi.fn(),
 }));
 vi.mock('../../../../src/cli/tui/config-writer-toml.js', () => ({
   writeTomlConfig: vi.fn(),
@@ -10,7 +12,7 @@ vi.mock('../../../../src/cli/tui/config-writer-cli.js', () => ({
   installViaClaudeCli: vi.fn(),
 }));
 
-import { writeJsonConfig } from '../../../../src/cli/tui/config-writer-json.js';
+import { removeJsonConfigEntry, writeJsonConfig } from '../../../../src/cli/tui/config-writer-json.js';
 import { writeTomlConfig } from '../../../../src/cli/tui/config-writer-toml.js';
 import { installViaClaudeCli } from '../../../../src/cli/tui/config-writer-cli.js';
 import { applyConfigs } from '../../../../src/cli/tui/config-writer.js';
@@ -24,13 +26,14 @@ const all: DetectedAgent[] = [
   { id: 'gemini-cli', displayName: 'Gemini CLI', detected: false, configPath: '/home/test/.gemini/settings.json', installType: 'config-file' },
   { id: 'windsurf', displayName: 'Windsurf', detected: false, configPath: '/home/test/.codeium/windsurf/mcp_config.json', installType: 'config-file' },
   { id: 'codex', displayName: 'Codex (OpenAI CLI)', detected: false, configPath: '/home/test/.codex/config.toml', installType: 'config-toml' },
-  { id: 'opencode', displayName: 'OpenCode', detected: false, configPath: '/home/test/.config/opencode/config.json', installType: 'config-file' },
+  { id: 'opencode', displayName: 'OpenCode', detected: false, configPath: '/home/test/.config/opencode/opencode.json', installType: 'config-file' },
 ];
 
 describe('applyConfigs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(writeJsonConfig).mockResolvedValue({ ok: true, code: 'OK' });
+    vi.mocked(removeJsonConfigEntry).mockResolvedValue({ ok: true, code: 'OK', removed: false });
     vi.mocked(writeTomlConfig).mockResolvedValue({ ok: true, code: 'OK' });
     vi.mocked(installViaClaudeCli).mockResolvedValue({ ok: true, code: 'OK' });
   });
@@ -88,11 +91,26 @@ describe('applyConfigs', () => {
     }));
   });
 
-  it('routes OpenCode with type:local in entry and keyPath=mcp.wigolo', async () => {
+  it('routes OpenCode with its local MCP command-array schema', async () => {
     await applyConfigs(all, ['opencode']);
     expect(writeJsonConfig).toHaveBeenCalledWith(expect.objectContaining({
+      path: '/home/test/.config/opencode/opencode.json',
       keyPath: ['mcp', 'wigolo'],
-      entry: expect.objectContaining({ type: 'local' }),
+      entry: {
+        type: 'local',
+        command: ['npx', '-y', 'wigolo'],
+        enabled: true,
+      },
+      allowJsonc: true,
+      requireBackup: true,
+      refuseSymlink: true,
+    }));
+    expect(removeJsonConfigEntry).toHaveBeenCalledWith(expect.objectContaining({
+      path: join('/home/test/.config/opencode/opencode.json', '..', 'config.json'),
+      keyPath: ['mcp', 'wigolo'],
+      allowJsonc: true,
+      requireBackup: true,
+      refuseSymlink: true,
     }));
   });
 
@@ -106,6 +124,23 @@ describe('applyConfigs', () => {
     const results = await applyConfigs(all, ['cursor', 'zed']);
     expect(results[0].ok).toBe(false);
     expect(results[1].ok).toBe(true);
+  });
+
+  it('turns a thrown writer error into a result and preserves prior successes', async () => {
+    vi.mocked(writeJsonConfig)
+      .mockResolvedValueOnce({ ok: true, code: 'OK' })
+      .mockRejectedValueOnce(new Error('writer exploded'));
+
+    const results = await applyConfigs(all, ['cursor', 'zed']);
+
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ id: 'cursor', ok: true });
+    expect(results[1]).toMatchObject({
+      id: 'zed',
+      ok: false,
+      code: 'UNEXPECTED_ERROR',
+      message: 'writer exploded',
+    });
   });
 
   it('skips ids not present in detected[]', async () => {

@@ -237,8 +237,8 @@ describe('OpenCode descriptor', () => {
     expect(getDescriptor('opencode').detect(ENV)).toBe(true);
   });
 
-  it('configPath returns ~/.config/opencode/config.json', () => {
-    expect(getDescriptor('opencode').configPath(ENV)).toBe(join('/home/test', '.config', 'opencode', 'config.json'));
+  it('configPath returns ~/.config/opencode/opencode.json', () => {
+    expect(getDescriptor('opencode').configPath(ENV)).toBe(join('/home/test', '.config', 'opencode', 'opencode.json'));
   });
 });
 

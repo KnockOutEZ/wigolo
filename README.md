@@ -4,7 +4,7 @@
 
 Local-first web intelligence for AI agents — **no keys, no cloud, no metered bill.**
 
-<sub>works with&nbsp;&nbsp;**Claude Code · Cursor · Codex · Gemini CLI · VS Code · Windsurf · Zed · Antigravity**</sub>
+<sub>works with&nbsp;&nbsp;**Claude Code · Cursor · Codex · Gemini CLI · OpenCode · VS Code · Windsurf · Zed · Antigravity**</sub>
 <br>
 <sub>and beyond&nbsp;&nbsp;**LangChain · CrewAI · LlamaIndex · Vercel AI SDK · n8n & self-hosted agents · any MCP client · plain REST**</sub>
 
@@ -46,7 +46,7 @@ npx wigolo init --agents=claude-code,cursor  # …or set up + wire your day-to-d
 
 Requires **Node ≥ 20** and ~1.5 GB of free disk on macOS, Linux, or Windows. Bare `init` sets up the local engine: it downloads the browser engine and on-device models, runs a health check, and reports each component. Adding `--agents` wires the named agents in the same run, so a coding agent you use daily is ready in one command.
 
-- **Supported agents** — `--agents` takes any of `claude-code` · `cursor` · `codex` · `gemini-cli` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated); wigolo writes the MCP config and instructions for each.
+- **Supported agents** — `--agents` takes any of `claude-code` · `cursor` · `codex` · `gemini-cli` · `opencode` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated); wigolo writes the MCP config and, where supported, instructions for each.
 - **Any other setup** — any MCP client, agent framework, or self-hosted agent registers `npx -y wigolo` in its own MCP config. The [installation guide](docs/installation.md) has the exact config block for every client, plus Docker, Homebrew, and single-file-binary channels.
 - **More on the way** — the supported list keeps growing, and a PR to add your agent is welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Interactive setup** — `--interactive` is a plain-text flow; `--wizard` is the full terminal TUI.
