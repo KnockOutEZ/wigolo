@@ -146,6 +146,11 @@ export class Crawler {
         // Carry the per-page render-completeness through from the fetch so
         // crawl consumers can skip shell pages. Absent for non-browser tiers.
         ...(fetchResult.content_completeness ? { content_completeness: fetchResult.content_completeness } : {}),
+        // Carry the solve-ladder provenance through so a page cleared via a
+        // solve rung (e.g. solve_method:'auto-pass') is auditable. Absent on
+        // pages that never hit a challenge.
+        ...(fetchResult.challenge_class !== undefined ? { challenge_class: fetchResult.challenge_class } : {}),
+        ...(fetchResult.solve_method !== undefined ? { solve_method: fetchResult.solve_method } : {}),
       };
       pages.push(item);
 
@@ -283,7 +288,16 @@ export class Crawler {
         }
 
         if (!result.error) {
-          const item: CrawlResultItem = { url: canonicalForOutput(result.url), title: result.title, markdown: result.markdown, depth: 0 };
+          const item: CrawlResultItem = {
+            url: canonicalForOutput(result.url),
+            title: result.title,
+            markdown: result.markdown,
+            depth: 0,
+            // Carry solve-ladder provenance through so a page cleared via a
+            // solve rung is auditable on the sitemap/explicit-urls path too.
+            ...(result.challenge_class !== undefined ? { challenge_class: result.challenge_class } : {}),
+            ...(result.solve_method !== undefined ? { solve_method: result.solve_method } : {}),
+          };
           pages.push(item);
 
           if (indexing) await enqueueIndexCrawl(item);

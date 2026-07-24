@@ -1010,6 +1010,14 @@ export interface CrawlResultItem {
   /** Per-page render completeness, carried through from the page's fetch.
    * Absent when the page was served by a non-browser tier. */
   content_completeness?: ContentCompleteness;
+  /** Solve-ladder provenance carried through from the page's fetch: the
+   * classified challenge class when this page hit an anti-bot challenge.
+   * Absent on pages that never encountered one. */
+  challenge_class?: ChallengeClass;
+  /** How a challenged page was cleared (e.g. 'auto-pass'), carried through
+   * from the page's fetch. Null when a challenge was detected but not cleared.
+   * Absent on pages that never encountered a challenge. */
+  solve_method?: SolveMethod | null;
 }
 
 export interface LinkEdge {
