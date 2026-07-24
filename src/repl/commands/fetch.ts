@@ -79,7 +79,14 @@ export async function executeFetch(args: ParsedArgs, deps: ReplDeps): Promise<Fe
     log.debug('executing fetch command', { url, flags: args.flags });
     const r = await handleFetch(input, deps.router);
     if (!r.ok) {
-      return errEnvelope(url, r.error_reason);
+      // Preserve solve-ladder provenance on a blocked_by_challenge stage error
+      // so the CLI/REPL surface matches the MCP tool output (challenge_class +
+      // an honest null solve_method), instead of dropping it in the envelope.
+      return {
+        ...errEnvelope(url, r.error_reason),
+        ...(r.challenge_class !== undefined ? { challenge_class: r.challenge_class } : {}),
+        ...(r.solve_method !== undefined ? { solve_method: r.solve_method } : {}),
+      };
     }
     return r.data;
   } catch (err) {
