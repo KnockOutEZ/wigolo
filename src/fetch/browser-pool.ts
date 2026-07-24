@@ -19,6 +19,7 @@ import { autoPassChallenge } from './auto-pass.js';
 import { aiSolveChallenge, type ImageSolveSubType, type WidgetImage } from './ai-solve.js';
 import { humanSolveChallenge } from './human-solve.js';
 import { connectScrapingBrowser } from './scraping-browser.js';
+import { cdpDirectFetch } from './cdp-direct.js';
 import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, parseChromeMajor, resolveStealthLauncher, STEALTH_INIT_SCRIPT } from './stealth.js';
 import { humanizePage } from './behavior.js';
 import { recordDomainClearance, clearDomainClearance } from '../cache/store.js';
@@ -534,6 +535,40 @@ export class MultiBrowserPool {
     const fetchStartMs = Date.now();
     const config = getConfig();
     const navTimeoutMs = options.timeoutMs ?? config.playwrightNavTimeoutMs;
+
+    // OFF-BY-DEFAULT opt-in escalation rung: raw-CDP content fetch via a throwaway
+    // real Chrome, no Playwright control plane (Phase 1). When `cdpDirect === 'off'`
+    // (default) this block is a hard no-op and the path below is byte-identical to
+    // today. When 'on' (always) or 'auto' (only on the anti-bot escalation path,
+    // signalled by options.stealth) AND the fetch is content-only — no actions,
+    // auth, downloads, screenshots, or a pinned/hosted CDP endpoint — try the rung
+    // FIRST. On any null (Chrome absent, optional dep absent, connect/nav failure,
+    // abort) fall through to the normal browser tier UNCHANGED. The rung makes no
+    // claim to beat the existing stealth/patchright tier — it is a live-evaluation
+    // escalation only, and never hard-fails a fetch.
+    if (config.cdpDirect !== 'off') {
+      const contentOnly =
+        !options.actions?.length &&
+        !options.cdpUrl &&
+        !options.storageStatePath &&
+        !options.userDataDir &&
+        !options.screenshot &&
+        !config.scrapingBrowserWss;
+      const engage = config.cdpDirect === 'on' || (config.cdpDirect === 'auto' && options.stealth === true);
+      if (contentOnly && engage) {
+        log.debug('trying cdp-direct escalation rung', { url, mode: config.cdpDirect });
+        const direct = await cdpDirectFetch(url, {
+          signal: options.signal,
+          timeoutMs: options.timeoutMs,
+        });
+        if (direct) {
+          log.info('cdp-direct rung served content', { url });
+          return direct;
+        }
+        log.debug('cdp-direct rung returned null, falling back to browser tier', { url });
+        if (options.signal?.aborted) throw options.signal.reason;
+      }
+    }
 
     let ctx: BrowserContext;
     let cdpBrowser: Browser | null = null;

@@ -1,10 +1,19 @@
+import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdtemp as fsMkdtemp, rm as fsRm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createLogger } from '../logger.js';
-import { discoverSessions } from './cdp-client.js';
+import { getConfig } from '../config.js';
+import { sanitizedChildEnv } from '../util/child-env.js';
+import { stealthLaunchArgs } from './stealth.js';
+import { discoverSessions, isCDPReachable } from './cdp-client.js';
+import type { RawFetchResult } from '../types.js';
 
 const log = createLogger('fetch');
 
 /**
- * Layer-B raw-CDP control plane — Phase 0 (DARK / not wired live).
+ * Layer-B raw-CDP control plane — Phase 1 (opt-in escalation rung, OFF by default).
  *
  * The keyless anti-bot cliff is the automation-protocol *handshake*: every
  * Playwright/Puppeteer fork (patchright included) issues `Runtime.enable` and
@@ -15,10 +24,19 @@ const log = createLogger('fetch');
  * auto-enabled default Runtime domain.
  *
  * Content-fetch-only by design: navigate → read HTML → close. Actions, auth, and
- * downloads stay on the browser (patchright) tier. This build ships the
- * leak-free connect + unit tests only; the live escalation rung is gated on a
- * residential-IP GO/NO-GO the CEO runs later. Nothing here is imported by the
- * router or the browser pool.
+ * downloads stay on the browser (patchright) tier.
+ *
+ * `cdpDirectConnect` is the leak-free connect primitive (transport-agnostic,
+ * unit-tested standalone). `cdpDirectFetch` productionizes it into a real
+ * content-fetch rung: it launches a THROWAWAY real Chrome as a raw child process
+ * (never `playwright.launch`, which would re-introduce the automation
+ * control-plane handshake this rung exists to avoid) with a `--remote-debugging-port`,
+ * connects raw, navigates, extracts HTML, and tears the child + temp profile down
+ * ALWAYS. The rung is OFF by default (`config.cdpDirect === 'off'`) and wired into
+ * the browser pool as an opt-in first-try on the anti-bot escalation path; on ANY
+ * failure or absence it returns `null` so the caller falls back to the normal
+ * browser tier — a fetch is NEVER hard-failed. This is an escalation rung for live
+ * evaluation; it makes NO claim to beat the existing patchright + channel=chrome tier.
  */
 
 /** A single CDP command send. Injectable so tests can record every command. */
@@ -290,4 +308,339 @@ async function resolveTargetWs(opts: CdpDirectConnectOptions): Promise<string | 
   });
   const page = sessions.find((s) => s.webSocketDebuggerUrl);
   return page?.webSocketDebuggerUrl ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// cdpDirectFetch — spawn a throwaway real Chrome + drive the leak-free rung
+// ---------------------------------------------------------------------------
+
+/** Options accepted by the productionized content-fetch rung. */
+export interface CdpDirectFetchOptions {
+  /** Abort signal — an already-aborted signal short-circuits to `null`. */
+  signal?: AbortSignal;
+  /** Total wall-clock budget (ms) for the whole rung: spawn → reachable →
+   *  navigate → read → teardown. Defaults to a bounded value. */
+  timeoutMs?: number;
+}
+
+/**
+ * Injectable dependency seam for {@link cdpDirectFetch}. Every side effect the
+ * rung performs (resolve Chrome, spawn a child, probe the debug endpoint,
+ * mkdtemp / rm the throwaway profile, open the CDP transport) is behind this so
+ * a unit test drives the whole orchestration with NO real Chrome or network.
+ * Left `undefined` in production → the real implementations are used.
+ */
+export interface CdpDirectFetchDeps {
+  /** Resolve a real installed Chrome executable path, or `null` when none. */
+  resolveChrome: () => string | null;
+  /** Spawn the browser child process (raw — never playwright.launch). */
+  spawn: (command: string, args: string[], options: { env: NodeJS.ProcessEnv; stdio: 'ignore' }) => ChildProcess;
+  /** Probe whether the CDP debug endpoint is reachable. */
+  isReachable: (cdpUrl: string, timeoutMs?: number) => Promise<boolean>;
+  /** Create a throwaway user-data dir from a prefix; returns the created path. */
+  mkdtemp: (prefix: string) => Promise<string>;
+  /** Remove the throwaway user-data dir (recursive, force). */
+  rm: (dir: string) => Promise<void>;
+  /** Open a CDP transport against the launched browser's debug endpoint, or
+   *  `null` when the optional dep is absent / no page target is discoverable. */
+  connectTransport: (cdpUrl: string, signal?: AbortSignal) => Promise<CdpTransport | null>;
+}
+
+let _testFetchDeps: CdpDirectFetchDeps | undefined;
+/** Test-only override for the fetch dependency seam. `undefined` → real deps. */
+export function _setCdpDirectFetchDepsForTests(deps: CdpDirectFetchDeps | undefined): void {
+  _testFetchDeps = deps;
+}
+
+// Total-budget default when the caller passes none. Bounded so a stuck launch /
+// challenge never holds the escalation slot; the caller's own signal is the
+// harder ceiling when present.
+const DEFAULT_FETCH_BUDGET_MS = 30_000;
+// How long to wait for the debug endpoint to come up after spawn.
+const REACHABLE_TIMEOUT_MS = 8_000;
+const REACHABLE_POLL_MS = 150;
+// Settle after navigation before reading HTML. Short — the rung is a content
+// fetch, not an interaction session; a slow SPA simply reads less and the
+// caller falls back on an empty/near-empty body.
+const NAV_SETTLE_MS = 1_200;
+// Grace after SIGTERM before escalating to SIGKILL on teardown.
+const KILL_GRACE_MS = 2_000;
+
+/**
+ * Real Chrome executable resolver. Prefers an explicit env override, else probes
+ * the well-known per-platform install locations for an AUTHENTIC Chrome (never
+ * the bundled "Chrome for Testing", whose fingerprint is exactly what this rung
+ * exists to avoid). Returns `null` when no installed Chrome is found OR when the
+ * user pinned `browserChannel: 'chromium'` (an explicit opt-out of authentic
+ * Chrome) — either way the caller degrades to the normal browser tier.
+ */
+function defaultResolveChrome(): string | null {
+  const cfg = getConfig();
+  // Respect an explicit chromium pin: the whole rung is about real Chrome.
+  if (cfg.browserChannel === 'chromium') return null;
+
+  const override = process.env.WIGOLO_CHROME_PATH || process.env.CHROME_PATH;
+  if (override && existsSync(override)) return override;
+
+  const candidates: string[] =
+    process.platform === 'darwin'
+      ? [
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta',
+          '/Applications/Chromium.app/Contents/MacOS/Chromium',
+        ]
+      : process.platform === 'win32'
+        ? [
+            join(process.env.PROGRAMFILES ?? 'C:\\Program Files', 'Google\\Chrome\\Application\\chrome.exe'),
+            join(process.env['PROGRAMFILES(X86)'] ?? 'C:\\Program Files (x86)', 'Google\\Chrome\\Application\\chrome.exe'),
+            join(process.env.LOCALAPPDATA ?? '', 'Google\\Chrome\\Application\\chrome.exe'),
+          ]
+        : [
+            '/usr/bin/google-chrome',
+            '/usr/bin/google-chrome-stable',
+            '/opt/google/chrome/chrome',
+            '/usr/bin/chromium',
+            '/usr/bin/chromium-browser',
+            '/snap/bin/chromium',
+          ];
+
+  for (const path of candidates) {
+    try {
+      if (path && existsSync(path)) return path;
+    } catch { /* keep probing */ }
+  }
+  return null;
+}
+
+/** Reserve a free localhost TCP port, then release it. Best-effort: a returned
+ *  port could in theory be reclaimed before Chrome binds it, but for a throwaway
+ *  child this is acceptable and far simpler than DevToolsActivePort parsing. */
+async function reserveFreePort(): Promise<number> {
+  const net = await import('node:net');
+  return new Promise<number>((resolve, reject) => {
+    const srv = net.createServer();
+    srv.on('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address();
+      const port = addr && typeof addr === 'object' ? addr.port : 0;
+      srv.close(() => (port > 0 ? resolve(port) : reject(new Error('no free port'))));
+    });
+  });
+}
+
+/** Open a real CDP transport against a launched browser's HTTP debug endpoint by
+ *  discovering a page target and connecting via the optional CRI factory. This is
+ *  the production `connectTransport` — tests inject their own. */
+async function defaultConnectTransport(
+  cdpUrl: string,
+  signal?: AbortSignal,
+): Promise<CdpTransport | null> {
+  // Reuse cdpDirectConnect's transport builder by discovering the WS target
+  // ourselves so we can hand a concrete transport to cdpDirectConnect below.
+  const factory = await loadCRI();
+  if (!factory) return null;
+  const sessions = await discoverSessions(cdpUrl, { timeoutMs: 3000, filterPages: true });
+  if (signal?.aborted) return null;
+  const target = sessions.find((s) => s.webSocketDebuggerUrl)?.webSocketDebuggerUrl;
+  if (!target) return null;
+  try {
+    const client = await factory({ target, local: true });
+    return {
+      send: (method, params) => client.send(method, params),
+      close: async () => { await client.close(); },
+    };
+  } catch (err) {
+    log.debug('cdp-direct: transport connect failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+function realFetchDeps(): CdpDirectFetchDeps {
+  return {
+    resolveChrome: defaultResolveChrome,
+    spawn: (command, args, options) => nodeSpawn(command, args, options),
+    isReachable: isCDPReachable,
+    mkdtemp: (prefix) => fsMkdtemp(prefix),
+    rm: async (dir) => { await fsRm(dir, { recursive: true, force: true }); },
+    connectTransport: defaultConnectTransport,
+  };
+}
+
+/** Kill a spawned child and wait (bounded) for it to exit; escalate SIGTERM →
+ *  SIGKILL after a short grace. Never throws. */
+async function killChild(child: ChildProcess): Promise<void> {
+  // Already exited? (a number exit code or a real signal). `null`/`undefined`
+  // both mean "still running" — undefined arises for injected fakes.
+  if (typeof child.exitCode === 'number' || (child.signalCode != null)) return;
+  const exited = new Promise<void>((resolve) => {
+    child.once('exit', () => resolve());
+  });
+  try { child.kill('SIGTERM'); } catch { /* already gone */ }
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  const grace = new Promise<void>((resolve) => {
+    graceTimer = setTimeout(resolve, KILL_GRACE_MS);
+    (graceTimer as { unref?: () => void }).unref?.();
+  });
+  const winner = await Promise.race([exited.then(() => 'exited' as const), grace.then(() => 'grace' as const)]);
+  if (graceTimer !== undefined) clearTimeout(graceTimer);
+  if (winner === 'grace') {
+    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+  }
+}
+
+/** Wait until the CDP debug endpoint is reachable, bounded by `deadline` and the
+ *  abort signal. Returns true when reachable, false on timeout/abort. */
+async function waitForReachable(
+  isReachable: CdpDirectFetchDeps['isReachable'],
+  cdpUrl: string,
+  deadlineMs: number,
+  signal: AbortSignal | undefined,
+): Promise<boolean> {
+  while (Date.now() < deadlineMs) {
+    if (signal?.aborted) return false;
+    const remaining = deadlineMs - Date.now();
+    if (await isReachable(cdpUrl, Math.min(1000, remaining)).catch(() => false)) return true;
+    if (signal?.aborted) return false;
+    await new Promise((r) => setTimeout(r, REACHABLE_POLL_MS));
+  }
+  return false;
+}
+
+/**
+ * Launch a throwaway real Chrome as a RAW child process, connect over raw CDP,
+ * navigate, extract the hydrated HTML, and tear everything down. Returns a
+ * `RawFetchResult` on success, or `null` on ANY failure/absence so the caller
+ * falls back to the normal browser tier. NEVER throws to the caller.
+ *
+ * Content-fetch-only: the caller must NOT route actions/auth/downloads/screenshots
+ * or a pinned cdpUrl here — those stay on the normal tier.
+ */
+export async function cdpDirectFetch(
+  url: string,
+  opts: CdpDirectFetchOptions = {},
+): Promise<RawFetchResult | null> {
+  if (opts.signal?.aborted) {
+    log.debug('cdp-direct: signal already aborted, not launching');
+    return null;
+  }
+
+  const deps = _testFetchDeps ?? realFetchDeps();
+
+  const chromePath = deps.resolveChrome();
+  if (!chromePath) {
+    log.debug('cdp-direct: no authentic Chrome resolvable, falling back');
+    return null;
+  }
+
+  const budgetMs = opts.timeoutMs ?? DEFAULT_FETCH_BUDGET_MS;
+  const startedAt = Date.now();
+
+  let userDataDir: string | null = null;
+  let child: ChildProcess | null = null;
+  let handle: CdpDirectHandle | null = null;
+
+  try {
+    userDataDir = await deps.mkdtemp(join(tmpdir(), 'wigolo-cdp-direct-'));
+
+    const port = await reserveFreePort();
+    const cfg = getConfig();
+    const headless = !cfg.browserHeadful;
+    const args = [
+      ...stealthLaunchArgs('chromium'),
+      `--remote-debugging-port=${port}`,
+      '--remote-debugging-address=127.0.0.1',
+      `--user-data-dir=${userDataDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--no-startup-window',
+      ...(headless ? ['--headless=new'] : []),
+      'about:blank',
+    ];
+
+    child = deps.spawn(chromePath, args, {
+      env: sanitizedChildEnv({ stripProxy: true }),
+      stdio: 'ignore',
+    });
+    // A child that dies immediately (bad binary) must not leave a dangling
+    // error listener; swallow so it never becomes an unhandled 'error'.
+    child.on('error', (err) => {
+      log.debug('cdp-direct: child process error', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+
+    if (opts.signal?.aborted) return null;
+
+    const cdpUrl = `http://127.0.0.1:${port}`;
+    const reachDeadline = Math.min(startedAt + budgetMs, Date.now() + REACHABLE_TIMEOUT_MS);
+    const reachable = await waitForReachable(deps.isReachable, cdpUrl, reachDeadline, opts.signal);
+    if (!reachable) {
+      log.debug('cdp-direct: debug endpoint never became reachable, falling back', { url });
+      return null;
+    }
+    if (opts.signal?.aborted) return null;
+
+    const transport = await deps.connectTransport(cdpUrl, opts.signal);
+    if (!transport) {
+      log.debug('cdp-direct: no CDP transport (optional dep / no target), falling back', { url });
+      return null;
+    }
+
+    handle = await cdpDirectConnect({ transport, signal: opts.signal });
+    if (!handle) return null;
+
+    await handle.navigate(url);
+    if (opts.signal?.aborted) return null;
+
+    // Bounded settle before the content read. Race against the abort signal so a
+    // cancelled fetch tears down promptly.
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, NAV_SETTLE_MS);
+      (t as { unref?: () => void }).unref?.();
+      opts.signal?.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+    });
+    if (opts.signal?.aborted) return null;
+
+    const html = await handle.getContentHtml();
+    if (!html) {
+      log.debug('cdp-direct: empty content read, falling back', { url });
+      return null;
+    }
+
+    log.info('cdp-direct rung produced content', { url, bytes: html.length });
+    return {
+      url,
+      finalUrl: url,
+      html,
+      contentType: 'text/html',
+      statusCode: 200,
+      method: 'browser',
+      headers: {},
+    };
+  } catch (err) {
+    // NEVER throw to the caller — any failure degrades to a fallback.
+    log.debug('cdp-direct: rung failed, falling back', {
+      url,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  } finally {
+    // Teardown ALWAYS: close the CDP session, kill the child, remove the temp dir.
+    if (handle) {
+      await handle.close().catch(() => {});
+    }
+    if (child) {
+      await killChild(child).catch(() => {});
+    }
+    if (userDataDir) {
+      await deps.rm(userDataDir).catch((err) => {
+        log.debug('cdp-direct: temp dir cleanup failed (ignored)', {
+          dir: userDataDir,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+  }
 }
