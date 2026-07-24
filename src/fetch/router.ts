@@ -36,10 +36,12 @@ import {
   clearanceCookieValue,
   isClearanceFresh,
   uaMatchesTier,
+  routeMatchesClearance,
   parsedClearanceCookie,
   type ClearanceTier,
 } from './clearance-reuse.js';
 import { ChallengeBlockedError } from './browser-pool.js';
+import { classifyChallenge } from './challenge-classify.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
 import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
@@ -550,11 +552,13 @@ export class SmartRouter {
   }
 
   /**
-   * The stored clearance for `host` when it is fresh AND presentable by `tier`,
-   * else null. Purges an EXPIRED entry as a side-effect so a dead cookie is not
-   * carried forward. A UA mismatch (e.g. a Firefox-minted clearance for the
-   * Chromium browser tier) returns null WITHOUT clearing — the entry may still
-   * be valid for another tier.
+   * The stored clearance for `host` when it is fresh AND presentable by `tier`
+   * AND route-identity-matched to the current egress, else null. Purges an
+   * EXPIRED entry as a side-effect so a dead cookie is not carried forward. A UA
+   * mismatch (e.g. a Firefox-minted clearance for the Chromium browser tier) OR
+   * a route mismatch (a clearance solved direct being replayed behind a proxy,
+   * or vice-versa) returns null WITHOUT clearing — the entry may still be valid
+   * for another tier / another egress route.
    */
   private clearanceFor(host: string, tier: ClearanceTier): DomainClearance | null {
     let stored: DomainClearance | null;
@@ -569,6 +573,12 @@ export class SmartRouter {
       return null;
     }
     if (!uaMatchesTier(stored.ua, tier)) return null;
+    // Route-identity gate (P6 physics): a cf_clearance is bound to the
+    // {IP + UA + TLS} of the egress it was solved on (FlareSolverr #871). The
+    // current route is `proxyUrl ?? 'direct'`; a mismatch hard-refuses reuse but
+    // does NOT clear — the clearance may still be valid for its own route.
+    const currentRoute = getConfig().proxyUrl ?? 'direct';
+    if (!routeMatchesClearance(stored.solvedRoute, currentRoute)) return null;
     if (clearanceCookieValue(stored.cookie) == null) return null;
     return stored;
   }
@@ -769,6 +779,10 @@ export class SmartRouter {
           // hard challenge-block reaches the crawl adaptive-cooldown. Undefined
           // when no reliable status exists — never invented.
           ...(err.httpStatus !== undefined ? { http_status: err.httpStatus } : {}),
+          // Solve-ladder provenance: the classified challenge class, plus a null
+          // solve method (no rung cleared it — the honest block).
+          ...(err.challengeClass !== undefined ? { challenge_class: err.challengeClass } : {}),
+          solve_method: null,
         };
       }
       throw err;
@@ -863,6 +877,10 @@ export class SmartRouter {
   private guardChallengeShell(raw: RawFetchResult): RawFetchResult | StageError {
     if (isChallengeResponse(raw.statusCode, raw.html, raw.headers)) {
       const err = new ChallengeBlockedError(raw.url);
+      // Prefer any class the browser tier's ladder already assigned; otherwise
+      // classify the shell body here so a lower-tier (HTTP/TLS) block still
+      // reports its challenge class. solve_method is null — no rung cleared it.
+      const challengeClass = raw.challenge_class ?? classifyChallenge(raw.html);
       return {
         error: err.code,
         error_reason: err.message,
@@ -872,6 +890,8 @@ export class SmartRouter {
         // crawl cooldown sees it. A challenge served at 2xx has no anti-bot
         // status to thread, so leave it unset there.
         ...(isAntiBotStatus(raw.statusCode) ? { http_status: raw.statusCode } : {}),
+        ...(challengeClass !== undefined ? { challenge_class: challengeClass } : {}),
+        solve_method: null,
       };
     }
     return raw;
