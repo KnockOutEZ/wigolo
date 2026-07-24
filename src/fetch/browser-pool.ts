@@ -910,6 +910,9 @@ export class MultiBrowserPool {
                   ua,
                   tier: 'browser',
                   expiresAt: clearanceExpiresIso(outcome.cfClearance.expires),
+                  // A cf_clearance is IP/UA/TLS-bound; record the egress route it
+                  // was solved on so reuse can refuse a route-identity mismatch.
+                  solvedRoute: getConfig().proxyUrl ?? 'direct',
                 });
               } catch { /* best-effort — never block the fetch */ }
             }

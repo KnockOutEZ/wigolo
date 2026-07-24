@@ -48,6 +48,49 @@ export function isClearanceFresh(clearance: DomainClearance, now: number): boole
 }
 
 /**
+ * The egress route a clearance was minted on, normalised. A missing / empty /
+ * null stored value (a legacy pre-route row) is treated as `'direct'` — the
+ * only route those rows could have been harvested on before route capture
+ * existed.
+ */
+export function normalizeClearanceRoute(route: string | undefined | null): string {
+  if (route == null) return 'direct';
+  const trimmed = route.trim();
+  return trimmed.length === 0 ? 'direct' : trimmed;
+}
+
+/**
+ * Route-identity gate. A cf_clearance is bound to the `{IP + UA + TLS}` of the
+ * egress it was solved on (FlareSolverr #871): a clearance harvested on one
+ * route is invalid from another. We capture the route as `proxyUrl ?? 'direct'`
+ * at harvest and HARD-REFUSE reuse on any mismatch. Legacy rows (undefined
+ * stored route) are treated as `'direct'`, so they only replay on a direct
+ * current route and are refused from a proxy route.
+ */
+export function routeMatchesClearance(clearanceRoute: string | undefined | null, currentRoute: string): boolean {
+  return normalizeClearanceRoute(clearanceRoute) === normalizeClearanceRoute(currentRoute);
+}
+
+/**
+ * The single reuse-eligibility predicate: a stored clearance may be replayed by
+ * `tier` on `currentRoute` at `now` ONLY when it is fresh AND UA-presentable by
+ * the tier AND route-identity-matched AND carries a real cf_clearance value.
+ * Composes the individual gates so callers cannot skip one.
+ */
+export function isClearanceReusable(
+  clearance: DomainClearance,
+  tier: ClearanceTier,
+  currentRoute: string,
+  now: number,
+): boolean {
+  if (!isClearanceFresh(clearance, now)) return false;
+  if (!uaMatchesTier(clearance.ua, tier)) return false;
+  if (!routeMatchesClearance(clearance.solvedRoute, currentRoute)) return false;
+  if (clearanceCookieValue(clearance.cookie) == null) return false;
+  return true;
+}
+
+/**
  * Extract the raw cf_clearance token from a stored cookie string
  * (`cf_clearance=<value>`). Returns null when the stored value is not a
  * cf_clearance cookie or carries no value.
