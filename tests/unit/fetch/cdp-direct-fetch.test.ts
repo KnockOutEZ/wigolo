@@ -4,11 +4,36 @@ import {
   cdpDirectFetch,
   _setCriForTests,
   _setCdpDirectFetchDepsForTests,
+  _setProcessKillForTests,
   type CdpDirectFetchDeps,
   type CdpTransport,
   type CdpSend,
 } from '../../../src/fetch/cdp-direct.js';
 import { resetConfig } from '../../../src/config.js';
+import type { LookupAll } from '../../../src/watch/ssrf.js';
+
+// Records group-kill signals so the process-group teardown path is assertable
+// without ever signalling a REAL process group. Routes the fallback (child.kill)
+// through by throwing on the group send when asked (see makeGroupKill).
+const groupKills: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
+function makeGroupKill(opts: { throwOnGroup?: boolean } = {}) {
+  return (pid: number, signal: NodeJS.Signals | number): void => {
+    groupKills.push({ pid, signal });
+    if (opts.throwOnGroup) throw new Error('ESRCH');
+  };
+}
+
+// A lookup that resolves the host to a fixed set of addresses (drives the
+// pre-navigation resolved-host SSRF re-check deterministically).
+function lookupTo(addresses: Array<{ address: string; family: number }>): LookupAll {
+  return ((_hostname, _options, callback) => {
+    callback(null, addresses);
+  }) as LookupAll;
+}
+
+// Resolves any host to a public IP — keeps the pre-navigation SSRF guard happy
+// (and off the real network) for the non-SSRF tests.
+const PUBLIC_LOOKUP: LookupAll = lookupTo([{ address: '93.184.216.34', family: 4 }]);
 
 // A fake spawned child: an EventEmitter with the .kill()/.pid surface the
 // orchestrator drives. Records kill signals so a test can assert teardown.
@@ -112,11 +137,17 @@ describe('cdpDirectFetch — spawn + orchestrate the raw-CDP content rung', () =
     resetConfig();
     _setCriForTests(undefined);
     _setCdpDirectFetchDepsForTests(undefined);
+    groupKills.length = 0;
+    // Default: group kill throws (like a real ESRCH on a fake pid) so teardown
+    // falls back to child.kill — keeps existing kill-signal assertions valid AND
+    // never signals a real process group.
+    _setProcessKillForTests(makeGroupKill({ throwOnGroup: true }));
   });
   afterEach(() => {
     resetConfig();
     _setCriForTests(undefined);
     _setCdpDirectFetchDepsForTests(undefined);
+    _setProcessKillForTests(undefined);
     vi.restoreAllMocks();
   });
 
@@ -143,7 +174,7 @@ describe('cdpDirectFetch — spawn + orchestrate the raw-CDP content rung', () =
   it('happy path: spawns raw Chrome, navigates, extracts HTML, returns a browser RawFetchResult', async () => {
     const h = makeHarness();
     _setCdpDirectFetchDepsForTests(h.deps);
-    const result = await cdpDirectFetch('https://example.com', {});
+    const result = await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP });
     expect(result).not.toBeNull();
     expect(result!.method).toBe('browser');
     expect(result!.html).toContain('hardcore');
@@ -163,7 +194,7 @@ describe('cdpDirectFetch — spawn + orchestrate the raw-CDP content rung', () =
   it('preserves the leak-free invariant end-to-end (NO Runtime.enable / Target.setAutoAttach)', async () => {
     const h = makeHarness();
     _setCdpDirectFetchDepsForTests(h.deps);
-    await cdpDirectFetch('https://example.com', {});
+    await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP });
     expect(h.calls).not.toContain('Runtime.enable');
     expect(h.calls).not.toContain('Target.setAutoAttach');
     expect(h.calls).toContain('Page.createIsolatedWorld');
@@ -172,7 +203,7 @@ describe('cdpDirectFetch — spawn + orchestrate the raw-CDP content rung', () =
   it('teardown ALWAYS on success: kills the child and removes the temp dir', async () => {
     const h = makeHarness();
     _setCdpDirectFetchDepsForTests(h.deps);
-    await cdpDirectFetch('https://example.com', {});
+    await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP });
     expect(h.child.killed).toBe(true);
     expect(h.child.killSignals).toContain('SIGTERM');
     expect(h.rmCalls.length).toBe(1);
@@ -221,5 +252,113 @@ describe('cdpDirectFetch — spawn + orchestrate the raw-CDP content rung', () =
     h.deps.spawn = (() => { throw new Error('spawn EACCES'); }) as unknown as CdpDirectFetchDeps['spawn'];
     _setCdpDirectFetchDepsForTests(h.deps);
     await expect(cdpDirectFetch('https://example.com', {})).resolves.toBeNull();
+  });
+
+  it('SSRF: a DNS-rebind to metadata IP must NOT egress — returns null, NEVER navigates, still tears down', async () => {
+    const h = makeHarness();
+    _setCdpDirectFetchDepsForTests(h.deps);
+    // Public hostname whose DNS record points at the cloud-metadata IP — the
+    // upstream literal guard cannot catch this; the resolved-host guard must.
+    const rebind = lookupTo([{ address: '169.254.169.254', family: 4 }]);
+    const result = await cdpDirectFetch('https://internal.evil.example', { lookup: rebind });
+    expect(result).toBeNull();
+    // The core invariant: NO egress. Page.navigate is never sent.
+    expect(h.calls).not.toContain('Page.navigate');
+    // Teardown still fires: child killed, transport closed, temp dir removed.
+    expect(h.child.killed).toBe(true);
+    expect(h.transportClosed()).toBe(true);
+    expect(h.rmCalls.length).toBe(1);
+    expect(h.rmCalls[0]).toBe(h.mkdtempDirs[0]);
+  });
+
+  it('SSRF: a DNS-rebind to an RFC-1918 IP is also refused (no egress)', async () => {
+    const h = makeHarness();
+    _setCdpDirectFetchDepsForTests(h.deps);
+    const rebind = lookupTo([{ address: '10.1.2.3', family: 4 }]);
+    const result = await cdpDirectFetch('https://looks-public.example', { lookup: rebind });
+    expect(result).toBeNull();
+    expect(h.calls).not.toContain('Page.navigate');
+    expect(h.rmCalls.length).toBe(1);
+  });
+
+  it('empty-content null path: a transport yielding "" returns null AND tears down', async () => {
+    const h = makeHarness();
+    // Override the transport so Runtime.evaluate yields an empty string.
+    const calls: string[] = [];
+    let closedFlag = false;
+    const emptyTransport: CdpTransport = {
+      send: (async (method: string) => {
+        calls.push(method);
+        switch (method) {
+          case 'Page.createIsolatedWorld':
+            return { executionContextId: 7 };
+          case 'Runtime.evaluate':
+            return { result: { type: 'string', value: '' } };
+          case 'Page.navigate':
+            return { frameId: 'f1' };
+          default:
+            return {};
+        }
+      }) as CdpSend,
+      close: async () => { closedFlag = true; },
+    };
+    h.deps.connectTransport = async () => emptyTransport;
+    _setCdpDirectFetchDepsForTests(h.deps);
+    const result = await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP });
+    expect(result).toBeNull();
+    expect(calls).toContain('Page.navigate');
+    // Shared finally: child killed, transport closed, temp dir removed.
+    expect(h.child.killed).toBe(true);
+    expect(closedFlag).toBe(true);
+    expect(h.rmCalls.length).toBe(1);
+  });
+
+  it('empty-content null path: a non-string Runtime.evaluate result also returns null + tears down', async () => {
+    const h = makeHarness();
+    const nonStringTransport: CdpTransport = {
+      send: (async (method: string) => {
+        switch (method) {
+          case 'Page.createIsolatedWorld':
+            return { executionContextId: 7 };
+          case 'Runtime.evaluate':
+            return { result: { type: 'undefined', value: undefined } };
+          case 'Page.navigate':
+            return { frameId: 'f1' };
+          default:
+            return {};
+        }
+      }) as CdpSend,
+      close: async () => {},
+    };
+    h.deps.connectTransport = async () => nonStringTransport;
+    _setCdpDirectFetchDepsForTests(h.deps);
+    const result = await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP });
+    expect(result).toBeNull();
+    expect(h.child.killed).toBe(true);
+    expect(h.rmCalls.length).toBe(1);
+  });
+
+  it('process-group kill: teardown signals the process group (kill(-pid)), or falls back on throw', async () => {
+    const h = makeHarness();
+    // Group kill SUCCEEDS this time (does not throw) so the group path is taken
+    // and the child.kill fallback is NOT needed.
+    _setProcessKillForTests(makeGroupKill({ throwOnGroup: false }));
+    _setCdpDirectFetchDepsForTests(h.deps);
+    await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP });
+    // The group was signalled with a NEGATIVE pid (the process-group id).
+    expect(groupKills.length).toBeGreaterThanOrEqual(1);
+    expect(groupKills[0].pid).toBe(-h.child.pid);
+    expect(groupKills[0].signal).toBe('SIGTERM');
+    // Group kill succeeded → the parent-only child.kill fallback was NOT used.
+    expect(h.child.killSignals).not.toContain('SIGTERM');
+  });
+
+  it('process-group kill: spawns the child detached so a group kill is possible', async () => {
+    const h = makeHarness();
+    _setCdpDirectFetchDepsForTests(h.deps);
+    await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP });
+    expect(h.spawn).toHaveBeenCalledTimes(1);
+    const opts = h.spawn.mock.calls[0][2] as { detached?: boolean };
+    expect(opts.detached).toBe(true);
   });
 });

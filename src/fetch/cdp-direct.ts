@@ -8,6 +8,7 @@ import { getConfig } from '../config.js';
 import { sanitizedChildEnv } from '../util/child-env.js';
 import { stealthLaunchArgs } from './stealth.js';
 import { discoverSessions, isCDPReachable } from './cdp-client.js';
+import { guardResolvedHost, type LookupAll } from '../watch/ssrf.js';
 import type { RawFetchResult } from '../types.js';
 
 const log = createLogger('fetch');
@@ -321,6 +322,9 @@ export interface CdpDirectFetchOptions {
   /** Total wall-clock budget (ms) for the whole rung: spawn → reachable →
    *  navigate → read → teardown. Defaults to a bounded value. */
   timeoutMs?: number;
+  /** Injectable DNS lookup for the pre-navigation resolved-host SSRF re-check
+   *  (tests). Defaults to Node's `dns.lookup`. */
+  lookup?: LookupAll;
 }
 
 /**
@@ -333,8 +337,10 @@ export interface CdpDirectFetchOptions {
 export interface CdpDirectFetchDeps {
   /** Resolve a real installed Chrome executable path, or `null` when none. */
   resolveChrome: () => string | null;
-  /** Spawn the browser child process (raw — never playwright.launch). */
-  spawn: (command: string, args: string[], options: { env: NodeJS.ProcessEnv; stdio: 'ignore' }) => ChildProcess;
+  /** Spawn the browser child process (raw — never playwright.launch). Spawned
+   *  `detached` so the whole process group can be killed on teardown, not just
+   *  the Chrome parent (renderer / GPU children can otherwise orphan). */
+  spawn: (command: string, args: string[], options: { env: NodeJS.ProcessEnv; stdio: 'ignore'; detached: boolean }) => ChildProcess;
   /** Probe whether the CDP debug endpoint is reachable. */
   isReachable: (cdpUrl: string, timeoutMs?: number) => Promise<boolean>;
   /** Create a throwaway user-data dir from a prefix; returns the created path. */
@@ -350,6 +356,14 @@ let _testFetchDeps: CdpDirectFetchDeps | undefined;
 /** Test-only override for the fetch dependency seam. `undefined` → real deps. */
 export function _setCdpDirectFetchDepsForTests(deps: CdpDirectFetchDeps | undefined): void {
   _testFetchDeps = deps;
+}
+
+/** Process-group signaller. Real `process.kill`, overridable in tests so the
+ *  group-kill path can be asserted without signalling a real process group. */
+type GroupKill = (pid: number, signal: NodeJS.Signals | number) => void;
+let _testProcessKill: GroupKill | undefined;
+export function _setProcessKillForTests(fn: GroupKill | undefined): void {
+  _testProcessKill = fn;
 }
 
 // Total-budget default when the caller passes none. Bounded so a stuck launch /
@@ -461,6 +475,8 @@ function realFetchDeps(): CdpDirectFetchDeps {
   return {
     resolveChrome: defaultResolveChrome,
     spawn: (command, args, options) => nodeSpawn(command, args, options),
+    // detached: true so killChild can signal the whole process group (-pid),
+    // reaping reparented renderer/GPU children Chrome forks.
     isReachable: isCDPReachable,
     mkdtemp: (prefix) => fsMkdtemp(prefix),
     rm: async (dir) => { await fsRm(dir, { recursive: true, force: true }); },
@@ -468,8 +484,29 @@ function realFetchDeps(): CdpDirectFetchDeps {
   };
 }
 
-/** Kill a spawned child and wait (bounded) for it to exit; escalate SIGTERM →
- *  SIGKILL after a short grace. Never throws. */
+/**
+ * Signal a spawned child's whole PROCESS GROUP (child spawned `detached`, so its
+ * group id is its own pid). Killing the group reaps reparented renderer / GPU
+ * children Chrome forks — killing the parent pid alone can orphan them. Falls
+ * back to a plain `child.kill(signal)` when the group kill throws (e.g. the group
+ * is already dead, or `process.kill` is unavailable in a fake). Never throws.
+ */
+function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  const killFn: GroupKill = _testProcessKill ?? ((p, s) => process.kill(p, s));
+  if (typeof pid === 'number' && pid > 0) {
+    try {
+      killFn(-pid, signal);
+      return;
+    } catch {
+      // Group kill failed (already dead / no group) — fall through to the parent.
+    }
+  }
+  try { child.kill(signal); } catch { /* already gone */ }
+}
+
+/** Kill a spawned child's process group and wait (bounded) for it to exit;
+ *  escalate SIGTERM → SIGKILL after a short grace. Never throws. */
 async function killChild(child: ChildProcess): Promise<void> {
   // Already exited? (a number exit code or a real signal). `null`/`undefined`
   // both mean "still running" — undefined arises for injected fakes.
@@ -477,7 +514,7 @@ async function killChild(child: ChildProcess): Promise<void> {
   const exited = new Promise<void>((resolve) => {
     child.once('exit', () => resolve());
   });
-  try { child.kill('SIGTERM'); } catch { /* already gone */ }
+  signalGroup(child, 'SIGTERM');
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
   const grace = new Promise<void>((resolve) => {
     graceTimer = setTimeout(resolve, KILL_GRACE_MS);
@@ -486,8 +523,39 @@ async function killChild(child: ChildProcess): Promise<void> {
   const winner = await Promise.race([exited.then(() => 'exited' as const), grace.then(() => 'grace' as const)]);
   if (graceTimer !== undefined) clearTimeout(graceTimer);
   if (winner === 'grace') {
-    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    signalGroup(child, 'SIGKILL');
   }
+}
+
+/** True when `host` is an IP literal — already covered by the upstream literal
+ *  SSRF guard (tools/fetch.ts), so a DNS-resolved re-check would be redundant.
+ *  Mirrors escape-hatch's helper of the same name. */
+function isIpLiteralHost(host: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
+}
+
+/**
+ * Pre-navigation SSRF re-check for the cdp-direct rung. The upstream fetch path
+ * (tools/fetch.ts) only validates the LITERAL host, so a public hostname whose
+ * DNS record points at cloud metadata (169.254.169.254) / RFC-1918 / loopback
+ * passes that guard and would reach an internal service through this rung — a
+ * new unguarded egress. This resolves the target host and blocks a rebind BEFORE
+ * `handle.navigate`. Returns `true` when allowed (or skipped for an IP literal),
+ * `false` when the resolved address is blocked. Honours the SAME
+ * `fetchAllowPrivate` policy the rest of the fetch path uses.
+ */
+async function resolvedNavigateGuardOk(url: string, lookup?: LookupAll): Promise<boolean> {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    // Unparseable URL — refuse rather than navigate to something we can't guard.
+    return false;
+  }
+  if (isIpLiteralHost(host)) return true;
+  const allowPrivate = getConfig().fetchAllowPrivate;
+  const resolved = await guardResolvedHost(host, 'cdp-direct target URL', { allowPrivate, lookup });
+  return resolved.ok;
 }
 
 /** Wait until the CDP debug endpoint is reachable, bounded by `deadline` and the
@@ -562,6 +630,9 @@ export async function cdpDirectFetch(
     child = deps.spawn(chromePath, args, {
       env: sanitizedChildEnv({ stripProxy: true }),
       stdio: 'ignore',
+      // Own process group so teardown can kill the whole group (renderer/GPU
+      // children reparent under Chrome and would otherwise orphan).
+      detached: true,
     });
     // A child that dies immediately (bad binary) must not leave a dangling
     // error listener; swallow so it never becomes an unhandled 'error'.
@@ -590,6 +661,15 @@ export async function cdpDirectFetch(
 
     handle = await cdpDirectConnect({ transport, signal: opts.signal });
     if (!handle) return null;
+
+    // SSRF: re-check the RESOLVED host before we navigate. The upstream literal
+    // guard cannot catch a DNS rebind to metadata / RFC-1918 / loopback, and this
+    // rung navigates before the browser tier's pre-navigation re-check. Block
+    // here → return null (caller falls back / the fetch is refused), NO egress.
+    if (!(await resolvedNavigateGuardOk(url, opts.lookup))) {
+      log.debug('cdp-direct: resolved-host SSRF guard blocked navigate, refusing', { url });
+      return null;
+    }
 
     await handle.navigate(url);
     if (opts.signal?.aborted) return null;
