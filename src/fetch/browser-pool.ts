@@ -703,7 +703,7 @@ export class MultiBrowserPool {
     // undefined when no challenge was involved / the short auto-poll cleared it
     // without engaging the ladder.
     let detectedChallengeClass: ChallengeClass | undefined;
-    let laddderSolveMethod: SolveMethod | null | undefined;
+    let ladderSolveMethod: SolveMethod | null | undefined;
 
     try {
       // Pre-navigation fetch-time SSRF re-check. `guardFetchUrl` (applied
@@ -911,7 +911,7 @@ export class MultiBrowserPool {
               signal: options.signal,
             });
             if (ladder.solved) {
-              laddderSolveMethod = ladder.solveMethod;
+              ladderSolveMethod = ladder.solveMethod;
               // Normalise the stale challenge response the same way the auto-poll
               // pass path does, so the cleared page is not re-classified as
               // blocked downstream.
@@ -956,7 +956,7 @@ export class MultiBrowserPool {
                   } catch { /* best-effort — never block the fetch */ }
                 }
               }
-              laddderSolveMethod = null;
+              ladderSolveMethod = null;
               log.warn('bot-protection challenge did not clear within completion window, fast-failing', { url, statusCode });
               // Thread the triggering anti-bot status (403/429/503) so the router
               // surfaces it as http_status for the crawl cooldown. A 2xx shell
@@ -1129,7 +1129,7 @@ export class MultiBrowserPool {
         // Solve-ladder provenance: the challenge class detected (if any) and the
         // rung that cleared it. Absent when no challenge was involved.
         ...(detectedChallengeClass !== undefined ? { challenge_class: detectedChallengeClass } : {}),
-        ...(laddderSolveMethod !== undefined ? { solve_method: laddderSolveMethod } : {}),
+        ...(ladderSolveMethod !== undefined ? { solve_method: ladderSolveMethod } : {}),
       };
     } finally {
       // Detach the abort listener before closing so we don't trigger a
@@ -1272,7 +1272,16 @@ export class MultiBrowserPool {
     // Vision availability: a vision-capable cloud provider (anthropic / openai /
     // gemini) must be configured; the text-only custom/Ollama backend and Groq
     // are not used for image solves, so ai-solve is skipped cleanly otherwise.
-    const visionAvailable = await this.visionProviderAvailable();
+    //
+    // The check touches the OS keychain / decrypts the AES key file, so gate it:
+    // only resolve it when it can matter — an image-class challenge whose aiSolve
+    // knob is engaged. Every other class (behavioral / interactive / none) can
+    // never run the ai-vision rung, so visionAvailable is a fixed false there and
+    // we skip the keychain read entirely. The ladder still gets a correct
+    // visionAvailable for the image path.
+    const aiSolveEngaged = config.aiSolve !== 'off';
+    const visionAvailable =
+      challengeClass === 'image' && aiSolveEngaged ? await this.visionProviderAvailable() : false;
 
     return runSolveLadder({
       challengeClass,
@@ -1347,6 +1356,10 @@ export class MultiBrowserPool {
     const clip = box
       ? { x: Math.max(0, box.x - 160), y: Math.max(0, box.y - 160), width: 400, height: 500 }
       : undefined;
+    // Egress note: this screenshot is sent to the configured cloud vision
+    // provider by the ai-vision rung (opt-in `aiSolve`; AUP posture per spec §8).
+    // The full-page fallback below widens what leaves the machine, so it only
+    // runs once the ladder has already engaged the opt-in ai-solve path.
     const buf = clip
       ? await page.screenshot({ clip }).catch(() => page.screenshot())
       : await page.screenshot();
