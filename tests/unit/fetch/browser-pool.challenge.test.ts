@@ -72,6 +72,22 @@ vi.mock('playwright', () => {
   return { chromium: stub, firefox: stub, webkit: stub };
 });
 
+// The browser tier's pre-navigation SSRF re-check (guardResolvedHost) resolves
+// the target host via `node:dns`. Mock it to resolve SYNCHRONOUSLY to a benign
+// public IP: these tests drive `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync`
+// against a fully-mocked Playwright chain, and a REAL (unmocked) async DNS
+// lookup inserts a genuine, non-fake-timer-controlled async gap ahead of the
+// challenge-completion poll's setTimeout registration — the poll's timer then
+// registers AFTER the test's single `advanceTimersByTimeAsync` call has already
+// run, so it never fires and the test hangs to the real 20s timeout.
+vi.mock('node:dns', () => ({
+  lookup: (
+    _hostname: string,
+    _options: unknown,
+    callback: (err: null, addrs: { address: string; family: number }[]) => void,
+  ) => callback(null, [{ address: '203.0.113.10', family: 4 }]),
+}));
+
 import { MultiBrowserPool, ChallengeBlockedError } from '../../../src/fetch/browser-pool.js';
 
 const CHALLENGE_INTERSTITIAL =

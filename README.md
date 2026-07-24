@@ -16,10 +16,14 @@ Local-first web intelligence for AI agents — **no keys, no cloud, no metered b
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed)](https://modelcontextprotocol.io)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-2563eb)](#license)
 [![status](https://img.shields.io/badge/status-public%20beta-b7791f)](#beta--feedback)
+[![follow on X](https://img.shields.io/badge/follow-%40yourtowhid-000000?logo=x&logoColor=white)](https://x.com/yourtowhid)
 
 <a href="https://trendshift.io/repositories/79424?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-79424" target="_blank"><img src="https://trendshift.io/api/badge/repositories/79424" alt="wigolo on Trendshift" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/79424?utm_source=trendshift-badge&utm_medium=badge&utm_campaign=badge-trendshift-79424" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/79424/daily?language=TypeScript" alt="KnockOutEZ%2Fwigolo | Trendshift" width="250" height="55"/></a>
 
 [Quickstart](#quickstart) · [Tools](#tools) · [Why wigolo](#why-its-different) · [Benchmark](#benchmark) · [Docs](docs/README.md) · [Examples](examples/README.md) · [Feedback](#beta--feedback) · [FAQ](#faq)
+
+New features and updates ship steadily. Follow <a href="https://x.com/yourtowhid"><b>@yourtowhid on X</b></a> for all of it and new ways to use wigolo, and reach out there for collaborations or feedback · also on <a href="https://www.linkedin.com/in/yourtowhid/">LinkedIn</a>
 
 </div>
 
@@ -36,17 +40,19 @@ wigolo gives an AI agent one surface for everything web-related: **search, fetch
 ## Quickstart
 
 ```bash
-npx wigolo init --agents=<your-agent>
+npx wigolo init                              # set up the local engine — any system
+npx wigolo init --agents=claude-code,cursor  # …or set up + wire your day-to-day agents in one command
 ```
 
-Requires **Node ≥ 20** and ~1.5 GB of free disk on macOS, Linux, or Windows. One command wires the local engine into your agent.
+Requires **Node ≥ 20** and ~1.5 GB of free disk on macOS, Linux, or Windows. Bare `init` sets up the local engine: it downloads the browser engine and on-device models, runs a health check, and reports each component. Adding `--agents` wires the named agents in the same run, so a coding agent you use daily is ready in one command.
 
-- **`<your-agent>`** — one or more of `claude-code` · `cursor` · `codex` · `gemini-cli` · `opencode` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated). wigolo writes the MCP config and, where supported, instructions for you.
-- **Any other MCP client** — omit `--agents` and register `npx -y wigolo` yourself. The [installation guide](docs/installation.md) has the exact config block for every client, plus Docker, Homebrew, and single-file-binary channels.
+- **Supported agents** — `--agents` takes any of `claude-code` · `cursor` · `codex` · `gemini-cli` · `opencode` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated); wigolo writes the MCP config and, where supported, instructions for each.
+- **Any other setup** — any MCP client, agent framework, or self-hosted agent registers `npx -y wigolo` in its own MCP config. The [installation guide](docs/installation.md) has the exact config block for every client, plus Docker, Homebrew, and single-file-binary channels.
+- **More on the way** — the supported list keeps growing, and a PR to add your agent is welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Interactive setup** — `--interactive` is a plain-text flow; `--wizard` is the full terminal TUI.
-- **Defer downloads** — `--no-warmup` waits until first use. A failed component download never fails setup. init reports what's not ready with the exact fix and still wires your agent.
+- **Defer downloads** — `--no-warmup` waits until first use. A failed component download never fails setup; init reports what's not ready with the exact fix and still completes.
 
-`init` is unattended by default, so it's safe in scripts and CI. It runs the complete setup: it downloads the browser engine and on-device models, runs a health check, and prints a per-component summary. Any setup problem surfaces right here, before your agent's first call. **Search, fetch, crawl, extract, cache, and find-similar work with no API key.** Check it's healthy anytime:
+`init` is unattended by default, so it's safe in scripts and CI, and any setup problem surfaces right here in the per-component report, before your agent's first call. **Search, fetch, crawl, extract, cache, and find-similar work with no API key.** Check it's healthy anytime:
 
 ```bash
 npx wigolo doctor
@@ -244,11 +250,14 @@ One note for self-hosters: some challenge-protected sites score IP reputation, s
 
 <div align="center">
 
-<a href="https://star-history.com/#KnockOutEZ/wigolo&Date">
-<img alt="wigolo GitHub star history" src="https://api.star-history.com/svg?repos=knockoutez/wigolo&type=Date" width="720">
+<a href="https://www.star-history.com/#KnockOutEZ/wigolo&Date">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/KnockOutEZ/wigolo/star-chart/star-history-dark.svg">
+<img alt="wigolo GitHub stars over time" src="https://raw.githubusercontent.com/KnockOutEZ/wigolo/star-chart/star-history.svg" width="880">
+</picture>
 </a>
 
-<sub>Live chart. <a href="https://github.com/KnockOutEZ/wigolo">Add a ⭐</a> if it's useful to you.</sub>
+<sub>Refreshed daily from the GitHub API. <a href="https://github.com/KnockOutEZ/wigolo">Add a ⭐</a> if wigolo is useful to you.</sub>
 
 </div>
 
@@ -403,6 +412,6 @@ Bug reports, feature requests, and PRs are all welcome; see **[CONTRIBUTING.md](
 wigolo is free and actively maintained, and it's meant to stay that way.
 If it saves you a metered search bill, a ⭐, a sharp issue, or a **[☕ coffee](https://buymeacoffee.com/knockoutez)** helps keep it sustainable.
 
-<sub>Built and maintained by <a href="https://github.com/KnockOutEZ">@KnockOutEZ</a> · <a href="mailto:ktowhid20@gmail.com">ktowhid20@gmail.com</a></sub>
+<sub>Built and maintained by <a href="https://github.com/KnockOutEZ">@KnockOutEZ</a> · <a href="mailto:ktowhid20@gmail.com">ktowhid20@gmail.com</a> · <a href="https://x.com/yourtowhid">X</a> · <a href="https://www.linkedin.com/in/yourtowhid/">LinkedIn</a></sub>
 
 </div>

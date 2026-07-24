@@ -1,0 +1,38 @@
+name: star chart
+
+on:
+  schedule:
+    - cron: '17 5 * * *'  # daily 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate star chart
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUT_DIR: out
+        run: node scripts/star-chart.mjs
+
+      - name: Publish to star-chart branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd out
+          git init -b star-chart
+          git add .
+          git -c user.name=github-actions -c user.email=github-actions@github.com \
+            commit -m "chore: refresh star chart"
+          git push --force \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            star-chart

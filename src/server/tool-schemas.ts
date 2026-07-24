@@ -342,7 +342,7 @@ export const EXTRACT_TOOL_SCHEMA = {
     },
     named_schema: {
       type: 'string',
-      enum: ['Article', 'Recipe', 'Product', 'CodeSnippet', 'Paper', 'EventListing'],
+      enum: ['Article', 'Recipe', 'Product', 'CodeSnippet', 'Paper', 'EventListing', 'JobPosting'],
       description: 'Extract page data into a strict named schema (heuristic only; no LLM required). Mutually exclusive with `schema`.',
     },
     max_tokens_out: {

@@ -5,7 +5,7 @@ import type { SmartRouter } from '../fetch/router.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { getCachedContent, cacheContent, isCacheUsable } from '../cache/store.js';
 import { getConfig } from '../config.js';
-import { extractSection } from '../extraction/markdown.js';
+import { extractLinksAndImages, extractSection } from '../extraction/markdown.js';
 import { detectChange } from '../cache/change-detector.js';
 import { getEmbeddingService } from '../embedding/embed.js';
 import { truncateSmartly, applyOutputBudget } from '../search/truncate.js';
@@ -104,11 +104,21 @@ async function attachEvidence(
 function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOutput {
   let markdown = cached.markdown;
   let sectionMatched: boolean | undefined;
+  let links = JSON.parse(cached.links || '[]') as string[];
+  let images = JSON.parse(cached.images || '[]') as string[];
 
   if (input.section) {
     const result = extractSection(markdown, input.section, input.section_index);
-    markdown = result.content;
+    markdown = result.matched ? result.content : '';
     sectionMatched = result.matched;
+    if (result.matched) {
+      const sectionAssets = extractLinksAndImages(markdown);
+      links = sectionAssets.links;
+      images = sectionAssets.images;
+    } else {
+      links = [];
+      images = [];
+    }
   }
 
   if (input.max_chars && markdown.length > input.max_chars) {
@@ -135,8 +145,8 @@ function formatCachedResponse(cached: CachedContent, input: FetchInput): FetchOu
       ...JSON.parse(cached.metadata || '{}'),
       ...(sectionMatched !== undefined ? { section_matched: sectionMatched } : {}),
     },
-    links: JSON.parse(cached.links || '[]'),
-    images: JSON.parse(cached.images || '[]'),
+    links,
+    images,
     cached: true,
     cached_at: cached.fetchedAt,
     fetch_method: 'cache',
@@ -285,10 +295,9 @@ export async function handleFetch(
     }
 
     const extractor = await getExtractProvider();
+    // Keep the canonical extraction full-page. Section selection and char/token
+    // budgets are response shaping and must never change cache or diff inputs.
     const extraction = await extractor.extract(raw.html, raw.finalUrl, {
-      maxChars: input.max_chars,
-      section: input.section,
-      sectionIndex: input.section_index,
       contentType: raw.contentType,
       pdfBuffer: raw.rawBuffer,
     });
@@ -318,33 +327,30 @@ export async function handleFetch(
       log.debug('embedding hook skipped', { error: String(err) });
     }
 
-    // When the caller asked for a section, detect whether
-    // the extractor's pipeline actually matched a heading. The v1 pipeline
-    // currently slices to the section internally but does not signal a
-    // miss — we re-run extractSection on the cleaned markdown to determine
-    // match success at the tool layer so we can guard the body the same way
-    // the cached path does. This double-call is cheap (linear in markdown
-    // length) and only fires when `input.section` is set. The probe is
-    // wrapped in a defensive try-catch so a mocked / replaced extractSection
-    // (test environment) never breaks the production code path.
     let freshSectionMatched: boolean | undefined;
+    let finalMarkdown = extraction.markdown;
+    let responseLinks = extraction.links;
+    let responseImages = extraction.images;
+
     if (input.section) {
-      try {
-        const probe = extractSection(extraction.markdown, input.section, input.section_index);
-        if (probe && typeof probe.matched === 'boolean') {
-          freshSectionMatched = probe.matched;
-        }
-      } catch (err) {
-        log.debug('section match probe failed', { url: raw.finalUrl, error: String(err) });
+      const section = extractSection(extraction.markdown, input.section, input.section_index);
+      freshSectionMatched = section.matched;
+      finalMarkdown = section.matched ? section.content : '';
+      if (section.matched) {
+        const sectionAssets = extractLinksAndImages(finalMarkdown);
+        responseLinks = sectionAssets.links;
+        responseImages = sectionAssets.images;
+      } else {
+        responseLinks = [];
+        responseImages = [];
       }
     }
 
-    let finalMarkdown = input.max_content_chars !== undefined
-      ? truncateSmartly(extraction.markdown, input.max_content_chars)
-      : extraction.markdown;
-
-    if (freshSectionMatched === false) {
-      finalMarkdown = '';
+    if (input.max_chars !== undefined && finalMarkdown.length > input.max_chars) {
+      finalMarkdown = finalMarkdown.slice(0, input.max_chars);
+    }
+    if (input.max_content_chars !== undefined) {
+      finalMarkdown = truncateSmartly(finalMarkdown, input.max_content_chars);
     }
 
     const out: FetchOutput = {
@@ -355,8 +361,8 @@ export async function handleFetch(
         ...extraction.metadata,
         ...(freshSectionMatched !== undefined ? { section_matched: freshSectionMatched } : {}),
       },
-      links: extraction.links,
-      images: extraction.images,
+      links: responseLinks,
+      images: responseImages,
       screenshot: raw.screenshot,
       cached: false,
       action_results: raw.actionResults,

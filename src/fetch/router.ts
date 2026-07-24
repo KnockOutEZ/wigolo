@@ -42,7 +42,7 @@ import {
 import { ChallengeBlockedError } from './browser-pool.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
-import { guardFetchUrl } from '../watch/ssrf.js';
+import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
 import type { RawFetchResult, BrowserAction, Mode, StageError, ContentCompleteness } from '../types.js';
 
 // Domains we know up-front are heavily client-rendered. HTTP-first detection
@@ -316,6 +316,21 @@ export async function defaultPdfProbe(url: string, signal?: AbortSignal): Promis
     for (let hop = 0; hop <= maxHops; hop++) {
       if (seen.has(current)) return null;
       seen.add(current);
+      // Fetch-time SSRF re-check. `guardFetchUrl` (applied on the redirect
+      // Location below) only validates the LITERAL host, so a public hostname
+      // whose DNS record points at a blocked address (cloud metadata /
+      // RFC-1918 / loopback in serve mode) passes it and is only caught here,
+      // before we connect. Applies to the input target AND every redirect
+      // hop. Skip literal IPs — already validated. Same allowPrivate policy
+      // as the literal guard.
+      {
+        const rhost = new URL(current).hostname;
+        const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(rhost) || rhost.includes(':');
+        if (!isIpLiteral) {
+          const resolved = await guardResolvedHost(rhost, 'target url', { allowPrivate });
+          if (!resolved.ok) return null;
+        }
+      }
       const resp = await fetch(current, { ...init, redirect: 'manual', signal: combined.signal });
       if (resp.status >= 300 && resp.status < 400) {
         const loc = resp.headers.get('location');

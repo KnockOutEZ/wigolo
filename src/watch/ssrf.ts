@@ -18,6 +18,8 @@
  * the v0.3.0 surface the input-side guard is the documented contract.
  */
 
+import { lookup as nodeLookup } from 'node:dns';
+
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
 
 const PRIVATE_HOSTNAMES = new Set([
@@ -336,6 +338,21 @@ export function guardFetchUrl(
   }
 
   if (host.includes(':') || /^\[/.test(parsed.host)) {
+    // IPv6 loopback (::1) — explicitly allowed for fetch/crawl (local dev),
+    // mirroring the 127.0.0.0/8 IPv4 exemption above. This function's own
+    // docstring already promised this ("EXEMPTS loopback (127.0.0.0/8,
+    // ::1)"), but the exemption was never implemented for the IPv6 form — it
+    // fell through to the unconditional isPrivateIpv6 check below, which
+    // blocked ::1 even with allowPrivate:true. That silently broke any
+    // dual-stack "localhost" (resolves to both 127.0.0.1 AND ::1 on a typical
+    // host) once a caller reaches this guard with the resolved ::1 address —
+    // surfaced by the fetch-time DNS-resolved re-check (guardResolvedHost /
+    // guardResolvedServeTarget), which runs every resolved address back
+    // through this function. Restoring the documented exemption here.
+    const bracketless = host.replace(/^\[|\]$/g, '');
+    if (bracketless === '::1' || bracketless === '0:0:0:0:0:0:0:1') {
+      return { ok: true, url: parsed };
+    }
     if (isPrivateIpv6(host)) {
       return {
         ok: false,
@@ -347,4 +364,116 @@ export function guardFetchUrl(
   }
 
   return { ok: true, url: parsed };
+}
+
+/** DNS lookup shape used by {@link guardResolvedHost}; the Node default is injected in prod. */
+export type LookupAll = (
+  hostname: string,
+  options: { all: true },
+  callback: (err: NodeJS.ErrnoException | null, addresses: { address: string; family: number }[]) => void,
+) => void;
+
+export type ResolveGuardResult = { ok: true } | SsrfRejection;
+
+/**
+ * Fetch-time SSRF re-check. `guardFetchUrl` validates only the LITERAL hostname,
+ * so a public hostname whose DNS record points at a blocked address (cloud
+ * metadata / RFC-1918 / loopback in serve mode) passes the input guard and is
+ * only caught once we resolve. This resolves the host and runs EVERY resolved
+ * address back through `guardFetchUrl` (an `http://<ip>/` literal), so the
+ * resolved-IP policy is identical to the literal-IP policy — no drift.
+ *
+ * Call this right before the actual fetch (and on each redirect hop) for any
+ * non-IP-literal host. For full rebinding (TOCTOU) safety the connection should
+ * additionally be pinned to the validated address — a `lookup` hook / custom
+ * dispatcher — which callers can layer on; this guard closes the static-record
+ * bypass (the metadata-credential-theft case) on its own.
+ */
+/** Resolve every A/AAAA record for a host, or null on NXDOMAIN / timeout / empty. */
+async function resolveAll(
+  hostname: string,
+  lookup?: LookupAll,
+): Promise<{ address: string; family: number }[] | null> {
+  const lookupFn = lookup ?? (nodeLookup as unknown as LookupAll);
+  try {
+    const addresses = await new Promise<{ address: string; family: number }[]>(
+      (resolve, reject) => {
+        lookupFn(hostname, { all: true }, (err, addrs) => (err ? reject(err) : resolve(addrs)));
+      },
+    );
+    return addresses && addresses.length > 0 ? addresses : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Is a resolved IP a loopback address (127.0.0.0/8 or ::1)? Used for serve-mode refusal. */
+function isResolvedLoopback(address: string): boolean {
+  const a = address.toLowerCase().replace(/^\[|\]$/g, '');
+  return /^127\./.test(a) || a === '::1' || a === '::ffff:127.0.0.1' || a === '0:0:0:0:0:0:0:1';
+}
+
+/**
+ * Fetch-time SSRF re-check for the plain fetch/crawl policy. Resolves the host and runs EVERY
+ * resolved address back through `guardFetchUrl` (as an `http://<ip>/` literal), so the resolved-IP
+ * policy is identical to the literal-IP one (metadata/RFC-1918 blocked, loopback allowed for the
+ * local-dev promise). A host that does not resolve is NOT a bypass — there is no IP to connect to,
+ * so we fall through (`ok: true`) and let the real fetch surface the natural DNS error.
+ */
+export async function guardResolvedHost(
+  hostname: string,
+  fieldLabel: string,
+  opts: { allowPrivate?: boolean; lookup?: LookupAll } = {},
+): Promise<ResolveGuardResult> {
+  const addresses = await resolveAll(hostname, opts.lookup);
+  if (!addresses) return { ok: true };
+  for (const { address, family } of addresses) {
+    const ipUrl = family === 6 ? `http://[${address}]/` : `http://${address}/`;
+    const res = guardFetchUrl(ipUrl, fieldLabel, { allowPrivate: opts.allowPrivate });
+    if (!res.ok) {
+      return {
+        ...res,
+        reason: `${fieldLabel} hostname (${hostname}) resolves to a blocked address (${address}) — ${res.reason}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Fetch-time SSRF re-check for serve mode. Same as {@link guardResolvedHost} but ALSO applies the
+ * serve-mode loopback refusal to the resolved IPs (the resolved-IP counterpart of
+ * `guardServeTarget`'s literal loopback check): under a non-loopback bind, a hostname that resolves
+ * to 127.0.0.0/8 or ::1 is refused so a remote caller cannot reach the box's own services by name.
+ * Unresolvable hosts fall through (no IP to connect to). `WIGOLO_SERVE_ALLOW_LOCAL_TARGETS=1`
+ * restores the loopback allowance, matching `guardServeTarget`.
+ */
+export async function guardResolvedServeTarget(
+  hostname: string,
+  fieldLabel: string,
+  opts: { allowPrivate?: boolean; bindIsLoopback: boolean; lookup?: LookupAll },
+): Promise<ResolveGuardResult> {
+  const addresses = await resolveAll(hostname, opts.lookup);
+  if (!addresses) return { ok: true };
+  const refuseLoopback =
+    !opts.bindIsLoopback && process.env.WIGOLO_SERVE_ALLOW_LOCAL_TARGETS !== '1';
+  for (const { address, family } of addresses) {
+    const ipUrl = family === 6 ? `http://[${address}]/` : `http://${address}/`;
+    const res = guardFetchUrl(ipUrl, fieldLabel, { allowPrivate: opts.allowPrivate });
+    if (!res.ok) {
+      return {
+        ...res,
+        reason: `${fieldLabel} hostname (${hostname}) resolves to a blocked address (${address}) — ${res.reason}`,
+      };
+    }
+    if (refuseLoopback && isResolvedLoopback(address)) {
+      return {
+        ok: false,
+        code: SSRF_CODES.PRIVATE_TARGET,
+        reason: `${fieldLabel} hostname (${hostname}) resolves to a loopback address (${address}) while the server is bound to a non-loopback interface`,
+        hint: 'Remote-exposed serve mode blocks loopback/localhost targets. Set WIGOLO_SERVE_ALLOW_LOCAL_TARGETS=1 to allow them.',
+      };
+    }
+  }
+  return { ok: true };
 }

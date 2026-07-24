@@ -236,19 +236,31 @@ describe('handleFetch', () => {
     expect(router.fetch).toHaveBeenCalledOnce();
   });
 
-  it('passes section parameter through to extraction when fetching fresh', async () => {
-    extractMock.mockResolvedValue(makeExtraction());
+  it('applies section extraction after the canonical fresh extraction', async () => {
+    const fullMarkdown = '# Intro\n\nIntro text\n\n# Installation\n\nInstall steps';
+    extractMock.mockResolvedValue(makeExtraction({ markdown: fullMarkdown }));
+    vi.mocked(extractSection).mockReturnValue({ content: '# Installation\n\nInstall steps', matched: true });
 
     const router = mockRouter();
-    const input: FetchInput = { url: 'https://example.com', section: 'Installation' };
+    const input: FetchInput = {
+      url: 'https://example.com',
+      section: 'Installation',
+      include_full_markdown: true,
+    };
 
-    await handleFetch(input, router);
+    const result = await handleFetch(input, router);
 
     expect(extractMock).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(String),
-      expect.objectContaining({ section: 'Installation' }),
+      expect.not.objectContaining({ section: expect.anything() }),
     );
+    expect(vi.mocked(extractSection)).toHaveBeenCalledWith(fullMarkdown, 'Installation', undefined);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.markdown).toBe('# Installation\n\nInstall steps');
+      expect(result.data.metadata.section_matched).toBe(true);
+    }
   });
 
   it('applies section extraction on cached content', async () => {
@@ -268,21 +280,23 @@ describe('handleFetch', () => {
     expect(result.metadata.section_matched).toBe(true);
   });
 
-  it('respects max_chars on fresh content', async () => {
+  it('applies max_chars after the canonical fresh extraction', async () => {
     extractMock.mockResolvedValue(
       makeExtraction({ markdown: 'A'.repeat(500) }),
     );
 
     const router = mockRouter();
-    const input: FetchInput = { url: 'https://example.com', max_chars: 100 };
+    const input: FetchInput = { url: 'https://example.com', max_chars: 100, include_full_markdown: true };
 
-    await handleFetch(input, router);
+    const result = await handleFetch(input, router);
 
     expect(extractMock).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(String),
-      expect.objectContaining({ maxChars: 100 }),
+      expect.not.objectContaining({ maxChars: expect.anything() }),
     );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.markdown).toHaveLength(100);
   });
 
   it('respects max_chars on cached content', async () => {
@@ -351,6 +365,56 @@ describe('handleFetch', () => {
     await handleFetch(input, router);
 
     expect(vi.mocked(cacheContent)).toHaveBeenCalledOnce();
+  });
+
+  it('keeps canonical change detection and cache writes full-page for section requests', async () => {
+    const fullMarkdown = '# Intro\n\nIntro body\n\n## Per-server filtering\n\nFiltered body\n\n# Runtime\n\nRuntime body';
+    const sectionMarkdown = '## Per-server filtering\n\nFiltered body';
+
+    extractMock.mockImplementation(async (_html, _url, options) => {
+      return makeExtraction({
+        markdown: options.section ? sectionMarkdown : fullMarkdown,
+      });
+    });
+    vi.mocked(extractSection).mockReturnValue({ content: sectionMarkdown, matched: true });
+    vi.mocked(detectChange).mockReturnValue({ changed: false });
+
+    const router = mockRouter();
+    const result = await handleFetch({
+      url: 'https://example.com',
+      section: 'Per-server filtering',
+      force_refresh: true,
+      include_full_markdown: true,
+    }, router);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(extractMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.not.objectContaining({ section: expect.anything(), sectionIndex: expect.anything() }),
+    );
+    expect(vi.mocked(detectChange)).toHaveBeenCalledWith(
+      'https://example.com',
+      fullMarkdown,
+      200,
+    );
+    expect(vi.mocked(cacheContent)).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ markdown: fullMarkdown }),
+    );
+    expect(vi.mocked(extractSection)).toHaveBeenCalledWith(
+      fullMarkdown,
+      'Per-server filtering',
+      undefined,
+    );
+    // Canonical fields use the complete extraction; only the response is section-scoped.
+    const expectedHash = createHash('sha256').update(fullMarkdown).digest('hex');
+    expect(result.data.content_hash).toBe(expectedHash);
+    expect(result.data.markdown).toBe(sectionMarkdown);
+    expect(result.data.metadata.section_matched).toBe(true);
+    expect(result.data.changed).toBeUndefined();
   });
 
   it('caps links and images when max_content_chars is tight', async () => {
