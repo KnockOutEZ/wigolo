@@ -770,6 +770,12 @@ export interface DomainClearance {
   ua: string;
   tier: string;
   expiresAt: string;
+  /**
+   * The egress route the clearance was solved on (`proxyUrl ?? 'direct'`). A
+   * cf_clearance is IP/UA/TLS-bound, so it is only valid from the same route.
+   * Absent on legacy rows (pre-migration 010); those read back as `'direct'`.
+   */
+  solvedRoute?: string;
 }
 
 interface DomainClearanceRawRow {
@@ -777,6 +783,7 @@ interface DomainClearanceRawRow {
   clearance_ua: string | null;
   clearance_tier: string | null;
   clearance_expires_at: string | null;
+  solved_route: string | null;
 }
 
 /**
@@ -790,7 +797,7 @@ export function getDomainClearance(host: string): DomainClearance | null {
   try {
     const db = getDatabase();
     const row = db.prepare(
-      `SELECT cf_clearance, clearance_ua, clearance_tier, clearance_expires_at
+      `SELECT cf_clearance, clearance_ua, clearance_tier, clearance_expires_at, solved_route
        FROM domain_routing WHERE domain = ? LIMIT 1`,
     ).get(host) as DomainClearanceRawRow | undefined;
     if (!row || row.cf_clearance == null) return null;
@@ -799,6 +806,9 @@ export function getDomainClearance(host: string): DomainClearance | null {
       ua: row.clearance_ua ?? '',
       tier: row.clearance_tier ?? '',
       expiresAt: row.clearance_expires_at ?? '',
+      // A legacy NULL route reads back as 'direct' — the only egress those rows
+      // could have been harvested on before route capture existed.
+      solvedRoute: row.solved_route ?? 'direct',
     };
   } catch (err) {
     log.warn('getDomainClearance failed', { host, error: err instanceof Error ? err.message : String(err) });
@@ -813,16 +823,24 @@ export function recordDomainClearance(host: string, clearance: DomainClearance):
     db.prepare(`
       INSERT INTO domain_routing (
         domain, prefer_playwright, http_failures,
-        cf_clearance, clearance_ua, clearance_tier, clearance_expires_at, last_updated
+        cf_clearance, clearance_ua, clearance_tier, clearance_expires_at, solved_route, last_updated
       )
-      VALUES (?, 0, 0, ?, ?, ?, ?, datetime('now'))
+      VALUES (?, 0, 0, ?, ?, ?, ?, ?, datetime('now'))
       ON CONFLICT(domain) DO UPDATE SET
         cf_clearance = excluded.cf_clearance,
         clearance_ua = excluded.clearance_ua,
         clearance_tier = excluded.clearance_tier,
         clearance_expires_at = excluded.clearance_expires_at,
+        solved_route = excluded.solved_route,
         last_updated = datetime('now')
-    `).run(host, clearance.cookie, clearance.ua, clearance.tier, clearance.expiresAt);
+    `).run(
+      host,
+      clearance.cookie,
+      clearance.ua,
+      clearance.tier,
+      clearance.expiresAt,
+      clearance.solvedRoute ?? 'direct',
+    );
   } catch (err) {
     log.warn('recordDomainClearance failed', { host, error: err instanceof Error ? err.message : String(err) });
   }
