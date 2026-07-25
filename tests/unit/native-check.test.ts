@@ -42,6 +42,30 @@ describe('describeNativeError', () => {
     expect(failure?.requires).toBe(currentAbi());
   });
 
+  it('does not call a generic dlopen failure a missing binding', () => {
+    const failure = describeNativeError(
+      new Error(
+        "ERR_DLOPEN_FAILED: libstdc++.so.6: version 'GLIBCXX_3.4.29' not found " +
+          '(required by /app/node_modules/better-sqlite3/build/Release/better_sqlite3.node)',
+      ),
+    );
+
+    expect(failure?.kind).toBe('other');
+    expect(failure?.message).toContain('could not be loaded');
+    expect(failure?.message).toContain('GLIBCXX_3.4.29');
+  });
+
+  it('still classifies a dlopen failure naming a missing .node file as a missing binding', () => {
+    const failure = describeNativeError(
+      new Error(
+        'Error: /app/node_modules/better-sqlite3/build/Release/better_sqlite3.node: ' +
+          'no such file or directory',
+      ),
+    );
+
+    expect(failure?.kind).toBe('missing-binding');
+  });
+
   it('falls back to the current ABI when only one version is named', () => {
     const failure = describeNativeError(
       new Error('was compiled against a different Node.js version using NODE_MODULE_VERSION 115.'),

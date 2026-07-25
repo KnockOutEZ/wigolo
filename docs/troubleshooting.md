@@ -38,7 +38,7 @@ don't use that Node to *run* the server: Cursor, for example, starts MCP
 servers with its own bundled copy. When the two differ, the addon refuses to
 load and the client shows a startup failure or a closed connection:
 
-```
+```text
 The module '...better_sqlite3.node' was compiled against a different
 Node.js version using NODE_MODULE_VERSION 137. This version of Node.js
 requires NODE_MODULE_VERSION 127.
@@ -47,7 +47,7 @@ requires NODE_MODULE_VERSION 127.
 Run `wigolo doctor` under each Node and compare the `Runtime:` block — it
 prints the version and ABI, which is the pair that has to match:
 
-```
+```text
 [wigolo doctor] Runtime:
   Node:          v22.22.1 (ABI 127)
   SQLite addon:  loaded (ABI 127)

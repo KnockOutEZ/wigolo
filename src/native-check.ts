@@ -22,17 +22,33 @@ export interface NativeFailure {
   message: string;
 }
 
+/** Cap on the raw linker text echoed back, so a report stays one line. */
+const LOADER_MESSAGE_LIMIT = 200;
+
 /** NODE_MODULE_VERSION of the running process, e.g. '137' on Node 24. */
 export function currentAbi(): string {
   return process.versions.modules;
 }
 
 const ABI_PATTERNS = [/NODE_MODULE_VERSION/i, /was compiled against a different Node\.js version/i];
+
+// Only wording that actually names a failed *lookup* of the binding. A bare
+// ERR_DLOPEN_FAILED does not qualify: Node wraps every process.dlopen failure
+// in it, including a present-but-unloadable addon (missing shared library,
+// unresolved symbol, wrong architecture), and calling those "not downloaded"
+// sends the user to reinstall a file that is already there.
 const MISSING_PATTERNS = [
   /could not locate the bindings file/i,
   /cannot find module .*\.node/i,
-  /ERR_DLOPEN_FAILED/i,
+  /no such file or directory.*\.node/i,
+  /\.node.*no such file or directory/i,
+  /image not found/i,
 ];
+
+// Generic loader failures: the binding was found but the dynamic linker refused
+// it. The linker's own text is the diagnostic, so pass it through rather than
+// guessing a cause.
+const LOAD_FAILURE_PATTERNS = [/ERR_DLOPEN_FAILED/i, /dlopen\(/i, /cannot open shared object file/i];
 
 /**
  * Pulls the "compiled for X, requires Y" pair out of Node's ABI-mismatch text.
@@ -103,7 +119,25 @@ export function describeNativeError(err: unknown, moduleName = 'better-sqlite3')
     };
   }
 
+  if (LOAD_FAILURE_PATTERNS.some((re) => re.test(text))) {
+    return {
+      kind: 'other',
+      requires: currentAbi(),
+      message:
+        `${moduleName} was found but could not be loaded by this Node ` +
+        `(ABI ${currentAbi()}). The dynamic linker reported: ${firstLine(text)}. ` +
+        `That is usually a missing system library or an addon built for another ` +
+        `platform or architecture. ${remedy(moduleName)}`,
+    };
+  }
+
   return undefined;
+}
+
+/** First non-empty line of the raw error, trimmed for a one-line report. */
+function firstLine(text: string): string {
+  const line = text.split('\n').find((l) => l.trim().length > 0) ?? text;
+  return line.trim().slice(0, LOADER_MESSAGE_LIMIT);
 }
 
 /**
