@@ -30,10 +30,13 @@ describe('package.json: forbidden deps after Python-rerank migration', () => {
     expect(pkg.overrides?.protobufjs).toBeUndefined();
   });
 
-  it('engines.node is still >=20', () => {
+  it('engines.node still admits Node 20', () => {
+    // Guards the support floor, not its spelling: this PR states the majors
+    // that are actually tested (`^20 || ^22 || ^24`) instead of an open `>=20`,
+    // and both admit Node 20.
     const node = (pkg as { engines?: { node?: string } }).engines?.node;
     expect(node).toBeDefined();
-    expect(node).toMatch(/>=20/);
+    expect(node).toMatch(/>=\s*20|\^20(\.|$| )/);
   });
 });
 
