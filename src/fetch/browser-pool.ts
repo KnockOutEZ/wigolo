@@ -16,6 +16,7 @@ import { pollUntilCleared } from './challenge-completion.js';
 import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, STEALTH_INIT_SCRIPT } from './stealth.js';
 import { recordDomainClearance, clearDomainClearance } from '../cache/store.js';
 import { CLEARANCE_COOKIE_NAME, clearanceExpiresIso } from './clearance-reuse.js';
+import { guardResolvedHost } from '../watch/ssrf.js';
 import type { RawFetchResult, BrowserType, ActionResult, BrowserAction } from '../types.js';
 
 /**
@@ -548,6 +549,32 @@ export class MultiBrowserPool {
     let enteredChallengePoll = false;
 
     try {
+      // Pre-navigation fetch-time SSRF re-check. `guardFetchUrl` (applied
+      // upstream on input + every redirect hop before a fetch reaches the
+      // browser tier) only validates the LITERAL host, so a public hostname
+      // whose DNS record points at a blocked address (cloud metadata /
+      // RFC-1918 / loopback) passes it and is only caught here, before we
+      // navigate. Skip literal IPs — already validated by the literal guard.
+      //
+      // CHECK-ONLY: this does NOT close DNS rebinding. Chromium performs its
+      // OWN DNS resolution when it actually navigates, a separate lookup from
+      // the one below — a host that flips its A/AAAA record between this
+      // check and Chromium's own resolution (or that resolves differently to
+      // Chromium than to Node) would still slip through. Pinning the
+      // navigation itself to the validated address is a follow-up, tracked in
+      // issue #207.
+      {
+        const navHost = hostOf(url);
+        const isIpLiteral = navHost !== null && (/^\d{1,3}(\.\d{1,3}){3}$/.test(navHost) || navHost.includes(':'));
+        if (navHost && !isIpLiteral) {
+          const resolved = await guardResolvedHost(navHost, 'target url', {
+            allowPrivate: getConfig().fetchAllowPrivate,
+          });
+          if (!resolved.ok) {
+            throw new Error(`${resolved.reason}. ${resolved.hint}`);
+          }
+        }
+      }
       try {
         // Race the navigation against the caller's abort signal so the fetch
         // rejects promptly instead of waiting for the full nav timeout.

@@ -5,6 +5,7 @@ import { DevDocsEngine } from '../../engines/devdocs.js';
 import { DuckDuckGoEngine } from '../../engines/duckduckgo.js';
 import { BraveEngine } from '../../engines/brave.js';
 import { NpmRegistryEngine } from '../../engines/npm-registry.js';
+import { CratesIoEngine } from '../../engines/crates-io.js';
 import { wrapWithRetryAndBreaker, type EngineEntry } from '../engine-base.js';
 import { getConfig } from '../../../config.js';
 
@@ -15,11 +16,12 @@ import { getConfig } from '../../../config.js';
 // registry adds a package-name signal (free, no API key) so library queries
 // resolve directly to the canonical npm package page.
 //
-// MDN is admitted as a SECONDARY engine — it still runs, but the orchestrator
-// demotes results contributed only by secondary engines when their lexical
-// alignment with the query is low. This keeps MDN available for genuine
-// JS/HTML/CSS queries while preventing the HTML <search> element page from
-// hijacking results for "pgvector HNSW".
+// MDN and crates.io are admitted as SECONDARY engines — they still run, but
+// the orchestrator demotes results contributed only by secondary engines when
+// their lexical alignment with the query is low. This keeps MDN available for
+// genuine JS/HTML/CSS queries (and crates.io for genuine Rust-crate queries)
+// while preventing narrow-topic pages from hijacking results for unrelated
+// queries like "pgvector HNSW".
 let cached: EngineEntry[] | null = null;
 
 export function getCodeEngines(): EngineEntry[] {
@@ -69,6 +71,14 @@ export function getCodeEngines(): EngineEntry[] {
 
   entries.push({
     engine: wrapWithRetryAndBreaker(new MdnEngine()),
+    weight: 0.3,
+    supportsDateFilter: false,
+    secondary: true,
+    quality: 'high',
+  });
+
+  entries.push({
+    engine: wrapWithRetryAndBreaker(new CratesIoEngine()),
     weight: 0.3,
     supportsDateFilter: false,
     secondary: true,

@@ -22,6 +22,8 @@ import {
   type StageFailure,
 } from './errors.js';
 import { guardServeTarget } from './target-guard.js';
+import { guardResolvedServeTarget } from '../../watch/ssrf.js';
+import { getConfig } from '../../config.js';
 
 /**
  * Firecrawl-compatibility shim (EXPERIMENTAL, flag `WIGOLO_FIRECRAWL_COMPAT=1`).
@@ -221,12 +223,28 @@ function requireUrl(body: Record<string, unknown>): string | null {
   return typeof url === 'string' && url.length > 0 ? url : null;
 }
 
-/** Run the shared serve-mode target guard on a URL. Returns an error message on
- * refusal (mapped to 400), or null when allowed. */
-function guardUrl(ctx: CompatContext, url: string): string | null {
+/** Run the shared serve-mode target guard (literal + fetch-time resolved) on a
+ * URL. Returns an error message on refusal (mapped to 400), or null when
+ * allowed. */
+async function guardUrl(ctx: CompatContext, url: string): Promise<string | null> {
   const guard = guardServeTarget(url, { bindIsLoopback: ctx.bindIsLoopback });
-  if (guard.ok) return null;
-  return guard.hint ? `${guard.reason} — ${guard.hint}` : guard.reason;
+  if (!guard.ok) return guard.hint ? `${guard.reason} — ${guard.hint}` : guard.reason;
+
+  // Fetch-time SSRF re-check. `guardServeTarget` only validates the LITERAL
+  // host, so a public hostname whose DNS record points at a blocked address
+  // (cloud metadata / RFC-1918 / loopback under a non-loopback bind) passes
+  // it and is only caught here, before we connect. Skip literal IPs — already
+  // validated. Same allowPrivate policy `guardServeTarget` used (config's
+  // `fetchAllowPrivate` — it has no override param).
+  const host = guard.url.hostname;
+  const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
+  if (isIpLiteral) return null;
+  const resolved = await guardResolvedServeTarget(host, 'url', {
+    allowPrivate: getConfig().fetchAllowPrivate,
+    bindIsLoopback: ctx.bindIsLoopback,
+  });
+  if (resolved.ok) return null;
+  return resolved.hint ? `${resolved.reason} — ${resolved.hint}` : resolved.reason;
 }
 
 function stageFailureMessage(f: StageFailure & { hint?: string }): string {
@@ -243,7 +261,7 @@ async function handleScrape(req: IncomingMessage, ctx: CompatContext): Promise<v
   const url = requireUrl(body);
   if (!url) return fail(ctx, 400, 'A "url" string is required.');
 
-  const guardErr = guardUrl(ctx, url);
+  const guardErr = await guardUrl(ctx, url);
   if (guardErr) return fail(ctx, 400, guardErr);
 
   // formats: honour 'markdown' (the only format we produce). Unsupported
@@ -345,7 +363,7 @@ async function handleMap(req: IncomingMessage, ctx: CompatContext): Promise<void
   const url = requireUrl(body);
   if (!url) return fail(ctx, 400, 'A "url" string is required.');
 
-  const guardErr = guardUrl(ctx, url);
+  const guardErr = await guardUrl(ctx, url);
   if (guardErr) return fail(ctx, 400, guardErr);
 
   const limitErr = validateCrawlLimit(body);
@@ -389,7 +407,7 @@ async function handleCrawlStart(req: IncomingMessage, ctx: CompatContext): Promi
   const url = requireUrl(body);
   if (!url) return fail(ctx, 400, 'A "url" string is required.');
 
-  const guardErr = guardUrl(ctx, url);
+  const guardErr = await guardUrl(ctx, url);
   if (guardErr) return fail(ctx, 400, guardErr);
 
   const limitErr = validateCrawlLimit(body);

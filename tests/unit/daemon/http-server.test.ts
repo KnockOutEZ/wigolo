@@ -438,9 +438,9 @@ describe('DaemonHttpServer — MCP transport DNS-rebinding / Origin guard (MED-1
   // applied NO Host allowlist and NO Origin reject — unlike the REST router and
   // the admin route. A malicious web page resolving an attacker domain to
   // 127.0.0.1 could POST JSON-RPC to /mcp with a browser Origin and drive the
-  // local MCP server. These guards run BEFORE the transport, in both open and
-  // token modes: a browser always sets Origin, a legitimate MCP client never
-  // does; a spoofed Host is a rebinding attempt.
+  // local MCP server. Origin remains blocked in both open and token modes; a
+  // configured bearer token authorizes a remote MCP client without requiring a
+  // loopback Host.
   beforeEach(() => {
     delete process.env.WIGOLO_API_TOKEN;
     delete process.env.WIGOLO_API_TOKEN_FILE;
@@ -451,6 +451,41 @@ describe('DaemonHttpServer — MCP transport DNS-rebinding / Origin guard (MED-1
     delete process.env.WIGOLO_API_TOKEN;
     resetConfig();
   });
+
+  async function postMcp(url: string, headers: Record<string, string>): Promise<number> {
+    const http = await import('node:http');
+    const parsed = new URL(url);
+    return new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: '/mcp',
+          method: 'POST',
+          headers: {
+            Accept: 'application/json, text/event-stream',
+            'Content-Type': 'application/json',
+            ...headers,
+          },
+        },
+        (res) => {
+          resolve(res.statusCode ?? 0);
+          res.destroy();
+        },
+      );
+      req.on('error', reject);
+      req.end(JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'initialize',
+        id: 1,
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'test', version: '1.0' },
+        },
+      }));
+    });
+  }
 
   it('NEGATIVE: POST /mcp with a browser Origin → 403 (open mode)', async () => {
     const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
@@ -519,7 +554,7 @@ describe('DaemonHttpServer — MCP transport DNS-rebinding / Origin guard (MED-1
     }
   });
 
-  it('NEGATIVE: POST /mcp with a non-loopback spoofed Host → 403', async () => {
+  it('NEGATIVE: POST /mcp with a non-loopback Host → 403 in open mode', async () => {
     const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
     const http = await import('node:http');
     const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1' });
@@ -544,6 +579,36 @@ describe('DaemonHttpServer — MCP transport DNS-rebinding / Origin guard (MED-1
         req.end(JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: {} }));
       });
       expect(status).toBe(403);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('POSITIVE: POST /mcp with a valid bearer and remote Host reaches the transport', async () => {
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', apiToken: 'secret-token' });
+    try {
+      const url = await daemon.start();
+      const status = await postMcp(url, {
+        Authorization: 'Bearer secret-token',
+        Host: 'mcp.example.com',
+      });
+      expect(status).toBe(200);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('NEGATIVE: POST /mcp with an invalid bearer and remote Host → 401', async () => {
+    const { DaemonHttpServer } = await import('../../../src/daemon/http-server.js');
+    const daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', apiToken: 'secret-token' });
+    try {
+      const url = await daemon.start();
+      const status = await postMcp(url, {
+        Authorization: 'Bearer wrong-token',
+        Host: 'mcp.example.com',
+      });
+      expect(status).toBe(401);
     } finally {
       await daemon.stop();
     }

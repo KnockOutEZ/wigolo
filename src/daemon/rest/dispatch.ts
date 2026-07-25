@@ -23,7 +23,8 @@ import { handleDiff, type DiffInput } from '../../tools/diff.js';
 import { handleWatch } from '../../tools/watch.js';
 import { scheduleOverdueCheck } from '../../watch/scheduler.js';
 import { guardServeTarget } from './target-guard.js';
-import type { SsrfResult } from '../../watch/ssrf.js';
+import { guardResolvedServeTarget, type SsrfResult, type SsrfRejection } from '../../watch/ssrf.js';
+import { getConfig } from '../../config.js';
 import {
   errorEnvelope,
   notImplemented,
@@ -52,7 +53,7 @@ function stageFailure(f: { error: string; error_reason: string; stage: string; h
 }
 
 /** 400 envelope from a serve-mode target-guard refusal (SSRF). */
-function guardFailure(guard: Extract<SsrfResult, { ok: false }>): DispatchResult {
+function guardFailure(guard: Extract<SsrfResult, { ok: false }> | SsrfRejection): DispatchResult {
   return {
     status: 400,
     body: errorEnvelope(guard.code, guard.reason, { stage: 'validate', hint: guard.hint }),
@@ -60,13 +61,38 @@ function guardFailure(guard: Extract<SsrfResult, { ok: false }>): DispatchResult
 }
 
 /**
- * Run the serve-mode target guard on a required URL. Returns null when allowed;
- * a 400 DispatchResult when refused. Mirrors the fetch dispatch pattern.
+ * Fetch-time SSRF re-check for a URL that already passed the serve-mode
+ * literal guard. `guardServeTarget` (and the plain fetch guard it wraps) only
+ * validates the LITERAL host, so a public hostname whose DNS record points at
+ * a blocked address (cloud metadata / RFC-1918 / loopback under a
+ * non-loopback bind) passes it and is only caught here, before we connect.
+ * Returns null when allowed (or skipped for an IP literal — already
+ * validated), a 400 DispatchResult when the resolved address is blocked.
+ * Threads the SAME `allowPrivate` `guardServeTarget` used (config's
+ * `fetchAllowPrivate` — `guardServeTarget` has no override param) so the
+ * resolved-IP policy never drifts from the literal-IP one.
  */
-function guardUrlField(raw: unknown, ctx: DispatchContext): DispatchResult | null {
+async function resolvedGuardFailure(url: URL, ctx: DispatchContext): Promise<DispatchResult | null> {
+  const host = url.hostname;
+  const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
+  if (isIpLiteral) return null;
+  const resolved = await guardResolvedServeTarget(host, 'url', {
+    allowPrivate: getConfig().fetchAllowPrivate,
+    bindIsLoopback: ctx.bindIsLoopback,
+  });
+  if (!resolved.ok) return guardFailure(resolved);
+  return null;
+}
+
+/**
+ * Run the serve-mode target guard (literal + fetch-time resolved) on a
+ * required URL. Returns null when allowed; a 400 DispatchResult when refused.
+ * Mirrors the fetch dispatch pattern.
+ */
+async function guardUrlField(raw: unknown, ctx: DispatchContext): Promise<DispatchResult | null> {
   const guard = guardServeTarget(String(raw ?? ''), { bindIsLoopback: ctx.bindIsLoopback });
   if (!guard.ok) return guardFailure(guard);
-  return null;
+  return resolvedGuardFailure(guard.url, ctx);
 }
 
 /**
@@ -87,6 +113,8 @@ async function dispatchFetch(input: FetchInput, ctx: DispatchContext): Promise<D
   if (!guard.ok) {
     return { status: 400, body: errorEnvelope(guard.code, guard.reason, { stage: 'validate', hint: guard.hint }) };
   }
+  const resolvedFail = await resolvedGuardFailure(guard.url, ctx);
+  if (resolvedFail) return resolvedFail;
   const r = await handleFetch(input, ctx.subsystems.router);
   if (!r.ok) return stageFailure(r);
   return { status: 200, body: r.data };
@@ -112,7 +140,7 @@ async function dispatchSearch(input: SearchInput, ctx: DispatchContext): Promise
 }
 
 async function dispatchCrawl(input: CrawlInput, ctx: DispatchContext): Promise<DispatchResult> {
-  const refused = guardUrlField(input.url, ctx);
+  const refused = await guardUrlField(input.url, ctx);
   if (refused) return refused;
   const result = await handleCrawl(input, ctx.subsystems.router);
   if (typeof result.error === 'string' && result.error.length > 0) {
@@ -131,7 +159,7 @@ async function dispatchCache(input: CacheInput, ctx: DispatchContext): Promise<D
 
 async function dispatchExtract(input: ExtractInput, ctx: DispatchContext): Promise<DispatchResult> {
   if (input.url !== undefined && input.url !== '') {
-    const refused = guardUrlField(input.url, ctx);
+    const refused = await guardUrlField(input.url, ctx);
     if (refused) return refused;
   }
   const r = await handleExtract(input, ctx.subsystems.router);
@@ -141,7 +169,7 @@ async function dispatchExtract(input: ExtractInput, ctx: DispatchContext): Promi
 
 async function dispatchFindSimilar(input: FindSimilarInput, ctx: DispatchContext): Promise<DispatchResult> {
   if (input.url !== undefined && input.url !== '') {
-    const refused = guardUrlField(input.url, ctx);
+    const refused = await guardUrlField(input.url, ctx);
     if (refused) return refused;
   }
   const { searchEngines, router, backendStatus } = ctx.subsystems;
@@ -161,7 +189,7 @@ async function dispatchResearch(input: ResearchInput, ctx: DispatchContext): Pro
 
 async function dispatchAgent(input: AgentInput, ctx: DispatchContext): Promise<DispatchResult> {
   for (const u of input.urls ?? []) {
-    const refused = guardUrlField(u, ctx);
+    const refused = await guardUrlField(u, ctx);
     if (refused) return refused;
   }
   const { searchEngines, router, backendStatus } = ctx.subsystems;
@@ -178,11 +206,11 @@ async function dispatchDiff(input: DiffInput, _ctx: DispatchContext): Promise<Di
 
 async function dispatchWatch(input: WatchJobInput, ctx: DispatchContext): Promise<DispatchResult> {
   if (input.url !== undefined && input.url !== '') {
-    const refused = guardUrlField(input.url, ctx);
+    const refused = await guardUrlField(input.url, ctx);
     if (refused) return refused;
   }
   for (const u of input.urls ?? []) {
-    const refused = guardUrlField(u, ctx);
+    const refused = await guardUrlField(u, ctx);
     if (refused) return refused;
   }
   const r = await handleWatch(input, ctx.subsystems.router);

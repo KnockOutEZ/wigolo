@@ -74,6 +74,20 @@ function toIsoSeconds(date: Date): string {
   return date.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
 }
 
+const ZONELESS_UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+
+// Timestamps are persisted by toIsoSeconds() (and SQLite's datetime('now'))
+// as zone-less UTC: "YYYY-MM-DD HH:MM:SS". JavaScript's Date parser treats
+// that space-separated form as LOCAL time, which shifts every expiry
+// comparison by the host's UTC offset. Re-attach the UTC marker before
+// parsing; leave any other format untouched.
+function parseUtcTimestamp(value: string): number {
+  const normalized = ZONELESS_UTC_TIMESTAMP.test(value)
+    ? `${value.replace(' ', 'T')}Z`
+    : value;
+  return new Date(normalized).getTime();
+}
+
 export function cacheContent(result: RawFetchResult, extraction: ExtractionResult): void {
   try {
     const db = getDatabase();
@@ -282,7 +296,7 @@ export function getMarkdownForNormalizedUrl(normalizedUrl: string): string | nul
 
 export function isExpired(cached: CachedContent): boolean {
   if (!cached.expiresAt) return false;
-  return new Date(cached.expiresAt).getTime() < Date.now();
+  return parseUtcTimestamp(cached.expiresAt) < Date.now();
 }
 
 export interface CacheLookupOptions {
@@ -294,7 +308,7 @@ export function isCacheUsable(
   opts: CacheLookupOptions = {},
 ): { usable: boolean; stale: boolean } {
   if (!cached.expiresAt) return { usable: true, stale: false };
-  const expiresMs = new Date(cached.expiresAt).getTime();
+  const expiresMs = parseUtcTimestamp(cached.expiresAt);
   const now = Date.now();
   if (expiresMs >= now) return { usable: true, stale: false };
   const staleMaxMs = (opts.staleMaxSeconds ?? 0) * 1000;
@@ -433,7 +447,7 @@ export function getCachedSearchResults(
   if (!row) return null;
 
   if (row.expires_at) {
-    const expiresMs = new Date(row.expires_at).getTime();
+    const expiresMs = parseUtcTimestamp(row.expires_at);
     const now = Date.now();
     if (expiresMs < now) {
       const staleMaxMs = (opts.staleMaxSeconds ?? 0) * 1000;

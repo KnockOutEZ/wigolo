@@ -23,13 +23,14 @@ describe('getCodeEngines', () => {
     _resetCodeEnginesForTest();
   });
 
-  it('returns six entries by default (github-code, stackoverflow, devdocs, duckduckgo, npm-registry, mdn)', () => {
-    expect(getCodeEngines()).toHaveLength(6);
+  it('returns seven entries by default (github-code, stackoverflow, devdocs, duckduckgo, npm-registry, mdn, crates-io)', () => {
+    expect(getCodeEngines()).toHaveLength(7);
   });
 
-  it('lists github-code, stackoverflow, devdocs, duckduckgo, npm-registry, mdn (preserving names)', () => {
+  it('lists github-code, stackoverflow, devdocs, duckduckgo, npm-registry, mdn, crates-io (preserving names)', () => {
     const names = getCodeEngines().map((e) => e.engine.name).sort();
     expect(names).toEqual([
+      'crates-io',
       'devdocs',
       'duckduckgo',
       'github-code',
@@ -61,12 +62,15 @@ describe('getCodeEngines', () => {
     expect(a).not.toBe(b);
   });
 
-  it('marks MDN as secondary and leaves the other engines primary', () => {
+  it('marks MDN and crates-io as secondary and leaves the other engines primary', () => {
     const entries = getCodeEngines();
-    const mdn = entries.find((e) => e.engine.name === 'mdn');
-    expect(mdn?.secondary).toBe(true);
+    const secondaries = ['mdn', 'crates-io'];
+    for (const name of secondaries) {
+      const entry = entries.find((e) => e.engine.name === name);
+      expect(entry?.secondary).toBe(true);
+    }
     for (const e of entries) {
-      if (e.engine.name === 'mdn') continue;
+      if (secondaries.includes(e.engine.name)) continue;
       expect(e.secondary ?? false).toBe(false);
     }
   });
