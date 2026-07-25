@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.KnockOutEZ%2Fwigolo.svg)](https://mcptoplist.com/server/io.github.KnockOutEZ%2Fwigolo)
+
 <div align="center">
 
 <img alt="wigolo — the go-to web for your agent" src="assets/brand/wigolo-banner.png" width="640">
