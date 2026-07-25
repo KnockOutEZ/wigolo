@@ -11,6 +11,7 @@ import { isProcessAlive } from '../searxng/process.js';
 import { resolveContainerCli } from '../searxng/docker.js';
 import { getConfig } from '../config.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
+import { currentAbi, describeNativeError } from '../native-check.js';
 import { getCacheStats } from '../cache/store.js';
 import { getBackgroundIndexQueue } from '../embedding/background-queue.js';
 import { loadFeedConfig } from '../search/core/rss/feed-config.js';
@@ -673,7 +674,15 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
 
   const py = checkPython();
   const dk = checkDocker();
+  const native = nativeSqliteInfo();
   out('[wigolo doctor] Runtime:');
+  out(`  Node:          ${native.nodeVersion} (ABI ${native.abi})`);
+  out(`  SQLite addon:  ${native.ok ? `loaded (ABI ${native.abi})` : 'FAILED TO LOAD'}`);
+  if (!native.ok) {
+    out(`                 ${native.detail}`);
+    degraded = true;
+    nonFixableDegraded = true;
+  }
   out(`  Python 3:      ${py.ok ? `available (${py.version ?? 'unknown'})` : 'not available'}`);
   out(`  Docker:        ${dk.ok ? `available (${dk.cli}, ${dk.version})` : 'not available'}`);
   // python/docker are prerequisites ONLY for the opt-in search-engine sidecar
@@ -1004,6 +1013,32 @@ function checkCoreEmbeddings(dataDir: string): void {
     out('  provider:      installed (fastembed BGE-small-en-v1.5)');
   } else {
     out('  provider:      not installed (lazy — downloads on first use)');
+  }
+}
+
+/**
+ * Reports the Node ABI this process runs on and where the better-sqlite3
+ * binding resolved from.
+ *
+ * Doctor imports better-sqlite3 transitively, so by the time this runs the
+ * addon has already loaded — an ABI mismatch would have killed the process at
+ * import. That is precisely why the numbers matter: a user whose MCP client
+ * fails can run doctor under each Node and compare the ABI lines to see the
+ * split, rather than guessing from a truncated stack.
+ */
+function nativeSqliteInfo(): { abi: string; nodeVersion: string; ok: boolean; detail?: string } {
+  const base = { abi: currentAbi(), nodeVersion: process.version };
+  const req = createRequire(import.meta.url);
+  try {
+    // The addon's .node binary is dlopen'd on first Database construction, not
+    // on import — so opening a throwaway in-memory DB is what actually proves
+    // the binding matches this Node. Importing alone proves nothing.
+    const Database = req('better-sqlite3') as new (path: string) => { close(): void };
+    new Database(':memory:').close();
+    return { ...base, ok: true };
+  } catch (err) {
+    const failure = describeNativeError(err);
+    return { ...base, ok: false, detail: failure?.message ?? (err instanceof Error ? err.message : String(err)) };
   }
 }
 

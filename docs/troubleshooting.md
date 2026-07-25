@@ -26,7 +26,52 @@ wigolo doctor --fix  # repairs the known failure classes automatically
 | Ranking model download fails (`fetch failed`) | A transient network blip. Re-run `wigolo warmup --reranker` — it retries with backoff. |
 | A download fails with `self signed certificate in certificate chain` | You're behind a TLS-inspecting (corporate) proxy. Point Node at your organization's CA bundle — `NODE_EXTRA_CA_CERTS=/path/to/corp-ca.pem` — then re-run warmup. |
 | `npm install` fails compiling a native dependency (often on Windows) | Your Node version has no prebuilt binary, so npm falls back to a source build. Use a supported LTS — **Node 20, 22, or 24** — where prebuilts exist, or install a C/C++ toolchain (Visual Studio Build Tools on Windows). |
+| MCP client won't start wigolo: `NODE_MODULE_VERSION` mismatch / `Could not locate the bindings file` | Your editor runs wigolo on a different Node than the one that installed it — Cursor and some other clients ship their own Node. See [below](#mcp-client-runs-a-different-node). |
 | Downloads stall or fail on low disk | Components need ~1 GB free. Free space, point `WIGOLO_DATA_DIR` at a larger volume, or `wigolo config --cleanup` to reclaim a previous install. |
+
+## MCP client runs a different Node
+
+wigolo stores its cache in SQLite, and the SQLite driver is a compiled addon
+tied to one Node ABI. `npx -y wigolo` builds or downloads that addon for
+whichever Node runs `npx` — normally the Node on your `PATH`. Some MCP clients
+don't use that Node to *run* the server: Cursor, for example, starts MCP
+servers with its own bundled copy. When the two differ, the addon refuses to
+load and the client shows a startup failure or a closed connection:
+
+```
+The module '...better_sqlite3.node' was compiled against a different
+Node.js version using NODE_MODULE_VERSION 137. This version of Node.js
+requires NODE_MODULE_VERSION 127.
+```
+
+Run `wigolo doctor` under each Node and compare the `Runtime:` block — it
+prints the version and ABI, which is the pair that has to match:
+
+```
+[wigolo doctor] Runtime:
+  Node:          v22.22.1 (ABI 127)
+  SQLite addon:  loaded (ABI 127)
+```
+
+To fix it, install wigolo with the same Node that runs it and point the client
+at that Node explicitly instead of bare `npx`. On Windows with Cursor:
+
+```jsonc
+// ~/.cursor/mcp.json
+{
+  "mcpServers": {
+    "wigolo": {
+      "command": "C:/Program Files/cursor/resources/app/resources/helpers/node.exe",
+      "args": ["C:/Users/<you>/.cursor/tools/wigolo/node_modules/wigolo/dist/index.js"]
+    }
+  }
+}
+```
+
+Install into that fixed directory using the client's own `node.exe`, then run
+`npm rebuild better-sqlite3` there so the addon is built for the ABI the client
+will actually use. The same approach works for any client that bundles Node —
+substitute its node binary and install path.
 
 ## A component failed during setup — is wigolo broken?
 

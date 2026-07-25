@@ -14,6 +14,7 @@ import { MultiBrowserPool } from './fetch/browser-pool.js';
 import { closeDaemonBrowser } from './fetch/playwright-tier.js';
 import { httpFetch } from './fetch/http-client.js';
 import { initDatabase, closeDatabase } from './cache/db.js';
+import { toActionableNativeError } from './native-check.js';
 import { handleFetch } from './tools/fetch.js';
 import { handleSearch } from './tools/search.js';
 import { buildSearchContentBlocks } from './server/search-response.js';
@@ -92,7 +93,15 @@ export async function initSubsystems(): Promise<Subsystems> {
   const config = getConfig();
 
   mkdirSync(config.dataDir, { recursive: true });
-  initDatabase(join(config.dataDir, 'wigolo.db'));
+  // The cache DB is a hard dependency, so a failure here is fatal — but a
+  // native-binding failure is the one case where the raw error tells the user
+  // nothing useful, and it is exactly what an MCP client hits when it runs
+  // wigolo on a different Node than the one that installed it.
+  try {
+    initDatabase(join(config.dataDir, 'wigolo.db'));
+  } catch (err) {
+    throw toActionableNativeError(err);
+  }
 
   // Initialize embedding service: provisions the vector store, runs the
   // legacy-embedding migration, and surfaces sqlite-vec failures. It does NOT
