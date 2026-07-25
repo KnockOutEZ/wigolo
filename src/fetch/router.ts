@@ -936,7 +936,7 @@ export class SmartRouter {
         // The temp Chrome-profile copy (if getAuthOptions made one) is
         // single-use — remove it once the fetch settles (success, failure, or
         // abort) so no full-profile copy survives in tmp.
-        removeTempProfile(authOptions.userDataDir);
+        await removeTempProfile(authOptions.userDataDir);
       }
     }
 
@@ -957,7 +957,7 @@ export class SmartRouter {
         });
       } finally {
         // Single-use temp Chrome-profile copy — see the actions path above.
-        removeTempProfile(authOptions.userDataDir);
+        await removeTempProfile(authOptions.userDataDir);
       }
     }
 

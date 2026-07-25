@@ -33,7 +33,7 @@ export async function getAuthOptions(): Promise<AuthOptions | null> {
     // Single-use temp copy: consumed by the browser tier's persistent-context
     // launch and removed by the router (removeTempProfile) once the fetch
     // settles — success, failure, or abort.
-    return { userDataDir: copyProfileToTemp(config.chromeProfilePath) };
+    return { userDataDir: await copyProfileToTemp(config.chromeProfilePath) };
   }
 
   if (config.cdpUrl) {

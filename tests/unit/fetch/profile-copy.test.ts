@@ -22,8 +22,8 @@ describe('profile-copy', () => {
     }
   });
 
-  it('copyProfileToTemp copies the profile recursively into a prefixed temp dir', () => {
-    const copy = copyProfileToTemp(sourceDir);
+  it('copyProfileToTemp copies the profile recursively into a prefixed temp dir', async () => {
+    const copy = await copyProfileToTemp(sourceDir);
     madeCopies.push(copy);
 
     expect(copy).not.toBe(sourceDir);
@@ -32,30 +32,30 @@ describe('profile-copy', () => {
     expect(existsSync(join(copy, 'Default', 'Preferences'))).toBe(true);
   });
 
-  it('removeTempProfile deletes a wigolo temp copy', () => {
-    const copy = copyProfileToTemp(sourceDir);
+  it('removeTempProfile deletes a wigolo temp copy', async () => {
+    const copy = await copyProfileToTemp(sourceDir);
     madeCopies.push(copy);
     expect(existsSync(copy)).toBe(true);
 
-    removeTempProfile(copy);
+    await removeTempProfile(copy);
     expect(existsSync(copy)).toBe(false);
   });
 
-  it('removeTempProfile is a no-op for undefined', () => {
-    expect(() => removeTempProfile(undefined)).not.toThrow();
+  it('removeTempProfile is a no-op for undefined', async () => {
+    await expect(removeTempProfile(undefined)).resolves.toBeUndefined();
   });
 
-  it('removeTempProfile refuses to delete a directory without the wigolo prefix', () => {
+  it('removeTempProfile refuses to delete a directory without the wigolo prefix', async () => {
     // A user-configured directory (e.g. the LIVE profile path) must never be
     // deleted, even if it is mistakenly passed in.
-    removeTempProfile(sourceDir);
+    await removeTempProfile(sourceDir);
     expect(existsSync(sourceDir)).toBe(true);
     expect(existsSync(join(sourceDir, 'Cookies'))).toBe(true);
   });
 
-  it('removeTempProfile tolerates an already-removed directory', () => {
-    const copy = copyProfileToTemp(sourceDir);
+  it('removeTempProfile tolerates an already-removed directory', async () => {
+    const copy = await copyProfileToTemp(sourceDir);
     rmSync(copy, { recursive: true, force: true });
-    expect(() => removeTempProfile(copy)).not.toThrow();
+    await expect(removeTempProfile(copy)).resolves.toBeUndefined();
   });
 });

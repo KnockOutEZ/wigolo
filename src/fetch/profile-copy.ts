@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, rmSync } from 'node:fs';
+import { cp, mkdtemp, rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createLogger } from '../logger.js';
@@ -18,9 +18,9 @@ export const TEMP_PROFILE_PREFIX = 'wigolo-chrome-';
  * `removeTempProfile` once the fetch settles (success, failure, or abort) —
  * a surviving copy is a full-profile privacy leak in tmp.
  */
-export function copyProfileToTemp(profilePath: string): string {
-  const tempDir = mkdtempSync(join(tmpdir(), TEMP_PROFILE_PREFIX));
-  cpSync(profilePath, tempDir, { recursive: true });
+export async function copyProfileToTemp(profilePath: string): Promise<string> {
+  const tempDir = await mkdtemp(join(tmpdir(), TEMP_PROFILE_PREFIX));
+  await cp(profilePath, tempDir, { recursive: true });
   logger.debug('copied Chrome profile to temp directory', { from: profilePath, to: tempDir });
   return tempDir;
 }
@@ -31,14 +31,14 @@ export function copyProfileToTemp(profilePath: string): string {
  * a cleanup failure is logged, never thrown, so it cannot mask the fetch's own
  * outcome. No-op when no copy was made (`userDataDir` undefined).
  */
-export function removeTempProfile(userDataDir: string | undefined): void {
+export async function removeTempProfile(userDataDir: string | undefined): Promise<void> {
   if (!userDataDir) return;
   if (!basename(userDataDir).startsWith(TEMP_PROFILE_PREFIX)) {
     logger.warn('refusing to remove a directory that is not a wigolo temp profile copy', { userDataDir });
     return;
   }
   try {
-    rmSync(userDataDir, { recursive: true, force: true });
+    await rm(userDataDir, { recursive: true, force: true });
     logger.debug('removed temp Chrome profile copy', { userDataDir });
   } catch (err) {
     logger.warn('failed to remove temp Chrome profile copy', {
