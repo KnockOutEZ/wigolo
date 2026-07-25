@@ -1,7 +1,7 @@
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
-import { guardFetchUrl } from '../watch/ssrf.js';
+import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
 
 export interface HttpFetchOptions {
   headers?: Record<string, string>;
@@ -160,6 +160,24 @@ async function fetchWithRedirects(
     visited.add(currentUrl);
 
     logger.debug('fetching', { url: currentUrl, attempt: redirectCount });
+
+    // Fetch-time SSRF re-check. `guardFetchUrl` (applied on input + each redirect
+    // Location) only validates the LITERAL host, so a public hostname whose DNS
+    // record points at a blocked address (cloud metadata / RFC-1918 / loopback in
+    // serve mode) passes it and is only caught here, before we connect. Skip literal
+    // IPs — already validated. Same allowPrivate policy as the literal guard.
+    {
+      const rhost = new URL(currentUrl).hostname;
+      const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(rhost) || rhost.includes(':');
+      if (!isIpLiteral) {
+        const resolved = await guardResolvedHost(rhost, 'target url', {
+          allowPrivate,
+        });
+        if (!resolved.ok) {
+          throw new HttpFetchError(resolved.reason, false);
+        }
+      }
+    }
 
     const timeout = AbortSignal.timeout(timeoutMs);
     const combined = options.signal

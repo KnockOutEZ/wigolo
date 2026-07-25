@@ -17,7 +17,7 @@
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
-import { guardFetchUrl } from '../watch/ssrf.js';
+import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
 
 const log = createLogger('fetch');
 
@@ -304,6 +304,23 @@ export async function tlsFetch(url: string, options: TlsFetchOptions = {}): Prom
     for (let hop = 0; hop <= maxHops; hop++) {
       if (seen.has(current)) throw new Error(`redirect loop at ${current}`);
       seen.add(current);
+      // Fetch-time SSRF re-check. `guardFetchUrl` (applied on the redirect
+      // Location below) only validates the LITERAL host, so a public hostname
+      // whose DNS record points at a blocked address (cloud metadata /
+      // RFC-1918 / loopback in serve mode) passes it and is only caught here,
+      // before we connect. Applies to the input URL AND every redirect hop.
+      // Skip literal IPs — already validated. Same allowPrivate policy as the
+      // literal guard.
+      {
+        const rhost = new URL(current).hostname;
+        const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(rhost) || rhost.includes(':');
+        if (!isIpLiteral) {
+          const resolved = await guardResolvedHost(rhost, 'target url', { allowPrivate });
+          if (!resolved.ok) {
+            throw new Error(`Redirect blocked: ${resolved.reason}. ${resolved.hint}`);
+          }
+        }
+      }
       // Never carry a Cookie across a cross-host redirect hop — a reused,
       // host-scoped anti-bot clearance must not leak to a different origin.
       const hopHeaders = sameHost(url, current)

@@ -36,7 +36,7 @@ Defaults: `127.0.0.1:3333` (override with `WIGOLO_DAEMON_PORT` / `WIGOLO_DAEMON_
 
 Set the token with `WIGOLO_API_TOKEN`, or `WIGOLO_API_TOKEN_FILE` to read it from a file (the Docker/systemd secret pattern — keeps it out of process listings). With a token configured, every `/v1`, `/openapi.json`, compat-shim, and MCP request needs `Authorization: Bearer <token>`; `/health` stays open.
 
-The MCP transport additionally rejects any request carrying a browser `Origin` header (CLI/MCP clients never send one) and any non-allowlisted `Host` — blocking token probing from web pages and DNS-rebinding attacks even in token mode.
+The MCP transport additionally rejects any request carrying a browser `Origin` header (CLI/MCP clients never send one). In open mode it also requires an allowlisted loopback `Host`, blocking DNS-rebinding attacks; with a configured bearer token, remote MCP clients may use their normal Host header.
 
 One more remote-exposure guard: under a non-loopback bind, tool calls targeting loopback/localhost URLs are refused (a remote caller could otherwise probe services on the daemon's own box). `WIGOLO_SERVE_ALLOW_LOCAL_TARGETS=1` opts back in. See [self-hosting](./self-hosting.md#network-posture).
 

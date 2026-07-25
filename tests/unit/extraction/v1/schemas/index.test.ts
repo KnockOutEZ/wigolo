@@ -6,7 +6,7 @@ import {
 } from '../../../../../src/extraction/v1/schemas/index.js';
 
 describe('schema registry', () => {
-  it('lists all 6 named schemas', () => {
+  it('lists all 7 named schemas', () => {
     expect(NAMED_SCHEMAS).toEqual([
       'Article',
       'Recipe',
@@ -14,6 +14,7 @@ describe('schema registry', () => {
       'CodeSnippet',
       'Paper',
       'EventListing',
+      'JobPosting',
     ]);
   });
 
