@@ -8,6 +8,7 @@
 import type { RawSearchResult } from '../../types.js';
 import { getEmbedProvider } from '../../providers/embed-provider.js';
 import { createLogger } from '../../logger.js';
+import { getEmbedderStatus } from '../../embedding/embedder-status.js';
 
 const log = createLogger('search');
 
@@ -63,9 +64,12 @@ export async function applyContextRank(
   try {
     provider = await getEmbedProvider();
   } catch (err) {
-    log.warn('context-rank: embed provider unavailable, skipping', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+    const message = err instanceof Error ? err.message : String(err);
+    // Record it so the response, /health, and doctor can report that this
+    // search was ranked without vector signals — the log line alone left the
+    // caller with no way to know the ranking quality had dropped.
+    getEmbedderStatus().markUnavailable(message);
+    log.warn('context-rank: embed provider unavailable, skipping', { error: message });
     return results;
   }
 

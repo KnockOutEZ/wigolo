@@ -10,6 +10,7 @@ import {
   normalizeUrl,
 } from '../cache/store.js';
 import { FastembedEmbedProvider } from './fastembed-provider.js';
+import { getEmbedderStatus } from './embedder-status.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('embedding');
@@ -133,6 +134,7 @@ export class EmbeddingService {
     try {
       await this.provider.embed(['embedding service probe']);
       this.providerVerified = true;
+      getEmbedderStatus().markReady();
       log.info('embedding provider verified', {
         modelId: this.provider.modelId,
         dim: this.provider.dim,
@@ -144,6 +146,7 @@ export class EmbeddingService {
       if (this.loadAttempts >= MAX_LOAD_ATTEMPTS) {
         this.latchedOff = true;
         this.available = false;
+        getEmbedderStatus().markUnavailable(message);
         log.error(
           'embedding provider failed to load after repeated attempts — embeddings disabled; run `wigolo warmup --embeddings` to install the model',
           { error: message, attempts: this.loadAttempts },

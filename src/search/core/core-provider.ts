@@ -34,6 +34,7 @@ import { buildQueryUnderstanding } from './query-understanding.js';
 import { detectRareTerms } from './rare-terms.js';
 import { extractErrorTokens, resultMatchesErrorToken } from './error-intent.js';
 import { buildEngineWarnings } from './engine-warnings.js';
+import { getEmbedderStatus } from '../../embedding/embedder-status.js';
 import { faviconUrlFor } from './favicon.js';
 import { runSynthesis } from '../answer-synthesis.js';
 import { applyEvidenceDefault, renderCitationsXml } from '../evidence.js';
@@ -860,6 +861,15 @@ export class CoreSearchProvider implements SearchProvider {
 
     if (allDegraded) {
       data.warning = 'all engines failed or no results';
+    }
+
+    // Surface a degraded embedder once per session. Without this the caller has
+    // no way to tell that vector-similarity ranking silently dropped out — the
+    // failure #231 reported, where a container missing its native tokenizer
+    // served worse rankings with nothing anywhere in the response to say so.
+    const embedderWarning = getEmbedderStatus().consumeWarning();
+    if (embedderWarning) {
+      data.warning = data.warning ? `${data.warning}; ${embedderWarning}` : embedderWarning;
     }
 
     if (ultraFastMiss) {

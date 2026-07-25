@@ -166,6 +166,45 @@ function checkFastembedCache(dataDir: string): { installed: boolean; reason?: st
 }
 
 /**
+ * The name of the prebuilt tokenizer binding this platform needs.
+ *
+ * fastembed tokenizes through `@anush008/tokenizers`, a meta-package whose real
+ * code ships as per-platform optional dependencies. If the one matching this
+ * OS/arch isn't published or wasn't installed, the model throws on load and
+ * search quietly drops to keyword + cross-encoder ranking. Checking for the
+ * package on disk catches that without importing onnxruntime into the doctor
+ * process — deliberately avoided here (see runDoctorIsolated).
+ */
+export function expectedTokenizerBinding(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string | undefined {
+  if (platform === 'darwin') return '@anush008/tokenizers-darwin-universal';
+  if (platform === 'win32' && arch === 'x64') return '@anush008/tokenizers-win32-x64-msvc';
+  if (platform === 'linux' && arch === 'x64') return '@anush008/tokenizers-linux-x64-gnu';
+  if (platform === 'linux' && arch === 'arm64') return '@anush008/tokenizers-linux-arm64-gnu';
+  return undefined;
+}
+
+function checkTokenizerBinding(): { ok: boolean; binding?: string; reason?: string } {
+  const binding = expectedTokenizerBinding();
+  if (!binding) {
+    return { ok: false, reason: `no prebuilt tokenizer is published for ${process.platform}/${process.arch}` };
+  }
+  const req = createRequire(import.meta.url);
+  try {
+    req.resolve(`${binding}/package.json`);
+    return { ok: true, binding };
+  } catch {
+    return {
+      ok: false,
+      binding,
+      reason: `${binding} is not installed — embeddings cannot load, so search runs without vector ranking`,
+    };
+  }
+}
+
+/**
  * Cheap data-dir writability probe: create + delete a temp marker file in the
  * data dir. Surfaces the Docker bind-mount EACCES class at diagnosis time
  * rather than deep in a tool call. Returns an actionable reason naming the dir
@@ -531,6 +570,16 @@ export async function runDoctorColdChecks(dataDir: string): Promise<DoctorCheck[
     detail: emb.installed ? 'model cached' : (emb.reason ?? 'model missing'),
   });
 
+  // A cached model is useless without the native tokenizer for this platform,
+  // and no amount of re-downloading fixes a missing binding — hence not fixable.
+  const tok = checkTokenizerBinding();
+  checks.push({
+    name: 'tokenizer-binding',
+    status: tok.ok ? 'ok' : 'failed',
+    fixable: false,
+    detail: tok.ok ? `${tok.binding} present` : (tok.reason ?? 'binding missing'),
+  });
+
   // searxng bootstrap: only a fixable failure when the sidecar is opted into.
   // On core (default) a failed/absent state is EXPECTED, not a failure — report
   // it skipped and non-fixable so the wipe never runs (D9 hard gate).
@@ -732,6 +781,15 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
     out(`  Embeddings model:   installed (fastembed BGE-small-en-v1.5)`);
   } else {
     out(`  Embeddings model:   not installed${embeddings.reason ? ` (${embeddings.reason})` : ''}`);
+  }
+  const tokenizer = checkTokenizerBinding();
+  if (tokenizer.ok) {
+    out(`  Tokenizer binding:  ${tokenizer.binding}`);
+  } else {
+    out(`  Tokenizer binding:  MISSING for ${process.platform}/${process.arch}`);
+    out(`                      ${tokenizer.reason}`);
+    degraded = true;
+    nonFixableDegraded = true;
   }
 
   out('');
