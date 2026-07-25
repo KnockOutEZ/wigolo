@@ -8,7 +8,7 @@ export default function StartShipping() {
         <div className={styles.media}>
           <img
             src={asset("/promo/ask-twice.svg")}
-            alt="Ask twice, hit the web once: first query hits the live web in 3.6 seconds, the second answers from local cache in milliseconds, the third still answers offline"
+            alt="Ask twice, hit the web once — the same question three ways: the live-web ask takes 3.6 seconds, the cached ask answers in milliseconds, and the offline ask still answers with the network unreachable"
           />
         </div>
         <div className={styles.text}>

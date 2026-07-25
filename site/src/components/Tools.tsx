@@ -149,7 +149,7 @@ const FEATURES: Feature[] = [
     tab: "Local Cache",
     icon: <CacheIcon />,
     heading: "Successfully cached, locally reusable",
-    body: "Successfully fetched content lands in a local store under ~/.wigolo/ — full text, keyword index, and on-device vectors. Asking again avoids another network round trip and Wigolo usage fee; find_similar and change detection build on it.",
+    body: "Successfully fetched content lands in a local store under ~/.wigolo/ — full text, keyword index, and on-device vectors. Asking again is served from that store while the entry is still fresh — no network round trip, no Wigolo usage fee; a miss, an expired entry, or a forced refresh still goes out to the web. find_similar and change detection build on it.",
     cta: "Get started",
     href: "#quickstart",
     visual: <CacheVisual />,

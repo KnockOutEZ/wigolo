@@ -21,7 +21,7 @@ const mono = Azeret_Mono({
 
 const TITLE = "wigolo — local-first web intelligence for AI agents";
 const DESCRIPTION =
-  "Free, open-source server that gives any AI agent real web powers — search across 18 engines, fetch, crawl, extract, cache, and research. In your editor over MCP, in your framework through an SDK, or in your self-hosted stack over REST. Keyless core, local persistent state, and no Wigolo usage fee. Public beta.";
+  "Free, open-source server that gives any AI agent real web powers — search across up to 18 engines, fetch, crawl, extract, cache, and research. In your editor over MCP, in your framework through an SDK, or in your self-hosted stack over REST. Keyless core, local persistent state, and no Wigolo usage fee. Public beta.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),

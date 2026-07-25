@@ -82,7 +82,7 @@ export default function Footer() {
           </a>
           <div className={styles.bottomRight}>
             <span className={styles.status}>
-              <span className={styles.dot} /> Local engine active
+              <span className={styles.dot} /> Local-first engine
             </span>
             <span className={styles.copy}>
               public beta · AGPL-3.0 · built by @KnockOutEZ
