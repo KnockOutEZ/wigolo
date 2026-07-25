@@ -29,9 +29,20 @@ describe('embedder status', () => {
     const first = status.consumeWarning();
     expect(first).toContain('Vector-similarity ranking is inactive');
     expect(first).toContain('tokenizer binding missing');
-    expect(first).toContain('wigolo warmup --embeddings');
+    // A missing binding is not repaired by re-downloading the model, so the
+    // warning must not send the user to warmup — doctor says the same thing.
+    expect(first).not.toContain('wigolo warmup --embeddings');
+    expect(first).toContain("reinstall wigolo's dependencies");
 
     expect(status.consumeWarning()).toBeUndefined();
+  });
+
+  it('points a model-download failure at warmup', () => {
+    const status = getEmbedderStatus();
+    status.markUnavailable('model weights not found in cache');
+
+    const warning = status.consumeWarning();
+    expect(warning).toContain('wigolo warmup --embeddings');
   });
 
   it('stays quiet when the same failure repeats', () => {
@@ -65,11 +76,14 @@ describe('embedder status', () => {
 
 describe('expectedTokenizerBinding', () => {
   it('maps linux arm64 to the binding that was missing from the container', () => {
-    expect(expectedTokenizerBinding('linux', 'arm64')).toBe('@anush008/tokenizers-linux-arm64-gnu');
+    expect(expectedTokenizerBinding('linux', 'arm64', 'glibc')).toBe('@anush008/tokenizers-linux-arm64-gnu');
   });
 
   it('maps the platforms that do ship a prebuilt', () => {
-    expect(expectedTokenizerBinding('linux', 'x64')).toBe('@anush008/tokenizers-linux-x64-gnu');
+    expect(expectedTokenizerBinding('linux', 'x64', 'glibc')).toBe('@anush008/tokenizers-linux-x64-gnu');
+    // Alpine and other musl images need the musl build, not the glibc one.
+    expect(expectedTokenizerBinding('linux', 'x64', 'musl')).toBe('@anush008/tokenizers-linux-x64-musl');
+    expect(expectedTokenizerBinding('linux', 'arm64', 'musl')).toBe('@anush008/tokenizers-linux-arm64-musl');
     expect(expectedTokenizerBinding('darwin', 'arm64')).toBe('@anush008/tokenizers-darwin-universal');
     expect(expectedTokenizerBinding('win32', 'x64')).toBe('@anush008/tokenizers-win32-x64-msvc');
   });

@@ -178,12 +178,35 @@ function checkFastembedCache(dataDir: string): { installed: boolean; reason?: st
 export function expectedTokenizerBinding(
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,
+  libc: LinuxLibc = detectLinuxLibc(),
 ): string | undefined {
   if (platform === 'darwin') return '@anush008/tokenizers-darwin-universal';
   if (platform === 'win32' && arch === 'x64') return '@anush008/tokenizers-win32-x64-msvc';
-  if (platform === 'linux' && arch === 'x64') return '@anush008/tokenizers-linux-x64-gnu';
-  if (platform === 'linux' && arch === 'arm64') return '@anush008/tokenizers-linux-arm64-gnu';
+  if (platform === 'linux' && (arch === 'x64' || arch === 'arm64')) {
+    return `@anush008/tokenizers-linux-${arch}-${libc === 'musl' ? 'musl' : 'gnu'}`;
+  }
   return undefined;
+}
+
+export type LinuxLibc = 'glibc' | 'musl';
+
+/**
+ * Which libc this Linux process runs against. The tokenizer publishes separate
+ * `-gnu` and `-musl` builds, so an Alpine container needs the musl one — asking
+ * for the glibc binding there reports a missing binding that was never the
+ * right package to look for.
+ *
+ * Node reports the runtime glibc version in its diagnostic report; a musl build
+ * has no such field.
+ */
+function detectLinuxLibc(): LinuxLibc {
+  if (process.platform !== 'linux') return 'glibc';
+  try {
+    const report = process.report?.getReport() as { header?: { glibcVersionRuntime?: string } } | undefined;
+    return report?.header?.glibcVersionRuntime ? 'glibc' : 'musl';
+  } catch {
+    return 'glibc';
+  }
 }
 
 function checkTokenizerBinding(): { ok: boolean; binding?: string; reason?: string } {
@@ -192,16 +215,30 @@ function checkTokenizerBinding(): { ok: boolean; binding?: string; reason?: stri
     return { ok: false, reason: `no prebuilt tokenizer is published for ${process.platform}/${process.arch}` };
   }
   const req = createRequire(import.meta.url);
-  try {
-    req.resolve(`${binding}/package.json`);
-    return { ok: true, binding };
-  } catch {
-    return {
-      ok: false,
-      binding,
-      reason: `${binding} is not installed — embeddings cannot load, so search runs without vector ranking`,
-    };
+  // Accept the sibling libc build too: a musl-detected host with the glibc
+  // package installed (or the reverse) still has a working tokenizer, and
+  // reporting it missing would send the user chasing a package they have.
+  const candidates = [binding, siblingLibcBinding(binding)].filter((b): b is string => Boolean(b));
+  for (const candidate of candidates) {
+    try {
+      req.resolve(`${candidate}/package.json`);
+      return { ok: true, binding: candidate };
+    } catch {
+      // try the next candidate
+    }
   }
+  return {
+    ok: false,
+    binding,
+    reason: `${binding} is not installed — embeddings cannot load, so search runs without vector ranking`,
+  };
+}
+
+/** The other libc build of a Linux tokenizer binding, if this is one. */
+function siblingLibcBinding(binding: string): string | undefined {
+  if (binding.endsWith('-gnu')) return `${binding.slice(0, -'-gnu'.length)}-musl`;
+  if (binding.endsWith('-musl')) return `${binding.slice(0, -'-musl'.length)}-gnu`;
+  return undefined;
 }
 
 /**

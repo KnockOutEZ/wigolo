@@ -901,7 +901,11 @@ export class CoreSearchProvider implements SearchProvider {
           data.synthesis_advice = synthResult.data.synthesis_advice;
         }
       } else {
-        data.warning = `synthesis failed: ${synthResult.error_reason}`;
+        // Append: an embedder-degradation warning set above is about ranking
+        // quality and stays true whether or not synthesis worked. Overwriting
+        // it here hid the #231 failure whenever answer generation also failed.
+        const synthesisWarning = `synthesis failed: ${synthResult.error_reason}`;
+        data.warning = data.warning ? `${data.warning}; ${synthesisWarning}` : synthesisWarning;
       }
 
       if (input.format === 'stream_answer') {

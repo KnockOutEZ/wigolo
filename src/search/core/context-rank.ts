@@ -80,11 +80,18 @@ export async function applyContextRank(
   try {
     vectors = await provider.embed([combinedQuery, ...resultTexts]);
   } catch (err) {
-    log.warn('context-rank: embed call failed, skipping', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+    const message = err instanceof Error ? err.message : String(err);
+    // A provider that loaded but then failed to embed degrades the ranking
+    // exactly as an absent provider does, so it has to leave the same trace —
+    // otherwise health and the response warning stay `unknown` mid-degradation.
+    getEmbedderStatus().markUnavailable(message);
+    log.warn('context-rank: embed call failed, skipping', { error: message });
     return results;
   }
+
+  // The provider only marks itself ready at load time, so a recovered call is
+  // the one signal that clears a previously recorded failure.
+  getEmbedderStatus().markReady();
 
   if (vectors.length !== results.length + 1) {
     log.warn('context-rank: unexpected vector count, skipping', {

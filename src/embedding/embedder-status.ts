@@ -48,11 +48,20 @@ class EmbedderStatus {
   consumeWarning(): string | undefined {
     if (this._state !== 'unavailable' || this._warned) return undefined;
     this._warned = true;
+    const reason = this._reason ?? 'unknown';
+    // A missing platform binding is not a download problem: `warmup` re-fetches
+    // the model weights, which are already there. Doctor says so, and the two
+    // must not contradict each other.
+    const remedy = isMissingBindingReason(reason)
+      ? `That is a missing native tokenizer binding for this platform, which re-downloading ` +
+        `the model does not fix — reinstall wigolo's dependencies with the Node that runs it ` +
+        `so the platform binding resolves.`
+      : `To install the model: \`npx wigolo warmup --embeddings\`.`;
     return (
       `Vector-similarity ranking is inactive — the embedding model could not be loaded, ` +
       `so results are ranked by keyword and cross-encoder signals only. ` +
-      `Reason: ${this._reason ?? 'unknown'}. ` +
-      `To install it: \`npx wigolo warmup --embeddings\`. For details: \`npx wigolo doctor\`.`
+      `Reason: ${reason}. ` +
+      `${remedy} For details: \`npx wigolo doctor\`.`
     );
   }
 
@@ -62,6 +71,14 @@ class EmbedderStatus {
     this._reason = undefined;
     this._warned = false;
   }
+}
+
+/**
+ * Whether a recorded failure reason points at an absent native tokenizer
+ * binding rather than an absent or corrupt model download.
+ */
+function isMissingBindingReason(reason: string): boolean {
+  return /tokenizer|binding|\.node\b|dlopen|@anush008/i.test(reason);
 }
 
 let instance: EmbedderStatus | null = null;
