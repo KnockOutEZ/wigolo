@@ -28,7 +28,7 @@ export interface SystemCheckResult {
   hardFailure: boolean;
 }
 
-const MIN_NODE_MAJOR = 20;
+const MIN_NODE_MAJOR = 22;
 const MIN_FREE_MB = 500;
 
 function parseSemver(raw: string): { major: number; minor: number; patch: number } | null {
@@ -51,7 +51,7 @@ export function checkNode(): CheckResult {
     return {
       ok: false,
       version,
-      message: `wigolo requires Node 20 or newer (found ${version})`,
+      message: `wigolo requires Node 22 or newer (found ${version})`,
     };
   }
   return { ok: true, version };

@@ -30,10 +30,13 @@ describe('package.json: forbidden deps after Python-rerank migration', () => {
     expect(pkg.overrides?.protobufjs).toBeUndefined();
   });
 
-  it('engines.node is still >=20', () => {
+  it('engines.node is still >=22', () => {
+    // Raised from >=20 with the better-sqlite3 12.11 bump (#237): 12.10+ ships
+    // Node 26 prebuilds but dropped the Node 20 Windows prebuilt, and Node 20
+    // reached EOL 2026-04-30. Keep this in lockstep with the CI smoke matrix.
     const node = (pkg as { engines?: { node?: string } }).engines?.node;
     expect(node).toBeDefined();
-    expect(node).toMatch(/>=20/);
+    expect(node).toMatch(/>=22/);
   });
 });
 

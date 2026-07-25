@@ -191,7 +191,7 @@ describe('runInit', () => {
 
   it('exits 1 when Node is too old', async () => {
     runSystemCheckMock.mockResolvedValue({
-      node: { ok: false, version: '18.0.0', message: 'requires Node 20+' },
+      node: { ok: false, version: '18.0.0', message: 'requires Node 22+' },
       python: { ok: true, binary: 'python3', version: '3.12.5' },
       docker: { ok: false },
       disk: { ok: true, freeMb: 50000 },
@@ -202,7 +202,7 @@ describe('runInit', () => {
       const code = await runInit(['--non-interactive', '--agents=cursor']);
       expect(code).toBe(1);
       const out = cap.stdout.join('');
-      expect(out).toMatch(/requires Node 20/i);
+      expect(out).toMatch(/requires Node 22/i);
     } finally {
       cap.restore();
     }

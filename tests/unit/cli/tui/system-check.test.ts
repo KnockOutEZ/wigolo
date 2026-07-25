@@ -47,13 +47,13 @@ function mockStatfs(bavail: number, bsize = 4096): void {
 }
 
 describe('checkNode', () => {
-  it('accepts Node 20 and above', () => {
+  it('rejects Node 20 (EOL 2026-04-30; floor raised to 22 with better-sqlite3 12.11)', () => {
     const originalVersion = process.version;
     Object.defineProperty(process, 'version', { value: 'v20.0.0', configurable: true });
     try {
       const r = checkNode();
-      expect(r.ok).toBe(true);
-      expect(r.version).toBe('20.0.0');
+      expect(r.ok).toBe(false);
+      expect(r.message).toMatch(/requires Node 22/i);
     } finally {
       Object.defineProperty(process, 'version', { value: originalVersion, configurable: true });
     }
@@ -75,7 +75,7 @@ describe('checkNode', () => {
     try {
       const r = checkNode();
       expect(r.ok).toBe(false);
-      expect(r.message).toMatch(/requires Node 20/i);
+      expect(r.message).toMatch(/requires Node 22/i);
     } finally {
       Object.defineProperty(process, 'version', { value: originalVersion, configurable: true });
     }
