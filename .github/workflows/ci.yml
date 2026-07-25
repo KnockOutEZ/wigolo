@@ -86,7 +86,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Every desktop OS across the supported Node range. 12.9.0 ships prebuilt
+        # Every desktop OS across the supported Node range. 12.11.1 ships prebuilt
         # native binaries for all of these (win32-x64 + darwin/linux arm64 across
         # Node 22/24/26), so npm ci never falls back to a source compile.
         os: [ubuntu-latest, macos-latest, windows-latest]
