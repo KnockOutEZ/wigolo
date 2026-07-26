@@ -81,6 +81,36 @@ describe('DblpEngine', () => {
     expect(results[0].url).toBe('https://dblp.org/rec/x');
   });
 
+  // ee/url are normally absolute, but a relative value is resolved against the
+  // DBLP origin so it stays a usable link rather than a broken relative path.
+  it('resolves a relative ee against the dblp origin', async () => {
+    const body = dblpBody([
+      { title: 'A paper', venue: 'ICML', year: '2020', ee: '/rec/conf/x/y.html' },
+    ]);
+    captureFetch(body);
+    const results = await new DblpEngine().search('q');
+    expect(results[0].url).toBe('https://dblp.org/rec/conf/x/y.html');
+  });
+
+  it('resolves a relative url fallback against the dblp origin', async () => {
+    const body = dblpBody([
+      { title: 'A paper', venue: 'ICML', year: '2020', url: 'rec/z' },
+    ]);
+    captureFetch(body);
+    const results = await new DblpEngine().search('q');
+    expect(results[0].url).toBe('https://dblp.org/rec/z');
+  });
+
+  // A malformed ee is dropped so the record url can still stand in.
+  it('falls back to url when ee is a malformed value', async () => {
+    const body = dblpBody([
+      { title: 'A paper', venue: 'ICML', year: '2020', ee: 'http://', url: 'https://dblp.org/rec/w' },
+    ]);
+    captureFetch(body);
+    const results = await new DblpEngine().search('q');
+    expect(results[0].url).toBe('https://dblp.org/rec/w');
+  });
+
   it('skips a hit with neither ee nor url', async () => {
     const body = dblpBody([
       { title: 'linkless', venue: 'ICML', year: '2020' },

@@ -49,6 +49,21 @@ function asString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
 
+// DBLP's `ee`/`url` are normally absolute, but resolve against the DBLP origin
+// defensively: a relative path becomes a usable link and a malformed value is
+// dropped rather than stored as a broken result URL.
+const DBLP_ORIGIN = 'https://dblp.org/';
+
+function toAbsoluteUrl(v: unknown): string | undefined {
+  const s = asString(v);
+  if (!s) return undefined;
+  try {
+    return new URL(s, DBLP_ORIGIN).href;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Author names, normalized across DBLP's two shapes: a single author is a bare
  * object, multiple authors are an array. Trimmed to the first {@link MAX_AUTHORS}
@@ -100,8 +115,9 @@ export class DblpEngine implements SearchEngine {
       if (!title) continue;
 
       // `ee` is the publisher/DOI link to the paper itself; `url` is the DBLP
-      // record page. Prefer the paper, fall back to the record.
-      const url = asString(info?.ee) ?? asString(info?.url);
+      // record page. Prefer the paper, fall back to the record. Both are
+      // resolved to absolute form so a relative value is still usable.
+      const url = toAbsoluteUrl(info?.ee) ?? toAbsoluteUrl(info?.url);
       if (!url) continue;
 
       // DBLP returns bibliographic metadata, not abstracts, so the snippet is
