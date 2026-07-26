@@ -27,6 +27,7 @@ wigolo doctor --fix  # repairs the known failure classes automatically
 | A download fails with `self signed certificate in certificate chain` | You're behind a TLS-inspecting (corporate) proxy. Point Node at your organization's CA bundle — `NODE_EXTRA_CA_CERTS=/path/to/corp-ca.pem` — then re-run warmup. |
 | `npm install` fails compiling a native dependency (often on Windows) | Your Node version has no prebuilt binary, so npm falls back to a source build. Use a supported LTS — **Node 20, 22, or 24** — where prebuilts exist, or install a C/C++ toolchain (Visual Studio Build Tools on Windows). |
 | Downloads stall or fail on low disk | Components need ~1 GB free. Free space, point `WIGOLO_DATA_DIR` at a larger volume, or `wigolo config --cleanup` to reclaim a previous install. |
+| `npm ci` / `npm install` fails with `sharp: Please add node-addon-api to your dependencies` | You have a system-wide `vips` (e.g. `brew install vips` on macOS). `sharp` detects it via `pkg-config` and tries to build against it instead of using its prebuilt binary. Run `SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm ci` instead — see [CONTRIBUTING.md](../CONTRIBUTING.md#macos-a-system-wide-vips-breaks-sharp-on-install). |
 
 ## A component failed during setup — is wigolo broken?
 

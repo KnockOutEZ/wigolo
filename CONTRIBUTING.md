@@ -17,6 +17,29 @@ npm run lint         # tsc --noEmit
 
 `npm run dev` runs the CLI from source via `tsx`.
 
+### macOS: a system-wide `vips` breaks `sharp` on install
+
+If you have `vips` installed system-wide (typically `brew install vips`),
+`npm ci` fails with:
+
+```
+sharp: Please add node-addon-api to your dependencies
+```
+
+`sharp` arrives transitively via `@huggingface/transformers`. It detects the
+global `libvips` through `pkg-config` and prefers building against it over
+using its own prebuilt binary — but that from-source path needs
+`node-addon-api`, which is not a direct dependency here, so the install fails.
+
+Tell `sharp` to ignore the global copy:
+
+```bash
+SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm ci
+```
+
+This is unrelated to your Node version — it reproduces on any Node once a
+Homebrew `vips` is present.
+
 ## Proposing changes
 
 1. Open an issue first for anything non-trivial so we can agree on the approach.
