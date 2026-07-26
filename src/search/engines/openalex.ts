@@ -33,13 +33,17 @@ function asString(v: unknown): string | undefined {
  * Returns undefined when the field is absent or malformed so the caller can
  * fall back cleanly.
  */
+// Cap the sparse-array size so a malformed huge position can't balloon it.
+// Real abstracts topped out at ~4000 words in sampling; 10000 clears that.
+const MAX_POSITION = 10000;
+
 function reconstructAbstract(index: unknown): string | undefined {
   if (typeof index !== 'object' || index === null) return undefined;
   const slots: string[] = [];
   for (const [word, positions] of Object.entries(index as Record<string, unknown>)) {
     if (!Array.isArray(positions)) continue;
     for (const p of positions) {
-      if (typeof p === 'number' && p >= 0) slots[p] = word;
+      if (typeof p === 'number' && p >= 0 && p < MAX_POSITION) slots[p] = word;
     }
   }
   const text = slots.join(' ').replace(/\s+/g, ' ').trim();

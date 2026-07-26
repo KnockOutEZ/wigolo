@@ -89,6 +89,21 @@ describe('OpenAlexEngine', () => {
     expect(results[0].snippet.length).toBe(200);
   });
 
+  // Positions index a sparse array whose size is driven by the largest value,
+  // so an anomalously large position is dropped rather than ballooning it.
+  it('drops abstract words at out-of-range positions', async () => {
+    const body = oaBody([
+      {
+        id: 'https://openalex.org/W3b',
+        title: 'Capped',
+        abstract_inverted_index: { real: [0], words: [1], junk: [1_000_000] },
+      },
+    ]);
+    captureFetch(body);
+    const results = await new OpenAlexEngine().search('q');
+    expect(results[0].snippet).toBe('real words');
+  });
+
   it('yields an empty snippet when the abstract index is absent', async () => {
     const body = oaBody([{ id: 'https://openalex.org/W4', title: 'No abstract' }]);
     captureFetch(body);
