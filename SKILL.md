@@ -7,7 +7,7 @@ repository: https://github.com/KnockOutEZ/wigolo
 transport: stdio
 install: npx wigolo
 runtime: node
-min_runtime_version: "20"
+min_runtime_version: "22"
 tools:
   - name: fetch
     description: Fetch one URL, return clean markdown. Auto-routes between HTTP and browser engine. Supports sections, auth, screenshots, browser actions.

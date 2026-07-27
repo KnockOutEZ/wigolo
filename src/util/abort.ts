@@ -1,5 +1,7 @@
 // Small AbortSignal combinators for bounding the search content-fetch stage.
-// Hand-rolled rather than AbortSignal.any() (Node 20.0–20.2 lack it; floor is >=20).
+// Hand-rolled AbortSignal.any() replacement, kept for leak behavior: the native
+// implementation retains listeners on long-lived parent signals in some Node
+// versions, and this version is load-bearing for that. Floor is >=22.
 
 export interface CancelableSignal {
   signal: AbortSignal;

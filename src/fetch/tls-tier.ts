@@ -273,7 +273,7 @@ export async function tlsFetch(url: string, options: TlsFetchOptions = {}): Prom
   // every attempt shares the same per-fetch budget rather than stacking a
   // fresh full timeout on top of an already-spent one. Built ONCE and reused
   // across rotations. `anySignal` is the hand-rolled combiner the HTTP tier
-  // uses (Node 20.0–20.2 lack AbortSignal.any; floor is >=20).
+  // uses (floor is >=22; see util/abort.ts for why it stays hand-rolled).
   let signal: AbortSignal | undefined;
   let cleanup: (() => void) | undefined;
   try {
