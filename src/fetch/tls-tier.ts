@@ -405,15 +405,6 @@ const CHALLENGE_MARKERS = [
   // 2xx, so a real article that merely mentions the phrase can't trip.
   'id="px-captcha"',
   'Robot or human?',
-  // PerimeterX "denied" VARIANT (zillow, …). This template carries neither
-  // `id="px-captcha"` nor the "Robot or human?" title — its widget markup is
-  // styled through `px-captcha-error-*` classes instead, so the two markers
-  // above miss it entirely and the 403 body leaked as content (live-found
-  // 2026-07-28: a zillow fetch returned the 38-char string "Access to this page
-  // has been denied" as a SUCCESSFUL page). The class prefix is PerimeterX
-  // template markup that never appears in article prose, and at 2xx the
-  // skeleton gate still applies.
-  'px-captcha-error',
 ] as const;
 
 export function isAntiBotStatus(status: number): boolean {
@@ -524,10 +515,7 @@ const CHALLENGE_PLATFORM_SRC = '/cdn-cgi/challenge-platform/';
 // Interstitial page titles. Cloudflare's "Just a moment" already lives in the
 // shared marker list; this covers the title form used by the skeleton check
 // without widening the shared list.
-// `access to this page has been denied` is the PerimeterX block/interstitial
-// title (zillow, …). Title-scoped like the others, so a real article that
-// merely discusses access denials in its body can never trip it.
-const CHALLENGE_TITLE_PATTERN = /<title>[^<]*(?:just a moment|attention required|checking your browser|access to this page has been denied)[^<]*<\/title>/i;
+const CHALLENGE_TITLE_PATTERN = /<title>[^<]*(?:just a moment|attention required|checking your browser)[^<]*<\/title>/i;
 // Below this rendered-text size a body carries no real article content — the
 // hallmark of an interstitial that is nothing but a challenge widget.
 const CHALLENGE_SKELETON_MAX_TEXT = 600;
@@ -571,6 +559,36 @@ function approxVisibleTextLength(html: string): number {
 export function isNearEmptyBody(html: string | null | undefined): boolean {
   if (!html) return true;
   return approxVisibleTextLength(html) < CHALLENGE_SKELETON_MAX_TEXT;
+}
+
+/** Below this size a document is too small for the density ratio to mean
+ *  anything (a 30-byte error page's ratio is noise). Real bot walls ship a
+ *  large scaffold of scripts/styles/widget markup. */
+const WALL_MIN_HTML_BYTES = 1000;
+/** Visible-text-to-markup ratio below which a document carries essentially no
+ *  human-readable content. Measured across real traffic: genuine pages and
+ *  substantive error pages sit at ~0.28-0.93; vendor bot walls sit at ~0.006 —
+ *  two orders of magnitude apart, so the boundary is not finely tuned. */
+const WALL_MAX_TEXT_DENSITY = 0.05;
+
+/**
+ * GENERAL, vendor-agnostic bot-wall SHAPE: a large document that is almost
+ * entirely markup (scripts, styles, widget scaffolding) with essentially no
+ * human-readable text.
+ *
+ * This exists because a marker catalog only ever recognises walls we have
+ * already met — every new vendor or template variant silently leaks its block
+ * page as "content" until someone adds another string. Shape generalises where
+ * markers cannot: whoever served it, a wall has no readable content.
+ *
+ * Deliberately NOT sufficient on its own — callers pair it with an anti-bot
+ * STATUS. A thin 2xx body is the normal shape of an un-hydrated SPA shell, and
+ * treating that as a wall would break ordinary pages.
+ */
+export function isLowContentDensity(html: string | null | undefined): boolean {
+  if (!html || html.length < WALL_MIN_HTML_BYTES) return false;
+  const slice = html.length > 32768 ? html.slice(0, 32768) : html;
+  return approxVisibleTextLength(slice) / slice.length < WALL_MAX_TEXT_DENSITY;
 }
 
 export function isChallengeSkeleton(html: string | null | undefined): boolean {
@@ -671,6 +689,14 @@ export function isAntiBotSignal(statusCode: number, html: string | null | undefi
 export function isChallengeShell(statusCode: number, html: string | null | undefined): boolean {
   if (!html) return false;
   if (isAntiBotStatus(statusCode) && hasChallengeBody(html)) return true;
+  // GENERAL, vendor-agnostic wall rule (see isLowContentDensity). The marker
+  // list above is a catalog of known vendor templates, so each new vendor or
+  // variant leaks its block page as "content" until a string is added. Shape
+  // generalises: an anti-bot STATUS carrying a large all-scaffolding body with
+  // no readable text is a wall whoever served it. Both halves are required —
+  // the status alone would swallow substantive 403s (an admin page must pass
+  // through), and low density alone would swallow un-hydrated SPA shells.
+  if (isAntiBotStatus(statusCode) && isLowContentDensity(html)) return true;
   const is2xx = statusCode >= 200 && statusCode < 300;
   if (is2xx && hasChallengeBody(html) && isChallengeSkeleton(html)) return true;
   return false;
