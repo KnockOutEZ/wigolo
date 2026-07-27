@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { validatePluginExports, validateSearchEngine } from '../../../src/plugins/validate.js';
 import { searchEngine } from '../../../examples/plugin-search-engine/index.mjs';
 
@@ -27,8 +27,45 @@ describe('plugin search engine example', () => {
     expect(typeof searchEngine.search).toBe('function');
   });
 
-  it('maps a real HN Algolia hit to the RawSearchResult shape end-to-end', async () => {
+  // Mocked rather than live: CI runners are offline/rate-limited often enough
+  // that a real hn.algolia.com call makes this suite flaky. The README shows a
+  // one-liner live check for anyone who wants to hit the real endpoint.
+  it('maps an HN Algolia hit to the RawSearchResult shape end-to-end', async () => {
+    // A trimmed real response from https://hn.algolia.com/api/v1/search —
+    // the fields the example plugin actually maps.
+    const hnFixture = {
+      hits: [
+        {
+          title: 'Show HN: Agentic coding with local models',
+          url: 'https://example.com/agentic-coding',
+          story_text: null,
+          _highlightResult: { title: { value: 'Agentic coding' } },
+          points: 128,
+          num_comments: 45,
+          objectID: '39001234',
+        },
+        {
+          title: 'Ask HN: Best agentic coding setup?',
+          url: null, // Ask HN posts have no external URL — maps to the HN item page
+          story_text: 'What are people using day to day?',
+          points: 42,
+          num_comments: 87,
+          objectID: '39005678',
+        },
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(hnFixture), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+
     const results = await searchEngine.search('agentic coding', { maxResults: 3 });
+
     expect(Array.isArray(results)).toBe(true);
     expect(results.length).toBeGreaterThan(0);
     for (const r of results) {
@@ -40,5 +77,12 @@ describe('plugin search engine example', () => {
       expect(r.relevance_score).toBeLessThanOrEqual(1);
       expect(r.engine).toBe('hn-algolia-example');
     }
+    // The query reached the mocked endpoint, not the network.
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    expect(String(fetchMock.mock.calls[0][0])).toContain('hn.algolia.com');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 });
