@@ -39,16 +39,26 @@ const ABI_PATTERNS = [/NODE_MODULE_VERSION/i, /was compiled against a different 
 // sends the user to reinstall a file that is already there.
 const MISSING_PATTERNS = [
   /could not locate the bindings file/i,
-  /cannot find module .*\.node/i,
+  // Anchored to a quoted .node specifier: an unanchored `.*\.node` also matches
+  // unrelated missing-JS-module errors whose path merely contains ".node"
+  // (e.g. "Cannot find module './foo.nodejs.config.js'").
+  /cannot find module ['"][^'"]*\.node['"]/i,
   /no such file or directory.*\.node/i,
   /\.node.*no such file or directory/i,
-  /image not found/i,
 ];
 
 // Generic loader failures: the binding was found but the dynamic linker refused
 // it. The linker's own text is the diagnostic, so pass it through rather than
 // guessing a cause.
-const LOAD_FAILURE_PATTERNS = [/ERR_DLOPEN_FAILED/i, /dlopen\(/i, /cannot open shared object file/i];
+// "image not found" belongs here, not in MISSING_PATTERNS: it is macOS dyld's
+// wording for a present-but-unloadable addon (missing dependent .dylib, wrong
+// arch) — the binding itself was found.
+const LOAD_FAILURE_PATTERNS = [
+  /ERR_DLOPEN_FAILED/i,
+  /dlopen\(/i,
+  /cannot open shared object file/i,
+  /image not found/i,
+];
 
 /**
  * Pulls the "compiled for X, requires Y" pair out of Node's ABI-mismatch text.
@@ -123,11 +133,16 @@ export function describeNativeError(err: unknown, moduleName = 'better-sqlite3')
     return {
       kind: 'other',
       requires: currentAbi(),
+      // No ABI-remedy here: reinstalling with a different Node does nothing for
+      // a missing system library or a wrong-platform binary. The linker's own
+      // text is the diagnosis; the remedy is environmental.
       message:
         `${moduleName} was found but could not be loaded by this Node ` +
         `(ABI ${currentAbi()}). The dynamic linker reported: ${firstLine(text)}. ` +
-        `That is usually a missing system library or an addon built for another ` +
-        `platform or architecture. ${remedy(moduleName)}`,
+        `That is usually a missing or outdated system library, or an addon built ` +
+        `for another platform or architecture — update the system libraries the ` +
+        `linker names, or reinstall wigolo's dependencies on this machine so the ` +
+        `addon is built for it.`,
     };
   }
 

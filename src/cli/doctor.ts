@@ -1017,14 +1017,15 @@ function checkCoreEmbeddings(dataDir: string): void {
 }
 
 /**
- * Reports the Node ABI this process runs on and where the better-sqlite3
- * binding resolved from.
+ * Reports the Node ABI this process runs on and whether the better-sqlite3
+ * addon actually loads under it.
  *
- * Doctor imports better-sqlite3 transitively, so by the time this runs the
- * addon has already loaded — an ABI mismatch would have killed the process at
- * import. That is precisely why the numbers matter: a user whose MCP client
- * fails can run doctor under each Node and compare the ABI lines to see the
- * split, rather than guessing from a truncated stack.
+ * Importing better-sqlite3 proves nothing: the .node binary is dlopen'd inside
+ * the Database constructor, not at module load, so a broken installation
+ * imports cleanly and only fails on first open. Hence the throwaway in-memory
+ * open below. The value of the report: a user whose MCP client fails can run
+ * doctor under each Node and compare the ABI lines to see the split, rather
+ * than guessing from a truncated stack.
  */
 function nativeSqliteInfo(): { abi: string; nodeVersion: string; ok: boolean; detail?: string } {
   const base = { abi: currentAbi(), nodeVersion: process.version };

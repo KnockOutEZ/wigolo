@@ -66,6 +66,59 @@ describe('describeNativeError', () => {
     expect(failure?.kind).toBe('missing-binding');
   });
 
+  it('classifies both orderings of "no such file or directory" around the .node path', () => {
+    const failure = describeNativeError(
+      new Error('no such file or directory, open /app/build/Release/better_sqlite3.node'),
+    );
+
+    expect(failure?.kind).toBe('missing-binding');
+  });
+
+  it("treats macOS dyld's 'image not found' as a load failure, not a missing binding", () => {
+    // dyld says "image not found" for a PRESENT addon whose dependent dylib is
+    // absent — telling the user to re-download the binding would be wrong.
+    const failure = describeNativeError(
+      new Error(
+        'dlopen(/app/node_modules/better-sqlite3/build/Release/better_sqlite3.node, 0x0001): ' +
+          'Library not loaded: /usr/local/opt/icu4c/lib/libicui18n.dylib\n' +
+          '  Referenced from: better_sqlite3.node\n  Reason: image not found',
+      ),
+    );
+
+    expect(failure?.kind).toBe('other');
+    expect(failure?.message).not.toContain('was not downloaded');
+  });
+
+  it('classifies a linux missing shared-object as a load failure with the linker text', () => {
+    const failure = describeNativeError(
+      new Error(
+        'Error: libgomp.so.1: cannot open shared object file: No such file or directory',
+      ),
+    );
+
+    expect(failure?.kind).toBe('other');
+    expect(failure?.message).toContain('libgomp.so.1');
+  });
+
+  it('does not treat a missing JS module whose path contains ".node" as a native binding', () => {
+    const failure = describeNativeError(
+      new Error("Cannot find module './foo.nodejs.config.js'"),
+    );
+
+    expect(failure).toBeUndefined();
+  });
+
+  it('does not send the generic load-failure case to the ABI remedy', () => {
+    const failure = describeNativeError(
+      new Error("ERR_DLOPEN_FAILED: libstdc++.so.6: version 'GLIBCXX_3.4.29' not found"),
+    );
+
+    expect(failure?.kind).toBe('other');
+    // Rebuilding against a different Node does not install a system library.
+    expect(failure?.message).not.toContain('npm rebuild');
+    expect(failure?.message).toContain('system librar');
+  });
+
   it('falls back to the current ABI when only one version is named', () => {
     const failure = describeNativeError(
       new Error('was compiled against a different Node.js version using NODE_MODULE_VERSION 115.'),
