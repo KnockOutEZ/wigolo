@@ -411,6 +411,11 @@ const REACHABLE_POLL_MS = 150;
 // fetch, not an interaction session; a slow SPA simply reads less and the
 // caller falls back on an empty/near-empty body.
 const NAV_SETTLE_MS = 1_200;
+/** Upper bound on the post-navigation challenge-clear poll. A bot-wall
+ *  interstitial that auto-clears (PerimeterX/Cloudflare) typically does so
+ *  within a few seconds; past this we fall back rather than hold the rung. */
+const CHALLENGE_CLEAR_TIMEOUT_MS = 12_000;
+const CHALLENGE_POLL_INTERVAL_MS = 500;
 // Grace after SIGTERM before escalating to SIGKILL on teardown.
 const KILL_GRACE_MS = 2_000;
 
@@ -727,26 +732,40 @@ export async function cdpDirectFetch(
     });
     if (opts.signal?.aborted) return null;
 
-    const html = await handle.getContentHtml();
-    if (!html) {
-      log.debug('cdp-direct: empty content read, falling back', { url });
-      return null;
-    }
-
-    // Block-detection on the fetched body. cdp-direct has no real HTTP status
-    // (it navigates + reads the DOM, status is not surfaced by CDP here), so a
-    // bot wall that serves its denial/challenge page at HTTP 200 (PerimeterX
-    // "Access denied", Cloudflare/DataDome interstitials) would otherwise be
-    // returned as successful content. Run the shared classifier; if the body is
-    // a challenge/block, return null so the caller falls back to the standard
-    // tier (which maps to an honest blocked_by_challenge) rather than serving a
-    // denial page as if it were the real page. (Found via live testing
-    // 2026-07-28 — cdp-direct was returning "Access to this page has been
-    // denied" as a 200.)
-    const challengeClass = classifyChallenge(html);
-    if (challengeClass !== 'none') {
-      log.debug('cdp-direct: fetched a challenge/block page, falling back', { url, challengeClass });
-      return null;
+    // Read + CHALLENGE-CLEAR POLL.
+    //
+    // Two problems are solved together here:
+    //   1. cdp-direct has no real HTTP status (it navigates and reads the DOM),
+    //      so a bot wall that serves its denial/challenge page at HTTP 200
+    //      (PerimeterX "Access denied", Cloudflare/DataDome interstitials) would
+    //      otherwise be returned as SUCCESSFUL content.
+    //   2. Those interstitials commonly auto-clear a couple of seconds after
+    //      navigation. A single read at NAV_SETTLE_MS catches the interstitial
+    //      and would wrongly fall back on a page that was about to render.
+    //
+    // So: re-read until the body is no longer a challenge (→ real content) or
+    // the bounded deadline elapses (→ null, caller falls back to the standard
+    // tier, which maps to an honest blocked_by_challenge). Mirrors the browser
+    // tier's pollUntilCleared. Live-found 2026-07-28: zillow's PerimeterX
+    // interstitial cleared at ~3s while the fixed 1.2s settle read the wall.
+    const clearDeadline = Math.min(startedAt + budgetMs, Date.now() + CHALLENGE_CLEAR_TIMEOUT_MS);
+    let html = '';
+    for (;;) {
+      if (opts.signal?.aborted) return null;
+      html = await handle.getContentHtml();
+      if (html && classifyChallenge(html) === 'none') break;
+      if (Date.now() >= clearDeadline) {
+        log.debug('cdp-direct: challenge/empty body did not clear, falling back', {
+          url,
+          challengeClass: html ? classifyChallenge(html) : 'empty',
+        });
+        return null;
+      }
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, CHALLENGE_POLL_INTERVAL_MS);
+        (t as { unref?: () => void }).unref?.();
+        opts.signal?.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+      });
     }
 
     log.info('cdp-direct rung produced content', { url, bytes: html.length });

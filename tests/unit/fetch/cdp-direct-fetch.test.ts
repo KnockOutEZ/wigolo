@@ -312,7 +312,7 @@ describe('cdpDirectFetch — spawn + orchestrate the raw-CDP content rung', () =
     };
     h.deps.connectTransport = async () => emptyTransport;
     _setCdpDirectFetchDepsForTests(h.deps);
-    const result = await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP });
+    const result = await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP, timeoutMs: 1500 });
     expect(result).toBeNull();
     expect(calls).toContain('Page.navigate');
     // Shared finally: child killed, transport closed, temp dir removed.
@@ -334,7 +334,7 @@ describe('cdpDirectFetch — spawn + orchestrate the raw-CDP content rung', () =
     const rec = makeRecordingTransport(challengeHtml);
     const h = makeHarness({ transport: rec.transport });
     _setCdpDirectFetchDepsForTests(h.deps);
-    const result = await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP });
+    const result = await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP, timeoutMs: 1500 });
     expect(result).toBeNull(); // block detected → fall back, do NOT serve the wall
     expect(rec.calls).toContain('Page.navigate'); // it did fetch, then rejected the body
     expect(h.child.killed).toBe(true);
@@ -360,7 +360,7 @@ describe('cdpDirectFetch — spawn + orchestrate the raw-CDP content rung', () =
     };
     h.deps.connectTransport = async () => nonStringTransport;
     _setCdpDirectFetchDepsForTests(h.deps);
-    const result = await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP });
+    const result = await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP, timeoutMs: 1500 });
     expect(result).toBeNull();
     expect(h.child.killed).toBe(true);
     expect(h.rmCalls.length).toBe(1);

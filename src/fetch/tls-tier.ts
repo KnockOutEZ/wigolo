@@ -405,6 +405,15 @@ const CHALLENGE_MARKERS = [
   // 2xx, so a real article that merely mentions the phrase can't trip.
   'id="px-captcha"',
   'Robot or human?',
+  // PerimeterX "denied" VARIANT (zillow, …). This template carries neither
+  // `id="px-captcha"` nor the "Robot or human?" title — its widget markup is
+  // styled through `px-captcha-error-*` classes instead, so the two markers
+  // above miss it entirely and the 403 body leaked as content (live-found
+  // 2026-07-28: a zillow fetch returned the 38-char string "Access to this page
+  // has been denied" as a SUCCESSFUL page). The class prefix is PerimeterX
+  // template markup that never appears in article prose, and at 2xx the
+  // skeleton gate still applies.
+  'px-captcha-error',
 ] as const;
 
 export function isAntiBotStatus(status: number): boolean {
@@ -515,7 +524,10 @@ const CHALLENGE_PLATFORM_SRC = '/cdn-cgi/challenge-platform/';
 // Interstitial page titles. Cloudflare's "Just a moment" already lives in the
 // shared marker list; this covers the title form used by the skeleton check
 // without widening the shared list.
-const CHALLENGE_TITLE_PATTERN = /<title>[^<]*(?:just a moment|attention required|checking your browser)[^<]*<\/title>/i;
+// `access to this page has been denied` is the PerimeterX block/interstitial
+// title (zillow, …). Title-scoped like the others, so a real article that
+// merely discusses access denials in its body can never trip it.
+const CHALLENGE_TITLE_PATTERN = /<title>[^<]*(?:just a moment|attention required|checking your browser|access to this page has been denied)[^<]*<\/title>/i;
 // Below this rendered-text size a body carries no real article content — the
 // hallmark of an interstitial that is nothing but a challenge widget.
 const CHALLENGE_SKELETON_MAX_TEXT = 600;
