@@ -134,7 +134,7 @@ export class EmbeddingService {
     try {
       await this.provider.embed(['embedding service probe']);
       this.providerVerified = true;
-      getEmbedderStatus().markReady();
+      getEmbedderStatus().markReady('ingest');
       log.info('embedding provider verified', {
         modelId: this.provider.modelId,
         dim: this.provider.dim,
@@ -146,7 +146,7 @@ export class EmbeddingService {
       if (this.loadAttempts >= MAX_LOAD_ATTEMPTS) {
         this.latchedOff = true;
         this.available = false;
-        getEmbedderStatus().markUnavailable(message);
+        getEmbedderStatus().markUnavailable('ingest', message);
         log.error(
           'embedding provider failed to load after repeated attempts — embeddings disabled; run `wigolo warmup --embeddings` to install the model',
           { error: message, attempts: this.loadAttempts },

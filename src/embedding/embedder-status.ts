@@ -8,47 +8,60 @@
  *
  * This is the one place that records "the embedder is not working", so the
  * search response, the health endpoint, and doctor all read the same fact
- * instead of each guessing. It deliberately mirrors `BackendStatus` — a
- * process-wide latch with a warning that is emitted once per session, so a
- * degraded setup is reported without spamming every single response.
+ * instead of each guessing. It mirrors `BackendStatus` — a process-wide latch
+ * whose warning is emitted once per degradation, not on every response.
+ *
+ * Two embedding paths exist and they fail independently: the ingest path
+ * (`EmbeddingService` — vector store, find_similar) latches off permanently
+ * after repeated load failures, while the search-side context rerank retries
+ * every call and can recover. They are tracked as separate sources so a
+ * recovered rerank path cannot mask a dead ingest path: the reported state is
+ * the WORST across sources, never the latest write.
  */
 
 export type EmbedderState = 'unknown' | 'ready' | 'unavailable';
+export type EmbedderSource = 'ingest' | 'rerank';
+
+interface SourceState {
+  state: EmbedderState;
+  reason?: string;
+}
 
 class EmbedderStatus {
-  private _state: EmbedderState = 'unknown';
-  private _reason: string | undefined;
-  private _warned = false;
+  private _sources = new Map<EmbedderSource, SourceState>();
+  private _warnedKey: string | undefined;
 
+  /** Worst state across sources: any unavailable wins, then any ready, else unknown. */
   get state(): EmbedderState {
-    return this._state;
+    const states = [...this._sources.values()].map((s) => s.state);
+    if (states.includes('unavailable')) return 'unavailable';
+    if (states.includes('ready')) return 'ready';
+    return 'unknown';
   }
 
   get reason(): string | undefined {
-    return this._reason;
+    for (const s of this._sources.values()) {
+      if (s.state === 'unavailable') return s.reason;
+    }
+    return undefined;
   }
 
-  markReady(): void {
-    this._state = 'ready';
-    this._reason = undefined;
+  markReady(source: EmbedderSource): void {
+    this._sources.set(source, { state: 'ready' });
   }
 
-  /**
-   * Records that vector ranking is off. Re-arms the warning only on a change
-   * of reason, so a persistent failure stays quiet after it has been reported.
-   */
-  markUnavailable(reason: string): void {
-    if (this._state === 'unavailable' && this._reason === reason) return;
-    this._state = 'unavailable';
-    this._reason = reason;
-    this._warned = false;
+  markUnavailable(source: EmbedderSource, reason: string): void {
+    const prev = this._sources.get(source);
+    if (prev?.state === 'unavailable' && prev.reason === reason) return;
+    this._sources.set(source, { state: 'unavailable', reason });
   }
 
-  /** Returns warning text once per degradation, then undefined. */
+  /** Returns warning text once per distinct degradation, then undefined. */
   consumeWarning(): string | undefined {
-    if (this._state !== 'unavailable' || this._warned) return undefined;
-    this._warned = true;
-    const reason = this._reason ?? 'unknown';
+    if (this.state !== 'unavailable') return undefined;
+    const reason = this.reason ?? 'unknown';
+    if (this._warnedKey === reason) return undefined;
+    this._warnedKey = reason;
     // A missing platform binding is not a download problem: `warmup` re-fetches
     // the model weights, which are already there. Doctor says so, and the two
     // must not contradict each other.
@@ -67,18 +80,20 @@ class EmbedderStatus {
 
   /** Test seam — resets the process-wide latch. */
   reset(): void {
-    this._state = 'unknown';
-    this._reason = undefined;
-    this._warned = false;
+    this._sources.clear();
+    this._warnedKey = undefined;
   }
 }
 
 /**
  * Whether a recorded failure reason points at an absent native tokenizer
- * binding rather than an absent or corrupt model download.
+ * binding rather than an absent or corrupt model download. Free-text sniffing
+ * on purpose — the reason is an already-stringified error message — but scoped
+ * to native-loading vocabulary; a bare "binding" would false-positive on
+ * unrelated errors like a socket bind failure.
  */
 function isMissingBindingReason(reason: string): boolean {
-  return /tokenizer|binding|\.node\b|dlopen|@anush008/i.test(reason);
+  return /tokenizer|bindings file|\.node\b|dlopen|@anush008/i.test(reason);
 }
 
 let instance: EmbedderStatus | null = null;

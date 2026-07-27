@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { probeHealth } from '../../../src/daemon/health-check.js';
+import { getEmbedderStatus } from '../../../src/embedding/embedder-status.js';
 import type { HealthProbeInput } from '../../../src/daemon/health-check.js';
 
 function makeInput(overrides?: Partial<HealthProbeInput>): HealthProbeInput {
@@ -183,5 +184,31 @@ describe('probeHealth — sidecar NOT configured (default core backend, D1)', ()
     }));
     expect(report.status).toBe('healthy');
     expect(report.searxng).toBe('not_configured');
+  });
+});
+
+describe('embedder field', () => {
+  beforeEach(() => {
+    getEmbedderStatus().reset();
+  });
+
+  it('reports unknown before anything has needed the model — the lazy loader has not probed yet', () => {
+    const report = probeHealth(makeInput({ browserPool: {} as any }));
+    expect(report.embedder).toBe('unknown');
+  });
+
+  it('reports ready once a load has succeeded', () => {
+    getEmbedderStatus().markReady('ingest');
+    const report = probeHealth(makeInput({ browserPool: {} as any }));
+    expect(report.embedder).toBe('ready');
+  });
+
+  it('reports unavailable when a path is degraded, without dragging overall status down', () => {
+    // Results are still correct without embeddings — a dead embedder is a
+    // quality signal, not an outage, so status must stay healthy.
+    getEmbedderStatus().markUnavailable('ingest', 'tokenizer binding missing');
+    const report = probeHealth(makeInput({ searxngConfigured: false, browserPool: {} as any }));
+    expect(report.embedder).toBe('unavailable');
+    expect(report.status).toBe('healthy');
   });
 });

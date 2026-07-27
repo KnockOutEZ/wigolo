@@ -68,7 +68,7 @@ export async function applyContextRank(
     // Record it so the response, /health, and doctor can report that this
     // search was ranked without vector signals — the log line alone left the
     // caller with no way to know the ranking quality had dropped.
-    getEmbedderStatus().markUnavailable(message);
+    getEmbedderStatus().markUnavailable('rerank', message);
     log.warn('context-rank: embed provider unavailable, skipping', { error: message });
     return results;
   }
@@ -84,14 +84,14 @@ export async function applyContextRank(
     // A provider that loaded but then failed to embed degrades the ranking
     // exactly as an absent provider does, so it has to leave the same trace —
     // otherwise health and the response warning stay `unknown` mid-degradation.
-    getEmbedderStatus().markUnavailable(message);
+    getEmbedderStatus().markUnavailable('rerank', message);
     log.warn('context-rank: embed call failed, skipping', { error: message });
     return results;
   }
 
   // The provider only marks itself ready at load time, so a recovered call is
   // the one signal that clears a previously recorded failure.
-  getEmbedderStatus().markReady();
+  getEmbedderStatus().markReady('rerank');
 
   if (vectors.length !== results.length + 1) {
     log.warn('context-rank: unexpected vector count, skipping', {

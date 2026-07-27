@@ -24,7 +24,7 @@ describe('embedder status', () => {
 
   it('reports a failure once, then stays quiet so every response is not spammed', () => {
     const status = getEmbedderStatus();
-    status.markUnavailable('tokenizer binding missing');
+    status.markUnavailable('rerank', 'tokenizer binding missing');
 
     const first = status.consumeWarning();
     expect(first).toContain('Vector-similarity ranking is inactive');
@@ -39,7 +39,7 @@ describe('embedder status', () => {
 
   it('points a model-download failure at warmup', () => {
     const status = getEmbedderStatus();
-    status.markUnavailable('model weights not found in cache');
+    status.markUnavailable('rerank', 'model weights not found in cache');
 
     const warning = status.consumeWarning();
     expect(warning).toContain('wigolo warmup --embeddings');
@@ -47,30 +47,45 @@ describe('embedder status', () => {
 
   it('stays quiet when the same failure repeats', () => {
     const status = getEmbedderStatus();
-    status.markUnavailable('same reason');
+    status.markUnavailable('rerank', 'same reason');
     expect(status.consumeWarning()).toBeDefined();
 
-    status.markUnavailable('same reason');
+    status.markUnavailable('rerank', 'same reason');
     expect(status.consumeWarning()).toBeUndefined();
   });
 
   it('re-arms when the failure changes, so a new problem is not masked by an old one', () => {
     const status = getEmbedderStatus();
-    status.markUnavailable('first reason');
+    status.markUnavailable('rerank', 'first reason');
     status.consumeWarning();
 
-    status.markUnavailable('a different reason');
+    status.markUnavailable('rerank', 'a different reason');
 
     expect(status.consumeWarning()).toContain('a different reason');
   });
 
   it('goes quiet once the model loads', () => {
     const status = getEmbedderStatus();
-    status.markUnavailable('transient');
-    status.markReady();
+    status.markUnavailable('rerank', 'transient');
+    status.markReady('rerank');
 
     expect(status.state).toBe('ready');
     expect(status.consumeWarning()).toBeUndefined();
+  });
+
+  it('a recovered rerank path cannot mask a dead ingest path', () => {
+    // The ingest service latches off permanently after repeated failures while
+    // the search-side rerank retries and can recover — the reported state must
+    // be the worst across the two, or /health goes green over a dead indexer.
+    const status = getEmbedderStatus();
+    status.markUnavailable('ingest', 'provider latched off');
+    status.markReady('rerank');
+
+    expect(status.state).toBe('unavailable');
+    expect(status.reason).toBe('provider latched off');
+
+    status.markReady('ingest');
+    expect(status.state).toBe('ready');
   });
 });
 
