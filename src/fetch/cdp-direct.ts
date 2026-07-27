@@ -8,6 +8,7 @@ import { getConfig } from '../config.js';
 import { sanitizedChildEnv } from '../util/child-env.js';
 import { stealthLaunchArgs } from './stealth.js';
 import { discoverSessions, isCDPReachable } from './cdp-client.js';
+import { classifyChallenge } from './challenge-classify.js';
 import { guardResolvedHost, type LookupAll } from '../watch/ssrf.js';
 import type { RawFetchResult } from '../types.js';
 
@@ -729,6 +730,22 @@ export async function cdpDirectFetch(
     const html = await handle.getContentHtml();
     if (!html) {
       log.debug('cdp-direct: empty content read, falling back', { url });
+      return null;
+    }
+
+    // Block-detection on the fetched body. cdp-direct has no real HTTP status
+    // (it navigates + reads the DOM, status is not surfaced by CDP here), so a
+    // bot wall that serves its denial/challenge page at HTTP 200 (PerimeterX
+    // "Access denied", Cloudflare/DataDome interstitials) would otherwise be
+    // returned as successful content. Run the shared classifier; if the body is
+    // a challenge/block, return null so the caller falls back to the standard
+    // tier (which maps to an honest blocked_by_challenge) rather than serving a
+    // denial page as if it were the real page. (Found via live testing
+    // 2026-07-28 — cdp-direct was returning "Access to this page has been
+    // denied" as a 200.)
+    const challengeClass = classifyChallenge(html);
+    if (challengeClass !== 'none') {
+      log.debug('cdp-direct: fetched a challenge/block page, falling back', { url, challengeClass });
       return null;
     }
 

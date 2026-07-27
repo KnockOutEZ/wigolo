@@ -52,7 +52,15 @@ class FakeChild extends EventEmitter {
 
 // A recording CDP transport: captures every send so the leak-free invariant is
 // asserted end-to-end through cdpDirectFetch (not just cdpDirectConnect).
-function makeRecordingTransport(html = '<html><body>hardcore</body></html>'): {
+// Default mock body is a REALISTIC page (title + real paragraph text) so the
+// block-detection classifier reads it as `none`; a pathologically tiny body
+// (e.g. "<body>hardcore</body>") trips the near-empty-skeleton heuristic and is
+// correctly treated as a challenge shell.
+function makeRecordingTransport(
+  html = '<html><head><title>hardcore</title></head><body><h1>hardcore</h1>' +
+    ('<p>hardcore content paragraph with real words describing an ordinary web article at ordinary length. </p>'.repeat(10)) +
+    '</body></html>',
+): {
   transport: CdpTransport;
   calls: string[];
   closed: () => boolean;
@@ -310,6 +318,26 @@ describe('cdpDirectFetch — spawn + orchestrate the raw-CDP content rung', () =
     // Shared finally: child killed, transport closed, temp dir removed.
     expect(h.child.killed).toBe(true);
     expect(closedFlag).toBe(true);
+    expect(h.rmCalls.length).toBe(1);
+  });
+
+  it('block-detection: a challenge/block body (served at 200) returns null + tears down (honest fallback)', async () => {
+    // WHY: cdp-direct navigates + reads the DOM; it has no real HTTP status, so
+    // a bot wall serving its denial/challenge page at 200 would otherwise be
+    // returned as successful content. It must classify the body and fall back.
+    // (Live-found 2026-07-28: cdp-direct served "Access to this page has been
+    // denied" as a 200.)
+    const challengeHtml =
+      '<html><head><title>Just a moment...</title>' +
+      '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script></head>' +
+      '<body><div class="cf-browser-verification"></div></body></html>';
+    const rec = makeRecordingTransport(challengeHtml);
+    const h = makeHarness({ transport: rec.transport });
+    _setCdpDirectFetchDepsForTests(h.deps);
+    const result = await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP });
+    expect(result).toBeNull(); // block detected → fall back, do NOT serve the wall
+    expect(rec.calls).toContain('Page.navigate'); // it did fetch, then rejected the body
+    expect(h.child.killed).toBe(true);
     expect(h.rmCalls.length).toBe(1);
   });
 
