@@ -299,6 +299,39 @@ async function resolveTransport(
   }
 }
 
+/** Max wall-clock to wait for a spawned Chrome's first page target to register.
+ *  Chrome exposes the HTTP debug port BEFORE the initial page target appears
+ *  (~1-2s gap on Chrome 150); a single-shot discover races that gap, so the
+ *  rung must poll. */
+const TARGET_DISCOVER_MS = 6000;
+const TARGET_POLL_INTERVAL_MS = 250;
+
+/**
+ * Poll for a page target's WS debugger URL until one appears or the deadline
+ * elapses. `discover`/`sleep`/`now` are injected for deterministic tests.
+ * Returns the first page target's WS URL, or null when none registers within
+ * the budget / the signal aborts.
+ */
+export async function discoverPageTargetWithRetry(deps: {
+  discover: () => Promise<Array<{ webSocketDebuggerUrl?: string }>>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+  deadlineMs?: number;
+  intervalMs?: number;
+  signal?: AbortSignal;
+}): Promise<string | null> {
+  const deadline = deps.now() + (deps.deadlineMs ?? TARGET_DISCOVER_MS);
+  const interval = deps.intervalMs ?? TARGET_POLL_INTERVAL_MS;
+  for (;;) {
+    if (deps.signal?.aborted) return null;
+    const sessions = await deps.discover();
+    const target = sessions.find((s) => s.webSocketDebuggerUrl)?.webSocketDebuggerUrl;
+    if (target) return target;
+    if (deps.now() >= deadline) return null;
+    await deps.sleep(interval);
+  }
+}
+
 /** Resolve the page target's WS debugger URL, discovering it if not supplied. */
 async function resolveTargetWs(opts: CdpDirectConnectOptions): Promise<string | null> {
   if (opts.webSocketDebuggerUrl) return opts.webSocketDebuggerUrl;
@@ -453,9 +486,15 @@ async function defaultConnectTransport(
   // ourselves so we can hand a concrete transport to cdpDirectConnect below.
   const factory = await loadCRI();
   if (!factory) return null;
-  const sessions = await discoverSessions(cdpUrl, { timeoutMs: 3000, filterPages: true });
-  if (signal?.aborted) return null;
-  const target = sessions.find((s) => s.webSocketDebuggerUrl)?.webSocketDebuggerUrl;
+  // Poll for the first page target — Chrome opens the debug port before the
+  // page target registers, so a single-shot discover races the gap and finds
+  // nothing (root-caused live 2026-07-27). Bounded + abort-aware.
+  const target = await discoverPageTargetWithRetry({
+    discover: () => discoverSessions(cdpUrl, { timeoutMs: 3000, filterPages: true }),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
+    signal,
+  });
   if (!target) return null;
   try {
     const client = await factory({ target, local: true });
@@ -622,7 +661,11 @@ export async function cdpDirectFetch(
       `--user-data-dir=${userDataDir}`,
       '--no-first-run',
       '--no-default-browser-check',
-      '--no-startup-window',
+      // NB: do NOT pass --no-startup-window. On Chrome 129+ it suppresses the
+      // initial `page` target entirely (only extension background_page/
+      // service_worker targets remain), so the page-target discovery finds
+      // nothing and the rung silently falls back on every spawn (root-caused
+      // live 2026-07-27). The initial `about:blank` page is what we navigate.
       ...(headless ? ['--headless=new'] : []),
       'about:blank',
     ];
