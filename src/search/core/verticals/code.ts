@@ -52,12 +52,6 @@ export function getCodeEngines(): EngineEntry[] {
       supportsDateFilter: false,
       quality: 'medium',
     },
-    {
-      engine: wrapWithRetryAndBreaker(new NpmRegistryEngine()),
-      weight: 0.9,
-      supportsDateFilter: false,
-      quality: 'medium',
-    },
   ];
 
   if (getConfig().braveApiKey) {
@@ -79,6 +73,14 @@ export function getCodeEngines(): EngineEntry[] {
 
   entries.push({
     engine: wrapWithRetryAndBreaker(new CratesIoEngine()),
+    weight: 0.3,
+    supportsDateFilter: false,
+    secondary: true,
+    quality: 'high',
+  });
+
+  entries.push({
+    engine: wrapWithRetryAndBreaker(new NpmRegistryEngine()),
     weight: 0.3,
     supportsDateFilter: false,
     secondary: true,

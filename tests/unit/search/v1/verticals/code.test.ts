@@ -62,9 +62,9 @@ describe('getCodeEngines', () => {
     expect(a).not.toBe(b);
   });
 
-  it('marks MDN and crates-io as secondary and leaves the other engines primary', () => {
+  it('marks MDN, crates-io and npm-registry as secondary and leaves the other engines primary', () => {
     const entries = getCodeEngines();
-    const secondaries = ['mdn', 'crates-io'];
+    const secondaries = ['mdn', 'crates-io', 'npm-registry'];
     for (const name of secondaries) {
       const entry = entries.find((e) => e.engine.name === name);
       expect(entry?.secondary).toBe(true);
