@@ -37,7 +37,7 @@ npx wigolo init --json                            # machine-readable summary
 ```
 
 Supported agent ids: `claude-code`, `cursor`, `zed`, `windsurf`, `codex`,
-`gemini-cli`, `vscode`, and `antigravity`. (Cline gets the skill packs via
+`gemini-cli`, `opencode`, `vscode`, and `antigravity`. (Cline gets the skill packs via
 `wigolo skills add` — wire its MCP entry by hand.) Undo everything with
 `npx wigolo uninstall`.
 

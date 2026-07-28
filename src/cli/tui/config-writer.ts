@@ -1,7 +1,12 @@
 import type { AgentId, DetectedAgent } from './agents.js';
-import { writeJsonConfig, type WriteJsonConfigResult } from './config-writer-json.js';
+import { join } from 'node:path';
+import {
+  writeJsonConfig,
+  type WriteJsonConfigResult,
+} from './config-writer-json.js';
 import { writeTomlConfig, type WriteTomlConfigResult } from './config-writer-toml.js';
 import { installViaClaudeCli, type InstallViaClaudeCliResult } from './config-writer-cli.js';
+import { syncOpencodeConfig } from '../agents/opencode.js';
 
 const SERVER_COMMAND = 'npx';
 const SERVER_ARGS = ['-y', 'wigolo'];
@@ -11,13 +16,12 @@ interface JsonAgentSpec {
   extraEntryFields?: Record<string, unknown>;
 }
 
-const JSON_SPECS: Record<Exclude<AgentId, 'claude-code' | 'codex'>, JsonAgentSpec> = {
+const JSON_SPECS: Record<Exclude<AgentId, 'claude-code' | 'codex' | 'opencode'>, JsonAgentSpec> = {
   cursor:       { keyPath: ['mcpServers', 'wigolo'] },
   vscode:       { keyPath: ['servers', 'wigolo'], extraEntryFields: { type: 'stdio' } },
   zed:          { keyPath: ['context_servers', 'wigolo'] },
   'gemini-cli': { keyPath: ['mcpServers', 'wigolo'] },
   windsurf:     { keyPath: ['mcpServers', 'wigolo'] },
-  opencode:     { keyPath: ['mcp', 'wigolo'], extraEntryFields: { type: 'local' } },
   antigravity:  { keyPath: ['mcpServers', 'wigolo'] },
 };
 
@@ -73,6 +77,15 @@ async function applyOne(agent: DetectedAgent, opts: ApplyConfigsOptions): Promis
   if (!agent.configPath) {
     return { ...base, ok: false, code: 'NO_CONFIG_PATH', message: 'no configPath for JSON agent' };
   }
+  if (agent.id === 'opencode') {
+    const sync = await syncOpencodeConfig({
+      command: { command: SERVER_COMMAND, args: SERVER_ARGS },
+      dryRun: opts.dryRun,
+      configPath: agent.configPath,
+      legacyConfigPath: join(agent.configPath, '..', 'config.json'),
+    });
+    return mapOpencodeResult(base, sync);
+  }
   const spec = JSON_SPECS[agent.id as keyof typeof JSON_SPECS];
   if (!spec) {
     return { ...base, ok: false, code: 'UNKNOWN_AGENT', message: `no JSON spec for ${agent.id}` };
@@ -82,8 +95,24 @@ async function applyOne(agent: DetectedAgent, opts: ApplyConfigsOptions): Promis
     keyPath: spec.keyPath,
     entry: buildEntry(spec.extraEntryFields),
     dryRun: opts.dryRun,
+    allowJsonc: false,
+    requireBackup: false,
   });
   return mapJsonResult(base, r);
+}
+
+function mapOpencodeResult(
+  base: ResultBase,
+  r: { ok: boolean; code: string; message?: string; dryRun?: boolean; backupPath?: string; removed: string[] },
+): ConfigApplyResult {
+  return {
+    ...base,
+    ok: r.ok,
+    code: r.code,
+    message: r.message,
+    dryRun: r.dryRun,
+    backupPath: r.backupPath,
+  };
 }
 
 function mapJsonResult(base: ResultBase, r: WriteJsonConfigResult): ConfigApplyResult {
@@ -132,8 +161,19 @@ export async function applyConfigs(
   for (const id of selected) {
     const agent = byId.get(id);
     if (!agent) continue;
-    const r = await applyOne(agent, opts);
-    results.push(r);
+    try {
+      const r = await applyOne(agent, opts);
+      results.push(r);
+    } catch (err) {
+      results.push({
+        id: agent.id,
+        displayName: agent.displayName,
+        configPath: agent.configPath,
+        ok: false,
+        code: 'UNEXPECTED_ERROR',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
   return results;
 }

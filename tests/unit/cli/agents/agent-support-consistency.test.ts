@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { KNOWN_AGENT_IDS } from '../../../../src/cli/tui/flags-types.js';
 import { AGENTS } from '../../../../src/cli/tui/agents.js';
 import { JSON_SPECS } from '../../../../src/cli/tui/config-writer.js';
@@ -21,10 +23,11 @@ const TUI_ABSENT_BY_DESIGN = new Set(['cline']);
 // dead code. So for an agent to REALLY work, three lists must agree:
 //   1. KNOWN_AGENT_IDS  — what `--agents=<id>` accepts (flags-types.ts)
 //   2. AGENTS ids       — what detectAgents() returns (agents.ts)
-//   3. a config-writer path — JSON_SPECS entry, or the CLI (claude-code) / TOML (codex) branch
+//   3. a config-writer path — JSON_SPECS entry, or the CLI (claude-code),
+//      TOML (codex), or special shared helper paths.
 // Drift between them = an agent that is offered but silently does nothing.
 
-const CONFIG_WRITER_SPECIAL = new Set(['claude-code', 'codex']); // handled by CLI / TOML branches, not JSON_SPECS
+const CONFIG_WRITER_SPECIAL = new Set(['claude-code', 'codex', 'opencode']); // handled by CLI / TOML / helper path, not JSON_SPECS
 
 describe('agent support seams stay consistent', () => {
   it('every flag-accepted id (KNOWN_AGENT_IDS) is also a detection descriptor, and vice versa', () => {
@@ -50,6 +53,12 @@ describe('agent support seams stay consistent', () => {
     expect('antigravity' in JSON_SPECS).toBe(true);
   });
 
+  it('every detectable agent has uninstall ownership', () => {
+    const handlerIds = new Set(agentHandlers.map((handler) => handler.id));
+    const missing = AGENTS.map((agent) => agent.id).filter((id) => !handlerIds.has(id));
+    expect(missing).toEqual([]);
+  });
+
   it('cline is deliberately absent from TUI flags/detection/config-writer (skills-only)', () => {
     // Explicit exception record: cline is a skills-engine-only agent. If a future
     // slice adds cline MCP support, remove it from TUI_ABSENT_BY_DESIGN and wire
@@ -66,5 +75,20 @@ describe('agent support seams stay consistent', () => {
     const registryIds = new Set(agentHandlers.map((h) => h.id));
     const orphans = SUPPORTED_AGENTS.filter((a) => !registryIds.has(a));
     expect(orphans).toEqual([]);
+  });
+
+  it('markets OpenCode consistently across the public support lists', () => {
+    const surfaces = [
+      'README.md',
+      'docs/installation.md',
+      'site/src/components/Quickstart.tsx',
+      'site/src/components/TrustedBy.tsx',
+      'site/public/llms.txt',
+      'examples/quickstart-claude-code/README.md',
+    ];
+    const missing = surfaces.filter((path) => (
+      !/opencode/i.test(readFileSync(join(process.cwd(), path), 'utf-8'))
+    ));
+    expect(missing).toEqual([]);
   });
 });

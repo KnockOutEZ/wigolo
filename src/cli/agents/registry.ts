@@ -6,6 +6,7 @@ import { zedHandler } from './zed.js';
 import { windsurfHandler } from './windsurf.js';
 import { codexHandler } from './codex.js';
 import { antigravityHandler } from './antigravity.js';
+import { opencodeHandler } from './opencode.js';
 import { clineHandler } from './cline.js';
 
 export type AgentSkillHandler = {
@@ -13,6 +14,7 @@ export type AgentSkillHandler = {
   displayName: string;
   supportsSkills: boolean;
   supportsCommands: boolean;
+  supportsInstructions?: boolean;
   detect(): boolean;
   installMcp(cmd: { command: string; args: string[] }): Promise<void>;
   installInstructions(): Promise<void>;
@@ -30,6 +32,7 @@ export const agentHandlers: readonly AgentSkillHandler[] = [
   windsurfHandler,
   codexHandler,
   antigravityHandler,
+  opencodeHandler,
   clineHandler,
 ];
 
