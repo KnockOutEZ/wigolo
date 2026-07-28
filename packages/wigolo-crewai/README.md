@@ -11,7 +11,7 @@ tools, and a zero-setup embedded daemon starts automatically.
 ## Install
 
 ```bash
-pip install wigolo-crewai[crewai]
+pip install 'wigolo-crewai[crewai]'
 ```
 
 This pulls in the `wigolo` SDK. `crewai` is an optional extra so the core
