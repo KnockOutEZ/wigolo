@@ -159,6 +159,10 @@ export interface CdpDirectHandle {
   navigate(url: string): Promise<void>;
   getContentHtml(): Promise<string>;
   close(): Promise<void>;
+  /** Best-effort: send the browser window to the background (minimized) so a
+   *  HEADFUL render never steals the user's screen. Resolves even when the
+   *  browser refuses — backgrounding is cosmetic, never load-bearing. */
+  minimizeWindow?(): Promise<void>;
 }
 
 interface IsolatedWorldResult {
@@ -216,6 +220,28 @@ export async function cdpDirectConnect(
   };
 
   const handle: CdpDirectHandle = {
+    // Background the HEADFUL window. Headful is REQUIRED to clear real bot walls
+    // (headless is itself the tell — measured: same IP, headless blocked, headful
+    // passed), but a window popping onto the user's screen is unacceptable for a
+    // background fetch. Minimizing keeps the real-browser signals while getting
+    // out of the way; `document.visibilityState` becomes 'hidden', which walls do
+    // NOT appear to score (verified passing while minimized). Paired with the
+    // anti-throttle launch flags so the hidden window's timers/rAF still run at
+    // full speed — otherwise a challenge's own polling JS gets throttled and
+    // stalls. Entirely best-effort: any failure is swallowed.
+    async minimizeWindow(): Promise<void> {
+      if (closed) return;
+      try {
+        const win = (await transport.send('Browser.getWindowForTarget', {})) as { windowId?: number };
+        if (typeof win?.windowId !== 'number') return;
+        await transport.send('Browser.setWindowBounds', {
+          windowId: win.windowId,
+          bounds: { windowState: 'minimized' },
+        });
+      } catch {
+        /* cosmetic only — never fail a fetch because the window stayed visible */
+      }
+    },
     async navigate(url: string): Promise<void> {
       if (closed) throw new Error('cdp-direct: handle is closed');
       if (opts.signal?.aborted) throw new Error('cdp-direct: aborted');
@@ -416,6 +442,32 @@ const NAV_SETTLE_MS = 1_200;
  *  within a few seconds; past this we fall back rather than hold the rung. */
 const CHALLENGE_CLEAR_TIMEOUT_MS = 12_000;
 const CHALLENGE_POLL_INTERVAL_MS = 500;
+
+/**
+ * Keep a BACKGROUNDED (minimized/occluded) window's timers running at full
+ * speed. Chromium throttles background renderers — `requestAnimationFrame`
+ * callbacks get skipped and timers slowed — which stalls a challenge page's own
+ * polling JS and makes it look like the challenge never clears. Every browser
+ * automation framework ships these for the same reason. Note Chromium labels the
+ * first one a testing switch internally, so treat it as best-effort, not API.
+ */
+const ANTI_THROTTLE_ARGS = [
+  '--disable-backgrounding-occluded-windows',
+  '--disable-background-timer-throttling',
+  '--disable-renderer-backgrounding',
+];
+
+/**
+ * Whether a window server / display is reachable, i.e. whether a HEADFUL Chrome
+ * can actually launch. Headful is required to clear real bot walls (headless is
+ * the tell), so we prefer it whenever a display exists and only fall back to
+ * headless — with the honest ceiling that implies — when there is none (a bare
+ * Linux server with no X/Wayland session and no virtual display).
+ */
+function hasDisplaySession(): boolean {
+  if (process.platform === 'darwin' || process.platform === 'win32') return true;
+  return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+}
 // Grace after SIGTERM before escalating to SIGKILL on teardown.
 const KILL_GRACE_MS = 2_000;
 
@@ -659,8 +711,19 @@ export async function cdpDirectFetch(
 
     const port = await reserveFreePort();
     const cfg = getConfig();
-    const headless = !cfg.browserHeadful;
+    // Prefer HEADFUL whenever a display exists — headless is itself the strongest
+    // automation tell on real bot walls (measured on one residential IP: the same
+    // Chrome passed zillow/indeed headful and was blocked with --headless=new).
+    // When the operator has not asked for a visible window we still launch
+    // headful and MINIMIZE it after connect (see minimizeWindow), so the wall
+    // sees a real browser while the user's screen stays untouched. Only a
+    // display-less host falls back to headless, with the honest ceiling that
+    // implies (a virtual display, e.g. Xvfb, restores the headful path there).
+    const displayAvailable = hasDisplaySession();
+    const headless = !displayAvailable;
+    const backgroundWindow = displayAvailable && !cfg.browserHeadful;
     const args = [
+      ...ANTI_THROTTLE_ARGS,
       ...stealthLaunchArgs('chromium'),
       `--remote-debugging-port=${port}`,
       '--remote-debugging-address=127.0.0.1',
@@ -710,6 +773,10 @@ export async function cdpDirectFetch(
 
     handle = await cdpDirectConnect({ transport, signal: opts.signal });
     if (!handle) return null;
+
+    // Send the headful window to the background BEFORE navigating, so the user
+    // never sees it flash up mid-fetch. Best-effort by contract.
+    if (backgroundWindow) await handle.minimizeWindow?.();
 
     // SSRF: re-check the RESOLVED host before we navigate. The upstream literal
     // guard cannot catch a DNS rebind to metadata / RFC-1918 / loopback, and this
