@@ -38,12 +38,48 @@ import { isChallengeSkeleton, isNearEmptyBody } from './tls-tier.js';
  * shipped `isChallengeResponse` / `hasBrowserChallengeBody` about WHETHER a page
  * is a challenge — it only refines the SHAPE. Pure; fully unit-testable on HTML.
  */
+/** Visible-text length at or above which a body is REAL CONTENT and therefore
+ *  cannot be an interstitial. Measured bot-wall pages carry 35-330 visible
+ *  chars; an ordinary page carries thousands. */
+const REAL_CONTENT_MIN_TEXT = 600;
+
+/** Approximate rendered-text length: drop script/style bodies, then tags. */
+function visibleTextLength(html: string): number {
+  return html
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim().length;
+}
+
 export function classifyChallenge(html: string): ChallengeClass {
   if (!html) return 'none';
   // Challenge interstitials are tiny; bound every scan to the first 32KB to
   // match the shipped detectors and avoid full-document work on a real article.
   const slice = html.length > 32768 ? html.slice(0, 32768) : html;
   const lower = slice.toLowerCase();
+
+  // CONTENT WINS OVER MARKERS.
+  //
+  // A site protected by PerimeterX / DataDome / reCAPTCHA embeds that vendor's
+  // SENSOR script on every page it serves — including the ones it serves
+  // SUCCESSFULLY. A marker therefore means "this vendor is present", NOT "this
+  // request was blocked". Keying off markers alone misclassified real pages as
+  // walls: walmart.com returned 405KB with the genuine title "Walmart | Save
+  // Money. Live better." and 2,777 chars of visible text, yet classified
+  // `behavioral` purely because its PerimeterX sensor markers were present
+  // (measured 2026-07-28) — which rejects genuine content across a large slice
+  // of the protected web.
+  //
+  // A body carrying real readable text IS a real page, whatever rides along in
+  // it. Interstitials are uniformly tiny, so this cannot mask an actual wall.
+  // Mirrors the HTTP-layer rule in tls-tier, which already requires markers AND
+  // a thin body before calling a 2xx response a challenge.
+  // Measured over the WHOLE document, deliberately NOT the 32KB marker slice: a
+  // large real page's first 32KB is mostly <head> scripts/CSS and carries almost
+  // no text (walmart's 405KB page has <600 visible chars in its first 32KB but
+  // 2,777 overall), so slicing here would defeat the guard entirely.
+  if (visibleTextLength(html) >= REAL_CONTENT_MIN_TEXT) return 'none';
 
   // A managed/invisible signal that is NOT itself a bare Cloudflare shell —
   // reCAPTCHA v3, DataDome, Akamai. These are POSITIVE evidence of a
