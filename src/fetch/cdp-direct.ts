@@ -163,6 +163,11 @@ export interface CdpDirectHandle {
    *  HEADFUL render never steals the user's screen. Resolves even when the
    *  browser refuses — backgrounding is cosmetic, never load-bearing. */
   minimizeWindow?(): Promise<void>;
+  /** The user agent the launched binary reports for itself, or null. */
+  browserUserAgent?(): Promise<string | null>;
+  /** Present a coherent headless identity (UA + client hints + dpr) so the HTTP
+   *  and JS surface match the same binary running headful. Best-effort. */
+  applyIdentity?(identity: CoherentIdentity, viewport: { width: number; height: number }): Promise<void>;
 }
 
 interface IsolatedWorldResult {
@@ -240,6 +245,38 @@ export async function cdpDirectConnect(
         });
       } catch {
         /* cosmetic only — never fail a fetch because the window stayed visible */
+      }
+    },
+    async browserUserAgent(): Promise<string | null> {
+      try {
+        const v = (await transport.send('Browser.getVersion', {})) as { userAgent?: string };
+        return typeof v?.userAgent === 'string' && v.userAgent ? v.userAgent : null;
+      } catch {
+        return null;
+      }
+    },
+    async applyIdentity(identity, viewport): Promise<void> {
+      try {
+        await transport.send('Network.enable', {});
+        // UA, platform and client-hint metadata are set in ONE call so they can
+        // never disagree with each other.
+        await transport.send('Network.setUserAgentOverride', {
+          userAgent: identity.userAgent,
+          platform: identity.platform,
+          userAgentMetadata: identity.userAgentMetadata,
+          // acceptLanguage is deliberately NOT sent here: supplying it relocates
+          // the Accept-Language header out of its natural last position, which is
+          // an ordering anomaly no real Chrome produces. The launch flags set the
+          // language instead.
+        });
+        await transport.send('Emulation.setDeviceMetricsOverride', {
+          width: viewport.width,
+          height: viewport.height,
+          deviceScaleFactor: identity.deviceScaleFactor,
+          mobile: false,
+        });
+      } catch {
+        /* best-effort: a fetch must never fail because hardening didn't apply */
       }
     },
     async navigate(url: string): Promise<void> {
@@ -464,6 +501,81 @@ const ANTI_THROTTLE_ARGS = [
  * headless — with the honest ceiling that implies — when there is none (a bare
  * Linux server with no X/Wayland session and no virtual display).
  */
+/** The identity override a headless browser must present so its HTTP + JS
+ *  surface matches what the SAME binary sends when headful. */
+export interface CoherentIdentity {
+  userAgent: string;
+  platform: string;
+  userAgentMetadata: {
+    brands: Array<{ brand: string; version: string }>;
+    fullVersion: string;
+    platform: string;
+    platformVersion: string;
+    architecture: string;
+    model: string;
+    mobile: boolean;
+    bitness: string;
+    wow64: boolean;
+  };
+  deviceScaleFactor: number;
+}
+
+/**
+ * Derive a coherent identity from the launched binary's OWN reported user agent
+ * (`Browser.getVersion`), so nothing is invented and nothing can drift.
+ *
+ * Headless Chrome differs from headful in exactly three ways that reach a
+ * server, and they must be fixed TOGETHER — fixing one alone creates a worse
+ * signal than the original, because detectors score cross-layer contradictions
+ * rather than individual values:
+ *   1. the UA carries a `HeadlessChrome` token,
+ *   2. the UA carries the full build (`150.0.7871.187`) where headful sends a
+ *      reduced `150.0.0.0`, and the `sec-ch-ua` brand list names HeadlessChrome,
+ *   3. `devicePixelRatio` reports 1 even on a HiDPI host — implausible next to a
+ *      real GPU renderer string (measured: headful 2, headless 1 on the same Mac).
+ *
+ * Everything else (header order, casing, Accept-Encoding, Sec-Fetch-*, HTTP/2
+ * SETTINGS and pseudo-header order) is already byte-identical between the two
+ * modes, so it is deliberately left alone.
+ *
+ * The brand list is rebuilt from the SAME major the UA reports, so UA major,
+ * brand major and fullVersion major can never disagree.
+ */
+export function coherentIdentity(rawUserAgent: string, platform: NodeJS.Platform): CoherentIdentity | null {
+  const deHeadless = rawUserAgent.replace(/HeadlessChrome/g, 'Chrome');
+  const m = deHeadless.match(/Chrome\/(\d+)\.(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return null;
+  const major = m[1];
+  const fullVersion = `${m[1]}.${m[2]}.${m[3]}.${m[4]}`;
+  // Headful Chrome sends a REDUCED UA version (major.0.0.0); headless leaks the
+  // full build. Match headful.
+  const userAgent = deHeadless.replace(/Chrome\/\d+\.\d+\.\d+\.\d+/, `Chrome/${major}.0.0.0`);
+  const uaPlatform = platform === 'darwin' ? 'macOS' : platform === 'win32' ? 'Windows' : 'Linux';
+  return {
+    userAgent,
+    platform: platform === 'darwin' ? 'MacIntel' : platform === 'win32' ? 'Win32' : 'Linux x86_64',
+    userAgentMetadata: {
+      // A GREASE entry plus the two real brands, all on the UA's own major.
+      brands: [
+        { brand: 'Not;A=Brand', version: '8' },
+        { brand: 'Chromium', version: major },
+        { brand: 'Google Chrome', version: major },
+      ],
+      fullVersion,
+      platform: uaPlatform,
+      platformVersion: '',
+      architecture: process.arch.startsWith('arm') ? 'arm' : 'x86',
+      model: '',
+      mobile: false,
+      bitness: '64',
+      wow64: false,
+    },
+    // HiDPI is the norm on Mac; 1 is the norm on a Linux server. A HiDPI GPU
+    // renderer reporting dpr 1 is the contradiction we are removing.
+    deviceScaleFactor: platform === 'darwin' ? 2 : 1,
+  };
+}
+
 function hasDisplaySession(): boolean {
   if (process.platform === 'darwin' || process.platform === 'win32') return true;
   return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
@@ -724,6 +836,11 @@ export async function cdpDirectFetch(
     const backgroundWindow = displayAvailable && !cfg.browserHeadful;
     const args = [
       ...ANTI_THROTTLE_ARGS,
+      // Headless Chrome omits Accept-Language ENTIRELY where headful sends
+      // `en-US,en;q=0.9`. Set it at launch (not via CDP) so the header keeps its
+      // natural last position — supplying it through the UA override relocates it
+      // and creates a fresh ordering anomaly.
+      '--accept-lang=en-US,en;q=0.9',
       ...stealthLaunchArgs('chromium'),
       `--remote-debugging-port=${port}`,
       '--remote-debugging-address=127.0.0.1',
@@ -777,6 +894,24 @@ export async function cdpDirectFetch(
     // Send the headful window to the background BEFORE navigating, so the user
     // never sees it flash up mid-fetch. Best-effort by contract.
     if (backgroundWindow) await handle.minimizeWindow?.();
+
+    // Headless leaks a `HeadlessChrome` UA token, a HeadlessChrome sec-ch-ua
+    // brand, the full build version, and dpr 1 on a HiDPI host. Present the
+    // coherent identity of the same binary running headful instead — derived
+    // from the binary's OWN reported UA so nothing drifts. Headful needs none of
+    // this: its identity is already correct, and overriding it could only
+    // introduce a contradiction.
+    if (headless) {
+      const rawUa = await handle.browserUserAgent?.();
+      const identity = rawUa ? coherentIdentity(rawUa, process.platform) : null;
+      if (identity) {
+        await handle.applyIdentity?.(identity, { width: 1200, height: 900 });
+        log.debug('cdp-direct: applied coherent headless identity', {
+          chromeMajor: identity.userAgentMetadata.brands.find((b) => b.brand === 'Chromium')?.version,
+          dpr: identity.deviceScaleFactor,
+        });
+      }
+    }
 
     // SSRF: re-check the RESOLVED host before we navigate. The upstream literal
     // guard cannot catch a DNS rebind to metadata / RFC-1918 / loopback, and this
