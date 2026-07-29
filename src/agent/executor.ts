@@ -127,12 +127,15 @@ export interface ExecutionResult {
   steps: AgentStep[];
 }
 
+type AgentStepCallback = (step: AgentStep) => void | Promise<void>;
+
 export async function executeAgentPlan(
   plan: AgentPlan,
   engines: SearchEngine[],
   router: SmartRouter,
   budget: ExecutionBudget,
   prompt = '',
+  onStep?: AgentStepCallback,
 ): Promise<ExecutionResult> {
   const steps: AgentStep[] = [];
   const allUrls = new Set<string>();
@@ -149,11 +152,13 @@ export async function executeAgentPlan(
       const searchStart = Date.now();
       const searchResults = await executeSearches(plan.searches, engines, budget.deadlineMs, prompt);
 
-      steps.push({
+      const searchStep: AgentStep = {
         action: 'search',
         detail: `Searched ${plan.searches.length} queries, found ${searchResults.length} results`,
         time_ms: Date.now() - searchStart,
-      });
+      };
+      steps.push(searchStep);
+      await onStep?.(searchStep);
 
       for (const result of searchResults) {
         allUrls.add(result.url);
@@ -169,11 +174,13 @@ export async function executeAgentPlan(
     const fetchStart = Date.now();
     const sources = await fetchPages(urlsToFetch, router, budget);
 
-    steps.push({
+    const fetchStep: AgentStep = {
       action: 'fetch',
       detail: `Fetched ${sources.filter((s) => s.fetched).length}/${urlsToFetch.length} pages`,
       time_ms: Date.now() - fetchStart,
-    });
+    };
+    steps.push(fetchStep);
+    await onStep?.(fetchStep);
 
     // Phase 4: Post-fetch relevance scoring
     // Only filter when a real reranker is configured; the token-overlap
