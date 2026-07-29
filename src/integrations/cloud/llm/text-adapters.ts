@@ -119,6 +119,33 @@ export async function callGroqText(opts: TextCallOpts, apiKey: string): Promise<
   };
 }
 
+export async function callMiniMaxText(opts: TextCallOpts, apiKey: string): Promise<TextCallResult> {
+  const { default: OpenAI } = await import('openai');
+  const { resolveMiniMaxBaseUrl } = await import('./minimax.js');
+  // Authenticated: the OpenAI SDK sends `Authorization: Bearer <apiKey>` to the
+  // resolved regional endpoint (global by default, mainland China via env).
+  const client = new OpenAI({ apiKey, baseURL: resolveMiniMaxBaseUrl() });
+  const start = Date.now();
+  const response = await client.chat.completions.create(
+    {
+      model: opts.model,
+      max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+      messages: [{ role: 'user', content: opts.prompt }],
+    },
+    { signal: opts.signal },
+  );
+  const text = response.choices?.[0]?.message?.content;
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    throw new Error('minimax: empty content in response');
+  }
+  return {
+    text,
+    provider: 'minimax',
+    model: response.model ?? opts.model,
+    latencyMs: Date.now() - start,
+  };
+}
+
 export const TEXT_ADAPTERS: Record<
   LLMProvider,
   (opts: TextCallOpts, apiKey: string) => Promise<TextCallResult>
@@ -127,4 +154,5 @@ export const TEXT_ADAPTERS: Record<
   openai: callOpenAIText,
   gemini: callGeminiText,
   groq: callGroqText,
+  minimax: callMiniMaxText,
 };
