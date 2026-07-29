@@ -55,9 +55,19 @@ Two honest facts to calibrate expectations:
 
 Every wigolo tool reports MCP capability hints (`readOnlyHint`, `destructiveHint`,
 `idempotentHint`, `openWorldHint`) in its `tools/list` entry, and most clients use those to
-auto-approve the read-only ones. Eight of the ten are read-only. `cache` and `watch` are not,
-because `cache` accepts `clear` and `watch` creates and deletes jobs — clients are told so
-deliberately, and prompting on those two is correct behavior.
+auto-approve the read-only ones. Seven of the ten are read-only. Three are not, and clients are
+told so deliberately — prompting on these is correct, not a bug:
+
+| Tool | Why it is not read-only |
+| --- | --- |
+| `fetch` | `actions` runs live `click` / `type` on the page, so it can submit forms and trigger navigation |
+| `cache` | `clear` deletes cached rows |
+| `watch` | `create` / `delete` mutate the persistent job store |
+
+`fetch` is the surprising one, and it is the tool you call most. Its default path only reads, but
+a capability hint describes what a tool *can* do, not what a given call does, and the hints are
+static per tool — so it has to declare the widest behaviour. If you never pass `actions` and want
+`fetch` auto-approved anyway, allow it explicitly with the rule below.
 
 Clients that ignore the hints need an explicit allow rule.
 
@@ -66,7 +76,7 @@ annotated read-only, and it decides that *before* it looks at your allow rules �
 rule cannot lift it.
 Before wigolo shipped these hints, every tool was treated as non-read-only and prompted on every
 call in plan mode no matter what was in `settings.json`. If you are on an older wigolo, upgrade.
-`cache` and `watch` still prompt in plan mode, correctly: they change state.
+The three non-read-only tools above still prompt in plan mode, correctly: they change state.
 
 **Claude Code, normal modes.** Add to `~/.claude/settings.json`:
 

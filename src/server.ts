@@ -335,11 +335,17 @@ export function createMcpServer(subsystems: Subsystems): Server {
         name: 'fetch',
         description: TOOL_DESCRIPTIONS.fetch,
         inputSchema: FETCH_TOOL_SCHEMA,
+        // Not read-only: `actions` accepts `click` and `type`, which run as live
+        // Playwright interactions on the target page (tool-schemas.ts), so a
+        // caller can submit a form or trigger navigation. The hints cover the
+        // widest reachable behaviour, and a click on an arbitrary page can
+        // destroy remote state, so `destructiveHint` is true even though the
+        // no-actions path — the common one — only reads.
         annotations: {
           title: 'Fetch a page',
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: true,
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
           openWorldHint: true,
         },
       },

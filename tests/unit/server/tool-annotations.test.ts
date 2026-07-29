@@ -92,12 +92,16 @@ const HINT_KEYS = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWor
 
 type HintMatrix = Record<(typeof HINT_KEYS)[number], boolean>;
 
+// Three tools are not read-only, and none of them look it from the name alone:
+//   `fetch`  — `actions` runs live click/type via Playwright
+//   `cache`  — `clear` deletes rows
+//   `watch`  — create/delete mutate the job store
 // `diff` is the only closed-world tool: it resolves its `url` sides from the
 // local cache and returns `cache_miss` rather than fetching (src/tools/diff.ts).
 // `cache` looks local but `check_changes` re-fetches over the network
 // (src/tools/cache.ts).
 const EXPECTED: Record<string, HintMatrix> = {
-  fetch: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  fetch: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   search: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   crawl: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   cache: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
@@ -136,12 +140,17 @@ describe('tools/list capability annotations', () => {
   beforeEach(() => {
     tmpDataDir = mkdtempSync(join(tmpdir(), 'wigolo-tool-annotations-'));
     process.env.WIGOLO_DATA_DIR = tmpDataDir;
+    // `pluginsDir` defaults to `<dataDir>/plugins`, so the line above already
+    // isolates it — but pin it anyway so an exported WIGOLO_PLUGINS_DIR in the
+    // developer's shell can't make `initSubsystems()` import real plugin code.
+    process.env.WIGOLO_PLUGINS_DIR = join(tmpDataDir, 'plugins');
     resetConfig();
     _resetMigrationGuard();
     vi.clearAllMocks();
   });
   afterEach(() => {
     delete process.env.WIGOLO_DATA_DIR;
+    delete process.env.WIGOLO_PLUGINS_DIR;
     resetConfig();
     try { rmSync(tmpDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
@@ -201,7 +210,7 @@ describe('tools/list capability annotations', () => {
     }
   });
 
-  it('the two state-changing tools are not advertised as read-only', async () => {
+  it('the three state-changing tools are not advertised as read-only', async () => {
     const { client, teardown } = await connectClient();
     try {
       const res = await client.listTools();
@@ -209,7 +218,7 @@ describe('tools/list capability annotations', () => {
         .filter((t) => t.annotations?.readOnlyHint === false)
         .map((t) => t.name)
         .sort();
-      expect(notReadOnly).toEqual(['cache', 'watch']);
+      expect(notReadOnly).toEqual(['cache', 'fetch', 'watch']);
     } finally {
       await teardown();
     }
