@@ -2,7 +2,14 @@ import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync, execSync } from 'node:child_process';
-import { mergeBlock, removeBlock, readAsset, mergeMcpJson } from './utils.js';
+import {
+  mergeBlock,
+  removeBlock,
+  readAsset,
+  mergeMcpJson,
+  mergeJsonArray,
+  removeJsonArrayValues,
+} from './utils.js';
 import { installSkills as installSkillsEngine } from './skills/index.js';
 
 function claudeDir(): string {
@@ -75,6 +82,27 @@ async function installSkills(): Promise<void> {
   installSkillsEngine({ scope: 'global', agents: ['claude-code'], cwd: process.cwd() });
 }
 
+// One wildcard rule rather than ten literal tool names: Claude Code supports a
+// glob after the literal `mcp__<server>__` prefix, and a wildcard keeps working
+// when wigolo grows an eleventh tool.
+const PERMISSION_RULE = 'mcp__wigolo__*';
+
+/**
+ * Allow wigolo's tools without a per-call prompt.
+ *
+ * Tool annotations already cover the read-only tools in hosts that honour them,
+ * but Claude Code consults its own allow rules outside plan mode, so without
+ * this every tool prompts once on first use.
+ */
+async function installPermissions(): Promise<boolean> {
+  const added = mergeJsonArray(
+    join(claudeDir(), 'settings.json'),
+    ['permissions', 'allow'],
+    [PERMISSION_RULE],
+  );
+  return added.length > 0;
+}
+
 async function installCommand(): Promise<void> {
   const content = readAsset('blocks/claude-code/wigolo-command.md');
   const commandsDir = join(claudeDir(), 'commands');
@@ -94,6 +122,24 @@ async function uninstall(): Promise<{ removed: string[] }> {
     removed.push('MCP server (claude mcp remove)');
   } catch {
     // already gone or claude not found
+  }
+
+  // Remove only the exact rule wigolo wrote — the rest of the user's allow
+  // list is none of our business. Guarded so an unreadable settings.json can't
+  // abort the CLAUDE.md and slash-command teardown below it.
+  try {
+    const removedRules = removeJsonArrayValues(
+      join(claudeDir(), 'settings.json'),
+      ['permissions', 'allow'],
+      [PERMISSION_RULE],
+    );
+    if (removedRules.length > 0) {
+      removed.push(`~/.claude/settings.json (${PERMISSION_RULE} allow rule)`);
+    }
+  } catch (err) {
+    process.stderr.write(
+      `Leaving the ${PERMISSION_RULE} allow rule in place: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
   }
 
   // Remove instructions block
@@ -126,5 +172,6 @@ export const claudeCodeHandler = {
   installInstructions,
   installSkills,
   installCommand,
+  installPermissions,
   uninstall,
 };

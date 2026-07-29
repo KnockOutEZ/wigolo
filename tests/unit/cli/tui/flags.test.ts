@@ -88,6 +88,8 @@ describe('parseInitFlags — flags', () => {
       wizard: false,
       // Full setup is the default: warmup is TRUE unless --no-warmup is passed.
       warmup: true,
+      // Same shape: allowing the tools is on unless --no-permissions is passed.
+      permissions: true,
       json: false,
       provider: undefined,
       search: undefined,

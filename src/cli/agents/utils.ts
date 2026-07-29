@@ -192,6 +192,133 @@ export function mergeMcpJson(
   writeFileSync(configPath, JSON.stringify(root, null, 2) + '\n', 'utf-8');
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Reject the keys that would walk into `Object.prototype`. `keyPath` is a
+ * module constant at every call site today, but this is an exported generic
+ * helper and the signature invites a dynamic caller.
+ */
+function assertSafeKey(key: string): string {
+  if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+    throw new Error(`refusing to write reserved key "${key}"`);
+  }
+  return key;
+}
+
+/**
+ * Parse a JSON config that must be an object. Anything else — invalid JSON, an
+ * array, a bare primitive — throws rather than being silently replaced: the
+ * target here is the user's own config, and a wrong guess costs them the file.
+ */
+function readJsonObject(configPath: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
+  } catch (err) {
+    throw new Error(
+      `${configPath} is not valid JSON, refusing to overwrite it: ${String(err)}`,
+    );
+  }
+  if (!isPlainObject(parsed)) {
+    throw new Error(
+      `${configPath} is not a JSON object, refusing to overwrite it`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Write via a sibling temp file + rename. A plain `writeFileSync` truncates
+ * first, so an interrupted write would leave the user with a truncated or empty
+ * config — the whole file, not just our one entry.
+ */
+function writeJsonAtomic(configPath: string, root: unknown): void {
+  const tmp = `${configPath}.wigolo-tmp`;
+  writeFileSync(tmp, JSON.stringify(root, null, 2) + '\n', 'utf-8');
+  try {
+    renameSync(tmp, configPath);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* leave it rather than mask the real error */ }
+    throw err;
+  }
+}
+
+/**
+ * Append values to a string array nested at `keyPath`, creating the path when
+ * absent. Idempotent — values already present are skipped, so re-running an
+ * install never duplicates a rule.
+ *
+ * Unlike `mergeMcpJson` this must not clobber the target: the file it is aimed
+ * at (`~/.claude/settings.json`) is the user's own, and the array it edits sits
+ * beside settings wigolo has no business rewriting. Returns the values it
+ * actually added.
+ */
+export function mergeJsonArray(
+  configPath: string,
+  keyPath: string[],
+  values: string[],
+): string[] {
+  mkdirSync(dirname(configPath), { recursive: true });
+
+  const root = existsSync(configPath) ? readJsonObject(configPath) : {};
+
+  let obj = root;
+  for (let i = 0; i < keyPath.length - 1; i++) {
+    const key = assertSafeKey(keyPath[i]);
+    if (!isPlainObject(obj[key])) {
+      obj[key] = {};
+    }
+    obj = obj[key] as Record<string, unknown>;
+  }
+
+  const leaf = assertSafeKey(keyPath[keyPath.length - 1]);
+  const existing = Array.isArray(obj[leaf]) ? (obj[leaf] as unknown[]) : [];
+  const added = values.filter((v) => !existing.includes(v));
+  if (added.length === 0) return [];
+
+  obj[leaf] = [...existing, ...added];
+  writeJsonAtomic(configPath, root);
+  return added;
+}
+
+/**
+ * Remove exactly the given values from a string array nested at `keyPath`.
+ * Everything else in the array — and in the file — is left alone. Returns the
+ * values actually removed.
+ */
+export function removeJsonArrayValues(
+  configPath: string,
+  keyPath: string[],
+  values: string[],
+): string[] {
+  if (!existsSync(configPath)) return [];
+
+  // Unlike the install path this throws rather than returning silently, so an
+  // uninstall that leaves the rule behind says so instead of claiming success.
+  const root = readJsonObject(configPath);
+
+  let obj = root;
+  for (let i = 0; i < keyPath.length - 1; i++) {
+    const key = assertSafeKey(keyPath[i]);
+    if (!isPlainObject(obj[key])) return [];
+    obj = obj[key] as Record<string, unknown>;
+  }
+
+  const leaf = assertSafeKey(keyPath[keyPath.length - 1]);
+  if (!Array.isArray(obj[leaf])) return [];
+
+  const existing = obj[leaf] as unknown[];
+  const removed = values.filter((v) => existing.includes(v));
+  if (removed.length === 0) return [];
+
+  obj[leaf] = existing.filter((v) => !values.includes(v as string));
+  writeJsonAtomic(configPath, root);
+  return removed;
+}
+
 /** Remove the wigolo entry from a JSON MCP config, preserving other servers. */
 export function removeMcpJson(configPath: string, keyPath: string[]): void {
   if (!existsSync(configPath)) return;

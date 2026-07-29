@@ -78,7 +78,9 @@ Before wigolo shipped these hints, every tool was treated as non-read-only and p
 call in plan mode no matter what was in `settings.json`. If you are on an older wigolo, upgrade.
 The three non-read-only tools above still prompt in plan mode, correctly: they change state.
 
-**Claude Code, normal modes.** Add to `~/.claude/settings.json`:
+**Claude Code, normal modes.** `wigolo init --agents=claude-code` writes the allow rule for you
+(pass `--no-permissions` to skip, and `wigolo doctor` reports whether it is in place). To do it
+by hand, add to `~/.claude/settings.json`:
 
 ```json
 {
