@@ -585,15 +585,26 @@ function claudeSettingsPath(): string {
   return join(homedir(), '.claude', 'settings.json');
 }
 
-function readClaudeAllowList(): string[] | null {
+interface ClaudePermissionLists {
+  allow: string[];
+  ask: string[];
+  deny: string[];
+}
+
+function readClaudePermissions(): ClaudePermissionLists | null {
   const path = claudeSettingsPath();
   if (!existsSync(path)) return null;
   try {
     const root = JSON.parse(readFileSync(path, 'utf-8')) as {
-      permissions?: { allow?: unknown };
+      permissions?: { allow?: unknown; ask?: unknown; deny?: unknown };
     };
-    const allow = root.permissions?.allow;
-    return Array.isArray(allow) ? allow.filter((v): v is string => typeof v === 'string') : [];
+    const list = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    return {
+      allow: list(root.permissions?.allow),
+      ask: list(root.permissions?.ask),
+      deny: list(root.permissions?.deny),
+    };
   } catch {
     return null;
   }
@@ -622,14 +633,38 @@ function checkClaudeCodePermissions(): DoctorCheck {
     return advisory('Claude Code not detected');
   }
 
-  const allow = readClaudeAllowList();
-  if (allow === null) {
+  const perms = readClaudePermissions();
+  if (perms === null) {
     return advisory(`${claudeSettingsPath()} missing or unreadable`);
   }
 
+  // Claude Code evaluates deny, then ask, then allow — so a rule in either of
+  // the first two wins and reporting `ok` off the allow list alone would be
+  // wrong. Any overlap at all is reported rather than second-guessed: a rule
+  // shadowing only some tools still means the user does not get what the
+  // allow rule promises.
+  const shadows = (rules: string[]): string[] =>
+    rules.filter((r) => CLAUDE_ALLOW_RULES.includes(r) || CLAUDE_TOOL_RULES.includes(r));
+
+  const denied = shadows(perms.deny);
+  if (denied.length > 0) {
+    return advisory(
+      `a deny rule blocks wigolo tools (${denied.join(', ')}) — deny wins over allow in ` +
+        `Claude Code, so remove it from permissions.deny in ${claudeSettingsPath()}`,
+    );
+  }
+
+  const asked = shadows(perms.ask);
+  if (asked.length > 0) {
+    return advisory(
+      `an ask rule forces a prompt for wigolo tools (${asked.join(', ')}) — ask wins over ` +
+        `allow in Claude Code, so remove it from permissions.ask in ${claudeSettingsPath()}`,
+    );
+  }
+
   const covered =
-    CLAUDE_ALLOW_RULES.some((r) => allow.includes(r)) ||
-    CLAUDE_TOOL_RULES.every((r) => allow.includes(r));
+    CLAUDE_ALLOW_RULES.some((r) => perms.allow.includes(r)) ||
+    CLAUDE_TOOL_RULES.every((r) => perms.allow.includes(r));
 
   if (covered) {
     return {

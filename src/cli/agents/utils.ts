@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, lstatSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, lstatSync, renameSync, statSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
@@ -238,6 +238,14 @@ function readJsonObject(configPath: string): Record<string, unknown> {
 function writeJsonAtomic(configPath: string, root: unknown): void {
   const tmp = `${configPath}.wigolo-tmp`;
   writeFileSync(tmp, JSON.stringify(root, null, 2) + '\n', 'utf-8');
+  // The rename swaps the temp file's inode in wholesale, so without this the
+  // destination inherits the temp file's umask-default mode. A user who
+  // chmod-hardened their settings would have it quietly widened.
+  try {
+    chmodSync(tmp, statSync(configPath).mode);
+  } catch {
+    // No existing file to copy the mode from — leave the umask default.
+  }
   try {
     renameSync(tmp, configPath);
   } catch (err) {

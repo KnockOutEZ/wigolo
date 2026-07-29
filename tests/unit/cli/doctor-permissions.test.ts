@@ -92,6 +92,38 @@ describe('doctor: claude-code-permissions', () => {
     expect((await permissionCheck()).status).toBe('ok');
   });
 
+  it('does not report ok when a deny rule shadows the allow rule', async () => {
+    // Claude Code evaluates deny before allow, so the tools are blocked
+    // despite the allow entry.
+    writeSettings({ permissions: { allow: ['mcp__wigolo__*'], deny: ['mcp__wigolo__*'] } });
+
+    const check = await permissionCheck();
+
+    expect(check.status).toBe('skipped');
+    expect(check.detail).toMatch(/deny rule/);
+  });
+
+  it('does not report ok when an ask rule shadows the allow rule', async () => {
+    writeSettings({ permissions: { allow: ['mcp__wigolo__*'], ask: ['mcp__wigolo__search'] } });
+
+    const check = await permissionCheck();
+
+    expect(check.status).toBe('skipped');
+    expect(check.detail).toMatch(/ask rule/);
+  });
+
+  it('ignores deny/ask rules aimed at other servers', async () => {
+    writeSettings({
+      permissions: {
+        allow: ['mcp__wigolo__*'],
+        deny: ['mcp__other__*', 'Read(**/.env)'],
+        ask: ['Bash(rm:*)'],
+      },
+    });
+
+    expect((await permissionCheck()).status).toBe('ok');
+  });
+
   it('is not satisfied by a partial literal list', async () => {
     writeSettings({ permissions: { allow: ['mcp__wigolo__search', 'mcp__wigolo__fetch'] } });
     expect((await permissionCheck()).status).toBe('skipped');

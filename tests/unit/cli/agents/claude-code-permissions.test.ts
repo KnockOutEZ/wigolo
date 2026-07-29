@@ -5,7 +5,7 @@
  * nothing, and uninstall takes back exactly one string.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, statSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { mergeJsonArray, removeJsonArrayValues } from '../../../../src/cli/agents/utils.js';
@@ -125,6 +125,28 @@ describe('claude-code tool permissions', () => {
       /reserved key/,
     );
     expect(({} as Record<string, unknown>).allow).toBeUndefined();
+  });
+
+  it('preserves a hardened file mode across the atomic rename', () => {
+    // The rename swaps inodes, so without an explicit chmod the destination
+    // would come back at the umask default and silently widen the user's
+    // permissions.
+    writeSettings({ permissions: { allow: ['WebFetch'] } });
+    chmodSync(settingsPath, 0o600);
+
+    mergeJsonArray(settingsPath, ['permissions', 'allow'], [RULE]);
+
+    expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+    expect(allowList()).toEqual(['WebFetch', RULE]);
+  });
+
+  it('preserves the file mode on removal too', () => {
+    writeSettings({ permissions: { allow: ['WebFetch', RULE] } });
+    chmodSync(settingsPath, 0o600);
+
+    removeJsonArrayValues(settingsPath, ['permissions', 'allow'], [RULE]);
+
+    expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
   });
 
   it('leaves no temp file behind after a successful write', () => {
