@@ -16,6 +16,7 @@ wigolo doctor --fix  # repairs the known failure classes automatically
 | `wigolo serve` exits: port in use | The daemon deliberately does not auto-rebind. The error names a free port to retry with, e.g. `wigolo serve --port 3334`. |
 | `wigolo serve` refuses to start on a non-loopback host | Working as designed (fail-closed). Set `WIGOLO_API_TOKEN` / `WIGOLO_API_TOKEN_FILE`, or explicitly pass `--allow-unauthenticated`. See [self-hosting](./self-hosting.md#binding-beyond-loopback). |
 | Fetch result says `blocked_by_challenge` | See [below](#blocked_by_challenge). |
+| Your agent asks permission before every wigolo tool call | See [below](#your-agent-keeps-asking-permission). |
 | Search results feel thin / an engine seems dead | Degraded engines are *reported*, not hidden — check `engine_warnings`, `engine_telemetry`, and `engine_pool` in the response, and `wigolo doctor`'s per-engine table (it names the env var when an engine just wants a key, e.g. `WIGOLO_GITHUB_TOKEN`, `BRAVE_API_KEY`). |
 | Results are stale | Pass `force_refresh: true` (news, prices, changelogs), or clear scoped entries: `wigolo cache clear --url-pattern="*example.com*"`. Lifetimes are tunable: `CACHE_TTL_SEARCH`, `CACHE_TTL_CONTENT`. |
 | Everything fails behind a corporate proxy | Set `USE_PROXY=true` and `PROXY_URL` (credentials go to the OS keychain, not disk). See [configuration](./configuration.md#fetch-and-browser-engine). |
@@ -49,6 +50,43 @@ Two honest facts to calibrate expectations:
 
 - **IP reputation is scored.** From datacenter IPs (VPS, CI, cloud), some challenge-protected sites will not clear even though the identical request works from a residential connection. That's a property of where you're running, not a knob wigolo forgot.
 - **The opt-in lever is a proxy** whose IP reputation matches your legitimate-research use — see [self-hosting](./self-hosting.md#the-datacenter-ip-reality). Credentials are keychain-stored, and politeness (robots.txt, per-domain rate limits) still applies.
+
+## Your agent keeps asking permission
+
+Every wigolo tool reports MCP capability hints (`readOnlyHint`, `destructiveHint`,
+`idempotentHint`, `openWorldHint`) in its `tools/list` entry, and most clients use those to
+auto-approve the read-only ones. Eight of the ten are read-only. `cache` and `watch` are not,
+because `cache` accepts `clear` and `watch` creates and deletes jobs — clients are told so
+deliberately, and prompting on those two is correct behavior.
+
+Clients that ignore the hints need an explicit allow rule.
+
+**Claude Code in plan mode** (observed on 2.1.220). Plan mode refuses any MCP tool that is not
+annotated read-only, and it decides that *before* it looks at your allow rules — so an allow
+rule cannot lift it.
+Before wigolo shipped these hints, every tool was treated as non-read-only and prompted on every
+call in plan mode no matter what was in `settings.json`. If you are on an older wigolo, upgrade.
+`cache` and `watch` still prompt in plan mode, correctly: they change state.
+
+**Claude Code, normal modes.** Add to `~/.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": ["mcp__wigolo__*"]
+  }
+}
+```
+
+Then **restart Claude Code**. This is the step people miss: permission rules are read once at
+session start, so a session that was already open when you edited the file keeps prompting until
+you restart it, and it looks like the rule did not work.
+
+The `mcp__wigolo__` prefix must be literal — the server segment cannot contain a glob, so
+`mcp__*` is skipped with a warning and approves nothing.
+
+If the server name is not `wigolo` in your config, use whatever name you registered it under —
+the rule matches the configured server name, not the package name. `claude mcp list` shows it.
 
 ## Platform notes
 
