@@ -208,6 +208,18 @@ export interface Config {
    */
   browserHeadful: boolean;
   /**
+   * Force the WINDOWLESS path on the raw-CDP rung even when a display exists.
+   *
+   * That rung prefers a real headful browser (minimized) because headless is
+   * itself an automation tell; on a desktop that still starts a browser process
+   * owning a real — if never visible — window. Setting this launches headless
+   * instead and presents a coherent headless identity (user agent + client hints
+   * + device pixel ratio matching the SAME binary running headful), so no window
+   * is ever created. Off by default: headful remains the stronger posture, and
+   * this trades a little of that for a guarantee of no window.
+   */
+  browserWindowless: boolean;
+  /**
    * Driver selection for the DEDICATED browser-tier stealth launch:
    *   - 'auto'       : use the driver-hardened stealth launcher (patches the
    *                    CDP `Runtime.enable`-class automation leak at the driver
@@ -707,6 +719,7 @@ export function getConfig(): Config {
       return raw === 'chrome' || raw === 'chromium' ? (raw as 'chrome' | 'chromium') : 'auto';
     })(),
     browserHeadful: envBool('WIGOLO_BROWSER_HEADFUL', false, settings, 'browserHeadful'),
+    browserWindowless: envBool('WIGOLO_BROWSER_WINDOWLESS', false, settings, 'browserWindowless'),
     stealthDriver: (() => {
       const raw = (envStr('WIGOLO_STEALTH_DRIVER', 'auto', settings, 'stealthDriver') ?? 'auto').toLowerCase();
       return raw === 'patchright' || raw === 'playwright'

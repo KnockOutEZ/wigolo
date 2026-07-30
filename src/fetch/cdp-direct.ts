@@ -831,7 +831,10 @@ export async function cdpDirectFetch(
     // sees a real browser while the user's screen stays untouched. Only a
     // display-less host falls back to headless, with the honest ceiling that
     // implies (a virtual display, e.g. Xvfb, restores the headful path there).
-    const displayAvailable = hasDisplaySession();
+    // `browserWindowless` forces the headless path even where a display exists,
+    // for callers that must guarantee no browser window is ever created (the
+    // coherent-identity override below is what makes that viable).
+    const displayAvailable = hasDisplaySession() && !cfg.browserWindowless;
     const headless = !displayAvailable;
     const backgroundWindow = displayAvailable && !cfg.browserHeadful;
     const args = [
