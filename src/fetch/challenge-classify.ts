@@ -43,6 +43,39 @@ import { isChallengeSkeleton, isNearEmptyBody } from './tls-tier.js';
  *  chars; an ordinary page carries thousands. */
 const REAL_CONTENT_MIN_TEXT = 600;
 
+/**
+ * Titles that ONLY an interstitial ever carries. Unlike a vendor sensor script
+ * (which rides along on pages served successfully), one of these in the <title>
+ * is high-confidence proof the response IS the challenge — so it outranks the
+ * content-length guard below. Some interstitials pad themselves with
+ * explanatory copy, and a padded interstitial is still an interstitial.
+ */
+const INTERSTITIAL_TITLE =
+  /<title>[^<]*(?:just a moment|attention required|checking your browser|access to this page has been denied|verifying you are human)[^<]*<\/title>/i;
+
+/**
+ * Vendor TEMPLATE markup — emitted only by the interstitial page itself, never by
+ * a page served successfully. This is the load-bearing distinction: a vendor
+ * SENSOR script (`_px*`, `_dd_s`, the reCAPTCHA badge) rides along on ordinary
+ * pages, so content must outrank it; these template signatures do not, so they
+ * outrank content. Verified: walmart.com's successfully-served page contains
+ * NONE of these while carrying PerimeterX sensor markers throughout.
+ */
+const INTERSTITIAL_TEMPLATE_MARKERS = [
+  'cf-browser-verification',
+  '_cfChlOpt',
+  'id="cmsg"',        // DataDome "enable JS" interstitial
+  'id="px-captcha"',  // PerimeterX widget
+  'px-captcha-error', // PerimeterX "denied" variant
+  'Robot or human?',
+] as const;
+
+/** True when the body carries proof it IS an interstitial (title or template). */
+function hasInterstitialSignal(slice: string, lower: string): boolean {
+  if (INTERSTITIAL_TITLE.test(slice)) return true;
+  return INTERSTITIAL_TEMPLATE_MARKERS.some((m) => lower.includes(m.toLowerCase()));
+}
+
 /** Approximate rendered-text length: drop script/style bodies, then tags. */
 function visibleTextLength(html: string): number {
   return html
@@ -79,7 +112,13 @@ export function classifyChallenge(html: string): ChallengeClass {
   // large real page's first 32KB is mostly <head> scripts/CSS and carries almost
   // no text (walmart's 405KB page has <600 visible chars in its first 32KB but
   // 2,777 overall), so slicing here would defeat the guard entirely.
-  if (visibleTextLength(html) >= REAL_CONTENT_MIN_TEXT) return 'none';
+  // The guard covers SENSOR markers only. An interstitial title or vendor
+  // template signature is high-confidence proof the response IS the challenge,
+  // and interstitials sometimes pad themselves with explanatory copy — a padded
+  // interstitial is still an interstitial, so those outrank length.
+  if (!hasInterstitialSignal(slice, lower) && visibleTextLength(html) >= REAL_CONTENT_MIN_TEXT) {
+    return 'none';
+  }
 
   // A managed/invisible signal that is NOT itself a bare Cloudflare shell —
   // reCAPTCHA v3, DataDome, Akamai. These are POSITIVE evidence of a
