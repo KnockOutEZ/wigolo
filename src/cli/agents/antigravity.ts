@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { spawnSync  } from 'node:child_process';
 import { mergeMcpJson, removeMcpJson } from './utils.js';
 
 const MCP_KEY_PATH = ['mcpServers', 'wigolo'];
@@ -22,9 +22,15 @@ export function antigravityMcpConfigPath(home: string = homedir()): string {
 }
 
 function binaryExists(name: string): boolean {
+  const comand = process.platform === 'win32' ? 'where': 'which';
+
   try {
-    execSync(`which ${name}`, { stdio: ['pipe', 'pipe', 'pipe'] });
-    return true;
+    const result = spawnSync(comand, [name], {
+      encoding:'utf-8',
+      timeout: 3000,
+    });
+    
+    return !result.error && result.status === 0;
   } catch {
     return false;
   }
