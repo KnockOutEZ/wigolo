@@ -250,13 +250,13 @@ describe('Antigravity descriptor', () => {
     expect(getDescriptor('antigravity').detect(ENV)).toBe(true);
   });
 
-  it('detects when ~/.antigravity dir exists', () => {
-    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.antigravity'));
+  it('detects when ~/.gemini/config dir exists', () => {
+    vi.mocked(dirExists).mockImplementation((p) => p === join('/home/test', '.gemini', 'config'));
     expect(getDescriptor('antigravity').detect(ENV)).toBe(true);
   });
 
-  it('configPath returns ~/.antigravity/mcp.json', () => {
-    expect(getDescriptor('antigravity').configPath(ENV)).toBe(join('/home/test', '.antigravity', 'mcp.json'));
+  it('configPath returns ~/.gemini/config/mcp_config.json', () => {
+    expect(getDescriptor('antigravity').configPath(ENV)).toBe(join('/home/test', '.gemini', 'config', 'mcp_config.json'));
   });
 });
 

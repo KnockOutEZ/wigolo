@@ -95,8 +95,8 @@ const antigravity: AgentDescriptor = {
   installType: 'config-file',
   detect: ({ home }) =>
     binaryInPath('antigravity') !== null ||
-    dirExists(join(home, '.antigravity')),
-  configPath: ({ home }) => join(home, '.antigravity', 'mcp.json'),
+    dirExists(join(home, '.gemini', 'config')),
+  configPath: ({ home }) => join(home, '.gemini', 'config', 'mcp_config.json'),
 };
 
 export const AGENTS: readonly AgentDescriptor[] = [
