@@ -263,12 +263,18 @@ export interface Config {
    * dependency-free behavioral pass (curved mouse traversal + small randomized
    * scroll + randomized delays, hard time-capped) runs on the browser tier
    * AFTER navigation settles and BEFORE content extraction.
-   *   - 'off'  : never engage; browser fetches pay zero behavioral cost.
-   *   - 'auto' : engage ONLY on the anti-bot / stealth escalation path
-   *              (DEFAULT) — a benign, non-escalated browser fetch does NOT
-   *              pay the cost.
+   *   - 'off'  : never engage; browser fetches pay zero behavioral cost
+   *              (DEFAULT).
+   *   - 'auto' : engage ONLY on the anti-bot / stealth escalation path — a
+   *              benign, non-escalated browser fetch does NOT pay the cost.
    *   - 'on'   : engage on every browser fetch.
-   * Any other value normalizes to 'auto' (the safe default).
+   * Any other value normalizes to 'off' (the safe default).
+   *
+   * Defaults OFF. The pass is reactive (escalation path only), so it never
+   * slows a successful fetch — but it does add ~1.2s to one that ends up
+   * blocked anyway, and behavioural interaction did not measure as a lever that
+   * changes a bot-wall outcome (passive render sufficed). Opt in with
+   * WIGOLO_HUMANIZE=auto.
    */
   humanize: 'off' | 'auto' | 'on';
   /**
@@ -283,8 +289,12 @@ export interface Config {
   hardcore: 'off' | 'on';
   /**
    * Automated interactive-challenge pass (trusted-input gesture on a checkbox /
-   * Turnstile widget). 'off' | 'auto' (engage on the escalation path, DEFAULT) |
-   * 'on'. Any other value normalizes to 'auto'. WIGOLO_AUTO_PASS.
+   * Turnstile widget). 'off' (DEFAULT) | 'auto' (engage on the escalation path)
+   * | 'on'. Any other value normalizes to 'off'. WIGOLO_AUTO_PASS.
+   *
+   * Defaults OFF. The rung only runs on a fetch that already hit a challenge, so
+   * it never slows a successful one, but it adds ~3s to a fetch that ends up
+   * blocked anyway and has no measured win. Opt in with WIGOLO_AUTO_PASS=auto.
    */
   autoPass: 'off' | 'auto' | 'on';
   /**
@@ -747,16 +757,16 @@ export function getConfig(): Config {
         : 'playwright';
     })(),
     humanize: (() => {
-      const raw = (envStr('WIGOLO_HUMANIZE', 'auto', settings, 'humanize') ?? 'auto').toLowerCase();
-      return raw === 'off' || raw === 'on' ? (raw as 'off' | 'on') : 'auto';
+      const raw = (envStr('WIGOLO_HUMANIZE', 'off', settings, 'humanize') ?? 'off').toLowerCase();
+      return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
     })(),
     hardcore: (() => {
       const raw = (envStr('WIGOLO_HARDCORE', 'off', settings, 'hardcore') ?? 'off').toLowerCase();
       return raw === 'on' ? 'on' : 'off';
     })(),
     autoPass: (() => {
-      const raw = (envStr('WIGOLO_AUTO_PASS', 'auto', settings, 'autoPass') ?? 'auto').toLowerCase();
-      return raw === 'off' || raw === 'on' ? (raw as 'off' | 'on') : 'auto';
+      const raw = (envStr('WIGOLO_AUTO_PASS', 'off', settings, 'autoPass') ?? 'off').toLowerCase();
+      return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
     })(),
     cdpDirect: (() => {
       const raw = (envStr('WIGOLO_CDP_DIRECT', 'off', settings, 'cdpDirect') ?? 'off').toLowerCase();

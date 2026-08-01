@@ -206,6 +206,9 @@ describe('browser-pool anti-bot fast-fail (D6)', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+    // A test that opted into the auto-pass rung must not leave it on for the
+    // next one — the default is off.
+    delete process.env.WIGOLO_AUTO_PASS;
     resetConfig();
   });
 
@@ -567,8 +570,11 @@ describe('browser-pool anti-bot fast-fail (D6)', () => {
     // WHY (reviewer-flagged regression): the ladder-solved harvest must thread
     // the CURRENT egress route into recordDomainClearance.solvedRoute. This drives
     // the REAL pool path: the auto-poll cannot see the clearance cookie (no CDP
-    // session), times out, and the LADDER's auto-pass rung (default gate 'auto')
-    // opens a CDP session — which reveals the cookie — and clears.
+    // session), times out, and the LADDER's auto-pass rung opens a CDP session
+    // — which reveals the cookie — and clears. The rung is OPT-IN (it adds time
+    // to an already-blocked fetch), so this test enables it explicitly.
+    process.env.WIGOLO_AUTO_PASS = 'auto';
+    resetConfig();
     vi.useFakeTimers();
     process.env.WIGOLO_CHALLENGE_COMPLETION_MS = '3000';
     resetConfig();

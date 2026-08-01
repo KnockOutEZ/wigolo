@@ -60,7 +60,7 @@ describe('config — hardcore-mode knob defaults', () => {
   it('all new knobs take their documented defaults when unset', () => {
     const cfg = getConfig();
     expect(cfg.hardcore).toBe('off');
-    expect(cfg.autoPass).toBe('auto');
+    expect(cfg.autoPass).toBe('off');
     expect(cfg.cdpDirect).toBe('off');
     expect(cfg.aiSolve).toBe('off');
     expect(cfg.aiSolveMaxAttempts).toBe(2);
@@ -92,7 +92,7 @@ describe('config — hardcore knob env / persisted / normalize', () => {
     expect(getConfig().hardcore).toBe('on');
   });
 
-  it('WIGOLO_AUTO_PASS: env off/auto/on, persisted, junk→auto', () => {
+  it('WIGOLO_AUTO_PASS: env off/auto/on, persisted, junk→off', () => {
     process.env.WIGOLO_AUTO_PASS = 'on';
     resetConfig();
     expect(getConfig().autoPass).toBe('on');
@@ -103,7 +103,7 @@ describe('config — hardcore knob env / persisted / normalize', () => {
 
     process.env.WIGOLO_AUTO_PASS = 'nonsense';
     resetConfig();
-    expect(getConfig().autoPass).toBe('auto');
+    expect(getConfig().autoPass).toBe('off');
 
     delete process.env.WIGOLO_AUTO_PASS;
     writeFileSync(
@@ -318,15 +318,18 @@ describe('config — hardcore preset resolver', () => {
     expect(cfg.stealthDriver).toBe('playwright');
     expect(cfg.browserChannel).toBe('chromium');
     expect(cfg.browserHeadful).toBe(false);
-    expect(cfg.humanize).toBe('auto');
+    // Both rungs default OFF: reactive-only, so they never slow a successful
+    // fetch, but they add time to one that ends up blocked anyway for no
+    // measured win. Opt in per-knob.
+    expect(cfg.humanize).toBe('off');
     expect(cfg.cdpDirect).toBe('off');
-    expect(cfg.autoPass).toBe('auto');
+    expect(cfg.autoPass).toBe('off');
     expect(cfg.aiSolve).toBe('off');
     expect(cfg.humanSolve).toBe('off');
     expect(cfg.challengeCompletionTimeoutMs).toBe(15000);
   });
 
-  it('does NOT touch proxyBypassOnChallenge (its default is already true)', () => {
+  it('does NOT touch proxyBypassOnChallenge (the preset owns no entry for it)', () => {
     // Assert the resolver is a no-op on this knob: with hardcore on and the knob
     // explicitly set false, it must stay false (the preset must not flip it).
     process.env.WIGOLO_HARDCORE = 'on';

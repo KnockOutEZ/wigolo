@@ -124,8 +124,17 @@ describe('config', () => {
   });
 
   describe('humanize (behavioral realism) configuration', () => {
-    it('defaults WIGOLO_HUMANIZE to auto', () => {
+    // Defaults OFF: the pass is reactive (escalation path only) so it never
+    // slows a successful fetch, but it adds ~1.2s to one that ends up blocked
+    // anyway, for a lever that did not measure as changing a wall outcome.
+    it('defaults WIGOLO_HUMANIZE to off', () => {
       delete process.env.WIGOLO_HUMANIZE;
+      resetConfig();
+      expect(getConfig().humanize).toBe('off');
+    });
+
+    it('reads WIGOLO_HUMANIZE=auto to opt into the escalation-path pass', () => {
+      process.env.WIGOLO_HUMANIZE = 'auto';
       resetConfig();
       expect(getConfig().humanize).toBe('auto');
     });
@@ -142,10 +151,10 @@ describe('config', () => {
       expect(getConfig().humanize).toBe('off');
     });
 
-    it('normalizes an unknown WIGOLO_HUMANIZE value to the safe auto default', () => {
+    it('normalizes an unknown WIGOLO_HUMANIZE value to the safe off default', () => {
       process.env.WIGOLO_HUMANIZE = 'aggressive';
       resetConfig();
-      expect(getConfig().humanize).toBe('auto');
+      expect(getConfig().humanize).toBe('off');
     });
 
     it('is case-insensitive for WIGOLO_HUMANIZE', () => {

@@ -119,13 +119,13 @@ describe('getConfig() — humanize (behavioral realism) resolution', () => {
     expect(getConfig().humanize).toBe('off');
   });
 
-  it('defaults to auto when both env and config.json are absent', () => {
+  it('defaults to off when both env and config.json are absent', () => {
     const cfgPath = join(dir, 'config.json');
     writeFileSync(cfgPath, JSON.stringify({ version: 1, settings: {} }));
     setConfigPath(cfgPath);
     delete process.env.WIGOLO_HUMANIZE;
     resetConfig(); resetPersistedConfig();
-    expect(getConfig().humanize).toBe('auto');
+    expect(getConfig().humanize).toBe('off');
   });
 });
 
