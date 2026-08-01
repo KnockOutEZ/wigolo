@@ -907,7 +907,7 @@ export class SmartRouter {
    * returns null so the caller degrades gracefully to the honest normal ladder
    * rather than hard-failing the whole fetch.
    */
-  private async tryRedditApi(url: string, config: Config): Promise<RawFetchResult | null> {
+  private async tryRedditApi(url: string, config: Config, signal?: AbortSignal): Promise<RawFetchResult | null> {
     const logger = createLogger('fetch');
     const creds: RedditCredentials = {
       // redditApiConfigured() guaranteed both are non-null before this call.
@@ -921,7 +921,7 @@ export class SmartRouter {
       this.redditTokenManager = { key: creds.clientId, mgr: new RedditTokenManager(creds) };
     }
     try {
-      return await fetchViaRedditApi(url, this.redditTokenManager.mgr, creds);
+      return await fetchViaRedditApi(url, this.redditTokenManager.mgr, creds, undefined, signal);
     } catch (err) {
       if (err instanceof RedditRateLimitError) {
         logger.info('reddit-api rate limited — falling through to normal ladder', {
@@ -964,7 +964,7 @@ export class SmartRouter {
       !screenshot &&
       !(actions && actions.length > 0)
     ) {
-      const redditResult = await this.tryRedditApi(url, config);
+      const redditResult = await this.tryRedditApi(url, config, options.signal);
       if (redditResult !== null) return redditResult;
       logger.debug('reddit-api path did not apply — falling through to normal ladder', { url });
     }

@@ -26,6 +26,15 @@ import type { RawFetchResult } from '../types.js';
 import type { RedditThread, RedditComment } from '../extraction/site-extractors/reddit.js';
 import { guardFetchUrl } from '../watch/ssrf.js';
 import { createLogger } from '../logger.js';
+import { anySignal } from '../util/abort.js';
+
+/**
+ * Hard ceiling on each Reddit HTTP call. The default `fetch` has no request
+ * timeout, so a stalled token mint or data request would hold the router's
+ * fetch path open until the process exits instead of falling through to the
+ * normal ladder. Combined with any caller signal, so cancellation still wins.
+ */
+const REDDIT_REQUEST_TIMEOUT_MS = 15_000;
 
 /** Fixed OAuth token endpoint — app-only (client-credentials) grant. */
 const TOKEN_URL = 'https://www.reddit.com/api/v1/access_token';
@@ -198,6 +207,7 @@ export class RedditTokenManager {
         'User-Agent': this.creds.userAgent,
       },
       body: 'grant_type=client_credentials',
+      signal: AbortSignal.timeout(REDDIT_REQUEST_TIMEOUT_MS),
       // The token endpoint is a fixed host and must never legitimately
       // redirect. `redirect: 'manual'` disables the auto-follower so a hostile
       // 3xx (e.g. to an internal address) is never followed with the Basic
@@ -430,6 +440,7 @@ export async function fetchViaRedditApi(
   tokenManager: RedditTokenManager,
   creds: RedditCredentials,
   fetchFn: FetchFn = fetch,
+  signal?: AbortSignal,
 ): Promise<RawFetchResult | null> {
   const endpointPath = mapRedditUrlToEndpoint(url);
   if (endpointPath === null) return null;
@@ -443,19 +454,32 @@ export async function fetchViaRedditApi(
   }
 
   const token = await tokenManager.getToken();
-  const res = await fetchFn(endpointUrl, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'User-Agent': creds.userAgent,
-    },
-    // The OAuth data host is fixed and must never legitimately redirect.
-    // `redirect: 'manual'` disables the auto-follower (default: follow, up to
-    // 20 hops) so a hostile 3xx to an internal address is never followed with
-    // the bearer token attached. Any 3xx is rejected below, which makes the
-    // router fall through to the normal fetch ladder.
-    redirect: 'manual',
-  });
+  // Bounded, and still cancellable by the caller — whichever fires first. The
+  // combiner attaches a listener to the caller's (long-lived, shared) signal,
+  // so its cleanup runs as soon as this request settles; skipping it would
+  // accumulate one listener per fetch on that signal.
+  const combined = signal
+    ? anySignal([signal, AbortSignal.timeout(REDDIT_REQUEST_TIMEOUT_MS)])
+    : null;
+  let res: Response;
+  try {
+    res = await fetchFn(endpointUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'User-Agent': creds.userAgent,
+      },
+      signal: combined ? combined.signal : AbortSignal.timeout(REDDIT_REQUEST_TIMEOUT_MS),
+      // The OAuth data host is fixed and must never legitimately redirect.
+      // `redirect: 'manual'` disables the auto-follower (default: follow, up to
+      // 20 hops) so a hostile 3xx to an internal address is never followed with
+      // the bearer token attached. Any 3xx is rejected below, which makes the
+      // router fall through to the normal fetch ladder.
+      redirect: 'manual',
+    });
+  } finally {
+    combined?.cleanup();
+  }
 
   if (res.status >= 300 && res.status < 400) {
     throw new Error(`reddit oauth endpoint returned an unexpected redirect (HTTP ${res.status})`);

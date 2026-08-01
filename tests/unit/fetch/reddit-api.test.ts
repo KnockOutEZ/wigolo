@@ -401,3 +401,46 @@ describe('fetchViaRedditApi', () => {
     expect(calledUrl.hostname).toBe('oauth.reddit.com');
   });
 });
+
+describe('reddit fetches are bounded', () => {
+  // Neither call passed a signal, and the default fetch has no request timeout.
+  // A stalled token mint or data request therefore held the router's fetch path
+  // open indefinitely instead of falling through to the normal ladder.
+  it('passes an abort signal to the token request', async () => {
+    const fetchFn = vi.fn(async (_u: string, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return jsonResponse({ access_token: 't', expires_in: 3600 });
+    }) as unknown as FetchFn;
+    const mgr = new RedditTokenManager(CREDS, fetchFn, () => 0);
+    await mgr.getToken();
+    expect(fetchFn).toHaveBeenCalled();
+  });
+
+  it('passes an abort signal to the data request', async () => {
+    const calls: Array<RequestInit | undefined> = [];
+    const fetchFn = vi.fn(async (u: string, init?: RequestInit) => {
+      calls.push(init);
+      return u.includes('access_token')
+        ? jsonResponse({ access_token: 't', expires_in: 3600 })
+        : jsonResponse({ kind: 'Listing', data: { children: [] } });
+    }) as unknown as FetchFn;
+    const mgr = new RedditTokenManager(CREDS, fetchFn, () => 0);
+    await fetchViaRedditApi('https://www.reddit.com/r/rust/hot', mgr, CREDS, fetchFn);
+    expect(calls.length).toBe(2);
+    for (const c of calls) expect(c?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('aborts the data request when the caller cancels', async () => {
+    const ac = new AbortController();
+    const fetchFn = vi.fn(async (u: string, init?: RequestInit) => {
+      if (u.includes('access_token')) return jsonResponse({ access_token: 't', expires_in: 3600 });
+      ac.abort();
+      expect(init?.signal?.aborted).toBe(true);
+      throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    }) as unknown as FetchFn;
+    const mgr = new RedditTokenManager(CREDS, fetchFn, () => 0);
+    await expect(
+      fetchViaRedditApi('https://www.reddit.com/r/rust/hot', mgr, CREDS, fetchFn, ac.signal),
+    ).rejects.toThrow();
+  });
+});
