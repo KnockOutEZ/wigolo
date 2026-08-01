@@ -106,6 +106,22 @@ describe('NpmRegistryEngine', () => {
     expect(calls[0].url).toContain('size=25');
   });
 
+  it('caps request size at 250 when maxResults exceeds the npm limit', async () => {
+    const { calls } = captureFetch({ objects: [] });
+    await new NpmRegistryEngine().search('q', { maxResults: 500 });
+    expect(calls[0].url).toContain('size=250');
+  });
+
+  it('slices results down to maxResults for local enforcement', async () => {
+    const objects = Array.from({ length: 5 }, (_, i) => ({
+      package: { name: `pkg-${i}`, description: 'd' },
+    }));
+    captureFetch({ objects });
+    const results = await new NpmRegistryEngine().search('q', { maxResults: 3 });
+    expect(results).toHaveLength(3);
+    expect(results.map((r) => r.title)).toEqual(['pkg-0', 'pkg-1', 'pkg-2']);
+  });
+
   it('encodes the query text parameter', async () => {
     const { calls } = captureFetch({ objects: [] });
     await new NpmRegistryEngine().search('fastify schema');
