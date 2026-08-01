@@ -341,6 +341,7 @@ If wigolo earns a place in your setup, three things keep it going: a ⭐ **star*
 - **Browser won't launch on Linux** — `wigolo warmup --browser` installs the OS libraries (or prints the exact command).
 - **Native build error / unusual Node** — use an LTS: **Node 20, 22, or 24**.
 - **Behind a proxy** — `USE_PROXY=true` + `PROXY_URL`; add `NODE_EXTRA_CA_CERTS` for TLS-inspecting proxies.
+- **Your agent asks permission on every call** — allow the tools in your client, then restart it; rules are read at session start. [Details](docs/troubleshooting.md#your-agent-keeps-asking-permission).
 
 The full guide covers per-symptom fixes, a "what still works when X fails" map, platform notes (incl. linux-arm64), and offline installs: **[docs/troubleshooting.md](docs/troubleshooting.md)**.
 

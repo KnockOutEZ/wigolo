@@ -20,6 +20,12 @@ export type AgentSkillHandler = {
   installInstructions(): Promise<void>;
   installSkills?(): Promise<void>;
   installCommand?(): Promise<void>;
+  /**
+   * Allow this agent to call wigolo's tools without a per-call prompt.
+   * Only hosts with a writable allow-list implement it. Resolves true when it
+   * changed something, false when the rule was already there.
+   */
+  installPermissions?(): Promise<boolean>;
   uninstall(): Promise<{ removed: string[] }>;
 };
 
