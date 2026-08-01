@@ -291,6 +291,10 @@ export class MultiBrowserPool {
   // channel:'chrome' launch cost on every stealth fetch. Chromium-only — the
   // authentic-channel concept does not apply to firefox/webkit.
   private resolvedStealthChannel: 'chrome' | 'bundled' | null = null;
+  // Cached outcome of the hardened-driver LAUNCH probe. 'standard' means the
+  // optional hardened driver imported but could not launch on this machine, so
+  // we stop reaching for it. null = not yet demoted.
+  private resolvedStealthDriver: 'standard' | null = null;
 
   constructor(options?: MultiBrowserPoolOptions) {
     let types = options?.browserTypes ?? ['chromium'];
@@ -501,7 +505,18 @@ export class MultiBrowserPool {
    */
   private async launchDedicatedStealthBrowser(type: BrowserType, forceNoProxy = false): Promise<Browser> {
     const cfg = getConfig();
-    const launcher = await resolveStealthLauncher(type, cfg.stealthDriver, getLauncher(type));
+    const standard = getLauncher(type);
+    // `resolveStealthLauncher` proves the hardened driver IMPORTS — never that
+    // it can LAUNCH. It resolves a browser revision it neither installs nor
+    // owns, so a version skew between it and the standard driver leaves a
+    // launcher that loads fine and then fails on every launch. Without a
+    // launch-time fallback that hard-fails every anti-bot fetch, silently. Once
+    // we learn it cannot launch on this machine we stop reaching for it.
+    const hardened =
+      this.resolvedStealthDriver === 'standard'
+        ? standard
+        : await resolveStealthLauncher(type, cfg.stealthDriver, standard);
+    const usingHardened = hardened !== standard;
     // A managed-challenge direct-retry forces a proxy-free launch even when a
     // proxy is configured (a datacenter proxy blocks many managed challenges).
     const proxy = forceNoProxy ? undefined : playwrightProxyOption(cfg.proxyUrl, cfg.useProxy);
@@ -516,28 +531,52 @@ export class MultiBrowserPool {
       ...(proxy ? { proxy } : {}),
     };
 
+    /**
+     * Launch through the hardened driver, degrading to the standard one when
+     * the hardened driver itself cannot launch (as opposed to the CHANNEL being
+     * unavailable, which the caller handles separately). The downgrade is
+     * cached for the process so a broken optional driver is probed once, not
+     * once per fetch. Errors from the STANDARD launcher propagate — at that
+     * point there is nothing left to fall back to.
+     */
+    const launchWithFallback = async (opts: Record<string, unknown>): Promise<Browser> => {
+      if (!usingHardened) return standard.launch(opts);
+      try {
+        return await hardened.launch(opts);
+      } catch (err) {
+        this.resolvedStealthDriver = 'standard';
+        log.warn('hardened stealth driver could not launch, using the standard browser driver', {
+          type,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return standard.launch(opts);
+      }
+    };
+
     // Only chromium supports the authentic installed-browser channel. For
     // firefox/webkit (or a 'chromium'-forced config) launch bundled directly.
     const wantChannel = type === 'chromium' && cfg.browserChannel !== 'chromium';
     if (!wantChannel) {
       this.resolvedStealthChannel = 'bundled';
-      return launcher.launch(baseOpts);
+      return launchWithFallback(baseOpts);
     }
 
     // Cached probe: never re-attempt channel:'chrome' once we know it fails on
     // this machine, and never drop back to bundled once we know chrome works.
     if (this.resolvedStealthChannel === 'bundled') {
-      return launcher.launch(baseOpts);
+      return launchWithFallback(baseOpts);
     }
     if (this.resolvedStealthChannel === 'chrome') {
-      return launcher.launch({ ...baseOpts, channel: 'chrome' });
+      return launchWithFallback({ ...baseOpts, channel: 'chrome' });
     }
 
     // First probe this process. Try the authentic browser; on ANY launch
     // failure (not installed / spawn error) fall back to the bundled engine and
-    // cache the outcome so later fetches skip the failed attempt.
+    // cache the outcome so later fetches skip the failed attempt. A hardened
+    // driver that cannot launch AT ALL is caught one level down, so a channel
+    // failure and a driver failure cannot be confused for one another.
     try {
-      const browser = await launcher.launch({ ...baseOpts, channel: 'chrome' });
+      const browser = await launchWithFallback({ ...baseOpts, channel: 'chrome' });
       this.resolvedStealthChannel = 'chrome';
       log.info('anti-bot stealth launch using authentic installed browser', { type });
       return browser;
@@ -547,7 +586,7 @@ export class MultiBrowserPool {
         type,
         error: err instanceof Error ? err.message : String(err),
       });
-      return launcher.launch(baseOpts);
+      return launchWithFallback(baseOpts);
     }
   }
 
