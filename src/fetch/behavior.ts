@@ -166,11 +166,17 @@ export async function humanizePage(page: Page, opts: HumanizeOptions = {}): Prom
     };
     const path = humanMousePath(from, to, rng);
     // Spend at most ~55% of the budget on the traversal, leaving room for the
-    // scroll + delays.
+    // scroll + delays. The sub-budget is ENFORCED with its own deadline, not
+    // just used to size the per-step delay: on a slow host each `mouse.move`
+    // costs real wall-clock (and `sleep(perStep)` rounds up to the platform
+    // timer granularity — ~15.6ms on Windows), so a loop bounded only by the
+    // GLOBAL deadline eats the whole budget and the scroll never runs. The pass
+    // then silently degrades to mouse-only exactly when the machine is busy.
     const moveBudget = Math.max(0, Math.floor(timeLeft() * 0.55));
+    const moveDeadline = Date.now() + moveBudget;
     const perStep = path.length > 0 ? Math.min(12, Math.floor(moveBudget / path.length)) : 0;
     for (const p of path) {
-      if (signal?.aborted || timeLeft() <= 0) break;
+      if (signal?.aborted || timeLeft() <= 0 || Date.now() >= moveDeadline) break;
       await page.mouse!.move!(p.x, p.y);
       if (perStep > 0) await sleep(perStep, signal);
     }
