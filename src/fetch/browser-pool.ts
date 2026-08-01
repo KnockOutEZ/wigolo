@@ -88,6 +88,13 @@ const WIDGET_FRAME_SELECTORS = [
 
 /** How many selectors a total miss pays for. Exported so the budget contract is
  *  assertable without reaching into the private locator. */
+/** Cross-origin frames a vision solve drives into, most specific first. */
+const CHALLENGE_FRAME_SELECTORS = [
+  'iframe[src*="api2/bframe"]',
+  'iframe[src*="hcaptcha.com"]',
+  'iframe[title*="challenge" i]',
+] as const;
+
 export const WIDGET_LOCATE_SELECTOR_COUNT =
   WIDGET_DOC_SELECTORS.length + WIDGET_FRAME_SELECTORS.length;
 
@@ -690,8 +697,20 @@ export class MultiBrowserPool {
         // Treat the hosted browser like the pinned-CDP browser so the shared
         // finally closes it (never released to the local pool).
         cdpBrowser = scrapingHandle.browser;
-        const contexts = cdpBrowser.contexts();
-        ctx = contexts.length > 0 ? contexts[0] : await cdpBrowser.newContext();
+        try {
+          const contexts = cdpBrowser.contexts();
+          ctx = contexts.length > 0 ? contexts[0] : await cdpBrowser.newContext();
+        } catch (err) {
+          // This runs BEFORE the main try/finally, so a context failure here
+          // would strand the hosted browser — and a hosted one keeps running
+          // (and billing) remotely. Close it and degrade like a failed connect.
+          log.warn('hosted scraping-browser context creation failed, falling back to a local browser', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          await scrapingHandle.close().catch(() => {});
+          cdpBrowser = null;
+          ctx = await this.acquireForType(resolvedType);
+        }
       } else {
         // Off / bad scheme / connect failed → graceful fall back to launch.
         ctx = await this.acquireForType(resolvedType);
@@ -1520,12 +1539,21 @@ export class MultiBrowserPool {
 
   /** The cross-origin reCAPTCHA image-select (bframe) / hCaptcha challenge frame
    *  a vision solve drives into, or null when it can't be resolved. */
-  private challengeSolveFrame(page: import('playwright').Page) {
+  private async challengeSolveFrame(page: import('playwright').Page) {
     if (typeof page.frameLocator !== 'function') return null;
-    for (const sel of ['iframe[src*="api2/bframe"]', 'iframe[src*="hcaptcha.com"]', 'iframe[title*="challenge" i]']) {
-      try {
-        return page.frameLocator(sel).first();
-      } catch { /* try next selector */ }
+    // `frameLocator` builds a LAZY locator — it does not throw when no matching
+    // frame exists, so a try/catch around it never fires and the loop always
+    // returned the FIRST selector. hCaptcha and generic challenge frames were
+    // therefore never targeted: every solve drove the reCAPTCHA bframe locator,
+    // matching nothing. Probe the underlying iframe element instead.
+    for (const sel of CHALLENGE_FRAME_SELECTORS) {
+      const present = await page
+        .locator(sel)
+        .first()
+        .count()
+        .then((n) => n > 0)
+        .catch(() => false);
+      if (present) return page.frameLocator(sel).first();
     }
     return null;
   }
@@ -1534,7 +1562,7 @@ export class MultiBrowserPool {
    *  0-based left-to-right, top-to-bottom; the frame exposes them as a table of
    *  cells. Best-effort per tile so one un-clickable index never aborts the set. */
   private async clickChallengeTiles(page: import('playwright').Page, indices: number[]): Promise<void> {
-    const frame = this.challengeSolveFrame(page);
+    const frame = await this.challengeSolveFrame(page);
     if (!frame) return;
     for (const idx of indices) {
       const cell = frame.locator('table td, .task-image').nth(idx);
@@ -1563,7 +1591,7 @@ export class MultiBrowserPool {
 
   /** Press the verify/submit control of the challenge (grid + text captchas). */
   private async submitChallenge(page: import('playwright').Page): Promise<void> {
-    const frame = this.challengeSolveFrame(page);
+    const frame = await this.challengeSolveFrame(page);
     if (frame) {
       const verify = frame.locator('#recaptcha-verify-button, .button-submit');
       const clicked = await verify.first().click({ timeout: 2000 }).then(() => true).catch(() => false);
