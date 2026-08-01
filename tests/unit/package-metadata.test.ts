@@ -72,6 +72,10 @@ describe('package.json — MCP registry metadata', () => {
     expect(mcp).toBeDefined();
     expect(mcp.transport).toBe('stdio');
     expect(mcp.command).toBeDefined();
+    expect(mcp.tools).toEqual([
+      'fetch', 'search', 'crawl', 'cache', 'extract',
+      'find_similar', 'research', 'agent', 'diff', 'watch',
+    ]);
   });
 
   it('repository field is a valid GitHub URL', () => {

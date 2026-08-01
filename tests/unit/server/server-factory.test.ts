@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { resetConfig } from '../../../src/config.js';
 import { resolveSearchBackend, getBootstrapState } from '../../../src/searxng/bootstrap.js';
 
@@ -62,6 +62,7 @@ vi.mock('../../../src/searxng/docker.js', () => ({
 // probing the ONNX provider. The probe fires lazily on first use, never at boot.
 const embeddingInit = vi.fn().mockResolvedValue(undefined);
 const embeddingEnsureProviderReady = vi.fn().mockResolvedValue(true);
+const resetEmbeddingService = vi.fn();
 vi.mock('../../../src/embedding/embed.js', () => ({
   getEmbeddingService: vi.fn(() => ({
     init: embeddingInit,
@@ -70,10 +71,14 @@ vi.mock('../../../src/embedding/embed.js', () => ({
     isSubprocessReady: vi.fn().mockReturnValue(false),
     shutdown: vi.fn(),
   })),
-  resetEmbeddingService: vi.fn(),
+  resetEmbeddingService,
 }));
 
 describe('initSubsystems', () => {
+  beforeAll(async () => {
+    await import('../../../src/server.js');
+  }, 120000);
+
   beforeEach(() => {
     resetConfig();
     vi.clearAllMocks();
@@ -93,6 +98,23 @@ describe('initSubsystems', () => {
     // Boot-negative: the lazy provider probe must not fire at startup (this is
     // the ~150-200MB idle-footprint win).
     expect(embeddingEnsureProviderReady).not.toHaveBeenCalled();
+  }, 60000);
+
+  it('rejects subsystem initialization when the embedding store cannot initialize', async () => {
+    embeddingInit.mockRejectedValueOnce(new Error('embedding fixture failure'));
+    const { initSubsystems } = await import('../../../src/server.js');
+    await expect(initSubsystems()).rejects.toThrow('embedding fixture failure');
+    expect(resetEmbeddingService).toHaveBeenCalledTimes(1);
+    const { closeDatabase } = await import('../../../src/cache/db.js');
+    expect(closeDatabase).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports rollback failure when initialization and cleanup both fail', async () => {
+    embeddingInit.mockRejectedValueOnce(new Error('embedding fixture failure'));
+    const db = await import('../../../src/cache/db.js');
+    vi.mocked(db.closeDatabase).mockImplementationOnce(() => { throw new Error('close fixture failure'); });
+    const { initSubsystems } = await import('../../../src/server.js');
+    await expect(initSubsystems()).rejects.toThrow('runtime initialization and rollback failed');
   });
 
   it('exports initSubsystems function', async () => {
@@ -204,8 +226,4 @@ describe('createMcpServer', () => {
     expect(server).toBeDefined();
   });
 
-  it('startServer still works for stdio mode', async () => {
-    const { startServer } = await import('../../../src/server.js');
-    expect(typeof startServer).toBe('function');
-  });
 });

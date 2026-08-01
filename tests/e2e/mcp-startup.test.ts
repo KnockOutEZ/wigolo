@@ -1,130 +1,230 @@
-import { spawn, execSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..');
 const PKG_VERSION = (JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf-8')) as { version: string }).version;
 const DIST_ENTRY = join(REPO_ROOT, 'dist', 'index.js');
+const DIST_CONTROL = join(REPO_ROOT, 'dist', 'server', 'control.js');
+const EXPECTED_TOOLS = [
+  'fetch', 'search', 'crawl', 'cache', 'extract',
+  'find_similar', 'research', 'agent', 'diff', 'watch',
+];
 
-interface InitResponse {
-  result?: { protocolVersion: string; serverInfo: { name: string; version: string } };
-  error?: unknown;
-  jsonrpc: string;
-  id: number;
+type ProbeResult = { initializeMs: number; toolsListMs: number; tools: string[]; stderr: string; dataDirCreated: boolean };
+
+function moduleTraceOptions(tracePath: string): string {
+  const source = [
+    "import { registerHooks } from 'node:module'",
+    "import { appendFileSync } from 'node:fs'",
+    `const trace = ${JSON.stringify(tracePath)}`,
+    "registerHooks({ resolve(specifier, context, nextResolve) { const result = nextResolve(specifier, context); appendFileSync(trace, result.url + '\\n'); return result } })",
+  ].join(';');
+  return `--import=${new URL(`data:text/javascript,${encodeURIComponent(source)}`).href}`;
 }
 
-async function spawnMcpAndInit(
-  dataDir: string,
-  timeoutMs: number,
-  settleMs = 0,
-): Promise<{ response: InitResponse | null; elapsedMs: number; stderr: string }> {
-  const start = Date.now();
-  const child = spawn('node', [DIST_ENTRY, 'mcp'], {
-    // LOG_LEVEL=info so the lazy model-load info line would be visible IF it
-    // ever fired at boot — the assertion below proves it does not.
-    env: { ...process.env, WIGOLO_DATA_DIR: dataDir, LOG_LEVEL: 'info' },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+function assertFreshBuild(): void {
+  const pairs = [
+    ['src/index.ts', 'dist/index.js'],
+    ['src/cli/mcp.ts', 'dist/cli/mcp.js'],
+    ['src/server.ts', 'dist/server.js'],
+    ['src/server/control.ts', 'dist/server/control.js'],
+    ['tsup.config.ts', 'dist/server/control.js'],
+  ] as const;
+  for (const [source, output] of pairs) {
+    const sourcePath = join(REPO_ROOT, source);
+    const outputPath = join(REPO_ROOT, output);
+    expect(existsSync(outputPath), `missing build output: ${output}`).toBe(true);
+    expect(
+      statSync(outputPath).mtimeMs,
+      `stale build output: ${output} is older than ${source}; run npm run build`,
+    ).toBeGreaterThanOrEqual(statSync(sourcePath).mtimeMs);
+  }
+}
 
-  let buffer = '';
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function closeMcp(client: Client, transport: StdioClientTransport): Promise<void> {
+  try {
+    await withTimeout(client.close(), 4500, 'MCP close');
+  } catch (err) {
+    await withTimeout(transport.close(), 5000, 'MCP transport cleanup');
+    throw err;
+  }
+}
+
+async function probeMcp(dataDir: string, extraEnv: Record<string, string> = {}): Promise<ProbeResult> {
+  const client = new Client({ name: 'wigolo-stage-a-test', version: '1.0.0' });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [DIST_ENTRY, 'mcp'],
+    cwd: REPO_ROOT,
+    env: { WIGOLO_DATA_DIR: dataDir, LOG_LEVEL: 'info', ...extraEnv },
+    stderr: 'pipe',
+  });
   let stderr = '';
-  let response: InitResponse | null = null;
-  child.stderr.on('data', (chunk: Buffer) => {
-    stderr += chunk.toString();
-  });
-  const responsePromise = new Promise<void>((resolve) => {
-    child.stdout.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString();
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const parsed = JSON.parse(line);
-          if (parsed.id === 1) {
-            response = parsed as InitResponse;
-            resolve();
-          }
-        } catch {}
-      }
-    });
-  });
-
-  child.stdin.write(JSON.stringify({
-    jsonrpc: '2.0',
-    id: 1,
-    method: 'initialize',
-    params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' } },
-  }) + '\n');
-
-  await Promise.race([
-    responsePromise,
-    new Promise<void>((_, reject) => setTimeout(() => reject(new Error(`init timeout after ${timeoutMs}ms`)), timeoutMs)),
-  ]);
-
-  const elapsedMs = Date.now() - start;
-  // Optionally let the process idle so any boot-time background work (which
-  // must NOT include a model load) has a chance to emit its stderr line.
-  if (settleMs > 0) await new Promise((r) => setTimeout(r, settleMs));
-  child.kill('SIGTERM');
-  await new Promise((r) => setTimeout(r, 100));
-  if (!child.killed) child.kill('SIGKILL');
-  return { response, elapsedMs, stderr };
+  transport.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+  try {
+    const initializeStart = Date.now();
+    await withTimeout(client.connect(transport), 5000, 'initialize');
+    const initializeMs = Date.now() - initializeStart;
+    const toolsStart = Date.now();
+    const result = await withTimeout(client.listTools(), 500, 'tools/list');
+    const toolsListMs = Date.now() - toolsStart;
+    return {
+      initializeMs,
+      toolsListMs,
+      tools: result.tools.map((tool) => tool.name),
+      stderr,
+      dataDirCreated: existsSync(dataDir),
+    };
+  } finally {
+    await closeMcp(client, transport);
+  }
 }
 
 describe('e2e: MCP server startup', () => {
-  let dataDir: string;
-
   beforeAll(() => {
-    if (!existsSync(DIST_ENTRY)) {
-      execSync('npm run build', { cwd: REPO_ROOT, stdio: 'pipe' });
+    expect(existsSync(DIST_ENTRY)).toBe(true);
+    expect(existsSync(DIST_CONTROL)).toBe(true);
+    assertFreshBuild();
+  });
+
+  it('keeps lightweight CLI paths prompt and free of the heavy runtime', () => {
+    const commands = [
+      { args: ['--version'], exitCode: 0, output: `wigolo ${PKG_VERSION}` },
+      { args: ['--help'], exitCode: 0, output: /local-first web intelligence/i },
+      { args: ['auth', 'status'], exitCode: 0, output: /Auth Configuration Status/ },
+      { args: ['not-a-command'], exitCode: 1, output: /unknown command/i },
+    ];
+    for (const command of commands) {
+      const root = mkdtempSync(join(tmpdir(), 'wigolo-cli-trace-'));
+      const dataDir = join(root, 'data');
+      const tracePath = join(root, 'modules.txt');
+      try {
+        const startedAt = Date.now();
+        const result = spawnSync(process.execPath, [DIST_ENTRY, ...command.args], {
+          cwd: REPO_ROOT,
+          encoding: 'utf-8',
+          timeout: 5000,
+          env: {
+            ...process.env,
+            WIGOLO_DATA_DIR: dataDir,
+            NODE_OPTIONS: moduleTraceOptions(tracePath),
+          },
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(command.exitCode);
+        const output = `${result.stdout}${result.stderr}`;
+        if (typeof command.output === 'string') {
+          expect(output).toContain(command.output);
+        } else {
+          expect(output).toMatch(command.output);
+        }
+        expect(Date.now() - startedAt).toBeLessThan(5000);
+        expect(existsSync(dataDir)).toBe(false);
+        const loaded = readFileSync(tracePath, 'utf-8').replaceAll('\\', '/');
+        for (const marker of [
+          '/server.js', '/cache/db.js', '/embedding/', '/fetch/browser-pool.js',
+          '/fetch/browser-acquire.js', '/fetch/playwright-tier.js',
+          '/plugins/', '/searxng/', '/tools/',
+        ]) {
+          expect(loaded).not.toContain(marker);
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
-  }, 60000);
-
-  beforeEach(() => {
-    dataDir = mkdtempSync(join(tmpdir(), 'wigolo-test-'));
   });
 
-  afterEach(() => {
-    try { rmSync(dataDir, { recursive: true, force: true }); } catch {}
+  it('completes initialize and tools/list without starting the runtime', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wigolo-stage-a-'));
+    const dataDir = join(root, 'data');
+    try {
+      const result = await probeMcp(dataDir);
+      expect(result.initializeMs).toBeLessThan(5000);
+      expect(result.toolsListMs).toBeLessThan(500);
+      expect(result.tools).toEqual(EXPECTED_TOOLS);
+      expect(result.dataDirCreated).toBe(false);
+      expect(result.stderr).not.toMatch(/loading embedding model|embedding provider verified/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
-  it('responds to initialize before background bootstrap completes (cold start)', async () => {
-    // Cold start: empty WIGOLO_DATA_DIR. Pre-fix this took 30s+ because the
-    // server awaited a search-engine sidecar download before connecting the
-    // MCP transport. Post-fix that bootstrap is opt-in / runs in background.
-    // The remaining startup cost is heavy module load + plugin scan — the
-    // embedding model is now loaded lazily on first use (D2), NOT at boot, so
-    // it no longer contributes to startup latency. Locally this lands
-    // ~5-10s and on slow CI runners ~15-20s. We assert under 25s.
-    const { response, elapsedMs } = await spawnMcpAndInit(dataDir, 30000);
+  it('does not load heavy runtime modules during protocol discovery', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wigolo-module-trace-'));
+    const dataDir = join(root, 'data');
+    const tracePath = join(root, 'modules.txt');
+    try {
+      const result = await probeMcp(dataDir, {
+        WIGOLO_MODULE_TRACE: tracePath,
+        NODE_OPTIONS: moduleTraceOptions(tracePath),
+      });
+      expect(result.tools).toEqual(EXPECTED_TOOLS);
+      const loaded = readFileSync(tracePath, 'utf-8').replaceAll('\\', '/');
+      const forbidden = [
+        '/cache/db.js', '/embedding/', '/fetch/browser', 'playwright-tier',
+        '/plugins/', '/searxng/', '/tools/', '/daemon/proxy.js',
+      ];
+      for (const marker of forbidden) expect(loaded).not.toContain(marker);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
-    expect(response).not.toBeNull();
-    expect(response!.result).toBeDefined();
-    expect(response!.result!.serverInfo.name).toBe('wigolo');
-    expect(elapsedMs).toBeLessThan(25000);
-  }, 35000);
+  it('keeps all 30 serial cold processes within the protocol budgets', async () => {
+    const results: Array<ProbeResult | Error> = [];
+    for (let index = 0; index < 30; index += 1) {
+      const root = mkdtempSync(join(tmpdir(), 'wigolo-cold-'));
+      const dataDir = join(root, 'data');
+      try {
+        results.push(await probeMcp(dataDir));
+      } catch (err) {
+        results.push(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+    const failures = results.filter((result): result is Error => result instanceof Error);
+    const successes = results.filter((result): result is ProbeResult => !(result instanceof Error));
+    expect(failures.map((failure) => failure.message)).toEqual([]);
+    expect(successes).toHaveLength(30);
+    expect(Math.max(...successes.map((result) => result.initializeMs))).toBeLessThan(5000);
+    expect(Math.max(...successes.map((result) => result.toolsListMs))).toBeLessThan(500);
+    for (const result of successes) {
+      expect(result.tools).toEqual(EXPECTED_TOOLS);
+      expect(result.dataDirCreated).toBe(false);
+    }
+  }, 180000);
 
-  it('does not load the embedding model at boot (no model-load stderr line)', async () => {
-    // Lazy embedding (D2): boot provisions the vector store + runs migrations
-    // but must NOT touch the ONNX runtime. The one-line load message only
-    // appears on first real embed/find_similar use — never during startup,
-    // even after a short idle settle.
-    const { response, stderr } = await spawnMcpAndInit(dataDir, 30000, 3000);
-
-    expect(response).not.toBeNull();
-    expect(stderr).not.toMatch(/loading embedding model/i);
-    expect(stderr).not.toMatch(/embedding provider verified/i);
-    expect(stderr).not.toMatch(/Loading embedding model/);
-    expect(stderr).not.toMatch(/Embedding model ready/);
-  }, 40000);
-
-  it('serverInfo.version matches package.json version', async () => {
-    const { response } = await spawnMcpAndInit(dataDir, 25000);
-
-    expect(response).not.toBeNull();
-    expect(response!.result!.serverInfo.version).toBe(PKG_VERSION);
-  }, 30000);
+  it('reports the package version through the official SDK initialization', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wigolo-version-'));
+    try {
+      const client = new Client({ name: 'version-test', version: '1.0.0' });
+      const transport = new StdioClientTransport({ command: process.execPath, args: [DIST_ENTRY, 'mcp'], cwd: REPO_ROOT, env: { WIGOLO_DATA_DIR: join(root, 'data') }, stderr: 'pipe' });
+      try {
+        await withTimeout(client.connect(transport), 5000, 'initialize');
+        expect(client.getServerVersion()?.version).toBe(PKG_VERSION);
+      } finally {
+        await closeMcp(client, transport);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -1,14 +1,6 @@
-import { dirname, join } from 'node:path';
-import { mkdirSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-  ListResourcesRequestSchema,
-  ReadResourceRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
 import { SmartRouter, type HttpClient } from './fetch/router.js';
 import { MultiBrowserPool } from './fetch/browser-pool.js';
 import { closeDaemonBrowser } from './fetch/playwright-tier.js';
@@ -40,43 +32,16 @@ import { getEmbeddingService, resetEmbeddingService } from './embedding/embed.js
 import { getConfig } from './config.js';
 import { createLogger } from './logger.js';
 import {
-  WIGOLO_INSTRUCTIONS,
-  WIGOLO_INSTRUCTIONS_FULL,
-  WIGOLO_DOCS_URI,
-  TOOL_DESCRIPTIONS,
-} from './instructions.js';
-import {
-  FETCH_TOOL_SCHEMA,
-  SEARCH_TOOL_SCHEMA,
-  CRAWL_TOOL_SCHEMA,
-  CACHE_TOOL_SCHEMA,
-  EXTRACT_TOOL_SCHEMA,
-  FIND_SIMILAR_TOOL_SCHEMA,
-  RESEARCH_TOOL_SCHEMA,
-  AGENT_TOOL_SCHEMA,
-  DIFF_TOOL_SCHEMA,
-  WATCH_TOOL_SCHEMA,
-} from './server/tool-schemas.js';
+  createMcpServer as createControlPlaneServer,
+} from './server/control.js';
 import { loadPlugins } from './plugins/loader.js';
 import { PluginRegistry } from './plugins/registry.js';
 import { registerExtractor } from './extraction/pipeline.js';
 import type { FetchInput, SearchInput, SearchEngine, CrawlInput, CacheInput, ExtractInput, FindSimilarInput, ResearchInput, AgentInput, ProgressCallback, WatchJobInput } from './types.js';
+import type { CallToolRequest, CallToolResult, ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 
 const log = createLogger('server');
-
-function readPackageVersion(): string {
-  try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    // src/server.ts in dev, dist/server.js in build — both are siblings of package.json
-    const pkgPath = join(here, '..', 'package.json');
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version?: string };
-    return pkg.version ?? '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
-
-const SERVER_VERSION = readPackageVersion();
 
 export interface Subsystems {
   searchEngines: SearchEngine[];
@@ -92,37 +57,48 @@ export async function initSubsystems(): Promise<Subsystems> {
   const config = getConfig();
 
   mkdirSync(config.dataDir, { recursive: true });
-  initDatabase(join(config.dataDir, 'wigolo.db'));
+  let browserPool!: MultiBrowserPool;
+  let router!: SmartRouter;
+  let backendStatus!: BackendStatus;
+  let searchEngines!: SearchEngine[];
+  let pluginRegistry!: PluginRegistry;
 
   // Initialize embedding service: provisions the vector store, runs the
   // legacy-embedding migration, and surfaces sqlite-vec failures. It does NOT
   // load the embedding model — that happens lazily on first embed/find_similar
   // via ensureProviderReady(), keeping idle footprint low (D2).
   try {
+    initDatabase(join(config.dataDir, 'wigolo.db'));
     await getEmbeddingService().init();
-  } catch (err) {
-    log.warn('embedding service init failed, find_similar will run without embedding path', {
-      error: String(err),
+    const httpClient: HttpClient = {
+      fetch: (url, options) => httpFetch(url, options),
+    };
+    browserPool = new MultiBrowserPool({
+      browserTypes: config.browserTypes,
+      selectionStrategy: 'round-robin',
     });
+    router = new SmartRouter(httpClient, browserPool);
+    backendStatus = new BackendStatus();
+    searchEngines = [new BingEngine(), new DuckDuckGoEngine()];
+    pluginRegistry = new PluginRegistry();
+  } catch (err) {
+    const rollback = await Promise.allSettled([
+      browserPool?.shutdown(),
+      closeDaemonBrowser(),
+      Promise.resolve().then(() => resetEmbeddingService()),
+      Promise.resolve().then(() => closeDatabase()),
+    ]);
+    const rollbackFailures = rollback.filter((result) => result.status === 'rejected');
+    if (rollbackFailures.length > 0) {
+      log.error('runtime initialization rollback failed', { count: rollbackFailures.length });
+      throw new AggregateError(
+        [err, ...rollbackFailures.map((result) => (result as PromiseRejectedResult).reason)],
+        'runtime initialization and rollback failed',
+      );
+    }
+    throw err;
   }
-
-  const httpClient: HttpClient = {
-    fetch: (url, options) => httpFetch(url, options),
-  };
-  const browserPool = new MultiBrowserPool({
-    browserTypes: config.browserTypes,
-    selectionStrategy: 'round-robin',
-  });
-  const router = new SmartRouter(httpClient, browserPool);
-
-  const backendStatus = new BackendStatus();
-
-  const searchEngines: SearchEngine[] = [
-    new BingEngine(),
-    new DuckDuckGoEngine(),
-  ];
   // Load plugins from ~/.wigolo/plugins/
-  const pluginRegistry = new PluginRegistry();
   try {
     const pluginResult = await loadPlugins();
     for (const ext of pluginResult.extractors) {
@@ -258,12 +234,21 @@ export async function initSubsystems(): Promise<Subsystems> {
         new Promise<void>((r) => setTimeout(r, 2000)),
       ]);
     }
-    if (searxngProcess) await searxngProcess.stop();
-    if (dockerSearxng) await dockerSearxng.stop();
-    await browserPool.shutdown();
-    await closeDaemonBrowser().catch((e) => log.debug('closeDaemonBrowser failed', { error: e instanceof Error ? e.message : String(e) }));
-    resetEmbeddingService();
-    closeDatabase();
+    const results = await Promise.allSettled([
+      searxngProcess?.stop(),
+      dockerSearxng?.stop(),
+      browserPool.shutdown(),
+      closeDaemonBrowser(),
+      Promise.resolve().then(() => resetEmbeddingService()),
+      Promise.resolve().then(() => closeDatabase()),
+    ]);
+    const failures = results.filter((result) => result.status === 'rejected');
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures.map((result) => (result as PromiseRejectedResult).reason),
+        'one or more runtime shutdown steps failed',
+      );
+    }
   }
 
   return {
@@ -281,98 +266,16 @@ export async function initSubsystems(): Promise<Subsystems> {
 }
 
 export function createMcpServer(subsystems: Subsystems): Server {
-  const { searchEngines, router, backendStatus } = subsystems;
+  return createControlPlaneServer(subsystems).server;
+}
 
-  const server = new Server(
-    { name: 'wigolo', version: SERVER_VERSION },
-    {
-      capabilities: { tools: {}, resources: {} },
-      instructions: WIGOLO_INSTRUCTIONS,
-    },
-  );
-
-  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-    resources: [
-      {
-        uri: WIGOLO_DOCS_URI,
-        name: 'Wigolo usage guide',
-        description: 'Routing tables, performance budgets, auth flows, and other detail trimmed from the per-session instructions.',
-        mimeType: 'text/markdown',
-      },
-    ],
-  }));
-
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    if (request.params.uri !== WIGOLO_DOCS_URI) {
-      throw new Error(`Unknown resource: ${request.params.uri}`);
-    }
-    return {
-      contents: [
-        {
-          uri: WIGOLO_DOCS_URI,
-          mimeType: 'text/markdown',
-          text: WIGOLO_INSTRUCTIONS_FULL,
-        },
-      ],
-    };
-  });
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      {
-        name: 'fetch',
-        description: TOOL_DESCRIPTIONS.fetch,
-        inputSchema: FETCH_TOOL_SCHEMA,
-      },
-      {
-        name: 'search',
-        description: TOOL_DESCRIPTIONS.search,
-        inputSchema: SEARCH_TOOL_SCHEMA,
-      },
-      {
-        name: 'crawl',
-        description: TOOL_DESCRIPTIONS.crawl,
-        inputSchema: CRAWL_TOOL_SCHEMA,
-      },
-      {
-        name: 'cache',
-        description: TOOL_DESCRIPTIONS.cache,
-        inputSchema: CACHE_TOOL_SCHEMA,
-      },
-      {
-        name: 'extract',
-        description: TOOL_DESCRIPTIONS.extract,
-        inputSchema: EXTRACT_TOOL_SCHEMA,
-      },
-      {
-        name: 'find_similar',
-        description: TOOL_DESCRIPTIONS.find_similar,
-        inputSchema: FIND_SIMILAR_TOOL_SCHEMA,
-      },
-      {
-        name: 'research',
-        description: TOOL_DESCRIPTIONS.research,
-        inputSchema: RESEARCH_TOOL_SCHEMA,
-      },
-      {
-        name: 'agent',
-        description: TOOL_DESCRIPTIONS.agent,
-        inputSchema: AGENT_TOOL_SCHEMA,
-      },
-      {
-        name: 'diff',
-        description: TOOL_DESCRIPTIONS.diff,
-        inputSchema: DIFF_TOOL_SCHEMA,
-      },
-      {
-        name: 'watch',
-        description: TOOL_DESCRIPTIONS.watch,
-        inputSchema: WATCH_TOOL_SCHEMA,
-      },
-    ],
-  }));
-
-  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+export async function dispatchTool(
+  subsystems: Subsystems,
+  server: Server,
+  request: CallToolRequest,
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+): Promise<CallToolResult> {
+    const { searchEngines, router, backendStatus } = subsystems;
     const { name, arguments: args } = request.params;
 
     // Lazy-execution hook for the `watch` tool. Every non-watch tool call
@@ -545,32 +448,12 @@ export function createMcpServer(subsystems: Subsystems): Server {
       content: [{ type: 'text', text: `Unknown tool: ${name}` }],
       isError: true,
     };
-  });
+  }
 
-  return server;
-}
-
-export async function startServer(): Promise<void> {
-  const subs = await initSubsystems();
-  const server = createMcpServer(subs);
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  log.info('MCP server started');
-
+export function startRuntimeBackgroundWork(subs: Subsystems): void {
   maybeEagerWarmup();
   warmEngines();
-
   subs.bootstrapSearxng().catch((err) => {
     log.warn('search engine bootstrap failed', { error: String(err) });
   });
-
-  const shutdown = async () => {
-    await subs.shutdown();
-    await server.close();
-    process.exit(0);
-  };
-
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
 }

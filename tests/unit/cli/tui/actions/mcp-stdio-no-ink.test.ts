@@ -6,23 +6,21 @@
  * the JSON-RPC framing.
  *
  * This test EXERCISES THE ACTUAL MCP DISPATCH (runMcp from src/cli/mcp.ts —
- * the body of the `case 'mcp'` branch in src/index.ts). It asserts startServer
- * is called and that the unified entry router (`runEntry`) is NOT. It would
+ * the body of the `case 'mcp'` branch in src/index.ts). It asserts the lazy
+ * stdio server starts and that the unified entry router (`runEntry`) is NOT. It would
  * fail if someone added an Ink mount to the mcp path.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const startServerMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const startStdioServerMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const runEntryMock = vi.hoisted(() =>
   vi.fn().mockResolvedValue({
     resolution: { mode: 'home', firstRun: false, headless: false },
     mounted: false,
   }),
 );
-const tryConnectDaemonMock = vi.hoisted(() => vi.fn().mockResolvedValue(null));
-
-vi.mock('../../../../../src/server.js', () => ({
-  startServer: startServerMock,
+vi.mock('../../../../../src/server/control.js', () => ({
+  startStdioServer: startStdioServerMock,
 }));
 
 vi.mock('../../../../../src/cli/tui/entry.js', () => ({
@@ -30,27 +28,18 @@ vi.mock('../../../../../src/cli/tui/entry.js', () => ({
   resolveEntry: vi.fn(),
 }));
 
-vi.mock('../../../../../src/config.js', () => ({
-  getConfig: () => ({ dataDir: '/tmp/data', daemonPort: 9999, daemonHost: '127.0.0.1' }),
-}));
-
-vi.mock('../../../../../src/daemon/proxy.js', () => ({
-  tryConnectDaemon: tryConnectDaemonMock,
-}));
-
 import { runMcp } from '../../../../../src/cli/mcp.js';
 import { parseCommand } from '../../../../../src/cli/index.js';
 
 beforeEach(() => {
-  startServerMock.mockClear();
+  startStdioServerMock.mockClear();
   runEntryMock.mockClear();
-  tryConnectDaemonMock.mockClear().mockResolvedValue(null);
 });
 
 describe('runMcp — MCP stdio path', () => {
-  it('calls startServer (begins the protocol server)', async () => {
+  it('calls the lazy stdio control plane', async () => {
     await runMcp();
-    expect(startServerMock).toHaveBeenCalledOnce();
+    expect(startStdioServerMock).toHaveBeenCalledOnce();
   });
 
   it('NEVER mounts Ink (runEntry not called)', async () => {
@@ -58,19 +47,6 @@ describe('runMcp — MCP stdio path', () => {
     expect(runEntryMock).not.toHaveBeenCalled();
   });
 
-  it('starts the local server even when a daemon is detected', async () => {
-    tryConnectDaemonMock.mockResolvedValueOnce({ status: 'healthy' });
-    await runMcp();
-    expect(startServerMock).toHaveBeenCalledOnce();
-    expect(runEntryMock).not.toHaveBeenCalled();
-  });
-
-  it('starts the local server even when daemon proxy throws', async () => {
-    tryConnectDaemonMock.mockRejectedValueOnce(new Error('proxy unavailable'));
-    await runMcp();
-    expect(startServerMock).toHaveBeenCalledOnce();
-    expect(runEntryMock).not.toHaveBeenCalled();
-  });
 });
 
 describe('parseCommand routing — mcp vs Ink commands', () => {

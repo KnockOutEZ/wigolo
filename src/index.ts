@@ -1,30 +1,13 @@
 #!/usr/bin/env node
 
 import { parseCommand } from './cli/index.js';
-import { runWarmup } from './cli/warmup.js';
-import { runDaemon } from './cli/daemon.js';
-import { runHealthCheck } from './cli/health.js';
-import { runDoctorIsolated } from './cli/doctor.js';
-import { runShell } from './cli/shell.js';
-import { runAuth } from './cli/auth.js';
-import { runPluginCommand } from './cli/plugin.js';
-import { runInit } from './cli/init.js';
-import { runConfig } from './cli/config.js';
-import { runMcp } from './cli/mcp.js';
-import { runUninstall } from './cli/uninstall.js';
-import { runSetupMcp } from './cli/setup-mcp.js';
-import { runSkills } from './cli/skills.js';
-import { runStatus } from './cli/status.js';
-import { runTune } from './cli/tune.js';
-import { runBackfill } from './cli/backfill.js';
-import { runVerifyE2E } from './cli/verify.js';
 import { printHelp, printVersion, printUnknownCommand } from './cli/help.js';
-import { runTool } from './cli/tool-run.js';
-import { getConfig } from './config.js';
-import { shutdownCli } from './cli/shutdown.js';
 
-async function exitCli(code: number): Promise<void> {
-  await shutdownCli();
+async function exitCli(code: number, cleanup = true): Promise<void> {
+  if (cleanup) {
+    const { shutdownCli } = await import('./cli/shutdown.js');
+    await shutdownCli();
+  }
   // Exit naturally: set the code and let the event loop drain. Forcing
   // process.exit() here races the native ONNX runtime's thread-pool teardown
   // and aborts with `mutex lock failed: Invalid argument`; letting Node shut
@@ -57,21 +40,30 @@ export async function main(): Promise<void> {
 
   switch (command) {
     case 'warmup':
+      { const { runWarmup } = await import('./cli/warmup.js');
       await runWarmup(args);
       await exitCli(0);
+      }
       break;
 
     case 'serve':
+      { const { runDaemon } = await import('./cli/daemon.js');
       runDaemon(args);
+      }
       break;
 
     case 'health': {
+      const { runHealthCheck } = await import('./cli/health.js');
       const exitCode = await runHealthCheck(args);
-      await exitCli(exitCode);
+      await exitCli(exitCode, false);
       break;
     }
 
     case 'doctor': {
+      const [{ runDoctorIsolated }, { getConfig }] = await Promise.all([
+        import('./cli/doctor.js'),
+        import('./config.js'),
+      ]);
       const code = await runDoctorIsolated(getConfig().dataDir, {
         probeEngines: args.includes('--probe-engines'),
         fix: args.includes('--fix'),
@@ -82,24 +74,28 @@ export async function main(): Promise<void> {
     }
 
     case 'auth': {
+      const { runAuth } = await import('./cli/auth.js');
       const authCode = await runAuth(args);
-      await exitCli(authCode);
+      await exitCli(authCode, false);
       break;
     }
 
     case 'shell': {
+      const { runShell } = await import('./cli/shell.js');
       const shellCode = await runShell(args);
       await exitCli(shellCode);
       break;
     }
 
     case 'plugin': {
+      const { runPluginCommand } = await import('./cli/plugin.js');
       const pluginCode = await runPluginCommand(args);
       await exitCli(pluginCode);
       break;
     }
 
     case 'init': {
+      const { runInit } = await import('./cli/init.js');
       const initCode = await runInit(args);
       await exitCli(initCode);
       break;
@@ -107,48 +103,56 @@ export async function main(): Promise<void> {
 
     case 'config':
     case 'dashboard': {
+      const { runConfig } = await import('./cli/config.js');
       const configCode = await runConfig(args);
       await exitCli(configCode);
       break;
     }
 
     case 'uninstall': {
+      const { runUninstall } = await import('./cli/uninstall.js');
       const uninstallCode = await runUninstall(args);
       await exitCli(uninstallCode);
       break;
     }
 
     case 'setup': {
+      const { runSetupMcp } = await import('./cli/setup-mcp.js');
       const code = await runSetupMcp(args);
       await exitCli(code);
       break;
     }
 
     case 'skills': {
+      const { runSkills } = await import('./cli/skills.js');
       const code = await runSkills(args);
       await exitCli(code);
       break;
     }
 
     case 'status': {
+      const { runStatus } = await import('./cli/status.js');
       const code = await runStatus(args);
       await exitCli(code);
       break;
     }
 
     case 'tune': {
+      const { runTune } = await import('./cli/tune.js');
       const code = await runTune(args);
       await exitCli(code);
       break;
     }
 
     case 'backfill': {
+      const { runBackfill } = await import('./cli/backfill.js');
       const code = await runBackfill(args);
       await exitCli(code);
       break;
     }
 
     case 'verify': {
+      const { runVerifyE2E } = await import('./cli/verify.js');
       const code = await runVerifyE2E(args);
       await exitCli(code);
       break;
@@ -165,6 +169,7 @@ export async function main(): Promise<void> {
     case 'agent':
     case 'diff':
     case 'watch': {
+      const { runTool } = await import('./cli/tool-run.js');
       const code = await runTool(command, args);
       await exitCli(code);
       break;
@@ -172,20 +177,21 @@ export async function main(): Promise<void> {
 
     case 'help':
       printHelp();
-      await exitCli(0);
+      await exitCli(0, false);
       break;
 
     case 'version':
       printVersion();
-      await exitCli(0);
+      await exitCli(0, false);
       break;
 
     case 'unknown':
       printUnknownCommand(args[0] ?? '');
-      await exitCli(1);
+      await exitCli(1, false);
       break;
 
     case 'mcp': {
+      const { runMcp } = await import('./cli/mcp.js');
       await runMcp();
       break;
     }

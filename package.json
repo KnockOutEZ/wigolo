@@ -83,14 +83,16 @@
       "wigolo"
     ],
     "tools": [
-      "search",
       "fetch",
+      "search",
       "crawl",
       "cache",
       "extract",
       "find_similar",
       "research",
-      "agent"
+      "agent",
+      "diff",
+      "watch"
     ]
   },
   "engines": {
