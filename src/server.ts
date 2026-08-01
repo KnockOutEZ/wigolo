@@ -317,57 +317,148 @@ export function createMcpServer(subsystems: Subsystems): Server {
     };
   });
 
+  // Capability hints per MCP `tools/list`. Hosts use these to decide whether a
+  // call needs a permission prompt, so each one describes the WIDEST behaviour
+  // its tool can reach, not the common case.
+  //
+  // Read-only tools still populate the local content cache. That store is an
+  // implementation detail rather than caller-visible state, which is why they
+  // stay `readOnlyHint: true` while `cache` — the tool that exposes the store
+  // directly — does not.
+  //
+  // `idempotentHint` is inert wherever `readOnlyHint` is true (spec: "meaningful
+  // only when readOnlyHint == false"), so those tools carry `true` for
+  // consistency rather than as a claim about output stability.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
         name: 'fetch',
         description: TOOL_DESCRIPTIONS.fetch,
         inputSchema: FETCH_TOOL_SCHEMA,
+        // Not read-only: `actions` accepts `click` and `type`, which run as live
+        // Playwright interactions on the target page (tool-schemas.ts), so a
+        // caller can submit a form or trigger navigation. The hints cover the
+        // widest reachable behaviour, and a click on an arbitrary page can
+        // destroy remote state, so `destructiveHint` is true even though the
+        // no-actions path — the common one — only reads.
+        annotations: {
+          title: 'Fetch a page',
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
       },
       {
         name: 'search',
         description: TOOL_DESCRIPTIONS.search,
         inputSchema: SEARCH_TOOL_SCHEMA,
+        annotations: {
+          title: 'Web search',
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
       },
       {
         name: 'crawl',
         description: TOOL_DESCRIPTIONS.crawl,
         inputSchema: CRAWL_TOOL_SCHEMA,
+        annotations: {
+          title: 'Crawl a site',
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
       },
       {
         name: 'cache',
         description: TOOL_DESCRIPTIONS.cache,
         inputSchema: CACHE_TOOL_SCHEMA,
+        // `clear` deletes rows; `check_changes` re-fetches every matching URL
+        // over the network, so this is not a closed-world tool either.
+        annotations: {
+          title: 'Search or clear the local cache',
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
       },
       {
         name: 'extract',
         description: TOOL_DESCRIPTIONS.extract,
         inputSchema: EXTRACT_TOOL_SCHEMA,
+        annotations: {
+          title: 'Extract structured data',
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
       },
       {
         name: 'find_similar',
         description: TOOL_DESCRIPTIONS.find_similar,
         inputSchema: FIND_SIMILAR_TOOL_SCHEMA,
+        annotations: {
+          title: 'Find similar pages',
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
       },
       {
         name: 'research',
         description: TOOL_DESCRIPTIONS.research,
         inputSchema: RESEARCH_TOOL_SCHEMA,
+        annotations: {
+          title: 'Deep research',
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
       },
       {
         name: 'agent',
         description: TOOL_DESCRIPTIONS.agent,
         inputSchema: AGENT_TOOL_SCHEMA,
+        annotations: {
+          title: 'Autonomous data gathering',
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
       },
       {
         name: 'diff',
         description: TOOL_DESCRIPTIONS.diff,
         inputSchema: DIFF_TOOL_SCHEMA,
+        annotations: {
+          title: 'Diff two versions',
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
       },
       {
         name: 'watch',
         description: TOOL_DESCRIPTIONS.watch,
         inputSchema: WATCH_TOOL_SCHEMA,
+        // `create`/`delete`/`pause`/`resume` mutate the persistent job store.
+        annotations: {
+          title: 'Watch a URL for changes',
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
       },
     ],
   }));
