@@ -9,7 +9,7 @@ import { sanitizedChildEnv } from '../util/child-env.js';
 import { stealthLaunchArgs } from './stealth.js';
 import { discoverSessions, isCDPReachable } from './cdp-client.js';
 import { classifyChallenge } from './challenge-classify.js';
-import { guardResolvedHost, type LookupAll } from '../watch/ssrf.js';
+import { guardFetchUrl, guardResolvedHost, type LookupAll } from '../watch/ssrf.js';
 import type { RawFetchResult } from '../types.js';
 
 const log = createLogger('fetch');
@@ -70,6 +70,11 @@ export type CriFactory = (opts: { target: string; local?: boolean }) => Promise<
 
 /** The eval expression that reads the fully-hydrated document HTML. */
 const CONTENT_EXPRESSION = 'document.documentElement.outerHTML';
+
+/** Reads where the page ACTUALLY landed. `Page.navigate` follows redirects
+ *  inside the browser, so the requested URL is not necessarily the one whose
+ *  content we are about to read. */
+const LOCATION_EXPRESSION = 'location.href';
 
 /** Name of the isolated world we create for leak-free evaluation. */
 const ISOLATED_WORLD_NAME = 'wigolo_cdp_direct';
@@ -158,6 +163,9 @@ export interface CdpDirectConnectOptions {
 export interface CdpDirectHandle {
   navigate(url: string): Promise<void>;
   getContentHtml(): Promise<string>;
+  /** Where the page actually landed after any in-browser redirects, or '' when
+   *  it cannot be read. Never throws. */
+  getLocationHref?(): Promise<string>;
   close(): Promise<void>;
   /** Best-effort: send the browser window to the background (minimized) so a
    *  HEADFUL render never steals the user's screen. Resolves even when the
@@ -310,6 +318,25 @@ export async function cdpDirectConnect(
       }
       const value = res?.result?.value;
       return typeof value === 'string' ? value : '';
+    },
+
+    async getLocationHref(): Promise<string> {
+      if (closed) return '';
+      try {
+        const contextId = await ensureIsolatedWorld();
+        const res = (await transport.send('Runtime.evaluate', {
+          expression: LOCATION_EXPRESSION,
+          contextId,
+          returnByValue: true,
+          awaitPromise: false,
+        })) as EvaluateResult;
+        const value = res?.result?.value;
+        return typeof value === 'string' ? value : '';
+      } catch {
+        // Best-effort: an unreadable location falls back to the requested URL,
+        // which the caller has already guarded.
+        return '';
+      }
     },
 
     async close(): Promise<void> {
@@ -753,6 +780,71 @@ function isIpLiteralHost(host: string): boolean {
  * `false` when the resolved address is blocked. Honours the SAME
  * `fetchAllowPrivate` policy the rest of the fetch path uses.
  */
+/**
+ * The `--proxy-server` argument this rung must launch with so it egresses the
+ * SAME way as every other tier, or a refusal.
+ *
+ * This rung spawns its own browser, so unlike the Playwright tiers it does not
+ * inherit the configured proxy for free — and its env is proxy-stripped. Left
+ * unwired it egressed DIRECT on the operator's real IP whenever a proxy was
+ * configured, silently defeating the boundary they set up.
+ *
+ * Chrome's `--proxy-server` accepts NO inline credentials, so an authenticated
+ * proxy cannot be honoured here at all. Rather than fall back to direct (the
+ * exact leak), the rung REFUSES: `{ refuse: true }` makes the caller return null
+ * and the fetch degrades to the normal browser tier, which does honour it.
+ */
+function proxyArgFor(cfg: { useProxy: boolean; proxyUrl: string | null }):
+  | { refuse: true }
+  | { refuse: false; arg: string | null } {
+  if (!cfg.useProxy || !cfg.proxyUrl) return { refuse: false, arg: null };
+  let parsed: URL;
+  try {
+    parsed = new URL(cfg.proxyUrl);
+  } catch {
+    // An unparseable proxy URL cannot be honoured — refuse rather than leak.
+    return { refuse: true };
+  }
+  if (parsed.username || parsed.password) return { refuse: true };
+  // Rebuild from parts so nothing beyond scheme/host/port reaches the flag.
+  const port = parsed.port ? `:${parsed.port}` : '';
+  return { refuse: false, arg: `--proxy-server=${parsed.protocol}//${parsed.hostname}${port}` };
+}
+
+/** True when `value` parses as an http(s) URL. Used to decide whether a
+ *  `location.href` read is trustworthy enough to act on. */
+function isHttpUrl(value: string): boolean {
+  if (!value) return false;
+  try {
+    const p = new URL(value);
+    return p.protocol === 'http:' || p.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Guard a POST-REDIRECT landing URL. Unlike the pre-navigation check this must
+ * NOT skip IP literals: that skip is justified only because the caller's literal
+ * guard already vetted the REQUESTED url, and a redirect target was never seen
+ * by it. `http://169.254.169.254/` is exactly the shape a rebind lands on, so it
+ * gets the literal guard here plus the resolved check for hostnames.
+ */
+async function landingGuardOk(url: string, lookup?: LookupAll): Promise<boolean> {
+  const literal = guardFetchUrl(url, 'cdp-direct redirect target');
+  if (!literal.ok) return false;
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return false;
+  }
+  if (isIpLiteralHost(host)) return true; // already vetted by guardFetchUrl above
+  const allowPrivate = getConfig().fetchAllowPrivate;
+  const resolved = await guardResolvedHost(host, 'cdp-direct redirect target', { allowPrivate, lookup });
+  return resolved.ok;
+}
+
 async function resolvedNavigateGuardOk(url: string, lookup?: LookupAll): Promise<boolean> {
   let host: string;
   try {
@@ -823,6 +915,17 @@ export async function cdpDirectFetch(
 
     const port = await reserveFreePort();
     const cfg = getConfig();
+
+    // Egress policy FIRST: this rung owns its own browser process, so it only
+    // honours the operator's proxy if we hand it one explicitly.
+    const proxyDecision = proxyArgFor(cfg);
+    if (proxyDecision.refuse) {
+      log.info(
+        'cdp-direct declined: the configured proxy cannot be applied to this rung, and egressing direct would bypass it',
+        { url },
+      );
+      return null;
+    }
     // Prefer HEADFUL whenever a display exists — headless is itself the strongest
     // automation tell on real bot walls (measured on one residential IP: the same
     // Chrome passed zillow/indeed headful and was blocked with --headless=new).
@@ -856,6 +959,9 @@ export async function cdpDirectFetch(
       // nothing and the rung silently falls back on every spawn (root-caused
       // live 2026-07-27). The initial `about:blank` page is what we navigate.
       ...(headless ? ['--headless=new'] : []),
+      // Route through the operator's proxy when one is configured, so this rung
+      // egresses the same way every other tier does.
+      ...(proxyDecision.arg ? [proxyDecision.arg] : []),
       'about:blank',
     ];
 
@@ -973,10 +1079,36 @@ export async function cdpDirectFetch(
       });
     }
 
+    // POST-REDIRECT SSRF re-check. The pre-navigation guard covers the
+    // REQUESTED host only; `Page.navigate` follows redirects inside the browser,
+    // so a public host that 302s to cloud metadata / RFC-1918 / loopback lands
+    // somewhere the guard never saw. Read where we actually ended up and refuse
+    // to hand back its content.
+    //
+    // Honest limit: this blocks the RESULT, not the request. The redirect hop
+    // itself has already left the machine by the time we can read `location`.
+    // Guarding every hop needs request interception, which would mean enabling
+    // another CDP domain on the one rung that exists to keep its protocol
+    // surface minimal — so the exfiltration path is closed here and the
+    // connection-level exposure is stated rather than hidden.
+    // Only trust a landing value that is actually an http(s) URL. An empty or
+    // unparseable read (a stub, a closed page, a `data:`/`about:` shell) must
+    // fall back to the requested URL — which is already guarded — rather than
+    // fail the fetch on an unreadable value.
+    const landed = (await handle.getLocationHref?.()) ?? '';
+    const finalUrl = isHttpUrl(landed) ? landed : url;
+    if (finalUrl !== url && !(await landingGuardOk(finalUrl, opts.lookup))) {
+      log.warn('cdp-direct: page redirected to a blocked address, refusing to return its content', {
+        url,
+        finalUrl,
+      });
+      return null;
+    }
+
     log.info('cdp-direct rung produced content', { url, bytes: html.length });
     return {
       url,
-      finalUrl: url,
+      finalUrl,
       html,
       contentType: 'text/html',
       statusCode: 200,
