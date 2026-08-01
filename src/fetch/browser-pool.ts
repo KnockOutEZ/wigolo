@@ -20,7 +20,7 @@ import { aiSolveChallenge, type ImageSolveSubType, type WidgetImage } from './ai
 import { humanSolveChallenge } from './human-solve.js';
 import { connectScrapingBrowser } from './scraping-browser.js';
 import { cdpDirectFetch } from './cdp-direct.js';
-import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, parseChromeMajor, resolveStealthLauncher, STEALTH_INIT_SCRIPT } from './stealth.js';
+import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, parseChromeMajor, resolveStealthLauncher, recordLaunchedChromeMajor, STEALTH_INIT_SCRIPT } from './stealth.js';
 import { humanizePage } from './behavior.js';
 import { recordDomainClearance, clearDomainClearance } from '../cache/store.js';
 import { CLEARANCE_COOKIE_NAME, clearanceExpiresIso } from './clearance-reuse.js';
@@ -66,6 +66,30 @@ function findCfClearance(cookies: ClearanceCookie[]): { value: string; expires: 
   const c = cookies.find((k) => k.name === CLEARANCE_COOKIE_NAME && k.value.length > 0);
   return c ? { value: c.value, expires: c.expires } : null;
 }
+
+/**
+ * Per-selector budget for a challenge-widget probe. The widget is already
+ * painted when the solve ladder runs, so a hit resolves immediately; this bounds
+ * the MISS. Must stay far under the browser engine's 30s actionability default —
+ * an unbounded probe across the selector list costs minutes per blocked fetch.
+ */
+export const WIDGET_LOCATE_TIMEOUT_MS = 400;
+
+/** Same-document widget selectors (Turnstile is not in an iframe). */
+const WIDGET_DOC_SELECTORS = ['.cf-turnstile', '#challenge-form', 'input[type="checkbox"]'] as const;
+
+/** Cross-origin checkbox iframes (reCAPTCHA anchor / hCaptcha checkbox). */
+const WIDGET_FRAME_SELECTORS = [
+  'iframe[src*="api2/anchor"]',
+  'iframe[src*="recaptcha"]',
+  'iframe[src*="hcaptcha.com"]',
+  'iframe[title*="challenge" i]',
+] as const;
+
+/** How many selectors a total miss pays for. Exported so the budget contract is
+ *  assertable without reaching into the private locator. */
+export const WIDGET_LOCATE_SELECTOR_COUNT =
+  WIDGET_DOC_SELECTORS.length + WIDGET_FRAME_SELECTORS.length;
 
 /**
  * Thrown when the browser tier lands on a hard bot-protection challenge page
@@ -669,6 +693,10 @@ export class MultiBrowserPool {
             ? dedicatedBrowser.version()
             : null;
         const launchedMajor = parseChromeMajor(launchedVersion);
+        // Publish the real major so the clearance reuse gate compares against
+        // the identity this tier actually presents. Without this the gate keeps
+        // testing the static pin and refuses every clearance we mint here.
+        recordLaunchedChromeMajor(launchedMajor);
         advertisedUa =
           launchedMajor !== null
             ? resolveStealthUA(process.platform, launchedMajor)
@@ -1387,24 +1415,28 @@ export class MultiBrowserPool {
 
   /** Locate the interactive challenge checkbox/widget and its viewport centre,
    *  frame-aware (the reCAPTCHA anchor + hCaptcha checkbox live in iframes; the
-   *  Turnstile widget is same-document). Returns null when no widget is found. */
+   *  Turnstile widget is same-document). Returns null when no widget is found.
+   *
+   *  Every probe carries an EXPLICIT short timeout. The widget is already
+   *  rendered by the time the ladder runs, so a match is immediate and a miss
+   *  should cost milliseconds — but `boundingBox()` with no timeout inherits the
+   *  browser engine's 30s actionability default, and a full miss then costs
+   *  30s × every selector. Measured live: that turned a 15s
+   *  blocked_by_challenge into a 226s one on the DEFAULT config, because
+   *  `autoPass` engages on the escalation path out of the box. */
   private async locateChallengeWidget(page: import('playwright').Page): Promise<{ x: number; y: number } | null> {
+    const probe = (sel: string) =>
+      page.locator(sel).first().boundingBox({ timeout: WIDGET_LOCATE_TIMEOUT_MS }).catch(() => null);
+
     // Same-document Turnstile widget first.
-    const docSelectors = ['.cf-turnstile', '#challenge-form', 'input[type="checkbox"]'];
-    for (const sel of docSelectors) {
-      const box = await page.locator(sel).first().boundingBox().catch(() => null);
+    for (const sel of WIDGET_DOC_SELECTORS) {
+      const box = await probe(sel);
       if (box) return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     }
     // Cross-origin checkbox iframes (reCAPTCHA anchor / hCaptcha checkbox): the
     // iframe element's box is enough to aim the trusted click at the checkbox.
-    const frameSelectors = [
-      'iframe[src*="api2/anchor"]',
-      'iframe[src*="recaptcha"]',
-      'iframe[src*="hcaptcha.com"]',
-      'iframe[title*="challenge" i]',
-    ];
-    for (const sel of frameSelectors) {
-      const box = await page.locator(sel).first().boundingBox().catch(() => null);
+    for (const sel of WIDGET_FRAME_SELECTORS) {
+      const box = await probe(sel);
       // Aim at the left-side checkbox region of the widget iframe, not its centre.
       if (box) return { x: box.x + Math.min(28, box.width / 2), y: box.y + box.height / 2 };
     }
