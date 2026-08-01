@@ -84,6 +84,9 @@ export async function executeFetch(args: ParsedArgs, deps: ReplDeps): Promise<Fe
       // an honest null solve_method), instead of dropping it in the envelope.
       return {
         ...errEnvelope(url, r.error_reason),
+        // http_status belongs to the same contract: without it a caller cannot
+        // tell an anti-bot 403 from a challenge served at 200.
+        ...(typeof r.http_status === 'number' ? { http_status: r.http_status } : {}),
         ...(r.challenge_class !== undefined ? { challenge_class: r.challenge_class } : {}),
         ...(r.solve_method !== undefined ? { solve_method: r.solve_method } : {}),
       };
