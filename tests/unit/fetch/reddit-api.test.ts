@@ -90,11 +90,15 @@ describe('mapRedditUrlToEndpoint', () => {
     expect(mapRedditUrlToEndpoint('https://www.reddit.com/settings')).toBeNull();
   });
 
-  it('sanitizes path segments so no injection reaches the endpoint', () => {
-    // A crafted segment must not smuggle characters outside [A-Za-z0-9_-] into
-    // the constructed endpoint path.
-    expect(mapRedditUrlToEndpoint('https://www.reddit.com/r/ru$st!/hot')).toBe('/r/rust/hot');
-    expect(mapRedditUrlToEndpoint('https://www.reddit.com/r/a.b.c/hot')).toBe('/r/abc/hot');
+  it('REFUSES a segment carrying anything outside [A-Za-z0-9_-] rather than sanitizing it', () => {
+    // Stripping the offending characters kept the endpoint safe but silently
+    // fetched a DIFFERENT resource (`/r/a.b.c` -> the real `/r/abc`). Refusing
+    // is strictly stronger: no injection reaches the endpoint AND no wrong
+    // community is served in place of the requested one.
+    expect(mapRedditUrlToEndpoint('https://www.reddit.com/r/ru$st!/hot')).toBeNull();
+    expect(mapRedditUrlToEndpoint('https://www.reddit.com/r/a.b.c/hot')).toBeNull();
+    // The legal name is unaffected.
+    expect(mapRedditUrlToEndpoint('https://www.reddit.com/r/rust/hot')).toBe('/r/rust/hot');
   });
 });
 
@@ -378,13 +382,20 @@ describe('fetchViaRedditApi', () => {
     const mgr = new RedditTokenManager(CREDS, fetchFn, () => 0);
 
     // A hostile path with an embedded @ / host-like segment must not redirect
-    // egress off oauth.reddit.com — the host comes from the fixed base only.
-    await fetchViaRedditApi(
+    // egress off oauth.reddit.com. It no longer even reaches the API: the name
+    // is not a legal reddit segment, so the mapper refuses and NOTHING is
+    // fetched — not the data endpoint, not even a token.
+    const hostile = await fetchViaRedditApi(
       'https://www.reddit.com/r/rust@evil.example/hot',
       mgr,
       CREDS,
       fetchFn,
     );
+    expect(hostile).toBeNull();
+    expect((fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+
+    // And the host of a LEGAL request still comes from the fixed base only.
+    await fetchViaRedditApi('https://www.reddit.com/r/rust/hot', mgr, CREDS, fetchFn);
     const dataCall = (fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls[1];
     const calledUrl = new URL(dataCall[0] as string);
     expect(calledUrl.hostname).toBe('oauth.reddit.com');

@@ -63,9 +63,19 @@ export function isRedditUrl(url: string): boolean {
 
 const SORTS = new Set(['hot', 'new', 'top', 'rising', 'controversial', 'best']);
 
-/** Keep only characters valid in a reddit name segment (sub / user / id). */
-function sanitizeSegment(seg: string): string {
-  return seg.replace(/[^A-Za-z0-9_-]/g, '');
+/**
+ * A reddit name segment (sub / user / id), or null when the input is not already
+ * one. Reddit names are `[A-Za-z0-9_-]+`, so anything else cannot be served.
+ *
+ * This REJECTS rather than sanitizes. Stripping the offending characters keeps
+ * the fixed-host URL safe but silently changes WHICH resource is fetched —
+ * `/r/foo.bar` became `/r/foobar`, and `/r/AskReddit%2F..%2Fpolitics` became the
+ * real-but-wrong `/r/AskReddit2F2Fpolitics` — handing back another community's
+ * content with no signal. Returning null makes the router fall through to the
+ * normal ladder against the URL as the caller wrote it.
+ */
+function validSegment(seg: string): string | null {
+  return /^[A-Za-z0-9_-]+$/.test(seg) ? seg : null;
 }
 
 /**
@@ -96,19 +106,19 @@ export function mapRedditUrlToEndpoint(url: string): string | null {
 
   // /user/<name> or /u/<name>
   if ((parts[0] === 'user' || parts[0] === 'u') && parts[1]) {
-    const name = sanitizeSegment(parts[1]);
+    const name = validSegment(parts[1]);
     if (!name) return null;
     return `/user/${name}/about`;
   }
 
   // /r/<sub>/...
   if (parts[0] === 'r' && parts[1]) {
-    const sub = sanitizeSegment(parts[1]);
+    const sub = validSegment(parts[1]);
     if (!sub) return null;
 
     // /r/<sub>/comments/<id>[/slug]
     if (parts[2] === 'comments' && parts[3]) {
-      const id = sanitizeSegment(parts[3]);
+      const id = validSegment(parts[3]);
       if (!id) return null;
       return `/r/${sub}/comments/${id}`;
     }
