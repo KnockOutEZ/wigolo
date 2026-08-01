@@ -312,8 +312,11 @@ describe('config — hardcore preset resolver', () => {
     const cfg = getConfig();
     expect(cfg.hardcore).toBe('off');
     expect(cfg.stealth).toBe('auto');
-    expect(cfg.stealthDriver).toBe('auto');
-    expect(cfg.browserChannel).toBe('auto');
+    // Both default to the CONSERVATIVE build/driver: an install must render
+    // through the same pinned browser via the standard driver unless the
+    // operator opts into host-installed Chrome / the hardened driver.
+    expect(cfg.stealthDriver).toBe('playwright');
+    expect(cfg.browserChannel).toBe('chromium');
     expect(cfg.browserHeadful).toBe(false);
     expect(cfg.humanize).toBe('auto');
     expect(cfg.cdpDirect).toBe('off');

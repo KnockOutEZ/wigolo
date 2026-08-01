@@ -114,6 +114,10 @@ describe('SmartRouter — Part 2: proxy-bypass direct-retry on managed challenge
   function proxyEnv() {
     process.env.USE_PROXY = 'true';
     process.env.PROXY_URL = 'http://proxy.example.com:8080';
+    // The direct-retry is OPT-IN: bypassing an operator's configured proxy
+    // leaks their real IP, so it is off unless explicitly enabled. These tests
+    // exercise the enabled path; the "knob off" test below overrides it back.
+    process.env.WIGOLO_PROXY_BYPASS_ON_CHALLENGE = 'true';
     resetConfig();
   }
 

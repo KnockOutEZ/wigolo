@@ -75,16 +75,19 @@ describe('config', () => {
   });
 
   describe('proxyBypassOnChallenge configuration', () => {
-    it('defaults to true', () => {
+    // Defaults OFF: silently retrying direct defeats an operator's configured
+    // proxy and leaks their real IP to the origin. That is a consent decision,
+    // so it must be opted into rather than inherited.
+    it('defaults to false — never bypasses a configured proxy unasked', () => {
       delete process.env.WIGOLO_PROXY_BYPASS_ON_CHALLENGE;
       resetConfig();
-      expect(getConfig().proxyBypassOnChallenge).toBe(true);
+      expect(getConfig().proxyBypassOnChallenge).toBe(false);
     });
 
-    it('reads WIGOLO_PROXY_BYPASS_ON_CHALLENGE=false', () => {
-      process.env.WIGOLO_PROXY_BYPASS_ON_CHALLENGE = 'false';
+    it('reads WIGOLO_PROXY_BYPASS_ON_CHALLENGE=true to opt in', () => {
+      process.env.WIGOLO_PROXY_BYPASS_ON_CHALLENGE = 'true';
       resetConfig();
-      expect(getConfig().proxyBypassOnChallenge).toBe(false);
+      expect(getConfig().proxyBypassOnChallenge).toBe(true);
     });
   });
 
@@ -157,8 +160,16 @@ describe('config', () => {
   });
 
   describe('browser identity (channel + headful) configuration', () => {
-    it('defaults WIGOLO_BROWSER_CHANNEL to auto', () => {
+    // Defaults to the BUNDLED engine so every install renders through the same
+    // pinned browser instead of whatever build happens to be on the host.
+    it('defaults WIGOLO_BROWSER_CHANNEL to chromium (bundled)', () => {
       delete process.env.WIGOLO_BROWSER_CHANNEL;
+      resetConfig();
+      expect(getConfig().browserChannel).toBe('chromium');
+    });
+
+    it('reads WIGOLO_BROWSER_CHANNEL=auto to opt into an installed browser', () => {
+      process.env.WIGOLO_BROWSER_CHANNEL = 'auto';
       resetConfig();
       expect(getConfig().browserChannel).toBe('auto');
     });
@@ -175,12 +186,12 @@ describe('config', () => {
       expect(getConfig().browserChannel).toBe('chromium');
     });
 
-    it('normalizes an unknown WIGOLO_BROWSER_CHANNEL to auto', () => {
-      // A typo must not silently pick a real installed-Chrome preference — the
-      // safe default is auto (probe-then-fallback).
+    it('normalizes an unknown WIGOLO_BROWSER_CHANNEL to chromium', () => {
+      // A typo must not silently opt the host into launching its own installed
+      // browser — it falls back to the pinned bundled engine.
       process.env.WIGOLO_BROWSER_CHANNEL = 'firefox';
       resetConfig();
-      expect(getConfig().browserChannel).toBe('auto');
+      expect(getConfig().browserChannel).toBe('chromium');
     });
 
     it('is case-insensitive for WIGOLO_BROWSER_CHANNEL', () => {
@@ -209,8 +220,17 @@ describe('config', () => {
   });
 
   describe('stealthDriver (driver-level hardening) configuration', () => {
-    it('defaults WIGOLO_STEALTH_DRIVER to auto', () => {
+    // Defaults to the STANDARD driver: the hardened one has no launch-time
+    // fallback, so a driver that imports but cannot launch would hard-fail the
+    // fetch instead of degrading.
+    it('defaults WIGOLO_STEALTH_DRIVER to playwright (standard driver)', () => {
       delete process.env.WIGOLO_STEALTH_DRIVER;
+      resetConfig();
+      expect(getConfig().stealthDriver).toBe('playwright');
+    });
+
+    it('reads WIGOLO_STEALTH_DRIVER=auto to opt into the hardened driver', () => {
+      process.env.WIGOLO_STEALTH_DRIVER = 'auto';
       resetConfig();
       expect(getConfig().stealthDriver).toBe('auto');
     });
@@ -227,10 +247,12 @@ describe('config', () => {
       expect(getConfig().stealthDriver).toBe('playwright');
     });
 
-    it('normalizes an unknown WIGOLO_STEALTH_DRIVER value to the safe auto default', () => {
+    it('normalizes an unknown WIGOLO_STEALTH_DRIVER value to the safe playwright default', () => {
+      // A typo must not silently select the hardened driver, which has no
+      // launch-time fallback.
       process.env.WIGOLO_STEALTH_DRIVER = 'undetected';
       resetConfig();
-      expect(getConfig().stealthDriver).toBe('auto');
+      expect(getConfig().stealthDriver).toBe('playwright');
     });
 
     it('is case-insensitive for WIGOLO_STEALTH_DRIVER', () => {

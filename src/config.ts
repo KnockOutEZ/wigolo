@@ -82,7 +82,13 @@ export interface Config {
   crawlJitterPct: number;
   /** Multiplier applied to a domain's crawl wait on each 403/429 (adaptive back-off). */
   crawlCooldownFactor: number;
-  /** Ceiling for the adaptive per-domain crawl cooldown wait, in ms. */
+  /**
+   * Ceiling for the adaptive per-domain crawl cooldown wait, in ms. Default
+   * 30s: the cooldown only compounds while a domain keeps returning 403/429, and
+   * a ceiling long enough to be genuinely polite is also long enough to be
+   * indistinguishable from a hung crawl. Raise it deliberately for a domain
+   * worth waiting on.
+   */
   crawlCooldownMaxMs: number;
   useProxy: boolean;
   proxyUrl: string | null;
@@ -91,9 +97,13 @@ export interface Config {
    * proxy is in use, attempt ONE additional direct (no-proxy) browser fetch
    * before returning blocked_by_challenge. A datacenter proxy converts many
    * managed-challenge passes into blocks, whereas direct residential-grade
-   * egress often clears — and wigolo cannot know the proxy's ASN type. Default
-   * true. No-op when no proxy is configured (no double-fetch). Off via
-   * WIGOLO_PROXY_BYPASS_ON_CHALLENGE=false.
+   * egress often clears — and wigolo cannot know the proxy's ASN type.
+   *
+   * Default FALSE. Routing around an operator's configured proxy is a consent
+   * decision, not an optimization: someone who set a proxy did so for privacy,
+   * egress control, or policy reasons, and a silent direct retry leaks their
+   * real IP to the origin. Opt in with WIGOLO_PROXY_BYPASS_ON_CHALLENGE=true.
+   * No-op when no proxy is configured (no double-fetch either way).
    */
   proxyBypassOnChallenge: boolean;
   /** Opt-in challenge-solver service URL (Tier-B escape hatch). Off unless set. */
@@ -187,15 +197,20 @@ export interface Config {
   stealth: 'off' | 'auto' | 'on';
   /**
    * Which browser build the DEDICATED stealth path launches:
+   *   - 'chromium' : always use the bundled browser engine, never probe for an
+   *                  installed one (DEFAULT).
    *   - 'auto'     : prefer an authentic installed browser (real TLS + version),
-   *                  falling back to the bundled browser engine when none is
-   *                  installed (DEFAULT).
+   *                  falling back to the bundled engine when none is installed.
    *   - 'chrome'   : force the authentic installed browser; still falls back to
    *                  bundled if the launch fails.
-   *   - 'chromium' : always use the bundled browser engine (never probe for an
-   *                  installed browser).
-   * Any other value normalizes to 'auto'. Applies to the stealth path only —
+   * Any other value normalizes to 'chromium'. Applies to the stealth path only —
    * the pooled fast path is unaffected.
+   *
+   * Defaults to the BUNDLED engine so every install renders through the same
+   * pinned browser. Launching whatever build happens to be on the host makes
+   * behaviour vary per machine for no measured anti-bot gain — the levers that
+   * actually decide a bot-wall outcome measured as classifier + IP, not browser
+   * identity. Opt in with WIGOLO_BROWSER_CHANNEL=auto.
    */
   browserChannel: 'auto' | 'chrome' | 'chromium';
   /**
@@ -221,19 +236,24 @@ export interface Config {
   browserWindowless: boolean;
   /**
    * Driver selection for the DEDICATED browser-tier stealth launch:
+   *   - 'playwright' : always use the standard browser driver; never load the
+   *                    hardened driver even when installed (DEFAULT).
    *   - 'auto'       : use the driver-hardened stealth launcher (patches the
    *                    CDP `Runtime.enable`-class automation leak at the driver
-   *                    level) for the dedicated stealth path WHEN its optional
-   *                    package + browser are present; otherwise fall back to the
-   *                    standard browser driver (DEFAULT).
-   *   - 'patchright' : same as 'auto' — prefer the hardened driver when present,
-   *                    fall back gracefully when absent (the dep is optional, so
-   *                    this never hard-fails a keyless install).
-   *   - 'playwright' : always use the standard browser driver; never load the
-   *                    hardened driver even when installed.
+   *                    level) WHEN its optional package + browser are present;
+   *                    otherwise fall back to the standard browser driver.
+   *   - 'patchright' : same as 'auto'.
    * Only affects the dedicated stealth launch. The pooled fast path and the
    * firefox/webkit engines are unaffected (the hardened driver is Chromium-only).
-   * Any other value normalizes to 'auto'.
+   * Any other value normalizes to 'playwright'.
+   *
+   * Defaults to the STANDARD driver. The hardened driver resolves a browser
+   * revision it neither installs nor owns, and the launch path has no fallback:
+   * once the hardened launcher is selected, every launch attempt goes through it
+   * (a failed `channel:'chrome'` probe still retries on the SAME launcher), so a
+   * driver that imports but cannot launch hard-fails the fetch rather than
+   * degrading. Nothing asserts that its expected browser revision stays aligned
+   * with the standard driver's. Opt in with WIGOLO_STEALTH_DRIVER=auto.
    */
   stealthDriver: 'auto' | 'patchright' | 'playwright';
   /**
@@ -620,10 +640,10 @@ export function getConfig(): Config {
     crawlPrivateDelayMs: envInt('CRAWL_PRIVATE_DELAY_MS', 0, settings, 'crawlPrivateDelayMs'),
     crawlJitterPct: clamp01(envFloat('WIGOLO_CRAWL_JITTER_PCT', 0.3, settings, 'crawlJitterPct')),
     crawlCooldownFactor: atLeast1(envFloat('WIGOLO_CRAWL_COOLDOWN_FACTOR', 2, settings, 'crawlCooldownFactor')),
-    crawlCooldownMaxMs: envInt('WIGOLO_CRAWL_COOLDOWN_MAX_MS', 300000, settings, 'crawlCooldownMaxMs'),
+    crawlCooldownMaxMs: envInt('WIGOLO_CRAWL_COOLDOWN_MAX_MS', 30000, settings, 'crawlCooldownMaxMs'),
     useProxy: envBool('USE_PROXY', false, settings, 'useProxy'),
     proxyUrl: resolveCredentialUrl(envStr('PROXY_URL', null, settings, 'proxyUrl'), 'proxyUrl'),
-    proxyBypassOnChallenge: envBool('WIGOLO_PROXY_BYPASS_ON_CHALLENGE', true, settings, 'proxyBypassOnChallenge'),
+    proxyBypassOnChallenge: envBool('WIGOLO_PROXY_BYPASS_ON_CHALLENGE', false, settings, 'proxyBypassOnChallenge'),
     solverUrl: resolveCredentialUrl(
       envStr('WIGOLO_SOLVER_URL', null, settings, 'solverUrl'),
       'solverUrl',
@@ -715,16 +735,16 @@ export function getConfig(): Config {
       return raw === 'off' || raw === 'on' ? (raw as 'off' | 'on') : 'auto';
     })(),
     browserChannel: (() => {
-      const raw = (envStr('WIGOLO_BROWSER_CHANNEL', 'auto', settings, 'browserChannel') ?? 'auto').toLowerCase();
-      return raw === 'chrome' || raw === 'chromium' ? (raw as 'chrome' | 'chromium') : 'auto';
+      const raw = (envStr('WIGOLO_BROWSER_CHANNEL', 'chromium', settings, 'browserChannel') ?? 'chromium').toLowerCase();
+      return raw === 'chrome' || raw === 'auto' ? (raw as 'chrome' | 'auto') : 'chromium';
     })(),
     browserHeadful: envBool('WIGOLO_BROWSER_HEADFUL', false, settings, 'browserHeadful'),
     browserWindowless: envBool('WIGOLO_BROWSER_WINDOWLESS', false, settings, 'browserWindowless'),
     stealthDriver: (() => {
-      const raw = (envStr('WIGOLO_STEALTH_DRIVER', 'auto', settings, 'stealthDriver') ?? 'auto').toLowerCase();
-      return raw === 'patchright' || raw === 'playwright'
-        ? (raw as 'patchright' | 'playwright')
-        : 'auto';
+      const raw = (envStr('WIGOLO_STEALTH_DRIVER', 'playwright', settings, 'stealthDriver') ?? 'playwright').toLowerCase();
+      return raw === 'patchright' || raw === 'auto'
+        ? (raw as 'patchright' | 'auto')
+        : 'playwright';
     })(),
     humanize: (() => {
       const raw = (envStr('WIGOLO_HUMANIZE', 'auto', settings, 'humanize') ?? 'auto').toLowerCase();

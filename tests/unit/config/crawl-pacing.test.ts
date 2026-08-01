@@ -14,11 +14,11 @@ describe('crawl pacing config', () => {
     resetConfig();
   });
 
-  it('defaults: jitter 0.3, cooldown factor 2, cooldown max 300000ms', () => {
+  it('defaults: jitter 0.3, cooldown factor 2, cooldown max 30000ms', () => {
     const c = getConfig();
     expect(c.crawlJitterPct).toBe(0.3);
     expect(c.crawlCooldownFactor).toBe(2);
-    expect(c.crawlCooldownMaxMs).toBe(300000);
+    expect(c.crawlCooldownMaxMs).toBe(30000);
   });
 
   it('honors env overrides', () => {

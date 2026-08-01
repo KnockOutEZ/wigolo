@@ -91,6 +91,10 @@ function resetState() {
 describe('dedicated stealth launch: authentic-browser channel (T1-A)', () => {
   beforeEach(() => {
     resetState();
+    // Probing for an installed browser is OPT-IN — the default is the pinned
+    // bundled engine so behaviour does not vary per host. This describe covers
+    // the opted-in path; the chromium-pin test below overrides it back.
+    process.env.WIGOLO_BROWSER_CHANNEL = 'auto';
     resetConfig();
   });
   afterEach(() => {
