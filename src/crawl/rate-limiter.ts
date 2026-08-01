@@ -102,7 +102,12 @@ export class RateLimiter {
     if (status === 403 || status === 429) {
       state.successStreak = 0;
       const next = state.cooldownMultiplier * this.cooldownFactor;
-      const maxMultiplier = state.delayMs > 0 ? this.cooldownMaxMs / state.delayMs : next;
+      // A ZERO base delay (the default for private hosts) has no meaningful
+      // multiplier: scaling it yields 0 either way. Falling back to `next` left
+      // the multiplier uncapped, doubling on every block forever — unbounded
+      // state that also lies in wait for any later change that gives the domain
+      // a non-zero delay. Pin it to 1 instead.
+      const maxMultiplier = state.delayMs > 0 ? this.cooldownMaxMs / state.delayMs : 1;
       state.cooldownMultiplier = Math.min(next, Math.max(1, maxMultiplier));
       return;
     }

@@ -210,3 +210,35 @@ describe('RateLimiter adaptive cooldown', () => {
     expect(() => limiter.recordResponse('never-seen.com', 429)).not.toThrow();
   });
 });
+
+describe('RateLimiter — cooldown stays bounded when the base delay is zero', () => {
+  // crawlPrivateDelayMs defaults to 0, so delayMs === 0 is the NORMAL state for
+  // private hosts. maxMultiplier fell back to `next` there, leaving the
+  // multiplier uncapped: it doubled on every 403/429 forever, and any later
+  // change that made a zero base delay non-zero would inherit an absurd wait.
+  it('does not grow the multiplier without bound on repeated blocks', () => {
+    const rl = new RateLimiter({ cooldownFactor: 2, cooldownMaxMs: 30_000, jitterPct: 0, rng: () => 0.5 });
+    rl.registerDomain('http://zero.example/a');
+    // Force the zero-base-delay state this guards.
+    (rl as unknown as { domains: Map<string, { delayMs: number }> }).domains.get('zero.example')!.delayMs = 0;
+
+    for (let i = 0; i < 40; i++) rl.recordResponse('zero.example', 429);
+
+    const m = (rl as unknown as { domains: Map<string, { cooldownMultiplier: number }> })
+      .domains.get('zero.example')!.cooldownMultiplier;
+    expect(Number.isFinite(m)).toBe(true);
+    expect(m).toBeLessThanOrEqual(1);
+    // And the wait it produces is still sane.
+    expect(rl.nextWaitMs('zero.example')).toBe(0);
+  });
+
+  it('still caps a NON-zero base delay at cooldownMaxMs', () => {
+    const rl = new RateLimiter({ cooldownFactor: 2, cooldownMaxMs: 4_000, jitterPct: 0, rng: () => 0.5 });
+    rl.registerDomain('http://slow.example/a');
+    (rl as unknown as { domains: Map<string, { delayMs: number }> }).domains.get('slow.example')!.delayMs = 1_000;
+
+    for (let i = 0; i < 20; i++) rl.recordResponse('slow.example', 403);
+
+    expect(rl.nextWaitMs('slow.example')).toBeLessThanOrEqual(4_000);
+  });
+});
