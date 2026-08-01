@@ -263,3 +263,35 @@ describe('classifyImageSubType', () => {
     });
   });
 });
+
+describe('classifyImageSubType — slider detection must not fire on ordinary UI', () => {
+  // `sliderish && (puzzle || slide)` was vacuous for the `slider` token, because
+  // the string "slider" itself contains "slide". Any page carrying a carousel,
+  // range input or `class="slider"` therefore classified as a drag puzzle — and
+  // the vision rung would attempt a drag gesture on it.
+  it('does NOT call a plain carousel a slider puzzle', () => {
+    expect(
+      classifyImageSubType('<html><body><div class="slider"><img src="/a.jpg"></div></body></html>'),
+    ).not.toBe('slider');
+  });
+
+  it('does NOT call a range input a slider puzzle', () => {
+    expect(
+      classifyImageSubType('<html><body><input type="range" class="volume-slider"></body></html>'),
+    ).not.toBe('slider');
+  });
+
+  it('still detects a GeeTest slide puzzle', () => {
+    expect(classifyImageSubType('<html><body><div class="geetest_slider"></div></body></html>')).toBe('slider');
+  });
+
+  it('still detects a slidebg drag puzzle', () => {
+    expect(classifyImageSubType('<html><body><div class="slideBg"></div></body></html>')).toBe('slider');
+  });
+
+  it('still detects a slider co-present with an explicit puzzle hint', () => {
+    expect(
+      classifyImageSubType('<html><body><div class="slider">Drag the puzzle piece to verify</div></body></html>'),
+    ).toBe('slider');
+  });
+});

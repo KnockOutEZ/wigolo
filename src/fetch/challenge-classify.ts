@@ -280,9 +280,14 @@ export function classifyImageSubType(html: string): ImageSolveSubType {
 function hasSliderMarker(lower: string): boolean {
   if (lower.includes('geetest')) return true;
   if (lower.includes('slidebg')) return true;
+  // The corroborating hint must be a SEPARATE signal from the token that
+  // triggered the check. `'slider'.includes('slide')` made the old guard
+  // vacuous: every carousel, range input and `class="slider"` satisfied its own
+  // corroboration and classified as a drag puzzle, so the vision rung would
+  // attempt a drag on ordinary UI.
   const sliderish = lower.includes('slider') || lower.includes('drag');
-  if (sliderish && (lower.includes('puzzle') || lower.includes('slide'))) return true;
-  return false;
+  if (!sliderish) return false;
+  return lower.includes('puzzle') || lower.includes('verify') || lower.includes('captcha');
 }
 
 /**
