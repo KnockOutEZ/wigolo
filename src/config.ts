@@ -78,8 +78,34 @@ export interface Config {
   crawlDelayMs: number;
   crawlPrivateConcurrency: number;
   crawlPrivateDelayMs: number;
+  /** Randomized jitter fraction applied to each crawl inter-request wait (0..1). Breaks the fixed-metronome bot signal. */
+  crawlJitterPct: number;
+  /** Multiplier applied to a domain's crawl wait on each 403/429 (adaptive back-off). */
+  crawlCooldownFactor: number;
+  /**
+   * Ceiling for the adaptive per-domain crawl cooldown wait, in ms. Default
+   * 30s: the cooldown only compounds while a domain keeps returning 403/429, and
+   * a ceiling long enough to be genuinely polite is also long enough to be
+   * indistinguishable from a hung crawl. Raise it deliberately for a domain
+   * worth waiting on.
+   */
+  crawlCooldownMaxMs: number;
   useProxy: boolean;
   proxyUrl: string | null;
+  /**
+   * When a managed bot-protection challenge blocks the browser tier WHILE a
+   * proxy is in use, attempt ONE additional direct (no-proxy) browser fetch
+   * before returning blocked_by_challenge. A datacenter proxy converts many
+   * managed-challenge passes into blocks, whereas direct residential-grade
+   * egress often clears — and wigolo cannot know the proxy's ASN type.
+   *
+   * Default FALSE. Routing around an operator's configured proxy is a consent
+   * decision, not an optimization: someone who set a proxy did so for privacy,
+   * egress control, or policy reasons, and a silent direct retry leaks their
+   * real IP to the origin. Opt in with WIGOLO_PROXY_BYPASS_ON_CHALLENGE=true.
+   * No-op when no proxy is configured (no double-fetch either way).
+   */
+  proxyBypassOnChallenge: boolean;
   /** Opt-in challenge-solver service URL (Tier-B escape hatch). Off unless set. */
   solverUrl: string | null;
   /** Opt-in hosted reader-service URL (Tier-B escape hatch). Off unless set. */
@@ -169,6 +195,165 @@ export interface Config {
    * Any other value normalizes to 'auto' (the safe default).
    */
   stealth: 'off' | 'auto' | 'on';
+  /**
+   * Which browser build the DEDICATED stealth path launches:
+   *   - 'chromium' : always use the bundled browser engine, never probe for an
+   *                  installed one (DEFAULT).
+   *   - 'auto'     : prefer an authentic installed browser (real TLS + version),
+   *                  falling back to the bundled engine when none is installed.
+   *   - 'chrome'   : force the authentic installed browser; still falls back to
+   *                  bundled if the launch fails.
+   * Any other value normalizes to 'chromium'. Applies to the stealth path only —
+   * the pooled fast path is unaffected.
+   *
+   * Defaults to the BUNDLED engine so every install renders through the same
+   * pinned browser. Launching whatever build happens to be on the host makes
+   * behaviour vary per machine for no measured anti-bot gain — the levers that
+   * actually decide a bot-wall outcome measured as classifier + IP, not browser
+   * identity. Opt in with WIGOLO_BROWSER_CHANNEL=auto.
+   */
+  browserChannel: 'auto' | 'chrome' | 'chromium';
+  /**
+   * When true, the DEDICATED stealth path launches with a visible-window
+   * (headful) browser for the strongest fingerprint. Default false: the stealth
+   * path uses the browser engine's windowless headless mode (headful-grade
+   * fingerprint, no visible window) so a background server never pops a window.
+   * Enable only on a machine with a display (or CI with a virtual display).
+   * Applies to the stealth path only.
+   */
+  browserHeadful: boolean;
+  /**
+   * Force the WINDOWLESS path on the raw-CDP rung even when a display exists.
+   *
+   * That rung prefers a real headful browser (minimized) because headless is
+   * itself an automation tell; on a desktop that still starts a browser process
+   * owning a real — if never visible — window. Setting this launches headless
+   * instead and presents a coherent headless identity (user agent + client hints
+   * + device pixel ratio matching the SAME binary running headful), so no window
+   * is ever created. Off by default: headful remains the stronger posture, and
+   * this trades a little of that for a guarantee of no window.
+   */
+  browserWindowless: boolean;
+  /**
+   * Driver selection for the DEDICATED browser-tier stealth launch:
+   *   - 'playwright' : always use the standard browser driver; never load the
+   *                    hardened driver even when installed (DEFAULT).
+   *   - 'auto'       : use the driver-hardened stealth launcher (patches the
+   *                    CDP `Runtime.enable`-class automation leak at the driver
+   *                    level) WHEN its optional package + browser are present;
+   *                    otherwise fall back to the standard browser driver.
+   *   - 'patchright' : same as 'auto'.
+   * Only affects the dedicated stealth launch. The pooled fast path and the
+   * firefox/webkit engines are unaffected (the hardened driver is Chromium-only).
+   * Any other value normalizes to 'playwright'.
+   *
+   * Defaults to the STANDARD driver. The hardened driver resolves a browser
+   * revision it neither installs nor owns, and the launch path has no fallback:
+   * once the hardened launcher is selected, every launch attempt goes through it
+   * (a failed `channel:'chrome'` probe still retries on the SAME launcher), so a
+   * driver that imports but cannot launch hard-fails the fetch rather than
+   * degrading. Nothing asserts that its expected browser revision stays aligned
+   * with the standard driver's. Opt in with WIGOLO_STEALTH_DRIVER=auto.
+   */
+  stealthDriver: 'auto' | 'patchright' | 'playwright';
+  /**
+   * Opt-in HUMAN-LIKE INTERACTION layer on the browser tier. 2026 anti-bot
+   * walls (Cloudflare, DataDome) score SESSION BEHAVIOR — mouse movement,
+   * scroll, timing — not just fingerprint/TLS. When engaged, a bounded,
+   * dependency-free behavioral pass (curved mouse traversal + small randomized
+   * scroll + randomized delays, hard time-capped) runs on the browser tier
+   * AFTER navigation settles and BEFORE content extraction.
+   *   - 'off'  : never engage; browser fetches pay zero behavioral cost
+   *              (DEFAULT).
+   *   - 'auto' : engage ONLY on the anti-bot / stealth escalation path — a
+   *              benign, non-escalated browser fetch does NOT pay the cost.
+   *   - 'on'   : engage on every browser fetch.
+   * Any other value normalizes to 'off' (the safe default).
+   *
+   * Defaults OFF. The pass is reactive (escalation path only), so it never
+   * slows a successful fetch — but it does add ~1.2s to one that ends up
+   * blocked anyway, and behavioural interaction did not measure as a lever that
+   * changes a bot-wall outcome (passive render sufficed). Opt in with
+   * WIGOLO_HUMANIZE=auto.
+   */
+  humanize: 'off' | 'auto' | 'on';
+  /**
+   * "Hardcore" umbrella preset. When `'on'`, a pure resolver flips the anti-bot
+   * / solve knobs to their most aggressive settings (stealth on, chrome channel,
+   * headful, patchright driver, humanize on, cdpDirect auto, autoPass/aiSolve/
+   * humanSolve on, raised challenge timeout) — UNLESS an individual knob was
+   * explicitly provided (env or persisted). Precedence: explicit knob > hardcore
+   * preset > default. `'off'` (default) leaves every knob at its own default.
+   * Any other value normalizes to `'off'`. WIGOLO_HARDCORE.
+   */
+  hardcore: 'off' | 'on';
+  /**
+   * Automated interactive-challenge pass (trusted-input gesture on a checkbox /
+   * Turnstile widget). 'off' (DEFAULT) | 'auto' (engage on the escalation path)
+   * | 'on'. Any other value normalizes to 'off'. WIGOLO_AUTO_PASS.
+   *
+   * Defaults OFF. The rung only runs on a fetch that already hit a challenge, so
+   * it never slows a successful one, but it adds ~3s to a fetch that ends up
+   * blocked anyway and has no measured win. Opt in with WIGOLO_AUTO_PASS=auto.
+   */
+  autoPass: 'off' | 'auto' | 'on';
+  /**
+   * Raw control-plane fetch rung (Layer-B, P0-gated). 'off' (DEFAULT) | 'auto'
+   * (engage on escalation when a real installed browser is present) | 'on'. Any
+   * other value normalizes to 'off'. WIGOLO_CDP_DIRECT.
+   */
+  cdpDirect: 'off' | 'auto' | 'on';
+  /**
+   * In-band vision solve for visible-image challenges. Off by default (pointing
+   * a model at a security-control captcha may breach a provider AUP; opt-in +
+   * labeled). 'off' (DEFAULT) | 'auto' | 'on'. Any other value normalizes to
+   * 'off'. WIGOLO_AI_SOLVE.
+   */
+  aiSolve: 'off' | 'auto' | 'on';
+  /** Bounded vision-solve attempts (each = one vision call). Clamped to >= 1.
+   * Default 2. WIGOLO_AI_SOLVE_MAX_ATTEMPTS. */
+  aiSolveMaxAttempts: number;
+  /**
+   * Human-solve last rung. Engages ONLY with consent + a visible surface; a hard
+   * no-op on headless/hosted. 'off' (DEFAULT) | 'auto' | 'on'. Any other value
+   * normalizes to 'off'. WIGOLO_HUMAN_SOLVE.
+   */
+  humanSolve: 'off' | 'auto' | 'on';
+  /** Poll budget (ms) for the human-solve rung. Default 120000.
+   * WIGOLO_HUMAN_SOLVE_MS. */
+  humanSolveTimeoutMs: number;
+  /** Explicit consent gate for the human-solve rung. Default false.
+   * WIGOLO_HUMAN_SOLVE_CONSENT. */
+  humanSolveConsent: boolean;
+  /**
+   * Opt-in hosted-CDP (Bright-Data-style) websocket endpoint. When set, an
+   * escape rung connects over this CDP endpoint (built-in IP + solver +
+   * fingerprint server-side) instead of launching locally. Credential-gated,
+   * keychain-backed (denylisted so it never persists cleartext). `null` (default)
+   * leaves the rung off. WIGOLO_SCRAPING_BROWSER_WSS.
+   */
+  scrapingBrowserWss: string | null;
+  /**
+   * Opt-in Reddit OAuth app client id (non-secret). Paired with
+   * `redditClientSecret`, enables the credential-gated Reddit OAuth-API fetch
+   * path: when both are present AND a fetch targets a Reddit URL, the router
+   * fetches via the official API instead of hitting the IP-reputation block.
+   * `null` (default) leaves the path off — Reddit fetches go through the normal
+   * ladder (which honestly hits the block). WIGOLO_REDDIT_CLIENT_ID.
+   */
+  redditClientId: string | null;
+  /**
+   * Opt-in Reddit OAuth app client SECRET. Keychain-backed: added to
+   * SETTINGS_SECRETS_DENYLIST so it is never persisted to config.json in
+   * cleartext; the config resolve path recomposes it from the OS keychain (or
+   * reads it from WIGOLO_REDDIT_CLIENT_SECRET). `null` when unset.
+   */
+  redditClientSecret: string | null;
+  /**
+   * User-agent Reddit requires on both the token and data requests. Non-secret.
+   * Defaults to a generic capability-clean UA. WIGOLO_REDDIT_USER_AGENT.
+   */
+  redditUserAgent: string;
   /** Browser fingerprint profile passed to the TLS-impersonation backend. */
   tlsBrowser: string;
   /** Successes required before a domain is auto-promoted to TLS-first routing. */
@@ -222,6 +407,35 @@ function envInt(
   return fallback;
 }
 
+function envFloat(
+  key: string,
+  fallback: number,
+  settings: Record<string, unknown>,
+  settingsKey?: string,
+): number {
+  const envVal = process.env[key];
+  if (envVal !== undefined) {
+    const parsed = parseFloat(envVal);
+    return isNaN(parsed) ? fallback : parsed;
+  }
+  const sk = settingsKey ?? key;
+  const persisted = settings[sk];
+  if (typeof persisted === 'number' && !isNaN(persisted)) return persisted;
+  return fallback;
+}
+
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
+}
+
+// The cooldown factor multiplies the per-domain wait on an anti-bot block. A
+// factor <= 1 would leave pace unchanged (=1) or, if the decay ever divides by
+// it, degenerate. Floor it at 1 so a misconfigured value never disables the
+// adaptive cooldown.
+function atLeast1(n: number): number {
+  return n >= 1 ? n : 1;
+}
+
 function envIntArray(
   key: string,
   fallback: number[],
@@ -254,6 +468,66 @@ function envBool(
   const persisted = settings[sk];
   if (typeof persisted === 'boolean') return persisted;
   return fallback;
+}
+
+/**
+ * True when a knob was EXPLICITLY provided — an env var is present OR the
+ * persisted `settings` map carries its key. Used by the hardcore preset to
+ * honour the precedence rule (explicit knob > hardcore preset > default): a
+ * preset value is only applied to knobs the operator did not set themselves.
+ */
+function isExplicit(envKey: string, settingsKey: string, settings: Record<string, unknown>): boolean {
+  return process.env[envKey] !== undefined || settings[settingsKey] !== undefined;
+}
+
+/**
+ * The knobs the hardcore preset flips, each with the env + persisted key that
+ * marks it "explicitly set". Kept as data so `applyHardcorePreset` stays a pure,
+ * exhaustively-tested transform. NOT included: `proxyBypassOnChallenge` — its
+ * default is already `true`, so a preset entry would be a no-op the resolver
+ * test would falsely assert (spec §3.7 / review A4).
+ */
+interface HardcoreKnob {
+  envKey: string;
+  settingsKey: string;
+  apply: (cfg: Config) => void;
+}
+
+const HARDCORE_KNOBS: HardcoreKnob[] = [
+  { envKey: 'WIGOLO_STEALTH', settingsKey: 'stealth', apply: (c) => { c.stealth = 'on'; } },
+  { envKey: 'WIGOLO_BROWSER_CHANNEL', settingsKey: 'browserChannel', apply: (c) => { c.browserChannel = 'chrome'; } },
+  { envKey: 'WIGOLO_BROWSER_HEADFUL', settingsKey: 'browserHeadful', apply: (c) => { c.browserHeadful = true; } },
+  { envKey: 'WIGOLO_STEALTH_DRIVER', settingsKey: 'stealthDriver', apply: (c) => { c.stealthDriver = 'patchright'; } },
+  { envKey: 'WIGOLO_HUMANIZE', settingsKey: 'humanize', apply: (c) => { c.humanize = 'on'; } },
+  { envKey: 'WIGOLO_CDP_DIRECT', settingsKey: 'cdpDirect', apply: (c) => { c.cdpDirect = 'auto'; } },
+  { envKey: 'WIGOLO_AUTO_PASS', settingsKey: 'autoPass', apply: (c) => { c.autoPass = 'on'; } },
+  { envKey: 'WIGOLO_AI_SOLVE', settingsKey: 'aiSolve', apply: (c) => { c.aiSolve = 'on'; } },
+  { envKey: 'WIGOLO_HUMAN_SOLVE', settingsKey: 'humanSolve', apply: (c) => { c.humanSolve = 'on'; } },
+];
+
+/** Minimum challenge-completion budget the hardcore preset guarantees (ms). */
+export const HARDCORE_CHALLENGE_COMPLETION_MIN_MS = 30000;
+
+/**
+ * Apply the hardcore preset in place. When `cfg.hardcore === 'on'`, flip each
+ * preset knob to its aggressive value UNLESS the operator explicitly set that
+ * knob (env or persisted). Also raise the challenge-completion budget to at
+ * least the hardcore floor without ever lowering a caller-supplied larger value.
+ *
+ * Pure w.r.t. the passed `settings` snapshot + current `process.env`; a no-op
+ * when hardcore is off. Exported for direct unit testing.
+ */
+export function applyHardcorePreset(cfg: Config, settings: Record<string, unknown>): void {
+  if (cfg.hardcore !== 'on') return;
+  for (const knob of HARDCORE_KNOBS) {
+    if (!isExplicit(knob.envKey, knob.settingsKey, settings)) knob.apply(cfg);
+  }
+  // Raise the challenge-completion budget to the hardcore floor, but never lower
+  // an explicit/default value the caller already set higher.
+  cfg.challengeCompletionTimeoutMs = Math.max(
+    cfg.challengeCompletionTimeoutMs,
+    HARDCORE_CHALLENGE_COMPLETION_MIN_MS,
+  );
 }
 
 /**
@@ -293,6 +567,31 @@ function resolveCredentialUrl(raw: string | null, settingsKey: string): string |
   const stored = readCredentialFromKeychain(credentialKeychainUser(settingsKey));
   if (!stored) return raw;
   return recomposeWithUserinfo(raw, stored);
+}
+
+/**
+ * Resolve a plain-string secret (no URL wrapper): env var > OS keychain entry
+ * stored under `credentialKeychainUser(settingsKey)`. The value is NEVER read
+ * from persisted config.json (the denylist strips it on the write path), so a
+ * disk config never holds the cleartext secret. `null` when unset everywhere.
+ */
+function resolveKeychainSecret(envKey: string, settingsKey: string): string | null {
+  const envVal = process.env[envKey];
+  if (envVal !== undefined && envVal !== '') return envVal;
+  return readCredentialFromKeychain(credentialKeychainUser(settingsKey));
+}
+
+/** Default user-agent for the opt-in Reddit OAuth-API path. Generic +
+ * capability-clean; overridable via WIGOLO_REDDIT_USER_AGENT. */
+export const DEFAULT_REDDIT_USER_AGENT = 'web:wigolo:v1.0 (web intelligence agent)';
+
+/**
+ * True when the opt-in Reddit OAuth-API path is fully configured: both the
+ * client id and the (keychain-backed) client secret are present. When false the
+ * router never routes to the API — Reddit fetches use the normal ladder.
+ */
+export function redditApiConfigured(cfg: Config = getConfig()): boolean {
+  return !!cfg.redditClientId && !!cfg.redditClientSecret;
 }
 
 let cachedConfig: Config | null = null;
@@ -349,8 +648,12 @@ export function getConfig(): Config {
     crawlDelayMs: envInt('CRAWL_DELAY_MS', 500, settings, 'crawlDelayMs'),
     crawlPrivateConcurrency: envInt('CRAWL_PRIVATE_CONCURRENCY', 10, settings, 'crawlPrivateConcurrency'),
     crawlPrivateDelayMs: envInt('CRAWL_PRIVATE_DELAY_MS', 0, settings, 'crawlPrivateDelayMs'),
+    crawlJitterPct: clamp01(envFloat('WIGOLO_CRAWL_JITTER_PCT', 0.3, settings, 'crawlJitterPct')),
+    crawlCooldownFactor: atLeast1(envFloat('WIGOLO_CRAWL_COOLDOWN_FACTOR', 2, settings, 'crawlCooldownFactor')),
+    crawlCooldownMaxMs: envInt('WIGOLO_CRAWL_COOLDOWN_MAX_MS', 30000, settings, 'crawlCooldownMaxMs'),
     useProxy: envBool('USE_PROXY', false, settings, 'useProxy'),
     proxyUrl: resolveCredentialUrl(envStr('PROXY_URL', null, settings, 'proxyUrl'), 'proxyUrl'),
+    proxyBypassOnChallenge: envBool('WIGOLO_PROXY_BYPASS_ON_CHALLENGE', false, settings, 'proxyBypassOnChallenge'),
     solverUrl: resolveCredentialUrl(
       envStr('WIGOLO_SOLVER_URL', null, settings, 'solverUrl'),
       'solverUrl',
@@ -441,12 +744,61 @@ export function getConfig(): Config {
       const raw = (envStr('WIGOLO_STEALTH', 'auto', settings, 'stealth') ?? 'auto').toLowerCase();
       return raw === 'off' || raw === 'on' ? (raw as 'off' | 'on') : 'auto';
     })(),
+    browserChannel: (() => {
+      const raw = (envStr('WIGOLO_BROWSER_CHANNEL', 'chromium', settings, 'browserChannel') ?? 'chromium').toLowerCase();
+      return raw === 'chrome' || raw === 'auto' ? (raw as 'chrome' | 'auto') : 'chromium';
+    })(),
+    browserHeadful: envBool('WIGOLO_BROWSER_HEADFUL', false, settings, 'browserHeadful'),
+    browserWindowless: envBool('WIGOLO_BROWSER_WINDOWLESS', false, settings, 'browserWindowless'),
+    stealthDriver: (() => {
+      const raw = (envStr('WIGOLO_STEALTH_DRIVER', 'playwright', settings, 'stealthDriver') ?? 'playwright').toLowerCase();
+      return raw === 'patchright' || raw === 'auto'
+        ? (raw as 'patchright' | 'auto')
+        : 'playwright';
+    })(),
+    humanize: (() => {
+      const raw = (envStr('WIGOLO_HUMANIZE', 'off', settings, 'humanize') ?? 'off').toLowerCase();
+      return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
+    })(),
+    hardcore: (() => {
+      const raw = (envStr('WIGOLO_HARDCORE', 'off', settings, 'hardcore') ?? 'off').toLowerCase();
+      return raw === 'on' ? 'on' : 'off';
+    })(),
+    autoPass: (() => {
+      const raw = (envStr('WIGOLO_AUTO_PASS', 'off', settings, 'autoPass') ?? 'off').toLowerCase();
+      return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
+    })(),
+    cdpDirect: (() => {
+      const raw = (envStr('WIGOLO_CDP_DIRECT', 'off', settings, 'cdpDirect') ?? 'off').toLowerCase();
+      return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
+    })(),
+    aiSolve: (() => {
+      const raw = (envStr('WIGOLO_AI_SOLVE', 'off', settings, 'aiSolve') ?? 'off').toLowerCase();
+      return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
+    })(),
+    aiSolveMaxAttempts: atLeast1(envInt('WIGOLO_AI_SOLVE_MAX_ATTEMPTS', 2, settings, 'aiSolveMaxAttempts')),
+    humanSolve: (() => {
+      const raw = (envStr('WIGOLO_HUMAN_SOLVE', 'off', settings, 'humanSolve') ?? 'off').toLowerCase();
+      return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
+    })(),
+    humanSolveTimeoutMs: envInt('WIGOLO_HUMAN_SOLVE_MS', 120000, settings, 'humanSolveTimeoutMs'),
+    humanSolveConsent: envBool('WIGOLO_HUMAN_SOLVE_CONSENT', false, settings, 'humanSolveConsent'),
+    scrapingBrowserWss: resolveCredentialUrl(
+      envStr('WIGOLO_SCRAPING_BROWSER_WSS', null, settings, 'scrapingBrowserWss'),
+      'scrapingBrowserWss',
+    ),
     // The TLS-impersonation backend accepts a `<browser>_<version>` profile
     // string and forwards it into a Rust napi binding. Passing an unvalidated
     // value risks a panic / abort in native code if the env var is a typo
     // (`chrme_142`) or hostile input. Restrict to the documented wreq-js
     // browser families; on mismatch we warn (to stderr via the logger) and
     // fall back to the safe default.
+    redditClientId: envStr('WIGOLO_REDDIT_CLIENT_ID', null, settings, 'redditClientId'),
+    // Keychain-backed secret — resolved from env or OS keychain, never from
+    // the (denylist-stripped) config.json.
+    redditClientSecret: resolveKeychainSecret('WIGOLO_REDDIT_CLIENT_SECRET', 'redditClientSecret'),
+    redditUserAgent:
+      envStr('WIGOLO_REDDIT_USER_AGENT', null, settings, 'redditUserAgent') ?? DEFAULT_REDDIT_USER_AGENT,
     tlsBrowser: validateTlsBrowser(envStr('WIGOLO_TLS_BROWSER', null, settings, 'tlsBrowser'), 'chrome_142'),
     tlsSuccessThreshold: envInt('WIGOLO_TLS_SUCCESS_THRESHOLD', 3, settings, 'tlsSuccessThreshold'),
     tlsDomains: (() => {
@@ -458,6 +810,11 @@ export function getConfig(): Config {
         .filter((s) => s.length > 0);
     })(),
   };
+
+  // Apply the hardcore umbrella preset last: it flips the anti-bot / solve
+  // knobs to their aggressive values, but only for knobs the operator did not
+  // explicitly set (precedence: explicit knob > hardcore preset > default).
+  applyHardcorePreset(cachedConfig, settings);
 
   return cachedConfig;
 }

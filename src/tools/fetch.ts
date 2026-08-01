@@ -263,13 +263,27 @@ export async function handleFetch(
     // stealth mode can return a StageError (e.g., playwright_not_installed,
     // playwright_fetch_failed). Surface it directly.
     if ('error' in raw && typeof (raw as { error?: unknown }).error === 'string') {
-      const stageErr = raw as unknown as { error: string; error_reason?: string; stage?: string; hint?: string };
+      const stageErr = raw as unknown as { error: string; error_reason?: string; stage?: string; hint?: string; http_status?: number; statusCode?: number; challenge_class?: FetchOutput['challenge_class']; solve_method?: FetchOutput['solve_method'] };
+      // A StageError carries its upstream status as `http_status` (see StageError
+      // in types.ts); some raw fetch shapes use `statusCode`. Read whichever is a
+      // number so a blocked_by_challenge status reaches the crawl cooldown.
+      const stageStatus = typeof stageErr.http_status === 'number'
+        ? stageErr.http_status
+        : (typeof stageErr.statusCode === 'number' ? stageErr.statusCode : undefined);
       return {
         ok: false,
         error: stageErr.error,
         error_reason: stageErr.error_reason ?? stageErr.error,
         stage: stageErr.stage ?? 'fetch',
+        // Surface the upstream status when the stage error carries one (e.g. an
+        // anti-bot 403/429) so the crawl limiter can adapt pace. Never invented:
+        // stage errors without a known status (SSRF/validation) stay unset.
+        ...(stageStatus !== undefined ? { http_status: stageStatus } : {}),
         ...(stageErr.hint ? { hint: stageErr.hint } : {}),
+        // Solve-ladder provenance on a blocked_by_challenge stage error — the
+        // classified challenge class + a null solve method (honest ceiling).
+        ...(stageErr.challenge_class !== undefined ? { challenge_class: stageErr.challenge_class } : {}),
+        ...(stageErr.solve_method !== undefined ? { solve_method: stageErr.solve_method } : {}),
       };
     }
 
@@ -288,6 +302,7 @@ export async function handleFetch(
         error: `http_${raw.statusCode}`,
         error_reason: `Upstream returned HTTP ${raw.statusCode}${snippet ? `: ${snippet}` : ''}`,
         stage: 'fetch',
+        ...(typeof raw.statusCode === 'number' ? { http_status: raw.statusCode } : {}),
         hint: raw.statusCode === 404
           ? 'Check the URL — file/branch may have been removed or renamed'
           : 'Retry later or check upstream status',
@@ -401,6 +416,11 @@ export async function handleFetch(
       ...(extraction.site_data_blocked
         ? { fetch_failed: extraction.site_data_blocked }
         : {}),
+      // Solve-ladder provenance from the browser tier when a challenge was
+      // detected on this fetch (e.g. a challenge the ladder cleared to content).
+      // Absent on plain fetches that never hit a challenge.
+      ...(raw.challenge_class !== undefined ? { challenge_class: raw.challenge_class } : {}),
+      ...(raw.solve_method !== undefined ? { solve_method: raw.solve_method } : {}),
     };
 
     capAuxFields(out, input.max_content_chars);
