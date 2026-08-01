@@ -18,9 +18,11 @@
 // the human module itself hard-no-ops on missing consent / surface, so gating
 // here on the `humanSolve` knob alone is safe.
 //
-// Deferred rungs (NOT wired this build): the raw control-plane rung and the
-// opt-in hosted paid rung are CEO GO-gated / opt-in and stay dark — no slot is
-// called here.
+// Rungs the LADDER does not own: the raw control-plane rung (cdp-direct) and the
+// hosted scraping-browser rung are both wired, but at the BROWSER POOL level —
+// cdp-direct runs before the pool ever navigates, and the hosted rung replaces
+// the local launch. Neither is a slot in this sequence, so nothing is called for
+// them here. Both are opt-in and off by default.
 
 import type { ChallengeClass, SolveMethod } from '../types.js';
 import type { ClearanceCookie } from './challenge-completion.js';
@@ -112,9 +114,10 @@ export async function runSolveLadder(opts: SolveLadderOptions): Promise<SolveLad
     if (signal?.aborted) throw signal.reason;
   }
 
-  // Deferred rungs (dark this build): raw control-plane rung (CEO GO-gated) and
-  // the opt-in hosted paid rung slot here between the automated rungs and human.
-  // They are intentionally NOT called — see cdp-direct.ts / scraping-browser.ts.
+  // The raw control-plane and hosted scraping-browser rungs are deliberately
+  // absent from this sequence: the browser pool engages them around the whole
+  // navigation, not as a step between the automated rungs and human. See
+  // cdp-direct.ts / scraping-browser.ts and their call sites in browser-pool.ts.
 
   // human is the LAST rung for any solvable class. The human module hard-no-ops
   // on missing consent / visible surface, so gating on the knob alone is safe.

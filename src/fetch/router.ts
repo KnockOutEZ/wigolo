@@ -35,8 +35,7 @@ import {
   CLEARANCE_COOKIE_NAME,
   clearanceCookieValue,
   isClearanceFresh,
-  uaMatchesTier,
-  routeMatchesClearance,
+  isClearanceReusable,
   parsedClearanceCookie,
   type ClearanceTier,
 } from './clearance-reuse.js';
@@ -568,18 +567,22 @@ export class SmartRouter {
       return null;
     }
     if (!stored) return null;
-    if (!isClearanceFresh(stored, Date.now())) {
+    // Expiry is checked here rather than left to the composite below because it
+    // is the only gate with a SIDE EFFECT: a dead cookie is purged so it is not
+    // replayed next time. Every other gate is a pure refusal.
+    const now = Date.now();
+    if (!isClearanceFresh(stored, now)) {
       try { this.clearanceStore.clear(host); } catch { /* best-effort */ }
       return null;
     }
-    if (!uaMatchesTier(stored.ua, tier)) return null;
-    // Route-identity gate (P6 physics): a cf_clearance is bound to the
-    // {IP + UA + TLS} of the egress it was solved on (FlareSolverr #871). The
-    // current route is `proxyUrl ?? 'direct'`; a mismatch hard-refuses reuse but
-    // does NOT clear — the clearance may still be valid for its own route.
+    // The remaining gates (UA-presentable by this tier, route-identity matched,
+    // carries a real cf_clearance) live in ONE composite predicate so a caller
+    // cannot accidentally skip one. Route identity matters because a
+    // cf_clearance is bound to the {IP + UA + TLS} of the egress it was solved
+    // on (FlareSolverr #871): a mismatch hard-refuses reuse but does NOT clear —
+    // the clearance may still be valid for its own route.
     const currentRoute = getConfig().proxyUrl ?? 'direct';
-    if (!routeMatchesClearance(stored.solvedRoute, currentRoute)) return null;
-    if (clearanceCookieValue(stored.cookie) == null) return null;
+    if (!isClearanceReusable(stored, tier, currentRoute, now)) return null;
     return stored;
   }
 
