@@ -527,8 +527,20 @@ const REAL_FORM_PATTERN = /<form[\s>][\s\S]*?<(?:input|button|select|textarea)[\
 // Approximate the visible text length of an HTML body: strip script/style and
 // tags, collapse whitespace. Cheap and bounded — the caller only cares whether
 // the result is tiny (interstitial) or substantial (real page).
-function approxVisibleTextLength(html: string): number {
-  const slice = html.length > 32768 ? html.slice(0, 32768) : html;
+/**
+ * Approximate rendered-text length.
+ *
+ * Bounded to the first 32KB by DEFAULT, which is correct for the interstitial
+ * detectors (`isNearEmptyBody`, `isChallengeSkeleton`): a challenge shell is
+ * tiny, so a leading slice sees all of it and a huge real document is not worth
+ * scanning in full.
+ *
+ * `whole: true` measures the ENTIRE document, which the density rule needs — a
+ * ratio computed on a leading slice is meaningless, because any modern page
+ * opens with 32KB+ of head assets carrying no text.
+ */
+function approxVisibleTextLength(html: string, opts?: { whole?: boolean }): number {
+  const slice = !opts?.whole && html.length > 32768 ? html.slice(0, 32768) : html;
   const stripped = slice
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -587,8 +599,13 @@ const WALL_MAX_TEXT_DENSITY = 0.05;
  */
 export function isLowContentDensity(html: string | null | undefined): boolean {
   if (!html || html.length < WALL_MIN_HTML_BYTES) return false;
-  const slice = html.length > 32768 ? html.slice(0, 32768) : html;
-  return approxVisibleTextLength(slice) / slice.length < WALL_MAX_TEXT_DENSITY;
+  // Measured over the WHOLE document, deliberately NOT a leading slice. Any
+  // modern page opens with 32KB+ of <head> scripts and stylesheets carrying
+  // almost no text, so judging density on a prefix calls a large REAL page
+  // empty and relabels a genuine 403 as a bot wall. Mirrors the same rule in
+  // challenge-classify.ts, which documents the walmart case (405KB page: <600
+  // visible chars in its first 32KB, 2,777 overall).
+  return approxVisibleTextLength(html, { whole: true }) / html.length < WALL_MAX_TEXT_DENSITY;
 }
 
 export function isChallengeSkeleton(html: string | null | undefined): boolean {
