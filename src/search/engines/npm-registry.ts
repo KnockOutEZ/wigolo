@@ -30,6 +30,11 @@ function asString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
 
+// npm's /-/v1/search endpoint caps the `size` parameter at 250; larger values
+// are silently truncated server-side. Cap the request and enforce the caller's
+// requested limit locally so results never exceed maxResults.
+const MAX_NPM_PAGE_SIZE = 250;
+
 // npm's public package-search API: free, no key, returns name/version/
 // description/date/publisher for matching packages. Adds a canonical
 // JavaScript-package-registry signal to the code vertical — useful when a
@@ -45,7 +50,7 @@ export class NpmRegistryEngine implements SearchEngine {
 
     const params = new URLSearchParams({
       text: query,
-      size: String(maxResults),
+      size: String(Math.min(maxResults, MAX_NPM_PAGE_SIZE)),
     });
 
     const url = `https://registry.npmjs.org/-/v1/search?${params}`;
@@ -61,7 +66,7 @@ export class NpmRegistryEngine implements SearchEngine {
     if (!response.ok) throw new Error(`npm registry returned ${response.status}`);
 
     const data = (await response.json()) as NpmSearchResponse;
-    return this.parseObjects(data.objects ?? []);
+    return this.parseObjects((data.objects ?? []).slice(0, maxResults));
   }
 
   private parseObjects(objects: NpmSearchObject[]): RawSearchResult[] {
