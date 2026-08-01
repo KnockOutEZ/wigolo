@@ -46,18 +46,19 @@ describe('the suite is pinned to the standard browser driver', () => {
   });
 
   it('a test that wants the hardened driver must opt in explicitly', async () => {
-    // Opting in is a per-test env override + an injected mock — never the
-    // ambient default. Proves the opt-in path still works.
-    const previous = process.env.WIGOLO_STEALTH_DRIVER;
+    // Opting in is an injected mock, never the ambient default. The reset lives
+    // in `finally`: if the assertion throws, an override left in place would
+    // leak into every later test and defeat the pin this whole file exists to
+    // hold. (No env save/restore here — this test never writes the var, and
+    // restoring an `undefined` would store the STRING "undefined".)
+    const { _setStealthDriverForTests } = await import('../../../src/fetch/stealth.js');
+    const hardened = { launch: vi.fn() };
+    _setStealthDriverForTests(hardened as never);
     try {
-      const { _setStealthDriverForTests } = await import('../../../src/fetch/stealth.js');
-      const hardened = { launch: vi.fn() };
-      _setStealthDriverForTests(hardened as never);
       const resolved = await resolveStealthLauncher('chromium', 'auto', { launch: vi.fn() } as never);
       expect(resolved).toBe(hardened);
-      _setStealthDriverForTests(undefined);
     } finally {
-      process.env.WIGOLO_STEALTH_DRIVER = previous;
+      _setStealthDriverForTests(undefined);
     }
   });
 });

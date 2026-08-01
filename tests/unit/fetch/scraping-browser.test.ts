@@ -41,21 +41,21 @@ const CRED_WSS = 'wss://user-abc123:secret-token@brd.superproxy.io:9222';
 
 describe('connectScrapingBrowser — OFF by default', () => {
   it('returns null and never calls the connector when wss is null', async () => {
-    const connect = vi.fn<Parameters<CdpConnector>, ReturnType<CdpConnector>>();
+    const connect = vi.fn<CdpConnector>();
     const out = await connectScrapingBrowser({ wss: null, connect });
     expect(out).toBeNull();
     expect(connect).not.toHaveBeenCalled();
   });
 
   it('returns null and never calls the connector when wss is undefined', async () => {
-    const connect = vi.fn<Parameters<CdpConnector>, ReturnType<CdpConnector>>();
+    const connect = vi.fn<CdpConnector>();
     const out = await connectScrapingBrowser({ wss: undefined, connect });
     expect(out).toBeNull();
     expect(connect).not.toHaveBeenCalled();
   });
 
   it('returns null and never calls the connector when wss is empty', async () => {
-    const connect = vi.fn<Parameters<CdpConnector>, ReturnType<CdpConnector>>();
+    const connect = vi.fn<CdpConnector>();
     const out = await connectScrapingBrowser({ wss: '', connect });
     expect(out).toBeNull();
     expect(connect).not.toHaveBeenCalled();
@@ -64,7 +64,7 @@ describe('connectScrapingBrowser — OFF by default', () => {
 
 describe('connectScrapingBrowser — scheme validation', () => {
   it('refuses http:// (connector not called, warns)', async () => {
-    const connect = vi.fn<Parameters<CdpConnector>, ReturnType<CdpConnector>>();
+    const connect = vi.fn<CdpConnector>();
     const { logger, lines } = makeCapturingLogger();
     const out = await connectScrapingBrowser({
       wss: 'http://user:pass@brd.superproxy.io:9222',
@@ -77,7 +77,7 @@ describe('connectScrapingBrowser — scheme validation', () => {
   });
 
   it('refuses ftp:// (connector not called, warns)', async () => {
-    const connect = vi.fn<Parameters<CdpConnector>, ReturnType<CdpConnector>>();
+    const connect = vi.fn<CdpConnector>();
     const { logger, lines } = makeCapturingLogger();
     const out = await connectScrapingBrowser({
       wss: 'ftp://brd.superproxy.io/thing',
@@ -90,7 +90,7 @@ describe('connectScrapingBrowser — scheme validation', () => {
   });
 
   it('refuses a non-URL string (connector not called)', async () => {
-    const connect = vi.fn<Parameters<CdpConnector>, ReturnType<CdpConnector>>();
+    const connect = vi.fn<CdpConnector>();
     const out = await connectScrapingBrowser({ wss: 'not a url', connect });
     expect(out).toBeNull();
     expect(connect).not.toHaveBeenCalled();
@@ -175,7 +175,7 @@ describe('connectScrapingBrowser — credential redaction & transparency', () =>
 
 describe('connectScrapingBrowser — abort & timeout', () => {
   it('returns null when the signal is already aborted (connector not called)', async () => {
-    const connect = vi.fn<Parameters<CdpConnector>, ReturnType<CdpConnector>>();
+    const connect = vi.fn<CdpConnector>();
     const controller = new AbortController();
     controller.abort();
     const out = await connectScrapingBrowser({ wss: CRED_WSS, connect, signal: controller.signal });
