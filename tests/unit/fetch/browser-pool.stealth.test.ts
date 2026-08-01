@@ -123,16 +123,24 @@ function resetState() {
 
 describe('browser-pool dedicated stealth context', () => {
   beforeEach(() => {
+    // Restore the suite-wide pin (tests/setup.ts) so a test that opted into
+    // 'auto' cannot leave the NEXT test resolving the real optional driver.
+    process.env.WIGOLO_STEALTH_DRIVER = 'playwright';
     resetConfig();
     resetState();
   });
   afterEach(async () => {
+    process.env.WIGOLO_STEALTH_DRIVER = 'playwright';
     resetConfig();
     _setStealthDriverForTests(undefined);
-    delete process.env.WIGOLO_STEALTH_DRIVER;
   });
 
   it('dedicated stealth launch uses the driver-hardened launcher when present (auto)', async () => {
+    // The suite pins WIGOLO_STEALTH_DRIVER=playwright so no test accidentally
+    // loads the REAL optional driver (tests/setup.ts). This test is the explicit
+    // opt-in: switch to 'auto' and inject a MOCK hardened launcher.
+    process.env.WIGOLO_STEALTH_DRIVER = 'auto';
+    resetConfig();
     // Simulate the optional driver being installed. Its launcher reuses the
     // playwright-mock browser factory so the rest of the fetch flow is intact.
     const hardenedLaunch = vi.fn().mockImplementation(() => Promise.resolve(makeBrowser()));
