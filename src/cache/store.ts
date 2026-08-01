@@ -817,6 +817,34 @@ export function getDomainClearance(host: string): DomainClearance | null {
 }
 
 /** Store (or replace) the anti-bot clearance for a host. */
+/**
+ * The stable, NON-SECRET identity of an egress route.
+ *
+ * `solvedRoute` is supplied as `proxyUrl ?? 'direct'`, and proxyUrl is resolved
+ * through `resolveCredentialUrl` — so it can carry inline `user:pass@`. The
+ * reuse gate only ever needs EQUALITY of the route, never the original string,
+ * and persisted-config.ts already treats credential-bearing URLs as secrets
+ * that must not reach disk in cleartext. Strip the userinfo down to
+ * `scheme//host:port` so the cache DB never holds a credential, while two
+ * different proxies stay distinguishable.
+ *
+ * Lives here, at the disk boundary, so no caller can bypass it; the comparison
+ * side imports the same function so both ends agree.
+ */
+export function routeIdentity(route: string | undefined | null): string {
+  if (route == null) return 'direct';
+  const trimmed = route.trim();
+  if (trimmed.length === 0 || trimmed === 'direct') return 'direct';
+  try {
+    const u = new URL(trimmed);
+    return `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ''}`;
+  } catch {
+    // Not a URL (a label, or malformed). It carries no userinfo to leak, so
+    // keep it as-is rather than collapsing distinct routes into 'direct'.
+    return trimmed;
+  }
+}
+
 export function recordDomainClearance(host: string, clearance: DomainClearance): void {
   try {
     const db = getDatabase();
@@ -839,7 +867,7 @@ export function recordDomainClearance(host: string, clearance: DomainClearance):
       clearance.ua,
       clearance.tier,
       clearance.expiresAt,
-      clearance.solvedRoute ?? 'direct',
+      routeIdentity(clearance.solvedRoute),
     );
   } catch (err) {
     log.warn('recordDomainClearance failed', { host, error: err instanceof Error ? err.message : String(err) });

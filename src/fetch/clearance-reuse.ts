@@ -1,4 +1,5 @@
 import { currentStealthChromeMajor } from './stealth.js';
+import { routeIdentity } from '../cache/store.js';
 import type { DomainClearance } from '../cache/store.js';
 
 /**
@@ -61,9 +62,11 @@ export function isClearanceFresh(clearance: DomainClearance, now: number): boole
  * existed.
  */
 export function normalizeClearanceRoute(route: string | undefined | null): string {
-  if (route == null) return 'direct';
-  const trimmed = route.trim();
-  return trimmed.length === 0 ? 'direct' : trimmed;
+  // Same reduction the store applies on write, so a clearance minted while the
+  // configured proxyUrl carried credentials still matches the current route
+  // derived from that same raw URL. Using a different rule on either side would
+  // silently kill reuse for every proxy user.
+  return routeIdentity(route);
 }
 
 /**
