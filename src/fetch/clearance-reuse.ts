@@ -1,4 +1,4 @@
-import { STEALTH_CHROME_MAJOR } from './stealth.js';
+import { currentStealthChromeMajor } from './stealth.js';
 import type { DomainClearance } from '../cache/store.js';
 
 /**
@@ -19,10 +19,17 @@ export type ClearanceTier = 'browser' | 'tls' | 'http';
 /**
  * Whether a clearance minted against `clearanceUa` may be presented by `tier`.
  *
- * The browser tier renders through Chromium advertising a fixed Chrome identity
- * (the pinned {@link STEALTH_CHROME_MAJOR}); it CANNOT present a Firefox/Safari
- * UA, and a Chrome UA of a different major is a fingerprint mismatch a bot wall
- * will reject. So the browser tier only accepts a Chrome-major-matching UA.
+ * The browser tier renders through Chromium advertising ONE Chrome identity; it
+ * CANNOT present a Firefox/Safari UA, and a Chrome UA of a different major is a
+ * fingerprint mismatch a bot wall will reject. So the browser tier only accepts
+ * a Chrome-major-matching UA.
+ *
+ * The major compared against is {@link currentStealthChromeMajor} — the browser
+ * the tier ACTUALLY launched, falling back to the shared pin before any launch.
+ * It must not be the static pin: the tier mints clearances under the real
+ * installed browser's major (T1-C), so pinning here would refuse every
+ * clearance the tier itself just minted on any machine whose Chrome differs
+ * from the pin.
  *
  * The header tiers (tls/http) inject the cookie as a `Cookie:` header rather
  * than re-presenting the minting UA byte-for-byte; cross-tier reuse there is
@@ -33,7 +40,7 @@ export function uaMatchesTier(clearanceUa: string, tier: ClearanceTier): boolean
   if (tier !== 'browser') return true;
   const m = clearanceUa.match(/Chrome\/(\d+)\./);
   if (!m) return false;
-  return Number(m[1]) === STEALTH_CHROME_MAJOR;
+  return Number(m[1]) === currentStealthChromeMajor();
 }
 
 /**

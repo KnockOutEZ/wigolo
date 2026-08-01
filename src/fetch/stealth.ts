@@ -22,6 +22,27 @@ const log = createLogger('fetch');
  */
 export const STEALTH_CHROME_MAJOR = 142;
 
+/**
+ * The Chrome major the dedicated stealth path ACTUALLY launched this process,
+ * or null before the first launch. The tier no longer advertises the pin: it
+ * reads `browser.version()` and mints clearances under that real major (T1-C),
+ * so the reuse gate has to compare against the same value or every clearance
+ * minted on a machine whose Chrome differs from the pin is unreplayable.
+ */
+let launchedChromeMajor: number | null = null;
+
+/** Record the major of the browser the stealth path just launched. `null`
+ *  resets to the pin (used by tests and by a failed launch). */
+export function recordLaunchedChromeMajor(major: number | null): void {
+  launchedChromeMajor = major;
+}
+
+/** The Chrome major the browser tier will present: the real launched one when
+ *  known, else the shared pin. */
+export function currentStealthChromeMajor(): number {
+  return launchedChromeMajor ?? STEALTH_CHROME_MAJOR;
+}
+
 /** Default desktop viewport for the dedicated stealth context. */
 const STEALTH_VIEWPORT = { width: 1280, height: 800 } as const;
 
