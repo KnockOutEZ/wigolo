@@ -145,6 +145,19 @@ export async function connectScrapingBrowser(
  * Race a connect promise against a timeout and an abort signal. Rejects on
  * whichever fires first so a hung / slow hosted endpoint never blocks forever.
  */
+/** Best-effort close of a browser nobody is waiting for any more. Never throws
+ *  — it runs detached from any caller, so a rejection here has nowhere to go. */
+async function closeStrandedBrowser(value: unknown): Promise<void> {
+  const closable = value as { close?: () => Promise<void> | void } | null;
+  if (!closable || typeof closable.close !== 'function') return;
+  try {
+    await closable.close();
+    defaultLogger.debug('scraping-browser: closed a connection that arrived after timeout/abort');
+  } catch {
+    /* nothing further we can do from here */
+  }
+}
+
 function withTimeoutAndAbort<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -181,7 +194,14 @@ function withTimeoutAndAbort<T>(
 
     promise.then(
       (value) => {
-        if (settled) return;
+        if (settled) {
+          // The connect won the race against nothing — we already rejected on
+          // timeout/abort and the caller has moved on. Nobody will ever close
+          // this browser, and it is a HOSTED one: left open it keeps running
+          // (and billing) on the provider's side until their own idle timeout.
+          void closeStrandedBrowser(value);
+          return;
+        }
         settled = true;
         cleanup();
         resolve(value);
