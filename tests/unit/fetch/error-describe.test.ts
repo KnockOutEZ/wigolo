@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { describeFetchError } from '../../../src/fetch/error-describe.js';
+import { ChallengeBlockedError } from '../../../src/fetch/browser-pool.js';
 
 function withCause(message: string, code: string): Error {
   const cause = new Error(message);
@@ -33,5 +34,13 @@ describe('describeFetchError', () => {
 
   it('handles non-Error throwables', () => {
     expect(describeFetchError('plain string')).toEqual({ reason: 'plain string' });
+  });
+
+  it('describes a ChallengeBlockedError in capability language with the use_auth hint', () => {
+    const err = new ChallengeBlockedError('https://blocked.example/');
+    const described = describeFetchError(err);
+    // Capability language — names the site's bot protection, no vendor jargon.
+    expect(described.reason.toLowerCase()).toMatch(/bot protection|challenge page/);
+    expect(described.hint).toMatch(/use_auth/);
   });
 });

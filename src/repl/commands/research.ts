@@ -2,6 +2,7 @@ import type { ResearchInput, ResearchOutput } from '../../types.js';
 import type { ParsedArgs } from '../parser.js';
 import type { ReplDeps } from './types.js';
 import { handleResearch } from '../../tools/research.js';
+import { coerceFlags, mergeBridged } from '../../cli/flag-bridge.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('repl');
@@ -24,18 +25,39 @@ export async function executeResearch(args: ParsedArgs, deps: ReplDeps): Promise
 
     const input: ResearchInput = { question };
 
-    if (args.flags.depth) {
-      input.depth = args.flags.depth as ResearchInput['depth'];
-    }
+    const consumed = new Set<string>();
     if (args.flags['max-sources']) {
       input.max_sources = parseInt(args.flags['max-sources'], 10);
+      consumed.add('max-sources');
     }
     if (args.flags.domains) {
       input.include_domains = args.flags.domains.split(',').map(d => d.trim());
+      consumed.add('domains');
     }
     if (args.flags['exclude-domains']) {
       input.exclude_domains = args.flags['exclude-domains'].split(',').map(d => d.trim());
+      consumed.add('exclude-domains');
     }
+
+    // --depth (enum) and everything else validate through the schema bridge.
+    const rest: Record<string, string> = {};
+    for (const [k, v] of Object.entries(args.flags)) {
+      if (!consumed.has(k)) rest[k] = v;
+    }
+    const bridged = coerceFlags('research', rest);
+    if (bridged.errors.length > 0) {
+      return {
+        report: '',
+        citations: [],
+        sources: [],
+        sub_queries: [],
+        depth: input.depth ?? 'standard',
+        total_time_ms: 0,
+        sampling_supported: false,
+        error: bridged.errors[0],
+      };
+    }
+    mergeBridged(input, bridged.input);
 
     log.debug('executing research command', { question, flags: args.flags });
     const r = await handleResearch(input, deps.engines, deps.router, deps.backendStatus);

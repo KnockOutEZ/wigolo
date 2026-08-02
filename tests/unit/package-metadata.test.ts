@@ -58,6 +58,14 @@ describe('package.json — MCP registry metadata', () => {
     expect(files).toContain('SKILL.md');
   });
 
+  it('files array packages skills/ and the legacy-hash manifest, not assets/skills', () => {
+    pkg = JSON.parse(readFileSync(PKG_PATH, 'utf-8'));
+    const files = pkg.files as string[];
+    expect(files).toContain('skills');
+    expect(files).toContain('assets/legacy-skill-hashes.json');
+    expect(files).not.toContain('assets/skills');
+  });
+
   it('has mcp configuration field', () => {
     pkg = JSON.parse(readFileSync(PKG_PATH, 'utf-8'));
     const mcp = pkg.mcp as Record<string, unknown>;

@@ -1,15 +1,15 @@
 import { spawnSync, spawn } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdtempSync, rmdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdirSync, mkdtempSync, rmdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { resolvePythonExe } from '../python-env.js';
 import { probeBrowser } from '../fetch/browser-probe.js';
 import { getBootstrapState, type BootstrapState } from '../searxng/bootstrap.js';
 import { isProcessAlive } from '../searxng/process.js';
+import { resolveContainerCli } from '../searxng/docker.js';
 import { getConfig } from '../config.js';
-import { getRerankProvider } from '../providers/rerank-provider.js';
-import { getEmbedProvider } from '../providers/embed-provider.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
 import { getCacheStats } from '../cache/store.js';
 import { getBackgroundIndexQueue } from '../embedding/background-queue.js';
@@ -21,7 +21,7 @@ import {
 } from '../search/core/engine-health.js';
 import type { EngineEntry } from '../search/core/engine-base.js';
 import { isTelemetryEnabled } from './telemetry.js';
-import { allProviders, providerEnvVar, selectProvider } from '../integrations/cloud/llm/select.js';
+import { allProviders, providerEnvVar, providerKeyFromEnv, selectProvider } from '../integrations/cloud/llm/select.js';
 import { resolveModel, providerDefaultModel, providerModelEnvVar } from '../integrations/cloud/llm/model-select.js';
 import { readKey } from '../security/key-store.js';
 import { setLogSuppression } from '../logger.js';
@@ -29,6 +29,11 @@ import { isLlmConfigured } from '../integrations/cloud/llm/run.js';
 import { resolveCustomBackend, pickOllamaModel } from '../integrations/cloud/llm/custom-backend.js';
 import { probeOllama, resolveProbeBaseUrl, maybeOllamaHint, DEFAULT_PROBE_TIMEOUT_MS } from './ollama-probe.js';
 import { resolveLocalModelTier, type LocalModelTier } from '../integrations/cloud/llm/local-tier.js';
+import { installBrowser, installEmbeddings, wipeSearxngState } from './warmup.js';
+import { resetBreakers, getBreakerSnapshot } from '../search/core/engine-base.js';
+import { searxngConfigured } from '../searxng/enabled.js';
+import { readAdminToken } from '../daemon/admin-token.js';
+import { getVersion } from './help.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
 
@@ -68,10 +73,14 @@ function checkPython(): { ok: boolean; version?: string } {
   return { ok: true, version: match?.[1] };
 }
 
-function checkDocker(): { ok: boolean; version?: string } {
-  const r = spawnSync('docker', ['--version'], { encoding: 'utf-8' });
+function checkDocker(): { ok: boolean; version?: string; cli?: string } {
+  // Any docker-compatible CLI works — see resolveContainerCli() in
+  // searxng/docker.ts (Docker Desktop, plain Docker Engine, or Podman).
+  const cli = resolveContainerCli();
+  if (!cli) return { ok: false };
+  const r = spawnSync(cli, ['--version'], { encoding: 'utf-8' });
   if (r.status !== 0 || r.error) return { ok: false };
-  return { ok: true, version: (r.stdout || '').trim() };
+  return { ok: true, version: (r.stdout || '').trim(), cli };
 }
 
 async function checkPlaywright(): Promise<{ installed: boolean; version?: string; browsers: { chromium: boolean; chromiumHeadlessShell: boolean; firefox: boolean; webkit: boolean }; chromiumPath?: string; chromiumOnDisk: boolean; chromiumError?: string }> {
@@ -114,42 +123,81 @@ async function checkPlaywright(): Promise<{ installed: boolean; version?: string
   };
 }
 
-async function checkReranker(
-): Promise<{ installed: boolean; modelId?: string; rerankMs?: number; reason?: string }> {
+// Passive cache-presence probe for the cross-encoder ML reranker. The model
+// caches under `dataDir/transformers` — a DIFFERENT directory than the
+// fastembed embedding model — so this targets that dir. Loading the model
+// downloads it on a fresh dir, so doctor must NOT load it: the download belongs
+// to `--fix`/warmup only. lazy ≠ blind — a populated-but-corrupt dir is out of
+// scope here (loads surface at first use), presence is the diagnosis signal.
+function checkReranker(
+  dataDir: string,
+): { installed: boolean; reason?: string } {
+  const cacheDir = join(dataDir, 'transformers');
+  if (!existsSync(cacheDir)) {
+    return { installed: false, reason: 'lazy — downloads on first use' };
+  }
   try {
-    const provider = await getRerankProvider();
-    const docs = [
-      'React Server Components render on the server.',
-      'Next.js App Router uses RSC by default.',
-      'Bananas are a popular fruit.',
-      'TypeScript adds static types to JavaScript.',
-      'The capital of France is Paris.',
-    ].map((text, i) => ({ id: String(i), text }));
-    const t0 = Date.now();
-    await provider.rerank('react server components', docs);
-    const rerankMs = Date.now() - t0;
-    return { installed: true, modelId: provider.modelId, rerankMs };
+    const entries = readdirSync(cacheDir);
+    if (entries.length === 0) {
+      return { installed: false, reason: 'lazy — downloads on first use' };
+    }
+    return { installed: true };
   } catch (err) {
-    return { installed: false, reason: err instanceof Error ? err.message : 'rerank failed' };
+    return { installed: false, reason: err instanceof Error ? err.message : 'unknown error' };
   }
 }
 
 function checkFastembedCache(dataDir: string): { installed: boolean; reason?: string } {
   const cacheDir = join(dataDir, 'fastembed');
   if (!existsSync(cacheDir)) {
-    return { installed: false, reason: 'cache dir missing — run `wigolo warmup --embeddings`' };
+    return { installed: false, reason: 'lazy — downloads on first use' };
   }
   try {
     // First-run downloads create a model subdir with ONNX assets. Empty cache
     // dir means the model has not been fetched yet.
     const entries = readdirSync(cacheDir);
     if (entries.length === 0) {
-      return { installed: false, reason: 'cache empty — run `wigolo warmup --embeddings`' };
+      return { installed: false, reason: 'lazy — downloads on first use' };
     }
     return { installed: true };
   } catch (err) {
     return { installed: false, reason: err instanceof Error ? err.message : 'unknown error' };
   }
+}
+
+/**
+ * Cheap data-dir writability probe: create + delete a temp marker file in the
+ * data dir. Surfaces the Docker bind-mount EACCES class at diagnosis time
+ * rather than deep in a tool call. Returns an actionable reason naming the dir
+ * and the fix on failure.
+ */
+function checkDataDirWritable(dataDir: string): { writable: boolean; reason?: string } {
+  const marker = join(dataDir, `.wigolo-doctor-write-probe-${process.pid}`);
+  try {
+    // Doctor can be the first command on a fresh install — the data dir may not
+    // exist yet. Creating it is part of "is this dir usable" and is idempotent.
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(marker, 'ok');
+    try { unlinkSync(marker); } catch { /* best-effort cleanup */ }
+    return { writable: true };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    const detail = `data dir not writable: ${dataDir}${code ? ` (${code})` : ''} — fix directory permissions (Docker: bind-mount as the container uid)`;
+    return { writable: false, reason: detail };
+  }
+}
+
+/**
+ * Detect the install channel WITHOUT loading anything heavy. `binary` when
+ * running inside a packaged single-executable snapshot (argv[1] / __dirname
+ * resolves under a /snapshot path, the @yao-pkg/pkg convention); otherwise the
+ * npm-or-source path. Kept deliberately one-line-cheap for support triage.
+ */
+function detectInstallChannel(): 'binary' | 'npm-or-source' {
+  const snapshot = typeof (process as { pkg?: unknown }).pkg !== 'undefined'
+    || process.argv[1]?.includes('/snapshot/')
+    || fileURLToPath(import.meta.url).includes('/snapshot/');
+  return snapshot ? 'binary' : 'npm-or-source';
 }
 
 /**
@@ -379,6 +427,218 @@ function humanRetry(nextRetryAt?: string): string {
 export interface DoctorOptions {
   /** Run a live search probe against every registered engine. */
   probeEngines?: boolean;
+  /** Attempt an automatic repair for every failed check with a known fix. */
+  fix?: boolean;
+  /** Emit a machine-readable JSON report on stdout (logs still go to stderr). */
+  json?: boolean;
+}
+
+/** One diagnosable component in the doctor report. `fixable` marks checks that
+ * `--fix` knows how to repair. */
+export interface DoctorCheck {
+  name: string;
+  status: 'ok' | 'failed' | 'skipped';
+  fixable: boolean;
+  detail?: string;
+}
+
+/** Before/after record for one repair `--fix` attempted. */
+export interface DoctorFix {
+  name: string;
+  action: string;
+  before: 'ok' | 'failed' | 'skipped';
+  after: 'ok' | 'failed' | 'skipped';
+  ok: boolean;
+  error?: string;
+}
+
+/** The machine-readable doctor report emitted under `--json`. */
+export interface DoctorReport {
+  status: 'ok' | 'degraded';
+  exitCode: number;
+  /** Running package version — for cross-channel support triage. */
+  version: string;
+  /** How wigolo was installed: `binary` (packaged executable) or `npm-or-source`. */
+  install_channel: 'binary' | 'npm-or-source';
+  checks: DoctorCheck[];
+  fixes: DoctorFix[];
+}
+
+/** Whether the daemon appears to be running (a live admin token + a reachable
+ * /health). Used to decide whether to ALSO POST the breaker reset to the daemon
+ * (its breaker Map is separate from this CLI process's). */
+async function daemonReachable(dataDir: string): Promise<boolean> {
+  const token = readAdminToken(dataDir);
+  if (!token) return false;
+  try {
+    const cfg = getConfig();
+    const resp = await fetch(`http://${cfg.daemonHost}:${cfg.daemonPort}/health`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    return resp.ok || resp.status === 503;
+  } catch {
+    return false;
+  }
+}
+
+/** POST the authed breaker reset to a running daemon. Best-effort: a failure is
+ * reported but never turns doctor into a hard failure (the in-process reset
+ * already happened). */
+async function postDaemonBreakerReset(dataDir: string): Promise<{ ok: boolean; error?: string }> {
+  const token = readAdminToken(dataDir);
+  if (!token) return { ok: false, error: 'no admin token on disk' };
+  try {
+    const cfg = getConfig();
+    const resp = await fetch(`http://${cfg.daemonHost}:${cfg.daemonPort}/admin/reset-breakers`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!resp.ok) return { ok: false, error: `daemon returned HTTP ${resp.status}` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Collect the checks `--fix` knows how to repair. Each returns `ok`/`failed`
+ * with a fixable flag. Pure snapshots — no side effects — so they can be run
+ * before AND after a repair to build the before/after record.
+ *
+ * Exported as the shared cold-check surface: `init` reuses it after a full
+ * warmup to append a doctor summary (component presence, browser installed,
+ * data-dir writable, breakers) WITHOUT a live network verify. Every check here
+ * is presence/snapshot-only — none downloads a model or spawns a browser — so
+ * it is safe to run on a `--no-warmup` init too (writes zero bytes).
+ */
+export async function runDoctorColdChecks(dataDir: string): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+
+  const pw = await checkPlaywright();
+  checks.push({
+    name: 'browser',
+    status: pw.browsers.chromium ? 'ok' : 'failed',
+    fixable: true,
+    detail: pw.browsers.chromium ? 'chromium launchable' : 'chromium missing',
+  });
+
+  const emb = checkFastembedCache(dataDir);
+  checks.push({
+    name: 'embeddings',
+    status: emb.installed ? 'ok' : 'failed',
+    fixable: true,
+    detail: emb.installed ? 'model cached' : (emb.reason ?? 'model missing'),
+  });
+
+  // searxng bootstrap: only a fixable failure when the sidecar is opted into.
+  // On core (default) a failed/absent state is EXPECTED, not a failure — report
+  // it skipped and non-fixable so the wipe never runs (D9 hard gate).
+  const configured = searxngConfigured(getConfig());
+  const state = getBootstrapState(dataDir) as BootstrapState | null;
+  const bootstrapFailed = state?.status === 'failed';
+  const staleLock = detectStaleSearxngLock(dataDir);
+  if (!configured) {
+    checks.push({ name: 'searxng', status: 'skipped', fixable: false, detail: 'sidecar not configured (core backend)' });
+  } else if (bootstrapFailed || staleLock) {
+    checks.push({ name: 'searxng', status: 'failed', fixable: true, detail: bootstrapFailed ? 'bootstrap failed' : 'stale lock/port files' });
+  } else {
+    checks.push({ name: 'searxng', status: 'ok', fixable: true, detail: state?.status ?? 'ready' });
+  }
+
+  const openBreakers = getBreakerSnapshot().filter((b) => b.state !== 'closed');
+  checks.push({
+    name: 'breakers',
+    status: openBreakers.length > 0 ? 'failed' : 'ok',
+    fixable: true,
+    detail: openBreakers.length > 0 ? `${openBreakers.length} open/half-open` : 'all closed',
+  });
+
+  // Data-dir writability — non-fixable (a permissions problem doctor can't
+  // repair) but a real failure that must surface at diagnosis time.
+  const wr = checkDataDirWritable(dataDir);
+  checks.push({
+    name: 'data-dir',
+    status: wr.writable ? 'ok' : 'failed',
+    fixable: false,
+    detail: wr.writable ? `writable (${dataDir})` : (wr.reason ?? 'not writable'),
+  });
+
+  return checks;
+}
+
+/** Whether a stale searxng lock/port file is present (process dead / unparseable). */
+function detectStaleSearxngLock(dataDir: string): boolean {
+  const lockPath = join(dataDir, 'searxng.lock');
+  if (!existsSync(lockPath)) return existsSync(join(dataDir, 'searxng.port'));
+  try {
+    const lock = JSON.parse(readFileSync(lockPath, 'utf-8')) as { pid?: number };
+    return !(lock.pid && isProcessAlive(lock.pid));
+  } catch {
+    return true; // unparseable lock = stale
+  }
+}
+
+/**
+ * Run repairs for every failed, fixable check and return the before/after
+ * records. Re-checks after each repair so the report reflects the real
+ * post-repair state.
+ */
+async function applyDoctorFixes(dataDir: string, checks: DoctorCheck[]): Promise<DoctorFix[]> {
+  const fixes: DoctorFix[] = [];
+  const configured = searxngConfigured(getConfig());
+
+  for (const check of checks) {
+    if (check.status !== 'failed' || !check.fixable) continue;
+
+    if (check.name === 'browser') {
+      out(`[wigolo doctor] --fix: installing browser engine (chromium)...`);
+      const r = await installBrowser('chromium');
+      const after = (await checkPlaywright()).browsers.chromium ? 'ok' : 'failed';
+      fixes.push({ name: 'browser', action: 'installBrowser(chromium)', before: 'failed', after, ok: r.ok && after === 'ok', error: r.error });
+      out(`[wigolo doctor] --fix: browser ${after}`);
+    } else if (check.name === 'embeddings') {
+      out(`[wigolo doctor] --fix: downloading embeddings model...`);
+      const r = await installEmbeddings();
+      const after = checkFastembedCache(dataDir).installed ? 'ok' : 'failed';
+      fixes.push({ name: 'embeddings', action: 'installEmbeddings()', before: 'failed', after, ok: r.embeddings === 'ok' && after === 'ok', error: r.embeddingsError });
+      out(`[wigolo doctor] --fix: embeddings ${after}`);
+    } else if (check.name === 'searxng') {
+      // Hard gate: only wipe when the sidecar is opted into. On core this branch
+      // is unreachable (check is skipped/non-fixable) — belt-and-braces here.
+      if (!configured) continue;
+      out(`[wigolo doctor] --fix: wiping stale search-engine state...`);
+      wipeSearxngState(dataDir);
+      const staleAfter = detectStaleSearxngLock(dataDir);
+      const stateAfter = (getBootstrapState(dataDir) as BootstrapState | null)?.status;
+      // Wipe clears the locks; a failed bootstrap still needs a warmup, so the
+      // check may remain failed — report honestly.
+      const after: DoctorFix['after'] = !staleAfter && stateAfter !== 'failed' ? 'ok' : 'failed';
+      fixes.push({
+        name: 'searxng',
+        action: 'wipeSearxngState()',
+        before: 'failed',
+        after,
+        ok: after === 'ok',
+        error: after === 'failed' ? 'locks cleared; run `wigolo warmup --searxng` to re-bootstrap' : undefined,
+      });
+      out(`[wigolo doctor] --fix: search-engine state ${after === 'ok' ? 'cleared' : 'cleared (re-bootstrap needed)'}`);
+    } else if (check.name === 'breakers') {
+      out(`[wigolo doctor] --fix: resetting search-engine circuit breakers...`);
+      resetBreakers();
+      let error: string | undefined;
+      if (await daemonReachable(dataDir)) {
+        const daemonReset = await postDaemonBreakerReset(dataDir);
+        if (!daemonReset.ok) error = `daemon reset failed: ${daemonReset.error}`;
+        else out(`[wigolo doctor] --fix: daemon breakers reset via admin route`);
+      }
+      const after = getBreakerSnapshot().some((b) => b.state !== 'closed') ? 'failed' : 'ok';
+      fixes.push({ name: 'breakers', action: 'resetBreakers()', before: 'failed', after, ok: after === 'ok', error });
+      out(`[wigolo doctor] --fix: breakers ${after === 'ok' ? 'reset' : 'still open'}`);
+    }
+  }
+
+  return fixes;
 }
 
 export async function runDoctor(dataDir: string, opts?: DoctorOptions): Promise<number> {
@@ -395,16 +655,31 @@ export async function runDoctor(dataDir: string, opts?: DoctorOptions): Promise<
 
 async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<number> {
   let degraded = false;
+  // A degraded contributor doctor cannot repair (python + docker both missing).
+  // Kept separate so the --fix exit-code recompute can tell "unfixable failure
+  // remains" apart from the fixable browser/searxng contributions.
+  let nonFixableDegraded = false;
 
   out(`[wigolo doctor] Data dir:        ${dataDir}`);
+  const writable = checkDataDirWritable(dataDir);
+  if (writable.writable) {
+    out('  Writable:      yes');
+  } else {
+    out(`  Writable:      NO — ${writable.reason ?? 'not writable'}`);
+    degraded = true;
+    nonFixableDegraded = true;
+  }
   out('');
 
   const py = checkPython();
   const dk = checkDocker();
   out('[wigolo doctor] Runtime:');
   out(`  Python 3:      ${py.ok ? `available (${py.version ?? 'unknown'})` : 'not available'}`);
-  out(`  Docker:        ${dk.ok ? `available (${dk.version})` : 'not available'}`);
-  if (!py.ok && !dk.ok) degraded = true;
+  out(`  Docker:        ${dk.ok ? `available (${dk.cli}, ${dk.version})` : 'not available'}`);
+  // python/docker are prerequisites ONLY for the opt-in search-engine sidecar
+  // (bootstrap + --fix repair). On the default core backend their absence is
+  // healthy — same gate the searxng section and runDoctorColdChecks use.
+  if (searxngConfigured(getConfig()) && !py.ok && !dk.ok) { degraded = true; nonFixableDegraded = true; }
 
   out('');
   const pw = await checkPlaywright();
@@ -420,14 +695,22 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
     out(`  Chromium path: ${pw.chromiumPath}${onDiskNote}`);
   }
   if (!pw.browsers.chromium) {
-    if (pw.chromiumOnDisk && process.platform === 'linux') {
-      // Binary present but launch failed — on Linux this is almost always
-      // missing OS shared libs. Give the exact remediation command.
-      out('  Hint:          system libraries missing — run: sudo npx playwright install-deps chromium');
+    if (pw.chromiumOnDisk) {
+      // Binary present but launch failed — a broken install, NOT a fresh one.
+      // lazy ≠ blind: a corrupt browser degrades so the user acts on it.
+      if (process.platform === 'linux') {
+        out('  Hint:          system libraries missing — run: sudo npx playwright install-deps chromium');
+      } else {
+        out("  Hint:          on disk but will not launch — reinstall: 'npx playwright install chromium'");
+      }
+      // Fixable via reinstall, so leave nonFixableDegraded alone — a --fix run
+      // can still clear this.
+      degraded = true;
     } else {
-      out("  Hint:          run 'npx playwright install chromium' — JS-rendered pages will fail without it");
+      // Not on disk at all — lazily acquired on first fetch use. Absence at
+      // diagnosis time is expected on a fresh install, not a failure.
+      out('  Status:        lazy — downloads on first use (`wigolo warmup --browser` pre-caches)');
     }
-    degraded = true;
   }
 
   out('');
@@ -437,12 +720,11 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   out(`  tls_tier:      ${formatTlsTierLine(tlsCfg.tlsTier, tlsCfg.tlsBrowser, wreqAvailable)}`);
 
   out('');
-  const reranker = await checkReranker();
+  const reranker = checkReranker(dataDir);
   const embeddings = checkFastembedCache(dataDir);
   out('[wigolo doctor] Optional components:');
   if (reranker.installed) {
-    const timing = reranker.rerankMs !== undefined ? ` — 5-doc rerank ${reranker.rerankMs}ms` : '';
-    out(`  ML reranker:        installed (${reranker.modelId})${timing}`);
+    out(`  ML reranker:        installed (cross-encoder)`);
   } else {
     out(`  ML reranker:        not installed${reranker.reason ? ` (${reranker.reason})` : ''}`);
   }
@@ -458,7 +740,11 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   const active = selectProvider(process.env);
   for (const p of allProviders()) {
     const envVar = providerEnvVar(p);
-    const envSet = !!process.env[envVar];
+    // Alias-aware: accept the canonical var OR a back-compat alias (e.g. gemini's
+    // GOOGLE_API_KEY), matching how synthesis actually resolves the key — else
+    // doctor would report "no key" for a key that synthesis happily uses.
+    const envKey = providerKeyFromEnv(p, process.env);
+    const envSet = !!envKey;
     // Check keystore for this provider (async — use readKey)
     let keyLocation: 'keychain' | 'file' | 'env' | 'none' = 'none';
     let maskedKey: string | undefined;
@@ -469,13 +755,13 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
         maskedKey = maskApiKey(ksResult.value);
       } else if (envSet) {
         keyLocation = 'env';
-        maskedKey = maskApiKey(process.env[envVar] ?? '');
+        maskedKey = maskApiKey(envKey ?? '');
       }
     } catch {
       // keystore read failure — fall back to env-only display
       if (envSet) {
         keyLocation = 'env';
-        maskedKey = maskApiKey(process.env[envVar] ?? '');
+        maskedKey = maskApiKey(envKey ?? '');
       }
     }
     const configured = keyLocation !== 'none';
@@ -597,55 +883,61 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
     out(`  (engine probes failed: ${msg.slice(0, 80)})`);
   }
 
-  out('');
+  // The search-engine sidecar sections only apply when the sidecar backend is
+  // opted into. On the default core backend an absent bootstrap is EXPECTED,
+  // not a failure — skip the whole section (same gate runDoctorColdChecks
+  // uses at the top of this file) instead of degrading on a missing state.json.
   const state = getBootstrapState(dataDir) as BootstrapState | null;
-  out('[wigolo doctor] Search engine:');
-  if (!state) {
-    out('  status:        not bootstrapped — run `npx wigolo warmup`');
-    degraded = true;
-  } else if (state.status === 'ready') {
-    out(`  status:        ready`);
-    out(`  path:          ${state.searxngPath ?? 'unknown'}`);
-  } else {
-    out(`  status:        ${state.status}`);
-    if (state.attempts !== undefined) out(`  attempts:      ${state.attempts} / 3`);
-    if (state.lastAttemptAt) out(`  lastAttemptAt: ${state.lastAttemptAt}`);
-    if (state.nextRetryAt || state.status === 'failed') out(`  nextRetryAt:   ${humanRetry(state.nextRetryAt)}`);
-    if (state.lastError?.command) out(`  command:       ${state.lastError.command}`);
-    if (state.lastError?.exitCode !== undefined) out(`  exit code:     ${state.lastError.exitCode}`);
-    if (state.lastError?.message) out(`  message:       ${state.lastError.message}`);
-    if (state.lastError?.stderr) {
-      out('  stderr:');
-      for (const line of state.lastError.stderr.split('\n').slice(0, 20)) out(`    ${line}`);
-    }
-    degraded = true;
-  }
-
-  out('');
-  const lockPath = join(dataDir, 'searxng.lock');
-  if (existsSync(lockPath)) {
-    try {
-      const lock = JSON.parse(readFileSync(lockPath, 'utf-8')) as { pid?: number; port?: number };
-      if (lock.pid && isProcessAlive(lock.pid)) {
-        out(`[wigolo doctor] Search engine process:  running (pid ${lock.pid}, port ${lock.port ?? '?'})`);
-      } else {
-        out('[wigolo doctor] Search engine process:  stale lock (process exited) — will be cleaned on next start');
-      }
-    } catch {
-      out('[wigolo doctor] Search engine process:  lock file unparseable — will be cleaned on next start');
-    }
-  } else {
-    out('[wigolo doctor] Search engine process:  not running (starts on-demand with MCP server)');
-  }
-
-  if (state?.status === 'failed') {
+  if (searxngConfigured(getConfig())) {
     out('');
-    out('[wigolo doctor] Recovery:');
-    if (state.nextRetryAt) out(`  - Wait until next auto-retry (${humanRetry(state.nextRetryAt)}), or`);
-    out(`  - Force retry now: npx wigolo warmup --force`);
+    out('[wigolo doctor] Search engine:');
+    if (!state) {
+      out('  status:        not bootstrapped — run `npx wigolo warmup`');
+      degraded = true;
+    } else if (state.status === 'ready') {
+      out(`  status:        ready`);
+      out(`  path:          ${state.searxngPath ?? 'unknown'}`);
+    } else {
+      out(`  status:        ${state.status}`);
+      if (state.attempts !== undefined) out(`  attempts:      ${state.attempts} / 3`);
+      if (state.lastAttemptAt) out(`  lastAttemptAt: ${state.lastAttemptAt}`);
+      if (state.nextRetryAt || state.status === 'failed') out(`  nextRetryAt:   ${humanRetry(state.nextRetryAt)}`);
+      if (state.lastError?.command) out(`  command:       ${state.lastError.command}`);
+      if (state.lastError?.exitCode !== undefined) out(`  exit code:     ${state.lastError.exitCode}`);
+      if (state.lastError?.message) out(`  message:       ${state.lastError.message}`);
+      if (state.lastError?.stderr) {
+        out('  stderr:');
+        for (const line of state.lastError.stderr.split('\n').slice(0, 20)) out(`    ${line}`);
+      }
+      degraded = true;
+    }
+
+    out('');
+    const lockPath = join(dataDir, 'searxng.lock');
+    if (existsSync(lockPath)) {
+      try {
+        const lock = JSON.parse(readFileSync(lockPath, 'utf-8')) as { pid?: number; port?: number };
+        if (lock.pid && isProcessAlive(lock.pid)) {
+          out(`[wigolo doctor] Search engine process:  running (pid ${lock.pid}, port ${lock.port ?? '?'})`);
+        } else {
+          out('[wigolo doctor] Search engine process:  stale lock (process exited) — will be cleaned on next start');
+        }
+      } catch {
+        out('[wigolo doctor] Search engine process:  lock file unparseable — will be cleaned on next start');
+      }
+    } else {
+      out('[wigolo doctor] Search engine process:  not running (starts on-demand with MCP server)');
+    }
+
+    if (state?.status === 'failed') {
+      out('');
+      out('[wigolo doctor] Recovery:');
+      if (state.nextRetryAt) out(`  - Wait until next auto-retry (${humanRetry(state.nextRetryAt)}), or`);
+      out(`  - Force retry now: npx wigolo warmup --force`);
+    }
   }
 
-  await checkCoreEmbeddings();
+  checkCoreEmbeddings(dataDir);
   await checkSqliteVec(dataDir);
   checkCacheStats(dataDir);
   checkBackgroundQueue(dataDir);
@@ -663,20 +955,55 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
     }
   }
 
+  // --fix pass: repair every failed, fixable check, then recompute status from
+  // the post-fix fixable checks + the unfixable degraded contributor. Without
+  // --fix the original `degraded` verdict is authoritative (preserves the
+  // report-only exit-code contract).
+  let fixes: DoctorFix[] = [];
+  let fixableChecks = await runDoctorColdChecks(dataDir);
+  if (opts?.fix) {
+    out('');
+    fixes = await applyDoctorFixes(dataDir, fixableChecks);
+    if (fixes.length === 0) out('[wigolo doctor] --fix: nothing to repair');
+    // Re-collect so the report + status reflect the repaired state.
+    fixableChecks = await runDoctorColdChecks(dataDir);
+    const anyFixableStillFailed = fixableChecks.some((c) => c.status === 'failed');
+    degraded = nonFixableDegraded || anyFixableStillFailed;
+  }
+
+  const status: DoctorReport['status'] = degraded ? 'degraded' : 'ok';
+  const exitCode = degraded ? 1 : 0;
+
   out('');
   out(`[wigolo doctor] Overall: ${degraded ? 'DEGRADED' : 'OK'}`);
-  return degraded ? 1 : 0;
+
+  if (opts?.json) {
+    const report: DoctorReport = {
+      status,
+      exitCode,
+      version: getVersion(),
+      install_channel: detectInstallChannel(),
+      checks: fixableChecks,
+      fixes,
+    };
+    // Machine shape on stdout; the human diagnostic above stays on stderr.
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+  }
+
+  return exitCode;
 }
 
-async function checkCoreEmbeddings(): Promise<void> {
+// Passive cache-presence probe — reports whether the embedding model is on
+// disk WITHOUT loading it (loading downloads on a fresh dir). The download
+// belongs to `--fix`/warmup only. Mirrors checkFastembedCache's directory.
+function checkCoreEmbeddings(dataDir: string): void {
   out('');
   out('[wigolo doctor] Core embeddings:');
-  try {
-    const provider = await getEmbedProvider();
-    out(`  provider:      ready (fastembed ${provider.modelId}, dim=${provider.dim})`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    out(`  provider:      not ready (${msg.slice(0, 80)})`);
+  const cache = checkFastembedCache(dataDir);
+  if (cache.installed) {
+    out('  provider:      installed (fastembed BGE-small-en-v1.5)');
+  } else {
+    out('  provider:      not installed (lazy — downloads on first use)');
   }
 }
 
@@ -916,8 +1243,16 @@ export async function runDoctorAsChild(dataDir: string, opts?: DoctorOptions): P
   }
 
   // Inherit stdout, but pipe stderr so we can strip the cosmetic libc++ abort
-  // message that fires after the child's diagnostic has completed.
-  const childArgs = [entry, 'doctor', ...(opts?.probeEngines ? ['--probe-engines'] : [])];
+  // message that fires after the child's diagnostic has completed. --json writes
+  // its machine object to the child's stdout, which passes through via the
+  // inherited fd — so the JSON survives the child-process isolation path.
+  const childArgs = [
+    entry,
+    'doctor',
+    ...(opts?.probeEngines ? ['--probe-engines'] : []),
+    ...(opts?.fix ? ['--fix'] : []),
+    ...(opts?.json ? ['--json'] : []),
+  ];
   const code: number = await new Promise((resolve) => {
     const child = spawn(process.execPath, childArgs, {
       stdio: ['inherit', 'inherit', 'pipe'],

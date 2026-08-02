@@ -5,6 +5,20 @@ vi.mock('../../../src/fetch/auth.js', () => ({
   getAuthOptions: vi.fn(async () => null),
 }));
 
+// Browser-acquire mock — report the engine "ready" without a real install so
+// browser-tier paths reach the mocked browserPool. On a browserless CI runner
+// the real ensureBrowser() attempts an install and hangs past the test timeout.
+// Tests needing the "unavailable" branch spy on their own instance to override.
+vi.mock('../../../src/fetch/browser-acquire.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/fetch/browser-acquire.js')>();
+  return {
+    ...actual,
+    BrowserAcquirer: class {
+      ensureBrowser = vi.fn(async () => 'ready');
+    },
+  };
+});
+
 import { SmartRouter, type HttpClient, type BrowserPoolInterface, type TlsFetcher, type TlsRoutingPersistence } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 import type { TlsFetchResult } from '../../../src/fetch/tls-tier.js';
@@ -34,7 +48,7 @@ function makeBrowserResult(url = 'https://example.com/page'): RawFetchResult {
     html: FULL_HTML,
     contentType: 'text/html',
     statusCode: 200,
-    method: 'playwright',
+    method: 'browser',
     headers: {},
   };
 }
@@ -188,7 +202,7 @@ describe('SmartRouter — TLS tier', () => {
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(tlsFetcher).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
       // TLS returned anti-bot → no success recorded.
       expect(recordedDomains).not.toContain('hard.com');
     });
@@ -204,7 +218,7 @@ describe('SmartRouter — TLS tier', () => {
       vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(makeBrowserResult('https://hard.com/page'));
 
       const result = await router.fetch('https://hard.com/page');
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     });
 
@@ -218,7 +232,7 @@ describe('SmartRouter — TLS tier', () => {
       vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(makeBrowserResult('https://x.com/page'));
 
       const result = await router.fetch('https://x.com/page');
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
 
     it('uses TLS tier first when domain has prefer_tls_impersonation=1', async () => {

@@ -4,7 +4,8 @@ function log(msg: string): void {
   process.stderr.write(`[wigolo health] ${msg}\n`);
 }
 
-export async function runHealthCheck(): Promise<number> {
+export async function runHealthCheck(args: string[] = []): Promise<number> {
+  const json = args.includes('--json');
   const config = getConfig();
   const host = config.daemonHost;
   const port = config.daemonPort;
@@ -16,13 +17,26 @@ export async function runHealthCheck(): Promise<number> {
     });
 
     if (!response.ok) {
-      log(`Daemon returned HTTP ${response.status}`);
       const text = await response.text().catch(() => '');
+      if (json) {
+        // Best-effort parse the daemon body; fall back to a minimal shape.
+        let body: unknown;
+        try { body = JSON.parse(text); } catch { body = { status: 'down', http_status: response.status }; }
+        process.stdout.write(`${JSON.stringify(body)}\n`);
+        return 1;
+      }
+      log(`Daemon returned HTTP ${response.status}`);
       if (text) log(text);
       return 1;
     }
 
     const report = await response.json();
+
+    if (json) {
+      // Machine shape on stdout; the human summary stays on stderr.
+      process.stdout.write(`${JSON.stringify(report)}\n`);
+      return report.status === 'healthy' ? 0 : 1;
+    }
 
     log(`Status: ${report.status}`);
     log(`Search engine: ${report.searxng}`);
@@ -35,6 +49,11 @@ export async function runHealthCheck(): Promise<number> {
     return report.status === 'healthy' ? 0 : 1;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ status: 'down', error: message })}\n`);
+      return 1;
+    }
 
     if (message.includes('ECONNREFUSED') || message.includes('fetch failed') || message.includes('timed out')) {
       log(`Daemon is not running at ${host}:${port}`);

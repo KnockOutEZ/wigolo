@@ -23,6 +23,20 @@ vi.mock('../../../src/fetch/auth.js', () => ({
   getAuthOptions: vi.fn(async () => null),
 }));
 
+// Browser-acquire mock — report the engine "ready" without a real install so
+// browser-tier paths reach the mocked browserPool. On a browserless CI runner
+// the real ensureBrowser() attempts an install and hangs past the test timeout.
+// Tests needing the "unavailable" branch spy on their own instance to override.
+vi.mock('../../../src/fetch/browser-acquire.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/fetch/browser-acquire.js')>();
+  return {
+    ...actual,
+    BrowserAcquirer: class {
+      ensureBrowser = vi.fn(async () => 'ready');
+    },
+  };
+});
+
 import { SmartRouter, type HttpClient, type BrowserPoolInterface } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 
@@ -55,7 +69,7 @@ function makeBrowserResult(url = 'https://example.com/page'): RawFetchResult {
     html: SUBSTANTIVE_ARTICLE,
     contentType: 'text/html',
     statusCode: 200,
-    method: 'playwright',
+    method: 'browser',
     headers: {},
   };
 }
@@ -120,7 +134,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
       const result = await router.fetch('https://true-spa.example/');
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
 
     it('keeps HTTP path when <noscript> contains a "javascript" warning BUT the article body has 500+ chars of visible text', async () => {
@@ -174,7 +188,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
       const result = await router.fetch('https://empty.example/');
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
   });
 
@@ -202,7 +216,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
       });
       const result = await router.fetch('https://cf-protected.example/');
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
 
     it('escalates to Playwright on a 503 with a Cloudflare challenge body', async () => {
@@ -213,7 +227,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
       });
       const result = await router.fetch('https://cf-503.example/');
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
   });
 

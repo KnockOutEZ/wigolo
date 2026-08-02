@@ -14,7 +14,13 @@ import type { StudioHostHandlers } from './studio-dispatch.js';
 import type { StudioSessionsAccessor } from '../studio/session-drive.js';
 import { probeHealth } from './health-check.js';
 import { checkAuth, checkAuthSubprotocol, checkOriginHost } from '../studio/auth.js';
+import { getConfig } from '../config.js';
+import { searxngConfigured } from '../searxng/enabled.js';
 import { createLogger } from '../logger.js';
+import { ensureAdminToken, readAdminToken, tokenMatches } from './admin-token.js';
+import { resetBreakers, getBreakerSnapshot } from '../search/core/engine-base.js';
+import { resolveApiToken } from './rest/auth.js';
+import type { RestRouter } from './rest/router.js';
 
 export type UpgradeHandler = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
 
@@ -23,6 +29,26 @@ const log = createLogger('server');
 export interface DaemonAuthConfig {
   token: string;
   host: string;
+}
+
+/**
+ * Server-level slow-loris guards. Without these, a slow-drip client stays under
+ * the per-request byte cap yet holds a connection (and, since /v1 acquires a
+ * concurrency slot before the body read, a slot) for Node's ~300s default
+ * requestTimeout. These bounded defaults cut a slow body/headers off well
+ * before that while leaving legit large crawls-over-REST room. Both are
+ * env-overridable.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+const DEFAULT_HEADERS_TIMEOUT_MS = 60_000;
+
+function envTimeoutMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return fallback;
 }
 
 export interface DaemonOptions {
@@ -46,6 +72,17 @@ export interface DaemonOptions {
    * behavior is unchanged when this is absent.
    */
   mcpServerFactory?: () => Server;
+  /** Configured API token (null = open mode). Resolved by the CLI. */
+  apiToken?: string | null;
+  /** Operator opted into open remote access. */
+  allowUnauthenticated?: boolean;
+  /**
+   * The bind host the REST auth pipeline reasons about, independent of the
+   * actual TCP listen host. Defaults to `host`. Lets tests simulate a
+   * non-loopback bind (open-mode override / target-guard rows) without
+   * actually binding a public interface.
+   */
+  restBindHost?: string;
 }
 
 export class DaemonHttpServer {
@@ -66,6 +103,11 @@ export class DaemonHttpServer {
   private mcpRequestCount = 0;
   private studioHost: StudioHostHandlers | null = null;
   private studioSessions: StudioSessionsAccessor | null = null;
+  private readonly apiToken: string | null;
+  private readonly allowUnauthenticated: boolean;
+  private readonly restBindHost: string;
+  private restRouter: RestRouter | null = null;
+  private restRouterPromise: Promise<RestRouter> | null = null;
 
   // `options` is exposed readonly for observability/wiring assertions (e.g. confirming
   // the host enforces the same bearer it published to the handle). In-process only; the
@@ -77,6 +119,11 @@ export class DaemonHttpServer {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 0;
     this.onUpgrade = options.onUpgrade ?? null;
     this.mcpServerFactory = options.mcpServerFactory ?? null;
+    // The CLI resolves the token; fall back to env resolution so direct
+    // DaemonHttpServer construction (tests, embedders) still honors it.
+    this.apiToken = options.apiToken !== undefined ? options.apiToken : resolveApiToken();
+    this.allowUnauthenticated = options.allowUnauthenticated ?? false;
+    this.restBindHost = options.restBindHost ?? options.host;
   }
 
   /**
@@ -107,6 +154,70 @@ export class DaemonHttpServer {
     return this.mcpRequestCount;
   }
 
+  /**
+   * Lazily construct the REST router on first matching request. Nothing under
+   * `rest/` (including ajv) loads at boot, in stdio mode, or for /mcp-only use.
+   */
+  private async getRestRouter(): Promise<RestRouter> {
+    if (this.restRouter) return this.restRouter;
+    if (!this.restRouterPromise) {
+      this.restRouterPromise = (async () => {
+        const { RestRouter } = await import('./rest/router.js');
+        const router = new RestRouter({
+          subsystems: this.subsystems!,
+          bindHost: this.restBindHost,
+          token: this.apiToken,
+          allowUnauthenticated: this.allowUnauthenticated,
+        });
+        this.restRouter = router;
+        return router;
+      })();
+    }
+    return this.restRouterPromise;
+  }
+
+  /**
+   * Gate the MCP transport routes (/mcp, /sse, /messages). Returns true when the
+   * request was rejected (a response was written). A browser `Origin` is always
+   * rejected, including in token mode, so a page cannot drive the transport.
+   * In token mode the bearer token authorizes remote MCP clients, so Host is not
+   * restricted. In open mode, the loopback Host allowlist blocks DNS rebinding.
+   */
+  private mcpTransportRejected(req: IncomingMessage, res: ServerResponse): boolean {
+    if (req.headers.origin !== undefined) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: 'Forbidden: browser origin not allowed',
+        error_reason: 'origin_not_allowed',
+        hint: 'Browser-origin requests are not supported on the MCP transport. Use a server-side or CLI client.',
+      }));
+      return true;
+    }
+    if (this.apiToken) {
+      const auth = req.headers.authorization ?? '';
+      const provided = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : null;
+      if (tokenMatches(this.apiToken, provided)) return false;
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: 'Missing or invalid bearer token',
+        error_reason: 'unauthorized',
+        hint: 'Provide a valid "Authorization: Bearer <token>" header (set via WIGOLO_API_TOKEN).',
+      }));
+      return true;
+    }
+    if (this.isAllowedHost(req.headers.host)) return false;
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: false,
+      error: 'Forbidden: host not allowed',
+      error_reason: 'host_not_allowed',
+      hint: 'Request Host is not on the loopback allowlist.',
+    }));
+    return true;
+  }
+
   async start(): Promise<string> {
     this.startedAt = Date.now();
     this.stopped = false;
@@ -132,6 +243,17 @@ export class DaemonHttpServer {
       });
     }
 
+    // Admin control routes (breaker reset) are gated by a random bearer token
+    // written owner-only to disk at start. doctor --fix reads it back to
+    // authenticate. A fresh token per process invalidates any leaked prior one.
+    // NOTE: `bootstrapSearxng()` is NOT called here — it runs inside the
+    // full-daemon branch above, because studio-only mode has no subsystems.
+    try {
+      ensureAdminToken(getConfig().dataDir);
+    } catch (err) {
+      log.warn('Failed to write daemon admin token', { error: String(err) });
+    }
+
     this.httpServer = createServer((req, res) => {
       this.handleRequest(req, res).catch((err) => {
         log.error('Unhandled request error', { error: String(err) });
@@ -143,6 +265,10 @@ export class DaemonHttpServer {
     });
 
     this.httpServer.on('upgrade', (req, socket, head) => this.handleUpgrade(req, socket, head));
+
+    // Slow-loris guards (env-overridable). See DEFAULT_*_TIMEOUT_MS above.
+    this.httpServer.requestTimeout = envTimeoutMs('WIGOLO_SERVE_REQUEST_TIMEOUT_MS', DEFAULT_REQUEST_TIMEOUT_MS);
+    this.httpServer.headersTimeout = envTimeoutMs('WIGOLO_SERVE_HEADERS_TIMEOUT_MS', DEFAULT_HEADERS_TIMEOUT_MS);
 
     return new Promise<string>((resolve, reject) => {
       this.httpServer!.on('error', (err) => {
@@ -203,25 +329,46 @@ export class DaemonHttpServer {
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
+    // REST surface — lazily loaded so rest/ + ajv never touch the boot / stdio
+    // path. Delegated by prefix; the router owns method gating + auth.
+    if (
+      pathname.startsWith('/v1/') ||
+      pathname === '/openapi.json' ||
+      pathname === '/compat/firecrawl' ||
+      pathname.startsWith('/compat/firecrawl/')
+    ) {
+      const router = await this.getRestRouter();
+      return router.handle(req, res);
+    }
+
     if (pathname === '/mcp' && method === 'POST') {
+      if (this.mcpTransportRejected(req, res)) return;
       return this.handleStreamableHttpRequest(req, res);
     }
 
     if (pathname === '/mcp' && method === 'GET') {
+      if (this.mcpTransportRejected(req, res)) return;
       return this.handleStreamableHttpGet(req, res);
     }
 
     if (pathname === '/mcp' && method === 'DELETE') {
+      if (this.mcpTransportRejected(req, res)) return;
       return this.handleStreamableHttpDelete(req, res);
     }
 
     if (pathname === '/sse' && method === 'GET') {
+      if (this.mcpTransportRejected(req, res)) return;
       return this.handleSseRequest(req, res);
     }
 
     if (pathname === '/messages' && method === 'POST') {
+      if (this.mcpTransportRejected(req, res)) return;
       const sessionId = url.searchParams.get('sessionId');
       return this.handleSseMessageRequest(req, res, sessionId);
+    }
+
+    if (pathname === '/admin/reset-breakers' && method === 'POST') {
+      return this.handleAdminResetBreakers(req, res);
     }
 
     res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -295,6 +442,7 @@ export class DaemonHttpServer {
         browserPool: this.subsystems?.browserPool ?? null,
         startedAt: this.startedAt,
         cacheProbe: () => probeCacheDb(),
+        searxngConfigured: searxngConfigured(getConfig()),
       });
 
       const statusCode = report.status === 'down' ? 503 : 200;
@@ -305,6 +453,58 @@ export class DaemonHttpServer {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'down', error: String(err) }));
     }
+  }
+
+  /**
+   * Whether the request's Host header is on the allowlist: `localhost`,
+   * `127.0.0.1`, `[::1]`, or the daemon's configured host. Rejecting other
+   * Hosts blocks DNS-rebinding: a browser resolving an attacker domain to
+   * 127.0.0.1 sends the attacker's Host, not a loopback one.
+   */
+  private isAllowedHost(hostHeader: string | undefined): boolean {
+    if (!hostHeader) return false;
+    // Strip the :port suffix — but keep IPv6 brackets intact.
+    const host = hostHeader.startsWith('[')
+      ? hostHeader.slice(0, hostHeader.indexOf(']') + 1)
+      : hostHeader.split(':')[0];
+    const allow = new Set(['localhost', '127.0.0.1', '[::1]', '::1', this.host]);
+    return allow.has(host);
+  }
+
+  /**
+   * Reset all search-engine circuit breakers. Privileged control route:
+   *   1. Host allowlist (DNS-rebinding guard) — non-allowlisted → 403.
+   *   2. No `Origin` header allowed (browsers always set it; a CLI never does)
+   *      → 403. Runs before the token check so a browser page can't probe the
+   *      token's validity.
+   *   3. `Authorization: Bearer <token>` must match the on-disk admin token —
+   *      missing/wrong → 401.
+   * Loopback source IP is deliberately NOT trusted (cloudflared delivers remote
+   * requests from 127.0.0.1).
+   */
+  private handleAdminResetBreakers(req: IncomingMessage, res: ServerResponse): void {
+    const deny = (code: number, message: string): void => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: message }));
+    };
+
+    if (!this.isAllowedHost(req.headers.host)) {
+      return deny(403, 'Forbidden: host not allowed');
+    }
+    if (req.headers.origin !== undefined) {
+      return deny(403, 'Forbidden: browser origin not allowed on admin route');
+    }
+
+    const auth = req.headers.authorization ?? '';
+    const provided = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : null;
+    const expected = readAdminToken(getConfig().dataDir);
+    if (!tokenMatches(expected, provided)) {
+      return deny(401, 'Unauthorized');
+    }
+
+    resetBreakers();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ reset: true, breakers: getBreakerSnapshot() }));
   }
 
   private async handleStreamableHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {

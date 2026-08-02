@@ -16,6 +16,8 @@ import {
 import * as cacheStore from '../cache/store.js';
 import * as searchTool from './search.js';
 import { createLogger } from '../logger.js';
+import { guardFetchUrl } from '../watch/ssrf.js';
+import { getConfig } from '../config.js';
 
 const log = createLogger('search');
 
@@ -39,6 +41,22 @@ export async function handleFindSimilar(
         error_reason: 'Either url or concept must be provided',
         stage: 'find_similar',
       };
+    }
+
+    // SSRF guard on the url seed — the seed is fetched raw downstream
+    // (crawl-rank / cache-seed), bypassing handleFetch's own guard. Same
+    // allowPrivate wiring as the fetch tool.
+    if (url) {
+      const ssrf = guardFetchUrl(url, 'url', { allowPrivate: getConfig().fetchAllowPrivate });
+      if (!ssrf.ok) {
+        return {
+          ok: false,
+          error: 'invalid_url',
+          error_reason: ssrf.reason,
+          stage: 'find_similar',
+          hint: ssrf.hint,
+        };
+      }
     }
 
     const sanitizedInput: FindSimilarInput = {

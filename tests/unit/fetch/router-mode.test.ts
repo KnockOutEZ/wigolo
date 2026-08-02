@@ -5,6 +5,20 @@ vi.mock('../../../src/fetch/auth.js', () => ({
   getAuthOptions: vi.fn(async () => null),
 }));
 
+// Browser-acquire mock — report the engine "ready" without a real install so
+// browser-tier paths reach the mocked browserPool. On a browserless CI runner
+// the real ensureBrowser() attempts an install and hangs past the test timeout.
+// Tests needing the "unavailable" branch spy on their own instance to override.
+vi.mock('../../../src/fetch/browser-acquire.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/fetch/browser-acquire.js')>();
+  return {
+    ...actual,
+    BrowserAcquirer: class {
+      ensureBrowser = vi.fn(async () => 'ready');
+    },
+  };
+});
+
 import { SmartRouter } from '../../../src/fetch/router.js';
 import type { HttpClient, BrowserPoolInterface } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
@@ -18,7 +32,7 @@ function makeBrowserResult(url: string): RawFetchResult {
     html: '<html><body><p>real content here</p></body></html>',
     contentType: 'text/html',
     statusCode: 200,
-    method: 'playwright',
+    method: 'browser',
     headers: {},
   };
 }

@@ -114,6 +114,18 @@ export async function uninstall(opts: UninstallOptions): Promise<UninstallResult
     }
   }
 
+  // Skills sweep — MUST run before the data-dir rmSync: skill-pack receipts live
+  // at <dataDir>/skills/receipts.json and are the deletion oracle. Removing the
+  // data dir first would wipe those receipts before the sweep can consult them,
+  // orphaning the installed skill files on disk. Best-effort: a sweep failure
+  // never blocks the data-dir removal below.
+  try {
+    const { removeAllSkills } = await import('../../../cli/agents/skills/index.js');
+    removeAllSkills({ cwd: process.cwd() });
+  } catch {
+    // best-effort — proceed with data-dir removal regardless
+  }
+
   // Remove data dir
   let dataDirRemoved = false;
   try {

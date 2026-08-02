@@ -308,6 +308,69 @@ describe('httpFetch', () => {
     });
   });
 
+  describe('cross-host cookie safety on redirect', () => {
+    let hostServer: http.Server;
+    let otherServer: http.Server;
+
+    afterEach(async () => {
+      await closeServer(hostServer);
+      await closeServer(otherServer);
+    });
+
+    it('CROSS-DOMAIN: does NOT carry an injected Cookie to a different host on redirect', async () => {
+      // otherServer is reached via `localhost` (a different hostname than the
+      // `127.0.0.1` origin) so the host-equality check treats it as cross-host.
+      const otherCookies: (string | undefined)[] = [];
+      otherServer = await startServer((req, res) => {
+        otherCookies.push(req.headers.cookie);
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<html>other host</html>');
+      });
+      const otherPort = getPort(otherServer);
+
+      const originCookies: (string | undefined)[] = [];
+      hostServer = await startServer((req, res) => {
+        originCookies.push(req.headers.cookie);
+        res.writeHead(302, { location: `http://localhost:${otherPort}/landing` });
+        res.end();
+      });
+      const startUrl = `http://127.0.0.1:${getPort(hostServer)}/start`;
+
+      const result = await httpFetch(startUrl, {
+        headers: { Cookie: 'cf_clearance=SECRET' },
+        allowPrivate: true,
+      });
+
+      expect(result.statusCode).toBe(200);
+      // Origin host saw the cookie.
+      expect(originCookies[0]).toBe('cf_clearance=SECRET');
+      // Cross-host destination must NOT have received it.
+      expect(otherCookies[0]).toBeUndefined();
+    });
+
+    it('SAME-DOMAIN: keeps the Cookie across a same-host redirect', async () => {
+      const seen: (string | undefined)[] = [];
+      hostServer = await startServer((req, res) => {
+        seen.push(req.headers.cookie);
+        if (req.url === '/start') {
+          res.writeHead(302, { location: `http://127.0.0.1:${getPort(hostServer)}/next` });
+          res.end();
+        } else {
+          res.writeHead(200, { 'content-type': 'text/html' });
+          res.end('<html>same host</html>');
+        }
+      });
+      // Unused second server kept for symmetric teardown.
+      otherServer = await startServer((_req, res) => res.end('x'));
+      const startUrl = `http://127.0.0.1:${getPort(hostServer)}/start`;
+
+      await httpFetch(startUrl, { headers: { Cookie: 'cf_clearance=SECRET' }, allowPrivate: true });
+      // Both the /start and the same-host /next hop carried the cookie.
+      expect(seen[0]).toBe('cf_clearance=SECRET');
+      expect(seen[1]).toBe('cf_clearance=SECRET');
+    });
+  });
+
   describe('connection errors', () => {
     it('throws on ECONNREFUSED after retries', async () => {
       process.env.FETCH_MAX_RETRIES = '1';

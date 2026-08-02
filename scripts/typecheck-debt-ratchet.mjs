@@ -11,7 +11,14 @@
  */
 import { execSync } from 'node:child_process';
 
-const BASELINE = 280;
+// 280 -> 412 on the 2026-08-02 `origin/main` merge (pre-flight #2). The +132 is INHERITED,
+// not newly written: the merge imported ~130 test files that never existed on this branch
+// (e.g. tests/unit/search/v1/v1-provider, tests/unit/fetch/router-challenge-status,
+// router-clearance-route-gate), each carrying its own legacy implicit-any debt. Raising a
+// one-way ratchet is otherwise wrong — it is justified here only because the corpus itself
+// changed. The Studio safety surface stays at ZERO via tsconfig.test.json, which is the gate
+// that actually protects the new code. Ratchet DOWN from 412 as the legacy debt is cleaned.
+const BASELINE = 412;
 
 let count = 0;
 try {

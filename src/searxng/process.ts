@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { venvBinPath } from '../python-env.js';
+import { sanitizedChildEnv } from '../util/child-env.js';
 
 const log = createLogger('searxng');
 
@@ -165,7 +166,7 @@ export class SearxngProcess {
     }
 
     this.child = spawn(pythonBin, ['-m', 'searx.webapp'], {
-      env: { ...process.env, SEARXNG_SETTINGS_PATH: settingsPath },
+      env: { ...sanitizedChildEnv(), SEARXNG_SETTINGS_PATH: settingsPath },
       stdio: ['ignore', 'ignore', 'pipe'],
     });
 

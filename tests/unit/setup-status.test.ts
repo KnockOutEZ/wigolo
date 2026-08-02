@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { summarizeSetup, probeSetupStatus, defaultProbeDeps, configReferencesLlmKey, type ComponentStatus } from '../../src/cli/tui/actions/setup-status.js';
+import { summarizeSetup, probeSetupStatus, defaultProbeDeps, configReferencesLlmKey, glyph, type ComponentStatus } from '../../src/cli/tui/actions/setup-status.js';
 
 const base: ComponentStatus[] = [
   { id: 'browser', label: 'browser', required: true, status: 'ok' },
@@ -39,6 +39,33 @@ describe('summarizeSetup', () => {
     expect(s.exitCode).toBe(0);
     expect(s.lines.join('\n')).toMatch(/LLM key/);
   });
+
+  it('a REQUIRED lazy component does not fail setup (lazy acquisition)', () => {
+    // A required-but-lazy component (P0 lazy acquisition) is acquired on first
+    // use — it must not fail the setup nor flip the exit code to 1.
+    const s = summarizeSetup(
+      base.map(c => c.id === 'agents' ? { ...c, status: 'lazy', required: true } : c),
+    );
+    expect(s.requiredFailed).toBe(false);
+    expect(s.exitCode).toBe(0);
+  });
+
+  it('a REQUIRED skipped component does not fail setup (engine-only)', () => {
+    const s = summarizeSetup(
+      base.map(c => c.id === 'agents' ? { ...c, status: 'skipped', required: false } : c),
+    );
+    expect(s.requiredFailed).toBe(false);
+    expect(s.exitCode).toBe(0);
+  });
+});
+
+describe('glyph', () => {
+  it('maps lazy and skipped to the neutral ○, not the ✗ failure glyph', () => {
+    expect(glyph('lazy')).toBe('○');
+    expect(glyph('skipped')).toBe('○');
+    expect(glyph('failed')).toBe('✗');
+    expect(glyph('ok')).toBe('✓');
+  });
 });
 
 describe('probeSetupStatus', () => {
@@ -59,11 +86,23 @@ describe('probeSetupStatus', () => {
     expect(search.label).toContain('core');
   });
 
-  it('missing browser → required browser failed', async () => {
+  it('missing browser → lazy (self-installs on first use), not a setup failure', async () => {
+    // WHY (updated for wave-2 S8): the probe must still surface a missing
+    // browser distinctly — but a missing browser now triggers a background
+    // install on first fetch use, so it renders ○ lazy with the warmup hint
+    // and must not fail setup or flip the exit code.
     const comps = await probeSetupStatus({ ...deps, browserInstalled: () => false });
     const b = comps.find(c => c.id === 'browser')!;
     expect(b.required).toBe(true);
-    expect(b.status).toBe('failed');
+    expect(b.status).toBe('lazy');
+    expect(b.detail).toMatch(/first use/);
+    expect(b.detail).toMatch(/wigolo warmup --browser/);
+    const summary = summarizeSetup(comps);
+    expect(summary.requiredFailed).toBe(false);
+    expect(summary.exitCode).toBe(0);
+    const line = summary.lines.find(l => l.includes('browser'))!;
+    expect(line).toContain('○');
+    expect(line).not.toContain('✗');
   });
 
   it('no LLM key → llm absent + optional', async () => {
@@ -78,6 +117,105 @@ describe('probeSetupStatus', () => {
     const search = comps.find(c => c.id === 'search')!;
     expect(search.status).toBe('degraded');
     expect(search.required).toBe(false);
+  });
+
+  it('agents configured → agents ok (regardless of agentsRequested)', async () => {
+    const comps = await probeSetupStatus(deps, { agentsRequested: false });
+    const a = comps.find(c => c.id === 'agents')!;
+    expect(a.status).toBe('ok');
+    expect(a.required).toBe(true);
+  });
+
+  // Case (a): engine-only mode. No agents were requested, so a bare engine
+  // install is a deliberate, valid choice — NOT a failure.
+  it('engine-only (agentsRequested=false) + no agents → skipped, not required, not failed', async () => {
+    const comps = await probeSetupStatus(
+      { ...deps, configuredAgents: () => [] },
+      { agentsRequested: false },
+    );
+    const a = comps.find(c => c.id === 'agents')!;
+    expect(a.required).toBe(false);
+    expect(a.status).toBe('skipped');
+    expect(a.detail).toMatch(/engine-only/);
+    expect(a.detail).toMatch(/npx wigolo mcp/);
+    // A skipped agents component must not fail the setup.
+    const summary = summarizeSetup(comps);
+    expect(summary.requiredFailed).toBe(false);
+    expect(summary.exitCode).toBe(0);
+  });
+
+  // Case (b): the guard must NOT go vacuous. Agents WERE requested but none got
+  // registered → that is a genuine required-component failure.
+  it('agents requested but none configured → required failure (guard not vacuous)', async () => {
+    const comps = await probeSetupStatus(
+      { ...deps, configuredAgents: () => [] },
+      { agentsRequested: true },
+    );
+    const a = comps.find(c => c.id === 'agents')!;
+    expect(a.required).toBe(true);
+    expect(a.status).toBe('failed');
+    expect(a.detail).toBe('no agent configured');
+    const summary = summarizeSetup(comps);
+    expect(summary.requiredFailed).toBe(true);
+    expect(summary.exitCode).toBe(1);
+  });
+
+  it('agentsRequested defaults to true (omitted options) → empty agents fail', async () => {
+    // Safety default: an options-less caller must keep the failure guard, never
+    // silently treat a missing agent as engine-only.
+    const comps = await probeSetupStatus({ ...deps, configuredAgents: () => [] });
+    const a = comps.find(c => c.id === 'agents')!;
+    expect(a.required).toBe(true);
+    expect(a.status).toBe('failed');
+  });
+
+  // Case (c): a missing embedding model is lazily acquired on first use — it is
+  // not a failure glyph, and the detail names the warmup flag.
+  it('missing embedding model → lazy (not failed), detail names warmup --embeddings', async () => {
+    const comps = await probeSetupStatus({ ...deps, embeddingsInstalled: () => false });
+    const e = comps.find(c => c.id === 'embeddings')!;
+    expect(e.status).toBe('lazy');
+    expect(e.required).toBe(false);
+    expect(e.detail).toMatch(/first use/);
+    expect(e.detail).toMatch(/wigolo warmup --embeddings/);
+    // Lazy embeddings must not fail the setup, and must not render the ✗ glyph
+    // nor the "find_similar disabled" suffix.
+    const summary = summarizeSetup(comps);
+    expect(summary.requiredFailed).toBe(false);
+    expect(summary.exitCode).toBe(0);
+    const embLine = summary.lines.find(l => l.includes('embeddings'))!;
+    expect(embLine).not.toContain('✗');
+    expect(embLine).toContain('○');
+    expect(embLine).not.toContain('find_similar disabled');
+  });
+
+  // Genuinely fresh machine: no browser, no embeddings, engine-only install.
+  // Every lazily-acquired component self-installs on first use, so a bare
+  // `wigolo init --non-interactive` must succeed — exit 0, both rows ○ lazy.
+  it('fresh machine (no browser, no embeddings, engine-only) → exit 0, both ○ lazy', async () => {
+    const comps = await probeSetupStatus(
+      {
+        ...deps,
+        browserInstalled: () => false,
+        embeddingsInstalled: () => false,
+        configuredAgents: () => [],
+      },
+      { agentsRequested: false },
+    );
+    const browser = comps.find(c => c.id === 'browser')!;
+    const embeddings = comps.find(c => c.id === 'embeddings')!;
+    expect(browser.status).toBe('lazy');
+    expect(embeddings.status).toBe('lazy');
+
+    const summary = summarizeSetup(comps);
+    expect(summary.requiredFailed).toBe(false);
+    expect(summary.exitCode).toBe(0);
+    const browserLine = summary.lines.find(l => l.includes('browser'))!;
+    const embLine = summary.lines.find(l => l.includes('embeddings'))!;
+    expect(browserLine).toContain('○');
+    expect(browserLine).not.toContain('✗');
+    expect(embLine).toContain('○');
+    expect(embLine).not.toContain('✗');
   });
 });
 

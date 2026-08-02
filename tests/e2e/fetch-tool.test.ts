@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { handleFetch } from '../../src/tools/fetch.js';
-import { SmartRouter, type HttpClient } from '../../src/fetch/router.js';
+import { SmartRouter, type HttpClient, type BrowserPoolInterface } from '../../src/fetch/router.js';
+import { ChallengeBlockedError } from '../../src/fetch/browser-pool.js';
 import { httpFetch } from '../../src/fetch/http-client.js';
 import { initDatabase, closeDatabase } from '../../src/cache/db.js';
 import { resetConfig } from '../../src/config.js';
@@ -24,6 +25,10 @@ function startServer(): Promise<string> {
       } else if (req.url === '/empty') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<html><body></body></html>');
+      } else if (req.url === '/challenge') {
+        // A hard bot-protection interstitial: 403 + challenge markers, near-empty body.
+        res.writeHead(403, { 'Content-Type': 'text/html' });
+        res.end('<html><head><title>Just a moment...</title></head><body><div class="cf-browser-verification"></div></body></html>');
       } else {
         res.writeHead(404, { 'Content-Type': 'text/html' });
         res.end('<html><body><h1>Not Found</h1></body></html>');
@@ -167,5 +172,25 @@ describe('e2e: fetch tool', () => {
     const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.metadata).toBeDefined();
+  });
+
+  it('challenged page fast-fails with a blocked_by_challenge error object', async () => {
+    // The HTTP tier gets a 403 challenge interstitial and escalates to the
+    // browser tier, which fast-fails (ChallengeBlockedError). The tool surfaces
+    // a structured blocked_by_challenge error the caller can branch on — the
+    // same shape a `--json` invocation emits (ok:false → error object on stdout).
+    const httpClient: HttpClient = { fetch: (url, options) => httpFetch(url, options) };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: async (url) => { throw new ChallengeBlockedError(url); },
+    };
+    const challengeRouter = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+
+    const res = await handleFetch({ url: `${baseUrl}/challenge` }, challengeRouter);
+    expect(res.ok).toBe(false);
+    const err = res as { ok: false; error: string; error_reason: string; stage: string; hint?: string };
+    expect(err.error).toBe('blocked_by_challenge');
+    expect(err.stage).toBe('fetch');
+    expect(err.error_reason.toLowerCase()).toMatch(/bot protection|challenge page/);
+    expect(err.hint).toMatch(/use_auth/);
   });
 });

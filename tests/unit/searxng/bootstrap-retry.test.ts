@@ -84,6 +84,7 @@ describe('backoffSchedule', () => {
 
 import { execSync, spawnSync } from 'node:child_process';
 import { BootstrapError, runStep, resolveSearchBackend, bootstrapNativeSearxng } from '../../../src/searxng/bootstrap.js';
+import { __resetResolvedContainerCli } from '../../../src/searxng/docker.js';
 
 describe('runStep', () => {
   beforeEach(() => { vi.clearAllMocks(); });
@@ -136,11 +137,20 @@ describe('runStep', () => {
 });
 
 describe('resolveSearchBackend — retry-aware failed state', () => {
+  // Retry-window/attempt-cap logic is platform-independent — pin to a
+  // supported platform so the win32 native-unsupported branch doesn't
+  // short-circuit these assertions when run on an actual Windows machine.
+  const originalPlatform = process.platform;
   beforeEach(() => {
     process.env = { ...process.env };
     delete process.env.SEARXNG_URL;
     resetConfig();
     vi.clearAllMocks();
+    __resetResolvedContainerCli();
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
   });
 
   it('returns native when retry window is open, attempts < MAX, python present', async () => {
@@ -193,8 +203,73 @@ describe('resolveSearchBackend — retry-aware failed state', () => {
   });
 });
 
+describe('resolveSearchBackend — win32 native-unsupported branch', () => {
+  const originalPlatform = process.platform;
+  beforeEach(() => {
+    process.env = { ...process.env };
+    delete process.env.SEARXNG_URL;
+    resetConfig();
+    vi.clearAllMocks();
+    __resetResolvedContainerCli();
+    vi.mocked(existsSync).mockReturnValue(false); // no prior bootstrap state on disk
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  });
+
+  function stateWrites(): BootstrapState[] {
+    return vi.mocked(writeFileSync).mock.calls
+      .filter(([p]) => String(p).includes('state.json'))
+      .map(([, data]) => JSON.parse(String(data)) as BootstrapState);
+  }
+
+  it('uses docker when a CLI is available and SEARXNG_MODE=docker is set', async () => {
+    process.env.SEARXNG_MODE = 'docker';
+    resetConfig();
+    vi.mocked(execSync).mockReturnValue('Docker version 24.0.0' as any);
+    const r = await resolveSearchBackend();
+    expect(r.type).toBe('docker');
+  });
+
+  it('falls back to scraping with a SEARXNG_MODE hint when a CLI is available but mode is the default (native)', async () => {
+    delete process.env.SEARXNG_MODE; // default is 'native'
+    resetConfig();
+    vi.mocked(execSync).mockReturnValue('Docker version 24.0.0' as any);
+    const r = await resolveSearchBackend();
+    expect(r.type).toBe('scraping');
+    const [state] = stateWrites();
+    expect(state.status).toBe('no_runtime');
+    expect(state.error).toContain('SEARXNG_MODE=docker');
+    expect(state.error).not.toContain('install Docker Desktop');
+  });
+
+  it('falls back to scraping with installation guidance when no CLI is found at all', async () => {
+    delete process.env.SEARXNG_MODE;
+    resetConfig();
+    vi.mocked(execSync).mockImplementation(() => { throw new Error('not found'); });
+    const r = await resolveSearchBackend();
+    expect(r.type).toBe('scraping');
+    const [state] = stateWrites();
+    expect(state.status).toBe('no_runtime');
+    expect(state.error).toContain('install Docker Desktop');
+    expect(state.error).not.toContain('SEARXNG_MODE=docker');
+  });
+});
+
 describe('bootstrapNativeSearxng — failure path', () => {
-  beforeEach(() => { resetConfig(); vi.clearAllMocks(); });
+  // These tests exercise the pip/venv failure path, not platform gating —
+  // pin to a supported platform so the win32 early-exit guard doesn't
+  // short-circuit them when run on an actual Windows machine.
+  const originalPlatform = process.platform;
+  beforeEach(() => {
+    resetConfig();
+    vi.clearAllMocks();
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  });
 
   it('writes failed state with attempts=1 and lastError from BootstrapError', async () => {
     vi.mocked(spawnSync).mockReturnValue({

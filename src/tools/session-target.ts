@@ -127,7 +127,7 @@ export async function runSessionFetch(
     images: extraction.images,
     cached: false,
     // The bytes came off a headed browser session.
-    fetch_method: 'playwright',
+    fetch_method: 'browser',
     ...(extraction.site_data ? { site_data: extraction.site_data } : {}),
   };
   return { ok: true, data: out };

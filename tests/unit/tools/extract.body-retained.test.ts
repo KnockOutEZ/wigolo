@@ -54,6 +54,8 @@ describe('extract named_schema=Article retains body even on tight budget', () =>
       // The bug: body would be missing/empty entirely.
       expect(typeof data.body).toBe('string');
       expect((data.body as string).length).toBeGreaterThan(50);
+      // The body was truncated to fit the budget — that clip must be signaled.
+      expect(result.data.truncated).toBe(true);
     }
   });
 });

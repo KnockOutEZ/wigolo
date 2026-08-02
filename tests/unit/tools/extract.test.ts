@@ -527,7 +527,185 @@ describe('handleExtract mode=metadata with JSON-LD', () => {
     if (__r.ok) {
       const tokensUsed = countTokens(JSON.stringify(__r.data.data));
       expect(tokensUsed).toBeLessThanOrEqual(1800);
+      // Budget-clip must be signaled, and the surviving structure must keep
+      // headers + at least one row (never a silent whole-structure drop).
+      expect(__r.data.truncated).toBe(true);
+      const tables = __r.data.data as Array<{ headers: string[]; rows: unknown[] }>;
+      expect(tables.length).toBeGreaterThan(0);
+      expect(tables[0].headers.length).toBeGreaterThan(0);
+      const keptRows = tables.reduce((n, t) => n + t.rows.length, 0);
+      expect(keptRows).toBeGreaterThan(0);
+      expect(Array.isArray(__r.data.warnings)).toBe(true);
+      expect((__r.data.warnings ?? []).join(' ')).toMatch(/trimmed to fit max_tokens_out/i);
     }
+  });
+
+  // Live P0 benchmark repro: a single wide 26-row table under a tight budget
+  // used to trim to `data: []` with NO signal. The contract is proportional
+  // degradation — keep headers + some rows, flip truncated, and name the drop.
+  it('mode=tables: single 26-row table under tight budget keeps headers + some rows and signals', async () => {
+    const cell = 'metric value payload '.repeat(6).trim();
+    const rows = Array.from({ length: 26 }, (_, i) => ({
+      metric: `${cell}-${i}`,
+      value: `${cell}-v${i}`,
+    }));
+    vi.mocked(extractTables).mockReturnValue([
+      { caption: 'Benchmark Results', headers: ['metric', 'value'], rows },
+    ]);
+
+    const __r = await handleExtract(
+      { html: '<html></html>', mode: 'tables', max_tokens_out: 300 },
+      mockRouter(),
+    );
+    expect(__r.ok).toBe(true);
+    if (!__r.ok) return;
+    const tables = __r.data.data as Array<{
+      caption?: string;
+      headers: string[];
+      rows: unknown[];
+    }>;
+    expect(tables.length).toBe(1);
+    expect(tables[0].headers).toEqual(['metric', 'value']);
+    expect(tables[0].caption).toBe('Benchmark Results');
+    expect(tables[0].rows.length).toBeGreaterThan(0);
+    expect(tables[0].rows.length).toBeLessThan(26);
+    expect(__r.data.truncated).toBe(true);
+    const warning = (__r.data.warnings ?? []).join(' ');
+    expect(warning).toMatch(/kept \d+ of 26 (table )?rows/i);
+  });
+
+  it('mode=structured: tight budget partially populates every non-empty array or signals its drop', async () => {
+    const filler = 'lorem ipsum dolor sit amet '.repeat(8).trim();
+    const structured = {
+      tables: [
+        {
+          caption: 'Pricing',
+          headers: ['Plan', 'Price'],
+          rows: Array.from({ length: 12 }, (_, i) => ({ Plan: `Tier ${i} ${filler}`, Price: `$${i}` })),
+        },
+      ],
+      definitions: Array.from({ length: 10 }, (_, i) => ({ term: `term ${i}`, description: `${filler} ${i}` })),
+      key_value_pairs: Array.from({ length: 10 }, (_, i) => ({ key: `k${i}`, value: `${filler} ${i}`, source: 'text-pattern' as const })),
+      jsonld: [],
+      chart_hints: [],
+    };
+    vi.mocked(extractMetadata).mockReturnValue({});
+    // structured mode is dispatched through extractStructured — mock it.
+    const structuredMod = await import('../../../src/extraction/structured.js');
+    vi.spyOn(structuredMod, 'extractStructured').mockReturnValue(structured as any);
+
+    const __r = await handleExtract(
+      { html: '<html></html>', mode: 'structured', max_tokens_out: 250 },
+      mockRouter(),
+    );
+    expect(__r.ok).toBe(true);
+    if (!__r.ok) return;
+    expect(__r.data.truncated).toBe(true);
+    const data = __r.data.data as {
+      tables: Array<{ headers: string[]; rows: unknown[] }>;
+      definitions: unknown[];
+      key_value_pairs: unknown[];
+    };
+    // Empty arrays stay empty and untouched.
+    expect((data as any).jsonld).toEqual([]);
+    expect((data as any).chart_hints).toEqual([]);
+    // No originally-non-empty array vanished silently: each is either
+    // partially populated OR its total drop is named in a warning.
+    const warnings = (__r.data.warnings ?? []).join(' ');
+    for (const [name, arr, orig] of [
+      ['tables', data.tables, structured.tables],
+      ['definitions', data.definitions, structured.definitions],
+      ['key_value_pairs', data.key_value_pairs, structured.key_value_pairs],
+    ] as const) {
+      if ((arr?.length ?? 0) === 0) {
+        expect(warnings.toLowerCase()).toContain(name);
+      }
+      // when populated, it must be a strict subset (something was dropped overall)
+      expect((arr?.length ?? 0)).toBeLessThanOrEqual(orig.length);
+    }
+    expect(warnings).toMatch(/trimmed to fit max_tokens_out/i);
+  });
+
+  it('degenerate budget (max_tokens_out=5) never returns silent data:[] — always signals', async () => {
+    const rows = Array.from({ length: 20 }, (_, i) => ({ a: `long cell value ${i} `.repeat(4), b: `${i}` }));
+    vi.mocked(extractTables).mockReturnValue([
+      { caption: 'Wide', headers: ['a', 'b'], rows },
+    ]);
+
+    const __r = await handleExtract(
+      { html: '<html></html>', mode: 'tables', max_tokens_out: 5 },
+      mockRouter(),
+    );
+    expect(__r.ok).toBe(true);
+    if (!__r.ok) return;
+    expect(__r.data.truncated).toBe(true);
+    expect((__r.data.warnings ?? []).length).toBeGreaterThan(0);
+    expect((__r.data.warnings ?? []).join(' ')).toMatch(/trimmed to fit max_tokens_out/i);
+  });
+
+  // ---- MUST-NOT-FIRE (negative) ----
+
+  it('mode=tables: no max_tokens_out and under default cap → full rows, no truncated flag, no trim warning', async () => {
+    const rows = Array.from({ length: 26 }, (_, i) => ({ metric: `m${i}`, value: `${i}` }));
+    vi.mocked(extractTables).mockReturnValue([
+      { caption: 'Small', headers: ['metric', 'value'], rows },
+    ]);
+    const __r = await handleExtract({ html: '<html></html>', mode: 'tables' }, mockRouter());
+    expect(__r.ok).toBe(true);
+    if (!__r.ok) return;
+    const tables = __r.data.data as Array<{ rows: unknown[] }>;
+    expect(tables[0].rows.length).toBe(26);
+    expect(__r.data.truncated).toBeUndefined();
+    const warnings = (__r.data.warnings ?? []).join(' ');
+    expect(warnings).not.toMatch(/trimmed to fit max_tokens_out/i);
+  });
+
+  it('mode=tables: generous max_tokens_out fitting everything → identical data, no flag, no warning', async () => {
+    const rows = Array.from({ length: 26 }, (_, i) => ({ metric: `m${i}`, value: `${i}` }));
+    const input = [{ caption: 'Small', headers: ['metric', 'value'], rows }];
+    vi.mocked(extractTables).mockReturnValue(input.map((t) => ({ ...t, rows: [...t.rows] })));
+    const __r = await handleExtract(
+      { html: '<html></html>', mode: 'tables', max_tokens_out: 100000 },
+      mockRouter(),
+    );
+    expect(__r.ok).toBe(true);
+    if (!__r.ok) return;
+    expect(__r.data.data).toEqual(input);
+    expect(__r.data.truncated).toBeUndefined();
+    expect(__r.data.warnings).toBeUndefined();
+  });
+
+  it('mode=metadata: small payload under budget → untouched, no flag, no warning', async () => {
+    vi.mocked(extractMetadata).mockReturnValue({ title: 'Tiny', description: 'ok' });
+    vi.mocked(extractJsonLd).mockReturnValue([]);
+    const __r = await handleExtract(
+      { html: '<html></html>', mode: 'metadata', max_tokens_out: 5000 },
+      mockRouter(),
+    );
+    expect(__r.ok).toBe(true);
+    if (!__r.ok) return;
+    expect(__r.data.data).toEqual({ title: 'Tiny', description: 'ok' });
+    expect(__r.data.truncated).toBeUndefined();
+    expect(__r.data.warnings).toBeUndefined();
+  });
+
+  it('strings-only payload over budget → string truncated with marker, truncated:true, no array warnings', async () => {
+    const long = 'PostgreSQL async I/O detail. '.repeat(400);
+    vi.mocked(extractMetadata).mockReturnValue({ title: 'Doc', description: long });
+    vi.mocked(extractJsonLd).mockReturnValue([]);
+    const __r = await handleExtract(
+      { html: '<html></html>', mode: 'metadata', max_tokens_out: 120 },
+      mockRouter(),
+    );
+    expect(__r.ok).toBe(true);
+    if (!__r.ok) return;
+    const data = __r.data.data as Record<string, unknown>;
+    expect(typeof data.description).toBe('string');
+    expect((data.description as string).length).toBeLessThan(long.length);
+    expect(__r.data.truncated).toBe(true);
+    // A string-only trim should not fabricate an array-drop warning.
+    const warnings = (__r.data.warnings ?? []).join(' ');
+    expect(warnings).not.toMatch(/table rows|key_value_pairs|definitions/i);
   });
 
   // Perf encoding: clampTablesToChars used to re-serialize the entire tables

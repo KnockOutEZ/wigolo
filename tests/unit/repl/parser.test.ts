@@ -131,3 +131,38 @@ describe('parseArgs', () => {
     expect(result.flags['from-date']).toBe('2024-01-01');
   });
 });
+
+describe('parseArgs with booleanFlags set', () => {
+  it('a bare flag in the set does NOT consume the following positional token', () => {
+    // WHY: `search --no-content <query>` must keep <query> positional; without
+    // the set the value-taking heuristic would swallow it as the flag value.
+    const set = new Set(['no-content']);
+    const result = parseArgs(['search', '--no-content', 'react hooks'], set);
+    expect(result.flags['no-content']).toBe('true');
+    expect(result.positional).toEqual(['react hooks']);
+  });
+
+  it('a flag NOT in the set still consumes its value (unchanged heuristic)', () => {
+    const set = new Set(['no-content']);
+    const result = parseArgs(['search', '--limit', '5', 'query'], set);
+    expect(result.flags.limit).toBe('5');
+    expect(result.positional).toEqual(['query']);
+  });
+
+  it('no-set path is byte-identical to the value-swallowing default', () => {
+    // WHY: passing no set must leave every prior behaviour exactly as it was.
+    const withoutArg = parseArgs(['search', '--screenshot', 'react hooks']);
+    const withUndefined = parseArgs(['search', '--screenshot', 'react hooks'], undefined);
+    expect(withUndefined).toEqual(withoutArg);
+    // Default heuristic swallows the next token as the value.
+    expect(withoutArg.flags.screenshot).toBe('react hooks');
+    expect(withoutArg.positional).toEqual([]);
+  });
+
+  it('=value form is unaffected by the set', () => {
+    const set = new Set(['no-content']);
+    const result = parseArgs(['search', '--no-content=false', 'query'], set);
+    expect(result.flags['no-content']).toBe('false');
+    expect(result.positional).toEqual(['query']);
+  });
+});

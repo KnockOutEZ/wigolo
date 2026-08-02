@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const {
-  runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, runVerifyMock,
+  runWarmupMock, detectAgentsMock, selectAgentsMock, applyConfigsMock, runDoctorColdChecksMock,
   systemCheckMock, getAgentHandlerMock, probeSetupStatusMock, summarizeSetupMock,
   applyHeadlessSetMock, saveMock, createSettingsStoreMock, fakeStoreSetMock, storeKeyMock, configState,
+  installSkillsMock,
 } = vi.hoisted(() => {
   const fakeStoreSetMock = vi.fn();
   const fakeStore = {
@@ -29,7 +30,7 @@ const {
     detectAgentsMock: vi.fn(),
     selectAgentsMock: vi.fn(),
     applyConfigsMock: vi.fn(),
-    runVerifyMock: vi.fn(),
+    runDoctorColdChecksMock: vi.fn(() => []),
     systemCheckMock: vi.fn(),
     getAgentHandlerMock: vi.fn(),
     probeSetupStatusMock: vi.fn(),
@@ -40,6 +41,7 @@ const {
     fakeStoreSetMock,
     storeKeyMock: vi.fn(),
     configState: { dataDir: '/tmp/data' },
+    installSkillsMock: vi.fn(() => ({ written: [], removed: [], refused: [], notices: [] })),
   };
 });
 
@@ -58,8 +60,8 @@ vi.mock('../../../src/cli/tui/select-agents.js', () => ({
 vi.mock('../../../src/cli/tui/config-writer.js', () => ({
   applyConfigs: applyConfigsMock,
 }));
-vi.mock('../../../src/cli/tui/verify.js', () => ({
-  runVerify: runVerifyMock,
+vi.mock('../../../src/cli/doctor.js', () => ({
+  runDoctorColdChecks: runDoctorColdChecksMock,
 }));
 vi.mock('../../../src/cli/tui/system-check.js', () => ({
   runSystemCheck: systemCheckMock,
@@ -69,6 +71,11 @@ vi.mock('../../../src/config.js', () => ({
 }));
 vi.mock('../../../src/cli/agents/registry.js', () => ({
   getAgentHandler: getAgentHandlerMock,
+}));
+vi.mock('../../../src/cli/agents/skills/index.js', () => ({
+  installSkills: installSkillsMock,
+  removeAllSkills: vi.fn(),
+  SUPPORTED_AGENTS: ['claude-code', 'codex', 'cursor', 'gemini-cli', 'cline', 'windsurf'],
 }));
 vi.mock('../../../src/cli/tui/utils/config-writer.js', () => ({
   saveInitConfig: vi.fn(),
@@ -117,7 +124,7 @@ vi.mock('../../../src/security/key-store.js', () => ({
 import { runInit } from '../../../src/cli/init.js';
 
 beforeEach(() => {
-  runWarmupMock.mockReset().mockResolvedValue(undefined);
+  runWarmupMock.mockReset().mockResolvedValue({ playwright: 'ok', searxng: 'skipped', embeddings: 'ok', reranker: 'ok' });
   detectAgentsMock.mockReset().mockReturnValue([
     { id: 'cursor', displayName: 'Cursor', detected: true, installType: 'config-file', configPath: '/h/.cursor/mcp.json' },
     { id: 'claude-code', displayName: 'Claude Code', detected: true, installType: 'cli-command', configPath: null },
@@ -126,7 +133,10 @@ beforeEach(() => {
   applyConfigsMock.mockReset().mockResolvedValue([
     { id: 'cursor', displayName: 'Cursor', ok: true, code: 'OK', configPath: '/h/.cursor/mcp.json' },
   ]);
-  runVerifyMock.mockReset().mockResolvedValue({ allPassed: true });
+  runDoctorColdChecksMock.mockReset().mockReturnValue([
+    { name: 'browser', status: 'ok', fixable: true, detail: 'chromium launchable' },
+    { name: 'data-dir', status: 'ok', fixable: false, detail: 'writable (/tmp/data)' },
+  ]);
   systemCheckMock.mockReset().mockResolvedValue({
     node: { ok: true, version: '22.0.0' },
     python: { ok: true, binary: 'python3', version: '3.12.0' },
@@ -156,8 +166,87 @@ beforeEach(() => {
   createSettingsStoreMock.mockClear();
   fakeStoreSetMock.mockClear();
   storeKeyMock.mockReset().mockResolvedValue({ location: 'keychain' });
+  installSkillsMock.mockReset().mockReturnValue({ written: [], removed: [], refused: [], notices: [] });
   // Ensure WIGOLO_LLM_API_KEY is unset by default so tests are isolated
   delete process.env.WIGOLO_LLM_API_KEY;
+});
+
+describe('runInit --non-interactive: skills engine wiring', () => {
+  function captureOut(): { restore: () => void } {
+    const origOut = process.stdout.write.bind(process.stdout);
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.stdout.write = (() => true) as typeof process.stdout.write;
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    return {
+      restore: () => {
+        process.stdout.write = origOut;
+        process.stderr.write = origErr;
+      },
+    };
+  }
+
+  it('invokes the skills engine ONCE with the selected skills-capable agents at global scope', async () => {
+    const cap = captureOut();
+    try {
+      await runInit(['--non-interactive', '--agents=cursor,claude-code', '--skip-verify']);
+    } finally {
+      cap.restore();
+    }
+    expect(installSkillsMock).toHaveBeenCalledTimes(1);
+    const arg = installSkillsMock.mock.calls[0]?.[0] as { scope: string; agents: string[] };
+    expect(arg.scope).toBe('global');
+    // Both cursor and claude-code are engine-supported, so both are passed.
+    expect(arg.agents.sort()).toEqual(['claude-code', 'cursor']);
+  });
+
+  it('filters non-skills-capable agents (vscode/zed) out of the engine call — no error', async () => {
+    // vscode is a valid init agent but has no skills target; it must be dropped
+    // before the engine call, leaving only the skills-capable selection.
+    getAgentHandlerMock.mockReturnValue({
+      id: 'vscode', displayName: 'VS Code',
+      supportsSkills: false, supportsCommands: false,
+      installInstructions: vi.fn().mockResolvedValue(undefined),
+    });
+    const cap = captureOut();
+    let code: number;
+    try {
+      code = await runInit(['--non-interactive', '--agents=vscode,cursor', '--skip-verify']);
+    } finally {
+      cap.restore();
+    }
+    expect(code).toBe(0);
+    expect(installSkillsMock).toHaveBeenCalledTimes(1);
+    const arg = installSkillsMock.mock.calls[0]?.[0] as { agents: string[] };
+    expect(arg.agents).toEqual(['cursor']);
+  });
+
+  it('does NOT invoke the engine when no selected agent is skills-capable', async () => {
+    const cap = captureOut();
+    try {
+      await runInit(['--non-interactive', '--agents=vscode,zed', '--skip-verify']);
+    } finally {
+      cap.restore();
+    }
+    expect(installSkillsMock).not.toHaveBeenCalled();
+  });
+
+  it('summary line reflects the engine ApplyResult (files written), not a hardcoded count', async () => {
+    installSkillsMock.mockReturnValue({
+      written: ['/h/.claude/skills/wigolo/SKILL.md', '/h/.claude/skills/wigolo-search/SKILL.md'],
+      removed: [], refused: [], notices: [],
+    });
+    const lines: string[] = [];
+    const origOut = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((c: unknown) => { lines.push(String(c)); return true; }) as typeof process.stdout.write;
+    try {
+      await runInit(['--non-interactive', '--agents=cursor', '--skip-verify']);
+    } finally {
+      process.stdout.write = origOut;
+    }
+    const out = lines.join('');
+    expect(out).toContain('2 files written');
+    expect(out).not.toContain('8 skills');
+  });
 });
 
 describe('runInit --non-interactive', () => {
@@ -177,8 +266,11 @@ describe('runInit --non-interactive', () => {
     // Honest-setup contract: when summarizeSetup reports a required component
     // failed (exitCode 1), runInitPlain must propagate that out of runInit —
     // it cannot silently return 0. Guards the failure path, not just success.
+    // Fixture uses the agents-requested-but-failed case: since wave-2 S8 a
+    // missing browser is 'lazy' (self-installs on first use) and can no longer
+    // produce this state, but a requested agent that failed to register still does.
     summarizeSetupMock.mockReturnValueOnce({
-      lines: ['Setup: 5/6 ready', '  ✗ browser — install failed'],
+      lines: ['Setup: 5/6 ready', '  ✗ agents(none) — no agent configured'],
       readyCount: 5,
       total: 6,
       requiredFailed: true,
@@ -189,14 +281,17 @@ describe('runInit --non-interactive', () => {
     expect(code).toBe(1);
   });
 
-  it('skips runVerify when --skip-verify is set', async () => {
-    await runInit(['--non-interactive', '--agents=cursor', '--skip-verify']);
-    expect(runVerifyMock).not.toHaveBeenCalled();
+  it('runs doctor cold checks (not a live verify) after setup', async () => {
+    // init replaced the live-network verify with doctor cold checks — presence
+    // probes only, no download, no searxng spin. This runs on the default path.
+    await runInit(['--non-interactive', '--agents=cursor']);
+    expect(runDoctorColdChecksMock).toHaveBeenCalledTimes(1);
   });
 
-  it('runs runVerify when --skip-verify is not set', async () => {
-    await runInit(['--non-interactive', '--agents=cursor']);
-    expect(runVerifyMock).toHaveBeenCalledTimes(1);
+  it('runs doctor cold checks even under --no-warmup (presence-only, no download)', async () => {
+    await runInit(['--non-interactive', '--agents=cursor', '--no-warmup']);
+    expect(runDoctorColdChecksMock).toHaveBeenCalledTimes(1);
+    expect(runWarmupMock).not.toHaveBeenCalled();
   });
 
   it('returns 2 on unknown agent id', async () => {
@@ -205,15 +300,83 @@ describe('runInit --non-interactive', () => {
     expect(runWarmupMock).not.toHaveBeenCalled();
   });
 
-  it('--non-interactive with NO --agents sets up the engine only (no gatekeeping)', async () => {
-    // Marketing contract: wigolo works for ANY MCP-capable agent, so a user whose
-    // agent has no built-in installer (e.g. Hermes) must still install the engine
-    // headlessly. --agents is optional: warmup runs, agent wiring is skipped, exit 0.
-    const code = await runInit(['--non-interactive', '--skip-verify']);
+  it('engine-only (no --agents) probes with agentsRequested:false; JSON status ok, exit 0', async () => {
+    // Case (a): a non-interactive install with no --agents is engine-only mode.
+    // init must tell the classifier NOT to require agents, and the honest
+    // summary (mocked ok) yields exit 0 + status "ok".
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((c: any) => { writes.push(String(c)); return true; });
+    let code: number;
+    try {
+      code = await runInit(['--non-interactive', '--skip-verify', '--json']);
+    } finally {
+      spy.mockRestore();
+    }
     expect(code).toBe(0);
-    expect(runWarmupMock).toHaveBeenCalledTimes(1); // engine setup still happens
+    // The classifier was told agents were NOT requested.
+    expect(probeSetupStatusMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentsRequested: false }),
+    );
+    const parsed = JSON.parse(writes.join('').trim());
+    expect(parsed.status).toBe('ok');
+    expect(parsed.requiredFailed).toBe(false);
+  });
+
+  it('--agents given → probes with agentsRequested:true (guard stays active)', async () => {
+    // Case (b) at the init seam: because --agents was given, init must keep the
+    // failure guard active by passing agentsRequested:true to the classifier.
+    await runInit(['--non-interactive', '--agents=cursor', '--skip-verify']);
+    expect(probeSetupStatusMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentsRequested: true }),
+    );
+  });
+
+  it('json status agrees with exit code on the failure path (status error, exit 1)', async () => {
+    // Case (d): when the classifier reports a required failure, the --json status
+    // and the process exit code must both signal error — never disagree.
+    summarizeSetupMock.mockReturnValueOnce({
+      lines: ['Setup: 5/6 ready', '  ✗ agents(none) — no agent configured'],
+      readyCount: 5,
+      total: 6,
+      requiredFailed: true,
+      exitCode: 1,
+    });
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((c: any) => { writes.push(String(c)); return true; });
+    let code: number;
+    try {
+      code = await runInit(['--non-interactive', '--agents=cursor', '--skip-verify', '--json']);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(code).toBe(1);
+    const parsed = JSON.parse(writes.join('').trim());
+    expect(parsed.status).toBe('error');
+    // Agreement: a non-'ok' status must line up with a non-zero exit.
+    expect(parsed.status === 'ok').toBe(code === 0);
+  });
+
+  it('--non-interactive --no-warmup with NO --agents sets up config only, no downloads (no gatekeeping)', async () => {
+    // Marketing contract: wigolo works for ANY MCP-capable agent, so a user whose
+    // agent has no built-in installer (e.g. Hermes) must still complete init
+    // headlessly. --agents is optional: agent wiring is skipped, exit 0.
+    // --no-warmup is the download-nothing escape hatch: runWarmup NEVER fires.
+    const code = await runInit(['--non-interactive', '--no-warmup']);
+    expect(code).toBe(0);
+    expect(runWarmupMock).not.toHaveBeenCalled(); // --no-warmup: zero downloads
     expect(selectAgentsMock).not.toHaveBeenCalled(); // no interactive prompt
     expect(applyConfigsMock).not.toHaveBeenCalled(); // no agent wiring
+  });
+
+  it('--non-interactive (default) runs runWarmup(["--all"]) exactly once (full setup)', async () => {
+    // Full setup is the default: even engine-only mode (no --agents) downloads
+    // every component so setup failures surface loudly.
+    const code = await runInit(['--non-interactive']);
+    expect(code).toBe(0);
+    expect(runWarmupMock).toHaveBeenCalledTimes(1);
+    expect(runWarmupMock.mock.calls[0]?.[0]).toEqual(['--all', '--skip-verify']);
   });
 
   it('--non-interactive with no agents but --provider still persists the provider', async () => {

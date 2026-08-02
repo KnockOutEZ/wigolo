@@ -23,22 +23,105 @@ import { extractWithLocalLlm } from '../extraction/v1/local-llm.js';
 import { resolveLocalModelTier } from '../integrations/cloud/llm/local-tier.js';
 import { extractBrandAsync } from '../extraction/brand.js';
 import { applyEvidenceFilter, getSourceText } from '../extraction/schema-truth.js';
+import { guardFetchUrl } from '../watch/ssrf.js';
+import { getConfig } from '../config.js';
 
 const log = createLogger('extract');
 
+// Result of a budget clamp: the trimmed payload plus signals for the caller.
+// `truncated` mirrors the clampTablesToChars precedent; `warnings` names every
+// budget-driven drop in human-readable, capability-language terms.
+interface ClampResult {
+  data: ExtractOutput['data'];
+  truncated: boolean;
+  warnings: string[];
+}
+
+// A value is a TableData when it carries a headers[] + rows[] pair. Row-drop
+// degradation preserves the table shape (caption + headers) instead of dropping
+// the whole structure the way a generic array trim would.
+function isTableData(v: unknown): v is TableData {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    Array.isArray((v as { headers?: unknown }).headers) &&
+    Array.isArray((v as { rows?: unknown }).rows)
+  );
+}
+
+function isTableDataArray(v: unknown): v is TableData[] {
+  return Array.isArray(v) && v.length > 0 && v.every(isTableData);
+}
+
+// Token-budgeted sibling of clampTablesToChars. Drops rows tail-first across a
+// TableData[] preserving every surviving table's caption + headers; a whole
+// trailing table is dropped only after its rows are gone. Returns the kept
+// tables plus counts so the caller can build a precise warning.
+function clampTablesToTokens(
+  tables: TableData[],
+  maxTokens: number,
+): { data: TableData[]; keptRows: number; totalRows: number; keptTables: number; totalTables: number } {
+  const totalTables = tables.length;
+  const totalRows = tables.reduce((n, t) => n + t.rows.length, 0);
+  const work = tables.map((t) => ({
+    caption: t.caption,
+    headers: [...t.headers],
+    rows: [...t.rows],
+  })) as TableData[];
+
+  // Running-size accounting keeps the hot loop O(N): summing per-row token
+  // counts drifts low (the tokenizer merges tokens across row boundaries), so
+  // after the fast loop drains the estimated budget we re-sync `size` to the
+  // true measurement and resume. A handful of re-syncs converges — the true
+  // measurement count is bounded by re-sync rounds (small), not by row count.
+  const pop = (): number => {
+    const last = work[work.length - 1];
+    if (last.rows.length > 0) {
+      const popped = last.rows.pop();
+      return countTokens(JSON.stringify(popped)) + 1;
+    }
+    const poppedCost = countTokens(JSON.stringify(last)) + 1;
+    work.pop();
+    return poppedCost;
+  };
+  let size = countTokens(JSON.stringify(work));
+  while (size > maxTokens && work.length > 0) {
+    while (size > maxTokens && work.length > 0) size -= pop();
+    size = countTokens(JSON.stringify(work)); // reconcile drift, resume if still over
+  }
+
+  // Degenerate budget: even a headers-only table won't fit. Keep the first
+  // table's structure (caption + headers, zero rows) so the caller still learns
+  // the shape rather than getting a bare []. The drop is always signaled.
+  if (work.length === 0 && totalTables > 0) {
+    work.push({ caption: tables[0].caption, headers: [...tables[0].headers], rows: [] });
+  }
+
+  const keptRows = work.reduce((n, t) => n + t.rows.length, 0);
+  return { data: work, keptRows, totalRows, keptTables: work.length, totalTables };
+}
+
 // Trim a structured extraction payload to fit within `maxTokens`.
-//   - arrays: keep prefix items until budget exhausted, then stop.
-//   - objects with array fields (StructuredData): trim each array in
-//     descending order of token weight until total fits.
-//   - primitives: returned untouched (already under budget by construction).
-// Returns a shallow copy; never mutates the input.
+//   - TableData[]: drop rows tail-first (preserve caption + headers).
+//   - other arrays: keep leading items until budget exhausted, then stop.
+//   - objects with array fields (StructuredData): trim table fields via
+//     row-dropping and other array fields prefix-first; oversize strings get
+//     truncated in place so a huge `body` never vanishes entirely.
+//   - primitives: returned untouched.
+// Returns a shallow copy plus drop signals; never mutates the input.
 function clampExtractData(
   data: ExtractOutput['data'],
   maxTokens: number,
-): ExtractOutput['data'] {
-  if (data === null || data === undefined) return data;
+): ClampResult {
+  if (data === null || data === undefined) return { data, truncated: false, warnings: [] };
   const total = countTokens(JSON.stringify(data));
-  if (total <= maxTokens) return data;
+  if (total <= maxTokens) return { data, truncated: false, warnings: [] };
+
+  if (isTableDataArray(data)) {
+    const r = clampTablesToTokens(data, maxTokens);
+    const warnings = [tableTrimWarning(r)];
+    return { data: r.data as ExtractOutput['data'], truncated: true, warnings };
+  }
 
   if (Array.isArray(data)) {
     const out: unknown[] = [];
@@ -49,12 +132,17 @@ function clampExtractData(
       out.push(item);
       used += t;
     }
-    return out as ExtractOutput['data'];
+    const warnings =
+      out.length < data.length
+        ? [`output trimmed to fit max_tokens_out: kept ${out.length} of ${data.length} items`]
+        : [];
+    return { data: out as ExtractOutput['data'], truncated: true, warnings };
   }
 
   if (typeof data === 'object') {
     const obj = data as Record<string, unknown>;
     const out: Record<string, unknown> = {};
+    const warnings: string[] = [];
     // First, copy small primitive fields (cheap, almost always retained).
     // Stash oversize strings + arrays for proportional truncation in pass 2 so
     // a single huge `body`/`markdown` field never disappears entirely when the
@@ -93,25 +181,65 @@ function clampExtractData(
         used -= countTokens(JSON.stringify({ [k]: '' })) - 1;
       }
     }
-    // Then fill array fields proportionally, biggest-first.
+    // Then fill array fields, biggest-first. Table-shaped fields degrade by
+    // row-dropping (keep headers); other array fields keep leading items. Every
+    // originally-non-empty field that ends up empty or short is named in a
+    // warning so no drop is silent.
     arrayKeys.sort((a, b) =>
       countTokens(JSON.stringify(obj[b])) - countTokens(JSON.stringify(obj[a])),
     );
     for (const k of arrayKeys) {
       const arr = obj[k] as unknown[];
-      const kept: unknown[] = [];
-      for (const item of arr) {
-        const t = countTokens(JSON.stringify(item)) + 1;
-        if (used + t > maxTokens) break;
-        kept.push(item);
-        used += t;
+      if (arr.length === 0) {
+        out[k] = [];
+        continue;
       }
-      out[k] = kept;
+      const remaining = Math.max(0, maxTokens - used);
+      if (isTableDataArray(arr)) {
+        const r = clampTablesToTokens(arr, remaining);
+        out[k] = r.data;
+        used += countTokens(JSON.stringify(r.data)) + 1;
+        if (r.keptRows < r.totalRows || r.keptTables < r.totalTables) {
+          warnings.push(`${k}: ${tableTrimWarning(r)}`);
+        }
+      } else {
+        const kept: unknown[] = [];
+        for (const item of arr) {
+          const t = countTokens(JSON.stringify(item)) + 1;
+          if (used + t > maxTokens) break;
+          kept.push(item);
+          used += t;
+        }
+        out[k] = kept;
+        if (kept.length < arr.length) {
+          warnings.push(
+            `output trimmed to fit max_tokens_out: kept ${kept.length} of ${arr.length} ${k}`,
+          );
+        }
+      }
     }
-    return out as ExtractOutput['data'];
+    if (warnings.length === 0) {
+      // Only oversize strings were truncated — signal the clip without an
+      // array-drop message the caller could misread as data loss.
+      warnings.push('output trimmed to fit max_tokens_out');
+    }
+    return { data: out as ExtractOutput['data'], truncated: true, warnings };
   }
 
-  return data;
+  return { data, truncated: true, warnings: ['output trimmed to fit max_tokens_out'] };
+}
+
+function tableTrimWarning(r: {
+  keptRows: number;
+  totalRows: number;
+  keptTables: number;
+  totalTables: number;
+}): string {
+  const parts = [`output trimmed to fit max_tokens_out: kept ${r.keptRows} of ${r.totalRows} table rows`];
+  if (r.keptTables < r.totalTables) {
+    parts.push(`dropped ${r.totalTables - r.keptTables} of ${r.totalTables} tables`);
+  }
+  return parts.join('; ');
 }
 
 // default char ceiling for mode='tables' when caller didn't pass
@@ -170,8 +298,12 @@ function buildSuccessOutput(
 ): StageResult<ExtractOutput> {
   let finalData = data;
   let truncated = false;
+  const allWarnings = warnings ? [...warnings] : [];
   if (maxTokens !== undefined) {
-    finalData = clampExtractData(data, maxTokens);
+    const clamped = clampExtractData(data, maxTokens);
+    finalData = clamped.data;
+    truncated = clamped.truncated;
+    allWarnings.push(...clamped.warnings);
   } else if (mode === 'tables') {
     // Default-cap path for tables — only runs when the caller didn't pass an
     // explicit budget. Surfaces `truncated: true` on clip so callers can detect.
@@ -180,7 +312,7 @@ function buildSuccessOutput(
     truncated = clamped.truncated;
   }
   const out: ExtractOutput = { data: finalData, source_url: sourceUrl, mode };
-  if (warnings && warnings.length > 0) out.warnings = warnings;
+  if (allWarnings.length > 0) out.warnings = allWarnings;
   if (typeof startMs === 'number') out.response_time_ms = Date.now() - startMs;
   if (truncated) out.truncated = true;
   return { ok: true, data: out };
@@ -197,6 +329,19 @@ async function resolveHtml(
   }
 
   if (input.url) {
+    // SSRF guard — same policy as `fetch`: loopback ok, private LANs blocked
+    // by default. Set WIGOLO_FETCH_ALLOW_PRIVATE=1 to opt into permissive.
+    const ssrf = guardFetchUrl(input.url, 'url', {
+      allowPrivate: getConfig().fetchAllowPrivate,
+    });
+    if (!ssrf.ok) {
+      throw Object.assign(new Error(ssrf.reason), {
+        code: 'invalid_url',
+        reason: ssrf.reason,
+        hint: ssrf.hint,
+      });
+    }
+
     const cached = getCachedContent(input.url);
     if (cached && !isExpired(cached)) {
       log.info('Using cached HTML', { url: input.url });

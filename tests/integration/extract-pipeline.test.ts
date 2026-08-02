@@ -146,6 +146,36 @@ describe('integration: extract pipeline', () => {
     expect(data.title).toBe('Understanding TypeScript Generics');
   });
 
+  it('trims tables to a tight max_tokens_out at the tool boundary and signals the clip', async () => {
+    const result = await handleExtract(
+      { url: `${baseUrl}/tables`, mode: 'tables', max_tokens_out: 60 },
+      makeRouter(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.mode).toBe('tables');
+    // Proportional degradation: structure survives with headers, the clip is
+    // signaled, and a human-readable warning names the drop — never silent [].
+    expect(result.data.truncated).toBe(true);
+    expect(Array.isArray(result.data.warnings)).toBe(true);
+    expect((result.data.warnings ?? []).join(' ')).toMatch(/trimmed to fit max_tokens_out/i);
+    const tables = result.data.data as Array<{ headers: string[]; rows: unknown[] }>;
+    if (tables.length > 0) {
+      expect(tables[0].headers.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('leaves tables untouched when max_tokens_out fits everything', async () => {
+    const result = await handleExtract(
+      { url: `${baseUrl}/tables`, mode: 'tables', max_tokens_out: 100000 },
+      makeRouter(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.truncated).toBeUndefined();
+    expect(result.data.warnings).toBeUndefined();
+  });
+
   it('handles 404 URL gracefully', async () => {
     const __r_result = await handleExtract(
       { url: `${baseUrl}/nonexistent`, mode: 'metadata' },

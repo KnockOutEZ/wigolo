@@ -204,6 +204,30 @@ describe('handleFindSimilar', () => {
     }
   });
 
+  it('refuses an SSRF url seed (metadata target) before the pipeline runs', async () => {
+    // WHY: the url seed is fetched raw downstream (bypassing handleFetch's
+    // guard). A metadata/private seed must be refused at the handler top.
+    const guardRouter = {
+      fetch: vi.fn().mockResolvedValue({
+        url: 'x', finalUrl: 'x', html: '', contentType: 'text/html',
+        statusCode: 200, method: 'http' as const, headers: {},
+      }),
+    } as unknown as SmartRouter;
+
+    const r = await handleFindSimilar(
+      { url: 'http://169.254.169.254/latest/meta-data/' },
+      [mockEngine],
+      guardRouter,
+    );
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error_reason).toMatch(/link-local|metadata|blocked/i);
+      expect(r.stage).toBe('find_similar');
+    }
+    expect(guardRouter.fetch).not.toHaveBeenCalled();
+  });
+
   it('max_results is capped at 50', async () => {
     const __r_result = await handleFindSimilar(
       { concept: 'test', max_results: 1000 },
@@ -395,6 +419,49 @@ describe('handleFindSimilar', () => {
 
       expect(countSpy).not.toHaveBeenCalled();
       expect(out.cache_seeded).toBeUndefined();
+    });
+  });
+
+  describe('lazy embedding readiness (D2 gate sites)', () => {
+    it('awaits provider readiness before probing availability rather than returning false immediately', async () => {
+      const embedModule = await import('../../../src/embedding/embed.js');
+
+      let resolveReady: (v: boolean) => void = () => {};
+      const readyPromise = new Promise<boolean>((res) => { resolveReady = res; });
+      const ensureProviderReady = vi.fn().mockReturnValue(readyPromise);
+
+      // Availability = true (service booted), provider verified only AFTER the
+      // slow ensureProviderReady() resolves. If the gate did not await, the
+      // synchronous isSubprocessReady() probe would read false and the whole
+      // request would report embedding_available:false.
+      let verified = false;
+      vi.spyOn(embedModule, 'getEmbeddingService').mockReturnValue({
+        isAvailable: () => true,
+        isSubprocessReady: () => verified,
+        ensureProviderReady,
+        getIndex: () => ({ size: () => 0, has: () => false }),
+        findSimilar: vi.fn().mockResolvedValue([]),
+        embedAndStore: vi.fn().mockResolvedValue(undefined),
+        embedAsync: vi.fn(),
+      } as unknown as ReturnType<typeof embedModule.getEmbeddingService>);
+
+      const out$ = handleFindSimilar(
+        { concept: 'React hooks', include_web: false },
+        [mockEngine],
+        mockRouter,
+      );
+
+      // Let the pipeline reach the readiness gate, then resolve it as verified.
+      await Promise.resolve();
+      verified = true;
+      resolveReady(true);
+
+      const __r = await out$;
+      const out = __r.ok ? __r.data : ({ ...__r } as any);
+
+      expect(ensureProviderReady).toHaveBeenCalled();
+      // The gate awaited readiness, so availability reflects the resolved state.
+      expect(out.embedding_available).toBe(true);
     });
   });
 

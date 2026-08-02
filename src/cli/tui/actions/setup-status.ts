@@ -7,7 +7,11 @@ import { createRequire } from 'node:module';
 // modules without making defaultProbeDeps async. Mirrors src/security/keychain.ts.
 const require = createRequire(import.meta.url);
 
-export type ComponentState = 'ok' | 'failed' | 'degraded' | 'absent';
+// 'lazy'    — component acquired on first use (P0 lazy acquisition); not a
+//             failure, and not yet present. Renders ○ with a warmup hint.
+// 'skipped' — deliberately not set up (e.g. engine-only mode registers no
+//             agent); not a failure and not required.
+export type ComponentState = 'ok' | 'failed' | 'degraded' | 'absent' | 'lazy' | 'skipped';
 
 export interface ComponentStatus {
   id: string;
@@ -30,19 +34,33 @@ export function glyph(s: ComponentState): string {
   if (s === 'ok') return '✓';
   if (s === 'absent') return '⚠';
   if (s === 'degraded') return '⚠';
+  // A lazily-acquired or deliberately-skipped component is not a failure — a
+  // ✗ would read as broken. ○ marks "not present, but not a problem".
+  if (s === 'lazy' || s === 'skipped') return '○';
   return '✗';
 }
 
 export function summarizeSetup(components: ComponentStatus[]): SetupSummary {
   const total = components.length;
   const readyCount = components.filter(c => c.status === 'ok').length;
-  const requiredFailed = components.some(c => c.required && c.status !== 'ok');
+  // 'lazy' / 'skipped' are non-failure states even for a required component:
+  // a required-but-lazy component (P0 lazy acquisition) will be there on first
+  // use, so it must not fail the setup and must not flip the exit code.
+  const requiredFailed = components.some(
+    c => c.required && c.status !== 'ok' && c.status !== 'lazy' && c.status !== 'skipped',
+  );
 
   const lines: string[] = [`Setup: ${readyCount}/${total} ready`];
   for (const c of components) {
     let line = `  ${glyph(c.status)} ${c.label}`;
+    // Detail is informative for lazy/skipped too (names the warmup flag / mode),
+    // so show it for any non-ok state that carries one.
     if (c.detail && c.status !== 'ok') line += ` — ${c.detail}`;
-    if (c.disables && c.status !== 'ok') line += `   → ${c.disables} disabled`;
+    // A lazy/skipped capability is not lost — it just isn't cached yet — so do
+    // NOT print the "→ X disabled" suffix for those states.
+    if (c.disables && c.status !== 'ok' && c.status !== 'lazy' && c.status !== 'skipped') {
+      line += `   → ${c.disables} disabled`;
+    }
     if (c.status === 'absent' && !c.required) line += ' (optional)';
     lines.push(line);
   }
@@ -85,28 +103,64 @@ export interface ProbeDeps {
   configuredAgents: () => readonly string[];
 }
 
-export async function probeSetupStatus(deps: ProbeDeps): Promise<ComponentStatus[]> {
+export interface ProbeOptions {
+  /**
+   * Whether agent registration was requested/expected — true when the user
+   * gave `--agents=<...>` or went through the interactive agent-selection step.
+   * When false, this is engine-only mode: no agent is registered on purpose, so
+   * the agents component is neither required nor a failure. Defaults to true so
+   * a caller that omits it never silently drops the "agent failed to register"
+   * guard (case b): agents requested but registration failed still fails setup.
+   */
+  agentsRequested?: boolean;
+}
+
+export async function probeSetupStatus(
+  deps: ProbeDeps,
+  options: ProbeOptions = {},
+): Promise<ComponentStatus[]> {
   const backend = deps.searchBackend();
   const agents = deps.configuredAgents();
+  const agentsRequested = options.agentsRequested ?? true;
 
   // core backend needs no native engine; searxng/hybrid degrade (not fail) when engine not ready
   const searchOk = backend === 'core' ? true : deps.searxngReady();
   const searchStatus: ComponentState = backend === 'core' ? 'ok' : (searchOk ? 'ok' : 'degraded');
 
+  // Agents component:
+  //  - registration requested + configured → ok
+  //  - registration requested + none present → failed (the guard must not go
+  //    vacuous: a requested-but-failed registration is a real setup failure)
+  //  - engine-only mode (not requested) → skipped, not required, not a failure.
+  //    wigolo works for any MCP client, so setting up the engine alone is valid.
+  const agentsStatus: ComponentState = agents.length > 0
+    ? 'ok'
+    : agentsRequested ? 'failed' : 'skipped';
+  const agentsDetail = agents.length > 0
+    ? undefined
+    : agentsRequested
+      ? 'no agent configured'
+      : 'engine-only — point your MCP client at `npx wigolo mcp`';
+
   return [
     {
       id: 'browser',
       label: 'browser',
+      // Still required for operation, but lazily acquired: a missing browser
+      // triggers a background install on first fetch use (browser-acquire), so
+      // absence at init time is 'lazy', not a setup failure.
       required: true,
-      status: deps.browserInstalled() ? 'ok' : 'failed',
-      detail: deps.browserInstalled() ? undefined : 'browser engine not installed',
+      status: deps.browserInstalled() ? 'ok' : 'lazy',
+      detail: deps.browserInstalled()
+        ? undefined
+        : 'downloads on first use — `wigolo warmup --browser` pre-caches',
     },
     {
       id: 'agents',
       label: `agents(${agents.join(',') || 'none'})`,
-      required: true,
-      status: agents.length > 0 ? 'ok' : 'failed',
-      detail: agents.length > 0 ? undefined : 'no agent configured',
+      required: agents.length > 0 ? true : agentsRequested,
+      status: agentsStatus,
+      detail: agentsDetail,
     },
     {
       id: 'search',
@@ -119,7 +173,10 @@ export async function probeSetupStatus(deps: ProbeDeps): Promise<ComponentStatus
       id: 'embeddings',
       label: 'embeddings',
       required: false,
-      status: deps.embeddingsInstalled() ? 'ok' : 'failed',
+      status: deps.embeddingsInstalled() ? 'ok' : 'lazy',
+      detail: deps.embeddingsInstalled()
+        ? undefined
+        : 'downloads on first use — `wigolo warmup --embeddings` pre-caches',
       disables: 'find_similar',
     },
     {

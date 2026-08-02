@@ -65,6 +65,15 @@ export class BingNewsEngine implements SearchEngine {
       filters: 'tnews',
       form: 'YFNR', // news-specific form id surfaces the .news-card layout
     });
+    // See BingEngine: pin market + UI language to English by default so a
+    // non-US IP does not return locale-mixed results. Regional intent still
+    // arrives via `country` (→ cc) which takes precedence over the default.
+    if (options.country) {
+      params.set('cc', options.country.toLowerCase());
+    } else {
+      params.set('mkt', 'en-US');
+      params.set('setlang', 'en');
+    }
     const url = `https://www.bing.com/search?${params}`;
 
     log.debug('scraping bing news', { query });

@@ -5,9 +5,14 @@ import {
   isAntiBotStatus,
   hasChallengeBody,
   isAntiBotSignal,
+  isChallengeShell,
+  hasChallengeHeader,
+  isChallengeResponse,
   looksJsRequired,
   describeAntiBot,
   tlsFetch,
+  hasBrowserChallengeBody,
+  isChallengeSkeleton,
   _setTlsBackendForTests,
   _resetTlsBackend,
   TlsTierUnavailableError,
@@ -99,6 +104,362 @@ describe('tls-tier: anti-bot detectors', () => {
     expect(describeAntiBot(429, '')).toBe('status_429');
     expect(describeAntiBot(200, 'cf-browser-verification')).toBe('challenge_body');
     expect(describeAntiBot(200, '<html>normal</html>')).toBe(null);
+  });
+});
+
+describe('tls-tier: browser-tier contextual challenge detection', () => {
+  // A near-empty interstitial body: no real article prose, tiny <body>.
+  const nearEmptyBody =
+    '<html><head><title>Just a moment...</title></head><body><div class="cf-turnstile"></div></body></html>';
+  // Full login page that legitimately embeds a Turnstile widget: real form,
+  // substantial content. Must NOT be treated as a challenge skeleton.
+  const realTurnstileLogin =
+    '<html><head><title>Sign in to Acme</title></head><body>' +
+    '<header><nav>Home Products Pricing Docs Support About Contact</nav></header>' +
+    '<main><h1>Welcome back</h1><p>Sign in to your Acme account to continue managing ' +
+    'your projects, billing, and team members. New here? Create an account.</p>' +
+    '<form action="/login" method="post"><label>Email</label><input name="email">' +
+    '<label>Password</label><input name="password" type="password">' +
+    '<div class="cf-turnstile" data-sitekey="0x4AAA"></div>' +
+    '<button type="submit">Sign in</button></form>' +
+    '<footer><p>Terms of Service and Privacy Policy apply to all Acme accounts.</p></footer>' +
+    '</main></body></html>'.padEnd(1200, ' ');
+
+  it('isChallengeSkeleton: true for a near-empty challenge body', () => {
+    expect(isChallengeSkeleton(nearEmptyBody)).toBe(true);
+  });
+
+  it('isChallengeSkeleton: true when a challenge-platform script src is present', () => {
+    const withScript =
+      '<html><body><script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script>' +
+      // Padded to defeat the near-empty check so the script src is the sole signal.
+      '<div>'.padEnd(2000, 'x') + '</div></body></html>';
+    expect(isChallengeSkeleton(withScript)).toBe(true);
+  });
+
+  it('isChallengeSkeleton: true for a challenge title on an otherwise larger body', () => {
+    const withTitle =
+      '<html><head><title>Just a moment...</title></head><body>' +
+      '<div>'.padEnd(2000, 'x') + '</div></body></html>';
+    expect(isChallengeSkeleton(withTitle)).toBe(true);
+  });
+
+  it('isChallengeSkeleton: false for a full page with real content', () => {
+    expect(isChallengeSkeleton(realTurnstileLogin)).toBe(false);
+    expect(isChallengeSkeleton('<html><body>' + 'real content '.repeat(200) + '</body></html>')).toBe(false);
+    expect(isChallengeSkeleton(null)).toBe(false);
+    expect(isChallengeSkeleton('')).toBe(false);
+  });
+
+  it('hasBrowserChallengeBody: true for shared markers (delegates to hasChallengeBody)', () => {
+    expect(hasBrowserChallengeBody('<html><body>cf-browser-verification</body></html>')).toBe(true);
+    expect(hasBrowserChallengeBody('<title>Just a moment...</title>')).toBe(true);
+  });
+
+  it('hasBrowserChallengeBody: true for cf-turnstile ONLY when co-occurring with a skeleton', () => {
+    // Bare turnstile on a real full page → NOT a challenge (contextual gate).
+    expect(hasBrowserChallengeBody(realTurnstileLogin)).toBe(false);
+    // Turnstile on a near-empty interstitial skeleton → challenge.
+    expect(hasBrowserChallengeBody(nearEmptyBody)).toBe(true);
+  });
+
+  it('hasBrowserChallengeBody: cf-turnstile as a bare substring never fires alone', () => {
+    // A large article that mentions cf-turnstile in prose / a code sample.
+    const article =
+      '<html><body><article>' +
+      'Here is how to embed a widget: add a <div class="cf-turnstile"></div> element. '.repeat(50) +
+      '</article></body></html>';
+    expect(hasBrowserChallengeBody(article)).toBe(false);
+    expect(isChallengeSkeleton(article)).toBe(false);
+  });
+
+  it('hasBrowserChallengeBody: false for normal HTML / empty', () => {
+    expect(hasBrowserChallengeBody('<html><body><h1>Normal page with plenty of text here</h1></body></html>')).toBe(false);
+    expect(hasBrowserChallengeBody(null)).toBe(false);
+    expect(hasBrowserChallengeBody('')).toBe(false);
+  });
+});
+
+describe('tls-tier: isChallengeShell (status-agnostic challenge classifier)', () => {
+  // DataDome-style interstitial served at HTTP 200: challenge markers PLUS a
+  // near-empty challenge skeleton (title + dd-loader, no real prose).
+  const dataDomeShell200 =
+    '<html><head><title>Just a moment...</title></head><body>' +
+    '<div class="dd-loader"></div><script>window._dd_s = 1;</script></body></html>';
+  // A real article at 200 that merely QUOTES a marker string in substantial prose.
+  const articleQuotingMarker =
+    '<html><head><title>Understanding bot protection</title></head><body><article>' +
+    ('The interstitial sets _cfChlOpt and shows "Just a moment" while loading. ' +
+      'This article explains the full flow in depth for engineers. ').repeat(30) +
+    '</article></body></html>';
+
+  it('MUST-FIRE: anti-bot status + challenge body (preserves existing behavior)', () => {
+    expect(isChallengeShell(403, '<html><body>cf-browser-verification</body></html>')).toBe(true);
+    expect(isChallengeShell(503, '<title>Just a moment...</title>')).toBe(true);
+  });
+
+  it('MUST-FIRE: 200 + challenge markers + challenge skeleton (the new case)', () => {
+    expect(isChallengeShell(200, dataDomeShell200)).toBe(true);
+    expect(isChallengeShell(204, dataDomeShell200)).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: 2xx with markers but SUBSTANTIAL prose (article quoting markers)', () => {
+    expect(isChallengeShell(200, articleQuotingMarker)).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: 2xx skeleton WITHOUT any challenge marker (plain SPA shell)', () => {
+    const spaShell = '<html><head><title>My App</title></head><body><div id="root"></div></body></html>';
+    expect(isChallengeShell(200, spaShell)).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: 2xx with markers alone (markers present but body is substantial, not skeleton)', () => {
+    // Markers present but body has >600 visible chars → not a skeleton → no fire.
+    const bulky =
+      '<html><body>_cfChlOpt ' + 'genuine readable content that a user would consume here. '.repeat(30) +
+      '</body></html>';
+    expect(hasChallengeBody(bulky)).toBe(true);
+    expect(isChallengeSkeleton(bulky)).toBe(false);
+    expect(isChallengeShell(200, bulky)).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: 200 clean page, null, empty', () => {
+    expect(isChallengeShell(200, '<html><body><h1>Normal page with plenty of text here that is real</h1></body></html>')).toBe(false);
+    expect(isChallengeShell(200, null)).toBe(false);
+    expect(isChallengeShell(200, '')).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: bare anti-bot status (403) with a real HTML body and no markers', () => {
+    // A substantive admin 403 page must pass through — not a challenge shell.
+    const admin403 = '<html><body><h1>403 Forbidden</h1><p>' + 'You do not have permission to view this resource. '.repeat(20) + '</p></body></html>';
+    expect(isChallengeShell(403, admin403)).toBe(false);
+  });
+});
+
+describe('tls-tier: modern-CF challenge (header + guarded body marker)', () => {
+  // The exact header Cloudflare sets on a modern challenge-platform response.
+  it('hasChallengeHeader: true when cf-mitigated marks a challenge', () => {
+    expect(hasChallengeHeader({ 'cf-mitigated': 'challenge' })).toBe(true);
+  });
+
+  it('hasChallengeHeader: case-insensitive on the header KEY', () => {
+    // Header casing varies across fetch tiers — the lookup must not care.
+    expect(hasChallengeHeader({ 'CF-Mitigated': 'challenge' })).toBe(true);
+    expect(hasChallengeHeader({ 'Cf-Mitigated': 'CHALLENGE' })).toBe(true);
+  });
+
+  it('hasChallengeHeader: also treats a block mitigation as a challenge', () => {
+    expect(hasChallengeHeader({ 'cf-mitigated': 'block' })).toBe(true);
+  });
+
+  it('hasChallengeHeader: false for absent / unrelated / empty values', () => {
+    expect(hasChallengeHeader(undefined)).toBe(false);
+    expect(hasChallengeHeader({})).toBe(false);
+    expect(hasChallengeHeader({ 'content-type': 'text/html' })).toBe(false);
+    expect(hasChallengeHeader({ 'cf-mitigated': '' })).toBe(false);
+    expect(hasChallengeHeader({ 'cf-mitigated': 'pass' })).toBe(false);
+  });
+
+  it('isChallengeResponse: Upwork-shaped 403 (cf-mitigated header, NO legacy body markers) → true', () => {
+    // Modern challenge body: challenge-platform + __cf_chl, no legacy markers.
+    const upworkBody =
+      '<html><head><title>Just a moment...</title></head><body>' +
+      '<div id="challenge-error-text">Enable JavaScript and cookies to continue</div>' +
+      '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1?ray=x"></script>' +
+      '<script>window.__cf_chl_opt={};</script></body></html>';
+    // Header alone must be sufficient even without any body markers at all.
+    expect(isChallengeResponse(403, '<html><body>no markers here</body></html>', { 'cf-mitigated': 'challenge' })).toBe(true);
+    // Full Upwork shape (header + modern body) → true.
+    expect(isChallengeResponse(403, upworkBody, { 'cf-mitigated': 'challenge', server: 'cloudflare' })).toBe(true);
+  });
+
+  it('isChallengeResponse: 403 with /cdn-cgi/challenge-platform/ body (no header) → true', () => {
+    const body =
+      '<html><body>Verifying you are human.' +
+      '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script></body></html>';
+    expect(isChallengeResponse(403, body, undefined)).toBe(true);
+    expect(isChallengeResponse(429, body, {})).toBe(true);
+    expect(isChallengeResponse(503, body, {})).toBe(true);
+  });
+
+  it('isChallengeResponse: still fires for legacy body markers (parity with hasChallengeBody)', () => {
+    expect(isChallengeResponse(403, '<html>cf-browser-verification</html>', undefined)).toBe(true);
+    expect(isChallengeResponse(200, '<title>Just a moment...</title>', undefined)).toBe(true);
+  });
+
+  it('isChallengeResponse: DataDome 403 (x-dd-b block flag, cmsg body, NO CF markers) → true', () => {
+    // G2-shaped DataDome interstitial: 403 + x-dd-b:1 + x-datadome:protected +
+    // a `<p id="cmsg">Please enable JS…` body. NONE of the CF signals
+    // (cf-mitigated / dd-loader / _dd_s / challenge-platform) are present, so
+    // only the DataDome block header can catch it.
+    const ddBody =
+      '<html lang="en"><head><title>g2.com</title>' +
+      '<style>#cmsg{animation: A 1.5s;}</style></head>' +
+      '<body style="margin:0"><p id="cmsg">Please enable JS and disable any ad blocker</p></body></html>';
+    expect(isChallengeResponse(403, ddBody, { 'x-dd-b': '1' })).toBe(true);
+    expect(isChallengeResponse(403, ddBody, { 'x-datadome': 'protected' })).toBe(true);
+    // Case-insensitive on the header KEY, and a `blocked` value also counts.
+    expect(isChallengeResponse(403, ddBody, { 'X-DataDome': 'BLOCKED' })).toBe(true);
+    // Header alone is sufficient even with a bare body.
+    expect(isChallengeResponse(429, '<html><body>x</body></html>', { 'x-dd-b': '1' })).toBe(true);
+  });
+
+  it('isChallengeResponse: PerimeterX "press & hold" interstitial served at 200 → true', () => {
+    // Walmart/PerimeterX serves its human-verification interstitial at HTTP 200
+    // (masking the block), title "Robot or human?" + "Activate and hold the
+    // button…". The px sensor (window._px) rides on EVERY real page so it can't
+    // be a marker — the interstitial-only title/body text is the safe signal.
+    const pxShell =
+      '<html><head><title>Robot or human?</title></head><body>' +
+      '<div id="px-captcha"></div>' +
+      '<p>Activate and hold the button to confirm that you’re human. Thank You!</p>' +
+      '</body></html>';
+    expect(isChallengeResponse(200, pxShell, undefined)).toBe(true);
+    expect(isChallengeResponse(403, pxShell, undefined)).toBe(true);
+  });
+
+  it('isChallengeResponse: Cloudflare "Attention Required!" WAF block leaked at 200 → true', () => {
+    // Crunchbase-shaped: CF WAF block page served at 200, title "Attention
+    // Required! | Cloudflare", thin "Sorry, you have been blocked" body, none of
+    // the JS-challenge markers. Must be labeled, not returned as content.
+    const cfBlock =
+      '<html><head><title>Attention Required! | Cloudflare</title></head><body>' +
+      '<h1>Sorry, you have been blocked</h1><p>You are unable to access this site. ' +
+      'Cloudflare Ray ID: 8xy.</p></body></html>';
+    expect(isChallengeResponse(200, cfBlock, undefined)).toBe(true);
+    expect(isChallengeResponse(403, cfBlock, undefined)).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: a real 200 page whose prose mentions "robot or human" → FALSE', () => {
+    const article =
+      '<html><head><title>AI ethics deep dive</title></head><body><article>' +
+      'The perennial question of robot or human judgment recurs across the field. ' +
+      'Here is a great deal of genuine article prose so the body is unmistakably real content. '.repeat(8) +
+      '</article></body></html>';
+    expect(isChallengeResponse(200, article, undefined)).toBe(false);
+  });
+
+  it('isChallengeResponse: DataDome cmsg interstitial as a browser-tier 200 shell → true', () => {
+    // The browser tier renders DataDome's "enable JS" interstitial and
+    // Playwright reports the nav as 200. NO anti-bot status and NO block header
+    // survive to this point — only the rendered body (id="cmsg", tiny skeleton)
+    // catches it, via the 2xx-shell path in isChallengeShell.
+    const shell200 =
+      '<html lang="en"><head><title>g2.com</title>' +
+      '<style>#cmsg{animation: A 1.5s;}</style></head>' +
+      '<body style="margin:0"><p id="cmsg">Please enable JS and disable any ad blocker</p></body></html>';
+    expect(isChallengeResponse(200, shell200, undefined)).toBe(true);
+    // And at the raw HTTP 403 too.
+    expect(isChallengeResponse(403, shell200, undefined)).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: a real 200 article that quotes "id=\\"cmsg\\"" in prose → FALSE', () => {
+    // A blog post ABOUT DataDome could mention the id; the 2xx path also demands
+    // a challenge-page skeleton (tiny visible text), so substantial prose is safe.
+    const article =
+      '<html><body><h1>How DataDome interstitials work</h1><p>' +
+      'DataDome renders a paragraph with id="cmsg" on its block page. ' +
+      'Here is a great deal of genuine article prose so the body is unmistakably real content. '.repeat(8) +
+      '</p></body></html>';
+    expect(isChallengeResponse(200, article, undefined)).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: DataDome tracking header on an ALLOWED 200 response → FALSE', () => {
+    // DataDome stamps x-datadome-cid (client id) on responses it processes,
+    // INCLUDING allowed ones. That is NOT a block: only x-dd-b / an explicit
+    // protected|blocked value on an anti-bot STATUS counts.
+    const article =
+      '<html><body><h1>Real page</h1><p>' +
+      'Genuine article prose that is unmistakably content. '.repeat(10) +
+      '</p></body></html>';
+    expect(isChallengeResponse(200, article, { 'x-datadome-cid': 'abc123' })).toBe(false);
+    expect(isChallengeResponse(200, article, { 'x-datadome': 'protected' })).toBe(false);
+    // An anti-bot status but only the benign CID (no block flag/value) → FALSE.
+    expect(isChallengeResponse(403, article, { 'x-datadome-cid': 'abc123' })).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: a 200 article whose body contains /cdn-cgi/challenge-platform/ → FALSE', () => {
+    // A blog post ABOUT Cloudflare, or a page that legitimately loads a CF
+    // script, is a real 200 — the challenge-platform marker is STATUS-gated so
+    // it can never trip here.
+    const article =
+      '<html><body><h1>How Cloudflare challenge-platform works</h1>' +
+      '<p>The script lives at /cdn-cgi/challenge-platform/ and does the check. ' +
+      'Here is a lot of real article prose so this is unmistakably content. '.repeat(10) +
+      '</p></body></html>';
+    expect(isChallengeResponse(200, article, undefined)).toBe(false);
+    // Even with a benign header that is NOT cf-mitigated.
+    expect(isChallengeResponse(200, article, { server: 'cloudflare' })).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: a real 403 admin/error page with NO cf-mitigated header and NO CF markers → FALSE', () => {
+    const admin403 =
+      '<html><body><h1>403 Forbidden</h1><p>' +
+      'You do not have permission to view this resource. '.repeat(20) +
+      '</p></body></html>';
+    expect(isChallengeResponse(403, admin403, undefined)).toBe(false);
+    expect(isChallengeResponse(403, admin403, { server: 'nginx' })).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: isRateLimit / isChallengeShell are UNCHANGED by the new signal', async () => {
+    const { isRateLimit, isChallengeShell: shell } = await import('../../../src/fetch/tls-tier.js');
+    // A bare 429 with a modern header is still a challenge? isRateLimit only
+    // looks at the legacy body scan — it must NOT shift because of the header.
+    expect(isRateLimit(429, '')).toBe(true);
+    // isChallengeShell is body-only and must not see the new header/marker path.
+    expect(shell(403, '<html><body>no markers</body></html>')).toBe(false);
+  });
+});
+
+describe('stillShowingChallenge — browser-tier CLEAR-CHECK body predicate', () => {
+  // The browser tier's poll re-reads the RENDERED body each tick. This predicate
+  // is the "still a challenge?" clear-check — it must key on the CURRENT DOM, not
+  // the (stale) nav header, and must recognise the modern-CF rendered challenge
+  // whose only body signal is the /cdn-cgi/challenge-platform/ script, WITHOUT
+  // over-firing on a real full article that merely references that path.
+  const MODERN_CF_SKELETON =
+    '<html><head><title>Just a moment...</title></head><body>' +
+    '<div id="challenge-error-text">Verifying you are human.</div>' +
+    '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1?ray=x"></script>' +
+    '</body></html>';
+
+  it('MUST-FIRE: modern-CF rendered challenge (challenge-platform marker + skeleton) → true', async () => {
+    const { stillShowingChallenge } = await import('../../../src/fetch/tls-tier.js');
+    expect(stillShowingChallenge(MODERN_CF_SKELETON)).toBe(true);
+  });
+
+  it('MUST-FIRE: legacy challenge body (via hasBrowserChallengeBody) → true', async () => {
+    const { stillShowingChallenge } = await import('../../../src/fetch/tls-tier.js');
+    const legacy =
+      '<html><head><title>Just a moment...</title></head><body>' +
+      '<div class="cf-browser-verification"></div><div class="cf-turnstile"></div></body></html>';
+    expect(stillShowingChallenge(legacy)).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: a real full article that references /cdn-cgi/challenge-platform/ → false (skeleton gate)', async () => {
+    const { stillShowingChallenge } = await import('../../../src/fetch/tls-tier.js');
+    // The cleared page IS a real article — the clear-check must report NOT a
+    // challenge so pollUntilCleared returns cleared. A body that quotes the
+    // script path but carries substantial prose is not a skeleton.
+    const realArticle =
+      '<html><body><article><h1>How the challenge-platform works</h1>' +
+      ('The verification script lives at /cdn-cgi/challenge-platform/ and runs a check. ' +
+        'Here is a deep dive of real article prose so this is unmistakably content. '.repeat(10)) +
+      '</article></body></html>';
+    expect(stillShowingChallenge(realArticle)).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: a plain real article with no markers at all → false', async () => {
+    const { stillShowingChallenge } = await import('../../../src/fetch/tls-tier.js');
+    const article =
+      '<html><body><article>' + 'Real hydrated content here. '.repeat(50) + '</article></body></html>';
+    expect(stillShowingChallenge(article)).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: empty / nullish body → false', async () => {
+    const { stillShowingChallenge } = await import('../../../src/fetch/tls-tier.js');
+    expect(stillShowingChallenge('')).toBe(false);
+    expect(stillShowingChallenge(null)).toBe(false);
+    expect(stillShowingChallenge(undefined)).toBe(false);
   });
 });
 
@@ -433,6 +794,152 @@ describe('tls-tier: profile rotation on Cloudflare challenge', () => {
   });
 });
 
+describe('tls-tier: redirect SSRF re-guard (manual hop loop)', () => {
+  // WHY: guardedBackendFetch drives redirect:'manual' and re-guards every
+  // resolved Location with guardFetchUrl, throwing "Redirect blocked: …" on a
+  // private/metadata target. This is the THIRD re-guard site (alongside
+  // http-client + defaultPdfProbe) and had NO negative test — a silent revert
+  // to redirect:'follow' would reopen SSRF-via-redirect on the TLS tier with
+  // every other test still green. These rows pin the guard at this tier.
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    resetConfig();
+    _setTlsBackendForTests(null);
+    _resetTlsBackend();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    resetConfig();
+    _setTlsBackendForTests(null);
+    _resetTlsBackend();
+  });
+
+  // A backend whose responses are keyed by requested URL: a 3xx with a Location
+  // header per `redirects`, else a terminal 200. Records the URLs it was asked
+  // to fetch so a blocked hop can be shown to NEVER reach the backend.
+  function redirectingBackend(
+    redirects: Record<string, string>,
+    fetched: string[],
+  ) {
+    _setTlsBackendForTests({
+      fetch: async (url, init) => {
+        fetched.push(url);
+        // The guarded loop MUST drive redirects itself.
+        expect(init?.redirect).toBe('manual');
+        const loc = redirects[url];
+        if (loc) {
+          return {
+            status: 302,
+            url,
+            headers: { entries: function* () { yield ['location', loc]; } },
+            text: async () => '',
+          };
+        }
+        return {
+          status: 200,
+          url,
+          headers: { entries: function* () { yield ['content-type', 'text/html']; } },
+          text: async () => `<html><body>arrived at ${url}</body></html>`,
+        };
+      },
+    });
+  }
+
+  it('refuses a 302 into a link-local metadata address (169.254.169.254)', async () => {
+    const fetched: string[] = [];
+    redirectingBackend(
+      { 'https://public.example.net/start': 'http://169.254.169.254/latest/meta-data/' },
+      fetched,
+    );
+    await expect(tlsFetch('https://public.example.net/start')).rejects.toThrow(
+      /blocked|metadata|link-local|private/i,
+    );
+    // The metadata target must NEVER be fetched — the guard fires before the hop.
+    expect(fetched).not.toContain('http://169.254.169.254/latest/meta-data/');
+  });
+
+  it('refuses a 302 into a private RFC1918 address by default', async () => {
+    const fetched: string[] = [];
+    redirectingBackend(
+      { 'https://public.example.net/start': 'http://10.0.0.5/internal' },
+      fetched,
+    );
+    await expect(tlsFetch('https://public.example.net/start')).rejects.toThrow(
+      /blocked|private|link-local|metadata/i,
+    );
+    expect(fetched).not.toContain('http://10.0.0.5/internal');
+  });
+
+  it('follows a benign public 302 through to a 200 destination', async () => {
+    const fetched: string[] = [];
+    redirectingBackend(
+      { 'https://public.example.net/start': 'https://public.example.org/final' },
+      fetched,
+    );
+    const result = await tlsFetch('https://public.example.net/start');
+    expect(result.statusCode).toBe(200);
+    expect(result.html).toContain('arrived at https://public.example.org/final');
+    // Proves the guarded loop actually followed the hop to the public target.
+    expect(fetched).toEqual([
+      'https://public.example.net/start',
+      'https://public.example.org/final',
+    ]);
+  });
+
+  // A backend that records the request headers it saw per URL.
+  function headerRecordingBackend(
+    redirects: Record<string, string>,
+    seen: Record<string, Record<string, string> | undefined>,
+  ) {
+    _setTlsBackendForTests({
+      fetch: async (url, init) => {
+        seen[url] = init?.headers as Record<string, string> | undefined;
+        const loc = redirects[url];
+        if (loc) {
+          return {
+            status: 302,
+            url,
+            headers: { entries: function* () { yield ['location', loc]; } },
+            text: async () => '',
+          };
+        }
+        return {
+          status: 200,
+          url,
+          headers: { entries: function* () { yield ['content-type', 'text/html']; } },
+          text: async () => `<html><body>arrived at ${url}</body></html>`,
+        };
+      },
+    });
+  }
+
+  it('CROSS-DOMAIN: drops an injected Cookie header on a cross-host redirect hop', async () => {
+    const seen: Record<string, Record<string, string> | undefined> = {};
+    headerRecordingBackend(
+      { 'https://a.example.net/start': 'https://b.example.org/final' },
+      seen,
+    );
+    await tlsFetch('https://a.example.net/start', { headers: { Cookie: 'cf_clearance=SECRET' } });
+    // First (same-host) hop keeps the Cookie.
+    expect(seen['https://a.example.net/start']?.Cookie).toBe('cf_clearance=SECRET');
+    // Cross-host hop must NOT carry the Cookie.
+    const crossHeaders = seen['https://b.example.org/final'] ?? {};
+    expect(crossHeaders.Cookie).toBeUndefined();
+    expect(crossHeaders.cookie).toBeUndefined();
+  });
+
+  it('SAME-DOMAIN: keeps the Cookie header across a same-host redirect hop', async () => {
+    const seen: Record<string, Record<string, string> | undefined> = {};
+    headerRecordingBackend(
+      { 'https://a.example.net/start': 'https://a.example.net/next' },
+      seen,
+    );
+    await tlsFetch('https://a.example.net/start', { headers: { Cookie: 'cf_clearance=SECRET' } });
+    expect(seen['https://a.example.net/next']?.Cookie).toBe('cf_clearance=SECRET');
+  });
+});
+
 describe('tls-tier: MCP-stdio safety', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
@@ -606,4 +1113,50 @@ describe.skipIf(!wreqJsAvailable)('tls-tier: real wreq-js binary stdio safety', 
 
     expect(stdoutWrites).toBe(0);
   }, 20000);
+});
+
+describe('tls-tier: GENERAL vendor-agnostic bot-wall shape (isLowContentDensity)', () => {
+  // WHY this exists: the CHALLENGE_MARKERS list is a catalog of vendor templates
+  // we have already met, so every new vendor/variant leaks its block page as
+  // "content" until someone adds another string. Shape generalises — a wall is a
+  // large all-scaffolding document with no human-readable text, whoever served
+  // it. Live-measured density: real/substantive pages 0.28-0.93, vendor walls
+  // ~0.006 (two orders of magnitude apart).
+  const wall =
+    '<html><head><title>Denied</title>' +
+    '<style>' + '.a{color:#fff;padding:1px}'.repeat(60) + '</style>' +
+    '<script>' + 'var x=1;function f(){return x;}'.repeat(60) + '</script>' +
+    '</head><body><div class="blocked"></div><p>Denied</p></body></html>';
+
+  it('classifies a wall-shaped body at an anti-bot status as a challenge WITHOUT any vendor marker', async () => {
+    const { isLowContentDensity, isChallengeShell: shell } = await import('../../../src/fetch/tls-tier.js');
+    expect(wall).not.toContain('px-captcha');
+    expect(wall).not.toContain('cf-browser-verification');
+    expect(isLowContentDensity(wall)).toBe(true);
+    expect(shell(403, wall)).toBe(true);
+    expect(shell(429, wall)).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: the same wall shape at 2xx stays FALSE (an un-hydrated SPA shell looks identical)', async () => {
+    const { isChallengeShell: shell } = await import('../../../src/fetch/tls-tier.js');
+    // Status is the other half of the gate; without it a thin 200 body would be
+    // treated as a wall and ordinary SPA pages would break.
+    expect(shell(200, wall)).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: a SUBSTANTIVE 403 page passes through (admin/permission pages are real content)', async () => {
+    const { isLowContentDensity, isChallengeShell: shell } = await import('../../../src/fetch/tls-tier.js');
+    const substantive =
+      '<html><body><h1>Forbidden</h1><p>' +
+      'You do not have permission to view this resource, and here is a genuine explanation. '.repeat(12) +
+      '</p></body></html>';
+    expect(isLowContentDensity(substantive)).toBe(false);
+    expect(shell(403, substantive)).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: a tiny body is below the size floor (its ratio is noise)', async () => {
+    const { isLowContentDensity, isChallengeShell: shell } = await import('../../../src/fetch/tls-tier.js');
+    expect(isLowContentDensity('<html><body>no markers</body></html>')).toBe(false);
+    expect(shell(403, '<html><body>no markers</body></html>')).toBe(false);
+  });
 });

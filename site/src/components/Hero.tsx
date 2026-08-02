@@ -6,7 +6,7 @@ import styles from "./Hero.module.css";
 
 function CopyField() {
   const [copied, setCopied] = useState(false);
-  const cmd = "npx wigolo init --non-interactive --agents=<your-agent>";
+  const cmd = "npx wigolo init --agents=<your-agent>";
   return (
     <button
       className={styles.copy}
@@ -39,14 +39,16 @@ export default function Hero() {
             into your local agent.
           </h1>
           <p className={styles.lede}>
-            wigolo is a local-first MCP server that hands any coding agent the
-            whole web — search, fetch, crawl, extract, cache, and research.
-            Built to stand with the best tools in the lane. No API keys. No
-            cloud. No metered bill.
+            wigolo is a local-first server that hands any AI agent the whole
+            web — search, fetch, crawl, extract, cache, and research. In your
+            editor over MCP, in your framework through an SDK, or in your
+            self-hosted stack over REST. No API keys. No cloud. No metered
+            bill.
           </p>
           <p className={styles.agents}>
             claude code · cursor · codex · gemini cli · vs code · windsurf ·
-            zed · antigravity — and any other agent, through MCP
+            zed · antigravity · langchain · crewai · n8n — and any other agent,
+            through MCP, REST, or the SDKs
           </p>
         </div>
 

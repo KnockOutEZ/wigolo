@@ -1,4 +1,4 @@
-import { getConfig } from '../config.js';
+import { getConfig, type Config } from '../config.js';
 import { createLogger } from '../logger.js';
 import { contentAppearsEmpty } from './content-check.js';
 import { getAuthOptions } from './auth.js';
@@ -8,8 +8,9 @@ import {
   tlsFetch,
   isAntiBotSignal,
   isAntiBotStatus,
+  isChallengeShell,
+  isChallengeResponse,
   isRateLimit,
-  hasChallengeBody,
   looksJsRequired,
   describeAntiBot,
   TlsTierUnavailableError,
@@ -18,10 +19,41 @@ import {
 import {
   getDomainRouting,
   recordTlsImpersonationSuccess,
+  getDomainClearance,
+  clearDomainClearance,
+  getBackoff,
+  recordBackoff,
+  type DomainClearance,
 } from '../cache/store.js';
+import {
+  parseRetryAfter,
+  clampBackoffMs,
+  DEFAULT_BACKOFF_MS,
+} from './politeness.js';
+import { resolveStealthUA } from './stealth.js';
+import {
+  CLEARANCE_COOKIE_NAME,
+  clearanceCookieValue,
+  isClearanceFresh,
+  isClearanceReusable,
+  parsedClearanceCookie,
+  type ClearanceTier,
+} from './clearance-reuse.js';
+import { ChallengeBlockedError } from './browser-pool.js';
+import { classifyChallenge } from './challenge-classify.js';
+import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
-import type { RawFetchResult, BrowserAction, Mode, StageError } from '../types.js';
 import { guardNavigation, type NavSource } from '../security/ssrf.js';
+import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
+import {
+  isRedditUrl,
+  fetchViaRedditApi,
+  RedditTokenManager,
+  RedditRateLimitError,
+  type RedditCredentials,
+} from './reddit-api.js';
+import { redditApiConfigured } from '../config.js';
+import type { RawFetchResult, BrowserAction, Mode, StageError, ContentCompleteness } from '../types.js';
 
 // Domains we know up-front are heavily client-rendered. HTTP-first detection
 // keeps mis-classifying these (react.dev SSRs enough nav text to clear the
@@ -113,10 +145,28 @@ export interface HttpClient {
   }>;
 }
 
+/**
+ * Options accepted by the browser tier's `fetchWithBrowser`. `stealth` opts a
+ * single fetch into the dedicated anti-bot fingerprint-hardening context path.
+ */
+export interface BrowserFetchArgs {
+  headers?: Record<string, string>;
+  storageStatePath?: string;
+  userDataDir?: string;
+  screenshot?: boolean;
+  actions?: BrowserAction[];
+  cdpUrl?: string;
+  signal?: AbortSignal;
+  stealth?: boolean;
+  injectedCookies?: Array<{ name: string; value: string; domain: string; path?: string }>;
+  /** Force a proxy-free browser launch for this fetch (managed-challenge direct-retry). */
+  forceNoProxy?: boolean;
+}
+
 export interface BrowserPoolInterface {
   fetchWithBrowser(
     url: string,
-    options?: { headers?: Record<string, string>; storageStatePath?: string; userDataDir?: string; screenshot?: boolean; actions?: BrowserAction[]; cdpUrl?: string; signal?: AbortSignal },
+    options?: BrowserFetchArgs,
   ): Promise<RawFetchResult>;
   /** Optional pre-launch of the browser engine so a later fetch doesn't pay
    *  cold-start inline. Idempotent + best-effort. Pools that don't implement it
@@ -132,7 +182,7 @@ export type HttpFetcher = (
 export type PlaywrightFetcher = (
   url: string,
   options?: { timeoutMs?: number; signal?: AbortSignal },
-) => Promise<{ html: string; text: string }>;
+) => Promise<{ html: string; text: string; completeness: ContentCompleteness }>;
 
 /**
  * Injectable TLS-impersonation fetcher. Same shape as `tlsFetch`
@@ -157,6 +207,23 @@ export interface TlsRoutingPersistence {
   recordSuccess(domain: string): void;
 }
 
+/**
+ * Anti-bot clearance store seam (S-A2). The router reads a stored clearance
+ * before a dispatch and purges a dead one after a re-challenge. Injectable so
+ * router unit tests exercise reuse without a DB; defaults to the cache store.
+ *
+ * S-A5 extends the seam with the per-host rate-limit backoff window so the same
+ * injection point covers both clearance reuse and origin-politeness backoff.
+ */
+export interface ClearanceStore {
+  get(host: string): DomainClearance | null;
+  clear(host: string): void;
+  /** Epoch ms when the host's rate-limit cooldown ends, or null when none. */
+  getBackoff(host: string): number | null;
+  /** Record a per-host rate-limit cooldown (epoch ms). */
+  recordBackoff(host: string, untilEpochMs: number): void;
+}
+
 export interface SmartRouterOptions {
   httpClient?: HttpClient;
   browserPool?: BrowserPoolInterface;
@@ -166,8 +233,30 @@ export interface SmartRouterOptions {
   tlsFetcher?: TlsFetcher;
   /** Persistence for `prefer_tls_impersonation` learning. */
   tlsPersistence?: TlsRoutingPersistence;
+  /** Anti-bot clearance reuse store. Defaults to the cache store. */
+  clearanceStore?: ClearanceStore;
   /** Overrides the default HEAD/magic-bytes PDF probe (tests inject a stub). */
   pdfProbe?: PdfProbe;
+  /**
+   * Coordinates lazy browser-engine acquisition when the browser tier is
+   * entered on a machine without the browser installed. Injectable so router
+   * tests can control the acquisition outcome without touching the installer.
+   * Defaults to a shared {@link BrowserAcquirer}.
+   */
+  browserAcquirer?: BrowserAcquirer;
+  /**
+   * Opt-in Tier-B escape-hatch fetchers (challenge-solver + hosted reader).
+   * Injectable so router tests exercise the ladder without the real network
+   * rungs. Defaults to a lazy `import('./escape-hatch.js')` so a default
+   * install never loads the module.
+   */
+  escapeHatch?: EscapeHatchFetchers;
+}
+
+/** The two escape-hatch rung fetchers, injectable for tests. */
+export interface EscapeHatchFetchers {
+  solverFetch: typeof import('./escape-hatch.js').solverFetch;
+  hostedReaderFetch: typeof import('./escape-hatch.js').hostedReaderFetch;
 }
 
 interface DomainStats {
@@ -229,19 +318,65 @@ export async function defaultPdfProbe(url: string, signal?: AbortSignal): Promis
   const probeTimeoutMs = 3000;
   const timeout = AbortSignal.timeout(probeTimeoutMs);
   const combined = signal ? anySignal([signal, timeout]) : { signal: timeout, cleanup: () => {} };
+  const allowPrivate = getConfig().fetchAllowPrivate;
+  const maxHops = getConfig().maxRedirects;
+
+  // Manual, SSRF-re-guarded redirect follower. `redirect:'follow'` would let a
+  // public URL 302 the probe onto a private/metadata target; instead we follow
+  // hops ourselves and re-guard every resolved Location. A blocked hop resolves
+  // to `null` so the caller treats it as a probe failure (non-fatal by
+  // contract) rather than issuing the request.
+  const guardedFetch = async (
+    target: string,
+    init: { method: string; headers?: Record<string, string> },
+  ): Promise<Response | null> => {
+    let current = target;
+    const seen = new Set<string>();
+    for (let hop = 0; hop <= maxHops; hop++) {
+      if (seen.has(current)) return null;
+      seen.add(current);
+      // Fetch-time SSRF re-check. `guardFetchUrl` (applied on the redirect
+      // Location below) only validates the LITERAL host, so a public hostname
+      // whose DNS record points at a blocked address (cloud metadata /
+      // RFC-1918 / loopback in serve mode) passes it and is only caught here,
+      // before we connect. Applies to the input target AND every redirect
+      // hop. Skip literal IPs — already validated. Same allowPrivate policy
+      // as the literal guard.
+      {
+        const rhost = new URL(current).hostname;
+        const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(rhost) || rhost.includes(':');
+        if (!isIpLiteral) {
+          const resolved = await guardResolvedHost(rhost, 'target url', { allowPrivate });
+          if (!resolved.ok) return null;
+        }
+      }
+      const resp = await fetch(current, { ...init, redirect: 'manual', signal: combined.signal });
+      if (resp.status >= 300 && resp.status < 400) {
+        const loc = resp.headers.get('location');
+        if (!loc) return resp;
+        try { await resp.arrayBuffer(); } catch { /* drain */ }
+        current = new URL(loc, current).toString();
+        if (!guardFetchUrl(current, 'redirect location', { allowPrivate }).ok) return null;
+        continue;
+      }
+      return resp;
+    }
+    return null;
+  };
+
   try {
-    const head = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: combined.signal });
+    const head = await guardedFetch(url, { method: 'HEAD' });
+    if (!head) return false;
     const ct = head.headers.get('content-type')?.toLowerCase() ?? '';
     if (ct.includes('application/pdf')) return true;
     // HEAD returned a definitive non-PDF content-type → trust it, skip the GET.
     if (ct && !ct.includes('application/octet-stream')) return false;
     // No / ambiguous content-type: sniff the first bytes with a ranged GET.
-    const ranged = await fetch(url, {
+    const ranged = await guardedFetch(url, {
       method: 'GET',
-      redirect: 'follow',
       headers: { Range: 'bytes=0-15' },
-      signal: combined.signal,
     });
+    if (!ranged) return false;
     const rangedCt = ranged.headers.get('content-type')?.toLowerCase() ?? '';
     if (rangedCt.includes('application/pdf')) return true;
     // Read only the first chunk from the stream — a server that ignores the
@@ -262,6 +397,11 @@ export async function defaultPdfProbe(url: string, signal?: AbortSignal): Promis
   } finally {
     combined.cleanup();
   }
+}
+
+/** A fetch outcome is a StageError (not content) when it carries a string `error`. */
+function isStageError(x: RawFetchResult | StageError): x is StageError {
+  return 'error' in x && typeof (x as { error?: unknown }).error === 'string';
 }
 
 function isKnownSpaDomain(host: string): boolean {
@@ -310,6 +450,34 @@ export function isAntiBotTlsFirstUrl(url: string, extraDomains: readonly string[
   return isAntiBotTlsDomain(host, extraDomains);
 }
 
+/**
+ * Whether a browser-tier fetch should use the dedicated anti-bot
+ * fingerprint-hardening (stealth) context, given the configured mode and
+ * whether THIS browser fetch was reached via an anti-bot / challenge
+ * escalation.
+ *
+ *   - 'off'  → never harden.
+ *   - 'on'   → harden every browser fetch.
+ *   - 'auto' → harden ONLY an anti-bot / challenge escalation (a bot wall the
+ *              lower tiers could not clear). A benign SPA-shell render or an
+ *              explicit browser request (render_js:'always' / auth / actions)
+ *              is left on the pooled default fingerprint — hardening a benign
+ *              page adds cost + a distinct context for no anti-bot benefit.
+ */
+export function stealthForBrowser(
+  config: Pick<Config, 'stealth'>,
+  ctx: { antiBotEscalation: boolean },
+): boolean {
+  switch (config.stealth) {
+    case 'off':
+      return false;
+    case 'on':
+      return true;
+    default:
+      return ctx.antiBotEscalation;
+  }
+}
+
 // Connection-level timeout / reset errors that surface as a THROW
 // (no HTTP status) rather than a response. Mirrors the retryable set the HTTP
 // client uses; the AbortSignal.timeout path throws TimeoutError, while raw
@@ -332,6 +500,13 @@ export class SmartRouter {
   private readonly tlsFetcher: TlsFetcher;
   private readonly tlsPersistence: TlsRoutingPersistence;
   private readonly pdfProbe: PdfProbe;
+  private readonly browserAcquirer: BrowserAcquirer;
+  private readonly clearanceStore: ClearanceStore;
+  private readonly escapeHatchOverride: EscapeHatchFetchers | undefined;
+  /** Lazily-minted Reddit OAuth token manager. Created on the first Reddit-API
+   * route and reused so the app-only token is minted at most once per window.
+   * Keyed on the resolved client id so a credential change re-mints. */
+  private redditTokenManager: { key: string; mgr: RedditTokenManager } | null = null;
 
   constructor(httpClient: HttpClient, browserPool: BrowserPoolInterface);
   constructor(options: SmartRouterOptions);
@@ -351,7 +526,9 @@ export class SmartRouter {
         'playwrightFetcher' in httpClientOrOptions ||
         'tlsFetcher' in httpClientOrOptions ||
         'tlsPersistence' in httpClientOrOptions ||
-        'pdfProbe' in httpClientOrOptions)
+        'clearanceStore' in httpClientOrOptions ||
+        'pdfProbe' in httpClientOrOptions ||
+        'escapeHatch' in httpClientOrOptions)
     ) {
       const opts = httpClientOrOptions as SmartRouterOptions;
       if (!opts.httpFetcher && !opts.httpClient) {
@@ -364,6 +541,9 @@ export class SmartRouter {
       this.tlsFetcher = opts.tlsFetcher ?? tlsFetch;
       this.tlsPersistence = opts.tlsPersistence ?? defaultTlsPersistence();
       this.pdfProbe = opts.pdfProbe ?? defaultPdfProbe;
+      this.browserAcquirer = opts.browserAcquirer ?? new BrowserAcquirer();
+      this.clearanceStore = opts.clearanceStore ?? defaultClearanceStore();
+      this.escapeHatchOverride = opts.escapeHatch;
       return;
     } else {
       // Backwards-compat: single HttpClient positional (unusual but safe)
@@ -374,6 +554,88 @@ export class SmartRouter {
     this.tlsFetcher = tlsFetch;
     this.tlsPersistence = defaultTlsPersistence();
     this.pdfProbe = defaultPdfProbe;
+    this.browserAcquirer = new BrowserAcquirer();
+    this.clearanceStore = defaultClearanceStore();
+  }
+
+  /**
+   * The stored clearance for `host` when it is fresh AND presentable by `tier`
+   * AND route-identity-matched to the current egress, else null. Purges an
+   * EXPIRED entry as a side-effect so a dead cookie is not carried forward. A UA
+   * mismatch (e.g. a Firefox-minted clearance for the Chromium browser tier) OR
+   * a route mismatch (a clearance solved direct being replayed behind a proxy,
+   * or vice-versa) returns null WITHOUT clearing — the entry may still be valid
+   * for another tier / another egress route.
+   */
+  private clearanceFor(host: string, tier: ClearanceTier): DomainClearance | null {
+    let stored: DomainClearance | null;
+    try {
+      stored = this.clearanceStore.get(host);
+    } catch {
+      return null;
+    }
+    if (!stored) return null;
+    // Expiry is checked here rather than left to the composite below because it
+    // is the only gate with a SIDE EFFECT: a dead cookie is purged so it is not
+    // replayed next time. Every other gate is a pure refusal.
+    const now = Date.now();
+    if (!isClearanceFresh(stored, now)) {
+      try { this.clearanceStore.clear(host); } catch { /* best-effort */ }
+      return null;
+    }
+    // The remaining gates (UA-presentable by this tier, route-identity matched,
+    // carries a real cf_clearance) live in ONE composite predicate so a caller
+    // cannot accidentally skip one. Route identity matters because a
+    // cf_clearance is bound to the {IP + UA + TLS} of the egress it was solved
+    // on (FlareSolverr #871): a mismatch hard-refuses reuse but does NOT clear —
+    // the clearance may still be valid for its own route.
+    const currentRoute = getConfig().proxyUrl ?? 'direct';
+    if (!isClearanceReusable(stored, tier, currentRoute, now)) return null;
+    return stored;
+  }
+
+  /**
+   * Merge a reused clearance `Cookie:` header for the header tiers (tls/http)
+   * into `headers` without clobbering caller headers. Returns the original
+   * reference when there is no usable clearance so no allocation happens on the
+   * common path.
+   */
+  private withClearanceHeader(
+    host: string,
+    tier: 'tls' | 'http',
+    headers?: Record<string, string>,
+  ): Record<string, string> | undefined {
+    const clearance = this.clearanceFor(host, tier);
+    if (!clearance) return headers;
+    const value = clearanceCookieValue(clearance.cookie);
+    if (value == null) return headers;
+    const existingCookie = headers?.['Cookie'] ?? headers?.['cookie'];
+    const cookieValue = existingCookie
+      ? `${existingCookie}; ${CLEARANCE_COOKIE_NAME}=${value}`
+      : `${CLEARANCE_COOKIE_NAME}=${value}`;
+    return { ...headers, Cookie: cookieValue };
+  }
+
+  /**
+   * HTTP-tier dispatch that injects a reused clearance `Cookie:` header for the
+   * URL's host (best-effort cross-tier). Every real HTTP dispatch routes through
+   * here so no call site is left unthreaded. The http-client's redirect follower
+   * strips the Cookie on a cross-host hop, so the cookie never leaks.
+   */
+  private async httpClientFetch(
+    url: string,
+    opts: {
+      headers?: Record<string, string>;
+      timeoutMs?: number;
+      conditionalHeaders?: RouterFetchOptions['conditionalHeaders'];
+      signal?: AbortSignal;
+    },
+  ): Promise<Awaited<ReturnType<HttpClient['fetch']>>> {
+    if (!this.httpClient) throw new Error('SmartRouter: httpClient not configured');
+    let host: string | null = null;
+    try { host = new URL(url).hostname; } catch { host = null; }
+    const headers = host ? this.withClearanceHeader(host, 'http', opts.headers) : opts.headers;
+    return this.httpClient.fetch(url, { ...opts, headers });
   }
 
   private makeDefaultHttpFetcher(): HttpFetcher {
@@ -381,7 +643,7 @@ export class SmartRouter {
       if (!this.httpClient) {
         throw new Error('SmartRouter: httpClient not configured');
       }
-      const r = await this.httpClient.fetch(url, opts);
+      const r = await this.httpClientFetch(url, opts ?? {});
       return { url: r.url, html: r.html, text: '' };
     };
   }
@@ -400,7 +662,7 @@ export class SmartRouter {
     domain: string,
     opts: { headers?: Record<string, string>; screenshot?: boolean; conditionalHeaders?: RouterFetchOptions['conditionalHeaders']; signal?: AbortSignal },
     logger: ReturnType<typeof createLogger>,
-  ): Promise<RawFetchResult> {
+  ): Promise<RawFetchResult | StageError> {
     const { headers, screenshot, conditionalHeaders, signal } = opts;
     // An extension-typed binary already routed to HTTP upstream, so this probe
     // only fires for extensionless URLs about to hit the browser.
@@ -414,13 +676,276 @@ export class SmartRouter {
       if (isPdf) {
         if (!this.httpClient) throw new Error('SmartRouter: httpClient not configured');
         logger.debug('content-type probe identified a PDF, routing to http instead of browser', { url, domain });
-        const result = await this.httpClient.fetch(url, { headers, conditionalHeaders, signal });
+        const result = await this.httpClientFetch(url, { headers, conditionalHeaders, signal });
         this.ensureStats(domain);
         return this.toRawFetchResult(result);
       }
     }
     if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
-    return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
+    // Domain-marked / binary auto path — not an anti-bot escalation, so 'auto'
+    // leaves it unhardened; 'on' still hardens every browser fetch.
+    return this.browserFetch(url, {
+      headers,
+      screenshot,
+      signal,
+      stealth: stealthForBrowser(getConfig(), { antiBotEscalation: false }),
+    });
+  }
+
+  /**
+   * Invoke the browser tier and map a hard bot-protection challenge
+   * (ChallengeBlockedError, thrown by the browser pool's anti-bot fast-fail)
+   * to a structured `blocked_by_challenge` stage error instead of letting it
+   * propagate as an unhandled throw. All other errors propagate unchanged.
+   * Every browser-tier call site routes through here so the mapping is uniform.
+   *
+   * This is ALSO the single lazy-acquisition choke point (D3): before touching
+   * the browser pool we ensure the browser engine is installed. When it is not,
+   * a memoized background install is joined for a bounded budget; if it hasn't
+   * finished in time we DON'T block the tool call for minutes — we fall back to
+   * the best lower-tier content the caller already has (`fallback`, when the
+   * escalation site captured an HTTP/TLS response) with an actionable note, or,
+   * when no lower-tier content exists, return an actionable stage error.
+   */
+  private async browserFetch(
+    url: string,
+    options: BrowserFetchArgs & { fallback?: RawFetchResult },
+  ): Promise<RawFetchResult | StageError> {
+    if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
+
+    const { fallback, ...browserOptions } = options;
+    const acquired = await this.browserAcquirer.ensureBrowser();
+    if (acquired !== 'ready') {
+      const logger = createLogger('fetch');
+      if (fallback) {
+        logger.info('browser engine not ready within budget — returning lower-tier content with note', { url });
+        // The browser was the escalation target because the lower tier returned
+        // a challenge shell (or an anti-bot-status challenge body). If we cannot
+        // acquire it, we must NOT fall back to returning that shell as content —
+        // guard it so a challenge fallback becomes blocked_by_challenge, while
+        // legit lower-tier content passes through unchanged with the note.
+        return this.guardChallengeShell({ ...fallback, warning: BROWSER_INSTALLING_NOTE });
+      }
+      logger.info('browser engine not ready within budget and no lower-tier content — failing with actionable error', { url });
+      return {
+        error: 'browser_engine_unavailable',
+        error_reason: BROWSER_UNAVAILABLE_ERROR,
+        stage: 'fetch',
+        hint: 'run `wigolo warmup --browser` to install the browser engine now, then retry',
+      };
+    }
+
+    // Seed a reused browser-tier clearance (same-tier preferred). Skipped for
+    // the CDP path (an external browser owns its own cookie jar) and when the
+    // caller already supplied injectedCookies. The host is scoped onto the
+    // cookie so the browser drops it on any cross-host redirect.
+    if (!browserOptions.cdpUrl && !browserOptions.injectedCookies) {
+      let host: string | null = null;
+      try { host = new URL(url).hostname; } catch { host = null; }
+      if (host) {
+        const clearance = this.clearanceFor(host, 'browser');
+        const cookie = clearance ? parsedClearanceCookie(clearance.cookie, host) : null;
+        if (cookie) {
+          browserOptions.injectedCookies = [cookie];
+        }
+      }
+    }
+
+    try {
+      // Guard the browser SUCCESS return: a browser result that is STILL a
+      // challenge (an uncleared modern-CF interstitial that reports 403 +
+      // cf-mitigated + a challenge body) must become a labeled
+      // blocked_by_challenge, never leak the shell as content. guardChallengeShell
+      // runs isChallengeResponse(status, html, headers). A CLEARED challenge is
+      // safe here: the browser pool normalises a cleared result to 200 and drops
+      // the stale cf-mitigated header, so the guard only fires on a genuine
+      // still-challenge; normal content passes through unchanged.
+      const guarded = this.guardChallengeShell(await this.browserPool.fetchWithBrowser(url, browserOptions));
+      // A guarded still-challenge (StageError) is a managed-challenge block just
+      // like a thrown ChallengeBlockedError — give it the same direct-retry.
+      if (isStageError(guarded) && guarded.error === 'blocked_by_challenge') {
+        const retried = await this.retryDirectOnChallenge(url, browserOptions);
+        if (retried) return retried;
+      }
+      return guarded;
+    } catch (err) {
+      if (err instanceof ChallengeBlockedError) {
+        // Managed-challenge direct-retry (T3-H): a datacenter proxy converts
+        // many managed-challenge passes into blocks; direct residential-grade
+        // egress often clears. When a proxy is in use, try ONE proxy-free
+        // browser fetch before the escape-hatch/fast-fail below.
+        const retried = await this.retryDirectOnChallenge(url, browserOptions);
+        if (retried) return retried;
+        // Terminal browser challenge-block. Before returning the fast-fail, try
+        // the opt-in escape-hatch rungs (solver → hosted reader) IF configured.
+        // Unconfigured rungs no-op and never load the module (default path).
+        const cleared = await this.tryEscapeHatch(url, browserOptions.signal);
+        if (cleared) return cleared;
+        return {
+          error: err.code,
+          error_reason: err.message,
+          stage: 'fetch',
+          hint: err.hint,
+          // Surface the underlying anti-bot status (403/429/503) when known so a
+          // hard challenge-block reaches the crawl adaptive-cooldown. Undefined
+          // when no reliable status exists — never invented.
+          ...(err.httpStatus !== undefined ? { http_status: err.httpStatus } : {}),
+          // Solve-ladder provenance: the classified challenge class, plus a null
+          // solve method (no rung cleared it — the honest block).
+          ...(err.challengeClass !== undefined ? { challenge_class: err.challengeClass } : {}),
+          solve_method: null,
+        };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Managed-challenge direct-retry (T3-H). When a proxy IS in use and the
+   * browser tier hit a managed-challenge block, attempt ONE additional direct
+   * (no-proxy) browser fetch — a datacenter proxy often blocks a managed
+   * challenge that direct residential-grade egress would clear, and wigolo
+   * cannot know the proxy's ASN type. Returns the cleared content on success,
+   * or null to fall through to the normal fast-fail. No-op (returns null,
+   * NO extra fetch) when: the knob is off, no proxy is configured, or this call
+   * is already a no-proxy attempt.
+   */
+  private async retryDirectOnChallenge(
+    url: string,
+    browserOptions: BrowserFetchArgs,
+  ): Promise<RawFetchResult | null> {
+    const cfg = getConfig();
+    if (
+      !this.browserPool ||
+      browserOptions.forceNoProxy ||
+      !cfg.proxyBypassOnChallenge ||
+      !cfg.useProxy ||
+      !cfg.proxyUrl ||
+      browserOptions.cdpUrl
+    ) {
+      return null;
+    }
+    const logger = createLogger('fetch');
+    logger.info('managed-challenge block behind a proxy — retrying once with direct egress', { url });
+    try {
+      const direct = this.guardChallengeShell(
+        await this.browserPool.fetchWithBrowser(url, { ...browserOptions, forceNoProxy: true }),
+      );
+      if (isStageError(direct)) return null; // still blocked — fall through to fast-fail
+      logger.info('direct-egress retry cleared the managed challenge', { url });
+      return direct;
+    } catch {
+      // A direct retry that itself errors (incl. another ChallengeBlockedError)
+      // falls through to the normal fast-fail path — never surface a new throw.
+      return null;
+    }
+  }
+
+  /**
+   * Opt-in Tier-B escape-hatch ladder, tried only after the browser tier hits a
+   * hard challenge-block. Rungs are attempted in order: challenge-solver, then
+   * hosted reader. Each is OFF unless its URL is configured; when neither is
+   * configured this returns null WITHOUT loading the escape-hatch module, so a
+   * default install never pays for it. Any rung that clears the page wins.
+   */
+  private async tryEscapeHatch(
+    url: string,
+    signal: AbortSignal | undefined,
+  ): Promise<RawFetchResult | null> {
+    const cfg = getConfig();
+    if (!cfg.solverUrl && !cfg.hostedReaderUrl) return null;
+
+    const fetchers =
+      this.escapeHatchOverride ?? (await import('./escape-hatch.js'));
+    const hatchCfg = {
+      solverUrl: cfg.solverUrl,
+      hostedReaderUrl: cfg.hostedReaderUrl,
+      fetchAllowPrivate: cfg.fetchAllowPrivate,
+      maxRedirects: cfg.maxRedirects,
+      fetchTimeoutMs: cfg.fetchTimeoutMs,
+    };
+
+    if (cfg.solverUrl) {
+      const solved = await fetchers.solverFetch(url, hatchCfg, { signal });
+      if (solved) return solved;
+    }
+    if (cfg.hostedReaderUrl) {
+      const read = await fetchers.hostedReaderFetch(url, hatchCfg, { signal });
+      if (read) return read;
+    }
+    return null;
+  }
+
+  /**
+   * Terminal choke point: never return a challenge-shell body as final fetch
+   * content. When a lower tier's result is about to exit to the caller as final
+   * content (http-only mode, TLS terminal, escalation exhausted) and the body
+   * classifies as a challenge shell (challenge markers + skeleton, at any HTTP
+   * status), map it to the same `blocked_by_challenge` stage error the browser
+   * tier raises — the caller gets a structured, actionable error instead of the
+   * interstitial markdown. A clean result passes through untouched.
+   */
+  private guardChallengeShell(raw: RawFetchResult): RawFetchResult | StageError {
+    if (isChallengeResponse(raw.statusCode, raw.html, raw.headers)) {
+      const err = new ChallengeBlockedError(raw.url);
+      // Prefer any class the browser tier's ladder already assigned; otherwise
+      // classify the shell body here so a lower-tier (HTTP/TLS) block still
+      // reports its challenge class. solve_method is null — no rung cleared it.
+      const challengeClass = raw.challenge_class ?? classifyChallenge(raw.html);
+      return {
+        error: err.code,
+        error_reason: err.message,
+        stage: 'fetch',
+        hint: err.hint,
+        // Carry the anti-bot status of the shell result (403/429/503) so the
+        // crawl cooldown sees it. A challenge served at 2xx has no anti-bot
+        // status to thread, so leave it unset there.
+        ...(isAntiBotStatus(raw.statusCode) ? { http_status: raw.statusCode } : {}),
+        ...(challengeClass !== undefined ? { challenge_class: challengeClass } : {}),
+        solve_method: null,
+      };
+    }
+    return raw;
+  }
+
+  /**
+   * Try the opt-in Reddit OAuth-API path. Returns the mapped RawFetchResult on
+   * success, or null when the URL shape is unsupported by the API (caller falls
+   * through to the normal ladder). On a token/network/rate-limit failure it also
+   * returns null so the caller degrades gracefully to the honest normal ladder
+   * rather than hard-failing the whole fetch.
+   */
+  private async tryRedditApi(url: string, config: Config, signal?: AbortSignal): Promise<RawFetchResult | null> {
+    const logger = createLogger('fetch');
+    const creds: RedditCredentials = {
+      // redditApiConfigured() guaranteed both are non-null before this call.
+      clientId: config.redditClientId as string,
+      clientSecret: config.redditClientSecret as string,
+      userAgent: config.redditUserAgent,
+    };
+    // Reuse a token manager keyed on the client id so the app-only token is
+    // minted once per validity window; re-mint if the credential changed.
+    if (!this.redditTokenManager || this.redditTokenManager.key !== creds.clientId) {
+      this.redditTokenManager = { key: creds.clientId, mgr: new RedditTokenManager(creds) };
+    }
+    try {
+      return await fetchViaRedditApi(url, this.redditTokenManager.mgr, creds, undefined, signal);
+    } catch (err) {
+      if (err instanceof RedditRateLimitError) {
+        logger.info('reddit-api rate limited — falling through to normal ladder', {
+          url,
+          retryAfterSeconds: err.retryAfterSeconds,
+        });
+        return null;
+      }
+      // Never log the error object verbatim (could echo an auth header from a
+      // fetch impl); log only the message string.
+      logger.warn('reddit-api fetch failed — falling through to normal ladder', {
+        url,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   async fetch(url: string, options: RouterFetchOptions & { mode: 'stealth' }): Promise<RawFetchResult | StageError>;
@@ -456,12 +981,43 @@ export class SmartRouter {
     const threshold = config.browserFallbackThreshold;
     const domain = new URL(url).hostname;
 
+    // Opt-in Reddit OAuth-API escape hatch. reddit.com blocks wigolo at the
+    // IP-reputation edge, so when Reddit app credentials are configured AND this
+    // is a Reddit URL, fetch via the sanctioned API instead of the normal ladder
+    // (which honestly hits the block). Credentials absent → this never fires and
+    // the normal ladder runs. A screenshot/actions request can't be served by
+    // the API, so those fall through to the browser tier.
+    if (
+      isRedditUrl(url) &&
+      redditApiConfigured(config) &&
+      !screenshot &&
+      !(actions && actions.length > 0)
+    ) {
+      const redditResult = await this.tryRedditApi(url, config, options.signal);
+      if (redditResult !== null) return redditResult;
+      logger.debug('reddit-api path did not apply — falling through to normal ladder', { url });
+    }
+
     // Stealth mode: static fetch first, escalate to Playwright when content is thin.
     if (mode === 'stealth') {
+      // A 429 backoff window is the origin rate-limiting us — stealth is the
+      // retry-past-a-block escape hatch, but it cannot clear a rate limit, so
+      // it respects the window too rather than hammering the origin.
+      const stealthBackoff = this.backoffWindowResult(url, domain);
+      if (stealthBackoff) {
+        logger.debug('host in rate-limit backoff window — skipping stealth origin fetch', { url, domain });
+        return stealthBackoff;
+      }
       logger.debug('routing to stealth (static then escalate)', { url });
       const staticResult = await this.httpFetcher(url, { headers, signal });
       this.ensureStats(domain);
-      if (!shouldEscalate(staticResult.text)) {
+      // Escalate on thin content (shouldEscalate) OR on a challenge shell. The
+      // /enable javascript/i shell already trips shouldEscalate, but a
+      // challenge skeleton that carries markers yet exceeds the 500-char floor
+      // and never says "enable javascript" would otherwise pass through — the
+      // isChallengeShell check (markers + skeleton) covers that shape too.
+      const stealthChallenge = isChallengeShell(200, staticResult.html);
+      if (!shouldEscalate(staticResult.text) && !stealthChallenge) {
         return {
           url: staticResult.url,
           finalUrl: staticResult.url,
@@ -472,6 +1028,29 @@ export class SmartRouter {
           headers: {},
         };
       }
+      // The stealth escalation uses the daemon browser helper
+      // (playwright-tier.ts), which is a browser-tier entry outside browserFetch.
+      // Thread lazy acquisition here too so no escalation call site is left
+      // unthreaded — when the browser can't be acquired within budget, return the
+      // static content already in hand with the actionable note rather than a
+      // hard failure or a minutes-long block.
+      const acquired = await this.browserAcquirer.ensureBrowser();
+      if (acquired !== 'ready') {
+        logger.info('stealth escalation: browser engine not ready within budget — returning static content with note', { url });
+        // If the static body is itself a challenge shell we cannot fall back to
+        // returning it — surface the structured challenge error instead of the
+        // interstitial markdown.
+        return this.guardChallengeShell({
+          url: staticResult.url,
+          finalUrl: staticResult.url,
+          html: staticResult.html,
+          contentType: 'text/html',
+          statusCode: 200,
+          method: 'http',
+          headers: {},
+          warning: BROWSER_INSTALLING_NOTE,
+        });
+      }
       try {
         const pw = await this.playwrightFetcher(url, { signal });
         return {
@@ -480,9 +1059,10 @@ export class SmartRouter {
           html: pw.html,
           contentType: 'text/html',
           statusCode: 200,
-          method: 'playwright',
+          method: 'browser',
           headers: {},
           escalated: true,
+          contentCompleteness: pw.completeness,
         };
       } catch (err) {
         if (err instanceof Error && err.message === 'playwright_not_installed') {
@@ -514,7 +1094,7 @@ export class SmartRouter {
       }
       logger.debug('routing to http (cache)', { url });
       if (!this.httpClient) throw new Error('SmartRouter: httpClient not configured');
-      const result = await this.httpClient.fetch(url, {
+      const result = await this.httpClientFetch(url, {
         headers,
         timeoutMs: config.fastTimeoutMs,
         conditionalHeaders,
@@ -532,7 +1112,14 @@ export class SmartRouter {
       if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
       const authOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
       logger.debug('routing to playwright', { url, reason: 'actions present' });
-      return this.browserPool.fetchWithBrowser(url, { headers, screenshot, actions, ...authOptions, signal });
+      return this.browserFetch(url, {
+        headers,
+        screenshot,
+        actions,
+        ...authOptions,
+        signal,
+        stealth: stealthForBrowser(config, { antiBotEscalation: false }),
+      });
     }
 
     // Always Playwright for auth or explicit override
@@ -540,14 +1127,22 @@ export class SmartRouter {
       if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
       const authOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
       logger.debug('routing to playwright', { url, reason: useAuth ? 'auth' : 'render_js=always' });
-      return this.browserPool.fetchWithBrowser(url, { headers, screenshot, ...authOptions, signal });
+      // Explicit browser request (auth / render_js:always) — not an anti-bot
+      // escalation, so 'auto' leaves it unhardened; 'on' still hardens.
+      return this.browserFetch(url, {
+        headers,
+        screenshot,
+        ...authOptions,
+        signal,
+        stealth: stealthForBrowser(config, { antiBotEscalation: false }),
+      });
     }
 
     // HTTP only, no fallback
     if (renderJs === 'never') {
       if (!this.httpClient) throw new Error('SmartRouter: httpClient not configured');
       logger.debug('routing to http (never)', { url });
-      const result = await this.httpClient.fetch(url, { headers, conditionalHeaders, signal });
+      const result = await this.httpClientFetch(url, { headers, conditionalHeaders, signal });
       const neverStats = this.ensureStats(domain);
       // A known-SPA domain that returns substantive
       // HTTP content on a render_js: never call proves the domain is
@@ -561,7 +1156,10 @@ export class SmartRouter {
         logger.info('known-SPA domain served substantive HTTP via render_js:never — downgrading prefer-chromium', { url, domain });
         neverStats.preferPlaywright = false;
       }
-      return this.toRawFetchResult(result);
+      // http-only mode can never escalate to the browser to clear a challenge,
+      // so a challenge shell here is terminal — surface the structured error
+      // instead of returning the interstitial markdown.
+      return this.guardChallengeShell(this.toRawFetchResult(result));
     }
 
     // Binary downloads (PDF/zip/office docs) must go to the byte tier: the
@@ -574,9 +1172,19 @@ export class SmartRouter {
     if (looksLikeBinaryDownload(url)) {
       if (!this.httpClient) throw new Error('SmartRouter: httpClient not configured');
       logger.debug('routing to http (binary download)', { url });
-      const result = await this.httpClient.fetch(url, { headers, conditionalHeaders, signal });
+      const result = await this.httpClientFetch(url, { headers, conditionalHeaders, signal });
       this.ensureStats(domain);
       return this.toRawFetchResult(result);
+    }
+
+    // auto: honor an active rate-limit backoff window before touching the
+    // origin — a 429 means the origin is rate-limiting us, so re-hammering it
+    // (any tier) does not help. Expired/absent windows fall through and fetch
+    // normally (no false positives).
+    const autoBackoff = this.backoffWindowResult(url, domain);
+    if (autoBackoff) {
+      logger.debug('host in rate-limit backoff window — skipping origin fetch', { url, domain });
+      return autoBackoff;
     }
 
     // auto: check if domain is already marked for Playwright
@@ -610,7 +1218,7 @@ export class SmartRouter {
     if (tryTlsFirst) {
       const tlsTry = await this.tryTlsTier(url, domain, headers, signal);
       if (tlsTry.ok) {
-        return tlsTry.result;
+        return this.guardChallengeShell(tlsTry.result);
       }
       // TLS failed → fall through to HTTP, then to Playwright if needed.
       logger.debug('tls-first miss, falling back to http', { url, domain, reason: tlsTry.reason });
@@ -619,11 +1227,40 @@ export class SmartRouter {
     // Try HTTP first
     try {
       if (!this.httpClient) throw new Error('SmartRouter: httpClient not configured');
-      const result = await this.httpClient.fetch(url, { headers, conditionalHeaders, signal });
+      let result = await this.httpClientFetch(url, { headers, conditionalHeaders, signal });
 
       // 304 = unchanged: pass through; never escalate to a browser.
       if (result.statusCode === 304) {
         return this.toRawFetchResult(result);
+      }
+
+      // A bare 403 (anti-bot status, no challenge body) is sometimes a
+      // UA-fingerprint block rather than a hard wall. Before paying the cost of
+      // a heavier tier, retry the HTTP fetch EXACTLY ONCE with a rotated
+      // desktop User-Agent. If the rotated attempt is no longer blocked, use it;
+      // if it is still blocked, fall through with the retried result so the
+      // existing escalation ladder runs unchanged. A 403 is NOT a rate-limit, so
+      // no backoff window is recorded. Bounded to one retry — no loop.
+      // Restricted to a BARE 403 (no challenge markers): a Cloudflare/DataDome
+      // challenge-body 403 is a strong wall a UA rotation cannot clear, so it
+      // escalates directly without paying for a doomed retry.
+      if (result.statusCode === 403 && !isChallengeResponse(result.statusCode, result.html, result.headers)) {
+        const rotatedUa = resolveStealthUA();
+        const currentUa = headers?.['User-Agent'] ?? config.userAgent;
+        if (rotatedUa !== currentUa) {
+          logger.debug('bare 403 — retrying once with a rotated user-agent', { url, domain });
+          const retried = await this.httpClientFetch(url, {
+            headers: { ...headers, 'User-Agent': rotatedUa },
+            conditionalHeaders,
+            signal,
+          });
+          if (!isAntiBotSignal(retried.statusCode, retried.html)) {
+            logger.debug('rotated user-agent cleared the 403', { url, domain });
+            return this.guardChallengeShell(this.toRawFetchResult(retried));
+          }
+          // Still blocked — carry the retried result into the escalation ladder.
+          result = retried;
+        }
       }
 
       // A PDF response is a completed byte-tier result. The HTTP tier returns
@@ -641,8 +1278,59 @@ export class SmartRouter {
       // escalation just pays the browser cold-start cost. Surface the 429
       // directly so callers (tools/fetch.ts) can map it to a stage error.
       if (isRateLimit(result.statusCode, result.html)) {
-        logger.debug('rate-limit (429) without challenge body — passing through, NOT escalating', { url, domain });
+        // Park the host in a bounded backoff window so subsequent fetches don't
+        // re-hammer it. Honor Retry-After when present; otherwise a default
+        // window. A hostile/absurd Retry-After is clamped so a domain is never
+        // parked for hours.
+        const retryMs = clampBackoffMs(
+          parseRetryAfter(result.headers['retry-after'], Date.now()) ?? DEFAULT_BACKOFF_MS,
+        );
+        try {
+          this.clearanceStore.recordBackoff(domain, Date.now() + retryMs);
+        } catch {
+          // Best-effort — never block the pass-through on a persistence miss.
+        }
+        logger.debug('rate-limited, backing off', {
+          url,
+          domain,
+          backoffSeconds: Math.round(retryMs / 1000),
+        });
         return this.toRawFetchResult(result);
+      }
+
+      // Challenge interstitial shell. Some bot walls (DataDome "enable
+      // JavaScript" pages) serve the challenge at HTTP 200, which the
+      // status-gated anti-bot checks below miss. Escalate exactly as an
+      // anti-bot-status response would — TLS first when usable, else the
+      // browser (which may clear the challenge within its settle window). This
+      // is intentionally NOT a hard fail at the HTTP tier. Restricted to the
+      // 2xx-shell case here (markers AND skeleton); status-driven signals stay
+      // with the blocks below so a bare 403 with no markers is unaffected.
+      const is2xxShell =
+        result.statusCode >= 200 && result.statusCode < 300 &&
+        isChallengeShell(result.statusCode, result.html);
+      if (is2xxShell) {
+        if (tlsUsable) {
+          const tlsTry = await this.tryTlsTier(url, domain, headers, signal);
+          if (tlsTry.ok) {
+            return this.guardChallengeShell(tlsTry.result);
+          }
+        }
+        if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
+        logger.info('challenge shell at 2xx: escalating to browser', {
+          url,
+          domain,
+          httpStatus: result.statusCode,
+          signal: describeAntiBot(result.statusCode, result.html),
+        });
+        stats.preferPlaywright = true;
+        return this.browserFetch(url, {
+          headers,
+          screenshot,
+          signal,
+          stealth: stealthForBrowser(config, { antiBotEscalation: true }),
+          fallback: this.toRawFetchResult(result),
+        });
       }
 
       // Anti-bot signal (403/503 or challenge body, plus 429 with
@@ -662,7 +1350,13 @@ export class SmartRouter {
           tlsReason: tlsTry.reason,
         });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
+        return this.browserFetch(url, {
+          headers,
+          screenshot,
+          signal,
+          stealth: stealthForBrowser(config, { antiBotEscalation: true }),
+          fallback: this.toRawFetchResult(result),
+        });
       }
 
       // With TLS tier disabled, escalate to Playwright
@@ -674,16 +1368,26 @@ export class SmartRouter {
       // on small challenge bodies, but we now gate that on 2xx-only — so
       // the bot-wall escalation must be made explicit, and the same body-
       // marker check we use elsewhere keeps it from over-firing.
-      if (!tlsTierEnabled && hasChallengeBody(result.html) && isAntiBotStatus(result.statusCode)) {
+      if (
+        !tlsTierEnabled &&
+        isAntiBotStatus(result.statusCode) &&
+        isChallengeResponse(result.statusCode, result.html, result.headers)
+      ) {
         if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
-        logger.info('anti-bot challenge body: escalating to playwright (tls tier disabled)', {
+        logger.info('anti-bot challenge: escalating to browser (tls tier disabled)', {
           url,
           domain,
           httpStatus: result.statusCode,
           signal: describeAntiBot(result.statusCode, result.html),
         });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
+        return this.browserFetch(url, {
+          headers,
+          screenshot,
+          signal,
+          stealth: stealthForBrowser(config, { antiBotEscalation: true }),
+          fallback: this.toRawFetchResult(result),
+        });
       }
 
       // SPA-shell detection is only meaningful for 2xx
@@ -697,7 +1401,14 @@ export class SmartRouter {
         if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
         logger.info('SPA shell detected, marking domain for playwright', { url, domain });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
+        // Benign SPA render — anti-bot hardening only when the mode is 'on'.
+        return this.browserFetch(url, {
+          headers,
+          screenshot,
+          signal,
+          stealth: stealthForBrowser(config, { antiBotEscalation: false }),
+          fallback: this.toRawFetchResult(result),
+        });
       }
 
       // A known-SPA domain (pre-marked preferPlaywright
@@ -713,7 +1424,11 @@ export class SmartRouter {
         stats.preferPlaywright = false;
       }
 
-      return this.toRawFetchResult(result);
+      // Final HTTP-tier content return. The explicit 2xx-shell escalation above
+      // already re-routes challenge interstitials to the browser, but guard the
+      // terminal return too so no challenge body can leak to the caller if a
+      // future branch reaches here with one.
+      return this.guardChallengeShell(this.toRawFetchResult(result));
     } catch (err) {
       stats.failureCount++;
       logger.warn('http fetch failed', {
@@ -744,7 +1459,14 @@ export class SmartRouter {
         if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
         logger.info('failure threshold reached, marking domain for playwright', { url, domain, threshold });
         stats.preferPlaywright = true;
-        return this.browserPool.fetchWithBrowser(url, { headers, screenshot, signal });
+        // Repeated plain-HTTP failure is not itself an anti-bot signal —
+        // harden only when the mode is 'on'.
+        return this.browserFetch(url, {
+          headers,
+          screenshot,
+          signal,
+          stealth: stealthForBrowser(config, { antiBotEscalation: false }),
+        });
       }
 
       throw err;
@@ -802,6 +1524,34 @@ export class SmartRouter {
     };
   }
 
+  /**
+   * When `host` is inside an active rate-limit backoff window, returns a
+   * synthetic 429 result WITHOUT touching the origin — a 429 is the origin
+   * rate-limiting us, so re-hammering it (even via stealth/force_refresh) does
+   * not help and is impolite. The plain-text body carries no challenge markers,
+   * so it maps to `http_429` downstream exactly as a real pass-through 429 does.
+   * Returns null when there is no active window (null or expired) so the caller
+   * fetches normally — no false positives.
+   */
+  private backoffWindowResult(url: string, host: string): RawFetchResult | null {
+    let backoffUntil: number | null;
+    try {
+      backoffUntil = this.clearanceStore.getBackoff(host);
+    } catch {
+      backoffUntil = null;
+    }
+    if (backoffUntil == null || Date.now() >= backoffUntil) return null;
+    return {
+      url,
+      finalUrl: url,
+      html: `host is in a rate-limit backoff window; retry after ${new Date(backoffUntil).toISOString()}`,
+      contentType: 'text/plain',
+      statusCode: 429,
+      method: 'http',
+      headers: { 'retry-after': String(Math.ceil((backoffUntil - Date.now()) / 1000)) },
+    };
+  }
+
   // --- TLS-impersonation tier helpers ---
 
   /**
@@ -824,9 +1574,14 @@ export class SmartRouter {
   ): Promise<{ ok: true; result: RawFetchResult } | { ok: false; reason: 'unavailable' | 'still_blocked' | 'js_required' | 'error'; error?: unknown }>
   {
     const logger = createLogger('fetch');
+    // Best-effort cross-tier reuse: a stored clearance for this host is injected
+    // as a Cookie header (any minting UA is allowed for the header tiers). A
+    // different JA3 may still be re-challenged — that surfaces as an anti-bot
+    // signal below and escalates normally.
+    const tlsHeaders = this.withClearanceHeader(domain, 'tls', headers);
     let r: TlsFetchResult;
     try {
-      r = await this.tlsFetcher(url, { headers, signal });
+      r = await this.tlsFetcher(url, { headers: tlsHeaders, signal });
     } catch (err) {
       if (err instanceof TlsTierUnavailableError) {
         logger.debug('tls tier unavailable, escalating', { url, domain });
@@ -866,6 +1621,12 @@ export class SmartRouter {
     }
 
     if (isAntiBotSignal(r.statusCode, r.html)) {
+      // Re-validation: if we injected a reused clearance and it STILL tripped
+      // the anti-bot wall, the stored clearance is dead for this tier — purge it
+      // so it isn't replayed, then escalate normally.
+      if (tlsHeaders !== headers) {
+        try { this.clearanceStore.clear(domain); } catch { /* best-effort */ }
+      }
       logger.info('tls tier returned anti-bot signal, escalating to playwright', {
         url,
         domain,
@@ -908,6 +1669,39 @@ export class SmartRouter {
  * the SmartRouter constructor so tests that never touch the DB never
  * trigger a `getDatabase()` call.
  */
+function defaultClearanceStore(): ClearanceStore {
+  return {
+    get(host) {
+      try {
+        return getDomainClearance(host);
+      } catch {
+        return null;
+      }
+    },
+    clear(host) {
+      try {
+        clearDomainClearance(host);
+      } catch {
+        // Best-effort — swallow.
+      }
+    },
+    getBackoff(host) {
+      try {
+        return getBackoff(host);
+      } catch {
+        return null;
+      }
+    },
+    recordBackoff(host, untilEpochMs) {
+      try {
+        recordBackoff(host, untilEpochMs);
+      } catch {
+        // Best-effort — swallow.
+      }
+    },
+  };
+}
+
 function defaultTlsPersistence(): TlsRoutingPersistence {
   return {
     getPreferTls(domain) {

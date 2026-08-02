@@ -1,15 +1,41 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 — 2026-07-17
 
-### License change (BREAKING for commercial users)
+Zero-config onboarding, full distribution surface, and a headless-first control plane — matching and going past the ergonomics of the paid tools without shedding the local semantic brain. All ten tools (search, fetch, crawl, extract, cache, find_similar, research, agent, diff, watch) keep working throughout; everything below is additive and keyless-by-default.
 
-wigolo is now distributed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0), replacing the previous Business Source License 1.1 (root) and AGPL-3.0-or-later (`wigolo-ai-sdk` subpackage). The repository is now a single license everywhere.
+### Zero-config onboarding
+- The search sidecar is no longer on the default path — the direct-engine backend is default and needs no external process, no Python, no port. The embedding model and browser engine download on **first actual use**, not at boot; a fresh install is instant and idle footprint drops to ~47 MB.
+- Headless-first CLI: every setup/diagnose/config action runs non-interactively with flags and `--json`; the interactive wizard is now opt-in (`--wizard`).
+- `doctor --fix` auto-repairs known failures (re-download a missing model, install the browser engine, clear stale sidecar state, reset stuck engine breakers — including on a running daemon).
+- Degraded states return an actionable message naming the fix; a zero-lexical-match result is never ranked top, and the anti-bot path fast-fails instead of hanging.
 
-- **Noncommercial users** (personal, research, education, hobby, charity, government): no action required. Continue using wigolo freely.
-- **Commercial users** (any company, sole proprietorship, or organization using wigolo for the benefit of a commercial entity): you now require a separate commercial license or sponsorship arrangement. Contact <ktowhid20@gmail.com>.
+### Distribution channels
+- Ships on npm (primary), a `curl … | sh` installer, a Homebrew formula, a Docker image, and a standalone single-file binary — no new native-dependency landmine. Each channel's install/upgrade/uninstall and the exact MCP wiring command are documented, with any CI-unverifiable target called out rather than left silent.
 
-The new license removes the previous BUSL change-date conversion to AGPL — there is no longer a scheduled open-source transition. The change is intentional: wigolo's commercial-rights model is now a single, plain-English license rather than a multi-layered time-bombed structure.
+### HTTP/REST API + self-host
+- `wigolo serve` exposes a plain-JSON REST surface (`POST /v1/{tool}` for all ten tools) alongside the MCP transport, plus `GET /openapi.json` (OpenAPI 3.1) and `GET /v1/tools`. Optional bearer auth (`WIGOLO_API_TOKEN` / `_FILE`); the server refuses a non-loopback bind without a token unless explicitly opted out. Transport-level body caps, per-route deadlines, and a concurrency limiter. An optional, flag-gated compatibility shim eases drop-in migration from a common hosted-scraper API.
+- Redirect-following is SSRF-re-guarded on every fetch tier; the MCP-over-HTTP transport rejects cross-origin (DNS-rebinding) requests.
+
+### SDKs
+- Thin, typed clients live in-repo: TypeScript (`sdks/typescript`, zero runtime dependencies, edge-runnable) and Python (`sdks/python`, standard library only, sync + async). One method per tool, env-driven config, and an embedded local mode that finds or starts a local server. Both are contract-locked to the live `/openapi.json` by drift tests. (Package names pending; not yet published.)
+
+### Agent-skills installer
+- `wigolo skills add|list|remove` installs an 11-pack skill catalog into every detected coding agent (project or global scope), idempotently, with receipts so it never clobbers hand-edited files and uninstall only removes what it verifiably installed.
+
+### Framework integrations
+- Opt-in wrappers under `packages/`: LangChain (tools + retriever), CrewAI (tools), LlamaIndex (reader), and a Vercel AI SDK tool factory — each thin over the server or the SDKs. The core never depends on any framework.
+
+### Anti-bot capability tier (keyless, with an honest ceiling)
+- The fetch ladder now rotates the request identity on a bare `403`, impersonates a browser's TLS fingerprint, hardens the headless browser, waits out interstitial challenges to capture and per-domain-reuse the clearance cookie, and applies polite per-domain backoff. This clears the common JS-challenge sites with no keys.
+- Honest ceiling: managed-challenge networks with IP-reputation scoring still won't issue a clearance to a datacenter or fresh residential address — for those you opt into a proxy, a challenge-solver sidecar, or a hosted reader (all off by default). When a page stays blocked, the result is a labeled `blocked_by_challenge` failure, never a challenge shell returned as content.
+
+### Enhanced shell / REPL
+- Every tool is reachable interactively and one-shot, with the **full** parameter surface derived from the tool schemas (previously only a hand-picked flag subset), tab completion for commands and flags, and unknown-flag errors with a suggestion. `--json` is available on every command (output is a single machine-readable document on stdout, logs on stderr, exit code reflects success); piping a command script to `wigolo shell --json` returns one JSON line per command with an aggregate exit code.
+- New `wigolo tune` surfaces and resets what the fetch router learned per domain (preferred tier, clearance state, backoff) — never printing secret cookie values.
+
+### Notes
+- No capability regressions: all ten tools work across MCP, REST, one-shot CLI, and the REPL with a single shared implementation. Credentials never touch `config.json` (OS keychain / encrypted file only) and are stripped from child-process environments and logs.
 
 ## v0.1.22 — 2026-05-27
 

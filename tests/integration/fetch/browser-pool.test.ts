@@ -149,7 +149,7 @@ describe('BrowserPool', () => {
 
       expect(result.url).toBe(url);
       expect(result.html).toContain('Hello browser');
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
       expect(result.statusCode).toBe(200);
       expect(result.finalUrl).toBeTruthy();
     }, 30000);
@@ -261,7 +261,7 @@ describe('BrowserPool', () => {
       const result = await pool.fetchWithBrowser(url);
 
       expect(result.html).toContain('Chromium test');
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
 
       await closeServer(testServer);
     }, 30000);

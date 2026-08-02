@@ -49,6 +49,28 @@ describe('parseInitFlags — flags', () => {
     expect(parseInitFlags(['--plain']).plain).toBe(true);
   });
 
+  it('recognizes --wizard (rich Ink TUI, not the plain-text prompt mode)', () => {
+    const out = parseInitFlags(['--wizard']);
+    expect(out.wizard).toBe(true);
+    expect(out.interactive).toBe(false);
+  });
+
+  it('recognizes --interactive (plain-text prompts) as a mode distinct from --wizard', () => {
+    // --interactive is its OWN mode (plain-text prompts), NOT an alias of the
+    // Ink wizard — it must set interactive without setting wizard.
+    const out = parseInitFlags(['--interactive']);
+    expect(out.interactive).toBe(true);
+    expect(out.wizard).toBe(false);
+  });
+
+  it('accepts --non-interactive as a no-op alongside the default (still parses)', () => {
+    // --non-interactive is a documented no-op now (unattended is the default),
+    // but it must still be ACCEPTED so published scripts keep working.
+    const out = parseInitFlags(['--non-interactive', '--agents=cursor']);
+    expect(out.nonInteractive).toBe(true);
+    expect(out.agents).toEqual(['cursor']);
+  });
+
   it('recognizes --help and -h', () => {
     expect(parseInitFlags(['--help']).help).toBe(true);
     expect(parseInitFlags(['-h']).help).toBe(true);
@@ -62,6 +84,13 @@ describe('parseInitFlags — flags', () => {
       skipVerify: true,
       plain: true,
       help: false,
+      interactive: false,
+      wizard: false,
+      // Full setup is the default: warmup is TRUE unless --no-warmup is passed.
+      warmup: true,
+      json: false,
+      provider: undefined,
+      search: undefined,
     });
   });
 });

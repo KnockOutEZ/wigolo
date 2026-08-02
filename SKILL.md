@@ -1,6 +1,6 @@
 ---
 name: wigolo
-description: Local-first web intelligence MCP server for AI coding agents. Eight tools for search, fetch, crawl, cache, extract, find similar, research, and agent-driven data gathering. No API keys. Results cached in a local knowledge store.
+description: Local-first web intelligence MCP server for AI coding agents. Ten tools for search, fetch, crawl, cache, extract, find similar, research, agent-driven data gathering, page diffing, and change watching. No API keys. Results cached in a local knowledge store.
 author: KnockOutEZ
 license: AGPL-3.0-only
 repository: https://github.com/KnockOutEZ/wigolo
@@ -25,11 +25,15 @@ tools:
     description: Multi-step research pipeline. Question decomposition, parallel sub-search, source synthesis with citations. Quick, standard, or comprehensive depth.
   - name: agent
     description: Natural-language data gathering. Plans searches/URLs, fetches in parallel within page and time budgets, optionally applies a JSON Schema to each page.
+  - name: diff
+    description: Compare two page versions — a live URL vs its cached copy, two URLs, or two markdown blobs. Unified patch, per-section hunks, or a counts summary at line, word, or section granularity.
+  - name: watch
+    description: Monitor a page for changes over time. Create lazy watch jobs on one or many URLs, list them, and check on demand with optional SSRF-guarded webhook delivery.
 ---
 
 # wigolo
 
-Local-first web intelligence MCP server for AI coding agents. Ships eight tools over stdio. All network results land in a local knowledge cache.
+Local-first web intelligence MCP server for AI coding agents. Ships ten tools over stdio. All network results land in a local knowledge cache.
 
 ## Host-LLM synthesis (read me first)
 
@@ -235,6 +239,42 @@ Example:
 
 Tip: output includes a `steps` array showing every action (plan, search, fetch, extract, synthesize) with timings. Use this to debug why an agent run produced a weak result.
 
+### diff
+
+Compare two versions of a page. Point it at a live URL and its cached copy, two URLs, or two markdown blobs.
+
+Parameters:
+- `old` (object, required): one of `{ url, markdown, content_hash }`
+- `new` (object, required): one of `{ url, markdown }`
+- `output`: `"unified"` (default), `"hunks"`, or `"summary"`
+- `granularity`: `"line"` (default), `"word"`, or `"section"`
+
+Example:
+```json
+{ "old": { "url": "https://docs.example.com/api" }, "new": { "url": "https://docs.example.com/api" }, "output": "hunks", "granularity": "section" }
+```
+
+Tip: same URL on both sides diffs the cached copy against a fresh fetch. Use `output: "summary"` for counts only.
+
+### watch
+
+Monitor a page for changes over time. Lazy execution — checks run when you call `check` or when an overdue job is picked up during another tool run.
+
+Parameters:
+- `action` (string, required): `"create"`, `"list"`, `"check"`, `"pause"`, `"resume"`, `"delete"`
+- `url` or `urls`: single-URL or batch create (mutually exclusive)
+- `interval_seconds`: required for create (min 60)
+- `selector`: create-only CSS selector to scope the diff
+- `notification`: `"inline"` (default) or an SSRF-guarded webhook URL
+- `job_id`: required for check/pause/resume/delete
+
+Example:
+```json
+{ "action": "create", "url": "https://nodejs.org/en/blog", "interval_seconds": 21600 }
+```
+
+Tip: webhook destinations are SSRF-guarded — a job cannot be pointed at internal or loopback addresses.
+
 ## Workflow Patterns
 
 Quick routing:
@@ -246,6 +286,8 @@ Quick routing:
 - Use when `find_similar` — you have a good page/concept and want related content.
 - Use when `research` — a question needs decomposition and multi-source synthesis.
 - Use when `agent` — a natural-language task needs multi-step data gathering.
+- Use when `diff` — you need to see what changed between two versions of a page.
+- Use when `watch` — you want to monitor a page for changes over time.
 
 **Cache-first lookup.** Before any `fetch` or `search`, probe the cache.
 ```json
@@ -379,4 +421,4 @@ Full list: see `src/config.ts`.
 
 - Repository: https://github.com/KnockOutEZ/wigolo
 - npm: https://www.npmjs.com/package/wigolo
-- License: PolyForm Noncommercial 1.0.0 — free for noncommercial use; commercial use requires a separate license (contact ktowhid20@gmail.com)
+- License: GNU AGPL-3.0-only — free to use, modify, and self-host; see the root LICENSE

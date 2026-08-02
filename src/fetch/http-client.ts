@@ -1,7 +1,7 @@
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
-import { guardNavigation } from '../security/ssrf.js';
+import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
 
 export interface HttpFetchOptions {
   headers?: Record<string, string>;
@@ -11,6 +11,13 @@ export interface HttpFetchOptions {
     ifModifiedSince?: string;
   };
   signal?: AbortSignal;
+  /**
+   * Whether private/LAN redirect targets are permitted. Defaults to the
+   * resolved `WIGOLO_FETCH_ALLOW_PRIVATE` config so the redirect re-guard uses
+   * the same policy the input URL was guarded under. Link-local / metadata
+   * targets stay blocked regardless.
+   */
+  allowPrivate?: boolean;
 }
 
 export interface HttpFetchResult {
@@ -29,6 +36,16 @@ const PDF_MAGIC = '%PDF-';
 
 function bufferLooksLikePdf(buf: Buffer): boolean {
   return buf.length >= PDF_MAGIC.length && buf.subarray(0, PDF_MAGIC.length).toString('latin1') === PDF_MAGIC;
+}
+
+/** True when both URLs resolve to the same hostname (host-equality, not eTLD+1).
+ *  Malformed inputs are treated as different hosts (fail closed). */
+function isSameHost(a: string, b: string): boolean {
+  try {
+    return new URL(a).hostname === new URL(b).hostname;
+  } catch {
+    return false;
+  }
 }
 
 const RETRYABLE_STATUSES = new Set([429, 502, 503]);
@@ -74,6 +91,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
   const maxRetries = config.fetchMaxRetries;
   const timeoutMs = options.timeoutMs ?? config.fetchTimeoutMs;
   const maxRedirects = config.maxRedirects;
+  const allowPrivate = options.allowPrivate ?? config.fetchAllowPrivate;
   const external = options.signal;
 
   let lastError: unknown;
@@ -88,7 +106,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
     }
 
     try {
-      const result = await fetchWithRedirects(url, options, timeoutMs, maxRedirects, logger);
+      const result = await fetchWithRedirects(url, options, timeoutMs, maxRedirects, allowPrivate, logger);
       return result;
     } catch (err) {
       if (external?.aborted) throw external.reason;
@@ -128,6 +146,7 @@ async function fetchWithRedirects(
   options: HttpFetchOptions,
   timeoutMs: number,
   maxRedirects: number,
+  allowPrivate: boolean,
   logger: ReturnType<typeof createLogger>,
 ): Promise<HttpFetchResult> {
   const visited = new Set<string>();
@@ -142,6 +161,24 @@ async function fetchWithRedirects(
 
     logger.debug('fetching', { url: currentUrl, attempt: redirectCount });
 
+    // Fetch-time SSRF re-check. `guardFetchUrl` (applied on input + each redirect
+    // Location) only validates the LITERAL host, so a public hostname whose DNS
+    // record points at a blocked address (cloud metadata / RFC-1918 / loopback in
+    // serve mode) passes it and is only caught here, before we connect. Skip literal
+    // IPs — already validated. Same allowPrivate policy as the literal guard.
+    {
+      const rhost = new URL(currentUrl).hostname;
+      const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(rhost) || rhost.includes(':');
+      if (!isIpLiteral) {
+        const resolved = await guardResolvedHost(rhost, 'target url', {
+          allowPrivate,
+        });
+        if (!resolved.ok) {
+          throw new HttpFetchError(resolved.reason, false);
+        }
+      }
+    }
+
     const timeout = AbortSignal.timeout(timeoutMs);
     const combined = options.signal
       ? anySignal([options.signal, timeout])
@@ -152,6 +189,13 @@ async function fetchWithRedirects(
     try {
       const ua = getRotatingUserAgent(getConfig());
       const mergedHeaders: Record<string, string> = { 'User-Agent': ua, ...options.headers };
+      // Never carry a Cookie across a cross-host redirect hop. A reused anti-bot
+      // clearance cookie is host-scoped; leaking it to a different host on a 3xx
+      // would send a credential to an unintended origin.
+      if (!isSameHost(originalUrl, currentUrl)) {
+        delete mergedHeaders['Cookie'];
+        delete mergedHeaders['cookie'];
+      }
       // Conditional GET: inject If-None-Match / If-Modified-Since so the
       // server can return 304 + no body when the resource hasn't changed.
       // Callers (eg. etag-incremental crawl) wire these from the persisted
@@ -206,13 +250,19 @@ async function fetchWithRedirects(
 
       // Resolve relative redirects
       currentUrl = new URL(location, currentUrl).toString();
-      // P6-a: re-validate each redirect HOP as AGENT-source (the PAGE chose the target, not the
-      // human) — the classic SSRF-via-redirect bypass (a public URL that 302s to 169.254.169.254
-      // or an RFC1918 host). Loopback stays allowed (non-escalation), matching the content-path
-      // policy. Block BEFORE the loop re-requests, so the internal target is never fetched.
-      const hopVerdict = guardNavigation(currentUrl, { source: 'agent', allowLoopback: true });
-      if (!hopVerdict.ok) {
-        throw new HttpFetchError(`Redirect to a blocked address (${hopVerdict.host ?? currentUrl})`, false);
+
+      // SSRF re-guard on EVERY resolved redirect target (P6-a) — the PAGE chose this
+      // target, not the human, so a public URL must not be able to 302 the fetch onto
+      // a private/LAN host or a cloud metadata endpoint. Blocked BEFORE the loop
+      // re-requests, so the internal target is never fetched. Uses the same
+      // `allowPrivate` policy the input URL was guarded under, so the documented
+      // WIGOLO_FETCH_ALLOW_PRIVATE escape keeps working across redirects.
+      const redirectGuard = guardFetchUrl(currentUrl, 'redirect location', { allowPrivate });
+      if (!redirectGuard.ok) {
+        throw new HttpFetchError(
+          `Redirect blocked: ${redirectGuard.reason}. ${redirectGuard.hint}`,
+          false,
+        );
       }
       continue;
     }

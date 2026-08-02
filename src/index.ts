@@ -14,10 +14,13 @@ import { runConfig } from './cli/config.js';
 import { runMcp } from './cli/mcp.js';
 import { runUninstall } from './cli/uninstall.js';
 import { runSetupMcp } from './cli/setup-mcp.js';
+import { runSkills } from './cli/skills.js';
 import { runStatus } from './cli/status.js';
+import { runTune } from './cli/tune.js';
 import { runBackfill } from './cli/backfill.js';
 import { runVerifyE2E } from './cli/verify.js';
 import { printHelp, printVersion, printUnknownCommand } from './cli/help.js';
+import { runTool } from './cli/tool-run.js';
 import { getConfig } from './config.js';
 import { shutdownCli } from './cli/shutdown.js';
 
@@ -37,118 +40,166 @@ async function exitCli(code: number): Promise<void> {
 // fire — the signal handler simply forces an exit with the recorded code.
 process.on('SIGABRT', () => process.exit(process.exitCode ?? 0));
 
-const rawArgs = process.argv.slice(2);
-if (rawArgs.includes('--wait-for-index')) {
-  process.env.WIGOLO_WAIT_FOR_INDEX = '1';
+/**
+ * CLI entry. Extracted from module top-level to a named async function so the
+ * dist entry carries no top-level `await` — a hard requirement for the
+ * single-file binary, whose esbuild CJS bundle rejects top-level await.
+ * Behaviour is byte-for-byte identical to the previous top-level flow: same
+ * command routing, same exit-code recording via `exitCli` (natural event-loop
+ * drain, never `process.exit`). Errors set a non-zero code the same way an
+ * unhandled top-level rejection would have.
+ */
+export async function main(): Promise<void> {
+  const rawArgs = process.argv.slice(2);
+  if (rawArgs.includes('--wait-for-index')) {
+    process.env.WIGOLO_WAIT_FOR_INDEX = '1';
+  }
+  const { command, args } = parseCommand(rawArgs.filter((a) => a !== '--wait-for-index'));
+
+  switch (command) {
+    case 'warmup':
+      await runWarmup(args);
+      await exitCli(0);
+      break;
+
+    case 'serve':
+      runDaemon(args);
+      break;
+
+    // Internal/unadvertised (Phase 0): boots the Studio session host. Intentionally
+    // absent from `help` until the full UX lands so it isn't mistaken for complete.
+    case 'studio':
+      runStudio(args);
+      break;
+
+    case 'health': {
+      const exitCode = await runHealthCheck(args);
+      await exitCli(exitCode);
+      break;
+    }
+
+    case 'doctor': {
+      const code = await runDoctorIsolated(getConfig().dataDir, {
+        probeEngines: args.includes('--probe-engines'),
+        fix: args.includes('--fix'),
+        json: args.includes('--json'),
+      });
+      await exitCli(code);
+      break;
+    }
+
+    case 'auth': {
+      const authCode = await runAuth(args);
+      await exitCli(authCode);
+      break;
+    }
+
+    case 'shell': {
+      const shellCode = await runShell(args);
+      await exitCli(shellCode);
+      break;
+    }
+
+    case 'plugin': {
+      const pluginCode = await runPluginCommand(args);
+      await exitCli(pluginCode);
+      break;
+    }
+
+    case 'init': {
+      const initCode = await runInit(args);
+      await exitCli(initCode);
+      break;
+    }
+
+    case 'config':
+    case 'dashboard': {
+      const configCode = await runConfig(args);
+      await exitCli(configCode);
+      break;
+    }
+
+    case 'uninstall': {
+      const uninstallCode = await runUninstall(args);
+      await exitCli(uninstallCode);
+      break;
+    }
+
+    case 'setup': {
+      const code = await runSetupMcp(args);
+      await exitCli(code);
+      break;
+    }
+
+    case 'skills': {
+      const code = await runSkills(args);
+      await exitCli(code);
+      break;
+    }
+
+    case 'status': {
+      const code = await runStatus(args);
+      await exitCli(code);
+      break;
+    }
+
+    case 'tune': {
+      const code = await runTune(args);
+      await exitCli(code);
+      break;
+    }
+
+    case 'backfill': {
+      const code = await runBackfill(args);
+      await exitCli(code);
+      break;
+    }
+
+    case 'verify': {
+      const code = await runVerifyE2E(args);
+      await exitCli(code);
+      break;
+    }
+
+    case 'search':
+    case 'fetch':
+    case 'crawl':
+    case 'extract':
+    case 'cache':
+    case 'find-similar':
+    case 'find_similar':
+    case 'research':
+    case 'agent':
+    case 'diff':
+    case 'watch': {
+      const code = await runTool(command, args);
+      await exitCli(code);
+      break;
+    }
+
+    case 'help':
+      printHelp();
+      await exitCli(0);
+      break;
+
+    case 'version':
+      printVersion();
+      await exitCli(0);
+      break;
+
+    case 'unknown':
+      printUnknownCommand(args[0] ?? '');
+      await exitCli(1);
+      break;
+
+    case 'mcp': {
+      await runMcp();
+      break;
+    }
+  }
 }
-const { command, args } = parseCommand(rawArgs.filter((a) => a !== '--wait-for-index'));
 
-switch (command) {
-  case 'warmup':
-    await runWarmup(args);
-    await exitCli(0);
-    break;
-
-  case 'serve':
-    runDaemon(args);
-    break;
-
-  // Internal/unadvertised (Phase 0): boots the Studio session host. Intentionally
-  // absent from `help` until the full UX lands so it isn't mistaken for complete.
-  case 'studio':
-    runStudio(args);
-    break;
-
-  case 'health': {
-    const exitCode = await runHealthCheck();
-    await exitCli(exitCode);
-    break;
-  }
-
-  case 'doctor': {
-    const code = await runDoctorIsolated(getConfig().dataDir, {
-      probeEngines: args.includes('--probe-engines'),
-    });
-    await exitCli(code);
-    break;
-  }
-
-  case 'auth': {
-    const authCode = await runAuth(args);
-    await exitCli(authCode);
-    break;
-  }
-
-  case 'shell':
-    await runShell(args);
-    await exitCli(0);
-    break;
-
-  case 'plugin':
-    runPluginCommand(args);
-    await exitCli(0);
-    break;
-
-  case 'init': {
-    const initCode = await runInit(args);
-    await exitCli(initCode);
-    break;
-  }
-
-  case 'config':
-  case 'dashboard': {
-    const configCode = await runConfig(args);
-    await exitCli(configCode);
-    break;
-  }
-
-  case 'uninstall': {
-    const uninstallCode = await runUninstall(args);
-    await exitCli(uninstallCode);
-    break;
-  }
-
-  case 'setup': {
-    const code = await runSetupMcp(args);
-    await exitCli(code);
-    break;
-  }
-
-  case 'status': {
-    const code = await runStatus(args);
-    await exitCli(code);
-    break;
-  }
-
-  case 'backfill': {
-    const code = await runBackfill(args);
-    await exitCli(code);
-    break;
-  }
-
-  case 'verify': {
-    const code = await runVerifyE2E(args);
-    await exitCli(code);
-    break;
-  }
-
-  case 'help':
-    printHelp();
-    await exitCli(0);
-    break;
-
-  case 'version':
-    printVersion();
-    await exitCli(0);
-    break;
-
-  case 'unknown':
-    printUnknownCommand(args[0] ?? '');
-    await exitCli(1);
-    break;
-
-  case 'mcp': {
-    await runMcp();
-    break;
-  }
-}
+main().catch((err) => {
+  process.stderr.write(`${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
+  process.exitCode = 1;
+});

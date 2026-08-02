@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { EmbedProvider } from '../../../src/providers/embed-provider.js';
 import type { VectorStore } from '../../../src/providers/vector-store.js';
 
@@ -55,22 +55,20 @@ vi.mock('../../../src/config.js', () => ({
   }),
 }));
 
+const logSpy = {
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+};
 vi.mock('../../../src/logger.js', () => ({
-  createLogger: () => ({
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  }),
+  createLogger: () => logSpy,
 }));
 
 import { updateCacheEmbedding, getAllEmbeddings } from '../../../src/cache/store.js';
 
-// embed is a mock typed to the REAL embed() signature, so MockProvider stays assignable to
-// EmbedProvider (a bare `ReturnType<typeof vi.fn>` is not — it produced TS2430 + per-instantiation
-// TS2345 across this file).
-interface MockProvider extends Omit<EmbedProvider, 'embed'> {
-  embed: Mock<EmbedProvider['embed']>;
+interface MockProvider extends EmbedProvider {
+  embed: ReturnType<typeof vi.fn>;
 }
 
 function makeMockProvider(overrides: Partial<MockProvider> = {}): MockProvider {
@@ -78,7 +76,7 @@ function makeMockProvider(overrides: Partial<MockProvider> = {}): MockProvider {
   return {
     modelId: 'BGE-small-en-v1.5',
     dim: 384,
-    embed: vi.fn<EmbedProvider['embed']>().mockResolvedValue([defaultVector]),
+    embed: vi.fn().mockResolvedValue([defaultVector]),
     ...overrides,
   };
 }
@@ -89,6 +87,10 @@ describe('EmbeddingService', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mockStoreState.records.clear();
+    logSpy.debug.mockClear();
+    logSpy.info.mockClear();
+    logSpy.warn.mockClear();
+    logSpy.error.mockClear();
     vi.mocked(getAllEmbeddings).mockReturnValue([]);
     vi.mocked(updateCacheEmbedding).mockReturnValue(true);
     const mod = await import('../../../src/embedding/embed.js');
@@ -256,55 +258,168 @@ describe('EmbeddingService', () => {
     expect(updateCacheEmbedding).toHaveBeenCalledTimes(3);
   });
 
-  it('init() does NOT block on the provider embed probe (a cold model load must not stall MCP initialize)', async () => {
-    // The probe used to be awaited inside init(); on a cold data dir that load/download blocked
-    // `initialize` indefinitely. init() must now return without waiting on the probe — the
-    // provider lazy-loads on first real embed, and the probe just flips providerVerified async.
-    let resolveProbe: (v: Float32Array[]) => void = () => {};
-    const provider = makeMockProvider({
-      embed: vi.fn().mockReturnValue(new Promise<Float32Array[]>((r) => { resolveProbe = r; })),
-    });
+  it('init does NOT probe the provider (lazy) so isSubprocessReady stays false until first use', async () => {
+    const provider = makeMockProvider();
     const service = new EmbeddingService(provider);
 
-    const start = Date.now();
-    await service.init(); // resolves WITHOUT awaiting the gated probe
-    expect(Date.now() - start).toBeLessThan(100);
-    expect(service.isAvailable()).toBe(true); // available immediately
-    expect(service.isSubprocessReady()).toBe(false); // probe still in flight → not yet verified
-
-    resolveProbe([new Float32Array(384).fill(0.1)]); // probe completes…
-    await new Promise((r) => setTimeout(r, 10));
-    expect(service.isSubprocessReady()).toBe(true); // …flips verified asynchronously
-  }, 2000);
-
-  it('a FAILED probe degrades but does not disable: service stays available, embedAndStore still works and self-heals providerVerified', async () => {
-    // The background probe rejects (e.g. a transient cold-load error). init() must still complete
-    // (handled — no unhandled rejection), the service stays available, and a later real embed both
-    // works (indexing not gated on the probe) AND self-heals providerVerified so find_similar
-    // doesn't stay dark for the process lifetime if only the probe lost the race.
-    const provider = makeMockProvider({
-      embed: vi
-        .fn()
-        .mockRejectedValueOnce(new Error('probe load failed'))
-        .mockResolvedValue([new Float32Array(384).fill(0.1)]),
-    });
-    const service = new EmbeddingService(provider);
     await service.init();
-    await new Promise((r) => setTimeout(r, 10)); // let the failing probe settle
 
-    expect(service.isAvailable()).toBe(true); // a failed probe does NOT disable the service
-    expect(service.isSubprocessReady()).toBe(false); // …but it's not yet verified
+    // Lazy: boot init must not touch the ONNX provider. The ~150-200MB idle
+    // win depends on this — the probe embed() only fires on first real use.
+    expect(provider.embed).not.toHaveBeenCalled();
+    expect(service.isSubprocessReady()).toBe(false);
 
-    await service.embedAndStore('https://x.com', 'content'); // a real embed succeeds
-    expect(service.getIndex().has('https://x.com')).toBe(true); // indexing works despite the failed probe
-    expect(service.isSubprocessReady()).toBe(true); // self-healed — a successful embed proves the provider works
+    await service.ensureProviderReady();
+    expect(provider.embed).toHaveBeenCalledWith(['embedding service probe']);
+    expect(service.isSubprocessReady()).toBe(true);
   });
 
-  it('isSubprocessReady flips true once the async provider probe lands (not synchronously at init)', async () => {
-    const service = new EmbeddingService(makeMockProvider());
-    expect(service.isSubprocessReady()).toBe(false);
-    await service.init();
-    await new Promise((r) => setTimeout(r, 0)); // the probe verifies asynchronously
-    expect(service.isSubprocessReady()).toBe(true);
+  describe('ensureProviderReady (lazy provider probe)', () => {
+    it('probes the provider exactly once across concurrent callers', async () => {
+      let resolveEmbed: (v: Float32Array[]) => void = () => {};
+      const probeVector = new Float32Array(384).fill(0.1);
+      const provider = makeMockProvider({
+        embed: vi.fn().mockImplementation(
+          () => new Promise<Float32Array[]>(resolve => { resolveEmbed = resolve; }),
+        ),
+      });
+      const service = new EmbeddingService(provider);
+      await service.init();
+
+      const a = service.ensureProviderReady();
+      const b = service.ensureProviderReady();
+      resolveEmbed([probeVector]);
+      const [ra, rb] = await Promise.all([a, b]);
+
+      expect(ra).toBe(true);
+      expect(rb).toBe(true);
+      // Exactly one probe embed() despite two concurrent callers.
+      expect(provider.embed).toHaveBeenCalledTimes(1);
+    });
+
+    it('emits exactly ONE model-load stderr line across concurrent first uses', async () => {
+      let resolveEmbed: (v: Float32Array[]) => void = () => {};
+      const provider = makeMockProvider({
+        embed: vi.fn().mockImplementation(
+          () => new Promise<Float32Array[]>(resolve => { resolveEmbed = resolve; }),
+        ),
+      });
+      const service = new EmbeddingService(provider);
+      await service.init();
+
+      const a = service.ensureProviderReady();
+      const b = service.ensureProviderReady();
+      resolveEmbed([new Float32Array(384).fill(0.1)]);
+      await Promise.all([a, b]);
+
+      const loadLines = logSpy.info.mock.calls.filter(
+        c => typeof c[0] === 'string' && /loading embedding model/i.test(c[0]),
+      );
+      expect(loadLines).toHaveLength(1);
+    });
+
+    it('does not re-probe once verified (memoized success)', async () => {
+      const provider = makeMockProvider();
+      const service = new EmbeddingService(provider);
+      await service.init();
+
+      await service.ensureProviderReady();
+      await service.ensureProviderReady();
+      await service.ensureProviderReady();
+
+      expect(provider.embed).toHaveBeenCalledTimes(1);
+    });
+
+    it('memoizes a failed load for 60s then retries after the window', async () => {
+      vi.useFakeTimers();
+      try {
+        const provider = makeMockProvider({
+          embed: vi.fn().mockRejectedValue(new Error('onnx load failed')),
+        });
+        const service = new EmbeddingService(provider);
+        await service.init();
+
+        const first = await service.ensureProviderReady();
+        expect(first).toBe(false);
+        expect(provider.embed).toHaveBeenCalledTimes(1);
+
+        // Immediate retry within the memo window does NOT re-probe.
+        const second = await service.ensureProviderReady();
+        expect(second).toBe(false);
+        expect(provider.embed).toHaveBeenCalledTimes(1);
+
+        // After the 60s memo window, the next use retries.
+        vi.advanceTimersByTime(60_001);
+        const third = await service.ensureProviderReady();
+        expect(third).toBe(false);
+        expect(provider.embed).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('latches off after 3 failed attempts with an actionable message', async () => {
+      vi.useFakeTimers();
+      try {
+        const provider = makeMockProvider({
+          embed: vi.fn().mockRejectedValue(new Error('onnx load failed')),
+        });
+        const service = new EmbeddingService(provider);
+        await service.init();
+
+        await service.ensureProviderReady();
+        vi.advanceTimersByTime(60_001);
+        await service.ensureProviderReady();
+        vi.advanceTimersByTime(60_001);
+        await service.ensureProviderReady();
+        expect(provider.embed).toHaveBeenCalledTimes(3);
+
+        // Latched: further attempts never re-probe, even past the window.
+        vi.advanceTimersByTime(60_001);
+        const latched = await service.ensureProviderReady();
+        expect(latched).toBe(false);
+        expect(provider.embed).toHaveBeenCalledTimes(3);
+
+        // isAvailable flips off once latched.
+        expect(service.isAvailable()).toBe(false);
+
+        // Actionable error names the warmup fix.
+        const errCalls = logSpy.error.mock.calls
+          .map(c => JSON.stringify(c))
+          .filter(s => /wigolo warmup --embeddings/.test(s));
+        expect(errCalls.length).toBeGreaterThan(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('isAvailable stays true while the provider is healthy (not latched)', async () => {
+      const service = new EmbeddingService(makeMockProvider());
+      await service.init();
+      expect(service.isAvailable()).toBe(true);
+      await service.ensureProviderReady();
+      expect(service.isAvailable()).toBe(true);
+    });
+
+    it('regression: fresh service embedAsync writes a vector WITHOUT any prior find_similar/probe call', async () => {
+      const provider = makeMockProvider();
+      const service = new EmbeddingService(provider);
+      await service.init();
+
+      // No ensureProviderReady()/findSimilar() call precedes this — the hoist
+      // inside embedAsync must prime the provider on its own.
+      service.embedAsync('https://fresh.example.com', 'Fresh content to embed');
+
+      // Drain the fire-and-forget embed.
+      await vi.waitFor(() => {
+        expect(mockStoreState.records.has('https://fresh.example.com')).toBe(true);
+      });
+      expect(updateCacheEmbedding).toHaveBeenCalledWith(
+        'https://fresh.example.com',
+        expect.any(Buffer),
+        'BGE-small-en-v1.5',
+        384,
+      );
+    });
   });
 });

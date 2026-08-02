@@ -1,0 +1,204 @@
+.section {
+  padding-block: 96px 104px;
+  background: var(--bg);
+}
+.inner {
+  display: grid;
+  gap: 56px;
+}
+.head {
+  max-width: 60ch;
+}
+.title {
+  margin-top: 20px;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(38px, 4.6vw, 64px);
+  line-height: 1.02;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.body {
+  margin-top: 24px;
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--muted);
+  max-width: 54ch;
+}
+
+/* ---- the flow: your agent → wigolo → the web ---- */
+.flow {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 22px 24px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.node {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 0;
+  min-width: 140px;
+  padding: 14px 18px;
+  border-radius: 10px;
+  background: #efeeff;
+}
+.nodeMid {
+  background: var(--black);
+}
+.nodeLabel {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.nodeName {
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1.1;
+  color: var(--ink);
+}
+.nodeMid .nodeLabel {
+  color: #a99adf;
+}
+.nodeMid .nodeName {
+  color: #fff;
+}
+.arrow {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  padding-inline: 4px;
+  color: var(--muted-2);
+}
+.arrow svg {
+  width: 22px;
+  height: 22px;
+}
+.over {
+  margin-top: 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.over b {
+  color: #7c3aed;
+  font-weight: 500;
+}
+
+/* ---- three pillars ---- */
+.pillars {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+.pillar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 26px 26px 28px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.pillarHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pillarIcon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: #e7dff4;
+  color: #4a3a6b;
+}
+.pillarIcon svg {
+  width: 18px;
+  height: 18px;
+}
+.pillarName {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+}
+.pillarBody {
+  margin-top: 16px;
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.pillarBody b {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+/* ---- steps inside the fetch pillar ---- */
+.steps {
+  margin-top: 18px;
+  display: grid;
+  gap: 7px;
+}
+.step {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.stepN {
+  flex: 0 0 auto;
+  color: #c14b23;
+}
+
+/* ---- closing line ---- */
+.closer {
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--muted);
+  max-width: 66ch;
+}
+.closer code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: #ecebe4;
+  color: var(--ink-2);
+}
+.closer b {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+@media (max-width: 900px) {
+  .pillars {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 640px) {
+  .section {
+    padding-block: 64px 72px;
+  }
+  .arrow {
+    width: 100%;
+    padding-block: 2px;
+  }
+  .arrow svg {
+    transform: rotate(90deg);
+  }
+}

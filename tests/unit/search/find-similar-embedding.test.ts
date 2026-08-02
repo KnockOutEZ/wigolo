@@ -49,6 +49,10 @@ const mockIndex = {
 const mockService = {
   isAvailable: () => mockEmbeddingState.available,
   isSubprocessReady: () => mockEmbeddingState.subprocessReady,
+  // Lazy provider gate (D2): find-similar awaits this before reading
+  // isSubprocessReady(). Resolve to the mocked subprocess-ready state so the
+  // availability probe reflects the configured posture.
+  ensureProviderReady: vi.fn(async () => mockEmbeddingState.subprocessReady),
   setAvailable: vi.fn(),
   getIndex: () => mockIndex,
   init: vi.fn(),

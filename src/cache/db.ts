@@ -1,10 +1,83 @@
+import { chmodSync, copyFileSync, mkdirSync, statSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import * as sv from 'sqlite-vec';
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
+import { isPackagedBinary } from '../util/packaged.js';
 import { applyMigrations } from './migrations/runner.js';
 
 const log = createLogger('cache');
+
+/**
+ * Load the sqlite-vec loadable extension into `db`.
+ *
+ * On the npm/source path this is a straight `sv.load(db)` — SQLite dlopen's the
+ * dylib/.so straight out of node_modules and nothing changes.
+ *
+ * Inside a single-file packaged binary (@yao-pkg/pkg) the extension lives in the
+ * virtual `/snapshot` filesystem, which the OS loader (dlopen) cannot read — the
+ * native `.node` addons work because pkg auto-extracts them at require() time,
+ * but `db.loadExtension(path)` hands a raw path to SQLite with no pkg hook, so a
+ * `/snapshot/...` path fails, and SQLite then re-suffixes the missing file to a
+ * doubled `vec0.dylib.dylib` while probing. Fix: copy the extension out of the
+ * snapshot to a real path under `<dataDir>/native/` and load it from there. The
+ * copy is idempotent — re-copied only when the on-disk size differs (a binary
+ * upgrade), so warm starts pay nothing.
+ *
+ * `dbPath` is `<dataDir>/wigolo.db`, so the sibling `native/` dir is the data
+ * dir; no config dependency is pulled into the cache layer.
+ */
+function loadVecExtension(db: Database.Database, dbPath: string): void {
+  if (!isPackagedBinary()) {
+    sv.load(db);
+    return;
+  }
+
+  // Snapshot source path, e.g. /snapshot/.../sqlite-vec-darwin-arm64/vec0.dylib
+  const snapshotPath = sv.getLoadablePath();
+  const nativeDir = join(dirname(dbPath), 'native');
+  const realPath = join(nativeDir, basename(snapshotPath));
+
+  mkdirSync(nativeDir, { recursive: true });
+
+  let needsCopy = true;
+  try {
+    const src = statSync(snapshotPath);
+    const dst = statSync(realPath);
+    needsCopy = src.size !== dst.size;
+  } catch {
+    // Destination missing (first run) — copy.
+    needsCopy = true;
+  }
+  if (needsCopy) {
+    copyFileSync(snapshotPath, realPath);
+  }
+
+  // Load the exact extracted file. Passing the full, existing `.dylib`/`.so`
+  // path stops SQLite from appending its own suffix (the doubled `.dylib.dylib`
+  // seen under /snapshot). No entrypoint override — sqlite-vec's default init
+  // symbol resolves from the filename, matching `sv.load`'s behaviour.
+  db.loadExtension(realPath);
+}
+
+// The DB stores session-bearing anti-bot clearance tokens (cf_clearance), so
+// the file must be owner-only like config.json — not the default 0644.
+const DB_FILE_MODE = 0o600;
+
+// Restrict a DB path (or a lazily-created -wal/-shm sidecar) to owner-only,
+// tolerating ENOENT since sidecars may not exist yet on a fresh WAL DB.
+function restrictMode(path: string): void {
+  try {
+    chmodSync(path, DB_FILE_MODE);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    log.warn('failed to restrict DB file permissions', {
+      path,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 let instance: Database.Database | null = null;
 let vecLoaded = false;
@@ -38,6 +111,10 @@ export function initDatabase(dbPath: string): Database.Database {
 
   const db = new Database(dbPath);
 
+  // Lock the DB file down before any write. In-memory DBs have no file.
+  const isFileBacked = dbPath !== ':memory:' && dbPath !== '';
+  if (isFileBacked) restrictMode(dbPath);
+
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
@@ -51,7 +128,7 @@ export function initDatabase(dbPath: string): Database.Database {
   // FTS5-only flows. Vector code paths check `isVecExtensionLoaded()` or
   // gracefully degrade.
   try {
-    sv.load(db);
+    loadVecExtension(db, dbPath);
     vecLoaded = true;
   } catch (err) {
     vecLoaded = false;
@@ -165,6 +242,14 @@ export function initDatabase(dbPath: string): Database.Database {
     log.error('migration runner failed — some schema may be missing', {
       error: err instanceof Error ? err.message : String(err),
     });
+  }
+
+  // The -wal/-shm sidecars are created lazily on first write (the inline
+  // schema + migrations above). Lock them down too — they can hold recently
+  // written clearance rows. ENOENT is tolerated (WAL may be checkpointed away).
+  if (isFileBacked) {
+    restrictMode(`${dbPath}-wal`);
+    restrictMode(`${dbPath}-shm`);
   }
 
   instance = db;

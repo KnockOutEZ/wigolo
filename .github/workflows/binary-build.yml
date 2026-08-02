@@ -1,0 +1,235 @@
+# Single-file binary channel (spec D1, slice S-P1-BIN).
+#
+# DORMANT: tag-triggered ONLY. There is deliberately NO `push`, NO
+# `pull_request`, and NO `workflow_dispatch` trigger — nothing can build or
+# publish a binary without pushing a `v*` tag. Until a maintainer cuts a tag
+# this workflow never runs.
+#
+# The macOS codesign + notarize steps and the Windows Authenticode step are
+# present but gated on release-time secrets (skipped when unset), so an
+# unsigned artifact is still produced for platforms without signing configured.
+#
+# Per-platform native asset lists: macOS-arm64 is verified locally
+# (packaging/verification/binary.md). linux-x64 / linux-arm64 / win-x64 lists
+# below are UNVERIFIED-until-CI — the first tagged run is their verification.
+name: binary-build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # upload release assets on a tag
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: node22-macos-arm64
+            runner: macos-14
+            artifact: wigolo-macos-arm64
+            # VERIFIED locally (macOS arm64).
+            assets: >-
+              node_modules/onnxruntime-node/bin/napi-v3/darwin/arm64/onnxruntime_binding.node
+              node_modules/onnxruntime-node/bin/napi-v3/darwin/arm64/libonnxruntime.1.21.0.dylib
+              node_modules/sqlite-vec-darwin-arm64/vec0.dylib
+              node_modules/@napi-rs/keyring-darwin-arm64/keyring.darwin-arm64.node
+              node_modules/wreq-js/rust/wreq-js.darwin-arm64.node
+              node_modules/@anush008/tokenizers-darwin-universal/tokenizers.darwin-universal.node
+              node_modules/@img/sharp-darwin-arm64/**/*
+              node_modules/@img/sharp-libvips-darwin-arm64/**/*
+          - target: node22-macos-x64
+            runner: macos-13
+            artifact: wigolo-macos-x64
+            # UNVERIFIED-until-CI.
+            assets: >-
+              node_modules/onnxruntime-node/bin/napi-v3/darwin/x64/onnxruntime_binding.node
+              node_modules/onnxruntime-node/bin/napi-v3/darwin/x64/libonnxruntime.1.21.0.dylib
+              node_modules/sqlite-vec-darwin-x64/vec0.dylib
+              node_modules/@napi-rs/keyring-darwin-x64/keyring.darwin-x64.node
+              node_modules/wreq-js/rust/wreq-js.darwin-x64.node
+              node_modules/@anush008/tokenizers-darwin-universal/tokenizers.darwin-universal.node
+              node_modules/@img/sharp-darwin-x64/**/*
+              node_modules/@img/sharp-libvips-darwin-x64/**/*
+          - target: node22-linux-x64
+            runner: ubuntu-22.04
+            artifact: wigolo-linux-x64
+            # UNVERIFIED-until-CI.
+            assets: >-
+              node_modules/onnxruntime-node/bin/napi-v3/linux/x64/onnxruntime_binding.node
+              node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime.so.1
+              node_modules/sqlite-vec-linux-x64/vec0.so
+              node_modules/@napi-rs/keyring-linux-x64-gnu/keyring.linux-x64-gnu.node
+              node_modules/wreq-js/rust/wreq-js.linux-x64-gnu.node
+              node_modules/@anush008/tokenizers-linux-x64-gnu/tokenizers.linux-x64-gnu.node
+              node_modules/@img/sharp-linux-x64/**/*
+              node_modules/@img/sharp-libvips-linux-x64/**/*
+          - target: node22-linux-arm64
+            runner: ubuntu-22.04-arm
+            artifact: wigolo-linux-arm64
+            # UNVERIFIED-until-CI.
+            assets: >-
+              node_modules/onnxruntime-node/bin/napi-v3/linux/arm64/onnxruntime_binding.node
+              node_modules/onnxruntime-node/bin/napi-v3/linux/arm64/libonnxruntime.so.1
+              node_modules/sqlite-vec-linux-arm64/vec0.so
+              node_modules/@napi-rs/keyring-linux-arm64-gnu/keyring.linux-arm64-gnu.node
+              node_modules/wreq-js/rust/wreq-js.linux-arm64-gnu.node
+              node_modules/@anush008/tokenizers-linux-arm64-gnu/tokenizers.linux-arm64-gnu.node
+              node_modules/@img/sharp-linux-arm64/**/*
+              node_modules/@img/sharp-libvips-linux-arm64/**/*
+          - target: node22-win-x64
+            runner: windows-2022
+            artifact: wigolo-win-x64.exe
+            # UNVERIFIED-until-CI.
+            assets: >-
+              node_modules/onnxruntime-node/bin/napi-v3/win32/x64/onnxruntime_binding.node
+              node_modules/onnxruntime-node/bin/napi-v3/win32/x64/onnxruntime.dll
+              node_modules/sqlite-vec-windows-x64/vec0.dll
+              node_modules/@napi-rs/keyring-win32-x64-msvc/keyring.win32-x64-msvc.node
+              node_modules/wreq-js/rust/wreq-js.win32-x64-msvc.node
+              node_modules/@anush008/tokenizers-win32-x64-msvc/tokenizers.win32-x64-msvc.node
+              node_modules/@img/sharp-win32-x64/**/*
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build dist + CJS bundle
+        run: |
+          npm run build
+          node packaging/binary/bundle.mjs
+
+      - name: Compose per-platform pkg config
+        shell: bash
+        run: |
+          # Start from the base config (common assets + macOS-arm64 natives),
+          # strip the native lines, and re-inject this platform's asset list.
+          # The base already carries package.json shims + playwright/assets/blocks.
+          node - "$PWD" "${{ matrix.assets }}" <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const root = process.argv[2];
+          const assets = process.argv[3].split(/\s+/).filter(Boolean);
+          const cfg = JSON.parse(fs.readFileSync(path.join(root, 'packaging/binary/pkg.config.json'), 'utf8'));
+          // Keep only the platform-agnostic assets; drop the macOS-arm64 native
+          // lines baked into the committed config, then add this platform's.
+          const common = cfg.pkg.assets.filter((a) =>
+            !a.includes('onnxruntime-node/bin/napi-v3/') &&
+            !a.startsWith('node_modules/sqlite-vec-') &&
+            !a.includes('/keyring') &&
+            !a.startsWith('node_modules/wreq-js/rust/') &&
+            !a.includes('/tokenizers') &&
+            !a.startsWith('node_modules/@img/'));
+          cfg.pkg.assets = [...common, ...assets];
+          fs.writeFileSync(path.join(root, 'pkg.build.json'), JSON.stringify(cfg, null, 2));
+          console.log('composed pkg.build.json with', assets.length, 'platform assets');
+          NODE
+          # Depth shims (mirrors packaging/binary/pack.sh).
+          cp package.json dist/package.json
+          mkdir -p dist/cli
+          cp package.json dist/cli/package.json
+
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir -p packaging/binary/dist
+          npx @yao-pkg/pkg@6.21.0 dist/cli/agents/wigolo.bundle.cjs \
+            --config pkg.build.json \
+            --target ${{ matrix.target }} \
+            --output "packaging/binary/dist/${{ matrix.artifact }}"
+
+      # --- macOS codesign + notarize (RELEASE-TIME; skipped when secrets unset) ---
+      - name: Codesign + notarize (macOS, release-time)
+        if: startsWith(matrix.target, 'node22-macos') && env.MACOS_CERT_P12 != ''
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BIN="packaging/binary/dist/${{ matrix.artifact }}"
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p ci "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p ci "$KEYCHAIN"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security list-keychain -d user -s "$KEYCHAIN"
+          codesign --force --options runtime --timestamp --sign "Developer ID Application" "$BIN"
+          ditto -c -k --keepParent "$BIN" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$MACOS_NOTARY_APPLE_ID" \
+            --team-id "$MACOS_NOTARY_TEAM_ID" \
+            --password "$MACOS_NOTARY_PASSWORD" --wait
+          # Note: notarytool staples the .zip/.dmg, not a bare Mach-O; distribute
+          # inside a stapled container (dmg/pkg) at release time.
+
+      # --- Windows Authenticode (RELEASE-TIME placeholder; skipped when unset) ---
+      - name: Authenticode sign (Windows, release-time)
+        if: matrix.target == 'node22-win-x64' && env.WINDOWS_CERT_PFX != ''
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          # PLACEHOLDER: import the PFX and sign with signtool at release time.
+          # Kept inert here (skipped unless WINDOWS_CERT_PFX is configured).
+          Write-Host "Authenticode signing placeholder — configure signtool + PFX secret to enable."
+
+      - name: Checksum
+        shell: bash
+        run: |
+          cd packaging/binary/dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          fi
+          cat "${{ matrix.artifact }}.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            packaging/binary/dist/${{ matrix.artifact }}
+            packaging/binary/dist/${{ matrix.artifact }}.sha256
+
+  release:
+    name: attach binaries to the release
+    needs: build
+    runs-on: ubuntu-22.04
+    # Only ever on a tag — the sole trigger, but assert it explicitly so this
+    # job can never publish from any other ref.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-binaries
+
+      - name: Aggregate checksums
+        run: |
+          cd dist-binaries
+          find . -name '*.sha256' -exec cat {} + > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-binaries/**/wigolo-*
+            dist-binaries/SHA256SUMS.txt

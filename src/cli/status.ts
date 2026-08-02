@@ -33,6 +33,14 @@ export async function runStatus(_args: string[]): Promise<number> {
     agents,
   };
 
+  if (_args.includes('--json')) {
+    // Machine shape on stdout; keep the pretty block off stdout so the output
+    // pipes cleanly through jq. `status` is informational — runStatus never
+    // fails, so it is always 'ok'.
+    process.stdout.write(`${JSON.stringify({ status: 'ok', ...bag })}\n`);
+    return 0;
+  }
+
   process.stderr.write(formatStatus(bag));
   return 0;
 }

@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { statfs } from 'node:fs';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
+import { resolveContainerCli } from '../../searxng/docker.js';
 
 const statfsAsync = promisify(statfs);
 
@@ -88,7 +89,11 @@ export function checkPython(): PythonCheckResult {
 }
 
 export function checkDocker(): CheckResult {
-  const r = spawnSync('docker', ['--version'], { encoding: 'utf-8' });
+  // Any docker-compatible CLI works — see resolveContainerCli() in
+  // searxng/docker.ts (Docker Desktop, plain Docker Engine, or Podman).
+  const cli = resolveContainerCli();
+  if (!cli) return { ok: false };
+  const r = spawnSync(cli, ['--version'], { encoding: 'utf-8' });
   if (r.error || r.status !== 0) {
     return { ok: false };
   }
@@ -121,6 +126,10 @@ export async function runSystemCheck(): Promise<SystemCheckResult> {
   const python = checkPython();
   const docker = checkDocker();
   const disk = await checkDiskSpace();
-  const hardFailure = !node.ok || !python.ok;
+  // Only Node is a hard requirement. Python powers the opt-in search-engine
+  // sidecar alone — core search + fetch/crawl/extract/cache/embeddings/rerank are
+  // all Python-free, and warmup degrades to core without it — so a missing Python
+  // is a soft warning, never a setup blocker.
+  const hardFailure = !node.ok;
   return { node, python, docker, disk, hardFailure };
 }

@@ -1,5 +1,8 @@
-// E2E test for `wigolo init`. Covers non-destructive help + flag error paths
-// so we don't run a real warmup (which would install Playwright / Python deps).
+// E2E test for `wigolo init`. Covers non-destructive help + flag error paths.
+// Headless-first (D8): the DEFAULT init path no longer runs any warmup —
+// components download lazily on first use — so no browser/Python download is
+// triggered here. Warmup only runs under the explicit --warmup flag (not
+// exercised in this suite, which stays fast + non-destructive).
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -7,7 +10,7 @@ import { join } from 'node:path';
 const projectRoot = join(import.meta.dirname, '..', '..');
 
 describe('wigolo init (E2E)', () => {
-  it('prints usage and exits 0 on --help', () => {
+  it('prints usage and exits 0 on --help; documents headless-first + --wizard', () => {
     const r = spawnSync('npx', ['tsx', 'src/index.ts', 'init', '--help'], {
       cwd: projectRoot,
       encoding: 'utf-8',
@@ -17,9 +20,15 @@ describe('wigolo init (E2E)', () => {
 
     expect(r.status).toBe(0);
     expect(r.stderr).toContain('Usage: wigolo init');
-    expect(r.stderr).toContain('--non-interactive');
+    // The retired --non-interactive alias still parses but is no longer
+    // advertised — unattended IS the default, so the help must not resurrect it.
+    expect(r.stderr).not.toContain('--non-interactive');
     expect(r.stderr).toContain('--agents');
     expect(r.stderr).toContain('--skip-verify');
+    // Headless-first surface: --wizard opts into Ink, --warmup opts into pre-cache.
+    expect(r.stderr).toContain('--wizard');
+    expect(r.stderr).toContain('--warmup');
+    expect(r.stderr).toMatch(/first use|pre-download|download/i);
   }, 35000);
 
   it('exits 2 on unknown flag', () => {

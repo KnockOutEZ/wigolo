@@ -22,6 +22,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { checkPythonAvailable, checkDockerAvailable, getBootstrapState, setBootstrapState, generateSettings, resolveSearchBackend } from '../../../src/searxng/bootstrap.js';
 import { __resetResolvedPythonExe } from '../../../src/python-env.js';
+import { __resetResolvedContainerCli } from '../../../src/searxng/docker.js';
 
 type SpawnResult = ReturnType<typeof spawnSync>;
 function spawnResult(status: number, error?: Error): SpawnResult {
@@ -36,9 +37,10 @@ describe('SearXNG bootstrap', () => {
     resetConfig();
     vi.clearAllMocks();
     __resetResolvedPythonExe();
+    __resetResolvedContainerCli();
   });
 
-  afterEach(() => { process.env = originalEnv; resetConfig(); __resetResolvedPythonExe(); });
+  afterEach(() => { process.env = originalEnv; resetConfig(); __resetResolvedPythonExe(); __resetResolvedContainerCli(); });
 
   describe('checkPythonAvailable', () => {
     it('returns true when python is available', () => {

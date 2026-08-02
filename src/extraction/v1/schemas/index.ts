@@ -5,6 +5,7 @@ import { extractProductSchema, type ProductData } from './Product.js';
 import { extractCodeSnippet, type CodeSnippetData } from './CodeSnippet.js';
 import { extractPaper, type PaperData } from './Paper.js';
 import { extractEventListing, type EventListingData } from './EventListing.js';
+import { extractJobPosting, type JobPostingData } from './JobPosting.js';
 
 export type { NamedSchemaType } from '../../../types.js';
 
@@ -14,7 +15,8 @@ export type NamedSchemaData =
   | ProductData
   | CodeSnippetData
   | PaperData
-  | EventListingData;
+  | EventListingData
+  | JobPostingData;
 
 export const NAMED_SCHEMAS: readonly NamedSchemaType[] = [
   'Article',
@@ -23,6 +25,7 @@ export const NAMED_SCHEMAS: readonly NamedSchemaType[] = [
   'CodeSnippet',
   'Paper',
   'EventListing',
+  'JobPosting',
 ] as const;
 
 export function isNamedSchemaType(s: string): s is NamedSchemaType {
@@ -47,6 +50,8 @@ export async function extractNamedSchema(
       return extractPaper(html, url);
     case 'EventListing':
       return extractEventListing(html, url);
+    case 'JobPosting':
+      return extractJobPosting(html, url);
     default: {
       const _exhaustive: never = schema;
       void _exhaustive;

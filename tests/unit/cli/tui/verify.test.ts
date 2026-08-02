@@ -30,6 +30,8 @@ vi.mock('../../../../src/providers/rerank-provider.js', () => ({
 }));
 
 import { runVerify } from '../../../../src/cli/tui/verify.js';
+import { SearxngProcess } from '../../../../src/searxng/process.js';
+import { resetConfig } from '../../../../src/config.js';
 
 class FakeReporter {
   events: string[] = [];
@@ -48,10 +50,37 @@ beforeEach(() => {
   rerankMock.mockReset();
   existsSyncMock.mockReset();
   readdirSyncMock.mockReset();
+  vi.mocked(SearxngProcess).mockClear();
   rerankMock.mockResolvedValue([{ id: '0', score: 0.5 }]);
   // Default: fastembed model dir present and non-empty (embeddings installed).
   existsSyncMock.mockReturnValue(true);
   readdirSyncMock.mockReturnValue(['model.onnx']);
+  // These branches exercise the sidecar-verify machinery, which only runs when
+  // the sidecar is opted into (D1). Opt in for the searxng-focused cases.
+  process.env.WIGOLO_SEARCH = 'searxng';
+  resetConfig();
+});
+
+describe('runVerify — not configured (D1 gate)', () => {
+  it('skips the searxng step entirely and never constructs SearxngProcess on the default core backend', async () => {
+    // WHY (D1): verify must not spin up the sidecar for a zero-config user.
+    // Constructing SearxngProcess would probe/spawn the sidecar even when the
+    // user never opted in.
+    delete process.env.WIGOLO_SEARCH;
+    resetConfig();
+
+    const reporter = new FakeReporter();
+    const result = await runVerify('/tmp/wigolo-data', reporter);
+
+    expect(vi.mocked(SearxngProcess)).not.toHaveBeenCalled();
+    expect(startMock).not.toHaveBeenCalled();
+    expect(result.searxng).toBe('skipped');
+    // The reranker + embeddings checks still run and, when present, allPassed is
+    // true even though searxng was skipped (not required on the core backend).
+    expect(result.reranker).toBe('ok');
+    expect(result.embeddings).toBe('ok');
+    expect(result.allPassed).toBe(true);
+  });
 });
 
 describe('runVerify — SearXNG branches', () => {

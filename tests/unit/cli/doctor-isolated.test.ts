@@ -258,7 +258,10 @@ describe('runDoctorIsolated — child mode (WIGOLO_DOCTOR_CHILD set)', () => {
     vi.mocked(existsSync).mockReturnValue(false);
 
     let sentinelWrittenAt: number | null = null;
-    vi.mocked(writeFileSync).mockImplementationOnce((path, _data, _opts) => {
+    // Match on the SENTINEL path across ALL writes — doctor also writes a
+    // short-lived data-dir writability-probe marker (D5), so a `...Once` mock
+    // would capture that unrelated write instead of the sentinel.
+    vi.mocked(writeFileSync).mockImplementation((path) => {
       if (String(path) === SENTINEL) sentinelWrittenAt = Date.now();
     });
 

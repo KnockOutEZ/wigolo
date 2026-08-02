@@ -9,24 +9,38 @@ vi.mock('node:os', async (importOriginal) => {
   return { ...actual, homedir: vi.fn(() => tmpHome) };
 });
 
-// Mock node:child_process execSync
+// Mock node:child_process execSync + execFileSync. installMcp and uninstall
+// now use execFileSync (argv array) instead of execSync (shell string) for
+// safer argument handling.
 vi.mock('node:child_process', () => ({
   execSync: vi.fn(),
+  execFileSync: vi.fn(),
 }));
 
-import { execSync } from 'node:child_process';
+// installSkills now delegates to the skills engine, which writes receipts under
+// getConfig().dataDir — point it at a temp dir so tests never touch ~/.wigolo.
+vi.mock('../../../../src/config.js', () => ({
+  getConfig: vi.fn(() => ({ dataDir: tmpData })),
+}));
+
+import { execSync, execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 
 let tmpHome: string;
+let tmpData: string;
 
 beforeEach(() => {
-  tmpHome = join(tmpdir(), `wigolo-cc-test-${Date.now()}`);
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  tmpHome = join(tmpdir(), `wigolo-cc-test-${stamp}`);
+  tmpData = join(tmpdir(), `wigolo-cc-data-${stamp}`);
   mkdirSync(tmpHome, { recursive: true });
+  mkdirSync(tmpData, { recursive: true });
   vi.mocked(homedir).mockReturnValue(tmpHome);
 });
 
 afterEach(() => {
   rmSync(tmpHome, { recursive: true, force: true });
+  rmSync(tmpData, { recursive: true, force: true });
   vi.clearAllMocks();
 });
 
@@ -46,27 +60,36 @@ describe('claudeCodeHandler.detect', () => {
 
 describe('claudeCodeHandler.installMcp', () => {
   it('calls claude mcp add with --scope user so the entry lives once in ~/.claude.json', async () => {
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
     await claudeCodeHandler.installMcp({ command: 'wigolo', args: [] });
-    const cmd = vi.mocked(execSync).mock.calls[0][0] as string;
-    expect(cmd).toContain('claude mcp add wigolo');
-    expect(cmd).toContain('--scope user');
-    // The -- separator before the executable must still be present.
-    expect(cmd).toMatch(/--scope user .*-- wigolo/);
+    const call = vi.mocked(execFileSync).mock.calls[0];
+    const cmd = call[0] as string;
+    const args = call[1] as string[];
+    expect(cmd).toBe('claude');
+    expect(args).toContain('mcp');
+    expect(args).toContain('add');
+    expect(args).toContain('wigolo');
+    expect(args).toContain('--scope');
+    expect(args).toContain('user');
+    // The -- separator before the executable must still be present, and
+    // the executable + its args must follow.
+    const sepIdx = args.indexOf('--');
+    expect(sepIdx).toBeGreaterThan(-1);
+    expect(args.slice(sepIdx + 1)).toEqual(['wigolo']);
   });
 
   it('tolerates "already exists" errors', async () => {
-    vi.mocked(execSync).mockImplementation(() => { throw new Error('already exists'); });
+    vi.mocked(execFileSync).mockImplementation(() => { throw new Error('already exists'); });
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
     await expect(claudeCodeHandler.installMcp({ command: 'wigolo', args: [] })).resolves.not.toThrow();
   });
 
   it('falls back to writing ~/.claude.json directly when the claude CLI is absent (ENOENT)', async () => {
-    // execSync('which claude') throws → detect returns false; execSync('claude mcp add ...')
-    // would also throw ENOENT. We expect the handler to NOT propagate the error and
-    // to instead drop the MCP entry into ~/.claude.json so the user is still wired up.
-    vi.mocked(execSync).mockImplementation((cmd: string) => {
+    // execFileSync('claude', [...]) throws ENOENT. We expect the handler to NOT
+    // propagate the error and to instead drop the MCP entry into ~/.claude.json
+    // so the user is still wired up.
+    vi.mocked(execFileSync).mockImplementation(() => {
       const err = Object.assign(new Error(`spawn claude ENOENT`), { code: 'ENOENT' });
       throw err;
     });
@@ -82,8 +105,8 @@ describe('claudeCodeHandler.installMcp', () => {
     expect(parsed.mcpServers.wigolo.args).toEqual(['-y', 'wigolo']);
   });
 
-  it('falls back when execSync reports "command not found" (shell stderr) instead of ENOENT', async () => {
-    vi.mocked(execSync).mockImplementation(() => {
+  it('falls back when execFileSync reports "command not found" (shell stderr) instead of ENOENT', async () => {
+    vi.mocked(execFileSync).mockImplementation(() => {
       throw new Error('/bin/sh: claude: command not found');
     });
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
@@ -109,18 +132,19 @@ describe('claudeCodeHandler.installInstructions', () => {
   });
 });
 
-describe('claudeCodeHandler.installSkills', () => {
-  it('creates all 8 skill directories in ~/.claude/skills/', async () => {
+describe('claudeCodeHandler.installSkills (engine-delegated)', () => {
+  it('installs ALL 11 canonical packs (incl. cache/diff/watch) into ~/.claude/skills/', async () => {
     vi.mocked(execSync).mockReturnValue(Buffer.from(''));
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
     await claudeCodeHandler.installSkills();
     const skillsDir = join(tmpHome, '.claude', 'skills');
     const expected = [
-      'wigolo', 'wigolo-search', 'wigolo-fetch', 'wigolo-crawl',
+      'wigolo', 'wigolo-search', 'wigolo-fetch', 'wigolo-crawl', 'wigolo-cache',
       'wigolo-extract', 'wigolo-find-similar', 'wigolo-research', 'wigolo-agent',
+      'wigolo-diff', 'wigolo-watch',
     ];
     for (const dir of expected) {
-      expect(existsSync(join(skillsDir, dir, 'SKILL.md'))).toBe(true);
+      expect(existsSync(join(skillsDir, dir, 'SKILL.md')), dir).toBe(true);
     }
   });
 
@@ -132,41 +156,27 @@ describe('claudeCodeHandler.installSkills', () => {
     expect(existsSync(join(tmpHome, '.claude', 'skills', 'wigolo', 'rules', 'synthesis.md'))).toBe(true);
   });
 
-  it('aborts before any writes when a skill dest path exists as a regular file', async () => {
-    // A path collision (file where we want a directory) used to throw mid-loop
-    // and leave skills installed up to that point. Pre-flight should detect
-    // the collision and refuse to start.
+  it('writes a receipt store under the configured dataDir', async () => {
+    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
+    await claudeCodeHandler.installSkills();
+    expect(existsSync(join(tmpData, 'skills', 'receipts.json'))).toBe(true);
+  });
+
+  it('refuses (does NOT throw, does NOT overwrite) when a pack-dir slot is a regular file', async () => {
+    // The engine surfaces this as a refused action rather than throwing; the
+    // colliding file is left intact and other packs still install.
     vi.mocked(execSync).mockReturnValue(Buffer.from(''));
     const skillsBase = join(tmpHome, '.claude', 'skills');
     mkdirSync(skillsBase, { recursive: true });
     writeFileSync(join(skillsBase, 'wigolo-extract'), 'I am a file, not a dir', 'utf-8');
 
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
-    await expect(claudeCodeHandler.installSkills()).rejects.toThrow();
+    await expect(claudeCodeHandler.installSkills()).resolves.toBeUndefined();
 
-    // No other skill dirs should have been touched.
-    expect(existsSync(join(skillsBase, 'wigolo', 'SKILL.md'))).toBe(false);
-    expect(existsSync(join(skillsBase, 'wigolo-search', 'SKILL.md'))).toBe(false);
-    expect(existsSync(join(skillsBase, 'wigolo-fetch', 'SKILL.md'))).toBe(false);
-  });
-
-  it('rolls back freshly-created skill dirs when a mid-install write fails', async () => {
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
-    const skillsBase = join(tmpHome, '.claude', 'skills');
-    mkdirSync(skillsBase, { recursive: true });
-
-    // Force a mid-install failure: claim wigolo-research as a read-only file.
-    // The pre-flight collision check catches this AND rejects before any
-    // writes — exactly the desired behavior. Verify no partial install.
-    writeFileSync(join(skillsBase, 'wigolo-research'), 'collision', 'utf-8');
-
-    const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
-    await expect(claudeCodeHandler.installSkills()).rejects.toThrow();
-
-    // None of the other skill dirs should have been left behind.
-    for (const d of ['wigolo', 'wigolo-search', 'wigolo-fetch', 'wigolo-crawl', 'wigolo-extract', 'wigolo-find-similar', 'wigolo-agent']) {
-      expect(existsSync(join(skillsBase, d, 'SKILL.md'))).toBe(false);
-    }
+    // Colliding file untouched; a non-colliding pack still installed.
+    expect(readFileSync(join(skillsBase, 'wigolo-extract'), 'utf-8')).toBe('I am a file, not a dir');
+    expect(existsSync(join(skillsBase, 'wigolo', 'SKILL.md'))).toBe(true);
   });
 });
 
@@ -210,21 +220,27 @@ describe('claudeCodeHandler.uninstall', () => {
   });
 
   it('calls claude mcp remove with --scope user matching the install path', async () => {
-    vi.mocked(execSync).mockReturnValue(Buffer.from(''));
+    vi.mocked(execFileSync).mockReturnValue(Buffer.from(''));
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
     await claudeCodeHandler.uninstall();
-    const mcpRemoveCall = vi.mocked(execSync).mock.calls.find(
-      (c) => typeof c[0] === 'string' && (c[0] as string).includes('mcp remove'),
+    const mcpRemoveCall = vi.mocked(execFileSync).mock.calls.find(
+      (c) => c[0] === 'claude' && Array.isArray(c[1]) && (c[1] as string[]).includes('remove'),
     );
     expect(mcpRemoveCall).toBeDefined();
-    expect(mcpRemoveCall![0] as string).toContain('--scope user');
+    const args = mcpRemoveCall![1] as string[];
+    expect(args).toContain('remove');
+    expect(args).toContain('wigolo');
+    expect(args).toContain('--scope');
+    expect(args).toContain('user');
   });
 
-  it('removes skill directories', async () => {
+  it('does NOT tear down skill directories (sweep is owned by the engine, wired later)', async () => {
     vi.mocked(execSync).mockReturnValue(Buffer.from(''));
     const { claudeCodeHandler } = await import('../../../../src/cli/agents/claude-code.js');
     await claudeCodeHandler.installSkills();
     await claudeCodeHandler.uninstall();
-    expect(existsSync(join(tmpHome, '.claude', 'skills', 'wigolo'))).toBe(false);
+    // Skill dirs must remain — a naive recursive rm was removed on purpose so
+    // receipts + user-modified files are respected by the future sweep.
+    expect(existsSync(join(tmpHome, '.claude', 'skills', 'wigolo', 'SKILL.md'))).toBe(true);
   });
 });

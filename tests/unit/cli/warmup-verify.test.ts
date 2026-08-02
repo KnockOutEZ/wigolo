@@ -95,6 +95,12 @@ describe('runWarmup verify step', () => {
     expect(outBuffer).toMatch(/Verifying setup/);
   });
 
+  it('skips the verify step under --all when --skip-verify is passed (init runs doctor instead)', async () => {
+    await runWarmup(['--all', '--skip-verify', '--plain']);
+    expect(outBuffer).not.toMatch(/Verifying setup/);
+    expect(mockStart).not.toHaveBeenCalled();
+  });
+
   it('does not run verify without flag', async () => {
     await runWarmup(['--plain']);
     expect(outBuffer).not.toMatch(/Verifying setup/);

@@ -15,6 +15,8 @@
 | Find related | `find_similar` | `url` or `concept`, `threshold` — best after a `crawl` |
 | Deep research | `research` | `question`, `depth` (`quick`/`standard`/`comprehensive`), `schema` |
 | Gather data | `agent` | `prompt`, `schema`, `urls`, `max_pages`, `max_time_ms` |
+| Compare versions | `diff` | `old`, `new` (url/markdown/content_hash), `output` (`unified`/`hunks`/`summary`), `granularity` |
+| Watch for changes | `watch` | `action` (`create`/`list`/`check`), `url`/`urls`, `interval_seconds` (min 60), `notification` |
 
 ### Search backend
 
@@ -43,16 +45,6 @@ Default `WIGOLO_SEARCH=core` — direct engines + RRF + ML rerank. Opt-in:
 - `response_time_ms` — latency alias for client compatibility.
 - `engines_used` / `engine_telemetry` — per-engine latency + `dedup_kept`.
 - `fallback_signal` — only on hybrid mode, names the signal(s) that fired.
-
-### What's new (v{version})
-
-- `search_depth` tiers (`ultra-fast` / `fast` / `balanced` / `deep`).
-- `exact_match`, `time_range`, `country` parameters (schema parity).
-- `include_images`, `include_favicon`, `include_engine_outcomes` opt-in fields.
-- `evidence_score`, `freshness_signal`, `brand_collision_warning`, `query_understanding` always emitted on the core path.
-- `WIGOLO_SEARCH=hybrid` smart-fallback mode; `WIGOLO_SEARCH=core` is now the default (was `searxng`).
-- `find_similar` emits `cold_start` when local signals are weak — tune `WIGOLO_FIND_SIMILAR_COLD_START_THRESHOLD`.
-- `research.brief.sections.gaps` surfaces named sub-entities that decomposition could not corroborate.
 
 Full docs: wigolo skills are loaded automatically when relevant.
 <!-- wigolo:end -->

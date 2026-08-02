@@ -270,6 +270,63 @@ describe('HybridSearchProvider', () => {
     expect(sx.search).not.toHaveBeenCalled();
   });
 
+  it('skips the searxng fallback and attaches an actionable warning when the sidecar is NOT available (D1 degrade)', async () => {
+    // WHY (D1): in hybrid mode with no usable sidecar (no external URL, never
+    // installed), the fallback tier would search with empty engines and return
+    // junk. Instead the provider returns the core results untouched and surfaces
+    // a PER-REQUEST warning (stderr boot lines are invisible to MCP users)
+    // naming BOTH fixes so the caller can act.
+    const coreOut: SearchOutput = {
+      results: [makeResult('only', 'https://example.com/a', 0.8)],
+      query: 'q',
+      engines_used: ['bing'],
+      total_time_ms: 100,
+    };
+    const core = mockProvider('core', () => ({ ok: true, data: coreOut }));
+    const sx = mockProvider('searxng', () => ok({ results: [makeResult('b', 'https://b.com/')] }));
+    // Third ctor arg = searxngAvailable; false means the sidecar can't serve.
+    const hybrid = new HybridSearchProvider(core, sx, false);
+
+    const out = await hybrid.search(
+      { query: 'q', include_domains: ['example.com'] },
+      ctx,
+    );
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(sx.search).not.toHaveBeenCalled();
+    expect(out.data.results.map((r) => r.url)).toEqual(['https://example.com/a']);
+    expect(out.data.warning).toBeTruthy();
+    expect(out.data.warning).toContain('WIGOLO_SEARXNG_URL');
+    expect(out.data.warning).toContain('wigolo warmup --searxng');
+    // The signal is still recorded so callers can see WHY the fallback was
+    // wanted, even though it was skipped.
+    expect(out.data.fallback_signal).toContain('include_domains_over_filter');
+  });
+
+  it('does NOT attach the degrade warning when no signal fires even if the sidecar is unavailable', async () => {
+    // WHY: the warning is only actionable when a fallback was actually wanted.
+    const core = mockProvider('core', () =>
+      ok({
+        results: [
+          makeResult('Kubernetes Operators', 'https://kubernetes.io/operators', 0.8),
+          makeResult('Operator Framework', 'https://operatorframework.io/', 0.7),
+        ],
+        engines_used: ['bing'],
+      }),
+    );
+    const sx = mockProvider('searxng', () => ok({ results: [] }));
+    const hybrid = new HybridSearchProvider(core, sx, false);
+
+    const out = await hybrid.search({ query: 'kubernetes operator' }, ctx);
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(sx.search).not.toHaveBeenCalled();
+    expect(out.data.warning).toBeUndefined();
+    expect(out.data.fallback_signal).toBeNull();
+  });
+
   it('passes the same context through to both providers', async () => {
     const core = mockProvider('core', () =>
       ok({

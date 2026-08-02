@@ -56,7 +56,7 @@ export function tokenize(input: string): string[] {
   return tokens;
 }
 
-export function parseArgs(tokens: string[]): ParsedArgs {
+export function parseArgs(tokens: string[], booleanFlags?: Set<string>): ParsedArgs {
   if (tokens.length === 0) {
     return { command: '', positional: [], flags: {} };
   }
@@ -81,7 +81,12 @@ export function parseArgs(tokens: string[]): ParsedArgs {
       } else {
         const key = withoutDashes;
         const next = tokens[i + 1];
-        if (next !== undefined && !next.startsWith('--')) {
+        // A flag known to take no value never swallows the next token, so a
+        // bare boolean stays a boolean and the following token stays positional.
+        if (booleanFlags?.has(key)) {
+          flags[key] = 'true';
+          i++;
+        } else if (next !== undefined && !next.startsWith('--')) {
           flags[key] = next;
           i += 2;
         } else {

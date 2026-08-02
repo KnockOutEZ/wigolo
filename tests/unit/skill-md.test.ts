@@ -127,21 +127,21 @@ describe('SKILL.md — v3 structure and content', () => {
     expect(frontmatter!.runtime).toBe('node');
   });
 
-  it('frontmatter lists all 8 v3 tools', () => {
+  it('frontmatter lists all 10 tools', () => {
     content = readFileSync(SKILL_PATH, 'utf-8');
     frontmatter = parseYamlFrontmatter(content);
     expect(frontmatter).not.toBeNull();
     const tools = frontmatter!.tools as unknown[];
     expect(Array.isArray(tools)).toBe(true);
-    expect(tools.length).toBe(8);
+    expect(tools.length).toBe(10);
   });
 
-  it('frontmatter tools include v3 additions: find_similar, research, agent', () => {
+  it('frontmatter tools include v3 additions: find_similar, research, agent, diff, watch', () => {
     content = readFileSync(SKILL_PATH, 'utf-8');
     frontmatter = parseYamlFrontmatter(content);
     const tools = frontmatter!.tools as Array<Record<string, unknown>>;
     const toolNames = tools.map(t => t.name);
-    for (const name of ['find_similar', 'research', 'agent']) {
+    for (const name of ['find_similar', 'research', 'agent', 'diff', 'watch']) {
       expect(toolNames).toContain(name);
     }
   });
@@ -289,23 +289,23 @@ describe('SKILL.md — CRLF tolerance (Windows checkout)', () => {
     expect(frontmatter!.runtime).toBe('node');
   });
 
-  it('parseYamlFrontmatter returns all 8 v3 tools from CRLF input', () => {
+  it('parseYamlFrontmatter returns all 10 tools from CRLF input', () => {
     const lf = readFileSync(SKILL_PATH, 'utf-8');
     const crlf = asCrlf(lf);
     const frontmatter = parseYamlFrontmatter(crlf);
     expect(frontmatter).not.toBeNull();
     const tools = frontmatter!.tools as unknown[];
     expect(Array.isArray(tools)).toBe(true);
-    expect(tools.length).toBe(8);
+    expect(tools.length).toBe(10);
   });
 
-  it('parseYamlFrontmatter tool names from CRLF input cover v3 additions and v1/v2 tools', () => {
+  it('parseYamlFrontmatter tool names from CRLF input cover all 10 tools', () => {
     const lf = readFileSync(SKILL_PATH, 'utf-8');
     const crlf = asCrlf(lf);
     const frontmatter = parseYamlFrontmatter(crlf);
     const tools = frontmatter!.tools as Array<Record<string, unknown>>;
     const toolNames = tools.map(t => t.name);
-    for (const name of ['fetch', 'search', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent']) {
+    for (const name of ['fetch', 'search', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent', 'diff', 'watch']) {
       expect(toolNames).toContain(name);
     }
   });

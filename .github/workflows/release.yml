@@ -17,6 +17,8 @@ jobs:
   release:
     needs: test
     runs-on: ubuntu-latest
+    env:
+      SMITHERY_API_KEY: ${{ secrets.SMITHERY_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,14 +47,181 @@ jobs:
       # Beta versions (x.y.z-beta.N) publish to the default `latest` dist-tag so
       # `npm install wigolo` works during the public beta. (For a separate opt-in
       # beta channel instead, add `--tag beta`.)
-      - run: npm publish --provenance --access public
+      # Idempotent: skip if this exact version is already on npm, so a re-run
+      # after a partial-publish failure (e.g. a downstream sub-package error)
+      # doesn't abort on the root that already landed.
+      - name: Publish wigolo (npm)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VER="$(node -p "require('./package.json').version")"
+          if npm view "wigolo@$VER" version >/dev/null 2>&1; then
+            echo "wigolo@$VER already on npm — skipping"
+          else
+            npm publish --provenance --access public
+          fi
 
       # Publish as a normal GitHub Release so the newest version earns the Latest
-      # badge and shows in the repo sidebar. The -beta.N version string is what
-      # marks it as a beta; GitHub's "Pre-release" flag is intentionally not set.
+      # badge and shows in the repo sidebar. Idempotent: skip if the release
+      # already exists (re-run safety).
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists — skipping"
+          else
+            gh release create "$GITHUB_REF_NAME" --generate-notes
+          fi
+
+      # ---------------------------------------------------------------------
+      # Sub-package publish (SDKs + framework integrations).
+      #
+      # Ordering: these run AFTER the root `wigolo` npm publish and the GitHub
+      # Release so the critical root artifacts land first. They are NOT
+      # continue-on-error — a sub-package failure fails the release loudly so a
+      # partial publish is visible, rather than being silently skipped like the
+      # best-effort registry/Smithery steps that follow.
+      #
+      # Every sub-package version is guarded against the tag the same way the
+      # root package is, so a version drift stops the publish before it starts.
+      # ---------------------------------------------------------------------
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python build tooling
+        run: pip install build twine
+
+      - name: Verify sub-package versions match tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          fail=0
+          check_npm() {
+            local dir="$1"
+            local ver
+            ver="$(node -p "require('./$dir/package.json').version")"
+            if [ "$ver" != "$TAG_VERSION" ]; then
+              echo "::error::$dir version $ver does not match tag $TAG_VERSION"
+              fail=1
+            fi
+          }
+          check_py() {
+            local dir="$1"
+            local ver
+            ver="$(python -c "import tomllib,sys; print(tomllib.load(open('$dir/pyproject.toml','rb'))['project']['version'])")"
+            if [ "$ver" != "$TAG_VERSION" ]; then
+              echo "::error::$dir version $ver does not match tag $TAG_VERSION"
+              fail=1
+            fi
+          }
+          check_npm sdks/typescript
+          check_npm packages/wigolo-vercel-ai-sdk
+          check_py sdks/python
+          check_py packages/wigolo-langchain
+          check_py packages/wigolo-crewai
+          check_py packages/wigolo-llamaindex
+          if [ "$fail" != "0" ]; then exit 1; fi
+          echo "All sub-package versions agree on $TAG_VERSION"
+
+      # npm sub-packages: wigolo-sdk and wigolo-vercel-ai-sdk.
+      - name: Publish wigolo-sdk (npm)
+        working-directory: sdks/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm ci
+          npm run build
+          VER="$(node -p "require('./package.json').version")"
+          if npm view "wigolo-sdk@$VER" version >/dev/null 2>&1; then
+            echo "wigolo-sdk@$VER already on npm — skipping"
+          else
+            npm publish --provenance --access public
+          fi
+
+      - name: Publish wigolo-vercel-ai-sdk (npm)
+        working-directory: packages/wigolo-vercel-ai-sdk
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          VER="$(node -p "require('./package.json').version")"
+          if npm view "wigolo-vercel-ai-sdk@$VER" version >/dev/null 2>&1; then
+            echo "wigolo-vercel-ai-sdk@$VER already on npm — skipping"
+          else
+            npm publish --provenance --access public
+          fi
+
+      # One-time cleanup: this Vercel integration was briefly published as
+      # `wigolo-ai-sdk` (ambiguous next to the general `wigolo-sdk` client);
+      # it is renamed to `wigolo-vercel-ai-sdk`. Deprecate the old name so npm
+      # points installers at the new one. Best-effort + idempotent.
+      - name: Deprecate old wigolo-ai-sdk name
+        continue-on-error: true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm deprecate wigolo-ai-sdk "renamed to wigolo-vercel-ai-sdk" || true
+
+      # PyPI packages: wigolo (SDK) + the three framework integrations.
+      - name: Publish wigolo (PyPI)
+        working-directory: sdks/python
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          python -m build --wheel --sdist
+          twine upload --skip-existing dist/*
+
+      - name: Publish wigolo-langchain (PyPI)
+        working-directory: packages/wigolo-langchain
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          python -m build --wheel --sdist
+          twine upload --skip-existing dist/*
+
+      - name: Publish wigolo-crewai (PyPI)
+        working-directory: packages/wigolo-crewai
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          python -m build --wheel --sdist
+          twine upload --skip-existing dist/*
+
+      - name: Publish wigolo-llamaindex (PyPI)
+        working-directory: packages/wigolo-llamaindex
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          python -m build --wheel --sdist
+          twine upload --skip-existing dist/*
+
+      # Publish metadata to the Official MCP Registry. GitHub OIDC (id-token: write
+      # above) authenticates the io.github.KnockOutEZ/* namespace with no secrets.
+      # server.json is regenerated from package.json each run so the version stays
+      # in lockstep with the release. Best-effort: a registry hiccup must not fail
+      # a release whose npm + GitHub artifacts already published.
+      - name: Publish to MCP Registry
+        continue-on-error: true
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          rm -f server.json
+          ./mcp-publisher init
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
+
+      # Publish the stdio MCPB bundle to Smithery. Runs only when SMITHERY_API_KEY
+      # is set. The manifest version is synced from package.json so it always
+      # matches the release. Best-effort, like the registry step.
+      - name: Publish to Smithery
+        if: ${{ env.SMITHERY_API_KEY != '' }}
+        continue-on-error: true
+        run: |
+          node -e "const fs=require('fs'),p='mcpb/manifest.json',m=require('./'+p);m.version=require('./package.json').version;fs.writeFileSync(p,JSON.stringify(m,null,2)+'\n')"
+          npx -y @anthropic-ai/mcpb pack mcpb wigolo.mcpb
+          npx -y @smithery/cli mcp publish ./wigolo.mcpb -n ktowhid20/wigolo

@@ -120,6 +120,35 @@ describe('cross-platform browser system deps (GH #116)', () => {
     expect(installDepsViaSudo).toBeUndefined();
   });
 
+  it('Linux non-root + NO sudo binary at all (spawn ENOENT): probe treated as skip, warmup does not crash', async () => {
+    // WHY: slim containers ship no sudo. spawn('sudo') emits an async ENOENT
+    // 'error', which runCommand surfaces as a REJECTION — not a non-zero exit.
+    // The deps strategy must treat that exactly like a failed probe ('skip'),
+    // or the whole browser install crashes BEFORE the launch smoke-test even
+    // though the binary installed fine and the OS libs are baked in the image.
+    setPlatform('linux');
+    setUid(1000);
+    vi.mocked(runCommand).mockImplementation(async (cmd) => {
+      if (cmd === 'sudo') {
+        const err = new Error('spawn sudo ENOENT') as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return ok;
+    });
+    // Launch succeeds — the baked-libs case.
+    vi.mocked(chromium.launch).mockImplementation(okLaunch as never);
+
+    const result = await runWarmup([]);
+
+    expect(result.playwright).toBe('ok');
+    // Never attempted a privileged install.
+    const installDepsViaSudo = vi.mocked(runCommand).mock.calls.find(
+      (c) => cmdOf(c) === 'sudo' && argsOf(c).includes('install-deps'),
+    );
+    expect(installDepsViaSudo).toBeUndefined();
+  });
+
   it('Linux root: install-deps invoked directly (no sudo)', async () => {
     setPlatform('linux');
     setUid(0); // root

@@ -43,8 +43,10 @@ export async function findSimilar(
 ): Promise<FindSimilarOutput> {
   const start = Date.now();
 
-  // Probe embedding availability once up front for the whole request
-  const embeddingAvailable = checkEmbeddingAvailable();
+  // Probe embedding availability once up front for the whole request.
+  // Awaits the lazy provider load (D2) so a healthy provider that has not yet
+  // been touched this process reports available instead of silently missing.
+  const embeddingAvailable = await checkEmbeddingAvailable();
 
   // Snapshot cache/embedding posture BEFORE the web fallback writes new
   // entries into cache, otherwise the cold-start note would wrongly report a
@@ -335,13 +337,17 @@ export async function findSimilar(
   }
 }
 
-function checkEmbeddingAvailable(): boolean {
+async function checkEmbeddingAvailable(): Promise<boolean> {
   try {
     const svc = getEmbeddingService();
-    // Available = service initialized + subprocess verified (Python + model work).
-    // We no longer require index.size() > 0 because the embedding path can
-    // generate query embeddings on-the-fly and compare against freshly-embedded
-    // web fallback results within the same request.
+    // Short-circuit when the service was never booted (never init'd) so we do
+    // not trigger a provider load in contexts that have no embedding backend.
+    if (!svc.isAvailable()) return false;
+    // Await the lazy provider load once (D2). Verified = model loaded and able
+    // to embed. We no longer require index.size() > 0 because the embedding
+    // path can generate query embeddings on-the-fly and compare against
+    // freshly-embedded web fallback results within the same request.
+    await svc.ensureProviderReady();
     return svc.isAvailable() && svc.isSubprocessReady();
   } catch {
     return false;
@@ -544,6 +550,8 @@ async function runEmbeddingSearch(
 ): Promise<FindSimilarResult[]> {
   try {
     const service = getEmbeddingService();
+    if (!service.isAvailable()) return [];
+    await service.ensureProviderReady();
     if (!service.isAvailable() || !service.isSubprocessReady()) return [];
     if (service.getIndex().size() === 0) return [];
 
@@ -849,6 +857,9 @@ async function runWebSearchFallback(
     // (fire-and-forget), but find_similar needs embeddings in THIS request.
     try {
       const embeddingService = getEmbeddingService();
+      if (embeddingService.isAvailable()) {
+        await embeddingService.ensureProviderReady();
+      }
       if (embeddingService.isAvailable() && embeddingService.isSubprocessReady()) {
         const embedPromises = allResults
           .filter(r => r.markdown)

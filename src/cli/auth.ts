@@ -54,8 +54,22 @@ async function discoverCommand(): Promise<number> {
   }
 }
 
-async function statusCommand(): Promise<number> {
+async function statusCommand(useJson: boolean): Promise<number> {
   const config = getConfig();
+
+  if (useJson) {
+    // Machine shape on stdout; presence booleans + the user-configured
+    // path/endpoint values only. No credential material (browser storage
+    // state, profile contents, or API tokens) is ever read or emitted here.
+    process.stdout.write(`${JSON.stringify({
+      status: 'ok',
+      storageState: { configured: Boolean(config.authStatePath), path: config.authStatePath ?? null },
+      chromeProfile: { configured: Boolean(config.chromeProfilePath), path: config.chromeProfilePath ?? null },
+      cdp: { configured: Boolean(config.cdpUrl), url: config.cdpUrl ?? null },
+      fallbackOrder: ['storageState', 'chromeProfile', 'cdp'],
+    })}\n`);
+    return 0;
+  }
 
   write('Auth Configuration Status:\n');
 
@@ -90,14 +104,15 @@ async function statusCommand(): Promise<number> {
 }
 
 export async function runAuth(args: string[]): Promise<number> {
-  const subcommand = args[0];
+  const useJson = args.includes('--json');
+  const subcommand = args.find((a) => !a.startsWith('-'));
 
   switch (subcommand) {
     case 'discover':
       return discoverCommand();
 
     case 'status':
-      return statusCommand();
+      return statusCommand(useJson);
 
     default:
       write('Usage: wigolo auth <subcommand>');

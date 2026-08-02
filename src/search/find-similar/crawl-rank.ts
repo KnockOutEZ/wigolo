@@ -7,6 +7,8 @@ import type { SmartRouter } from '../../fetch/router.js';
 import { getExtractProvider } from '../../providers/extract-provider.js';
 import { getEmbedProvider } from '../../providers/embed-provider.js';
 import { createLogger } from '../../logger.js';
+import { guardFetchUrl } from '../../watch/ssrf.js';
+import { getConfig } from '../../config.js';
 
 const log = createLogger('search');
 
@@ -52,6 +54,18 @@ export async function crawlRank(
     });
   }
 
+  // SSRF guard on the seed before any fetch — the seed is fetched raw via
+  // router.fetch (bypassing handleFetch's guard), so a metadata/private seed
+  // must be refused here. Same allowPrivate wiring as the fetch tool.
+  const seedGuard = guardFetchUrl(seedUrl, 'url', { allowPrivate: getConfig().fetchAllowPrivate });
+  if (!seedGuard.ok) {
+    return emptyOutput({
+      error: seedGuard.reason,
+      embeddingAvailable: false,
+      elapsed: Date.now() - start,
+    });
+  }
+
   // 1. Fetch seed
   let seedRaw;
   try {
@@ -81,13 +95,26 @@ export async function crawlRank(
   // 3. Filter links: same-host (unless explicitly widened), domain filters, dedup, cap
   const includeDomains = input.include_domains;
   const excludeDomains = input.exclude_domains;
-  const allowedLinks = filterLinks(
+  const filteredLinks = filterLinks(
     seedExtraction.links ?? [],
     seedHost,
     includeDomains,
     excludeDomains,
     maxPages,
   );
+
+  // SSRF guard on each discovered 1-hop link — a page can link to a
+  // metadata/private target. Skip refused links (per-link skip-not-fail) so a
+  // single hostile link doesn't fail the whole discovery run.
+  const allowPrivate = getConfig().fetchAllowPrivate;
+  const allowedLinks = filteredLinks.filter((link) => {
+    const g = guardFetchUrl(link, 'link', { allowPrivate });
+    if (!g.ok) {
+      log.debug('crawl-rank skipping SSRF-refused discovered link', { link, reason: g.reason });
+      return false;
+    }
+    return true;
+  });
 
   // 6. Probe embedding (before failing on empty links so error messaging reflects
   // capability). If no links AND no embedding, the empty-links error is still

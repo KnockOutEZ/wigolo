@@ -149,6 +149,63 @@ describe('handleFetch — http_status surfaces at the tool boundary (C2 integrat
   });
 });
 
+// --- Challenge-block http_status plumbing at the tool boundary ---
+//
+// WHY: the anti-bot program threads an upstream anti-bot status (403/429/503)
+// through a `blocked_by_challenge` StageError so the crawl adaptive-cooldown can
+// adapt pace per-domain. The router sets that status on the StageError as
+// `http_status` (see StageError in src/types.ts). handleFetch reconstructs the
+// { ok:false } envelope from that StageError; if it reads the wrong field the
+// status is silently dropped and the crawl cooldown never fires on the headline
+// scenario (a crawl hitting a managed challenge-block). These tests pin the
+// tool-boundary contract: a challenge-block StageError carrying http_status must
+// surface that status on the { ok:false } result, and a StageError with no
+// status must leave it unset (SSRF/validation stay statusless).
+
+describe('handleFetch — challenge-block StageError surfaces http_status', () => {
+  it('preserves http_status:403 from a blocked_by_challenge StageError', async () => {
+    const router = {
+      fetch: vi.fn().mockResolvedValue({
+        error: 'blocked_by_challenge',
+        error_reason: 'Blocked by an anti-bot challenge',
+        stage: 'fetch',
+        hint: 'Try mode:stealth or configure a proxy',
+        http_status: 403,
+      }),
+    };
+
+    const r = await handleFetch(
+      { url: 'https://blocked.example.com/x', force_refresh: true } as FetchInput,
+      router as never,
+    );
+
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toBe('blocked_by_challenge');
+    expect(r.http_status).toBe(403);
+  });
+
+  it('leaves http_status unset when the StageError carries no status', async () => {
+    const router = {
+      fetch: vi.fn().mockResolvedValue({
+        error: 'ssrf_blocked',
+        error_reason: 'Refused to fetch a private address',
+        stage: 'fetch',
+      }),
+    };
+
+    const r = await handleFetch(
+      { url: 'https://blocked.example.com/y', force_refresh: true } as FetchInput,
+      router as never,
+    );
+
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toBe('ssrf_blocked');
+    expect(r.http_status).toBeUndefined();
+  });
+});
+
 // --- C3: section extraction silent failure ---
 //
 // WHY: when callers pass `section: "X"` and no heading matches, the old path

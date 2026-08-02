@@ -29,7 +29,7 @@ export interface ScoreFloorVerdict {
 // rerank-fold uses for its tier-0 split. Off-topic real-content domains
 // (benchmark 2026-06-14 C1: YouTube / Google Play / Zhihu / MyBroadband)
 // land below zero here even though they pass the url-shape + content gates.
-const SCORE_FLOOR = 0;
+export const SCORE_FLOOR = 0;
 
 /**
  * Classify a candidate research source by its (post-rerank) relevance score.

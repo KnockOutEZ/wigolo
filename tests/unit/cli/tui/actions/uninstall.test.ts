@@ -23,6 +23,13 @@ vi.mock('../../../../../src/cli/agents/registry.js', () => ({
   agentHandlers: [],
 }));
 
+const { removeAllSkillsMock } = vi.hoisted(() => ({
+  removeAllSkillsMock: vi.fn(() => ({ written: [], removed: [], refused: [], notices: [] })),
+}));
+vi.mock('../../../../../src/cli/agents/skills/index.js', () => ({
+  removeAllSkills: removeAllSkillsMock,
+}));
+
 import {
   uninstall,
   type UninstallResult,
@@ -34,6 +41,7 @@ let tmpDir: string;
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), 'wigolo-sp5-uninstall-'));
   vi.clearAllMocks();
+  removeAllSkillsMock.mockReturnValue({ written: [], removed: [], refused: [], notices: [] });
 });
 
 afterEach(() => {
@@ -176,6 +184,39 @@ describe('uninstall — path-safety guard (rm -rf footgun prevention)', () => {
     populateDataDir();
     const result = await uninstall({ dataDir: tmpDir, confirmed: true });
     expect(result.ok).toBe(true);
+  });
+});
+
+describe('uninstall — skills sweep ordering', () => {
+  it('runs the skills sweep BEFORE the data-dir rmSync (receipts are the deletion oracle)', async () => {
+    // Receipts live at <dataDir>/skills/receipts.json. If the data dir were
+    // removed first, the sweep would have no receipts to consult. Assert the
+    // sweep is invoked while receipts still exist on disk.
+    const receiptsPath = join(tmpDir, 'skills', 'receipts.json');
+    mkdirSync(join(tmpDir, 'skills'), { recursive: true });
+    writeFileSync(receiptsPath, '{}', 'utf-8');
+    populateDataDir();
+
+    let receiptsPresentAtSweep = false;
+    removeAllSkillsMock.mockImplementation(() => {
+      receiptsPresentAtSweep = existsSync(receiptsPath);
+      return { written: [], removed: [], refused: [], notices: [] };
+    });
+
+    const result = await uninstall({ dataDir: tmpDir, confirmed: true });
+    expect(result.ok).toBe(true);
+    expect(removeAllSkillsMock).toHaveBeenCalledTimes(1);
+    // Sweep saw the receipts (ran before deletion) …
+    expect(receiptsPresentAtSweep).toBe(true);
+    // … and the data dir (with receipts) is gone afterward.
+    expect(existsSync(receiptsPath)).toBe(false);
+    expect(existsSync(tmpDir)).toBe(false);
+  });
+
+  it('does NOT run the skills sweep when the data dir is unsafe (guard fires first)', async () => {
+    const result = await uninstall({ dataDir: '/', confirmed: true });
+    expect(result.ok).toBe(false);
+    expect(removeAllSkillsMock).not.toHaveBeenCalled();
   });
 });
 

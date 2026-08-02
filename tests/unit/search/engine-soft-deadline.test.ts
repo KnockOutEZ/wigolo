@@ -148,36 +148,41 @@ describe('session-scoped adaptive down-weight of chronically-tripped engines', (
     return p;
   }
 
-  it('counts cumulative session trips that do NOT reset on an intervening success', async () => {
-    // WHY: `state.trips` resets on success (it drives per-cooldown backoff).
-    // Session trips must ACCUMULATE across recoveries so a flaky engine that
-    // trips, recovers, trips again is recognised as chronically bad.
+  it('accumulates session trips across repeated failed probes but resets them on a successful recovery', async () => {
+    // WHY (D5, updated): a repeatedly-failing engine's sessionTrips ACCUMULATE
+    // across failed probes so it is recognised as chronically unhealthy. But a
+    // SUCCESSFUL half-open recovery clears the chronic counter — chronic status
+    // must be ESCAPABLE (a burst that briefly over-drove an engine should not
+    // pin it to the tighter budget for the life of the process). This inverts
+    // the old "sessionTrips persist across a recovery" invariant deliberately.
     let calls = 0;
     const spy = vi.fn(async () => {
       calls++;
-      // Fail the first 2 (trips once at threshold 2), then succeed once, then
-      // fail 2 more (trips again).
-      if (calls <= 2) throw new Error('down');
-      if (calls === 3) return [makeResult('e', 'https://ok/1')];
-      throw new Error('down again');
+      // Trip, then fail two probes (sessionTrips climbs 1->2->3), then a probe
+      // finally succeeds (sessionTrips must reset to 0).
+      if (calls <= 3) throw new Error('down');
+      return [makeResult('e', 'https://ok/1')];
     });
     const wrapped = wrapWithRetryAndBreaker({ name: 'flaky', search: spy }, {
-      failureThreshold: 2,
+      failureThreshold: 1,
       cooldownMs: 60_000,
       retryAttempts: 1,
     });
 
-    await settle(wrapped); // fail
     await settle(wrapped); // fail -> trip #1
     expect(getEngineSessionTrips('flaky')).toBe(1);
 
     vi.advanceTimersByTime(60_000);
-    await settle(wrapped); // probe succeeds -> closes; session trips PERSIST
-    expect(getEngineSessionTrips('flaky')).toBe(1);
-
-    await settle(wrapped); // fail
-    await settle(wrapped); // fail -> trip #2
+    await settle(wrapped); // probe fails -> reopen, sessionTrips accumulates
     expect(getEngineSessionTrips('flaky')).toBe(2);
+
+    vi.advanceTimersByTime(120_000);
+    await settle(wrapped); // probe fails again -> sessionTrips accumulates
+    expect(getEngineSessionTrips('flaky')).toBe(3);
+
+    vi.advanceTimersByTime(180_000);
+    await settle(wrapped); // probe SUCCEEDS -> chronic status escapes
+    expect(getEngineSessionTrips('flaky')).toBe(0);
   });
 
   it('does NOT mark a transiently-slow-once engine as chronically tripped', async () => {

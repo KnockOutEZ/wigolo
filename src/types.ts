@@ -11,6 +11,17 @@ export interface StageError {
   error_reason: string;
   stage: string;
   hint?: string;
+  /** Upstream HTTP status when the stage failure carries one (e.g. anti-bot 403/429).
+   * Lets the crawl rate-limiter adapt pace per-domain. Absent when no status exists. */
+  http_status?: number;
+  /**
+   * Solve-ladder provenance on a `blocked_by_challenge` stage error: the coarse
+   * challenge class the classifier assigned, and the solve method — always
+   * `null` on a block (no rung cleared it). Absent on non-challenge stage errors.
+   * Lets a caller audit the honest ceiling (which challenge class blocked).
+   */
+  challenge_class?: ChallengeClass;
+  solve_method?: SolveMethod | null;
 }
 
 export type StageResult<T> =
@@ -64,9 +75,9 @@ export interface FetchInput {
  *   - 'cache'             : served from the local cache (no tier touched)
  *   - 'http'              : vanilla HTTP tier
  *   - 'tls-impersonation' : TLS-fingerprinted HTTP tier (opt-in)
- *   - 'playwright'        : full browser tier
+ *   - 'browser'           : full browser tier
  */
-export type FetchMethod = 'cache' | 'http' | 'tls-impersonation' | 'playwright';
+export type FetchMethod = 'cache' | 'http' | 'tls-impersonation' | 'browser' | 'reddit-api';
 
 export interface FetchOutput {
   /** Compatibility alias of how long the request took, ms. */
@@ -97,6 +108,16 @@ export interface FetchOutput {
   changed?: boolean;
   previous_hash?: string;
   diff_summary?: string;
+  /**
+   * SHA-256 of the FULL extracted markdown, computed before any
+   * presentation reshaping (include_full_markdown / max_tokens_out /
+   * max_chars). This is the same content hash the cache and change-detector
+   * key off. Consumers that need a stable content fingerprint (the `watch`
+   * scheduler, url-mode `diff`) MUST hash this rather than the returned
+   * `markdown`, which the view budget may truncate — otherwise a change
+   * beyond the truncation point is silently invisible.
+   */
+  content_hash?: string;
   evidence?: EvidenceItem[];
   /**
    * Per-site structured JSON, present only when a site extractor matched the
@@ -110,6 +131,14 @@ export interface FetchOutput {
   /** Which tier produced the bytes — see FetchMethod. Always emitted on
    * successful responses; absent only on StageError replies. */
   fetch_method?: FetchMethod;
+  /**
+   * How completely a browser-tier capture rendered its real content (level
+   * full/partial/shell + reason). Present only when the browser tier served
+   * the bytes; absent on HTTP/TLS-tier responses and on cache hits whose row
+   * predates completeness persistence. Lets callers tell a genuine page from
+   * an un-rendered shell without re-parsing the HTML.
+   */
+  content_completeness?: ContentCompleteness;
   /**
    * Upstream HTTP status code. Surfaced so callers can branch on 404 / 403 /
    * 5xx pages that still render usable HTML (a missing-docs landing page is
@@ -128,7 +157,69 @@ export interface FetchOutput {
    * as a real site_data payload.
    */
   fetch_failed?: string;
+  /**
+   * Solve-ladder provenance surfaced from the browser tier: the coarse
+   * challenge class the classifier assigned when a bot-protection challenge was
+   * detected on this fetch. Absent when no challenge was involved.
+   */
+  challenge_class?: ChallengeClass;
+  /**
+   * Which solve rung cleared the challenge, or `null` when a challenge was
+   * detected but no rung passed it (the honest, but recovered-to-content case is
+   * rare here — a hard block surfaces as a `blocked_by_challenge` stage error).
+   * Absent when no challenge was involved.
+   */
+  solve_method?: SolveMethod | null;
 }
+
+/**
+ * Post-settle assessment of how completely a browser-tier capture rendered.
+ * `level` is the coarse verdict; `reason` names the specific class (closed
+ * 8-value taxonomy); `settled_by` records which settle gate ended the wait.
+ * Only produced by the browser tiers (playwright / stealth) — HTTP/TLS captures
+ * leave `contentCompleteness` absent.
+ */
+export interface ContentCompleteness {
+  level: 'full' | 'partial' | 'shell';
+  reason:
+    | 'content_verified'
+    | 'stable_content'
+    | 'nav_shell'
+    | 'app_shell'
+    | 'challenge_shell'
+    | 'never_settled'
+    // A rendered-but-thin page with no frame evidence (no nav chrome, no SPA
+    // root) — thin/unstructured, NOT an un-rendered shell, so not shell-gated.
+    | 'thin_content'
+    | 'empty';
+  settled_by: 'probe' | 'stability' | 'budget';
+}
+
+/**
+ * Coarse taxonomy of a bot-protection challenge, produced by the challenge
+ * classifier. Drives which solve rung (if any) the ladder engages:
+ *   - 'image'       : a visible-image challenge (grid/slider/text) — pixels to
+ *                     reason about, so in-band AI-vision-solvable.
+ *   - 'interactive' : a checkbox/Turnstile-style widget — a trusted gesture can
+ *                     pass it (no image to read).
+ *   - 'behavioral'  : an invisible/managed challenge (reCAPTCHA v3, managed
+ *                     Turnstile, DataDome/Akamai) — no image, not "solvable",
+ *                     only avoidable via fingerprint/IP/behavior.
+ *   - 'none'        : real content, no challenge markers.
+ */
+export type ChallengeClass = 'image' | 'interactive' | 'behavioral' | 'none';
+
+/**
+ * Which rung of the solve ladder actually cleared (or attempted) a challenge.
+ * Surfaced on the fetch result for audit + honesty:
+ *   - 'reuse'     : a stored, route-gated clearance was injected.
+ *   - 'auto-pass' : a trusted-input gesture passed an interactive widget.
+ *   - 'cdp-direct': the raw control-plane rung.
+ *   - 'ai-vision' : an in-band vision model solved a visible-image challenge.
+ *   - 'solver'    : an opt-in external solver/reader escape rung.
+ *   - 'human'     : a human solved it in a visible browser surface.
+ */
+export type SolveMethod = 'reuse' | 'auto-pass' | 'cdp-direct' | 'ai-vision' | 'solver' | 'human';
 
 export interface RawFetchResult {
   url: string;
@@ -140,9 +231,10 @@ export interface RawFetchResult {
    * Which fetch tier produced the bytes:
    *   - 'http'              : default httpFetch via node fetch
    *   - 'tls-impersonation' : TLS-fingerprinted HTTP tier (opt-in)
-   *   - 'playwright'        : full browser fallback
+   *   - 'browser'           : full browser fallback
+   *   - 'reddit-api'        : opt-in Reddit OAuth API path (credential-gated)
    */
-  method: 'http' | 'tls-impersonation' | 'playwright';
+  method: 'http' | 'tls-impersonation' | 'browser' | 'reddit-api';
   headers: Record<string, string>;
   rawBuffer?: Buffer;
   screenshot?: string;
@@ -150,6 +242,26 @@ export interface RawFetchResult {
   jsRequired?: boolean;
   escalated?: boolean;
   warning?: string;
+  /**
+   * How completely a browser-tier capture rendered — set by the playwright /
+   * stealth paths from the shared settle. Absent on HTTP/TLS captures and cache
+   * rows that predate the field. Downstream (cache staleness, research source
+   * filtering) branches on `level`/`reason` to avoid trusting shell captures.
+   */
+  contentCompleteness?: ContentCompleteness;
+  /**
+   * Coarse challenge class the classifier assigned to this fetch, when the
+   * browser tier detected a bot-protection challenge. Absent on captures that
+   * never hit a challenge. Set by the solve-ladder path (slice PL); optional so
+   * existing construction sites compile unchanged.
+   */
+  challenge_class?: ChallengeClass;
+  /**
+   * Which solve rung cleared the challenge (or `null` when a challenge was
+   * detected but no rung passed it — the honest `blocked_by_challenge` path).
+   * Absent when no challenge was involved. Set by the solve-ladder path.
+   */
+  solve_method?: SolveMethod | null;
 }
 
 export interface ExtractionResult {
@@ -212,7 +324,7 @@ export interface CachedContent {
   metadata: string;
   links: string;
   images: string;
-  fetchMethod: 'http' | 'playwright';
+  fetchMethod: 'http' | 'browser';
   extractorUsed: ExtractorType;
   contentHash: string;
   fetchedAt: string;
@@ -225,6 +337,13 @@ export interface CachedContent {
    * to hash identically.
    */
   httpStatus?: number | null;
+  /**
+   * Render-completeness label captured at fetch time (browser tier only).
+   * Absent on rows persisted before migration 009 added the columns, and on
+   * HTTP/TLS-tier rows. The cache staleness gate treats a `shell` level as
+   * stale so a shell capture is re-fetched once rather than replayed.
+   */
+  contentCompleteness?: ContentCompleteness;
 }
 
 export interface Extractor {
@@ -551,7 +670,10 @@ export interface SearchOutput {
    * dispatched, `healthy` = engines that returned ≥1 result, `degraded` =
    * healthy < total. `reasons` names the events that degraded the pool
    * (e.g. `starvation_redispatch` when a thin vertical fell back to the
-   * general pool). Single surface for "pool degraded to N engines". */
+   * general pool; `thin_pool` when some dispatched engine contributed no
+   * results so cross-engine ranking ran on a thinned pool; `pool_collapsed`
+   * when the pool fell below the collapse floor). Single surface for "pool
+   * degraded to N engines". */
   engine_pool?: EnginePoolHealth;
 }
 
@@ -664,12 +786,15 @@ export interface ResearchSource {
    * source is web/page-derived → false. Required so a caller never sees an
    * untagged source. (Studio sources arrive with C3.) */
   trusted: boolean;
+  /** Render-completeness label from the fetch (browser tier only). A `shell`
+   * level excludes the source from the evidence set before synthesis. */
+  content_completeness?: ContentCompleteness;
 }
 
 export interface RejectedSource {
   url: string;
-  reason: 'homepage' | 'serp' | 'social-promo' | 'low-content' | 'low-overlap' | 'negative-score';
-  stage: 'url-shape' | 'content-gate' | 'score-floor';
+  reason: 'homepage' | 'serp' | 'social-promo' | 'low-content' | 'low-overlap' | 'negative-score' | 'shell-content';
+  stage: 'url-shape' | 'content-gate' | 'score-floor' | 'shell-content';
 }
 
 export interface ResearchOutput {
@@ -910,6 +1035,17 @@ export interface CrawlResultItem {
   depth: number;
   evidence?: EvidenceItem[];
   excerpt?: string;
+  /** Per-page render completeness, carried through from the page's fetch.
+   * Absent when the page was served by a non-browser tier. */
+  content_completeness?: ContentCompleteness;
+  /** Solve-ladder provenance carried through from the page's fetch: the
+   * classified challenge class when this page hit an anti-bot challenge.
+   * Absent on pages that never encountered one. */
+  challenge_class?: ChallengeClass;
+  /** How a challenged page was cleared (e.g. 'auto-pass'), carried through
+   * from the page's fetch. Null when a challenge was detected but not cleared.
+   * Absent on pages that never encountered a challenge. */
+  solve_method?: SolveMethod | null;
 }
 
 export interface LinkEdge {
@@ -1003,7 +1139,8 @@ export type NamedSchemaType =
   | 'Product'
   | 'CodeSnippet'
   | 'Paper'
-  | 'EventListing';
+  | 'EventListing'
+  | 'JobPosting';
 
 export interface ExtractInput {
   url?: string;

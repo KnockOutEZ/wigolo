@@ -6,6 +6,7 @@ import {
 } from '../search/sampling.js';
 import type { ResearchSource, Citation } from '../types.js';
 import { wrapUntrusted } from '../security/untrusted.js';
+import { stripResearchChrome } from './brief.js';
 
 const log = createLogger('research');
 
@@ -44,7 +45,8 @@ export async function synthesizeReport(
     title: s.title,
     // Page-derived preview returned to the agent — structurally contained (P6-a): the snippet
     // is fenced as untrusted data regardless of the trust flag (which is mirrored separately).
-    snippet: wrapUntrusted(s.markdown_content.slice(0, 200)),
+    // Chrome is stripped BEFORE the slice so the 200 chars are real content, then fenced.
+    snippet: wrapUntrusted(stripResearchChrome(s.markdown_content).slice(0, 200)),
     trusted: s.trusted, // mirror the source's trust (C4)
   }));
 

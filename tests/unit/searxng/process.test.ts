@@ -22,8 +22,9 @@ vi.mock('node:fs', async () => {
   };
 });
 
-import { findAvailablePort, acquireLock, releaseLock } from '../../../src/searxng/process.js';
+import { findAvailablePort, acquireLock, releaseLock, SearxngProcess } from '../../../src/searxng/process.js';
 import { createServer } from 'node:net';
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 
 describe('SearXNG process management', () => {
@@ -127,6 +128,43 @@ describe('SearXNG process management', () => {
       vi.mocked(existsSync).mockReturnValue(true);
       releaseLock('/tmp/.wigolo');
       expect(unlinkSync).toHaveBeenCalled();
+    });
+  });
+
+  describe('start spawn environment', () => {
+    it('does NOT pass WIGOLO_API_TOKEN / WIGOLO_API_TOKEN_FILE to the spawned child', async () => {
+      process.env.WIGOLO_API_TOKEN = 'daemon-secret';
+      process.env.WIGOLO_API_TOKEN_FILE = '/run/secrets/api-token';
+
+      // Fresh lock acquired (no existing instance).
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue('' as unknown as Buffer);
+
+      // Port resolves cleanly.
+      const mockNetServer = {
+        listen: vi.fn((_port: number, cb: () => void) => { cb(); return mockNetServer; }),
+        close: vi.fn((cb: () => void) => { cb(); }),
+        address: vi.fn().mockReturnValue({ port: 8888 }),
+        on: vi.fn().mockReturnThis(),
+      };
+      vi.mocked(createServer).mockReturnValue(mockNetServer as any);
+
+      // Capture the spawn env, then throw to abort start() before the health poll.
+      let capturedEnv: NodeJS.ProcessEnv | undefined;
+      vi.mocked(spawn).mockImplementation(((_bin: string, _args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+        capturedEnv = opts?.env;
+        throw new Error('abort-after-capture');
+      }) as unknown as typeof spawn);
+
+      const proc = new SearxngProcess('/tmp/.wigolo/searxng', '/tmp/.wigolo');
+      await proc.start().catch(() => { /* expected — we threw to short-circuit */ });
+
+      expect(spawn).toHaveBeenCalled();
+      expect(capturedEnv).toBeDefined();
+      expect(capturedEnv!.WIGOLO_API_TOKEN).toBeUndefined();
+      expect(capturedEnv!.WIGOLO_API_TOKEN_FILE).toBeUndefined();
+      // Sanity: the settings path merge still applies.
+      expect(capturedEnv!.SEARXNG_SETTINGS_PATH).toContain('settings.yml');
     });
   });
 });

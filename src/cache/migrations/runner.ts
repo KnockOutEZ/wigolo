@@ -229,6 +229,45 @@ CREATE TABLE IF NOT EXISTS tool_audit (
 CREATE INDEX IF NOT EXISTS idx_tool_audit_ts ON tool_audit(ts);
 CREATE INDEX IF NOT EXISTS idx_tool_audit_tool ON tool_audit(tool);
 `;
+// Anti-bot clearance columns on domain_routing. The base table is created
+// inline in src/cache/db.ts; the CREATE here is the safety net for raw
+// callers. ALTERs live in the postStep (guarded by table_info) since SQLite
+// has no `ADD COLUMN IF NOT EXISTS` and an unguarded ALTER blows up on re-run.
+const MIGRATION_008_ANTIBOT_CLEARANCE = `
+CREATE TABLE IF NOT EXISTS domain_routing (
+  domain TEXT PRIMARY KEY,
+  prefer_playwright INTEGER DEFAULT 0,
+  http_failures INTEGER DEFAULT 0,
+  last_updated TEXT
+);
+`;
+
+const ANTIBOT_CLEARANCE_COLUMNS = [
+  'cf_clearance',
+  'clearance_ua',
+  'clearance_tier',
+  'clearance_expires_at',
+  'backoff_until',
+  'last_403_at',
+];
+
+// Nullable content-completeness columns on url_cache so a cache hit can be
+// re-classified stale when the cached capture was only a shell. Empty SQL —
+// the whole effect is the guarded ADD COLUMNs in the postStep (mirrors 006).
+const MIGRATION_009_CONTENT_COMPLETENESS = '';
+
+const CONTENT_COMPLETENESS_COLUMNS = [
+  'content_completeness_level',
+  'content_completeness_reason',
+  'content_completeness_settled_by',
+];
+
+// Nullable route-identity column on domain_routing. A cf_clearance is bound to
+// the {IP + UA + TLS} of the egress it was solved on, so a clearance harvested
+// on one route (proxy-or-direct) is invalid from another. `solved_route`
+// records that egress at harvest; legacy rows read NULL → 'direct'. Empty SQL —
+// the whole effect is the guarded ADD COLUMN in the postStep (mirrors 008).
+const MIGRATION_010_CLEARANCE_ROUTE = '';
 
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
@@ -336,6 +375,60 @@ export const MIGRATIONS: Migration[] = [
   },
   { name: '010-studio-audit', sql: MIGRATION_010_STUDIO_AUDIT },
   { name: '011-tool-audit', sql: MIGRATION_011_TOOL_AUDIT },
+  {
+    name: '008-antibot-clearance',
+    sql: MIGRATION_008_ANTIBOT_CLEARANCE,
+    /**
+     * Adds the anti-bot clearance columns to domain_routing, skipping any
+     * that already exist (idempotent) — mirrors the 005 postStep pattern.
+     */
+    postStep: (db) => {
+      const cols = db.pragma('table_info(domain_routing)') as Array<{ name: string }>;
+      const names = new Set(cols.map((c) => c.name));
+      for (const col of ANTIBOT_CLEARANCE_COLUMNS) {
+        if (!names.has(col)) {
+          db.exec(`ALTER TABLE domain_routing ADD COLUMN ${col} TEXT`);
+        }
+      }
+    },
+  },
+  {
+    name: '009-content-completeness',
+    sql: MIGRATION_009_CONTENT_COMPLETENESS,
+    /**
+     * Adds the nullable content-completeness columns to url_cache, skipping any
+     * that already exist (idempotent) — mirrors the 006 postStep. url_cache is
+     * created inline by initDatabase(); the runner-only harness skips that, so
+     * guard on an empty table_info (no table → no-op, column arrives with the
+     * table on the next initDatabase).
+     */
+    postStep: (db) => {
+      const cols = db.pragma('table_info(url_cache)') as Array<{ name: string }>;
+      if (cols.length === 0) return;
+      const names = new Set(cols.map((c) => c.name));
+      for (const col of CONTENT_COMPLETENESS_COLUMNS) {
+        if (!names.has(col)) {
+          db.exec(`ALTER TABLE url_cache ADD COLUMN ${col} TEXT`);
+        }
+      }
+    },
+  },
+  {
+    name: '010-clearance-route',
+    sql: MIGRATION_010_CLEARANCE_ROUTE,
+    /**
+     * Adds the nullable route-identity column to domain_routing, skipping it if
+     * already present (idempotent) — mirrors the 008 postStep. SQLite has no
+     * `ADD COLUMN IF NOT EXISTS`, so we guard on PRAGMA table_info.
+     */
+    postStep: (db) => {
+      const cols = db.pragma('table_info(domain_routing)') as Array<{ name: string }>;
+      const names = new Set(cols.map((c) => c.name));
+      if (!names.has('solved_route')) {
+        db.exec('ALTER TABLE domain_routing ADD COLUMN solved_route TEXT');
+      }
+    },
+  },
 ];
 
 function isReadOnlyError(err: unknown): boolean {

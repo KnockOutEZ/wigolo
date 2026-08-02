@@ -20,6 +20,10 @@ vi.mock('playwright', () => {
                 headers: () => ({ 'content-type': 'text/html' }),
               }),
               waitForLoadState: vi.fn().mockResolvedValue(undefined),
+              // settlePage's hybrid gate: probe resolves immediately (recognized
+              // content) so settle exits fast without the stability poller.
+              waitForFunction: vi.fn().mockResolvedValue(undefined),
+              evaluate: vi.fn().mockResolvedValue({ textLen: 1000, nodes: 20 }),
               content: vi.fn().mockResolvedValue(`<html><body>${type} page</body></html>`),
               screenshot: vi.fn().mockResolvedValue(Buffer.from('fake-screenshot')),
               setExtraHTTPHeaders: vi.fn().mockResolvedValue(undefined),
@@ -43,6 +47,7 @@ vi.mock('playwright', () => {
 });
 
 import { MultiBrowserPool } from '../../../src/fetch/browser-pool.js';
+import { chromium } from 'playwright';
 import type { BrowserType } from '../../../src/types.js';
 
 describe('MultiBrowserPool', () => {
@@ -72,11 +77,30 @@ describe('MultiBrowserPool', () => {
     expect(pool.getConfiguredTypes()).toEqual(['chromium', 'firefox', 'webkit']);
   });
 
+  it('launches the browser engine with an environment stripped of the API token', async () => {
+    process.env.WIGOLO_API_TOKEN = 'daemon-secret';
+    process.env.WIGOLO_API_TOKEN_FILE = '/run/secrets/api-token';
+
+    const pool = new MultiBrowserPool({ browserTypes: ['chromium'] });
+    await pool.fetchWithBrowser('https://example.com');
+
+    expect(chromium.launch).toHaveBeenCalled();
+    const launchOpts = vi.mocked(chromium.launch).mock.calls[0]?.[0] as
+      | { headless?: boolean; env?: NodeJS.ProcessEnv }
+      | undefined;
+    expect(launchOpts).toBeDefined();
+    expect(launchOpts!.headless).toBe(true);
+    expect(launchOpts!.env).toBeDefined();
+    expect(launchOpts!.env!.WIGOLO_API_TOKEN).toBeUndefined();
+    expect(launchOpts!.env!.WIGOLO_API_TOKEN_FILE).toBeUndefined();
+    await pool.shutdown();
+  });
+
   it('fetchWithBrowser uses default type when none specified', async () => {
     const pool = new MultiBrowserPool({ browserTypes: ['chromium'] });
     const result = await pool.fetchWithBrowser('https://example.com');
     expect(result.html).toContain('chromium page');
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
     await pool.shutdown();
   });
 
@@ -214,7 +238,7 @@ describe('MultiBrowserPool', () => {
   it('stores the used browser type in the result metadata', async () => {
     const pool = new MultiBrowserPool({ browserTypes: ['chromium', 'firefox'] });
     const result = await pool.fetchWithBrowser('https://example.com', { browserType: 'firefox' });
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
     await pool.shutdown();
   });
 });

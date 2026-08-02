@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { resetConfig } from '../../../src/config.js';
+import { resolveSearchBackend, getBootstrapState } from '../../../src/searxng/bootstrap.js';
 
 vi.mock('../../../src/cache/db.js', () => ({
   initDatabase: vi.fn(),
@@ -58,13 +59,41 @@ vi.mock('../../../src/searxng/docker.js', () => ({
   })),
 }));
 
+// Boot-negative (D2): initSubsystems must init the embedding store WITHOUT
+// probing the ONNX provider. The probe fires lazily on first use, never at boot.
+const embeddingInit = vi.fn().mockResolvedValue(undefined);
+const embeddingEnsureProviderReady = vi.fn().mockResolvedValue(true);
+vi.mock('../../../src/embedding/embed.js', () => ({
+  getEmbeddingService: vi.fn(() => ({
+    init: embeddingInit,
+    ensureProviderReady: embeddingEnsureProviderReady,
+    isAvailable: vi.fn().mockReturnValue(true),
+    isSubprocessReady: vi.fn().mockReturnValue(false),
+    shutdown: vi.fn(),
+  })),
+  resetEmbeddingService: vi.fn(),
+}));
+
 describe('initSubsystems', () => {
   beforeEach(() => {
     resetConfig();
     vi.clearAllMocks();
+    embeddingInit.mockClear().mockResolvedValue(undefined);
+    embeddingEnsureProviderReady.mockClear().mockResolvedValue(true);
   });
   afterEach(() => {
     resetConfig();
+  });
+
+  it('inits the embedding store at boot but does NOT probe the ONNX provider', async () => {
+    const { initSubsystems } = await import('../../../src/server.js');
+    await initSubsystems();
+
+    // Positive control: boot still initializes the embedding subsystem.
+    expect(embeddingInit).toHaveBeenCalledTimes(1);
+    // Boot-negative: the lazy provider probe must not fire at startup (this is
+    // the ~150-200MB idle-footprint win).
+    expect(embeddingEnsureProviderReady).not.toHaveBeenCalled();
   });
 
   it('exports initSubsystems function', async () => {
@@ -101,6 +130,39 @@ describe('initSubsystems', () => {
     const { initSubsystems } = await import('../../../src/server.js');
     const subs = await initSubsystems();
     await subs.shutdown();
+  });
+
+  it('bootstrapSearxng performs ZERO sidecar activity on the default core backend', async () => {
+    // WHY (D1): the zero-config path. A default `core` user must never trigger
+    // any sidecar machinery — resolveSearchBackend both probes runtimes AND
+    // writes state files, so even calling it once breaks the "no state.json,
+    // no port probe" acceptance gate.
+    delete process.env.WIGOLO_SEARCH;
+    resetConfig();
+    const { initSubsystems } = await import('../../../src/server.js');
+    const subs = await initSubsystems();
+    await subs.bootstrapSearxng();
+    expect(resolveSearchBackend).not.toHaveBeenCalled();
+  });
+
+  it('bootstrapSearxng DOES resolve the backend when WIGOLO_SEARCH=searxng and the sidecar is installed (positive control)', async () => {
+    // WHY: proves the not-called assertion above is meaningful — the harness
+    // CAN observe a resolveSearchBackend call when the sidecar is opted into AND
+    // available (installed). A ready on-disk state is what warmup --searxng
+    // leaves behind.
+    process.env.WIGOLO_SEARCH = 'searxng';
+    resetConfig();
+    vi.mocked(getBootstrapState).mockReturnValue({ status: 'ready', searxngPath: '/tmp/searxng' });
+    try {
+      const { initSubsystems } = await import('../../../src/server.js');
+      const subs = await initSubsystems();
+      await subs.bootstrapSearxng();
+      expect(resolveSearchBackend).toHaveBeenCalled();
+    } finally {
+      delete process.env.WIGOLO_SEARCH;
+      vi.mocked(getBootstrapState).mockReturnValue(null);
+      resetConfig();
+    }
   });
 });
 

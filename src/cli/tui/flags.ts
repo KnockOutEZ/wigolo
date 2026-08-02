@@ -17,6 +17,11 @@ const INIT_KNOWN = new Set([
   '-h',
   '--provider',
   '--search',
+  '--wizard',
+  '--interactive',
+  '--warmup',
+  '--no-warmup',
+  '--json',
 ]);
 
 const SETUP_KNOWN = new Set([
@@ -26,6 +31,7 @@ const SETUP_KNOWN = new Set([
   '--plain',
   '--help',
   '-h',
+  '--json',
 ]);
 
 interface Raw {
@@ -34,6 +40,7 @@ interface Raw {
   skipVerify: boolean;
   plain: boolean;
   help: boolean;
+  json: boolean;
 }
 
 function parseAgentsValue(value: string): string[] {
@@ -69,6 +76,7 @@ function parseCommon(args: readonly string[], known: ReadonlySet<string>): Raw {
     skipVerify: false,
     plain: false,
     help: false,
+    json: false,
   };
 
   let i = 0;
@@ -96,6 +104,12 @@ function parseCommon(args: readonly string[], known: ReadonlySet<string>): Raw {
 
     if (token === '--help' || token === '-h') {
       raw.help = true;
+      i++;
+      continue;
+    }
+
+    if (token === '--json') {
+      raw.json = true;
       i++;
       continue;
     }
@@ -129,14 +143,46 @@ function parseCommon(args: readonly string[], known: ReadonlySet<string>): Raw {
 const VALID_PROVIDERS = ['anthropic', 'openai', 'gemini', 'ollama'] as const;
 const VALID_SEARCH_BACKENDS = ['core', 'searxng', 'hybrid'] as const;
 
-function parseInitOnlyFlags(args: readonly string[]): { provider?: string; search?: string } {
+function parseInitOnlyFlags(args: readonly string[]): { provider?: string; search?: string; interactive: boolean; wizard: boolean; warmup: boolean } {
   let provider: string | undefined;
   let search: string | undefined;
+  let interactive = false;
+  let wizard = false;
+  // Full setup is the DEFAULT: a manual init downloads every component so
+  // failures surface loudly. `--no-warmup` is the download-nothing escape hatch;
+  // `--warmup` is kept as an explicit-on alias for back-compat (a no-op given
+  // the new default).
+  let warmup = true;
 
   let i = 0;
   while (i < args.length) {
     const token = args[i];
     if (!token) { i++; continue; }
+
+    if (token === '--wizard') {
+      wizard = true;
+      i++;
+      continue;
+    }
+
+    // The plain-text prompt mode — distinct from the Ink --wizard.
+    if (token === '--interactive') {
+      interactive = true;
+      i++;
+      continue;
+    }
+
+    if (token === '--warmup') {
+      warmup = true;
+      i++;
+      continue;
+    }
+
+    if (token === '--no-warmup') {
+      warmup = false;
+      i++;
+      continue;
+    }
 
     if (token.startsWith('--provider=')) {
       const value = token.slice('--provider='.length);
@@ -199,18 +245,22 @@ function parseInitOnlyFlags(args: readonly string[]): { provider?: string; searc
     i++;
   }
 
-  return { provider, search };
+  return { provider, search, interactive, wizard, warmup };
 }
 
 export function parseInitFlags(args: readonly string[]): InitFlags {
   const raw = parseCommon(args, INIT_KNOWN);
-  const { provider, search } = parseInitOnlyFlags(args);
+  const { provider, search, interactive, wizard, warmup } = parseInitOnlyFlags(args);
   return {
     nonInteractive: raw.nonInteractive,
     agents: raw.agents,
     skipVerify: raw.skipVerify,
     plain: raw.plain,
     help: raw.help,
+    interactive,
+    wizard,
+    warmup,
+    json: raw.json,
     provider,
     search,
   };
@@ -227,5 +277,6 @@ export function parseSetupMcpFlags(args: readonly string[]): SetupMcpFlags {
     agents: raw.agents,
     plain: raw.plain,
     help: raw.help,
+    json: raw.json,
   };
 }

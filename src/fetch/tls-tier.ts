@@ -17,6 +17,7 @@
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
+import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
 
 const log = createLogger('fetch');
 
@@ -134,6 +135,30 @@ async function loadBackend(): Promise<LoadedTlsBackend> {
     }
   })();
   return _backendPromise;
+}
+
+/** Host-equality of two URLs; malformed inputs are treated as different hosts. */
+function sameHost(a: string, b: string): boolean {
+  try {
+    return new URL(a).hostname === new URL(b).hostname;
+  } catch {
+    return false;
+  }
+}
+
+/** A copy of `headers` with any Cookie entry removed (case-insensitive), or the
+ *  original reference when there is nothing to strip. */
+function stripCookieHeader(
+  headers: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!headers) return headers;
+  const out: Record<string, string> = {};
+  let stripped = false;
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === 'cookie') { stripped = true; continue; }
+    out[k] = v;
+  }
+  return stripped ? out : headers;
 }
 
 function headersToRecord(h: WreqHeaders | undefined): Record<string, string> {
@@ -265,15 +290,67 @@ export async function tlsFetch(url: string, options: TlsFetchOptions = {}): Prom
   }
 
   const profiles = buildProfileRotation(config.tlsBrowser);
+  const allowPrivate = config.fetchAllowPrivate;
+  const maxHops = config.maxRedirects;
+
+  // Manual, SSRF-re-guarded redirect follower for the TLS-impersonation tier.
+  // The backend would otherwise follow 3xx internally with no per-hop guard,
+  // so a public URL could be redirected onto a private/metadata target. We
+  // follow hops ourselves (redirect:'manual') and re-guard every resolved
+  // Location under the same policy the input URL got.
+  const guardedBackendFetch = async (browser: string): Promise<WreqResponse> => {
+    let current = url;
+    const seen = new Set<string>();
+    for (let hop = 0; hop <= maxHops; hop++) {
+      if (seen.has(current)) throw new Error(`redirect loop at ${current}`);
+      seen.add(current);
+      // Fetch-time SSRF re-check. `guardFetchUrl` (applied on the redirect
+      // Location below) only validates the LITERAL host, so a public hostname
+      // whose DNS record points at a blocked address (cloud metadata /
+      // RFC-1918 / loopback in serve mode) passes it and is only caught here,
+      // before we connect. Applies to the input URL AND every redirect hop.
+      // Skip literal IPs — already validated. Same allowPrivate policy as the
+      // literal guard.
+      {
+        const rhost = new URL(current).hostname;
+        const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(rhost) || rhost.includes(':');
+        if (!isIpLiteral) {
+          const resolved = await guardResolvedHost(rhost, 'target url', { allowPrivate });
+          if (!resolved.ok) {
+            throw new Error(`Redirect blocked: ${resolved.reason}. ${resolved.hint}`);
+          }
+        }
+      }
+      // Never carry a Cookie across a cross-host redirect hop — a reused,
+      // host-scoped anti-bot clearance must not leak to a different origin.
+      const hopHeaders = sameHost(url, current)
+        ? options.headers
+        : stripCookieHeader(options.headers);
+      const resp = await backend.fetch(current, {
+        headers: hopHeaders,
+        browser,
+        signal,
+        redirect: 'manual',
+      });
+      if (resp.status >= 300 && resp.status < 400) {
+        const loc = headersToRecord(resp.headers)['location'];
+        if (!loc) return resp;
+        current = new URL(loc, current).toString();
+        const guard = guardFetchUrl(current, 'redirect location', { allowPrivate });
+        if (!guard.ok) {
+          throw new Error(`Redirect blocked: ${guard.reason}. ${guard.hint}`);
+        }
+        continue;
+      }
+      return resp;
+    }
+    throw new Error(`too many redirects from ${url}`);
+  };
 
   try {
     let last: TlsFetchResult | undefined;
     for (const browser of profiles) {
-      const response = await backend.fetch(url, {
-        headers: options.headers,
-        browser,
-        signal,
-      });
+      const response = await guardedBackendFetch(browser);
       const result = await readResponse(url, response);
 
       // Healthy response — return immediately. No rotation on a first-try win.
@@ -303,15 +380,112 @@ const ANTI_BOT_STATUS = new Set([403, 429, 503]);
 const CHALLENGE_MARKERS = [
   'cf-browser-verification',
   'Just a moment',
+  // Cloudflare's classic WAF block page ("Attention Required! | Cloudflare").
+  // It carries none of the JS-challenge markers, so a 200/403 block leaked its
+  // thin "Sorry, you have been blocked" body as content. Already an
+  // interstitial title (see CHALLENGE_TITLE_PATTERN); mirrored here so the body
+  // scan / isChallengeShell catches it too. Skeleton-gated at 2xx.
+  'Attention Required!',
   '_cfChlOpt',
   // DataDome inserts a `dd-loader` sensor and inline script that begins
   // `window._dd_s` — either is a strong "blocked" signal.
   'dd-loader',
   '_dd_s',
+  // DataDome's "enable JavaScript" interstitial (used by G2 and others) renders
+  // `<p id="cmsg">Please enable JS and disable any ad blocker</p>` and carries
+  // NONE of the sensor markers above. The `id="cmsg"` attribute is a DataDome
+  // template signature that never appears in article prose; at a 2xx status the
+  // isChallengeShell skeleton gate still applies, so a real article can't trip.
+  'id="cmsg"',
+  // PerimeterX / HUMAN "press & hold" interstitial (Walmart, StockX, …) — often
+  // served at HTTP 200 to MASK the block. The px SENSOR (`window._px`) rides on
+  // every real page and must NOT be a marker; these two strings appear only on
+  // the interstitial itself. The captcha widget id is vendor-standard; the
+  // "Robot or human?" title is the interstitial's own title. Skeleton-gated at
+  // 2xx, so a real article that merely mentions the phrase can't trip.
+  'id="px-captcha"',
+  'Robot or human?',
 ] as const;
 
 export function isAntiBotStatus(status: number): boolean {
   return ANTI_BOT_STATUS.has(status);
+}
+
+// The modern Cloudflare challenge-platform script path. Present in modern
+// interstitial bodies AND already used as a skeleton marker below — but here it
+// only counts as a challenge signal when it co-occurs with an anti-bot STATUS
+// (see isChallengeResponse), so a 200 page that merely links a `/cdn-cgi/...`
+// script can never trip it.
+const MODERN_CHALLENGE_PLATFORM_MARKER = '/cdn-cgi/challenge-platform/';
+
+/**
+ * Header-driven challenge signal. Cloudflare sets `cf-mitigated: challenge`
+ * (or `block`) specifically to mark a challenge/block response, so it carries
+ * ZERO over-fire risk — a real article response never sends it. Header casing
+ * varies across tiers, so the lookup is case-insensitive.
+ */
+export function hasChallengeHeader(headers: Record<string, string> | undefined): boolean {
+  if (!headers) return false;
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== 'cf-mitigated') continue;
+    const v = (value ?? '').toLowerCase();
+    if (v.includes('challenge') || v.includes('block')) return true;
+  }
+  return false;
+}
+
+/**
+ * DataDome block signal from response headers. DataDome (used by G2, Reddit,
+ * and others) does NOT send Cloudflare's `cf-mitigated`; on a block it sets
+ * `x-dd-b: 1` (its explicit block flag) and/or `x-datadome: protected|blocked`.
+ * The `x-datadome-cid` client-id header is stamped on ALLOWED responses too, so
+ * it is deliberately ignored here. Caller status-gates this (see
+ * isChallengeResponse) for defence in depth — a real 200 never trips it.
+ */
+export function hasDataDomeBlockHeader(headers: Record<string, string> | undefined): boolean {
+  if (!headers) return false;
+  for (const [key, value] of Object.entries(headers)) {
+    const k = key.toLowerCase();
+    const v = (value ?? '').toLowerCase().trim();
+    if (k === 'x-dd-b' && v !== '' && v !== '0') return true;
+    if (k === 'x-datadome' && (v === 'protected' || v === 'blocked')) return true;
+  }
+  return false;
+}
+
+/**
+ * Combined challenge classifier that recognises BOTH legacy and modern
+ * Cloudflare challenge shapes without widening the shared CHALLENGE_MARKERS
+ * list (which drives isRateLimit / isChallengeShell — those must not shift).
+ *
+ * Fires when ANY of:
+ *   - the `cf-mitigated` response header marks a challenge/block (zero
+ *     over-fire — the primary modern signal), OR
+ *   - the existing status-agnostic shell classifier fires (isChallengeShell:
+ *     anti-bot-status + legacy body markers, OR a 2xx legacy shell with the
+ *     skeleton gate), OR
+ *   - an anti-bot STATUS (403/429/503) co-occurs with the modern
+ *     `/cdn-cgi/challenge-platform/` script marker.
+ *
+ * The challenge-platform marker is STATUS-gated and the legacy body path keeps
+ * its skeleton gate (via isChallengeShell), so a 200 article that merely quotes
+ * challenge markers or references `/cdn-cgi/...` can never trip it.
+ */
+export function isChallengeResponse(
+  statusCode: number,
+  html: string | null | undefined,
+  headers?: Record<string, string> | undefined,
+): boolean {
+  if (hasChallengeHeader(headers)) return true;
+  // DataDome block headers count only on an anti-bot status — its client-id
+  // header rides along on allowed 200s, so status-gating keeps zero over-fire.
+  if (isAntiBotStatus(statusCode) && hasDataDomeBlockHeader(headers)) return true;
+  if (isChallengeShell(statusCode, html)) return true;
+  if (isAntiBotStatus(statusCode) && html) {
+    const slice = html.length > 32768 ? html.slice(0, 32768) : html;
+    if (slice.includes(MODERN_CHALLENGE_PLATFORM_MARKER)) return true;
+  }
+  return false;
 }
 
 export function hasChallengeBody(html: string | null | undefined): boolean {
@@ -321,6 +495,172 @@ export function hasChallengeBody(html: string | null | undefined): boolean {
   const slice = html.length > 32768 ? html.slice(0, 32768) : html;
   for (const marker of CHALLENGE_MARKERS) {
     if (slice.includes(marker)) return true;
+  }
+  return false;
+}
+
+// --- Browser-tier-only contextual detection (D6) ---
+//
+// The browser tier fast-fails a hard challenge page (see browser-pool.ts). It
+// must NOT touch the shared CHALLENGE_MARKERS list (which drives router
+// escalation + isRateLimit): a bare-substring turnstile marker there would
+// over-fire. Instead the browser tier layers a CONTEXTUAL turnstile signal on
+// top of the shared body scan, gated on a challenge-page skeleton.
+
+// Turnstile widget marker — only meaningful in the browser tier and only when
+// co-occurring with a challenge skeleton. Deliberately NOT in CHALLENGE_MARKERS.
+const TURNSTILE_MARKER = 'cf-turnstile';
+// A script the challenge interstitial loads to run the browser check.
+const CHALLENGE_PLATFORM_SRC = '/cdn-cgi/challenge-platform/';
+// Interstitial page titles. Cloudflare's "Just a moment" already lives in the
+// shared marker list; this covers the title form used by the skeleton check
+// without widening the shared list.
+const CHALLENGE_TITLE_PATTERN = /<title>[^<]*(?:just a moment|attention required|checking your browser)[^<]*<\/title>/i;
+// Below this rendered-text size a body carries no real article content — the
+// hallmark of an interstitial that is nothing but a challenge widget.
+const CHALLENGE_SKELETON_MAX_TEXT = 600;
+// A server-rendered interactive form (login/search) proves the body is a real
+// page, not a challenge interstitial (which injects its widget via JS and ships
+// no real form). Used to exempt text-light login pages from the skeleton check.
+const REAL_FORM_PATTERN = /<form[\s>][\s\S]*?<(?:input|button|select|textarea)[\s>]/i;
+
+// Approximate the visible text length of an HTML body: strip script/style and
+// tags, collapse whitespace. Cheap and bounded — the caller only cares whether
+// the result is tiny (interstitial) or substantial (real page).
+/**
+ * Approximate rendered-text length.
+ *
+ * Bounded to the first 32KB by DEFAULT, which is correct for the interstitial
+ * detectors (`isNearEmptyBody`, `isChallengeSkeleton`): a challenge shell is
+ * tiny, so a leading slice sees all of it and a huge real document is not worth
+ * scanning in full.
+ *
+ * `whole: true` measures the ENTIRE document, which the density rule needs — a
+ * ratio computed on a leading slice is meaningless, because any modern page
+ * opens with 32KB+ of head assets carrying no text.
+ */
+function approxVisibleTextLength(html: string, opts?: { whole?: boolean }): number {
+  const slice = !opts?.whole && html.length > 32768 ? html.slice(0, 32768) : html;
+  const stripped = slice
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return stripped.length;
+}
+
+/**
+ * Browser-tier-only heuristic: does the page look like a challenge-page
+ * skeleton rather than a real document? True when ANY of:
+ *   - the visible body text is near-empty (interstitials carry almost no prose), OR
+ *   - a `/cdn-cgi/challenge-platform/` script is loaded, OR
+ *   - the page title is a known interstitial title.
+ *
+ * This is the CONTEXT gate for the contextual turnstile signal — a real login
+ * page that embeds a Turnstile widget has substantial content, no
+ * challenge-platform script, and a normal title, so it is never a skeleton.
+ */
+/**
+ * Is the rendered body near-empty (below the interstitial content floor)? A
+ * challenge poll uses this AFTER full hydration: a body that never filled with
+ * real content did not truly clear — some bot walls (DataDome) swap the
+ * interstitial for a tiny stub carrying no marker, which a marker-based
+ * clear-check misreads as a pass. Empty/absent HTML counts as near-empty.
+ */
+export function isNearEmptyBody(html: string | null | undefined): boolean {
+  if (!html) return true;
+  return approxVisibleTextLength(html) < CHALLENGE_SKELETON_MAX_TEXT;
+}
+
+/** Below this size a document is too small for the density ratio to mean
+ *  anything (a 30-byte error page's ratio is noise). Real bot walls ship a
+ *  large scaffold of scripts/styles/widget markup. */
+const WALL_MIN_HTML_BYTES = 1000;
+/** Visible-text-to-markup ratio below which a document carries essentially no
+ *  human-readable content. Measured across real traffic: genuine pages and
+ *  substantive error pages sit at ~0.28-0.93; vendor bot walls sit at ~0.006 —
+ *  two orders of magnitude apart, so the boundary is not finely tuned. */
+const WALL_MAX_TEXT_DENSITY = 0.05;
+
+/**
+ * GENERAL, vendor-agnostic bot-wall SHAPE: a large document that is almost
+ * entirely markup (scripts, styles, widget scaffolding) with essentially no
+ * human-readable text.
+ *
+ * This exists because a marker catalog only ever recognises walls we have
+ * already met — every new vendor or template variant silently leaks its block
+ * page as "content" until someone adds another string. Shape generalises where
+ * markers cannot: whoever served it, a wall has no readable content.
+ *
+ * Deliberately NOT sufficient on its own — callers pair it with an anti-bot
+ * STATUS. A thin 2xx body is the normal shape of an un-hydrated SPA shell, and
+ * treating that as a wall would break ordinary pages.
+ */
+export function isLowContentDensity(html: string | null | undefined): boolean {
+  if (!html || html.length < WALL_MIN_HTML_BYTES) return false;
+  // Measured over the WHOLE document, deliberately NOT a leading slice. Any
+  // modern page opens with 32KB+ of <head> scripts and stylesheets carrying
+  // almost no text, so judging density on a prefix calls a large REAL page
+  // empty and relabels a genuine 403 as a bot wall. Mirrors the same rule in
+  // challenge-classify.ts, which documents the walmart case (405KB page: <600
+  // visible chars in its first 32KB, 2,777 overall).
+  return approxVisibleTextLength(html, { whole: true }) / html.length < WALL_MAX_TEXT_DENSITY;
+}
+
+export function isChallengeSkeleton(html: string | null | undefined): boolean {
+  if (!html) return false;
+  const slice = html.length > 32768 ? html.slice(0, 32768) : html;
+  if (slice.includes(CHALLENGE_PLATFORM_SRC)) return true;
+  if (CHALLENGE_TITLE_PATTERN.test(slice)) return true;
+  // A real server-rendered interactive form means this is a genuine page (e.g.
+  // a text-light login screen), not an interstitial skeleton.
+  if (REAL_FORM_PATTERN.test(slice)) return false;
+  return approxVisibleTextLength(slice) < CHALLENGE_SKELETON_MAX_TEXT;
+}
+
+/**
+ * Browser-tier challenge-body predicate. Fires when the shared body scan
+ * matches (hasChallengeBody) OR when the Turnstile widget marker co-occurs
+ * with a challenge-page skeleton. The turnstile signal is CONTEXTUAL — a bare
+ * `cf-turnstile` substring on a full real page (a login form) never fires.
+ * The shared CHALLENGE_MARKERS list is untouched.
+ */
+export function hasBrowserChallengeBody(html: string | null | undefined): boolean {
+  if (!html) return false;
+  if (hasChallengeBody(html)) return true;
+  const slice = html.length > 32768 ? html.slice(0, 32768) : html;
+  if (slice.includes(TURNSTILE_MARKER) && isChallengeSkeleton(slice)) return true;
+  return false;
+}
+
+/**
+ * Browser-tier CLEAR-CHECK: does the CURRENTLY-RENDERED body still show a
+ * challenge? Used as the `isStillChallenge` predicate the completion poll
+ * re-evaluates each tick — it MUST key on the live DOM, never the (stale) nav
+ * header, so a genuinely-cleared challenge (the real page rendered) reports
+ * false and the poll returns cleared.
+ *
+ * Fires when EITHER:
+ *   - the existing browser challenge-body scan matches
+ *     (hasBrowserChallengeBody: legacy markers, or contextual turnstile on a
+ *     skeleton), OR
+ *   - the modern-CF `/cdn-cgi/challenge-platform/` script marker is present AND
+ *     the body is a near-empty skeleton (visible text under the interstitial
+ *     floor). The skeleton gate here is TEXT-LENGTH based — deliberately NOT
+ *     isChallengeSkeleton, which short-circuits true on the marker itself — so a
+ *     real full article that merely references the script path (substantial
+ *     prose) is NOT treated as still-challenge and the poll clears.
+ */
+export function stillShowingChallenge(html: string | null | undefined): boolean {
+  if (!html) return false;
+  if (hasBrowserChallengeBody(html)) return true;
+  const slice = html.length > 32768 ? html.slice(0, 32768) : html;
+  if (
+    slice.includes(MODERN_CHALLENGE_PLATFORM_MARKER) &&
+    approxVisibleTextLength(slice) < CHALLENGE_SKELETON_MAX_TEXT
+  ) {
+    return true;
   }
   return false;
 }
@@ -347,6 +687,36 @@ export function isAntiBotSignal(statusCode: number, html: string | null | undefi
   // Rate-limits are not anti-bot signals — see `isRateLimit`.
   if (isRateLimit(statusCode, html)) return false;
   return isAntiBotStatus(statusCode) || hasChallengeBody(html);
+}
+
+/**
+ * Status-agnostic challenge-shell classifier. A challenge interstitial must
+ * never be returned as fetch content REGARDLESS of HTTP status — some bot
+ * walls (DataDome "enable JavaScript" pages) serve the shell at HTTP 200.
+ *
+ * Fires when EITHER:
+ *   - (anti-bot status AND challenge body) — the pre-existing status-gated
+ *     signal, preserved verbatim, OR
+ *   - (2xx AND challenge markers present AND challenge-page skeleton) — the
+ *     200-shell case. BOTH the markers AND the skeleton are required: markers
+ *     alone must never fire (an article quoting 'Just a moment' or 'dd-loader'
+ *     is legit content), and a skeleton alone is a plain SPA shell handled by
+ *     the SPA-empty-content path, not the challenge path.
+ */
+export function isChallengeShell(statusCode: number, html: string | null | undefined): boolean {
+  if (!html) return false;
+  if (isAntiBotStatus(statusCode) && hasChallengeBody(html)) return true;
+  // GENERAL, vendor-agnostic wall rule (see isLowContentDensity). The marker
+  // list above is a catalog of known vendor templates, so each new vendor or
+  // variant leaks its block page as "content" until a string is added. Shape
+  // generalises: an anti-bot STATUS carrying a large all-scaffolding body with
+  // no readable text is a wall whoever served it. Both halves are required —
+  // the status alone would swallow substantive 403s (an admin page must pass
+  // through), and low density alone would swallow un-hydrated SPA shells.
+  if (isAntiBotStatus(statusCode) && isLowContentDensity(html)) return true;
+  const is2xx = statusCode >= 200 && statusCode < 300;
+  if (is2xx && hasChallengeBody(html) && isChallengeSkeleton(html)) return true;
+  return false;
 }
 
 /**

@@ -4,8 +4,18 @@ import { WikipediaEngine } from '../../engines/wikipedia.js';
 import { BraveEngine } from '../../engines/brave.js';
 import { MojeekEngine } from '../../engines/mojeek.js';
 import { MarginaliaEngine } from '../../engines/marginalia.js';
-import { wrapWithRetryAndBreaker, type EngineEntry } from '../engine-base.js';
+import {
+  wrapWithRetryAndBreaker,
+  registerEngineMinInterval,
+  MARGINALIA_MIN_INTERVAL_MS,
+  type EngineEntry,
+} from '../engine-base.js';
 import { getConfig } from '../../../config.js';
+
+// Marginalia rate-limits (429) aggressively under a burst. Spacing its calls
+// at least this far apart keeps it in the pool instead of tripping its breaker;
+// a call inside the interval is skipped, never queued (no pool-deadline cost).
+registerEngineMinInterval('marginalia', MARGINALIA_MIN_INTERVAL_MS);
 
 // Pool diversity matters more than weight precision: every additional
 // independent lexical signal dilutes single-engine brand collisions (Bing's

@@ -2,11 +2,13 @@ import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { SearxngProcess } from '../../searxng/process.js';
 import { getRerankProvider } from '../../providers/rerank-provider.js';
+import { getConfig } from '../../config.js';
+import { searxngConfigured } from '../../searxng/enabled.js';
 import type { WarmupReporter } from './reporter.js';
 import { suggestionsFromResult } from './verify-suggestions.js';
 
 export interface VerifyResult {
-  searxng: 'ok' | 'failed';
+  searxng: 'ok' | 'failed' | 'skipped';
   searxngUrl?: string;
   searxngError?: string;
   reranker: 'ok' | 'missing';
@@ -31,6 +33,25 @@ export async function runVerify(
     embeddings: 'missing',
     allPassed: false,
   };
+
+  // D1: the search-engine sidecar is opt-in. On the default core backend we do
+  // NOT construct SearxngProcess (which would probe/spawn the sidecar) — we skip
+  // the step and let health derive from the reranker/embeddings probes.
+  if (!searxngConfigured(getConfig())) {
+    result.searxng = 'skipped';
+    reporter.note('Search engine sidecar: skipped — using multi-engine core backend');
+
+    const rerankerProbeCore = await runRerankerProbe(reporter);
+    result.reranker = rerankerProbeCore.state;
+    if (rerankerProbeCore.error) result.rerankerError = rerankerProbeCore.error;
+
+    const { state: embStateCore, error: embErrorCore, dim: embDimCore } = runEmbeddingsProbe(dataDir, reporter);
+    result.embeddings = embStateCore;
+    if (embErrorCore) result.embeddingsError = embErrorCore;
+    if (typeof embDimCore === 'number') result.embeddingsDim = embDimCore;
+
+    return finalize(result, reporter);
+  }
 
   const proc = new SearxngProcess(`${dataDir}/searxng`, dataDir);
 
@@ -109,8 +130,10 @@ function runEmbeddingsProbe(
 }
 
 function finalize(result: VerifyResult, reporter?: WarmupReporter): VerifyResult {
+  // A skipped sidecar (core backend, D1) is not a failure — the core backend
+  // needs no sidecar, so allPassed derives from the reranker/embeddings checks.
   result.allPassed =
-    result.searxng === 'ok' &&
+    (result.searxng === 'ok' || result.searxng === 'skipped') &&
     result.reranker === 'ok' &&
     result.embeddings === 'ok';
   if (!result.allPassed && reporter) {

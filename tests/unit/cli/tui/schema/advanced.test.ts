@@ -2,18 +2,31 @@ import { describe, it, expect } from 'vitest';
 import { advancedCategory } from '../../../../../src/cli/tui/schema/advanced.js';
 
 describe('advancedCategory', () => {
-  it('has id advanced and six fields', () => {
+  it('has id advanced and eight fields (incl. opt-in escape-hatch URLs)', () => {
     expect(advancedCategory.id).toBe('advanced');
-    expect(advancedCategory.fields.length).toBe(6);
+    expect(advancedCategory.fields.length).toBe(8);
     const keys = advancedCategory.fields.map((f) => f.key);
     expect(keys).toEqual([
       'WIGOLO_LOG_LEVEL',
       'PROXY_URL',
       'USE_PROXY',
+      'WIGOLO_SOLVER_URL',
+      'WIGOLO_HOSTED_READER_URL',
       'USER_AGENT',
       'WIGOLO_DAEMON_PORT',
       'WIGOLO_DAEMON_HOST',
     ]);
+  });
+
+  it('solver + reader URL fields are opt-in text fields with capability-language help', () => {
+    const solver = advancedCategory.fields.find((x) => x.key === 'WIGOLO_SOLVER_URL');
+    expect(solver?.kind).toBe('text');
+    expect(solver?.settingsPath).toBe('solverUrl');
+    expect(solver?.help).toBeTruthy();
+    const reader = advancedCategory.fields.find((x) => x.key === 'WIGOLO_HOSTED_READER_URL');
+    expect(reader?.kind).toBe('text');
+    expect(reader?.settingsPath).toBe('hostedReaderUrl');
+    expect(reader?.help).toBeTruthy();
   });
 
   it('WIGOLO_LOG_LEVEL is select with all four levels and defaults to info', () => {

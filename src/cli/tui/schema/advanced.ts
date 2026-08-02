@@ -33,6 +33,20 @@ export const advancedCategory: CategoryDef = {
       default: false,
     },
     {
+      key: 'WIGOLO_SOLVER_URL',
+      settingsPath: 'solverUrl',
+      label: 'Challenge-solver URL',
+      kind: 'text',
+      help: 'Optional self-hosted challenge-solver service (off unless set). Enabling it trusts the service as a content source.',
+    },
+    {
+      key: 'WIGOLO_HOSTED_READER_URL',
+      settingsPath: 'hostedReaderUrl',
+      label: 'Hosted reader URL',
+      kind: 'text',
+      help: 'Optional third-party reader service (off unless set). Sends the target URL off-machine.',
+    },
+    {
       key: 'USER_AGENT',
       settingsPath: 'userAgent',
       label: 'User-Agent',

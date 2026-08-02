@@ -43,6 +43,8 @@ async function httpGetJson(url: string): Promise<{ status: number; body: unknown
 
 describe('Daemon Mode Integration', () => {
   beforeAll(async () => {
+    delete process.env.WIGOLO_API_TOKEN;
+    delete process.env.WIGOLO_API_TOKEN_FILE;
     daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1' });
     daemonUrl = await daemon.start();
     daemonPort = parseInt(new URL(daemonUrl).port, 10);

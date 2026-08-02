@@ -28,7 +28,7 @@ export interface ScoreFloorResult<T> {
   dropped: T[];
 }
 
-export interface ScoreFloorOptions {
+export interface ScoreFloorOptions<T = unknown> {
   /**
    * Per-engine keep guarantee. When set (>0), any contributing engine that the
    * query-wide floor would otherwise floor out ENTIRELY (kept-0) keeps up to
@@ -50,6 +50,25 @@ export interface ScoreFloorOptions {
    * own rescue must refuse it.
    */
   perEngineKeep?: number;
+  /**
+   * Set when the engine pool degraded during this dispatch (all-but-one engine
+   * down under burst). Combined with `lexicalAlignmentOf`, it withdraws both the
+   * top-1 exemption AND the per-engine rescue from a ZERO-lexical result — the
+   * live-incident junk shape where a lone degraded survivor returns an off-topic
+   * page that shares no query token. A pool that is entirely zero-lexical under
+   * degradation therefore returns EMPTY rather than surfacing junk as the top
+   * answer. Inert without `lexicalAlignmentOf` (fails open) and inert on a
+   * healthy pool (`degraded` unset/false) — never a query-wide floor change.
+   */
+  degraded?: boolean;
+  /**
+   * Per-result lexical-alignment accessor. Supplies the [0,1] query/text overlap
+   * signal the degraded gate keys on, without coupling this pure module to the
+   * RawSearchResult shape (the caller reads it from
+   * `evidence_score.components.lexical_alignment`). Only consulted when
+   * `degraded` is true.
+   */
+  lexicalAlignmentOf?: (r: T) => number;
 }
 
 // A rescued engine's best below-floor result must be at least this fraction of
@@ -78,12 +97,20 @@ const RESCUE_MIN_FLOOR_FRACTION = 0.5;
 export function applyScoreFloor<T extends { relevance_score: number; engine?: string }>(
   results: T[],
   floor: number,
-  opts: ScoreFloorOptions = {},
+  opts: ScoreFloorOptions<T> = {},
 ): ScoreFloorResult<T> {
   if (results.length === 0) return { kept: [], dropped: [] };
   if (!Number.isFinite(floor) || floor <= 0) {
     return { kept: [...results], dropped: [] };
   }
+
+  // Degraded-pool lexical gate: only active when the pool degraded AND a
+  // lexical accessor is supplied. A result is "zero-lexical" (junk under
+  // degradation) when its alignment is exactly 0. Such results forfeit the
+  // top-1 exemption and the per-engine rescue.
+  const lexicalGate = opts.degraded === true && typeof opts.lexicalAlignmentOf === 'function';
+  const isZeroLexical = (r: T): boolean =>
+    lexicalGate && opts.lexicalAlignmentOf!(r) === 0;
 
   let maxScore = -Infinity;
   let topIdx = 0;
@@ -93,6 +120,10 @@ export function applyScoreFloor<T extends { relevance_score: number; engine?: st
       topIdx = i;
     }
   }
+  // Under the lexical gate the top-1 exemption is withdrawn from a zero-lexical
+  // top result: a degraded pool whose best survivor is off-topic must not
+  // surface it. topIdx = -1 disables the exemption entirely for this call.
+  if (isZeroLexical(results[topIdx])) topIdx = -1;
 
   // Per-engine keep guarantee: identify the below-floor indices to RESCUE so a
   // dominant engine can't floor out another engine entirely. Only engines with
@@ -126,6 +157,9 @@ export function applyScoreFloor<T extends { relevance_score: number; engine?: st
         // Only rescue a plausibly-relevant-just-below-floor result. An engine
         // whose best is far below the floor returned only junk; leave it
         // dropped rather than force pure junk into the slice.
+        // Under the degraded lexical gate a zero-lexical result is never
+        // rescued — it is the live-incident off-topic survivor.
+        if (isZeroLexical(results[idxs[k]])) continue;
         if (results[idxs[k]].relevance_score >= rescueMin) rescued.add(idxs[k]);
       }
     }

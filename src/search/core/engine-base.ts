@@ -100,6 +100,14 @@ export interface BreakerConfig {
    * (one retry). The inter-attempt backoff grows exponentially from the base
    * so a rate-limited engine is not hammered. */
   retryAttempts?: number;
+  /** Minimum inter-request interval (ms) for a rate-limit-prone engine. A call
+   * arriving within this window of the previous dispatch is SKIPPED (throws
+   * {@link ThrottledError}) rather than waiting — waiting would poison the
+   * pool's soft deadlines and serialize multi-query fan-out. When omitted (and
+   * no name-registered default exists) the engine is never throttled.
+   * A per-engine default can be pre-registered via
+   * {@link registerEngineMinInterval}; the explicit option wins over it. */
+  minIntervalMs?: number;
 }
 
 /**
@@ -127,13 +135,25 @@ interface BreakerState {
    * recovery. A single trip is transient; a high count marks an engine as
    * chronically unhealthy so the pool can give it a tighter wait budget. */
   sessionTrips: number;
+  /** Epoch ms of the last dispatch admitted past the throttle gate. Drives the
+   * per-engine minimum inter-request interval. 0 = never dispatched. */
+  lastDispatchAt: number;
   /** Last engine error, surfaced via getBreakerSnapshot() for doctor. */
   lastError?: string;
 }
 
 const DEFAULT_THRESHOLD = 3;
 const DEFAULT_COOLDOWN_MS = 60_000;
-const MAX_COOLDOWN_MS = 600_000;
+/** Exponential-backoff ceiling for HARD (403/5xx/other) failures. A persistent
+ * block backs off geometrically but never darkens an engine longer than this —
+ * 3 minutes is a real backoff yet short enough that a caller can wait it out
+ * and the pool recovers within a session (was 600s / 10 min). */
+const MAX_COOLDOWN_MS = 180_000;
+/** Backoff ceiling for a REPEATED rate-limit (429) block. A 429 means the
+ * engine is UP and throttling this caller; it must recover fast and never climb
+ * the hard-failure exponential ladder. Capped well below MAX_COOLDOWN_MS so a
+ * momentarily over-driven engine returns within a burst, not minutes later. */
+const RATE_LIMIT_MAX_COOLDOWN_MS = 30_000;
 /** Session trips at/above this count mark an engine as chronically unhealthy.
  * The pool then applies the tighter `chronicSoftDeadlineMs` budget to it so a
  * repeatedly-failing engine stops draining wall-clock every call. A trip
@@ -155,6 +175,24 @@ const MAX_LAST_ERROR_LEN = 300;
  * engine name. Kept well above a single burst's inter-call gap so a genuinely
  * rate-limited engine still gets breathing room. */
 const TRANSIENT_COOLDOWN_MS = 5_000;
+
+/** Marginalia's minimum inter-request interval. It rate-limits (429) aggressively
+ * under a burst; spacing calls at least this far apart keeps it in the pool
+ * instead of tripping its breaker. Generic mechanism — the value is registered
+ * against the engine name, not special-cased in the dispatch logic. */
+export const MARGINALIA_MIN_INTERVAL_MS = 2_000;
+
+/** Name-keyed default minimum inter-request intervals. A vertical registers a
+ * rate-limit-prone engine here so every wrapped instance picks it up without
+ * each call site threading `minIntervalMs`. NOT cleared by resetBreakers —
+ * it is static config, not per-run state. */
+const engineMinIntervals = new Map<string, number>();
+
+/** Register a default minimum inter-request interval for an engine by name.
+ * Idempotent. An explicit `minIntervalMs` on wrapWithRetryAndBreaker wins. */
+export function registerEngineMinInterval(name: string, ms: number): void {
+  engineMinIntervals.set(name, ms);
+}
 
 export type FailureClass = 'rate-limit' | 'forbidden' | 'other';
 
@@ -191,7 +229,15 @@ const breakers = new Map<string, BreakerState>();
 function getState(name: string): BreakerState {
   let s = breakers.get(name);
   if (!s) {
-    s = { failures: 0, tripUntil: 0, probing: false, probeStartedAt: 0, trips: 0, sessionTrips: 0 };
+    s = {
+      failures: 0,
+      tripUntil: 0,
+      probing: false,
+      probeStartedAt: 0,
+      trips: 0,
+      sessionTrips: 0,
+      lastDispatchAt: 0,
+    };
     breakers.set(name, s);
   }
   return s;
@@ -208,8 +254,15 @@ function recordFailure(
   if (state.failures >= threshold && state.tripUntil === 0) {
     const effectiveCooldown = cooldownForFailure(failureClass, cooldownMs);
     state.tripUntil = Date.now() + effectiveCooldown;
-    state.trips = 1;
-    state.sessionTrips += 1;
+    // A rate-limit (429) block is transient: the engine is up and throttling.
+    // It opens on the short window but must NOT feed the exponential-backoff
+    // (`trips`) or chronic-health (`sessionTrips`) counters — otherwise a burst
+    // that momentarily over-drives one engine would back it off toward the hard
+    // cap and mark it permanently chronic. Hard failures keep the ladder.
+    if (failureClass !== 'rate-limit') {
+      state.trips = 1;
+      state.sessionTrips += 1;
+    }
     log.warn('breaker tripped', {
       engine: name,
       failures: state.failures,
@@ -220,8 +273,26 @@ function recordFailure(
   }
 }
 
-/** Reopen after a failed (or stuck) probe: exponential backoff, capped. */
-function reopenWithBackoff(state: BreakerState, cooldownMs: number): number {
+/** Reopen after a failed (or stuck) probe. Hard failures back off
+ * exponentially and feed the trip counters, capped at {@link MAX_COOLDOWN_MS}.
+ * A rate-limit failure stays on a flat short window (capped at
+ * {@link RATE_LIMIT_MAX_COOLDOWN_MS}) and never touches `trips`/`sessionTrips`,
+ * so a repeatedly-throttled engine is never mistaken for a chronically-broken
+ * one. Stuck-probe reclaim is treated as a hard failure (class unknown). */
+function reopenWithBackoff(
+  state: BreakerState,
+  cooldownMs: number,
+  failureClass: FailureClass,
+): number {
+  if (failureClass === 'rate-limit') {
+    const backoffMs = Math.min(
+      cooldownForFailure('rate-limit', cooldownMs),
+      RATE_LIMIT_MAX_COOLDOWN_MS,
+    );
+    state.tripUntil = Date.now() + backoffMs;
+    state.probing = false;
+    return backoffMs;
+  }
   state.trips += 1;
   state.sessionTrips += 1;
   const backoffMs = Math.min(cooldownMs * 2 ** (state.trips - 1), MAX_COOLDOWN_MS);
@@ -236,12 +307,25 @@ function recordSuccess(name: string): void {
   state.tripUntil = 0;
   state.probing = false;
   state.trips = 0;
+  // A successful half-open recovery clears the chronic counter too: an engine
+  // that trips, recovers, and behaves is no longer chronically unhealthy. This
+  // makes chronic status ESCAPABLE — otherwise a single bad burst would pin the
+  // engine to the tighter chronic budget for the life of the process.
+  state.sessionTrips = 0;
   delete state.lastError;
 }
 
-export function _resetBreakersForTest(): void {
+/** Clear ALL breaker state (failures, cooldowns, trips, sessionTrips). Public:
+ * doctor `--fix` and the daemon admin reset route call this to un-stick an
+ * engine pool that collapsed under a burst. Also the reset used by tests. */
+export function resetBreakers(): void {
   breakers.clear();
 }
+
+/** Delegating alias kept for the many test files that import it. Renaming
+ * would be pure churn (and would collide with parallel work), so the public
+ * name is `resetBreakers` and this stays a reference to the same function. */
+export const _resetBreakersForTest = resetBreakers;
 
 /**
  * Cumulative breaker trips for an engine over the life of this process.
@@ -299,6 +383,21 @@ export class BreakerOpenError extends Error {
   }
 }
 
+/**
+ * Thrown when a call arrives inside an engine's minimum inter-request interval.
+ * The engine is SKIPPED (not waited on) to avoid poisoning pool deadlines and
+ * serializing multi-query fan-out. Subclasses BreakerOpenError so the existing
+ * pool catch maps it to a `skipped: true` outcome with no forwarding change;
+ * `cooldownRemainingMs` carries the time until the engine is dispatchable again.
+ */
+export class ThrottledError extends BreakerOpenError {
+  constructor(name: string, cooldownRemainingMs: number) {
+    super(name, cooldownRemainingMs);
+    this.name = 'ThrottledError';
+    this.message = `throttled: engine ${name} called within its minimum interval`;
+  }
+}
+
 export function wrapWithRetryAndBreaker(
   engine: SearchEngine,
   cfg?: BreakerConfig,
@@ -306,12 +405,26 @@ export function wrapWithRetryAndBreaker(
   const threshold = cfg?.failureThreshold ?? DEFAULT_THRESHOLD;
   const cooldownMs = cfg?.cooldownMs ?? DEFAULT_COOLDOWN_MS;
   const retryAttempts = Math.max(1, cfg?.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS);
+  const minIntervalMs = cfg?.minIntervalMs ?? engineMinIntervals.get(engine.name) ?? 0;
   const onRetry = (engine as RetryableEngine).onRetry?.bind(engine);
 
   return {
     name: engine.name,
     async search(query: string, options?: SearchEngineOptions): Promise<RawSearchResult[]> {
       const state = getState(engine.name);
+
+      // Throttle gate: a call arriving within the engine's minimum interval is
+      // SKIPPED, not delayed. Checked before the breaker so a throttled call
+      // never touches breaker state. The last-dispatch clock advances only for
+      // admitted calls, so a run of throttled calls can't starve the engine.
+      if (minIntervalMs > 0 && state.lastDispatchAt > 0) {
+        const sinceLast = Date.now() - state.lastDispatchAt;
+        if (sinceLast < minIntervalMs) {
+          throw new ThrottledError(engine.name, minIntervalMs - sinceLast);
+        }
+      }
+      state.lastDispatchAt = Date.now();
+
       let probe = false;
       if (state.tripUntil > 0) {
         const now = Date.now();
@@ -323,8 +436,9 @@ export function wrapWithRetryAndBreaker(
             // Stuck probe: in flight longer than a full cooldown window —
             // treat it as failed so a never-settling engine can't hold the
             // breaker half-open forever. Reopen with backoff; a later
-            // caller re-probes once the new cooldown elapses.
-            const backoffMs = reopenWithBackoff(state, cooldownMs);
+            // caller re-probes once the new cooldown elapses. A hung engine is
+            // not a rate-limit signal, so this takes the hard-failure ladder.
+            const backoffMs = reopenWithBackoff(state, cooldownMs, 'other');
             log.warn('breaker reclaimed stuck probe', {
               engine: engine.name,
               trips: state.trips,
@@ -367,8 +481,9 @@ export function wrapWithRetryAndBreaker(
         lastErr instanceof Error ? lastErr.message : String(lastErr),
       );
       if (probe) {
-        // Failed probe — reopen with exponential backoff, capped at 10 min.
-        const backoffMs = reopenWithBackoff(state, cooldownMs);
+        // Failed probe — reopen. Hard failures back off exponentially (capped
+        // at MAX_COOLDOWN_MS); a rate-limit stays on the short window.
+        const backoffMs = reopenWithBackoff(state, cooldownMs, classifyFailure(lastErr));
         log.warn('breaker reopened after failed probe', {
           engine: engine.name,
           trips: state.trips,

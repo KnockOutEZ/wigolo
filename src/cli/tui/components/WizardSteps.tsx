@@ -31,6 +31,8 @@ import {
   type SystemCheckResult,
 } from '../system-check.js';
 import { defaultConfigPath } from '../../../persisted-config.js';
+import { dirname } from 'node:path';
+import { saveInitConfig } from '../utils/config-writer.js';
 import {
   probeSetupStatus,
   defaultProbeDeps,
@@ -287,12 +289,15 @@ export function SetupComplete({ statuses, onDone }: SetupCompleteProps): React.R
         // produced by summarizeSetup in setup-status.ts.
         let line = `${glyph(c.status)} ${c.label}`;
         if (c.detail && c.status !== 'ok') line += ` — ${c.detail}`;
-        if (c.disables && c.status !== 'ok') line += `   → ${c.disables} disabled`;
+        // A lazy/skipped capability is not lost — don't print "→ X disabled".
+        if (c.disables && c.status !== 'ok' && c.status !== 'lazy' && c.status !== 'skipped') {
+          line += `   → ${c.disables} disabled`;
+        }
         if (c.status === 'absent' && !c.required) line += ' (optional)';
         const color =
           c.status === 'ok'
             ? semantic.ok
-            : c.status === 'degraded' || c.status === 'absent'
+            : c.status === 'degraded' || c.status === 'absent' || c.status === 'lazy' || c.status === 'skipped'
               ? semantic.warn
               : semantic.err;
         return (
@@ -455,6 +460,16 @@ export function WizardSteps(props: WizardStepsProps): React.ReactElement {
         }
       }
 
+      // 5. Persist the wizard's agent selection into the SAME init-config key the
+      //    plain path writes (configuredAgents). The wizard itself installs no
+      //    skills — after the Ink shell unmounts, runInit's wizard branch reads
+      //    this back and runs the shared skills engine for these agents. Writing
+      //    the receipt here is the only wizard-side seam that hand-off needs.
+      saveInitConfig(dirname(configPath), {
+        configuredAgents: selectedAgentIds,
+        lastInit: new Date().toISOString(),
+      });
+
     } finally {
       setSaving(false);
     }
@@ -470,7 +485,10 @@ export function WizardSteps(props: WizardStepsProps): React.ReactElement {
     // On error, call onDone immediately (no ceremony).
     if (!hadError) {
       try {
-        const probed = await probeSetupStatus(defaultProbeDeps());
+        // The wizard always routes through the agent-selection step, so agent
+        // registration was requested — an empty selection is a genuine "no agent"
+        // failure here, not the engine-only mode the non-interactive path allows.
+        const probed = await probeSetupStatus(defaultProbeDeps(), { agentsRequested: true });
         setSetupStatuses(probed);
       } catch {
         // probe failed — show ceremony with empty list rather than crashing

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('node:child_process', () => ({
   spawnSync: vi.fn(),
+  execSync: vi.fn(),
 }));
 
 vi.mock('node:fs', async () => {
@@ -12,7 +13,7 @@ vi.mock('node:fs', async () => {
   };
 });
 
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execSync } from 'node:child_process';
 import { statfs } from 'node:fs';
 import {
   checkNode,
@@ -21,6 +22,12 @@ import {
   checkDiskSpace,
   runSystemCheck,
 } from '../../../../src/cli/tui/system-check.js';
+import { __resetResolvedContainerCli } from '../../../../src/searxng/docker.js';
+
+beforeEach(() => {
+  __resetResolvedContainerCli();
+  vi.mocked(execSync).mockReturnValue(Buffer.from('Docker version 29.4.0, build abcdef'));
+});
 
 function mockSpawn(stdout: string, status = 0): void {
   vi.mocked(spawnSync).mockReturnValue({
@@ -133,7 +140,11 @@ describe('checkPython', () => {
 });
 
 describe('checkDocker', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetResolvedContainerCli();
+    vi.mocked(execSync).mockReturnValue(Buffer.from('Docker version 29.4.0, build abcdef'));
+  });
 
   it('detects docker when available', () => {
     mockSpawn('Docker version 29.4.0, build abcdef\n');
@@ -208,12 +219,16 @@ describe('runSystemCheck', () => {
     }
   });
 
-  it('sets hardFailure=true when Python 3 is missing', async () => {
+  it('does NOT hard-fail when Python 3 is missing (Python is only for the optional search-engine sidecar)', async () => {
+    // WHY: the default core backend + fetch/crawl/extract/cache/embeddings/rerank
+    // are all Python-free. Python is used ONLY by the opt-in search-engine sidecar,
+    // and warmup degrades to core when it is absent — so a missing Python must
+    // never block setup (it used to abort `wigolo init` with "cannot continue").
     vi.mocked(spawnSync).mockReturnValue({
       status: 127, stdout: '', stderr: '', error: new Error('ENOENT'),
     } as any);
     const r = await runSystemCheck();
-    expect(r.hardFailure).toBe(true);
+    expect(r.hardFailure).toBe(false);
     expect(r.python.ok).toBe(false);
   });
 

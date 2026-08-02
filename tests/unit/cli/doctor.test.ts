@@ -8,6 +8,10 @@ vi.mock('node:fs', async () => {
     ...actual,
     existsSync: vi.fn(),
     readFileSync: vi.fn(),
+    readdirSync: vi.fn(() => []),
+    writeFileSync: vi.fn(),
+    unlinkSync: vi.fn(),
+    mkdirSync: vi.fn(),
   };
 });
 // doctor now probes browser health via a real headless launch (shared with
@@ -21,19 +25,6 @@ vi.mock('playwright', () => {
     webkit: { executablePath: vi.fn(() => '/fake/playwright/webkit/webkit'), launch: vi.fn(okLaunch) },
   };
 });
-vi.mock('../../../src/providers/rerank-provider.js', () => ({
-  getRerankProvider: vi.fn(async () => ({
-    modelId: 'Xenova/ms-marco-MiniLM-L-6-v2',
-    rerank: vi.fn().mockResolvedValue([{ id: '0', score: 0.9 }]),
-  })),
-}));
-vi.mock('../../../src/providers/embed-provider.js', () => ({
-  getEmbedProvider: vi.fn(async () => ({
-    modelId: 'BAAI/bge-small-en-v1.5',
-    dim: 384,
-    embed: vi.fn(),
-  })),
-}));
 vi.mock('../../../src/cache/db.js', () => {
   const db = {
     prepare: vi.fn((sql: string) => {
@@ -65,10 +56,20 @@ vi.mock('../../../src/security/keychain.js', () => ({
   WIGOLO_SERVICE: 'wigolo',
 }));
 
+// Force the keystore to report no stored key, so the LLM-section tests depend
+// ONLY on env vars. Otherwise a gemini key in the developer's OS keychain masks
+// the "no key" cases (the documented machine-env flakiness) and hides the env
+// alias-detection path that CI exercises on a clean box.
+vi.mock('../../../src/security/key-store.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/security/key-store.js')>(
+    '../../../src/security/key-store.js',
+  );
+  return { ...actual, readKey: vi.fn().mockResolvedValue(null) };
+});
+
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { runDoctor } from '../../../src/cli/doctor.js';
-import { getEmbedProvider } from '../../../src/providers/embed-provider.js';
 import { initDatabase } from '../../../src/cache/db.js';
 import { loadFeedConfig } from '../../../src/search/core/rss/feed-config.js';
 import { scrubProviderEnv } from '../../helpers/provider-isolation.js';
@@ -104,25 +105,39 @@ describe('runDoctor', () => {
     expect(outBuffer).toMatch(/Overall: OK/i);
   });
 
-  it('exits 1 when SearXNG state is failed', async () => {
-    vi.mocked(spawnSync).mockImplementation(() => okProc('Python 3.12.4'));
-    vi.mocked(existsSync).mockImplementation((p) => String(p).endsWith('state.json'));
-    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
-      status: 'failed',
-      attempts: 2,
-      lastAttemptAt: '2026-04-13T09:15:01Z',
-      nextRetryAt: '2026-04-13T10:15:01Z',
-      lastError: { message: 'pip install failed: 1', stderr: 'ERROR: ...', exitCode: 1, command: 'pip install', timestamp: '2026-04-13T09:15:01Z' },
-    }));
-    const code = await runDoctor('/tmp/.wigolo');
-    expect(code).toBe(1);
-    expect(outBuffer).toContain('attempts:      2');
-    expect(outBuffer).toContain('pip install failed');
-    expect(outBuffer).toContain('warmup --force');
-    expect(outBuffer).toMatch(/Overall: DEGRADED/);
+  it('exits 1 when SearXNG state is failed (sidecar backend configured)', async () => {
+    // The suite default backend is searxng (tests/setup.ts), so the
+    // failed-bootstrap section is gated in and degrades as before. On the
+    // default core backend this section is skipped — see doctor-lazy.test.ts.
+    process.env.WIGOLO_SEARCH = 'searxng';
+    resetConfig();
+    try {
+      vi.mocked(spawnSync).mockImplementation(() => okProc('Python 3.12.4'));
+      vi.mocked(existsSync).mockImplementation((p) => String(p).endsWith('state.json'));
+      vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+        status: 'failed',
+        attempts: 2,
+        lastAttemptAt: '2026-04-13T09:15:01Z',
+        nextRetryAt: '2026-04-13T10:15:01Z',
+        lastError: { message: 'pip install failed: 1', stderr: 'ERROR: ...', exitCode: 1, command: 'pip install', timestamp: '2026-04-13T09:15:01Z' },
+      }));
+      const code = await runDoctor('/tmp/.wigolo');
+      expect(code).toBe(1);
+      expect(outBuffer).toContain('attempts:      2');
+      expect(outBuffer).toContain('pip install failed');
+      expect(outBuffer).toContain('warmup --force');
+      expect(outBuffer).toMatch(/Overall: DEGRADED/);
+    } finally {
+      delete process.env.WIGOLO_SEARCH;
+      resetConfig();
+    }
   });
 
-  it('exits 1 when Playwright is installed but chromium browser is missing', async () => {
+  it('reports a missing (not-on-disk) chromium as lazy and exits 0 (D5 lazy contract)', async () => {
+    // WHY: a fresh install has no browser binary on disk; it is downloaded on
+    // first fetch use (lazy acquisition), so its absence is NOT a failure and
+    // must not flip the exit code. This replaces the old "missing browser ⇒
+    // degraded/exit-1" assertion, which broke fresh-install acceptance.
     vi.mocked(spawnSync).mockImplementation((cmd, args) => {
       const joined = [cmd, ...((args ?? []) as string[])].join(' ');
       if (joined.includes('--version')) return okProc('1.50.0');
@@ -141,9 +156,10 @@ describe('runDoctor', () => {
       return '';
     });
     const code = await runDoctor('/tmp/.wigolo');
-    expect(code).toBe(1);
+    expect(code).toBe(0);
     expect(outBuffer).toContain('chromium missing');
-    expect(outBuffer).toContain('npx playwright install chromium');
+    expect(outBuffer).toMatch(/downloads on first use/i);
+    expect(outBuffer).toMatch(/Overall: OK/);
   });
 
   it('exits 1 with the install-deps hint when chromium is on disk but will not launch on Linux (GH #116)', async () => {
@@ -183,12 +199,22 @@ describe('runDoctor', () => {
     }
   });
 
-  it('exits 1 when no state file exists', async () => {
-    vi.mocked(spawnSync).mockImplementation(() => okProc('Python 3.12.4'));
-    vi.mocked(existsSync).mockReturnValue(false);
-    const code = await runDoctor('/tmp/.wigolo');
-    expect(code).toBe(1);
-    expect(outBuffer).toContain('not bootstrapped');
+  it('exits 1 when no state file exists AND the sidecar backend is configured', async () => {
+    // Same gate as above: "not bootstrapped ⇒ degraded" only applies to an
+    // opted-in sidecar backend. On the default core backend, see the
+    // fresh-install lazy contract (doctor-lazy.test.ts): the section is skipped.
+    process.env.WIGOLO_SEARCH = 'searxng';
+    resetConfig();
+    try {
+      vi.mocked(spawnSync).mockImplementation(() => okProc('Python 3.12.4'));
+      vi.mocked(existsSync).mockReturnValue(false);
+      const code = await runDoctor('/tmp/.wigolo');
+      expect(code).toBe(1);
+      expect(outBuffer).toContain('not bootstrapped');
+    } finally {
+      delete process.env.WIGOLO_SEARCH;
+      resetConfig();
+    }
   });
 
   describe('LLM fallback section', () => {
@@ -198,6 +224,7 @@ describe('runDoctor', () => {
       process.env = { ...originalEnv };
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.OPENAI_API_KEY;
+      delete process.env.GEMINI_API_KEY;
       delete process.env.GOOGLE_API_KEY;
       delete process.env.GROQ_API_KEY;
       delete process.env.WIGOLO_LLM_PROVIDER;
@@ -314,6 +341,7 @@ describe('runDoctor', () => {
     beforeEach(() => {
       vi.mocked(spawnSync).mockImplementation(() => okProc('Python 3.12.4'));
       vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readdirSync).mockReturnValue(['model'] as never);
       vi.mocked(readFileSync).mockImplementation((p) => {
         const s = String(p);
         if (s.endsWith('state.json')) return JSON.stringify({ status: 'ready', searxngPath: '/tmp/sx' });
@@ -322,17 +350,22 @@ describe('runDoctor', () => {
       });
     });
 
-    it('reports embedding provider ready with model id and dim', async () => {
+    it('reports the embedding model installed via a PASSIVE cache-presence check (no model load)', async () => {
+      // WHY (D5): checkCoreEmbeddings must NOT load the provider (loading
+      // downloads on a fresh dir). It reports presence from the fastembed cache
+      // dir instead. Cache dir populated ⇒ installed.
       await runDoctor('/tmp/.wigolo');
       expect(outBuffer).toMatch(/Core embeddings:/);
-      expect(outBuffer).toMatch(/provider:\s+ready \(fastembed BAAI\/bge-small-en-v1\.5, dim=384\)/);
+      expect(outBuffer).toMatch(/provider:\s+installed \(fastembed BGE-small-en-v1\.5\)/);
     });
 
-    it('reports embedding provider not ready on failure', async () => {
-      vi.mocked(getEmbedProvider).mockRejectedValueOnce(new Error('model download failed'));
+    it('reports the embedding model lazy when the cache dir is absent — never degrades on its own', async () => {
+      // Fastembed cache dir missing ⇒ lazy (downloads on first use), NOT a
+      // failure. The old contract reported "not ready (<error>)" only after an
+      // active load attempt; the passive probe never triggers that download.
+      vi.mocked(existsSync).mockImplementation((p) => !String(p).endsWith('fastembed'));
       await runDoctor('/tmp/.wigolo');
-      expect(outBuffer).toMatch(/provider:\s+not ready \(model download failed\)/);
-      // Failure must not flip overall to DEGRADED on its own.
+      expect(outBuffer).toMatch(/provider:\s+not installed \(lazy — downloads on first use\)/);
       expect(outBuffer).toMatch(/Overall: OK/);
     });
 

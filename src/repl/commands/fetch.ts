@@ -2,72 +2,100 @@ import type { FetchInput, FetchOutput } from '../../types.js';
 import type { ParsedArgs } from '../parser.js';
 import type { ReplDeps } from './types.js';
 import { handleFetch } from '../../tools/fetch.js';
+import { coerceFlags, mergeBridged } from '../../cli/flag-bridge.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('repl');
+
+function errEnvelope(url: string, reason: string): FetchOutput {
+  return {
+    url,
+    title: '',
+    markdown: '',
+    metadata: {},
+    links: [],
+    images: [],
+    cached: false,
+    error: reason,
+  };
+}
 
 export async function executeFetch(args: ParsedArgs, deps: ReplDeps): Promise<FetchOutput> {
   try {
     const url = args.positional[0];
     if (!url) {
-      return {
-        url: '',
-        title: '',
-        markdown: '',
-        metadata: {},
-        links: [],
-        images: [],
-        cached: false,
-        error: 'Usage: fetch <URL> [--mode=raw|markdown]',
-      };
+      return errEnvelope('', 'Usage: fetch <URL> [--mode=raw|markdown|cache|default|stealth]');
     }
 
     const input: FetchInput = { url };
 
-    if (args.flags.mode === 'raw') {
-      input.render_js = 'never';
-    } else if (args.flags.mode === 'markdown') {
-      input.render_js = 'auto';
+    // --mode is value-dispatched across two schemas: raw/markdown map to the
+    // render_js render mode; cache/default/stealth map to the schema `mode`
+    // routing property. Anything else fails loudly.
+    const consumed = new Set<string>();
+    if (args.flags.mode !== undefined) {
+      consumed.add('mode');
+      const mode = args.flags.mode;
+      if (mode === 'raw') {
+        input.render_js = 'never';
+      } else if (mode === 'markdown') {
+        input.render_js = 'auto';
+      } else if (mode === 'cache' || mode === 'default' || mode === 'stealth') {
+        input.mode = mode;
+      } else {
+        return errEnvelope(
+          url,
+          `--mode: '${mode}' is not valid (allowed: raw, markdown, cache, default, stealth)`,
+        );
+      }
     }
 
+    // Curated mappings kept for the friendly shorthands.
     if (args.flags['max-chars']) {
       input.max_chars = parseInt(args.flags['max-chars'], 10);
+      consumed.add('max-chars');
     }
     if (args.flags.section) {
       input.section = args.flags.section;
+      consumed.add('section');
     }
     if (args.flags.screenshot === 'true') {
       input.screenshot = true;
+      consumed.add('screenshot');
     }
+
+    // Everything else flows through the schema-driven bridge; curated keys win.
+    const rest: Record<string, string> = {};
+    for (const [k, v] of Object.entries(args.flags)) {
+      if (!consumed.has(k)) rest[k] = v;
+    }
+    const bridged = coerceFlags('fetch', rest);
+    if (bridged.errors.length > 0) {
+      return errEnvelope(url, bridged.errors[0]);
+    }
+    // Curated keys already set above win over bridge-derived values.
+    mergeBridged(input, bridged.input);
 
     log.debug('executing fetch command', { url, flags: args.flags });
     // REPL is a human-initiated entry — may reach a local dev server (P6-a source policy).
     const r = await handleFetch(input, deps.router, 'human');
     if (!r.ok) {
+      // Preserve solve-ladder provenance on a blocked_by_challenge stage error
+      // so the CLI/REPL surface matches the MCP tool output (challenge_class +
+      // an honest null solve_method), instead of dropping it in the envelope.
       return {
-        url,
-        title: '',
-        markdown: '',
-        metadata: {},
-        links: [],
-        images: [],
-        cached: false,
-        error: r.error_reason,
+        ...errEnvelope(url, r.error_reason),
+        // http_status belongs to the same contract: without it a caller cannot
+        // tell an anti-bot 403 from a challenge served at 200.
+        ...(typeof r.http_status === 'number' ? { http_status: r.http_status } : {}),
+        ...(r.challenge_class !== undefined ? { challenge_class: r.challenge_class } : {}),
+        ...(r.solve_method !== undefined ? { solve_method: r.solve_method } : {}),
       };
     }
     return r.data;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error('fetch command failed', { error: msg });
-    return {
-      url: args.positional[0] || '',
-      title: '',
-      markdown: '',
-      metadata: {},
-      links: [],
-      images: [],
-      cached: false,
-      error: msg,
-    };
+    return errEnvelope(args.positional[0] || '', msg);
   }
 }

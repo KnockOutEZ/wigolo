@@ -8,6 +8,22 @@ export interface WarmupReporter {
   finish(): void;
 }
 
+/**
+ * A reporter that discards every event. Lets a repair function (installBrowser,
+ * installEmbeddings, wipeSearxngState) be called outside the warmup flow — e.g.
+ * from `doctor --fix` — without wiring a full progress reporter. Callers that
+ * want the before/after lines pass their own reporter instead.
+ */
+export const noopReporter: WarmupReporter = {
+  start() {},
+  update() {},
+  progress() {},
+  success() {},
+  fail() {},
+  note() {},
+  finish() {},
+};
+
 export class PlainReporter implements WarmupReporter {
   private readonly prefix: string;
 

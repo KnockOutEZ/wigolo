@@ -54,6 +54,21 @@ describe('runSetupMcp — usage', () => {
     writeMock.mockRestore();
     expect(code).toBe(2);
   });
+
+  it('--help usage does not advertise the retired --non-interactive alias', async () => {
+    // The alias still parses (-y / --non-interactive both set nonInteractive),
+    // but it is a documented no-op name — help/examples must use -y instead.
+    let written = '';
+    const writeMock = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      written += String(chunk);
+      return true;
+    });
+    const code = await runSetupMcp(['mcp', '--help']);
+    writeMock.mockRestore();
+    expect(code).toBe(0);
+    expect(written).toContain('Usage: wigolo setup');
+    expect(written).not.toContain('--non-interactive');
+  });
 });
 
 describe('runSetupMcp — happy path', () => {

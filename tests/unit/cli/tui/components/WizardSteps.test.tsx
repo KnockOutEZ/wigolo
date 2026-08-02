@@ -22,8 +22,15 @@ vi.mock('../../../../../src/cli/tui/actions/write-config.js', () => ({
   writeMcpConfig: vi.fn().mockResolvedValue({ results: [], anyFailed: false }),
 }));
 
+const { saveInitConfigMock } = vi.hoisted(() => ({ saveInitConfigMock: vi.fn() }));
+vi.mock('../../../../../src/cli/tui/utils/config-writer.js', () => ({
+  saveInitConfig: saveInitConfigMock,
+  readInitConfig: vi.fn(() => ({})),
+}));
+
 afterEach(() => {
   cleanup();
+  saveInitConfigMock.mockClear();
 });
 
 const ENTER = '\r';
@@ -230,6 +237,13 @@ describe('WizardSteps', () => {
     expect(ids).toContain('claude-code');
     expect(ids).toContain('cursor');
     expect(onDone).toHaveBeenCalledTimes(1);
+
+    // The wizard persists the selected agents into the init-config so runInit's
+    // wizard branch can read them back and install skills. This is the hand-off
+    // seam between the Ink shell and the shared skills engine.
+    expect(saveInitConfigMock).toHaveBeenCalled();
+    const payload = saveInitConfigMock.mock.calls.at(-1)?.[1] as { configuredAgents: string[] };
+    expect(payload.configuredAgents.sort()).toEqual(['claude-code', 'cursor']);
   });
 
   // Bug #105 — install state was detected once and never refreshed, so the

@@ -58,6 +58,10 @@ const mockIndex = {
 const mockService = {
   isAvailable: () => mockEmbeddingState.available,
   isSubprocessReady: () => mockEmbeddingState.subprocessReady,
+  // find_similar awaits the lazy provider load (D2) before the availability probe and
+  // before the embedding search. Resolve to the configured subprocess-ready posture so
+  // the embedding lane reflects this harness's intent instead of throwing.
+  ensureProviderReady: vi.fn(async () => mockEmbeddingState.subprocessReady),
   setAvailable: vi.fn(),
   getIndex: () => mockIndex,
   init: vi.fn(),

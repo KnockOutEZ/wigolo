@@ -5,6 +5,7 @@ import {
   cacheContent,
   getCachedContent,
   isExpired,
+  isCacheUsable,
   searchCache,
   cacheSearchResults,
   getCachedSearchResults,
@@ -169,10 +170,10 @@ describe('cacheContent + getCachedContent', () => {
 
   it('stores fetchMethod from RawFetchResult', () => {
     const raw = makeRaw('https://example.com/method');
-    raw.method = 'playwright';
+    raw.method = 'browser';
     cacheContent(raw, makeExtraction());
     const result = getCachedContent('https://example.com/method');
-    expect(result!.fetchMethod).toBe('playwright');
+    expect(result!.fetchMethod).toBe('browser');
   });
 
   it('stores extractorUsed from ExtractionResult', () => {
@@ -201,6 +202,29 @@ describe('cacheContent + getCachedContent', () => {
     const result = getCachedContent(url);
     expect(result!.expiresAt).not.toBeNull();
     expect(new Date(result!.expiresAt!).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('roundtrips content_completeness from RawFetchResult through the cache', () => {
+    const url = 'https://example.com/completeness';
+    const raw = makeRaw(url);
+    raw.method = 'playwright';
+    raw.contentCompleteness = { level: 'shell', reason: 'app_shell', settled_by: 'budget' };
+    cacheContent(raw, makeExtraction());
+    const result = getCachedContent(url);
+    expect(result!.contentCompleteness).toEqual({
+      level: 'shell',
+      reason: 'app_shell',
+      settled_by: 'budget',
+    });
+  });
+
+  it('leaves contentCompleteness undefined when the RawFetchResult lacks it (HTTP tier)', () => {
+    const url = 'https://example.com/no-completeness';
+    // Default makeRaw is an http-tier result with no contentCompleteness — the
+    // same shape a legacy row (written before migration 009) reads back as.
+    cacheContent(makeRaw(url), makeExtraction());
+    const result = getCachedContent(url);
+    expect(result!.contentCompleteness).toBeUndefined();
   });
 });
 
@@ -693,5 +717,73 @@ describe('getHashAndStatusForNormalizedUrl', () => {
     expect(combined.hash).toBe(standaloneHash);
     // status should match what was persisted (200 from makeRaw).
     expect(combined.status).toBe(200);
+  });
+});
+
+describe('timezone-independent expiry (issue #208)', () => {
+  // Stored timestamps are zone-less UTC ("YYYY-MM-DD HH:MM:SS"). The bug:
+  // new Date() parses that form as LOCAL time, shifting expiry by the host's
+  // UTC offset. These tests flip TZ west of UTC at runtime; on hosts where
+  // the runtime ignores a TZ change (e.g. Windows), they skip themselves.
+  const originalTz = process.env.TZ;
+
+  function tzFlipTookEffect(): boolean {
+    process.env.TZ = 'Etc/GMT+8'; // POSIX sign convention: UTC-8
+    return new Date().getTimezoneOffset() === 480;
+  }
+
+  afterEach(() => {
+    if (originalTz === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTz;
+  });
+
+  function zonelessUtc(msFromNow: number): string {
+    return new Date(Date.now() + msFromNow)
+      .toISOString()
+      .replace('T', ' ')
+      .replace(/\.\d+Z$/, '');
+  }
+
+  function makeCached(expiresAt: string): CachedContent {
+    return {
+      url: 'https://tz.test/',
+      normalizedUrl: 'https://tz.test',
+      title: 't',
+      markdown: 'm',
+      metadata: {},
+      links: [],
+      images: [],
+      fetchMethod: 'http',
+      extractorUsed: 'defuddle',
+      contentHash: 'h',
+      fetchedAt: zonelessUtc(-3_600_000),
+      expiresAt,
+    } as unknown as CachedContent;
+  }
+
+  it('isExpired stays true for a just-expired row under a UTC-8 clock', () => {
+    if (!tzFlipTookEffect()) return;
+    expect(isExpired(makeCached(zonelessUtc(-60_000)))).toBe(true);
+  });
+
+  it('isExpired stays false for a not-yet-expired row under a UTC-8 clock', () => {
+    if (!tzFlipTookEffect()) return;
+    expect(isExpired(makeCached(zonelessUtc(60_000)))).toBe(false);
+  });
+
+  it('isCacheUsable marks a row inside the stale window stale under a UTC-8 clock', () => {
+    if (!tzFlipTookEffect()) return;
+    const out = isCacheUsable(makeCached(zonelessUtc(-3_600_000)), {
+      staleMaxSeconds: 24 * 3600,
+    });
+    expect(out).toEqual({ usable: true, stale: true });
+  });
+
+  it('isCacheUsable rejects a row past the stale window under a UTC-8 clock', () => {
+    if (!tzFlipTookEffect()) return;
+    const out = isCacheUsable(makeCached(zonelessUtc(-25 * 3_600_000)), {
+      staleMaxSeconds: 24 * 3600,
+    });
+    expect(out).toEqual({ usable: false, stale: false });
   });
 });

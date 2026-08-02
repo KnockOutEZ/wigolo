@@ -5,6 +5,21 @@
 .head {
   margin-bottom: 64px;
 }
+.headLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 22px;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 500;
+  color: #7c3aed;
+  transition: gap 0.18s var(--ease), opacity 0.18s var(--ease);
+}
+.headLink:hover {
+  gap: 11px;
+  opacity: 0.82;
+}
 .title {
   margin-top: 20px;
   font-family: var(--font-display);

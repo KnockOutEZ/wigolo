@@ -74,7 +74,18 @@ export class BingEngine implements SearchEngine {
     const maxResults = options.maxResults ?? 10;
 
     const params = new URLSearchParams({ q: query });
-    if (options.country) params.set('cc', options.country.toLowerCase());
+    if (options.country) {
+      params.set('cc', options.country.toLowerCase());
+    } else {
+      // Bing geolocates by IP; with no explicit market a query from a non-US IP
+      // returns locale-mixed results (e.g. Chinese React docs for an English
+      // query out of a South-Asian IP). Accept-Language alone does not override
+      // Bing's market. Pin market + UI language to English to match wigolo's
+      // English-first default (see Accept-Language below). An explicit `country`
+      // opts back into regional results.
+      params.set('mkt', 'en-US');
+      params.set('setlang', 'en');
+    }
     const url = `https://www.bing.com/search?${params}`;
 
     log.debug('scraping bing', { query });

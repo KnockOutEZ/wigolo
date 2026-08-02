@@ -7,10 +7,27 @@ vi.mock('../../../src/fetch/auth.js', () => ({
   getAuthOptions: vi.fn(async () => null),
 }));
 
+// Browser-acquire mock — every router (injected or the internal default) reports
+// the engine "ready" without a real install. On a browserless CI runner the real
+// BrowserAcquirer.ensureBrowser() attempts an install and hangs past the test
+// timeout; here browser-tier paths reach the mocked browserPool instead. Tests
+// that need the "unavailable" branch spy on their own instance to override this.
+vi.mock('../../../src/fetch/browser-acquire.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/fetch/browser-acquire.js')>();
+  return {
+    ...actual,
+    BrowserAcquirer: class {
+      ensureBrowser = vi.fn(async () => 'ready');
+    },
+  };
+});
+
 import { SmartRouter } from '../../../src/fetch/router.js';
 import type { HttpClient, BrowserPoolInterface, TlsFetcher } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 import { getAuthOptions } from '../../../src/fetch/auth.js';
+import { ChallengeBlockedError } from '../../../src/fetch/browser-pool.js';
+import { BrowserAcquirer, BROWSER_INSTALLING_NOTE } from '../../../src/fetch/browser-acquire.js';
 
 const FULL_HTML = `
 <html><head><title>Test</title></head>
@@ -40,9 +57,20 @@ function makeBrowserResult(url = 'https://example.com/page'): RawFetchResult {
     html: FULL_HTML,
     contentType: 'text/html',
     statusCode: 200,
-    method: 'playwright',
+    method: 'browser',
     headers: {},
   };
+}
+
+// A BrowserAcquirer stub that reports the engine is ready without touching the
+// installer/launcher. The main-block tests inject this so the render_js:'always'
+// path exercises the mocked browserPool.fetchWithBrowser rather than attempting
+// a real browser acquire — which on a browserless CI runner installs/launches
+// and times out.
+function readyAcquirer(): BrowserAcquirer {
+  const acquirer = new BrowserAcquirer();
+  vi.spyOn(acquirer, 'ensureBrowser').mockResolvedValue('ready');
+  return acquirer;
 }
 
 describe('SmartRouter', () => {
@@ -67,7 +95,7 @@ describe('SmartRouter', () => {
     // Inject a non-PDF probe so the shared router never issues a real network
     // HEAD when the browser-bound path runs (dedicated PDF tests inject their
     // own probe). Keeps these unit tests hermetic.
-    router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+    router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, browserAcquirer: readyAcquirer() });
 
     vi.mocked(getAuthOptions).mockResolvedValue(null);
   });
@@ -91,7 +119,7 @@ describe('SmartRouter', () => {
 
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('routes to HTTP only when render_js is "never"', async () => {
@@ -121,7 +149,7 @@ describe('SmartRouter', () => {
 
     // threshold-th call should trigger fallback to Playwright
     const result = await router.fetch('https://failing.com/final');
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
   });
 
@@ -132,7 +160,7 @@ describe('SmartRouter', () => {
 
     expect(httpClient.fetch).toHaveBeenCalledOnce();
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('marks domain for Playwright after SPA shell detection', async () => {
@@ -148,7 +176,7 @@ describe('SmartRouter', () => {
     const result = await router.fetch('https://spa-domain.com/page2');
 
     // Second call should go straight to Playwright without HTTP
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
     // httpClient was only used on first call (SPA detection)
     expect(httpClient.fetch).toHaveBeenCalledTimes(1);
   });
@@ -167,7 +195,7 @@ describe('SmartRouter', () => {
 
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   describe('binary-download pre-sniff (PDF routing)', () => {
@@ -205,7 +233,7 @@ describe('SmartRouter', () => {
 
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
       expect(httpClient.fetch).not.toHaveBeenCalled();
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
     });
 
     it('an extensionless PDF (application/pdf, empty html + rawBuffer) does NOT escalate to the browser as an SPA shell', async () => {
@@ -291,7 +319,7 @@ describe('SmartRouter', () => {
 
       const result = await probingRouter.fetch(url);
 
-      expect(result.method).toBe('playwright');
+      expect(result.method).toBe('browser');
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     });
   });
@@ -319,7 +347,7 @@ describe('SmartRouter', () => {
     // This call should hit threshold, mark domain, and return playwright result
     const result = await router.fetch('https://fallback.com/final');
 
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
     expect(result.url).toBe('https://fallback.com/final');
   });
 });
@@ -357,7 +385,7 @@ describe('SmartRouter --- actions routing', () => {
     const result = await router.fetch('https://example.com/page', { actions });
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('routes to Playwright when actions are present, even with renderJs=never', async () => {
@@ -365,7 +393,7 @@ describe('SmartRouter --- actions routing', () => {
     const result = await router.fetch('https://example.com/page', { renderJs: 'never', actions });
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('does not force Playwright when actions array is empty', async () => {
@@ -399,7 +427,7 @@ describe('SmartRouter --- actions routing', () => {
     const result = await router.fetch('https://example.com/page', { useAuth: true, actions });
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('passes actions alongside screenshot option', async () => {
@@ -421,7 +449,7 @@ describe('SmartRouter --- actions routing', () => {
     ];
     const result = await router.fetch('https://example.com/page', { actions });
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('routes known-SPA domains straight to Playwright on first visit', async () => {
@@ -431,7 +459,7 @@ describe('SmartRouter --- actions routing', () => {
     const result = await router.fetch('https://react.dev/learn');
     expect(httpClient.fetch).not.toHaveBeenCalled();
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('routes SPA subdomains (docs.react.dev) the same way', async () => {
@@ -440,7 +468,7 @@ describe('SmartRouter --- actions routing', () => {
     );
     const result = await router.fetch('https://docs.react.dev/intro');
     expect(httpClient.fetch).not.toHaveBeenCalled();
-    expect(result.method).toBe('playwright');
+    expect(result.method).toBe('browser');
   });
 
   it('does NOT pre-mark unrelated domains', async () => {
@@ -492,5 +520,306 @@ describe('SmartRouter --- signal forwarding', () => {
       else process.env.WIGOLO_TLS_TIER = originalTlsTier;
       resetConfig();
     }
+  });
+});
+
+describe('SmartRouter: browser-tier challenge → blocked_by_challenge StageError', () => {
+  const originalEnv = process.env;
+  beforeEach(() => {
+    process.env = { ...originalEnv, BROWSER_FALLBACK_THRESHOLD: '3' };
+    resetConfig();
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+    resetConfig();
+    vi.clearAllMocks();
+  });
+
+  function build(browserFetcher: BrowserPoolInterface['fetchWithBrowser']) {
+    const httpClient: HttpClient = { fetch: vi.fn(async () => makeHttpResult()) };
+    const browserPool: BrowserPoolInterface = { fetchWithBrowser: vi.fn(browserFetcher) };
+    return new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+  }
+
+  it('maps a ChallengeBlockedError from the render_js:always path to a blocked_by_challenge stage error', async () => {
+    const router = build(async (url: string) => {
+      throw new ChallengeBlockedError(url);
+    });
+    const result = await router.fetch('https://blocked.example/', { renderJs: 'always' });
+    expect('error' in result).toBe(true);
+    const err = result as { error: string; error_reason: string; stage: string; hint?: string };
+    expect(err.error).toBe('blocked_by_challenge');
+    expect(err.stage).toBe('fetch');
+    // Capability language — names the site's bot protection.
+    expect(err.error_reason.toLowerCase()).toMatch(/bot protection|challenge page/);
+    expect(err.hint).toMatch(/use_auth/);
+  });
+
+  it('maps a ChallengeBlockedError from the auto/SPA-shell escalation path', async () => {
+    // HTTP returns an empty SPA shell → escalates to the browser, which throws.
+    const httpClient: HttpClient = {
+      fetch: vi.fn(async () => makeHttpResult(SPA_SHELL_HTML)),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string) => { throw new ChallengeBlockedError(url); }),
+    };
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+    const result = await router.fetch('https://blocked.example/');
+    expect('error' in result).toBe(true);
+    expect((result as { error: string }).error).toBe('blocked_by_challenge');
+  });
+
+  it('does NOT swallow non-challenge browser errors (they still throw)', async () => {
+    const router = build(async () => { throw new Error('some other browser crash'); });
+    await expect(router.fetch('https://x.example/', { renderJs: 'always' })).rejects.toThrow('some other browser crash');
+  });
+
+  it('SUCCESS-RETURN GUARD: fetchWithBrowser returning a still-challenge result (403 + cf-mitigated) → blocked_by_challenge, never content', async () => {
+    // The browser pool can return (not throw) a still-challenge result — e.g. a
+    // modern-CF interstitial that reports 403 + cf-mitigated + a challenge body.
+    // The success-return guard must map it to blocked_by_challenge so the shell
+    // never leaks as content.
+    const modernCfShell =
+      '<html><head><title>Verify</title></head><body>' +
+      '<div id="challenge-running">Verifying you are human.</div>' +
+      '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1?ray=x"></script>' +
+      '</body></html>';
+    const router = build(async (url: string): Promise<RawFetchResult> => ({
+      url,
+      finalUrl: url,
+      html: modernCfShell,
+      contentType: 'text/html',
+      statusCode: 403,
+      method: 'browser',
+      headers: { 'cf-mitigated': 'challenge' },
+    }));
+    const result = await router.fetch('https://blocked.example/', { renderJs: 'always' });
+    expect('error' in result).toBe(true);
+    expect((result as { error: string }).error).toBe('blocked_by_challenge');
+  });
+
+  it('SUCCESS-RETURN GUARD: a CLEARED modern-CF result (browser normalised to 200, cf-mitigated dropped) passes through as content', async () => {
+    // After the challenge clears, the browser pool normalises the result to 200
+    // and drops the stale cf-mitigated header. The guard must NOT fire on it.
+    const router = build(async (url: string): Promise<RawFetchResult> => ({
+      url,
+      finalUrl: url,
+      html: FULL_HTML,
+      contentType: 'text/html',
+      statusCode: 200,
+      method: 'browser',
+      headers: { server: 'cloudflare' },
+    }));
+    const result = await router.fetch('https://blocked.example/', { renderJs: 'always' });
+    expect('error' in result).toBe(false);
+    expect((result as RawFetchResult).method).toBe('browser');
+    expect((result as RawFetchResult).html).toContain('real content');
+  });
+
+  it('SUCCESS-RETURN GUARD: a normal 200 content result passes through unchanged', async () => {
+    const router = build(async (url: string) => makeBrowserResult(url));
+    const result = await router.fetch('https://ok.example/', { renderJs: 'always' });
+    expect('error' in result).toBe(false);
+    expect((result as RawFetchResult).method).toBe('browser');
+  });
+});
+
+// A DataDome-style interstitial served at HTTP 200: challenge markers PLUS a
+// near-empty challenge skeleton. Must NEVER be returned as fetch content.
+const DATADOME_SHELL_200 =
+  '<html><head><title>Just a moment...</title></head><body>' +
+  '<div class="dd-loader"></div><script>window._dd_s = 1;</script></body></html>';
+// A 200 article whose prose merely quotes challenge marker strings.
+const ARTICLE_QUOTING_MARKERS_200 =
+  '<html><head><title>How bot walls work</title></head><body><article>' +
+  ('The interstitial sets _cfChlOpt and shows "Just a moment" while the ' +
+    'dd-loader sensor runs. This is a full explanation for engineers. ').repeat(30) +
+  '</article></body></html>';
+
+describe('SmartRouter: 200 challenge shell (P0 long-tail #5)', () => {
+  const originalEnv = process.env;
+  beforeEach(() => {
+    process.env = { ...originalEnv, BROWSER_FALLBACK_THRESHOLD: '3', WIGOLO_TLS_TIER: 'off' };
+    resetConfig();
+    vi.mocked(getAuthOptions).mockResolvedValue(null);
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+    resetConfig();
+    vi.clearAllMocks();
+  });
+
+  it('MUST-FIRE: auto mode, HTTP 200 shell escalates to the browser (does not fail at HTTP tier)', async () => {
+    const httpClient: HttpClient = {
+      fetch: vi.fn(async () => makeHttpResult(DATADOME_SHELL_200)),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
+    };
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+    const result = await router.fetch('https://blocked.example/');
+    // Escalated to the browser and returned the browser's real content.
+    expect(browserPool.fetchWithBrowser).toHaveBeenCalled();
+    expect('error' in result).toBe(false);
+    expect((result as RawFetchResult).method).toBe('browser');
+  });
+
+  it('MUST-FIRE: auto mode, HTTP 200 shell that persists in the browser → blocked_by_challenge', async () => {
+    const httpClient: HttpClient = {
+      fetch: vi.fn(async () => makeHttpResult(DATADOME_SHELL_200)),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string) => { throw new ChallengeBlockedError(url); }),
+    };
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+    const result = await router.fetch('https://blocked.example/');
+    expect('error' in result).toBe(true);
+    expect((result as { error: string }).error).toBe('blocked_by_challenge');
+  });
+
+  it('MUST-FIRE: render_js:never, HTTP 200 shell → blocked_by_challenge StageError, never the shell markdown', async () => {
+    const httpClient: HttpClient = {
+      fetch: vi.fn(async () => makeHttpResult(DATADOME_SHELL_200)),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
+    };
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+    const result = await router.fetch('https://blocked.example/', { renderJs: 'never' });
+    // http-only path must never touch the browser AND must not return the shell.
+    expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
+    expect('error' in result).toBe(true);
+    const err = result as { error: string; error_reason: string; stage: string; hint?: string };
+    expect(err.error).toBe('blocked_by_challenge');
+    expect(err.stage).toBe('fetch');
+    expect(err.error_reason.toLowerCase()).toMatch(/bot protection|challenge page/);
+  });
+
+  it('MUST-NOT-FIRE: auto mode, 200 article quoting markers returns content, no escalation', async () => {
+    const httpClient: HttpClient = {
+      fetch: vi.fn(async () => makeHttpResult(ARTICLE_QUOTING_MARKERS_200)),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
+    };
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+    const result = await router.fetch('https://news.example/article');
+    expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
+    expect('error' in result).toBe(false);
+    expect((result as RawFetchResult).html).toContain('How bot walls work');
+  });
+
+  it('MUST-NOT-FIRE: auto mode, plain 200 SPA shell (no markers) uses the SPA path, not the challenge error', async () => {
+    const httpClient: HttpClient = {
+      fetch: vi.fn(async () => makeHttpResult(SPA_SHELL_HTML)),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
+    };
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+    const result = await router.fetch('https://spa.example/');
+    // SPA escalation returns the browser's real content, NOT a challenge error.
+    expect(browserPool.fetchWithBrowser).toHaveBeenCalled();
+    expect('error' in result).toBe(false);
+    expect((result as RawFetchResult).method).toBe('browser');
+  });
+});
+
+describe('SmartRouter: browser-unavailable fallback must not leak a challenge shell', () => {
+  const originalEnv = process.env;
+  beforeEach(() => {
+    process.env = { ...originalEnv, BROWSER_FALLBACK_THRESHOLD: '3', WIGOLO_TLS_TIER: 'off' };
+    resetConfig();
+    vi.mocked(getAuthOptions).mockResolvedValue(null);
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+    resetConfig();
+    vi.clearAllMocks();
+  });
+
+  // A BrowserAcquirer stub that always reports the engine is not ready, so the
+  // browserFetch fallback branch is exercised.
+  function unavailableAcquirer(): BrowserAcquirer {
+    const acquirer = new BrowserAcquirer();
+    vi.spyOn(acquirer, 'ensureBrowser').mockResolvedValue('unavailable');
+    return acquirer;
+  }
+
+  it('MUST-FIRE: 200 shell escalates, browser unavailable → blocked_by_challenge (never the shell html)', async () => {
+    const httpClient: HttpClient = {
+      fetch: vi.fn(async () => makeHttpResult(DATADOME_SHELL_200)),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
+    };
+    const router = new SmartRouter({
+      httpClient,
+      browserPool,
+      pdfProbe: async () => false,
+      browserAcquirer: unavailableAcquirer(),
+    });
+    const result = await router.fetch('https://blocked.example/');
+    // The browser could not be acquired, so the shell would have been the
+    // fallback — the guard must convert it to a structured error instead.
+    expect('error' in result).toBe(true);
+    const err = result as { error: string; stage: string; error_reason: string };
+    expect(err.error).toBe('blocked_by_challenge');
+    expect(err.stage).toBe('fetch');
+    // The interstitial markdown must never surface.
+    expect(JSON.stringify(result)).not.toContain('dd-loader');
+  });
+
+  it('MUST-FIRE: 403 challenge-body escalation, browser unavailable → blocked_by_challenge (pre-existing site, new contract)', async () => {
+    const CHALLENGE_403 =
+      '<html><head><title>Just a moment...</title></head><body>' +
+      '<div class="cf-browser-verification"></div></body></html>';
+    const httpClient: HttpClient = {
+      fetch: vi.fn(async () => ({
+        url: 'https://blocked.example/',
+        finalUrl: 'https://blocked.example/',
+        html: CHALLENGE_403,
+        contentType: 'text/html',
+        statusCode: 403,
+        headers: {},
+      })),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
+    };
+    const router = new SmartRouter({
+      httpClient,
+      browserPool,
+      pdfProbe: async () => false,
+      browserAcquirer: unavailableAcquirer(),
+    });
+    const result = await router.fetch('https://blocked.example/');
+    expect('error' in result).toBe(true);
+    expect((result as { error: string }).error).toBe('blocked_by_challenge');
+    expect(JSON.stringify(result)).not.toContain('cf-browser-verification');
+  });
+
+  it('MUST-NOT-FIRE: browser unavailable + legit lower-tier content → content returned WITH installing warning', async () => {
+    // A known-SPA domain returns thin-but-legit content (empty SPA shell, no
+    // challenge markers): the SPA escalation fires, the browser is unavailable,
+    // and the fallback (the lower-tier content) must pass through untouched
+    // with the installing note — the guard must not intercept it.
+    const httpClient: HttpClient = {
+      fetch: vi.fn(async () => makeHttpResult(SPA_SHELL_HTML)),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
+    };
+    const router = new SmartRouter({
+      httpClient,
+      browserPool,
+      pdfProbe: async () => false,
+      browserAcquirer: unavailableAcquirer(),
+    });
+    const result = await router.fetch('https://spa.example/');
+    expect('error' in result).toBe(false);
+    const raw = result as RawFetchResult;
+    expect(raw.html).toBe(SPA_SHELL_HTML);
+    expect(raw.warning).toBe(BROWSER_INSTALLING_NOTE);
   });
 });

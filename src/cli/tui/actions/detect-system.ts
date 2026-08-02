@@ -22,7 +22,8 @@ export interface SystemInfo {
   diskOk: boolean;
   diskFreeMb?: number;
   diskMessage?: string;
-  /** True when a hard-failure condition (node or python missing) is detected. */
+  /** True only when Node (the sole hard requirement) is missing/too old. Python
+   * is optional — it powers only the opt-in search-engine sidecar. */
   hardFailure: boolean;
 }
 
@@ -31,7 +32,9 @@ export async function detectSystem(): Promise<SystemInfo> {
   const python = checkPython();
   const docker = checkDocker();
   const disk = await checkDiskSpace();
-  const hardFailure = !node.ok || !python.ok;
+  // Only Node is a hard requirement; Python is optional (search-engine sidecar
+  // only). Keep this in lockstep with runSystemCheck's hardFailure.
+  const hardFailure = !node.ok;
 
   return {
     nodeOk: node.ok,

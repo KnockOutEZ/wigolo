@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { BASE_PATH } from "@/lib/site";
 import styles from "./Tools.module.css";
 
 type Feature = {
@@ -138,7 +139,7 @@ const FEATURES: Feature[] = [
     tab: "Smart Fetch",
     icon: <FetchIcon />,
     heading: "Routing on observable signals",
-    body: "The fetch ladder escalates to a real browser on what it sees — SPA markers, challenge bodies, thin content — not domain guesses. It learns per-domain, and unlearns when a site stops needing it.",
+    body: "The keyless fetch ladder escalates to a real browser on what it sees — SPA markers, challenge bodies, thin content — not domain guesses. It clears most challenge sites with no keys; the strictest managed-challenge and IP-reputation walls need an opt-in proxy, solver, or reader. It learns per-domain, and unlearns when a site stops needing it.",
     cta: "How it works",
     href: `${GH}#architecture`,
     visual: <FetchVisual />,
@@ -197,6 +198,18 @@ export default function Tools() {
         <h2 className={styles.title}>
           Your agent is smart. Its web access isn&apos;t.
         </h2>
+        <a href={`${BASE_PATH}/docs/tools`} className={styles.headLink}>
+          Full tool reference
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path
+              d="M3 8h9M8 3l5 5-5 5"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </a>
       </div>
 
       <div className={`container ${styles.grid}`}>

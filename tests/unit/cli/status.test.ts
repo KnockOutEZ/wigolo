@@ -94,4 +94,39 @@ describe('runStatus', () => {
     const out = chunks.join('');
     expect(out).toContain('✗ Search engine: failed');
   });
+
+  it('--json emits a machine-readable object on STDOUT (human text stays on stderr)', async () => {
+    // WHY (D8): AI-drivable diagnose. --json must put the machine shape on
+    // stdout and keep the pretty status block off stdout so a caller can pipe
+    // `wigolo status --json | jq`.
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    const origOut = process.stdout.write.bind(process.stdout);
+    const origErr = process.stderr.write.bind(process.stderr);
+    (process.stdout.write as unknown) = ((s: string | Uint8Array) => {
+      stdoutChunks.push(typeof s === 'string' ? s : Buffer.from(s).toString('utf-8'));
+      return true;
+    });
+    (process.stderr.write as unknown) = ((s: string | Uint8Array) => {
+      stderrChunks.push(typeof s === 'string' ? s : Buffer.from(s).toString('utf-8'));
+      return true;
+    });
+    let code = 99;
+    try {
+      code = await runStatus(['--json']);
+    } finally {
+      (process.stdout.write as unknown) = origOut;
+      (process.stderr.write as unknown) = origErr;
+    }
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdoutChunks.join(''));
+    expect(parsed).toHaveProperty('status');
+    expect(parsed).toHaveProperty('version');
+    expect(parsed).toHaveProperty('searxng', 'ready');
+    expect(parsed).toHaveProperty('reranker', 'ok');
+    expect(parsed).toHaveProperty('cache');
+    // The pretty block must NOT be on stdout.
+    expect(stdoutChunks.join('')).not.toContain('✓ Search engine ready');
+  });
 });

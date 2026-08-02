@@ -4,6 +4,7 @@ import type { BackendStatus } from '../server/backend-status.js';
 import type { SamplingCapableServer } from '../search/sampling.js';
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
+import { searxngBackendAvailable } from '../searxng/enabled.js';
 
 const log = createLogger('providers');
 
@@ -63,10 +64,16 @@ export function getSearchProvider(): Promise<SearchProvider> {
           import('../search/legacy/searxng-provider.js'),
           import('../search/hybrid/router.js'),
         ]);
-        log.info('search provider selected', { provider: 'hybrid' });
+        // D1: in hybrid mode the fallback tier runs only when the sidecar can
+        // actually serve (external URL or an installed, ready process). When it
+        // can't, the hybrid provider skips the fallback and surfaces an
+        // actionable per-request warning instead of searching empty engines.
+        const available = searxngBackendAvailable(getConfig());
+        log.info('search provider selected', { provider: 'hybrid', searxngAvailable: available });
         return new hybridMod.HybridSearchProvider(
           new coreMod.CoreSearchProvider(),
           new sxMod.LegacySearxngProvider(),
+          available,
         );
       } catch (err) {
         cached = null;

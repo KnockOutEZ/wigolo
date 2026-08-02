@@ -16,7 +16,9 @@ import type {
 import {
   wrapWithRetryAndBreaker,
   getBreakerSnapshot,
+  getEngineSessionTrips,
   BreakerOpenError,
+  resetBreakers,
   _resetBreakersForTest,
 } from '../../../src/search/core/engine-base.js';
 import {
@@ -193,26 +195,32 @@ describe('breaker half-open state machine', () => {
     expect(spy.mock.calls.length).toBeGreaterThan(callsAfterProbe);
   });
 
-  it('caps the backoff cooldown at 600000 ms', async () => {
+  it('caps the backoff cooldown at 180000 ms', async () => {
+    // WHY: the old 600s (10-min) cap kept a hard-failing engine dark for ten
+    // minutes — far longer than any realistic recovery window and long enough
+    // to leave the pool depleted across a whole session. The cap is now 180s
+    // (3 min): still a real backoff for a persistently-broken engine, but the
+    // engine gets a fresh probe within a window a caller can wait out.
     const spy = vi.fn(async () => {
       throw new Error('永 down');
     });
     const wrapped = wrapWithRetryAndBreaker(makeEngine('hf6', spy), {
       failureThreshold: 1,
-      cooldownMs: 200_000,
+      cooldownMs: 100_000,
     });
 
-    await settleCall(wrapped); // trip — 200s
-    vi.advanceTimersByTime(200_000);
-    await settleCall(wrapped); // probe fail — 400s
-    vi.advanceTimersByTime(400_000);
-    await settleCall(wrapped); // probe fail — 800s, capped to 600s
+    await settleCall(wrapped); // trip — 100s
+    vi.advanceTimersByTime(100_000);
+    await settleCall(wrapped); // probe fail — 200s, capped to 180s
+    vi.advanceTimersByTime(180_000);
+    await settleCall(wrapped); // probe fail — 400s, capped to 180s
 
     const snap = getBreakerSnapshot().find((s) => s.engine === 'hf6');
     expect(snap).toBeDefined();
     expect(snap!.state).toBe('open');
-    expect(snap!.cooldownRemainingMs).toBeLessThanOrEqual(600_000);
-    expect(snap!.cooldownRemainingMs).toBeGreaterThan(400_000);
+    // Capped exactly at 180s and not below the base cooldown.
+    expect(snap!.cooldownRemainingMs).toBeLessThanOrEqual(180_000);
+    expect(snap!.cooldownRemainingMs).toBeGreaterThan(100_000);
   });
 
   it('reclaims a stuck probe after the cooldown deadline so the engine is not dark forever', async () => {
@@ -479,5 +487,177 @@ describe('adaptive in-call retry', () => {
     expect(engine.search).toHaveBeenCalledTimes(2);
     expect(onRetry).toHaveBeenCalledTimes(1);
     expect(onRetry).toHaveBeenCalledWith(1, expect.any(Error));
+  });
+});
+
+// D5 breaker tuning: 429 exemption from the exponential ladder, escapable
+// chronic status, and a public reset.
+//
+// WHY: ~15 rapid queries tripped marginalia (429) and mojeek (403) breakers;
+// because a 429 fed the SAME exponential trips/sessionTrips counters as a hard
+// failure, the transient rate-limit backed off to the 10-minute cap and marked
+// the engine chronically unhealthy — permanently, since sessionTrips never
+// reset. A rate-limited engine is UP and throttling; it must recover on the
+// short transient window and never poison the exponential ladder or the
+// chronic-budget counter. Hard failures (403/5xx) keep their protective ladder.
+describe('D5 breaker tuning', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetBreakers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    resetBreakers();
+  });
+
+  it('never trips the exponential ladder for repeated 429s — cooldown stays at the transient window', async () => {
+    // POSITIVE: many consecutive 429 probe-failures must keep the SHORT
+    // transient cooldown and never climb the exponential ladder toward the
+    // hard-failure cap, and must never raise trips/sessionTrips.
+    const spy = vi.fn(async () => {
+      throw new Error('Upstream returned 429 too many requests');
+    });
+    const wrapped = wrapWithRetryAndBreaker(makeEngine('rl429', spy), {
+      failureThreshold: 1,
+      cooldownMs: 60_000,
+      retryAttempts: 1,
+    });
+
+    await settleCall(wrapped); // trips — transient 5s window
+    for (let i = 0; i < 6; i++) {
+      // Elapse the transient window, then re-probe: still a 429.
+      vi.advanceTimersByTime(5_000);
+      await settleCall(wrapped);
+    }
+
+    const snap = getBreakerSnapshot().find((s) => s.engine === 'rl429')!;
+    expect(snap.state).toBe('open');
+    // Never escapes the transient window onto the exponential ladder.
+    expect(snap.cooldownRemainingMs).toBeGreaterThan(0);
+    expect(snap.cooldownRemainingMs).toBeLessThanOrEqual(5_000);
+    // Rate-limit never feeds the chronic counter.
+    expect(getEngineSessionTrips('rl429')).toBe(0);
+  });
+
+  it('caps a repeated-429 backoff at 30s even with a large base cooldown (boundary at the cap)', async () => {
+    // POSITIVE boundary: a rate-limit cooldown is bounded by 30s regardless of
+    // the caller's base cooldown — it must never inherit the exponential base.
+    const spy = vi.fn(async () => {
+      throw new Error('rate limit exceeded (429)');
+    });
+    const wrapped = wrapWithRetryAndBreaker(makeEngine('rl429cap', spy), {
+      failureThreshold: 1,
+      cooldownMs: 600_000, // large base — must not leak into the rate-limit path
+      retryAttempts: 1,
+    });
+
+    await settleCall(wrapped); // trip
+    // Probe repeatedly; each failure stays inside the transient/30s bound.
+    for (let i = 0; i < 4; i++) {
+      const cd = getBreakerSnapshot().find((s) => s.engine === 'rl429cap')!.cooldownRemainingMs;
+      vi.advanceTimersByTime(cd + 1);
+      await settleCall(wrapped);
+      const snap = getBreakerSnapshot().find((s) => s.engine === 'rl429cap')!;
+      expect(snap.cooldownRemainingMs).toBeLessThanOrEqual(30_000);
+    }
+    expect(getEngineSessionTrips('rl429cap')).toBe(0);
+  });
+
+  it('resets sessionTrips on a successful half-open recovery so chronic status is escapable', async () => {
+    // A hard failure raises sessionTrips (chronic counter). Once the engine
+    // recovers on a probe, sessionTrips must reset to 0 — chronic status is not
+    // a life sentence.
+    let calls = 0;
+    const spy = vi.fn(async () => {
+      calls++;
+      if (calls <= 1) throw new Error('ECONNRESET socket hang up');
+      return [makeResult('ok')];
+    });
+    const wrapped = wrapWithRetryAndBreaker(makeEngine('recov', spy), {
+      failureThreshold: 1,
+      cooldownMs: 60_000,
+      retryAttempts: 1,
+    });
+
+    await settleCall(wrapped); // hard trip
+    expect(getEngineSessionTrips('recov')).toBe(1);
+
+    vi.advanceTimersByTime(60_000);
+    await settleCall(wrapped); // probe succeeds -> recovery
+
+    expect(getEngineSessionTrips('recov')).toBe(0);
+    const snap = getBreakerSnapshot().find((s) => s.engine === 'recov')!;
+    expect(snap.state).toBe('closed');
+  });
+
+  it('NEGATIVE: a 403 (forbidden) still trips at threshold 3 and backs off exponentially to the 180s cap', async () => {
+    // The protective ladder for hard failures is unchanged in kind: trips at
+    // exactly 3 consecutive failures and climbs the exponential backoff, capped
+    // at 180s, feeding sessionTrips each time.
+    const spy = vi.fn(async () => {
+      throw new Error('Upstream returned 403 forbidden');
+    });
+    const wrapped = wrapWithRetryAndBreaker(makeEngine('fb403', spy), {
+      failureThreshold: 3,
+      cooldownMs: 100_000,
+      retryAttempts: 1,
+    });
+
+    // Two failures: not yet tripped.
+    await settleCall(wrapped);
+    await settleCall(wrapped);
+    expect(getBreakerSnapshot().find((s) => s.engine === 'fb403')!.state).toBe('closed');
+
+    // Third failure: trips at threshold 3, sessionTrips = 1.
+    await settleCall(wrapped);
+    let snap = getBreakerSnapshot().find((s) => s.engine === 'fb403')!;
+    expect(snap.state).toBe('open');
+    expect(getEngineSessionTrips('fb403')).toBe(1);
+
+    // Failed probe -> exponential backoff, capped at 180s, sessionTrips climbs.
+    vi.advanceTimersByTime(100_000);
+    await settleCall(wrapped); // 200s -> capped 180s
+    vi.advanceTimersByTime(180_000);
+    await settleCall(wrapped); // 400s -> capped 180s
+
+    snap = getBreakerSnapshot().find((s) => s.engine === 'fb403')!;
+    expect(snap.state).toBe('open');
+    expect(snap.cooldownRemainingMs).toBeLessThanOrEqual(180_000);
+    expect(snap.cooldownRemainingMs).toBeGreaterThan(100_000);
+    expect(getEngineSessionTrips('fb403')).toBe(3);
+  });
+
+  it('resetBreakers() clears the map so a previously-open engine is immediately dispatchable', async () => {
+    let calls = 0;
+    const spy = vi.fn(async () => {
+      calls++;
+      if (calls <= 3) throw new Error('boom');
+      return [makeResult('after-reset')];
+    });
+    const wrapped = wrapWithRetryAndBreaker(makeEngine('reset1', spy), {
+      failureThreshold: 3,
+      cooldownMs: 60_000,
+      retryAttempts: 1,
+    });
+
+    await settleCall(wrapped);
+    await settleCall(wrapped);
+    await settleCall(wrapped); // tripped
+    expect(getBreakerSnapshot().find((s) => s.engine === 'reset1')!.state).toBe('open');
+    expect(getEngineSessionTrips('reset1')).toBe(1);
+
+    resetBreakers();
+
+    // Snapshot is empty and the next call reaches the engine immediately.
+    expect(getBreakerSnapshot().find((s) => s.engine === 'reset1')).toBeUndefined();
+    expect(getEngineSessionTrips('reset1')).toBe(0);
+    const results = await settleCall(wrapped);
+    expect(results).toEqual([makeResult('after-reset')]);
+  });
+
+  it('_resetBreakersForTest is a delegating alias for resetBreakers (importer stability)', () => {
+    // WHY: 15 test files import _resetBreakersForTest; it must keep working as
+    // an alias so renaming to the public resetBreakers causes zero churn.
+    expect(_resetBreakersForTest).toBe(resetBreakers);
   });
 });

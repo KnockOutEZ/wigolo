@@ -79,11 +79,87 @@ describe('parseCommand', () => {
     });
   });
 
+  it('returns "tune" for tune argument', () => {
+    expect(parseCommand(['tune'])).toEqual({ command: 'tune', args: [] });
+  });
+
+  it('routes "tune show <domain>" preserving the subcommand + domain + flags', () => {
+    expect(parseCommand(['tune', 'show', 'example.com', '--json'])).toEqual({
+      command: 'tune',
+      args: ['show', 'example.com', '--json'],
+    });
+  });
+
   it('passes --plain flag through to warmup args', () => {
     expect(parseCommand(['warmup', '--plain'])).toEqual({
       command: 'warmup',
       args: ['--plain'],
     });
+  });
+});
+
+describe('parseCommand — one-shot tools', () => {
+  const tools = [
+    'search',
+    'fetch',
+    'crawl',
+    'extract',
+    'cache',
+    'find-similar',
+    'research',
+    'agent',
+    'diff',
+    'watch',
+  ] as const;
+
+  for (const t of tools) {
+    it(`routes "${t}" to command=${t} with remaining args`, () => {
+      const parsed = parseCommand([t, 'foo', '--json']);
+      expect(parsed.command).toBe(t);
+      expect(parsed.args).toEqual(['foo', '--json']);
+    });
+  }
+
+  it('routes the snake-case "find_similar" alias', () => {
+    const parsed = parseCommand(['find_similar', 'https://x.com']);
+    expect(parsed.command).toBe('find_similar');
+    expect(parsed.args).toEqual(['https://x.com']);
+  });
+
+  it('preserves multi-word query positionals in args', () => {
+    const parsed = parseCommand(['search', 'react', 'hooks', '--limit=5']);
+    expect(parsed.command).toBe('search');
+    expect(parsed.args).toEqual(['react', 'hooks', '--limit=5']);
+  });
+
+  it('routes "watch add <url>" preserving the subcommand + url', () => {
+    const parsed = parseCommand(['watch', 'add', 'https://x.com', '--interval', '120']);
+    expect(parsed.command).toBe('watch');
+    expect(parsed.args).toEqual(['add', 'https://x.com', '--interval', '120']);
+  });
+
+  it('still defaults bare invocation to mcp', () => {
+    expect(parseCommand([])).toEqual({ command: 'mcp', args: [] });
+  });
+});
+
+describe('parseCommand — skills', () => {
+  it('parses "skills add" into command=skills, args=[add]', () => {
+    const parsed = parseCommand(['skills', 'add']);
+    expect(parsed.command).toBe('skills');
+    expect(parsed.args).toEqual(['add']);
+  });
+
+  it('parses "skills" alone into command=skills, args=[]', () => {
+    const parsed = parseCommand(['skills']);
+    expect(parsed.command).toBe('skills');
+    expect(parsed.args).toEqual([]);
+  });
+
+  it('forwards packs + flags on "skills add"', () => {
+    const parsed = parseCommand(['skills', 'add', 'wigolo-search', '--agent', 'cline', '--json']);
+    expect(parsed.command).toBe('skills');
+    expect(parsed.args).toEqual(['add', 'wigolo-search', '--agent', 'cline', '--json']);
   });
 });
 

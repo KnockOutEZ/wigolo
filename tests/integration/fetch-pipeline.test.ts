@@ -1,12 +1,15 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { httpFetch } from '../../src/fetch/http-client.js';
 import { extractContent } from '../../src/extraction/pipeline.js';
 import { initDatabase, closeDatabase } from '../../src/cache/db.js';
 import { cacheContent, getCachedContent, isExpired } from '../../src/cache/store.js';
 import { resetConfig } from '../../src/config.js';
+import { SmartRouter, type HttpClient, type BrowserPoolInterface } from '../../src/fetch/router.js';
+import { ChallengeBlockedError } from '../../src/fetch/browser-pool.js';
+import { handleFetch } from '../../src/tools/fetch.js';
 import type { RawFetchResult } from '../../src/types.js';
 
 const FIXTURE_PATH = join(import.meta.dirname, '..', 'fixtures', 'extraction', 'article.html');
@@ -156,5 +159,85 @@ describe('integration: fetch pipeline', () => {
 
     expect(result.statusCode).toBe(404);
     expect(result.html).toContain('404');
+  });
+});
+
+describe('integration: anti-bot challenge fast-fail (router → fetch tool)', () => {
+  const CHALLENGE_BODY =
+    '<html><head><title>Just a moment...</title></head><body>' +
+    '<div class="cf-browser-verification"></div></body></html>';
+
+  beforeEach(() => {
+    resetConfig();
+    initDatabase(':memory:');
+  });
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  it('surfaces a blocked_by_challenge stage error end-to-end when the browser tier fast-fails', async () => {
+    // HTTP tier returns a 403 challenge body → router escalates to the browser
+    // tier, which fast-fails with ChallengeBlockedError. The router maps that to
+    // a blocked_by_challenge stage error and handleFetch surfaces it as ok:false.
+    const httpClient: HttpClient = {
+      fetch: async (url) => ({
+        url,
+        finalUrl: url,
+        html: CHALLENGE_BODY,
+        contentType: 'text/html',
+        statusCode: 403,
+        headers: {},
+      }),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: async (url) => { throw new ChallengeBlockedError(url); },
+    };
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+
+    const result = await handleFetch({ url: 'https://blocked.example/' }, router);
+
+    expect(result.ok).toBe(false);
+    const err = result as { ok: false; error: string; error_reason: string; stage: string; hint?: string };
+    expect(err.error).toBe('blocked_by_challenge');
+    expect(err.stage).toBe('fetch');
+    // Capability language + actionable use_auth suggestion.
+    expect(err.error_reason.toLowerCase()).toMatch(/bot protection|challenge page/);
+    expect(err.hint).toMatch(/use_auth/);
+  });
+
+  it('does not fast-fail a normal 200 page whose PROSE quotes challenge markers', async () => {
+    // A real article that merely mentions the marker strings must fetch + extract
+    // normally — no escalation, no blocked_by_challenge.
+    const articleHtml =
+      '<html><head><title>How bot challenges work</title></head><body><article>' +
+      ('An interstitial shows "Just a moment" and injects a cf-turnstile widget. ' +
+        'This article explains that flow in depth for engineers. ').repeat(20) +
+      '</article></body></html>';
+    let browserCalled = false;
+    const httpClient: HttpClient = {
+      fetch: async (url) => ({
+        url,
+        finalUrl: url,
+        html: articleHtml,
+        contentType: 'text/html',
+        statusCode: 200,
+        headers: {},
+      }),
+    };
+    const browserPool: BrowserPoolInterface = {
+      fetchWithBrowser: async (url) => {
+        browserCalled = true;
+        throw new ChallengeBlockedError(url);
+      },
+    };
+    const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
+
+    const result = await handleFetch({ url: 'https://news.example/how-challenges-work' }, router);
+
+    expect(result.ok).toBe(true);
+    // No escalation to the browser tier → the gate never fired on prose markers.
+    expect(browserCalled).toBe(false);
+    const data = (result as { ok: true; data: { markdown: string } }).data;
+    expect(data.markdown.toLowerCase()).toContain('this article explains that flow in depth');
   });
 });

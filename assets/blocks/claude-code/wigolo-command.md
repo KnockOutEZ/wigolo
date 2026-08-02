@@ -4,7 +4,7 @@ description: Quick reference for wigolo web intelligence tools (search, fetch, c
 
 # wigolo
 
-Quick reference for wigolo web intelligence tools. Wigolo provides 8 MCP tools for local-first web access.
+Quick reference for wigolo web intelligence tools. Wigolo provides 10 MCP tools for local-first web access.
 
 ## Tool Selection
 
@@ -18,6 +18,8 @@ Quick reference for wigolo web intelligence tools. Wigolo provides 8 MCP tools f
 | Find similar | `find_similar` | `url` or `concept`, `include_domains` |
 | Deep research | `research` | `question`, `depth`, `include_domains` |
 | Gather data | `agent` | `prompt`, `schema`, `max_pages` |
+| Compare versions | `diff` | `old`, `new`, `output`, `granularity` |
+| Watch for changes | `watch` | `action`, `url`, `interval_seconds`, `notification` |
 
 ## Common Patterns
 

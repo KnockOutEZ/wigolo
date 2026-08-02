@@ -26,6 +26,8 @@ describe('runDaemon', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    delete process.env.WIGOLO_API_TOKEN;
+    delete process.env.WIGOLO_API_TOKEN_FILE;
     resetConfig();
     vi.clearAllMocks();
     stderrOutput = '';
@@ -106,21 +108,34 @@ describe('runDaemon', () => {
     expect(parseDaemonArgs(['--allow-remote']).allowRemote).toBe(true);
   });
 
-  // P6-d finding 2: the prominent remote-exposure WARNING must key off the NON-LOOPBACK bind,
-  // not off token minting. An operator-supplied token (minted:false) on a 0.0.0.0 bind is just
-  // as remotely reachable, so the operator must still be warned.
-  it('emits the remote-exposure WARNING on a non-loopback bind even with an OPERATOR token (not minted-gated)', async () => {
-    process.env.WIGOLO_STUDIO_TOKEN = 'pinned-operator-token';
+  it('parses --allow-unauthenticated', async () => {
+    const { parseDaemonArgs } = await import('../../../src/cli/daemon.js');
+    expect(parseDaemonArgs([]).allowUnauthenticated).toBe(false);
+    expect(parseDaemonArgs(['--allow-unauthenticated']).allowUnauthenticated).toBe(true);
+  });
+
+  it('honors WIGOLO_SERVE_ALLOW_UNAUTHENTICATED=1 for the override', async () => {
+    process.env.WIGOLO_SERVE_ALLOW_UNAUTHENTICATED = '1';
+    const { parseDaemonArgs } = await import('../../../src/cli/daemon.js');
+    expect(parseDaemonArgs([]).allowUnauthenticated).toBe(true);
+    delete process.env.WIGOLO_SERVE_ALLOW_UNAUTHENTICATED;
+  });
+
+  // P6-d finding 2: the prominent remote-exposure WARNING must key off the NON-LOOPBACK BIND,
+  // not off token provenance. An operator-supplied token on a 0.0.0.0 bind is just as remotely
+  // reachable, so the operator must still be warned.
+  it('emits the remote-exposure WARNING on a non-loopback bind even with an OPERATOR token', async () => {
+    process.env.WIGOLO_API_TOKEN = 'pinned-operator-token';
     resetConfig();
     const { runDaemon } = await import('../../../src/cli/daemon.js');
-    runDaemon(['--host', '0.0.0.0', '--allow-remote']); // operator token → minted:false
+    runDaemon(['--host', '0.0.0.0', '--allow-remote']);
     expect(stderrOutput).toMatch(/WARNING[\s\S]*non-loopback/i);
   });
 
   // Guard the other side: a loopback bind never emits the remote-exposure WARNING (keyed off
-  // non-loopback, NOT "always warn"). Holds before and after the fix.
+  // non-loopback, NOT "always warn").
   it('does NOT emit the remote-exposure WARNING on a loopback bind with an operator token', async () => {
-    process.env.WIGOLO_STUDIO_TOKEN = 'pinned-operator-token';
+    process.env.WIGOLO_API_TOKEN = 'pinned-operator-token';
     resetConfig();
     const { runDaemon } = await import('../../../src/cli/daemon.js');
     runDaemon(['--host', '127.0.0.1']);
@@ -128,72 +143,44 @@ describe('runDaemon', () => {
   });
 });
 
-describe('buildServeAuth (audit S3 closure)', () => {
-  it('loopback + no token → no auth required (back-compat)', async () => {
-    const { buildServeAuth } = await import('../../../src/cli/daemon.js');
-    expect(buildServeAuth({ host: '127.0.0.1', allowRemote: false, configuredToken: null })).toEqual({
-      ok: true,
-      auth: undefined,
-      minted: false,
-      remote: false,
-    });
+// Remote exposure needs EXPLICIT operator intent, independent of the token gate. Binding to
+// 0.0.0.0 by accident must never silently expose the daemon (audit S3).
+describe('checkServeRemoteIntent (explicit remote intent)', () => {
+  it('loopback bind → ok, not flagged remote', async () => {
+    const { checkServeRemoteIntent } = await import('../../../src/cli/daemon.js');
+    const r = checkServeRemoteIntent({ host: '127.0.0.1', port: 3333, allowRemote: false, allowUnauthenticated: false });
+    expect(r.ok).toBe(true);
+    expect(r.remote).toBe(false);
   });
 
-  it('loopback + operator token → uses the supplied token', async () => {
-    const { buildServeAuth } = await import('../../../src/cli/daemon.js');
-    expect(buildServeAuth({ host: '127.0.0.1', allowRemote: false, configuredToken: 'pinned' })).toEqual({
-      ok: true,
-      auth: { token: 'pinned', host: '127.0.0.1' },
-      minted: false,
-      remote: false,
-    });
+  it('non-loopback WITHOUT --allow-remote → refused, message names --allow-remote', async () => {
+    const { checkServeRemoteIntent } = await import('../../../src/cli/daemon.js');
+    const r = checkServeRemoteIntent({ host: '0.0.0.0', port: 3333, allowRemote: false, allowUnauthenticated: false });
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/allow-remote/i);
   });
 
-  it('non-loopback WITHOUT --allow-remote → refused', async () => {
-    const { buildServeAuth } = await import('../../../src/cli/daemon.js');
-    const d = buildServeAuth({ host: '0.0.0.0', allowRemote: false, configuredToken: null });
-    expect(d.ok).toBe(false);
-    if (!d.ok) expect(d.message).toMatch(/allow-remote/i);
-  });
-
-  it('non-loopback + --allow-remote + no token → FORCES auth on (minted) — closes S3', async () => {
-    const { buildServeAuth } = await import('../../../src/cli/daemon.js');
-    const d = buildServeAuth({ host: '0.0.0.0', allowRemote: true, configuredToken: null });
-    expect(d.ok).toBe(true);
-    if (d.ok) {
-      expect(d.minted).toBe(true);
-      expect(d.auth?.token).toHaveLength(43);
-      expect(d.auth?.host).toBe('0.0.0.0');
-    }
-  });
-
-  it('non-loopback + --allow-remote + operator token → forces auth with that (stable) token', async () => {
-    const { buildServeAuth } = await import('../../../src/cli/daemon.js');
-    expect(buildServeAuth({ host: '0.0.0.0', allowRemote: true, configuredToken: 'pinned' })).toEqual({
-      ok: true,
-      auth: { token: 'pinned', host: '0.0.0.0' },
-      minted: false,
-      remote: true,
-    });
+  it('non-loopback WITH --allow-remote → ok and flagged remote (so the caller warns)', async () => {
+    const { checkServeRemoteIntent } = await import('../../../src/cli/daemon.js');
+    const r = checkServeRemoteIntent({ host: '0.0.0.0', port: 3333, allowRemote: true, allowUnauthenticated: false });
+    expect(r.ok).toBe(true);
+    expect(r.remote).toBe(true);
   });
 });
 
-// D13 — the MINTED per-launch remote bearer is delivered via a 0600 handle file, not echoed to
-// stderr (terminal/shell-log scrollback is a leak surface). Fail CLOSED on write error. All pins
-// enter through real startup (runDaemon); the minted path needs a non-loopback bind + --allow-remote
-// + NO operator token. Landmines: loopback path untouched (P6-d back-compat), 0600 owner-only, the
-// token value never reaches stderr.
-describe('D13 — minted serve bearer via a 0600 handle file (not stderr)', () => {
+// Startup is fail-closed on remote exposure, and a refusal never leaks a token to stderr
+// (terminal/shell-log scrollback is a leak surface). Both fail-closed checks run before the
+// server binds, so an under-protected daemon is never reachable even briefly.
+describe('runDaemon — fail-closed remote startup (no token leak)', () => {
   const originalEnv = process.env;
-  let dataDir: string;
   let stderrOutput: string;
   const exitCalls: number[] = [];
 
   beforeEach(() => {
     process.env = { ...originalEnv };
-    delete process.env.WIGOLO_STUDIO_TOKEN; // unset -> the per-launch token is MINTED on a remote bind
-    dataDir = mkdtempSync(join(tmpdir(), 'wigolo-d13-'));
-    process.env.WIGOLO_DATA_DIR = dataDir;
+    delete process.env.WIGOLO_API_TOKEN;
+    delete process.env.WIGOLO_API_TOKEN_FILE;
+    delete process.env.WIGOLO_SERVE_ALLOW_UNAUTHENTICATED;
     resetConfig();
     vi.clearAllMocks();
     stderrOutput = '';
@@ -210,55 +197,105 @@ describe('D13 — minted serve bearer via a 0600 handle file (not stderr)', () =
 
   afterEach(() => {
     process.env = originalEnv;
-    rmSync(dataDir, { recursive: true, force: true });
     resetConfig();
     vi.restoreAllMocks();
   });
 
-  const bearerPath = () => join(dataDir, 'serve-bearer');
-
-  it('D13-1: writes the minted REMOTE bearer to a 0600 file', async () => {
+  it('refuses a non-loopback bind without --allow-remote (intent gate, before the token gate)', async () => {
     const { runDaemon } = await import('../../../src/cli/daemon.js');
-    runDaemon(['--host', '0.0.0.0', '--allow-remote']);
-    // flipped value: the bearer file exists (no file on current code -> RED).
-    expect(existsSync(bearerPath())).toBe(true);
-    expect(readFileSync(bearerPath(), 'utf-8')).toHaveLength(43); // minted token format
-    // POSIX mode-bit assert (0o600) — skip on win32 (no POSIX perms) to match existing test patterns
-    if (process.platform !== 'win32') {
-      expect(statSync(bearerPath()).mode & 0o777).toBe(0o600); // owner-only (MUT 0644 -> RED)
-    }
+    expect(() => runDaemon(['--host', '0.0.0.0'])).toThrow(/process\.exit/);
+    expect(exitCalls).toContain(1);
+    expect(stderrOutput).toMatch(/allow-remote/i);
   });
 
-  it('D13-2: does NOT echo the minted bearer VALUE to stderr — points to the file instead', async () => {
+  it('refuses a non-loopback bind with --allow-remote but NO token and no override, and prints no token', async () => {
     const { runDaemon } = await import('../../../src/cli/daemon.js');
-    runDaemon(['--host', '0.0.0.0', '--allow-remote']);
-    // flipped value: no "label: <long-token>" echo (current code prints the token -> RED).
-    expect(stderrOutput).not.toMatch(/bearer token[^\n]*: \S{20,}/i);
-    expect(stderrOutput).toMatch(/serve-bearer/); // the PATH is surfaced instead
-    // strengthening (GREEN state): the actual written token never appears in stderr.
-    if (existsSync(bearerPath())) {
-      expect(stderrOutput).not.toContain(readFileSync(bearerPath(), 'utf-8'));
-    }
-  });
-
-  it('D13-3: fail-closed on a handle-file write error — refuses, no stderr-fallback', async () => {
-    // Force the write to fail: point dataDir at a regular FILE so mkdirSync throws.
-    const filePath = join(dataDir, 'not-a-dir');
-    writeFileSync(filePath, 'x');
-    process.env.WIGOLO_DATA_DIR = filePath;
-    resetConfig();
-    const { runDaemon } = await import('../../../src/cli/daemon.js');
-    // process.exit is mocked to throw -> the fail-closed path surfaces as a throw (no quiet return).
     expect(() => runDaemon(['--host', '0.0.0.0', '--allow-remote'])).toThrow(/process\.exit/);
-    expect(exitCalls).toContain(1); // refused
-    expect(stderrOutput).toMatch(/error|refus/i);
-    expect(stderrOutput).not.toMatch(/bearer token[^\n]*: \S{20,}/i); // no fallback leak
+    expect(exitCalls).toContain(1);
+    expect(stderrOutput).toContain('WIGOLO_API_TOKEN');
+    // No token-shaped secret is ever echoed, even on the refusal path.
+    expect(stderrOutput).not.toMatch(/bearer token[^\n]*: \S{20,}/i);
   });
 
-  it('D13-4: loopback-default (no --allow-remote) still works WITHOUT a handle file', async () => {
+  it('loopback default starts with no token configured (back-compat, no refusal)', async () => {
     const { runDaemon } = await import('../../../src/cli/daemon.js');
     expect(() => runDaemon(['--host', '127.0.0.1'])).not.toThrow();
-    expect(existsSync(bearerPath())).toBe(false); // no bearer file on the loopback path (MUT require-file -> RED)
-    expect(exitCalls).toHaveLength(0); // no refusal
+    expect(exitCalls).toHaveLength(0);
+  });
+});
+
+describe('checkServeBindGate (fail-closed bind matrix)', () => {
+  const originalEnv = process.env;
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.WIGOLO_API_TOKEN;
+    delete process.env.WIGOLO_API_TOKEN_FILE;
+  });
+  afterEach(() => { process.env = originalEnv; });
+
+  it('non-loopback bind + no token + no override → refuses, message names WIGOLO_API_TOKEN + override', async () => {
+    const { checkServeBindGate } = await import('../../../src/cli/daemon.js');
+    const r = checkServeBindGate({ host: '0.0.0.0', port: 3333, allowRemote: true, allowUnauthenticated: false });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('WIGOLO_API_TOKEN');
+    expect(r.message).toContain('--allow-unauthenticated');
+  });
+
+  it('loopback bind + no token → starts', async () => {
+    const { checkServeBindGate } = await import('../../../src/cli/daemon.js');
+    expect(checkServeBindGate({ host: '127.0.0.1', port: 3333, allowRemote: false, allowUnauthenticated: false }).ok).toBe(true);
+  });
+
+  it('non-loopback bind + token → starts (and returns the token)', async () => {
+    process.env.WIGOLO_API_TOKEN = 'secret';
+    const { checkServeBindGate } = await import('../../../src/cli/daemon.js');
+    const r = checkServeBindGate({ host: '0.0.0.0', port: 3333, allowRemote: true, allowUnauthenticated: false });
+    expect(r.ok).toBe(true);
+    expect(r.token).toBe('secret');
+  });
+
+  it('non-loopback bind + override → starts', async () => {
+    const { checkServeBindGate } = await import('../../../src/cli/daemon.js');
+    expect(checkServeBindGate({ host: '0.0.0.0', port: 3333, allowRemote: true, allowUnauthenticated: true }).ok).toBe(true);
+  });
+
+  it('empty WIGOLO_API_TOKEN = unconfigured (non-loopback refuses)', async () => {
+    process.env.WIGOLO_API_TOKEN = '   ';
+    const { checkServeBindGate } = await import('../../../src/cli/daemon.js');
+    expect(checkServeBindGate({ host: '0.0.0.0', port: 3333, allowRemote: true, allowUnauthenticated: false }).ok).toBe(false);
+  });
+});
+
+describe('serve-port conflict (S9)', () => {
+  // WHY (D9): a taken serve port gets an actionable error naming --port AND the
+  // next free port — no auto-rebind (predictability). This is the message a
+  // user sees when `wigolo serve` collides with a running daemon.
+  it('findNextFreePort returns a port > the taken one that is actually bindable', async () => {
+    const { findNextFreePort } = await import('../../../src/cli/daemon.js');
+    const net = await import('node:net');
+    // Take a port on 127.0.0.1, then ask for the next free one.
+    const taken = await new Promise<number>((resolve) => {
+      const s = net.createServer();
+      s.listen(0, '127.0.0.1', () => {
+        const addr = s.address();
+        resolve(typeof addr === 'object' && addr ? addr.port : 0);
+      });
+      // keep it open for the duration of the test
+      (globalThis as Record<string, unknown>).__takenServer = s;
+    });
+    const next = await findNextFreePort(taken, '127.0.0.1');
+    expect(next).toBeGreaterThan(taken);
+    const s = (globalThis as Record<string, unknown>).__takenServer as import('node:net').Server;
+    await new Promise<void>((r) => s.close(() => r()));
+    delete (globalThis as Record<string, unknown>).__takenServer;
+  });
+
+  it('formatPortConflictError names --port and the suggested next free port', async () => {
+    const { formatPortConflictError } = await import('../../../src/cli/daemon.js');
+    const msg = await formatPortConflictError(3333, '127.0.0.1');
+    expect(msg).toContain('3333');
+    expect(msg).toContain('--port');
+    // The suggested port must be present and different from the taken one.
+    expect(msg).toMatch(/--port \d+/);
   });
 });

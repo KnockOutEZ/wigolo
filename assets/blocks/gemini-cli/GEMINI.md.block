@@ -10,9 +10,11 @@
 | Crawl a site | `crawl` | `url`, `strategy: "sitemap"`/`"bfs"`/`"map"`, `include_patterns` |
 | Check cache | `cache` | Always probe before search/fetch — instant, free |
 | Extract data | `extract` | `mode: "structured"` (tables + JSON-LD + definitions + chart hints in one call) |
-| Find similar | `find_similar` | `url` or `concept`, fused embedding + FTS5 + web; emits `cold_start` when local signals weak |
+| Find similar | `find_similar` | `url` or `concept`, fused semantic + keyword + web; emits `cold_start` when local signals weak |
 | Deep research | `research` | `question`, `depth: "quick"`/`"standard"`/`"comprehensive"`, optional `schema` |
 | Gather data | `agent` | `prompt`, optional `schema`, `max_pages`, `max_time_ms` |
+| Compare versions | `diff` | `old`, `new` (url/markdown/content_hash), `output` (`unified`/`hunks`/`summary`), `granularity` |
+| Watch for changes | `watch` | `action` (`create`/`list`/`check`), `url`/`urls`, `interval_seconds` (min 60), `notification` |
 
 ### Search backend (`WIGOLO_SEARCH`)
 

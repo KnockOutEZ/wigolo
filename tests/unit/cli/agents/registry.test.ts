@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { agentHandlers, getAgentHandler } from '../../../../src/cli/agents/registry.js';
 
 describe('agentHandlers', () => {
-  it('contains exactly the 8 expected agents', () => {
+  it('contains exactly the 10 expected agents', () => {
     const ids = agentHandlers.map((h) => h.id);
     expect(ids).toContain('claude-code');
     expect(ids).toContain('cursor');
@@ -12,7 +12,9 @@ describe('agentHandlers', () => {
     expect(ids).toContain('windsurf');
     expect(ids).toContain('codex');
     expect(ids).toContain('antigravity');
-    expect(ids).toHaveLength(8);
+    expect(ids).toContain('cline');
+    expect(ids).toContain('opencode');
+    expect(ids).toHaveLength(10);
   });
 
   it('each handler has required fields', () => {
@@ -32,6 +34,13 @@ describe('agentHandlers', () => {
     const cc = getAgentHandler('claude-code');
     expect(cc?.supportsSkills).toBe(true);
     expect(cc?.supportsCommands).toBe(true);
+  });
+
+  it('cline supports skills but not commands', () => {
+    const cl = getAgentHandler('cline');
+    expect(cl?.supportsSkills).toBe(true);
+    expect(cl?.supportsCommands).toBe(false);
+    expect(typeof cl?.installSkills).toBe('function');
   });
 
   it('cursor, vscode, gemini-cli, zed, windsurf, codex, antigravity do not support skills', () => {

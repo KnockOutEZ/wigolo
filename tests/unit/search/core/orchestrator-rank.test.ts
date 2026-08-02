@@ -365,6 +365,67 @@ describe('runV1Search — brand-collision rank (sub-ticket 2.1)', () => {
   });
 });
 
+// Gate (d): the orchestrator max-normalisation (relevance_score / maxFinal)
+// stretches the top result to 1.0 BY CONSTRUCTION. On a degraded pool whose top
+// pre-normalised score is below an absolute confidence floor, that stretch
+// manufactures a ~1.0 evidence score on a low-confidence junk survivor (the
+// live incident). The guard skips the stretch in exactly that case; every other
+// case (healthy pool, or a confident-degraded top) still normalises.
+function emptyEntry(name: string) {
+  return makeEntry(name, []);
+}
+
+describe('runV1Search — degraded-pool normalisation guard (gate d)', () => {
+  it('does NOT stretch a degraded pool with a weak zero-lexical top to 1.0', async () => {
+    // 3 engines dispatched, 2 empty -> primaryHealthy 1 < ceil(3/2)=2 = degraded.
+    // The lone survivor's single result shares NO token with the query (zero
+    // lexical) so its pre-normalised final is far below the confidence floor.
+    // The guard must leave it un-stretched (< 1.0), NOT normalise it to 1.0.
+    const survivor = makeEntry('bing', [
+      makeResult('bing', 'https://junk.example/jp', 'driving school reservation', 'lessons and pricing'),
+    ]);
+    verticalState.general = [survivor, emptyEntry('ddg'), emptyEntry('wikipedia')];
+
+    const out = await runV1Search({ query: 'kubernetes ingress controller', maxResults: 10 });
+    expect(out.results.length).toBeGreaterThanOrEqual(1);
+    const junk = out.results.find((r) => r.url === 'https://junk.example/jp')!;
+    // Without the guard, max-normalisation makes the single result exactly 1.0.
+    expect(junk.relevance_score).toBeLessThan(1);
+  });
+
+  it('STILL normalises a degraded pool whose top is confident (lexically strong)', async () => {
+    // Same degraded shape (1 of 3 healthy), but the survivor's result is
+    // lexically strong (shares every query token) so its pre-normalised final
+    // clears the confidence floor. The stretch-to-1.0 must still apply.
+    const survivor = makeEntry('bing', [
+      makeResult(
+        'bing',
+        'https://kubernetes.io/docs/ingress',
+        'kubernetes ingress controller setup',
+        'configure a kubernetes ingress controller',
+      ),
+    ]);
+    verticalState.general = [survivor, emptyEntry('ddg'), emptyEntry('wikipedia')];
+
+    const out = await runV1Search({ query: 'kubernetes ingress controller', maxResults: 10 });
+    const top = out.results.find((r) => r.url === 'https://kubernetes.io/docs/ingress')!;
+    expect(top.relevance_score).toBeCloseTo(1, 5);
+  });
+
+  it('MUST-STILL-NORMALISE: a HEALTHY low-score pool is normalised to 1.0', async () => {
+    // A single healthy engine (primaryHealthy 1 of 1 -> NOT degraded) returning
+    // a low-lexical result must still normalise the top to 1.0 — the guard is
+    // gated on pool degradation, never a query-wide low-score condition.
+    const engine = makeEntry('bing', [
+      makeResult('bing', 'https://only.example/x', 'unrelated homepage', 'nothing matching'),
+    ]);
+    verticalState.general = [engine];
+
+    const out = await runV1Search({ query: 'kubernetes ingress controller', maxResults: 10 });
+    expect(out.results[0].relevance_score).toBeCloseTo(1, 5);
+  });
+});
+
 describe('rare-term ranking', () => {
   it('ranks the exact sqlite-vec doc above the generic sqlite.org homepage', async () => {
     verticalState.general = [
