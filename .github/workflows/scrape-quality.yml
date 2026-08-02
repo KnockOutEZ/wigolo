@@ -1,0 +1,47 @@
+name: Scrape Quality (C0 referee)
+
+# The BLOCKING half of the D6 hybrid gate. Deterministic frozen fixtures only —
+# no live targets, no paid APIs, no network — so it can run on every PR without
+# being flaky or costly. Live targets and the Firecrawl side-by-side stay on
+# cron/workflow_dispatch, which is what the existing benchmark workflows do.
+#
+# This is NEW construction: before this workflow, no benchmark blocked a merge
+# (the extraction/search/agent workflows are weekly-cron + dispatch only, and all
+# three have been failing since at least 2026-06-29 because their runners have no
+# entry point).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  scrape-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # No build step: the runner executes TypeScript sources directly via tsx and
+      # reads only committed fixtures, so a stale dist/ cannot mask a regression.
+      - name: Run scrape-quality benchmark
+        run: npm run bench:scrape
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-quality-${{ github.run_number }}
+          path: |
+            benchmarks/scrape-quality/output/scrape-quality.json
+            benchmarks/scrape-quality/output/scrape-quality.md
+          retention-days: 90

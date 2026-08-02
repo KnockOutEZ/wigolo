@@ -1,0 +1,93 @@
+{
+  "version": "1.0.0",
+  "corpusSource": "Page classes and domains selected from the Web Bench READ subset (github.com/Halluminate/WebBench, MIT, webbenchfinal.csv: 1637 READ tasks over 448 domains; stackexchange/stackoverflow/github are among its top domains). Web Bench itself is a LIVE agent-task set with no frozen HTML and no goldens, so it cannot be the blocking gate directly — it is the corpus SELECTOR. Snapshots here are frozen at capture time and are never re-fetched by the gate; live targets and the Firecrawl side-by-side belong to the cron/dispatch half of the D6 hybrid gate.",
+  "fixtures": [
+    {
+      "id": "wikipedia-base64",
+      "url": "https://en.wikipedia.org/wiki/Base64",
+      "pageClass": "reference_tables",
+      "htmlPath": "wikipedia-base64.html",
+      "capturedAt": "2026-08-03",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "assertions": [
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Encoding with one padding character", "why": "A section heading deep in the body: proves extraction reached past the lead, not just the intro." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "TWFu", "why": "The canonical worked example. Short alphanumeric strings are the first thing an over-aggressive boilerplate stripper eats." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "heading", "min": 6, "max": 40, "why": "Section structure must survive. Zero means the document flattened; a huge count means nav lists were mistaken for headings." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 25000, "max": 70000, "why": "Truncation caps scored 5.33 on the July bench — a hard lower bound is the cheapest detector for a silently-truncated body." },
+        { "kind": "count", "category": "table_preservation", "feature": "table_row", "min": 40, "max": 400, "why": "The alphabet and worked-example tables are the page's substance; a flattened table loses the rows but keeps the prose, so char count alone would not notice." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 8, "why": "Structured mode must see the same tables the markdown does." },
+        { "kind": "structured", "category": "structured_extract", "field": "definitions", "min": 10, "why": "Definition lists are a distinct extraction path from tables and regress independently." },
+        { "kind": "structured", "category": "structured_extract", "field": "jsonld", "min": 1, "why": "Wikipedia ships JSON-LD; losing it means the jsonld path broke, not that the page changed." },
+        { "kind": "table_cell", "category": "table_preservation", "value": "Letter (ASCII)", "why": "A real header cell — proves headers are parsed, not merged into the first data row." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Jump to content", "why": "MediaWiki skip-link. The single most common Wikipedia boilerplate leak." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Privacy policy", "why": "Footer chrome." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Create account", "why": "Header account chrome." }
+      ]
+    },
+    {
+      "id": "wikipedia-png",
+      "url": "https://en.wikipedia.org/wiki/Portable_Network_Graphics",
+      "pageClass": "reference_infobox",
+      "htmlPath": "wikipedia-article.html",
+      "capturedAt": "2026-08-03",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "assertions": [
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Filename extension", "why": "Infobox label. Infoboxes are markup-dense and are what naive extractors drop first." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "image/png", "why": "An infobox VALUE, not just its label — proves the label/value pairing survived." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 60000, "max": 160000, "why": "Long-article lower bound; the upper bound catches nav/footer bloat being counted as content." },
+        { "kind": "count", "category": "table_preservation", "feature": "table_row", "min": 45, "max": 400, "why": "This page carries the chunk-layout and colour-type tables that make it a table fixture." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 15, "why": "21 at capture; a large drop means the table detector regressed, not that Wikipedia changed (the snapshot is frozen)." },
+        { "kind": "table_cell", "category": "table_preservation", "value": "Chunk type", "why": "A header from the PNG chunk-layout table — the page's most structurally load-bearing table." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Jump to content", "why": "MediaWiki skip-link." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Retrieved from", "why": "MediaWiki footer marker." }
+      ]
+    },
+    {
+      "id": "mdn-http-status",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status",
+      "pageClass": "docs_definition_list",
+      "htmlPath": "mdn-status.html",
+      "capturedAt": "2026-08-03",
+      "licence": "CC BY-SA 2.5 (MDN)",
+      "assertions": [
+        { "kind": "contains", "category": "markdown_fidelity", "value": "HTTP response status codes", "why": "Page title in body — a site-specific extractor that mis-selects the root node loses this." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "404 Not Found", "why": "A mid-document definition term; proves the long definition list was not truncated." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "500 Internal Server Error", "why": "The LAST class of the list — the strongest single truncation detector on this page." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 15000, "max": 45000, "why": "Truncation bound for the docs class." },
+        { "kind": "structured", "category": "structured_extract", "field": "definitions", "min": 50, "why": "82 at capture. This page is definition-lists rather than tables, which is a separate structured path from the Wikipedia fixtures and would otherwise be untested." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Skip to main content", "why": "MDN skip-link." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Your blueprint for a better internet", "why": "MDN footer tagline." }
+      ]
+    },
+    {
+      "id": "github-repo",
+      "url": "https://github.com/sindresorhus/got",
+      "pageClass": "site_specific_repo",
+      "htmlPath": "github-repo.html",
+      "capturedAt": "2026-08-03",
+      "licence": "Repo content MIT (sindresorhus/got); page chrome © GitHub, snapshot used for regression testing only",
+      "assertions": [
+        { "kind": "contains", "category": "markdown_fidelity", "value": "HTTP request library", "why": "The README's own description — the GitHub site extractor exists to return README content rather than page chrome." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 6000, "max": 40000, "why": "Below this the extractor returned the file listing without the README." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "code_block", "min": 2, "max": 60, "why": "A README without code blocks means fenced code was flattened into prose — the highest-value loss on a developer page." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 4, "why": "The file listing is a real table; 6 at capture." },
+        { "kind": "table_cell", "category": "table_preservation", "value": "package.json", "why": "A file-listing row — proves the repo tree table parsed into cells rather than one blob." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "You signed out in another tab", "why": "GitHub's session-chrome string; a classic leak from the app shell." }
+      ]
+    },
+    {
+      "id": "cloudflare-interstitial",
+      "url": "https://stackoverflow.com/questions/11227809/why-is-processing-a-sorted-array-faster-than-processing-an-unsorted-array",
+      "pageClass": "challenge_shell",
+      "htmlPath": "cloudflare-interstitial.html",
+      "capturedAt": "2026-08-03",
+      "licence": "Cloudflare interstitial served to a plain HTTP client; no site content captured",
+      "assertions": [
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 0, "max": 400, "why": "A challenge shell must never be returned as a substantial page. This fixture exists because the corpus needs the failure case, not only pages that work — the snapshot is what stackoverflow.com actually served a plain HTTP client at capture time." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Just a moment", "why": "Pins what the extractor currently DOES return, so a change in that behaviour shows up as a diff instead of passing silently." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Enable JavaScript and cookies to continue", "why": "KNOWN GAP, expected to fail at baseline: challenge chrome is still returned as content at the extractor layer. The classification that catches this lives downstream in the fetch pipeline, not here. Recorded as a failing baseline assertion so it is visible and measured rather than assumed fixed." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 0, "why": "A challenge shell has no tables; a non-zero count would mean the detector is hallucinating structure out of markup." }
+      ]
+    }
+  ]
+}

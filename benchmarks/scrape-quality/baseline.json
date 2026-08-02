@@ -1,0 +1,71 @@
+{
+  "takenAt": "2026-08-02T23:54:32.470Z",
+  "commit": "5047f84a",
+  "note": "pre-S9 baseline (C0). Taken BEFORE any bridge work so the bridge's anti-bot gain and extraction changes cannot confound in one number.",
+  "overall": {
+    "passed": 36,
+    "total": 37,
+    "score": 0.972972972972973
+  },
+  "byCategory": {
+    "markdown_fidelity": {
+      "passed": 16,
+      "total": 16,
+      "score": 1
+    },
+    "table_preservation": {
+      "passed": 5,
+      "total": 5,
+      "score": 1
+    },
+    "boilerplate_noise": {
+      "passed": 8,
+      "total": 9,
+      "score": 0.8888888888888888
+    },
+    "structured_extract": {
+      "passed": 7,
+      "total": 7,
+      "score": 1
+    }
+  },
+  "assertions": {
+    "wikipedia-base64#0:contains \"Encoding with one padding character\"": true,
+    "wikipedia-base64#1:contains \"TWFu\"": true,
+    "wikipedia-base64#2:heading count in [6, 40]": true,
+    "wikipedia-base64#3:char count in [25000, 70000]": true,
+    "wikipedia-base64#4:table_row count in [40, 400]": true,
+    "wikipedia-base64#5:structured.tables >= 8": true,
+    "wikipedia-base64#6:structured.definitions >= 10": true,
+    "wikipedia-base64#7:structured.jsonld >= 1": true,
+    "wikipedia-base64#8:some table cell contains \"Letter (ASCII)\"": true,
+    "wikipedia-base64#9:omits \"Jump to content\"": true,
+    "wikipedia-base64#10:omits \"Privacy policy\"": true,
+    "wikipedia-base64#11:omits \"Create account\"": true,
+    "wikipedia-png#0:contains \"Filename extension\"": true,
+    "wikipedia-png#1:contains \"image/png\"": true,
+    "wikipedia-png#2:char count in [60000, 160000]": true,
+    "wikipedia-png#3:table_row count in [45, 400]": true,
+    "wikipedia-png#4:structured.tables >= 15": true,
+    "wikipedia-png#5:some table cell contains \"Chunk type\"": true,
+    "wikipedia-png#6:omits \"Jump to content\"": true,
+    "wikipedia-png#7:omits \"Retrieved from\"": true,
+    "mdn-http-status#0:contains \"HTTP response status codes\"": true,
+    "mdn-http-status#1:contains \"404 Not Found\"": true,
+    "mdn-http-status#2:contains \"500 Internal Server Error\"": true,
+    "mdn-http-status#3:char count in [15000, 45000]": true,
+    "mdn-http-status#4:structured.definitions >= 50": true,
+    "mdn-http-status#5:omits \"Skip to main content\"": true,
+    "mdn-http-status#6:omits \"Your blueprint for a better internet\"": true,
+    "github-repo#0:contains \"HTTP request library\"": true,
+    "github-repo#1:char count in [6000, 40000]": true,
+    "github-repo#2:code_block count in [2, 60]": true,
+    "github-repo#3:structured.tables >= 4": true,
+    "github-repo#4:some table cell contains \"package.json\"": true,
+    "github-repo#5:omits \"You signed out in another tab\"": true,
+    "cloudflare-interstitial#0:char count in [0, 400]": true,
+    "cloudflare-interstitial#1:contains \"Just a moment\"": true,
+    "cloudflare-interstitial#2:omits \"Enable JavaScript and cookies to continue\"": false,
+    "cloudflare-interstitial#3:structured.tables >= 0": true
+  }
+}
