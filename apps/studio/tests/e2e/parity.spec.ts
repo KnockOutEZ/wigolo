@@ -81,6 +81,16 @@ interface Coherence {
   innerWidth: number;
   rafFps: number | null;
   intervalRatio: number | null;
+  // Measurement provenance from the probe page (see fixtures/parity-probe.html). The page settles a
+  // pending window-surface transition before sampling and reports what it saw; this lane asserts that
+  // no flip happened DURING the measurement, for the same reason botd-gate does — a cadence number
+  // averaged across a starved and a live window is not a reading of either.
+  visibilityTimeline?: Array<{ at: number; state: string; focus: boolean }>;
+  visibilityStateAfterCadence?: string | null;
+  rafFrames?: number | null;
+  cadenceElapsedMs?: number | null;
+  settleWaitedMs?: number | null;
+  flipsDuringMeasurement?: number | null;
 }
 
 interface Probe { botd?: BotdVerdict; botdError?: string; coherence?: Coherence; coherenceError?: string; ready: boolean }
@@ -371,19 +381,33 @@ describe.skipIf(!RUN)('browser-substrate parity gate (e2e, both window states)',
       expect(hidden.agent.coherence!.fonts).toEqual(visible.agent.coherence!.fonts);
     });
 
+    /** The same measurement-validity gate botd-gate carries, for the same measured reason. */
+    const measurementState = (): string => {
+      const fmt = (label: string, c: Coherence): string =>
+        `${label}: state=${c.visibilityState} afterCadence=${c.visibilityStateAfterCadence ?? '?'} ` +
+        `frames=${c.rafFrames ?? '?'}/${c.cadenceElapsedMs ?? '?'}ms settleWaited=${c.settleWaitedMs ?? '?'}ms ` +
+        `timeline=${JSON.stringify(c.visibilityTimeline ?? null)}`;
+      return `\n  ${fmt('hidden ', hidden.agent.coherence!)}\n  ${fmt('visible', visible.agent.coherence!)}`;
+    };
+
+    it('measured in ONE steady window state — a visibility flip mid-measurement would average a starved window with a live one, and the resulting cadence number is a reading of neither', () => {
+      expect(hidden.agent.coherence!.flipsDuringMeasurement, measurementState()).toBe(0);
+      expect(visible.agent.coherence!.flipsDuringMeasurement, measurementState()).toBe(0);
+    });
+
     it('reports visibilityState `visible` on a window that was never shown, because the page is not occluded — a hidden window is not a background tab', () => {
-      expect(hidden.agent.coherence!.visibilityState).toBe('visible');
+      expect(hidden.agent.coherence!.visibilityState, measurementState()).toBe('visible');
     });
 
     it('keeps real rAF cadence while hidden: backgroundThrottling is off, and a throttled hidden window would be trivially detectable AND would break drives', () => {
-      expect(hidden.agent.coherence!.rafFps).toBeGreaterThan(30);
+      expect(hidden.agent.coherence!.rafFps, measurementState()).toBeGreaterThan(30);
       // Within a factor of two of the visible arm — the loose bound is deliberate, since CI runners
       // are noisy and the failure this guards against (throttling to ~1fps) is an order of magnitude.
-      expect(hidden.agent.coherence!.rafFps!).toBeGreaterThan(visible.agent.coherence!.rafFps! / 2);
+      expect(hidden.agent.coherence!.rafFps!, measurementState()).toBeGreaterThan(visible.agent.coherence!.rafFps! / 2);
     });
 
     it('keeps real timer cadence while hidden — background timer clamping to 1s is the classic occluded-tab tell', () => {
-      expect(hidden.agent.coherence!.intervalRatio).toBeGreaterThan(0.5);
+      expect(hidden.agent.coherence!.intervalRatio, measurementState()).toBeGreaterThan(0.5);
     });
 
     // A RECORDED CEILING, and its VALUE is deliberately not asserted in this lane. Measured, the
