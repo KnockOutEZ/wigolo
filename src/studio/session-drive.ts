@@ -45,6 +45,14 @@ export interface SessionDrive {
   /** Read the session's CURRENT page — its url + outer HTML — WITHOUT navigating (the token-free read for extract). */
   readCurrentPage(): Promise<{ url: string; html: string }>;
   /**
+   * S9 — is the live page a login/credential context? The SAME probe observe/marks/capture use, surfaced on
+   * the drive seam so a caller that does NOT persist through `insertTrusted0` (the S9 bridge, which hands its
+   * bytes to the core fetch pipeline rather than the studio artifact rail) still gets the credential exclusion.
+   * REQUIRED, not optional: an optional probe defaulting to "not credential" would silently disarm the gate
+   * on any new drive.
+   */
+  isCredentialContext(): Promise<boolean>;
+  /**
    * Persist session-derived page content to the cache, content_trusted=0 BY CONSTRUCTION (routes through
    * captureFromPage; the agent can never mark session-fetched content trusted-as-instructions). Async because
    * the host resolves the live credential-context signal fresh and excludes a credential page entirely.
@@ -67,6 +75,8 @@ export interface SessionDriveDeps {
   currentUrl: () => string | undefined;
   /** Read the live page's outer HTML (host-side, via the session CDP). */
   readHtml: () => Promise<string>;
+  /** The host's live credential-context probe (the same one observe/marks/capture read). */
+  isCredentialContext: () => Promise<boolean>;
   /** Persist content_trusted=0 (captureFromPage); resolves + applies the credential-context exclusion. */
   insert: (args: { url: string; title: string; markdown: string }) => Promise<CaptureResult>;
 }
@@ -95,6 +105,7 @@ export function createSessionDrive(deps: SessionDriveDeps): SessionDrive {
       url: deps.currentUrl() ?? '',
       html: await deps.readHtml(),
     }),
+    isCredentialContext: () => deps.isCredentialContext(),
     insertTrusted0: (args) => deps.insert(args),
   };
 }

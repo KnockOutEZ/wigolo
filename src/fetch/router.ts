@@ -43,6 +43,7 @@ import { ChallengeBlockedError } from './browser-pool.js';
 import { classifyChallenge } from './challenge-classify.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
+import { readHandle } from '../studio/handle.js';
 import { guardNavigation, type NavSource } from '../security/ssrf.js';
 import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
 import {
@@ -251,12 +252,23 @@ export interface SmartRouterOptions {
    * install never loads the module.
    */
   escapeHatch?: EscapeHatchFetchers;
+  /**
+   * S9 — the Studio bridge rung. Defaults to a lazy `import('./studio-bridge.js')` that is only reached
+   * when a live session handle exists, so a default install never loads the module.
+   */
+  studioBridge?: StudioBridgeFetchers;
 }
 
 /** The two escape-hatch rung fetchers, injectable for tests. */
 export interface EscapeHatchFetchers {
   solverFetch: typeof import('./escape-hatch.js').solverFetch;
   hostedReaderFetch: typeof import('./escape-hatch.js').hostedReaderFetch;
+}
+
+/** The Studio bridge rung, injectable for tests. */
+export interface StudioBridgeFetchers {
+  studioBridgeAvailable: typeof import('./studio-bridge.js').studioBridgeAvailable;
+  studioBridgeFetch: typeof import('./studio-bridge.js').studioBridgeFetch;
 }
 
 interface DomainStats {
@@ -503,6 +515,7 @@ export class SmartRouter {
   private readonly browserAcquirer: BrowserAcquirer;
   private readonly clearanceStore: ClearanceStore;
   private readonly escapeHatchOverride: EscapeHatchFetchers | undefined;
+  private readonly studioBridgeOverride: StudioBridgeFetchers | undefined;
   /** Lazily-minted Reddit OAuth token manager. Created on the first Reddit-API
    * route and reused so the app-only token is minted at most once per window.
    * Keyed on the resolved client id so a credential change re-mints. */
@@ -528,7 +541,8 @@ export class SmartRouter {
         'tlsPersistence' in httpClientOrOptions ||
         'clearanceStore' in httpClientOrOptions ||
         'pdfProbe' in httpClientOrOptions ||
-        'escapeHatch' in httpClientOrOptions)
+        'escapeHatch' in httpClientOrOptions ||
+        'studioBridge' in httpClientOrOptions)
     ) {
       const opts = httpClientOrOptions as SmartRouterOptions;
       if (!opts.httpFetcher && !opts.httpClient) {
@@ -544,6 +558,7 @@ export class SmartRouter {
       this.browserAcquirer = opts.browserAcquirer ?? new BrowserAcquirer();
       this.clearanceStore = opts.clearanceStore ?? defaultClearanceStore();
       this.escapeHatchOverride = opts.escapeHatch;
+      this.studioBridgeOverride = opts.studioBridge;
       return;
     } else {
       // Backwards-compat: single HttpClient positional (unusual but safe)
@@ -766,6 +781,8 @@ export class SmartRouter {
       if (isStageError(guarded) && guarded.error === 'blocked_by_challenge') {
         const retried = await this.retryDirectOnChallenge(url, browserOptions);
         if (retried) return retried;
+        const bridged = await this.tryStudioBridge(url);
+        if (bridged) return bridged;
       }
       return guarded;
     } catch (err) {
@@ -781,6 +798,9 @@ export class SmartRouter {
         // Unconfigured rungs no-op and never load the module (default path).
         const cleared = await this.tryEscapeHatch(url, browserOptions.signal);
         if (cleared) return cleared;
+        // S9 — last rung: the human's own live browser session, if one is running.
+        const bridged = await this.tryStudioBridge(url);
+        if (bridged) return bridged;
         return {
           error: err.code,
           error_reason: err.message,
@@ -848,6 +868,25 @@ export class SmartRouter {
    * configured this returns null WITHOUT loading the escape-hatch module, so a
    * default install never pays for it. Any rung that clears the page wins.
    */
+  /**
+   * S9 — the Studio bridge rung, tried only after the browser tier (and any configured escape hatch) has
+   * terminally hit a bot-protection challenge. When a Studio session is LIVE it re-fetches the page through
+   * the human's real, attended browser; with no live session it declines instantly, so a default install
+   * never pays for it and never loads the module.
+   *
+   * Kept OPPORTUNISTIC on purpose: every failure inside the bridge returns null, and the caller falls
+   * through to the honest `blocked_by_challenge` it would have returned anyway.
+   */
+  private async tryStudioBridge(url: string): Promise<RawFetchResult | null> {
+    const dataDir = getConfig().dataDir;
+    // Gate on the published handle BEFORE resolving the module, so the default (no Studio) path costs one
+    // stat and never pulls the bridge graph in — the same discipline the escape hatch applies to its knobs.
+    if (this.studioBridgeOverride === undefined && readHandle(dataDir) === null) return null;
+    const bridge = this.studioBridgeOverride ?? (await import('./studio-bridge.js'));
+    if (!bridge.studioBridgeAvailable(dataDir)) return null;
+    return bridge.studioBridgeFetch(url, { dataDir });
+  }
+
   private async tryEscapeHatch(
     url: string,
     signal: AbortSignal | undefined,

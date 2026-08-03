@@ -45,6 +45,31 @@ describe('createDriveEngine.attachTab', () => {
     expect(enable).toBeTruthy();
   });
 
+  /**
+   * S9 — the ATTACHMENT INVARIANT the bridge's identity coherence rests on.
+   *
+   * Everything the Studio bridge navigates goes through a SessionDrive, and a SessionDrive only exists for a
+   * tab this engine registered. So "is a debugger attached to every tab the bridge can navigate?" reduces to
+   * "can a drive ever be registered without one?". If the answer is no, a CDP-delivered identity override
+   * (the only mechanism the UA spike found coherent) covers 100% of bridge navigations. If a drive could
+   * survive a failed attach, the build would present one identity on driven tabs and another elsewhere — and
+   * that inconsistency is itself the signal detectors look for.
+   */
+  it('a FAILED attach registers NO drive — a tab can never be driven with the debugger detached', async () => {
+    const dbg = fakeDebugger();
+    dbg.sendCommand = vi.fn(async (method: string) => {
+      if (method === 'Fetch.enable') throw new Error('target closed');
+      return {};
+    }) as unknown as typeof dbg.sendCommand;
+    const engine = createDriveEngine();
+    await expect(
+      engine.attachTab('t1', { debugger: dbg, viewport, grant: { humanAllowPrivate: true, agentAllowPrivate: false } }),
+    ).rejects.toThrow();
+    expect(engine.getDrive('t1')).toBeUndefined();
+    // and the half-attached transport is torn back down rather than left live
+    expect(dbg.detach).toHaveBeenCalled();
+  });
+
   it('getDrive returns the per-tab record (token, fsm, navEpoch, agent input channel); default holder is human', async () => {
     const dbg = fakeDebugger();
     const engine = createDriveEngine();

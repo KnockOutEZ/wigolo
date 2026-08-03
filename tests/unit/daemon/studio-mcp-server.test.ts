@@ -3,6 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createStudioMcpServer } from '../../../src/daemon/studio-mcp-server.js';
 import type { StudioHostHandlers } from '../../../src/daemon/studio-dispatch.js';
+import type { SessionDrive, StudioSessionsAccessor } from '../../../src/studio/session-drive.js';
 
 let spawnCalls: number;
 const hostHandlers = (): StudioHostHandlers => ({
@@ -17,13 +18,23 @@ const hostHandlers = (): StudioHostHandlers => ({
   extractSet: async () => ({ columns: [], rows: [], pages_followed: 0 }),
 });
 
-async function connect() {
+async function connect(sessions?: StudioSessionsAccessor) {
   spawnCalls = 0;
-  const server = createStudioMcpServer({ studioHost: hostHandlers() });
+  const server = createStudioMcpServer({ studioHost: hostHandlers(), ...(sessions ? { sessions } : {}) });
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'test', version: '1.0.0' }, { capabilities: {} });
   await Promise.all([server.connect(serverT), client.connect(clientT)]);
   return { client };
+}
+
+function liveDrive(html = '<html>bridged</html>'): SessionDrive {
+  return {
+    currentUrl: () => 'https://walled.example/',
+    gatedNavigate: async () => ({ ok: true }),
+    readCurrentPage: async () => ({ url: 'https://walled.example/', html }),
+    insertTrusted0: async () => ({ artifactId: 1, inserted: true, contentHash: 'h' }) as never,
+    isCredentialContext: async () => false,
+  };
 }
 
 describe('createStudioMcpServer — studio-only gateway MCP surface', () => {
@@ -55,5 +66,43 @@ describe('createStudioMcpServer — studio-only gateway MCP surface', () => {
     const res = await client.callTool({ name: 'studio_observe', arguments: {} });
     const body = JSON.parse((res.content as Array<{ text: string }>)[0].text) as { trusted: boolean };
     expect(body.trusted).toBe(false);
+  });
+});
+
+/**
+ * S9 slice 1 — `studio_fetch` is a BROKER CAPABILITY, not an MCP tool. The distinction is not cosmetic:
+ * a tool must be registered across six seams and is advertised to every agent that connects, whereas this
+ * is an internal rung the core's router reaches over a transport the handle file already authenticates.
+ */
+describe('createStudioMcpServer — the studio_fetch broker capability', () => {
+  it('is NOT advertised in listTools — advertising it would make it a tool, with six seams to keep in sync', async () => {
+    const { client } = await connect({ getSessionDrive: () => liveDrive() });
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name)).not.toContain('studio_fetch');
+  });
+
+  it('serves a page off the live session when called', async () => {
+    const { client } = await connect({ getSessionDrive: (id) => (id === 'sess-1' ? liveDrive() : undefined) });
+    const res = await client.callTool({ name: 'studio_fetch', arguments: { url: 'https://walled.example/' } });
+    expect(res.isError).toBeFalsy();
+    const body = JSON.parse((res.content as Array<{ text: string }>)[0].text) as { ok: boolean; html: string };
+    expect(body).toMatchObject({ ok: true, html: '<html>bridged</html>' });
+  });
+
+  it('refuses when the gateway was built without a sessions accessor — no silent half-wired bridge', async () => {
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'studio_fetch', arguments: { url: 'https://walled.example/' } });
+    expect(res.isError).toBe(true);
+    const body = JSON.parse((res.content as Array<{ text: string }>)[0].text) as { error: string };
+    expect(body.error).toBe('studio_no_drive');
+  });
+
+  it('reports a refusal as an MCP error so the caller cannot read it as an empty page', async () => {
+    const credentialDrive: SessionDrive = { ...liveDrive(), isCredentialContext: async () => true };
+    const { client } = await connect({ getSessionDrive: () => credentialDrive });
+    const res = await client.callTool({ name: 'studio_fetch', arguments: { url: 'https://walled.example/login' } });
+    expect(res.isError).toBe(true);
+    const body = JSON.parse((res.content as Array<{ text: string }>)[0].text) as { error: string };
+    expect(body.error).toBe('capture_refused');
   });
 });

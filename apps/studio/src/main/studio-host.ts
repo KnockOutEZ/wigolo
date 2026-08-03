@@ -456,6 +456,9 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
         deps.broker.call<CaptureResult>('persistSessionFetch', {
           sessionId, url, title, markdown, credentialSignal: await credentialSignal(),
         }),
+      // S9: the SAME shared probe observe/marks/capture read. The bridge does not persist through the
+      // artifact rail, so this is where its credential exclusion comes from.
+      isCredentialContext: isCredentialPage,
     });
 
     // ── P2 marking (in-memory per session; DB persistence is P3, native cache can't load in Electron) ──

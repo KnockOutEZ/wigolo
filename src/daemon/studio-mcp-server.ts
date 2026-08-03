@@ -1,6 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { dispatchStudioTool, type StudioHostHandlers } from './studio-dispatch.js';
+import { runStudioFetch, STUDIO_FETCH_CAPABILITY, type StudioFetchInput } from '../studio/studio-fetch.js';
 import type { StudioSessionsAccessor } from '../studio/session-drive.js';
 import { TOOL_DESCRIPTIONS, type ToolName } from '../instructions.js';
 import {
@@ -63,6 +64,15 @@ export function createStudioMcpServer(deps: StudioMcpServerDeps): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    // S9 — the broker `studio_fetch` capability. Handled HERE and only here: it is deliberately absent
+    // from STUDIO_TOOLS above, so it is callable over this already-authenticated transport but is never
+    // advertised as a tool (which would make it the six-seam register instead of one seam).
+    if (name === STUDIO_FETCH_CAPABILITY) {
+      const body = deps.sessions
+        ? await runStudioFetch({ sessions: deps.sessions, host: deps.studioHost }, (args ?? {}) as unknown as StudioFetchInput)
+        : ({ ok: false, error: 'studio_no_drive', error_reason: 'This studio gateway was started without a session accessor.' } as const);
+      return { content: [{ type: 'text', text: JSON.stringify(body, null, 2) }], isError: !body.ok };
+    }
     // studioHost is set (EXECUTE path), so dispatch runs the host handlers locally — never a proxy loop.
     const result = await dispatchStudioTool(name, (args ?? {}) as Record<string, unknown>, deps.studioHost, deps.dataDir);
     return { content: result.content, isError: result.isError };

@@ -913,6 +913,9 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     },
     readHtml: readSessionHtml,
     insert: insertSessionContent,
+    // S9: the SAME shared probe observe/marks/capture read — so the bridge's credential exclusion and the
+    // artifact rail's cannot drift apart.
+    isCredentialContext: isCredentialPage,
   });
   const studioSessions: StudioSessionsAccessor = {
     getSessionDrive: (id) =>

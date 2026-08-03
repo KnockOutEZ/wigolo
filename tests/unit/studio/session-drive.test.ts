@@ -47,6 +47,7 @@ function makeDrive(token: DriveControlToken, browser: NavigableBrowser) {
     currentUrl: () => 'https://example.com',
     readHtml: async () => '<html></html>',
     insert: async () => ({ id: 1, inserted: true, contentHash: 'x' }),
+    isCredentialContext: async () => false,
   };
   return createSessionDrive(deps);
 }
