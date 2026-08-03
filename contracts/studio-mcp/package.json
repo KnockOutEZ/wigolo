@@ -1,0 +1,14 @@
+{
+  "name": "@wigolo/studio-mcp-contract",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "The studio_* MCP wire contract: the ten input schemas, the tool-name set, and a conformance suite any Studio implementation must pass over its real MCP endpoint.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "test:conformance": "vitest run --config vitest.e2e.config.ts"
+  }
+}
