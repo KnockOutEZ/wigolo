@@ -411,7 +411,10 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // lanes cannot drift into different pacing/consent policies. The budget applies to EVERY origin the agent
   // drives; only the grant card consults F5. `approvalSurfaceAttached` reads the LIVE client count — a
   // background session with nobody watching fails fast instead of waiting out a card nobody can see.
-  const originBudget = new OriginBudget({ limit: getConfig().studioOriginBudget });
+  const originBudget = new OriginBudget({
+    limit: getConfig().studioOriginBudget,
+    anonymousLimit: getConfig().studioAnonymousOriginBudget,
+  });
   const driveGate: AgentDriveGate = {
     budget: originBudget,
     preGrant,

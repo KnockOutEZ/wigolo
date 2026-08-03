@@ -1,5 +1,5 @@
 import type { ApprovalDecision } from './approvals.js';
-import { budgetOrigin, type OriginBudget } from './origin-budget.js';
+import { budgetOrigin, type OriginBudget, type OriginClass } from './origin-budget.js';
 import type { PreGrantStore } from './pre-grant.js';
 import type { EscalationCounterKey } from './escalation-counters.js';
 
@@ -8,12 +8,21 @@ import type { EscalationCounterKey } from './escalation-counters.js';
  * written here together rather than at their call sites: keeping the ORDER in one place is what makes the
  * decoupling real.
  *
- *   1. BUDGET — charged for EVERY origin, authenticated or not, and it never consults the predicate.
- *   2. CARD   — only for an origin the human is signed in to, only on first agent use per session.
+ *   1. F5     — evaluated ONCE. Absent or throwing is UNKNOWN: tight lane, but no card.
+ *   2. BUDGET — charged for EVERY origin, authenticated or not, always with a finite limit.
+ *   3. CARD   — only for an origin the human is signed in to, only on first agent use per session.
  *
- * Running the budget first is not cosmetic. The budget is the rail that bounds how much damage a runaway
- * agent can do to an account's standing, and it has to hold even when the authenticated-origin predicate is
- * wrong. If the card ran first, a predicate false negative would skip straight past both.
+ * The predicate now runs first, because it selects WHICH budget lane applies — signed-in origins stay tight
+ * because the cost of over-driving them is the human's account, anonymous origins get a few hundred because
+ * the cost there is a rate-limit. That is a deliberate amendment to the original "the budget never consults
+ * the predicate" rule, and the property that rule protected is preserved directly instead:
+ *
+ *   - the budget is charged on EVERY path, including when the predicate throws;
+ *   - every lane has a finite limit, so no verdict can turn the rail off;
+ *   - ignorance resolves to the TIGHT lane, so a predicate failure can only tighten, never loosen.
+ *
+ * Those three are asserted on the failure modes themselves, which is stronger than the call-order assertion
+ * they replace — order was only ever a proxy for them, and it is no longer even the right proxy.
  *
  * UNATTENDED CONTEXTS FAIL FAST. When no approval surface is attached — an MCP server with no Studio window,
  * a scheduled run, an agent-spawned background session — the card does not wait out its timeout. It refuses
@@ -36,7 +45,9 @@ export interface AgentDriveGate {
   budget: OriginBudget;
   /**
    * F5, evaluated HOST-SIDE. Returns a boolean and nothing else — no cookie, no name, no reason object.
-   * Absent ⇒ no origin is treated as signed in ⇒ the card never fires (the budget still does).
+   *
+   * Absent ⇒ the card never fires, and the budget uses the TIGHT lane. Those two go in opposite directions
+   * on purpose: with no predicate there is no basis to prompt a human, and no basis to relax pacing either.
    */
   isAuthenticatedOrigin?: (origin: string) => boolean | Promise<boolean>;
   /** The session's pre-grant store, holding this session's approved signed-in origins. */
@@ -74,22 +85,40 @@ function needsGrant(origin: string, why: string): AgentDriveVerdict {
 }
 
 /**
- * Charge the budget, then require an authenticated-use grant if the origin is one the human is signed in to.
- * A URL with no parseable origin passes: it cannot be attributed, and the SSRF fence downstream is what
- * rejects an address the agent should not reach.
+ * Classify the origin, charge the budget against the matching lane, then require an authenticated-use grant
+ * if the origin is one the human is signed in to. A URL with no parseable origin passes: it cannot be
+ * attributed, and the SSRF fence downstream is what rejects an address the agent should not reach.
  */
 export async function checkAgentDrive(gate: AgentDriveGate, url: string): Promise<AgentDriveVerdict> {
   const origin = budgetOrigin(url);
   if (!origin) return { ok: true };
 
-  const spend = gate.budget.spend(url);
+  // ONE evaluation, used for both the lane and the card. Two calls could disagree — a cookie jar read is
+  // not pure — and a navigation charged as anonymous but carded as signed in is incoherent.
+  //
+  // Three outcomes, not two, and they do NOT resolve the same way for the two decisions:
+  //   verdict true   → tight lane, card fires.
+  //   verdict false  → anonymous lane, no card.
+  //   unknown        → tight lane, NO card. Absent predicate and thrown predicate are both this case.
+  // Unknown splits deliberately. Pacing has to assume the expensive possibility, but prompting a human on
+  // the strength of a failed cookie read would nag on every transient jar error and teach them to click
+  // through — which costs more safety than the prompt buys.
+  let verdict: boolean | 'unknown';
+  try {
+    verdict = gate.isAuthenticatedOrigin ? await gate.isAuthenticatedOrigin(origin) : 'unknown';
+  } catch {
+    verdict = 'unknown';
+  }
+  const carded = verdict === true;
+  const originClass: OriginClass = verdict === false ? 'anonymous' : 'authenticated';
+
+  const spend = gate.budget.spend(url, { originClass });
   if (!spend.ok) {
     gate.bump?.('budgetRefused');
     return budgetExhausted(spend.used, spend.limit, spend.origin);
   }
 
-  const authenticated = (await gate.isAuthenticatedOrigin?.(origin)) ?? false;
-  if (!authenticated) return { ok: true };
+  if (!carded) return { ok: true };
 
   // Already approved this session ⇒ the card fires ONCE per origin per session, not once per request.
   if (gate.preGrant?.hasAuthenticatedUse(origin)) return { ok: true };

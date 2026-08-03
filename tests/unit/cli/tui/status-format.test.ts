@@ -61,3 +61,51 @@ describe('formatStatus', () => {
     expect(pending).toMatch(/⊘ Search engine: not installed/);
   });
 });
+
+describe('formatStatus — the D10(a) browser-session block', () => {
+  const withSession: StatusBag = {
+    ...baseBag,
+    browserSession: {
+      signedInBudget: 20,
+      anonymousBudget: 300,
+      bridgeAttempted: 7,
+      bridgeServed: 4,
+      budgetRefused: 2,
+      cardShown: 1,
+      cardUnattended: 3,
+    },
+  };
+
+  it('is omitted entirely when the browser session has never been used — a block of zeroes for every user is noise, and a section people learn to skip is worthless the day it matters', () => {
+    expect(formatStatus(baseBag)).not.toMatch(/Browser session/);
+  });
+
+  it('prints BOTH pacing lanes, because a single number would hide the split that is the only reason the tight one is acceptable', () => {
+    const out = formatStatus(withSession);
+    expect(out).toMatch(/20 requests per signed-in site/);
+    expect(out).toMatch(/300 elsewhere/);
+  });
+
+  it('shows the escalation rate the D9 defaults are meant to be re-decided from — the whole point of collecting it is that a human can read it', () => {
+    expect(formatStatus(withSession)).toMatch(/Escalations: 7 attempted, 4 served/);
+  });
+
+  it('names requests held back by pacing, so a limit that fires is never indistinguishable from a bug', () => {
+    expect(formatStatus(withSession)).toMatch(/Held back by pacing: 2/);
+  });
+
+  it('reports prompts skipped with nobody attached — that count is how a user discovers their background runs are silently degrading', () => {
+    expect(formatStatus(withSession)).toMatch(/3 skipped with nobody attached/);
+  });
+
+  it('states the counters never leave the machine, because a user reading their own usage numbers will reasonably wonder', () => {
+    expect(formatStatus(withSession)).toMatch(/never leave this machine/);
+  });
+
+  it('hides the pacing and prompt lines when nothing was refused or prompted, keeping the block to what actually happened', () => {
+    const quiet = formatStatus({ ...withSession, browserSession: { ...withSession.browserSession!, budgetRefused: 0, cardShown: 0, cardUnattended: 0 } });
+    expect(quiet).toMatch(/Browser session/);
+    expect(quiet).not.toMatch(/Held back by pacing/);
+    expect(quiet).not.toMatch(/Sign-in prompts/);
+  });
+});

@@ -6,14 +6,21 @@ import { PreGrantStore } from '../../../src/studio/pre-grant.js';
 /**
  * S9 / D9 — the pacing budget and the authenticated-use grant card.
  *
- * The single most important property under test is the DECOUPLING: the budget applies to every origin and
- * never consults the authenticated-origin predicate, while only the card does. That is what makes an F5
- * false negative cost a prompt instead of an account. A test suite that only exercised the card would let a
- * refactor quietly make the rail depend on the predicate and still pass.
+ * The single most important property under test is that THE RAIL CANNOT BE LOST: the budget is charged for
+ * every origin, on every path, with a finite limit, whatever the authenticated-origin predicate does —
+ * including when it is absent or throws. Only the card is gated on the predicate's verdict. That is what
+ * makes an F5 false negative cost a prompt instead of an account.
+ *
+ * The predicate now also selects WHICH budget lane applies (signed-in tight, anonymous relaxed), so the
+ * older "the budget never consults the predicate" phrasing no longer holds literally. The property it stood
+ * for does, and is asserted directly on the failure modes further down: absent, throwing, and any other
+ * ignorance all resolve to the TIGHT lane, so a broken predicate can only tighten the rail, never loosen it.
  */
 
 function gate(over: Partial<AgentDriveGate> = {}): AgentDriveGate {
-  return { budget: new OriginBudget({ limit: 3 }), ...over };
+  // Both lanes set to the same small number, so these tests exercise "the budget applies at all" without
+  // also depending on which lane an origin lands in — that split has its own describe block below.
+  return { budget: new OriginBudget({ limit: 3, anonymousLimit: 3 }), ...over };
 }
 
 describe('D9 budget — applies to EVERY origin', () => {
@@ -78,8 +85,8 @@ describe('OriginBudget — configuration and visibility', () => {
     b.spend('https://a.example/2');
     b.spend('https://b.example/');
     expect(b.snapshot()).toEqual([
-      { origin: 'https://a.example', used: 2, limit: 5 },
-      { origin: 'https://b.example', used: 1, limit: 5 },
+      { origin: 'https://a.example', used: 2, limit: 5, originClass: 'authenticated' },
+      { origin: 'https://b.example', used: 1, limit: 5, originClass: 'authenticated' },
     ]);
   });
 
@@ -215,18 +222,136 @@ describe('D9 — PreGrantStore keeps its human-only-writer bright line under the
   });
 });
 
-describe('D9 — the order of the two halves', () => {
-  it('the budget is charged BEFORE the predicate is consulted', async () => {
-    // If the card ran first, a predicate false negative would skip past both checks. Order is the mechanism
-    // that makes the rail independent of the predicate, so it is asserted directly.
+describe('D9 — the invariant the old call-order assertion was a proxy for', () => {
+  /**
+   * The order changed on purpose: the predicate now runs first, because it selects WHICH budget lane
+   * applies. The property the order assertion protected — that the rail cannot be lost to a bad or broken
+   * predicate — is asserted here directly on the failure modes, which is what actually matters.
+   */
+  const spying = (over: Partial<AgentDriveGate> = {}): { gate: AgentDriveGate; calls: string[] } => {
     const calls: string[] = [];
-    const budget = new OriginBudget({ limit: 5 });
+    const budget = new OriginBudget({ limit: 2, anonymousLimit: 4 });
     const spend = budget.spend.bind(budget);
-    const g: AgentDriveGate = {
-      budget: { ...budget, spend: (u: string) => { calls.push('budget'); return spend(u); }, snapshot: () => budget.snapshot(), totalSpent: budget.totalSpent } as unknown as OriginBudget,
-      isAuthenticatedOrigin: () => { calls.push('predicate'); return false; },
+    return {
+      calls,
+      gate: {
+        budget: {
+          ...budget,
+          spend: (u: string, o?: { originClass?: 'authenticated' | 'anonymous' }) => { calls.push(`budget:${o?.originClass ?? 'default'}`); return spend(u, o); },
+          limitFor: (c: 'authenticated' | 'anonymous') => budget.limitFor(c),
+          snapshot: () => budget.snapshot(),
+          totalSpent: budget.totalSpent,
+        } as unknown as OriginBudget,
+        ...over,
+      },
     };
-    await checkAgentDrive(g, 'https://a.example/');
-    expect(calls).toEqual(['budget', 'predicate']);
+  };
+
+  it('charges the budget even when the predicate THROWS — an instrumentation or cookie-jar failure must never be a way to spend an origin for free', async () => {
+    const { gate, calls } = spying({ isAuthenticatedOrigin: () => { throw new Error('jar unavailable'); } });
+    await checkAgentDrive(gate, 'https://a.example/');
+    expect(calls.some((c) => c.startsWith('budget:'))).toBe(true);
+  });
+
+  it('charges a THROWING predicate against the TIGHT lane: ignorance can only tighten the rail, never loosen it', async () => {
+    const { gate, calls } = spying({ isAuthenticatedOrigin: () => { throw new Error('jar unavailable'); } });
+    await checkAgentDrive(gate, 'https://a.example/');
+    expect(calls).toContain('budget:authenticated');
+  });
+
+  it('charges an ABSENT predicate against the tight lane too — with no way to classify an origin there is no basis to relax pacing on it', async () => {
+    const { gate, calls } = spying();
+    await checkAgentDrive(gate, 'https://a.example/');
+    expect(calls).toContain('budget:authenticated');
+  });
+
+  it('does NOT fire a card when the predicate threw, even though it charged the tight lane: prompting a human off a failed read would nag on every transient error and teach them to click through', async () => {
+    let asked = 0;
+    const { gate } = spying({
+      isAuthenticatedOrigin: () => { throw new Error('jar unavailable'); },
+      approvalSurfaceAttached: () => true,
+      requestApproval: async () => { asked += 1; return 'approved'; },
+    });
+    expect((await checkAgentDrive(gate, 'https://a.example/')).ok).toBe(true);
+    expect(asked).toBe(0);
+  });
+
+  it('evaluates the predicate exactly ONCE per navigation — two reads of a live cookie jar can disagree, and a hop charged as anonymous but carded as signed in is incoherent', async () => {
+    let calls = 0;
+    const gate: AgentDriveGate = {
+      budget: new OriginBudget({ limit: 5 }),
+      isAuthenticatedOrigin: () => { calls += 1; return true; },
+    };
+    await checkAgentDrive(gate, 'https://a.example/');
+    expect(calls).toBe(1);
+  });
+});
+
+describe('D9 — the two budget lanes', () => {
+  it('gives an anonymous origin the relaxed limit: over-driving a public docs site costs a rate-limit, and capping ordinary research at the signed-in number failed users for nothing', async () => {
+    const g: AgentDriveGate = {
+      budget: new OriginBudget({ limit: 2, anonymousLimit: 5 }),
+      isAuthenticatedOrigin: () => false,
+    };
+    for (let i = 0; i < 5; i++) expect((await checkAgentDrive(g, 'https://docs.example/p')).ok, `hop ${i}`).toBe(true);
+    expect((await checkAgentDrive(g, 'https://docs.example/p')).ok).toBe(false);
+  });
+
+  it('keeps a signed-in origin on the tight limit — over-driving one costs the human\'s ACCOUNT, which is the largest unpriced risk in the program', async () => {
+    const g: AgentDriveGate = {
+      budget: new OriginBudget({ limit: 2, anonymousLimit: 500 }),
+      isAuthenticatedOrigin: () => true,
+      preGrant: new PreGrantStore(),
+      approvalSurfaceAttached: () => true,
+      requestApproval: async () => 'approved',
+    };
+    expect((await checkAgentDrive(g, 'https://signed.example/a')).ok).toBe(true);
+    expect((await checkAgentDrive(g, 'https://signed.example/b')).ok).toBe(true);
+    const v = await checkAgentDrive(g, 'https://signed.example/c');
+    expect(v.ok).toBe(false);
+    expect(v.ok === false && v.reason).toBe('origin_budget_exhausted');
+  });
+
+  it('tracks the two lanes per origin, so a heavily-read public site cannot consume a signed-in site\'s allowance', async () => {
+    const g: AgentDriveGate = {
+      budget: new OriginBudget({ limit: 1, anonymousLimit: 3 }),
+      isAuthenticatedOrigin: (o) => o === 'https://signed.example',
+      preGrant: new PreGrantStore(),
+      approvalSurfaceAttached: () => true,
+      requestApproval: async () => 'approved',
+    };
+    for (let i = 0; i < 3; i++) expect((await checkAgentDrive(g, 'https://anon.example/')).ok).toBe(true);
+    expect((await checkAgentDrive(g, 'https://anon.example/')).ok).toBe(false);
+    expect((await checkAgentDrive(g, 'https://signed.example/')).ok).toBe(true);
+  });
+
+  it('re-classifies on the CURRENT verdict, so an origin the human signs into mid-session starts being measured against the tight limit from that point', () => {
+    const b = new OriginBudget({ limit: 2, anonymousLimit: 10 });
+    b.spend('https://x.example/', { originClass: 'anonymous' });
+    b.spend('https://x.example/', { originClass: 'anonymous' });
+    const now = b.spend('https://x.example/', { originClass: 'authenticated' });
+    expect(now.ok).toBe(false);
+    expect(now.limit).toBe(2);
+  });
+
+  it('never lets a misconfigured anonymous limit end up TIGHTER than the signed-in one — inverting them would make public pages the restricted case', () => {
+    const b = new OriginBudget({ limit: 50, anonymousLimit: 5 });
+    expect(b.limitFor('anonymous')).toBe(50);
+    expect(b.limitFor('authenticated')).toBe(50);
+  });
+
+  it('defaults an unspecified class to the tight lane, so a caller that forgets under-serves rather than over-drives', () => {
+    const b = new OriginBudget({ limit: 3, anonymousLimit: 99 });
+    expect(b.spend('https://x.example/').limit).toBe(3);
+    expect(b.spend('https://x.example/').originClass).toBe('authenticated');
+  });
+
+  it('reports each origin\'s lane in the snapshot, because a visible counter against an invisible limit explains nothing', () => {
+    const b = new OriginBudget({ limit: 2, anonymousLimit: 7 });
+    b.spend('https://anon.example/', { originClass: 'anonymous' });
+    b.spend('https://signed.example/', { originClass: 'authenticated' });
+    const snap = b.snapshot();
+    expect(snap.find((e) => e.origin === 'https://anon.example')).toMatchObject({ originClass: 'anonymous', limit: 7 });
+    expect(snap.find((e) => e.origin === 'https://signed.example')).toMatchObject({ originClass: 'authenticated', limit: 2 });
   });
 });

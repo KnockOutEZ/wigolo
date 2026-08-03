@@ -5,6 +5,7 @@ import { readCacheStats } from './tui/status-cache.js';
 import { probePythonPackages } from './tui/status-python.js';
 import { readConnectedAgents } from './tui/status-agents.js';
 import { formatStatus, type StatusBag } from './tui/status-format.js';
+import { readEscalationCounters } from '../studio/escalation-counters.js';
 
 const require = createRequire(import.meta.url);
 interface PackageJson { version?: string }
@@ -24,6 +25,13 @@ export async function runStatus(_args: string[]): Promise<number> {
   const cache = readCacheStats(dataDir);
   const agents = readConnectedAgents({});
 
+  // D10(a): surface the escalation counters here as well as in `doctor`, because this is the command a
+  // user actually runs. Rendered ONLY once the browser session has been used at all — printing a block of
+  // zeroes for everyone would make the section noise, and noise gets skipped when it finally matters.
+  const counters = readEscalationCounters(dataDir);
+  const used = counters.bridgeAttempted + counters.budgetRefused + counters.cardShown + counters.cardUnattended;
+  const cfg = getConfig();
+
   const bag: StatusBag = {
     version: pkg.version ?? '0.0.0',
     searxng,
@@ -31,6 +39,19 @@ export async function runStatus(_args: string[]): Promise<number> {
     embeddings: python.embeddings,
     cache,
     agents,
+    ...(used > 0
+      ? {
+          browserSession: {
+            signedInBudget: cfg.studioOriginBudget,
+            anonymousBudget: cfg.studioAnonymousOriginBudget,
+            bridgeAttempted: counters.bridgeAttempted,
+            bridgeServed: counters.bridgeServed,
+            budgetRefused: counters.budgetRefused,
+            cardShown: counters.cardShown,
+            cardUnattended: counters.cardUnattended,
+          },
+        }
+      : {}),
   };
 
   if (_args.includes('--json')) {

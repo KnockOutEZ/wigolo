@@ -31,6 +31,7 @@ import {
   projectCookies,
   OriginBudget,
   DEFAULT_ORIGIN_BUDGET,
+  DEFAULT_ANONYMOUS_ORIGIN_BUDGET,
   bumpEscalationCounter,
   LoginHandoff,
   createLoginCapture,
@@ -376,10 +377,14 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
   // S9/D9 — the per-origin budget limit and the human authenticated/anonymous origin marks. Read from the
   // env + the persisted config the CLI writes, NOT from core's getConfig(): resolving the full core config in
   // this process would pull the native cache DB, which cannot load here.
-  const budgetLimit = ((): number => {
-    const raw = Number(process.env.WIGOLO_STUDIO_ORIGIN_BUDGET);
-    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_ORIGIN_BUDGET;
-  })();
+  const envLimit = (name: string, fallback: number): number => {
+    const raw = Number(process.env[name]);
+    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+  };
+  // TWO lanes: signed-in origins stay tight because over-driving them costs the human's account, anonymous
+  // origins get a few hundred because over-driving those costs a rate-limit. Both are still provisional.
+  const budgetLimit = envLimit('WIGOLO_STUDIO_ORIGIN_BUDGET', DEFAULT_ORIGIN_BUDGET);
+  const anonymousBudgetLimit = envLimit('WIGOLO_STUDIO_ANONYMOUS_ORIGIN_BUDGET', DEFAULT_ANONYMOUS_ORIGIN_BUDGET);
   /** Re-read per evaluation so a `wigolo config --anonymous-origin` takes effect without an app restart. */
   const authOriginOverrides = (): AuthenticatedOriginOverrides => {
     try {
@@ -414,7 +419,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     // ── S9/D9: ONE pacing + consent gate, shared by act-navigate and the session-drive seam ──
     // The budget is charged for EVERY origin, authenticated or not, and never consults F5 — so a predicate
     // false negative costs the prompt, never the rail. Only the card consults F5.
-    const originBudget = new OriginBudget({ limit: budgetLimit });
+    const originBudget = new OriginBudget({ limit: budgetLimit, anonymousLimit: anonymousBudgetLimit });
     const driveGate: AgentDriveGate = {
       budget: originBudget,
       preGrant,

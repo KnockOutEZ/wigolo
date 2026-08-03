@@ -1175,7 +1175,14 @@ function checkAuthenticatedOrigins(dataDir: string): void {
     const configPath = process.env.WIGOLO_CONFIG_PATH ?? join(homedir(), '.wigolo', 'config.json');
     const count = authenticatedOriginCount(readPersistedConfig(configPath).settings, dataDir);
     out(buildAuthenticatedOriginLine(count));
-    out(`  Per-origin request budget: ${getConfig().studioOriginBudget} per session (WIGOLO_STUDIO_ORIGIN_BUDGET)`);
+    const cfg = getConfig();
+    // BOTH lanes, named, because a single printed number would hide the split that makes the tight one
+    // acceptable — and a limit the user cannot see is indistinguishable from a bug when it fires.
+    out(
+      `  Per-origin request budget: ${cfg.studioOriginBudget} on sites you are signed in to,` +
+        ` ${cfg.studioAnonymousOriginBudget} elsewhere, per session` +
+        ` (WIGOLO_STUDIO_ORIGIN_BUDGET / WIGOLO_STUDIO_ANONYMOUS_ORIGIN_BUDGET)`,
+    );
     for (const line of formatEscalationCounterLines(readEscalationCounters(dataDir))) out(line);
   } catch {
     out('  Signed-in origins: unavailable');
