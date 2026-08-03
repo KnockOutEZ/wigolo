@@ -1,5 +1,6 @@
 import { app, BrowserWindow, WebContentsView, ipcMain } from 'electron';
 import { join } from 'node:path';
+import { applyCdpDebugPortFence } from './cdp-fence';
 import { TabManager, type TabView, type Rect } from './tab-manager';
 import { SessionRegistry } from './session-registry';
 import { registerIpc, registerMarksIpc } from './ipc-host';
@@ -16,8 +17,13 @@ import type { ControlParty, NavGrant } from 'wigolo/studio';
 const CHROME_HEIGHT = 88; // titlebar (40) + toolbar (48)
 const RAIL_WIDTH = 380; // the right Agent rail — kept in sync with .rail width in studio.css
 
-const cdpPort = process.env.WIGOLO_STUDIO_CDP_PORT;
-if (cdpPort) app.commandLine.appendSwitch('remote-debugging-port', cdpPort);
+// The remote-debugging port is a development seam (the e2e suite drives it) on a process that
+// holds the user's signed-in profile. Packaged builds refuse it outright; see cdp-fence.ts.
+applyCdpDebugPortFence(
+  { isPackaged: app.isPackaged, appendSwitch: (n, v) => app.commandLine.appendSwitch(n, v) },
+  process.env,
+  (line) => process.stderr.write(line),
+);
 
 function makeViewFactory(win: BrowserWindow): () => TabView {
   return () => {
