@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync, statSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -224,8 +224,14 @@ describe('F5 store — the persisted ledger', () => {
 
   it('is written 0600 — it is browsing history, not configuration', () => {
     recordAuthOrigin('https://example.com', 'human', dir);
-    const mode = statSync(join(dir, 'studio', 'auth-origins.json')).mode & 0o777;
-    expect(mode).toBe(0o600);
+    expect(existsSync(join(dir, 'studio', 'auth-origins.json'))).toBe(true);
+    // POSIX mode-bit assert (0o600) — skip on win32 (no POSIX perms) to match existing test patterns.
+    // Windows reports 0o666 for every file it creates; the ledger's protection there comes from the
+    // user-profile ACL on the data dir, which this assertion cannot express.
+    if (process.platform !== 'win32') {
+      const mode = statSync(join(dir, 'studio', 'auth-origins.json')).mode & 0o777;
+      expect(mode).toBe(0o600);
+    }
   });
 
   it('an absent or corrupt ledger reads as empty rather than throwing — a missing ledger costs a card, not safety', () => {

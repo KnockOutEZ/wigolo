@@ -37,7 +37,10 @@ describe('escalation counters', () => {
 
   it('are written 0600 like the rest of the studio data dir', () => {
     bumpEscalationCounter('cardShown', dir);
-    expect(statSync(join(dir, 'studio', 'escalation-counters.json')).mode & 0o777).toBe(0o600);
+    // POSIX mode-bit assert (0o600) — skip on win32 (no POSIX perms) to match existing test patterns.
+    if (process.platform !== 'win32') {
+      expect(statSync(join(dir, 'studio', 'escalation-counters.json')).mode & 0o777).toBe(0o600);
+    }
   });
 
   it('a corrupt file resets to zero instead of throwing — instrumentation is never load-bearing', () => {
