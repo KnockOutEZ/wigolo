@@ -279,7 +279,7 @@ describe('dedicated stealth launch: UA/platform coherence (T1-C)', () => {
     await pool.fetchWithBrowser('https://a.example', { stealth: true });
 
     const ua = String((lastContextOptions as Record<string, unknown>).userAgent);
-    expect(ua).toContain('Chrome/142.');
+    expect(ua).toContain('Chrome/147.');
 
     await pool.shutdown();
   });

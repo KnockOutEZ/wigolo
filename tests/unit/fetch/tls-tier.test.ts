@@ -76,6 +76,33 @@ describe('tls-tier: anti-bot detectors', () => {
     expect(isAntiBotSignal(200, 'cf-browser-verification')).toBe(true);
   });
 
+  it('isAntiBotSignal does NOT fire on a substantive 200 page that merely QUOTES the markers', () => {
+    // The escalation this predicate drives is reachable for every domain now
+    // that WIGOLO_TLS_TIER defaults to 'auto'. Marker-only matching would make
+    // any article ABOUT bot protection pay a doomed TLS attempt plus a browser
+    // launch and then surface as blocked_by_challenge — content the origin
+    // served us at 200 with no wall involved.
+    const prose =
+      '<html><head><title>How bot challenges work</title></head><body><article>' +
+      ('An interstitial shows "Just a moment" and injects a cf-turnstile widget. ' +
+        'This article explains that flow in depth for engineers. ').repeat(20) +
+      '</article></body></html>';
+    expect(isAntiBotSignal(200, prose)).toBe(false);
+    // Same prose behind an anti-bot STATUS is still a signal — the narrowing is
+    // scoped to 2xx and cannot swallow a real wall's status code.
+    expect(isAntiBotSignal(403, prose)).toBe(true);
+  });
+
+  it('isAntiBotSignal still fires on a real 200-served challenge shell', () => {
+    // DataDome/CF serve interstitials at 200. Markers plus the skeleton shape
+    // (near-empty visible text) must remain a signal, or the 2xx narrowing
+    // above would open a hole for exactly the wall it exists to catch.
+    const shell =
+      '<html><head><title>Just a moment...</title></head><body>' +
+      '<div class="cf-browser-verification"></div></body></html>';
+    expect(isAntiBotSignal(200, shell)).toBe(true);
+  });
+
   it('isAntiBotSignal treats a bare 429 (no challenge body) as a rate-limit, NOT anti-bot', async () => {
     // Bare 429s are rate-limits. Playwright cannot
     // bypass a rate limit, so escalation just pays the browser cold-start
@@ -1044,7 +1071,7 @@ describe('config: WIGOLO_TLS_BROWSER allowlist', () => {
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
     try {
       const cfg = getConfig();
-      expect(cfg.tlsBrowser).toBe('chrome_142');
+      expect(cfg.tlsBrowser).toBe('chrome_147');
     } finally {
       stderrSpy.mockRestore();
     }

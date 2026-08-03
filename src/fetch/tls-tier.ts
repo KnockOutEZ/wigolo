@@ -683,10 +683,28 @@ export function isRateLimit(statusCode: number, html: string | null | undefined)
   return !hasChallengeBody(html);
 }
 
+/**
+ * Anti-bot signal: an anti-bot STATUS, or a challenge body on a non-2xx
+ * response.
+ *
+ * At 2xx, marker strings ALONE are not a wall — an article about bot
+ * protection legitimately quotes 'Just a moment' and 'cf-turnstile'. A 2xx
+ * therefore has to satisfy the full shell rule (markers AND a challenge-page
+ * skeleton), which is the same test `isChallengeShell` documents and applies.
+ * A bare marker with no prose still qualifies, because a body that short IS a
+ * skeleton; a real document that merely mentions the markers does not.
+ *
+ * This matters because the tier escalation this predicate drives is only
+ * reachable for arbitrary domains now that `WIGOLO_TLS_TIER` defaults to
+ * `auto`. Left marker-only, every page *writing about* bot walls would pay a
+ * doomed TLS attempt plus a browser launch and then surface as blocked.
+ */
 export function isAntiBotSignal(statusCode: number, html: string | null | undefined): boolean {
   // Rate-limits are not anti-bot signals — see `isRateLimit`.
   if (isRateLimit(statusCode, html)) return false;
-  return isAntiBotStatus(statusCode) || hasChallengeBody(html);
+  if (isAntiBotStatus(statusCode)) return true;
+  if (statusCode >= 200 && statusCode < 300) return isChallengeShell(statusCode, html);
+  return hasChallengeBody(html);
 }
 
 /**

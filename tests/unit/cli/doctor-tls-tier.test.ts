@@ -91,16 +91,18 @@ describe('runDoctor — TLS tier visibility', () => {
     writeSpy.mockClear();
   });
 
-  it('emits "tls_tier: off (default)" when WIGOLO_TLS_TIER is unset', async () => {
+  it('emits "tls_tier: auto (default)" when WIGOLO_TLS_TIER is unset', async () => {
+    // The tier defaults ON (escalate-on-block). Left off, everything outside the
+    // curated allowlist egressed over plain Node with a non-Chrome handshake.
     await runDoctor('/tmp/.wigolo');
-    expect(outBuffer).toMatch(/tls_tier:\s+off \(default\)/);
+    expect(outBuffer).toMatch(/tls_tier:\s+auto \(.*default\)/);
   });
 
-  it('emits "tls_tier: off (default)" when WIGOLO_TLS_TIER=off', async () => {
+  it('emits "tls_tier: off (explicitly disabled)" when WIGOLO_TLS_TIER=off', async () => {
     process.env.WIGOLO_TLS_TIER = 'off';
     resetConfig();
     await runDoctor('/tmp/.wigolo');
-    expect(outBuffer).toMatch(/tls_tier:\s+off \(default\)/);
+    expect(outBuffer).toMatch(/tls_tier:\s+off \(explicitly disabled\)/);
   });
 
   it('emits "tls_tier: auto (...)" when WIGOLO_TLS_TIER=auto', async () => {
@@ -127,23 +129,23 @@ describe('runDoctor — TLS tier visibility', () => {
 });
 
 describe('formatTlsTierLine', () => {
-  it('returns "off (default)" for mode=off regardless of wreq availability', () => {
-    expect(formatTlsTierLine('off', 'chrome_142', true)).toBe('off (default)');
-    expect(formatTlsTierLine('off', 'chrome_142', false)).toBe('off (default)');
+  it('returns "off (explicitly disabled)" for mode=off regardless of wreq availability', () => {
+    expect(formatTlsTierLine('off', 'chrome_147', true)).toBe('off (explicitly disabled)');
+    expect(formatTlsTierLine('off', 'chrome_147', false)).toBe('off (explicitly disabled)');
   });
 
   it('reports browser profile + wreq-js ✓ when wreq-js is available', () => {
-    expect(formatTlsTierLine('auto', 'chrome_142', true)).toBe('auto (chrome_142, wreq-js ✓)');
-    expect(formatTlsTierLine('on', 'chrome_142', true)).toBe('on (chrome_142, wreq-js ✓)');
+    expect(formatTlsTierLine('auto', 'chrome_147', true)).toBe('auto (chrome_147, wreq-js ✓, default)');
+    expect(formatTlsTierLine('on', 'chrome_147', true)).toBe('on (chrome_147, wreq-js ✓)');
   });
 
   it('reflects the configured browser profile when wreq-js is available', () => {
     expect(formatTlsTierLine('on', 'firefox_133', true)).toBe('on (firefox_133, wreq-js ✓)');
-    expect(formatTlsTierLine('auto', 'safari_18', true)).toBe('auto (safari_18, wreq-js ✓)');
+    expect(formatTlsTierLine('auto', 'safari_18', true)).toBe('auto (safari_18, wreq-js ✓, default)');
   });
 
   it('flags "wreq-js missing — fallback only" when the optional dep is absent', () => {
-    expect(formatTlsTierLine('auto', 'chrome_142', false)).toBe('auto (wreq-js missing — fallback only)');
-    expect(formatTlsTierLine('on', 'chrome_142', false)).toBe('on (wreq-js missing — fallback only)');
+    expect(formatTlsTierLine('auto', 'chrome_147', false)).toBe('auto (wreq-js missing — fallback only, default)');
+    expect(formatTlsTierLine('on', 'chrome_147', false)).toBe('on (wreq-js missing — fallback only)');
   });
 });

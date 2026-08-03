@@ -298,19 +298,23 @@ export async function runEngineProbeSection(
 /**
  * Build the `tls_tier` doctor line. Pure so it stays unit-testable.
  *
- *   WIGOLO_TLS_TIER=off  → `off (default)`
- *   WIGOLO_TLS_TIER=auto → `auto (chrome_142, wreq-js ✓)` when wreq-js loaded
- *                          `auto (wreq-js missing — fallback only)` when not
- *   WIGOLO_TLS_TIER=on   → `on (chrome_142, wreq-js ✓)` etc.
+ *   WIGOLO_TLS_TIER=off  → `off (explicitly disabled)`
+ *   WIGOLO_TLS_TIER=auto → `auto (chrome_147, wreq-js ✓, default)` when loaded
+ *                          `auto (wreq-js missing — fallback only, default)` when not
+ *   WIGOLO_TLS_TIER=on   → `on (chrome_147, wreq-js ✓)` etc.
+ *
+ * `auto` is the default, so `off` now reads as a deliberate choice — a reader
+ * seeing `off` should understand the impersonation tier is not being reached.
  */
 export function formatTlsTierLine(
   mode: 'off' | 'auto' | 'on',
   browser: string,
   wreqAvailable: boolean,
 ): string {
-  if (mode === 'off') return 'off (default)';
-  if (!wreqAvailable) return `${mode} (wreq-js missing — fallback only)`;
-  return `${mode} (${browser}, wreq-js ✓)`;
+  if (mode === 'off') return 'off (explicitly disabled)';
+  const dflt = mode === 'auto' ? ', default' : '';
+  if (!wreqAvailable) return `${mode} (wreq-js missing — fallback only${dflt})`;
+  return `${mode} (${browser}, wreq-js ✓${dflt})`;
 }
 
 /**

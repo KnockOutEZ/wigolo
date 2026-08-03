@@ -15,7 +15,7 @@ describe('resolveStealthUA', () => {
   // top cross-layer inconsistency a modern detector scores (UA says Windows,
   // navigator.platform says the real OS). Table-driven across the 3 platforms.
   it.each([
-    ['darwin', 'Macintosh; Intel Mac OS X', 142],
+    ['darwin', 'Macintosh; Intel Mac OS X', 147],
     ['linux', 'X11; Linux x86_64', 130],
     ['win32', 'Windows NT 10.0; Win64; x64', 138],
   ] as const)(
@@ -34,7 +34,7 @@ describe('resolveStealthUA', () => {
     // A "HeadlessChrome" token is an unconditional automation tell; the
     // synthesized UA must never carry it regardless of platform/major.
     for (const platform of ['darwin', 'linux', 'win32'] as const) {
-      expect(resolveStealthUA(platform, 142)).not.toContain('HeadlessChrome');
+      expect(resolveStealthUA(platform, 147)).not.toContain('HeadlessChrome');
     }
   });
 
@@ -43,7 +43,7 @@ describe('resolveStealthUA', () => {
     // Chrome identity for clearance reuse.
     const ua = resolveStealthUA('darwin');
     expect(ua).toContain(`Chrome/${STEALTH_CHROME_MAJOR}.`);
-    expect(STEALTH_CHROME_MAJOR).toBe(142);
+    expect(STEALTH_CHROME_MAJOR).toBe(147);
   });
 
   it('defaults to the runtime OS platform token when none is given', () => {

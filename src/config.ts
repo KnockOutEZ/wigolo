@@ -796,8 +796,13 @@ export function getConfig(): Config {
       return 'off';
     })(),
     localLlmModel: envStr('WIGOLO_LOCAL_LLM_MODEL', null, settings, 'localLlmModel'),
+    // Default 'auto': the tier escalates on a block rather than leading with it.
+    // Left 'off', every fetch outside the curated anti-bot allowlist went out
+    // over plain Node, advertising a 59-cipher / ALPN-h1 handshake where Chrome
+    // is 16-cipher / h2 — measured. The impersonation profile was never the
+    // problem; the tier simply was not reached.
     tlsTier: (() => {
-      const raw = (envStr('WIGOLO_TLS_TIER', 'off', settings, 'tlsTier') ?? 'off').toLowerCase();
+      const raw = (envStr('WIGOLO_TLS_TIER', 'auto', settings, 'tlsTier') ?? 'auto').toLowerCase();
       return raw === 'auto' || raw === 'on' ? (raw as 'auto' | 'on') : 'off';
     })(),
     stealth: (() => {
@@ -859,7 +864,7 @@ export function getConfig(): Config {
     redditClientSecret: resolveKeychainSecret('WIGOLO_REDDIT_CLIENT_SECRET', 'redditClientSecret'),
     redditUserAgent:
       envStr('WIGOLO_REDDIT_USER_AGENT', null, settings, 'redditUserAgent') ?? DEFAULT_REDDIT_USER_AGENT,
-    tlsBrowser: validateTlsBrowser(envStr('WIGOLO_TLS_BROWSER', null, settings, 'tlsBrowser'), 'chrome_142'),
+    tlsBrowser: validateTlsBrowser(envStr('WIGOLO_TLS_BROWSER', null, settings, 'tlsBrowser'), 'chrome_147'),
     tlsSuccessThreshold: envInt('WIGOLO_TLS_SUCCESS_THRESHOLD', 3, settings, 'tlsSuccessThreshold'),
     tlsDomains: (() => {
       const raw = envStr('WIGOLO_TLS_DOMAINS', null, settings, 'tlsDomains');

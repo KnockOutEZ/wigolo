@@ -16,11 +16,11 @@ const log = createLogger('fetch');
 
 /**
  * Pinned Chrome desktop major version. Kept in ONE place so the TLS tier's
- * default browser profile (`chrome_142`) and this browser UA present a single,
+ * default browser profile (`chrome_147`) and this browser UA present a single,
  * coherent Chrome identity — a prerequisite for reusing a clearance cookie
  * across the two tiers. Bump BOTH together when the pin moves.
  */
-export const STEALTH_CHROME_MAJOR = 142;
+export const STEALTH_CHROME_MAJOR = 147;
 
 /**
  * The Chrome major the dedicated stealth path ACTUALLY launched this process,
