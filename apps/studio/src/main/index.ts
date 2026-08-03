@@ -359,7 +359,8 @@ async function createWindow(): Promise<void> {
     win.setOpacity(p.opacity);
     win.setIgnoreMouseEvents(p.ignoreMouseEvents);
     win.setSkipTaskbar(p.skipTaskbar);
-    win.setPosition(p.position[0], p.position[1]);
+    // Left at its natural position ON the display: a window parked off-screen is not viewable on X11
+    // and gets no frames, which is the starvation this whole branch exists to avoid.
     win.showInactive(); // never `show()`: a background run must not take foreground from the human
     process.stderr.write('[studio] running hidden: no window is presented; the agent line is live.\n');
   } else {

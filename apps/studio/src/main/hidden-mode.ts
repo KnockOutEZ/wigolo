@@ -71,8 +71,6 @@ export interface HiddenPresentation {
   readonly ignoreMouseEvents: true;
   /** No dock/taskbar entry for a window the human did not ask to see. */
   readonly skipTaskbar: true;
-  /** Off any display, belt-and-braces for platforms that ignore or clamp one of the above. */
-  readonly position: readonly [number, number];
 }
 
 /**
@@ -94,20 +92,29 @@ export interface HiddenPresentation {
  * `requestAnimationFrame` would return an empty shell to the agent. The mode would have been broken
  * for the background work it exists to serve.
  *
- * The fix maps the window and then withholds it: transparent, click-through, off any display, and
- * shown WITHOUT focus so it never steals foreground from the human. The browser is then genuinely in
- * the state it reports — nothing here claims to be anything it is not, which is the §4 rule this has
- * to satisfy. Timers were never affected (interval cadence measured at ~1.00 in every arm); it is the
- * frame clock alone that needed a real surface.
+ * The fix maps the window and then withholds it: transparent, click-through, and shown WITHOUT focus
+ * so it never steals foreground from the human. The browser is then genuinely in the state it reports —
+ * nothing here claims to be anything it is not, which is the §4 rule this has to satisfy. Timers were
+ * never affected (interval cadence measured at ~1.00 in every arm); it is the frame clock alone that
+ * needed a real surface.
+ *
+ * IT DELIBERATELY DOES NOT MOVE THE WINDOW OFF-SCREEN, and that is a correction rather than an
+ * omission. Parking it far off any display works on macOS but **breaks the frame clock on X11**: a
+ * window positioned entirely outside the screen is never viewable there, so it gets no frames — the
+ * exact starvation this function exists to prevent, reintroduced by the belt-and-braces. Measured in
+ * CI: `hidden=0 visible=60.99` with the offscreen move, on the build where macOS reported ~110 in both
+ * arms. Transparency alone was measured sufficient on macOS (109.9 fps), so it is the whole mechanism.
+ *
+ * **Recorded ceiling:** X11 honours per-window opacity only under a compositing window manager. On a
+ * bare X11 session with no compositor, a hidden window may therefore be VISIBLE. Every mainstream
+ * Linux desktop composites, and the alternative — moving it off-screen — is measurably worse because it
+ * starves the tab of frames and so breaks the mode outright. Stated rather than papered over.
  */
 export function hiddenWindowPresentation(): HiddenPresentation {
   return {
     opacity: 0,
     ignoreMouseEvents: true,
     skipTaskbar: true,
-    // Large negative, not merely negative: multi-monitor setups put real desktop space at negative
-    // coordinates, and a window at (-100, -100) can be genuinely visible on a display to the left.
-    position: [-32000, -32000],
   };
 }
 

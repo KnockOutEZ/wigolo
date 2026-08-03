@@ -81,7 +81,6 @@ app.whenReady().then(async () => {
     win.setOpacity(presentation.opacity);
     win.setIgnoreMouseEvents(presentation.ignoreMouseEvents);
     win.setSkipTaskbar(presentation.skipTaskbar);
-    win.setPosition(presentation.position[0], presentation.position[1]);
     win.showInactive();
   }
 

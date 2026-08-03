@@ -115,10 +115,14 @@ describe('hiddenWindowPresentation — a hidden window must be MAPPED, not merel
     expect(hiddenWindowPresentation().skipTaskbar).toBe(true);
   });
 
-  it('sits far off any display, not merely at negative coordinates — a second monitor puts real, visible desktop space at negative x/y, so (-100,-100) can be genuinely on screen', () => {
-    const [x, y] = hiddenWindowPresentation().position;
-    expect(x).toBeLessThan(-10000);
-    expect(y).toBeLessThan(-10000);
+  it('does NOT move the window off-screen — measured in CI, a window parked off any display is never viewable on X11 and gets NO frames (hidden=0 vs visible=60.99), which is the exact starvation this function exists to prevent, so the belt-and-braces was worse than the belt', () => {
+    expect(hiddenWindowPresentation()).not.toHaveProperty('position');
+  });
+
+  it('is applied without a setPosition call at the call site either, since that is where the X11 regression actually lived', () => {
+    const src = readFileSync(join(import.meta.dirname, '../../src/main/index.ts'), 'utf-8');
+    const branch = src.slice(src.indexOf('hiddenWindowPresentation()'), src.indexOf('running hidden'));
+    expect(branch).not.toContain('setPosition');
   });
 
   it('is applied with showInactive, never show — asserted at the call site, because taking foreground away from the human mid-task is the one thing a background run must never do', () => {
