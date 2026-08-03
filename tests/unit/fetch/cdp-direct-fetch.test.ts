@@ -113,7 +113,12 @@ function makeHarness(overrides?: {
   const transport = overrides?.transport === undefined ? rec.transport : overrides.transport;
 
   const deps: CdpDirectFetchDeps = {
-    resolveChrome: () => (overrides?.chromePath === undefined ? '/usr/bin/google-chrome' : overrides.chromePath),
+    resolveChrome: () => {
+      const path = overrides?.chromePath === undefined ? '/usr/bin/google-chrome' : overrides.chromePath;
+      return path
+        ? { path, probed: [path], pinOverridden: false }
+        : { path: null, reason: 'no-authentic-browser' as const, probed: [], pinOverridden: false };
+    },
     spawn: spawn as unknown as CdpDirectFetchDeps['spawn'],
     isReachable: reachable as unknown as CdpDirectFetchDeps['isReachable'],
     mkdtemp: async (prefix: string) => {

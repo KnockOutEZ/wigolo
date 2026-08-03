@@ -39,6 +39,13 @@ const log = createLogger('fetch');
  * failure or absence it returns `null` so the caller falls back to the normal
  * browser tier — a fetch is NEVER hard-failed. This is an escalation rung for live
  * evaluation; it makes NO claim to beat the existing patchright + channel=chrome tier.
+ *
+ * REACHABLE + AUDIBLE, by contract. Two properties are load-bearing and were both
+ * once broken here: an explicit `cdpDirect` opt-in must actually ATTEMPT to resolve
+ * an authentic browser (see `resolveAuthenticChrome`), and every decline must land
+ * on the `warn` channel with a reason and a remedy (see `declineRung`). A rung that
+ * silently does nothing is worse than an absent rung — it invalidates measurements
+ * taken against it. Only the caller's own abort stays at debug.
  */
 
 /** A single CDP command send. Injectable so tests can record every command. */
@@ -459,8 +466,8 @@ export interface CdpDirectFetchOptions {
  * Left `undefined` in production → the real implementations are used.
  */
 export interface CdpDirectFetchDeps {
-  /** Resolve a real installed Chrome executable path, or `null` when none. */
-  resolveChrome: () => string | null;
+  /** Resolve a real installed Chrome executable, or an explained decline. */
+  resolveChrome: () => ChromeResolution;
   /** Spawn the browser child process (raw — never playwright.launch). Spawned
    *  `detached` so the whole process group can be killed on teardown, not just
    *  the Chrome parent (renderer / GPU children can otherwise orphan). */
@@ -610,50 +617,134 @@ function hasDisplaySession(): boolean {
 // Grace after SIGTERM before escalating to SIGKILL on teardown.
 const KILL_GRACE_MS = 2_000;
 
+/** Why the rung could not resolve an authentic browser build. */
+export type ChromeDeclineReason = 'chromium-pinned' | 'no-authentic-browser';
+
 /**
- * Real Chrome executable resolver. Prefers an explicit env override, else probes
- * the well-known per-platform install locations for an AUTHENTIC Chrome (never
- * the bundled "Chrome for Testing", whose fingerprint is exactly what this rung
- * exists to avoid). Returns `null` when no installed Chrome is found OR when the
- * user pinned `browserChannel: 'chromium'` (an explicit opt-out of authentic
- * Chrome) — either way the caller degrades to the normal browser tier.
+ * The outcome of resolving an authentic browser for this rung. Deliberately NOT
+ * a bare `string | null`: a decline has to carry WHY, because the whole defect
+ * this shape exists to fix was a decline nobody could see or explain.
  */
-function defaultResolveChrome(): string | null {
-  const cfg = getConfig();
-  // Respect an explicit chromium pin: the whole rung is about real Chrome.
-  if (cfg.browserChannel === 'chromium') return null;
+export interface ChromeResolution {
+  /** Path to an authentic browser executable, or `null` when none resolved. */
+  path: string | null;
+  /** Set only when `path` is null. */
+  reason?: ChromeDeclineReason;
+  /**
+   * Every executable path actually probed, in order. This is the REACHABILITY
+   * evidence: an empty array on an opted-in config means the rung short-circuited
+   * instead of trying, which is exactly the bug that made it dead code.
+   */
+  probed: string[];
+  /** True when an explicit rung opt-in outranked an explicit bundled-engine pin. */
+  pinOverridden: boolean;
+}
 
-  const override = process.env.WIGOLO_CHROME_PATH || process.env.CHROME_PATH;
-  if (override && existsSync(override)) return override;
+/** Injectable seams so the resolver is testable without a browser on the host. */
+export interface ResolveChromeDeps {
+  exists?: (path: string) => boolean;
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+}
 
-  const candidates: string[] =
-    process.platform === 'darwin'
-      ? [
-          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-          '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta',
-          '/Applications/Chromium.app/Contents/MacOS/Chromium',
-        ]
-      : process.platform === 'win32'
-        ? [
-            join(process.env.PROGRAMFILES ?? 'C:\\Program Files', 'Google\\Chrome\\Application\\chrome.exe'),
-            join(process.env['PROGRAMFILES(X86)'] ?? 'C:\\Program Files (x86)', 'Google\\Chrome\\Application\\chrome.exe'),
-            join(process.env.LOCALAPPDATA ?? '', 'Google\\Chrome\\Application\\chrome.exe'),
-          ]
-        : [
-            '/usr/bin/google-chrome',
-            '/usr/bin/google-chrome-stable',
-            '/opt/google/chrome/chrome',
-            '/usr/bin/chromium',
-            '/usr/bin/chromium-browser',
-            '/snap/bin/chromium',
-          ];
-
-  for (const path of candidates) {
-    try {
-      if (path && existsSync(path)) return path;
-    } catch { /* keep probing */ }
+/** Well-known install locations for an AUTHENTIC browser build, per platform.
+ *  Never the bundled "Chrome for Testing" build, whose control-plane-shaped
+ *  fingerprint is exactly what this rung exists to avoid. */
+function chromeCandidates(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
+  if (platform === 'darwin') {
+    return [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    ];
   }
-  return null;
+  if (platform === 'win32') {
+    return [
+      join(env.PROGRAMFILES ?? 'C:\\Program Files', 'Google\\Chrome\\Application\\chrome.exe'),
+      join(env['PROGRAMFILES(X86)'] ?? 'C:\\Program Files (x86)', 'Google\\Chrome\\Application\\chrome.exe'),
+      join(env.LOCALAPPDATA ?? '', 'Google\\Chrome\\Application\\chrome.exe'),
+    ];
+  }
+  return [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/opt/google/chrome/chrome',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/snap/bin/chromium',
+  ];
+}
+
+/**
+ * Resolve an authentic installed browser for this rung, or explain the decline.
+ *
+ * REACHABILITY CONTRACT — read before changing the guard order.
+ *
+ * This resolver used to return `null` the moment `browserChannel === 'chromium'`,
+ * reading the pin as "an explicit opt-out of authentic Chrome". It is not: it is
+ * the DEFAULT (`config.ts`), and only the hardcore preset ever flips it. So
+ * `WIGOLO_CDP_DIRECT=on` was a silent no-op on every default install, and the
+ * decline was logged at `debug` — the rung shipped, was never once executed by a
+ * default user, and voided a full round of live measurements that read
+ * "byte-identical in both arms" as evidence about handshakes when in truth the
+ * rung never ran.
+ *
+ * The rule now: **`cdpDirect !== 'off'` is stated operator intent, and it
+ * outranks the channel pin.** Precedence is by specificity — `cdpDirect` governs
+ * this rung and nothing else, whereas `browserChannel`'s own documented scope is
+ * the stealth path, so vetoing here was outside the pin's remit in the first
+ * place. When the pin was set EXPLICITLY the contradiction is surfaced
+ * (`pinOverridden`) rather than resolved in silence; when it is merely the
+ * default there is no contradiction to report.
+ *
+ * Nothing is invented: with no authentic build on the host this returns
+ * `path: null` and the caller falls back. A chromium build is never dressed up
+ * as Chrome.
+ */
+export function resolveAuthenticChrome(deps: ResolveChromeDeps = {}): ChromeResolution {
+  const exists = deps.exists ?? ((path: string) => {
+    try {
+      return existsSync(path);
+    } catch {
+      return false;
+    }
+  });
+  const platform = deps.platform ?? process.platform;
+  const env = deps.env ?? process.env;
+
+  const cfg = getConfig();
+  const optedIn = cfg.cdpDirect !== 'off';
+  const pinnedToBundled = cfg.browserChannel === 'chromium';
+
+  // No opt-in → the pin stands and nothing is probed. In production the rung is
+  // never consulted at all in this state (the pool gates on `cdpDirect`); this
+  // keeps the override TIED to intent rather than making it unconditional.
+  if (pinnedToBundled && !optedIn) {
+    return { path: null, reason: 'chromium-pinned', probed: [], pinOverridden: false };
+  }
+
+  // Only an EXPLICIT pin is a contradiction worth reporting. Persisted-config
+  // explicitness is not observable here, so this reads the env knob — the
+  // dominant case — and under-reports rather than crying wolf on the default.
+  const pinOverridden = pinnedToBundled && (env.WIGOLO_BROWSER_CHANNEL ?? '').toLowerCase() === 'chromium';
+
+  const probed: string[] = [];
+  const probe = (path: string): boolean => {
+    if (!path) return false;
+    probed.push(path);
+    return exists(path);
+  };
+
+  const override = env.WIGOLO_CHROME_PATH || env.CHROME_PATH;
+  if (override && probe(override)) {
+    return { path: override, probed, pinOverridden };
+  }
+
+  for (const candidate of chromeCandidates(platform, env)) {
+    if (probe(candidate)) return { path: candidate, probed, pinOverridden };
+  }
+
+  return { path: null, reason: 'no-authentic-browser', probed, pinOverridden };
 }
 
 /** Reserve a free localhost TCP port, then release it. Best-effort: a returned
@@ -709,7 +800,7 @@ async function defaultConnectTransport(
 
 function realFetchDeps(): CdpDirectFetchDeps {
   return {
-    resolveChrome: defaultResolveChrome,
+    resolveChrome: () => resolveAuthenticChrome(),
     spawn: (command, args, options) => nodeSpawn(command, args, options),
     // detached: true so killChild can signal the whole process group (-pid),
     // reaping reparented renderer/GPU children Chrome forks.
@@ -859,6 +950,67 @@ async function resolvedNavigateGuardOk(url: string, lookup?: LookupAll): Promise
   return resolved.ok;
 }
 
+/**
+ * Every way this rung can decline to serve a fetch. Each one is a distinct,
+ * greppable cause with a distinct remedy — a decline is only useful if it says
+ * which of these happened.
+ */
+export type CdpDirectDeclineReason =
+  | ChromeDeclineReason
+  | 'proxy-not-applicable'
+  | 'control-endpoint-unreachable'
+  | 'no-control-transport'
+  | 'blocked-target-address'
+  | 'challenge-did-not-clear'
+  | 'rung-error';
+
+/**
+ * What an operator can DO about each decline. A reason without a remedy is a
+ * shrug; the whole lesson of this rung's unreachability is that the log line has
+ * to close the loop by itself.
+ *
+ * Capability language, with the component named where the fix requires naming it
+ * (an operator cannot install "a browser engine" — they install a specific
+ * build), and the env knobs verbatim because they are the user-facing API.
+ */
+const DECLINE_REMEDY: Record<CdpDirectDeclineReason, string> = {
+  'chromium-pinned':
+    'this rung needs an authentic installed browser build; set WIGOLO_CDP_DIRECT=on to let it use one, or leave the rung off',
+  'no-authentic-browser':
+    'install an authentic browser build (Google Chrome) or point WIGOLO_CHROME_PATH at its executable',
+  'proxy-not-applicable':
+    'the configured proxy carries credentials or is unparseable and cannot be applied to this rung; use a credential-free proxy URL, or leave the rung off so the browser tier handles it',
+  'control-endpoint-unreachable':
+    'the launched browser never exposed its control endpoint; check that the resolved executable starts on this host, or raise the fetch timeout',
+  'no-control-transport':
+    'the optional raw control-plane dependency is missing or exposed no page target; reinstall without --omit=optional',
+  'blocked-target-address':
+    'the target resolved to an address the fetch policy blocks; this is the guard working, not a fault',
+  'challenge-did-not-clear':
+    "the target's challenge did not clear inside this rung's budget; the fetch falls back to the browser tier",
+  'rung-error': 'unexpected failure in this rung; the fetch falls back to the browser tier',
+};
+
+/**
+ * Emit a decline at `warn` — ABOVE the default log level, deliberately.
+ *
+ * A rung that silently does nothing is worse than an absent rung: it produced a
+ * full round of confidently wrong measurements before anyone noticed it had
+ * never run. Declining is often CORRECT (no browser installed, the wall won),
+ * but it must never be INVISIBLE. Only the caller's own abort stays at debug —
+ * that is the caller cancelling, not the rung declining, and warning on it would
+ * drown this signal in noise.
+ */
+function declineRung(reason: CdpDirectDeclineReason, url: string, extra?: Record<string, unknown>): null {
+  log.warn('cdp-direct rung declined', {
+    url,
+    reason,
+    remedy: DECLINE_REMEDY[reason],
+    ...extra,
+  });
+  return null;
+}
+
 /** Wait until the CDP debug endpoint is reachable, bounded by `deadline` and the
  *  abort signal. Returns true when reachable, false on timeout/abort. */
 async function waitForReachable(
@@ -897,10 +1049,26 @@ export async function cdpDirectFetch(
 
   const deps = _testFetchDeps ?? realFetchDeps();
 
-  const chromePath = deps.resolveChrome();
-  if (!chromePath) {
-    log.debug('cdp-direct: no authentic Chrome resolvable, falling back');
-    return null;
+  const resolution = deps.resolveChrome();
+  if (!resolution.path) {
+    return declineRung(resolution.reason ?? 'no-authentic-browser', url, {
+      probed: resolution.probed.length,
+    });
+  }
+  const chromePath = resolution.path;
+  // The line whose absence made this rung unmeasurable: engagement is now stated
+  // at info, so a log always shows whether the rung actually ran.
+  log.info('cdp-direct rung engaged', {
+    url,
+    mode: getConfig().cdpDirect,
+    browser: chromePath,
+    ...(resolution.pinOverridden ? { channelPinOverridden: true } : {}),
+  });
+  if (resolution.pinOverridden) {
+    log.warn(
+      'cdp-direct: the browser channel is pinned to the bundled engine but this rung was explicitly enabled; the rung-specific knob wins and an authentic installed browser will be used',
+      { url },
+    );
   }
 
   const budgetMs = opts.timeoutMs ?? DEFAULT_FETCH_BUDGET_MS;
@@ -920,11 +1088,7 @@ export async function cdpDirectFetch(
     // honours the operator's proxy if we hand it one explicitly.
     const proxyDecision = proxyArgFor(cfg);
     if (proxyDecision.refuse) {
-      log.info(
-        'cdp-direct declined: the configured proxy cannot be applied to this rung, and egressing direct would bypass it',
-        { url },
-      );
-      return null;
+      return declineRung('proxy-not-applicable', url);
     }
     // Prefer HEADFUL whenever a display exists — headless is itself the strongest
     // automation tell on real bot walls (measured on one residential IP: the same
@@ -986,19 +1150,23 @@ export async function cdpDirectFetch(
     const reachDeadline = Math.min(startedAt + budgetMs, Date.now() + REACHABLE_TIMEOUT_MS);
     const reachable = await waitForReachable(deps.isReachable, cdpUrl, reachDeadline, opts.signal);
     if (!reachable) {
-      log.debug('cdp-direct: debug endpoint never became reachable, falling back', { url });
-      return null;
+      // An abort is the caller cancelling, not the rung declining — stay quiet.
+      if (opts.signal?.aborted) return null;
+      return declineRung('control-endpoint-unreachable', url);
     }
     if (opts.signal?.aborted) return null;
 
     const transport = await deps.connectTransport(cdpUrl, opts.signal);
     if (!transport) {
-      log.debug('cdp-direct: no CDP transport (optional dep / no target), falling back', { url });
-      return null;
+      if (opts.signal?.aborted) return null;
+      return declineRung('no-control-transport', url);
     }
 
     handle = await cdpDirectConnect({ transport, signal: opts.signal });
-    if (!handle) return null;
+    if (!handle) {
+      if (opts.signal?.aborted) return null;
+      return declineRung('no-control-transport', url);
+    }
 
     // Send the headful window to the background BEFORE navigating, so the user
     // never sees it flash up mid-fetch. Best-effort by contract.
@@ -1027,8 +1195,7 @@ export async function cdpDirectFetch(
     // rung navigates before the browser tier's pre-navigation re-check. Block
     // here → return null (caller falls back / the fetch is refused), NO egress.
     if (!(await resolvedNavigateGuardOk(url, opts.lookup))) {
-      log.debug('cdp-direct: resolved-host SSRF guard blocked navigate, refusing', { url });
-      return null;
+      return declineRung('blocked-target-address', url, { stage: 'pre-navigation' });
     }
 
     await handle.navigate(url);
@@ -1066,11 +1233,9 @@ export async function cdpDirectFetch(
       html = await handle.getContentHtml();
       if (html && classifyChallenge(html) === 'none') break;
       if (Date.now() >= clearDeadline) {
-        log.debug('cdp-direct: challenge/empty body did not clear, falling back', {
-          url,
+        return declineRung('challenge-did-not-clear', url, {
           challengeClass: html ? classifyChallenge(html) : 'empty',
         });
-        return null;
       }
       await new Promise<void>((resolve) => {
         const t = setTimeout(resolve, CHALLENGE_POLL_INTERVAL_MS);
@@ -1098,11 +1263,7 @@ export async function cdpDirectFetch(
     const landed = (await handle.getLocationHref?.()) ?? '';
     const finalUrl = isHttpUrl(landed) ? landed : url;
     if (finalUrl !== url && !(await landingGuardOk(finalUrl, opts.lookup))) {
-      log.warn('cdp-direct: page redirected to a blocked address, refusing to return its content', {
-        url,
-        finalUrl,
-      });
-      return null;
+      return declineRung('blocked-target-address', url, { stage: 'post-redirect', finalUrl });
     }
 
     log.info('cdp-direct rung produced content', { url, bytes: html.length });
@@ -1116,12 +1277,15 @@ export async function cdpDirectFetch(
       headers: {},
     };
   } catch (err) {
-    // NEVER throw to the caller — any failure degrades to a fallback.
-    log.debug('cdp-direct: rung failed, falling back', {
-      url,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
+    // NEVER throw to the caller — any failure degrades to a fallback. An abort
+    // lands here too (navigate/read throw on a cancelled signal); that is the
+    // caller's own cancellation, not a rung decline, so it stays at debug.
+    const message = err instanceof Error ? err.message : String(err);
+    if (opts.signal?.aborted) {
+      log.debug('cdp-direct: aborted mid-fetch, falling back', { url, error: message });
+      return null;
+    }
+    return declineRung('rung-error', url, { error: message });
   } finally {
     // Teardown ALWAYS: close the CDP session, kill the child, remove the temp dir.
     if (handle) {

@@ -50,7 +50,7 @@ function harness(h: Harness): CdpDirectFetchDeps {
     close: vi.fn(async () => {}),
   };
   return {
-    resolveChrome: () => '/fake/chrome',
+    resolveChrome: () => ({ path: '/fake/chrome', probed: ['/fake/chrome'], pinOverridden: false }),
     spawn: (_cmd, args) => {
       h.spawnedArgs = args;
       return { pid: 4242, on: vi.fn(), kill: vi.fn(), exitCode: 0, signalCode: null } as never;
