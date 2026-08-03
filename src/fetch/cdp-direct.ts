@@ -10,6 +10,7 @@ import { stealthLaunchArgs } from './stealth.js';
 import { discoverSessions, isCDPReachable } from './cdp-client.js';
 import { classifyChallenge } from './challenge-classify.js';
 import { guardFetchUrl, guardResolvedHost, type LookupAll } from '../watch/ssrf.js';
+import { redactUrl } from '../util/redact-url.js';
 import type { RawFetchResult } from '../types.js';
 
 const log = createLogger('fetch');
@@ -986,10 +987,56 @@ const DECLINE_REMEDY: Record<CdpDirectDeclineReason, string> = {
     'the optional raw control-plane dependency is missing or exposed no page target; reinstall without --omit=optional',
   'blocked-target-address':
     'the target resolved to an address the fetch policy blocks; this is the guard working, not a fault',
+  // Deliberately does NOT assert "a challenge blocked us": the gate behind this
+  // reason is `classifyChallenge(html) !== 'none'`, and its skeleton predicate
+  // fires on visible-text length ALONE (`isChallengeSkeleton`, tls-tier.ts) — a
+  // predicate whose own sibling docstring says it is "deliberately NOT sufficient
+  // on its own" and must be paired with an anti-bot status. This rung has no HTTP
+  // status to pair with, so a short-but-legitimate page classifies as a wall
+  // (measured live: example.com, 559 bytes → 'behavioral'). The line therefore
+  // reports what was OBSERVED and names the ambiguity, rather than claiming a
+  // wall the build cannot actually distinguish. Tracked separately; see `bytes`
+  // in the log data to tell the two cases apart at a glance.
   'challenge-did-not-clear':
-    "the target's challenge did not clear inside this rung's budget; the fetch falls back to the browser tier",
+    "the body never classified as clean content inside this rung's budget; the fetch falls back to the browser tier. NOTE: a legitimately short page can classify this way — check `bytes` before reading this as a block",
   'rung-error': 'unexpected failure in this rung; the fetch falls back to the browser tier',
 };
+
+/**
+ * Decline causes that are STATIC for the life of the process — host or config
+ * facts, knowable before any I/O is attempted, identical on every subsequent
+ * fetch. These are latched: the first occurrence warns, the rest drop to debug.
+ *
+ * Without the latch an operator with no authentic browser installed running a
+ * 200-page crawl gets 200 byte-identical warns, which buries the causes that
+ * actually vary per fetch — the exact opposite of what this channel is for, and
+ * it lands hardest on the population the reachability fix newly serves.
+ *
+ * The dividing line is "did this require attempting the fetch?". Everything that
+ * did (endpoint never came up, address blocked, body never cleared, unexpected
+ * error) is about THIS target and warns every time; its repetition is signal,
+ * not noise.
+ *
+ * `no-control-transport` is the imperfect member: it covers both an absent
+ * optional dependency (static) and a launched browser that exposed no page
+ * target (transient). It is latched on the static reading, which is the dominant
+ * one — so a genuinely transient no-target failure is visible on its first
+ * occurrence and at debug thereafter.
+ */
+const STATIC_DECLINE_REASONS: ReadonlySet<CdpDirectDeclineReason> = new Set<CdpDirectDeclineReason>([
+  'chromium-pinned',
+  'no-authentic-browser',
+  'proxy-not-applicable',
+  'no-control-transport',
+]);
+
+/** Static reasons already warned about once in this process. */
+const warnedStaticReasons = new Set<CdpDirectDeclineReason>();
+
+/** Test-only: clear the latch so each test observes a fresh process. */
+export function _resetDeclineLatchForTests(): void {
+  warnedStaticReasons.clear();
+}
 
 /**
  * Emit a decline at `warn` — ABOVE the default log level, deliberately.
@@ -997,17 +1044,31 @@ const DECLINE_REMEDY: Record<CdpDirectDeclineReason, string> = {
  * A rung that silently does nothing is worse than an absent rung: it produced a
  * full round of confidently wrong measurements before anyone noticed it had
  * never run. Declining is often CORRECT (no browser installed, the wall won),
- * but it must never be INVISIBLE. Only the caller's own abort stays at debug —
- * that is the caller cancelling, not the rung declining, and warning on it would
- * drown this signal in noise.
+ * but it must never be INVISIBLE. Two things keep the channel usable:
+ *   - a STATIC cause warns once per process, then drops to debug (see
+ *     STATIC_DECLINE_REASONS) so a repeating host fact cannot bury a varying one;
+ *   - the caller's own abort never comes through here at all — that is
+ *     cancellation, not a decline.
+ *
+ * The target URL is REDACTED. This channel is default-visible and its whole
+ * purpose is to be pasted into a bug report, so a fetch of
+ * `https://svc:pw@host/x?token=…` must not put the credential there.
  */
 function declineRung(reason: CdpDirectDeclineReason, url: string, extra?: Record<string, unknown>): null {
-  log.warn('cdp-direct rung declined', {
-    url,
+  const data = {
+    url: redactUrl(url),
     reason,
     remedy: DECLINE_REMEDY[reason],
     ...extra,
-  });
+  };
+  if (STATIC_DECLINE_REASONS.has(reason)) {
+    if (warnedStaticReasons.has(reason)) {
+      log.debug('cdp-direct rung declined (repeat)', data);
+      return null;
+    }
+    warnedStaticReasons.add(reason);
+  }
+  log.warn('cdp-direct rung declined', data);
   return null;
 }
 
@@ -1057,9 +1118,10 @@ export async function cdpDirectFetch(
   }
   const chromePath = resolution.path;
   // The line whose absence made this rung unmeasurable: engagement is now stated
-  // at info, so a log always shows whether the rung actually ran.
+  // at info, so a log always shows whether the rung actually ran. URL redacted —
+  // this is a default-visible line and the target may carry credentials.
   log.info('cdp-direct rung engaged', {
-    url,
+    url: redactUrl(url),
     mode: getConfig().cdpDirect,
     browser: chromePath,
     ...(resolution.pinOverridden ? { channelPinOverridden: true } : {}),
@@ -1067,7 +1129,7 @@ export async function cdpDirectFetch(
   if (resolution.pinOverridden) {
     log.warn(
       'cdp-direct: the browser channel is pinned to the bundled engine but this rung was explicitly enabled; the rung-specific knob wins and an authentic installed browser will be used',
-      { url },
+      { url: redactUrl(url) },
     );
   }
 
@@ -1235,6 +1297,10 @@ export async function cdpDirectFetch(
       if (Date.now() >= clearDeadline) {
         return declineRung('challenge-did-not-clear', url, {
           challengeClass: html ? classifyChallenge(html) : 'empty',
+          // The number that separates a real wall from the short-page false
+          // positive this classifier is known to produce. Without it the line
+          // asserts something it cannot actually establish.
+          bytes: html.length,
         });
       }
       await new Promise<void>((resolve) => {
@@ -1263,10 +1329,13 @@ export async function cdpDirectFetch(
     const landed = (await handle.getLocationHref?.()) ?? '';
     const finalUrl = isHttpUrl(landed) ? landed : url;
     if (finalUrl !== url && !(await landingGuardOk(finalUrl, opts.lookup))) {
-      return declineRung('blocked-target-address', url, { stage: 'post-redirect', finalUrl });
+      return declineRung('blocked-target-address', url, {
+        stage: 'post-redirect',
+        finalUrl: redactUrl(finalUrl),
+      });
     }
 
-    log.info('cdp-direct rung produced content', { url, bytes: html.length });
+    log.info('cdp-direct rung produced content', { url: redactUrl(url), bytes: html.length });
     return {
       url,
       finalUrl,
@@ -1282,7 +1351,7 @@ export async function cdpDirectFetch(
     // caller's own cancellation, not a rung decline, so it stays at debug.
     const message = err instanceof Error ? err.message : String(err);
     if (opts.signal?.aborted) {
-      log.debug('cdp-direct: aborted mid-fetch, falling back', { url, error: message });
+      log.debug('cdp-direct: aborted mid-fetch, falling back', { url: redactUrl(url), error: message });
       return null;
     }
     return declineRung('rung-error', url, { error: message });

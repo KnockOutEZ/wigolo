@@ -4,6 +4,7 @@ import {
   cdpDirectFetch,
   _setCdpDirectFetchDepsForTests,
   _setProcessKillForTests,
+  _resetDeclineLatchForTests,
   type CdpDirectFetchDeps,
   type ChromeResolution,
 } from '../../../src/fetch/cdp-direct.js';
@@ -146,6 +147,9 @@ describe('cdp-direct decline visibility — a rung that cannot run must SAY SO',
   beforeEach(() => {
     for (const key of ENV_KEYS) saved[key] = process.env[key];
     resetConfig();
+    // Static decline causes latch per process; clear it so each case observes a
+    // fresh one rather than inheriting a prior test's first-warn.
+    _resetDeclineLatchForTests();
     _setProcessKillForTests(() => {});
   });
   afterEach(() => {
