@@ -295,3 +295,7 @@ describe('navigateSession', () => {
     expect(b.gotos).toEqual([]); // none reached the browser
   });
 });
+
+// CI GATE PROBE — deliberate type error in a gated safety test. Reverted immediately.
+const __probe: number = "not a number";
+void __probe;
