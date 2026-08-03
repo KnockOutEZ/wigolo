@@ -309,11 +309,19 @@ describe.skipIf(!RUN)('parity release gate — vendored BotD, no automation harn
       for (const api of PLATFORM_DEPENDENT_APIS) expect(h[api], api).toBe(v[api]);
     });
 
-    it('keeps a real GPU renderer string and a coherent devicePixelRatio — a real renderer reporting dpr 0 is exactly the contradiction to avoid, and it is what offscreen rendering would produce', () => {
-      for (const a of shipped()) {
-        expect(a.probe.coherence!.devicePixelRatio).toBeGreaterThan(0);
-        expect(a.probe.coherence!.webglRenderer).toBeTruthy();
-      }
+    it('reports a coherent devicePixelRatio — a renderer string with dpr 0 is exactly the contradiction to avoid', () => {
+      for (const a of shipped()) expect(a.probe.coherence!.devicePixelRatio).toBeGreaterThan(0);
+    });
+
+    // NOT asserted truthy. A GPU-less CI runner has no `WEBGL_debug_renderer_info` to report, so the
+    // renderer string is null there for the SAME reason it would be null for real Chrome on that box —
+    // it is a property of the machine, not of this build. What must hold is that the hidden window and
+    // the visible one report the SAME thing: a hidden window falling back to software GL is the GT#4
+    // offscreen-rendering leak this lane exists to avoid, and that shows up as a DIFFERENCE, not an absence.
+    it('reports the SAME GPU renderer in both window states — a hidden window falling back to software GL is the leak this lane exists to avoid, and it presents as a difference between the arms', () => {
+      const v = arm('identity-visible').probe.coherence!.webglRenderer;
+      const h = arm('identity-hidden').probe.coherence!.webglRenderer;
+      expect(h).toBe(v);
     });
 
     it('reports a plausible, non-empty font set for the platform rather than an empty or padded list', () => {
@@ -342,10 +350,32 @@ describe.skipIf(!RUN)('parity release gate — vendored BotD, no automation harn
       expect(h().visibilityState).toBe('visible');
     });
 
-    it('keeps real rAF cadence while hidden: backgroundThrottling is off, and a throttled hidden window is both trivially detectable and broken for drives', () => {
+    /**
+     * THE assertion this whole slice exists for, written so it has teeth in every environment.
+     *
+     * The bug it guards against: a never-mapped window has no compositor surface, so its child view's
+     * frame clock stops dead at 0fps while the visible arm runs at ~110. That is a DIFFERENCE between the
+     * arms, and a difference is what this asserts.
+     *
+     * It deliberately does NOT assert an absolute floor unconditionally. A GPU-less CI runner with no
+     * compositing window manager has no frame clock at all — the VISIBLE arm reports 0fps there too — so
+     * an absolute floor would fail for a property of the runner rather than of this build, and "the
+     * hidden arm is starved" would be indistinguishable from "this machine has no compositor". Comparing
+     * the arms separates those two, which is exactly the distinction that matters.
+     */
+    it('gives the hidden window a frame clock IF AND ONLY IF the visible one has one — this is the regression that shipped and was caught: a never-mapped window starves its tab of frames while a mapped one does not', () => {
+      const HAS_CLOCK = 5; // fps; well below any real cadence and well above a starved 0
+      expect(h().rafFps! > HAS_CLOCK, `hidden=${h().rafFps} visible=${v().rafFps}`).toBe(v().rafFps! > HAS_CLOCK);
+    });
+
+    it('runs the hidden window at a real cadence wherever a frame clock exists at all — the loose bound is deliberate, since the failure guarded against is an order of magnitude away and CI runners are noisy', () => {
+      if ((v().rafFps ?? 0) <= 5) {
+        // No compositor on this machine: the comparison above carries the signal, and a magnitude claim
+        // here would be measuring the runner. Recorded rather than silently skipped.
+        expect(h().rafFps).toBe(v().rafFps);
+        return;
+      }
       expect(h().rafFps).toBeGreaterThan(30);
-      // A deliberately loose bound. CI runners are noisy; the failure this guards against — clamping
-      // to roughly 1fps — is an order of magnitude away, so a tight bound would only buy flakes.
       expect(h().rafFps!).toBeGreaterThan(v().rafFps! / 2);
     });
 

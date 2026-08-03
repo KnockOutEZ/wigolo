@@ -114,10 +114,28 @@ describe.skipIf(!RUN)('studio login-wall handoff (e2e, real gateway + partition)
     }
     expect(completed).toBe(true); // the ARC completed through the real gateway (both keychain branches assert this)
 
+    // D9 (S9): the completed handoff put this origin in the authenticated-origin ledger, so the FIRST
+    // agent use of it in this session now needs the human's authenticated-use grant. That is the whole
+    // point of the card — the human just signed in, and spending that identity is the consent event —
+    // so the arc is only complete if the card fires here and the agent proceeds once it is answered.
+    // Wired before the act, because the card BLOCKS: with nobody answering it, this navigation waits.
+    await win.evaluate(() => {
+      const w = window as unknown as {
+        studio: { onApprovalParked(cb: (a: { id: string }) => void): void; decideApproval(id: string, d: 'allow' | 'deny'): Promise<void> };
+        __parked?: string[];
+      };
+      w.__parked = [];
+      w.studio.onApprovalParked((a) => { w.__parked!.push(a.id); void w.studio.decideApproval(a.id, 'allow'); });
+    });
+
     // Re-granted: the agent can act again (no longer not_holder).
     await sleep(300);
     const resumed = body(await proxy.callTool('studio_act', { action: 'navigate', url: loopbackUrl + 'home' }));
     expect(resumed.error_reason).not.toBe('not_holder');
+    // The card really did fire on the origin the human just logged into — asserted, not assumed, because
+    // a silently absent card would mean the agent spent that identity with no consent event at all.
+    const parked = await win.evaluate(() => (window as unknown as { __parked?: string[] }).__parked ?? []);
+    expect(parked.length).toBeGreaterThan(0);
 
     // Encryption-at-rest: the origin-scoped profile blob (if a keychain was available to hold its KEK).
     await sleep(500); // onComplete persists (awaited) before the finally re-grant; allow the file write to settle
