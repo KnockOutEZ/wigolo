@@ -2,7 +2,7 @@ import { app, BrowserWindow, WebContentsView, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { applyCdpDebugPortFence } from './cdp-fence';
 import { chromeWebPreferences, hiddenWindowPresentation, resolveHiddenMode, tabWebPreferences } from './hidden-mode';
-import { applyUaIdentityToTab, studioUaIdentity, HOST_HINTS_EXPR } from './ua-identity';
+import { applyUaIdentityToTab, resolveHostHints, studioUaIdentity, HOST_HINTS_EXPR, type HostHints } from './ua-identity';
 import { TabManager, type TabView, type Rect } from './tab-manager';
 import { SessionRegistry } from './session-registry';
 import { registerIpc, registerMarksIpc } from './ipc-host';
@@ -106,6 +106,10 @@ async function createWindow(): Promise<void> {
   // module (spec §13.7/§13.9). It inherits WIGOLO_DATA_DIR from this process, so captures land in the
   // same local library the agent's cache/find_similar read. The host calls it for capture + find_similar.
   const broker = createBrokerClient();
+
+  // Resolved after the shell loads (below) and read pull-at-eval by createTab. A tab created before the
+  // shell finishes loading simply omits the high-entropy hints rather than waiting on them.
+  let hostHints: HostHints | null = null;
 
   const studioHost = createStudioHost({
     broker,
@@ -217,8 +221,8 @@ async function createWindow(): Promise<void> {
       await applyUaIdentityToTab({
         identity: uaIdentity,
         platform: process.platform,
+        hints: hostHints,
         loadBlank: () => wc.loadURL('about:blank'),
-        readHostHints: () => wc.executeJavaScript(HOST_HINTS_EXPR),
         sendCdp: (method, params) => drive.transport.send(method, params),
         warn: (line) => process.stderr.write(line),
       });
@@ -337,6 +341,13 @@ async function createWindow(): Promise<void> {
   } else {
     await win.loadFile(join(import.meta.dirname, '../renderer/index.html'));
   }
+  // The host's own client hints, read ONCE from the shell — a secure context with a real origin.
+  // Reading them per-tab off `about:blank` never worked: `navigator.userAgentData` is undefined there,
+  // so every tab silently omitted the hints the read-through exists to preserve. These describe the
+  // machine rather than the tab, so one read shared by every tab is also the more correct shape.
+  hostHints = await resolveHostHints(() => win.webContents.executeJavaScript(HOST_HINTS_EXPR), {
+    warn: (line) => process.stderr.write(line),
+  });
   // `--hidden`: the window is mapped but never presented. GPU stays on and the compositor stays real
   // (this is not offscreen rendering) — only the presentation is withheld, so a background fetch keeps
   // the same renderer, codec and API surface a visible window has. It must be MAPPED, not merely

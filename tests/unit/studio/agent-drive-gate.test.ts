@@ -276,6 +276,32 @@ describe('D9 — the invariant the old call-order assertion was a proxy for', ()
     expect(asked).toBe(0);
   });
 
+  it('BOUNDS a predicate that never settles: it reads a live cookie jar and evaluates script in the tab, and a read that stalls rather than rejects would wedge the navigation this gate is gating — measured, it did, in a live e2e', async () => {
+    const started = Date.now();
+    const g: AgentDriveGate = {
+      budget: new OriginBudget({ limit: 5, anonymousLimit: 500 }),
+      isAuthenticatedOrigin: () => new Promise<boolean>(() => {}),
+      predicateTimeoutMs: 40,
+    };
+    expect((await checkAgentDrive(g, 'https://a.example/')).ok).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('charges a STALLED predicate against the tight lane and fires no card — a stall is just another way of not knowing, so it resolves like every other unknown', async () => {
+    const g: AgentDriveGate = {
+      budget: new OriginBudget({ limit: 1, anonymousLimit: 500 }),
+      isAuthenticatedOrigin: () => new Promise<boolean>(() => {}),
+      predicateTimeoutMs: 30,
+      approvalSurfaceAttached: () => true,
+      requestApproval: async () => 'approved',
+    };
+    expect((await checkAgentDrive(g, 'https://a.example/')).ok).toBe(true);
+    // Tight lane of 1 ⇒ the second hop is refused. Had the stall fallen to the anonymous lane it would pass.
+    const v = await checkAgentDrive(g, 'https://a.example/');
+    expect(v.ok).toBe(false);
+    expect(v.ok === false && v.reason).toBe('origin_budget_exhausted');
+  });
+
   it('evaluates the predicate exactly ONCE per navigation — two reads of a live cookie jar can disagree, and a hop charged as anonymous but carded as signed in is incoherent', async () => {
     let calls = 0;
     const gate: AgentDriveGate = {

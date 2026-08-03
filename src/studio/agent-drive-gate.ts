@@ -61,6 +61,26 @@ export interface AgentDriveGate {
   requestApproval?: (origin: string) => Promise<ApprovalDecision>;
   /** D10(a) local counters. Best-effort; never load-bearing. */
   bump?: (key: EscalationCounterKey) => void;
+  /**
+   * How long the predicate may take before it counts as UNKNOWN. The predicate reads a live cookie jar
+   * and, in the app host, evaluates script in the tab — reads that can stall rather than reject while a
+   * navigation is in flight. This gate is on the critical path of EVERY agent navigation, so an
+   * unbounded await here wedges the navigation itself. Measured: it did, in a live e2e.
+   */
+  predicateTimeoutMs?: number;
+}
+
+/** Reject after `ms` so a stalled read degrades to `unknown` instead of holding the gate open. */
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('predicate timed out')), ms); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 const SUMMON_HINT =
@@ -103,9 +123,16 @@ export async function checkAgentDrive(gate: AgentDriveGate, url: string): Promis
   // Unknown splits deliberately. Pacing has to assume the expensive possibility, but prompting a human on
   // the strength of a failed cookie read would nag on every transient jar error and teach them to click
   // through — which costs more safety than the prompt buys.
+  // BOUNDED, and the bound is not defensive padding. The predicate reads a live cookie jar and (in the
+  // app host) evaluates script in the tab; both can STALL rather than reject while a navigation is in
+  // flight, and neither rejecting nor resolving means this gate never returns — which wedges the
+  // navigation it is gating. A stall is simply another way of not knowing, so it resolves like every
+  // other unknown: tight lane, no card.
   let verdict: boolean | 'unknown';
   try {
-    verdict = gate.isAuthenticatedOrigin ? await gate.isAuthenticatedOrigin(origin) : 'unknown';
+    verdict = gate.isAuthenticatedOrigin
+      ? await withTimeout(Promise.resolve(gate.isAuthenticatedOrigin(origin)), gate.predicateTimeoutMs ?? 3000)
+      : 'unknown';
   } catch {
     verdict = 'unknown';
   }

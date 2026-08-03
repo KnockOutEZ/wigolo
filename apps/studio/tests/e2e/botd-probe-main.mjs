@@ -65,25 +65,9 @@ app.whenReady().then(async () => {
     // TRAP: an Emulation command against a webContents that has never navigated never resolves.
     await wc.loadURL('about:blank');
     if (override) {
-      let hints = null;
-      try {
-        hints = await wc.executeJavaScript(
-          "navigator.userAgentData.getHighEntropyValues(['platform','platformVersion','architecture','bitness','model'])",
-        );
-      } catch (err) {
-        log({ hints_error: String(err) });
-      }
-      await wc.debugger.sendCommand('Emulation.setUserAgentOverride', {
-        userAgent: override.userAgent,
-        userAgentMetadata: {
-          ...override.userAgentMetadata,
-          platform: hints?.platform ?? override.userAgentMetadata.platform,
-          platformVersion: hints?.platformVersion ?? override.userAgentMetadata.platformVersion,
-          architecture: hints?.architecture ?? override.userAgentMetadata.architecture,
-          bitness: hints?.bitness ?? override.userAgentMetadata.bitness,
-          model: hints?.model ?? override.userAgentMetadata.model,
-        },
-      });
+      // Applied verbatim. The hints are resolved by the spec (production reads them once from a secure
+      // context — `about:blank` has no `navigator.userAgentData`, so a read here would always fail).
+      await wc.debugger.sendCommand('Emulation.setUserAgentOverride', override);
     }
   }
 

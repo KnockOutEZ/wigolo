@@ -7,6 +7,7 @@ import {
   uaPlatformName,
   parseHostHints,
   applyUaIdentityToTab,
+  resolveHostHints,
   HOST_HINTS_EXPR,
   type HostHints,
 } from '../../src/main/ua-identity';
@@ -142,6 +143,36 @@ describe('parseHostHints', () => {
   });
 });
 
+describe('resolveHostHints — read once, from a secure context', () => {
+  it('parses a real result', async () => {
+    expect(await resolveHostHints(async () => ({ ...HINTS }))).toEqual(HINTS);
+  });
+
+  it('degrades to null when the context has no userAgentData at all — measured: `about:blank` in an in-memory partition has none, which is why reading per-tab there silently omitted the hints on EVERY tab', async () => {
+    const warned: string[] = [];
+    expect(await resolveHostHints(async () => null, { warn: (l) => warned.push(l) })).toBeNull();
+    expect(warned.join('')).toMatch(/no client hints/);
+  });
+
+  it('degrades to null and warns when the read rejects, rather than failing the launch over an optional value', async () => {
+    const warned: string[] = [];
+    expect(await resolveHostHints(async () => { throw new Error('nope'); }, { warn: (l) => warned.push(l) })).toBeNull();
+    expect(warned.join('')).toMatch(/could not read/);
+  });
+
+  it('is BOUNDED: a read that never settles must not hold up the launch, because CDP and renderer evaluations can hang rather than reject', async () => {
+    const warned: string[] = [];
+    const started = Date.now();
+    expect(await resolveHostHints(() => new Promise(() => {}), { timeoutMs: 40, warn: (l) => warned.push(l) })).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(warned.join('')).toMatch(/did not complete/);
+  });
+
+  it('asks in a way that cannot throw on a context without userAgentData — the expression itself guards, so the failure is a null rather than an exception', () => {
+    expect(HOST_HINTS_EXPR).toContain('navigator.userAgentData ?');
+  });
+});
+
 describe('applyUaIdentityToTab — ordering is the trap this exists to encode', () => {
   const spy = (over: Partial<Parameters<typeof applyUaIdentityToTab>[0]> = {}) => {
     const calls: string[] = [];
@@ -149,8 +180,8 @@ describe('applyUaIdentityToTab — ordering is the trap this exists to encode', 
     const deps = {
       identity: identity(),
       platform: 'darwin' as NodeJS.Platform,
+      hints: { ...HINTS },
       loadBlank: async () => { calls.push('loadBlank'); },
-      readHostHints: async () => { calls.push('readHostHints'); return { ...HINTS }; },
       sendCdp: async (method: string, params: Record<string, unknown>) => { calls.push('sendCdp'); sent.push({ method, params }); return {}; },
       warn: (line: string) => { calls.push(`warn:${line.slice(0, 20)}`); },
       ...over,
@@ -173,16 +204,16 @@ describe('applyUaIdentityToTab — ordering is the trap this exists to encode', 
     expect(sent[0]!.params.userAgent).toBe(identity().userAgent);
   });
 
-  it('reads the host hints before overriding, because after the override the engine reports the override back', async () => {
-    const { calls, deps } = spy();
+  it('passes the resolved host hints straight through to the override', async () => {
+    const { sent, deps } = spy();
     await applyUaIdentityToTab(deps);
-    expect(calls.indexOf('readHostHints')).toBeLessThan(calls.indexOf('sendCdp'));
+    const meta = sent[0]!.params.userAgentMetadata as { platformVersion: string };
+    expect(meta.platformVersion).toBe('15.6.0');
   });
 
-  it('still applies the override when the hint read rejects — losing the hints must not cost the whole identity', async () => {
-    const { sent, deps } = spy({ readHostHints: async () => { throw new Error('no userAgentData'); } });
-    const ok = await applyUaIdentityToTab(deps);
-    expect(ok).toBe(true);
+  it('still applies the override with no hints at all — losing the optional high-entropy detail must not cost the whole identity', async () => {
+    const { sent, deps } = spy({ hints: null });
+    expect(await applyUaIdentityToTab(deps)).toBe(true);
     expect(sent[0]!.method).toBe('Emulation.setUserAgentOverride');
   });
 
@@ -194,6 +225,22 @@ describe('applyUaIdentityToTab — ordering is the trap this exists to encode', 
     });
     await expect(applyUaIdentityToTab(deps)).resolves.toBe(false);
     expect(warned.join('')).toContain('identity override failed');
+  });
+
+  it('BOUNDS a hanging CDP send instead of holding the session open: a CDP command in the wrong state does not reject, it never settles — and an unbounded await here wedges studio_open itself, which is exactly how it broke a live e2e', async () => {
+    const warned: string[] = [];
+    const started = Date.now();
+    const { deps } = spy({ sendCdp: () => new Promise(() => {}), warn: (l: string) => { warned.push(l); }, timeoutMs: 40 });
+    await expect(applyUaIdentityToTab(deps)).resolves.toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(warned.join('')).toMatch(/did not complete/);
+  });
+
+  it('BOUNDS a hanging blank-page load for the same reason', async () => {
+    const started = Date.now();
+    const { deps } = spy({ loadBlank: () => new Promise(() => {}), timeoutMs: 40 });
+    await expect(applyUaIdentityToTab(deps)).resolves.toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 
   it('never resolves before the blank load does — returning early would let the first real navigation race the override', async () => {
@@ -230,5 +277,11 @@ describe('structural — one identity, computed once', () => {
   it('reads the hints with the shared expression rather than a hand-written copy that can drift from the parser', () => {
     expect(read('index.ts')).toContain('HOST_HINTS_EXPR');
     expect(HOST_HINTS_EXPR).toContain('getHighEntropyValues');
+  });
+
+  it('resolves the hints from the SHELL, not from a tab: the shell has a real origin and a secure context, and the per-tab read against about:blank always failed', () => {
+    const src = read('index.ts');
+    expect(src).toMatch(/resolveHostHints\(\(\) => win\.webContents\.executeJavaScript\(HOST_HINTS_EXPR\)/);
+    expect(src).not.toMatch(/readHostHints/);
   });
 });

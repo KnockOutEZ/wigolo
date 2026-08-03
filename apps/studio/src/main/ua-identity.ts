@@ -188,8 +188,55 @@ export function uaPlatformName(platform: NodeJS.Platform): string {
   return 'Linux';
 }
 
-/** The expression that reads the host's own hints. Kept here so the shape and its reader agree. */
-export const HOST_HINTS_EXPR = `navigator.userAgentData.getHighEntropyValues(['platform','platformVersion','architecture','bitness','model'])`;
+/**
+ * The expression that reads the host's own hints. Kept here so the shape and its reader agree.
+ *
+ * IT MUST BE EVALUATED IN A SECURE CONTEXT WITH A REAL ORIGIN. Measured: on `about:blank` in an
+ * in-memory partition `navigator.userAgentData` is `undefined`, so reading it there always fails —
+ * which is what the first version of this module did, on every tab, silently omitting the hints it
+ * was written to preserve. The app shell (`file://` or the dev server) is a secure context, so the
+ * read is done ONCE against the shell and shared. That is also the more correct shape: these values
+ * describe the machine, not the tab.
+ */
+export const HOST_HINTS_EXPR = `navigator.userAgentData ? navigator.userAgentData.getHighEntropyValues(['platform','platformVersion','architecture','bitness','model']) : null`;
+
+/**
+ * Resolve the host's hints once, from a secure context. Bounded and fail-soft: hints are a quality
+ * improvement to what the override sends, never a precondition for sending it.
+ */
+export async function resolveHostHints(
+  read: () => Promise<unknown>,
+  opts: { timeoutMs?: number; warn?: (line: string) => void } = {},
+): Promise<HostHints | null> {
+  try {
+    const hints = parseHostHints(await withTimeout(read(), opts.timeoutMs ?? 5000, 'client-hint read'));
+    if (!hints) opts.warn?.('[studio] this host reported no client hints; high-entropy hints will be omitted\n');
+    return hints;
+  } catch (err) {
+    opts.warn?.(`[studio] could not read this host's client hints (${err instanceof Error ? err.message : String(err)}); high-entropy hints will be omitted\n`);
+    return null;
+  }
+}
+
+/**
+ * Bound an await that must never wedge session creation.
+ *
+ * This exists because of a measured class of hang, not a hypothetical one: CDP `Emulation` commands
+ * against a webContents in the wrong state do not reject, they never settle — the phase-1 spike lost a
+ * whole run to one. Identity application is not a fence, so anything here that cannot finish must
+ * degrade to the substrate's own identity rather than hold a session open forever.
+ */
+async function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not complete within ${ms}ms`)), ms); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /** Narrow an unknown `getHighEntropyValues` result to `HostHints`, or null if it is not one. */
 export function parseHostHints(raw: unknown): HostHints | null {
@@ -212,14 +259,16 @@ export function parseHostHints(raw: unknown): HostHints | null {
 export interface ApplyUaIdentityDeps {
   readonly identity: UaIdentity;
   readonly platform: NodeJS.Platform;
+  /** The host's hints, resolved ONCE by the caller from a secure context. Null ⇒ omitted. */
+  readonly hints: HostHints | null;
   /** Load `about:blank`. MUST resolve before the override is sent — see the ordering note below. */
   readonly loadBlank: () => Promise<void>;
-  /** Evaluate `HOST_HINTS_EXPR` in the tab. May reject; a failure degrades, it never throws out. */
-  readonly readHostHints: () => Promise<unknown>;
   /** Send a CDP command on this tab's already-attached debugger. */
   readonly sendCdp: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   /** Loud, operator-visible warning (stderr — never stdout). */
   readonly warn: (line: string) => void;
+  /** Per-step bound. Nothing here may hold a session open; 5s is generous for two local CDP round-trips. */
+  readonly timeoutMs?: number;
 }
 
 /**
@@ -235,23 +284,16 @@ export interface ApplyUaIdentityDeps {
  * Refusing the session instead would trade a legitimacy regression for an outage.
  */
 export async function applyUaIdentityToTab(deps: ApplyUaIdentityDeps): Promise<boolean> {
-  await deps.loadBlank();
-
-  let hints: HostHints | null = null;
+  const ms = deps.timeoutMs ?? 5000;
   try {
-    hints = parseHostHints(await deps.readHostHints());
-  } catch {
-    hints = null;
-  }
-  if (!hints) {
-    // Not fatal, but it does mean high-entropy hints go out emptier than the engine would send them.
-    deps.warn('[studio] could not read this host\'s client hints; high-entropy hints will be omitted\n');
-  }
-
-  try {
-    await deps.sendCdp('Emulation.setUserAgentOverride', {
-      ...uaOverrideParams(deps.identity, hints, deps.platform),
-    } as unknown as Record<string, unknown>);
+    await withTimeout(deps.loadBlank(), ms, 'blank-page load');
+    await withTimeout(
+      deps.sendCdp('Emulation.setUserAgentOverride', {
+        ...uaOverrideParams(deps.identity, deps.hints, deps.platform),
+      } as unknown as Record<string, unknown>),
+      ms,
+      'identity override',
+    );
     return true;
   } catch (err) {
     deps.warn(
