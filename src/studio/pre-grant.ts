@@ -27,6 +27,16 @@ export interface PreGrantEntry {
 
 export class PreGrantStore {
   private entries: PreGrantEntry[] = [];
+  /**
+   * S9 / D9: origins the human has approved the agent SPENDING THEIR SIGNED-IN IDENTITY on, this session.
+   *
+   * Deliberately the same store rather than a fourth consent shape: it inherits the whole bright line
+   * above unchanged — closure-local in the host, off the session object, per-session, EMPTY by default,
+   * written only by the human `{t:'grant'}` channel. An agent-spawned background session therefore starts
+   * empty and STAYS empty until a human grants, which is what makes the no-human path a refusal rather
+   * than an implicit yes.
+   */
+  private authenticatedUse = new Set<string>();
 
   /** The number of live grant entries (0 by default — the fail-closed baseline). */
   get size(): number {
@@ -47,6 +57,30 @@ export class PreGrantStore {
   /** Revoke all grants this session. */
   clear(): void {
     this.entries = [];
+    this.authenticatedUse.clear();
+  }
+
+  /**
+   * S9 / D9: the human approved agent use of a signed-in origin for this session. HOST-ONLY caller — the
+   * same `{t:'grant'}` WS handler that writes the action grants above. Idempotent.
+   */
+  allowAuthenticatedUse(origin: string): void {
+    if (origin) this.authenticatedUse.add(origin);
+  }
+
+  /** Has the human approved agent use of this signed-in origin this session? Read pull-at-eval at the gate. */
+  hasAuthenticatedUse(origin: string): boolean {
+    return origin !== '' && this.authenticatedUse.has(origin);
+  }
+
+  /** Revoke one authenticated-use approval (human-driven). */
+  revokeAuthenticatedUse(origin: string): void {
+    this.authenticatedUse.delete(origin);
+  }
+
+  /** Enumeration-safe snapshot of the approved signed-in origins (for surfacing the active scope to the human). */
+  authenticatedUseSnapshot(): string[] {
+    return [...this.authenticatedUse].sort();
   }
 
   /**

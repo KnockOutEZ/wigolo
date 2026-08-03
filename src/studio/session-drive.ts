@@ -2,6 +2,7 @@ import { navigateSession, type NavigableBrowser } from './nav.js';
 import { policyForHolder, type NavGrant } from './nav-policy.js';
 import type { ControlParty } from './control-token.js';
 import type { CaptureResult } from './capture/artifacts.js';
+import { checkAgentDrive, type AgentDriveGate } from './agent-drive-gate.js';
 
 /**
  * D19 — the host-injected SESSION DRIVE SEAM.
@@ -18,7 +19,9 @@ import type { CaptureResult } from './capture/artifacts.js';
  */
 
 /** The result of a gated session navigation — mirrors the act handler's navigate verdict shape. */
-export type GatedNavResult = { ok: true } | { ok: false; reason: string; currentEpoch?: number };
+export type GatedNavResult =
+  | { ok: true }
+  | { ok: false; reason: string; currentEpoch?: number; error_reason?: string; hint?: string };
 
 /** The narrow control-token view `gatedNavigate` needs (the real ControlToken satisfies it). */
 export interface DriveControlToken {
@@ -77,6 +80,12 @@ export interface SessionDriveDeps {
   readHtml: () => Promise<string>;
   /** The host's live credential-context probe (the same one observe/marks/capture read). */
   isCredentialContext: () => Promise<boolean>;
+  /**
+   * S9 / D9 — the per-origin pacing budget + authenticated-use consent gate, charged on every agent-driven
+   * navigation. REQUIRED: an optional gate defaulting to "allow" would silently unpace a new drive, and the
+   * budget is the rail that bounds the account-ban blast radius.
+   */
+  driveGate: AgentDriveGate;
   /** Persist content_trusted=0 (captureFromPage); resolves + applies the credential-context exclusion. */
   insert: (args: { url: string; title: string; markdown: string }) => Promise<CaptureResult>;
 }
@@ -94,6 +103,11 @@ export function createSessionDrive(deps: SessionDriveDeps): SessionDrive {
       // GATE before acting (host-authoritative): the human holding ⇒ refuse, return the live epoch to resync.
       const gate = deps.controlToken.assertCanDrive('agent');
       if (!gate.ok) return { ok: false, reason: 'not_holder', currentEpoch: gate.currentEpoch };
+      // D9: pace every origin, then require a human grant before spending their signed-in identity. Checked
+      // AFTER the control gate (a navigation the human has already vetoed should not spend budget) and
+      // BEFORE the nav itself.
+      const d9 = await checkAgentDrive(deps.driveGate, url);
+      if (!d9.ok) return { ok: false, reason: d9.reason, error_reason: d9.error_reason, hint: d9.hint };
       const gateEpoch = deps.controlToken.epoch;
       // EPOCH FENCE on entry (backstop) + SINGLE-SOURCE POLICY off the SAME grant + SSRF inside navigateSession.
       const r = await navigateSession(deps.browser, url, policyForHolder('agent', deps.grant), {

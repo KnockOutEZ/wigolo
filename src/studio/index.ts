@@ -119,6 +119,15 @@ export {
   ANONYMOUS_ORIGINS_KEY,
 } from './auth-origin-store.js';
 export type { WriterParty, OverrideKind } from './auth-origin-store.js';
+export { projectCookies } from './authenticated-origin.js';
+export type { RawCookie } from './authenticated-origin.js';
+// S9/D9 — the pacing budget, the shared agent-drive gate, and the local escalation counters.
+export { OriginBudget, DEFAULT_ORIGIN_BUDGET, budgetOrigin, budgetRefusal } from './origin-budget.js';
+export type { OriginBudgetVerdict, OriginBudgetEntry } from './origin-budget.js';
+export { checkAgentDrive } from './agent-drive-gate.js';
+export type { AgentDriveGate, AgentDriveVerdict, AgentDriveRefusal } from './agent-drive-gate.js';
+export { bumpEscalationCounter, readEscalationCounters, formatEscalationCounterLines } from './escalation-counters.js';
+export type { EscalationCounters, EscalationCounterKey } from './escalation-counters.js';
 export { createLoginCapture, scopeStorageStateToOrigin, isEmptyStorageState } from './login-capture.js';
 export type { ProfilePersist, OriginMismatch } from './login-capture.js';
 export { ProfileStore, ProfileKeychainUnavailableError } from './profile-store.js';

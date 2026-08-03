@@ -23,6 +23,7 @@
  * retry, which would have it fighting the human for the wheel.
  */
 import { navigateSession, type NavigableBrowser } from './nav.js';
+import { checkAgentDrive, type AgentDriveGate } from './agent-drive-gate.js';
 import { policyForHolder, type NavGrant } from './nav-policy.js';
 import type { ControlParty } from './control-token.js';
 import type { AgentInputEvent } from './input-events.js';
@@ -99,6 +100,13 @@ export interface ActHandlerDeps {
    * park path; the action does NOT execute. Absent ⇒ the action still parks (the typed refusal), just not surfaced.
    */
   park?: (item: ParkedAction) => void;
+  /**
+   * S9 / D9: the per-origin pacing budget + authenticated-use consent gate, charged on `navigate`. Shares
+   * ONE implementation with the session-drive seam (`agent-drive-gate.ts`) so the two navigation lanes
+   * cannot drift into different policies. Absent (unit tests of the pre-D9 paths) ⇒ unpaced; production
+   * hosts wire it, and the host-level tests assert that they do.
+   */
+  driveGate?: AgentDriveGate;
 }
 
 /**
@@ -259,13 +267,24 @@ export function createActHandler(
     // GATE before acting (host-authoritative).
     const gate = controlToken.assertCanDrive('agent');
     if (!gate.ok) return refused(gate.currentEpoch);
+    // Captured BEFORE the D9 await below, so a reclaim during a grant-card wait advances the epoch past this
+    // value and the beforeNavigate fence refuses the nav. Capturing it after would re-baseline on the
+    // reclaim and quietly defeat the fence.
     const gateEpoch = controlToken.epoch;
 
-    // INVARIANT: this gate→navigate path MUST stay synchronous up to navigateSession —
-    // there is no await between assertCanDrive above and the CDP nav command, so on the
-    // single-threaded host a reclaim cannot interleave into the gate→start window. The
-    // beforeNavigate epoch fence below is the BACKSTOP: if a future edit introduces an
-    // await here, the fence still refuses a nav whose grant was revoked mid-window.
+    // D9: pace every origin, then require a human grant before spending their signed-in identity. This
+    // introduces the one await in the gate→navigate window that the invariant below anticipates: the
+    // beforeNavigate epoch fence is exactly the backstop for it, as on the click path's resolve await.
+    if (deps.driveGate) {
+      const d9 = await checkAgentDrive(deps.driveGate, url);
+      if (!d9.ok) return { error_reason: d9.error_reason, hint: d9.hint };
+    }
+
+    // INVARIANT (amended in S9): this path WAS synchronous from assertCanDrive to the CDP nav command, so a
+    // reclaim could not interleave into the gate→start window at all. D9's grant card breaks that by
+    // construction — a card can be open for as long as the human takes to answer — so the beforeNavigate
+    // epoch fence is now the PRIMARY protection here rather than a backstop, and `gateEpoch` is captured
+    // above the await for exactly that reason. Any further await inserted here inherits the same fence.
     const r = await navigateSession(browser, url, policyForHolder('agent', grant), {
       beforeNavigate: () => controlToken.holder === 'agent' && controlToken.epoch === gateEpoch,
     });

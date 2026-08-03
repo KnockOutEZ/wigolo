@@ -109,6 +109,9 @@ async function createWindow(): Promise<void> {
       const img = await wc.capturePage(rect);
       return { png: img.toPNG(), url: wc.getURL(), title: wc.getTitle() };
     },
+    // S9/D9 §5.1: a card is answerable only when a human can see it. A hidden or minimised window is the
+    // background case the amended spec calls the NORMAL path for scheduled work, not an edge case.
+    approvalSurfaceAttached: () => !win.isDestroyed() && win.isVisible() && !win.isMinimized(),
     onParked: (notice) => {
       const dto: PendingApprovalDto = { id: notice.approval_id, action: notice.action, risk: notice.risk };
       win.webContents.send(IPC.approvalParked, dto);

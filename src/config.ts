@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseBrowserTypes } from './fetch/browser-types.js';
+import { DEFAULT_ORIGIN_BUDGET } from './studio/origin-budget.js';
 import type { BrowserType } from './types.js';
 import {
   readPersistedConfig,
@@ -22,6 +23,12 @@ export interface Config {
   fetchMaxRetries: number;
   maxRedirects: number;
   fetchAllowPrivate: boolean;
+  /**
+   * S9/D9: how many agent-driven navigations one browser session may make to a single origin. The rail that
+   * bounds how automated the agent can make an account look. The default is an admitted PLACEHOLDER pending
+   * the escalation-rate data this phase starts collecting — not a considered number.
+   */
+  studioOriginBudget: number;
   playwrightLoadTimeoutMs: number;
   playwrightNavTimeoutMs: number;
   /** Upper bound on the browser tier's challenge-completion poll. A detected
@@ -648,6 +655,7 @@ export function getConfig(): Config {
     fetchMaxRetries: envInt('FETCH_MAX_RETRIES', 2, settings, 'fetchMaxRetries'),
     maxRedirects: envInt('MAX_REDIRECTS', 5, settings, 'maxRedirects'),
     fetchAllowPrivate: envBool('WIGOLO_FETCH_ALLOW_PRIVATE', false, settings, 'fetchAllowPrivate'),
+    studioOriginBudget: envInt('WIGOLO_STUDIO_ORIGIN_BUDGET', DEFAULT_ORIGIN_BUDGET, settings, 'studioOriginBudget'),
     playwrightLoadTimeoutMs: envInt('PLAYWRIGHT_LOAD_TIMEOUT_MS', 15000, settings, 'playwrightLoadTimeoutMs'),
     playwrightNavTimeoutMs: envInt('PLAYWRIGHT_NAV_TIMEOUT_MS', 30000, settings, 'playwrightNavTimeoutMs'),
     challengeCompletionTimeoutMs: envInt('WIGOLO_CHALLENGE_COMPLETION_MS', 15000, settings, 'challengeCompletionTimeoutMs'),

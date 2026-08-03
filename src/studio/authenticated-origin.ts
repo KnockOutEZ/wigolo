@@ -45,6 +45,44 @@ export interface CookieFacts {
   session: boolean;
 }
 
+/**
+ * A raw cookie as either browser backend hands it over. Both shapes are accepted because the two hosts read
+ * different jars: the browser-engine backend reports session scope as `expires: -1`, the app's backend as
+ * `session: true`. `value` is accepted in the type only so a caller can pass its own records straight in —
+ * `projectCookies` drops it, which is the one place the secret is discarded.
+ */
+export interface RawCookie {
+  name: string;
+  domain: string;
+  httpOnly?: boolean;
+  secure?: boolean;
+  /** Browser-engine backend: -1 (or absent) means session-scoped. */
+  expires?: number;
+  /** App backend: an absolute expiry; absent means session-scoped. */
+  expirationDate?: number;
+  /** App backend: an explicit session-scope flag. */
+  session?: boolean;
+  value?: string;
+}
+
+/**
+ * Project raw cookies down to the facts the predicate reads, DROPPING the value. This is the choke point that
+ * makes obligation 7 structural rather than a habit: past this call there is no value left to leak.
+ */
+export function projectCookies(cookies: readonly RawCookie[]): CookieFacts[] {
+  return cookies.map((c) => ({
+    domain: c.domain ?? '',
+    name: c.name ?? '',
+    httpOnly: c.httpOnly === true,
+    secure: c.secure === true,
+    session:
+      c.session === true ||
+      (c.session === undefined &&
+        (c.expirationDate === undefined || c.expirationDate <= 0) &&
+        (c.expires === undefined || c.expires <= 0)),
+  }));
+}
+
 export interface AuthenticatedOriginOverrides {
   /** Human-marked authenticated (covers the SPA/bearer false-negative class). */
   authenticated?: ReadonlySet<string>;

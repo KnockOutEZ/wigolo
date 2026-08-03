@@ -31,7 +31,12 @@ import type { ParkedAction } from '../studio/act.js';
 import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
 import { isCredentialContext } from '../studio/credential.js';
-import { recordAuthOrigin } from '../studio/auth-origin-store.js';
+import { recordAuthOrigin, readAuthOriginLedger, readOriginOverrides } from '../studio/auth-origin-store.js';
+import { isAuthenticatedOrigin, projectCookies, type CookieFacts } from '../studio/authenticated-origin.js';
+import { OriginBudget } from '../studio/origin-budget.js';
+import { bumpEscalationCounter } from '../studio/escalation-counters.js';
+import type { AgentDriveGate } from '../studio/agent-drive-gate.js';
+import { readPersistedConfig, defaultConfigPath } from '../persisted-config.js';
 import { LoginHandoff } from '../studio/handoff.js';
 import { createLoginCapture, type OriginMismatch } from '../studio/login-capture.js';
 import { UNTRUSTED_STUDIO_NOTICE, neutralizeMarkers } from '../security/untrusted.js';
@@ -195,6 +200,8 @@ export interface StudioHost {
   grantAgentPrivateNav: (on: boolean) => void;
   /** S7: the pre-grant authorization scope store (closure-local). Exposed for tests to assert the {t:'grant'} WS-human write boundary; the agent holds no reference to it. */
   preGrant: PreGrantStore;
+  /** S9/D9: the per-origin pacing budget for this session. Exposed so status output and tests can read the live counters — a limit the user cannot see is indistinguishable from a bug when it fires. */
+  originBudget: OriginBudget;
   /** D19: the host-injected session-drive accessor (mirrors studioHost). Exposed for tests; resolves the live session's gated drive by id. */
   studioSessions: StudioSessionsAccessor;
   /** D19: the primary session's drive seam (gated navigate + current-page read + trusted-0 insert). Exposed for tests. */
@@ -399,6 +406,37 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // channel, exposed via host.onGrant). A risky action with no matching grant PARKS: enqueued for the human's
   // batch review and surfaced as a {t:'parked'} broadcast (the agent is not blocked; the action does not execute).
   const preGrant = new PreGrantStore();
+
+  // S9/D9: ONE gate object shared by the act-navigate path and the session-drive seam, so the two navigation
+  // lanes cannot drift into different pacing/consent policies. The budget applies to EVERY origin the agent
+  // drives; only the grant card consults F5. `approvalSurfaceAttached` reads the LIVE client count — a
+  // background session with nobody watching fails fast instead of waiting out a card nobody can see.
+  const originBudget = new OriginBudget({ limit: getConfig().studioOriginBudget });
+  const driveGate: AgentDriveGate = {
+    budget: originBudget,
+    preGrant,
+    isAuthenticatedOrigin: async (origin) => {
+      // The session browser owns its own cookie jar. This read is HOST-ONLY (the same read-back the login
+      // handoff uses) and is projected through projectCookies, which drops every value before the predicate
+      // ever sees it. A read failure means clause (b) cannot fire — the ledger and overrides still can.
+      let cookies: CookieFacts[] = [];
+      try {
+        cookies = projectCookies((await sessionBrowser.storageState()).cookies);
+      } catch {
+        /* browser not started / mid-recovery */
+      }
+      return isAuthenticatedOrigin({
+        origin,
+        cookies,
+        ledger: readAuthOriginLedger(),
+        overrides: readOriginOverrides(readPersistedConfig(defaultConfigPath()).settings),
+      });
+    },
+    approvalSurfaceAttached: () => session.clients > 0,
+    requestApproval: (origin) => approvals.request({ action: 'use signed-in site', risk: 'credential', target: { url: origin } }),
+    bump: (key) => bumpEscalationCounter(key),
+  };
+
   const park = (item: ParkedAction): void => {
     hub.broadcast(session.id, { t: 'parked', action: item.action, risk: item.risk, ...(item.domain ? { domain: item.domain } : {}), ...(item.ref ? { ref: item.ref } : {}) });
   };
@@ -853,6 +891,8 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     // no match parks (surfaced via the broadcast above, not executed). preGrant is read pull-at-eval here.
     preGrant,
     park,
+    // S9/D9: the shared pacing + consent gate (same object the session-drive seam uses).
+    driveGate,
     currentUrl: () => {
       try {
         return sessionBrowser.page.url();
@@ -917,6 +957,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     },
     readHtml: readSessionHtml,
     insert: insertSessionContent,
+    driveGate,
     // S9: the SAME shared probe observe/marks/capture read — so the bridge's credential exclusion and the
     // artifact rail's cannot drift apart.
     isCredentialContext: isCredentialPage,
@@ -1015,7 +1056,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   const handle: SessionHandle = { id: session.id, endpoint, token, pid: process.pid, instanceId };
   writeHandle(handle, opts.dataDir);
 
-  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, preGrant, studioSessions, sessionDrive, handoff: loginHandoff, hub, handle, endpoint, onComment: (m) => onCommentHandler?.(m), onGrant: (m) => onGrantHandler?.(m) };
+  return { daemon, registry, idleSweeper, sessionMetrics, session, sessionBrowser, controller, navInterceptor, navigate, mark, onMarkResolved, marks: () => markStore.list(), healMark, marksView, marksSnapshot, sessionsSnapshot, generalizeMark, marksTool, observe: observeWithNarration, act: actWithHandoff, studioHandlers, audit: auditLog, approvals, grantAgentPrivateNav, preGrant, originBudget, studioSessions, sessionDrive, handoff: loginHandoff, hub, handle, endpoint, onComment: (m) => onCommentHandler?.(m), onGrant: (m) => onGrantHandler?.(m) };
 }
 
 /** The teardown-relevant slice of a StudioHost (structural — StudioHost satisfies it). */

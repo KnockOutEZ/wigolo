@@ -90,7 +90,12 @@ function markDebugger(opts: { hostileName?: boolean; overlay?: boolean; credRef?
 }
 
 /** Build a host wired to fake driven tabs; returns the host plus the parked-approval sink + navigate spies. */
-function makeHost(config?: { sessionCap?: number }, dbg: () => DebuggerLike = fakeDebugger, broker = makeFakeBroker()) {
+function makeHost(
+  config?: { sessionCap?: number; dataDir?: string },
+  dbg: () => DebuggerLike = fakeDebugger,
+  broker = makeFakeBroker(),
+  hostOver: { approvalSurfaceAttached?: () => boolean; cookies?: Array<Record<string, unknown>> } = {},
+) {
   const engine = createDriveEngine();
   const parked: ParkedApprovalNotice[] = [];
   const said: Array<{ text: string; markId?: string; ts: number; sessionId: string }> = [];
@@ -115,12 +120,13 @@ function makeHost(config?: { sessionCap?: number }, dbg: () => DebuggerLike = fa
         browser: { navigate: (u) => state.navigate(u) },
         currentUrl: () => state.url,
         readHtml: async () => '<html></html>',
-        storageState: async () => ({ cookies: [], origins: [] }),
+        storageState: async () => ({ cookies: (hostOver.cookies ?? []) as never, origins: [] }),
         applyStorageState: async () => {},
       };
       return tab;
     },
     closeTab: (tabId) => { const t = tabs.get(tabId); if (t) t.closed = true; void engine.detachTab(tabId); },
+    ...(hostOver.approvalSurfaceAttached ? { approvalSurfaceAttached: hostOver.approvalSurfaceAttached } : {}),
   });
   return { host, parked, said, sessionChanges, tabs, broker };
 }
@@ -571,5 +577,79 @@ describe('createStudioHost — localhost grant (§13.8c human-control-flip)', ()
     await host.handlers.close({ session_id: a.session_id });
     expect(host.getActiveSessionId()).toBeNull();
     expect(sessionChanges.at(-1)).toBeNull();
+  });
+});
+
+/**
+ * S9 / D9 — the authenticated-use grant card, at the host boundary.
+ *
+ * The unit tests for the gate cover its logic; what these cover is the wiring that a unit test cannot see:
+ * that the app's idea of "is a human attached" is the WINDOW's visibility, not the session's liveness. That
+ * distinction is the whole difference between a card and a hang — a background session in a hidden window is
+ * perfectly live and has nobody watching, and the amended §5.1 calls that the normal case for scheduled work.
+ */
+describe('createStudioHost — D9 authenticated-use card', () => {
+  const SIGNED_IN_COOKIE = [{ name: 'sid', domain: 'signed.example', httpOnly: true, secure: true, expires: -1 }];
+
+  it('fails fast on an UNATTENDED host instead of parking a card nobody can answer', async () => {
+    const { host, parked } = makeHost(undefined, fakeDebugger, makeFakeBroker(), {
+      approvalSurfaceAttached: () => false,
+      cookies: SIGNED_IN_COOKIE,
+    });
+    const s = await host.handlers.spawn({});
+    const id = (s as { session_id: string }).session_id;
+    const r = await host.handlers.act({ action: 'navigate', url: 'https://signed.example/' });
+    expect('error_reason' in r).toBe(true);
+    // No card was surfaced — the point is that it did not wait for one.
+    expect(parked.filter((p) => p.action === 'use signed-in site')).toEqual([]);
+    await host.handlers.close({ session_id: id });
+  });
+
+  it('with NO attachment probe wired it is unattended — guessing "attended" is what causes the hang', async () => {
+    const { host } = makeHost(undefined, fakeDebugger, makeFakeBroker(), { cookies: SIGNED_IN_COOKIE });
+    await host.handlers.spawn({});
+    const r = await host.handlers.act({ action: 'navigate', url: 'https://signed.example/' });
+    expect('error_reason' in r).toBe(true);
+  });
+
+  it('surfaces a card on an ATTENDED host and navigates once the human allows it', async () => {
+    const { host, parked, tabs } = makeHost(undefined, fakeDebugger, makeFakeBroker(), {
+      approvalSurfaceAttached: () => true,
+      cookies: SIGNED_IN_COOKIE,
+    });
+    await host.handlers.spawn({});
+    const pending = host.handlers.act({ action: 'navigate', url: 'https://signed.example/' });
+    // The card blocks, so the decision has to arrive from the human side while the act is in flight.
+    await vi.waitFor(() => expect(parked.some((p) => p.action === 'use signed-in site')).toBe(true));
+    const card = parked.find((p) => p.action === 'use signed-in site')!;
+    host.resolveApproval(card.approval_id, 'allow');
+    const r = await pending;
+    expect(r).toMatchObject({ ok: true, action: 'navigate' });
+    expect([...tabs.values()][0].navigate).toHaveBeenCalledWith('https://signed.example/');
+  });
+
+  it('a denied card refuses the navigation and the tab never loads the url', async () => {
+    const { host, parked, tabs } = makeHost(undefined, fakeDebugger, makeFakeBroker(), {
+      approvalSurfaceAttached: () => true,
+      cookies: SIGNED_IN_COOKIE,
+    });
+    await host.handlers.spawn({});
+    const pending = host.handlers.act({ action: 'navigate', url: 'https://signed.example/' });
+    await vi.waitFor(() => expect(parked.some((p) => p.action === 'use signed-in site')).toBe(true));
+    host.resolveApproval(parked.find((p) => p.action === 'use signed-in site')!.approval_id, 'deny');
+    const r = await pending;
+    expect('error_reason' in r).toBe(true);
+    expect([...tabs.values()][0].navigate).not.toHaveBeenCalledWith('https://signed.example/');
+  });
+
+  it('does NOT card an anonymous origin — an analytics cookie must not trigger a consent prompt', async () => {
+    const { host, parked } = makeHost(undefined, fakeDebugger, makeFakeBroker(), {
+      approvalSurfaceAttached: () => true,
+      cookies: [{ name: '_ga', domain: 'anon.example', httpOnly: false, secure: true, expires: 9e9 }],
+    });
+    await host.handlers.spawn({});
+    const r = await host.handlers.act({ action: 'navigate', url: 'https://anon.example/' });
+    expect(r).toMatchObject({ ok: true });
+    expect(parked.filter((p) => p.action === 'use signed-in site')).toEqual([]);
   });
 });

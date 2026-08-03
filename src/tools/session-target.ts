@@ -71,6 +71,12 @@ function navError(stage: string, nav: Extract<GatedNavResult, { ok: false }>): {
       stage,
     };
   }
+  // D9 refusals (pacing budget, authenticated-use grant) already carry their own reason + hint, with the
+  // live counters in the text. Passing them through verbatim is the whole point of a VISIBLE budget: a
+  // generic "navigation did not complete" would read as a bug.
+  if (nav.error_reason) {
+    return { ok: false, error: nav.reason, error_reason: nav.error_reason, stage, ...(nav.hint ? { hint: nav.hint } : {}) };
+  }
   return { ok: false, error: nav.reason, error_reason: `Session navigation did not complete (${nav.reason}).`, stage };
 }
 

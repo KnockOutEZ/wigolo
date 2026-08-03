@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import {
@@ -25,10 +25,20 @@ import {
   neutralizeMarkers,
   isCredentialContext,
   recordAuthOrigin,
+  readAuthOriginLedger,
+  readOriginOverrides,
+  isAuthenticatedOrigin,
+  projectCookies,
+  OriginBudget,
+  DEFAULT_ORIGIN_BUDGET,
+  bumpEscalationCounter,
   LoginHandoff,
   createLoginCapture,
   SessionAuditLog,
   UNTRUSTED_STUDIO_NOTICE,
+  type AgentDriveGate,
+  type CookieFacts,
+  type AuthenticatedOriginOverrides,
   type StudioHostHandlers,
   type StudioSessionsAccessor,
   type SessionDrive,
@@ -87,6 +97,8 @@ import type { QuoteMsg, RegionMsg, CaptureDto, KnowledgeHit, AuditDto } from '..
 const DEFAULT_INLINE_BUDGET = 6000;
 const DEFAULT_SPILL_MAX_BYTES = 64 * 1024 * 1024;
 const DEFAULT_SESSION_CAP = 8;
+/** S9/D9: fail-closed wait for an authenticated-use card, mirroring the risky-act approval timeout. */
+const APPROVAL_TIMEOUT_MS = 120_000;
 
 export type ApprovalRisk = 'money' | 'credential' | 'destructive';
 
@@ -162,6 +174,15 @@ export interface StudioHostDeps {
   closeTab: (tabId: string) => void;
   /** Surface a parked risky act to the human approval card (never auto-allowed). */
   onParked: (notice: ParkedApprovalNotice) => void;
+  /**
+   * S9/D9 §5.1 — is there a human who can actually SEE and answer an approval card right now? Wired to the
+   * window's visibility: a `--hidden` window, a minimised one, or a headless host has no approval surface,
+   * and D9's card must fail fast there rather than block on an answer that cannot arrive.
+   *
+   * FAIL-CLOSED when absent: a host that does not supply it counts as unattended. Guessing "attended" is
+   * precisely what turns a safety check into a hang.
+   */
+  approvalSurfaceAttached?: () => boolean;
   /** P4: the agent posted a chat message (studio_say) → push it to the human's chat rail. */
   onSay?: (msg: { text: string; markId?: string; ts: number; sessionId: string }) => void;
   /** P4: the active session changed (open/close) → the renderer re-backfills captures + resets per-session UI. */
@@ -262,6 +283,12 @@ interface ParkedRecord {
   domain: string | undefined;
   actionType: string;
   riskTier: RiskTier;
+  /**
+   * S9/D9: set for an authenticated-use grant card, which BLOCKS its navigation rather than parking it for a
+   * later re-issue. The waiter is settled from `resolveApproval` — the human's card click — so there is still
+   * exactly one place a decision can enter the host.
+   */
+  authenticatedUse?: { origin: string; settle: (decision: 'approved' | 'refused') => void };
 }
 
 interface MarkComment {
@@ -340,7 +367,28 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
   const spillMaxBytes = cfg.spillMaxBytes ?? DEFAULT_SPILL_MAX_BYTES;
   // Region-clip media root — the SAME data dir the broker uses (index.ts passes WIGOLO_DATA_DIR when set,
   // else both default to ~/.wigolo). The DB row stores a pointer; the PNG bytes live here (§6).
-  const mediaRoot = join(cfg.dataDir ?? join(homedir(), '.wigolo'), 'studio', 'media');
+  // ONE resolved data dir for every host-side file the app owns. Resolved here rather than left undefined
+  // for core's getConfig() to fall back on, so the app never silently reads a different profile than the one
+  // it was started with.
+  const dataDir = cfg.dataDir ?? process.env.WIGOLO_DATA_DIR ?? join(homedir(), '.wigolo');
+  const mediaRoot = join(dataDir, 'studio', 'media');
+
+  // S9/D9 — the per-origin budget limit and the human authenticated/anonymous origin marks. Read from the
+  // env + the persisted config the CLI writes, NOT from core's getConfig(): resolving the full core config in
+  // this process would pull the native cache DB, which cannot load here.
+  const budgetLimit = ((): number => {
+    const raw = Number(process.env.WIGOLO_STUDIO_ORIGIN_BUDGET);
+    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_ORIGIN_BUDGET;
+  })();
+  /** Re-read per evaluation so a `wigolo config --anonymous-origin` takes effect without an app restart. */
+  const authOriginOverrides = (): AuthenticatedOriginOverrides => {
+    try {
+      const path = process.env.WIGOLO_CONFIG_PATH ?? join(homedir(), '.wigolo', 'config.json');
+      return readOriginOverrides((JSON.parse(readFileSync(path, 'utf-8')) as { settings?: Record<string, unknown> }).settings ?? {});
+    } catch {
+      return {};
+    }
+  };
 
   const contexts = new Map<string, SessionContext>();
   const tabToSession = new Map<string, string>();
@@ -362,6 +410,61 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     const resolve = createResolver({ snapshot, cdp: transport });
     const eventQueue = new StudioEventQueue(512);
     const preGrant = new PreGrantStore();
+
+    // ── S9/D9: ONE pacing + consent gate, shared by act-navigate and the session-drive seam ──
+    // The budget is charged for EVERY origin, authenticated or not, and never consults F5 — so a predicate
+    // false negative costs the prompt, never the rail. Only the card consults F5.
+    const originBudget = new OriginBudget({ limit: budgetLimit });
+    const driveGate: AgentDriveGate = {
+      budget: originBudget,
+      preGrant,
+      isAuthenticatedOrigin: async (origin) => {
+        // HOST-ONLY cookie read (the same read-back the login handoff uses), projected through
+        // projectCookies, which drops every value before the predicate sees it. A read failure means clause
+        // (b) cannot fire; the ledger and the human overrides still can.
+        let cookies: CookieFacts[] = [];
+        try {
+          cookies = projectCookies((await tab.storageState()).cookies);
+        } catch {
+          /* tab gone / mid-recovery */
+        }
+        return isAuthenticatedOrigin({
+          origin,
+          cookies,
+          ledger: readAuthOriginLedger(dataDir),
+          overrides: authOriginOverrides(),
+        });
+      },
+      // The card is answerable only if a human can see it. A live session context is NOT that signal — a
+      // background session in a hidden window is perfectly "live" and has nobody watching, which is how a
+      // safety check becomes a hang. Fail-closed: no probe wired ⇒ unattended.
+      approvalSurfaceAttached: () => (deps.approvalSurfaceAttached?.() ?? false) && contexts.get(sessionId)?.status === 'live',
+      requestApproval: (origin) =>
+        new Promise<'approved' | 'refused'>((resolve) => {
+          const approvalId = randomUUID();
+          // Bounded even on the attended path: the window can be closed, or the human can simply walk away,
+          // after the card is up. approvals.ts applies the same fail-closed timeout to the risky-act cards;
+          // without one here a single unanswered card would pin an agent forever.
+          const timer = setTimeout(() => {
+            if (!parked.delete(approvalId)) return;
+            resolve('refused');
+          }, APPROVAL_TIMEOUT_MS);
+          if (typeof timer.unref === 'function') timer.unref();
+          parked.set(approvalId, {
+            approvalId,
+            sessionId,
+            domain: origin,
+            actionType: 'authenticated-use',
+            riskTier: 'credential',
+            authenticatedUse: {
+              origin,
+              settle: (decision) => { clearTimeout(timer); resolve(decision); },
+            },
+          });
+          deps.onParked({ approval_id: approvalId, action: 'use signed-in site', risk: 'credential', session_id: sessionId });
+        }),
+      bump: (key) => bumpEscalationCounter(key, dataDir),
+    };
 
     // HOISTED (P5): the shared credential-context probe — the SAME one observe/marks use. The login-handoff
     // needs it (pageContext), and observe/marksTool read it below; it depends only on snapshot + tab, so it
@@ -406,6 +509,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       currentUrl: tab.currentUrl,
       preGrant,
       audit,
+      driveGate,
       park: (item: ParkedAction) => {
         const approvalId = randomUUID();
         const rec: ParkedRecord = { approvalId, sessionId, domain: item.domain, actionType: item.action, riskTier: item.risk };
@@ -460,6 +564,7 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       // S9: the SAME shared probe observe/marks/capture read. The bridge does not persist through the
       // artifact rail, so this is where its credential exclusion comes from.
       isCredentialContext: isCredentialPage,
+      driveGate,
     });
 
     // ── P2 marking (in-memory per session; DB persistence is P3, native cache can't load in Electron) ──
@@ -1014,6 +1119,15 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       parked.delete(approvalId);
       const ctx = contexts.get(rec.sessionId);
       if (!ctx || ctx.status === 'closed') return;
+      // S9/D9 authenticated-use card: settle the BLOCKED navigation. ALLOW records the origin on the same
+      // per-session pre-grant store the action grants use, so the card fires once per origin per session,
+      // and the store keeps its human-only writer — this call is only ever the human's card click.
+      if (rec.authenticatedUse) {
+        if (decision === 'allow') ctx.preGrant.allowAuthenticatedUse(rec.authenticatedUse.origin);
+        rec.authenticatedUse.settle(decision === 'allow' ? 'approved' : 'refused');
+        ctx.eventQueue.enqueue({ type: 'approval', approval_id: approvalId, decision });
+        return;
+      }
       // ALLOW adds a matching pre-grant so the agent's re-issued act passes the risk gate; DENY adds none.
       // Either way the decision rides the next studio_observe drain. Never auto-allowed — this is only ever
       // called from the human's card click.

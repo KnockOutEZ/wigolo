@@ -70,6 +70,11 @@ function navError(nav: Extract<GatedNavResult, { ok: false }>): StudioFetchResul
       error_reason: 'That address is blocked for the agent (cloud-internal is never allowed; localhost/private needs a human grant).',
     };
   }
+  // D9 refusals arrive with their own reason + hint (live counters included). Pass them through verbatim —
+  // a visible budget that reports itself as a generic nav failure is not visible.
+  if (nav.error_reason) {
+    return { ok: false, error: nav.reason, error_reason: nav.error_reason, ...(nav.hint ? { hint: nav.hint } : {}) };
+  }
   return { ok: false, error: nav.reason, error_reason: `Session navigation did not complete (${nav.reason}).` };
 }
 

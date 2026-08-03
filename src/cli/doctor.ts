@@ -23,6 +23,7 @@ import type { EngineEntry } from '../search/core/engine-base.js';
 import { isTelemetryEnabled } from './telemetry.js';
 import { readPersistedConfig } from '../persisted-config.js';
 import { authenticatedOriginCount } from '../studio/auth-origin-store.js';
+import { readEscalationCounters, formatEscalationCounterLines } from '../studio/escalation-counters.js';
 import { allProviders, providerEnvVar, providerKeyFromEnv, selectProvider } from '../integrations/cloud/llm/select.js';
 import { resolveModel, providerDefaultModel, providerModelEnvVar } from '../integrations/cloud/llm/model-select.js';
 import { readKey } from '../security/key-store.js';
@@ -1174,6 +1175,8 @@ function checkAuthenticatedOrigins(dataDir: string): void {
     const configPath = process.env.WIGOLO_CONFIG_PATH ?? join(homedir(), '.wigolo', 'config.json');
     const count = authenticatedOriginCount(readPersistedConfig(configPath).settings, dataDir);
     out(buildAuthenticatedOriginLine(count));
+    out(`  Per-origin request budget: ${getConfig().studioOriginBudget} per session (WIGOLO_STUDIO_ORIGIN_BUDGET)`);
+    for (const line of formatEscalationCounterLines(readEscalationCounters(dataDir))) out(line);
   } catch {
     out('  Signed-in origins: unavailable');
   }

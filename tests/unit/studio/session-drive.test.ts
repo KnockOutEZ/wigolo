@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createSessionDrive, type DriveControlToken, type SessionDriveDeps } from '../../../src/studio/session-drive.js';
+import { OriginBudget } from '../../../src/studio/origin-budget.js';
 import type { NavigableBrowser } from '../../../src/studio/nav.js';
 import type { ControlParty } from '../../../src/studio/control-token.js';
 
@@ -48,6 +49,9 @@ function makeDrive(token: DriveControlToken, browser: NavigableBrowser) {
     readHtml: async () => '<html></html>',
     insert: async () => ({ id: 1, inserted: true, contentHash: 'x' }),
     isCredentialContext: async () => false,
+    // A budget generous enough to be irrelevant here: these two cases isolate the control gate and the epoch
+    // fence, so D9 must not be the thing that blocks them.
+    driveGate: { budget: new OriginBudget({ limit: 1000 }) },
   };
   return createSessionDrive(deps);
 }
