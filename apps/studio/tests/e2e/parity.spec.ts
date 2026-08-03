@@ -6,6 +6,10 @@ import { tmpdir } from 'node:os';
 import { createServer, type Server, type IncomingHttpHeaders } from 'node:http';
 import { launchStudio } from './launch';
 import { readHandle, DaemonProxy } from 'wigolo/studio';
+import {
+  PLATFORM_INDEPENDENT_APIS, PLATFORM_DEPENDENT_APIS,
+  PLATFORM_INDEPENDENT_CODECS, PLATFORM_DEPENDENT_CODECS,
+} from '../helpers/parity-expectations';
 
 /**
  * THE PARITY RELEASE GATE (S9 §7).
@@ -312,18 +316,40 @@ describe.skipIf(!RUN)('browser-substrate parity gate (e2e, both window states)',
       }
     });
 
-    it('supports the full codec set the claimed Chrome major does, hev1 included — the predicted sharpest discriminator, asserted so a build-flag change reds here', () => {
+    it('supports every codec Chromium builds on every platform', () => {
       for (const [name, arm] of arms()) {
-        for (const [codec, verdict] of Object.entries(arm.agent.coherence!.codecs)) {
-          expect(verdict, `${name}: ${codec}`).toBe('probably');
+        for (const codec of PLATFORM_INDEPENDENT_CODECS) {
+          expect(arm.agent.coherence!.codecs[codec], `${name}: ${codec}`).toBe('probably');
         }
       }
     });
 
-    it('exposes every version-gated API the claimed major has — a spoofed profile is caught for MISSING the APIs its claimed version ships', () => {
+    // hev1 is the pre-settled ceiling (§4 item 5) — `probably` on macOS, empty on Linux, because HEVC
+    // is a licensing-dependent build flag and real Chrome on Linux answers the same way. What must
+    // hold is that the two tab classes agree: a codec set that differed between them would be a
+    // contradiction inside one window, which is the thing this file exists to rule out.
+    it('gives the SAME licensing-gated codec answers to a driven tab and a human tab', () => {
       for (const [name, arm] of arms()) {
-        for (const [api, present] of Object.entries(arm.agent.coherence!.gatedApis)) {
-          expect(present, `${name}: ${api} missing for the claimed major`).toBe(true);
+        for (const codec of PLATFORM_DEPENDENT_CODECS) {
+          expect(arm.human.coherence!.codecs[codec], `${name}: ${codec}`).toBe(arm.agent.coherence!.codecs[codec]);
+        }
+      }
+    });
+
+    it('exposes the version-gated APIs the claimed major ships on EVERY platform — a spoofed profile is caught for MISSING the APIs its claimed version has', () => {
+      for (const [name, arm] of arms()) {
+        for (const api of PLATFORM_INDEPENDENT_APIS) {
+          expect(arm.agent.coherence!.gatedApis[api], `${name}: ${api} missing for the claimed major`).toBe(true);
+        }
+      }
+    });
+
+    // Platform-gated (BarcodeDetector is macOS/ChromeOS-only; WebHID/WebUSB/Serial vary with the
+    // desktop environment). Absolute values need a same-platform Chrome reference CI does not have.
+    it('reports the platform-gated APIs identically to a driven tab and a human tab', () => {
+      for (const [name, arm] of arms()) {
+        for (const api of PLATFORM_DEPENDENT_APIS) {
+          expect(arm.human.coherence!.gatedApis[api], `${name}: ${api}`).toBe(arm.agent.coherence!.gatedApis[api]);
         }
       }
     });

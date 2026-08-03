@@ -7,6 +7,11 @@ import { tmpdir } from 'node:os';
 import electronPath from 'electron';
 import { studioUaIdentity, uaOverrideParams } from '../../src/main/ua-identity';
 import { hiddenWindowPresentation } from '../../src/main/hidden-mode';
+import {
+  PLATFORM_INDEPENDENT_APIS, PLATFORM_DEPENDENT_APIS,
+  PLATFORM_INDEPENDENT_CODECS, PLATFORM_DEPENDENT_CODECS,
+  linuxSpawnArgs,
+} from '../helpers/parity-expectations';
 
 /**
  * THE PARITY RELEASE GATE — the deterministic, offline, Playwright-free half (S9 §7 fixture 4).
@@ -49,7 +54,7 @@ interface Coherence {
   rafFps: number | null; intervalRatio: number | null;
 }
 interface Probe { ready: boolean; botd?: BotdVerdict; botdError?: string; coherence?: Coherence; coherenceError?: string }
-interface Arm { probe: Probe; navHeaders: IncomingHttpHeaders | null; requestsPaused: number | null }
+interface Arm { probe: Probe; navHeaders: IncomingHttpHeaders | null; requestsPaused: number | null; stderr: string }
 
 /**
  * Ask the installed Electron what Chromium it actually carries, by running its own Node with
@@ -134,7 +139,7 @@ describe.skipIf(!RUN)('parity release gate — vendored BotD, no automation harn
         const key = `${arm}-${hidden ? 'hidden' : 'visible'}`;
         const dataDir = mkdtempSync(join(tmpdir(), `wigolo-botd-${key}-`));
         const lines: string[] = [];
-        const child = spawn(String(electronPath), [PROBE_MAIN], {
+        const child = spawn(String(electronPath), [PROBE_MAIN, ...linuxSpawnArgs()], {
           env: {
             ...process.env,
             WIGOLO_DATA_DIR: dataDir,
@@ -155,6 +160,9 @@ describe.skipIf(!RUN)('parity release gate — vendored BotD, no automation harn
           probe: fx.reports.get(key) ?? { ready: false },
           navHeaders: fx.navHeaders.get(key) ?? null,
           requestsPaused: pausedLine ? (JSON.parse(pausedLine) as { requests_paused: number }).requests_paused : null,
+          // Kept so a non-reporting arm says WHY. Without it a launch failure surfaces as
+          // `{"ready":false}` with no cause, which is what the first CI run of this gate produced.
+          stderr: lines.join(''),
         });
         try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
       }
@@ -166,7 +174,9 @@ describe.skipIf(!RUN)('parity release gate — vendored BotD, no automation harn
   const arm = (k: string): Arm => {
     const a = arms.get(k);
     if (!a) throw new Error(`arm ${k} never ran`);
-    if (!a.probe.ready) throw new Error(`arm ${k} never reported: ${JSON.stringify(a.probe)}`);
+    if (!a.probe.ready) {
+      throw new Error(`arm ${k} never reported: ${JSON.stringify(a.probe)}\nchild stderr:\n${a.stderr.slice(-4000) || '(empty)'}`);
+    }
     return a;
   };
   const shipped = (): Arm[] => [arm('identity-visible'), arm('identity-hidden')];
@@ -263,20 +273,40 @@ describe.skipIf(!RUN)('parity release gate — vendored BotD, no automation harn
       }
     });
 
-    it('supports every codec the claimed major does, hev1 included — the predicted sharpest discriminator, asserted so a licensing/build-flag change reds here instead of in the field', () => {
+    it('supports every codec Chromium builds on every platform', () => {
       for (const a of shipped()) {
-        for (const [codec, verdict] of Object.entries(a.probe.coherence!.codecs)) {
-          expect(verdict, codec).toBe('probably');
+        for (const codec of PLATFORM_INDEPENDENT_CODECS) {
+          expect(a.probe.coherence!.codecs[codec], codec).toBe('probably');
         }
       }
     });
 
-    it('exposes every version-gated API the claimed major has — spoofed profiles get caught for MISSING the APIs their claimed version ships, so a claim of 150 over a smaller surface must red', () => {
+    // hev1 is THE pre-settled ceiling (spec §4 item 5): `probably` on the macOS build, empty on the
+    // Linux one, because HEVC is a licensing-dependent build flag — and real Chrome on Linux answers
+    // the same way. Asserting the macOS value cross-platform was wrong, and CI caught it. What IS
+    // assertable is that the answer does not differ between arms, since only this repo's own
+    // configuration could cause that.
+    it('gives the SAME answer for the licensing-gated codecs in every window state, even where the platform does not carry them', () => {
+      const v = arm('identity-visible').probe.coherence!.codecs;
+      const h = arm('identity-hidden').probe.coherence!.codecs;
+      for (const codec of PLATFORM_DEPENDENT_CODECS) expect(h[codec], codec).toBe(v[codec]);
+    });
+
+    it('exposes the version-gated APIs the claimed major ships on EVERY platform — spoofed profiles get caught for MISSING the APIs their claimed version has, so a claim of 150 over a smaller surface must red', () => {
       for (const a of shipped()) {
-        for (const [api, present] of Object.entries(a.probe.coherence!.gatedApis)) {
-          expect(present, `${api} missing for the claimed major`).toBe(true);
+        for (const api of PLATFORM_INDEPENDENT_APIS) {
+          expect(a.probe.coherence!.gatedApis[api], `${api} missing for the claimed major`).toBe(true);
         }
       }
+    });
+
+    // `BarcodeDetector` is macOS/ChromeOS-only in Chromium and WebHID/WebUSB/Web Serial vary with the
+    // desktop environment, so their absolute values need a same-platform real-Chrome reference that CI
+    // does not have. The cross-arm comparison is the part with teeth here.
+    it('reports the platform-gated APIs identically in every window state', () => {
+      const v = arm('identity-visible').probe.coherence!.gatedApis;
+      const h = arm('identity-hidden').probe.coherence!.gatedApis;
+      for (const api of PLATFORM_DEPENDENT_APIS) expect(h[api], api).toBe(v[api]);
     });
 
     it('keeps a real GPU renderer string and a coherent devicePixelRatio — a real renderer reporting dpr 0 is exactly the contradiction to avoid, and it is what offscreen rendering would produce', () => {
