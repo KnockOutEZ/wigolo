@@ -20,7 +20,7 @@ import { aiSolveChallenge, type ImageSolveSubType, type WidgetImage } from './ai
 import { humanSolveChallenge } from './human-solve.js';
 import { connectScrapingBrowser } from './scraping-browser.js';
 import { cdpDirectFetch } from './cdp-direct.js';
-import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, parseChromeMajor, resolveStealthLauncher, recordLaunchedChromeMajor, STEALTH_INIT_SCRIPT } from './stealth.js';
+import { resolveStealthUA, stealthLaunchArgs, stealthContextOptions, parseChromeMajor, resolveStealthLauncher, recordLaunchedChromeMajor } from './stealth.js';
 import { humanizePage } from './behavior.js';
 import { recordDomainClearance, clearDomainClearance } from '../cache/store.js';
 import { CLEARANCE_COOKIE_NAME, clearanceExpiresIso } from './clearance-reuse.js';
@@ -755,7 +755,7 @@ export class MultiBrowserPool {
       // finally.
       //
       // This setup runs OUTSIDE the main try/finally below, so any throw here
-      // (launch/newContext/addInitScript/newPage — e.g. browser not installed,
+      // (launch/newContext/newPage — e.g. browser not installed,
       // resource exhaustion, launch race) would otherwise leak the semaphore
       // slot AND orphan a launched browser. Clean up locally + rethrow. On the
       // success path the catch never runs, so the finally below stays the sole
@@ -786,11 +786,14 @@ export class MultiBrowserPool {
           launchedMajor !== null
             ? resolveStealthUA(process.platform, launchedMajor)
             : resolveStealthUA();
+        // No init script: property patching (navigator.webdriver, plugins,
+        // languages, window.chrome, permissions.query) is forbidden. Each patch
+        // is a prototype-descriptor anomaly that contradicts the fifty other
+        // properties still reporting the truth, and contradiction is what
+        // current detectors score. Crawlee deleted the same ten-trick layer in
+        // 2022; SeleniumBase removed its webdriver patch in 2023. The context
+        // presents what the build actually is.
         ctx = await dedicatedBrowser.newContext(stealthContextOptions(advertisedUa));
-        // Guard for context stubs without addInitScript (unit-test mocks).
-        if (typeof (ctx as { addInitScript?: unknown }).addInitScript === 'function') {
-          await ctx.addInitScript(STEALTH_INIT_SCRIPT);
-        }
       } catch (err) {
         // Close the orphaned throwaway browser (if launch got that far) and
         // free the concurrency slot before rethrowing — otherwise N such

@@ -185,45 +185,7 @@ export function stealthContextOptions(
   };
 }
 
-/**
- * Page init script (run via `context.addInitScript`) patching the
- * highest-signal automation leaks: `navigator.webdriver`, a plausible
- * `navigator.plugins` / `navigator.languages`, a `window.chrome` runtime stub,
- * and `navigator.permissions.query` for the notifications quirk. Written as a
- * function body so it can be compiled and evaluated in tests; guards keep it
- * from throwing on a real page where some of these are already read-only.
- */
-export const STEALTH_INIT_SCRIPT = `
-try {
-  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-} catch (e) { /* already patched or read-only */ }
-try {
-  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-} catch (e) { /* ignore */ }
-try {
-  Object.defineProperty(navigator, 'plugins', {
-    get: () => [
-      { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-      { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-      { name: 'Native Client', filename: 'internal-nacl-plugin' },
-    ],
-  });
-} catch (e) { /* ignore */ }
-try {
-  if (typeof window !== 'undefined' && !window.chrome) {
-    window.chrome = { runtime: {} };
-  }
-} catch (e) { /* ignore */ }
-try {
-  if (navigator.permissions && navigator.permissions.query) {
-    const originalQuery = navigator.permissions.query.bind(navigator.permissions);
-    navigator.permissions.query = (parameters) =>
-      parameters && parameters.name === 'notifications'
-        ? Promise.resolve({ state: (typeof Notification !== 'undefined' ? Notification.permission : 'default') })
-        : originalQuery(parameters);
-  }
-} catch (e) { /* ignore */ }
-`;
+
 
 /**
  * Optional driver-level stealth launcher (T2-E).

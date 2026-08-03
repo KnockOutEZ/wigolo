@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   resolveStealthUA,
@@ -5,7 +6,6 @@ import {
   stealthContextOptions,
   parseChromeMajor,
   isSwiftShaderRenderer,
-  STEALTH_INIT_SCRIPT,
   STEALTH_CHROME_MAJOR,
 } from '../../../src/fetch/stealth.js';
 
@@ -164,27 +164,33 @@ describe('stealthContextOptions', () => {
   });
 });
 
-describe('STEALTH_INIT_SCRIPT', () => {
-  it('is syntactically valid JS that does not throw when evaluated', () => {
-    // A real page runs it as a function body; compiling + calling it in a
-    // stubbed navigator/window environment proves it neither has a syntax
-    // error nor throws on load.
-    const navigator: Record<string, unknown> = {
-      permissions: { query: () => Promise.resolve({ state: 'granted' }) },
-    };
-    const win: Record<string, unknown> = {};
-    const runner = new Function(
-      'navigator',
-      'window',
-      'Notification',
-      STEALTH_INIT_SCRIPT,
-    );
-    expect(() => runner(navigator, win, { permission: 'default' })).not.toThrow();
+describe('no property patching (spoof nothing)', () => {
+  // Regression guard for a DELETION. Patching navigator properties creates
+  // cross-property contradictions, which is what current detectors score —
+  // a build whose other properties report the truth is louder than the lie.
+  // Crawlee removed the same layer in 2022 (ten tricks; wigolo shipped five of
+  // them) and SeleniumBase removed its webdriver patch in 2023. This test must
+  // fail if anyone re-introduces one.
+  const stealthSrc = readFileSync(
+    new URL('../../../src/fetch/stealth.ts', import.meta.url),
+    'utf8',
+  );
+  const poolSrc = readFileSync(
+    new URL('../../../src/fetch/browser-pool.ts', import.meta.url),
+    'utf8',
+  );
+
+  it('exports no page init script', () => {
+    expect(stealthSrc).not.toContain('STEALTH_INIT_SCRIPT');
   });
 
-  it('patches the highest-signal automation leaks', () => {
-    expect(STEALTH_INIT_SCRIPT).toContain('webdriver');
-    expect(STEALTH_INIT_SCRIPT).toContain('plugins');
-    expect(STEALTH_INIT_SCRIPT).toContain('languages');
+  it('never redefines a navigator property', () => {
+    for (const prop of ['webdriver', 'languages', 'plugins', 'deviceMemory', 'maxTouchPoints']) {
+      expect(stealthSrc).not.toContain(`'${prop}'`);
+    }
+  });
+
+  it('injects no init script into a browser context', () => {
+    expect(poolSrc).not.toContain('addInitScript');
   });
 });

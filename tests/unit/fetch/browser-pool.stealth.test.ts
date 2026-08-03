@@ -196,8 +196,10 @@ describe('browser-pool dedicated stealth context', () => {
     const result = await pool.fetchWithBrowser('https://blocked.example', { stealth: true });
     expect(result.method).toBe('browser');
 
-    // The dedicated context was created, patched with the init script, then closed.
-    expect(state.addInitScriptCalls).toBe(1);
+    // The dedicated context is created and closed WITHOUT an init script:
+    // property patching is forbidden (spoof nothing — a patched navigator
+    // contradicts the properties still reporting the truth).
+    expect(state.addInitScriptCalls).toBe(0);
     expect(state.contextsCreated).toBe(1);
     expect(state.contextsClosed).toBe(1);
     // Never handed back to the shared pool.
