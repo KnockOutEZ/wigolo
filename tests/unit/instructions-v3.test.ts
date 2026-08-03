@@ -5,6 +5,7 @@ import {
   TOOL_DESCRIPTIONS,
 } from '../../src/instructions.js';
 import type { ToolName } from '../../src/instructions.js';
+import { TOOL_SCHEMAS } from '../../src/server/tool-schemas.js';
 
 describe('WIGOLO_INSTRUCTIONS v3 routing patterns (per-session)', () => {
   it('mentions all v3 tools by name', () => {
@@ -150,7 +151,7 @@ describe('WIGOLO_INSTRUCTIONS_FULL v3 routing patterns (resource)', () => {
 });
 
 describe('TOOL_DESCRIPTIONS v3 entries', () => {
-  it('has all 10 tool descriptions', () => {
+  it('has all 20 tool descriptions (10 core + the 10 studio tools)', () => {
     const keys = Object.keys(TOOL_DESCRIPTIONS);
     expect(keys).toContain('fetch');
     expect(keys).toContain('search');
@@ -327,14 +328,23 @@ describe('TOOL_DESCRIPTIONS v3 entries', () => {
 });
 
 describe('ToolName type', () => {
-  it('includes all tool names', () => {
-    // The ToolName union includes `diff` and `watch`. The TS compiler will
-    // reject this literal if either name is missing from the union — that is
-    // the contract this test locks in.
-    const validNames: ToolName[] = [
-      'fetch', 'search', 'crawl', 'cache', 'extract',
-      'find_similar', 'research', 'agent', 'diff', 'watch', 'studio_observe', 'studio_act', 'studio_marks', 'studio_capture',
-    ];
-    expect(validNames.length).toBe(14);
+  /**
+   * This used to be a hand-written 14-name literal asserting `length === 14` against a 20-name
+   * union — it passed vacuously for two phases while six tools were missing from it, which is
+   * exactly the drift a literal list cannot catch. The invariant it MEANT to hold is that ToolName
+   * and the schema map describe the same set, so assert that in both directions and derive the
+   * runtime half from the source rather than retyping it.
+   */
+  it('is exactly the key set of the schema map — a name in one and not the other cannot compile', () => {
+    type SchemaKey = keyof typeof TOOL_SCHEMAS;
+    const everyToolNameHasASchema: ToolName extends SchemaKey ? true : never = true;
+    const everySchemaIsAToolName: SchemaKey extends ToolName ? true : never = true;
+    expect(everyToolNameHasASchema && everySchemaIsAToolName).toBe(true);
+
+    const names = Object.keys(TOOL_DESCRIPTIONS) as ToolName[];
+    for (const name of names) {
+      expect(TOOL_SCHEMAS[name], `${name} has no input schema`).toBeDefined();
+    }
+    expect(names.length).toBe(Object.keys(TOOL_SCHEMAS).length);
   });
 });
