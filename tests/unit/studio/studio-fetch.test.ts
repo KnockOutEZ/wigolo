@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runStudioFetch, type StudioFetchDeps } from '../../../src/studio/studio-fetch.js';
 import type { SessionDrive, StudioSessionsAccessor } from '../../../src/studio/session-drive.js';
+import { isChallengeShell } from '../../../src/fetch/tls-tier.js';
+import { classifyChallenge } from '../../../src/fetch/challenge-classify.js';
 
 /**
  * S9 slice 1 — the BROKER `studio_fetch` capability.
@@ -185,5 +187,151 @@ describe('runStudioFetch — input validation', () => {
       { url: 'https://example.com/' },
     );
     expect(r).toEqual({ ok: true, url: 'https://example.com/final', html: '<html>ok</html>', session_id: 's1' });
+  });
+});
+
+/**
+ * S9B slice 1 — the bridge must not hand a CHALLENGE SHELL to core as content.
+ *
+ * WHY this matters more than it looks: the rung that calls this capability fires only AFTER the browser
+ * tier has terminally hit a challenge (`router.ts:785,803`), and the router returns the bridge's result
+ * DIRECTLY — unlike the browser tier's own result, which is wrapped in `guardChallengeShell`
+ * (`router.ts:779`). So an unguarded shell here does not merely produce a thin page: it converts an
+ * honest `blocked_by_challenge` into a SUCCESSFUL fetch whose body is an interstitial, which then gets
+ * extracted, cached, and cited as if it were the page. That is the `challenge-shell-as-content` failure
+ * class already on record in the P0 long-tail, reached by a new path.
+ *
+ * Classification happens HERE rather than only in the router because this is the one place that knows
+ * the bytes are raw page HTML from a real browser, which is the only input `classifyChallenge` is valid
+ * on.
+ */
+describe('runStudioFetch — a challenge shell is never returned as content', () => {
+  // A 2xx Cloudflare interstitial: a challenge marker plus the thin all-scaffolding shape. This is what
+  // the substrate reads when the human's browser is ALSO walled.
+  const CF_SHELL =
+    '<html><head><title>Just a moment...</title></head><body>' +
+    '<div id="cf-wrapper"><div class="cf-browser-verification"></div></div>' +
+    '<script>window._cfChlOpt={cvId:"3"};</script></body></html>';
+
+  it('refuses a Cloudflare interstitial instead of reporting it as a successful page', async () => {
+    const d = drive({ readCurrentPage: async () => ({ url: 'https://walled.example/', html: CF_SHELL }) });
+    const r = await runStudioFetch(
+      { sessions: { getSessionDrive: () => d }, host: { list: async () => ({ sessions: [{ id: 's1', status: 'live', clients: 0, createdAt: 0, lastActiveAt: 0 }] }), spawn: async () => ({ session_id: 's1' }) } },
+      { url: 'https://walled.example/' },
+    );
+    expect(r.ok).toBe(false);
+    // `blocked_by_challenge` deliberately: the agent already handles that path (S9 §5.1), so the caller
+    // keeps its honest block instead of learning a new reason code.
+    if (!r.ok) expect(r.error).toBe('blocked_by_challenge');
+  });
+
+  it('reports the challenge CLASS, so a caller can tell a solvable wall from a behavioral one', async () => {
+    const d = drive({ readCurrentPage: async () => ({ url: 'https://walled.example/', html: CF_SHELL }) });
+    const r = await runStudioFetch(
+      { sessions: { getSessionDrive: () => d }, host: { list: async () => ({ sessions: [{ id: 's1', status: 'live', clients: 0, createdAt: 0, lastActiveAt: 0 }] }), spawn: async () => ({ session_id: 's1' }) } },
+      { url: 'https://walled.example/' },
+    );
+    expect(r.ok).toBe(false);
+    // The class is what decides whether a human could help at all: `behavioral` runs no solve rung
+    // (`solve-ladder.ts:95-97`), so surfacing it is what keeps S9B from promising a click that cannot exist.
+    if (!r.ok) expect(typeof r.challenge_class).toBe('string');
+  });
+
+  it('lets a REAL page through untouched — the guard must not eat ordinary content', async () => {
+    // The regression that matters in the other direction. A page from a site that merely EMBEDS an
+    // anti-bot sensor is not a blocked page, and `classifyChallenge` is written content-wins-over-markers
+    // for exactly that reason. A guard that cannot tell them apart would break every protected site the
+    // bridge successfully opens — which is the bridge's entire purpose.
+    const real =
+      '<html><head><title>Real Article</title></head><body>' +
+      `<article>${'Substantive readable prose about a real subject. '.repeat(60)}</article>` +
+      '<script src="/dd-loader.js"></script></body></html>';
+    const d = drive({ readCurrentPage: async () => ({ url: 'https://ok.example/a', html: real }) });
+    const r = await runStudioFetch(
+      { sessions: { getSessionDrive: () => d }, host: { list: async () => ({ sessions: [{ id: 's1', status: 'live', clients: 0, createdAt: 0, lastActiveAt: 0 }] }), spawn: async () => ({ session_id: 's1' }) } },
+      { url: 'https://ok.example/a' },
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.html).toBe(real);
+  });
+
+  it('classifies AFTER the credential gate, so a login page is still refused as a credential context', async () => {
+    // Ordering assertion, not a style preference: a login page can carry challenge markers too, and if
+    // classification ran first it would be reported as a wall — losing the credential refusal that is the
+    // stronger and more specific protection.
+    const d = drive({
+      isCredentialContext: async () => true,
+      readCurrentPage: vi.fn(async () => ({ url: 'https://login.example/', html: CF_SHELL })),
+    });
+    const r = await runStudioFetch(
+      { sessions: { getSessionDrive: () => d }, host: { list: async () => ({ sessions: [{ id: 's1', status: 'live', clients: 0, createdAt: 0, lastActiveAt: 0 }] }), spawn: async () => ({ session_id: 's1' }) } },
+      { url: 'https://login.example/' },
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe('capture_refused');
+    // And the page was never read at all — the credential gate runs BEFORE the read (S9 step 5).
+    expect(d.readCurrentPage).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * S9B slice 1 — WHY the gate is `isChallengeShell` and not `classifyChallenge`.
+ *
+ * `studio-fetch.ts` carries a comment claiming that gating on `classifyChallenge(html) !== 'none'`
+ * would refuse real pages. A claim written into source and never executed is not a justification, so
+ * these tests EXECUTE it: they assert the two predicates DISAGREE on the inputs that matter, in the
+ * direction the choice depends on.
+ *
+ * This is deliberately a permanent test rather than a one-off mutation of the guard. A mutation proves
+ * the tests had teeth on the day it ran; this reds if anyone later swaps the predicate — which is the
+ * regression actually worth catching.
+ */
+describe('S9B slice 1 — the gate predicate choice is justified by measurement, not by comment', () => {
+  const CF_SHELL =
+    '<html><head><title>Just a moment...</title></head><body>' +
+    '<div id="cf-wrapper"><div class="cf-browser-verification"></div></div>' +
+    '<script>window._cfChlOpt={cvId:"3"};</script></body></html>';
+
+  // A real article from a site that merely EMBEDS an anti-bot sensor. Protected sites serve their
+  // sensor on pages they serve SUCCESSFULLY, which is the whole reason a marker is not a verdict.
+  const REAL_WITH_SENSOR =
+    '<html><head><title>Real Article</title></head><body>' +
+    `<article>${'Substantive readable prose about a real subject. '.repeat(60)}</article>` +
+    '<script src="/dd-loader.js"></script></body></html>';
+
+  // A genuine page that is simply THIN. The d14 spike measured `classifyChallenge` calling
+  // example.com 'behavioral', which is why the gate cannot be built on it.
+  const THIN_BUT_REAL =
+    '<html><head><title>Example Domain</title></head><body><div><h1>Example Domain</h1>' +
+    '<p>This domain is for use in illustrative examples in documents.</p></div></body></html>';
+
+  it('fires on a real interstitial — the shell is caught', () => {
+    expect(isChallengeShell(200, CF_SHELL)).toBe(true);
+  });
+
+  it('does NOT fire on a real page carrying an anti-bot sensor', () => {
+    expect(isChallengeShell(200, REAL_WITH_SENSOR)).toBe(false);
+  });
+
+  it('does NOT fire on a thin-but-genuine page', () => {
+    expect(isChallengeShell(200, THIN_BUT_REAL)).toBe(false);
+  });
+
+  it('classifyChallenge is UNSAFE as the gate — and it is the THIN page, not the sensor page, that proves it', () => {
+    // Measured locally, reproducing the d14 spike's example.com finding:
+    //   real article + anti-bot sensor → 'none'        (content wins over markers, working as designed)
+    //   thin-but-genuine page          → 'behavioral'  ← this is the one that would have been refused
+    // Asserted specifically rather than with a `.some()`, so the test names WHICH failure mode it guards.
+    // If either verdict moves, the source comment in studio-fetch.ts is no longer justified and this reds.
+    expect(classifyChallenge(REAL_WITH_SENSOR)).toBe('none');
+    expect(classifyChallenge(THIN_BUT_REAL)).not.toBe('none');
+  });
+
+  it('the class attached to a caught shell is the CLASSIFIER\'s, and it can be a class no solve rung serves', () => {
+    // Consequence worth encoding rather than discovering later: a Cloudflare interstitial with no
+    // interactive widget classifies `behavioral`, and `solve-ladder.ts:95–97` runs NO rung for that class.
+    // So catching a shell does not imply a human could clear it — which is precisely why the refusal
+    // carries the class instead of implying solvability.
+    expect(classifyChallenge(CF_SHELL)).toBe('behavioral');
   });
 });

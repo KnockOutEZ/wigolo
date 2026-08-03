@@ -1,5 +1,7 @@
 import type { StudioSessionsAccessor, SessionDrive, GatedNavResult } from './session-drive.js';
 import type { StudioHostHandlers } from '../daemon/studio-dispatch.js';
+import { isChallengeShell } from '../fetch/tls-tier.js';
+import { classifyChallenge } from '../fetch/challenge-classify.js';
 
 /**
  * S9 — the BROKER `studio_fetch` capability.
@@ -34,7 +36,7 @@ export interface StudioFetchInput {
 
 export type StudioFetchResult =
   | { ok: true; url: string; html: string; session_id: string }
-  | { ok: false; error: string; error_reason: string; hint?: string };
+  | { ok: false; error: string; error_reason: string; hint?: string; challenge_class?: string };
 
 export interface StudioFetchDeps {
   sessions: StudioSessionsAccessor;
@@ -128,5 +130,38 @@ export async function runStudioFetch(deps: StudioFetchDeps, input: StudioFetchIn
   }
 
   const page = await session.drive.readCurrentPage();
+
+  // S9B slice 1 — A CHALLENGE SHELL IS NOT CONTENT.
+  //
+  // This rung is reached only after the browser tier has TERMINALLY hit a challenge
+  // (`router.ts:785,803`), and the router returns this result DIRECTLY — where the browser tier's own
+  // result is wrapped in `guardChallengeShell` (`router.ts:779`). So without this check, a substrate
+  // that is ALSO walled converts an honest `blocked_by_challenge` into a SUCCESSFUL fetch whose body is
+  // an interstitial, which then gets extracted, cached and cited as the page. That is the
+  // `challenge-shell-as-content` failure class, reached by a new path.
+  //
+  // The GATE is `isChallengeShell`, not `classifyChallenge`. That distinction is load-bearing:
+  // `classifyChallenge` is content-wins-over-markers and still under-reports a thin-but-genuine page as
+  // `behavioral` (measured on example.com in the d14 spike), so gating on it would eat real pages —
+  // including the protected ones the bridge exists to open. `isChallengeShell` at 2xx requires BOTH a
+  // challenge marker AND the all-scaffolding skeleton shape, which is the shipped, skeleton-gated rule.
+  // `classifyChallenge` is then used only to LABEL, exactly as `guardChallengeShell` uses it.
+  //
+  // 2xx is assumed because a DOM read carries no HTTP status. That is the CONSERVATIVE assumption: the
+  // 2xx branch is the strict one (marker AND skeleton), where the anti-bot-status branch would fire on
+  // a marker alone.
+  if (isChallengeShell(200, page.html)) {
+    return {
+      ok: false,
+      error: 'blocked_by_challenge',
+      error_reason: 'The live browser session is also showing a bot-protection challenge for this page.',
+      // The class decides whether a human could help at all: `behavioral` runs no solve rung
+      // (`solve-ladder.ts:95–97`), so surfacing it is what stops a later phase promising a click that
+      // cannot exist.
+      challenge_class: classifyChallenge(page.html),
+      hint: 'Do not retry immediately. The page is walled for the browser session too.',
+    };
+  }
+
   return { ok: true, url: page.url, html: page.html, session_id: session.id };
 }
