@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { applyCdpDebugPortFence, decideCdpDebugPort, type CdpFenceHost } from '../../src/main/cdp-fence';
+import { describe, it, expect, vi, type Mock } from 'vitest';
+import { applyCdpDebugPortFence, decideCdpDebugPort } from '../../src/main/cdp-fence';
 
 const portSwitch = (d: ReturnType<typeof decideCdpDebugPort>) =>
   d.switches.find((s) => s.name === 'remote-debugging-port');
@@ -119,9 +119,10 @@ describe('decideCdpDebugPort — the fence', () => {
 });
 
 describe('applyCdpDebugPortFence — the adapter that runs against the real app', () => {
-  const host = (isPackaged: boolean): CdpFenceHost & { appendSwitch: ReturnType<typeof vi.fn> } => ({
+  type AppendSwitch = (name: string, value?: string) => void;
+  const host = (isPackaged: boolean): { isPackaged: boolean; appendSwitch: Mock<AppendSwitch> } => ({
     isPackaged,
-    appendSwitch: vi.fn(),
+    appendSwitch: vi.fn<AppendSwitch>(),
   });
 
   it('appends both switches in order and emits the warning on a development build', () => {

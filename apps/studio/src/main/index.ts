@@ -1,6 +1,7 @@
 import { app, BrowserWindow, WebContentsView, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { applyCdpDebugPortFence } from './cdp-fence';
+import { chromeWebPreferences, resolveHiddenMode, tabWebPreferences } from './hidden-mode';
 import { TabManager, type TabView, type Rect } from './tab-manager';
 import { SessionRegistry } from './session-registry';
 import { registerIpc, registerMarksIpc } from './ipc-host';
@@ -27,9 +28,7 @@ applyCdpDebugPortFence(
 
 function makeViewFactory(win: BrowserWindow): () => TabView {
   return () => {
-    const view = new WebContentsView({
-      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
-    });
+    const view = new WebContentsView({ webPreferences: tabWebPreferences() });
     win.contentView.addChildView(view);
     const wc = view.webContents;
     return {
@@ -51,6 +50,8 @@ function makeViewFactory(win: BrowserWindow): () => TabView {
   };
 }
 
+const hidden = resolveHiddenMode({ argv: process.argv, env: process.env });
+
 async function createWindow(): Promise<void> {
   const win = new BrowserWindow({
     width: 1360,
@@ -60,12 +61,7 @@ async function createWindow(): Promise<void> {
     // (the refined browser look). Falls back to a standard frame off macOS.
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     backgroundColor: '#0c0c10',
-    webPreferences: {
-      preload: join(import.meta.dirname, '../preload/index.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
+    webPreferences: chromeWebPreferences(join(import.meta.dirname, '../preload/index.cjs')),
   });
 
   // The Agent rail occupies a fixed right column; the WebContentsView stage is everything left of it,
@@ -313,8 +309,15 @@ async function createWindow(): Promise<void> {
   } else {
     await win.loadFile(join(import.meta.dirname, '../renderer/index.html'));
   }
-  win.show();
-  win.focus(); // take foreground on launch (a background/CLI launch otherwise leaves the window unfocused)
+  // `--hidden`: the window is never shown. GPU stays on and the compositor stays real (this is not
+  // offscreen rendering) — only the presentation is withheld, so a background fetch keeps the same
+  // renderer, codec and API surface a visible window has.
+  if (hidden) {
+    process.stderr.write('[studio] running hidden: no window is shown; the agent line is live.\n');
+  } else {
+    win.show();
+    win.focus(); // take foreground on launch (a background/CLI launch otherwise leaves the window unfocused)
+  }
 }
 
 app.whenReady().then(createWindow);
