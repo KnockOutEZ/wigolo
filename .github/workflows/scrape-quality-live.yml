@@ -1,0 +1,50 @@
+name: Scrape Quality — live + Firecrawl side-by-side
+
+# The NON-blocking half of the D6 hybrid gate. Live sites and a paid API, so it never runs
+# on `pull_request`: that is how a gate becomes flaky and expensive and then gets disabled.
+# The blocking half is `scrape-quality.yml`, which uses frozen fixtures only.
+#
+# Requires the repo secret FIRECRAWL_API_KEYS (comma-separated pool — the runner rotates
+# accounts and fails over on 402/429). With no secret set the runner reports "skipped" and
+# exits 0, so this workflow is green-and-honest rather than red-and-ignored.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'  # Weekly, Monday 07:00 UTC — after the other benchmark crons
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'Only run fixtures whose id contains this string'
+        required: false
+        type: string
+
+jobs:
+  live-comparison:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Install browser engine
+        run: npx playwright install --with-deps chromium
+
+      - name: wigolo vs Firecrawl
+        env:
+          FIRECRAWL_API_KEYS: ${{ secrets.FIRECRAWL_API_KEYS }}
+        run: npm run bench:scrape:firecrawl -- ${{ github.event.inputs.filter && format('--filter={0}', github.event.inputs.filter) || '' }}
+
+      - name: Upload comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firecrawl-comparison-${{ github.run_number }}
+          path: benchmarks/scrape-quality/output/firecrawl-comparison.md
+          retention-days: 90
