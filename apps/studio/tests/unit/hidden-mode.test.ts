@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { resolveHiddenMode, tabWebPreferences, chromeWebPreferences } from '../../src/main/hidden-mode';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { resolveHiddenMode, tabWebPreferences, chromeWebPreferences, hiddenWindowPresentation } from '../../src/main/hidden-mode';
 
 describe('resolveHiddenMode', () => {
   it('defaults to visible: a browser the human opened must appear', () => {
@@ -91,5 +93,38 @@ describe('chromeWebPreferences — the app shell', () => {
 
   it('carries the preload path it was given', () => {
     expect(chromeWebPreferences('/x/preload.cjs').preload).toBe('/x/preload.cjs');
+  });
+});
+
+describe('hiddenWindowPresentation — a hidden window must be MAPPED, not merely unshown', () => {
+  // MEASURED, and it corrects the phase-1 parity reading, which probed the BrowserWindow's own
+  // webContents rather than the WebContentsView child production actually hosts pages in. On the
+  // production shape a never-shown window reports `visibilityState: 'hidden'` and its child view's
+  // rAF stops completely (0fps) — while timers keep perfect cadence, so `backgroundThrottling: false`
+  // was never the missing piece. Mapping the window restores both. Minimising does NOT, which is
+  // where the minimized-real-Chrome prior stops transferring to Electron.
+  it('is transparent rather than unshown, because that is what gives the window a compositor surface — and without one a driven tab has no frame clock, never paints, and returns an empty shell for every page that lazy-loads on requestAnimationFrame', () => {
+    expect(hiddenWindowPresentation().opacity).toBe(0);
+  });
+
+  it('ignores mouse events: a fully transparent window that swallowed clicks meant for the app behind it would be a worse bug than the one this fixes', () => {
+    expect(hiddenWindowPresentation().ignoreMouseEvents).toBe(true);
+  });
+
+  it('skips the taskbar, so a background run leaves no entry for a window the human never asked to see', () => {
+    expect(hiddenWindowPresentation().skipTaskbar).toBe(true);
+  });
+
+  it('sits far off any display, not merely at negative coordinates — a second monitor puts real, visible desktop space at negative x/y, so (-100,-100) can be genuinely on screen', () => {
+    const [x, y] = hiddenWindowPresentation().position;
+    expect(x).toBeLessThan(-10000);
+    expect(y).toBeLessThan(-10000);
+  });
+
+  it('is applied with showInactive, never show — asserted at the call site, because taking foreground away from the human mid-task is the one thing a background run must never do', () => {
+    const src = readFileSync(join(import.meta.dirname, '../../src/main/index.ts'), 'utf-8');
+    const hiddenBranch = src.slice(src.indexOf('hiddenWindowPresentation()'), src.indexOf('running hidden'));
+    expect(hiddenBranch).toContain('win.showInactive()');
+    expect(hiddenBranch).not.toMatch(/win\.show\(\)|win\.focus\(\)/);
   });
 });

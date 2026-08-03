@@ -1,7 +1,7 @@
 import { app, BrowserWindow, WebContentsView, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { applyCdpDebugPortFence } from './cdp-fence';
-import { chromeWebPreferences, resolveHiddenMode, tabWebPreferences } from './hidden-mode';
+import { chromeWebPreferences, hiddenWindowPresentation, resolveHiddenMode, tabWebPreferences } from './hidden-mode';
 import { applyUaIdentityToTab, studioUaIdentity, HOST_HINTS_EXPR } from './ua-identity';
 import { TabManager, type TabView, type Rect } from './tab-manager';
 import { SessionRegistry } from './session-registry';
@@ -337,11 +337,20 @@ async function createWindow(): Promise<void> {
   } else {
     await win.loadFile(join(import.meta.dirname, '../renderer/index.html'));
   }
-  // `--hidden`: the window is never shown. GPU stays on and the compositor stays real (this is not
-  // offscreen rendering) — only the presentation is withheld, so a background fetch keeps the same
-  // renderer, codec and API surface a visible window has.
+  // `--hidden`: the window is mapped but never presented. GPU stays on and the compositor stays real
+  // (this is not offscreen rendering) — only the presentation is withheld, so a background fetch keeps
+  // the same renderer, codec and API surface a visible window has. It must be MAPPED, not merely
+  // unshown: a never-shown window has no compositor surface, which measurably stops the frame clock
+  // for its child views (rAF 0fps) and flips `document.visibilityState` to `hidden`. See
+  // hidden-mode.ts for the measurement.
   if (hidden) {
-    process.stderr.write('[studio] running hidden: no window is shown; the agent line is live.\n');
+    const p = hiddenWindowPresentation();
+    win.setOpacity(p.opacity);
+    win.setIgnoreMouseEvents(p.ignoreMouseEvents);
+    win.setSkipTaskbar(p.skipTaskbar);
+    win.setPosition(p.position[0], p.position[1]);
+    win.showInactive(); // never `show()`: a background run must not take foreground from the human
+    process.stderr.write('[studio] running hidden: no window is presented; the agent line is live.\n');
   } else {
     win.show();
     win.focus(); // take foreground on launch (a background/CLI launch otherwise leaves the window unfocused)

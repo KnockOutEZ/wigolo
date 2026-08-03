@@ -64,6 +64,53 @@ export function tabWebPreferences(): TabPreferences {
   };
 }
 
+export interface HiddenPresentation {
+  /** Fully transparent: mapped and composited, but nothing reaches the screen. */
+  readonly opacity: 0;
+  /** A transparent window must never swallow a click meant for whatever is behind it. */
+  readonly ignoreMouseEvents: true;
+  /** No dock/taskbar entry for a window the human did not ask to see. */
+  readonly skipTaskbar: true;
+  /** Off any display, belt-and-braces for platforms that ignore or clamp one of the above. */
+  readonly position: readonly [number, number];
+}
+
+/**
+ * How a hidden window is presented — and it is NOT "never shown", which is what this originally did.
+ *
+ * MEASURED, and it corrects the phase-1 parity reading. That reading loaded its probe into the
+ * BrowserWindow's OWN webContents and found `visibilityState: 'visible'` with rAF at ~110fps while
+ * hidden. Production does not host pages there: it hosts them in a `WebContentsView` child. On that
+ * shape a never-shown window reports `visibilityState: 'hidden'` and **rAF stops completely — 0
+ * frames per second** — and `backgroundThrottling: false` does not help, because the problem is not
+ * throttling. A window that was never mapped never acquires a compositor surface, so there is no
+ * frame clock for its child view to be driven by. `view.setVisible(true)` does not help either, and
+ * neither does minimising (which is where the `cdp-direct` minimized-real-Chrome prior stops
+ * applying to Electron: measured, a minimised Electron window behaves like a never-shown one).
+ *
+ * That was not merely a fingerprint delta. `document.visibilityState` is one line of JavaScript away
+ * from any page, so hidden and visible were trivially distinguishable — but far worse, a driven tab
+ * with no frame clock never paints, so every page that gates rendering or lazy-loading on
+ * `requestAnimationFrame` would return an empty shell to the agent. The mode would have been broken
+ * for the background work it exists to serve.
+ *
+ * The fix maps the window and then withholds it: transparent, click-through, off any display, and
+ * shown WITHOUT focus so it never steals foreground from the human. The browser is then genuinely in
+ * the state it reports — nothing here claims to be anything it is not, which is the §4 rule this has
+ * to satisfy. Timers were never affected (interval cadence measured at ~1.00 in every arm); it is the
+ * frame clock alone that needed a real surface.
+ */
+export function hiddenWindowPresentation(): HiddenPresentation {
+  return {
+    opacity: 0,
+    ignoreMouseEvents: true,
+    skipTaskbar: true,
+    // Large negative, not merely negative: multi-monitor setups put real desktop space at negative
+    // coordinates, and a window at (-100, -100) can be genuinely visible on a display to the left.
+    position: [-32000, -32000],
+  };
+}
+
 export interface ChromePreferences {
   readonly preload: string;
   readonly contextIsolation: true;
