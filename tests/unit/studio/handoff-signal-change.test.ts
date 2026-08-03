@@ -23,6 +23,7 @@ function deps(over: Partial<LoginHandoffDeps> = {}): LoginHandoffDeps {
     storageState: async () => EMPTY,
     currentUrl: () => 'https://example.com/login',
     timers: { setTimer: () => 0, clearTimer: () => {} }, // inert timers — drive transitions manually
+    recordAuthenticatedOrigin: () => {},
     ...over,
   };
 }

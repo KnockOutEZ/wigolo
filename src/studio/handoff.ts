@@ -26,6 +26,7 @@
  * storageState read is HOST-SIDE only — never agent-facing, never logged (it carries cookies).
  */
 import type { StorageStateOut } from './session-browser.js';
+import { cookieDomainCoversHost } from './authenticated-origin.js';
 
 export type ControlParty = 'human' | 'agent';
 
@@ -75,6 +76,13 @@ export interface LoginHandoffDeps {
   currentUrl?: () => string | undefined;
   /** The onComplete HOOK — 5e-b (persist origin-scoped) + 5e-c (re-grant + authenticated resume) fill it. Invoked ONLY on completion. */
   onComplete?: (ctx: HandoffCompletionContext) => void | Promise<void>;
+  /**
+   * S9 / F5 clause (a) — record the wall origin in the profile's authenticated-origin ledger on the
+   * COMPLETING terminal. REQUIRED, not optional: this is the one moment the host knows for certain that a
+   * human logged into a site, and a host that forgets to wire it silently loses the sticky half of the
+   * predicate. Never called on the LOCKED terminals — an aborted login is not a login.
+   */
+  recordAuthenticatedOrigin: (origin: string) => void;
   /** Optional PUSH seam (P5): fired on every login_handoff signal change (host → human renderer). The agent still PULLS the signal via studio_observe; this NEVER carries content/storageState — only {state, doNotRetry?}. */
   onSignalChange?: (signal: LoginHandoffSignal | null) => void;
   /** Abort deadline: no completion by then ⇒ aborted (LOCKED). */
@@ -111,7 +119,8 @@ function originOf(url: string | undefined): string | undefined {
 
 const cookieKey = (c: StorageStateOut['cookies'][number]): string => JSON.stringify([c.name, c.domain, c.path]);
 
-/** Whether a cookie's domain covers the wall origin's host (host-only or a leading-dot parent domain). */
+/** Whether a cookie's domain covers the wall origin's host. One shared rule with the F5 predicate — two
+ *  copies of a cookie-scoping rule is exactly how they drift. */
 function cookieMatchesOrigin(c: StorageStateOut['cookies'][number], wallOrigin: string): boolean {
   let host: string;
   try {
@@ -119,8 +128,7 @@ function cookieMatchesOrigin(c: StorageStateOut['cookies'][number], wallOrigin: 
   } catch {
     return false;
   }
-  const domain = c.domain.replace(/^\./, '');
-  return host === domain || host.endsWith('.' + domain);
+  return cookieDomainCoversHost(c.domain, host);
 }
 
 /**
@@ -270,6 +278,15 @@ export class LoginHandoff {
     this.clearTimers();
     this._state = 'completed';
     this.setSignal({ state: 'completed' });
+    // F5 clause (a): the human just logged in here, so the origin is authenticated from now on regardless
+    // of what happens to its cookies. Best-effort — a ledger write must never strand the agent mid-handoff.
+    if (this.wallOrigin) {
+      try {
+        this.deps.recordAuthenticatedOrigin(this.wallOrigin);
+      } catch {
+        /* ledger unavailable ⇒ the predicate falls back to the cookie clause; costs a card, not safety */
+      }
+    }
     // 5e-b: persist the captured session origin-scoped (FUTURE reuse). 5e-c: re-grant the agent so it
     // resumes driving the LIVE, now-authenticated session (the signal above is the login_handoff:completed
     // the agent observes). The grant is in `finally`: the live context is authenticated regardless of the

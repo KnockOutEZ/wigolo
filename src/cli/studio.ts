@@ -31,6 +31,7 @@ import type { ParkedAction } from '../studio/act.js';
 import { createInspector } from '../studio/mark/inspect.js';
 import { MarkStore, type StudioMark } from '../studio/mark/store.js';
 import { isCredentialContext } from '../studio/credential.js';
+import { recordAuthOrigin } from '../studio/auth-origin-store.js';
 import { LoginHandoff } from '../studio/handoff.js';
 import { createLoginCapture, type OriginMismatch } from '../studio/login-capture.js';
 import { UNTRUSTED_STUDIO_NOTICE, neutralizeMarkers } from '../security/untrusted.js';
@@ -540,6 +541,9 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     // session with no profile to persist to ⇒ no-op). 5e-c will re-grant + resume the authenticated
     // session. Fired ONLY on a detected completion (the 5e-a AND-gate), never on abort/vanish.
     onComplete: onLoginComplete,
+    // F5 clause (a): the ledger writer is the HUMAN channel — a completed handoff is by definition a human
+    // login, and this is the only place in the process that may record one.
+    recordAuthenticatedOrigin: (origin) => recordAuthOrigin(origin, 'human'),
   });
   const loginHandoff = handoff;
   // A control-token flip TO the agent during the window can only be an explicit human WS grant —

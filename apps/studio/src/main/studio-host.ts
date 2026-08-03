@@ -24,6 +24,7 @@ import {
   resolveNodePath,
   neutralizeMarkers,
   isCredentialContext,
+  recordAuthOrigin,
   LoginHandoff,
   createLoginCapture,
   SessionAuditLog,
@@ -564,6 +565,9 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       storageState: () => tab.storageState(),
       currentUrl: tab.currentUrl,
       onComplete: onLoginComplete,
+      // F5 clause (a): a completed handoff is by definition a human login, so the ledger writer is the
+      // human channel. Best-effort inside the machine — a ledger write never strands the agent.
+      recordAuthenticatedOrigin: (origin) => recordAuthOrigin(origin, 'human'),
       onSignalChange: (s) => deps.onLoginHandoff?.({ sessionId, state: s?.state ?? 'failed', origin: profileOrigin }),
       ...(cfg.handoffPollIntervalMs !== undefined ? { pollIntervalMs: cfg.handoffPollIntervalMs } : {}),
       ...(cfg.handoffMaxPolls !== undefined ? { maxPolls: cfg.handoffMaxPolls } : {}),

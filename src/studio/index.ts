@@ -104,6 +104,21 @@ export type {
   HandoffCompletionContext,
   HandoffState,
 } from './handoff.js';
+// S9 / F5 — the authenticated-origin predicate + its two stores. Pure + node:fs only, so the barrel stays
+// loadable in the app's main process. The stores refuse any writer that is not the human channel.
+export { isAuthenticatedOrigin, isCredentialClassCookie, cookieDomainCoversHost, normalizeOrigin } from './authenticated-origin.js';
+export type { CookieFacts, AuthenticatedOriginInputs, AuthenticatedOriginOverrides } from './authenticated-origin.js';
+export {
+  recordAuthOrigin,
+  readAuthOriginLedger,
+  readOriginOverrides,
+  overridePatch,
+  authenticatedOriginCount,
+  AgentWriteRefusedError,
+  AUTHENTICATED_ORIGINS_KEY,
+  ANONYMOUS_ORIGINS_KEY,
+} from './auth-origin-store.js';
+export type { WriterParty, OverrideKind } from './auth-origin-store.js';
 export { createLoginCapture, scopeStorageStateToOrigin, isEmptyStorageState } from './login-capture.js';
 export type { ProfilePersist, OriginMismatch } from './login-capture.js';
 export { ProfileStore, ProfileKeychainUnavailableError } from './profile-store.js';

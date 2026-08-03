@@ -42,6 +42,8 @@ const CONFIG_USAGE = [
   '  --cleanup <component>    Free storage for: cache|embeddings|models|browser|searxng',
   '  --prune-audit --older-than <dur> --yes  Prune studio audit rows older than <dur> (e.g. 30d)',
   '  --set <key>=<value>      Update a single non-secret setting headlessly',
+  '  --authenticated-origin <origin>  Mark an origin as one you are signed in to',
+  '  --anonymous-origin <origin>      Mark an origin as one you are NOT signed in to',
   '  --uninstall              Full uninstall (requires --yes)',
   '  --yes                    Skip interactive confirmation (use with --uninstall)',
   '  --help, -h               Show this message',
@@ -66,6 +68,8 @@ interface ConfigFlags {
   pruneAudit: boolean;
   olderThan: string | null;
   json: boolean;
+  /** S9/F5 human overrides — `[origin, kind]`, or null when neither flag was given. */
+  originOverride: { origin: string; kind: 'authenticated' | 'anonymous' } | null;
 }
 
 /** Parse an `--older-than` duration (`30d`, `12h`, `45m`, `60s`, `2w`) to milliseconds. Returns null on garbage/empty/non-positive — the caller fails closed (no delete) on null. */
@@ -95,6 +99,7 @@ function parseConfigFlags(args: string[]): ConfigFlags {
     pruneAudit: false,
     olderThan: null,
     json: false,
+    originOverride: null,
   };
 
   let i = 0;
@@ -196,6 +201,25 @@ function parseConfigFlags(args: string[]): ConfigFlags {
       }
       flags.set = payload;
       i++;
+      continue;
+    }
+
+    // S9/F5 — the human overrides for the authenticated-origin predicate. `wigolo config` carries a hard
+    // invariant that it is never reachable from the MCP stdio path, which is what makes these human-only.
+    const originKind = arg === '--authenticated-origin' || arg.startsWith('--authenticated-origin=')
+      ? 'authenticated' as const
+      : arg === '--anonymous-origin' || arg.startsWith('--anonymous-origin=')
+        ? 'anonymous' as const
+        : null;
+    if (originKind) {
+      const inline = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : null;
+      const value = inline ?? args[i + 1];
+      if (!value || value.startsWith('-')) {
+        process.stderr.write(`--${originKind}-origin requires an origin (e.g. --${originKind}-origin https://example.com)\n`);
+        process.exit(1);
+      }
+      flags.originOverride = { origin: value, kind: originKind };
+      i += inline ? 1 : 2;
       continue;
     }
 
@@ -322,6 +346,26 @@ export async function runConfig(args: string[]): Promise<number> {
     const cutoffMs = Date.now() - durationMs;
     const { deleted } = pruneStudioAudit(db, { cutoffMs });
     process.stdout.write(`Pruned ${deleted} studio audit row(s) older than ${flags.olderThan}.\n`);
+    return 0;
+  }
+
+  if (flags.originOverride !== null) {
+    const { readPersistedConfig, writePersistedConfig } = await import('../persisted-config.js');
+    const { overridePatch } = await import('../studio/auth-origin-store.js');
+    const configPath = process.env.WIGOLO_CONFIG_PATH ?? join(homedir(), '.wigolo', 'config.json');
+    const { origin, kind } = flags.originOverride;
+    let patch: Record<string, unknown>;
+    try {
+      // Party is 'human' BECAUSE this is the interactive CLI. The store refuses any other party, so a
+      // future caller that is not the human channel fails loudly instead of quietly granting itself a way
+      // to mark its own targets.
+      patch = overridePatch(readPersistedConfig(configPath).settings, origin, kind, 'human');
+    } catch (e) {
+      process.stderr.write(`${(e as Error).message}\n`);
+      return 1;
+    }
+    writePersistedConfig(configPath, { settings: patch });
+    process.stdout.write(`Marked ${origin} as ${kind}.\n`);
     return 0;
   }
 

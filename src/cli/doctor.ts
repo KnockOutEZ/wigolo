@@ -1,7 +1,7 @@
 import { spawnSync, spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdirSync, mkdtempSync, rmdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolvePythonExe } from '../python-env.js';
@@ -21,6 +21,8 @@ import {
 } from '../search/core/engine-health.js';
 import type { EngineEntry } from '../search/core/engine-base.js';
 import { isTelemetryEnabled } from './telemetry.js';
+import { readPersistedConfig } from '../persisted-config.js';
+import { authenticatedOriginCount } from '../studio/auth-origin-store.js';
 import { allProviders, providerEnvVar, providerKeyFromEnv, selectProvider } from '../integrations/cloud/llm/select.js';
 import { resolveModel, providerDefaultModel, providerModelEnvVar } from '../integrations/cloud/llm/model-select.js';
 import { readKey } from '../security/key-store.js';
@@ -942,6 +944,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   checkCacheStats(dataDir);
   checkBackgroundQueue(dataDir);
   checkRssFeeds(dataDir);
+  checkAuthenticatedOrigins(dataDir);
   checkTelemetryStatus();
   checkTuiEnv();
 
@@ -1152,6 +1155,28 @@ function checkTelemetryStatus(): void {
   out('');
   const state = isTelemetryEnabled() ? 'enabled' : 'disabled';
   out(`[wigolo doctor] Telemetry: opt-in ${state} (WIGOLO_TELEMETRY=1 to opt in)`);
+}
+
+/**
+ * S9/F5 — report HOW MANY origins this profile is treated as signed in to, and never WHICH.
+ * The list is a browsing-history disclosure; the count is what a human needs to sanity-check the setting.
+ */
+export function buildAuthenticatedOriginLine(count: number): string {
+  return `  Signed-in origins: ${count}` +
+    ' (count only — the list is browsing history and is never printed;' +
+    ' adjust with `wigolo config --authenticated-origin` / `--anonymous-origin`)';
+}
+
+function checkAuthenticatedOrigins(dataDir: string): void {
+  out('');
+  out('[wigolo doctor] Browser sessions:');
+  try {
+    const configPath = process.env.WIGOLO_CONFIG_PATH ?? join(homedir(), '.wigolo', 'config.json');
+    const count = authenticatedOriginCount(readPersistedConfig(configPath).settings, dataDir);
+    out(buildAuthenticatedOriginLine(count));
+  } catch {
+    out('  Signed-in origins: unavailable');
+  }
 }
 
 function checkTuiEnv(): void {

@@ -86,6 +86,7 @@ function setup(over: SetupOver = {}) {
   const timers = fakeTimers();
   const state = { cred: over.cred ?? true, storage: over.storage ?? ss([]) };
   const onComplete = over.onComplete ?? vi.fn();
+  const recordAuthenticatedOrigin = vi.fn();
   const handoff = new LoginHandoff({
     controlToken: token,
     eventQueue: queue,
@@ -93,6 +94,7 @@ function setup(over: SetupOver = {}) {
     storageState: async () => state.storage,
     currentUrl: () => (over.currentUrl === undefined ? WALL_URL : over.currentUrl),
     onComplete,
+    recordAuthenticatedOrigin,
     timeoutMs: over.timeoutMs ?? 60_000,
     timers,
   });
@@ -102,6 +104,7 @@ function setup(over: SetupOver = {}) {
     queue,
     timers,
     onComplete,
+    recordAuthenticatedOrigin,
     setCred: (c: boolean) => {
       state.cred = c;
     },
@@ -442,5 +445,43 @@ describe('meaningfulStorageDelta — conservative: a real NEW entry, scoped to t
   });
   it('with an UNKNOWN wall origin, any new cookie counts (fail-open to detecting the login)', () => {
     expect(meaningfulStorageDelta(ss([]), ss([cookie('session', 'whatever.example')]), undefined)).toBe(true);
+  });
+});
+
+// ── S9 / F5 clause (a): the ledger write on the COMPLETING terminal ──────────────
+describe('LoginHandoff — records the wall origin in the authenticated-origin ledger', () => {
+  it('records on COMPLETING — this is the one moment the host KNOWS a human logged in', async () => {
+    const s = setup({ storage: ss([]) });
+    await s.handoff.detectWall();
+    s.setCred(false);
+    s.setStorage(ss([cookie('session', 'acme.example')]));
+
+    await s.handoff.checkCompletion();
+
+    expect(s.handoff.state).toBe('completed');
+    expect(s.recordAuthenticatedOrigin).toHaveBeenCalledWith(WALL_ORIGIN);
+  });
+
+  it('does NOT record on a LOCKED terminal — an abandoned login is not a login', async () => {
+    const s = setup();
+    await s.handoff.detectWall();
+    s.handoff.onTimeout(); // deadline passes with no completion → aborted 🔒
+    expect(s.handoff.state).toBe('aborted');
+    expect(s.recordAuthenticatedOrigin).not.toHaveBeenCalled();
+  });
+
+  it('a throwing ledger writer never strands the agent mid-handoff — the re-grant still happens', async () => {
+    // The ledger is a convenience that makes a future card fire; the live session is authenticated either
+    // way. Letting a disk error abort settleCompleted would leave the human logged in and the agent frozen.
+    const s = setup({ storage: ss([]) });
+    s.recordAuthenticatedOrigin.mockImplementation(() => { throw new Error('disk full'); });
+    await s.handoff.detectWall();
+    s.setCred(false);
+    s.setStorage(ss([cookie('session', 'acme.example')]));
+
+    await s.handoff.checkCompletion();
+
+    expect(s.handoff.state).toBe('completed');
+    expect(s.token.holder).toBe('agent'); // 5e-c re-grant survived the ledger failure
   });
 });
