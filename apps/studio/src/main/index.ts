@@ -2,6 +2,7 @@ import { app, BrowserWindow, WebContentsView, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { applyCdpDebugPortFence } from './cdp-fence';
 import { chromeWebPreferences, resolveHiddenMode, tabWebPreferences } from './hidden-mode';
+import { applyUaIdentityToTab, studioUaIdentity, HOST_HINTS_EXPR } from './ua-identity';
 import { TabManager, type TabView, type Rect } from './tab-manager';
 import { SessionRegistry } from './session-registry';
 import { registerIpc, registerMarksIpc } from './ipc-host';
@@ -25,6 +26,18 @@ applyCdpDebugPortFence(
   process.env,
   (line) => process.stderr.write(line),
 );
+
+// ONE identity for the whole process. `app.userAgentFallback` is what every session inherits, so the
+// human's own omnibox tabs and the app shell present the same string the agent's driven tabs will —
+// see ua-identity.ts for why a window presenting two identities out of one cookie jar is a sharper
+// signal than the Electron token this removes. Driven tabs additionally carry the CDP override, which
+// is the only mechanism that also moves the brands and `Sec-CH-UA`.
+const uaIdentity = studioUaIdentity({
+  nativeUserAgent: app.userAgentFallback,
+  chromeVersion: process.versions.chrome,
+  platform: process.platform,
+});
+app.userAgentFallback = uaIdentity.userAgent;
 
 function makeViewFactory(win: BrowserWindow): () => TabView {
   return () => {
@@ -196,7 +209,19 @@ async function createWindow(): Promise<void> {
       // BOTH native input AND the agent's own CDP-injected keystrokes (indistinguishable at that hook), so
       // a naive wire self-preempts the agent mid-type. The FSM preemption LOGIC (drive.fsm.onHumanInput,
       // unit/property-tested) is ready for a source-distinguishing signal in P4.
-      void wc.loadURL('about:blank');
+      // The blank load and the identity override are one step, in this order: an `Emulation` command
+      // issued against a webContents that has never navigated NEVER RESOLVES, so the override must
+      // follow the about:blank load and must never move into attachTab, which runs before any
+      // navigation exists. Both complete before this tab is returned, so the agent's first real
+      // navigation is the first request that leaves the machine.
+      await applyUaIdentityToTab({
+        identity: uaIdentity,
+        platform: process.platform,
+        loadBlank: () => wc.loadURL('about:blank'),
+        readHostHints: () => wc.executeJavaScript(HOST_HINTS_EXPR),
+        sendCdp: (method, params) => drive.transport.send(method, params),
+        warn: (line) => process.stderr.write(line),
+      });
       return {
         tabId,
         drive,
