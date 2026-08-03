@@ -71,6 +71,24 @@ app.whenReady().then(async () => {
     }
   }
 
+  // WINDOW-SIDE DIAGNOSTICS. The page can only report what it observes from inside the tab, and
+  // `visibilityState: 'hidden'` with a dead frame clock has two very different causes — the window was
+  // never mapped, or it was mapped and then occluded. Only the main process can tell those apart, so it
+  // records the window's own lifecycle and reports it alongside the interception count.
+  const t0 = Date.now();
+  const windowEvents = [];
+  const note = (e) => windowEvents.push({ e, at: Date.now() - t0 });
+  win.on('show', () => note('show'));
+  win.on('hide', () => note('hide'));
+  win.on('minimize', () => note('minimize'));
+  win.on('restore', () => note('restore'));
+
+  // The window's own `show` event, awaited below before the MEASURED page is navigated. This is the
+  // precondition for the measurement, not the property under test: the property is what a mapped
+  // window's tab reports, and a window that cannot be mapped never emits this at all — the wait times
+  // out, the page reads `hidden`, and every assertion that should red still does.
+  const windowShown = new Promise((resolve) => win.once('show', resolve));
+
   if (!HIDDEN) {
     win.show();
     win.focus();
@@ -84,11 +102,29 @@ app.whenReady().then(async () => {
     win.showInactive();
   }
 
+  // Bounded at 5 s, an order of magnitude above the ~48 ms measured lag between the presentation call
+  // and the renderer observing it, and a quarter of the arm's 20 s budget. A window that never maps
+  // falls through here and is measured anyway — the point is to stop navigating the measured page INTO
+  // a window whose presentation has not been processed yet, not to wait for a good answer.
+  await Promise.race([windowShown, new Promise((r) => setTimeout(r, 5000))]);
+
   wc.loadURL(PROBE_URL).catch((err) => log({ load_error: String(err) }));
 
   // Bounded so a wedged arm cannot hang the run: report the interception count and quit.
   setTimeout(() => {
-    log({ arm: ARM, hidden: HIDDEN, requests_paused: paused, final_url: wc.getURL() });
+    log({
+      arm: ARM,
+      hidden: HIDDEN,
+      requests_paused: paused,
+      final_url: wc.getURL(),
+      // `presented` says whether the hidden branch actually ran its presentation at all: with no
+      // presentation payload the window would never be shown, which is byte-identical in the page's view
+      // to a window that was shown and then starved.
+      presented: HIDDEN ? Boolean(presentation) : true,
+      window_visible: win.isVisible(),
+      window_minimized: win.isMinimized(),
+      window_events: windowEvents,
+    });
     app.quit();
   }, BUDGET_MS);
 });
