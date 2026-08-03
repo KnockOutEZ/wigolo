@@ -44,9 +44,10 @@ describe('studioBridgeAvailable — the live-session gate', () => {
 });
 
 describe('studioBridgeFetch', () => {
-  it('does not call the transport at all when no session is published', async () => {
+  it('does not call the transport at all when no session is published and none can be started', async () => {
     const call = vi.fn();
-    expect(await studioBridgeFetch('https://walled.example/', { dataDir: dir, call })).toBeNull();
+    const ensureRunning = vi.fn(async () => null);
+    expect(await studioBridgeFetch('https://walled.example/', { dataDir: dir, call, ensureRunning })).toBeNull();
     expect(call).not.toHaveBeenCalled();
   });
 
@@ -93,5 +94,32 @@ describe('studioBridgeFetch', () => {
     publishHandle();
     const call = vi.fn(async () => ok({ url: 'https://walled.example/', html: '<html>x</html>' }));
     expect(await studioBridgeFetch('https://walled.example/', { dataDir: dir, call })).toBeNull();
+  });
+});
+
+describe('studioBridgeFetch — amended-D4 auto-launch', () => {
+  it('starts the substrate when none is running, then serves the page', async () => {
+    // Starting a process is not a consent event: the session opens on a clean in-memory profile, and D9's
+    // grant card is what gates spending the human's signed-in identity.
+    const ensureRunning = vi.fn(async () => { publishHandle(); return { endpoint: 'x' }; });
+    const call = vi.fn(async () => ok({ ok: true, url: 'https://walled.example/', html: '<html>after launch</html>' }));
+    const r = await studioBridgeFetch('https://walled.example/', { dataDir: dir, call, ensureRunning });
+    expect(ensureRunning).toHaveBeenCalledTimes(1);
+    expect(r?.html).toBe('<html>after launch</html>');
+  });
+
+  it('does NOT try to launch when a session is already published', async () => {
+    publishHandle();
+    const ensureRunning = vi.fn(async () => null);
+    const call = vi.fn(async () => ok({ ok: true, url: 'https://walled.example/', html: '<html>x</html>' }));
+    await studioBridgeFetch('https://walled.example/', { dataDir: dir, call, ensureRunning });
+    expect(ensureRunning).not.toHaveBeenCalled();
+  });
+
+  it('declines cleanly when the substrate cannot be started — no session, no error, no hang', async () => {
+    const ensureRunning = vi.fn(async () => null);
+    const call = vi.fn();
+    expect(await studioBridgeFetch('https://walled.example/', { dataDir: dir, call, ensureRunning })).toBeNull();
+    expect(call).not.toHaveBeenCalled();
   });
 });

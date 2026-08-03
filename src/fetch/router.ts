@@ -44,6 +44,7 @@ import { classifyChallenge } from './challenge-classify.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE, BROWSER_UNAVAILABLE_ERROR } from './browser-acquire.js';
 import { anySignal } from '../util/abort.js';
 import { readHandle } from '../studio/handle.js';
+import { studioLaunchable } from '../studio/auto-launch.js';
 import { guardNavigation, type NavSource } from '../security/ssrf.js';
 import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
 import {
@@ -879,11 +880,11 @@ export class SmartRouter {
    */
   private async tryStudioBridge(url: string): Promise<RawFetchResult | null> {
     const dataDir = getConfig().dataDir;
-    // Gate on the published handle BEFORE resolving the module, so the default (no Studio) path costs one
-    // stat and never pulls the bridge graph in — the same discipline the escape hatch applies to its knobs.
-    if (this.studioBridgeOverride === undefined && readHandle(dataDir) === null) return null;
+    // Gate BEFORE resolving the module, so the default path costs two stats and never pulls the bridge graph
+    // in — the same discipline the escape hatch applies to its knobs. A live handle OR a launchable substrate
+    // both qualify: under amended-D4 the bridge may start the substrate itself.
+    if (this.studioBridgeOverride === undefined && readHandle(dataDir) === null && !studioLaunchable()) return null;
     const bridge = this.studioBridgeOverride ?? (await import('./studio-bridge.js'));
-    if (!bridge.studioBridgeAvailable(dataDir)) return null;
     return bridge.studioBridgeFetch(url, { dataDir });
   }
 

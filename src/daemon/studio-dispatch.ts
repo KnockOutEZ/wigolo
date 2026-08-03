@@ -10,12 +10,15 @@
  *       · the handle points at ME (instanceId === mine) → REFUSE-SELF (defense-in-depth
  *         for the wiring window; unreachable in practice once setStudioHost precedes
  *         handle-publish, which is exactly why the test asserting it earns its keep);
- *       · no handle, or the host endpoint is dead → REFUSE no-reachable-host (fail
- *         loud, never hang).
+ *       · no handle → try to START the substrate (amended-D4 auto-launch: starting a process is not
+ *         a consent event, and the session opens on a clean profile), and only REFUSE if it cannot be
+ *         started;
+ *       · the host endpoint is dead → REFUSE no-reachable-host (fail loud, never hang).
  *
  * Identity is a collision-resistant instance UUID, not a bare pid (see handle.ts).
  */
 import { readHandle, getMyInstanceId } from '../studio/handle.js';
+import { ensureStudioRunning } from '../studio/auto-launch.js';
 import { DaemonProxy } from './proxy.js';
 import { createLogger } from '../logger.js';
 
@@ -427,9 +430,17 @@ export async function proxyToStudioHost(
   dataDir?: string,
   deps?: DispatchDeps,
 ): Promise<McpToolResult> {
-  const handle = readHandle(dataDir);
-  // REFUSE — no session published.
-  if (!handle) return refusal('no_studio_session', 'No active studio session — ask the human to run `wigolo studio`.');
+  // Amended D4 (S9): no published session is no longer a dead end. Starting a process is not a consent event
+  // — the session opens on a CLEAN profile, and D9's grant card is what gates spending the human's identity —
+  // so try to start the substrate first. Only when it cannot be started does this refuse, and then it says so
+  // honestly rather than telling the agent to ask a human who may not be there.
+  const handle = readHandle(dataDir) ?? (await ensureStudioRunning({ dataDir }));
+  if (!handle) {
+    return refusal(
+      'no_studio_session',
+      'No browser session is running and one could not be started here. Ask the human to open a browser session, or continue without one.',
+    );
+  }
 
   // REFUSE-SELF — handle points at THIS process (wiring-window defense; instance UUID, not pid).
   const myId = getMyInstanceId();

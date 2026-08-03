@@ -82,10 +82,13 @@ describe('SmartRouter — the Studio bridge rung', () => {
     expect((result as RawFetchResult).html).toContain('the real article text');
   });
 
-  it('leaves blocked_by_challenge intact when no session is live — the rung adds a path, it never hides a failure', async () => {
+  it('leaves blocked_by_challenge intact when no session is live and none can be started', async () => {
+    // The bridge itself owns the "is there a session, can one be started" decision (amended-D4 lets it start
+    // one), so from the router's side an unavailable bridge simply declines. The rung adds a path; it never
+    // converts a real failure into something else.
     studioBridgeAvailable.mockReturnValue(false);
+    studioBridgeFetch.mockResolvedValueOnce(null);
     const result = await router().fetch('https://walled.example/x', { renderJs: 'always' });
-    expect(studioBridgeFetch).not.toHaveBeenCalled();
     expect((result as { error?: string }).error).toBe('blocked_by_challenge');
   });
 
