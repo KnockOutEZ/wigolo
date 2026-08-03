@@ -4,7 +4,12 @@ on:
   push:
     branches: [main, studio-handoff]
   pull_request:
-    branches: [main]
+    # `studio-handoff` is listed because the Studio v2 program merges slice PRs into
+    # it, not into main. Without it, `pull_request` never fired for a slice PR: the
+    # 3-OS unit matrix, the gate:studio type gate and the studio e2e job all ran on
+    # PUSH — i.e. AFTER merge — so every slice merged with scrape-quality as its only
+    # check. That silently defeated the type gate, which exists to BLOCK a PR.
+    branches: [main, studio-handoff]
   workflow_call:
 
 concurrency:
