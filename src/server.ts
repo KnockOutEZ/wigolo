@@ -330,7 +330,7 @@ export async function initSubsystems(): Promise<Subsystems> {
  * The tool surfaces core hosts by default. One provider today. Core's own ten tools are NOT in here
  * — it owns those, and owning a list you wrote is fine; hosting someone else's is what needed a seam.
  */
-export function defaultToolRegistry(subsystems: Subsystems): ToolRegistry {
+function defaultToolRegistry(subsystems: Subsystems): ToolRegistry {
   const registry = new ToolRegistry();
   registry.register(
     createStudioToolProvider({

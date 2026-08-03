@@ -396,9 +396,6 @@ const HOST_ROUTES: Record<StudioToolName, HostRoute> = {
 /** Own-property lookup — a bare `HOST_ROUTES[name]` would resolve prototype keys like 'constructor'. */
 const HOST_ROUTE_TABLE = new Map<string, HostRoute>(Object.entries(HOST_ROUTES));
 
-/** The dispatchable studio tool names, in route-table order. */
-export const STUDIO_TOOL_NAMES = Object.keys(HOST_ROUTES) as StudioToolName[];
-
 /**
  * Route a `studio_*` call. `studioHost` is set only in the live host process.
  * Returns the MCP tool result shape; on the proxy path returns the host's result
