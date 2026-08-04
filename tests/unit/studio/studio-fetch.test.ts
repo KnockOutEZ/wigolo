@@ -300,10 +300,21 @@ describe('S9B slice 1 — the gate predicate choice is justified by measurement,
     '<script src="/dd-loader.js"></script></body></html>';
 
   // A genuine page that is simply THIN. The d14 spike measured `classifyChallenge` calling
-  // example.com 'behavioral', which is why the gate cannot be built on it.
+  // example.com 'behavioral'; slice P3-CLASSIFY fixed that (it was a length reading used as a
+  // verdict), so this input now agrees across both predicates. Kept as a regression fixture: the
+  // gate must never call it a shell again, from either predicate.
   const THIN_BUT_REAL =
     '<html><head><title>Example Domain</title></head><body><div><h1>Example Domain</h1>' +
     '<p>This domain is for use in illustrative examples in documents.</p></div></body></html>';
+
+  // A NOVEL vendor's wall: a large all-scaffolding body with no readable text and NONE of the
+  // catalogued challenge markers. Only the GENERAL density rule catches this shape — and that rule
+  // is STATUS-GATED, which is the point of the test below.
+  const MARKERLESS_WALL =
+    '<html><head><title>Security Check</title>' +
+    '<script>' + 'var _q=[];for(var i=0;i<99;i++){_q.push(i*7);}'.repeat(40) + '</script>' +
+    '<style>' + '.sh{display:none;position:absolute;top:0;left:0;width:100%}'.repeat(40) + '</style>' +
+    '</head><body><div id="shield"></div></body></html>';
 
   it('fires on a real interstitial — the shell is caught', () => {
     expect(isChallengeShell(200, CF_SHELL)).toBe(true);
@@ -317,14 +328,28 @@ describe('S9B slice 1 — the gate predicate choice is justified by measurement,
     expect(isChallengeShell(200, THIN_BUT_REAL)).toBe(false);
   });
 
-  it('classifyChallenge is UNSAFE as the gate — and it is the THIN page, not the sensor page, that proves it', () => {
-    // Measured locally, reproducing the d14 spike's example.com finding:
-    //   real article + anti-bot sensor → 'none'        (content wins over markers, working as designed)
-    //   thin-but-genuine page          → 'behavioral'  ← this is the one that would have been refused
-    // Asserted specifically rather than with a `.some()`, so the test names WHICH failure mode it guards.
-    // If either verdict moves, the source comment in studio-fetch.ts is no longer justified and this reds.
+  it('classifyChallenge is UNSAFE as the gate because it is STATUS-FREE — it MISSES a markerless wall', () => {
+    // The justification, restated after slice P3-CLASSIFY.
+    //
+    // The original version of this test rested on `classifyChallenge` OVER-firing: it called a
+    // thin-but-genuine page 'behavioral' because its skeleton predicate read visible-text length as a
+    // verdict. That was a defect, not a design property, and it has been fixed — so that assertion
+    // would now be asserting a bug.
+    //
+    // The gate choice survives on a stronger and opposite ground: `classifyChallenge` takes HTML only.
+    // It therefore cannot reach the STATUS-GATED general density rule, which is the one rule that
+    // catches a wall from a vendor whose markers are not in the catalogue. So as a gate it UNDER-fires
+    // — it would hand a real wall through as content, which is the failure a gate exists to prevent.
+    //
+    // Under-firing is the worse direction for a gate, so this is a firmer justification than the one it
+    // replaces. `classifyChallenge` remains correct at its actual job: refining the SHAPE of a
+    // challenge already established, never deciding WHETHER there is one.
+    expect(isChallengeShell(403, MARKERLESS_WALL)).toBe(true);
+    expect(classifyChallenge(MARKERLESS_WALL)).toBe('none');
+
+    // And the two now AGREE on both genuine pages — the sensor-bearing article and the thin one.
     expect(classifyChallenge(REAL_WITH_SENSOR)).toBe('none');
-    expect(classifyChallenge(THIN_BUT_REAL)).not.toBe('none');
+    expect(classifyChallenge(THIN_BUT_REAL)).toBe('none');
   });
 
   it('the class attached to a caught shell is the CLASSIFIER\'s, and it can be a class no solve rung serves', () => {

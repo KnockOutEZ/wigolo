@@ -1,6 +1,6 @@
 import type { ChallengeClass } from '../types.js';
 import type { ImageSolveSubType } from './ai-solve.js';
-import { isChallengeSkeleton, isNearEmptyBody } from './tls-tier.js';
+import { hasChallengeBody, isChallengeSkeleton } from './tls-tier.js';
 
 /**
  * Pure challenge classifier (the solve-ladder gatekeeper). Given the raw HTML
@@ -137,9 +137,47 @@ export function classifyChallenge(html: string): ChallengeClass {
   if (image) return 'image';
   // (3) A genuine clickable widget with no image and no behavioral marker.
   if (interactive) return 'interactive';
-  // (4) A bare Cloudflare managed shell (skeleton / interstitial title) with no
-  //     widget and no image → behavioral (managed check, nothing to click).
-  if (isChallengeSkeleton(slice) || isCloudflareShell(lower)) return 'behavioral';
+  // (4) A managed shell with no widget and no image → behavioral (managed check,
+  //     nothing to click).
+  //
+  //     A LENGTH READING IS NEVER A VERDICT ON ITS OWN.
+  //
+  //     This arm used to be `isChallengeSkeleton(slice) || isCloudflareShell(lower)`.
+  //     `isChallengeSkeleton`'s last arm is a bare `visibleText < 600`, and its
+  //     own sibling docstring says it is "deliberately NOT sufficient on its own
+  //     — callers pair it with an anti-bot STATUS". Used unpaired here, every
+  //     page below the content floor carrying no vendor marker at all classified
+  //     `behavioral`. Measured 2026-08-04: example.com, 559 bytes / ~128 visible
+  //     chars at HTTP 200, an entirely legitimate page → `behavioral`.
+  //
+  //     That mattered most at the one call site that cannot supply a status by
+  //     construction: `cdpDirectFetch` navigates and reads the DOM, then polls
+  //     `classifyChallenge(html) === 'none'` as its clear-check. It therefore
+  //     burned the full clear-poll budget and declined legitimate short pages as
+  //     bot walls.
+  //
+  //     The pairing input a status-free caller CAN supply is the marker scan —
+  //     which is exactly what the shipped HTTP-layer rule uses for a 2xx body
+  //     (`isChallengeShell`: markers AND a skeleton, neither alone). cdp-direct
+  //     synthesizes `statusCode: 200`, so the 2xx rule IS the status-free rule.
+  //     Reusing it here keeps this classifier in agreement with the shipped
+  //     detectors rather than inventing a second, weaker procedure.
+  //
+  //     Both halves are load-bearing in OPPOSITE directions, which is why
+  //     neither a threshold tweak nor a marker list alone would do:
+  //       - markers without the content check → an article ABOUT bot protection
+  //         reads as a wall (the P0 defect in `isAntiBotSignal`);
+  //       - the content check without markers → a legitimately tiny page reads
+  //         as a wall (this defect).
+  //     The 600 floor is unchanged; only its logical role is — from sufficient
+  //     to necessary-but-not-sufficient.
+  //
+  //     `hasInterstitialSignal` stays a separate, higher-precedence arm: an
+  //     interstitial title or vendor template signature is positive proof the
+  //     response IS the challenge, so it outranks length in BOTH directions (a
+  //     padded interstitial is still an interstitial).
+  if (hasInterstitialSignal(slice, lower)) return 'behavioral';
+  if (hasChallengeBody(slice) && isChallengeSkeleton(slice)) return 'behavioral';
   return 'none';
 }
 
