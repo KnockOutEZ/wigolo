@@ -11,7 +11,12 @@ import { reciprocalRankFusion, sortByRRFScore, buildRankMap } from '../search/rr
 import { applyAggregateMarkdownBudget } from '../search/evidence.js';
 import { getEmbedProvider } from '../providers/embed-provider.js';
 import { getVectorStore } from '../providers/vector-store.js';
-import { isStudioEmbedKey, getStudioArtifactByEmbedKey, searchStudioArtifactKeys } from '../studio/capture/artifacts.js';
+import {
+  ensureArtifactProviders,
+  isArtifactKey,
+  resolveArtifact,
+  searchArtifactKeys,
+} from '../cache/artifact-registry.js';
 import { createLogger } from '../logger.js';
 import type { CacheInput, CacheOutput, CacheResultItem, ChangeReport } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
@@ -144,11 +149,11 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
       source: 'cache',
       trusted: false, // url_cache page — page-derived, never trusted as instructions
     }));
-    // 4d slice-3: union studio_artifacts FTS hits (only when a query drives FTS).
-    // url_cache ranking above is unchanged; studio is appended then the merge is
-    // capped to `limit`. Guarded — studio retrieval must never error the cache tool.
-    const studioHits = input.query ? studioFtsCacheResults(input.query, limit) : [];
-    const merged = dedupeByUrl([...mapped, ...studioHits]).slice(0, limit);
+    // 4d slice-3: union registered artifact providers' FTS hits (only when a query drives FTS).
+    // url_cache ranking above is unchanged; provider hits are appended then the merge is capped to
+    // `limit`. Guarded — artifact retrieval must never error the cache tool.
+    const artifactHits = input.query ? await artifactCacheResults(input.query, limit) : [];
+    const merged = dedupeByUrl([...mapped, ...artifactHits]).slice(0, limit);
     return { results: applyBudget(merged, input.max_tokens_out) };
   } catch (err) {
     log.error('Cache tool error', { error: String(err) });
@@ -171,31 +176,27 @@ function applyBudget(results: CacheResultItem[], maxTokensOut?: number): CacheRe
 }
 
 /**
- * 4d slice-3: studio_artifacts FTS hits as cache results. Hydrates via the shared
- * getStudioArtifactByEmbedKey (no re-derivation); per-row resilient (a missing or
- * stale key is skipped, never surfaced empty). Whole thing is guarded so any
- * failure (e.g. studio retrieval unavailable) degrades to no studio hits rather
- * than erroring the cache tool.
+ * 4d slice-3: artifact-provider FTS hits as cache results. The provider hydrates each key (no
+ * re-derivation) and supplies the `source` value, so this path names no product. Per-row resilient
+ * (a missing or stale key is skipped, never surfaced empty). Whole thing is guarded so any failure
+ * (e.g. a provider's store unavailable) degrades to no artifact hits rather than erroring the tool.
  */
-function studioFtsCacheResults(query: string, limit: number): CacheResultItem[] {
+async function artifactCacheResults(query: string, limit: number): Promise<CacheResultItem[]> {
   try {
-    const keys = searchStudioArtifactKeys(query, limit);
+    await ensureArtifactProviders();
+    const keys = searchArtifactKeys(query, limit);
     const out: CacheResultItem[] = [];
     for (const key of keys) {
-      try {
-        const art = getStudioArtifactByEmbedKey(key);
-        if (!art) continue;
-        out.push({
-          url: key, // C1: the stable studio URI is the identity
-          title: art.title ?? key,
-          markdown: art.markdown ?? '',
-          fetched_at: art.fetchedAt,
-          source: 'studio',
-          trusted: art.contentTrusted, // mirrors content_trusted (clips/qa => false)
-        });
-      } catch {
-        continue;
-      }
+      const hit = resolveArtifact(key);
+      if (!hit) continue;
+      out.push({
+        url: key, // C1: the provider's stable URI is the identity
+        title: hit.record.title ?? key,
+        markdown: hit.record.markdown ?? '',
+        fetched_at: hit.record.fetchedAt,
+        source: hit.provider,
+        trusted: hit.record.trusted, // mirrors the provider's content-trust tag
+      });
     }
     return out;
   } catch {
@@ -203,8 +204,8 @@ function studioFtsCacheResults(query: string, limit: number): CacheResultItem[] 
   }
 }
 
-/** Dedup cache results by url, keeping the first occurrence. url_cache urls and
- * studio://<type>|<id> URIs never collide; this collapses any within-source dups. */
+/** Dedup cache results by url, keeping the first occurrence. url_cache urls and provider artifact
+ * URIs never collide; this collapses any within-source dups. */
 function dedupeByUrl(items: CacheResultItem[]): CacheResultItem[] {
   const seen = new Set<string>();
   const out: CacheResultItem[] = [];
@@ -264,42 +265,38 @@ async function runHybridSearch(input: CacheInput): Promise<CacheResultItem[] | n
 
   const ftsRankMap = buildRankMap(ftsHits.map(h => h.url));
   const vecRankMap = buildRankMap(vecHits.map(h => h.metadata.url));
-  // 4d slice-3: studio_artifacts FTS as a SEPARATE RRF list. The vector side
-  // already returns studio://<type>|<id> keys (shared store), so a studio
-  // artifact can arrive via BOTH sides and fuse by URI to one result. Guarded.
-  let studioFtsRankMap: Map<string, number>;
+  // 4d slice-3: artifact-provider FTS as a SEPARATE RRF list. The vector side already returns
+  // provider artifact keys (shared store), so one artifact can arrive via BOTH sides and fuse by
+  // URI to a single result. Guarded.
+  let artifactRankMap: Map<string, number>;
   try {
-    studioFtsRankMap = buildRankMap(searchStudioArtifactKeys(query, candidateLimit));
+    await ensureArtifactProviders();
+    artifactRankMap = buildRankMap(searchArtifactKeys(query, candidateLimit));
   } catch {
-    studioFtsRankMap = new Map();
+    artifactRankMap = new Map();
   }
 
-  if (ftsRankMap.size === 0 && vecRankMap.size === 0 && studioFtsRankMap.size === 0) return [];
+  if (ftsRankMap.size === 0 && vecRankMap.size === 0 && artifactRankMap.size === 0) return [];
 
-  const fused = reciprocalRankFusion([ftsRankMap, studioFtsRankMap, vecRankMap], 60);
+  const fused = reciprocalRankFusion([ftsRankMap, artifactRankMap, vecRankMap], 60);
   const ordered = sortByRRFScore(fused);
 
   const results: CacheResultItem[] = [];
   for (const [key] of ordered) {
     if (results.length >= limit) break;
-    // Route by key shape: studio://<type>|<id> hydrates from studio_artifacts BY
-    // ID (never new URL'd); url keys via url_cache. Per-row resilient — a miss or
-    // throw is skipped, never aborting the batch (the slice-1 lesson).
-    if (isStudioEmbedKey(key)) {
-      let art;
-      try {
-        art = getStudioArtifactByEmbedKey(key);
-      } catch {
-        continue;
-      }
-      if (!art) continue;
+    // Route by owner: a provider artifact key hydrates from its provider BY ID (never new URL'd);
+    // url keys via url_cache. Per-row resilient — a miss or throw is skipped, never aborting the
+    // batch (the slice-1 lesson).
+    if (isArtifactKey(key)) {
+      const hit = resolveArtifact(key);
+      if (!hit) continue;
       results.push({
         url: key,
-        title: art.title ?? key,
-        markdown: art.markdown ?? '',
-        fetched_at: art.fetchedAt,
-        source: 'studio',
-        trusted: art.contentTrusted,
+        title: hit.record.title ?? key,
+        markdown: hit.record.markdown ?? '',
+        fetched_at: hit.record.fetchedAt,
+        source: hit.provider,
+        trusted: hit.record.trusted,
       });
     } else {
       const cached = getCachedContentByNormalizedUrl(key);
