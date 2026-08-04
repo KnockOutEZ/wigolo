@@ -2,11 +2,11 @@
  * The artifact-provider registry — how a surface core does NOT own contributes rows to the SHARED
  * knowledge store's three read paths (`cache`, `find_similar`, `research`).
  *
- * WHY: those three paths used to import `isStudioEmbedKey` / `searchStudioArtifactKeys` /
- * `getStudioArtifactByEmbedKey` directly and emit a literal `source: 'studio'` / `engines: ['studio']`.
- * The discriminator in a shared store was a product name, so a second product could not register —
- * it would have had to edit core's query paths, core's response types and core's research-type
- * allowlist. Core now knows only "a provider owns some keys and answers with its own id".
+ * WHY: those three paths used to import one specific product's capture module directly and emit that
+ * product's name as a literal `source` / `engines` value. The discriminator in a shared store was a
+ * product name, so a second product could not register — it would have had to edit core's query paths,
+ * core's response types and core's research-type allowlist. Core now knows only "a provider owns some
+ * keys and answers with its own id".
  *
  * The URI SCHEME is deliberately the provider's business, not core's: keys are already persisted in
  * the shared vector store and `index_jobs`, so core matching on a prefix it hardcodes would be the
