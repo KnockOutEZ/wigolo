@@ -181,6 +181,17 @@ jobs:
         env:
           RUN_STUDIO_E2E: '1'
 
+      # The studio_* WIRE CONTRACT, driven against the app the step above just built. It rides this job
+      # rather than its own because it needs exactly what this job already paid for — the real electron
+      # binary, the Linux GUI libs and a virtual display — and nothing else. It is a separate PACKAGE
+      # (contracts/studio-mcp, not a workspace) on purpose: it asserts the endpoint's contract from
+      # outside the implementation, so a repo split moves it with `git mv`. Running it here is what makes
+      # it a gate; a conformance suite CI never invokes is documentation.
+      - name: Conformance (studio_* wire contract, virtual display)
+        run: xvfb-run -a npm run test:conformance --prefix contracts/studio-mcp
+        env:
+          RUN_STUDIO_E2E: '1'
+
 
   # Clean-machine smoke on every desktop OS: a fresh global install, a real
   # `init`, then tool calls that LOAD and EXERCISE every dependency subsystem —
