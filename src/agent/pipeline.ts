@@ -9,7 +9,7 @@ import {
 } from '../search/sampling.js';
 import { isLlmConfiguredWithKeyStore, runLlmText } from '../integrations/cloud/llm/run.js';
 import { resolveLocalModelTier } from '../integrations/cloud/llm/local-tier.js';
-import { wrapUntrusted } from '../security/untrusted.js';
+import { wrapUntrusted, untrustedWrapOverhead } from '../security/untrusted.js';
 import type {
   AgentInput,
   AgentOutput,
@@ -359,25 +359,28 @@ async function synthesizeResult(
 // END marker. The prior code wrapped each block then sliced the joined string to the budget,
 // which severed the trailing block's END (open fence) once the sources overflowed. P6-a: the page
 // body stays INSIDE the untrusted-data fence so an injected directive reads as quoted data, never
-// an instruction; embedded markers are neutralized pre-wrap by wrapUntrusted.
+// an instruction; a marker embedded by the page carries no valid nonce, so it cannot close the fence.
 export function buildUntrustedSourceBlocks(
   sources: AgentSource[],
   perSourceChars: number,
   totalChars: number,
 ): string {
   const sep = '\n\n';
-  const wrapOverhead = wrapUntrusted('').length; // content-independent fence cost (preamble + markers)
   const blocks: string[] = [];
   let used = 0;
   for (let i = 0; i < sources.length; i++) {
     const s = sources[i];
+    // P2: the fence cost depends on the ORIGIN echoed in the opener, so it must be measured
+    // per source INSIDE the loop. Hoisting an origin-less measurement out under-reserves for
+    // every source, and an under-reservation severs the closing marker → open fence.
+    const wrapOverhead = untrustedWrapOverhead(s.url);
     const header = `[${i + 1}] ${s.title} (${s.url})\n`;
     const sepLen = blocks.length > 0 ? sep.length : 0;
     const fixed = sepLen + header.length + wrapOverhead;
     if (used + fixed >= totalChars) break; // no room left for even an empty fenced block
     const contentBudget = Math.min(perSourceChars, totalChars - used - fixed);
     const content = s.markdown_content.slice(0, contentBudget);
-    const block = `${header}${wrapUntrusted(content)}`;
+    const block = `${header}${wrapUntrusted(content, { origin: s.url })}`;
     blocks.push(block);
     used += sepLen + block.length;
   }
@@ -466,15 +469,16 @@ function buildFallbackSynthesis(prompt: string, sources: AgentSource[]): string 
     remaining -= sourceHeader.length;
 
     // P6-a: reserve room for the untrusted-data fence so the content is truncated before
-    // wrapping and the fence stays well-formed within the budget.
-    const wrapOverhead = wrapUntrusted('').length;
+    // wrapping and the fence stays well-formed within the budget. P2: the reservation is
+    // origin-specific — the origin sits in the opening marker.
+    const wrapOverhead = untrustedWrapOverhead(source.url);
     const contentBudget = Math.min(remaining - 10 - wrapOverhead, source.markdown_content.length, 1500);
     if (contentBudget > 0) {
       let content = source.markdown_content.slice(0, contentBudget);
       if (content.length < source.markdown_content.length) {
         content = content.slice(0, Math.max(contentBudget - 3, 0)) + '...';
       }
-      const wrapped = wrapUntrusted(content);
+      const wrapped = wrapUntrusted(content, { origin: source.url });
       result += wrapped + '\n\n';
       remaining -= wrapped.length + 2;
     }

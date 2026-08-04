@@ -104,7 +104,7 @@ export function buildSourcesText(results: SearchResultItem[]): string {
       // D8a: fence the page body (same treatment as research/synthesize.ts) so an injected directive
       // can't be read as an instruction. Truncate BEFORE wrapping (above) so the closing marker is
       // never severed by the clamp. Search results are web-derived (trusted-0); fenced uniformly.
-      blocks.push(`[${sourceIndex}] ${result.title} (${result.url})\n${wrapUntrusted(truncated)}`);
+      blocks.push(`[${sourceIndex}] ${result.title} (${result.url})\n${wrapUntrusted(truncated, { origin: result.url })}`);
       sourceIndex++;
     }
 

@@ -5,7 +5,7 @@ import {
   checkSamplingSupport,
 } from '../search/sampling.js';
 import type { ResearchSource, Citation } from '../types.js';
-import { wrapUntrusted } from '../security/untrusted.js';
+import { wrapUntrusted, untrustedWrapOverhead } from '../security/untrusted.js';
 import { stripResearchChrome } from './brief.js';
 
 const log = createLogger('research');
@@ -46,7 +46,7 @@ export async function synthesizeReport(
     // Page-derived preview returned to the agent — structurally contained (P6-a): the snippet
     // is fenced as untrusted data regardless of the trust flag (which is mirrored separately).
     // Chrome is stripped BEFORE the slice so the 200 chars are real content, then fenced.
-    snippet: wrapUntrusted(stripResearchChrome(s.markdown_content).slice(0, 200)),
+    snippet: wrapUntrusted(stripResearchChrome(s.markdown_content).slice(0, 200), { origin: s.url }),
     trusted: s.trusted, // mirror the source's trust (C4)
   }));
 
@@ -90,7 +90,7 @@ async function synthesizeWithSampling(
       const content = source.markdown_content.slice(0, limits.perSourceChars);
       // P6-a: the page body is embedded INSIDE the untrusted-data fence so an injected
       // directive in the source cannot be read by the synthesis model as an instruction.
-      const block = `[${i + 1}] ${source.title} (${source.url})\n${wrapUntrusted(content)}`;
+      const block = `[${i + 1}] ${source.title} (${source.url})\n${wrapUntrusted(content, { origin: source.url })}`;
 
       totalChars += block.length;
       sourceBlocks.push(block);
@@ -162,14 +162,15 @@ export function buildFallbackReport(
     // P6-a: reserve room for the untrusted-data fence so the content is truncated BEFORE
     // wrapping — the fence is then never cut by the final length clamp (a cut END marker
     // would break containment).
-    const wrapOverhead = wrapUntrusted('').length;
+    // P2: origin-specific reservation — the origin is echoed in the opening marker.
+    const wrapOverhead = untrustedWrapOverhead(source.url);
     const contentBudget = Math.min(remaining - 10 - wrapOverhead, source.markdown_content.length);
     if (contentBudget > 0) {
       let content = source.markdown_content.slice(0, contentBudget);
       if (content.length < source.markdown_content.length) {
         content = content.slice(0, Math.max(contentBudget - 3, 0)) + '...';
       }
-      const wrapped = wrapUntrusted(content);
+      const wrapped = wrapUntrusted(content, { origin: source.url });
       report += wrapped + '\n\n';
       remaining -= wrapped.length + 2;
     }

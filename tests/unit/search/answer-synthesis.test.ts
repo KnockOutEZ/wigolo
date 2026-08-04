@@ -7,6 +7,7 @@ import {
   runSynthesis,
 } from '../../../src/search/answer-synthesis.js';
 import type { SearchResultItem, Citation } from '../../../src/types.js';
+import { UNTRUSTED_BEGIN_PREFIX, UNTRUSTED_END_PREFIX } from '../../../src/security/untrusted.js';
 
 function createMockServer(opts: {
   samplingSupported?: boolean;
@@ -115,7 +116,7 @@ describe('buildSourcesText', () => {
     const sourceContent = text.split('\n\n---\n\n')[0];
     // D8a: the body is now wrapped in the untrusted-data fence (preamble + markers add fixed
     // overhead). The truncation-to-3000 intent is on the page body INSIDE the fence.
-    const fenced = sourceContent.slice(sourceContent.indexOf('[[BEGIN UNTRUSTED DATA]]'), sourceContent.indexOf('[[END UNTRUSTED DATA]]'));
+    const fenced = sourceContent.slice(sourceContent.indexOf(UNTRUSTED_BEGIN_PREFIX), sourceContent.indexOf(UNTRUSTED_END_PREFIX));
     expect((fenced.match(/x/g) || []).length).toBeLessThanOrEqual(3000);
   });
 

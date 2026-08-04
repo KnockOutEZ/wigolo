@@ -5,6 +5,7 @@ import type { MergedSearchResult } from '../../../src/search/dedup.js';
 import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
 import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import { captureFromPage } from '../../../src/studio/capture/artifacts.js';
+import { enclosingRegion } from '../../helpers/untrusted-fence.js';
 
 /**
  * C3 slice-1 — studio_artifacts (clip + qa) as LOCAL research sources.
@@ -252,12 +253,13 @@ describe('research — studio_artifacts as local sources (C3 slice-1)', () => {
     const p = capture.prompt;
     const s = p.indexOf(SENTINEL);
     expect(s, 'studio sentinel reached the synthesis prompt via the real C3 path').toBeGreaterThanOrEqual(0);
-    const begin = p.lastIndexOf('[[BEGIN UNTRUSTED DATA]]', s);
-    const end = p.indexOf('[[END UNTRUSTED DATA]]', s);
-    expect(begin, 'an untrusted-data fence opens before the studio content').toBeGreaterThanOrEqual(0);
-    expect(end, 'an untrusted-data fence closes after the studio content').toBeGreaterThan(s);
-    // no fence CLOSES between the open and the sentinel → the sentinel is genuinely inside this fence.
-    expect(p.indexOf('[[END UNTRUSTED DATA]]', begin)).toBeGreaterThanOrEqual(s);
+    // P2 rewrite: the fence markers carry a per-call nonce, so locate the region whose CLOSE marker
+    // matches its own opener's nonce. That is a strictly stronger containment claim than the old
+    // "some BEGIN before / some END after" scan, which page-planted markers could satisfy.
+    const region = enclosingRegion(p, SENTINEL);
+    expect(region, 'the studio content sits inside a closed untrusted-data region').not.toBeNull();
+    expect(region?.open, 'an untrusted-data fence opens before the studio content').toBeLessThan(s);
+    expect(region?.close, 'an untrusted-data fence closes after the studio content').toBeGreaterThan(s);
     // mutation: synthesize.ts wrapUntrusted(content)→content (raw) at the sampling block → sentinel bare → begin=-1 → REDS.
   });
 });
