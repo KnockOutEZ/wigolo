@@ -20,6 +20,16 @@ jobs:
   lint-build-unit:
     name: lint + build + unit (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Fail loudly instead of burning the 6-hour default. On `studio-handoff` the
+    # ubuntu-latest leg of this job hangs indefinitely while the macOS and Windows
+    # legs finish the same commit in 4-6 min; measured at 360 min (killed by the
+    # default) as far back as 4eec8848, so it predates the CI-trigger and
+    # hookTimeout changes. It stayed invisible because push runs are killed by
+    # cancel-in-progress and PR runs did not exist on this branch until e29d14d7.
+    # 25 min is ~5x the 5 min this job takes on `main`. The hang is NOT yet
+    # diagnosed — capping it is what makes a log retrievable, since
+    # `gh run view --log` refuses while a job is in progress.
+    timeout-minutes: 25
     # Existing jobs never launch Electron; skip the ~100MB binary the workspaces
     # conversion would otherwise pull on every OS.
     env:
@@ -87,6 +97,10 @@ jobs:
   full-suite:
     name: full test suite (ubuntu)
     runs-on: ubuntu-latest
+    # See the note on `lint-build-unit`: this job has the same ubuntu-only hang and
+    # has never completed on `studio-handoff`. 30 min is ~6x the 5 min it takes on
+    # `main`, and generous against the ~7 min a local quiet-machine full run needs.
+    timeout-minutes: 30
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
