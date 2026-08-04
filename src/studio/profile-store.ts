@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { getConfig } from '../config.js';
+import { studioStateDir } from './paths.js';
 import { encryptToFile, decryptFromFile } from '../security/key-crypto.js';
 import { keychainAvailable, keychainGet, keychainSet } from '../security/keychain.js';
 
@@ -106,7 +106,7 @@ export class ProfileStore {
   }
 
   private profilePath(profileId: string): string {
-    return join(this.dataDir, 'studio', 'profiles', `${profileId}.enc`);
+    return studioStateDir(this.dataDir, 'profiles', `${profileId}.enc`);
   }
 
   /**

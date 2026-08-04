@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync, readFileSync, renameSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { getConfig } from '../config.js';
+import { studioStateDir } from './paths.js';
 import { normalizeOrigin, type AuthenticatedOriginOverrides } from './authenticated-origin.js';
 
 /**
@@ -37,7 +37,7 @@ interface LedgerFile {
 }
 
 function ledgerPath(dataDir?: string): string {
-  return join(dataDir ?? getConfig().dataDir, 'studio', 'auth-origins.json');
+  return studioStateDir(dataDir, 'auth-origins.json');
 }
 
 /** Read the handoff ledger. Absent/unreadable/malformed ⇒ empty (a missing ledger costs a card, never safety). */
