@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createLogger } from '../../src/logger.js';
 import { resetConfig } from '../../src/config.js';
 
@@ -96,5 +98,43 @@ describe('logger', () => {
 
     expect(stderrSpy).not.toHaveBeenCalled();
     delete process.env.WIGOLO_TUI_MODE;
+  });
+
+  /**
+   * The `Module` union used to hardcode the product name, so core had to know a product existed for
+   * `createLogger('<product>')` to typecheck. It is now open past core's own subsystem list.
+   */
+  describe('labels beyond core subsystems', () => {
+    it('a surface core does not own logs under its own label', () => {
+      process.env.LOG_FORMAT = 'json';
+      process.env.LOG_LEVEL = 'debug';
+      resetConfig();
+      // Not a member of CoreModule. Before this change adding a label meant editing core's union.
+      createLogger('atlas').info('from a surface core does not enumerate');
+
+      const parsed = JSON.parse(stderrSpy.mock.calls[0][0] as string);
+      expect(parsed.module).toBe('atlas');
+    });
+
+    it('the existing studio label keeps working — this is a type change, not a behaviour change', () => {
+      process.env.LOG_FORMAT = 'json';
+      process.env.LOG_LEVEL = 'debug';
+      resetConfig();
+      createLogger('studio').warn('still labelled the same');
+
+      const parsed = JSON.parse(stderrSpy.mock.calls[0][0] as string);
+      expect(parsed.module).toBe('studio');
+    });
+
+    it('core no longer enumerates the product name in its subsystem union', () => {
+      const src = readFileSync(join(import.meta.dirname, '../../src/logger.ts'), 'utf8');
+      const union = src.split('\n').find((l) => l.startsWith('type CoreModule'));
+      expect(union, 'CoreModule union not found — did the type get renamed?').toBeDefined();
+      expect(union).not.toContain("'studio'");
+      // Still a real enumeration, not widened to bare `string` — the core labels must stay
+      // autocompletable and typo-catchable.
+      expect(union).toContain("'fetch'");
+      expect(union).toContain("'cache'");
+    });
   });
 });

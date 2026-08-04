@@ -3,7 +3,15 @@ import { join } from 'node:path';
 import { getConfig } from './config.js';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-type Module = 'fetch' | 'search' | 'crawl' | 'cache' | 'extract' | 'searxng' | 'server' | 'cli' | 'jsonld' | 'repl' | 'embedding' | 'research' | 'agent' | 'structured-data' | 'reranker' | 'mode' | 'language-filter' | 'playwright-tier' | 'python-worker' | 'providers' | 'hybrid' | 'studio' | 'rest';
+/** Core's own subsystems — enumerated so the common labels autocomplete and typos stay catchable. */
+type CoreModule = 'fetch' | 'search' | 'crawl' | 'cache' | 'extract' | 'searxng' | 'server' | 'cli' | 'jsonld' | 'repl' | 'embedding' | 'research' | 'agent' | 'structured-data' | 'reranker' | 'mode' | 'language-filter' | 'playwright-tier' | 'python-worker' | 'providers' | 'hybrid' | 'rest';
+
+/**
+ * A logger label. Open beyond `CoreModule` because a surface core does not own must be able to log
+ * without being added to core's union — the product name used to be a hardcoded member here, so core
+ * had to know it existed for `createLogger('<product>')` to typecheck.
+ */
+type Module = CoreModule | (string & {});
 
 const LEVEL_PRIORITY: Record<LogLevel, number> = {
   debug: 0,
