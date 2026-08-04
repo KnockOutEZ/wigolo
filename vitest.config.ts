@@ -14,6 +14,20 @@ const shared = {
   environment: 'node' as const,
   setupFiles: ['./tests/setup.ts'],
   testTimeout: 20000,
+  // Hooks get the SAME allowance as test bodies. Vitest's hookTimeout default is
+  // 10s, so leaving it unset meant a suite that had explicitly declared 20s for
+  // synchronous filesystem + SQLite work still capped its setup at 10s — an
+  // asymmetry, not a decision. It surfaced on Windows CI as
+  // `tests/unit/studio/capture/list-session-artifacts.test.ts` timing out in a
+  // `beforeEach` that runs mkdtempSync + a 14-migration applyMigrations ONCE PER
+  // TEST; the same work in the test body would have been allowed 20s.
+  //
+  // This is deliberately not the "raise a timeout until it goes green" move: the
+  // hook does bounded SYNCHRONOUS work and measures nothing, so a longer ceiling
+  // cannot mask a signal. Contrast the BotD parity gate, which measures frame
+  // cadence — there a raised timeout would hide the very thing under test, which
+  // is why that one gets root-caused instead.
+  hookTimeout: 20000,
 };
 
 export default defineConfig({
