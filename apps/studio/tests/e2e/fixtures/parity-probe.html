@@ -12,6 +12,61 @@
   used against real Chrome so the two vectors are comparable.
 -->
 <script type="module">
+  /**
+   * VISIBILITY TIMELINE — recorded from the first line of script, before anything is awaited.
+   *
+   * `document.visibilityState` is not a constant for a page in a window that is still being mapped: a
+   * renderer created while its window has no compositor surface starts HIDDEN and flips when the
+   * surface arrives. A single late read therefore cannot tell "this window is starved" from "this
+   * window had not finished being mapped when I looked", and those two have opposite meanings — one is
+   * the regression the hidden lane exists to prevent, the other is the harness reading too early.
+   *
+   * So the page records the whole sequence with timestamps instead of one sample, and the harness
+   * reports it on failure. Recorded, never judged: the spec owns what a good sequence looks like.
+   */
+  const visibilityTimeline = [{ at: 0, state: document.visibilityState, focus: document.hasFocus() }];
+  document.addEventListener('visibilitychange', () => {
+    visibilityTimeline.push({ at: Math.round(performance.now()), state: document.visibilityState, focus: document.hasFocus() });
+  });
+
+  /**
+   * SETTLE BEFORE MEASURING — and the bound is derived, not chosen by trial.
+   *
+   * The window's compositor surface is acquired asynchronously, and the renderer learns about it one
+   * IPC hop later. MEASURED on this build: `showInactive()` → the renderer observing `visible` takes
+   * **48 ms**. The probe's own protective margin — map the window, then navigate this page over
+   * loopback and reach this script — is the SAME ORDER, tens of milliseconds. Two quantities of the
+   * same magnitude racing is a coin flip weighted by machine load, which is exactly the intermittent
+   * that made this gate untrustworthy: on a contended run the sample landed on the pre-surface side and
+   * reported `hidden` with a dead frame clock, indistinguishable from the real regression.
+   *
+   * So the page waits for the transition instead of racing it. 3000 ms is ~60x the measured 48 ms lag,
+   * and ~3x a load-stretched estimate of it (under 24x CPU oversubscription on a 12-core box this
+   * script's own start-to-sample time stretched 54 ms → 958 ms, ~18x; 48 ms x 18 ≈ 0.9 s). It costs
+   * nothing on a healthy arm — the flip has already happened before this line, so it returns
+   * immediately — and the arm's 20 s budget needs only ~1.3 s for the measurement, so even the full
+   * wait leaves >15 s of headroom.
+   *
+   * THIS CANNOT MASK THE REGRESSION IT GUARDS. A window that was never mapped has no surface to
+   * acquire: measured, it reports `hidden` at t=0 and is STILL `hidden` after the arm's whole budget.
+   * The wait expires, the page samples `hidden` with 0 frames, and every assertion that should red does.
+   * What the wait removes is only the reading taken mid-transition.
+   */
+  function settleVisibility(ms) {
+    if (document.visibilityState !== 'hidden') return Promise.resolve(0);
+    return new Promise((resolve) => {
+      const started = performance.now();
+      const done = () => {
+        document.removeEventListener('visibilitychange', onChange);
+        clearTimeout(timer);
+        resolve(Math.round(performance.now() - started));
+      };
+      const onChange = () => { if (document.visibilityState !== 'hidden') done(); };
+      document.addEventListener('visibilitychange', onChange);
+      const timer = setTimeout(done, ms);
+    });
+  }
+
   const codecs = {
     avc1: 'video/mp4; codecs="avc1.42E01E"',
     hev1: 'video/mp4; codecs="hev1.1.6.L93.B0"',
@@ -87,11 +142,27 @@
       // Hidden-vs-visible behavioural surface (checklist item 6).
       visibilityState: document.visibilityState,
       hasFocus: document.hasFocus(),
+      // The sequence behind that single value, plus when it was sampled, so a red assertion can say
+      // whether the window was starved or merely not mapped yet.
+      visibilityTimeline: visibilityTimeline.slice(),
+      visibilitySampledAt: Math.round(performance.now()),
       outerWidth: window.outerWidth,
       innerWidth: window.innerWidth,
       // Timer + rAF cadence: the sharpest hidden-window risk. Filled in by measure() below.
       rafFps: null,
       intervalRatio: null,
+      // The raw counts behind those two ratios. A starved clock and a measurement window that closed
+      // early both produce a small fps; only the raw frame count and elapsed time separate them.
+      rafFrames: null,
+      cadenceElapsedMs: null,
+      // The visibility state AFTER the cadence window, so a flip that happened mid-measurement is
+      // visible rather than averaged into a meaningless number.
+      visibilityStateAfterCadence: null,
+      // How long the settle took (0 = the surface was already there) and how many visibility flips
+      // happened DURING the measurement. A non-zero flip count means the numbers above average a
+      // starved window with a live one, so the spec refuses to score them at all.
+      settleWaitedMs: null,
+      flipsDuringMeasurement: null,
     };
   }
 
@@ -106,7 +177,7 @@
       setTimeout(() => {
         clearInterval(iv);
         const elapsed = performance.now() - started;
-        resolve({ rafFps: (frames / elapsed) * 1000, intervalRatio: ticks / (elapsed / 10) });
+        resolve({ rafFps: (frames / elapsed) * 1000, intervalRatio: ticks / (elapsed / 10), rafFrames: frames, cadenceElapsedMs: Math.round(elapsed) });
       }, ms);
     });
   }
@@ -139,10 +210,18 @@
       out.botdError = String(err);
     }
     try {
+      const settleWaitedMs = await settleVisibility(3000);
+      const measurementStartedAt = performance.now();
       out.coherence = await coherence();
       const cadence = await measureCadence(1000);
       out.coherence.rafFps = cadence.rafFps;
       out.coherence.intervalRatio = cadence.intervalRatio;
+      out.coherence.rafFrames = cadence.rafFrames;
+      out.coherence.cadenceElapsedMs = cadence.cadenceElapsedMs;
+      out.coherence.visibilityStateAfterCadence = document.visibilityState;
+      out.coherence.visibilityTimeline = visibilityTimeline.slice();
+      out.coherence.settleWaitedMs = settleWaitedMs;
+      out.coherence.flipsDuringMeasurement = visibilityTimeline.filter((e) => e.at >= measurementStartedAt).length;
     } catch (err) {
       out.coherenceError = String(err);
     }

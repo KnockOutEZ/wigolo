@@ -50,6 +50,19 @@ export default defineConfig({
       },
       {
         test: {
+          // The studio_* wire contract's deterministic half (drift check + wire predicates). It runs
+          // HERE, in the ordinary suite, because a drift check that only runs when someone remembers to
+          // run it is not a drift check — a core-side schema edit has to red on the same command that
+          // already gates every change. Its own setup is deliberately absent: the contract must not
+          // depend on core's test bootstrap, or it stops being checkable from outside.
+          name: 'contract',
+          environment: 'node',
+          globals: true,
+          include: ['contracts/*/tests/**/*.test.ts'],
+        },
+      },
+      {
+        test: {
           ...shared,
           name: 'spawn-serial',
           // The spawn-heavy lane: one fork, no file parallelism.

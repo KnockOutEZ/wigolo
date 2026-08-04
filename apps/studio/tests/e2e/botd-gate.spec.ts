@@ -52,9 +52,29 @@ interface Coherence {
   fonts: string[] | null; webglRenderer: string | null;
   visibilityState: string; hasFocus: boolean;
   rafFps: number | null; intervalRatio: number | null;
+  // Diagnostics, not assertions. `visibilityState` is a single late sample of a value that CHANGES
+  // while a window is being mapped, so a red assertion on it is ambiguous without the sequence behind
+  // it — and that ambiguity is what made this gate's earlier intermittent read as "arm data missing"
+  // rather than as what it was. Every red hidden-vs-visible assertion prints these.
+  visibilityTimeline?: Array<{ at: number; state: string; focus: boolean }>;
+  visibilitySampledAt?: number;
+  visibilityStateAfterCadence?: string | null;
+  rafFrames?: number | null;
+  cadenceElapsedMs?: number | null;
+  settleWaitedMs?: number | null;
+  /** Asserted, not merely reported: see 'the measurement is valid' below. */
+  flipsDuringMeasurement?: number | null;
 }
 interface Probe { ready: boolean; botd?: BotdVerdict; botdError?: string; coherence?: Coherence; coherenceError?: string }
-interface Arm { probe: Probe; navHeaders: IncomingHttpHeaders | null; requestsPaused: number | null; stderr: string }
+/** The arm's own view of its window, reported by the probe main (see botd-probe-main.mjs). */
+interface WindowReport {
+  requests_paused: number;
+  presented?: boolean;
+  window_visible?: boolean;
+  window_minimized?: boolean;
+  window_events?: Array<{ e: string; at: number }>;
+}
+interface Arm { probe: Probe; navHeaders: IncomingHttpHeaders | null; window: WindowReport | null; stderr: string }
 
 /**
  * Ask the installed Electron what Chromium it actually carries, by running its own Node with
@@ -159,7 +179,7 @@ describe.skipIf(!RUN)('parity release gate — vendored BotD, no automation harn
         arms.set(key, {
           probe: fx.reports.get(key) ?? { ready: false },
           navHeaders: fx.navHeaders.get(key) ?? null,
-          requestsPaused: pausedLine ? (JSON.parse(pausedLine) as { requests_paused: number }).requests_paused : null,
+          window: pausedLine ? (JSON.parse(pausedLine) as WindowReport) : null,
           // Kept so a non-reporting arm says WHY. Without it a launch failure surfaces as
           // `{"ready":false}` with no cause, which is what the first CI run of this gate produced.
           stderr: lines.join(''),
@@ -219,7 +239,7 @@ describe.skipIf(!RUN)('parity release gate — vendored BotD, no automation harn
 
     it('proves the SSRF fence really was armed during the measurement: a zero pause count would mean the clean verdict was collected with the fence off, which is not the shipped condition', () => {
       for (const key of ['identity-visible', 'identity-hidden']) {
-        expect(arm(key).requestsPaused, key).toBeGreaterThan(0);
+        expect(arm(key).window?.requests_paused, key).toBeGreaterThan(0);
       }
     });
 
@@ -336,6 +356,28 @@ describe.skipIf(!RUN)('parity release gate — vendored BotD, no automation harn
     const v = (): Coherence => arm('identity-visible').probe.coherence!;
     const h = (): Coherence => arm('identity-hidden').probe.coherence!;
 
+    /**
+     * What a red assertion in this block has to print to be actionable. Without it, "expected 'visible'
+     * to be 'hidden'" cannot distinguish a starved window from one whose mapping had not completed —
+     * opposite conclusions, and the earlier intermittent was misread for exactly that reason.
+     */
+    const windowState = (): string => {
+      const fmt = (label: string, key: string): string => {
+        const a = arm(key);
+        const c = a.probe.coherence!;
+        return `${label}: state=${c.visibilityState} afterCadence=${c.visibilityStateAfterCadence ?? '?'} ` +
+          `sampledAt=${c.visibilitySampledAt ?? '?'}ms frames=${c.rafFrames ?? '?'}/${c.cadenceElapsedMs ?? '?'}ms ` +
+          `fps=${c.rafFps === null ? 'null' : c.rafFps.toFixed(1)} intervalRatio=${c.intervalRatio === null ? 'null' : c.intervalRatio.toFixed(2)} ` +
+          `settleWaited=${c.settleWaitedMs ?? '?'}ms flipsDuringMeasurement=${c.flipsDuringMeasurement ?? '?'} ` +
+          `pageTimeline=${JSON.stringify(c.visibilityTimeline ?? null)} ` +
+          // The window's own lifecycle, from the main process: this is what separates "never mapped"
+          // from "mapped then occluded", which the page cannot distinguish.
+          `presented=${a.window?.presented ?? '?'} winVisible=${a.window?.window_visible ?? '?'} ` +
+          `winMinimized=${a.window?.window_minimized ?? '?'} winEvents=${JSON.stringify(a.window?.window_events ?? null)}`;
+      };
+      return `\n  ${fmt('hidden ', 'identity-hidden')}\n  ${fmt('visible', 'identity-visible')}`;
+    };
+
     it('presents an identical identity and capability surface in both window states', () => {
       expect(h().userAgent).toBe(v().userAgent);
       expect(h().brands).toEqual(v().brands);
@@ -346,8 +388,31 @@ describe.skipIf(!RUN)('parity release gate — vendored BotD, no automation harn
       expect(h().devicePixelRatio).toBe(v().devicePixelRatio);
     });
 
+    /**
+     * THE MEASUREMENT-VALIDITY ASSERTION, and the reason this gate stopped reding at random.
+     *
+     * A window's compositor surface is acquired asynchronously and the renderer learns of it one IPC hop
+     * later — measured at 48 ms. The probe used to navigate the measured page immediately after
+     * presenting the window, so its protective margin was the same tens of milliseconds as that lag: two
+     * quantities of the same order racing, decided by machine load. When the page won, it sampled the
+     * PRE-SURFACE state and reported `visibilityState: 'hidden'` with `rafFps: 0` — byte-identical to the
+     * real starvation regression, and with `intervalRatio` still 1.00 because timers were never affected.
+     * That is exactly the three-failure signature that made people re-run this gate.
+     *
+     * Both halves are now fixed: the page waits for the transition (bounded, derived — see the fixture)
+     * and the probe waits for the window's own `show` event before navigating. This assertion is what
+     * keeps that honest. A flip DURING the measurement means the numbers below average a starved window
+     * with a live one, so the gate refuses to score them at all rather than reporting whichever side won.
+     */
+    it('measured in ONE steady window state — no visibility flip during the measurement, so the cadence numbers below are a reading of something rather than an average across a transition', () => {
+      for (const key of ['identity-visible', 'identity-hidden']) {
+        const c = arm(key).probe.coherence!;
+        expect(c.flipsDuringMeasurement, `${key}: ${windowState()}`).toBe(0);
+      }
+    });
+
     it('reports visibilityState `visible` on a window that was never shown — the page is not occluded, and a hidden window is not a background tab', () => {
-      expect(h().visibilityState).toBe('visible');
+      expect(h().visibilityState, windowState()).toBe('visible');
     });
 
     /**
@@ -365,22 +430,22 @@ describe.skipIf(!RUN)('parity release gate — vendored BotD, no automation harn
      */
     it('gives the hidden window a frame clock IF AND ONLY IF the visible one has one — this is the regression that shipped and was caught: a never-mapped window starves its tab of frames while a mapped one does not', () => {
       const HAS_CLOCK = 5; // fps; well below any real cadence and well above a starved 0
-      expect(h().rafFps! > HAS_CLOCK, `hidden=${h().rafFps} visible=${v().rafFps}`).toBe(v().rafFps! > HAS_CLOCK);
+      expect(h().rafFps! > HAS_CLOCK, windowState()).toBe(v().rafFps! > HAS_CLOCK);
     });
 
     it('runs the hidden window at a real cadence wherever a frame clock exists at all — the loose bound is deliberate, since the failure guarded against is an order of magnitude away and CI runners are noisy', () => {
       if ((v().rafFps ?? 0) <= 5) {
         // No compositor on this machine: the comparison above carries the signal, and a magnitude claim
         // here would be measuring the runner. Recorded rather than silently skipped.
-        expect(h().rafFps).toBe(v().rafFps);
+        expect(h().rafFps, windowState()).toBe(v().rafFps);
         return;
       }
-      expect(h().rafFps).toBeGreaterThan(30);
-      expect(h().rafFps!).toBeGreaterThan(v().rafFps! / 2);
+      expect(h().rafFps, windowState()).toBeGreaterThan(30);
+      expect(h().rafFps!, windowState()).toBeGreaterThan(v().rafFps! / 2);
     });
 
     it('keeps real timer cadence while hidden — clamping background timers to 1s is the classic occluded-tab tell', () => {
-      expect(h().intervalRatio).toBeGreaterThan(0.5);
+      expect(h().intervalRatio, windowState()).toBeGreaterThan(0.5);
     });
 
     // A RECORDED CEILING, not a spoof. `document.hasFocus()` is false on a never-shown window, which

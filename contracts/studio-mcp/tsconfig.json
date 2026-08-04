@@ -1,0 +1,19 @@
+{
+  "//": "The root tsconfig includes only `src`, so without this file the contract package would never be typechecked at all — and a contract whose own types are unchecked is the least trustworthy artifact in the repo. Wired into `npm run gate:studio` as `typecheck:contract`.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "noEmit": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"],
+    "paths": {
+      "wigolo/studio": ["../../src/studio/index.ts"]
+    }
+  },
+  "//paths": "The conformance suite imports the PUBLIC package surface at runtime, which resolves to dist/ — but the repo's type gate deliberately runs with NO build step (ci.yml states the reason: a build would hide a type error behind a build failure), so this must stay checkable over source alone. The mapping points at the source the package publishes, which is where its declarations are generated from anyway.",
+  "include": ["src", "tests"]
+}

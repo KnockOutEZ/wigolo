@@ -1,0 +1,16 @@
+{
+  "name": "@wigolo/studio-mcp-contract",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "The studio_* MCP wire contract: the ten input schemas, the tool-name set, and a conformance suite any Studio implementation must pass over its real MCP endpoint.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "//not-a-workspace": "Deliberately outside the root `workspaces` globs. It declares no dependencies of its own — it uses the repo's vitest, playwright and node types, which resolve upward — so making it a workspace would buy nothing and change install topology for every contributor. Invoke it with `npm run <script> --prefix contracts/studio-mcp`, or from the repo root as `npm run typecheck:contract` and `vitest run --project contract`.",
+  "scripts": {
+    "lint": "tsc -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts",
+    "test:conformance": "vitest run --config vitest.e2e.config.ts"
+  }
+}
