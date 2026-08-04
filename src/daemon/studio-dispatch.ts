@@ -21,8 +21,18 @@ import { readHandle, getMyInstanceId } from '../studio/handle.js';
 import { ensureStudioRunning } from '../studio/auto-launch.js';
 import { DaemonProxy } from './proxy.js';
 import { createLogger } from '../logger.js';
+import type { ToolName } from '../instructions.js';
+import type { McpToolResult } from '../server/tool-registry.js';
 
 const log = createLogger('studio');
+
+/**
+ * The studio half of the tool-name union, expressed as a TYPE rather than a literal list — the same
+ * idiom `src/daemon/rest/openapi.ts` uses to say "REST is the core surface only". It is what makes
+ * the host-route table below compile-enforced: add a `studio_*` name to `ToolName` and tsc fails
+ * here until it has a route, instead of the tool 404ing at runtime with a green typecheck.
+ */
+export type StudioToolName = Extract<ToolName, `studio_${string}`>;
 
 export interface StudioObserveInput {
   /** The event cursor the agent last received; events ≤ this are acked. */
@@ -309,9 +319,13 @@ export interface StudioListOutput {
   sessions: StudioSessionView[];
 }
 
-export function isStudioToolError(
-  x: StudioObserveOutput | StudioActOutput | StudioMarksOutput | StudioGeneralizeOutput | StudioCaptureOutput | StudioSayOutput | StudioExtractSetOutput | StudioSpawnOutput | StudioCloseOutput | StudioListOutput | StudioToolError,
-): x is StudioToolError {
+/** Anything a host handler can return. Named so the route table and the type guard share one union. */
+export type StudioHostOutput =
+  | StudioObserveOutput | StudioActOutput | StudioMarksOutput | StudioGeneralizeOutput | StudioCaptureOutput
+  | StudioSayOutput | StudioExtractSetOutput | StudioSpawnOutput | StudioCloseOutput | StudioListOutput
+  | StudioToolError;
+
+export function isStudioToolError(x: StudioHostOutput): x is StudioToolError {
   return typeof (x as StudioToolError).error_reason === 'string';
 }
 
@@ -331,10 +345,7 @@ export interface StudioHostHandlers {
   extractSet(input: StudioExtractSetInput): Promise<StudioExtractSetOutput | StudioToolError>;
 }
 
-export interface McpToolResult {
-  content: Array<{ type: 'text'; text: string }>;
-  isError: boolean;
-}
+export type { McpToolResult };
 
 /** Injectable for tests; production builds a real DaemonProxy. */
 export interface DispatchDeps {
@@ -344,6 +355,46 @@ export interface DispatchDeps {
 function refusal(error_reason: string, hint: string): McpToolResult {
   return { content: [{ type: 'text', text: JSON.stringify({ error_reason, hint }, null, 2) }], isError: true };
 }
+
+/** A typed error becomes a refusal; anything else serializes as the data it is. */
+function refuseOrData(data: StudioHostOutput): McpToolResult {
+  if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
+  return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
+}
+
+/**
+ * Serialize the FULL result both ways. studio_act needs this because a refusal carries `hint` and
+ * (for not_holder) `currentEpoch`, which the bare refusal() shape would drop.
+ */
+function verbatim(data: StudioHostOutput): McpToolResult {
+  return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: isStudioToolError(data) };
+}
+
+type HostRoute = (host: StudioHostHandlers, args: Record<string, unknown>) => Promise<McpToolResult>;
+
+/**
+ * Tool name → host handler. Ten names, NINE handler keys: studio_open is the §5 public entry verb
+ * and routes to the SAME `spawn` key (PIN-SPLIT(a) — the agent-reachable handler-key set stays
+ * byte-unchanged). `Record<StudioToolName, …>` is the enforcement: a new studio tool cannot compile
+ * until it has a route here, which is what the old ten-way if-chain could not promise.
+ */
+const HOST_ROUTES: Record<StudioToolName, HostRoute> = {
+  studio_open: async (h, a) => refuseOrData(await h.spawn(a as StudioSpawnInput)),
+  studio_observe: async (h, a) => refuseOrData(await h.observe(a as StudioObserveInput)),
+  // args is validated structurally inside act() (unknown action → typed refusal).
+  studio_act: async (h, a) => verbatim(await h.act(a as unknown as StudioActInput)),
+  studio_marks: async (h, a) => refuseOrData(await h.marks(a as StudioMarksInput)),
+  studio_capture: async (h, a) => refuseOrData(await h.capture(a as StudioCaptureInput)),
+  // mark_id + tab_id are required → structural cast (mirrors studio_act's action). Host validates.
+  studio_extract_set: async (h, a) => refuseOrData(await h.extractSet(a as unknown as StudioExtractSetInput)),
+  studio_say: async (h, a) => refuseOrData(await h.say(a as unknown as StudioSayInput)),
+  studio_spawn: async (h, a) => refuseOrData(await h.spawn(a as StudioSpawnInput)),
+  studio_close: async (h, a) => refuseOrData(await h.close(a as StudioCloseInput)),
+  studio_list: async (h) => refuseOrData(await h.list()),
+};
+
+/** Own-property lookup — a bare `HOST_ROUTES[name]` would resolve prototype keys like 'constructor'. */
+const HOST_ROUTE_TABLE = new Map<string, HostRoute>(Object.entries(HOST_ROUTES));
 
 /**
  * Route a `studio_*` call. `studioHost` is set only in the live host process.
@@ -361,56 +412,10 @@ export async function dispatchStudioTool(
   // for studio_act runs in studioHost.act() here (where the token lives), never on the
   // stdio proxy side — a stdio caller cannot satisfy or bypass it.
   if (studioHost) {
-    if (name === 'studio_observe') {
-      const data = await studioHost.observe(args as StudioObserveInput);
-      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint); // typed error → tool error, not silent
-      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
-    }
-    if (name === 'studio_act') {
-      // args is validated structurally inside act() (unknown action → typed refusal).
-      const data = await studioHost.act(args as unknown as StudioActInput);
-      // Serialize the full result both ways — a refusal carries `hint` and (for
-      // not_holder) `currentEpoch`, which the bare refusal() shape would drop.
-      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: isStudioToolError(data) };
-    }
-    if (name === 'studio_marks') {
-      const data = await studioHost.marks(args as StudioMarksInput);
-      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
-      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
-    }
-    if (name === 'studio_capture') {
-      const data = await studioHost.capture(args as StudioCaptureInput);
-      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
-      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
-    }
-    if (name === 'studio_open' || name === 'studio_spawn') {
-      // studio_open is the §5 public entry verb; it routes to the SAME `spawn` host-handler key
-      // (PIN-SPLIT(a) handler-key set is byte-unchanged — no new key). studio_spawn stays too.
-      const data = await studioHost.spawn(args as StudioSpawnInput);
-      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
-      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
-    }
-    if (name === 'studio_close') {
-      const data = await studioHost.close(args as StudioCloseInput);
-      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
-      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
-    }
-    if (name === 'studio_list') {
-      const data = await studioHost.list();
-      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
-      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
-    }
-    if (name === 'studio_say') {
-      const data = await studioHost.say(args as unknown as StudioSayInput);
-      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
-      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
-    }
-    if (name === 'studio_extract_set') {
-      // mark_id + tab_id are required → structural cast (mirrors studio_act's action). Host validates.
-      const data = await studioHost.extractSet(args as unknown as StudioExtractSetInput);
-      if (isStudioToolError(data)) return refusal(data.error_reason, data.hint);
-      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], isError: false };
-    }
+    const route = HOST_ROUTE_TABLE.get(name);
+    if (route) return route(studioHost, args);
+    // A name that looks like a control/approval primitive has no route BY DESIGN — PIN-SPLIT(b):
+    // there is no agent path to obtain control or self-approve.
     return refusal('unknown_studio_tool', `No host handler for ${name}.`);
   }
 

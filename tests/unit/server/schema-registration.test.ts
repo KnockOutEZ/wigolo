@@ -115,9 +115,10 @@ vi.mock('../../../src/embedding/embed.js', () => ({
   resetEmbeddingService: vi.fn(),
 }));
 
-async function connectClient() {
+async function connectClient(mutate?: (subs: import('../../../src/server.js').Subsystems) => void) {
   const { initSubsystems, createMcpServer } = await import('../../../src/server.js');
   const subs = await initSubsystems();
+  mutate?.(subs);
   const server = createMcpServer(subs);
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -161,6 +162,37 @@ describe('diff + watch tool registration', () => {
         ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'studio_act', 'studio_capture', 'studio_close', 'studio_extract_set', 'studio_list', 'studio_marks', 'studio_observe', 'studio_open', 'studio_say', 'studio_spawn', 'watch']
       );
       expect(res.tools).toHaveLength(20);
+    } finally {
+      await teardown();
+    }
+  });
+
+  // P1a: the surface beyond core's own ten arrives through an INJECTED registry. If the injection
+  // point were decorative — core still reaching for the studio names itself — swapping the registry
+  // would leave studio_* advertised anyway, and this test would red. It also proves core's own ten
+  // are unaffected by whatever a host injects.
+  it('an injected tool registry replaces the hosted surface and leaves core\'s ten intact', async () => {
+    const { ToolRegistry } = await import('../../../src/server/tool-registry.js');
+    const { TOOL_SCHEMAS } = await import('../../../src/server/tool-schemas.js');
+    const registry = new ToolRegistry();
+    registry.register({
+      name: 'fake-surface',
+      tools: [{ name: 'studio_list', description: 'a stand-in surface', inputSchema: TOOL_SCHEMAS.studio_list }],
+      handles: (n) => n === 'studio_list',
+      dispatch: async () => ({ content: [{ type: 'text' as const, text: '{"from":"fake"}' }], isError: false }),
+    });
+    const { client, teardown } = await connectClient((subs) => { subs.toolRegistry = registry; });
+    try {
+      const names = (await client.listTools()).tools.map((t) => t.name).sort();
+      expect(names).toEqual(
+        ['agent', 'cache', 'crawl', 'diff', 'extract', 'fetch', 'find_similar', 'research', 'search', 'studio_list', 'watch'],
+      );
+      const res = await client.callTool({ name: 'studio_list', arguments: {} });
+      expect((res.content as Array<{ text: string }>)[0].text).toBe('{"from":"fake"}');
+      // A studio tool the injected registry does not own is now genuinely unknown to core.
+      const gone = await client.callTool({ name: 'studio_observe', arguments: {} });
+      expect(gone.isError).toBe(true);
+      expect((gone.content as Array<{ text: string }>)[0].text).toBe('Unknown tool: studio_observe');
     } finally {
       await teardown();
     }

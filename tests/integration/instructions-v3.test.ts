@@ -22,13 +22,12 @@ describe('knowledge layer integration', () => {
     }
   });
 
-  it('ToolName type includes all 19 tools (8 v3 + diff/watch + the 9 studio tools)', () => {
-    const allTools: ToolName[] = [
-      'fetch', 'search', 'crawl', 'cache', 'extract',
-      'find_similar', 'research', 'agent', 'diff', 'watch',
-      'studio_open', 'studio_observe', 'studio_act', 'studio_marks', 'studio_capture',
-      'studio_say', 'studio_spawn', 'studio_close', 'studio_list',
-    ];
+  it('every ToolName has a usable description (derived — the old 19-name literal had gone stale, missing studio_extract_set)', () => {
+    // A hand-written list here can only ever under-report: the loop asserts each NAMED tool has a
+    // description, so a tool missing from the list is silently unchecked. Deriving from the source
+    // makes the assertion cover the whole union, which is what the title always claimed.
+    const allTools = Object.keys(TOOL_DESCRIPTIONS) as ToolName[];
+    expect(allTools.length).toBe(20);
     for (const tool of allTools) {
       expect(TOOL_DESCRIPTIONS[tool]).toBeDefined();
       expect(typeof TOOL_DESCRIPTIONS[tool]).toBe('string');

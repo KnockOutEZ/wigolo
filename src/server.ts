@@ -57,23 +57,17 @@ import {
   AGENT_TOOL_SCHEMA,
   DIFF_TOOL_SCHEMA,
   WATCH_TOOL_SCHEMA,
-  STUDIO_OPEN_TOOL_SCHEMA,
-  STUDIO_OBSERVE_TOOL_SCHEMA,
-  STUDIO_ACT_TOOL_SCHEMA,
-  STUDIO_MARKS_TOOL_SCHEMA,
-  STUDIO_CAPTURE_TOOL_SCHEMA,
-  STUDIO_EXTRACT_SET_TOOL_SCHEMA,
-  STUDIO_SAY_TOOL_SCHEMA,
-  STUDIO_SPAWN_TOOL_SCHEMA,
-  STUDIO_CLOSE_TOOL_SCHEMA,
-  STUDIO_LIST_TOOL_SCHEMA,
 } from './server/tool-schemas.js';
 import { loadPlugins } from './plugins/loader.js';
 import { PluginRegistry } from './plugins/registry.js';
+import { ToolRegistry } from './server/tool-registry.js';
 // The studio_* seam: routes execute-on-host / proxy / refuse. Reaches the session ONLY
 // through the proxy + the (host-injected) studioHost closure — no session-module import,
 // so the stdio path stays untouched (grep invariant).
-import { dispatchStudioTool, proxyToStudioHost, type StudioHostHandlers } from './daemon/studio-dispatch.js';
+import { proxyToStudioHost, type StudioHostHandlers } from './daemon/studio-dispatch.js';
+// Core hosts the studio surface but does not enumerate it: this is the ONE reference, an injection
+// point rather than a list. When Studio moves to its own repo, this line moves with it.
+import { createStudioToolProvider } from './studio/tool-provider.js';
 import type { StudioSessionsAccessor } from './studio/session-drive.js';
 import { isSessionTargeted, runSessionFetch, runSessionExtract, runSessionCrawl } from './tools/session-target.js';
 import { projectToolArgs, recordToolCall, type ToolAuditDb } from './server/tool-audit.js';
@@ -116,6 +110,12 @@ export interface Subsystems {
   router: SmartRouter;
   backendStatus: BackendStatus;
   pluginRegistry: PluginRegistry;
+  /**
+   * Tool surfaces core hosts but does not own. Built by initSubsystems; a harness that stubs
+   * Subsystems may leave it undefined, in which case createMcpServer builds the default set — so a
+   * stub can OVERRIDE the surface but never accidentally drop it.
+   */
+  toolRegistry?: ToolRegistry;
   shutdown: () => Promise<void>;
   bootstrapSearxng: () => Promise<void>;
   /** Set ONLY in the live Studio host process (injected by cli/studio.ts via DaemonHttpServer.setStudioHost). Undefined on stdio → studio_* calls proxy to the host. */
@@ -306,7 +306,7 @@ export async function initSubsystems(): Promise<Subsystems> {
     closeDatabase();
   }
 
-  return {
+  const subsystems: Subsystems = {
     searchEngines,
     browserPool,
     router,
@@ -320,10 +320,32 @@ export async function initSubsystems(): Promise<Subsystems> {
     // D10: the live cache DB is the audit sink. initDatabase ran above, so getDatabase() resolves.
     toolAuditDb: getDatabase(),
   };
+  // Built AFTER the object exists: the provider reads `studioHost` off it on every dispatch, and
+  // that field is populated by a LATE setter (DaemonHttpServer.setStudioHost).
+  subsystems.toolRegistry = defaultToolRegistry(subsystems);
+  return subsystems;
+}
+
+/**
+ * The tool surfaces core hosts by default. One provider today. Core's own ten tools are NOT in here
+ * — it owns those, and owning a list you wrote is fine; hosting someone else's is what needed a seam.
+ */
+function defaultToolRegistry(subsystems: Subsystems): ToolRegistry {
+  const registry = new ToolRegistry();
+  registry.register(
+    createStudioToolProvider({
+      getHost: () => subsystems.studioHost,
+      getDataDir: () => getConfig().dataDir,
+    }),
+  );
+  return registry;
 }
 
 export function createMcpServer(subsystems: Subsystems): Server {
   const { searchEngines, router, backendStatus } = subsystems;
+  // A stubbed Subsystems may carry no registry; fall back so the hosted surface is never silently
+  // dropped, and so a harness that DOES inject one gets exactly what it injected.
+  const toolRegistry = subsystems.toolRegistry ?? defaultToolRegistry(subsystems);
 
   const server = new Server(
     { name: 'wigolo', version: SERVER_VERSION },
@@ -411,56 +433,9 @@ export function createMcpServer(subsystems: Subsystems): Server {
         description: TOOL_DESCRIPTIONS.watch,
         inputSchema: WATCH_TOOL_SCHEMA,
       },
-      {
-        name: 'studio_open',
-        description: TOOL_DESCRIPTIONS.studio_open,
-        inputSchema: STUDIO_OPEN_TOOL_SCHEMA,
-      },
-      {
-        name: 'studio_observe',
-        description: TOOL_DESCRIPTIONS.studio_observe,
-        inputSchema: STUDIO_OBSERVE_TOOL_SCHEMA,
-      },
-      {
-        name: 'studio_act',
-        description: TOOL_DESCRIPTIONS.studio_act,
-        inputSchema: STUDIO_ACT_TOOL_SCHEMA,
-      },
-      {
-        name: 'studio_marks',
-        description: TOOL_DESCRIPTIONS.studio_marks,
-        inputSchema: STUDIO_MARKS_TOOL_SCHEMA,
-      },
-      {
-        name: 'studio_capture',
-        description: TOOL_DESCRIPTIONS.studio_capture,
-        inputSchema: STUDIO_CAPTURE_TOOL_SCHEMA,
-      },
-      {
-        name: 'studio_extract_set',
-        description: TOOL_DESCRIPTIONS.studio_extract_set,
-        inputSchema: STUDIO_EXTRACT_SET_TOOL_SCHEMA,
-      },
-      {
-        name: 'studio_say',
-        description: TOOL_DESCRIPTIONS.studio_say,
-        inputSchema: STUDIO_SAY_TOOL_SCHEMA,
-      },
-      {
-        name: 'studio_spawn',
-        description: TOOL_DESCRIPTIONS.studio_spawn,
-        inputSchema: STUDIO_SPAWN_TOOL_SCHEMA,
-      },
-      {
-        name: 'studio_close',
-        description: TOOL_DESCRIPTIONS.studio_close,
-        inputSchema: STUDIO_CLOSE_TOOL_SCHEMA,
-      },
-      {
-        name: 'studio_list',
-        description: TOOL_DESCRIPTIONS.studio_list,
-        inputSchema: STUDIO_LIST_TOOL_SCHEMA,
-      },
+      // Then every hosted surface, in registration order. Core no longer hand-lists the studio
+      // tools; the provider derives them, so tools/list cannot disagree with dispatch.
+      ...toolRegistry.listTools(),
     ],
   }));
 
@@ -675,10 +650,12 @@ export function createMcpServer(subsystems: Subsystems): Server {
       };
     }
 
-    if (name === 'studio_open' || name === 'studio_observe' || name === 'studio_act' || name === 'studio_marks' || name === 'studio_capture' || name === 'studio_extract_set' || name === 'studio_say' || name === 'studio_spawn' || name === 'studio_close' || name === 'studio_list') {
-      // Route through the shared seam: execute-on-host (studioHost set) or proxy/refuse on stdio.
-      // studio_act's control-token gate runs inside the host handler — host-authoritative.
-      const result = await dispatchStudioTool(name, (args ?? {}) as Record<string, unknown>, subsystems.studioHost, getConfig().dataDir);
+    // Any hosted surface. The provider owns the name set, so core needs no list of its own; the
+    // studio provider routes through the shared seam (execute-on-host when studioHost is set,
+    // otherwise proxy/refuse on stdio) and studio_act's control-token gate stays host-authoritative.
+    const provider = toolRegistry.find(name);
+    if (provider) {
+      const result = await provider.dispatch(name, (args ?? {}) as Record<string, unknown>);
       return { content: result.content, isError: result.isError };
     }
 
