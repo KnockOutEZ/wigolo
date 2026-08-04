@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync, readFileSync, rmSync, renameSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { getConfig } from '../config.js';
+import { studioStateDir } from './paths.js';
 
 /**
  * The active-session handle the Studio host writes on launch so the user's
@@ -37,7 +37,7 @@ export function getMyInstanceId(): string | null {
 }
 
 function studioDir(dataDir?: string): string {
-  return join(dataDir ?? getConfig().dataDir, 'studio');
+  return studioStateDir(dataDir);
 }
 
 export function studioHandlePath(dataDir?: string): string {

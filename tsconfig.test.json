@@ -17,6 +17,7 @@
     "tests/unit/studio/control-token.test.ts",
     "tests/unit/studio/session-control.test.ts",
     "tests/unit/studio/handle.test.ts",
+    "tests/unit/studio/paths.test.ts",
     "tests/unit/studio/observe.test.ts",
     "tests/unit/studio/perception/target.test.ts",
     "tests/unit/studio/mark-store.test.ts",

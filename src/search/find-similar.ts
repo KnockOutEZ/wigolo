@@ -2,6 +2,7 @@ import type {
   FindSimilarInput,
   FindSimilarOutput,
   FindSimilarResult,
+  FindSimilarSource,
   SearchEngine,
   CachedContent,
 } from '../types.js';
@@ -14,7 +15,12 @@ import { filterByDomains } from './filters.js';
 import { handleSearch } from '../tools/search.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { getEmbeddingService } from '../embedding/embed.js';
-import { isStudioEmbedKey, getStudioArtifactByEmbedKey, searchStudioArtifactKeys } from '../studio/capture/artifacts.js';
+import {
+  ensureArtifactProviders,
+  isArtifactKey,
+  resolveArtifact,
+  searchArtifactKeys,
+} from '../cache/artifact-registry.js';
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
 import { selectMode } from './find-similar/mode.js';
@@ -117,11 +123,11 @@ export async function findSimilar(
     const fts5RankMap = new Map<string, number>();
     let embeddingResults: FindSimilarResult[] = [];
     const embeddingRankMap = new Map<string, number>();
-    // 4d slice-2: studio_artifacts_fts is a SEPARATE ranked list (like embedding),
-    // so a clip matching both studio-FTS and embedding fuses by URI rather than
-    // double-counting within url_cache's FTS ranking.
-    let studioFtsResults: FindSimilarResult[] = [];
-    const studioFtsRankMap = new Map<string, number>();
+    // 4d slice-2: artifact-provider FTS is a SEPARATE ranked list (like embedding), so an artifact
+    // matching both provider-FTS and embedding fuses by URI rather than double-counting within
+    // url_cache's FTS ranking.
+    let artifactFtsResults: FindSimilarResult[] = [];
+    const artifactFtsRankMap = new Map<string, number>();
 
     await Promise.all([
       (async () => {
@@ -135,14 +141,14 @@ export async function findSimilar(
             fts5RankMap,
           );
           log.debug('FTS5 search complete', { hits: cacheResults.length });
-          studioFtsResults = runStudioFtsSearch(
+          artifactFtsResults = await runArtifactFtsSearch(
             signal.terms,
             input.include_domains,
             input.exclude_domains,
             MAX_FTS5_CANDIDATES,
-            studioFtsRankMap,
+            artifactFtsRankMap,
           );
-          log.debug('studio FTS search complete', { hits: studioFtsResults.length });
+          log.debug('artifact FTS search complete', { hits: artifactFtsResults.length });
         }
       })(),
       (async () => {
@@ -166,7 +172,7 @@ export async function findSimilar(
 
     const combinedLocalHits = new Set<string>();
     for (const r of cacheResults) combinedLocalHits.add(safeNormalize(r.url));
-    for (const r of studioFtsResults) combinedLocalHits.add(safeNormalize(r.url));
+    for (const r of artifactFtsResults) combinedLocalHits.add(safeNormalize(r.url));
     for (const r of embeddingResults) combinedLocalHits.add(safeNormalize(r.url));
 
     if (combinedLocalHits.size < maxResults && includeWeb) {
@@ -206,15 +212,14 @@ export async function findSimilar(
     // Phase 3: 3-way RRF fusion
     const rankedLists: Map<string, number>[] = [];
     if (fts5RankMap.size > 0) rankedLists.push(fts5RankMap);
-    if (studioFtsRankMap.size > 0) rankedLists.push(studioFtsRankMap);
+    if (artifactFtsRankMap.size > 0) rankedLists.push(artifactFtsRankMap);
     if (embeddingRankMap.size > 0) rankedLists.push(embeddingRankMap);
     if (searchRankMap.size > 0) rankedLists.push(searchRankMap);
 
-    // mergeResults dedups by safeNormalize(url): a studio clip surfaced by BOTH
-    // the studio-FTS and embedding paths (identical studio://<type>|<id> URI)
-    // collapses to ONE result here, while its rank in each list above keeps both
-    // signals feeding the fusion.
-    const allResults = mergeResults(cacheResults, studioFtsResults, embeddingResults, searchResults);
+    // mergeResults dedups by safeNormalize(url): an artifact surfaced by BOTH the provider-FTS and
+    // embedding paths (identical provider URI) collapses to ONE result here, while its rank in each
+    // list above keeps both signals feeding the fusion.
+    const allResults = mergeResults(cacheResults, artifactFtsResults, embeddingResults, searchResults);
 
     let finalResults: FindSimilarResult[];
     let topRawScore = 0;
@@ -242,7 +247,7 @@ export async function findSimilar(
     }
 
     const method = determineMethod(
-      cacheResults.length > 0 || studioFtsResults.length > 0,
+      cacheResults.length > 0 || artifactFtsResults.length > 0,
       embeddingResults.length > 0,
       searchResults.length > 0,
     );
@@ -286,10 +291,10 @@ export async function findSimilar(
         };
         const fts = fts5RankMap.get(key);
         if (fts !== undefined) debug.fts5_rank = fts;
-        // studio-FTS shares the fts5_rank facet (both are keyword-FTS signals);
-        // surface it when url_cache FTS didn't rank this key (e.g. a studio hit).
-        const sfts = studioFtsRankMap.get(key);
-        if (debug.fts5_rank === undefined && sfts !== undefined) debug.fts5_rank = sfts;
+        // artifact-FTS shares the fts5_rank facet (both are keyword-FTS signals); surface it when
+        // url_cache FTS didn't rank this key (e.g. a captured-artifact hit).
+        const afts = artifactFtsRankMap.get(key);
+        if (debug.fts5_rank === undefined && afts !== undefined) debug.fts5_rank = afts;
         const emb = embeddingRankMap.get(key);
         if (emb !== undefined) debug.embedding_rank = emb;
         const web = searchRankMap.get(key);
@@ -559,29 +564,29 @@ async function runEmbeddingSearch(
     const similar = await service.findSimilar(queryText, topK, excludeUrls);
     if (similar.length === 0) return [];
 
-    // PER-ROW hydration. The shared vector store mixes url_cache pages with studio
-    // capture keys (studio://<type>|<id>), so a single key must never abort the
-    // batch: each candidate is resolved in its own try/catch, and a miss OR a
-    // throw is skipped + logged (never surfaced empty, never dropping the
-    // co-resident rows). studio keys hydrate from studio_artifacts BY ID — they
-    // must never reach getCachedContent/normalizeUrl (the `|` throws new URL()),
-    // which is exactly the latent suppression that returned [] for the whole batch.
-    const hydrated: Array<{ id: string; title: string; markdown: string; score: number; source: 'studio' | 'cache'; trusted: boolean }> = [];
+    // PER-ROW hydration. The shared vector store mixes url_cache pages with artifact-provider keys,
+    // so a single key must never abort the batch: each candidate is resolved in its own try/catch,
+    // and a miss OR a throw is skipped + logged (never surfaced empty, never dropping the
+    // co-resident rows). Provider keys hydrate from their own store BY ID — they must never reach
+    // getCachedContent/normalizeUrl (a non-URL-safe key throws new URL()), which is exactly the
+    // latent suppression that returned [] for the whole batch.
+    await ensureArtifactProviders();
+    const hydrated: Array<{ id: string; title: string; markdown: string; score: number; source: FindSimilarSource; trusted: boolean }> = [];
     for (const { url: key, score } of similar) {
       try {
-        if (isStudioEmbedKey(key)) {
-          const art = getStudioArtifactByEmbedKey(key);
-          if (!art) {
-            log.debug('embedding hydration skipped — studio artifact missing for key', { key });
+        if (isArtifactKey(key)) {
+          const hit = resolveArtifact(key);
+          if (!hit) {
+            log.debug('embedding hydration skipped — artifact missing for key', { key });
             continue;
           }
           hydrated.push({
-            id: key, // C1: the stable cross-surface identity IS the studio URI.
-            title: art.title ?? key,
-            markdown: (art.markdown ?? '').slice(0, 5000),
+            id: key, // C1: the stable cross-surface identity IS the provider's URI.
+            title: hit.record.title ?? key,
+            markdown: (hit.record.markdown ?? '').slice(0, 5000),
             score,
-            source: 'studio',
-            trusted: art.contentTrusted, // mirrors content_trusted (clips/qa => false)
+            source: hit.provider,
+            trusted: hit.record.trusted, // mirrors the provider's content-trust tag
           });
         } else {
           const cached = getCachedContent(key);
@@ -610,9 +615,9 @@ async function runEmbeddingSearch(
       }
     }
 
-    // Domain filter: url-keyed rows carry a real host; studio rows resolve to ''
-    // and pass unless an include filter is set (filters.ts getDomain swallows the
-    // unparseable studio key — no throw).
+    // Domain filter: url-keyed rows carry a real host; artifact rows resolve to '' and pass unless
+    // an include filter is set (filters.ts getDomain swallows the unparseable artifact key — no
+    // throw).
     const filtered = filterByDomains(
       hydrated.map(h => ({ url: h.id })),
       includeDomains,
@@ -710,30 +715,29 @@ function runFTS5Search(
 }
 
 /**
- * 4d slice-2: the studio side of the FTS path. Matches captured artifacts in
- * studio_artifacts_fts (sibling to url_cache_fts) and hydrates each via the
- * shared getStudioArtifactByEmbedKey read. Emits the SAME contract as the
- * embedding path — studio://<type>|<id> URI identity (C1) + trusted mirrored
- * from content_trusted (C4) — so a clip matching BOTH paths fuses to one result.
- * Per-row resilient: a missing/stale key is skipped + logged, never aborting the
- * batch.
+ * 4d slice-2: the artifact-provider side of the FTS path. Matches provider artifacts (a sibling
+ * index to url_cache_fts) and hydrates each through the registry. Emits the SAME contract as the
+ * embedding path — the provider's URI as identity (C1) + trusted mirrored from the provider's
+ * content-trust tag (C4) — so an artifact matching BOTH paths fuses to one result. Per-row
+ * resilient: a missing/stale key is skipped + logged, never aborting the batch.
  */
-function runStudioFtsSearch(
+async function runArtifactFtsSearch(
   terms: string[],
   includeDomains: string[] | undefined,
   excludeDomains: string[] | undefined,
   maxCandidates: number,
   rankMap: Map<string, number>,
-): FindSimilarResult[] {
+): Promise<FindSimilarResult[]> {
   try {
     const fts5Query = buildFTS5Query(terms);
     if (!fts5Query) return [];
 
-    const keys = searchStudioArtifactKeys(fts5Query, maxCandidates);
+    await ensureArtifactProviders();
+    const keys = searchArtifactKeys(fts5Query, maxCandidates);
     if (keys.length === 0) return [];
 
-    // studio keys have no web domain — getDomain('') keeps them unless an
-    // include filter is set (mirrors the embedding path's domain handling).
+    // Artifact keys have no web domain — getDomain('') keeps them unless an include filter is set
+    // (mirrors the embedding path's domain handling).
     const allowed = new Set(
       filterByDomains(keys.map((url) => ({ url })), includeDomains, excludeDomains).map((f) => f.url),
     );
@@ -742,29 +746,20 @@ function runStudioFtsSearch(
     let rank = 0;
     for (const key of keys) {
       if (!allowed.has(key)) continue;
-      let art;
-      try {
-        art = getStudioArtifactByEmbedKey(key);
-      } catch (err) {
-        log.warn('studio FTS hydration skipped — error resolving key', {
-          key,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        continue;
-      }
-      if (!art) {
-        log.debug('studio FTS hydration skipped — artifact missing for key', { key });
+      const hit = resolveArtifact(key);
+      if (!hit) {
+        log.debug('artifact FTS hydration skipped — artifact missing for key', { key });
         continue;
       }
       rank++;
       rankMap.set(safeNormalize(key), rank);
       results.push({
         url: key,
-        title: art.title ?? key,
-        markdown: (art.markdown ?? '').slice(0, 5000),
+        title: hit.record.title ?? key,
+        markdown: (hit.record.markdown ?? '').slice(0, 5000),
         relevance_score: 0,
-        source: 'studio',
-        trusted: art.contentTrusted,
+        source: hit.provider,
+        trusted: hit.record.trusted,
         match_signals: {
           fts5_rank: rank,
           fused_score: 0,
@@ -773,7 +768,7 @@ function runStudioFtsSearch(
     }
     return results;
   } catch (err) {
-    log.error('studio FTS search failed', { error: String(err) });
+    log.error('artifact FTS search failed', { error: String(err) });
     return [];
   }
 }

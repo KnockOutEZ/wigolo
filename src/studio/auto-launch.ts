@@ -37,6 +37,15 @@ const AUTO_LAUNCH_ENV = 'WIGOLO_STUDIO_AUTO_LAUNCH';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_MS = 250;
 
+/**
+ * The dev-checkout workspace holding the app. Stated ONCE because it was spelled two ways — a path
+ * segment list for the existence probe and an `npm -w` argument for the spawn — which can drift apart
+ * silently. This is the sibling-workspace assumption `installedSubstrateExists` exists to retire: when
+ * the app ships as a distributed substrate, or moves to its own repository, this const and that
+ * function are the whole coupling.
+ */
+const DEV_WORKSPACE = 'apps/studio';
+
 export interface AutoLaunchDeps {
   dataDir?: string;
   /** Start the substrate. Injectable so tests never spawn a real process. */
@@ -74,7 +83,7 @@ function installedSubstrateExists(): boolean {
 }
 
 function devCheckoutExists(): boolean {
-  return existsSync(join(repoRoot(), 'apps', 'studio', 'package.json'));
+  return existsSync(join(repoRoot(), ...DEV_WORKSPACE.split('/'), 'package.json'));
 }
 
 export function studioLaunchable(): boolean {
@@ -85,7 +94,7 @@ export function studioLaunchable(): boolean {
 
 /** Spawn the substrate detached and hidden, so it neither blocks nor steals focus from whatever the human is doing. */
 function defaultLaunch(): void {
-  const child = spawn('npm', ['run', 'dev', '-w', 'apps/studio'], {
+  const child = spawn('npm', ['run', 'dev', '-w', DEV_WORKSPACE], {
     cwd: repoRoot(),
     detached: true,
     stdio: 'ignore',

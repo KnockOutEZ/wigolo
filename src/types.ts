@@ -1093,17 +1093,31 @@ export interface CacheInput {
   max_tokens_out?: number;
 }
 
+/**
+ * Where a stored row came from. `'cache'` is core's own url_cache; anything else is the id of a
+ * registered artifact provider (`src/cache/artifact-registry.ts`).
+ *
+ * Open on purpose. This was `'cache' | 'studio'`, which put a product name in core's response
+ * contract: a second surface could not appear in a cache result without core being edited, and the
+ * value an agent reads named the product rather than the kind of thing it had.
+ */
+export type CacheItemSource = 'cache' | (string & {});
+
+/** As `CacheItemSource`, plus `'search'` for a live web result. */
+export type FindSimilarSource = 'cache' | 'search' | (string & {});
+
 export interface CacheResultItem {
   url: string;
   title: string;
   markdown: string;
   fetched_at: string;
-  /** Provenance: 'studio' = a captured session artifact (URI studio://<type>|<id>),
-   * 'cache' = a fetched url_cache page. */
-  source: 'cache' | 'studio';
-  /** Safe AS INSTRUCTIONS — mirrors studio_artifacts.content_trusted (studio
-   * clips/qa + url_cache pages ⇒ false; human-authored studio notes ⇒ true),
-   * NOT curated_by_human. Required so a caller never sees an untagged row. */
+  /** Provenance: 'cache' = a fetched url_cache page; any other value is the id of a registered
+   * artifact provider (`ArtifactProvider.name`) that owns the row's URI. Deliberately OPEN — a
+   * closed union here meant a second surface could not appear in a cache result at all. */
+  source: CacheItemSource;
+  /** Safe AS INSTRUCTIONS — mirrors the owning surface's content-trust tag (captured clips/qa +
+   * url_cache pages ⇒ false; human-authored notes ⇒ true), NOT curation.
+   * Required so a caller never sees an untagged row. */
   trusted: boolean;
 }
 
@@ -1395,16 +1409,15 @@ export interface FindSimilarResult {
   title: string;
   markdown: string;
   relevance_score: number;
-  /** Provenance: 'studio' = a captured session artifact (URI studio://<type>|<id>),
-   * 'cache' = a fetched url_cache page, 'search' = a live web result. */
-  source: 'cache' | 'search' | 'studio';
+  /** Provenance: 'cache' = a fetched url_cache page, 'search' = a live web result; any other value
+   * is the id of a registered artifact provider that owns the row's URI. */
+  source: FindSimilarSource;
   /**
-   * Whether the body bytes are safe AS INSTRUCTIONS — the at-rest continuation of
-   * the 6a in-flight `trusted` tag (studio-dispatch.ts). Mirrors
-   * studio_artifacts.content_trusted, NOT curated_by_human: page-derived content
-   * (studio clips/qa, url_cache pages, web results) is `false` even once a human
-   * curates it; only a human-authored studio note is `true`. Required on EVERY
-   * result so a caller never receives an untagged row.
+   * Whether the body bytes are safe AS INSTRUCTIONS — the at-rest continuation of the 6a in-flight
+   * `trusted` tag (studio-dispatch.ts). Mirrors the owning surface's content-trust tag, NOT
+   * curation: page-derived content (captured clips/qa, url_cache pages, web results) is `false`
+   * even once a human curates it; only human-authored prose is `true`. Required on EVERY result so
+   * a caller never receives an untagged row.
    */
   trusted: boolean;
   match_signals: MatchSignals;
