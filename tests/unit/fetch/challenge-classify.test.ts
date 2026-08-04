@@ -303,6 +303,30 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
     });
   });
 
+  describe('the two arms are BOTH load-bearing — neither is redundant', () => {
+    it('an interstitial whose signature is NOT in the shared marker list still fires', () => {
+      // `px-captcha-error` (PerimeterX "denied" variant) and the "denied" /
+      // "verifying you are human" interstitial titles live in this module's own
+      // template/title vocabulary and are absent from tls-tier's shared
+      // CHALLENGE_MARKERS. So the marker-pair arm alone would MISS them, and the
+      // high-precedence interstitial-signal arm is what catches them. If someone
+      // deletes that arm as redundant, this reds.
+      const pxDenied =
+        '<html><head><title>Access to this page has been denied</title></head>' +
+        '<body><div class="px-captcha-error"></div></body></html>';
+      expect(classifyChallenge(pxDenied)).toBe('behavioral');
+    });
+
+    it('a shared-marker interstitial with no template signature still fires', () => {
+      // The mirror case: `dd-loader` is in the shared marker list but is not one
+      // of this module's template signatures, so the marker-pair arm is what
+      // catches it. Both arms earn their place.
+      const dd = '<html><head><title>Please wait</title></head><body>' +
+        '<div class="dd-loader"></div></body></html>';
+      expect(classifyChallenge(dd)).toBe('behavioral');
+    });
+  });
+
   describe('the pairing invariant, stated directly', () => {
     it('a skeleton-shaped body WITHOUT any vendor artifact is never a challenge', () => {
       // The invariant, independent of any single fixture: take a body short
