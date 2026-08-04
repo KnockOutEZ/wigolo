@@ -215,6 +215,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_audit_session_seq
 // studio_audit (010), whose session_id NOT-NULL FK + studio-shaped columns don't fit a session-less
 // stdio tool call. INSERT-only: the sole writer (src/server/tool-audit.ts) never UPDATEs/DELETEs.
 // Mirrored in 011-tool-audit.sql.
+//
+// KNOWN, ACCEPTED LEAK — product-named tables in the shared DB, and the cost it has already charged.
+// `studio_sessions`, `studio_artifacts`, `studio_artifacts_fts` and `studio_audit` carry a product
+// name in a store every surface shares, and `studio_artifacts` holds a NOT-NULL FK to a
+// product-named parent. THIS TABLE IS THE BILL: a session-less tool-call record could not reuse
+// `studio_audit`, so D10 paid for a second audit table rather than one generic one. A second surface
+// wanting an audit trail pays it again.
+//   NOT FIXED ON PURPOSE. D15 locks migration names and rename-nothing: renaming a shipped table or
+// migration is a data-integrity bug on every machine that already ran them, which costs strictly more
+// than the duplication. The read paths that used to hardcode these names no longer do — core reaches
+// them through `src/cache/artifact-registry.ts` — so the leak is now confined to the schema, where a
+// future migration can address it deliberately with a data-migration plan attached.
 const MIGRATION_011_TOOL_AUDIT = `
 CREATE TABLE IF NOT EXISTS tool_audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
