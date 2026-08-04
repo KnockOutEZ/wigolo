@@ -48,11 +48,15 @@ function fakeCtx(): DispatchContext {
 }
 
 describe('dispatchTool — fetch', () => {
-  it('success returns r.data as plain JSON (200)', async () => {
+  it('success returns r.data as plain JSON (200), plus the P2 trust envelope, payload untouched', async () => {
     vi.mocked(handleFetch).mockResolvedValue({ ok: true, data: { url: 'https://x.com', markdown: 'hi' } } as never);
     const r = await dispatchTool('fetch', { url: 'https://x.com' }, fakeCtx());
     expect(r.status).toBe(200);
-    expect(r.body).toEqual({ url: 'https://x.com', markdown: 'hi' });
+    // P2/A3b: page-derived responses gain a sibling `untrusted_content` trust envelope. The tool
+    // fields themselves stay byte-identical — REST consumers persist `markdown`, so no inline markers.
+    const { untrusted_content, ...payload } = r.body as Record<string, unknown>;
+    expect(payload).toEqual({ url: 'https://x.com', markdown: 'hi' });
+    expect(untrusted_content).toMatchObject({ trusted: false });
   });
 
   it('failure maps via errors.ts status table (fetch upstream → 502)', async () => {
