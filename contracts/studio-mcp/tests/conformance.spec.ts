@@ -135,6 +135,47 @@ describe.skipIf(!RUN)(`studio_* MCP wire contract — ${studio.name}`, () => {
     it('does NOT advertise the unadvertised capability — advertising it would turn a one-seam capability into a tool with every seam a tool carries', () => {
       expect(advertised.map((t) => t.name)).not.toContain(STUDIO_UNADVERTISED_CAPABILITY);
     });
+
+    /**
+     * EVERY ADVERTISED NAME MUST DISPATCH — asserted over the WIRE.
+     *
+     * This is a conformance claim, not a substitute for a type-level one. Core derives its
+     * advertisement and its dispatch from one registry, so advertise-without-dispatch is a compile
+     * error there. But that guarantee belongs to ONE implementation's internals: it says nothing about
+     * a second implementation, a hand-written gateway, or a deployment whose advertisement and dispatch
+     * came from different builds. The contract's claim is the observable one — every name this endpoint
+     * offers, this endpoint answers — and it holds regardless of how the endpoint is put together.
+     *
+     * Deliberately shallow. It calls each of the ten with arguments chosen to be refused rather than to
+     * act (a nonexistent session id, an unknown capture type, an unknown mark), and asserts only that
+     * the answer is NOT `unknown_studio_tool`. What each tool DOES is behaviour and belongs in the
+     * implementation's own suite; that it is REACHABLE is the contract property.
+     */
+    it('answers every one of the ten it advertises — an advertised name the endpoint does not route is discoverable and unusable, whatever guarantees the implementation has internally', async () => {
+      const harmless: Record<string, Record<string, unknown>> = {
+        studio_list: {},
+        studio_observe: {},
+        studio_marks: {},
+        studio_act: {},                                        // no action → refused by the host, not 404
+        studio_capture: { type: 'not-a-capture-type' },
+        studio_say: { text: '' },
+        studio_extract_set: { mark_id: 'no-such-mark' },
+        studio_close: { session_id: 'no-such-session' },
+        studio_open: {},
+        studio_spawn: {},
+      };
+      const notDispatched: string[] = [];
+      for (const name of STUDIO_TOOL_NAMES) {
+        const body = await call(name, harmless[name]!);
+        if (body.error_reason === 'unknown_studio_tool') notDispatched.push(name);
+      }
+      expect(notDispatched).toEqual([]);
+      // studio_open/studio_spawn each opened a session above; leave none behind for the arc that follows.
+      const listed = await call('studio_list', {});
+      for (const s of ((listed.sessions as Array<{ id: string }> | undefined) ?? [])) {
+        await call('studio_close', { session_id: s.id });
+      }
+    });
   });
 
   // ── 3. Authentication ───────────────────────────────────────────────────────────────────────────
