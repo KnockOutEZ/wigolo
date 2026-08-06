@@ -7,6 +7,7 @@ vi.mock('../../../src/integrations/cloud/llm/anthropic.js', () => ({
 }));
 vi.mock('../../../src/integrations/cloud/llm/openai.js', () => ({
   callOpenAI: vi.fn(),
+  callOpenAICompatible: vi.fn(),
 }));
 vi.mock('../../../src/integrations/cloud/llm/gemini.js', () => ({
   callGemini: vi.fn(),

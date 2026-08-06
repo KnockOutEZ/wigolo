@@ -8,6 +8,7 @@
 // MCP server startup (caught by the cold-start e2e timing test).
 
 import type { LLMProvider } from './types.js';
+import { getConfig } from '../../../config.js';
 
 /** Optional image attached to a text call, for vision-capable models. */
 export interface TextCallImage {
@@ -165,6 +166,40 @@ export async function callGroqText(opts: TextCallOpts, apiKey: string): Promise<
   };
 }
 
+export async function callOpenAICompatibleText(opts: TextCallOpts, apiKey: string): Promise<TextCallResult> {
+  const { default: OpenAI } = await import('openai');
+  // Routed to an arbitrary OpenAI-compatible endpoint via WIGOLO_LLM_BASE_URL
+  // (e.g. OpenRouter, DeepSeek, SensNova, a self-hosted vLLM). Unlike the
+  // keyless `ollama`/custom backend, this provider sends the API key as a
+  // Bearer token so authenticated remote endpoints work.
+  const baseURL = getConfig().llmBaseUrl ?? undefined;
+  if (!baseURL) {
+    throw new Error(
+      'openai-compatible: WIGOLO_LLM_BASE_URL is not set; point it at your OpenAI-compatible /v1 endpoint',
+    );
+  }
+  const client = new OpenAI({ apiKey, baseURL });
+  const start = Date.now();
+  const response = await client.chat.completions.create(
+    {
+      model: opts.model,
+      max_completion_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+      messages: [{ role: 'user', content: opts.prompt }],
+    },
+    { signal: opts.signal },
+  );
+  const text = response.choices?.[0]?.message?.content;
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    throw new Error('openai-compatible: empty content in response');
+  }
+  return {
+    text,
+    provider: 'openai-compatible',
+    model: response.model ?? opts.model,
+    latencyMs: Date.now() - start,
+  };
+}
+
 export const TEXT_ADAPTERS: Record<
   LLMProvider,
   (opts: TextCallOpts, apiKey: string) => Promise<TextCallResult>
@@ -173,4 +208,5 @@ export const TEXT_ADAPTERS: Record<
   openai: callOpenAIText,
   gemini: callGeminiText,
   groq: callGroqText,
+  'openai-compatible': callOpenAICompatibleText,
 };

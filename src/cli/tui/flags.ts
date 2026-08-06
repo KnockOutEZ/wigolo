@@ -140,7 +140,7 @@ function parseCommon(args: readonly string[], known: ReadonlySet<string>): Raw {
   return raw;
 }
 
-const VALID_PROVIDERS = ['anthropic', 'openai', 'gemini', 'ollama'] as const;
+const VALID_PROVIDERS = ['anthropic', 'openai', 'gemini', 'ollama', 'openai-compatible'] as const;
 const VALID_SEARCH_BACKENDS = ['core', 'searxng', 'hybrid'] as const;
 
 function parseInitOnlyFlags(args: readonly string[]): { provider?: string; search?: string; interactive: boolean; wizard: boolean; warmup: boolean } {
