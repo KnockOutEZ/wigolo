@@ -13,9 +13,25 @@
 import { describe, it, expect } from 'vitest';
 import { hasRequiredFields } from '../../../../../src/cli/tui/state/required-fields.js';
 import type { PersistedConfig } from '../../../../../src/persisted-config.js';
+import type { CategoryDef, FieldDef } from '../../../../../src/cli/tui/schema/types.js';
 
 function cfg(settings: Record<string, unknown>): PersistedConfig {
   return { version: 1, settings };
+}
+
+function catalogWith(...fields: FieldDef[]): ReadonlyArray<CategoryDef> {
+  return [{ id: 'advanced', label: 'Test', description: 'Test fields', fields }];
+}
+
+function requiredField(overrides: Partial<FieldDef> = {}): FieldDef {
+  return {
+    key: 'TEST_VALUE',
+    settingsPath: 'testValue',
+    label: 'Test value',
+    kind: 'text',
+    required: true,
+    ...overrides,
+  };
 }
 
 describe('hasRequiredFields', () => {
@@ -32,7 +48,41 @@ describe('hasRequiredFields', () => {
   });
 
   it('provider + key both set → true', () => {
-    expect(hasRequiredFields(cfg({ llmProvider: 'anthropic', llmApiKey: 'sk-xxx' }))).toBe(true);
+    expect(hasRequiredFields(cfg({ llmProvider: 'anthropic', llmApiKey: 'test-key' }))).toBe(true);
+  });
+
+  it('recognizes a persisted secret-location reference without reading the key', () => {
+    expect(hasRequiredFields(cfg({
+      llmProvider: 'anthropic',
+      llmApiKeyKeyLocation: 'keychain',
+    }))).toBe(true);
+    expect(hasRequiredFields({
+      version: 1,
+      settings: { llmProvider: 'openai' },
+      provider: { name: 'openai', keyLocation: 'file' },
+    })).toBe(true);
+  });
+
+  it('rejects a legacy provider reference for a different selected provider', () => {
+    expect(hasRequiredFields({
+      version: 1,
+      settings: { llmProvider: 'openai' },
+      provider: { name: 'anthropic', keyLocation: 'keychain' },
+    })).toBe(false);
+  });
+
+  it('does not use the legacy LLM provider block for unrelated secret fields', () => {
+    const catalog = catalogWith(requiredField({
+      settingsPath: 'otherSecret',
+      kind: 'masked',
+      secret: true,
+    }));
+
+    expect(hasRequiredFields({
+      version: 1,
+      settings: {},
+      provider: { name: 'anthropic', keyLocation: 'keychain' },
+    }, catalog)).toBe(false);
   });
 
   it('provider is empty string → false', () => {
@@ -70,5 +120,40 @@ describe('hasRequiredFields', () => {
 
   it('key is non-string (object) → false', () => {
     expect(hasRequiredFields(cfg({ llmProvider: 'anthropic', llmApiKey: {} }))).toBe(false);
+  });
+
+  it('derives required paths from the supplied schema instead of provider names', () => {
+    const catalog = catalogWith(requiredField({ settingsPath: 'customRequired' }));
+
+    expect(hasRequiredFields(cfg({}), catalog)).toBe(false);
+    expect(hasRequiredFields(cfg({ customRequired: 'configured' }), catalog)).toBe(true);
+  });
+
+  it('evaluates conditional required rules against persisted settings', () => {
+    const catalog = catalogWith(requiredField({
+      required: (ctx) => ctx.current.mode === 'cloud',
+    }));
+
+    expect(hasRequiredFields(cfg({ mode: 'local' }), catalog)).toBe(true);
+    expect(hasRequiredFields(cfg({ mode: 'cloud' }), catalog)).toBe(false);
+    expect(hasRequiredFields(cfg({ mode: 'cloud', testValue: 'configured' }), catalog)).toBe(true);
+  });
+
+  it('ignores required fields that are not visible in the active schema context', () => {
+    const catalog = catalogWith(requiredField({ visible: () => false }));
+    expect(hasRequiredFields(cfg({}), catalog)).toBe(true);
+  });
+
+  it('treats empty strings and lists as missing while accepting zero and false', () => {
+    const textCatalog = catalogWith(requiredField());
+    const listCatalog = catalogWith(requiredField({ kind: 'multiselect' }));
+    const numberCatalog = catalogWith(requiredField({ kind: 'number' }));
+    const toggleCatalog = catalogWith(requiredField({ kind: 'toggle' }));
+
+    expect(hasRequiredFields(cfg({ testValue: '   ' }), textCatalog)).toBe(false);
+    expect(hasRequiredFields(cfg({ testValue: [] }), listCatalog)).toBe(false);
+    expect(hasRequiredFields(cfg({ testValue: ['one'] }), listCatalog)).toBe(true);
+    expect(hasRequiredFields(cfg({ testValue: 0 }), numberCatalog)).toBe(true);
+    expect(hasRequiredFields(cfg({ testValue: false }), toggleCatalog)).toBe(true);
   });
 });
