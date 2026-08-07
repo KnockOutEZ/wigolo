@@ -238,7 +238,7 @@ docker run -p 3333:3333 -v wigolo-data:/data \
   ghcr.io/knockoutez/wigolo serve --host 0.0.0.0
 ```
 
-The slim image lazy-loads models into the volume; `:full` preinstalls the browser engine. Also on Docker Hub as `towhid69420/wigolo`. → [installation & all channels](docs/installation.md)
+The slim image lazy-loads models into the volume; `ghcr.io/knockoutez/wigolo:latest-full` preinstalls the browser engine. Versioned releases use the same `-full` suffix (for example, `0.2.1-full`). Also on Docker Hub as `towhid69420/wigolo`. → [installation & all channels](docs/installation.md)
 
 ### Agent skills
 
