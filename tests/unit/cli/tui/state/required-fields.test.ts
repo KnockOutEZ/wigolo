@@ -71,6 +71,14 @@ describe('hasRequiredFields', () => {
     })).toBe(false);
   });
 
+  it('rejects a blank legacy provider key-location reference', () => {
+    expect(hasRequiredFields({
+      version: 1,
+      settings: { llmProvider: 'anthropic' },
+      provider: { name: 'anthropic', keyLocation: '   ' as 'keychain' },
+    })).toBe(false);
+  });
+
   it('does not use the legacy LLM provider block for unrelated secret fields', () => {
     const catalog = catalogWith(requiredField({
       settingsPath: 'otherSecret',

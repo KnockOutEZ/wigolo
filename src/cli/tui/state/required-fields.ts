@@ -47,7 +47,6 @@ export function hasRequiredFields(
     return field.secret === true
       && field.settingsPath === 'llmApiKey'
       && config.provider?.name === config.settings.llmProvider
-      && typeof config.provider?.keyLocation === 'string'
-      && config.provider.keyLocation.length > 0;
+      && hasCompleteValue(field, config.provider?.keyLocation);
   });
 }
