@@ -1,8 +1,8 @@
 const LATIN_OR_DIGIT_RE = /[\p{Script=Latin}\p{N}]/u;
 const CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
-// `Script_Extensions` keeps shared Japanese marks such as ー inside Katakana runs,
-// preventing ニュース from being split into ニュ + ス.
-const CJK_RUN = String.raw`[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}]+`;
+// Include the prolonged sound mark explicitly so it stays inside Katakana runs,
+// while punctuation such as 、, 。, and ・ still separates CJK token parts.
+const CJK_RUN = String.raw`[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u30FC]+`;
 const TOKEN_PART_RE = new RegExp(String.raw`[\p{Script=Latin}\p{N}]+|${CJK_RUN}`, 'gu');
 const MAX_INPUT_CODE_UNITS = 4096;
 const MAX_TOKENS = 256;

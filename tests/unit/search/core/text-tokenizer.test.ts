@@ -17,6 +17,15 @@ describe('tokenizeRankingText', () => {
     expect(tokenizeRankingText('AIニュース')).toEqual(['ai', 'ニュ', 'ュー', 'ース']);
   });
 
+  it('splits CJK runs around punctuation', () => {
+    expect(tokenizeRankingText('東京、京都。大阪・神戸')).toEqual([
+      '東京',
+      '京都',
+      '大阪',
+      '神戸',
+    ]);
+  });
+
   it('emits Hangul bigrams for unsegmented Korean text', () => {
     expect(tokenizeRankingText('인공지능뉴스')).toEqual(['인공', '공지', '지능', '능뉴', '뉴스']);
   });
