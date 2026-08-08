@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <rect width="880" height="360" fill="#0d1117"/>
+  <text x="64" y="32" font-size="20" font-weight="600" fill="#94a3b8">wigolo — GitHub stars over time</text>
+  <text x="848" y="30" text-anchor="end" font-size="26" font-weight="700" fill="#7c3aed">4404 ★</text>
+  <text x="848" y="48" text-anchor="end" font-size="13" fill="#94a3b8" opacity="0.7">updated 2026-08-08</text>
+  <line x1="64" y1="316.0" x2="848.0" y2="316.0" stroke="#1e293b" stroke-width="1"/><text x="54" y="320.0" text-anchor="end" font-size="14" fill="#94a3b8">0</text>
+  <line x1="64" y1="251.0" x2="848.0" y2="251.0" stroke="#1e293b" stroke-width="1"/><text x="54" y="255.0" text-anchor="end" font-size="14" fill="#94a3b8">1250</text>
+  <line x1="64" y1="186.0" x2="848.0" y2="186.0" stroke="#1e293b" stroke-width="1"/><text x="54" y="190.0" text-anchor="end" font-size="14" fill="#94a3b8">2500</text>
+  <line x1="64" y1="121.0" x2="848.0" y2="121.0" stroke="#1e293b" stroke-width="1"/><text x="54" y="125.0" text-anchor="end" font-size="14" fill="#94a3b8">3750</text>
+  <line x1="64" y1="56.0" x2="848.0" y2="56.0" stroke="#1e293b" stroke-width="1"/><text x="54" y="60.0" text-anchor="end" font-size="14" fill="#94a3b8">5000</text>
+  <path d="M64.0 315.9 L84.5 315.7 L228.0 315.7 L248.5 315.6 L269.0 315.4 L289.5 314.2 L310.0 311.7 L330.5 311.1 L351.0 310.3 L371.5 293.3 L392.0 272.1 L412.5 253.4 L433.0 224.0 L453.5 186.0 L474.0 154.5 L494.5 138.5 L515.0 134.3 L535.5 131.6 L556.0 129.1 L576.5 127.3 L597.0 122.4 L617.5 118.8 L638.0 117.4 L658.5 109.4 L679.0 107.0 L699.5 105.8 L720.0 104.7 L740.5 101.9 L761.0 100.3 L781.4 92.6 L801.9 88.9 L822.4 87.4 L842.9 87.0 L848.0 87.0 L848.0 316.0 L64.0 316.0 Z" fill="#7c3aed" fill-opacity="0.12" stroke="none"/>
+  <path d="M64.0 315.9 L84.5 315.7 L228.0 315.7 L248.5 315.6 L269.0 315.4 L289.5 314.2 L310.0 311.7 L330.5 311.1 L351.0 310.3 L371.5 293.3 L392.0 272.1 L412.5 253.4 L433.0 224.0 L453.5 186.0 L474.0 154.5 L494.5 138.5 L515.0 134.3 L535.5 131.6 L556.0 129.1 L576.5 127.3 L597.0 122.4 L617.5 118.8 L638.0 117.4 L658.5 109.4 L679.0 107.0 L699.5 105.8 L720.0 104.7 L740.5 101.9 L761.0 100.3 L781.4 92.6 L801.9 88.9 L822.4 87.4 L842.9 87.0 L848.0 87.0" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+  <text x="64" y="344" text-anchor="start" font-size="14" fill="#94a3b8">2026-07-01</text>
+  <text x="848" y="344" text-anchor="end" font-size="14" fill="#94a3b8">2026-08-08</text>
+</svg>
