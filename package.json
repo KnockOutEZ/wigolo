@@ -66,6 +66,7 @@
     "typecheck:studio": "tsc -p tsconfig.test.json",
     "check:typecheck-gate": "node scripts/check-typecheck-gate.mjs",
     "check:no-nul": "node scripts/check-no-nul.mjs",
+    "verify:llm-bundle": "npm run build && node scripts/verify-llm-bundle-resolution.mjs",
     "typecheck:debt": "node scripts/typecheck-debt-ratchet.mjs",
     "typecheck:contract": "tsc -p contracts/studio-mcp/tsconfig.json",
     "gate:studio": "npm run lint && npm run typecheck:studio && npm run check:typecheck-gate && npm run typecheck:debt && npm run typecheck:contract",

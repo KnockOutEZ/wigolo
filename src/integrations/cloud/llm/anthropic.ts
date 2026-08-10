@@ -1,4 +1,3 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type { Tool } from '@anthropic-ai/sdk/resources/messages/messages.js';
 import type { LLMCallOpts, LLMExtractResult } from './types.js';
 
@@ -9,6 +8,12 @@ export async function callAnthropic(
   opts: LLMCallOpts,
   apiKey: string,
 ): Promise<LLMExtractResult> {
+  // Loaded on use, not at import. Core search/fetch/crawl/extract/cache are
+  // keyless, and this module sits on the extract path, so a static import put
+  // the vendor SDK on the startup graph of users who never call a model.
+  // The specifier is a literal: esbuild drops import(variable), and the
+  // provider would then resolve in tests and dev but not in the packaged binary.
+  const { default: Anthropic } = await import('@anthropic-ai/sdk');
   const client = new Anthropic({ apiKey });
   const model = opts.modelOverride ?? DEFAULT_MODEL;
   const start = Date.now();

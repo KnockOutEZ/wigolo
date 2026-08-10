@@ -1,4 +1,3 @@
-import OpenAI from 'openai';
 import type { LLMCallOpts, LLMExtractResult } from './types.js';
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
@@ -7,6 +6,8 @@ export async function callOpenAI(
   opts: LLMCallOpts,
   apiKey: string,
 ): Promise<LLMExtractResult> {
+  // Literal specifier, loaded on use — see the note in anthropic.ts.
+  const { default: OpenAI } = await import('openai');
   const client = new OpenAI({ apiKey });
   const model = opts.modelOverride ?? DEFAULT_MODEL;
   const start = Date.now();
