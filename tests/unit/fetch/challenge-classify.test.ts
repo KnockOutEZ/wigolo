@@ -428,6 +428,14 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
       ['an application 403 whose correlation id is dot-separated hex',
         '<html><head><title>Error</title></head><body><h1>Access Denied</h1>' +
         '<p>Reference #a1b2c3.d4e5f6.9876fe</p></body></html>'],
+      // The Cloudflare entries sat in the PARALLEL position to the Imperva-prose one and were
+      // missing. Attribution verified rather than inferred: on a LONG page both classify 'none'
+      // via the vendor arm, which places them in this class, while `cf-browser-verification` and
+      // `_cfChlOpt` stay 'behavioral' on a long page through arm 1 and are correctly NOT here.
+      ['a short page citing the FULL challenge-platform path in CSP prose',
+        '<html><body><p>Allow /cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1 in CSP.</p></body></html>'],
+      ['a changelog line naming orchestrate/chl_page',
+        '<html><body><p>Fixed: skip orchestrate/chl_page on retry.</p></body></html>'],
     ];
 
     for (const [name, html] of accepted) {
@@ -561,7 +569,15 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
       expect(classifyChallenge(html)).toBe('none');
     });
 
-    it('a short page citing the challenge-platform prefix in CSP prose does not fire', () => {
+    it('a short page citing the challenge-platform PREFIX in CSP prose does not fire', () => {
+      // SCOPE, stated because this test is easy to over-read. It pins the NARROWING — that the bare
+      // prefix is not a marker — and it reds when the marker is widened back to the prefix.
+      //
+      // It does NOT show that citing the path in prose is safe generally. The prefix is not the
+      // marker in use, so this fixture cannot fail for `orchestrate/chl_`. The FULL path in prose
+      // classifies `behavioral` and is recorded in the accepted-limitation table below, which is
+      // where that case lives. Reading this as "prose citations are fine" was exactly the gap that
+      // left the Cloudflare entries missing from that table.
       const html =
         '<html><body><p>Allow /cdn-cgi/challenge-platform/ in your CSP.</p></body></html>';
       expect(classifyChallenge(html)).toBe('none');

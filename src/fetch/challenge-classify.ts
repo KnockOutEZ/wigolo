@@ -242,6 +242,9 @@ export function classifyChallenge(html: string): ChallengeClass {
   //   - a checkout form with an "Attention Required!" validation banner
   //   - an application 403 whose correlation id happens to be dot-separated hex
   //   - a short page naming the Imperva parameters in prose
+  //   - a short page citing the FULL challenge-platform path, or naming
+  //     `orchestrate/chl_page`, in prose (the Cloudflare parallel of the line
+  //     above, which the first enumeration missed)
   // The fetch is not lost — it declines and falls back to the browser tier — but
   // it costs a rung.
   //
