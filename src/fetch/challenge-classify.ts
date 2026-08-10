@@ -1,6 +1,6 @@
 import type { ChallengeClass } from '../types.js';
 import type { ImageSolveSubType } from './ai-solve.js';
-import { hasChallengeBody, hasRealForm, isChallengeSkeleton, isNearEmptyBody } from './tls-tier.js';
+import { hasChallengeBody, isChallengeSkeleton, isNearEmptyBody } from './tls-tier.js';
 
 /**
  * Pure challenge classifier (the solve-ladder gatekeeper). Given the raw HTML
@@ -215,28 +215,48 @@ export function classifyChallenge(html: string): ChallengeClass {
   // `isNearEmptyBody` IS that text-length gate, so the corroboration is now
   // genuinely independent of the marker that triggered the check.
   //
-  // The real-form exemption is applied EXPLICITLY, because swapping the
-  // corroborator silently dropped it.
+  // NO REAL-FORM EXEMPTION HERE, DELIBERATELY.
   //
-  // `isChallengeSkeleton` returns false on a server-rendered interactive form —
-  // a carve-out written for "a text-light login screen". `isNearEmptyBody` has
-  // no such carve-out, so moving to it inherited what the new predicate LACKS
-  // along with what it does better. Measured: a 299-byte Imperva-protected login
-  // page (form + text/password inputs + submit) went 'none' -> 'behavioral',
-  // a fresh instance of exactly the defect this slice exists to remove.
+  // A previous revision ANDed `!hasRealForm(slice)` onto this arm to restore a
+  // carve-out lost when the corroborator changed. That inverted the precedence
+  // and FAILED OPEN: in `isChallengeSkeleton` the marker short-circuits FIRST
+  // and the form exemption only guards the LENGTH arm, but ANDing it here let
+  // the form outrank the vendor marker. A carve-out scoped to "is this thin body
+  // a skeleton?" was promoted to "is this a challenge at all?".
   //
-  // An earlier version of this comment claimed the gap was "not reachable in
-  // practice". That claim was FALSE and, worse, unfalsifiable by the suite: the
-  // only login-form test padded its body so the CONTENT GUARD released it, so
-  // nothing could ever exercise the exemption. There is now a text-light form
-  // test that fails without this clause.
+  // Measured cost: six real walls classified 'none' and were returned to the
+  // agent as page content at a synthesized HTTP 200 — an Imperva wall with a
+  // cookie banner, an Akamai denial with a search box, a Cloudflare wall with a
+  // "Try again" button, and walls whose "form" was an input outside the element,
+  // a commented-out block, or a JS string literal. Their bodies are under 1KB so
+  // the density guard does not catch them either.
   //
-  // Keeping it here rather than only narrowing the markers also INOCULATES
-  // against the next rider marker: any vendor string that turns out to ride on
-  // successfully-served pages is exempted wherever a real form is present.
-  if (hasVendorTemplateMarker(lower) && isNearEmptyBody(slice) && !hasRealForm(slice)) {
-    return 'behavioral';
-  }
+  // ACCEPTED LIMITATION, stated because this IS a trade and not a free deletion:
+  // a thin page carrying one of these markers as ordinary UI COPY now classifies
+  // `behavioral`. The concrete shape is a text-light login screen whose submit
+  // status reads "Just a moment...". The fetch is not lost — it declines and
+  // falls back to the browser tier — but it costs a rung.
+  //
+  // Taken deliberately: six ordinary wall shapes (a consent banner, a site
+  // search box, a "go back" button, and forms that are not really forms) beat
+  // one login page nobody has observed live. The direction matters more than the
+  // count — the six FAIL OPEN, handing an interstitial to the agent as page
+  // content, while this one fails CLOSED.
+  //
+  // If that login shape is ever observed live, the right repair is to RESCOPE
+  // the exemption to the length question rather than reinstate it here as a veto
+  // over a positive marker. This comment is where to look.
+  //
+  // Note the Imperva login page that originally motivated the exemption is
+  // released by the MARKER NARROWING instead — its resource path is a rider, not
+  // a template. Verified by measurement before removing.
+  //
+  // TRANSFERABLE, and the inverse of the mistake that introduced it: that change
+  // inherited what the new predicate LACKED; this one inherited what it PERMITS.
+  // A loose predicate is harmless while it merely SUPPRESSES a heuristic and
+  // becomes dangerous the moment it can VETO a positive match. Promoting a
+  // predicate to a stronger position inherits its looseness at the new strength.
+  if (hasVendorTemplateMarker(lower) && isNearEmptyBody(slice)) return 'behavioral';
   return 'none';
 }
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { classifyChallenge, classifyImageSubType } from '../../../src/fetch/challenge-classify.js';
+import { isLowContentDensity } from '../../../src/fetch/tls-tier.js';
 
 // A minimal challenge-page skeleton: near-empty prose + the modern CF platform
 // script + interstitial title. Used to gate contextual widget markers so a real
@@ -336,6 +337,86 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
     });
   });
 
+  /**
+   * P1 — a wall carrying something FORM-ISH must still be a wall.
+   *
+   * A revision of this classifier ANDed a real-form exemption onto the vendor arm, to restore a
+   * carve-out lost when the corroborator changed. That inverted the precedence: in
+   * `isChallengeSkeleton` the marker short-circuits FIRST and the form exemption guards only the
+   * LENGTH arm, but ANDing it here let a form outrank a positive vendor marker.
+   *
+   * It FAILED OPEN, which no earlier defect in this slice did. All six bodies below classified
+   * 'none', and since each is under 1KB the density guard in `cdpDirectFetch` does not catch them
+   * either — so the interstitial was returned to the agent as page content at a synthesized HTTP
+   * 200 that the terminal shell guard then read as clean.
+   *
+   * Three of them are not even real forms (a control outside the element, a commented-out block, a
+   * JS string literal), which is a second reason the exemption had no business vetoing a marker.
+   */
+  describe('P1 — a form-ish element must not veto a positive vendor marker', () => {
+    const walls: Array<[string, string]> = [
+      ['an Imperva wall behind a cookie-consent banner',
+        '<html><head><title>Request unsuccessful.</title></head><body>' +
+        '<iframe src="/_Incapsula_Resource?CWUDNSAI=9&xinfo=12-345-0"></iframe>' +
+        '<form id="cookie"><button type="submit">Accept cookies</button></form></body></html>'],
+      ['an Akamai denial carrying a site-search box',
+        '<html><head><title>Access Denied</title></head><body><h1>Access Denied</h1>' +
+        '<p>Reference #18.1a2b3c4d.1712345678.9abcdef</p>' +
+        '<form action="/search"><input name="q" type="text"></form></body></html>'],
+      ['a Cloudflare interstitial with a "Try again" button',
+        '<html><head><meta charset="utf-8"></head><body><div id="challenge-running"></div>' +
+        '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>' +
+        '<form><button type="submit">Try again</button></form></body></html>'],
+      ['a wall whose input is OUTSIDE the form element',
+        '<html><head><title>Request unsuccessful.</title></head><body>' +
+        '<iframe src="/_Incapsula_Resource?CWUDNSAI=9"></iframe>' +
+        '<form action="/x"></form><input name="q" type="text"></body></html>'],
+      ['a wall whose form is inside an HTML COMMENT',
+        '<html><head><title>Access Denied</title></head><body><h1>Access Denied</h1>' +
+        '<p>Reference #18.1a2b3c4d.1712345678.9abcdef</p>' +
+        '<!-- <form action="/login"><input name="u"></form> --></body></html>'],
+      ['a wall whose form is inside a JS STRING literal',
+        '<html><head><meta charset="utf-8"></head><body><div id="challenge-running"></div>' +
+        '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>' +
+        '<script>var t = "<form><input name=\\"u\\"></form>";</script></body></html>'],
+    ];
+
+    for (const [name, html] of walls) {
+      it(`${name} is behavioral`, () => {
+        expect(classifyChallenge(html)).toBe('behavioral');
+      });
+    }
+
+    it('none of them would be caught by the density guard either — the classifier is the only line', () => {
+      // Why the classifier verdict is load-bearing rather than backstopped: every one of these is
+      // under the 1KB floor `isLowContentDensity` requires, so `cdpDirectFetch`'s second condition
+      // cannot save them. If the classifier says 'none', the body ships.
+      for (const [, html] of walls) {
+        expect(html.length).toBeLessThan(1000);
+        expect(isLowContentDensity(html)).toBe(false);
+      }
+    });
+  });
+
+  describe('P1 — the ACCEPTED cost of removing that exemption', () => {
+    it('a thin login page carrying a marker as UI copy classifies behavioral', () => {
+      // Asserted as the deliberate trade it is, so it is visible and can fail rather than living
+      // only in a comment. Removing the exemption means a marker in ordinary UI copy on a
+      // text-light page now reads as a challenge.
+      //
+      // Accepted because the direction differs: this fails CLOSED — the fetch declines and falls
+      // back to the browser tier, costing a rung — while the six shapes above failed OPEN and
+      // handed an interstitial to the agent as content. If this shape is ever observed live, the
+      // repair is to rescope the exemption to the length question, never to reinstate it as a veto.
+      const html =
+        '<html><head><title>Sign in</title></head><body><form action="/login" method="post">' +
+        '<input name="email" type="text"><input name="password" type="password">' +
+        '<button type="submit">Sign in</button></form>' +
+        '<p>Just a moment...</p></body></html>';
+      expect(classifyChallenge(html)).toBe('behavioral');
+    });
+  });
+
   describe('the two arms are BOTH load-bearing — neither is redundant', () => {
     it('an interstitial whose signature is NOT in the shared marker list still fires', () => {
       // `px-captcha-error` (PerimeterX "denied" variant) and the "denied" /
@@ -488,32 +569,19 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
       expect(classifyChallenge(html)).toBe('none');
     });
 
-    it('a TEXT-LIGHT login page on a vendor-protected zone does not fire', () => {
-      // M1, and the test whose absence is half of why M1 shipped.
+    it('an Imperva-protected login page is released by the MARKER, not by a form exemption', () => {
+      // The login page the form exemption was originally added for. It stays clean without any
+      // exemption, because Imperva's bare resource path is a RIDER it injects into pages it serves
+      // successfully — so narrowing the marker is what releases it.
       //
-      // `isChallengeSkeleton` exempts a server-rendered interactive form — a carve-out written for
-      // "a text-light login screen". Swapping the corroborator to `isNearEmptyBody` to break a
-      // self-corroborating pairing inherited what the new predicate LACKS, and this 299-byte page
-      // went 'none' -> 'behavioral': a fresh instance of the defect this slice exists to remove.
-      //
-      // The suite could not have caught it. The only other login-form test pads its body so the
-      // CONTENT GUARD releases it, meaning nothing exercised the exemption at all — while a source
-      // comment asserted the gap was "not reachable in practice". This fixture is deliberately
-      // SHORT so the content guard cannot rescue it: it reaches the vendor arm and survives on the
-      // form exemption or not at all.
-      //
-      // The MARKER here is load-bearing and was got wrong first time round. An earlier version used
-      // Imperva's rider path, which the marker narrowing in this same commit already releases — so
-      // deleting the form exemption left the test GREEN and it proved nothing about the carve-out
-      // it was written for. The marker must be one that still matches after narrowing, so the
-      // exemption is the only thing standing between this page and a 'behavioral' verdict.
-      // "Just a moment..." as a submit-status label is ordinary UI copy on exactly this kind of
-      // thin login screen, which is what makes it the honest choice rather than a contrivance.
+      // This is the fixture the exemption was justified by, kept as the regression guard for the
+      // narrowing. Deleting the narrowing reds it (measured: 1 failed / 61 passed).
       const html =
         '<html><head><title>Sign in</title></head><body><form action="/login" method="post">' +
         '<input name="email" type="text"><input name="password" type="password">' +
         '<button type="submit">Sign in</button></form>' +
-        '<p>Just a moment...</p></body></html>';
+        '<script src="/_Incapsula_Resource?SWJIYLWA=719d34d31c8e3a6e6fffd425f7e032f3"></script>' +
+        '</body></html>';
       expect(html.length).toBeLessThan(400);
       expect(classifyChallenge(html)).toBe('none');
     });
