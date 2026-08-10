@@ -1,6 +1,6 @@
 import type { ChallengeClass } from '../types.js';
 import type { ImageSolveSubType } from './ai-solve.js';
-import { hasChallengeBody, isChallengeSkeleton, isNearEmptyBody } from './tls-tier.js';
+import { hasChallengeBody, hasRealForm, isChallengeSkeleton, isNearEmptyBody } from './tls-tier.js';
 
 /**
  * Pure challenge classifier (the solve-ladder gatekeeper). Given the raw HTML
@@ -215,11 +215,28 @@ export function classifyChallenge(html: string): ChallengeClass {
   // `isNearEmptyBody` IS that text-length gate, so the corroboration is now
   // genuinely independent of the marker that triggered the check.
   //
-  // Ceiling worth naming: unlike `isChallengeSkeleton`, this carries no
-  // real-server-rendered-form exemption. A text-light page with a real form AND
-  // one of these vendor markers would classify behavioral. The markers are
-  // specific enough that this is not reachable in practice.
-  if (hasVendorTemplateMarker(lower) && isNearEmptyBody(slice)) return 'behavioral';
+  // The real-form exemption is applied EXPLICITLY, because swapping the
+  // corroborator silently dropped it.
+  //
+  // `isChallengeSkeleton` returns false on a server-rendered interactive form —
+  // a carve-out written for "a text-light login screen". `isNearEmptyBody` has
+  // no such carve-out, so moving to it inherited what the new predicate LACKS
+  // along with what it does better. Measured: a 299-byte Imperva-protected login
+  // page (form + text/password inputs + submit) went 'none' -> 'behavioral',
+  // a fresh instance of exactly the defect this slice exists to remove.
+  //
+  // An earlier version of this comment claimed the gap was "not reachable in
+  // practice". That claim was FALSE and, worse, unfalsifiable by the suite: the
+  // only login-form test padded its body so the CONTENT GUARD released it, so
+  // nothing could ever exercise the exemption. There is now a text-light form
+  // test that fails without this clause.
+  //
+  // Keeping it here rather than only narrowing the markers also INOCULATES
+  // against the next rider marker: any vendor string that turns out to ride on
+  // successfully-served pages is exempted wherever a real form is present.
+  if (hasVendorTemplateMarker(lower) && isNearEmptyBody(slice) && !hasRealForm(slice)) {
+    return 'behavioral';
+  }
   return 'none';
 }
 
@@ -275,8 +292,16 @@ function hasVendorTemplateMarker(lower: string): boolean {
   // (`…/h/g/orchestrate/chl_page/v1`) and in neither the JSD sensor path nor a
   // prose citation of the prefix.
   if (lower.includes('orchestrate/chl_')) return true;
-  // Imperva / Incapsula: the interstitial's own resource endpoint.
-  if (lower.includes('_incapsula_resource')) return true;
+  // Imperva / Incapsula — the INTERSTITIAL's resource call only.
+  //
+  // Deliberately NOT the bare `_incapsula_resource` path. Imperva injects that
+  // same endpoint into pages it serves SUCCESSFULLY (e.g.
+  // `?SWJIYLWA=<hash>`), so the bare path is a rider, not a template — the
+  // identical sensor-vs-template distinction already applied to Cloudflare's JSD
+  // path a few lines up, which this entry was left behind by.
+  //
+  // The interstitial's own call carries the `CWUDNSAI` / `SWUDNSAI` parameters.
+  if (lower.includes('cwudnsai') || lower.includes('swudnsai')) return true;
   // Akamai denial template: the phrase AND a reference id in Akamai's own shape
   // (dot-separated hex groups, e.g. `18.1a2b3c4d.1712345678.9abcdef`).
   //
@@ -285,12 +310,33 @@ function hasVendorTemplateMarker(lower: string): boolean {
   // ("If you see Access Denied, quote the Reference # shown on the page") and a
   // genuine app 403 carrying `Reference #4821` both classified behavioral.
   // Requiring the id's STRUCTURE keeps the real template and releases both.
-  if (lower.includes('access denied') && AKAMAI_REFERENCE_ID.test(lower)) return true;
+  if (lower.includes('access denied') && hasAkamaiReferenceId(lower)) return true;
   return false;
 }
 
-/** Akamai's error reference id: `#` then 3+ dot-separated alphanumeric groups. */
-const AKAMAI_REFERENCE_ID = /reference\s*#\s*[0-9a-f]+(?:\.[0-9a-f]+){2,}/i;
+/**
+ * The long-group test runs on the MATCHED id, never on the whole body — an
+ * unrelated long hex string elsewhere on the page (an asset hash, a nonce) must
+ * not license a short dotted section number.
+ */
+function hasAkamaiReferenceId(lower: string): boolean {
+  const m = AKAMAI_REFERENCE_ID.exec(lower);
+  return m !== null && AKAMAI_REFERENCE_LONG_GROUP.test(m[0]);
+}
+
+/**
+ * Akamai's error reference id: `#` then 3+ dot-separated hex groups, AT LEAST
+ * ONE of which is 6+ characters.
+ *
+ * The length requirement is what separates the id from a dotted SECTION NUMBER.
+ * Without it, `reference #1.2.3 of the policy` on a 126-byte page satisfied the
+ * pattern and classified behavioral — the same over-fire as the literal phrase
+ * pair it replaced, one refinement further in. Real ids carry long hex groups
+ * (`18.1a2b3c4d.1712345678.9abcdef`); section numbers never do.
+ */
+const AKAMAI_REFERENCE_ID =
+  /reference\s*#\s*[0-9a-f]+(?:\.[0-9a-f]+){2,}/i;
+const AKAMAI_REFERENCE_LONG_GROUP = /[0-9a-f]{6,}/i;
 
 // --- behavioral: managed / invisible, no clickable widget, no image ----------
 

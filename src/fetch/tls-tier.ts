@@ -524,6 +524,24 @@ const CHALLENGE_SKELETON_MAX_TEXT = 600;
 // no real form). Used to exempt text-light login pages from the skeleton check.
 const REAL_FORM_PATTERN = /<form[\s>][\s\S]*?<(?:input|button|select|textarea)[\s>]/i;
 
+/**
+ * Does the body carry a server-rendered interactive form? Exported so that any
+ * predicate pairing a marker with a THINNESS reading can apply the same
+ * exemption `isChallengeSkeleton` applies internally.
+ *
+ * Exists because the exemption is easy to lose by accident. `challenge-classify`
+ * swapped its corroborator from `isChallengeSkeleton` to `isNearEmptyBody` to
+ * break a self-corroborating pairing, and silently inherited what the new
+ * predicate LACKS along with what it does better: a 299-byte Imperva-protected
+ * login page went from 'none' to 'behavioral'. A shared predicate makes the
+ * carve-out reusable instead of re-derivable.
+ */
+export function hasRealForm(html: string | null | undefined): boolean {
+  if (!html) return false;
+  const slice = html.length > 32768 ? html.slice(0, 32768) : html;
+  return REAL_FORM_PATTERN.test(slice);
+}
+
 // Approximate the visible text length of an HTML body: strip script/style and
 // tags, collapse whitespace. Cheap and bounded — the caller only cares whether
 // the result is tiny (interstitial) or substantial (real page).

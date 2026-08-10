@@ -488,6 +488,50 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
       expect(classifyChallenge(html)).toBe('none');
     });
 
+    it('a TEXT-LIGHT login page on a vendor-protected zone does not fire', () => {
+      // M1, and the test whose absence is half of why M1 shipped.
+      //
+      // `isChallengeSkeleton` exempts a server-rendered interactive form — a carve-out written for
+      // "a text-light login screen". Swapping the corroborator to `isNearEmptyBody` to break a
+      // self-corroborating pairing inherited what the new predicate LACKS, and this 299-byte page
+      // went 'none' -> 'behavioral': a fresh instance of the defect this slice exists to remove.
+      //
+      // The suite could not have caught it. The only other login-form test pads its body so the
+      // CONTENT GUARD releases it, meaning nothing exercised the exemption at all — while a source
+      // comment asserted the gap was "not reachable in practice". This fixture is deliberately
+      // SHORT so the content guard cannot rescue it: it reaches the vendor arm and survives on the
+      // form exemption or not at all.
+      const html =
+        '<html><head><title>Sign in</title></head><body><form action="/login" method="post">' +
+        '<input name="email" type="text"><input name="password" type="password">' +
+        '<button type="submit">Sign in</button></form>' +
+        '<script src="/_Incapsula_Resource?SWJIYLWA=719d34d31c8e3a6e6fffd425f7e032f3"></script>' +
+        '</body></html>';
+      expect(html.length).toBeLessThan(400);
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('an Imperva RIDER resource call on a served page does not fire', () => {
+      // The second half of M1. Imperva injects `_Incapsula_Resource` into pages it serves
+      // SUCCESSFULLY, so the bare path is a sensor, not a template — the same distinction already
+      // applied to Cloudflare's JSD path, which the Imperva entry had been left behind by. No form
+      // here, so only the marker narrowing can save it.
+      const html =
+        '<html><head><title>Pricing</title></head><body><h1>Pricing</h1><p>Plans from $9.</p>' +
+        '<script src="/_Incapsula_Resource?SWJIYLWA=719d34d31c8e3a6e6fffd425f7e032f3"></script>' +
+        '</body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a dotted SECTION number is not an Akamai reference id', () => {
+      // M2. `[0-9a-f]+(?:\.[0-9a-f]+){2,}` matches `1.2.3`, so a policy citation on a short page
+      // classified behavioral — the same over-fire as the literal phrase pair it replaced, one
+      // refinement further in. Real ids carry long hex groups; section numbers never do.
+      const html =
+        '<html><body><h1>Access Denied</h1><p>See reference #1.2.3 of the policy.</p></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
     it('a short page with "attention required" as ordinary form copy does not fire', () => {
       // The Cloudflare WAF block page is titled "Attention Required! | Cloudflare". The bang is
       // load-bearing; without it the phrase is everyday UI copy.
