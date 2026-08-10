@@ -9,6 +9,7 @@ import { sanitizedChildEnv } from '../util/child-env.js';
 import { stealthLaunchArgs } from './stealth.js';
 import { discoverSessions, isCDPReachable } from './cdp-client.js';
 import { classifyChallenge } from './challenge-classify.js';
+import { isLowContentDensity } from './tls-tier.js';
 import { guardFetchUrl, guardResolvedHost, type LookupAll } from '../watch/ssrf.js';
 import { redactUrl } from '../util/redact-url.js';
 import type { RawFetchResult } from '../types.js';
@@ -1294,7 +1295,29 @@ export async function cdpDirectFetch(
     for (;;) {
       if (opts.signal?.aborted) return null;
       html = await handle.getContentHtml();
-      if (html && classifyChallenge(html) === 'none') break;
+      // BREAKING HERE RETURNS THE BODY TO THE AGENT AS CONTENT, at a synthesized
+      // HTTP 200 that the terminal `guardChallengeShell` then sees as clean. So
+      // this condition is not "is there a challenge shape?" — it is "is this
+      // body safe to hand back?", and it must fail CLOSED.
+      //
+      // `classifyChallenge` alone cannot carry that. Its own docstring scopes it
+      // to deciding WHICH solve rung applies for a page already suspected to be
+      // a challenge; it is a shape classifier, never a whether-detector. Using
+      // it as one is a category error that happened to fail closed while its
+      // skeleton predicate called every thin body a challenge, and began failing
+      // OPEN the moment that heuristic was correctly removed.
+      //
+      // So it is paired with the GENERAL, vendor-agnostic wall shape. A marker
+      // catalogue only ever recognises vendors already met; density generalises,
+      // and catches a large all-scaffolding wall from a vendor nobody has
+      // catalogued yet. Honest ceiling, stated rather than hidden: the density
+      // rule needs >=1KB of body, so a SMALL uncatalogued wall still passes here
+      // — that class is covered by the vendor template markers in the classifier,
+      // and anything neither rule knows is a real residual gap.
+      //
+      // Measured: example.com (544B, legitimate) breaks promptly; the markerless
+      // scaffold wall does not.
+      if (html && classifyChallenge(html) === 'none' && !isLowContentDensity(html)) break;
       if (Date.now() >= clearDeadline) {
         return declineRung('challenge-did-not-clear', url, {
           challengeClass: html ? classifyChallenge(html) : 'empty',

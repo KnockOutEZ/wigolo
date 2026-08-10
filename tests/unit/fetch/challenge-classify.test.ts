@@ -371,6 +371,104 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
     });
   });
 
+  /**
+   * REGRESSION — removing the length heuristic must not remove VENDOR COVERAGE with it.
+   *
+   * The arm this slice replaced was `isChallengeSkeleton(slice) || isCloudflareShell(lower)`. Only
+   * the `visibleText < 600` arm inside `isChallengeSkeleton` was defective. But that predicate ALSO
+   * short-circuits on two positive MARKERS, and `isCloudflareShell` is a pure marker check — so the
+   * first version of this fix deleted markers along with the heuristic, and four real wall shapes
+   * silently flipped `behavioral` -> `none`.
+   *
+   * Caught by a BASE-vs-TIP differential (running both revisions of the classifier side by side),
+   * not by this suite — every test here was green throughout. Consequence was not cosmetic:
+   * `cdpDirectFetch` breaks its clear-poll on `=== 'none'` and returns the body as content at a
+   * synthesized HTTP 200, so these walls would have been handed to the agent as real pages.
+   */
+  describe('vendor coverage the length heuristic was accidentally providing', () => {
+    it('an Imperva/Incapsula stub is behavioral', () => {
+      const html =
+        '<html><head><title>Request unsuccessful.</title></head><body>' +
+        '<iframe src="/_Incapsula_Resource?CWUDNSAI=9&xinfo=12-345-0"></iframe></body></html>';
+      expect(classifyChallenge(html)).toBe('behavioral');
+    });
+
+    it('an Akamai denial (no /akam/ sensor path) is behavioral', () => {
+      const html =
+        '<html><head><title>Access Denied</title></head><body><h1>Access Denied</h1>' +
+        '<p>You don\'t have permission to access this server.</p>' +
+        '<p>Reference #18.1a2b3c4d.1712345678.9abcdef</p></body></html>';
+      expect(classifyChallenge(html)).toBe('behavioral');
+    });
+
+    it('a modern-CF skeleton with no interstitial title is behavioral', () => {
+      // The F3 case: challenge-platform script, near-empty, no catalogued marker, no title. A
+      // localized Cloudflare interstitial looks exactly like this, since the title pattern is
+      // English-only — so this is not an exotic shape.
+      const html =
+        '<html><head><meta charset="utf-8"></head><body><div id="challenge-running"></div>' +
+        '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>' +
+        '</body></html>';
+      expect(classifyChallenge(html)).toBe('behavioral');
+    });
+
+    it('a LOWERCASE Cloudflare body phrase is behavioral — matching is case-insensitive', () => {
+      // The F4 case. The shared marker catalogue compares case-SENSITIVELY against raw HTML, while
+      // the removed `isCloudflareShell` compared on the lowercased slice, so a lowercase variant was
+      // released. Both cases must classify the same.
+      const lower =
+        '<html><head><title>Access</title></head><body><h1>just a moment...</h1></body></html>';
+      const upper =
+        '<html><head><title>Access</title></head><body><h1>Just a moment...</h1></body></html>';
+      expect(classifyChallenge(lower)).toBe('behavioral');
+      expect(classifyChallenge(upper)).toBe('behavioral');
+    });
+  });
+
+  /**
+   * OVER-FIRE PROBE for the vendor markers added above. A new marker is a new gate, and the house
+   * rule is that a new gate ships with negative tests. Each of these carries the marker in genuine
+   * prose; the content guard must release them all.
+   */
+  describe('MUST-NOT-FIRE — the new vendor markers quoted in real prose', () => {
+    it('an article explaining Imperva does not fire', () => {
+      const html =
+        '<html><head><title>How Imperva blocks bots</title></head><body><article>' +
+        'The interstitial loads an iframe pointing at _Incapsula_Resource with a CWUDNSAI parameter. ' +
+        'We explain the whole handshake for engineers below. '.repeat(20) +
+        '</article></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('an article explaining Akamai denials does not fire', () => {
+      const html =
+        '<html><head><title>Reading Akamai denials</title></head><body><article>' +
+        'An Akamai denial renders "Access Denied" plus a "Reference #" correlation id. ' +
+        'Here is how to read one when debugging your own traffic. '.repeat(20) +
+        '</article></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a docs page citing the challenge-platform script path does not fire', () => {
+      const html =
+        '<html><head><title>Cloudflare script paths</title></head><body><article>' +
+        'The orchestration script lives at /cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1. ' +
+        'Do not block this path in your CSP or challenges will fail. '.repeat(20) +
+        '</article></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a genuine short 403 saying "Access Denied" with NO reference id does not fire', () => {
+      // Proves the Akamai rule genuinely requires BOTH halves. "Access Denied" alone is ordinary
+      // 403 copy that a real error page serves, and this body is short enough that the old length
+      // arm would have called it a wall.
+      const html =
+        '<html><head><title>403 Forbidden</title></head><body><h1>Access Denied</h1>' +
+        '<p>You do not have permission to view this resource.</p></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+  });
+
   describe('the pairing invariant, stated directly', () => {
     it('a skeleton-shaped body WITHOUT any vendor artifact is never a challenge', () => {
       // The invariant, independent of any single fixture: take a body short

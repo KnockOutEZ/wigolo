@@ -177,8 +177,53 @@ export function classifyChallenge(html: string): ChallengeClass {
   //     response IS the challenge, so it outranks length in BOTH directions (a
   //     padded interstitial is still an interstitial).
   if (hasInterstitialSignal(slice, lower)) return 'behavioral';
-  if (hasChallengeBody(slice) && isChallengeSkeleton(slice)) return 'behavioral';
+  if ((hasChallengeBody(slice) || hasVendorTemplateMarker(lower)) && isChallengeSkeleton(slice)) {
+    return 'behavioral';
+  }
   return 'none';
+}
+
+/**
+ * Vendor template markers that the SHARED `CHALLENGE_MARKERS` catalogue does not
+ * carry. Paired with the skeleton reading by the caller — never used alone.
+ *
+ * WHY THIS EXISTS. The arm this replaced was
+ * `isChallengeSkeleton(slice) || isCloudflareShell(lower)`. Only ONE thing in it
+ * was defective: `isChallengeSkeleton`'s final `visibleText < 600` arm. But that
+ * predicate ALSO short-circuits true on two positive MARKERS (the
+ * `/cdn-cgi/challenge-platform/` script path and the interstitial title), and
+ * `isCloudflareShell` is a pure marker check. Removing the whole expression to
+ * kill the length heuristic removed the markers with it — so vendors absent from
+ * the shared catalogue lost their coverage silently, and a base-vs-tip
+ * differential showed four wall shapes flipping `behavioral` -> `none`:
+ * a modern-CF skeleton, an Imperva/Incapsula stub, an Akamai denial, and a
+ * lowercase Cloudflare body phrase.
+ *
+ * Matching is on the LOWERCASED slice. The shared `hasChallengeBody` compares
+ * case-SENSITIVELY against raw HTML while the removed `isCloudflareShell`
+ * compared on `lower`, so a lowercase `just a moment` body variant was released.
+ *
+ * These are PAIRED with the skeleton reading rather than treated as unconditional
+ * proof, deliberately. `tls-tier.ts` already documents the reason for the
+ * challenge-platform path specifically: a real full article that merely
+ * references the script path must NOT read as a challenge. Pairing keeps that
+ * true, and the content guard above releases anything with real prose first.
+ */
+function hasVendorTemplateMarker(lower: string): boolean {
+  // Cloudflare shell phrasing — case-insensitive, unlike the shared catalogue.
+  if (lower.includes('cf-browser-verification')) return true;
+  if (lower.includes('_cfchlopt')) return true;
+  if (lower.includes('just a moment')) return true;
+  if (lower.includes('attention required')) return true;
+  // Modern Cloudflare: the challenge-platform orchestration script.
+  if (lower.includes('/cdn-cgi/challenge-platform/')) return true;
+  // Imperva / Incapsula: the interstitial's own resource endpoint.
+  if (lower.includes('_incapsula_resource')) return true;
+  // Akamai denial template. BOTH halves required — "reference #" alone is far
+  // too generic to carry a verdict, and "access denied" alone is ordinary
+  //403 copy that a real error page legitimately serves.
+  if (lower.includes('access denied') && lower.includes('reference #')) return true;
+  return false;
 }
 
 // --- behavioral: managed / invisible, no clickable widget, no image ----------

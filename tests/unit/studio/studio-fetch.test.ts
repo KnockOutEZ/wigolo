@@ -307,14 +307,22 @@ describe('S9B slice 1 — the gate predicate choice is justified by measurement,
     '<html><head><title>Example Domain</title></head><body><div><h1>Example Domain</h1>' +
     '<p>This domain is for use in illustrative examples in documents.</p></div></body></html>';
 
-  // A NOVEL vendor's wall: a large all-scaffolding body with no readable text and NONE of the
-  // catalogued challenge markers. Only the GENERAL density rule catches this shape — and that rule
-  // is STATUS-GATED, which is the point of the test below.
+  // A NOVEL vendor's wall: a large all-scaffolding body carrying NONE of the catalogued challenge
+  // markers. Only the GENERAL density rule catches this shape — and that rule is STATUS-GATED,
+  // which is the point of the test below.
+  //
+  // Deliberately sized to carry MORE than 600 visible characters. That matters: `classifyChallenge`
+  // releases any body at or above that floor as content, at BOTH revisions, so its 'none' verdict
+  // here is a genuine pre-existing property of a status-free classifier and not an artifact of the
+  // P3-CLASSIFY change. An earlier version of this test used a SHORT markerless wall, whose 'none'
+  // that change had itself created — the assertion would have failed at base `fb16fb01`, so it
+  // proved the opposite of what it claimed.
   const MARKERLESS_WALL =
     '<html><head><title>Security Check</title>' +
-    '<script>' + 'var _q=[];for(var i=0;i<99;i++){_q.push(i*7);}'.repeat(40) + '</script>' +
-    '<style>' + '.sh{display:none;position:absolute;top:0;left:0;width:100%}'.repeat(40) + '</style>' +
-    '</head><body><div id="shield"></div></body></html>';
+    '<script>' + 'var _z=[];for(var i=0;i<64;i++){_z.push((i*31)%97);}'.repeat(700) + '</script>' +
+    '</head><body><p>' +
+    'Your request has been held for review by an automated security system. '.repeat(10) +
+    '</p></body></html>';
 
   it('fires on a real interstitial — the shell is caught', () => {
     expect(isChallengeShell(200, CF_SHELL)).toBe(true);
@@ -331,24 +339,28 @@ describe('S9B slice 1 — the gate predicate choice is justified by measurement,
   it('classifyChallenge is UNSAFE as the gate because it is STATUS-FREE — it MISSES a markerless wall', () => {
     // The justification, restated after slice P3-CLASSIFY.
     //
-    // The original version of this test rested on `classifyChallenge` OVER-firing: it called a
-    // thin-but-genuine page 'behavioral' because its skeleton predicate read visible-text length as a
-    // verdict. That was a defect, not a design property, and it has been fixed — so that assertion
-    // would now be asserting a bug.
+    // The original version rested on `classifyChallenge` OVER-firing: it called a thin-but-genuine
+    // page 'behavioral' because its skeleton predicate read visible-text length as a verdict. That
+    // was a defect, and it has been fixed — so that assertion would now be asserting a bug.
     //
-    // The gate choice survives on a stronger and opposite ground: `classifyChallenge` takes HTML only.
-    // It therefore cannot reach the STATUS-GATED general density rule, which is the one rule that
-    // catches a wall from a vendor whose markers are not in the catalogue. So as a gate it UNDER-fires
-    // — it would hand a real wall through as content, which is the failure a gate exists to prevent.
+    // The gate choice survives on a stronger and opposite ground, and this pair is the evidence:
+    // `classifyChallenge` takes HTML only, so it cannot reach the STATUS-GATED general density rule,
+    // which is the one rule that catches a wall from a vendor whose markers are not catalogued. As a
+    // gate it would UNDER-fire and hand a real wall back as content — the failure a gate exists to
+    // prevent, and the worse direction of the two.
     //
-    // Under-firing is the worse direction for a gate, so this is a firmer justification than the one it
-    // replaces. `classifyChallenge` remains correct at its actual job: refining the SHAPE of a
-    // challenge already established, never deciding WHETHER there is one.
+    // Both verdicts below hold at base `fb16fb01` as well as at tip, verified by running the two
+    // revisions of the classifier side by side. That is the whole point of choosing a wall with more
+    // than 600 visible characters: the property is inherent to a status-free classifier, not
+    // something this slice introduced.
     expect(isChallengeShell(403, MARKERLESS_WALL)).toBe(true);
     expect(classifyChallenge(MARKERLESS_WALL)).toBe('none');
 
-    // And the two now AGREE on both genuine pages — the sensor-bearing article and the thin one.
+    // The sensor-bearing article: 'none' at both revisions — content wins over markers, as designed.
     expect(classifyChallenge(REAL_WITH_SENSOR)).toBe('none');
+
+    // The thin genuine page: 'none' is NEW as of P3-CLASSIFY (it was 'behavioral' at base). Asserted
+    // as the fix it is, and labelled as such rather than presented as a standing property.
     expect(classifyChallenge(THIN_BUT_REAL)).toBe('none');
   });
 
