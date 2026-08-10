@@ -27,6 +27,8 @@ vi.mock('../../../src/integrations/cloud/llm/run.js', () => ({
 import { synthesizeLocal } from '../../../src/research/synthesis-local.js';
 import { runLlmText } from '../../../src/integrations/cloud/llm/run.js';
 import { buildFallbackReport } from '../../../src/research/synthesize.js';
+import { fenceResearchData } from '../../../src/server/content-fence.js';
+import type { ResearchOutput } from '../../../src/types.js';
 import type { ResearchSource } from '../../../src/types.js';
 
 function searchItem(over: Partial<SearchResultItem>): SearchResultItem {
@@ -124,14 +126,23 @@ describe('D8a — answer-synthesis fences page bodies (real buildSourcesText + b
 });
 
 describe('D8a — no regression at the already-fenced precedent sink (assert, do not mutate) (pin #5)', () => {
-  it('research/synthesize buildFallbackReport still wraps source bodies in the fence', () => {
+  // REWRITTEN for B1. This pinned buildFallbackReport as a fence-bearing producer — the very property
+  // that forced the response seam to decide "already fenced?" from page-controlled text. The precedent
+  // it guards (page bodies are contained before reaching the agent) is unchanged; the LOCATION moved
+  // from the producer to the response seam, and containment is now asserted end to end.
+  it('research/synthesize buildFallbackReport emits plain text that the response seam then fences', () => {
     const sources: ResearchSource[] = [
       { url: 'https://e.com/p', title: 'T', markdown_content: 'precedent-body', relevance_score: 1, fetched: true, trusted: false },
     ];
     const report = buildFallbackReport('q', sources, 2000);
-    expect(report).toContain(BEGIN);
-    expect(closedRegions(report)).toBe(1);
     expect(report).toContain('precedent-body');
-    expect(enclosingRegion(report, 'precedent-body')).not.toBeNull();
+    expect(report).not.toContain(BEGIN); // no producer-side fence (B1 rule 2)
+    const shaped = fenceResearchData({
+      report, citations: [], sources: [], sub_queries: [], depth: 'standard',
+      total_time_ms: 1, sampling_supported: false,
+    } as unknown as ResearchOutput);
+    expect(shaped.report).toContain(BEGIN);
+    expect(closedRegions(shaped.report)).toBe(1);
+    expect(enclosingRegion(shaped.report, 'precedent-body')).not.toBeNull();
   });
 });

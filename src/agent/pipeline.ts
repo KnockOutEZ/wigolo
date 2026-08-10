@@ -460,7 +460,9 @@ Provide a clear, well-organized response that addresses the user's request based
   }
 }
 
-function buildFallbackSynthesis(prompt: string, sources: AgentSource[]): string {
+// Exported so the fence-free-producer invariant (B1 rule 2) can be pinned against the REAL producer
+// rather than a reconstruction of it.
+export function buildFallbackSynthesis(prompt: string, sources: AgentSource[]): string {
   const header = `## Results: ${prompt}\n\nGathered from ${sources.length} source(s):\n\n`;
   let result = header;
   const maxTotal = 6000;
@@ -475,19 +477,19 @@ function buildFallbackSynthesis(prompt: string, sources: AgentSource[]): string 
     result += sourceHeader;
     remaining -= sourceHeader.length;
 
-    // P6-a: reserve room for the untrusted-data fence so the content is truncated before
-    // wrapping and the fence stays well-formed within the budget. P2: the reservation is
-    // origin-specific — the origin sits in the opening marker.
-    const wrapOverhead = untrustedWrapOverhead(source.url);
-    const contentBudget = Math.min(remaining - 10 - wrapOverhead, source.markdown_content.length, 1500);
+    // B1: no fence here any more. This builds the RESPONSE-bound `agent.result` string, and a
+    // producer that sometimes emits a fence forces the response seam to decide by inspecting page
+    // text — a decision the page can flip by printing the marker prefix. Zero fence-bearing response
+    // producers means the seam fences unconditionally, with no attacker-supplied input to the
+    // decision. The prompt-bound fences in buildUntrustedSourceBlocks above are untouched.
+    const contentBudget = Math.min(remaining - 10, source.markdown_content.length, 1500);
     if (contentBudget > 0) {
       let content = source.markdown_content.slice(0, contentBudget);
       if (content.length < source.markdown_content.length) {
         content = content.slice(0, Math.max(contentBudget - 3, 0)) + '...';
       }
-      const wrapped = wrapUntrusted(content, { origin: source.url });
-      result += wrapped + '\n\n';
-      remaining -= wrapped.length + 2;
+      result += content + '\n\n';
+      remaining -= content.length + 2;
     }
   }
 

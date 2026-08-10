@@ -134,7 +134,7 @@ describe('P2 — the four previously-unfenced tools fence on the real MCP wire',
     expect(parsed.depth).toBe('quick');
   });
 
-  it('WIRE-3: agent fences rawHtml, bodies and step details; the string result stays clean', async () => {
+  it('WIRE-3 (B1): agent fences rawHtml, bodies, step details AND the string result', async () => {
     // rawHtml is the densest injection carrier in the codebase and reached the model bare.
     // MUT: drop fenceAgentData → RED.
     const wire = await callTool('agent', { prompt: 'p' });
@@ -142,8 +142,9 @@ describe('P2 — the four previously-unfenced tools fence on the real MCP wire',
     expect(enclosingRegion(wire, 'AGENT-BODY')).not.toBeNull();
     expect(enclosingRegion(wire, 'STEP-DETAIL')).not.toBeNull();
     const parsed = JSON.parse(wire) as { result: string; steps: Array<{ action: string }> };
-    expect(parsed.result).toBe('agent synthesis text');
-    expect(parsed.steps[0].action).toBe('fetch');
+    expect(closedRegions(parsed.result)).toBe(1); // B1: fenced, exactly once
+    expect(parsed.result).toContain('agent synthesis text');
+    expect(parsed.steps[0].action).toBe('fetch'); // operational enum raw
   });
 
   it('WIRE-4: diff fences both sides and names the input url as origin', async () => {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { SearchInput, SearchOutput } from '../../../src/types.js';
 import { buildSearchContentBlocks } from '../../../src/server/search-response.js';
+import { closedRegions, regionBody } from '../../helpers/untrusted-fence.js';
 
 // format=stream_answer leaked the synthesis
 // warning out as a raw `[wigolo notice] ...` text block alongside the JSON
@@ -57,8 +58,11 @@ describe('buildSearchContentBlocks', () => {
     expect(blocks[0].text).not.toMatch(/^\[wigolo notice\]/);
 
     const payload = JSON.parse(blocks[0].text);
-    expect(payload.stream).toBe('synthesized answer');
-    expect(payload.notice).toBe(data.warning);
+    // B2: `answer` is page-derived on the keyless producers, so it is fenced before it becomes
+    // `stream`. The envelope SHAPE is what this pin is about; containment is pinned at SEAM-19/20.
+    expect(closedRegions(payload.stream)).toBe(1);
+    expect(regionBody(payload.stream)).toBe('synthesized answer');
+    expect(payload.notice).toBe(data.warning); // wigolo-authored warning stays raw
     // The rest of the SearchOutput remains accessible (results, citations, etc.).
     expect(payload.query).toBe('test');
     expect(payload.results).toEqual([]);
@@ -73,7 +77,7 @@ describe('buildSearchContentBlocks', () => {
     const blocks = buildSearchContentBlocks(input, data);
     const payload = JSON.parse(blocks[0].text);
 
-    expect(payload.stream).toBe('synthesized answer');
+    expect(regionBody(payload.stream)).toBe('synthesized answer'); // B2: fenced, body intact
     expect('notice' in payload).toBe(false);
   });
 

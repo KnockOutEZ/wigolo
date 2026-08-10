@@ -5,7 +5,9 @@ import {
   checkSamplingSupport,
 } from '../search/sampling.js';
 import type { ResearchSource, Citation } from '../types.js';
-import { wrapUntrusted, untrustedWrapOverhead } from '../security/untrusted.js';
+// Only the PROMPT path wraps here now; the response path emits plain text and is fenced at the
+// response seam (B1). No overhead reservation is needed for a wrap this file no longer performs.
+import { wrapUntrusted } from '../security/untrusted.js';
 import { stripResearchChrome } from './brief.js';
 
 const log = createLogger('research');
@@ -166,20 +168,26 @@ export function buildFallbackReport(
     report += sourceHeader;
     remaining -= sourceHeader.length;
 
-    // P6-a: reserve room for the untrusted-data fence so the content is truncated BEFORE
-    // wrapping — the fence is then never cut by the final length clamp (a cut END marker
-    // would break containment).
-    // P2: origin-specific reservation — the origin is echoed in the opening marker.
-    const wrapOverhead = untrustedWrapOverhead(source.url);
-    const contentBudget = Math.min(remaining - 10 - wrapOverhead, source.markdown_content.length);
+    // B1: this used to fence each source body. It no longer does, and that is the point.
+    //
+    // `report` is RESPONSE-bound, so the response seam has to decide whether to fence it. While ANY
+    // producer could emit a fence, that decision had to be made by INSPECTING THE VALUE — and the
+    // value is page text, so a page that merely printed the opening-marker prefix switched the fence
+    // off for the whole report. Hardening the predicate does not rescue it: with a byte-exact payload
+    // a page can reproduce a complete, nonce-matched region verbatim, so EVERY content-derived
+    // predicate is forgeable. The fix is to delete the decision rather than strengthen it — with zero
+    // fence-bearing producers the seam fences unconditionally and there is no input left to attack.
+    //
+    // The PROMPT-bound fences (synthesizeWithSampling's per-source blocks) are untouched: different
+    // sink, and nothing there flows into the response.
+    const contentBudget = Math.min(remaining - 10, source.markdown_content.length);
     if (contentBudget > 0) {
       let content = source.markdown_content.slice(0, contentBudget);
       if (content.length < source.markdown_content.length) {
         content = content.slice(0, Math.max(contentBudget - 3, 0)) + '...';
       }
-      const wrapped = wrapUntrusted(content, { origin: source.url });
-      report += wrapped + '\n\n';
-      remaining -= wrapped.length + 2;
+      report += content + '\n\n';
+      remaining -= content.length + 2;
     }
   }
 

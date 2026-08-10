@@ -50,6 +50,7 @@
     "tests/unit/security/d8a-2-truncation-fence.test.ts",
     "tests/unit/server/content-fence.test.ts",
     "tests/unit/server/content-fence-seams.test.ts",
+    "tests/unit/server/search-response.test.ts",
     "tests/unit/daemon/rest-untrusted-envelope.test.ts",
     "tests/unit/research/synthesize-containment.test.ts",
     "tests/unit/research/synthesis-local.test.ts",
