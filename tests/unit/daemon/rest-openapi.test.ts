@@ -63,6 +63,23 @@ describe('OpenAPI document assembly', () => {
     expect(doc.paths['/v1/openapi.json']).toBeDefined();
   });
 
+  it('documents the untrusted-content representation header on EVERY tool route, defaulting to inline', () => {
+    // A generated client must be able to DISCOVER the opt-out; prose in a markdown file is not the
+    // machine contract. And the served `default` is what tells a reader which representation they
+    // get for doing nothing — if it ever disagreed with the router's fallback, the contract would be
+    // lying about a security-relevant default.
+    // MUT: drop the parameter (or set default:'envelope') → RED for all 10 routes.
+    const doc = buildOpenApi() as { paths: Record<string, { post: { parameters?: Array<{ name: string; in: string; schema: { enum: string[]; default: string } }> } }> };
+    for (const tool of TOOLS) {
+      const params = doc.paths[`/v1/${tool}`].post.parameters ?? [];
+      const header = params.find((p) => p.name === 'X-Wigolo-Untrusted-Content');
+      expect(header, `${tool} must document the representation header`).toBeDefined();
+      expect(header?.in).toBe('header');
+      expect(header?.schema.enum).toEqual(['inline', 'envelope']);
+      expect(header?.schema.default).toBe('inline');
+    }
+  });
+
   it('injects the limits.ts clamp bounds onto the served schemas (drift gate)', () => {
     const doc = buildOpenApi() as { paths: Record<string, { post: { requestBody: { content: { 'application/json': { schema: Record<string, { properties?: Record<string, Record<string, unknown>> }> } } } } }> };
     for (const spec of CLAMP_TABLE) {

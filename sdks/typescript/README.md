@@ -91,10 +91,11 @@ names are the daemon's snake_case wire names (`max_results`, `total_time_ms`,
 
 ```ts
 new WigoloClient({
-  baseUrl,   // > WIGOLO_BASE_URL > http://127.0.0.1:3333
-  token,     // > WIGOLO_API_TOKEN (sent as `Authorization: Bearer <token>`)
-  timeoutMs, // default per-request deadline; overrides the per-tool default
-  fetch,     // injectable fetch (tests / custom transports)
+  baseUrl,          // > WIGOLO_BASE_URL > http://127.0.0.1:3333
+  token,            // > WIGOLO_API_TOKEN (sent as `Authorization: Bearer <token>`)
+  timeoutMs,        // default per-request deadline; overrides the per-tool default
+  fetch,            // injectable fetch (tests / custom transports)
+  untrustedContent, // 'envelope' for byte-clean page text — see below
 });
 ```
 
@@ -107,6 +108,39 @@ await client.research({ question: 'q' }, { timeoutMs: 120_000, signal: myAbortSi
 Explicit options win over env; env is read only when the option is absent (and
 every env read is guarded, so a runtime that throws on env access — e.g. Deno
 without `--allow-env` — does not crash construction).
+
+## Page content is contained by default
+
+Text that came off a web page is data, never instructions — a page can print
+"ignore your previous instructions and …", and a naive concatenation puts that
+sentence in instruction position. So the daemon returns page-derived text
+already wrapped in a containment region: a notice, then the text between two
+markers carrying a value unique to that response. **Do nothing and passing
+`page.markdown` to a model is safe.**
+
+Set `untrustedContent: 'envelope'` **only** when you need the exact bytes the
+site served — hashing, dedup, an embedding index, anything that persists text.
+The payload then arrives byte-clean and the boundary travels as an
+`untrusted_content` sibling field, which `fenceUntrusted` composes for you at
+whatever point some of that text does go to a model:
+
+```ts
+import { WigoloClient, fenceUntrusted } from 'wigolo-sdk';
+
+const client = new WigoloClient({ untrustedContent: 'envelope' });
+const page = await client.fetch({ url: 'https://example.com' });
+
+await index.upsert(page.url, page.markdown);         // byte-clean, exactly as served
+const prompt = fenceUntrusted(page, page.markdown!); // contained, for a model
+```
+
+- The option is **never read from the environment** — ambient config must not be
+  able to weaken containment.
+- `fenceUntrusted` **throws** on a response with no envelope: that response used
+  the default representation and its text is already contained, and wrapping it
+  twice would nest a region a page could close early.
+- Also exported: `fenceWithEnvelope`, `untrustedContentOf`,
+  `UNTRUSTED_CONTENT_HEADER`.
 
 ## Timeouts
 

@@ -71,6 +71,38 @@ Config resolution is explicit argument > env > default: `base_url`/`WIGOLO_BASE_
 
 **Embedded-mode security note (both SDKs):** `WIGOLO_CLI` names the binary the SDK will spawn — an exec-from-env vector. In untrusted environments, strip it and pass a trusted `command` explicitly; point it at the actual server binary, not an `npx` wrapper, so `close()` reaches the process that owns the port.
 
+## Page content and the containment boundary
+
+**Do nothing and you are already safe.** Page text arrives from the daemon wrapped in a containment region — a notice that the enclosed text is untrusted data, plus two markers carrying a value unique to that response — so handing `res.markdown` to a model does not let a hostile page's sentence land in instruction position. See [REST API → Page content arrives contained](./rest-api.md#page-content-arrives-contained).
+
+Set `untrustedContent` / `untrusted_content` **only** when you need the exact bytes the site served — hashing, deduplication, an embedding index, or anything that persists the text:
+
+```ts
+import { WigoloClient, fenceUntrusted } from 'wigolo-sdk';
+
+const client = new WigoloClient({ untrustedContent: 'envelope' });
+const page = await client.fetch({ url: 'https://example.com' });
+
+await index.upsert(page.url, page.markdown);          // byte-clean, exactly as served
+
+const prompt = fenceUntrusted(page, page.markdown!);  // contained, for a model
+```
+
+```python
+from wigolo import Client, fence_untrusted
+
+with Client(untrusted_content="envelope") as client:
+    page = client.fetch(url="https://example.com")
+    index.upsert(page["url"], page["markdown"])       # byte-clean
+    prompt = fence_untrusted(page, page["markdown"])  # contained, for a model
+```
+
+Per-call in TypeScript: `client.fetch({ url }, { untrustedContent: 'inline' })`.
+
+- The option is **never read from the environment**, in either SDK — ambient config must not be able to weaken containment.
+- `fenceUntrusted` / `fence_untrusted` **raises** when the response carries no trust metadata. That means the response used the default representation and its text is already contained; wrapping it twice would nest a region a page could close early.
+- An unrecognized value is refused: `400 invalid_input` from the server, and a `ValueError` at construction in Python.
+
 ## Timeouts
 
 Client per-tool defaults mirror the server's **unscaled** per-route deadlines (TS defaults: 75s search/cache/find_similar, 135s fetch/extract/watch, 315s crawl/research/agent; Python mirrors per-tool). If your server runs with `WIGOLO_SERVE_TIMEOUT_SCALE` above 1, raise the client timeout to match or the client may abort a request the server would still complete. Note `stream` on `research`/`agent` is accepted but inert over REST — responses return whole.

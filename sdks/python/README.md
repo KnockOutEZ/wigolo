@@ -116,6 +116,40 @@ env var is not consulted.
 The bearer token is only sent when set — the server requires it only when it
 runs with a token configured.
 
+`untrusted_content` is deliberately absent from that table: it has **no env
+var**, because ambient config must not be able to weaken containment. See below.
+
+## Page content is contained by default
+
+Text that came off a web page is data, never instructions — a page can print
+"ignore your previous instructions and …", and a naive concatenation puts that
+sentence in instruction position. So the daemon returns page-derived text
+already wrapped in a containment region: a notice, then the text between two
+markers carrying a value unique to that response. **Do nothing and passing
+`page["markdown"]` to a model is safe.**
+
+Pass `untrusted_content="envelope"` **only** when you need the exact bytes the
+site served — hashing, dedup, an embedding index, anything that persists text.
+The payload then arrives byte-clean and the boundary travels as an
+`untrusted_content` key, which `fence_untrusted` composes for you at whatever
+point some of that text does go to a model:
+
+```python
+from wigolo import Client, fence_untrusted
+
+with Client(untrusted_content="envelope") as client:
+    page = client.fetch(url="https://example.com")
+    index.upsert(page["url"], page["markdown"])       # byte-clean, exactly as served
+    prompt = fence_untrusted(page, page["markdown"])  # contained, for a model
+```
+
+- `fence_untrusted` **raises** `WigoloError` on a response with no envelope:
+  that response used the default representation and its text is already
+  contained, and wrapping it twice would nest a region a page could close early.
+- An unrecognized `untrusted_content` value raises `ValueError` at construction.
+- Also exported: `fence_with_envelope`, `untrusted_content_of`,
+  `UNTRUSTED_CONTENT_HEADER`, `UNTRUSTED_CONTENT_MODES`.
+
 ## Timeouts
 
 The `timeout` option (per client, or per call) is a **per-socket-operation**
