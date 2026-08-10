@@ -3,10 +3,9 @@
  *
  * Pipeline:
  *   1. Validate the input buffer (size cap, MIME type — reject SVG/non-raster).
- *   2. Decode + resize via sharp (already a transitive dependency through
- *      @huggingface/transformers, so no new bundle cost). Resize to <=200px
- *      on the long edge before quantization — k-means over 2000x2000 is the
- *      sort of accident that turns a 2s budget into a 12s budget.
+ *   2. Decode + resize via sharp. Resize to <=200px on the long edge before
+ *      quantization — k-means over 2000x2000 is the sort of accident that
+ *      turns a 2s budget into a 12s budget.
  *   3. Quantize to k=5 clusters with a small k-means (10 iterations).
  *   4. Filter near-monochrome clusters (white/black/grey) when at least one
  *      saturated cluster exists. Real logos are usually mostly white/transparent
@@ -14,16 +13,49 @@
  *      ["#ffffff", "#fefefe"] on every site.
  *   5. Sort surviving clusters by cluster size and emit hex codes.
  *
- * We pick k-means over node-vibrant because sharp + a ~80-line k-means
- * adds zero new dependencies (~0KB bundle delta) versus node-vibrant's
- * ~500KB. The trade-off is we lose Vibrant's perceptual-LAB heuristics,
- * but the saturation/lightness filter below recovers most of the
- * downstream signal for brand palette use.
+ * We pick k-means over node-vibrant because a ~80-line k-means over an
+ * already-required decoder beats node-vibrant's ~500KB. The trade-off is we
+ * lose Vibrant's perceptual-LAB heuristics, but the saturation/lightness
+ * filter below recovers most of the downstream signal for brand palette use.
+ *
+ * The decoder is loaded lazily, and its absence degrades to "no palette".
+ * It is a native module with per-platform prebuilt binaries, so a musl/arm64
+ * gap, a bundler that drops it, or a broken postinstall must not take the
+ * whole extraction module down at import time — which a top-level static
+ * import would do, since brand-palette sits on the `extract` path.
  */
-import sharp from 'sharp';
+import type { OutputInfo, Sharp, SharpOptions } from 'sharp';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('extract');
+
+type SharpFactory = (input: Buffer, options?: SharpOptions) => Sharp;
+
+let decoderPromise: Promise<SharpFactory | null> | undefined;
+
+/**
+ * Resolve the image decoder once and memoize the outcome — including failure,
+ * so a missing native binary costs one resolution attempt, not one per image.
+ *
+ * The specifier is a string literal on purpose: esbuild drops `import(variable)`
+ * and the feature would vanish only in the packaged binary.
+ */
+async function loadDecoder(): Promise<SharpFactory | null> {
+  decoderPromise ??= import('sharp')
+    .then((mod) => mod.default as unknown as SharpFactory)
+    .catch((err: unknown) => {
+      log.warn('palette: image decoder unavailable, brand palette disabled', {
+        error: String(err),
+      });
+      return null;
+    });
+  return decoderPromise;
+}
+
+/** Test seam: drop the memoized decoder so the absent path can be exercised. */
+export function __resetDecoderForTests(): void {
+  decoderPromise = undefined;
+}
 
 /** Hard cap on input image bytes. >2MB inputs blow the 2s round-trip budget. */
 export const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
@@ -285,7 +317,8 @@ function rankAndFilterClusters(
  * Returns null when:
  *   - input exceeds MAX_IMAGE_BYTES,
  *   - MIME type is non-raster (SVG, XML),
- *   - sharp fails to decode the buffer,
+ *   - the image decoder is not installable on this platform,
+ *   - the decoder fails to decode the buffer,
  *   - quantization produces no surviving clusters.
  *
  * On success: returns ≥1 hex code (best-effort to surface ≥2 when bitmap
@@ -306,7 +339,10 @@ export async function extractPaletteFromBuffer(
     return null;
   }
 
-  let raw: { data: Buffer; info: sharp.OutputInfo };
+  const sharp = await loadDecoder();
+  if (!sharp) return null;
+
+  let raw: { data: Buffer; info: OutputInfo };
   try {
     raw = await sharp(buffer, {
       failOn: 'none',
@@ -329,7 +365,7 @@ export async function extractPaletteFromBuffer(
       .raw()
       .toBuffer({ resolveWithObject: true });
   } catch (err) {
-    log.debug('palette: sharp decode failed', { error: String(err) });
+    log.debug('palette: decode failed', { error: String(err) });
     return null;
   }
 
