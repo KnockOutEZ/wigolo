@@ -92,13 +92,27 @@ export function clearArtifactProviders(): void {
 /**
  * Provider modules that ship in this repo, resolved LAZILY and exactly once.
  *
- * A module path is all core keeps: not the scheme, not the `source` label, not the artifact types,
- * not the SQL. The lazy `import()` is the same shape `fetch/router.ts` uses for its bridge rung, and it
- * means the stdio and gateway paths never pull the provider's storage layer unless a query actually
- * reaches for artifacts. A product living outside this repo calls `registerArtifactProvider` itself and
+ * A module reference is all core keeps: not the scheme, not the `source` label, not the artifact
+ * types, not the SQL. A product living outside this repo calls `registerArtifactProvider` itself and
  * never appears here.
+ *
+ * The laziness buys a smaller import graph for the GATEWAY only. It does NOT defer `better-sqlite3`
+ * on stdio: `server.ts -> tools/session-target.ts -> studio/capture/artifacts.ts -> cache/db.ts` is a
+ * pre-existing STATIC edge, so the native binding loads on that path regardless of what this module
+ * does. Do not rely on this for stdio load timing.
+ *
+ * EACH ENTRY MUST BE A THUNK WRAPPING A **LITERAL** `import()` SPECIFIER — never a variable, and never
+ * an array of path strings iterated into `import(path)`. `packaging/binary/bundle.mjs` runs esbuild
+ * with `bundle: true, format: 'cjs'`, and esbuild cannot follow a non-literal specifier: it silently
+ * emits the call verbatim instead of inlining the module, and does not warn. In the packaged binary
+ * that resolved to a path that does not exist, so the bootstrap caught ENOENT, registered nothing, and
+ * every captured artifact vanished from `cache`, `find_similar` and `research` with no error reaching
+ * the agent. A literal specifier IS bundled under those same flags and still resolves from source, so
+ * laziness is preserved. `tests/unit/cache/bundle-provider-inlining.test.ts` is the guard.
  */
-const IN_TREE_PROVIDER_MODULES = ['../studio/artifact-provider.js'];
+const IN_TREE_PROVIDER_LOADERS: Array<() => Promise<unknown>> = [
+  () => import('../studio/artifact-provider.js'),
+];
 
 let bootstrap: Promise<void> | null = null;
 
@@ -109,15 +123,14 @@ let bootstrap: Promise<void> | null = null;
  */
 export async function ensureArtifactProviders(): Promise<ArtifactProvider[]> {
   bootstrap ??= (async () => {
-    for (const path of IN_TREE_PROVIDER_MODULES) {
+    for (const load of IN_TREE_PROVIDER_LOADERS) {
       try {
-        const mod = (await import(path)) as Record<string, unknown>;
+        const mod = (await load()) as Record<string, unknown>;
         for (const value of Object.values(mod)) {
           if (isArtifactProvider(value)) registerArtifactProvider(value);
         }
       } catch (err) {
         log.warn('artifact provider module unavailable; continuing without it', {
-          module: path,
           error: err instanceof Error ? err.message : String(err),
         });
       }

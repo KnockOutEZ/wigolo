@@ -66,14 +66,24 @@ describe('core shared-store read paths name no product', () => {
     expect(src).not.toMatch(/from ['"][^'"]*\/studio\//);
   });
 
-  it('the registry keeps a module PATH and nothing else — no scheme, no label, no artifact types', () => {
+  it('the registry keeps a module reference and nothing else — no scheme, no label, no artifact types', () => {
     const src = read('src/cache/artifact-registry.ts');
-    const hits = src.split('\n').filter((l) => /studio/i.test(l));
-    // Exactly one reference: the lazy in-tree bootstrap path. If a scheme, a `source` value or a
-    // type allowlist ever creeps back in, this count moves.
+    // Assert on CODE, not prose. Comments in this file legitimately explain the bundling constraint
+    // and the pre-existing stdio import edge, and both must name the module to be useful; policing
+    // them would only push accurate documentation out of the file.
+    const code = src
+      .split('\n')
+      .filter((l) => {
+        const t = l.trim();
+        return t !== '' && !t.startsWith('*') && !t.startsWith('//') && !t.startsWith('/*');
+      });
+    const hits = code.filter((l) => /studio/i.test(l));
+    // Exactly one executable reference: the lazy in-tree bootstrap loader. If a scheme, a `source`
+    // value or a type allowlist ever creeps back into the code, this count moves.
     expect(hits).toHaveLength(1);
-    expect(hits[0]).toContain('../studio/artifact-provider.js');
-    // The persisted URI prefix is the provider's business — core must never match on it.
+    expect(hits[0]).toContain("import('../studio/artifact-provider.js')");
+    // The persisted URI prefix is the provider's business — core must never match on it, in code or
+    // in a comment that someone might later turn into code.
     expect(src).not.toContain('studio://');
   });
 

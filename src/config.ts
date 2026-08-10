@@ -759,11 +759,13 @@ export function getConfig(): Config {
     // The env name is unchanged (user-facing surface). The persisted-settings key is the new
     // spelling, falling back to the old misnamed one so a hand-written ~/.wigolo/config.json that
     // already carries `studioBusyTimeoutMs` keeps working rather than silently reverting to 5000.
+    // Selecting the key up front reads the env var once; nesting a second envInt as the fallback
+    // evaluated it eagerly and its env branch was dead.
     sqliteBusyTimeoutMs: envInt(
       'WIGOLO_SQLITE_BUSY_TIMEOUT_MS',
-      envInt('WIGOLO_SQLITE_BUSY_TIMEOUT_MS', 5000, settings, 'studioBusyTimeoutMs'),
+      5000,
       settings,
-      'sqliteBusyTimeoutMs',
+      typeof settings.sqliteBusyTimeoutMs === 'number' ? 'sqliteBusyTimeoutMs' : 'studioBusyTimeoutMs',
     ),
     studioAuthToken: envStr('WIGOLO_STUDIO_TOKEN', null, settings, 'studioAuthToken'),
     studioBrowserHeadless: envBool('WIGOLO_STUDIO_HEADLESS', false, settings, 'studioBrowserHeadless'),

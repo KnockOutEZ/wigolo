@@ -3,7 +3,11 @@ import { join } from 'node:path';
 import { getConfig } from './config.js';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-/** Core's own subsystems — enumerated so the common labels autocomplete and typos stay catchable. */
+/**
+ * Core's own subsystems — enumerated so the common labels autocomplete. NOTE: because `Module` below
+ * is open, a typo is NOT a type error; the enumeration buys discoverability, not validation. That is
+ * an accepted trade because `module` is a pure output label with no behaviour attached to it.
+ */
 type CoreModule = 'fetch' | 'search' | 'crawl' | 'cache' | 'extract' | 'searxng' | 'server' | 'cli' | 'jsonld' | 'repl' | 'embedding' | 'research' | 'agent' | 'structured-data' | 'reranker' | 'mode' | 'language-filter' | 'playwright-tier' | 'python-worker' | 'providers' | 'hybrid' | 'rest';
 
 /**
