@@ -7,11 +7,15 @@ import type { Subsystems } from '../../../src/server.js';
 vi.mock('../../../src/daemon/rest/dispatch.js', () => ({
   dispatchTool: vi.fn(),
 }));
+vi.mock('../../../src/daemon/rest/firecrawl-compat.js', () => ({
+  handleCompatRequest: vi.fn(async () => true),
+}));
 vi.mock('../../../src/watch/scheduler.js', () => ({
   scheduleOverdueCheck: vi.fn(),
 }));
 
 import { dispatchTool } from '../../../src/daemon/rest/dispatch.js';
+import { handleCompatRequest } from '../../../src/daemon/rest/firecrawl-compat.js';
 
 // Minimal req/res harness.
 function makeReq(opts: {
@@ -358,6 +362,66 @@ describe('RestRouter — untrusted-content representation header (R2 / A10 + A11
     }), res);
     expect(get().status).not.toBe(400);
     expect(dispatchTool).not.toHaveBeenCalled();
+  });
+
+  /** The `untrustedMode` the router put on the CompatContext for the last shim call. */
+  function lastCompatMode(): unknown {
+    const call = vi.mocked(handleCompatRequest).mock.calls.at(-1);
+    return (call?.[2] as { untrustedMode?: unknown } | undefined)?.untrustedMode;
+  }
+
+  it('MODE-R6 (A11): the compat shim falls back to `envelope` — the INVERSE of the native routes', async () => {
+    // The whole asymmetry of the ruling lives in these two fallbacks, and only the router knows
+    // them: the shim handler is told a mode, it does not pick one. Without this row, flipping the
+    // shim's fallback to `inline` reds NOTHING at the unit level — found by probing exactly that.
+    // MUT: pass 'inline' as the shim fallback → RED.
+    process.env.WIGOLO_FIRECRAWL_COMPAT = '1';
+    try {
+      const router = loopbackRouter();
+      const { res } = makeRes();
+      await router.handle(makeReq({ url: '/compat/firecrawl/v1/scrape', body: JSON.stringify({ url: 'https://example.com' }) }), res);
+      expect(handleCompatRequest).toHaveBeenCalled();
+      expect(lastCompatMode()).toBe('envelope');
+    } finally {
+      delete process.env.WIGOLO_FIRECRAWL_COMPAT;
+    }
+  });
+
+  it('MODE-R7: the shim honours the same header, so the fence is reachable there', async () => {
+    // A11 chooses compatibility over the safe default; that is only defensible while the opt-in
+    // actually works on this surface. MUT: stop threading the header on the compat branch → RED.
+    process.env.WIGOLO_FIRECRAWL_COMPAT = '1';
+    try {
+      const router = loopbackRouter();
+      const { res } = makeRes();
+      await router.handle(makeReq({
+        url: '/compat/firecrawl/v1/scrape',
+        headers: { 'x-wigolo-untrusted-content': 'inline' },
+        body: JSON.stringify({ url: 'https://example.com' }),
+      }), res);
+      expect(lastCompatMode()).toBe('inline');
+    } finally {
+      delete process.env.WIGOLO_FIRECRAWL_COMPAT;
+    }
+  });
+
+  it('MODE-R8: an unrecognized value is refused on the shim too, before the shim runs', async () => {
+    // Silently falling back HERE is the worst case in the tree: it hands byte-clean text to a caller
+    // who had just asked for containment, on the one surface that does not fence by default.
+    process.env.WIGOLO_FIRECRAWL_COMPAT = '1';
+    try {
+      const router = loopbackRouter();
+      const { res, get } = makeRes();
+      await router.handle(makeReq({
+        url: '/compat/firecrawl/v1/scrape',
+        headers: { 'x-wigolo-untrusted-content': 'inlined' },
+        body: JSON.stringify({ url: 'https://example.com' }),
+      }), res);
+      expect(get().status).toBe(400);
+      expect(handleCompatRequest).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.WIGOLO_FIRECRAWL_COMPAT;
+    }
   });
 
   it('MODE-R5 (must-not-fire): the header does not reach the tool INPUT', async () => {
