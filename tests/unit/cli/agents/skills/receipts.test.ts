@@ -192,6 +192,79 @@ describe('withReceiptsLock — atomic read-merge-write', () => {
     expect(readReceipts()[key]).toBeDefined();
   });
 
+  // The deadline must govern EVERY exit from the acquire loop, not just the sleeping one.
+  // The stale-lock STEAL branch `continue`s without sleeping, so when the steal cannot
+  // succeed the loop had no way out at all: it never threw, never slept, and — because the
+  // loop is SYNCHRONOUS — no test timeout, signal handler or teardown could interrupt it.
+  // That is the difference between a slow test and a wedged process: a wedged worker keeps
+  // its parent's pipes open, so the whole run hangs rather than failing.
+  //
+  // Forced condition: a lock that (a) exists, so mkdir yields EEXIST; (b) is backdated, so it
+  // reads as stale; and (c) sits in a read-only parent, so the rename-steal fails with EACCES
+  // — which is NOT the EPERM the steal retries on, so it can never win. Runs in a CHILD
+  // process precisely because a regression here blocks the event loop: an in-process
+  // assertion would hang the suite instead of failing it.
+  it.skipIf(process.platform === 'win32')(
+    'throws instead of spinning forever when a stale lock can never be stolen',
+    async () => {
+      const { spawn } = await import('node:child_process');
+      const { chmodSync, utimesSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname: dn } = await import('node:path');
+      const here = dn(fileURLToPath(import.meta.url));
+      const receiptsMod = join(here, '..', '..', '..', '..', '..', 'src', 'cli', 'agents', 'skills', 'receipts.ts');
+
+      const skillsDir = join(tmpData, 'skills');
+      const lockDir = join(skillsDir, 'receipts.lock');
+      mkdirSync(lockDir, { recursive: true });
+      writeFileSync(join(lockDir, 'owner'), 'never-releases', 'utf-8');
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(lockDir, old, old);
+      chmodSync(skillsDir, 0o500);
+
+      const script = `
+        import { pathToFileURL } from 'node:url';
+        const { withReceiptsLock } = await import(pathToFileURL(${JSON.stringify(receiptsMod)}).href);
+        try {
+          withReceiptsLock((store) => ({ store, result: 1 }));
+          process.stdout.write('ACQUIRED');
+        } catch (e) {
+          process.stdout.write('THREW:' + e.message);
+        }
+      `;
+
+      const started = Date.now();
+      const result = await new Promise<{ out: string; killed: boolean }>((resolve) => {
+        const p = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+          env: {
+            ...process.env,
+            WIGOLO_DATA_DIR: tmpData,
+            HOME: tmpHome,
+            // Keep the guard cheap: the defect is the MISSING deadline check, not its value.
+            WIGOLO_SKILLS_LOCK_TIMEOUT_MS: '400',
+          },
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        let out = '';
+        p.stdout.on('data', (d) => (out += String(d)));
+        // Hard bound well above the 400ms deadline. A spinning child is killed here, and the
+        // assertions below then fail on its empty output — a red, not a hung suite.
+        const killer = setTimeout(() => p.kill('SIGKILL'), 6_000);
+        p.on('exit', () => {
+          clearTimeout(killer);
+          resolve({ out, killed: Date.now() - started >= 6_000 });
+        });
+      });
+
+      chmodSync(skillsDir, 0o700); // let afterEach clean up
+
+      expect(result.out, 'child produced no verdict — it was still spinning when killed').toContain('THREW:');
+      expect(result.out).toContain('timed out');
+      expect(Date.now() - started, 'acquire must give up on its own deadline').toBeLessThan(5_000);
+    },
+    30_000
+  );
+
   it('atomic write leaves no .tmp turds', async () => {
     const { withReceiptsLock } = await load();
     withReceiptsLock((s) => ({ store: s, result: undefined }));
