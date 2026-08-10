@@ -74,6 +74,7 @@ jobs:
   gate:
     name: type gate (gate:studio)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
@@ -126,6 +127,7 @@ jobs:
   studio-unit:
     name: studio unit (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     strategy:
@@ -164,6 +166,7 @@ jobs:
   studio-e2e:
     name: studio e2e (ubuntu)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
