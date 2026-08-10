@@ -172,6 +172,64 @@ describe('getConfig() — legacy config.json migration', () => {
   });
 });
 
+/**
+ * `sqliteBusyTimeoutMs` used to be called `studioBusyTimeoutMs` even though it is read by generic
+ * core cache code (`cache/db.ts`) on every connection — a product-prefixed field controlling core DB
+ * behaviour. The env name is unchanged because it is a user-facing surface; the persisted-settings
+ * key gained the new spelling. These tests pin that an already-written config.json is NOT orphaned
+ * by the rename, which is the whole reason the old key is still read.
+ */
+describe('getConfig() — sqliteBusyTimeoutMs settings-key alias', () => {
+  it('honours the new settings key', () => {
+    const cfgPath = join(dir, 'config.json');
+    writeFileSync(cfgPath, JSON.stringify({ version: 1, settings: { sqliteBusyTimeoutMs: 9111 } }));
+    setConfigPath(cfgPath);
+    delete process.env.WIGOLO_SQLITE_BUSY_TIMEOUT_MS;
+    resetConfig(); resetPersistedConfig();
+    expect(getConfig().sqliteBusyTimeoutMs).toBe(9111);
+  });
+
+  it('still honours the OLD studioBusyTimeoutMs key — a rename must not silently revert a user value', () => {
+    const cfgPath = join(dir, 'config.json');
+    writeFileSync(cfgPath, JSON.stringify({ version: 1, settings: { studioBusyTimeoutMs: 8222 } }));
+    setConfigPath(cfgPath);
+    delete process.env.WIGOLO_SQLITE_BUSY_TIMEOUT_MS;
+    resetConfig(); resetPersistedConfig();
+    // Without the alias this would be 5000 — a config the user wrote, silently ignored.
+    expect(getConfig().sqliteBusyTimeoutMs).toBe(8222);
+  });
+
+  it('the new key wins when both are present', () => {
+    const cfgPath = join(dir, 'config.json');
+    writeFileSync(cfgPath, JSON.stringify({
+      version: 1,
+      settings: { studioBusyTimeoutMs: 8222, sqliteBusyTimeoutMs: 9111 },
+    }));
+    setConfigPath(cfgPath);
+    delete process.env.WIGOLO_SQLITE_BUSY_TIMEOUT_MS;
+    resetConfig(); resetPersistedConfig();
+    expect(getConfig().sqliteBusyTimeoutMs).toBe(9111);
+  });
+
+  it('the env var still overrides both spellings (the user-facing name is unchanged)', () => {
+    const cfgPath = join(dir, 'config.json');
+    writeFileSync(cfgPath, JSON.stringify({ version: 1, settings: { studioBusyTimeoutMs: 8222 } }));
+    setConfigPath(cfgPath);
+    process.env.WIGOLO_SQLITE_BUSY_TIMEOUT_MS = '7333';
+    resetConfig(); resetPersistedConfig();
+    expect(getConfig().sqliteBusyTimeoutMs).toBe(7333);
+  });
+
+  it('falls back to the built-in default when neither key nor env is present', () => {
+    const cfgPath = join(dir, 'config.json');
+    writeFileSync(cfgPath, JSON.stringify({ version: 1, settings: {} }));
+    setConfigPath(cfgPath);
+    delete process.env.WIGOLO_SQLITE_BUSY_TIMEOUT_MS;
+    resetConfig(); resetPersistedConfig();
+    expect(getConfig().sqliteBusyTimeoutMs).toBe(5000);
+  });
+});
+
 describe('getConfig() — no config.json (absent file)', () => {
   it('falls back to built-in defaults gracefully', () => {
     const cfgPath = join(dir, 'nonexistent.json');

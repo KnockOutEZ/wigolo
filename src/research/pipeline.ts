@@ -17,7 +17,12 @@ import { getEmbeddingService } from '../embedding/embed.js';
 import { checkSamplingSupport, type SamplingCapableServer } from '../search/sampling.js';
 import { isLlmConfiguredWithKeyStore } from '../integrations/cloud/llm/run.js';
 import { resolveLocalModelTier } from '../integrations/cloud/llm/local-tier.js';
-import { searchStudioArtifactKeys, getStudioArtifactByEmbedKey, studioEmbedKey } from '../studio/capture/artifacts.js';
+import {
+  ensureArtifactProviders,
+  isResearchableArtifact,
+  resolveArtifact,
+  searchArtifactKeys,
+} from '../cache/artifact-registry.js';
 import type {
   ResearchInput,
   ResearchOutput,
@@ -211,13 +216,13 @@ export async function runResearchPipeline(
       }
     }
 
-    // C3 local-rescue: collect LOCAL studio sources ONCE here — BEFORE the no-sources
-    // decision — so a web-empty run can still synthesize from studio (slice-1 injected
+    // C3 local-rescue: collect LOCAL artifact sources ONCE here — BEFORE the no-sources
+    // decision — so a web-empty run can still synthesize from them (slice-1 injected
     // post-fetch, which the early-return below skipped). Single FTS call per run; this same
     // result feeds BOTH the no-sources guard and the post-fetch merge below.
-    const studioSources = await collectStudioSources(input.question, maxSources);
+    const artifactSources = await collectArtifactSources(input.question, maxSources);
 
-    if (urlKept.length === 0 && studioSources.length === 0) {
+    if (urlKept.length === 0 && artifactSources.length === 0) {
       return {
         report: `## Research: ${input.question}\n\nNo sources could be found for this query.`,
         citations: [],
@@ -280,11 +285,11 @@ export async function runResearchPipeline(
     // sources beat no sources (rerank already ordered them).
     const webPool: ResearchSource[] = gated.length > 0 ? gated : fetched;
     if (gated.length > 0) rejected_sources.push(...contentRejects);
-    // C3: merge the LOCAL studio sources (collected ONCE above) with web — sort the union by
-    // relevance and cap together (rank-fair; no reserved quota; studio dedup-inert vs web by
-    // its studio:// identity → C1b). web-empty + studio-present lands here with webPool=[] →
-    // sources = studioSources; web-empty + studio-empty already returned no_sources above.
-    const sources: ResearchSource[] = [...webPool, ...studioSources]
+    // C3: merge the LOCAL artifact sources (collected ONCE above) with web — sort the union by
+    // relevance and cap together (rank-fair; no reserved quota; an artifact is dedup-inert vs web
+    // by its provider URI → C1b). web-empty + artifact-present lands here with webPool=[] →
+    // sources = artifactSources; web-empty + artifact-empty already returned no_sources above.
+    const sources: ResearchSource[] = [...webPool, ...artifactSources]
       .sort((a, b) => b.relevance_score - a.relevance_score)
       .slice(0, maxSources);
     applySourceBudget(sources, PER_SOURCE_CHAR_CAP, TOTAL_SOURCES_CHAR_CAP);
@@ -457,7 +462,7 @@ async function fetchSources(
         markdown_content: truncated,
         relevance_score: result.relevance_score,
         fetched: true,
-        trusted: false, // web/page-derived (C4); studio sources arrive with C3
+        trusted: false, // web/page-derived (C4); artifact sources arrive with C3
         // Carry the render-completeness label so the pipeline can exclude a
         // shell capture from the evidence set before synthesis. Absent on
         // non-browser (HTTP/TLS) results, which are never shell-excluded.
@@ -483,36 +488,40 @@ async function fetchSources(
   return Promise.all(fetchPromises);
 }
 
-// C3 slice-1 — local studio artifacts as research sources. The shared studio read
-// (searchStudioArtifactKeys / getStudioArtifactByEmbedKey / studioEmbedKey) is reused
-// VERBATIM — no re-derived query. clip + qa + note (note is the ONLY content_trusted=1 type;
-// mark is excluded — it has null markdown). Identity = studio://<type>|<id> (a non-null url
-// even for url-less qa/note; dedup-inert vs web → honors C1b; re-resolvable). trusted MIRRORS
-// content_trusted (true for note, false for clip/qa). Content is local → fetched:true, never
-// hits fetchSources/the network. Candidates are reranked onto the SAME cross-encoder scale as
-// web so the merged cap is rank-fair. RESILIENT: any throw or miss logs and yields [] — a
-// studio-read failure never aborts research (web sources stand).
-const STUDIO_RESEARCH_TYPES = new Set(['clip', 'qa', 'note']);
-
-async function collectStudioSources(question: string, limit: number): Promise<ResearchSource[]> {
+// C3 slice-1 — local artifact-provider records as research sources. The provider's own read is
+// reused VERBATIM through the registry — no re-derived query. WHICH types are citable is PROVIDER
+// POLICY (`isResearchableArtifact`): core used to hold a literal {clip,qa,note} set, which silently
+// dropped any other surface's types from research. Identity = the provider's URI (a non-null url
+// even for url-less records; dedup-inert vs web → honors C1b; re-resolvable). trusted MIRRORS the
+// provider's content-trust tag. Content is local → fetched:true, never hits fetchSources/the
+// network. Candidates are reranked onto the SAME cross-encoder scale as web so the merged cap is
+// rank-fair. RESILIENT: any throw or miss logs and yields [] — an artifact-read failure never
+// aborts research (web sources stand).
+async function collectArtifactSources(question: string, limit: number): Promise<ResearchSource[]> {
   try {
-    const keys = searchStudioArtifactKeys(question, limit);
+    await ensureArtifactProviders();
+    const keys = searchArtifactKeys(question, limit);
     if (keys.length === 0) return [];
     const candidates: MergedResult[] = [];
     const byUrl = new Map<string, { title: string; markdown: string; trusted: boolean }>();
     for (const key of keys) {
-      const art = getStudioArtifactByEmbedKey(key);
-      if (!art) continue;
-      if (!STUDIO_RESEARCH_TYPES.has(art.type)) {
-        // non-research types (e.g. mark — null markdown) match FTS but are excluded here.
-        log.debug('studio research source skipped: non-research artifact type', { type: art.type });
+      const hit = resolveArtifact(key);
+      if (!hit) continue;
+      const { provider, record } = hit;
+      if (!isResearchableArtifact(provider, record)) {
+        // Types the provider does not consider citable (e.g. a mark with null markdown) can match
+        // FTS on their title but are excluded here.
+        log.debug('artifact research source skipped: provider excluded the type', {
+          provider,
+          type: record.type,
+        });
         continue;
       }
-      if (art.markdown === null || art.markdown.length === 0) continue;
-      const url = studioEmbedKey(art.type, art.id); // studio://<type>|<id>
-      const title = art.title ?? '';
-      candidates.push({ title, url, snippet: art.markdown, relevance_score: 0, engines: ['studio'] });
-      byUrl.set(url, { title, markdown: art.markdown, trusted: art.contentTrusted });
+      if (record.markdown === null || record.markdown.length === 0) continue;
+      const url = record.key; // the provider's stable URI
+      const title = record.title ?? '';
+      candidates.push({ title, url, snippet: record.markdown, relevance_score: 0, engines: [provider] });
+      byUrl.set(url, { title, markdown: record.markdown, trusted: record.trusted });
     }
     if (candidates.length === 0) return [];
     const reranked = await rerankResults(question, candidates);
@@ -531,7 +540,7 @@ async function collectStudioSources(question: string, limit: number): Promise<Re
     }
     return sources;
   } catch (err) {
-    log.warn('studio source read failed; continuing web-only', {
+    log.warn('artifact source read failed; continuing web-only', {
       error: err instanceof Error ? err.message : String(err),
     });
     return [];

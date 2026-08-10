@@ -49,7 +49,7 @@ describe('database', () => {
   it('sets busy_timeout from config so concurrent (CLI + host) writers wait instead of throwing SQLITE_BUSY', () => {
     db = initDatabase(':memory:');
     const busyTimeout = db.pragma('busy_timeout', { simple: true });
-    expect(busyTimeout).toBe(getConfig().studioBusyTimeoutMs);
+    expect(busyTimeout).toBe(getConfig().sqliteBusyTimeoutMs);
     expect(busyTimeout).toBeGreaterThan(0);
   });
 

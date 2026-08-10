@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync, readFileSync, renameSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { getConfig } from '../config.js';
+import { studioStateDir } from './paths.js';
 
 /**
  * S9 / D10(a) — LOCAL escalation-rate counters.
@@ -51,7 +51,7 @@ interface CounterFile extends EscalationCounters {
 }
 
 function counterPath(dataDir?: string): string {
-  return join(dataDir ?? getConfig().dataDir, 'studio', 'escalation-counters.json');
+  return studioStateDir(dataDir, 'escalation-counters.json');
 }
 
 export function readEscalationCounters(dataDir?: string): EscalationCounters {

@@ -150,7 +150,13 @@ export interface Config {
   daemonPort: number;
   daemonHost: string;
   studioRequestTimeoutMs: number;
-  studioBusyTimeoutMs: number;
+  /**
+   * SQLite `busy_timeout` for the shared cache DB. Generic core setting despite its history: it is
+   * read by `cache/db.ts` on every connection, not by any one product. It was named
+   * `studioBusyTimeoutMs` because a concurrent host writer was the first thing to need it — a
+   * product-prefixed field controlling core DB behaviour.
+   */
+  sqliteBusyTimeoutMs: number;
   studioAuthToken: string | null;
   /** Studio session browser headed by default; CI / headless hosts set WIGOLO_STUDIO_HEADLESS=1. */
   studioBrowserHeadless: boolean;
@@ -750,7 +756,17 @@ export function getConfig(): Config {
       return raw?.trim() || '127.0.0.1';
     })(),
     studioRequestTimeoutMs: envInt('WIGOLO_STUDIO_REQUEST_TIMEOUT_MS', 120000, settings, 'studioRequestTimeoutMs'),
-    studioBusyTimeoutMs: envInt('WIGOLO_SQLITE_BUSY_TIMEOUT_MS', 5000, settings, 'studioBusyTimeoutMs'),
+    // The env name is unchanged (user-facing surface). The persisted-settings key is the new
+    // spelling, falling back to the old misnamed one so a hand-written ~/.wigolo/config.json that
+    // already carries `studioBusyTimeoutMs` keeps working rather than silently reverting to 5000.
+    // Selecting the key up front reads the env var once; nesting a second envInt as the fallback
+    // evaluated it eagerly and its env branch was dead.
+    sqliteBusyTimeoutMs: envInt(
+      'WIGOLO_SQLITE_BUSY_TIMEOUT_MS',
+      5000,
+      settings,
+      typeof settings.sqliteBusyTimeoutMs === 'number' ? 'sqliteBusyTimeoutMs' : 'studioBusyTimeoutMs',
+    ),
     studioAuthToken: envStr('WIGOLO_STUDIO_TOKEN', null, settings, 'studioAuthToken'),
     studioBrowserHeadless: envBool('WIGOLO_STUDIO_HEADLESS', false, settings, 'studioBrowserHeadless'),
     studioScreencastQuality: envInt('WIGOLO_STUDIO_SCREENCAST_QUALITY', 60, settings, 'studioScreencastQuality'),

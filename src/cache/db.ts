@@ -121,7 +121,7 @@ export function initDatabase(dbPath: string): Database.Database {
   // Cross-process write contention (the stdio CLI and the Studio host can both
   // open wigolo.db): wait up to busy_timeout ms for the lock instead of throwing
   // SQLITE_BUSY immediately. WAL already lets readers proceed during a write.
-  db.pragma(`busy_timeout = ${getConfig().studioBusyTimeoutMs}`);
+  db.pragma(`busy_timeout = ${getConfig().sqliteBusyTimeoutMs}`);
 
   // sqlite-vec extension. Required for vector search; soft-fails on
   // unsupported platforms (musl/alpine) so cache.db init still works for

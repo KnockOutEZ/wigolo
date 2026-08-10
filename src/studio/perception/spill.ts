@@ -14,14 +14,14 @@
  */
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { getConfig } from '../../config.js';
+import { studioStateDir } from '../paths.js';
 import { countTokens } from '../../search/tokens.js';
 import { hash } from './id.js';
 import type { SnapshotElement } from './snapshot.js';
 import type { SnapshotDiff } from './diff.js';
 
 function spillDir(dataDir?: string): string {
-  return join(dataDir ?? getConfig().dataDir, 'studio', 'snapshots');
+  return studioStateDir(dataDir, 'snapshots');
 }
 
 /** Write a payload to the content-addressed spill store; returns a `spill:<hash>` ref. */
