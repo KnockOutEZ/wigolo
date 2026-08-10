@@ -28,7 +28,10 @@ describe('studioStateDir', () => {
   });
 
   it('never escapes the shared data dir', () => {
-    expect(studioStateDir(DATA).startsWith(DATA)).toBe(true);
+    // Compare against join(DATA), not the raw literal: on Windows join() normalises the separators,
+    // so `\tmp\…\studio`.startsWith('/tmp/…') is false and the assertion would be about path
+    // spelling rather than containment.
+    expect(studioStateDir(DATA).startsWith(join(DATA))).toBe(true);
     expect(studioStateDir(DATA, 'x')).toContain(join(DATA, 'studio'));
   });
 
