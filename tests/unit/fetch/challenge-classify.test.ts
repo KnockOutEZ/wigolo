@@ -317,13 +317,24 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
       expect(classifyChallenge(pxDenied)).toBe('behavioral');
     });
 
-    it('a shared-marker interstitial with no template signature still fires', () => {
-      // The mirror case: `dd-loader` is in the shared marker list but is not one
-      // of this module's template signatures, so the marker-pair arm is what
-      // catches it. Both arms earn their place.
-      const dd = '<html><head><title>Please wait</title></head><body>' +
-        '<div class="dd-loader"></div></body></html>';
-      expect(classifyChallenge(dd)).toBe('behavioral');
+    it('an interstitial whose ONLY signal is a shared body marker still fires', () => {
+      // The mirror case, and it has to be chosen carefully. Most shared markers
+      // are ALSO caught earlier — `dd-loader` / `_dd_s` / `id="cmsg"` by the
+      // behavioral-positive step, the template signatures by the arm above — so
+      // using one of those would exercise neither arm and prove nothing. (That
+      // exact mistake was made and caught here: a `dd-loader` fixture stayed
+      // green with this arm deleted.)
+      //
+      // `Just a moment` in the BODY is the genuine arm-2-only shape: the title
+      // regex requires the phrase inside <title>, no template signature is
+      // present, and no behavioral-positive marker matches — so the shared
+      // marker paired with the skeleton reading is the ONLY thing that can
+      // classify it. Cloudflare renders the phrase as page copy, not only as a
+      // title, so this is a real interstitial shape and not a contrivance.
+      const bodyPhraseOnly =
+        '<html><head><title>Access</title></head><body>' +
+        '<h1>Just a moment...</h1><div id="wait"></div></body></html>';
+      expect(classifyChallenge(bodyPhraseOnly)).toBe('behavioral');
     });
   });
 
