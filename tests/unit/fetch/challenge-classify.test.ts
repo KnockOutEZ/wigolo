@@ -253,6 +253,39 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
     });
   });
 
+  /**
+   * BRANCH ATTRIBUTION — measured by deleting each return-branch of
+   * `classifyChallenge` in turn and recording which tests red. Recorded because
+   * a fixture's INTENDED branch and its ACTUAL branch are not the same thing,
+   * and only the deletion probe can tell them apart:
+   *
+   *   step1 behavioralPositive  -> 2 red   (Akamai shell; under-claim precedence)
+   *   step2 image               -> 3 red
+   *   step3 interactive         -> 3 red
+   *   step4 arm1 interstitial   -> 1 red   (the PerimeterX-denied fixture below)
+   *   step4 arm2 marker-pair    -> 1 red   (the body-phrase fixture below)
+   *   step4 BOTH arms           -> 9 red
+   *
+   * The must-still-fire fixtures in this block are REALISTIC interstitials, and
+   * a realistic interstitial carries both an interstitial title AND a shared
+   * marker — so two arms independently reach the right verdict and no SINGLE
+   * deletion reds them. They are behaviour regression guards, not branch
+   * proofs: each one also passed BEFORE this slice's fix. Branch isolation is
+   * supplied by the two dedicated arm tests further down.
+   *
+   * Two distinct failure modes, only one of which is a defect:
+   *   - INTERCEPTED: an EARLIER branch returns, so the intended branch is never
+   *     reached and the test cannot fail for the reason it claims. A real bug —
+   *     a `dd-loader` fixture here was intercepted by step1 and proved nothing.
+   *     Fixed by changing the FIXTURE, never the assertion.
+   *   - MULTIPLY COVERED: several branches independently give the right answer.
+   *     Not a defect. Making these single-signal to isolate a branch would trade
+   *     real interstitial shapes for contrived ones and weaken the suite.
+   *
+   * The DataDome fixture below never reds even with BOTH step4 arms deleted: it
+   * returns at step1 on its sensor markers. It therefore does NOT exercise the
+   * code this slice changed, and is kept only as a vendor-coverage guard.
+   */
   describe('MUST-STILL-FIRE — a real interstitial served at HTTP 200', () => {
     it('a Cloudflare managed shell is still behavioral', () => {
       // Positive artifact: the interstitial title AND the challenge-platform
