@@ -501,12 +501,19 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
       // comment asserted the gap was "not reachable in practice". This fixture is deliberately
       // SHORT so the content guard cannot rescue it: it reaches the vendor arm and survives on the
       // form exemption or not at all.
+      //
+      // The MARKER here is load-bearing and was got wrong first time round. An earlier version used
+      // Imperva's rider path, which the marker narrowing in this same commit already releases — so
+      // deleting the form exemption left the test GREEN and it proved nothing about the carve-out
+      // it was written for. The marker must be one that still matches after narrowing, so the
+      // exemption is the only thing standing between this page and a 'behavioral' verdict.
+      // "Just a moment..." as a submit-status label is ordinary UI copy on exactly this kind of
+      // thin login screen, which is what makes it the honest choice rather than a contrivance.
       const html =
         '<html><head><title>Sign in</title></head><body><form action="/login" method="post">' +
         '<input name="email" type="text"><input name="password" type="password">' +
         '<button type="submit">Sign in</button></form>' +
-        '<script src="/_Incapsula_Resource?SWJIYLWA=719d34d31c8e3a6e6fffd425f7e032f3"></script>' +
-        '</body></html>';
+        '<p>Just a moment...</p></body></html>';
       expect(html.length).toBeLessThan(400);
       expect(classifyChallenge(html)).toBe('none');
     });
