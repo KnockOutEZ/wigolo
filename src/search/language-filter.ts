@@ -1,8 +1,13 @@
-import { detectAll } from 'tinyld';
 import { createLogger } from '../logger.js';
 
 const MIN_DETECT_CHARS = 12;
-const MIN_CONFIDENCE = 0.1;
+
+/**
+ * A non-Latin script wins the document even from a minority of its letters:
+ * a Chinese or Russian result routinely carries a Latin brand name, a product
+ * code or a URL fragment in its title.
+ */
+const NON_LATIN_SHARE = 0.2;
 
 // Languages that use Latin script — used to avoid false positives when target is Latin.
 const LATIN_LANGS = new Set([
@@ -11,6 +16,83 @@ const LATIN_LANGS = new Set([
   'id', 'ms', 'tl', 'sw', 'af', 'ca', 'gl', 'eu', 'ga', 'cy', 'mt', 'sq',
   'lb', 'fo', 'ber', 'so', 'ha', 'yo', 'ig', 'zu', 'xh', 'st', 'tn',
 ]);
+
+/**
+ * Language detection here is SCRIPT detection, deliberately.
+ *
+ * This filter never used more than script separation in practice. `isMismatch`
+ * has always treated every Latin-script language as a match whenever the target
+ * is Latin — the comment below records why, short Latin-script snippets get
+ * misclassified between Latin languages — and the target defaults to 'en'. So on
+ * the default path the only decision that ever fired was "is this result in a
+ * different script from the one I asked for".
+ *
+ * That decision does not need a 12 MB n-gram model. It needs Unicode ranges.
+ * Comparing script FAMILIES rather than language codes also removes a sharp edge
+ * the old code had: with target='uk', a full-recall language model would drop
+ * every Russian-script neighbour, and misdetection between close Cyrillic
+ * languages would drop correct results too.
+ *
+ * What is genuinely given up: telling apart languages that SHARE a script
+ * (ru/uk/bg/sr, hi/mr/ne, zh/ja mixed text). Those results are now kept rather
+ * than dropped. The filter is a spam/wrong-locale guard, so keeping a
+ * same-script neighbour is the benign direction to be wrong in.
+ */
+type Script =
+  | 'latin' | 'cyrillic' | 'greek' | 'hebrew' | 'arabic' | 'devanagari'
+  | 'han' | 'hangul' | 'thai' | 'bengali' | 'tamil' | 'telugu' | 'kannada'
+  | 'malayalam' | 'gujarati' | 'gurmukhi' | 'sinhala' | 'myanmar' | 'khmer'
+  | 'lao' | 'georgian' | 'armenian' | 'ethiopic' | 'und';
+
+const SCRIPT_PATTERNS: ReadonlyArray<readonly [Exclude<Script, 'und'>, RegExp]> = [
+  ['latin', /\p{Script=Latin}/u],
+  ['cyrillic', /\p{Script=Cyrillic}/u],
+  ['greek', /\p{Script=Greek}/u],
+  ['hebrew', /\p{Script=Hebrew}/u],
+  ['arabic', /\p{Script=Arabic}/u],
+  ['devanagari', /\p{Script=Devanagari}/u],
+  // Japanese kana sit with Han: mixed Japanese text must not split its own vote.
+  ['han', /\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}/u],
+  ['hangul', /\p{Script=Hangul}/u],
+  ['thai', /\p{Script=Thai}/u],
+  ['bengali', /\p{Script=Bengali}/u],
+  ['tamil', /\p{Script=Tamil}/u],
+  ['telugu', /\p{Script=Telugu}/u],
+  ['kannada', /\p{Script=Kannada}/u],
+  ['malayalam', /\p{Script=Malayalam}/u],
+  ['gujarati', /\p{Script=Gujarati}/u],
+  ['gurmukhi', /\p{Script=Gurmukhi}/u],
+  ['sinhala', /\p{Script=Sinhala}/u],
+  ['myanmar', /\p{Script=Myanmar}/u],
+  ['khmer', /\p{Script=Khmer}/u],
+  ['lao', /\p{Script=Lao}/u],
+  ['georgian', /\p{Script=Georgian}/u],
+  ['armenian', /\p{Script=Armenian}/u],
+  ['ethiopic', /\p{Script=Ethiopic}/u],
+];
+
+/** ISO-639-1 -> script, for the non-Latin languages a caller may target. */
+const LANG_SCRIPT: Record<string, Exclude<Script, 'und'>> = {
+  ru: 'cyrillic', uk: 'cyrillic', bg: 'cyrillic', sr: 'cyrillic', mk: 'cyrillic',
+  be: 'cyrillic', kk: 'cyrillic', ky: 'cyrillic', mn: 'cyrillic', tg: 'cyrillic',
+  el: 'greek',
+  he: 'hebrew', iw: 'hebrew', yi: 'hebrew',
+  ar: 'arabic', fa: 'arabic', ur: 'arabic', ps: 'arabic', sd: 'arabic', ug: 'arabic',
+  hi: 'devanagari', mr: 'devanagari', ne: 'devanagari', sa: 'devanagari',
+  zh: 'han', ja: 'han', yue: 'han',
+  ko: 'hangul',
+  th: 'thai',
+  bn: 'bengali', as: 'bengali',
+  ta: 'tamil', te: 'telugu', kn: 'kannada', ml: 'malayalam',
+  gu: 'gujarati', pa: 'gurmukhi', si: 'sinhala',
+  my: 'myanmar', km: 'khmer', lo: 'lao',
+  ka: 'georgian', hy: 'armenian', am: 'ethiopic', ti: 'ethiopic',
+};
+
+function scriptOfLanguage(code: string): Script {
+  if (LATIN_LANGS.has(code)) return 'latin';
+  return LANG_SCRIPT[code] ?? 'und';
+}
 
 const log = createLogger('language-filter');
 
@@ -54,17 +136,34 @@ function isValidUrl(u: string): boolean {
   }
 }
 
-function detectLang(text: string): string {
+export function detectScript(text: string): Script {
   const t = text?.trim() ?? '';
   if (t.length < MIN_DETECT_CHARS) return 'und';
-  try {
-    const ranked = detectAll(t);
-    const top = ranked[0];
-    if (!top || top.accuracy < MIN_CONFIDENCE) return 'und';
-    return top.lang || 'und';
-  } catch {
-    return 'und';
+
+  const counts = new Map<Exclude<Script, 'und'>, number>();
+  let letters = 0;
+  for (const ch of t) {
+    for (const [script, pattern] of SCRIPT_PATTERNS) {
+      if (pattern.test(ch)) {
+        counts.set(script, (counts.get(script) ?? 0) + 1);
+        letters += 1;
+        break;
+      }
+    }
   }
+  if (letters === 0) return 'und';
+
+  let best: Exclude<Script, 'und'> | null = null;
+  let bestCount = 0;
+  for (const [script, count] of counts) {
+    if (script === 'latin') continue;
+    if (count > bestCount) {
+      best = script;
+      bestCount = count;
+    }
+  }
+  if (best && bestCount / letters >= NON_LATIN_SHARE) return best;
+  return counts.has('latin') ? 'latin' : (best ?? 'und');
 }
 
 export function filterByLanguage<T extends RawLike>(
@@ -94,20 +193,17 @@ export function filterByLanguage<T extends RawLike>(
     byEngine.set(r.engine, arr);
   }
 
-  const targetIsLatin = LATIN_LANGS.has(opts.target);
-  const isMismatch = (lang: string): boolean => {
-    if (lang === opts.target || lang === 'und') return false;
-    // Script-aware: Latin-target vs Latin-detected is treated as a match
-    // because tinyld misclassifies short Latin-script text into other Latin
-    // languages with low confidence.
-    if (targetIsLatin && LATIN_LANGS.has(lang)) return false;
-    return true;
+  const targetScript = scriptOfLanguage(opts.target);
+  const isMismatch = (script: Script): boolean => {
+    // 'und' on either side means we could not tell — never drop on that.
+    if (script === 'und' || targetScript === 'und') return false;
+    return script !== targetScript;
   };
 
   const kept: T[] = [];
   for (const [engine, batch] of byEngine) {
     let nonTarget = 0;
-    const langs = batch.map(r => detectLang(`${r.title} ${r.snippet}`));
+    const langs = batch.map(r => detectScript(`${r.title} ${r.snippet}`));
     for (const l of langs) if (isMismatch(l)) nonTarget += 1;
     const ratio = nonTarget / batch.length;
 

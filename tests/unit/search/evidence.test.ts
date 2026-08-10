@@ -5,6 +5,7 @@ import {
   buildEvidenceItem,
   stableCitationId,
 } from '../../../src/search/evidence.js';
+import { countTokens, TRUNCATION_MARKER_TOKENS } from '../../../src/search/tokens.js';
 
 describe('stableCitationId', () => {
   it('is identical for the same url + start across calls', () => {
@@ -68,6 +69,22 @@ describe('applyAggregateMarkdownBudget', () => {
     // First item consumes the budget; later bodied items are cleared to ''.
     expect(items[0].body.length).toBeGreaterThan(0);
     expect(items[items.length - 1].body).toBe('');
+  });
+
+  it('clears a body whose leftover budget cannot hold any actual content', () => {
+    // A leftover budget smaller than the truncation marker itself used to
+    // render a body that was ONLY the marker: zero information, still billed to
+    // the agent's context. The exhaustion bound is read from the counter, so a
+    // retune of the token weights cannot silently reintroduce the marker-only
+    // body the way the previously hardcoded cost did.
+    const items: Item[] = [{ body: longBody }, { body: longBody }];
+    run(items, { maxTokensOut: countTokens(longBody) + TRUNCATION_MARKER_TOKENS });
+
+    expect(items[0].body.length).toBeGreaterThan(0);
+    expect(items[1].body).toBe('');
+    for (const item of items) {
+      expect(item.body).not.toBe('\n\n[... content truncated]');
+    }
   });
 
   it('minTokensPerItem: every item that HAD a body keeps >=1 char even past the budget', () => {
