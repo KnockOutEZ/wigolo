@@ -239,6 +239,19 @@ const PAGE_DERIVED_TOOLS = new Set([
  *
  * `src/daemon/rest/firecrawl-compat.ts` is untouched by design — it calls the tool handlers directly
  * (never this dispatcher), and it exists to mimic an API whose consumers expect clean markdown.
+ *
+ * B3 — ACCEPTED, NAMED CONSEQUENCE, recorded here so it is a decision and not a side effect.
+ * Research `citations[].snippet` used to arrive fenced over REST, because the producer
+ * (research/synthesize.ts) wrapped it. B1/F1 moved all containment to the MCP response seam, and this
+ * dispatcher returns handler output verbatim — so over REST that snippet is now RAW, a change versus
+ * both base and the earlier commits of this branch.
+ *
+ * That is decision A3b applied consistently for the first time rather than a regression: REST payloads
+ * are byte-clean, and the trust boundary travels as the `untrusted_content` envelope below. The
+ * honest caveat is that an envelope with no consumer is not yet a control — no assembly helper exists
+ * in sdks/ (see untrustedFenceParts). Landing that helper is REQUIRED COMPANION WORK before this
+ * reaches SDK users. Do NOT "fix" this by fencing REST inline; that is the option A3b rejected,
+ * because dedup pipelines and embedding indexers persist the markdown they read.
  */
 function withUntrustedMetadata(tool: string, body: unknown): unknown {
   if (!PAGE_DERIVED_TOOLS.has(tool)) return body;
