@@ -1310,10 +1310,29 @@ export async function cdpDirectFetch(
       // So it is paired with the GENERAL, vendor-agnostic wall shape. A marker
       // catalogue only ever recognises vendors already met; density generalises,
       // and catches a large all-scaffolding wall from a vendor nobody has
-      // catalogued yet. Honest ceiling, stated rather than hidden: the density
-      // rule needs >=1KB of body, so a SMALL uncatalogued wall still passes here
-      // — that class is covered by the vendor template markers in the classifier,
-      // and anything neither rule knows is a real residual gap.
+      // catalogued yet.
+      //
+      // THE PAIRING IS ITSELF IMPERFECT, AND THE COST RUNS BOTH WAYS. Stated in
+      // full because naming only the under-fire half reads as though the sole
+      // cost were incomplete coverage:
+      //
+      //   - UNDER-FIRE: `isLowContentDensity` needs >=1KB of body, so a SMALL
+      //     wall from an uncatalogued vendor still breaks here and is returned.
+      //     Partly covered by the vendor template markers in the classifier;
+      //     anything neither rule knows is a real residual gap.
+      //   - OVER-FIRE: a LARGE, LEGITIMATE, low-text page fails this condition
+      //     and burns the full clear-poll before declining. Measured: a 220-image
+      //     gallery (47,950 B) and a large un-hydrated SPA shell. They are not
+      //     served wrongly — the fetch falls back to the browser tier — but they
+      //     pay the budget.
+      //
+      // Both are UNCHANGED versus base `fb16fb01`, which declined these too, and
+      // it fails CLOSED. `isLowContentDensity`'s own docstring asks callers to
+      // pair it with an anti-bot STATUS; this call site pairs it with
+      // `classifyChallenge === 'none'`, which is the ABSENCE of a signal rather
+      // than a status. A real status pairing is exactly what a status-free
+      // consumer cannot supply — the structural problem this rung has by design,
+      // not an oversight to be tidied away.
       //
       // Measured: example.com (544B, legitimate) breaks promptly; the markerless
       // scaffold wall does not.

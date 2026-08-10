@@ -426,11 +426,84 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
   });
 
   /**
-   * OVER-FIRE PROBE for the vendor markers added above. A new marker is a new gate, and the house
-   * rule is that a new gate ships with negative tests. Each of these carries the marker in genuine
-   * prose; the content guard must release them all.
+   * OVER-FIRE PROBE for the vendor markers. A new marker is a new gate, and the house rule is that
+   * a new gate ships with negative tests.
+   *
+   * EVERY FIXTURE HERE IS SHORT, DELIBERATELY. The first version of this block used long articles,
+   * and three of its four cases were VACUOUS: the content guard released them on length before the
+   * vendor arm ever ran, so they asserted the content guard and proved nothing about the markers.
+   * Forcing `hasVendorTemplateMarker` to `return true` left them green — the interception probe
+   * that should have been run when they were written.
+   *
+   * A negative for a marker paired with a length reading has to be SHORT ENOUGH TO REACH THE ARM,
+   * which means it must test the marker's PRECISION rather than the content guard's reach: a short
+   * body carrying something marker-adjacent that is not the marker. That is what each case below
+   * does, and it is why they double as the regression tests for N1 and N3.
    */
-  describe('MUST-NOT-FIRE — the new vendor markers quoted in real prose', () => {
+  describe('MUST-NOT-FIRE — short pages that reach the vendor arm and must survive it', () => {
+    it('a thin SPA shell behind Cloudflare JS Detections does not fire', () => {
+      // N1. JS Detections injects its sensor into pages served SUCCESSFULLY, so the bare
+      // `/cdn-cgi/challenge-platform/` prefix means "this zone uses Cloudflare", not "this response
+      // is a challenge". Measured 193 bytes, and it classified behavioral — through cdpDirectFetch
+      // that is this slice's own defect, narrowed to Cloudflare-protected thin pages.
+      const html =
+        '<html><head><title>Dashboard</title></head><body><div id="root"></div>' +
+        '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>' +
+        '<script src="/assets/app.js"></script></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a small Cloudflare-fronted landing page does not fire', () => {
+      const html =
+        '<html><head><title>Acme</title></head><body><h1>Acme</h1><p>Welcome.</p>' +
+        '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a short page citing the challenge-platform prefix in CSP prose does not fire', () => {
+      const html =
+        '<html><body><p>Allow /cdn-cgi/challenge-platform/ in your CSP.</p></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a short support snippet naming both Akamai phrases does not fire', () => {
+      // N3. "Access Denied" is ordinary 403 copy and a bare "Reference #" is ordinary support copy,
+      // so the literal phrase pair fired on this 99-byte help text. The rule now requires the id's
+      // STRUCTURE, not the words around it.
+      const html =
+        '<html><body><p>If you see Access Denied, quote the Reference # shown on the page.</p></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a genuine app 403 carrying a SHORT reference id does not fire', () => {
+      const html =
+        '<html><body><h1>Access Denied</h1><p>Reference #4821 — contact your admin.</p></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a genuine short 403 saying "Access Denied" with NO reference id does not fire', () => {
+      const html =
+        '<html><head><title>403 Forbidden</title></head><body><h1>Access Denied</h1>' +
+        '<p>You do not have permission to view this resource.</p></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a short page with "attention required" as ordinary form copy does not fire', () => {
+      // The Cloudflare WAF block page is titled "Attention Required! | Cloudflare". The bang is
+      // load-bearing; without it the phrase is everyday UI copy.
+      const html =
+        '<html><body><form action="/save"><p>Attention required: complete all fields.</p>' +
+        '<input name="a"><button>Save</button></form></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+  });
+
+  /**
+   * CONTENT-GUARD negatives — long bodies quoting the vendor markers in real prose. Kept, but
+   * labelled for what they actually exercise: the >=600-visible-char release at the top of
+   * `classifyChallenge`, NOT the vendor arm, which they never reach.
+   */
+  describe('MUST-NOT-FIRE — substantial articles quoting the vendor markers (content guard)', () => {
     it('an article explaining Imperva does not fire', () => {
       const html =
         '<html><head><title>How Imperva blocks bots</title></head><body><article>' +
@@ -443,28 +516,9 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
     it('an article explaining Akamai denials does not fire', () => {
       const html =
         '<html><head><title>Reading Akamai denials</title></head><body><article>' +
-        'An Akamai denial renders "Access Denied" plus a "Reference #" correlation id. ' +
+        'An Akamai denial renders "Access Denied" plus Reference #18.1a2b3c4d.1712345678.9abcdef. ' +
         'Here is how to read one when debugging your own traffic. '.repeat(20) +
         '</article></body></html>';
-      expect(classifyChallenge(html)).toBe('none');
-    });
-
-    it('a docs page citing the challenge-platform script path does not fire', () => {
-      const html =
-        '<html><head><title>Cloudflare script paths</title></head><body><article>' +
-        'The orchestration script lives at /cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1. ' +
-        'Do not block this path in your CSP or challenges will fail. '.repeat(20) +
-        '</article></body></html>';
-      expect(classifyChallenge(html)).toBe('none');
-    });
-
-    it('a genuine short 403 saying "Access Denied" with NO reference id does not fire', () => {
-      // Proves the Akamai rule genuinely requires BOTH halves. "Access Denied" alone is ordinary
-      // 403 copy that a real error page serves, and this body is short enough that the old length
-      // arm would have called it a wall.
-      const html =
-        '<html><head><title>403 Forbidden</title></head><body><h1>Access Denied</h1>' +
-        '<p>You do not have permission to view this resource.</p></body></html>';
       expect(classifyChallenge(html)).toBe('none');
     });
   });

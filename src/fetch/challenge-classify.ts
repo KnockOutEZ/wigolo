@@ -1,6 +1,6 @@
 import type { ChallengeClass } from '../types.js';
 import type { ImageSolveSubType } from './ai-solve.js';
-import { hasChallengeBody, isChallengeSkeleton } from './tls-tier.js';
+import { hasChallengeBody, isChallengeSkeleton, isNearEmptyBody } from './tls-tier.js';
 
 /**
  * Pure challenge classifier (the solve-ladder gatekeeper). Given the raw HTML
@@ -32,11 +32,29 @@ import { hasChallengeBody, isChallengeSkeleton } from './tls-tier.js';
  *   3. Otherwise an interactive marker => 'interactive'.
  *   4. Nothing matches => 'none'.
  *
- * Marker vocabulary is REUSED from the shipped detector (tls-tier.ts:
- * CHALLENGE_MARKERS, the `/cdn-cgi/challenge-platform/` path, `cf-turnstile`,
- * DataDome `_dd_s` / `id="cmsg"`) so this classifier never disagrees with the
- * shipped `isChallengeResponse` / `hasBrowserChallengeBody` about WHETHER a page
- * is a challenge — it only refines the SHAPE. Pure; fully unit-testable on HTML.
+ * Marker vocabulary is mostly REUSED from the shipped detector (tls-tier.ts:
+ * CHALLENGE_MARKERS, `cf-turnstile`, DataDome `_dd_s` / `id="cmsg"`), so this
+ * classifier largely tracks the shipped `isChallengeResponse` /
+ * `hasBrowserChallengeBody` about WHETHER a page is a challenge, and refines the
+ * SHAPE. Pure; fully unit-testable on HTML.
+ *
+ * IT IS NOT IDENTICAL TO THEM, IN BOTH DIRECTIONS. Stated because an earlier
+ * version of this comment claimed it never disagrees, and that claim was false
+ * at the time it was written:
+ *
+ *   - STRICTER on four vendor shapes the shared catalogue does not carry
+ *     (`hasVendorTemplateMarker`: modern-CF interstitial, Imperva, Akamai, a
+ *     lowercase Cloudflare phrase). It calls these challenges; a body-marker
+ *     scan alone does not.
+ *   - LOOSER wherever a STATUS is required, because this function never sees
+ *     one. It cannot reach the status-gated general density rule, so a
+ *     markerless wall it has no vocabulary for classifies 'none' here while
+ *     `isChallengeShell(403, …)` fires.
+ *
+ * Consequence for callers: this is a SHAPE refiner for a challenge already
+ * established. Using its 'none' as proof a body is safe to return is a category
+ * error — see the clear-poll in `cdp-direct.ts`, which pairs it with the density
+ * rule for exactly that reason.
  */
 /** Visible-text length at or above which a body is REAL CONTENT and therefore
  *  cannot be an interstitial. Measured bot-wall pages carry 35-330 visible
@@ -177,9 +195,31 @@ export function classifyChallenge(html: string): ChallengeClass {
   //     response IS the challenge, so it outranks length in BOTH directions (a
   //     padded interstitial is still an interstitial).
   if (hasInterstitialSignal(slice, lower)) return 'behavioral';
-  if ((hasChallengeBody(slice) || hasVendorTemplateMarker(lower)) && isChallengeSkeleton(slice)) {
-    return 'behavioral';
-  }
+  // The shipped 2xx rule, unchanged: catalogued marker + the skeleton reading.
+  if (hasChallengeBody(slice) && isChallengeSkeleton(slice)) return 'behavioral';
+  // Vendor markers the shared catalogue lacks, corroborated by a PURE TEXT-LENGTH
+  // reading rather than `isChallengeSkeleton`.
+  //
+  // That distinction is the whole point and was got wrong once already.
+  // `isChallengeSkeleton` SHORT-CIRCUITS TRUE on `/cdn-cgi/challenge-platform/`
+  // (`tls-tier.ts:614`), which was one of the markers below — so pairing these
+  // with it reduced to `marker && marker`, i.e. the marker ALONE. Structurally
+  // the same vacuity as the `'slider'.includes('slide')` guard fixed elsewhere
+  // in this file: a condition that corroborates itself.
+  //
+  // `tls-tier.ts` warns about exactly this, twice, for exactly that marker:
+  // `:414-418` (it counts only alongside an anti-bot STATUS, so a 200 page
+  // merely linking a `/cdn-cgi/` script can never trip it) and `:648-653`, where
+  // `stillShowingChallenge` uses a text-length gate "deliberately NOT
+  // isChallengeSkeleton, which short-circuits true on the marker itself".
+  // `isNearEmptyBody` IS that text-length gate, so the corroboration is now
+  // genuinely independent of the marker that triggered the check.
+  //
+  // Ceiling worth naming: unlike `isChallengeSkeleton`, this carries no
+  // real-server-rendered-form exemption. A text-light page with a real form AND
+  // one of these vendor markers would classify behavioral. The markers are
+  // specific enough that this is not reachable in practice.
+  if (hasVendorTemplateMarker(lower) && isNearEmptyBody(slice)) return 'behavioral';
   return 'none';
 }
 
@@ -214,17 +254,43 @@ function hasVendorTemplateMarker(lower: string): boolean {
   if (lower.includes('cf-browser-verification')) return true;
   if (lower.includes('_cfchlopt')) return true;
   if (lower.includes('just a moment')) return true;
-  if (lower.includes('attention required')) return true;
-  // Modern Cloudflare: the challenge-platform orchestration script.
-  if (lower.includes('/cdn-cgi/challenge-platform/')) return true;
+  // The WAF block page's title is "Attention Required! | Cloudflare". The bang is
+  // required: bare "attention required" is ordinary UI copy on form errors.
+  if (lower.includes('attention required!')) return true;
+  // Modern Cloudflare — the INTERSTITIAL's orchestration script only.
+  //
+  // Deliberately NOT the bare `/cdn-cgi/challenge-platform/` prefix. Cloudflare
+  // JS Detections injects `/cdn-cgi/challenge-platform/scripts/jsd/main.js` into
+  // pages it serves SUCCESSFULLY, so the prefix is a "this zone uses Cloudflare"
+  // signal, not "this response is a challenge" — the same sensor-vs-template
+  // distinction this module already documents for PerimeterX and DataDome.
+  //
+  // Measured on the prefix: a 193-byte thin SPA shell, a 157-byte landing page
+  // and an 80-byte page citing the path in CSP prose all classified behavioral.
+  // Through `cdpDirectFetch` that is precisely the defect this slice exists to
+  // fix — a legitimate short page burning the clear-poll and declining — merely
+  // narrowed from all thin pages to Cloudflare-protected thin pages.
+  //
+  // `orchestrate/chl_` appears in the interstitial's own script path
+  // (`…/h/g/orchestrate/chl_page/v1`) and in neither the JSD sensor path nor a
+  // prose citation of the prefix.
+  if (lower.includes('orchestrate/chl_')) return true;
   // Imperva / Incapsula: the interstitial's own resource endpoint.
   if (lower.includes('_incapsula_resource')) return true;
-  // Akamai denial template. BOTH halves required — "reference #" alone is far
-  // too generic to carry a verdict, and "access denied" alone is ordinary
-  //403 copy that a real error page legitimately serves.
-  if (lower.includes('access denied') && lower.includes('reference #')) return true;
+  // Akamai denial template: the phrase AND a reference id in Akamai's own shape
+  // (dot-separated hex groups, e.g. `18.1a2b3c4d.1712345678.9abcdef`).
+  //
+  // The literal phrase pair was too weak. "Access Denied" is ordinary 403 copy
+  // and a bare "Reference #" is ordinary support copy, so a 99-byte help snippet
+  // ("If you see Access Denied, quote the Reference # shown on the page") and a
+  // genuine app 403 carrying `Reference #4821` both classified behavioral.
+  // Requiring the id's STRUCTURE keeps the real template and releases both.
+  if (lower.includes('access denied') && AKAMAI_REFERENCE_ID.test(lower)) return true;
   return false;
 }
+
+/** Akamai's error reference id: `#` then 3+ dot-separated alphanumeric groups. */
+const AKAMAI_REFERENCE_ID = /reference\s*#\s*[0-9a-f]+(?:\.[0-9a-f]+){2,}/i;
 
 // --- behavioral: managed / invisible, no clickable widget, no image ----------
 
