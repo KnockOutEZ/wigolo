@@ -22,6 +22,13 @@
  * a weakened classifier is a silently-ungated risky action), and the approval
  * round-trip (studio/approvals — the host↔human gate that holds a risky action until
  * the human answers; a broken resolve/timeout is a fail-open).
+ *
+ * P2 adds the prompt-injection trust boundary: security/untrusted (the fence itself — a wrap that
+ * silently stops wrapping is an open instruction channel) and server/content-fence (the seam that
+ * applies it to every agent-facing result). tests/helpers/untrusted-fence is listed too because the
+ * fence assertions are structural and shared through that helper — a test that reaches the boundary
+ * only transitively would otherwise sit outside the gate, which is exactly the vacuity this guard
+ * exists to prevent.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -31,7 +38,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // Longest alternatives first so e.g. `nav-policy` / `session-control` are not
 // shadowed by `nav` / `control-token`.
-const SAFETY = /from\s+['"][^'"]*(?:studio\/perception\/resolve|studio\/mark\/target|studio\/mark\/inspect|studio\/mark\/store|studio\/mark\/generalize|studio\/mark\/heal|studio\/nav-policy|studio\/session-control|studio\/control-token|studio\/nav|studio\/audit|studio\/approvals|studio\/act|studio\/risk|studio\/input|studio\/handle|daemon\/studio-dispatch)\.js['"]/;
+const SAFETY = /from\s+['"][^'"]*(?:studio\/perception\/resolve|studio\/mark\/target|studio\/mark\/inspect|studio\/mark\/store|studio\/mark\/generalize|studio\/mark\/heal|studio\/nav-policy|studio\/session-control|studio\/control-token|studio\/nav|studio\/audit|studio\/approvals|studio\/act|studio\/risk|studio\/input|studio\/handle|daemon\/studio-dispatch|security\/untrusted|server\/content-fence|helpers\/untrusted-fence)\.js['"]/;
 
 const cfg = JSON.parse(readFileSync(join(ROOT, 'tsconfig.test.json'), 'utf8'));
 const gated = new Set(cfg.include.filter((p) => p.startsWith('tests/')));

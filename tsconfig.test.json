@@ -42,7 +42,21 @@
     "tests/unit/daemon/proxy-roundtrip.test.ts",
     "tests/integration/studio-session-target.test.ts",
     "tests/integration/studio-observe-seam.test.ts",
-    "tests/security-regression.test.ts"
+    "tests/security-regression.test.ts",
+    "tests/helpers/untrusted-fence.ts",
+    "tests/unit/security/untrusted.test.ts",
+    "tests/unit/security/untrusted-nonce.test.ts",
+    "tests/unit/security/d8a-synthesis-fence.test.ts",
+    "tests/unit/security/d8a-2-truncation-fence.test.ts",
+    "tests/unit/server/content-fence.test.ts",
+    "tests/unit/server/content-fence-seams.test.ts",
+    "tests/unit/daemon/rest-untrusted-envelope.test.ts",
+    "tests/unit/research/synthesize-containment.test.ts",
+    "tests/unit/research/synthesis-local.test.ts",
+    "tests/unit/research/pipeline-studio-source.test.ts",
+    "tests/unit/search/answer-synthesis.test.ts",
+    "tests/unit/agent/pipeline-containment.test.ts",
+    "tests/integration/content-fence-dispatch.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

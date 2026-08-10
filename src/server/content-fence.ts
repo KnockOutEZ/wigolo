@@ -333,8 +333,12 @@ export function fenceResearchData(data: ResearchOutput): ResearchOutput {
 }
 
 /**
- * `agent` was UNFENCED and carries the highest-density injection surface in the codebase: `rawHtml`,
- * the page's markup verbatim, plus per-source markdown and the step log.
+ * `agent` was UNFENCED across its per-source markdown, titles and step log.
+ *
+ * `rawHtml` is fenced too, but as defence in depth rather than a live hole: `stripRawHtml`
+ * (src/agent/pipeline.ts) deletes the field on every return path of runAgentPipeline, so it does not
+ * reach a caller today. The field is still declared optional on AgentSource, so the fence is here to
+ * fail CLOSED if that strip is ever relaxed or an AgentOutput is assembled by another producer.
  *
  * `result` is a string on the synthesis paths (already fence-bearing on the keyless fallback — see
  * fenceResearchData) and a Record on the schema path, where it is page-extracted and NEVER fenced

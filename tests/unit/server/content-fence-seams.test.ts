@@ -269,9 +269,12 @@ describe('content-fence — research: sources, evidence and brief fenced; report
   });
 });
 
-describe('content-fence — agent: rawHtml is the highest-density carrier in the codebase', () => {
+describe('content-fence — agent: bodies, titles, step details, and rawHtml as defence in depth', () => {
   it('SEAM-14: rawHtml, markdown_content, title and step details are fenced', () => {
-    // MUT: skip rawHtml → the page's full markup reaches the model bare → RED.
+    // NOTE, against the recon's claim: rawHtml is NOT a live hole — src/agent/pipeline.ts
+    // stripRawHtml() deletes it on every return path of runAgentPipeline. It stays declared optional
+    // on AgentSource, so this pin keeps the fence fail-CLOSED if that strip is ever relaxed.
+    // MUT: skip rawHtml → an AgentOutput carrying it would reach the model bare → RED.
     const out = fenceAgentData({
       result: 'synthesized text', pages_fetched: 1, total_time_ms: 1, sampling_supported: false,
       sources: [{ url: 'https://a.example/p', title: `AT ${INJECT}`, markdown_content: `AM ${INJECT}`, fetched: true, rawHtml: `<p>${INJECT}</p>` }],

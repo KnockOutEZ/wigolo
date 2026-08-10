@@ -638,7 +638,8 @@ export function createMcpServer(subsystems: Subsystems): Server {
           isError: true,
         };
       }
-      // P2: `rawHtml` on each source is raw page markup — the densest injection carrier here.
+      // P2: per-source bodies, titles and the step log reached the model bare. `rawHtml` is fenced
+      // as defence in depth — pipeline.ts strips it on every return path today.
       return {
         content: [{ type: 'text', text: JSON.stringify(fenceAgentData(r.data), null, 2) }],
         isError: false,
