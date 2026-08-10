@@ -332,7 +332,10 @@ describe('withReceiptsLock — concurrent cross-process writers (F17)', () => {
     // Belt and braces: a survivor must not be able to hold the runner open even in the window
     // before the sweep runs.
     p.unref();
-    p.stderr?.unref();
+    // spawn's stdio pipes are Sockets at runtime but are typed as Readable, which has no
+    // unref. Socket#unref is the part that actually stops a PIPED stream holding the event
+    // loop open — unref'ing the child alone does not release its stdio handles.
+    (p.stderr as unknown as { unref?: () => void } | null)?.unref?.();
     const done = new Promise<number>((resolve, reject) => {
       let stderr = '';
       p.stderr?.on('data', (d) => (stderr += String(d)));
