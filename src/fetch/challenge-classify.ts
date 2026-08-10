@@ -231,11 +231,19 @@ export function classifyChallenge(html: string): ChallengeClass {
   // a commented-out block, or a JS string literal. Their bodies are under 1KB so
   // the density guard does not catch them either.
   //
-  // ACCEPTED LIMITATION, stated because this IS a trade and not a free deletion:
-  // a thin page carrying one of these markers as ordinary UI COPY now classifies
-  // `behavioral`. The concrete shape is a text-light login screen whose submit
-  // status reads "Just a moment...". The fetch is not lost — it declines and
-  // falls back to the browser tier — but it costs a rung.
+  // ACCEPTED LIMITATION, stated because this IS a trade and not a free deletion.
+  //
+  // Stated GENERALLY rather than as one example, because the first version of
+  // this note named only the login screen and a check for what the removal opens
+  // immediately found three more. The general form: ANY of these markers
+  // appearing as ordinary content on a body under the visible-text floor now
+  // classifies `behavioral`. Measured instances:
+  //   - a login screen whose submit status reads "Just a moment..."
+  //   - a checkout form with an "Attention Required!" validation banner
+  //   - an application 403 whose correlation id happens to be dot-separated hex
+  //   - a short page naming the Imperva parameters in prose
+  // The fetch is not lost — it declines and falls back to the browser tier — but
+  // it costs a rung.
   //
   // Taken deliberately: six ordinary wall shapes (a consent banner, a site
   // search box, a "go back" button, and forms that are not really forms) beat

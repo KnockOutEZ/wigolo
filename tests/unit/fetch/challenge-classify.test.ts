@@ -398,23 +398,43 @@ describe('classifyChallenge — a short body is not evidence of a bot wall', () 
     });
   });
 
+  /**
+   * P1 — the ACCEPTED cost of removing that exemption, asserted so it is visible and can FAIL
+   * rather than living only in a comment.
+   *
+   * Enumerated rather than exemplified. The first version of this trade named ONE shape (the login
+   * screen); asking "what does this fix open?" turned up three more within a minute. A ceiling
+   * described by a single example reads as narrower than it is — the same under-statement this
+   * slice has been correcting all along — so the general rule is what is encoded: any of these
+   * markers as ordinary content, on a body under the visible-text floor, now classifies
+   * `behavioral`.
+   *
+   * Accepted because the DIRECTION differs. These fail CLOSED — the fetch declines and falls back
+   * to the browser tier, costing a rung — while the six shapes above failed OPEN and handed an
+   * interstitial to the agent as page content. If any of these is observed live, the repair is to
+   * rescope the exemption to the length question, never to reinstate it as a veto over a marker.
+   */
   describe('P1 — the ACCEPTED cost of removing that exemption', () => {
-    it('a thin login page carrying a marker as UI copy classifies behavioral', () => {
-      // Asserted as the deliberate trade it is, so it is visible and can fail rather than living
-      // only in a comment. Removing the exemption means a marker in ordinary UI copy on a
-      // text-light page now reads as a challenge.
-      //
-      // Accepted because the direction differs: this fails CLOSED — the fetch declines and falls
-      // back to the browser tier, costing a rung — while the six shapes above failed OPEN and
-      // handed an interstitial to the agent as content. If this shape is ever observed live, the
-      // repair is to rescope the exemption to the length question, never to reinstate it as a veto.
-      const html =
+    const accepted: Array<[string, string]> = [
+      ['a login screen whose submit status reads "Just a moment..."',
         '<html><head><title>Sign in</title></head><body><form action="/login" method="post">' +
         '<input name="email" type="text"><input name="password" type="password">' +
         '<button type="submit">Sign in</button></form>' +
-        '<p>Just a moment...</p></body></html>';
-      expect(classifyChallenge(html)).toBe('behavioral');
-    });
+        '<p>Just a moment...</p></body></html>'],
+      ['a checkout form with an "Attention Required!" validation banner',
+        '<html><head><title>Checkout</title></head><body><form action="/pay">' +
+        '<h2>Attention Required!</h2><p>Please fix the highlighted fields.</p>' +
+        '<input name="card" type="text"><button>Pay</button></form></body></html>'],
+      ['an application 403 whose correlation id is dot-separated hex',
+        '<html><head><title>Error</title></head><body><h1>Access Denied</h1>' +
+        '<p>Reference #a1b2c3.d4e5f6.9876fe</p></body></html>'],
+    ];
+
+    for (const [name, html] of accepted) {
+      it(`${name} classifies behavioral (accepted)`, () => {
+        expect(classifyChallenge(html)).toBe('behavioral');
+      });
+    }
   });
 
   describe('the two arms are BOTH load-bearing — neither is redundant', () => {
