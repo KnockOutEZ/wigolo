@@ -285,6 +285,31 @@ describe('withReceiptsLock — concurrent cross-process writers (F17)', () => {
   const WRITERS = 2;
   const CYCLES = 25;
 
+  // Every child this describe spawns, so none can outlive its test.
+  //
+  // WHY this bookkeeping exists: the writers race under `Promise.all`, which settles on the
+  // FIRST rejection while its siblings are still running — and nothing killed them. A survivor
+  // is not merely untidy: its stderr is piped, so the vitest worker holds an open pipe and a
+  // live child handle and can never exit. The run then HANGS instead of failing, which is a
+  // symptom nobody can read off a test report. Two writers leaking two orphans is exactly the
+  // shape of the unexplained ubuntu CI stall.
+  let spawned: Array<import('node:child_process').ChildProcess> = [];
+
+  function killSpawned(): void {
+    for (const p of spawned) {
+      try {
+        p.kill('SIGKILL');
+      } catch {
+        // already gone
+      }
+    }
+    spawned = [];
+  }
+
+  afterEach(() => {
+    killSpawned();
+  });
+
   function tsxAvailable(): boolean {
     try {
       require.resolve('tsx/cli');
@@ -294,22 +319,46 @@ describe('withReceiptsLock — concurrent cross-process writers (F17)', () => {
     }
   }
 
+  async function spawnChild(body: string): Promise<{
+    proc: import('node:child_process').ChildProcess;
+    done: Promise<number>;
+  }> {
+    const { spawn } = await import('node:child_process');
+    const p = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', body], {
+      env: { ...process.env, WIGOLO_DATA_DIR: tmpData, HOME: tmpHome },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    spawned.push(p);
+    // Belt and braces: a survivor must not be able to hold the runner open even in the window
+    // before the sweep runs.
+    p.unref();
+    p.stderr?.unref();
+    const done = new Promise<number>((resolve, reject) => {
+      let stderr = '';
+      p.stderr?.on('data', (d) => (stderr += String(d)));
+      p.on('error', reject);
+      p.on('exit', (code) => (code === 0 ? resolve(0) : reject(new Error(`child exited ${code}: ${stderr}`))));
+    });
+    return { proc: p, done };
+  }
+
+  async function receiptsModPath(): Promise<string> {
+    const { fileURLToPath } = await import('node:url');
+    const { dirname: dn } = await import('node:path');
+    const here = dn(fileURLToPath(import.meta.url));
+    return join(here, '..', '..', '..', '..', '..', 'src', 'cli', 'agents', 'skills', 'receipts.ts');
+  }
+
   it('no lost update: every key from both racing writers survives', async () => {
     // tsx is a devDependency — resolvable in any dev checkout. Fail loud rather
     // than silently passing if the environment can't spawn the racing child.
     expect(tsxAvailable(), 'tsx not resolvable — cannot run the lock-race test').toBe(true);
 
-    const { spawn } = await import('node:child_process');
-    const { fileURLToPath } = await import('node:url');
-    const { dirname: dn } = await import('node:path');
-    const here = dn(fileURLToPath(import.meta.url));
-    // Resolve the receipts module absolute path for the child to import.
-    const receiptsMod = join(here, '..', '..', '..', '..', '..', 'src', 'cli', 'agents', 'skills', 'receipts.ts');
+    const receiptsMod = await receiptsModPath();
+    const keyBase = join(tmpHome, 'w');
 
-    const child = (writerId: number): Promise<number> =>
-      new Promise((resolve, reject) => {
-        const keyBase = join(tmpHome, 'w');
-        const script = `
+    const child = async (writerId: number): Promise<number> => {
+      const script = `
           import { pathToFileURL } from 'node:url';
           const { withReceiptsLock } = await import(pathToFileURL(${JSON.stringify(receiptsMod)}).href);
           const id = ${writerId};
@@ -320,30 +369,48 @@ describe('withReceiptsLock — concurrent cross-process writers (F17)', () => {
             });
           }
         `;
-        const p = spawn(
-          process.execPath,
-          ['--import', 'tsx', '--input-type=module', '-e', script],
-          {
-            env: { ...process.env, WIGOLO_DATA_DIR: tmpData, HOME: tmpHome },
-            stdio: ['ignore', 'ignore', 'pipe'],
-          },
-        );
-        let stderr = '';
-        p.stderr.on('data', (d) => (stderr += String(d)));
-        p.on('error', reject);
-        p.on('exit', (code) => (code === 0 ? resolve(0) : reject(new Error(`writer ${writerId} exited ${code}: ${stderr}`))));
-      });
+      const { done } = await spawnChild(script);
+      return done;
+    };
 
     await Promise.all(Array.from({ length: WRITERS }, (_, i) => child(i)));
 
     const { readReceipts } = await load();
     const store = readReceipts();
-    const keyBase = join(tmpHome, 'w');
     // Every writer's every cycle must be present — no clobbering.
     for (let w = 0; w < WRITERS; w++) {
       for (let c = 0; c < CYCLES; c++) {
         expect(store[`${keyBase}${w}-c${c}`], `missing key from writer ${w} cycle ${c}`).toBeDefined();
       }
     }
+  }, 30_000);
+
+  // The forced condition for the leak itself: one writer dies immediately, its sibling never
+  // exits on its own. `Promise.all` rejects the moment the first one fails, which is precisely
+  // when the old code walked away from the survivor. Without the sweep the survivor outlives
+  // the test, keeps a piped stderr open on the vitest worker, and the RUN hangs — so this is
+  // asserted on a bounded wait rather than an `await once(proc, 'exit')`, which would itself
+  // hang the suite on regression instead of failing it.
+  it('a failed writer never leaves its sibling running', async () => {
+    expect(tsxAvailable(), 'tsx not resolvable — cannot run the orphan-sweep test').toBe(true);
+
+    const dies = await spawnChild(`process.exit(3);`);
+    // A real timer, not `new Promise(() => {})` — a never-settling promise registers NOTHING on
+    // the event loop, so node exits at once and the assertion below passes without ever having
+    // had a survivor to sweep. That vacuity is what the sweep-disabled probe caught.
+    const lingers = await spawnChild(`await new Promise((r) => setTimeout(r, 600_000));`);
+
+    await expect(Promise.all([dies.done, lingers.done])).rejects.toThrow(/exited 3/);
+
+    // The sibling is still running here — that is the leak the sweep exists to close.
+    expect(lingers.proc.exitCode, 'sibling should still be running before the sweep').toBeNull();
+
+    killSpawned();
+
+    const died = await Promise.race([
+      new Promise<boolean>((r) => lingers.proc.once('exit', () => r(true))),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 5_000)),
+    ]);
+    expect(died, 'sibling of a failed writer survived the sweep — it will wedge the runner').toBe(true);
   }, 30_000);
 });
