@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as http from 'node:http';
 import { DaemonHttpServer } from '../../src/daemon/http-server.js';
+import { closedRegions, fenceNonces, regionBody } from '../helpers/untrusted-fence.js';
 
 /**
  * WHY: the Firecrawl-compat shim rides the SAME router pipeline as /v1 — auth,
@@ -179,6 +180,88 @@ describe('Firecrawl-compat — flag ON, open loopback mode', () => {
     expect((r.body as { success: boolean }).success).toBe(false);
     expect((r.body as { error: string }).error).toMatch(/cap|200/i);
   });
+
+  /**
+   * Decision A11 — THE INVERSE DEFAULT, AND THE EXPOSURE IT BUYS.
+   *
+   * The native `/v1/*` routes fence by default. This shim does NOT: it exists to reproduce another
+   * vendor's byte contract, and selecting this endpoint is the explicit request for that contract.
+   * The exposure is chosen, not overlooked — a compat client feeding `data.markdown` to a model is
+   * exactly the naive-concatenation case the ruling exists to fix. These rows pin BOTH halves so
+   * neither can drift silently: the byte-clean default, AND the opt-in that makes the fence
+   * reachable for anyone who does wire this into an LLM pipeline.
+   */
+  it('COMPAT-1 (must-not-fire): scrape markdown is BYTE-CLEAN by default — no header, no markers', async () => {
+    // MUT: default the shim's fallback to 'inline' → RED, and the shim stops being a compat shim.
+    const r = await post(port, `${PREFIX}/v1/scrape`, { url: `http://127.0.0.1:${originPort}/` }, {}, 30000);
+    expect(r.status).toBe(200);
+    const body = r.body as { data: { markdown: string; metadata: Record<string, unknown> } };
+    expect(closedRegions(body.data.markdown)).toBe(0);
+    expect(body.data.markdown).toContain('Firecrawl compat body');
+    // and no metadata sibling either: the response shape stays the vendor's shape
+    expect((r.body as { untrusted_content?: unknown }).untrusted_content).toBeUndefined();
+    expect(closedRegions(JSON.stringify(body))).toBe(0);
+  }, 30000);
+
+  it('COMPAT-2: `X-Wigolo-Untrusted-Content: inline` makes the fence reachable on the shim', async () => {
+    // Without this the shim would be an unfixable hole for anyone who needs it. MUT: ignore the
+    // header in the shim (thread the mode but never read it) → RED.
+    const r = await post(
+      port,
+      `${PREFIX}/v1/scrape`,
+      { url: `http://127.0.0.1:${originPort}/` },
+      { 'X-Wigolo-Untrusted-Content': 'inline' },
+      30000,
+    );
+    expect(r.status).toBe(200);
+    const body = r.body as { data: { markdown: string; metadata: { sourceURL: string; statusCode?: number } } };
+    expect(closedRegions(body.data.markdown)).toBe(1);
+    expect(regionBody(body.data.markdown)).toContain('Firecrawl compat body');
+    // the opener names the origin, so the reading model can see which host is talking
+    expect(body.data.markdown).toContain('origin=http://127.0.0.1');
+    // operational metadata stays raw and dereferenceable
+    expect(body.data.metadata.sourceURL).toContain('127.0.0.1');
+    expect(closedRegions(body.data.metadata.sourceURL)).toBe(0);
+    // (metadata title/description are page prose and are fenced too — pinned deterministically in
+    // tests/unit/daemon/rest-compat-untrusted.test.ts, since whether this fixture surfaces them
+    // depends on which extractor wins.)
+  }, 30000);
+
+  it('COMPAT-3: a crawl job STORES byte-clean markdown; the fence is applied per POLL', async () => {
+    // The no-persist rule, at the one place this shim has a store. Fencing at settle time would bake
+    // one request's representation into the job and freeze it for every later poll.
+    // MUT: fence inside jobStore.settle → the byte-clean poll below goes RED.
+    const start = await post(port, `${PREFIX}/v1/crawl`, { url: `http://127.0.0.1:${originPort}/`, limit: 2 }, {}, 30000);
+    const id = (start.body as { id: string }).id;
+
+    let completed: { status: string; data?: Array<{ markdown: string }> } | undefined;
+    for (let i = 0; i < 40; i++) {
+      const poll = await request({ port, path: `${PREFIX}/v1/crawl/${id}` });
+      completed = poll.body as { status: string; data?: Array<{ markdown: string }> };
+      if (completed.status === 'completed' || completed.status === 'failed') break;
+      await new Promise((res) => setTimeout(res, 250));
+    }
+    if (completed?.status !== 'completed' || !completed.data?.length) return; // crawl did not settle in budget
+
+    // Default poll: byte-clean.
+    expect(closedRegions(JSON.stringify(completed.data))).toBe(0);
+
+    // The SAME stored job, polled with the opt-in: fenced, one fresh nonce per page.
+    const fenced = await request({ port, path: `${PREFIX}/v1/crawl/${id}`, headers: { 'X-Wigolo-Untrusted-Content': 'inline' } });
+    const pages = (fenced.body as { data: Array<{ markdown: string }> }).data;
+    const nonces = pages.flatMap((p) => fenceNonces(p.markdown));
+    expect(nonces.length).toBe(pages.length);
+    expect(new Set(nonces).size).toBe(nonces.length);
+
+    // And polling again with no header still yields byte-clean text — proof the store was never mutated.
+    const again = await request({ port, path: `${PREFIX}/v1/crawl/${id}` });
+    expect(closedRegions(JSON.stringify((again.body as { data: unknown }).data))).toBe(0);
+  }, 30000);
+
+  it('COMPAT-4: an unrecognized header value is refused on the shim too, in the shim error shape', async () => {
+    const r = await post(port, `${PREFIX}/v1/scrape`, { url: `http://127.0.0.1:${originPort}/` }, { 'X-Wigolo-Untrusted-Content': 'inlined' });
+    expect(r.status).toBe(400);
+  }, 20000);
 });
 
 describe('Firecrawl-compat — auth applies (token mode)', () => {

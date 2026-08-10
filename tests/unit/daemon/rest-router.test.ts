@@ -296,3 +296,81 @@ describe('RestRouter — deadline', () => {
     delete process.env.WIGOLO_SERVE_TIMEOUT_SCALE;
   });
 });
+
+describe('RestRouter — untrusted-content representation header (R2 / A10 + A11)', () => {
+  /** The `untrustedMode` the router put on the DispatchContext for the last call. */
+  function lastMode(): unknown {
+    const call = vi.mocked(dispatchTool).mock.calls.at(-1);
+    return (call?.[2] as { untrustedMode?: unknown } | undefined)?.untrustedMode;
+  }
+
+  it('MODE-R1: a native tool route with NO header dispatches in `inline` mode', async () => {
+    // The ruling: the safe representation is what you get for doing nothing. This is the seam where
+    // that default is actually chosen — the dispatcher only obeys what the router hands it.
+    // MUT: pass 'envelope' as the native fallback → RED.
+    const router = loopbackRouter();
+    const { res } = makeRes();
+    await router.handle(makeReq({ url: '/v1/fetch', body: JSON.stringify({ url: 'https://example.com' }) }), res);
+    expect(lastMode()).toBe('inline');
+  });
+
+  it('MODE-R2: `X-Wigolo-Untrusted-Content: envelope` opts the native route out', async () => {
+    // MUT: ignore the header in the router → still 'inline' → RED.
+    const router = loopbackRouter();
+    const { res } = makeRes();
+    await router.handle(makeReq({
+      url: '/v1/fetch',
+      headers: { 'x-wigolo-untrusted-content': 'envelope' },
+      body: JSON.stringify({ url: 'https://example.com' }),
+    }), res);
+    expect(lastMode()).toBe('envelope');
+  });
+
+  it('MODE-R3: an unrecognized value is a 400 and never reaches the dispatcher', async () => {
+    // Fail loud rather than fall back: a typo'd `envelop` must not silently pick a representation.
+    const router = loopbackRouter();
+    const { res, get } = makeRes();
+    await router.handle(makeReq({
+      url: '/v1/fetch',
+      headers: { 'x-wigolo-untrusted-content': 'envelop' },
+      body: JSON.stringify({ url: 'https://example.com' }),
+    }), res);
+    const out = get();
+    expect(out.status).toBe(400);
+    expect((out.body as { error_reason?: string }).error_reason).toBe('invalid_input');
+    expect(dispatchTool).not.toHaveBeenCalled();
+  });
+
+  it('MODE-R4: the representation gate sits BEHIND auth — an unauthed bad header is not a 400', async () => {
+    // Ordering matters: a pre-auth 400 would let an unauthenticated caller probe which header values
+    // the server understands. MUT: resolve the mode before passesAuth → 400 → RED.
+    const router = new RestRouter({
+      subsystems: fakeSubsystems(),
+      bindHost: '0.0.0.0',
+      token: 'secret',
+      allowUnauthenticated: false,
+    });
+    const { res, get } = makeRes();
+    await router.handle(makeReq({
+      url: '/v1/fetch',
+      headers: { host: 'example.com', 'x-wigolo-untrusted-content': 'envelop' },
+      body: JSON.stringify({ url: 'https://example.com' }),
+    }), res);
+    expect(get().status).not.toBe(400);
+    expect(dispatchTool).not.toHaveBeenCalled();
+  });
+
+  it('MODE-R5 (must-not-fire): the header does not reach the tool INPUT', async () => {
+    // It is a representation choice about the response, not an argument. If it leaked into the body
+    // it would hit schema validation, and worse, could travel into a persisted request field.
+    const router = loopbackRouter();
+    const { res } = makeRes();
+    await router.handle(makeReq({
+      url: '/v1/fetch',
+      headers: { 'x-wigolo-untrusted-content': 'envelope' },
+      body: JSON.stringify({ url: 'https://example.com' }),
+    }), res);
+    const input = vi.mocked(dispatchTool).mock.calls.at(-1)?.[1];
+    expect(input).toEqual({ url: 'https://example.com' });
+  });
+});

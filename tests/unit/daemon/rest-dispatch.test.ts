@@ -36,6 +36,12 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+/**
+ * These tests are about DISPATCH PLUMBING — status mapping, guards, the scheduler hook — not about
+ * the trust representation. They pin `envelope` so the tool payload stays byte-comparable and a
+ * shaping change cannot masquerade as a routing change; the representation itself is pinned in
+ * rest-untrusted-representation.test.ts, which covers the `inline` default.
+ */
 function fakeCtx(): DispatchContext {
   return {
     subsystems: {
@@ -44,6 +50,7 @@ function fakeCtx(): DispatchContext {
       backendStatus: {} as unknown,
     } as unknown as Subsystems,
     bindIsLoopback: true,
+    untrustedMode: 'envelope',
   };
 }
 

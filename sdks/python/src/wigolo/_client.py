@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 
 from ._errors import WigoloAPIError, WigoloConnectionError
 from ._manifest import MANIFEST
+from ._untrusted import UNTRUSTED_CONTENT_HEADER, UNTRUSTED_CONTENT_MODES
 
 if TYPE_CHECKING:
     from ._local import LocalDaemon
@@ -62,6 +63,17 @@ class Client:
             at its default), route through an embedded local daemon that is
             probed-or-spawned for you. In local mode ``WIGOLO_BASE_URL`` is
             ignored and the base URL points at the local daemon.
+        untrusted_content: How responses should carry page-derived (untrusted)
+            text. Leave it unset. The server's default already returns that
+            text with the containment fence woven in, which is what you want
+            when any of it reaches a model. Set ``"envelope"`` only when you
+            need BYTE-CLEAN payloads — hashing, dedup, an embedding index,
+            persisting exactly what the site served; the trust boundary then
+            arrives as an ``untrusted_content`` sibling field and
+            :func:`wigolo.fence_untrusted` composes it at the point some of
+            that text does go to a model. Deliberately NOT env-resolved:
+            silently weakening containment from the ambient environment is the
+            shape of bug this mechanism exists to prevent.
 
     Note on ``local`` precedence: the ``WIGOLO_LOCAL`` env var only triggers
     embedded mode when the ``local`` argument is left at its default. Passing
@@ -77,7 +89,14 @@ class Client:
         *,
         port: Optional[int] = None,
         command: Optional[list[str]] = None,
+        untrusted_content: Optional[str] = None,
     ) -> None:
+        if untrusted_content is not None and untrusted_content not in UNTRUSTED_CONTENT_MODES:
+            raise ValueError(
+                f"untrusted_content must be one of {UNTRUSTED_CONTENT_MODES}, "
+                f"got {untrusted_content!r}"
+            )
+        self._untrusted_content = untrusted_content
         # Resolve local mode. Explicit local arg wins; env only when default.
         if local is None:
             use_local = _env_flag("WIGOLO_LOCAL")
@@ -140,6 +159,8 @@ class Client:
         headers = {"Content-Type": "application/json"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
+        if self._untrusted_content:
+            headers[UNTRUSTED_CONTENT_HEADER] = self._untrusted_content
         return headers
 
     def _resolve_timeout(self, tool: str, per_call: Optional[float]) -> float:

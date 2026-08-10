@@ -335,4 +335,9 @@ export interface CallOptions {
   timeoutMs?: number;
   /** Caller-supplied cancellation signal, combined with the timeout. */
   signal?: AbortSignal;
+  /**
+   * Per-call override of how this response carries page-derived text. Overrides the client option.
+   * Omit for the server default, which is already fenced — see `untrusted.ts`.
+   */
+  untrustedContent?: import('./untrusted.js').UntrustedContentMode;
 }

@@ -10,6 +10,7 @@
  */
 import { manifest, type ToolName } from './manifest.js';
 import { WigoloApiError, WigoloConnectionError } from './errors.js';
+import { UNTRUSTED_CONTENT_HEADER, type UntrustedContentMode } from './untrusted.js';
 import type {
   CallOptions,
   HealthResponse,
@@ -60,6 +61,18 @@ export interface WigoloClientOptions {
   timeoutMs?: number;
   /** Injectable fetch implementation (tests / custom transports). */
   fetch?: FetchLike;
+  /**
+   * How responses should carry page-derived (untrusted) text.
+   *
+   * Omit this. The server's default already returns that text with the containment fence woven in,
+   * which is what you want when any of it reaches a model.
+   *
+   * Set `'envelope'` only when you need BYTE-CLEAN payloads — hashing, dedup, an embedding index,
+   * persisting exactly what the site served. The trust boundary then arrives as an
+   * `untrusted_content` sibling field, and `fenceUntrusted` composes it for you at whatever point
+   * some of that text does go to a model.
+   */
+  untrustedContent?: UntrustedContentMode;
 }
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3333';
@@ -110,6 +123,8 @@ function parseRetryAfter(headers: { get(name: string): string | null }): number 
 export class WigoloClient {
   readonly baseUrl: string;
   readonly token: string | undefined;
+  /** Representation requested for page-derived text; undefined means the server default (fenced). */
+  readonly untrustedContent: UntrustedContentMode | undefined;
   private readonly defaultTimeoutMs: number | undefined;
   private readonly fetchImpl: FetchLike;
 
@@ -120,6 +135,9 @@ export class WigoloClient {
         ? options.baseUrl
         : readEnv('WIGOLO_BASE_URL') ?? DEFAULT_BASE_URL;
     this.token = options.token !== undefined ? options.token : readEnv('WIGOLO_API_TOKEN');
+    // Deliberately NOT env-resolved: silently weakening containment from ambient environment is the
+    // shape of bug this whole mechanism exists to prevent. Opting out is an explicit code decision.
+    this.untrustedContent = options.untrustedContent;
     this.defaultTimeoutMs = options.timeoutMs;
     const injected = options.fetch;
     if (injected) {
@@ -136,9 +154,11 @@ export class WigoloClient {
     }
   }
 
-  private headers(): Record<string, string> {
+  private headers(call?: CallOptions): Record<string, string> {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.token) h.Authorization = `Bearer ${this.token}`;
+    const mode = call?.untrustedContent ?? this.untrustedContent;
+    if (mode) h[UNTRUSTED_CONTENT_HEADER] = mode;
     return h;
   }
 
@@ -163,7 +183,7 @@ export class WigoloClient {
     try {
       response = await this.fetchImpl(url, {
         method,
-        headers: this.headers(),
+        headers: this.headers(call),
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         signal,
       });

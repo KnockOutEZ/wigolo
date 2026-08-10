@@ -28,6 +28,12 @@ import {
 import { validateInput } from './validate.js';
 import { dispatchTool, type DispatchContext } from './dispatch.js';
 import { buildOpenApi, buildToolsIndex } from './openapi.js';
+import {
+  resolveUntrustedMode,
+  UNTRUSTED_MODE_HEADER,
+  UNTRUSTED_MODE_HEADER_NAME,
+  type UntrustedMode,
+} from './untrusted-mode.js';
 
 const log = createLogger('rest');
 
@@ -91,6 +97,31 @@ export class RestRouter {
     };
   }
 
+  /**
+   * Resolve the untrusted-content representation for one request (R2 / A10 + A11).
+   *
+   * The FALLBACK is the surface's default and is the only thing the two surfaces disagree about:
+   * `/v1/{tool}` fences by default, `/compat/firecrawl/*` stays byte-clean by default. An
+   * unrecognized header value is a 400 on BOTH surfaces — resolving it to the surface default would
+   * silently hand a typo'd caller the representation they did not ask for.
+   *
+   * Returns null when the request was refused (the 400 is already written).
+   */
+  private untrustedModeFor(
+    req: IncomingMessage,
+    res: ServerResponse,
+    fallback: UntrustedMode,
+  ): UntrustedMode | null {
+    const resolved = resolveUntrustedMode(req.headers[UNTRUSTED_MODE_HEADER], fallback);
+    if (resolved.ok) return resolved.mode;
+    this.respond(res, 400, errorEnvelope(
+      'invalid_input',
+      `Unsupported ${UNTRUSTED_MODE_HEADER_NAME} value ${JSON.stringify(resolved.value)}.`,
+      { stage: 'validate', hint: resolved.hint },
+    ));
+    return null;
+  }
+
   /** Run the shared auth gate; returns true when the request may proceed. */
   private passesAuth(req: IncomingMessage, res: ServerResponse): boolean {
     const result = checkAuth(this.authContext(), {
@@ -121,6 +152,9 @@ export class RestRouter {
           return;
         }
         const subPath = pathname.slice(SHIM_PREFIX.length) || '/';
+        // A11 — the shim's fallback is the INVERSE of the native routes': byte-clean unless asked.
+        const compatMode = this.untrustedModeFor(req, res, 'envelope');
+        if (compatMode === null) return;
         // The shim shares the SAME slot+deadline discipline as /v1 (D7/D11) —
         // it is NOT an escape hatch. A slot is acquired before the compat work
         // and released only when it settles; a deadline (mapped tool for the
@@ -134,6 +168,7 @@ export class RestRouter {
             subsystems: this.opts.subsystems,
             bindIsLoopback: this.bindIsLoopback,
             subPath,
+            untrustedMode: compatMode,
             respond: (status, body, headers) => this.respond(res, status, body, headers),
           });
         });
@@ -175,7 +210,10 @@ export class RestRouter {
         }
         // Auth BEFORE any body read — a stub route unauthed must 401/403, not 501.
         if (!this.passesAuth(req, res)) return;
-        await this.handleToolRequest(tool, req, res);
+        // A10 — native routes fence by default; `envelope` is the opt-in.
+        const mode = this.untrustedModeFor(req, res, 'inline');
+        if (mode === null) return;
+        await this.handleToolRequest(tool, req, res, mode);
         return;
       }
 
@@ -241,7 +279,12 @@ export class RestRouter {
     workPromise.catch(() => { /* already handled above */ });
   }
 
-  private async handleToolRequest(tool: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handleToolRequest(
+    tool: string,
+    req: IncomingMessage,
+    res: ServerResponse,
+    untrustedMode: UntrustedMode,
+  ): Promise<void> {
     await this.runUnderSlotAndDeadline(res, deadlineFor(tool), tool, async (releaseSlot) => {
       // Body cap read.
       let body: unknown;
@@ -282,7 +325,11 @@ export class RestRouter {
       }
 
       // Dispatch — the slot is released when this settles (see helper).
-      const ctx: DispatchContext = { subsystems: this.opts.subsystems, bindIsLoopback: this.bindIsLoopback };
+      const ctx: DispatchContext = {
+        subsystems: this.opts.subsystems,
+        bindIsLoopback: this.bindIsLoopback,
+        untrustedMode,
+      };
       const result = await dispatchTool(tool, body, ctx);
       this.respond(res, result.status, result.body, result.headers ?? {});
     });

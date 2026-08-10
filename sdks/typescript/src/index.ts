@@ -7,6 +7,13 @@
 export { WigoloClient } from './client.js';
 export type { WigoloClientOptions, FetchLike } from './client.js';
 export { WigoloError, WigoloApiError, WigoloConnectionError } from './errors.js';
+export {
+  fenceUntrusted,
+  fenceWithEnvelope,
+  untrustedContentOf,
+  UNTRUSTED_CONTENT_HEADER,
+} from './untrusted.js';
+export type { UntrustedContent, UntrustedContentMode, WithUntrustedContent } from './untrusted.js';
 export { manifest, defaultTimeoutFor } from './manifest.js';
 export type { ToolName } from './manifest.js';
 export type * from './types.js';
