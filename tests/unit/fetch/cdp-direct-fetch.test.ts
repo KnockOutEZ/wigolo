@@ -346,6 +346,57 @@ describe('cdpDirectFetch — spawn + orchestrate the raw-CDP content rung', () =
     expect(h.rmCalls.length).toBe(1);
   });
 
+  it('block-detection: a MARKERLESS wall (no catalogued vendor string) still returns null', async () => {
+    // WHY: breaking the clear-poll RETURNS THE BODY TO THE AGENT as content, at a
+    // synthesized HTTP 200 that the terminal guardChallengeShell then reads as
+    // clean. So the break condition must fail CLOSED, and `classifyChallenge`
+    // alone cannot carry it — it is a shape classifier scoped to "which solve
+    // rung", never a whether-detector.
+    //
+    // This body carries NO catalogued marker, so the classifier honestly says
+    // 'none'; only the general vendor-agnostic density rule recognises it. That
+    // pairing is what this test pins.
+    //
+    // Regression guard with teeth: slice P3-CLASSIFY removed a length heuristic
+    // that had been catching this shape ACCIDENTALLY, and for one commit this
+    // wall was returned to the agent as a real page. Deleting the
+    // `!isLowContentDensity(html)` half of the break condition reds this test —
+    // verified, because without that check nothing in the suite failed at all.
+    const markerlessWall =
+      '<html><head><title>Security Check</title>' +
+      '<script>' + 'var _q=[];for(var i=0;i<99;i++){_q.push(i*7);}'.repeat(40) + '</script>' +
+      '<style>' + '.sh{display:none;position:absolute;top:0;left:0;width:100%}'.repeat(40) + '</style>' +
+      '</head><body><div id="shield"></div></body></html>';
+    const rec = makeRecordingTransport(markerlessWall);
+    const h = makeHarness({ transport: rec.transport });
+    _setCdpDirectFetchDepsForTests(h.deps);
+    const result = await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP, timeoutMs: 1500 });
+    expect(result).toBeNull(); // must NOT be handed back as content
+    expect(rec.calls).toContain('Page.navigate');
+    expect(h.child.killed).toBe(true);
+  });
+
+  it('a legitimately SHORT page is returned as content, not declined as a wall', async () => {
+    // The other direction of the same condition, and the defect slice
+    // P3-CLASSIFY existed to fix: example.com is 544 bytes with ~142 visible
+    // characters, and was declined as `behavioral` after burning the full
+    // clear-poll because a visible-text length reading was treated as a verdict.
+    //
+    // Paired deliberately with the wall test above: together they pin BOTH
+    // directions, so neither a length heuristic nor a blanket refusal can
+    // satisfy the suite.
+    const shortLegit =
+      '<!doctype html><html lang="en"><head><title>Example Domain</title></head>' +
+      '<body><div><h1>Example Domain</h1><p>This domain is for use in documentation ' +
+      'examples without needing permission.</p></div></body></html>';
+    const rec = makeRecordingTransport(shortLegit);
+    const h = makeHarness({ transport: rec.transport });
+    _setCdpDirectFetchDepsForTests(h.deps);
+    const result = await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP, timeoutMs: 1500 });
+    expect(result).not.toBeNull();
+    expect(result?.html).toContain('Example Domain');
+  });
+
   it('empty-content null path: a non-string Runtime.evaluate result also returns null + tears down', async () => {
     const h = makeHarness();
     const nonStringTransport: CdpTransport = {

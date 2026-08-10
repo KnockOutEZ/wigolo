@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { classifyChallenge, classifyImageSubType } from '../../../src/fetch/challenge-classify.js';
+import { isLowContentDensity } from '../../../src/fetch/tls-tier.js';
 
 // A minimal challenge-page skeleton: near-empty prose + the modern CF platform
 // script + interstitial title. Used to gate contextual widget markers so a real
@@ -172,6 +173,521 @@ describe('classifyChallenge', () => {
         <iframe src="https://www.google.com/recaptcha/api2/bframe?k=abc"></iframe>
       </body></html>`;
       expect(classifyChallenge(html)).toBe('behavioral');
+    });
+  });
+});
+
+/**
+ * P3-CLASSIFY — a length reading is never a challenge VERDICT.
+ *
+ * `classifyChallenge`'s final arm used `isChallengeSkeleton` UNPAIRED. That
+ * predicate's own sibling docstring says it is "deliberately NOT sufficient on
+ * its own — callers pair it with an anti-bot STATUS", and its last arm is a bare
+ * `visibleText < 600`. So any page shorter than 600 visible characters and
+ * carrying no vendor marker at all classified `behavioral` — a bot wall.
+ *
+ * Measured live 2026-08-04: `https://example.com/` returns 559 bytes / ~128
+ * visible chars at HTTP 200 and classified `behavioral`. `cdpDirectFetch` polls
+ * `classifyChallenge(html) === 'none'` as its clear-check and structurally has
+ * NO HTTP status to pair with (it navigates and reads the DOM), so it burned the
+ * full clear-poll budget and declined a legitimate page as a bot wall.
+ *
+ * This is the SECOND instance of one pattern — P0 fixed `isAntiBotSignal`, which
+ * matched challenge markers ALONE at 2xx so an article *about* bot protection
+ * read as a wall. Same shape, opposite half: markers-without-content there,
+ * content-without-markers here.
+ *
+ * The fix is NOT a lower threshold. 600 is untouched; what changed is its
+ * LOGICAL ROLE — from a sufficient condition to the corroborating half of a
+ * pair. A challenge verdict now requires a positive interstitial ARTIFACT
+ * (interstitial title, vendor template signature, or a shared challenge marker).
+ * That is why both directions below can hold at once: a page can be legitimately
+ * 80 bytes, and an interstitial can be verbose.
+ */
+describe('classifyChallenge — a short body is not evidence of a bot wall', () => {
+  // The literal 559-byte body served by https://example.com/ (captured
+  // 2026-08-04). Not a paraphrase: this exact document is the reproduction.
+  const EXAMPLE_COM =
+    '<!doctype html><html lang="en"><head><title>Example Domain</title>' +
+    '<link rel="icon" href="data:,">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}' +
+    'h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head>' +
+    '<body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples ' +
+    'without needing permission. Avoid use in operations.</p>' +
+    '<p><a href="https://iana.org/domains/example">Learn more</a></p></div></body></html>\n';
+
+  describe('MUST-NOT-FIRE — legitimate pages below the content floor', () => {
+    it('the measured reproduction: example.com (559 bytes) is clean content, not a wall', () => {
+      // The exact case that burned the clear-poll and declined the rung.
+      expect(EXAMPLE_COM.length).toBe(559);
+      expect(classifyChallenge(EXAMPLE_COM)).toBe('none');
+    });
+
+    it('an 80-byte legitimate page is clean — a page may legitimately be tiny', () => {
+      // Stated in the slice constraints as the reason a threshold cannot be the
+      // decision procedure at ANY value: shortness is not misconduct.
+      const tiny = '<html><head><title>OK</title></head><body><p>Deploy succeeded.</p></body></html>';
+      expect(tiny.length).toBeLessThan(100);
+      expect(classifyChallenge(tiny)).toBe('none');
+    });
+
+    it('an un-hydrated SPA shell is clean — that is the SPA path, not the challenge path', () => {
+      // Mirrors the shipped rule in tls-tier's isChallengeShell: "a skeleton
+      // alone is a plain SPA shell handled by the SPA-empty-content path, not
+      // the challenge path". The classifier must agree with it.
+      const spa = '<html><head><title>My App</title></head><body><div id="root"></div>' +
+        '<script src="/assets/index.js"></script></body></html>';
+      expect(classifyChallenge(spa)).toBe('none');
+    });
+
+    it('a short genuine error page is clean — a thin 404 is not a bot wall', () => {
+      const notFound =
+        '<html><head><title>404 Not Found</title></head><body>' +
+        '<h1>Not Found</h1><p>The requested page does not exist.</p></body></html>';
+      expect(classifyChallenge(notFound)).toBe('none');
+    });
+
+    it('a text-light JSON/API landing body is clean', () => {
+      const api = '<html><body><pre>{"status":"ok","version":"2.1.0"}</pre></body></html>';
+      expect(classifyChallenge(api)).toBe('none');
+    });
+  });
+
+  /**
+   * BRANCH ATTRIBUTION — measured by deleting each return-branch of
+   * `classifyChallenge` in turn and recording which tests red. Recorded because
+   * a fixture's INTENDED branch and its ACTUAL branch are not the same thing,
+   * and only the deletion probe can tell them apart:
+   *
+   *   step1 behavioralPositive  -> 2 red   (Akamai shell; under-claim precedence)
+   *   step2 image               -> 3 red
+   *   step3 interactive         -> 3 red
+   *   step4 arm1 interstitial   -> 1 red   (the PerimeterX-denied fixture below)
+   *   step4 arm2 marker-pair    -> 1 red   (the body-phrase fixture below)
+   *   step4 BOTH arms           -> 9 red
+   *
+   * The must-still-fire fixtures in this block are REALISTIC interstitials, and
+   * a realistic interstitial carries both an interstitial title AND a shared
+   * marker — so two arms independently reach the right verdict and no SINGLE
+   * deletion reds them. They are behaviour regression guards, not branch
+   * proofs: each one also passed BEFORE this slice's fix. Branch isolation is
+   * supplied by the two dedicated arm tests further down.
+   *
+   * Two distinct failure modes, only one of which is a defect:
+   *   - INTERCEPTED: an EARLIER branch returns, so the intended branch is never
+   *     reached and the test cannot fail for the reason it claims. A real bug —
+   *     a `dd-loader` fixture here was intercepted by step1 and proved nothing.
+   *     Fixed by changing the FIXTURE, never the assertion.
+   *   - MULTIPLY COVERED: several branches independently give the right answer.
+   *     Not a defect. Making these single-signal to isolate a branch would trade
+   *     real interstitial shapes for contrived ones and weaken the suite.
+   *
+   * The DataDome fixture below never reds even with BOTH step4 arms deleted: it
+   * returns at step1 on its sensor markers. It therefore does NOT exercise the
+   * code this slice changed, and is kept only as a vendor-coverage guard.
+   */
+  describe('MUST-STILL-FIRE — a real interstitial served at HTTP 200', () => {
+    it('a Cloudflare managed shell is still behavioral', () => {
+      // Positive artifact: the interstitial title AND the challenge-platform
+      // script. Neither is a length reading.
+      const cf =
+        '<html><head><title>Just a moment...</title></head><body>' +
+        '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>' +
+        '<div id="cf-please-wait"></div></body></html>';
+      expect(classifyChallenge(cf)).toBe('behavioral');
+    });
+
+    it('a DataDome "enable JavaScript" interstitial is still behavioral', () => {
+      // DataDome serves this at 200 to mask the block — the case that makes a
+      // status-free decision procedure necessary in the first place.
+      const dd =
+        '<html><head><title>Access denied</title></head><body>' +
+        '<p id="cmsg">Please enable JS and disable any ad blocker</p>' +
+        '<script>window._dd_s = {};</script></body></html>';
+      expect(classifyChallenge(dd)).toBe('behavioral');
+    });
+
+    it('a PerimeterX "Robot or human?" interstitial is still behavioral', () => {
+      // The zillow/walmart class. Its template markers are in the shared
+      // CHALLENGE_MARKERS list, so the pairing has a marker to pair WITH.
+      const px =
+        '<html><head><title>Robot or human?</title></head><body>' +
+        '<div id="px-captcha"></div></body></html>';
+      expect(classifyChallenge(px)).toBe('behavioral');
+    });
+
+    it('a bare marker with no prose still qualifies — a body that short IS a skeleton', () => {
+      // Preserves the assertion tls-tier's isAntiBotSignal docstring makes and
+      // tls-tier.test.ts encodes. The marker is the positive half; the tiny body
+      // is the corroborating half. Both present → a challenge.
+      expect(classifyChallenge('cf-browser-verification')).toBe('behavioral');
+    });
+
+    it('a VERBOSE interstitial is still caught — length cannot be the escape hatch either', () => {
+      // The symmetric failure the fix must not introduce. A padded interstitial
+      // carries >600 visible chars, so a content-length rule alone would release
+      // it; the interstitial TITLE outranks length in both directions.
+      const padded =
+        '<html><head><title>Just a moment...</title></head><body>' +
+        `<p>${'We are checking your browser before granting access to this site. '.repeat(30)}</p>` +
+        '</body></html>';
+      expect(padded.replace(/<[^>]+>/g, ' ').trim().length).toBeGreaterThan(600);
+      expect(classifyChallenge(padded)).toBe('behavioral');
+    });
+  });
+
+  /**
+   * P1 — a wall carrying something FORM-ISH must still be a wall.
+   *
+   * A revision of this classifier ANDed a real-form exemption onto the vendor arm, to restore a
+   * carve-out lost when the corroborator changed. That inverted the precedence: in
+   * `isChallengeSkeleton` the marker short-circuits FIRST and the form exemption guards only the
+   * LENGTH arm, but ANDing it here let a form outrank a positive vendor marker.
+   *
+   * It FAILED OPEN, which no earlier defect in this slice did. All six bodies below classified
+   * 'none', and since each is under 1KB the density guard in `cdpDirectFetch` does not catch them
+   * either — so the interstitial was returned to the agent as page content at a synthesized HTTP
+   * 200 that the terminal shell guard then read as clean.
+   *
+   * Three of them are not even real forms (a control outside the element, a commented-out block, a
+   * JS string literal), which is a second reason the exemption had no business vetoing a marker.
+   */
+  describe('P1 — a form-ish element must not veto a positive vendor marker', () => {
+    const walls: Array<[string, string]> = [
+      ['an Imperva wall behind a cookie-consent banner',
+        '<html><head><title>Request unsuccessful.</title></head><body>' +
+        '<iframe src="/_Incapsula_Resource?CWUDNSAI=9&xinfo=12-345-0"></iframe>' +
+        '<form id="cookie"><button type="submit">Accept cookies</button></form></body></html>'],
+      ['an Akamai denial carrying a site-search box',
+        '<html><head><title>Access Denied</title></head><body><h1>Access Denied</h1>' +
+        '<p>Reference #18.1a2b3c4d.1712345678.9abcdef</p>' +
+        '<form action="/search"><input name="q" type="text"></form></body></html>'],
+      ['a Cloudflare interstitial with a "Try again" button',
+        '<html><head><meta charset="utf-8"></head><body><div id="challenge-running"></div>' +
+        '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>' +
+        '<form><button type="submit">Try again</button></form></body></html>'],
+      ['a wall whose input is OUTSIDE the form element',
+        '<html><head><title>Request unsuccessful.</title></head><body>' +
+        '<iframe src="/_Incapsula_Resource?CWUDNSAI=9"></iframe>' +
+        '<form action="/x"></form><input name="q" type="text"></body></html>'],
+      ['a wall whose form is inside an HTML COMMENT',
+        '<html><head><title>Access Denied</title></head><body><h1>Access Denied</h1>' +
+        '<p>Reference #18.1a2b3c4d.1712345678.9abcdef</p>' +
+        '<!-- <form action="/login"><input name="u"></form> --></body></html>'],
+      ['a wall whose form is inside a JS STRING literal',
+        '<html><head><meta charset="utf-8"></head><body><div id="challenge-running"></div>' +
+        '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>' +
+        '<script>var t = "<form><input name=\\"u\\"></form>";</script></body></html>'],
+    ];
+
+    for (const [name, html] of walls) {
+      it(`${name} is behavioral`, () => {
+        expect(classifyChallenge(html)).toBe('behavioral');
+      });
+    }
+
+    it('none of them would be caught by the density guard either — the classifier is the only line', () => {
+      // Why the classifier verdict is load-bearing rather than backstopped: every one of these is
+      // under the 1KB floor `isLowContentDensity` requires, so `cdpDirectFetch`'s second condition
+      // cannot save them. If the classifier says 'none', the body ships.
+      for (const [, html] of walls) {
+        expect(html.length).toBeLessThan(1000);
+        expect(isLowContentDensity(html)).toBe(false);
+      }
+    });
+  });
+
+  /**
+   * P1 — the ACCEPTED cost of removing that exemption, asserted so it is visible and can FAIL
+   * rather than living only in a comment.
+   *
+   * Enumerated rather than exemplified. The first version of this trade named ONE shape (the login
+   * screen); asking "what does this fix open?" turned up three more within a minute. A ceiling
+   * described by a single example reads as narrower than it is — the same under-statement this
+   * slice has been correcting all along — so the general rule is what is encoded: any of these
+   * markers as ordinary content, on a body under the visible-text floor, now classifies
+   * `behavioral`.
+   *
+   * Accepted because the DIRECTION differs. These fail CLOSED — the fetch declines and falls back
+   * to the browser tier, costing a rung — while the six shapes above failed OPEN and handed an
+   * interstitial to the agent as page content. If any of these is observed live, the repair is to
+   * rescope the exemption to the length question, never to reinstate it as a veto over a marker.
+   */
+  describe('P1 — the ACCEPTED cost of removing that exemption', () => {
+    const accepted: Array<[string, string]> = [
+      ['a login screen whose submit status reads "Just a moment..."',
+        '<html><head><title>Sign in</title></head><body><form action="/login" method="post">' +
+        '<input name="email" type="text"><input name="password" type="password">' +
+        '<button type="submit">Sign in</button></form>' +
+        '<p>Just a moment...</p></body></html>'],
+      ['a checkout form with an "Attention Required!" validation banner',
+        '<html><head><title>Checkout</title></head><body><form action="/pay">' +
+        '<h2>Attention Required!</h2><p>Please fix the highlighted fields.</p>' +
+        '<input name="card" type="text"><button>Pay</button></form></body></html>'],
+      ['an application 403 whose correlation id is dot-separated hex',
+        '<html><head><title>Error</title></head><body><h1>Access Denied</h1>' +
+        '<p>Reference #a1b2c3.d4e5f6.9876fe</p></body></html>'],
+      // The Cloudflare entries sat in the PARALLEL position to the Imperva-prose one and were
+      // missing. Attribution verified rather than inferred: on a LONG page both classify 'none'
+      // via the vendor arm, which places them in this class, while `cf-browser-verification` and
+      // `_cfChlOpt` stay 'behavioral' on a long page through arm 1 and are correctly NOT here.
+      ['a short page citing the FULL challenge-platform path in CSP prose',
+        '<html><body><p>Allow /cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1 in CSP.</p></body></html>'],
+      ['a changelog line naming orchestrate/chl_page',
+        '<html><body><p>Fixed: skip orchestrate/chl_page on retry.</p></body></html>'],
+    ];
+
+    for (const [name, html] of accepted) {
+      it(`${name} classifies behavioral (accepted)`, () => {
+        expect(classifyChallenge(html)).toBe('behavioral');
+      });
+    }
+  });
+
+  describe('the two arms are BOTH load-bearing — neither is redundant', () => {
+    it('an interstitial whose signature is NOT in the shared marker list still fires', () => {
+      // `px-captcha-error` (PerimeterX "denied" variant) and the "denied" /
+      // "verifying you are human" interstitial titles live in this module's own
+      // template/title vocabulary and are absent from tls-tier's shared
+      // CHALLENGE_MARKERS. So the marker-pair arm alone would MISS them, and the
+      // high-precedence interstitial-signal arm is what catches them. If someone
+      // deletes that arm as redundant, this reds.
+      const pxDenied =
+        '<html><head><title>Access to this page has been denied</title></head>' +
+        '<body><div class="px-captcha-error"></div></body></html>';
+      expect(classifyChallenge(pxDenied)).toBe('behavioral');
+    });
+
+    it('an interstitial whose ONLY signal is a shared body marker still fires', () => {
+      // The mirror case, and it has to be chosen carefully. Most shared markers
+      // are ALSO caught earlier — `dd-loader` / `_dd_s` / `id="cmsg"` by the
+      // behavioral-positive step, the template signatures by the arm above — so
+      // using one of those would exercise neither arm and prove nothing. (That
+      // exact mistake was made and caught here: a `dd-loader` fixture stayed
+      // green with this arm deleted.)
+      //
+      // `Just a moment` in the BODY is the genuine arm-2-only shape: the title
+      // regex requires the phrase inside <title>, no template signature is
+      // present, and no behavioral-positive marker matches — so the shared
+      // marker paired with the skeleton reading is the ONLY thing that can
+      // classify it. Cloudflare renders the phrase as page copy, not only as a
+      // title, so this is a real interstitial shape and not a contrivance.
+      const bodyPhraseOnly =
+        '<html><head><title>Access</title></head><body>' +
+        '<h1>Just a moment...</h1><div id="wait"></div></body></html>';
+      expect(classifyChallenge(bodyPhraseOnly)).toBe('behavioral');
+    });
+  });
+
+  /**
+   * REGRESSION — removing the length heuristic must not remove VENDOR COVERAGE with it.
+   *
+   * The arm this slice replaced was `isChallengeSkeleton(slice) || isCloudflareShell(lower)`. Only
+   * the `visibleText < 600` arm inside `isChallengeSkeleton` was defective. But that predicate ALSO
+   * short-circuits on two positive MARKERS, and `isCloudflareShell` is a pure marker check — so the
+   * first version of this fix deleted markers along with the heuristic, and four real wall shapes
+   * silently flipped `behavioral` -> `none`.
+   *
+   * Caught by a BASE-vs-TIP differential (running both revisions of the classifier side by side),
+   * not by this suite — every test here was green throughout. Consequence was not cosmetic:
+   * `cdpDirectFetch` breaks its clear-poll on `=== 'none'` and returns the body as content at a
+   * synthesized HTTP 200, so these walls would have been handed to the agent as real pages.
+   */
+  describe('vendor coverage the length heuristic was accidentally providing', () => {
+    it('an Imperva/Incapsula stub is behavioral', () => {
+      const html =
+        '<html><head><title>Request unsuccessful.</title></head><body>' +
+        '<iframe src="/_Incapsula_Resource?CWUDNSAI=9&xinfo=12-345-0"></iframe></body></html>';
+      expect(classifyChallenge(html)).toBe('behavioral');
+    });
+
+    it('an Akamai denial (no /akam/ sensor path) is behavioral', () => {
+      const html =
+        '<html><head><title>Access Denied</title></head><body><h1>Access Denied</h1>' +
+        '<p>You don\'t have permission to access this server.</p>' +
+        '<p>Reference #18.1a2b3c4d.1712345678.9abcdef</p></body></html>';
+      expect(classifyChallenge(html)).toBe('behavioral');
+    });
+
+    it('a modern-CF skeleton with no interstitial title is behavioral', () => {
+      // The F3 case: challenge-platform script, near-empty, no catalogued marker, no title. A
+      // localized Cloudflare interstitial looks exactly like this, since the title pattern is
+      // English-only — so this is not an exotic shape.
+      const html =
+        '<html><head><meta charset="utf-8"></head><body><div id="challenge-running"></div>' +
+        '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>' +
+        '</body></html>';
+      expect(classifyChallenge(html)).toBe('behavioral');
+    });
+
+    it('a LOWERCASE Cloudflare body phrase is behavioral — matching is case-insensitive', () => {
+      // The F4 case. The shared marker catalogue compares case-SENSITIVELY against raw HTML, while
+      // the removed `isCloudflareShell` compared on the lowercased slice, so a lowercase variant was
+      // released. Both cases must classify the same.
+      const lower =
+        '<html><head><title>Access</title></head><body><h1>just a moment...</h1></body></html>';
+      const upper =
+        '<html><head><title>Access</title></head><body><h1>Just a moment...</h1></body></html>';
+      expect(classifyChallenge(lower)).toBe('behavioral');
+      expect(classifyChallenge(upper)).toBe('behavioral');
+    });
+  });
+
+  /**
+   * OVER-FIRE PROBE for the vendor markers. A new marker is a new gate, and the house rule is that
+   * a new gate ships with negative tests.
+   *
+   * EVERY FIXTURE HERE IS SHORT, DELIBERATELY. The first version of this block used long articles,
+   * and three of its four cases were VACUOUS: the content guard released them on length before the
+   * vendor arm ever ran, so they asserted the content guard and proved nothing about the markers.
+   * Forcing `hasVendorTemplateMarker` to `return true` left them green — the interception probe
+   * that should have been run when they were written.
+   *
+   * A negative for a marker paired with a length reading has to be SHORT ENOUGH TO REACH THE ARM,
+   * which means it must test the marker's PRECISION rather than the content guard's reach: a short
+   * body carrying something marker-adjacent that is not the marker. That is what each case below
+   * does, and it is why they double as the regression tests for N1 and N3.
+   */
+  describe('MUST-NOT-FIRE — short pages that reach the vendor arm and must survive it', () => {
+    it('a thin SPA shell behind Cloudflare JS Detections does not fire', () => {
+      // N1. JS Detections injects its sensor into pages served SUCCESSFULLY, so the bare
+      // `/cdn-cgi/challenge-platform/` prefix means "this zone uses Cloudflare", not "this response
+      // is a challenge". Measured 193 bytes, and it classified behavioral — through cdpDirectFetch
+      // that is this slice's own defect, narrowed to Cloudflare-protected thin pages.
+      const html =
+        '<html><head><title>Dashboard</title></head><body><div id="root"></div>' +
+        '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>' +
+        '<script src="/assets/app.js"></script></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a small Cloudflare-fronted landing page does not fire', () => {
+      const html =
+        '<html><head><title>Acme</title></head><body><h1>Acme</h1><p>Welcome.</p>' +
+        '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a short page citing the challenge-platform PREFIX in CSP prose does not fire', () => {
+      // SCOPE, stated because this test is easy to over-read. It pins the NARROWING — that the bare
+      // prefix is not a marker — and it reds when the marker is widened back to the prefix.
+      //
+      // It does NOT show that citing the path in prose is safe generally. The prefix is not the
+      // marker in use, so this fixture cannot fail for `orchestrate/chl_`. The FULL path in prose
+      // classifies `behavioral` and is recorded in the accepted-limitation table below, which is
+      // where that case lives. Reading this as "prose citations are fine" was exactly the gap that
+      // left the Cloudflare entries missing from that table.
+      const html =
+        '<html><body><p>Allow /cdn-cgi/challenge-platform/ in your CSP.</p></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a short support snippet naming both Akamai phrases does not fire', () => {
+      // N3. "Access Denied" is ordinary 403 copy and a bare "Reference #" is ordinary support copy,
+      // so the literal phrase pair fired on this 99-byte help text. The rule now requires the id's
+      // STRUCTURE, not the words around it.
+      const html =
+        '<html><body><p>If you see Access Denied, quote the Reference # shown on the page.</p></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a genuine app 403 carrying a SHORT reference id does not fire', () => {
+      const html =
+        '<html><body><h1>Access Denied</h1><p>Reference #4821 — contact your admin.</p></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a genuine short 403 saying "Access Denied" with NO reference id does not fire', () => {
+      const html =
+        '<html><head><title>403 Forbidden</title></head><body><h1>Access Denied</h1>' +
+        '<p>You do not have permission to view this resource.</p></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('an Imperva-protected login page is released by the MARKER, not by a form exemption', () => {
+      // The login page the form exemption was originally added for. It stays clean without any
+      // exemption, because Imperva's bare resource path is a RIDER it injects into pages it serves
+      // successfully — so narrowing the marker is what releases it.
+      //
+      // This is the fixture the exemption was justified by, kept as the regression guard for the
+      // narrowing. Deleting the narrowing reds it (measured: 1 failed / 61 passed).
+      const html =
+        '<html><head><title>Sign in</title></head><body><form action="/login" method="post">' +
+        '<input name="email" type="text"><input name="password" type="password">' +
+        '<button type="submit">Sign in</button></form>' +
+        '<script src="/_Incapsula_Resource?SWJIYLWA=719d34d31c8e3a6e6fffd425f7e032f3"></script>' +
+        '</body></html>';
+      expect(html.length).toBeLessThan(400);
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('an Imperva RIDER resource call on a served page does not fire', () => {
+      // The second half of M1. Imperva injects `_Incapsula_Resource` into pages it serves
+      // SUCCESSFULLY, so the bare path is a sensor, not a template — the same distinction already
+      // applied to Cloudflare's JSD path, which the Imperva entry had been left behind by. No form
+      // here, so only the marker narrowing can save it.
+      const html =
+        '<html><head><title>Pricing</title></head><body><h1>Pricing</h1><p>Plans from $9.</p>' +
+        '<script src="/_Incapsula_Resource?SWJIYLWA=719d34d31c8e3a6e6fffd425f7e032f3"></script>' +
+        '</body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a dotted SECTION number is not an Akamai reference id', () => {
+      // M2. `[0-9a-f]+(?:\.[0-9a-f]+){2,}` matches `1.2.3`, so a policy citation on a short page
+      // classified behavioral — the same over-fire as the literal phrase pair it replaced, one
+      // refinement further in. Real ids carry long hex groups; section numbers never do.
+      const html =
+        '<html><body><h1>Access Denied</h1><p>See reference #1.2.3 of the policy.</p></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('a short page with "attention required" as ordinary form copy does not fire', () => {
+      // The Cloudflare WAF block page is titled "Attention Required! | Cloudflare". The bang is
+      // load-bearing; without it the phrase is everyday UI copy.
+      const html =
+        '<html><body><form action="/save"><p>Attention required: complete all fields.</p>' +
+        '<input name="a"><button>Save</button></form></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+  });
+
+  /**
+   * CONTENT-GUARD negatives — long bodies quoting the vendor markers in real prose. Kept, but
+   * labelled for what they actually exercise: the >=600-visible-char release at the top of
+   * `classifyChallenge`, NOT the vendor arm, which they never reach.
+   */
+  describe('MUST-NOT-FIRE — substantial articles quoting the vendor markers (content guard)', () => {
+    it('an article explaining Imperva does not fire', () => {
+      const html =
+        '<html><head><title>How Imperva blocks bots</title></head><body><article>' +
+        'The interstitial loads an iframe pointing at _Incapsula_Resource with a CWUDNSAI parameter. ' +
+        'We explain the whole handshake for engineers below. '.repeat(20) +
+        '</article></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+
+    it('an article explaining Akamai denials does not fire', () => {
+      const html =
+        '<html><head><title>Reading Akamai denials</title></head><body><article>' +
+        'An Akamai denial renders "Access Denied" plus Reference #18.1a2b3c4d.1712345678.9abcdef. ' +
+        'Here is how to read one when debugging your own traffic. '.repeat(20) +
+        '</article></body></html>';
+      expect(classifyChallenge(html)).toBe('none');
+    });
+  });
+
+  describe('the pairing invariant, stated directly', () => {
+    it('a skeleton-shaped body WITHOUT any vendor artifact is never a challenge', () => {
+      // The invariant, independent of any single fixture: take a body short
+      // enough that the old length arm fired, and assert that shortness ALONE
+      // decides nothing. Adding a marker — and only that — flips the verdict.
+      const shortNoMarker = '<html><body><div id="app"></div></body></html>';
+      expect(classifyChallenge(shortNoMarker)).toBe('none');
+
+      const shortWithMarker = '<html><body><div id="app"></div>_cfChlOpt</body></html>';
+      expect(classifyChallenge(shortWithMarker)).toBe('behavioral');
     });
   });
 });

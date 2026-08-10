@@ -300,10 +300,29 @@ describe('S9B slice 1 — the gate predicate choice is justified by measurement,
     '<script src="/dd-loader.js"></script></body></html>';
 
   // A genuine page that is simply THIN. The d14 spike measured `classifyChallenge` calling
-  // example.com 'behavioral', which is why the gate cannot be built on it.
+  // example.com 'behavioral'; slice P3-CLASSIFY fixed that (it was a length reading used as a
+  // verdict), so this input now agrees across both predicates. Kept as a regression fixture: the
+  // gate must never call it a shell again, from either predicate.
   const THIN_BUT_REAL =
     '<html><head><title>Example Domain</title></head><body><div><h1>Example Domain</h1>' +
     '<p>This domain is for use in illustrative examples in documents.</p></div></body></html>';
+
+  // A NOVEL vendor's wall: a large all-scaffolding body carrying NONE of the catalogued challenge
+  // markers. Only the GENERAL density rule catches this shape — and that rule is STATUS-GATED,
+  // which is the point of the test below.
+  //
+  // Deliberately sized to carry MORE than 600 visible characters. That matters: `classifyChallenge`
+  // releases any body at or above that floor as content, at BOTH revisions, so its 'none' verdict
+  // here is a genuine pre-existing property of a status-free classifier and not an artifact of the
+  // P3-CLASSIFY change. An earlier version of this test used a SHORT markerless wall, whose 'none'
+  // that change had itself created — the assertion would have failed at base `fb16fb01`, so it
+  // proved the opposite of what it claimed.
+  const MARKERLESS_WALL =
+    '<html><head><title>Security Check</title>' +
+    '<script>' + 'var _z=[];for(var i=0;i<64;i++){_z.push((i*31)%97);}'.repeat(700) + '</script>' +
+    '</head><body><p>' +
+    'Your request has been held for review by an automated security system. '.repeat(10) +
+    '</p></body></html>';
 
   it('fires on a real interstitial — the shell is caught', () => {
     expect(isChallengeShell(200, CF_SHELL)).toBe(true);
@@ -317,14 +336,32 @@ describe('S9B slice 1 — the gate predicate choice is justified by measurement,
     expect(isChallengeShell(200, THIN_BUT_REAL)).toBe(false);
   });
 
-  it('classifyChallenge is UNSAFE as the gate — and it is the THIN page, not the sensor page, that proves it', () => {
-    // Measured locally, reproducing the d14 spike's example.com finding:
-    //   real article + anti-bot sensor → 'none'        (content wins over markers, working as designed)
-    //   thin-but-genuine page          → 'behavioral'  ← this is the one that would have been refused
-    // Asserted specifically rather than with a `.some()`, so the test names WHICH failure mode it guards.
-    // If either verdict moves, the source comment in studio-fetch.ts is no longer justified and this reds.
+  it('classifyChallenge is UNSAFE as the gate because it is STATUS-FREE — it MISSES a markerless wall', () => {
+    // The justification, restated after slice P3-CLASSIFY.
+    //
+    // The original version rested on `classifyChallenge` OVER-firing: it called a thin-but-genuine
+    // page 'behavioral' because its skeleton predicate read visible-text length as a verdict. That
+    // was a defect, and it has been fixed — so that assertion would now be asserting a bug.
+    //
+    // The gate choice survives on a stronger and opposite ground, and this pair is the evidence:
+    // `classifyChallenge` takes HTML only, so it cannot reach the STATUS-GATED general density rule,
+    // which is the one rule that catches a wall from a vendor whose markers are not catalogued. As a
+    // gate it would UNDER-fire and hand a real wall back as content — the failure a gate exists to
+    // prevent, and the worse direction of the two.
+    //
+    // Both verdicts below hold at base `fb16fb01` as well as at tip, verified by running the two
+    // revisions of the classifier side by side. That is the whole point of choosing a wall with more
+    // than 600 visible characters: the property is inherent to a status-free classifier, not
+    // something this slice introduced.
+    expect(isChallengeShell(403, MARKERLESS_WALL)).toBe(true);
+    expect(classifyChallenge(MARKERLESS_WALL)).toBe('none');
+
+    // The sensor-bearing article: 'none' at both revisions — content wins over markers, as designed.
     expect(classifyChallenge(REAL_WITH_SENSOR)).toBe('none');
-    expect(classifyChallenge(THIN_BUT_REAL)).not.toBe('none');
+
+    // The thin genuine page: 'none' is NEW as of P3-CLASSIFY (it was 'behavioral' at base). Asserted
+    // as the fix it is, and labelled as such rather than presented as a standing property.
+    expect(classifyChallenge(THIN_BUT_REAL)).toBe('none');
   });
 
   it('the class attached to a caught shell is the CLASSIFIER\'s, and it can be a class no solve rung serves', () => {

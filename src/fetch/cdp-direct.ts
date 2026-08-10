@@ -9,6 +9,7 @@ import { sanitizedChildEnv } from '../util/child-env.js';
 import { stealthLaunchArgs } from './stealth.js';
 import { discoverSessions, isCDPReachable } from './cdp-client.js';
 import { classifyChallenge } from './challenge-classify.js';
+import { isLowContentDensity } from './tls-tier.js';
 import { guardFetchUrl, guardResolvedHost, type LookupAll } from '../watch/ssrf.js';
 import { redactUrl } from '../util/redact-url.js';
 import type { RawFetchResult } from '../types.js';
@@ -987,18 +988,19 @@ const DECLINE_REMEDY: Record<CdpDirectDeclineReason, string> = {
     'the optional raw control-plane dependency is missing or exposed no page target; reinstall without --omit=optional',
   'blocked-target-address':
     'the target resolved to an address the fetch policy blocks; this is the guard working, not a fault',
-  // Deliberately does NOT assert "a challenge blocked us": the gate behind this
-  // reason is `classifyChallenge(html) !== 'none'`, and its skeleton predicate
-  // fires on visible-text length ALONE (`isChallengeSkeleton`, tls-tier.ts) — a
-  // predicate whose own sibling docstring says it is "deliberately NOT sufficient
-  // on its own" and must be paired with an anti-bot status. This rung has no HTTP
-  // status to pair with, so a short-but-legitimate page classifies as a wall
-  // (measured live: example.com, 559 bytes → 'behavioral'). The line therefore
-  // reports what was OBSERVED and names the ambiguity, rather than claiming a
-  // wall the build cannot actually distinguish. Tracked separately; see `bytes`
-  // in the log data to tell the two cases apart at a glance.
+  // The short-page false positive this line used to hedge against is FIXED
+  // (slice P3-CLASSIFY). The gate behind this reason is still
+  // `classifyChallenge(html) !== 'none'`, but that classifier no longer treats a
+  // visible-text length reading as a verdict: a challenge class now requires a
+  // positive interstitial artifact (interstitial title, vendor template
+  // signature, or a shared challenge marker) paired with the skeleton reading.
+  // example.com — 559 bytes, the measured false positive — classifies 'none'.
+  //
+  // So this reason may now assert a challenge. `bytes` is still logged: it is
+  // genuinely useful for telling a tiny stub apart from a full interstitial, and
+  // a body that classifies as a challenge on a real marker is worth sizing.
   'challenge-did-not-clear':
-    "the body never classified as clean content inside this rung's budget; the fetch falls back to the browser tier. NOTE: a legitimately short page can classify this way — check `bytes` before reading this as a block",
+    "the body still carried a challenge when this rung's budget elapsed; the fetch falls back to the browser tier",
   'rung-error': 'unexpected failure in this rung; the fetch falls back to the browser tier',
 };
 
@@ -1293,13 +1295,56 @@ export async function cdpDirectFetch(
     for (;;) {
       if (opts.signal?.aborted) return null;
       html = await handle.getContentHtml();
-      if (html && classifyChallenge(html) === 'none') break;
+      // BREAKING HERE RETURNS THE BODY TO THE AGENT AS CONTENT, at a synthesized
+      // HTTP 200 that the terminal `guardChallengeShell` then sees as clean. So
+      // this condition is not "is there a challenge shape?" — it is "is this
+      // body safe to hand back?", and it must fail CLOSED.
+      //
+      // `classifyChallenge` alone cannot carry that. Its own docstring scopes it
+      // to deciding WHICH solve rung applies for a page already suspected to be
+      // a challenge; it is a shape classifier, never a whether-detector. Using
+      // it as one is a category error that happened to fail closed while its
+      // skeleton predicate called every thin body a challenge, and began failing
+      // OPEN the moment that heuristic was correctly removed.
+      //
+      // So it is paired with the GENERAL, vendor-agnostic wall shape. A marker
+      // catalogue only ever recognises vendors already met; density generalises,
+      // and catches a large all-scaffolding wall from a vendor nobody has
+      // catalogued yet.
+      //
+      // THE PAIRING IS ITSELF IMPERFECT, AND THE COST RUNS BOTH WAYS. Stated in
+      // full because naming only the under-fire half reads as though the sole
+      // cost were incomplete coverage:
+      //
+      //   - UNDER-FIRE: `isLowContentDensity` needs >=1KB of body, so a SMALL
+      //     wall from an uncatalogued vendor still breaks here and is returned.
+      //     Partly covered by the vendor template markers in the classifier;
+      //     anything neither rule knows is a real residual gap.
+      //   - OVER-FIRE: a LARGE, LEGITIMATE, low-text page fails this condition
+      //     and burns the full clear-poll before declining. Measured: a 220-image
+      //     gallery (47,950 B) and a large un-hydrated SPA shell. They are not
+      //     served wrongly — the fetch falls back to the browser tier — but they
+      //     pay the budget.
+      //
+      // Both are UNCHANGED versus base `fb16fb01`, which declined these too, and
+      // it fails CLOSED. `isLowContentDensity`'s own docstring asks callers to
+      // pair it with an anti-bot STATUS; this call site pairs it with
+      // `classifyChallenge === 'none'`, which is the ABSENCE of a signal rather
+      // than a status. A real status pairing is exactly what a status-free
+      // consumer cannot supply — the structural problem this rung has by design,
+      // not an oversight to be tidied away.
+      //
+      // Measured: example.com (544B, legitimate) breaks promptly; the markerless
+      // scaffold wall does not.
+      if (html && classifyChallenge(html) === 'none' && !isLowContentDensity(html)) break;
       if (Date.now() >= clearDeadline) {
         return declineRung('challenge-did-not-clear', url, {
           challengeClass: html ? classifyChallenge(html) : 'empty',
-          // The number that separates a real wall from the short-page false
-          // positive this classifier is known to produce. Without it the line
-          // asserts something it cannot actually establish.
+          // Kept for triage: it separates a tiny vendor stub from a full
+          // interstitial at a glance. It is no longer load-bearing for deciding
+          // whether the verdict is trustworthy — the classifier now requires a
+          // positive challenge artifact rather than a length reading, so a
+          // legitimately short page reaches the `=== 'none'` break above.
           bytes: html.length,
         });
       }
