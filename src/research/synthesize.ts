@@ -43,10 +43,17 @@ export async function synthesizeReport(
     index: i + 1,
     url: s.url,
     title: s.title,
-    // Page-derived preview returned to the agent — structurally contained (P6-a): the snippet
-    // is fenced as untrusted data regardless of the trust flag (which is mirrored separately).
-    // Chrome is stripped BEFORE the slice so the 200 chars are real content, then fenced.
-    snippet: wrapUntrusted(stripResearchChrome(s.markdown_content).slice(0, 200), { origin: s.url }),
+    // RAW page-derived preview. Containment for research citations lives at the ONE response-shaping
+    // seam (fenceResearchData, in the server dispatch layer), not here. Naming that module in full
+    // would trip PIN-A4, the architectural pin that keeps this file free of the dispatch fence.
+    //
+    // F1: it used to be fenced here, and the seam skipped research snippets on the strength of that.
+    // But this is only ONE of two producers — the local-LLM path rebuilds finalCitations from
+    // scratch (research/pipeline.ts) with an unfenced snippet, so the seam's skip made that path
+    // fail OPEN: a raw hostile snippet shipped next to a fenced sibling `title` on the same object.
+    // Fencing at the seam makes it one invariant at one choke point that every producer passes,
+    // instead of an assumption each new producer has to remember to honour.
+    snippet: stripResearchChrome(s.markdown_content).slice(0, 200),
     trusted: s.trusted, // mirror the source's trust (C4)
   }));
 

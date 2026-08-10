@@ -105,12 +105,23 @@ export function neutralizeMarkers(s: string): string {
 /**
  * The origin sits INSIDE the opening marker, so it is itself an injection vector: a URL carrying
  * `]]` or a newline would terminate the marker early and put the rest in instruction position.
- * A URL is a single token, so keep the LEADING run of URL-safe characters and drop everything from
- * the first illegal one (this excludes `[`, `]` and every whitespace character), then bound the
- * length. Truncating rather than stripping-in-place also stops a crafted value from reassembling
- * into something that reads like a second marker.
+ *
+ * F6 — reduce to SCHEME + HOST (`new URL(u).origin`) rather than sanitizing a whole URL. Character
+ * sanitizing alone was structurally sound, but it still permitted up to 512 characters of readable,
+ * attacker-chosen prose on the opener line — and `origin` is the POST-REDIRECT url, so a hostile page
+ * picks its own value with a 302. Cutting to the origin leaves a bounded DNS label, which is all the
+ * reading model needs ("which host is talking") and removes the prose channel entirely.
+ *
+ * The character allowlist is retained as the fallback for values that are not parseable URLs (a
+ * `studio://clip|7` artifact URI, a bare hostname), so those still cannot break the marker.
  */
 function sanitizeOrigin(origin: string): string {
+  try {
+    const parsed = new URL(origin);
+    if (parsed.origin && parsed.origin !== 'null') return parsed.origin.slice(0, MAX_ORIGIN_CHARS);
+  } catch {
+    // not a parseable absolute URL — fall through to the character allowlist
+  }
   const leading = /^[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]*/.exec(origin);
   return (leading ? leading[0] : '').slice(0, MAX_ORIGIN_CHARS);
 }
@@ -192,8 +203,12 @@ export interface UntrustedFenceParts {
  * Build the fence as STRUCTURED METADATA, leaving the payload untouched (decision A3b). The REST
  * surface serves non-LLM consumers — dedup pipelines, embedding indexers — that persist the
  * markdown they read, and fences must never be persisted. So REST returns these parts as a sibling
- * field and the LLM-facing SDK helpers concatenate `notice + begin_marker + payload + end_marker`
- * at the point the text actually enters a model's context.
+ * field, and any consumer about to hand the text to a model composes
+ * `notice + "\n" + begin_marker + "\n" + payload + "\n" + end_marker` first.
+ *
+ * F7 — stated as a CONTRACT the parts satisfy, not as a description of shipped code: no such helper
+ * exists in sdks/ yet. Landing it in the TS and Python clients is follow-up work; until then REST
+ * consumers must compose it themselves, and this shape is what they compose.
  */
 export function untrustedFenceParts(origin?: string): UntrustedFenceParts {
   const nonce = freshNonce();

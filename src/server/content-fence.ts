@@ -1,4 +1,4 @@
-import { wrapUntrusted } from '../security/untrusted.js';
+import { wrapUntrusted, UNTRUSTED_BEGIN_PREFIX } from '../security/untrusted.js';
 import type {
   AgentOutput,
   CacheOutput,
@@ -77,17 +77,23 @@ function fenceHighlights(items: Highlight[] | undefined): Highlight[] | undefine
 }
 
 /**
- * Citation titles + snippets. `snippetAlreadyFenced` exists because research's citation snippets are
- * fenced UPSTREAM at the synthesis seam (research/synthesize.ts), and re-wrapping them here would
- * NEST a fence whose inner close marker carries a VALID earlier nonce — the exact hazard the
- * wrap-once invariant exists to prevent. Search citations are built unfenced, so they are wrapped here.
+ * Citation titles + snippets — both always fenced here.
+ *
+ * F1: this used to take a `snippetAlreadyFenced` flag, passed `true` for research because
+ * research/synthesize.ts fenced its snippets upstream. That was fail-OPEN: research has TWO citation
+ * producers, and the local-LLM path (research/pipeline.ts, reached via WIGOLO_LOCAL_LLM or any
+ * provider routing through synthesizeLocal) rebuilds the array with a raw
+ * `stripResearchChrome(...).slice(0, 200)` snippet. The flag skipped it, so a hostile snippet shipped
+ * bare beside its own fenced `title`. The producer-side fence is gone and the seam now fences
+ * unconditionally: one invariant at one choke point, rather than an assumption every future producer
+ * must remember.
  */
-function fenceCitations(items: Citation[] | undefined, snippetAlreadyFenced: boolean): Citation[] | undefined {
+function fenceCitations(items: Citation[] | undefined): Citation[] | undefined {
   if (!Array.isArray(items)) return items;
   return items.map((c) => ({
     ...c,
     title: fenceOptional(c.title, c.url) as string,
-    snippet: snippetAlreadyFenced ? c.snippet : (fenceOptional(c.snippet, c.url) as string),
+    snippet: fenceOptional(c.snippet, c.url) as string,
   }));
 }
 
@@ -98,8 +104,12 @@ export function fenceFetchData(data: FetchOutput): FetchOutput {
     ...(typeof data.markdown === 'string' ? { markdown: fence(data.markdown, origin) } : {}),
     // `document.title` and the meta description are fully attacker-controlled and were returned raw.
     title: fenceOptional(data.title, origin) as string,
+    // F4: hand-picking `description` left og_type / date / keywords raw, while the extract seam's own
+    // OPERATIONAL_KEYS comment declares those exact keys fail-CLOSED. Same keys, two policies. Route
+    // metadata through the same deep-fence so there is one policy; canonical_url and og_image are on
+    // the allowlist and stay raw for free.
     ...(data.metadata && typeof data.metadata === 'object'
-      ? { metadata: { ...data.metadata, description: fenceOptional(data.metadata.description, origin) as string | undefined } }
+      ? { metadata: fenceDeepValue(data.metadata, false, 0, origin) as FetchOutput['metadata'] }
       : {}),
     ...(data.evidence ? { evidence: fenceEvidence(data.evidence, origin) } : {}),
     // site_data is per-site JSON lifted straight off the page (Reddit/YouTube/Amazon) — deep-fence its
@@ -222,13 +232,19 @@ export function fenceSearchData(data: SearchOutput): SearchOutput {
             title: typeof r.title === 'string' ? fence(r.title, r.url) : r.title,
             snippet: typeof r.snippet === 'string' ? fence(r.snippet, r.url) : r.snippet,
             ...(typeof r.markdown_content === 'string' ? { markdown_content: fence(r.markdown_content, r.url) } : {}),
+            // F5: alt text is page prose the author controls, same as a title. image_url stays raw.
+            ...(r.image_alt !== undefined ? { image_alt: fenceOptional(r.image_alt, r.url) as string } : {}),
           })),
         }
+      : {}),
+    // F5: the aggregated top-level image list carries the same alt prose; url/source_url stay raw.
+    ...(Array.isArray(data.images)
+      ? { images: data.images.map((im) => ({ ...im, ...(im.alt !== undefined ? { alt: fenceOptional(im.alt, im.source_url) as string } : {}) })) }
       : {}),
     // The evidence/citation/highlight arrays carry the SAME page prose as the results, re-sliced —
     // they were returned raw. `citations_xml` is a serialization of the citations INCLUDING snippets,
     // so it is fenced as one block (its origins are per-citation; no single one applies).
-    ...(data.citations ? { citations: fenceCitations(data.citations, false) } : {}),
+    ...(data.citations ? { citations: fenceCitations(data.citations) } : {}),
     ...(data.highlights ? { highlights: fenceHighlights(data.highlights) } : {}),
     ...(data.evidence ? { evidence: fenceEvidence(data.evidence) } : {}),
     ...(typeof data.citations_xml === 'string' && data.citations_xml.length > 0
@@ -309,14 +325,27 @@ function fenceBrief(brief: ResearchBrief): ResearchBrief {
  * `research` was UNFENCED at the dispatch envelope even though its sources, evidence and brief carry
  * page prose verbatim.
  *
- * `report` is deliberately NOT fenced: it is the synthesis OUTPUT, and on the keyless fallback path it
- * already CONTAINS per-source fences (research/synthesize.ts buildFallbackReport). Wrapping it again
- * would produce a nested fence whose inner close marker carries a valid earlier nonce — precisely the
- * hazard the wrap-once invariant forbids. Citation snippets are skipped for the same reason.
+ * F2 — `report` is decided by INSPECTING THE VALUE, never by naming a producer. There are two, and
+ * they differ in kind:
+ *  - `renderBriefReport` (research/render-brief.ts) is the DEFAULT keyless path and emits NO fence of
+ *    its own. Its bullets are raw page sentences lifted from key_findings, cross_references[].finding
+ *    and comparison.tradeoffs[].text. That is page-derived prose and MUST be fenced — the earlier
+ *    claim that `report` was always safe was simply false on the dominant path, and shipped the same
+ *    hostile sentence fenced in `brief.key_findings` and bare in `report` in one response.
+ *  - `buildFallbackReport` is only the safety net when no brief exists, and it embeds a fence PER
+ *    SOURCE. Re-wrapping that would nest a region whose inner close marker carries a VALID earlier
+ *    nonce, which is the hazard wrap-once forbids.
+ * So: a report already carrying a region is left alone; a report carrying none is fenced. Both halves
+ * are pinned, because a mutation test that only pinned the "leave it alone" half was defending a
+ * property that did not hold.
  */
 export function fenceResearchData(data: ResearchOutput): ResearchOutput {
+  const reportCarriesFence = typeof data.report === 'string' && data.report.includes(UNTRUSTED_BEGIN_PREFIX);
   return {
     ...data,
+    ...(typeof data.report === 'string' && data.report.length > 0 && !reportCarriesFence
+      ? { report: fence(data.report) }
+      : {}),
     ...(Array.isArray(data.sources)
       ? {
           sources: data.sources.map((s) => ({
@@ -326,7 +355,7 @@ export function fenceResearchData(data: ResearchOutput): ResearchOutput {
           })),
         }
       : {}),
-    ...(data.citations ? { citations: fenceCitations(data.citations, true) as Citation[] } : {}),
+    ...(data.citations ? { citations: fenceCitations(data.citations) as Citation[] } : {}),
     ...(data.evidence ? { evidence: fenceEvidence(data.evidence) } : {}),
     ...(data.brief ? { brief: fenceBrief(data.brief) } : {}),
   };

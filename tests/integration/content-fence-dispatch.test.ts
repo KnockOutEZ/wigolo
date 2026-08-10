@@ -3,7 +3,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { createMcpServer, type Subsystems } from '../../src/server.js';
 import { UNTRUSTED_BEGIN_PREFIX } from '../../src/security/untrusted.js';
-import { closedRegions, fenceNonces, enclosingRegion, STATIC_END } from '../helpers/untrusted-fence.js';
+import { closedRegions, fenceNonces, enclosingRegion, isFenced, STATIC_END } from '../helpers/untrusted-fence.js';
 
 /**
  * P2 — the four tools that reached the agent UNFENCED, proven on the WIRE through the real
@@ -114,16 +114,22 @@ describe('P2 — the four previously-unfenced tools fence on the real MCP wire',
     expect(parsed.results[1].trusted).toBe(false);
   });
 
-  it('WIRE-2: research fences sources + brief, and does NOT re-wrap the report', async () => {
-    // MUT: drop fenceResearchData → RED. MUT: also fence data.report → the report gains an outer
-    // region, which is the nested-fence hazard → the report equality assertion REDs.
+  it('WIRE-2 (F2): research fences sources, brief AND a fence-free report', async () => {
+    // REWRITTEN. This previously asserted `report` reached the agent unfenced, which encoded a FALSE
+    // property: on the default keyless path renderBriefReport weaves raw page sentences into prose and
+    // emits no fence, so the same hostile sentence shipped fenced in brief.key_findings and bare in
+    // report. A report with no region of its own must be fenced; one that already carries a region
+    // (buildFallbackReport) must not be re-wrapped — that half is pinned at SEAM-10b.
+    // MUT: skip the report → raw page prose bare on the wire → RED.
     const wire = await callTool('research', { question: 'q' });
     expect(enclosingRegion(wire, 'RESEARCH-BODY')).not.toBeNull();
     expect(enclosingRegion(wire, 'RESEARCH-TITLE')).not.toBeNull();
     expect(enclosingRegion(wire, 'BRIEF-TOPIC')).not.toBeNull();
     expect(enclosingRegion(wire, 'BRIEF-FINDING')).not.toBeNull();
     const parsed = JSON.parse(wire) as { report: string; sources: Array<{ url: string }>; depth: string };
-    expect(parsed.report).toBe('wigolo report text'); // synthesis output, deliberately unfenced
+    expect(isFenced(parsed.report)).toBe(true);
+    expect(closedRegions(parsed.report)).toBe(1); // fenced exactly once, no nesting
+    expect(parsed.report).toContain('wigolo report text'); // body preserved inside the region
     expect(parsed.sources[0].url).toBe('https://r.example/p');
     expect(parsed.depth).toBe('quick');
   });
@@ -145,7 +151,7 @@ describe('P2 — the four previously-unfenced tools fence on the real MCP wire',
     const wire = await callTool('diff', { old: { url: 'https://d.example/p' }, new: { url: 'https://d.example/p' } });
     expect(enclosingRegion(wire, 'DIFF-NEW')).not.toBeNull();
     expect(enclosingRegion(wire, 'old line')).not.toBeNull();
-    expect(wire).toContain('origin=https://d.example/p');
+    expect(wire).toContain('origin=https://d.example]]');
     const parsed = JSON.parse(wire) as { changed: boolean; hunks: Array<{ change_type: string }> };
     expect(parsed.changed).toBe(true);
     expect(parsed.hunks[0].change_type).toBe('modified');

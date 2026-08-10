@@ -370,9 +370,16 @@ export function buildUntrustedSourceBlocks(
   let used = 0;
   for (let i = 0; i < sources.length; i++) {
     const s = sources[i];
-    // P2: the fence cost depends on the ORIGIN echoed in the opener, so it must be measured
-    // per source INSIDE the loop. Hoisting an origin-less measurement out under-reserves for
-    // every source, and an under-reservation severs the closing marker → open fence.
+    // The fence cost depends on the ORIGIN echoed in the opener, so it must be measured per source
+    // INSIDE the loop; an origin-less measurement hoisted out under-reserves for every source, and an
+    // under-reservation severs the closing marker → open fence.
+    //
+    // History, corrected: at BASE the open-fence bug had a DIFFERENT cause. Origins did not exist
+    // yet, so the empty-wrap measurement was accurate for the fence itself — what broke it was
+    // PAYLOAD GROWTH under neutralization, which made the wrapped block longer than the reservation
+    // assumed. P2 removes that growth (byte-exact payload) and introduces a variable-length origin,
+    // so a correct reservation now needs the per-source measurement below. Both changes are load-
+    // bearing at head; neither alone would have been enough at base.
     const wrapOverhead = untrustedWrapOverhead(s.url);
     const header = `[${i + 1}] ${s.title} (${s.url})\n`;
     const sepLen = blocks.length > 0 ? sep.length : 0;

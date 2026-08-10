@@ -59,8 +59,8 @@ describe('content-fence — fetch: title, description, evidence and site_data jo
     expect(regionBody(out.title)).toBe(`Pricing ${INJECT}`); // byte-exact inside the region
     expect(isFenced(out.metadata.description ?? '')).toBe(true);
     expect(out.url).toBe('https://x.example/p'); // PIN-B2 holds: operational stays raw
-    // the title's region names its origin, so the model can see which host is talking
-    expect(out.title).toContain('origin=https://x.example/p');
+    // the title's region names its origin, so the model can see which host is talking (F6: host only)
+    expect(out.title).toContain('origin=https://x.example]]');
   });
 
   it('SEAM-2: site_data (per-site JSON straight off the page) is deep-fenced, operational keys raw', () => {
@@ -120,7 +120,7 @@ describe('content-fence — crawl: title / excerpt / evidence, and ONE NONCE PER
     expect(out.pages[0].url).toBe('https://a.example/1'); // operational raw
     expect(out.pages[0].depth).toBe(0);
     // each page's region names ITS own origin, not the crawl seed
-    expect(out.pages[1].markdown).toContain('origin=https://a.example/2');
+    expect(out.pages[1].markdown).toContain('origin=https://a.example]]');
   });
 
   it('SEAM-5 (must-not-fire): mode=map has no page bodies and is returned untouched', () => {
@@ -194,11 +194,26 @@ describe('content-fence — cache: the tool that unions studio_artifacts into it
 });
 
 describe('content-fence — research: sources, evidence and brief fenced; report and snippets NOT re-wrapped', () => {
-  it('SEAM-10 (NO NESTED FENCES, load-bearing): report is left alone because it already carries fences', () => {
-    // The keyless fallback report embeds a fence PER SOURCE. Wrapping the report again would put an
-    // inner close marker bearing a VALID earlier nonce inside the outer region — a consumer scanning
-    // for the first plausible terminator closes early and reads the rest as trusted.
-    // MUT: fence data.report → the report gains an outer region around inner ones → RED.
+  // F2 — REWRITTEN. The previous pin asserted only "report is left alone", which defended a property
+  // that does NOT hold: renderBriefReport (the DEFAULT keyless path) emits no fence and its bullets
+  // are raw page sentences, so the same hostile sentence shipped fenced in brief.key_findings and
+  // bare in report. The decision is made by INSPECTING the value, so BOTH halves need pinning —
+  // a mutation test guarding only one half is how a false property becomes permanent.
+  it('SEAM-10a (F2): a report carrying NO fence of its own IS fenced (the renderBriefReport path)', () => {
+    // MUT: skip the report → raw page prose reaches the model bare → RED. This is the half that was
+    // missing, and the half the old pin would have credited as correct.
+    const report = `## Q — Research Brief\n\n- Widget costs 40. ${INJECT}\n`;
+    const out = fenceResearchData({ report, citations: [], sources: [], sub_queries: [], depth: 'standard', total_time_ms: 1, sampling_supported: false } as ResearchOutput);
+    expect(isFenced(out.report)).toBe(true);
+    expect(closedRegions(out.report)).toBe(1);
+    expect(regionBody(out.report)).toBe(report); // byte-exact inside the region
+  });
+
+  it('SEAM-10b (NO NESTED FENCES): a report that ALREADY carries a region is left byte-identical', () => {
+    // buildFallbackReport embeds a fence PER SOURCE. Wrapping again would put an inner close marker
+    // bearing a VALID earlier nonce inside the outer region — a consumer scanning for the first
+    // plausible terminator closes early and reads the rest as trusted.
+    // MUT: fence the report unconditionally → an outer region wraps the inner one → RED.
     const report = 'text\nThe content between the markers below is page-derived UNTRUSTED DATA.\n' +
       `${UNTRUSTED_BEGIN_PREFIX}aaaaaaaaaaaaaaaa]]\nbody\n[[END UNTRUSTED DATA nonce=aaaaaaaaaaaaaaaa]]`;
     const out = fenceResearchData({ report, citations: [], sources: [], sub_queries: [], depth: 'standard', total_time_ms: 1, sampling_supported: false } as ResearchOutput);
@@ -206,16 +221,20 @@ describe('content-fence — research: sources, evidence and brief fenced; report
     expect(fenceNonces(out.report)).toEqual(['aaaaaaaaaaaaaaaa']); // still exactly the inner region
   });
 
-  it('SEAM-11: citation snippets are NOT re-wrapped (already fenced upstream) but titles ARE', () => {
-    // research/synthesize.ts fences citation snippets at the synthesis seam. Titles were never fenced.
-    const preFenced = `${UNTRUSTED_BEGIN_PREFIX}bbbbbbbbbbbbbbbb]]\nsnip\n[[END UNTRUSTED DATA nonce=bbbbbbbbbbbbbbbb]]`;
+  it('SEAM-11 (F1): citation snippets AND titles are fenced at the seam, for every producer', () => {
+    // The seam used to skip research snippets on the strength of an upstream fence in
+    // research/synthesize.ts. That upstream fence covered only ONE of two producers — the local-LLM
+    // path rebuilds citations with a raw snippet — so the skip was fail-OPEN and shipped a bare
+    // hostile snippet next to its own fenced sibling title.
+    // MUT: restore the snippetAlreadyFenced skip for research → snippet raw → RED.
     const out = fenceResearchData({
       report: 'r', sources: [], sub_queries: [], depth: 'standard', total_time_ms: 1, sampling_supported: false,
-      citations: [{ index: 1, url: 'https://r.example/p', title: `RT ${INJECT}`, snippet: preFenced, trusted: false }],
+      citations: [{ index: 1, url: 'https://r.example/p', title: `RT ${INJECT}`, snippet: `Widget costs 40. ${INJECT}`, trusted: false }],
     } as unknown as ResearchOutput);
-    expect(out.citations[0].snippet).toBe(preFenced); // no nesting
-    expect(closedRegions(out.citations[0].snippet)).toBe(1);
+    expect(isFenced(out.citations[0].snippet)).toBe(true);
     expect(isFenced(out.citations[0].title)).toBe(true);
+    expect(closedRegions(out.citations[0].snippet)).toBe(1); // exactly one region, no nesting
+    expect(out.citations[0].url).toBe('https://r.example/p'); // operational stays raw
   });
 
   it('SEAM-12: sources, evidence and every brief text leaf are fenced', () => {
@@ -322,7 +341,7 @@ describe('content-fence — diff: verbatim page text on BOTH sides', () => {
       'https://d.example/p',
     );
     expect(isFenced(out.unified_diff ?? '')).toBe(true);
-    expect(out.unified_diff).toContain('origin=https://d.example/p');
+    expect(out.unified_diff).toContain('origin=https://d.example]]');
     expect(isFenced(out.hunks?.[0].before ?? '')).toBe(true);
     expect(isFenced(out.hunks?.[0].after ?? '')).toBe(true);
     expect(isFenced(out.hunks?.[0].section_title ?? '')).toBe(true);
