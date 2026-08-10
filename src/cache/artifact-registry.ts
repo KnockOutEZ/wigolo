@@ -123,14 +123,21 @@ let bootstrap: Promise<void> | null = null;
  */
 export async function ensureArtifactProviders(): Promise<ArtifactProvider[]> {
   bootstrap ??= (async () => {
-    for (const load of IN_TREE_PROVIDER_LOADERS) {
+    for (const [index, load] of IN_TREE_PROVIDER_LOADERS.entries()) {
       try {
         const mod = (await load()) as Record<string, unknown>;
         for (const value of Object.values(mod)) {
           if (isArtifactProvider(value)) registerArtifactProvider(value);
         }
       } catch (err) {
+        // `loaderIndex` is the whole diagnostic for the silent-degradation mode: this warn is the
+        // ONLY signal that an artifact surface vanished, and a provider that THROWS DURING MODULE
+        // EVALUATION produces an error naming nothing. It is an index rather than the specifier
+        // because putting the path back as a data string would defeat the bundling guard (which
+        // asserts no bare specifier survives) and core's neutrality pin.
         log.warn('artifact provider module unavailable; continuing without it', {
+          loaderIndex: index,
+          loaderCount: IN_TREE_PROVIDER_LOADERS.length,
           error: err instanceof Error ? err.message : String(err),
         });
       }
