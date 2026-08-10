@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { synthesizeLocal } from '../../../src/research/synthesis-local.js';
 import { scrubProviderEnv, emptyKeystoreDataDir } from '../../helpers/provider-isolation.js';
+import { UNTRUSTED_BEGIN_PREFIX, UNTRUSTED_END_PREFIX } from '../../../src/security/untrusted.js';
 
 // In-memory keychain so storeKey/resolveProviderKey work without a real OS keychain.
 vi.mock('../../../src/security/keychain.js', () => {
@@ -216,7 +217,7 @@ describe('synthesizeLocal', () => {
     const content = body.messages[0].content as string;
     // D8a: the source body is now wrapped in the untrusted-data fence. Count 'x' INSIDE the fence
     // (the preamble's word "execute" carries an 'x'); the truncation-to-100 intent is on the body.
-    const fenced = content.slice(content.indexOf('[[BEGIN UNTRUSTED DATA]]'), content.indexOf('[[END UNTRUSTED DATA]]'));
+    const fenced = content.slice(content.indexOf(UNTRUSTED_BEGIN_PREFIX), content.indexOf(UNTRUSTED_END_PREFIX));
     expect((fenced.match(/x/g) || []).length).toBeLessThanOrEqual(100);
   });
 });

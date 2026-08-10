@@ -58,7 +58,7 @@ export async function synthesizeLocal(
     // D8a: the page body is embedded INSIDE the untrusted-data fence (same treatment as
     // research/synthesize.ts) so an injected directive can't be read as an instruction. Truncate
     // BEFORE wrapping (above) so the closing marker is never severed. Flag-independent by design.
-    return `[${i + 1}] ${s.title}\n${wrapUntrusted(body)}`;
+    return `[${i + 1}] ${s.title}\n${wrapUntrusted(body, { origin: s.url })}`;
   });
 
   const prompt =

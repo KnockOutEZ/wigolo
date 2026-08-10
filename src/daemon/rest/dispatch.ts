@@ -32,6 +32,7 @@ import {
   statusForSearchData,
   statusForCrawlCacheError,
 } from './errors.js';
+import { untrustedFenceParts } from '../../security/untrusted.js';
 
 export interface DispatchContext {
   subsystems: Subsystems;
@@ -219,11 +220,58 @@ async function dispatchWatch(input: WatchJobInput, ctx: DispatchContext): Promis
 }
 
 /**
+ * Tools whose 200 body carries page-derived text. `watch` is excluded: it returns
+ * content hashes and coarse line counts, not page prose.
+ */
+const PAGE_DERIVED_TOOLS = new Set([
+  'fetch', 'search', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent', 'diff',
+]);
+
+/**
+ * P2 / decision A3b — REST carries the trust boundary as ENVELOPE METADATA, never as inline markers.
+ *
+ * REST is what the TS/Python SDKs and any third-party client talk to, and those consumers are not all
+ * LLMs: dedup pipelines, embedding indexers and cache layers read `markdown` and PERSIST it. Injecting
+ * markers into the string would corrupt every one of them, and it would break our own rule that a fence
+ * is never persisted. So the payload stays byte-clean and the fence travels as a sibling field; the
+ * LLM-facing SDK helpers concatenate `notice + begin_marker + payload + end_marker` at the point the
+ * text actually enters a model's context.
+ *
+ * `src/daemon/rest/firecrawl-compat.ts` is untouched by design — it calls the tool handlers directly
+ * (never this dispatcher), and it exists to mimic an API whose consumers expect clean markdown.
+ *
+ * B3 — ACCEPTED, NAMED CONSEQUENCE, recorded here so it is a decision and not a side effect.
+ * Research `citations[].snippet` used to arrive fenced over REST, because the producer
+ * (research/synthesize.ts) wrapped it. B1/F1 moved all containment to the MCP response seam, and this
+ * dispatcher returns handler output verbatim — so over REST that snippet is now RAW, a change versus
+ * both base and the earlier commits of this branch.
+ *
+ * That is decision A3b applied consistently for the first time rather than a regression: REST payloads
+ * are byte-clean, and the trust boundary travels as the `untrusted_content` envelope below. The
+ * honest caveat is that an envelope with no consumer is not yet a control — no assembly helper exists
+ * in sdks/ (see untrustedFenceParts). Landing that helper is REQUIRED COMPANION WORK before this
+ * reaches SDK users. Do NOT "fix" this by fencing REST inline; that is the option A3b rejected,
+ * because dedup pipelines and embedding indexers persist the markdown they read.
+ */
+function withUntrustedMetadata(tool: string, body: unknown): unknown {
+  if (!PAGE_DERIVED_TOOLS.has(tool)) return body;
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return body;
+  return { ...(body as Record<string, unknown>), untrusted_content: untrustedFenceParts() };
+}
+
+/**
  * Per-tool dispatch behind the full router check pipeline. Every tool returns
  * plain JSON tool output on success; StageResult failures + crawl/cache in-band
- * errors + search data.error map through errors.ts.
+ * errors + search data.error map through errors.ts. Successful page-derived
+ * responses additionally carry the `untrusted_content` trust envelope.
  */
 export async function dispatchTool(tool: string, input: unknown, ctx: DispatchContext): Promise<DispatchResult> {
+  const result = await dispatchToolInner(tool, input, ctx);
+  if (result.status !== 200) return result;
+  return { ...result, body: withUntrustedMetadata(tool, result.body) };
+}
+
+async function dispatchToolInner(tool: string, input: unknown, ctx: DispatchContext): Promise<DispatchResult> {
   // Lazy watch-scheduler hook — same semantics as the MCP dispatch. Fires for
   // every non-watch call.
   if (tool !== 'watch') {

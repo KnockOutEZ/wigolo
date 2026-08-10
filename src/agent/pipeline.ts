@@ -9,7 +9,7 @@ import {
 } from '../search/sampling.js';
 import { isLlmConfiguredWithKeyStore, runLlmText } from '../integrations/cloud/llm/run.js';
 import { resolveLocalModelTier } from '../integrations/cloud/llm/local-tier.js';
-import { wrapUntrusted } from '../security/untrusted.js';
+import { wrapUntrusted, untrustedWrapOverhead } from '../security/untrusted.js';
 import type {
   AgentInput,
   AgentOutput,
@@ -359,25 +359,35 @@ async function synthesizeResult(
 // END marker. The prior code wrapped each block then sliced the joined string to the budget,
 // which severed the trailing block's END (open fence) once the sources overflowed. P6-a: the page
 // body stays INSIDE the untrusted-data fence so an injected directive reads as quoted data, never
-// an instruction; embedded markers are neutralized pre-wrap by wrapUntrusted.
+// an instruction; a marker embedded by the page carries no valid nonce, so it cannot close the fence.
 export function buildUntrustedSourceBlocks(
   sources: AgentSource[],
   perSourceChars: number,
   totalChars: number,
 ): string {
   const sep = '\n\n';
-  const wrapOverhead = wrapUntrusted('').length; // content-independent fence cost (preamble + markers)
   const blocks: string[] = [];
   let used = 0;
   for (let i = 0; i < sources.length; i++) {
     const s = sources[i];
+    // The fence cost depends on the ORIGIN echoed in the opener, so it must be measured per source
+    // INSIDE the loop; an origin-less measurement hoisted out under-reserves for every source, and an
+    // under-reservation severs the closing marker → open fence.
+    //
+    // History, corrected: at BASE the open-fence bug had a DIFFERENT cause. Origins did not exist
+    // yet, so the empty-wrap measurement was accurate for the fence itself — what broke it was
+    // PAYLOAD GROWTH under neutralization, which made the wrapped block longer than the reservation
+    // assumed. P2 removes that growth (byte-exact payload) and introduces a variable-length origin,
+    // so a correct reservation now needs the per-source measurement below. Both changes are load-
+    // bearing at head; neither alone would have been enough at base.
+    const wrapOverhead = untrustedWrapOverhead(s.url);
     const header = `[${i + 1}] ${s.title} (${s.url})\n`;
     const sepLen = blocks.length > 0 ? sep.length : 0;
     const fixed = sepLen + header.length + wrapOverhead;
     if (used + fixed >= totalChars) break; // no room left for even an empty fenced block
     const contentBudget = Math.min(perSourceChars, totalChars - used - fixed);
     const content = s.markdown_content.slice(0, contentBudget);
-    const block = `${header}${wrapUntrusted(content)}`;
+    const block = `${header}${wrapUntrusted(content, { origin: s.url })}`;
     blocks.push(block);
     used += sepLen + block.length;
   }
@@ -450,7 +460,9 @@ Provide a clear, well-organized response that addresses the user's request based
   }
 }
 
-function buildFallbackSynthesis(prompt: string, sources: AgentSource[]): string {
+// Exported so the fence-free-producer invariant (B1 rule 2) can be pinned against the REAL producer
+// rather than a reconstruction of it.
+export function buildFallbackSynthesis(prompt: string, sources: AgentSource[]): string {
   const header = `## Results: ${prompt}\n\nGathered from ${sources.length} source(s):\n\n`;
   let result = header;
   const maxTotal = 6000;
@@ -465,18 +477,19 @@ function buildFallbackSynthesis(prompt: string, sources: AgentSource[]): string 
     result += sourceHeader;
     remaining -= sourceHeader.length;
 
-    // P6-a: reserve room for the untrusted-data fence so the content is truncated before
-    // wrapping and the fence stays well-formed within the budget.
-    const wrapOverhead = wrapUntrusted('').length;
-    const contentBudget = Math.min(remaining - 10 - wrapOverhead, source.markdown_content.length, 1500);
+    // B1: no fence here any more. This builds the RESPONSE-bound `agent.result` string, and a
+    // producer that sometimes emits a fence forces the response seam to decide by inspecting page
+    // text — a decision the page can flip by printing the marker prefix. Zero fence-bearing response
+    // producers means the seam fences unconditionally, with no attacker-supplied input to the
+    // decision. The prompt-bound fences in buildUntrustedSourceBlocks above are untouched.
+    const contentBudget = Math.min(remaining - 10, source.markdown_content.length, 1500);
     if (contentBudget > 0) {
       let content = source.markdown_content.slice(0, contentBudget);
       if (content.length < source.markdown_content.length) {
         content = content.slice(0, Math.max(contentBudget - 3, 0)) + '...';
       }
-      const wrapped = wrapUntrusted(content);
-      result += wrapped + '\n\n';
-      remaining -= wrapped.length + 2;
+      result += content + '\n\n';
+      remaining -= content.length + 2;
     }
   }
 

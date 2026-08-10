@@ -5,6 +5,8 @@ import {
   checkSamplingSupport,
 } from '../search/sampling.js';
 import type { ResearchSource, Citation } from '../types.js';
+// Only the PROMPT path wraps here now; the response path emits plain text and is fenced at the
+// response seam (B1). No overhead reservation is needed for a wrap this file no longer performs.
 import { wrapUntrusted } from '../security/untrusted.js';
 import { stripResearchChrome } from './brief.js';
 
@@ -43,10 +45,17 @@ export async function synthesizeReport(
     index: i + 1,
     url: s.url,
     title: s.title,
-    // Page-derived preview returned to the agent — structurally contained (P6-a): the snippet
-    // is fenced as untrusted data regardless of the trust flag (which is mirrored separately).
-    // Chrome is stripped BEFORE the slice so the 200 chars are real content, then fenced.
-    snippet: wrapUntrusted(stripResearchChrome(s.markdown_content).slice(0, 200)),
+    // RAW page-derived preview. Containment for research citations lives at the ONE response-shaping
+    // seam (fenceResearchData, in the server dispatch layer), not here. Naming that module in full
+    // would trip PIN-A4, the architectural pin that keeps this file free of the dispatch fence.
+    //
+    // F1: it used to be fenced here, and the seam skipped research snippets on the strength of that.
+    // But this is only ONE of two producers — the local-LLM path rebuilds finalCitations from
+    // scratch (research/pipeline.ts) with an unfenced snippet, so the seam's skip made that path
+    // fail OPEN: a raw hostile snippet shipped next to a fenced sibling `title` on the same object.
+    // Fencing at the seam makes it one invariant at one choke point that every producer passes,
+    // instead of an assumption each new producer has to remember to honour.
+    snippet: stripResearchChrome(s.markdown_content).slice(0, 200),
     trusted: s.trusted, // mirror the source's trust (C4)
   }));
 
@@ -90,7 +99,7 @@ async function synthesizeWithSampling(
       const content = source.markdown_content.slice(0, limits.perSourceChars);
       // P6-a: the page body is embedded INSIDE the untrusted-data fence so an injected
       // directive in the source cannot be read by the synthesis model as an instruction.
-      const block = `[${i + 1}] ${source.title} (${source.url})\n${wrapUntrusted(content)}`;
+      const block = `[${i + 1}] ${source.title} (${source.url})\n${wrapUntrusted(content, { origin: source.url })}`;
 
       totalChars += block.length;
       sourceBlocks.push(block);
@@ -159,19 +168,26 @@ export function buildFallbackReport(
     report += sourceHeader;
     remaining -= sourceHeader.length;
 
-    // P6-a: reserve room for the untrusted-data fence so the content is truncated BEFORE
-    // wrapping — the fence is then never cut by the final length clamp (a cut END marker
-    // would break containment).
-    const wrapOverhead = wrapUntrusted('').length;
-    const contentBudget = Math.min(remaining - 10 - wrapOverhead, source.markdown_content.length);
+    // B1: this used to fence each source body. It no longer does, and that is the point.
+    //
+    // `report` is RESPONSE-bound, so the response seam has to decide whether to fence it. While ANY
+    // producer could emit a fence, that decision had to be made by INSPECTING THE VALUE — and the
+    // value is page text, so a page that merely printed the opening-marker prefix switched the fence
+    // off for the whole report. Hardening the predicate does not rescue it: with a byte-exact payload
+    // a page can reproduce a complete, nonce-matched region verbatim, so EVERY content-derived
+    // predicate is forgeable. The fix is to delete the decision rather than strengthen it — with zero
+    // fence-bearing producers the seam fences unconditionally and there is no input left to attack.
+    //
+    // The PROMPT-bound fences (synthesizeWithSampling's per-source blocks) are untouched: different
+    // sink, and nothing there flows into the response.
+    const contentBudget = Math.min(remaining - 10, source.markdown_content.length);
     if (contentBudget > 0) {
       let content = source.markdown_content.slice(0, contentBudget);
       if (content.length < source.markdown_content.length) {
         content = content.slice(0, Math.max(contentBudget - 3, 0)) + '...';
       }
-      const wrapped = wrapUntrusted(content);
-      report += wrapped + '\n\n';
-      remaining -= wrapped.length + 2;
+      report += content + '\n\n';
+      remaining -= content.length + 2;
     }
   }
 

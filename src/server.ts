@@ -17,7 +17,17 @@ import { initDatabase, closeDatabase, getDatabase } from './cache/db.js';
 import { handleFetch } from './tools/fetch.js';
 import { handleSearch } from './tools/search.js';
 import { buildSearchContentBlocks } from './server/search-response.js';
-import { fenceFetchData, fenceCrawlData, fenceExtractData, fenceFindSimilarData } from './server/content-fence.js';
+import {
+  fenceFetchData,
+  fenceCrawlData,
+  fenceExtractData,
+  fenceFindSimilarData,
+  fenceCacheData,
+  fenceResearchData,
+  fenceAgentData,
+  fenceDiffData,
+  diffOriginFromInput,
+} from './server/content-fence.js';
 import { handleCrawl } from './tools/crawl.js';
 import { handleCache } from './tools/cache.js';
 import { handleExtract } from './tools/extract.js';
@@ -548,8 +558,10 @@ export function createMcpServer(subsystems: Subsystems): Server {
     if (name === 'cache') {
       const input = (args ?? {}) as unknown as CacheInput;
       const result = await handleCache(input, router);
+      // P2: cache returns stored page bodies + titles, and unions studio_artifacts into its results —
+      // it was the one already-open path for captured artifact rows.
       return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(fenceCacheData(result), null, 2) }],
         isError: !!result.error,
       };
     }
@@ -608,8 +620,10 @@ export function createMcpServer(subsystems: Subsystems): Server {
           isError: true,
         };
       }
+      // P2: sources, evidence and the brief carry page prose verbatim. `report` is left alone —
+      // it is the synthesis output and already fence-bearing on the keyless path (no nested fences).
       return {
-        content: [{ type: 'text', text: JSON.stringify(r.data, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(fenceResearchData(r.data), null, 2) }],
         isError: false,
       };
     }
@@ -624,8 +638,10 @@ export function createMcpServer(subsystems: Subsystems): Server {
           isError: true,
         };
       }
+      // P2: per-source bodies, titles and the step log reached the model bare. `rawHtml` is fenced
+      // as defence in depth — pipeline.ts strips it on every return path today.
       return {
-        content: [{ type: 'text', text: JSON.stringify(r.data, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(fenceAgentData(r.data), null, 2) }],
         isError: false,
       };
     }
@@ -635,8 +651,10 @@ export function createMcpServer(subsystems: Subsystems): Server {
     if (name === 'diff') {
       const input = (args ?? {}) as Record<string, unknown>;
       const r = await handleDiff(input);
+      // P2: a diff quotes verbatim page text on BOTH sides. The origin comes from whichever input side
+      // named a url; a diff of two inline blobs genuinely has none and omits it.
       return {
-        content: [{ type: 'text', text: JSON.stringify(r.ok ? r.data : { error: r.error, error_reason: r.error_reason, stage: r.stage }, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(r.ok ? fenceDiffData(r.data, diffOriginFromInput(input)) : { error: r.error, error_reason: r.error_reason, stage: r.stage }, null, 2) }],
         isError: !r.ok,
       };
     }
