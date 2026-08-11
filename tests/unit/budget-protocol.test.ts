@@ -757,10 +757,11 @@ describe("G-ACQUIRE's threshold is re-derived over its distribution, not over on
     // ⚠ The pinned browser download measures 534 MiB on darwin-arm64, reproducibly, across two
     // independent installs of `playwright@1.60.0` (chromium revision 1223) — and a real browser
     // launch adds 0 to it. The runner reads that SAME revision at 541-548 and has been observed
-    // at 560. The offset is not noise: two window-correct runner runs report the headless shell
-    // at 198 where the laptop reads 191, IDENTICALLY, so it is a property of the measuring host.
-    // A laptop-derived threshold would be adrift on the only machine that runs the gate, which
-    // is the mistake G-DIET's baseline records at a seventh of this size.
+    // at 560. Three window-correct runs settle what varies: one of them reproduces the laptop's
+    // per-child figures EXACTLY on four directories at once (191/88/128/341) while the other two
+    // read every one of them high, so the reading is host-dependent and the download is not.
+    // A laptop-derived threshold would therefore be adrift on the only machine that runs the
+    // gate, which is the mistake G-DIET's baseline records at a seventh of this size.
     expect(WORST_CLEAN_RUNNER_MIB).toBeGreaterThan(LAPTOP_EQUIVALENT_MIB);
     expect(limitFor(GATES['G-ACQUIRE'])).toBeGreaterThan(WORST_CLEAN_RUNNER_MIB);
   });
