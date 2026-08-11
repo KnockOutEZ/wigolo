@@ -547,7 +547,7 @@ describe("S10-d's tier-conditional pair is scoped to the COMPONENT, not the tota
     // WHY KEEP IT: it is the only gate that charges anyone for the 218 MiB of models, and it is
     // what catches amended-D1's doubling regression — acquiring the component AND the engine.
     const { substrateMiB, modelsMiB, browserEngineMiB } = SUBSTRATE_ONLY_ACQUISITION;
-    expect(GATES['G-ACQUIRE'].limit).toBe(800);
+    expect(GATES['G-ACQUIRE'].limit).toBe(880);
     expect(evaluate(GATES['G-ACQUIRE'], substrateMiB + modelsMiB).pass).toBe(true);
     expect(evaluate(GATES['G-ACQUIRE'], substrateMiB + modelsMiB + browserEngineMiB).pass).toBe(false);
   });
@@ -583,9 +583,15 @@ describe('G-TOTAL-DESKTOP is dropped, not silently inherited', () => {
     // tree that no longer exists, and it did exactly that on this slice's first run (1315 against
     // a stale 1493). The window is 44 MiB in both derivations because it is the sum of each
     // gate's own headroom (8 + 36), which this slice preserved deliberately rather than by luck.
+    //
+    // ⚠ The window is 84 rather than 44 after G-ACQUIRE's re-derivation, and the change is the
+    // point rather than a wrinkle: 44 held while G-ACQUIRE carried 36 MiB of headroom over a
+    // clean reading it had sampled ONCE. Its clean reading is a distribution spanning 35 MiB, so
+    // the honest headroom is 76 and the composed window widens with it — i.e. a composed gate is
+    // less buildable now, not more.
     const d = G_TOTAL_DESKTOP_DROPPED;
     expect(limitFor(GATES['G-DIET']) + limitFor(GATES['G-ACQUIRE'])).toBe(d.jointBoundOfShippedGatesMiB);
-    expect(d.jointBoundOfShippedGatesMiB - d.measuredTodayMiB).toBe(44);
+    expect(d.jointBoundOfShippedGatesMiB - d.measuredTodayMiB).toBe(84);
     // And it is a deferral: once the desktop arm acquires a real component the window opens.
     expect(d.reDeriveAtMiB).toBeGreaterThan(d.measuredPostFlipMiB);
     expect(d.reDeriveAtMiB).toBeLessThan(d.measuredTodayMiB);
@@ -605,5 +611,229 @@ describe('G-RSS-SUBSTRATE stays report-only', () => {
     expect(ci).not.toMatch(/measure\.mjs substrate-rss/);
     // Control: the sweep is reading the right file — the gates that DO block are in there.
     expect(ci).toMatch(/measure\.mjs idle-rss/);
+  });
+});
+
+/*
+ * G-ACQUIRE's measurement WINDOW, which is a different thing from its threshold.
+ *
+ * The gate is titled "bytes `warmup` downloads" and its old artifact said "differenced after
+ * it". What the runner actually did was `du` the directories LIVE when the assertion ran —
+ * three steps and ~3 minutes after warmup exited, with a live `wigolo fetch` and a live
+ * `wigolo search` against the DEFAULT data directory in between. So cached web content was
+ * being charged to warmup. Across the ten runs of the current tree the data component reads
+ * 234-246 against a floor of 233 (216 MiB of models + 17 of browser driver): 1-13 MiB of
+ * noise, on a gate whose last clean run passed at 793 against 800.
+ *
+ * These tests are stated over the WORKFLOW and the RUNNER SOURCE rather than over protocol.mjs
+ * on purpose. The protocol object can describe any window it likes; only ci.yml and measure.mjs
+ * decide which one is measured, and a gate whose stated artifact and executed artifact disagree
+ * is precisely the failure this program keeps finding.
+ */
+describe("G-ACQUIRE's window closes when warmup exits, not when the assertion runs", () => {
+  const ciYml = async () => {
+    const { readFile } = await import('node:fs/promises');
+    return readFile(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  };
+  const measureSrc = async () => {
+    const { readFile } = await import('node:fs/promises');
+    return readFile(new URL('../../scripts/budget/measure.mjs', import.meta.url), 'utf8');
+  };
+
+  it('takes the closing snapshot before the step that fetches live web content', async () => {
+    const ci = await ciYml();
+    const after = ci.indexOf('acquire-snapshot "$RUNNER_TEMP/acquire-after.json"');
+    const toolCalls = ci.indexOf('wigolo fetch https://example.com');
+    const warmup = ci.indexOf('wigolo warmup --reranker --embeddings --json');
+    expect(after).toBeGreaterThan(-1);
+    expect(after).toBeGreaterThan(warmup);
+    expect(after).toBeLessThan(toolCalls);
+  });
+
+  it('still asserts AFTER the tool calls, so an acquisition red cannot hide the pipeline check', async () => {
+    // The other half of the constraint, and the reason the window moved instead of the step.
+    // The runner uses `bash -e` and stops at the first failing step: moving the ASSERTION up
+    // would mean a red acquisition costs the run its only proof that fetch/extract/search are
+    // wired. Only the snapshot moved.
+    const ci = await ciYml();
+    const diff = ci.indexOf('measure.mjs" acquire-diff');
+    const toolCalls = ci.indexOf('wigolo search \'typescript programming language\'');
+    expect(diff).toBeGreaterThan(toolCalls);
+  });
+
+  it('passes both snapshots to the diff, so the assertion never re-measures live', async () => {
+    // The wiring is the whole fix: `acquire-diff` still accepts one argument (a developer
+    // running snapshot/warmup/diff by hand), so a CI invocation that quietly dropped the
+    // second file would keep working and keep counting the tool calls.
+    const ci = await ciYml();
+    expect(ci).toMatch(/acquire-diff "\$RUNNER_TEMP\/acquire\.json" "\$RUNNER_TEMP\/acquire-after\.json"/);
+  });
+
+  it('prefers the recorded closing snapshot over a live `du` when one is given', async () => {
+    const src = await measureSrc();
+    expect(src).toMatch(/const now = after \? \(after\[key\]\?\.mib \?\? 0\) : duMiB\(path\)/);
+    // Control: the live path still exists for the by-hand invocation, so the assertion above
+    // is about which one is CHOSEN rather than about `duMiB` having been deleted.
+    expect(src).toMatch(/function duMiB/);
+  });
+
+  it('says in the report which window was measured, because the two are not comparable', async () => {
+    const src = await measureSrc();
+    expect(src).toMatch(/window closed at the end of the measured step/);
+    expect(src).toMatch(/window closed live at assertion time/);
+  });
+
+  it('attributes each directory delta to its child directories', async () => {
+    // WHY: every drift observation this gate has produced is one number per directory, which
+    // can show that something moved and can never say what. The pinned browser download is
+    // chromium + chromium-headless-shell + ffmpeg and measures 534 MiB reproducibly off the
+    // runner; a runner reading of 554 has to be attributable or it is unfalsifiable.
+    const src = await measureSrc();
+    expect(src).toMatch(/function childDeltas/);
+    expect(src).toMatch(/childDeltas\(children, nowChildren\)/);
+    expect(src).toMatch(/children: childrenMiB\(p\)/);
+  });
+
+  it('states the closing snapshot in the gate protocol, not just in the runner', async () => {
+    // A protocol that describes a window the runner does not measure is how this gate came to
+    // charge a live search to `warmup` for as long as it did.
+    const gate = GATES['G-ACQUIRE'];
+    expect(gate.artifact).toMatch(/second snapshot taken the instant warmup exits/i);
+    expect(gate.artifact).toMatch(/never a live `du` at assertion time/);
+    expect(gate.horizon).toMatch(/not the assertion/);
+    // Control: the substrate pair's artifact makes no such claim, so this is discriminating.
+    expect(GATES['G-ACQUIRE-SUBSTRATE-DESKTOP'].artifact).not.toMatch(/second snapshot/);
+  });
+});
+
+/*
+ * G-ACQUIRE's THRESHOLD, re-derived over the distribution instead of over one sample.
+ *
+ * 800 came from a single 764 reading. The distribution behind it was never looked at, and 800
+ * turned out to sit INSIDE it — which is why the gate failed once at 803 and then passed on
+ * re-run at 769 and 788, on commits that could not possibly have changed what warmup downloads.
+ *
+ * Every `clean-machine-smoke (macos-latest, node 22)` job log since 2026-08-01 was harvested:
+ * 29 runs carried a G-ACQUIRE reading. Ten of them are the CURRENT tree — the 218 -> 235 step in
+ * the data component is S10-e moving the browser driver off the default install path and into
+ * the data directory, so readings either side of it are different quantities and are not pooled.
+ */
+const CURRENT_TREE_RUNNER_READINGS = [769, 781, 783, 784, 785, 788, 792, 793, 793, 799];
+/** This slice's own run, on the corrected window. The worst clean reading on record. */
+const WORST_CLEAN_RUNNER_MIB = 804;
+/** The lowest clean reading on record, and what the resolution claim is measured from. */
+const BEST_CLEAN_RUNNER_MIB = 769;
+/** browsers 534 + models 216 + driver 17, all `du -sm` on darwin-arm64, the same instrument CI uses. */
+const LAPTOP_EQUIVALENT_MIB = 767;
+/**
+ * Regressions this gate is chartered to catch, smallest first. `secondBrowserEngine` is firefox,
+ * the cheapest engine `warmup` can be made to acquire; `doubling` is amended-D1's — the desktop
+ * component AND the browser engine in one run.
+ */
+const CHARTERED_REGRESSIONS_MIB = { secondBrowserEngine: 272, secondEngineWebkit: 290, doubling: 300 + 546 };
+
+describe("G-ACQUIRE's threshold is re-derived over its distribution, not over one sample", () => {
+  const spread = Math.max(...CURRENT_TREE_RUNNER_READINGS, WORST_CLEAN_RUNNER_MIB) - BEST_CLEAN_RUNNER_MIB;
+
+  it('reds a clean build at the old 800, which is the whole reason it moved', () => {
+    // Stated as an assertion rather than a note because it is the finding. Four of the eleven
+    // clean readings on the current tree are within 16 MiB of 800 and two are over it.
+    const overTheOldLimit = [...CURRENT_TREE_RUNNER_READINGS, WORST_CLEAN_RUNNER_MIB, 803].filter((r) => r > 800);
+    expect(overTheOldLimit).toEqual([804, 803]);
+    // ⚠ The two lines above are a RECORD and could not fail if the shipped gate quietly went
+    // back to 800, so the claim is also stated against the gate itself: the old limit reds the
+    // clean reading this slice measured, and the shipped one does not.
+    expect(evaluate({ ...GATES['G-ACQUIRE'], limit: 800 }, WORST_CLEAN_RUNNER_MIB).pass).toBe(false);
+    expect(evaluate(GATES['G-ACQUIRE'], WORST_CLEAN_RUNNER_MIB).pass).toBe(true);
+  });
+
+  it('passes every clean reading ever recorded on the runner', () => {
+    for (const reading of [...CURRENT_TREE_RUNNER_READINGS, WORST_CLEAN_RUNNER_MIB, 803]) {
+      expect(evaluate(GATES['G-ACQUIRE'], reading).pass, `${reading} MiB is a clean run`).toBe(true);
+    }
+  });
+
+  it('is anchored to the RUNNER, which reads the same pinned bytes higher than a laptop does', () => {
+    // ⚠ The pinned browser download measures 534 MiB on darwin-arm64, reproducibly, across two
+    // independent installs of `playwright@1.60.0` (chromium revision 1223) — and a real browser
+    // launch adds 0 to it. The runner reads that SAME revision at 541-548 and has been observed
+    // at 560. Three window-correct runs settle what varies: one of them reproduces the laptop's
+    // per-child figures EXACTLY on four directories at once (191/88/128/341) while the other two
+    // read every one of them high, so the reading is host-dependent and the download is not.
+    // A laptop-derived threshold would therefore be adrift on the only machine that runs the
+    // gate, which is the mistake G-DIET's baseline records at a seventh of this size.
+    expect(WORST_CLEAN_RUNNER_MIB).toBeGreaterThan(LAPTOP_EQUIVALENT_MIB);
+    expect(limitFor(GATES['G-ACQUIRE'])).toBeGreaterThan(WORST_CLEAN_RUNNER_MIB);
+  });
+
+  it('keeps headroom worth more than the spread it is drifting over', () => {
+    // A gate whose margin is smaller than its own noise is the gate that just failed at 803 and
+    // passed at 769. 880 - 804 = 76 against a 35 MiB spread.
+    expect(spread).toBe(35);
+    expect(limitFor(GATES['G-ACQUIRE']) - WORST_CLEAN_RUNNER_MIB).toBeGreaterThan(2 * spread);
+  });
+
+  it('reds the SMALLEST regression it is chartered to catch, from the BEST clean host', () => {
+    // The binding case, and it has to bind from the cheapest host rather than the dearest —
+    // a gate that only catches a regression on an unlucky runner is a gate that catches it
+    // sometimes.
+    const smallest = Math.min(...Object.values(CHARTERED_REGRESSIONS_MIB));
+    expect(smallest).toBe(CHARTERED_REGRESSIONS_MIB.secondBrowserEngine);
+    for (const regression of Object.values(CHARTERED_REGRESSIONS_MIB)) {
+      expect(
+        evaluate(GATES['G-ACQUIRE'], BEST_CLEAN_RUNNER_MIB + regression).pass,
+        `a ${regression} MiB regression must red`,
+      ).toBe(false);
+      expect(evaluate(GATES['G-ACQUIRE'], LAPTOP_EQUIVALENT_MIB + regression).pass).toBe(false);
+    }
+  });
+
+  it('would NOT catch a second browser engine if the headroom were sized as a percentage', () => {
+    // ⚠ THE TRAP. On a ~800 MiB artifact the instinct after being burned by a 4.7% margin (800
+    // over 764) is to give it a generous fraction instead. It does not survive the arithmetic:
+    // the smallest chartered regression lands at 767 + 272 = 1039, which is only 1.29x the worst
+    // clean reading — so ANY percentage headroom of ~30% or more produces a limit that passes a
+    // run which downloaded an entire second browser engine. "Give it a third" is 1072.
+    const sizedAsAThird = Math.round(WORST_CLEAN_RUNNER_MIB * (4 / 3));
+    const smallestRegressionLandsAt = LAPTOP_EQUIVALENT_MIB + CHARTERED_REGRESSIONS_MIB.secondBrowserEngine;
+    expect(sizedAsAThird).toBeGreaterThan(smallestRegressionLandsAt);
+    expect(limitFor(GATES['G-ACQUIRE'])).toBeLessThan(smallestRegressionLandsAt);
+    expect(limitFor(GATES['G-ACQUIRE'])).toBeLessThan(sizedAsAThird);
+  });
+
+  it('would red a clean build if the headroom were sized against the noise this slice removed', () => {
+    // The mirror trap, and the one this slice was in a position to fall into: the window fix
+    // takes at most 13 MiB of live-web contamination out of the reading, and sizing the new
+    // headroom against THAT saving is the natural move for whoever just won it. Twice the saving
+    // is 792 — BELOW the 804 a clean runner produced on the corrected window, so the gate would
+    // red a clean build. Even three times it lands at 805, one MiB clear of the worst clean
+    // reading and far inside the 35 MiB spread. The saving was never the noise; it was half of
+    // the fixable half.
+    const sizedAgainstTheSaving = LAPTOP_EQUIVALENT_MIB + 2 * 13;
+    expect(sizedAgainstTheSaving).toBeGreaterThan(BEST_CLEAN_RUNNER_MIB);
+    expect(sizedAgainstTheSaving).toBeLessThan(WORST_CLEAN_RUNNER_MIB);
+    expect(LAPTOP_EQUIVALENT_MIB + 3 * 13 - WORST_CLEAN_RUNNER_MIB).toBeLessThan(spread);
+    expect(limitFor(GATES['G-ACQUIRE'])).toBeGreaterThan(sizedAgainstTheSaving);
+  });
+
+  it('states the resolution it actually has, rather than implying it catches everything', () => {
+    // 880 - 767 = 113. An 88 MiB model duplication passes, and saying so is the point: a gate
+    // that is believed to be finer than it is, is worse than one whose blind spot is written
+    // down. No tighter number is honest while the pinned engine reads 26 MiB differently across
+    // hosts — which is why the drift is instrumented rather than absorbed into the threshold.
+    const detectsFrom = limitFor(GATES['G-ACQUIRE']) - LAPTOP_EQUIVALENT_MIB;
+    expect(detectsFrom).toBe(113);
+    expect(evaluate(GATES['G-ACQUIRE'], LAPTOP_EQUIVALENT_MIB + 88).pass).toBe(true);
+    expect(GATES['G-ACQUIRE'].baseline).toMatch(/BLIND BELOW THAT/);
+  });
+
+  it('stays BLOCKING, on the arithmetic that made G-RSS-SUBSTRATE report-only', () => {
+    // The comparison that decides it. Here: a 234 MiB window (804 -> 1038) against a 35 MiB
+    // spread. There: a 19 MiB window against a 21 MiB spread — narrower than the statistic's own
+    // resolution, which is what a report-only gate is for. A blocking gate needs the window to
+    // be coarser than the noise, and this one is by ~6.7x.
+    const window = LAPTOP_EQUIVALENT_MIB + CHARTERED_REGRESSIONS_MIB.secondBrowserEngine - WORST_CLEAN_RUNNER_MIB;
+    expect(window).toBeGreaterThan(5 * spread);
+    expect(GATES['G-RSS-SUBSTRATE'].limit - 478.5).toBeLessThan(497.5 - 457.5);
   });
 });

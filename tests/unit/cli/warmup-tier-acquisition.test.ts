@@ -92,7 +92,7 @@ describe('desktop tier — the component TAKES the browser engine\'s slot (asser
 
   it('does NOT also acquire the browser engine', async () => {
     // WHY: this is amended-D1's doubling regression, and it is the single assertion the whole
-    // flip turns on. Acquiring both lands at 300 + 546 + 218 = 1064 MiB against G-ACQUIRE's 800.
+    // flip turns on. Acquiring both lands at 300 + 546 + 218 = 1064 MiB against G-ACQUIRE's 880.
     // `skipped` rather than `ok` is what says the slot was taken, not shared.
     const r = await runWarmup([]);
     expect(r.playwright).toBe('skipped');

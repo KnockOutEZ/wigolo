@@ -7,8 +7,9 @@
  *   node scripts/budget/measure.mjs idle-rss
  *   node scripts/budget/measure.mjs substrate-rss    # needs the apps/studio checkout, built
  *   node scripts/budget/measure.mjs cold-start
- *   node scripts/budget/measure.mjs acquire-snapshot <file>   # before `wigolo warmup`
- *   node scripts/budget/measure.mjs acquire-diff <file>       # after it
+ *   node scripts/budget/measure.mjs acquire-snapshot <file>            # before `wigolo warmup`
+ *   node scripts/budget/measure.mjs acquire-snapshot <after-file>      # the instant it exits
+ *   node scripts/budget/measure.mjs acquire-diff <file> [after-file]   # assert, whenever
  *   node scripts/budget/measure.mjs substrate-snapshot <file>          # before a tiered warmup
  *   node scripts/budget/measure.mjs substrate-diff <file> <gate-id>    # after it
  *
@@ -18,13 +19,25 @@
  * (plateau detection, median, the assertion itself) ARE unit-tested; they live in
  * protocol.mjs precisely so they can be.
  *
- * `acquire-*` is split into two invocations because the thing being measured is the delta
+ * `acquire-*` is split into separate invocations because the thing being measured is the delta
  * across a step this script does not own: CI already runs `wigolo warmup` with a specific set
  * of flags, and re-running it here would both double the download and measure a warm cache.
+ *
+ * ⚠ THREE invocations, not two, and the third is the correction. `acquire-diff` used to `du`
+ * the directories LIVE at assertion time, which made the measured window "everything between
+ * the snapshot and whenever the gate happens to be evaluated" rather than "the warmup run".
+ * In CI those are not the same window: the assertion sits three steps and ~3 minutes after
+ * warmup exits, and in between the job fetches a live page and runs a live search against the
+ * DEFAULT data directory — so every byte of cached web content those wrote was charged to a
+ * gate whose title is "bytes `warmup` downloads". Measured over 10 runs of the current tree
+ * that contamination was 1-13 MiB of pure run-to-run noise on a gate with 7 MiB of headroom.
+ * Taking a SECOND snapshot the instant warmup exits closes the window where it belongs and
+ * leaves the assertion where it was, so an acquisition red still cannot hide the tool-call
+ * step's result.
  */
 import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, copyFileSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, copyFileSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -420,25 +433,66 @@ function substrateDiff(file, gateId) {
   return report(gateId, delta, `${before.path} ${before.mib}->${now} (+${delta})`);
 }
 
+/**
+ * Per-child sizes of an acquisition directory, so a reading can be attributed rather than
+ * merely disputed.
+ *
+ * ⚠ THE REASON THIS EXISTS. Both components of this gate have been observed drifting on the
+ * runner with no code change behind it, and the only evidence a run left was one number per
+ * directory — which is enough to see that something moved and never enough to say what. A
+ * per-child breakdown makes the NEXT red self-explaining: the pinned browser download is
+ * chromium + chromium-headless-shell + ffmpeg and measures 534 MiB reproducibly off-runner, so
+ * a run reporting 554 either names the child that grew or proves no child did.
+ */
+function childrenMiB(path) {
+  if (!existsSync(path)) return {};
+  const out = {};
+  for (const name of readdirSync(path).sort()) out[name] = duMiB(join(path, name));
+  return out;
+}
+
+/** `name +delta` for every child whose size moved, largest first. Empty string when none did. */
+function childDeltas(before = {}, after = {}) {
+  const moved = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .map((name) => ({ name, delta: (after[name] ?? 0) - (before[name] ?? 0) }))
+    .filter((c) => c.delta !== 0)
+    .sort((a, b) => b.delta - a.delta);
+  return moved.map((c) => `${c.name} ${c.delta > 0 ? '+' : ''}${c.delta}`).join(' ');
+}
+
 function acquireSnapshot(file) {
   const dirs = acquisitionDirs();
-  const snap = Object.fromEntries(Object.entries(dirs).map(([k, p]) => [k, { path: p, mib: duMiB(p) }]));
+  const snap = Object.fromEntries(
+    Object.entries(dirs).map(([k, p]) => [k, { path: p, mib: duMiB(p), children: childrenMiB(p) }]),
+  );
   mkdirSync(join(file, '..'), { recursive: true });
   writeFileSync(file, JSON.stringify(snap, null, 2));
   console.log(`snapshot: ${Object.entries(snap).map(([k, v]) => `${k}=${v.mib}MiB`).join(' ')}`);
 }
 
-function acquireDiff(file) {
+/**
+ * Difference two acquisition snapshots.
+ *
+ * `afterFile` is what closes the measurement window at the end of the step being measured
+ * rather than at the moment the gate runs. It is optional so a developer can still run
+ * snapshot/warmup/diff by hand, but CI passes it — see the header note: without it this gate
+ * charges whatever the rest of the job wrote into the data directory to `warmup`.
+ */
+function acquireDiff(file, afterFile) {
   const before = JSON.parse(readFileSync(file, 'utf8'));
+  const after = afterFile ? JSON.parse(readFileSync(afterFile, 'utf8')) : null;
   const parts = [];
   let total = 0;
-  for (const [key, { path, mib }] of Object.entries(before)) {
-    const now = duMiB(path);
+  for (const [key, { path, mib, children }] of Object.entries(before)) {
+    const now = after ? (after[key]?.mib ?? 0) : duMiB(path);
+    const nowChildren = after ? (after[key]?.children ?? {}) : childrenMiB(path);
     const delta = Math.max(0, now - mib);
     total += delta;
-    parts.push(`${key} ${mib}->${now} (+${delta})`);
+    const attribution = childDeltas(children, nowChildren);
+    parts.push(`${key} ${mib}->${now} (+${delta})${attribution ? ` [${attribution}]` : ''}`);
   }
-  return report('G-ACQUIRE', total, parts.join(', '));
+  const window = after ? 'window closed at the end of the measured step' : 'window closed live at assertion time';
+  return report('G-ACQUIRE', total, `${parts.join(', ')}; ${window}`);
 }
 
 // ------------------------------------------------------------------ dispatch
@@ -453,7 +507,7 @@ const handlers = {
   'substrate-rss': measureSubstrateRss,
   'cold-start': measureColdStart,
   'acquire-snapshot': () => acquireSnapshot(arg ?? join(ROOT, 'budget-acquire.json')),
-  'acquire-diff': () => acquireDiff(arg ?? join(ROOT, 'budget-acquire.json')),
+  'acquire-diff': () => acquireDiff(arg ?? join(ROOT, 'budget-acquire.json'), arg2),
 };
 
 const handler = handlers[subcommand];
