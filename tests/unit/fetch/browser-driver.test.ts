@@ -98,16 +98,43 @@ describe('browser driver seam', () => {
     expect(await requireBrowserDriver()).toBe(driver);
   });
 
-  it('drops a negative answer so a mid-process acquisition becomes visible', async () => {
-    // ⚠ WHY THIS IS NOT DECORATION. The absent answer is memoized. Without the invalidation an
-    // acquisition that succeeds during the run stays invisible: the install lands, the next
-    // probe returns the cached null, and the rung reports itself unavailable while sitting on
-    // disk. `browser-acquire` and `driver-acquire` both call it for exactly this reason.
-    _setBrowserDriverForTests(null);
-    expect(await loadBrowserDriver()).toBeNull();
-    _setBrowserDriverForTests(undefined);
-    resetBrowserDriverCache();
-    expect(await loadBrowserDriver()).not.toBeNull();
+  it('memoizes a NEGATIVE answer, and drops it so a mid-process acquisition becomes visible', async () => {
+    /*
+     * ⚠ WHY THIS TEST IS BUILT THE HARD WAY. The obvious version forces absence with
+     * `_setBrowserDriverForTests(null)` — and that version is worthless: the override answers
+     * before the memo is ever consulted, so the memo is never populated and deleting the
+     * invalidation entirely leaves it green. Verified, not assumed: as first written this
+     * assertion red 0 of 1 under exactly that mutation.
+     *
+     * So absence is produced by the real resolution failing, via a module-graph mock that
+     * throws on its first evaluation and succeeds on its second. The attempt counter is the
+     * outside signal — it distinguishes "the second call was served from the memo" from "the
+     * second call re-resolved and happened to agree".
+     */
+    vi.resetModules();
+    let attempts = 0;
+    vi.doMock('playwright', () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('driver not installed');
+      return fakeDriver();
+    });
+    const fresh = await import('../../../src/fetch/browser-driver.js');
+    try {
+      expect(await fresh.loadBrowserDriver()).toBeNull();
+      expect(attempts).toBe(1);
+
+      // Still absent, and WITHOUT a second resolution attempt — that is the memo.
+      expect(await fresh.loadBrowserDriver()).toBeNull();
+      expect(attempts).toBe(1);
+
+      // The acquisition just falsified the memo, so it is dropped and the rung reappears.
+      fresh.resetBrowserDriverCache();
+      expect(await fresh.loadBrowserDriver()).not.toBeNull();
+      expect(attempts).toBe(2);
+    } finally {
+      vi.doUnmock('playwright');
+      vi.resetModules();
+    }
   });
 
   it('rejects a module that is not actually a driver', async () => {
