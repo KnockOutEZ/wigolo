@@ -25,6 +25,10 @@ import { humanizePage } from './behavior.js';
 import { recordDomainClearance, clearDomainClearance } from '../cache/store.js';
 import { CLEARANCE_COOKIE_NAME, clearanceExpiresIso } from './clearance-reuse.js';
 import { guardResolvedHost } from '../watch/ssrf.js';
+import {
+  assertNavigationChainAllowed,
+  installBrowserRequestGuard,
+} from './browser-request-guard.js';
 import type { RawFetchResult, BrowserType, ActionResult, BrowserAction, ChallengeClass, SolveMethod } from '../types.js';
 
 /**
@@ -37,6 +41,35 @@ function hostOf(url: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Every URL the navigation actually travelled, oldest hop first. Playwright
+ * links each redirect through `redirectedFrom()`, so walking it back recovers
+ * the hops Chromium followed internally — the ones a pre-navigation check by
+ * construction never sees. `finalUrl` is always included so a page/response
+ * stub without the request chain still yields something to re-guard rather
+ * than an empty (vacuously passing) list.
+ */
+function navigationChain(
+  response: import('playwright').Response | null,
+  finalUrl: string,
+): string[] {
+  const hops: string[] = [];
+  try {
+    let req = typeof response?.request === 'function' ? response.request() : null;
+    let depth = 0;
+    while (req && depth < 32) {
+      hops.unshift(req.url());
+      req = typeof req.redirectedFrom === 'function' ? req.redirectedFrom() : null;
+      depth++;
+    }
+  } catch {
+    // A detached/closed frame can make the chain unreadable. Fall through to
+    // the final URL — fewer hops checked, never zero.
+  }
+  if (!hops.includes(finalUrl)) hops.push(finalUrl);
+  return hops;
 }
 
 /**
@@ -848,6 +881,15 @@ export class MultiBrowserPool {
       throw err;
     }
 
+    // Per-hop SSRF fence. The pre-navigation check below validates the URL we
+    // were handed; this refuses every SUBSEQUENT hop Chromium would follow.
+    // Attached to a CDP session on THIS page (not the shared pooled context),
+    // so it dies with the page in the finally instead of accumulating one
+    // interceptor per fetch on a context that outlives them all.
+    const requestGuard = await installBrowserRequestGuard(page, {
+      allowPrivate: config.fetchAllowPrivate,
+    });
+
     // When the caller's signal fires, close THIS page (the private one we
     // just opened) so the in-flight navigation is cancelled and the slot is
     // returned quickly. We never close the shared pooled context.
@@ -914,6 +956,7 @@ export class MultiBrowserPool {
           }
         }
       }
+      let navResponse: import('playwright').Response | null = null;
       try {
         // Race the navigation against the caller's abort signal so the fetch
         // rejects promptly instead of waiting for the full nav timeout.
@@ -928,6 +971,7 @@ export class MultiBrowserPool {
         ]);
 
         if (response) {
+          navResponse = response;
           statusCode = response.status();
           finalUrl = response.url();
           const rawHeaders = response.headers();
@@ -935,6 +979,13 @@ export class MultiBrowserPool {
           contentType = rawHeaders['content-type'] ?? '';
         }
       } catch (err) {
+        // The fence refused a hop. Report the fence's own verdict rather than
+        // Chromium's opaque net::ERR_BLOCKED_BY_CLIENT, and do it BEFORE the
+        // download / timeout branches below can reinterpret the failure.
+        const fenceReason = requestGuard.blockedReason();
+        if (fenceReason) {
+          throw new Error(`Blocked by SSRF policy on a browser redirect hop: ${fenceReason}`);
+        }
         // A PDF (or other binary) response makes Chromium reject goto with
         // "Download is starting" and/or fire a download event. Don't hard-error
         // — read the downloaded bytes and return them as a buffered result so
@@ -952,6 +1003,15 @@ export class MultiBrowserPool {
               .catch(() => undefined);
           }
           if (download) {
+            // A download is a fetched body like any other — re-guard where it
+            // actually came from before handing the bytes back, so a redirect
+            // onto a blocked host cannot deliver a payload through this branch.
+            assertNavigationChainAllowed(
+              [url, typeof download.url === 'function' ? download.url() : undefined].filter(
+                (u): u is string => typeof u === 'string',
+              ),
+              config.fetchAllowPrivate,
+            );
             const buf = await readDownloadBuffer(download, url, options.signal);
             if (buf) {
               log.debug('intercepted browser download, returning buffered bytes', { url, bytes: buf.length });
@@ -984,6 +1044,16 @@ export class MultiBrowserPool {
         gotoTimedOut = true;
         log.warn('page.goto timed out, returning partial content', { url, navTimeoutMs });
       }
+
+      // Post-navigation backstop, on EVERY engine, including the
+      // timeout-partial path. The per-hop interceptor above refuses a blocked
+      // request BEFORE it is issued, but it needs CDP (Chromium only), and an
+      // interceptor that were ever silently displaced would fail green.
+      // Re-guarding the chain we actually travelled is an outside signal — it
+      // can disagree with the interceptor, which is the point of having it.
+      // On firefox/webkit it is the ONLY fence: the request goes out, but its
+      // content is refused rather than returned.
+      assertNavigationChainAllowed(navigationChain(navResponse, finalUrl), config.fetchAllowPrivate);
 
       // Anti-bot fast-fail (D6). A hard bot-protection interstitial otherwise
       // holds the tab for the full nav + load timeout (30-45s). Fail fast so the
@@ -1317,6 +1387,7 @@ export class MultiBrowserPool {
       // Detach the abort listener before closing so we don't trigger a
       // redundant close call if abort fires after we're already in finally.
       options.signal?.removeEventListener('abort', onAbort);
+      await requestGuard.dispose();
       // Close the page; tolerate already-closed (double-close is safe).
       await page.close().catch(() => {});
       if (cdpBrowser) {
