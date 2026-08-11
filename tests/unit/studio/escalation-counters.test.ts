@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -52,7 +52,31 @@ describe('escalation counters', () => {
   });
 
   it('an unwritable data dir does not throw — a counter must never fail a fetch', () => {
-    expect(() => bumpEscalationCounter('bridgeServed', '/proc/definitely/not/writable')).not.toThrow();
+    // Use a real directory with the write bit cleared. Do NOT reach for a /proc path here:
+    // `mkdirSync(…, { recursive: true })` under procfs NEVER RETURNS on Linux — it spins at
+    // 100% CPU inside a SYNCHRONOUS call, so no test timeout can interrupt it, the vitest
+    // worker never exits, and the entire run hangs until CI's job bound kills it. This exact
+    // line (previously '/proc/definitely/not/writable') is what wedged
+    // `lint + build + unit (ubuntu-latest)` at its 25-minute cap, while the macOS and Windows
+    // legs of the SAME commit passed in ~5 minutes: /proc exists only on Linux, so everywhere
+    // else the path failed fast with ENOENT and the landmine stayed invisible.
+    const locked = mkdtempSync(join(tmpdir(), 'wig-esc-ro-'));
+    chmodSync(locked, 0o500);
+    try {
+      expect(() => bumpEscalationCounter('bridgeServed', locked)).not.toThrow();
+      // Non-vacuous wherever mode bits are actually enforced: prove the write was refused,
+      // rather than the counter quietly succeeding and `not.toThrow()` passing for free.
+      // win32 has no POSIX perms, and root bypasses them outright (containers often run as
+      // root, so this is not hypothetical) — in both cases the write legitimately succeeds
+      // and only the no-throw contract above is under test.
+      const modeBitsEnforced = process.platform !== 'win32' && process.getuid?.() !== 0;
+      if (modeBitsEnforced) {
+        expect(existsSync(join(locked, 'studio', 'escalation-counters.json'))).toBe(false);
+      }
+    } finally {
+      chmodSync(locked, 0o700);
+      rmSync(locked, { recursive: true, force: true });
+    }
   });
 
   it('ignores negative or non-numeric values already on disk', () => {
