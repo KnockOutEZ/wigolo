@@ -230,8 +230,8 @@ describe('the cross-run reducer for idle RSS is the minimum, not the median', ()
   it('is steadier across batches than the median on the same runner data', () => {
     // 162.8 vs 163.4 (a 0.6 MiB spread) against 163.0 vs 166.1. The spread is what a threshold
     // has to clear, so a steadier reducer is directly a wider window to choose one from.
-    const mins = RUNNER_FLOOR_BATCHES.map(minimum);
-    const medians = RUNNER_FLOOR_BATCHES.map(median);
+    const mins = RUNNER_FLOOR_BATCHES.map((b) => minimum(b) as number);
+    const medians = RUNNER_FLOOR_BATCHES.map((b) => median(b) as number);
     const spread = (xs: number[]) => Math.max(...xs) - Math.min(...xs);
     expect(spread(mins)).toBeLessThan(spread(medians));
     expect(mins).toEqual([162.8, 163.4]);
