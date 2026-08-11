@@ -13,6 +13,7 @@ Everything the server returns is transparent: per-result evidence scores, per-en
 | [Configuration](./configuration.md) | Resolution order, the settings TUI, and grouped env-var tables for search, fetch, models, LLM providers, cache, and serve. |
 | [Tools](./tools.md) | The 10 tools with parameters, response fields, and worked examples. |
 | [CLI](./cli.md) | Full command reference: management commands, one-shot tools, the interactive shell, and the `--json` contract. |
+| [Export](./export.md) | Writing your cached corpus out as plain Markdown plus a manifest — readable with wigolo uninstalled. |
 | [REST API](./rest-api.md) | `wigolo serve`, endpoints, the fail-closed auth model, resource limits, and a live curl quickstart. |
 | [SDKs](./sdks.md) | TypeScript and Python clients, plus LangChain, CrewAI, LlamaIndex, and Vercel AI SDK integrations. |
 | [Self-hosting](./self-hosting.md) | Running wigolo where your agents run: VPS, Docker, tokens, reverse proxies, and honest notes on datacenter IPs. |

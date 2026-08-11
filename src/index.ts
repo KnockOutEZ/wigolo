@@ -18,6 +18,7 @@ import { runSkills } from './cli/skills.js';
 import { runStatus } from './cli/status.js';
 import { runTune } from './cli/tune.js';
 import { runBackfill } from './cli/backfill.js';
+import { runExport } from './cli/export.js';
 import { runVerifyE2E } from './cli/verify.js';
 import { printHelp, printVersion, printUnknownCommand } from './cli/help.js';
 import { runTool } from './cli/tool-run.js';
@@ -151,6 +152,12 @@ export async function main(): Promise<void> {
 
     case 'backfill': {
       const code = await runBackfill(args);
+      await exitCli(code);
+      break;
+    }
+
+    case 'export': {
+      const code = await runExport(args);
       await exitCli(code);
       break;
     }
