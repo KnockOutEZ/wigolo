@@ -114,6 +114,13 @@ export const COLD_START_RUNS = 5;
  * a blocking gate that reds a clean build teaches people to re-run CI — which destroys the
  * gate more thoroughly than not having one.
  *
+ * ⚠ This stopped being a projection while S10-b was still open. Two consecutive commits of the
+ * same build — differing only in comments and a test-file path helper — measured medians of
+ * **162.8** and **192.3**, the second because two of its three runs failed to decay. The
+ * minimum on those same two batches was 162.8 and 163.4. And the estimate the argument above
+ * rests on (roughly one non-decay run in six) was itself too generous: over twelve runner runs
+ * the rate is **5 in 12**.
+ *
  * The minimum removes the problem at its source, and does so on a property this file already
  * states: a floor over a bounded horizon is an UPPER BOUND on the true floor (see
  * RSS_HORIZON_MS). Each run therefore produces an independent upper bound on the SAME
@@ -204,7 +211,7 @@ export const GATES = {
       'ci-runner': 185,
     },
     baseline:
-      'developer class: floor ranged 17.7-44.2 MiB over 6 runs, measured 2026-08-11 on darwin-arm64 at 7aa08144 (44.2/44.2/44.2 then 17.7/44.2/34.4); 55 sits above the highest observed floor and below the lowest-plus-40, so a clean build passes and a 40 MiB retained allocation reds from anywhere in the range (the spec\'s 130 would have let that leak through). ci-runner class: GitHub macos-latest floors 163.5/163.0/162.8 in one batch and 163.4/196.3/166.1 in a second — ~4x the developer machine on the same statistic and horizon, which is why the two classes carry different limits rather than one loosened number. Individual runner floors span 162.8-196.3 (in the 196.3 run the process never decayed inside the 45s horizon); reduced by the minimum those two batches give 162.8 and 163.4, and 185 is set from that. A third batch, taken by the blocking gate itself on the S10-b PR, came out [162.8, 194.8, 162.8] -> min 162.8: it reproduced the non-decay run (now 2 of 9 runner runs) and put the minimum within 0.6 MiB of both earlier batches, which is the anchor 185 rests on. BLOCKING on ci-runner from S10-b.',
+      'developer class: floor ranged 17.7-44.2 MiB over 6 runs, measured 2026-08-11 on darwin-arm64 at 7aa08144 (44.2/44.2/44.2 then 17.7/44.2/34.4); 55 sits above the highest observed floor and below the lowest-plus-40, so a clean build passes and a 40 MiB retained allocation reds from anywhere in the range (the spec\'s 130 would have let that leak through). ci-runner class: GitHub macos-latest floors 163.5/163.0/162.8 in one batch and 163.4/196.3/166.1 in a second — ~4x the developer machine on the same statistic and horizon, which is why the two classes carry different limits rather than one loosened number. Individual runner floors span 162.8-196.3 (in the 196.3 run the process never decayed inside the 45s horizon); reduced by the minimum those two batches give 162.8 and 163.4, and 185 is set from that. Two further batches, taken by the blocking gate itself on the S10-b PR: [162.8, 194.8, 162.8] -> min 162.8, then [163.4, 192.3, 192.3] -> min 163.4. ⚠ THE SECOND OF THOSE IS THE CASE THIS GATE WAS DESIGNED AGAINST, OBSERVED LIVE: two of its three runs never decayed inside the horizon, so its MEDIAN was 192.3 where the previous commit\'s was 162.8 — a 29.5 MiB swing between two commits that differ only in comments and a test-file path helper. Across four runner batches the median spans 162.8-192.3 and the minimum spans 162.8-163.4. Non-decay runs are 5 of 12 runner runs, not the 1-in-6 a single batch suggested. 185 is anchored on the minimum and has held on all four. BLOCKING on ci-runner from S10-b.',
   },
   'G-COLD-START': {
     id: 'G-COLD-START',

@@ -192,6 +192,11 @@ describe('gate definitions', () => {
 const RUNNER_FLOOR_BATCHES = [
   [163.5, 163.0, 162.8],
   [163.4, 196.3, 166.1],
+  // Taken by the blocking gate itself, on two consecutive commits of S10-b that differ only in
+  // comments and a test-file path helper. The fourth is the case the reducer exists for: two of
+  // three runs never decayed inside the horizon.
+  [162.8, 194.8, 162.8],
+  [163.4, 192.3, 192.3],
 ];
 
 describe('machine classes', () => {
@@ -228,13 +233,30 @@ describe('machine classes', () => {
 
 describe('the cross-run reducer for idle RSS is the minimum, not the median', () => {
   it('is steadier across batches than the median on the same runner data', () => {
-    // 162.8 vs 163.4 (a 0.6 MiB spread) against 163.0 vs 166.1. The spread is what a threshold
-    // has to clear, so a steadier reducer is directly a wider window to choose one from.
+    // The spread is what a threshold has to clear, so a steadier reducer is directly a wider
+    // window to choose one from. Over four real batches: the minimum moves 0.6 MiB and the
+    // median moves 29.5 — on a build whose only changes between two of those batches were
+    // comments and a test-file path helper.
     const mins = RUNNER_FLOOR_BATCHES.map((b) => minimum(b) as number);
     const medians = RUNNER_FLOOR_BATCHES.map((b) => median(b) as number);
     const spread = (xs: number[]) => Math.max(...xs) - Math.min(...xs);
+    expect(spread(mins)).toBeCloseTo(0.6, 5);
+    expect(spread(medians)).toBeGreaterThan(29);
     expect(spread(mins)).toBeLessThan(spread(medians));
-    expect(mins).toEqual([162.8, 163.4]);
+  });
+
+  it('would have let a median gate swing 29.5 MiB between two comment-only commits', () => {
+    // The concrete failure, not a projection. Batch 3's median is 162.8 and batch 4's is 192.3.
+    // Any blocking median gate has to sit above 192.3 AND below 162.8 + 40 = 202.8 — a 10 MiB
+    // window that only exists because these particular batches came out this way, and that no
+    // future batch is obliged to respect. The minimum sits at 163.4 in the same run.
+    const [, , batch3, batch4] = RUNNER_FLOOR_BATCHES;
+    expect(median(batch3)).toBe(162.8);
+    expect(median(batch4)).toBe(192.3);
+    expect(minimum(batch4)).toBe(163.4);
+    // The shipped gate passes batch 4; a median-reduced one at the same limit would not.
+    expect(evaluate(GATES['G-RSS-IDLE'], minimum(batch4), 'ci-runner').pass).toBe(true);
+    expect(evaluate(GATES['G-RSS-IDLE'], median(batch4), 'ci-runner').pass).toBe(false);
   });
 
   it('loses no sensitivity: a 40 MiB retained allocation raises every run, so it raises the minimum', () => {
