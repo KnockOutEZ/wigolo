@@ -1,5 +1,6 @@
-import { chromium, type Browser, type BrowserContext } from 'playwright';
+import type { Browser, BrowserContext } from 'playwright';
 import { existsSync } from 'node:fs';
+import { loadBrowserDriver, requireBrowserDriver } from './browser-driver.js';
 import { createLogger } from '../logger.js';
 import { abortRejection } from '../util/abort.js';
 import { settlePage, POST_GOTO_CAP_MS } from './settle.js';
@@ -13,12 +14,14 @@ export interface InstallStatus {
 }
 
 export async function detectPlaywrightInstall(): Promise<InstallStatus> {
+  const driver = await loadBrowserDriver();
+  if (!driver) return { installed: false, hint: 'wigolo warmup --browser' };
   try {
-    const exec = chromium.executablePath();
+    const exec = driver.chromium.executablePath();
     if (exec && existsSync(exec)) return { installed: true };
-    return { installed: false, hint: 'npx playwright install chromium' };
+    return { installed: false, hint: 'wigolo warmup --browser' };
   } catch {
-    return { installed: false, hint: 'npx playwright install chromium' };
+    return { installed: false, hint: 'wigolo warmup --browser' };
   }
 }
 
@@ -44,7 +47,7 @@ export async function getDaemonBrowser(): Promise<{ browser: Browser; context: B
         err.hint = status.hint;
         throw err;
       }
-      const browser = await chromium.launch({ headless: true });
+      const browser = await (await requireBrowserDriver()).chromium.launch({ headless: true });
       const context = await browser.newContext();
       _browser = browser;
       _ctx = context;

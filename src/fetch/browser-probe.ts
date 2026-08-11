@@ -1,13 +1,18 @@
 import { existsSync } from 'node:fs';
-import { chromium, firefox, webkit, type BrowserType } from 'playwright';
+import type { BrowserType } from 'playwright';
+import { loadBrowserDriver, BROWSER_DRIVER_MISSING_ERROR } from './browser-driver.js';
 
 export type BrowserName = 'chromium' | 'firefox' | 'webkit';
 
-const BROWSER_API: Record<BrowserName, BrowserType> = {
-  chromium,
-  firefox,
-  webkit,
-};
+/**
+ * S10-e: resolved per call rather than held in a module-level record. The record was three
+ * value imports evaluated at import time, so merely LOADING this module required the driver
+ * package to be on disk — which is precisely what taking it off the default install path
+ * makes untrue.
+ */
+async function browserApi(name: BrowserName): Promise<BrowserType | null> {
+  return (await loadBrowserDriver())?.[name] ?? null;
+}
 
 export interface BrowserProbeResult {
   /** Browser binary resolves to a path that exists on disk. */
@@ -56,7 +61,10 @@ export async function probeBrowser(
   name: BrowserName,
   opts: { launchTimeoutMs?: number } = {},
 ): Promise<BrowserProbeResult> {
-  const api = BROWSER_API[name];
+  const api = await browserApi(name);
+  if (!api) {
+    return { onDisk: false, launchable: false, execPath: '', error: BROWSER_DRIVER_MISSING_ERROR };
+  }
 
   let execPath = '';
   let onDisk = false;

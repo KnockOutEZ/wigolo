@@ -166,15 +166,33 @@ export const GATES = {
     runs: 1,
     unit: 'MiB',
     comparison: '<=',
-    limit: 720,
+    limit: 693,
     baseline:
-      '700 MiB measured 2026-08-11 on darwin-arm64 at 7aa08144 (post-C1). Headroom ~3%: tight enough that re-adding any package C1 removed reds it, wide enough to absorb transitive churn.',
-    // The S10 spec's gate 17 states 670 MiB, derived as "780 measured minus a 111 MiB Tier-A
-    // diet". C1's install-side removal actually measured 66.4 MiB — the 111/106 figure added
-    // startup bytes to install bytes — so 670 was never reachable, and asserting it here would
-    // red at baseline with no regression present. S10-e tightens this once the browser deps
-    // leave the core default path. Until then the gate guards the floor that exists rather
-    // than one that does not.
+      'THE RUNNER IS THE AUTHORITY, because this gate runs on exactly one machine class: the `clean-machine-smoke` macos-latest / node 22 arm. Measured there on the S10-e PR across two runs of the same branch: 685 then 683 MiB clean — so the runner carries ~2 MiB of run-to-run variance of its own, and the threshold is anchored to the WORSE of the two. Measured locally on darwin-arm64 minutes apart, same protocol: 681 MiB / 386 packages after S10-e against 698 MiB / 388 before it, with a per-package diff of exactly playwright + playwright-core removed and nothing added. The DELTA is platform-stable (both packages are pure JS), so the runner regression is 685 + 17 = 702. 693 is the midpoint of 685..702: 8 MiB (1.2%) of headroom for transitive churn, 9 MiB of margin under the regression.',
+    // ⚠ THE THRESHOLD IS SET BY THE REGRESSION IT MUST CATCH, NOT BY A PERCENTAGE.
+    //
+    // S10-e moved the browser driver from `dependencies` to an OPTIONAL PEER dependency, which
+    // npm does not install. The single most likely way that gets undone is someone putting it
+    // back — so the gate has to red when they do. That regression is worth exactly 17 MiB
+    // (`playwright` + `playwright-core`, the only two packages the move touches).
+    //
+    // Note what a habitual "keep ~3% headroom" would have produced: 685 * 1.03 = 706, which sits
+    // ABOVE the 702 regression and would therefore pass the very thing the gate is for. A gate
+    // that cannot fail is not a gate — the same failure as the spec's G-RSS-IDLE 130, which
+    // could not catch its own 40 MiB probe from a 17.7 floor. The window is 685..702 and there
+    // is no room in it for a round number chosen by habit.
+    //
+    // ⚠ AND THE LOCAL NUMBER WAS NOT GOOD ENOUGH TO SET IT. This first shipped at 690, derived
+    // from a laptop's 681. The runner then measured 685 — 4 MiB higher for the same commit and
+    // the same command — which left a clean build only 5 MiB of room on the one machine the gate
+    // actually runs on. Re-derived from the runner. Same machine-class lesson G-RSS-IDLE learned
+    // the expensive way; it is cheaper here only because the gate was made to run first.
+    //
+    // For the record on the number this replaces: the spec's gate 17 states 670 MiB, derived as
+    // "780 measured minus a 111 MiB Tier-A diet". C1's install-side removal actually measured
+    // 66.4 MiB — the 111/106 figure added startup bytes to install bytes — so 670 was never
+    // reachable and S10-a shipped 720 instead. 690 is the first threshold on this gate derived
+    // from two measurements of the same artifact rather than from an estimate of one of them.
   },
   'G-TARBALL': {
     id: 'G-TARBALL',
@@ -318,12 +336,22 @@ export const GATES = {
  * and would red on a return to acquiring both rungs (700 + 1064 = 1764). Re-derive it there,
  * against a measurement, not against this note.
  */
+/*
+ * ⚠ S10-e RE-DERIVED THESE, because it changed one of their inputs. Prod `node_modules` is 685
+ * on the runner, not 700, so every figure below that composes it moved with it — today
+ * 685 + 764 = 1449, post-flip 685 + 518 = 1203, joint bound 693 + 800 = 1493. Leaving the old
+ * numbers would have left the arithmetic describing a tree that no longer exists.
+ *
+ * The DECISION is unchanged and slightly better supported: the failure window narrows from
+ * 56 MiB to 44, which is further below the churn these two measurements carry, so a composed
+ * gate is if anything less buildable than when A34 dropped it.
+ */
 export const G_TOTAL_DESKTOP_DROPPED = {
   specLimitMiB: 1000,
-  measuredTodayMiB: 1464,
-  measuredPostFlipMiB: 1218,
-  jointBoundOfShippedGatesMiB: 1520,
-  reDeriveAtMiB: 1280,
+  measuredTodayMiB: 1449,
+  measuredPostFlipMiB: 1203,
+  jointBoundOfShippedGatesMiB: 1493,
+  reDeriveAtMiB: 1265,
 };
 
 /**
