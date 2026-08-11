@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resetConfig } from '../../../src/config.js';
 import { installedSubstrateExists, studioLaunchable } from '../../../src/studio/auto-launch.js';
-import { acquireSubstrate, localPathSource, substrateRoot } from '../../../src/studio/substrate-acquire.js';
+import { acquireSubstrate, localPathSource, resetSubstratePresenceCache, substrateRoot } from '../../../src/studio/substrate-acquire.js';
 
 /**
  * D-S10-3's seam, made real by S10-d. Until this slice `installedSubstrateExists()` returned a
@@ -23,6 +23,9 @@ beforeEach(() => {
   writeFileSync(join(sourceDir, 'bin', 'run'), '#!/bin/sh\n');
   process.env.WIGOLO_DATA_DIR = dataDir;
   resetConfig();
+  // The presence answer is memoized for the fetch path; each case starts from a cold one so the
+  // order of cases cannot decide the result.
+  resetSubstratePresenceCache();
 });
 
 afterEach(() => {

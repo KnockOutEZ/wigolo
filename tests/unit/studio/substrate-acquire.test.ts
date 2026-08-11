@@ -2,12 +2,15 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { resetConfig } from '../../../src/config.js';
 import {
   acquireSubstrate,
   localPathSource,
   readSubstrateManifest,
   readSubstrateRecord,
+  resetSubstratePresenceCache,
   resolveSubstrateSource,
+  substratePresent,
   substrateRoot,
   SUBSTRATE_PATH_ENV,
   type SubstrateSource,
@@ -37,9 +40,14 @@ beforeEach(() => {
   dataDir = mkdtempSync(join(tmpdir(), 'wigolo-substrate-data-'));
   sourceDir = makeSourceDir({ version: '1.2.3', executable: 'bin/run' });
   delete process.env[SUBSTRATE_PATH_ENV];
+  process.env.WIGOLO_DATA_DIR = dataDir;
+  resetConfig();
+  resetSubstratePresenceCache();
 });
 
 afterEach(() => {
+  delete process.env.WIGOLO_DATA_DIR;
+  resetConfig();
   rmSync(dataDir, { recursive: true, force: true });
   rmSync(sourceDir, { recursive: true, force: true });
   delete process.env[SUBSTRATE_PATH_ENV];
@@ -196,5 +204,49 @@ describe('source resolution', () => {
     const source = resolveSubstrateSource({ [SUBSTRATE_PATH_ENV]: sourceDir });
     expect(source?.id).toBe('local-path');
     expect(source?.manifest.version).toBe('1.2.3');
+  });
+});
+
+describe('the presence answer is memoized for the fetch path', () => {
+  it('holds its answer across calls inside the window instead of re-reading the record', async () => {
+    // WHY THIS CACHE EXISTS: `installedSubstrateExists()` is read by `resolveBrowserTier()`, and
+    // that resolver is consulted at the single exit of `SmartRouter.fetch` — once per fetched
+    // page. While the probe was a hardcoded `false` this was free; answering it from a record
+    // makes it a readFileSync plus a stat on every page, and `crawl` fans out through the same
+    // seam, so one crawl of a static docs site would add several hundred synchronous filesystem
+    // calls to the fetch path.
+    //
+    // Observed through an OUTSIDE SIGNAL rather than a spy: the record is deleted underneath a
+    // warm cache, and the answer must not change. A test that counted mock calls would be
+    // asserting on the mock; this asserts that the filesystem was genuinely not consulted.
+    await acquireSubstrate({ dataDir, source: localPathSource(sourceDir) });
+    expect(substratePresent()).toBe(true);
+    rmSync(join(substrateRoot(dataDir), 'record.json'), { force: true });
+    expect(substratePresent()).toBe(true);
+    // Control: the deletion was real, and the cache is the only reason the answer held.
+    resetSubstratePresenceCache();
+    expect(substratePresent()).toBe(false);
+  });
+
+  it('re-reads once the window has elapsed, so a stale answer cannot outlive it', async () => {
+    // The clock is injected rather than waited on: a test that sleeps 5 s to prove a TTL is a
+    // test that gets deleted the first time the suite gets slow.
+    let t = 1_000_000;
+    const clock = () => t;
+    await acquireSubstrate({ dataDir, source: localPathSource(sourceDir) });
+    expect(substratePresent(clock)).toBe(true);
+    rmSync(join(substrateRoot(dataDir), 'record.json'), { force: true });
+    expect(substratePresent(clock)).toBe(true);
+    t += 6000;
+    expect(substratePresent(clock)).toBe(false);
+  });
+
+  it('is invalidated immediately by an acquisition in this process', async () => {
+    // WHY: the one transition that must NOT wait out the TTL. `warmup` acquires and then reports
+    // the tier in the same process, so a cached "absent" would make it announce a rung it had
+    // just stopped being on.
+    expect(substratePresent()).toBe(false);
+    await acquireSubstrate({ dataDir, source: localPathSource(sourceDir) });
+    expect(substratePresent()).toBe(true);
   });
 });

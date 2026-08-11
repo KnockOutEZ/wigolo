@@ -40,7 +40,7 @@ vi.mock('../../../src/searxng/bootstrap.js', () => ({
 import { runCommand } from '../../../src/cli/tui/run-command.js';
 import { runWarmup, warmupResultToJson } from '../../../src/cli/warmup.js';
 import { resetBrowserTierAnnouncements, BROWSER_TIER_ENV } from '../../../src/fetch/browser-tier.js';
-import { SUBSTRATE_PATH_ENV, substrateRoot } from '../../../src/studio/substrate-acquire.js';
+import { SUBSTRATE_PATH_ENV, resetSubstratePresenceCache, substrateRoot } from '../../../src/studio/substrate-acquire.js';
 
 const ok = { code: 0, stdout: '', stderr: '', timedOut: false };
 
@@ -64,6 +64,7 @@ beforeEach(() => {
   delete process.env[SUBSTRATE_PATH_ENV];
   resetConfig();
   resetBrowserTierAnnouncements();
+  resetSubstratePresenceCache();
   vi.mocked(runCommand).mockReset().mockResolvedValue(ok);
 });
 

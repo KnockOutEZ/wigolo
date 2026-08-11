@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readHandle, type SessionHandle } from './handle.js';
-import { readSubstrateRecord } from './substrate-acquire.js';
+import { readSubstrateRecord, substratePresent } from './substrate-acquire.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('studio');
@@ -91,7 +91,7 @@ function repoRoot(): string {
  * reasoning that makes `ensureStudioRunning` poll for the session handle rather than watch the child.
  */
 export function installedSubstrateExists(): boolean {
-  return readSubstrateRecord() !== null;
+  return substratePresent();
 }
 
 function devCheckoutExists(): boolean {

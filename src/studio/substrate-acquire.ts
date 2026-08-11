@@ -114,6 +114,40 @@ export function readSubstrateRecord(dataDir?: string): SubstrateRecord | null {
   }
 }
 
+/**
+ * ⚠ HOT-PATH CACHE, and the reason it is needed rather than merely nice.
+ *
+ * `installedSubstrateExists()` is read by `resolveBrowserTier()`, and the tier resolver is
+ * consulted at the single exit of `SmartRouter.fetch` — i.e. ONCE PER FETCHED PAGE. While the
+ * probe was a hardcoded `false` that was free. Answering it from a record makes it a `readFileSync`
+ * plus a `stat` on every page, and `crawl` fans out through the same seam, so one crawl of a
+ * static docs site would add several hundred synchronous filesystem calls to the fetch path.
+ *
+ * A short TTL is the whole fix: the answer changes at most once per install, so a few seconds of
+ * staleness costs nothing, while an acquisition INSIDE this process invalidates the cache
+ * explicitly and is therefore visible immediately.
+ */
+const PRESENCE_TTL_MS = 5000;
+let presence: { value: boolean; at: number } | null = null;
+
+/** Drop the memoized presence answer. Called after any acquisition, and by tests that transition it. */
+export function resetSubstratePresenceCache(): void {
+  presence = null;
+}
+
+/**
+ * Is a substrate installed? The cached form of {@link readSubstrateRecord}, for callers on the
+ * fetch path. Anything that needs the record ITSELF (doctor, status, warmup) reads it directly
+ * and uncached — they run once per invocation, so there is nothing to amortize and a stale answer
+ * there would be a reporting bug.
+ */
+export function substratePresent(now: () => number = Date.now): boolean {
+  const t = now();
+  if (presence && t - presence.at < PRESENCE_TTL_MS) return presence.value;
+  presence = { value: readSubstrateRecord() !== null, at: t };
+  return presence.value;
+}
+
 /** Read a substrate directory's manifest. Null when absent or malformed. */
 export function readSubstrateManifest(dir: string): SubstrateManifest | null {
   try {
@@ -226,6 +260,7 @@ export async function acquireSubstrate(deps: AcquireSubstrateDeps = {}): Promise
       source: source.id,
     };
     writeFileSync(recordPath(dataDir), `${JSON.stringify(record, null, 2)}\n`);
+    resetSubstratePresenceCache();
     log.info('desktop component acquired', { version: record.version, source: record.source });
     return {
       outcome: 'acquired',
