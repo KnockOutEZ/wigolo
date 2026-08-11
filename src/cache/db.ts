@@ -137,10 +137,22 @@ export function isVecExtensionLoaded(): boolean {
   return vecLoaded;
 }
 
-// Register a process-exit guard so any CLI command that opens the DB
-// closes it before native teardown — prevents the better-sqlite3 +
-// sqlite-vec destructor race that surfaces as
-// `mutex lock failed: Invalid argument` on doctor/warmup exit.
+// Register a process-exit guard so any CLI command that opens the DB closes it
+// deterministically instead of leaving it to native teardown order.
+//
+// This hook does NOT prevent the `mutex lock failed: Invalid argument` abort,
+// and the "better-sqlite3 + sqlite-vec destructor race" this comment used to
+// name as the cause is not supported by measurement: a process that opens a
+// DB, loads the vector extension, runs a query and exits WITHOUT closing it
+// terminates cleanly (macOS/arm64, plain Node). If that race were the
+// mechanism, the unclosed case is where it would fire.
+//
+// What the real cause is remains OPEN — the abort was reported from doctor and
+// warmup, which load several other native modules, and it did not reproduce
+// under a bare require of any of them either. Deliberately not guessed at again
+// here: the previous guess is what sent people looking at this hook, and a
+// named-but-wrong cause is more expensive than an admitted unknown. The hook is
+// kept because closing the handle you opened is right regardless of the abort.
 function ensureExitHookRegistered(): void {
   if (exitHookRegistered) return;
   exitHookRegistered = true;
