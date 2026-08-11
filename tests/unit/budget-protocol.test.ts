@@ -152,8 +152,9 @@ describe("G-DIET's threshold is set by the regression it has to catch", () => {
    *
    * ⚠ THE THRESHOLD IS ANCHORED TO THE RUNNER, NOT THE LAPTOP. This gate runs on exactly one
    * machine class (clean-machine-smoke, macos-latest, node 22), and that machine measured 685
-   * for the same commit — 4 MiB above local. Shipping the laptop-derived 690 would have left a
-   * clean build 5 MiB of room on the only machine that runs the gate.
+   * then 683 across two runs of this branch — up to 4 MiB above local, with ~2 MiB of variance
+   * of its own. Shipping the laptop-derived 690 would have left a clean build 5 MiB of room on
+   * the only machine that runs the gate. The anchor is the WORSE runner reading, not the better.
    */
   const CLEAN_BUILD_MIB = 685;
   const DRIVER_BACK_ON_DEFAULT_PATH_MIB = 685 + 17;

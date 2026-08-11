@@ -168,7 +168,7 @@ export const GATES = {
     comparison: '<=',
     limit: 693,
     baseline:
-      'THE RUNNER IS THE AUTHORITY, because this gate runs on exactly one machine class: the `clean-machine-smoke` macos-latest / node 22 arm. Measured there on the S10-e PR: 685 MiB clean. Measured locally on darwin-arm64 minutes apart, same protocol: 681 MiB / 386 packages after S10-e against 698 MiB / 388 before it, with a per-package diff of exactly playwright + playwright-core removed and nothing added. The DELTA is platform-stable (both packages are pure JS), so the runner regression is 685 + 17 = 702. 693 is the midpoint of 685..702: 8 MiB (1.2%) of headroom for transitive churn, 9 MiB of margin under the regression.',
+      'THE RUNNER IS THE AUTHORITY, because this gate runs on exactly one machine class: the `clean-machine-smoke` macos-latest / node 22 arm. Measured there on the S10-e PR across two runs of the same branch: 685 then 683 MiB clean — so the runner carries ~2 MiB of run-to-run variance of its own, and the threshold is anchored to the WORSE of the two. Measured locally on darwin-arm64 minutes apart, same protocol: 681 MiB / 386 packages after S10-e against 698 MiB / 388 before it, with a per-package diff of exactly playwright + playwright-core removed and nothing added. The DELTA is platform-stable (both packages are pure JS), so the runner regression is 685 + 17 = 702. 693 is the midpoint of 685..702: 8 MiB (1.2%) of headroom for transitive churn, 9 MiB of margin under the regression.',
     // ⚠ THE THRESHOLD IS SET BY THE REGRESSION IT MUST CATCH, NOT BY A PERCENTAGE.
     //
     // S10-e moved the browser driver from `dependencies` to an OPTIONAL PEER dependency, which
