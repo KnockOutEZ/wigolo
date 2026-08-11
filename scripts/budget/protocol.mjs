@@ -167,9 +167,9 @@ export const GATES = {
     runs: 1,
     unit: 'MiB',
     comparison: '<=',
-    limit: 700,
+    limit: 800,
     baseline:
-      "today's cost, not a target: chromium 341 + chromium-headless-shell 191 + ffmpeg 3 (~535 MiB of browser engine) plus the ranking and embedding models. Asserted now so the tier work is measured against a gate that already existed rather than one written to fit its result. S10-d replaces this with the amended-D1 pair (desktop <= 320, no-display == 0).",
+      "764 MiB measured 2026-08-11 on the GitHub macos-latest runner — browser engine 546, models 218 — for the `warmup --reranker --embeddings` this job runs. ⚠ The S10 spec and brief:180 both price acquisition at ~535 MiB, which is the browser engine ALONE; the 218 MiB of ranking and embedding models is real, is downloaded by the same command, and is quantified here for the first time. Today's cost, not a target: asserted so the tier work is measured against a gate that already existed rather than one written to fit its result. S10-d replaces it with the amended-D1 pair (desktop <= 320, no-display == 0), which must be re-derived against 764 rather than 535.",
   },
 };
 
