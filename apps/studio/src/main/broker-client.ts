@@ -1,5 +1,6 @@
-import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { spawn as nodeSpawn, execFileSync as nodeExecFileSync, type ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import type { ArtifactDelta } from 'wigolo/studio';
 
 /**
@@ -16,44 +17,220 @@ export interface BrokerClient {
 }
 
 type SpawnFn = (cmd: string, args: string[], opts: object) => ChildProcess;
+type ExecFileSyncFn = (cmd: string, args: string[], opts: object) => string;
 
 export interface BrokerClientOptions {
   dataDir?: string;
+  /**
+   * Bypasses runtime resolution + the ABI probe entirely. Programmatic injection only (tests, and a
+   * host that has already decided): a caller naming a binary has made the choice we would otherwise
+   * have to validate. Production leaves it unset so `resolveBrokerNodeRuntime` runs.
+   */
   nodePath?: string;
   brokerPath?: string;
   spawnFn?: SpawnFn;
+  execFileSyncFn?: ExecFileSyncFn;
+  /** Loud, operator-visible warnings (stderr — never stdout, which is the MCP frame channel). */
+  warn?: (line: string) => void;
   callTimeoutMs?: number;
   bootTimeoutMs?: number;
+  probeTimeoutMs?: number;
 }
 
 /** The built broker entry, resolved via the `wigolo/studio-db-broker` export subpath (spawned, not imported). */
 export function resolveBrokerPath(): string {
   return createRequire(import.meta.url).resolve('wigolo/studio-db-broker');
 }
+
+export type NodeRuntimeSource = 'WIGOLO_STUDIO_BROKER_NODE' | 'npm_node_execpath' | 'process.execPath' | 'PATH';
+export interface NodeRuntimeCandidate {
+  /** The binary to exec. `'node'` for the PATH candidate — the exec resolves it, we never shell out to `which`. */
+  readonly path: string;
+  readonly source: NodeRuntimeSource;
+  /** How the candidate reads in an error message ("`node` on PATH", not just "node"). */
+  readonly label: string;
+}
+export interface NodeRuntimeRejection {
+  readonly candidate: NodeRuntimeCandidate;
+  readonly reason: string;
+}
+export type NodeRuntimeResolution =
+  | { readonly ok: true; readonly path: string; readonly source: NodeRuntimeSource; readonly abi: string }
+  | { readonly ok: false; readonly message: string; readonly rejected: readonly NodeRuntimeRejection[] };
+
+/** At most: one override, OR npm_node_execpath + process.execPath + PATH. Asserted by test — an
+ *  unbounded candidate walk would spawn a probe per entry with nothing capping the total. */
+export const MAX_NODE_RUNTIME_CANDIDATES = 3;
+const PROBE_SENTINEL = '__wigolo_broker_abi_ok__';
+
 /**
- * MUST be a real Node binary (Node ABI). Electron's own binary (`process.execPath`) is Electron ABI and
- * would fail to load better-sqlite3; `ELECTRON_RUN_AS_NODE` does not change that. Fall back to PATH `node`.
+ * Candidates in priority order. The override short-circuits to a list of ONE: when an operator names a
+ * binary and it is unusable, the answer is to say so — falling through to a different runtime would
+ * silently ignore the instruction, which is the failure this whole path exists to prevent.
  */
-export function resolveNodePath(): string {
-  return process.env.WIGOLO_STUDIO_BROKER_NODE || process.env.npm_node_execpath || 'node';
+export function nodeRuntimeCandidates(env: NodeJS.ProcessEnv = process.env): NodeRuntimeCandidate[] {
+  const override = env.WIGOLO_STUDIO_BROKER_NODE?.trim();
+  if (override) return [{ path: override, source: 'WIGOLO_STUDIO_BROKER_NODE', label: `WIGOLO_STUDIO_BROKER_NODE (${override})` }];
+
+  const out: NodeRuntimeCandidate[] = [];
+  const seen = new Set<string>();
+  const push = (path: string | undefined, source: NodeRuntimeSource, label: string): void => {
+    if (!path || seen.has(path)) return;
+    seen.add(path);
+    out.push({ path, source, label });
+  };
+  push(env.npm_node_execpath?.trim(), 'npm_node_execpath', `npm_node_execpath (${env.npm_node_execpath?.trim() ?? ''})`);
+  // Under Electron `process.execPath` is the Electron binary — a different ABI that cannot load the
+  // database engine, and ELECTRON_RUN_AS_NODE does not change that. Under plain Node (dev, tests) it is
+  // the best candidate there is. We do not guess either way past this point: the probe decides.
+  if (!process.versions.electron) push(process.execPath, 'process.execPath', `the current runtime (${process.execPath})`);
+  push('node', 'PATH', '`node` on PATH');
+  return out;
+}
+
+/** The database engine the broker will actually load, resolved from the broker entry itself so the probe
+ *  exercises the same file — not some other copy hoisted elsewhere in the tree. */
+export function resolveDatabaseModulePath(brokerPath: string): string {
+  return createRequire(pathToFileURL(brokerPath)).resolve('better-sqlite3');
+}
+
+/**
+ * Bounded ABI probe. It OPENS a database — `require()` of an ABI-mismatched native build SUCCEEDS and
+ * yields a callable constructor; only `new Database()` throws. A probe that stopped at `typeof Database`
+ * would report a false pass on exactly the runtime we are trying to reject.
+ */
+export function probeNodeRuntime(
+  nodePath: string,
+  databaseModulePath: string,
+  opts: { execFileSyncFn?: ExecFileSyncFn; timeoutMs?: number } = {},
+): { ok: true; abi: string } | { ok: false; reason: string } {
+  const exec = opts.execFileSyncFn ?? (nodeExecFileSync as unknown as ExecFileSyncFn);
+  const script =
+    `const D=require(${JSON.stringify(databaseModulePath)});` +
+    `const d=new D(":memory:");d.close();` +
+    `process.stdout.write(${JSON.stringify(PROBE_SENTINEL)}+process.versions.modules);`;
+  let out: string;
+  try {
+    out = exec(nodePath, ['-e', script], {
+      timeout: opts.timeoutMs ?? 10_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+  } catch (err) {
+    return { ok: false, reason: describeProbeFailure(err) };
+  }
+  const at = String(out ?? '').indexOf(PROBE_SENTINEL);
+  if (at < 0) return { ok: false, reason: 'the runtime did not report a working database engine' };
+  return { ok: true, abi: String(out).slice(at + PROBE_SENTINEL.length).trim() };
+}
+
+function describeProbeFailure(err: unknown): string {
+  const e = err as { code?: string; signal?: string | null; stderr?: string | Buffer; message?: string };
+  if (e?.code === 'ENOENT') return 'not found (no such executable)';
+  if (e?.code === 'ETIMEDOUT' || e?.signal === 'SIGTERM') return 'the runtime did not answer the database probe in time';
+  const stderr = typeof e?.stderr === 'string' ? e.stderr : e?.stderr?.toString('utf8') ?? '';
+  const detail = stderr.trim() || e?.message?.trim() || 'unknown error';
+  return `the database engine refused this runtime — ${collapse(detail)}`;
+}
+
+/**
+ * A native-loader failure arrives as a code frame, then the message, then a stack. Only the message says
+ * anything a reader can act on, so keep that and drop the rest — an error nobody finishes reading is the
+ * inscrutable failure this slice exists to stop producing.
+ */
+function collapse(text: string): string {
+  const start = text.search(/^[A-Za-z]*Error: /m);
+  const body = start >= 0 ? text.slice(start) : text;
+  const stackAt = body.search(/\n\s+at /);
+  const one = (stackAt >= 0 ? body.slice(0, stackAt) : body).replace(/\s+/g, ' ').trim();
+  return one.length > 400 ? `${one.slice(0, 400)}…` : one;
+}
+
+/**
+ * Resolve the Node runtime the broker will run on, and PROVE it can open the database before returning
+ * it. Never returns a guess: a wrong-but-startable runtime surfaces later as an inscrutable native-module
+ * error, which is strictly worse than refusing here with the cause and the remedy.
+ */
+export function resolveBrokerNodeRuntime(
+  opts: { env?: NodeJS.ProcessEnv; brokerPath: string; execFileSyncFn?: ExecFileSyncFn; probeTimeoutMs?: number },
+): NodeRuntimeResolution {
+  let databaseModulePath: string;
+  try {
+    databaseModulePath = resolveDatabaseModulePath(opts.brokerPath);
+  } catch {
+    return {
+      ok: false,
+      rejected: [],
+      message:
+        'studio local database service cannot start: this install has no database engine next to the background ' +
+        'service, so no Node runtime can be validated. Reinstall wigolo, then set WIGOLO_STUDIO_BROKER_NODE if you ' +
+        'run the service on a specific Node binary.',
+    };
+  }
+
+  const candidates = nodeRuntimeCandidates(opts.env ?? process.env).slice(0, MAX_NODE_RUNTIME_CANDIDATES);
+  const rejected: NodeRuntimeRejection[] = [];
+  for (const candidate of candidates) {
+    const probe = probeNodeRuntime(candidate.path, databaseModulePath, {
+      execFileSyncFn: opts.execFileSyncFn,
+      timeoutMs: opts.probeTimeoutMs,
+    });
+    if (probe.ok) return { ok: true, path: candidate.path, source: candidate.source, abi: probe.abi };
+    rejected.push({ candidate, reason: probe.reason });
+  }
+  return { ok: false, rejected, message: describeNoRuntime(rejected) };
+}
+
+function describeNoRuntime(rejected: readonly NodeRuntimeRejection[]): string {
+  const tried = rejected.length
+    ? rejected.map((r) => `  - ${r.candidate.label}: ${r.reason}`).join('\n')
+    : '  - (no candidate runtime was available)';
+  const overrode = rejected.some((r) => r.candidate.source === 'WIGOLO_STUDIO_BROKER_NODE');
+  const remedy = overrode
+    ? 'WIGOLO_STUDIO_BROKER_NODE names that binary, so no other runtime was tried. Point it at a Node ' +
+      'binary that can open this install\'s database (matching build ABI), or unset it to search again.'
+    : 'Set WIGOLO_STUDIO_BROKER_NODE to a Node binary that can open this install\'s database — it must ' +
+      'match the ABI the database engine was built for, and loading the engine is not enough on its own.';
+  return `studio local database service cannot start: no usable Node runtime.\nTried:\n${tried}\n${remedy}`;
+}
+
+/** A client that only ever reports why it is dead. Loud (the reason travels to every caller), not fatal. */
+function deadClient(reason: string): BrokerClient {
+  return {
+    ready: () => Promise.reject(new Error(reason)),
+    call: () => Promise.reject(new Error(reason)),
+    onArtifact: () => { /* never fires */ },
+    stop: async () => { /* nothing to stop */ },
+  };
 }
 
 export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient {
   const spawnFn = opts.spawnFn ?? (nodeSpawn as unknown as SpawnFn);
-  const nodePath = opts.nodePath ?? resolveNodePath();
+  const warn = opts.warn ?? ((line: string) => { process.stderr.write(line); });
   // Resolving the broker entry must NEVER crash app boot — a failure here degrades captures to
   // `capture_unavailable` (§11), it does not take down the human UI or the P1/P2 agent line.
   let brokerPath: string;
   try {
     brokerPath = opts.brokerPath ?? resolveBrokerPath();
   } catch {
-    return {
-      ready: () => Promise.reject(new Error('studio background service unavailable')),
-      call: () => Promise.reject(new Error('studio background service unavailable')),
-      onArtifact: () => { /* never fires */ },
-      stop: async () => { /* nothing to stop */ },
-    };
+    return deadClient('studio background service unavailable');
   }
+
+  // The runtime is resolved and PROVEN, never guessed. Refusing here is deliberate: a broker started on
+  // the wrong Node fails later as a native-module error nobody can act on.
+  let nodePath: string;
+  if (opts.nodePath) {
+    nodePath = opts.nodePath;
+  } else {
+    const runtime = resolveBrokerNodeRuntime({ brokerPath, execFileSyncFn: opts.execFileSyncFn, probeTimeoutMs: opts.probeTimeoutMs });
+    if (!runtime.ok) {
+      warn(`[studio] ${runtime.message}\n`);
+      return deadClient(runtime.message);
+    }
+    nodePath = runtime.path;
+  }
+
   const callTimeoutMs = opts.callTimeoutMs ?? 15_000;
   const bootTimeoutMs = opts.bootTimeoutMs ?? 20_000;
 
@@ -88,6 +265,10 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
     else p.reject(new Error((msg.error as { message?: string })?.message ?? 'broker error'));
   };
 
+  const scheduleRespawn = (): void => {
+    if (!stopped) { setTimeout(() => { if (!stopped) start(); }, backoff); backoff = Math.min(backoff * 2, 5_000); }
+  };
+
   const start = (): void => {
     try {
       child = spawnFn(nodePath, [brokerPath], {
@@ -95,25 +276,37 @@ export function createBrokerClient(opts: BrokerClientOptions = {}): BrokerClient
         env: { ...process.env, WIGOLO_STUDIO_BROKER_MAIN: '1', ...(opts.dataDir ? { WIGOLO_DATA_DIR: opts.dataDir } : {}) },
       });
     } catch {
-      // spawn failed (e.g. no node on PATH) — schedule a backoff retry; call()/ready() reject meanwhile.
+      // A synchronous spawn throw (bad argument shape). ENOENT does NOT arrive here — see the 'error'
+      // handler below.
       child = null;
-      if (!stopped) { setTimeout(() => { if (!stopped) start(); }, backoff); backoff = Math.min(backoff * 2, 5_000); }
+      scheduleRespawn();
       return;
     }
+    // `spawn` reports a missing/unexecutable binary ASYNCHRONOUSLY as an 'error' event, never as the
+    // throw the catch above expects. With no handler, Node re-throws it as an unhandled 'error' and the
+    // whole Electron main goes down — the one failure a background service must never cause. `gone`
+    // keeps this idempotent: after 'error', 'exit' may or may not follow.
+    let gone = false;
+    const onGone = (reason: string): void => {
+      if (gone) return;
+      gone = true;
+      rejectAllPending(reason);
+      buf = ''; // drop any partial line from the dead child — else it corrupts the respawn's first frame (can eat `ready`)
+      if (stopped) return;
+      readyPromise = new Promise((r) => { readyResolve = r; });
+      scheduleRespawn();
+    };
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => {
       buf += chunk;
       let nl: number;
       while ((nl = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, nl); buf = buf.slice(nl + 1); onLine(line); }
     });
-    child.on('exit', () => {
-      rejectAllPending('studio background service exited');
-      buf = ''; // drop any partial line from the dead child — else it corrupts the respawn's first frame (can eat `ready`)
-      if (stopped) return;
-      readyPromise = new Promise((r) => { readyResolve = r; });
-      setTimeout(() => { if (!stopped) start(); }, backoff);
-      backoff = Math.min(backoff * 2, 5_000);
+    child.on('error', (err: unknown) => {
+      warn(`[studio] background service failed to start on ${nodePath}: ${err instanceof Error ? err.message : String(err)}\n`);
+      onGone('studio background service failed to start');
     });
+    child.on('exit', () => { onGone('studio background service exited'); });
   };
   start();
 
