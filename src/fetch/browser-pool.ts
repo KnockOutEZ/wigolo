@@ -296,8 +296,8 @@ async function readContentWithRetry(
   return await page.content();
 }
 
-function getLauncher(type: BrowserType) {
-  const driver = requireBrowserDriver();
+async function getLauncher(type: BrowserType) {
+  const driver = await requireBrowserDriver();
   switch (type) {
     case 'firefox': return driver.firefox;
     case 'webkit': return driver.webkit;
@@ -410,7 +410,7 @@ export class MultiBrowserPool {
   private async launchBrowser(type: BrowserType): Promise<Browser> {
     const typePool = this.pools.get(type)!;
     if (!typePool.browser) {
-      const launcher = getLauncher(type);
+      const launcher = await getLauncher(type);
       const cfg = getConfig();
       const proxy = playwrightProxyOption(cfg.proxyUrl, cfg.useProxy);
       log.debug('launching browser', { type, proxied: proxy !== undefined });
@@ -574,7 +574,7 @@ export class MultiBrowserPool {
    */
   private async launchDedicatedStealthBrowser(type: BrowserType, forceNoProxy = false): Promise<Browser> {
     const cfg = getConfig();
-    const standard = getLauncher(type);
+    const standard = await getLauncher(type);
     // `resolveStealthLauncher` proves the hardened driver IMPORTS — never that
     // it can LAUNCH. It resolves a browser revision it neither installs nor
     // owns, so a version skew between it and the standard driver leaves a
@@ -734,7 +734,7 @@ export class MultiBrowserPool {
       resolvedType = 'chromium';
       try {
         log.info('connecting via CDP', { cdpUrl: redactUrl(options.cdpUrl) });
-        cdpBrowser = await requireBrowserDriver().chromium.connectOverCDP(options.cdpUrl);
+        cdpBrowser = await (await requireBrowserDriver()).chromium.connectOverCDP(options.cdpUrl);
         const contexts = cdpBrowser.contexts();
         ctx = contexts.length > 0 ? contexts[0] : await cdpBrowser.newContext();
       } catch (err) {

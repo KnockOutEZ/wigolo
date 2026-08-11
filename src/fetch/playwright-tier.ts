@@ -14,7 +14,7 @@ export interface InstallStatus {
 }
 
 export async function detectPlaywrightInstall(): Promise<InstallStatus> {
-  const driver = loadBrowserDriver();
+  const driver = await loadBrowserDriver();
   if (!driver) return { installed: false, hint: 'wigolo warmup --browser' };
   try {
     const exec = driver.chromium.executablePath();
@@ -47,7 +47,7 @@ export async function getDaemonBrowser(): Promise<{ browser: Browser; context: B
         err.hint = status.hint;
         throw err;
       }
-      const browser = await requireBrowserDriver().chromium.launch({ headless: true });
+      const browser = await (await requireBrowserDriver()).chromium.launch({ headless: true });
       const context = await browser.newContext();
       _browser = browser;
       _ctx = context;

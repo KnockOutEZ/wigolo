@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
-import { loadBrowserDriver } from '../../../fetch/browser-driver.js';
+import { loadBrowserDriverSync } from '../../../fetch/browser-driver.js';
 
 // This project is pure ESM (`"type":"module"`); `require` is not defined at
 // runtime. Use createRequire so the synchronous probe body can lazily load
@@ -217,7 +217,7 @@ export function defaultProbeDeps(): ProbeDeps {
       // local require already anticipated an absent package; what it could not do is see a
       // driver acquired into the data directory, so it would have reported "not installed"
       // for a machine that had just installed one.
-      const driver = loadBrowserDriver();
+      const driver = loadBrowserDriverSync();
       if (!driver) return false;
       try {
         return existsSync(driver.chromium.executablePath());

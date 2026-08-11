@@ -60,7 +60,7 @@ export type SessionBrowserLauncher = (opts: LaunchOptions) => Promise<LaunchedSe
 
 /** The real launcher: dedicated headed Chromium → isolated context → page → CDP session. */
 export async function defaultSessionLauncher(opts: LaunchOptions): Promise<LaunchedSessionBrowser> {
-  const browser = await requireBrowserDriver().chromium.launch({ headless: opts.headless });
+  const browser = await (await requireBrowserDriver()).chromium.launch({ headless: opts.headless });
   // deviceScaleFactor:1 keeps screencast frame coords 1:1 with the CSS viewport for input
   // mapping (Phase 1c). Slice 5d: an opted-in named profile loads its storageState here (the
   // browser scopes the cookies by origin naturally — origin-scoping at PERSIST is 5e's job);

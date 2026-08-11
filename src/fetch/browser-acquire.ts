@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadBrowserDriver, resetBrowserDriverCache } from './browser-driver.js';
+import { loadBrowserDriverSync, resetBrowserDriverCache } from './browser-driver.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { PlainReporter } from '../cli/tui/reporter.js';
@@ -49,7 +49,7 @@ const LOCK_STALE_MS = 10 * 60 * 1000;
  * branch; what changed is that the first cause used to be impossible.
  */
 export function browserInstalledOnDisk(): boolean {
-  const driver = loadBrowserDriver();
+  const driver = loadBrowserDriverSync();
   if (!driver) return false;
   try {
     const exec = driver.chromium.executablePath();

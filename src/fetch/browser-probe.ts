@@ -10,8 +10,8 @@ export type BrowserName = 'chromium' | 'firefox' | 'webkit';
  * package to be on disk — which is precisely what taking it off the default install path
  * makes untrue.
  */
-function browserApi(name: BrowserName): BrowserType | null {
-  return loadBrowserDriver()?.[name] ?? null;
+async function browserApi(name: BrowserName): Promise<BrowserType | null> {
+  return (await loadBrowserDriver())?.[name] ?? null;
 }
 
 export interface BrowserProbeResult {
@@ -61,7 +61,7 @@ export async function probeBrowser(
   name: BrowserName,
   opts: { launchTimeoutMs?: number } = {},
 ): Promise<BrowserProbeResult> {
-  const api = browserApi(name);
+  const api = await browserApi(name);
   if (!api) {
     return { onDisk: false, launchable: false, execPath: '', error: BROWSER_DRIVER_MISSING_ERROR };
   }

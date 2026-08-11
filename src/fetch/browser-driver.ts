@@ -44,6 +44,15 @@ export interface BrowserDriverModule {
  */
 const DRIVER_MODULE_ID: string = 'playwright';
 
+/*
+ * ⚠ The `import()` below spells the specifier INLINE rather than reusing the constant above,
+ * and the two are not interchangeable. Interception and bundling both work off a statically
+ * analysable specifier, and a `const`-bound string is not one — routing the dynamic import
+ * through a variable resolved the REAL package straight past a mock, and would likewise be
+ * dropped by a bundler. The `string`-typed constant remains for the `createRequire` path, where
+ * its whole job is the opposite: to stop `tsc` resolving a package that may be absent.
+ */
+
 /** Directory under `dataDir` that `warmup --browser` installs the driver into. */
 export const DRIVER_INSTALL_DIRNAME = 'browser-driver';
 
@@ -70,6 +79,29 @@ const log = createLogger('fetch');
 
 let _cached: BrowserDriverModule | null = null;
 let _resolved = false;
+/**
+ * The in-flight resolution, so concurrent first callers join one import instead of each
+ * starting their own.
+ *
+ * ⚠ Memoizing the VALUE is not enough and the difference is observable. `doctor` probes
+ * chromium, firefox and webkit through `Promise.all`, so three callers reach this function
+ * before any of them has finished awaiting — with only a value memo, all three resolve the
+ * module independently. The same shape is what `stealth.ts` and `cdp-direct.ts` already do for
+ * their optional packages; omitting it here made a concurrent probe resolve a DIFFERENT module
+ * instance than its siblings.
+ */
+let _inFlight: Promise<BrowserDriverModule | null> | null = null;
+/**
+ * The synchronous path memoizes SEPARATELY, and the separation is load-bearing rather than an
+ * oversight. The two mechanisms agree in production by construction — `import()` and
+ * `createRequire` from this same file resolve the same package from the same two roots — so a
+ * shared memo bought nothing there. What it did buy was an ordering hazard: whichever path ran
+ * first decided the answer for both, and only the async one is visible to the module graph. A
+ * single early on-disk probe could therefore pin the driver for the whole process to something
+ * the async path was never given a chance to resolve.
+ */
+let _syncCached: BrowserDriverModule | null = null;
+let _syncResolved = false;
 let _testOverride: BrowserDriverModule | null | undefined;
 
 /**
@@ -80,8 +112,7 @@ let _testOverride: BrowserDriverModule | null | undefined;
  */
 export function _setBrowserDriverForTests(mod: BrowserDriverModule | null | undefined): void {
   _testOverride = mod;
-  _cached = null;
-  _resolved = false;
+  resetBrowserDriverCache();
 }
 
 /**
@@ -96,6 +127,9 @@ export function _setBrowserDriverForTests(mod: BrowserDriverModule | null | unde
 export function resetBrowserDriverCache(): void {
   _cached = null;
   _resolved = false;
+  _inFlight = null;
+  _syncCached = null;
+  _syncResolved = false;
 }
 
 /** The data-directory root the acquirer installs into. Separated so tests can assert the path. */
@@ -115,14 +149,33 @@ function looksLikeDriver(mod: unknown): mod is BrowserDriverModule {
 }
 
 /**
+ * A CJS package reached through `import()` arrives as a namespace object whose named exports
+ * may hang off `default` instead of the namespace, depending on what the CJS lexer detected.
+ * Both shapes are accepted rather than assumed.
+ */
+function unwrap(mod: unknown): BrowserDriverModule | null {
+  if (looksLikeDriver(mod)) return mod;
+  const inner = (mod as { default?: unknown } | null)?.default;
+  return looksLikeDriver(inner) ? inner : null;
+}
+
+/**
  * Try one resolution root. `createRequire` takes a plain absolute PATH here rather than a
  * `file:` URL: `new URL(...).pathname` yields `/C:/...` on win32, which is the Windows-only
  * failure this program has already shipped three times.
  */
 function tryRoot(fromPath: string): BrowserDriverModule | null {
   try {
-    const mod = createRequire(fromPath)(DRIVER_MODULE_ID) as unknown;
-    return looksLikeDriver(mod) ? mod : null;
+    return unwrap(createRequire(fromPath)(DRIVER_MODULE_ID) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+/** The acquired copy under the data directory. Isolated because `getConfig()` can throw. */
+function tryAcquiredRoot(): BrowserDriverModule | null {
+  try {
+    return tryRoot(join(driverInstallRoot(), 'package.json'));
   } catch {
     return null;
   }
@@ -132,26 +185,56 @@ function tryRoot(fromPath: string): BrowserDriverModule | null {
  * Resolve the browser driver, or `null` when it is not installed anywhere this process can see.
  * Never throws. Memoized in both directions, so an absent package costs one failed resolution
  * per process rather than one per fetch.
+ *
+ * ⚠ THE FIRST ATTEMPT USES A LITERAL `import()` SPECIFIER, and that is deliberate on two counts.
+ * A literal is the only form a bundler can see — a variable specifier is silently dropped by
+ * esbuild, which makes the feature vanish in the packaged binary and nowhere else. And it is the
+ * form the module graph can intercept, which is what lets thirty existing suites keep driving
+ * this rung through the seam they already mock instead of re-mocking a private resolver.
+ *
+ * The `createRequire` fallback is not redundant: `import()` resolves relative to THIS file, so
+ * it can never see a driver acquired into the data directory. One of the two roots covers the
+ * user who installed a driver themselves, the other covers the one `warmup` installed.
  */
-export function loadBrowserDriver(): BrowserDriverModule | null {
+export async function loadBrowserDriver(): Promise<BrowserDriverModule | null> {
   if (_testOverride !== undefined) return _testOverride;
   if (_resolved) return _cached;
+  if (_inFlight) return _inFlight;
 
-  let mod = tryRoot(import.meta.filename);
-  if (!mod) {
-    // The acquired copy. `getConfig()` can throw on a half-configured process; a driver probe
-    // must not be the thing that takes that process down.
+  _inFlight = (async () => {
+    let mod: BrowserDriverModule | null = null;
     try {
-      mod = tryRoot(join(driverInstallRoot(), 'package.json'));
+      mod = unwrap(await import('playwright'));
     } catch {
       mod = null;
     }
-  }
+    if (!mod) mod = tryAcquiredRoot();
 
-  if (!mod) log.debug('browser driver not installed; the browser rung is unavailable until acquired');
-  _cached = mod;
-  _resolved = true;
-  return _cached;
+    if (!mod) log.debug('browser driver not installed; the browser rung is unavailable until acquired');
+    _cached = mod;
+    _resolved = true;
+    _inFlight = null;
+    return _cached;
+  })();
+  return _inFlight;
+}
+
+/**
+ * The synchronous resolution, for the two probes that genuinely cannot await: the on-disk check
+ * on the fetch hot path and the setup TUI's `ProbeDeps`, both of which answer a plain boolean
+ * inside a synchronous interface.
+ *
+ * Shares one memo with {@link loadBrowserDriver}, so the two can never report different answers
+ * about whether this machine has a driver — which is the failure mode that a second, independent
+ * probe of the same fact always eventually produces.
+ */
+export function loadBrowserDriverSync(): BrowserDriverModule | null {
+  if (_testOverride !== undefined) return _testOverride;
+  if (_syncResolved) return _syncCached;
+
+  _syncCached = tryRoot(import.meta.filename) ?? tryAcquiredRoot();
+  _syncResolved = true;
+  return _syncCached;
 }
 
 /**
@@ -178,7 +261,7 @@ export function resolveDriverPackageJson(): string | null {
 
 /** Whether a driver is resolvable. The cheap predicate for `doctor`, `status` and warmup. */
 export function browserDriverInstalled(): boolean {
-  return loadBrowserDriver() !== null;
+  return loadBrowserDriverSync() !== null;
 }
 
 /**
@@ -186,8 +269,8 @@ export function browserDriverInstalled(): boolean {
  * proceed without one — a launch, an `executablePath()` — where returning `null` would only
  * move the crash one frame outward with a worse message.
  */
-export function requireBrowserDriver(): BrowserDriverModule {
-  const mod = loadBrowserDriver();
+export async function requireBrowserDriver(): Promise<BrowserDriverModule> {
+  const mod = await loadBrowserDriver();
   if (!mod) throw new Error(BROWSER_DRIVER_MISSING_ERROR);
   return mod;
 }
