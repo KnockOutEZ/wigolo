@@ -66,13 +66,19 @@ describe('browser tier re-guards every redirect hop', () => {
       publicTarget = { server: targetServer, port: targetPort, hits: targetHits };
 
       origin = createServer((req, res) => {
+        // Route names are deliberately opaque. A descriptive name like
+        // "/to-metadata" appears verbatim in Chromium's own navigation error
+        // text, so a message-matching assertion would pass against UNFENCED
+        // code purely because the request URL echoed the word — a vacuous
+        // green. Measured: with "/to-metadata" this suite showed 2 reds at
+        // base instead of 3.
         const routes: Record<string, string> = {
-          '/to-blocked': `http://0.0.0.0:${sinkPort}/pwned`,
-          '/hop1': '/hop2',
-          '/hop2': `http://0.0.0.0:${sinkPort}/pwned`,
-          '/to-metadata': 'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
-          '/to-private': 'http://10.0.0.1/admin',
-          '/to-allowed': `http://127.0.0.1:${targetPort}/landing`,
+          '/r1': `http://0.0.0.0:${sinkPort}/pwned`,
+          '/r2': '/r3',
+          '/r3': `http://0.0.0.0:${sinkPort}/pwned`,
+          '/r4': 'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
+          '/r5': 'http://10.0.0.1/admin',
+          '/r6': `http://127.0.0.1:${targetPort}/landing`,
         };
         const location = routes[req.url ?? ''];
         if (location) {
@@ -115,8 +121,8 @@ describe('browser tier re-guards every redirect hop', () => {
     expect(sink.hits).toEqual(['/control']);
     sink.hits.length = 0;
 
-    await expect(pool.fetchWithBrowser(`http://127.0.0.1:${originPort}/to-blocked`)).rejects.toThrow(
-      /SSRF policy|unspecified IPv4/i,
+    await expect(pool.fetchWithBrowser(`http://127.0.0.1:${originPort}/r1`)).rejects.toThrow(
+      /Blocked by SSRF policy on a browser redirect hop.*unspecified IPv4/is,
     );
     expect(sink.hits).toEqual([]);
   }, 90_000);
@@ -130,10 +136,10 @@ describe('browser tier re-guards every redirect hop', () => {
     expect(sink.hits.length).toBe(1);
     sink.hits.length = 0;
 
-    // /hop1 -> /hop2 (both allowed) -> the sink. A first-hop-only check passes
+    // /r2 -> /r3 (both allowed) -> the sink. A first-hop-only check passes
     // this chain; only a per-hop re-guard refuses it.
-    await expect(pool.fetchWithBrowser(`http://127.0.0.1:${originPort}/hop1`)).rejects.toThrow(
-      /SSRF policy|unspecified IPv4/i,
+    await expect(pool.fetchWithBrowser(`http://127.0.0.1:${originPort}/r2`)).rejects.toThrow(
+      /Blocked by SSRF policy on a browser redirect hop.*unspecified IPv4/is,
     );
     expect(sink.hits).toEqual([]);
   }, 90_000);
@@ -143,9 +149,9 @@ describe('browser tier re-guards every redirect hop', () => {
       console.warn('local bind or browser launch unavailable here; CI exercises this for real');
       return;
     }
-    await expect(
-      pool.fetchWithBrowser(`http://127.0.0.1:${originPort}/to-metadata`),
-    ).rejects.toThrow(/link-local|metadata/i);
+    await expect(pool.fetchWithBrowser(`http://127.0.0.1:${originPort}/r4`)).rejects.toThrow(
+      /Blocked by SSRF policy on a browser redirect hop.*link-local IPv4 \(169\.254\.169\.254\)/is,
+    );
   }, 90_000);
 
   it('refuses a redirect onto an RFC1918 address', async () => {
@@ -153,8 +159,8 @@ describe('browser tier re-guards every redirect hop', () => {
       console.warn('local bind or browser launch unavailable here; CI exercises this for real');
       return;
     }
-    await expect(pool.fetchWithBrowser(`http://127.0.0.1:${originPort}/to-private`)).rejects.toThrow(
-      /private IPv4/i,
+    await expect(pool.fetchWithBrowser(`http://127.0.0.1:${originPort}/r5`)).rejects.toThrow(
+      /Blocked by SSRF policy on a browser redirect hop.*private IPv4 \(10\.0\.0\.1, 10\/8\)/is,
     );
   }, 90_000);
 
@@ -165,7 +171,7 @@ describe('browser tier re-guards every redirect hop', () => {
       return;
     }
     publicTarget.hits.length = 0;
-    const result = await pool.fetchWithBrowser(`http://127.0.0.1:${originPort}/to-allowed`);
+    const result = await pool.fetchWithBrowser(`http://127.0.0.1:${originPort}/r6`);
     expect(result.html).toContain('ALLOWED BODY');
     expect(result.finalUrl).toContain('/landing');
     expect(publicTarget.hits).toEqual(['/landing']);
