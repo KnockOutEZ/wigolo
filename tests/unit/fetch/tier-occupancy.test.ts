@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -179,10 +179,20 @@ describe('the counter file', () => {
     // (a container with a mounted config), and an instrument that turns it into a fetch failure
     // is worse than no instrument.
     const locked = join(dataDir, 'locked');
-    mkdirSync(locked, { mode: 0o500 });
+    mkdirSync(locked);
+    chmodSync(locked, 0o500);
     try {
-      expect(() => bumpTierOccupancy('desktop', 'http', join(locked, 'nested'))).not.toThrow();
-      expect(readTierOccupancy(join(locked, 'nested')).desktop.http).toBe(0);
+      const nested = join(locked, 'nested');
+      expect(() => bumpTierOccupancy('desktop', 'http', nested)).not.toThrow();
+      // Non-vacuous wherever mode bits are actually enforced: prove the write was REFUSED,
+      // rather than the counter quietly succeeding and `not.toThrow()` passing for free.
+      // win32 has no POSIX perms and root bypasses them outright (containers often run as
+      // root), so there the no-throw contract above is the whole of what is under test —
+      // asserting the refusal unconditionally would red on Windows only, which is the one
+      // platform this suite cannot see locally.
+      if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+        expect(existsSync(join(nested, 'tier-occupancy.json'))).toBe(false);
+      }
     } finally {
       chmodSync(locked, 0o700);
     }
