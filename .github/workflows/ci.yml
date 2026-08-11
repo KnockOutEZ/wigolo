@@ -374,6 +374,61 @@ jobs:
           node "$GITHUB_WORKSPACE/scripts/budget/measure.mjs" tarball
           node "$GITHUB_WORKSPACE/scripts/budget/measure.mjs" acquire-diff "$RUNNER_TEMP/acquire.json"
 
+      # S10-d's tier-conditional pair, run as TWO ARMS of the same measurement.
+      #
+      # Neither arm is wired without the other, and that is the point. Read alone, the desktop
+      # gate's `<= 320` passes trivially on a host that acquired nothing at all — a gate that
+      # cannot tell "correctly acquired" from "did nothing". The claim is carried by the
+      # DIFFERENTIAL: same command, same artifact, same job, same component available to install,
+      # and only the resolved tier differs. The desktop arm must take it; the headless arm must
+      # take exactly zero bytes of it.
+      #
+      # WIGOLO_SUBSTRATE_PATH supplies a real component to acquire. There is no published one yet
+      # — that is S16-alpha — so without it BOTH arms would measure zero and the pair would prove
+      # nothing about the branch. WIGOLO_BROWSER_TIER forces each tier rather than waiting for a
+      # runner of each kind, because what is under test is the dispatch, not the detection (the
+      # detection has its own unit coverage, and a macOS runner cannot produce a no-display host).
+      #
+      # Each arm gets its own WIGOLO_DATA_DIR so the desktop arm's acquisition cannot be mistaken
+      # for the headless arm's, and the gate id is passed explicitly so a runner can never report
+      # one arm against the other's expectation.
+      - name: budget gates — tier-conditional acquisition, both arms (blocking)
+        if: matrix.os == 'macos-latest' && matrix.node == '22'
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          COMPONENT="$RUNNER_TEMP/fake-component"
+          mkdir -p "$COMPONENT/bin"
+          printf '{"version":"ci-arm","executable":"bin/run"}' > "$COMPONENT/substrate.json"
+          printf '#!/bin/sh\nexit 0\n' > "$COMPONENT/bin/run"
+          chmod +x "$COMPONENT/bin/run"
+          export WIGOLO_SUBSTRATE_PATH="$COMPONENT"
+
+          for ARM in desktop no-display; do
+            if [ "$ARM" = "desktop" ]; then GATE=G-ACQUIRE-SUBSTRATE-DESKTOP; else GATE=G-ACQUIRE-SUBSTRATE-HEADLESS; fi
+            export WIGOLO_DATA_DIR="$RUNNER_TEMP/tier-$ARM"
+            export WIGOLO_BROWSER_TIER="$ARM"
+            mkdir -p "$WIGOLO_DATA_DIR"
+            node scripts/budget/measure.mjs substrate-snapshot "$RUNNER_TEMP/substrate-$ARM.json"
+            wigolo warmup --json --plain > "warm-$ARM.json"
+            echo "$ARM warmup: $(cat "warm-$ARM.json")"
+            node scripts/budget/measure.mjs substrate-diff "$RUNNER_TEMP/substrate-$ARM.json" "$GATE"
+          done
+
+          # The dispatch itself, not just the byte counts: the desktop arm must report the
+          # component acquired AND the browser engine skipped (amended-D1's no-doubling rule),
+          # and the headless arm must report no component attempt at all.
+          node -e "
+            const fs = require('fs');
+            const d = JSON.parse(fs.readFileSync('warm-desktop.json', 'utf8'));
+            const h = JSON.parse(fs.readFileSync('warm-no-display.json', 'utf8'));
+            const fail = (m) => { console.error('DISPATCH FAILED:', m); process.exit(1); };
+            if (d.desktopComponent !== 'acquired') fail('desktop arm did not acquire: ' + d.desktopComponent);
+            if (d.browserEngine !== 'skipped') fail('desktop arm also took the engine slot: ' + d.browserEngine);
+            if (h.desktopComponent !== undefined) fail('no-display arm attempted a component: ' + h.desktopComponent);
+            console.log('tier-conditional dispatch OK');
+          "
+
       - name: cloud-LLM synthesis (Gemini) — proves the LLM path + key wiring
         if: matrix.os == 'ubuntu-latest' && matrix.node == '22' && env.GEMINI_API_KEY != ''
         # Best-effort: an external LLM API's quota or a transient error must not
