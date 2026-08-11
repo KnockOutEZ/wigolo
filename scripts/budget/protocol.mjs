@@ -240,8 +240,50 @@ export const GATES = {
     comparison: '<=',
     limit: 800,
     baseline:
-      "764 MiB measured 2026-08-11 on the GitHub macos-latest runner — browser engine 546, models 218 — for the `warmup --reranker --embeddings` this job runs. ⚠ The S10 spec and brief:180 both price acquisition at ~535 MiB, which is the browser engine ALONE; the 218 MiB of ranking and embedding models is real, is downloaded by the same command, and is quantified here for the first time. Today's cost, not a target: asserted so the tier work is measured against a gate that already existed rather than one written to fit its result. S10-d replaces it with the amended-D1 pair (desktop <= 320, no-display == 0), which must be re-derived against 764 rather than 535.",
+      "764 MiB measured 2026-08-11 on the GitHub macos-latest runner — browser engine 546, models 218 — for the `warmup --reranker --embeddings` this job runs. ⚠ The S10 spec and brief:180 both price acquisition at ~535 MiB, which is the browser engine ALONE; the 218 MiB of ranking and embedding models is real, is downloaded by the same command, and is quantified here for the first time. Today's cost, not a target: asserted so the tier work is measured against a gate that already existed rather than one written to fit its result. The models were re-measured independently on darwin-arm64 (fastembed 128 + transformers 88 = 216 MiB), so 218 is a property of the download rather than of the runner. ⚠ S10-d's replacement pair CANNOT be stated over this artifact — see SUBSTRATE_ONLY_ACQUISITION.",
   },
+};
+
+/**
+ * ⚠ Why S10-d's replacement pair cannot be stated over G-ACQUIRE's artifact, and what to
+ * measure instead.
+ *
+ * Spec §4.3 replaces G-ACQUIRE with two tier-conditional gates: G-ACQUIRE-DESKTOP <= 320 MiB
+ * ("296 substrate + headroom; today 535") and G-ACQUIRE-HEADLESS == 0 MiB. Both were derived
+ * while acquisition was believed to be the browser engine alone. It is not: S10-a measured
+ * 764 MiB, of which **218 MiB is ranking and embedding models**, and those models are
+ * TIER-INDEPENDENT. No browser rung makes `warmup` stop downloading a reranker.
+ *
+ * Worked against G-ACQUIRE's own artifact (growth of `ms-playwright` + the data dir):
+ *
+ *   desktop, post-S10-d   = substrate 300 + models 218 + browser engine 0 = ~518 MiB
+ *   no-display, post-S10-d = substrate   0 + models 218 + browser engine 0 = ~218 MiB
+ *
+ * So `<= 320` reds at baseline with no regression present, and `== 0` reds at baseline for a
+ * host that correctly downloaded nothing at all of the substrate. That is the same error class
+ * as the spec's G-DIET 670 (§ G-DIET baseline): a threshold derived from one line item and then
+ * asserted over a total.
+ *
+ * The fix is not a bigger number, because a bigger number would destroy what `==` is for.
+ * D-S10-5's claim is that a no-display host acquires ZERO SUBSTRATE BYTES — exact, and true —
+ * and "zero substrate" is only expressible over a substrate-scoped artifact. So S10-d should:
+ *
+ *   1. scope the tier-conditional pair to the SUBSTRATE directory alone, where 320 keeps its
+ *      ~6.7% headroom over a measured 300 and `== 0` becomes both exact and achievable; and
+ *   2. keep THIS gate, over the full artifact, unchanged. It is what still prices the models,
+ *      and it is what catches the doubling regression D1 fears: acquiring the substrate AND the
+ *      browser engine lands at 300 + 546 + 218 = 1064, well over the 800 limit.
+ *
+ * Substrate baseline for (1): **300 MiB**, `du -sm node_modules/electron` after a real
+ * `node node_modules/electron/install.js` on darwin-arm64 at 96af301a — Electron 43.0.0, the
+ * version `apps/studio` pins. This corroborates the spec's 296 on a second machine.
+ * ⚠ Platform-scoped like every other baseline here: the linux and win32 substrate downloads
+ * have NOT been measured, and the packaged S16-alpha app is a different artifact again.
+ */
+export const SUBSTRATE_ONLY_ACQUISITION = {
+  substrateMiB: 300,
+  modelsMiB: 218,
+  browserEngineMiB: 546,
 };
 
 /**

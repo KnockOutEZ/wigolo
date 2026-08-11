@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
-import { GATES, RSS_HORIZON_MS, RSS_SAMPLE_INTERVAL_MS, MACHINE_CLASSES, floorMiB, median, minimum, limitFor, evaluate, renderReport } from '../../scripts/budget/protocol.mjs';
+import { GATES, RSS_HORIZON_MS, RSS_SAMPLE_INTERVAL_MS, MACHINE_CLASSES, SUBSTRATE_ONLY_ACQUISITION, floorMiB, median, minimum, limitFor, evaluate, renderReport } from '../../scripts/budget/protocol.mjs';
 
 /*
  * WHY these tests exist.
@@ -180,6 +180,40 @@ describe('gate definitions', () => {
     const gate = GATES['G-RSS-IDLE'];
     expect(evaluate(gate, 44.2).pass).toBe(true);
     expect(evaluate(gate, 17.7 + 40).pass).toBe(false);
+  });
+});
+
+describe('S10-d acquisition pair — re-derived against the measured 764, not the spec’s 535', () => {
+  const { substrateMiB, modelsMiB, browserEngineMiB } = SUBSTRATE_ONLY_ACQUISITION;
+
+  it('the spec’s desktop limit of 320 reds at baseline over the whole-acquisition artifact', () => {
+    // WHY this is a test and not a note: 320 was derived as "296 substrate + headroom" while
+    // acquisition was believed to be the browser engine alone. The 218 MiB of ranking and
+    // embedding models is tier-INDEPENDENT — no browser rung stops warmup downloading a
+    // reranker — so a correct post-S10-d desktop run lands ~518 and fails a gate with no
+    // regression present. Same error class as the spec's G-DIET 670.
+    expect(substrateMiB + modelsMiB).toBeGreaterThan(320);
+  });
+
+  it('the spec’s headless `== 0` reds at baseline for a host that acquired no substrate at all', () => {
+    // A no-display host still downloads the models. Stated over the whole artifact, "zero" is
+    // false for a machine doing exactly the right thing.
+    expect(modelsMiB).not.toBe(0);
+  });
+
+  it('a substrate-scoped 320 keeps real headroom over the measured substrate', () => {
+    // The fix is a narrower artifact, not a bigger number: scoped to the substrate alone, the
+    // spec's own 320 works and `== 0` becomes both exact and achievable.
+    expect(substrateMiB).toBeLessThan(320);
+    expect((320 - substrateMiB) / substrateMiB).toBeGreaterThan(0.05);
+  });
+
+  it('the doubling regression D1 fears still reds the whole-acquisition gate, which is why it is kept', () => {
+    // Acquiring the substrate AND the browser engine is the failure amended-D1 exists to
+    // prevent. Narrowing the tier-conditional pair to the substrate would stop seeing it, so
+    // this gate has to survive S10-d rather than be replaced by it.
+    expect(evaluate(GATES['G-ACQUIRE'], substrateMiB + browserEngineMiB + modelsMiB).pass).toBe(false);
+    expect(evaluate(GATES['G-ACQUIRE'], substrateMiB + modelsMiB).pass).toBe(true);
   });
 });
 
