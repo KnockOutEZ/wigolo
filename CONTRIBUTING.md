@@ -5,7 +5,7 @@ up, how to propose changes, and the contribution terms.
 
 ## Development setup
 
-Requires Node.js ≥ 20.
+Requires Node.js ≥ 22.
 
 ```bash
 npm install

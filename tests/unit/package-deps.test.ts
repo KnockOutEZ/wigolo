@@ -33,10 +33,16 @@ describe('package.json: forbidden deps after Python-rerank migration', () => {
     expect(pkg.overrides?.protobufjs).toBeUndefined();
   });
 
-  it('engines.node is still >=20', () => {
+  // Node 20 "Iron" went EOL upstream on 2026-03-24. The floor tracks a
+  // SUPPORTED LTS line, so this asserts the EOL floor is gone rather than just
+  // that some floor is declared — a silent revert to >=20 would put installs
+  // back on a runtime that receives no security fixes, and `npm install` would
+  // stop warning about it.
+  it('engines.node is >=22 — the EOL Node 20 floor is gone', () => {
     const node = (pkg as { engines?: { node?: string } }).engines?.node;
     expect(node).toBeDefined();
-    expect(node).toMatch(/>=20/);
+    expect(node).toMatch(/>=22/);
+    expect(node).not.toMatch(/>=(18|20)\b/);
   });
 });
 

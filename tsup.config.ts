@@ -3,7 +3,7 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   entry: ['src/**/*.ts', 'src/**/*.tsx'],
   format: ['esm'],
-  target: 'node20',
+  target: 'node22',
   outDir: 'dist',
   sourcemap: true,
   splitting: false,

@@ -6,7 +6,7 @@
 #   ./pipeline.sh                  # uses `npx wigolo`
 #   WIGOLO="wigolo" ./pipeline.sh  # or any wigolo entry point
 #
-# Requires: node >= 20, jq.
+# Requires: node >= 22, jq.
 set -euo pipefail
 
 WIGOLO="${WIGOLO:-npx wigolo}"

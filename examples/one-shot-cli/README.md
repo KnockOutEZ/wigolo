@@ -21,7 +21,7 @@ Or run all three at once:
 WIGOLO="wigolo" ./run.sh                  # or a global install
 ```
 
-Requires node >= 20 and `jq`.
+Requires node >= 22 and `jq`.
 
 ## What you'll see
 
