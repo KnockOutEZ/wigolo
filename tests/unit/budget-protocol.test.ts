@@ -607,3 +607,95 @@ describe('G-RSS-SUBSTRATE stays report-only', () => {
     expect(ci).toMatch(/measure\.mjs idle-rss/);
   });
 });
+
+/*
+ * G-ACQUIRE's measurement WINDOW, which is a different thing from its threshold.
+ *
+ * The gate is titled "bytes `warmup` downloads" and its old artifact said "differenced after
+ * it". What the runner actually did was `du` the directories LIVE when the assertion ran —
+ * three steps and ~3 minutes after warmup exited, with a live `wigolo fetch` and a live
+ * `wigolo search` against the DEFAULT data directory in between. So cached web content was
+ * being charged to warmup. Across the ten runs of the current tree the data component reads
+ * 234-246 against a floor of 233 (216 MiB of models + 17 of browser driver): 1-13 MiB of
+ * noise, on a gate whose last clean run passed at 793 against 800.
+ *
+ * These tests are stated over the WORKFLOW and the RUNNER SOURCE rather than over protocol.mjs
+ * on purpose. The protocol object can describe any window it likes; only ci.yml and measure.mjs
+ * decide which one is measured, and a gate whose stated artifact and executed artifact disagree
+ * is precisely the failure this program keeps finding.
+ */
+describe("G-ACQUIRE's window closes when warmup exits, not when the assertion runs", () => {
+  const ciYml = async () => {
+    const { readFile } = await import('node:fs/promises');
+    return readFile(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  };
+  const measureSrc = async () => {
+    const { readFile } = await import('node:fs/promises');
+    return readFile(new URL('../../scripts/budget/measure.mjs', import.meta.url), 'utf8');
+  };
+
+  it('takes the closing snapshot before the step that fetches live web content', async () => {
+    const ci = await ciYml();
+    const after = ci.indexOf('acquire-snapshot "$RUNNER_TEMP/acquire-after.json"');
+    const toolCalls = ci.indexOf('wigolo fetch https://example.com');
+    const warmup = ci.indexOf('wigolo warmup --reranker --embeddings --json');
+    expect(after).toBeGreaterThan(-1);
+    expect(after).toBeGreaterThan(warmup);
+    expect(after).toBeLessThan(toolCalls);
+  });
+
+  it('still asserts AFTER the tool calls, so an acquisition red cannot hide the pipeline check', async () => {
+    // The other half of the constraint, and the reason the window moved instead of the step.
+    // The runner uses `bash -e` and stops at the first failing step: moving the ASSERTION up
+    // would mean a red acquisition costs the run its only proof that fetch/extract/search are
+    // wired. Only the snapshot moved.
+    const ci = await ciYml();
+    const diff = ci.indexOf('measure.mjs" acquire-diff');
+    const toolCalls = ci.indexOf('wigolo search \'typescript programming language\'');
+    expect(diff).toBeGreaterThan(toolCalls);
+  });
+
+  it('passes both snapshots to the diff, so the assertion never re-measures live', async () => {
+    // The wiring is the whole fix: `acquire-diff` still accepts one argument (a developer
+    // running snapshot/warmup/diff by hand), so a CI invocation that quietly dropped the
+    // second file would keep working and keep counting the tool calls.
+    const ci = await ciYml();
+    expect(ci).toMatch(/acquire-diff "\$RUNNER_TEMP\/acquire\.json" "\$RUNNER_TEMP\/acquire-after\.json"/);
+  });
+
+  it('prefers the recorded closing snapshot over a live `du` when one is given', async () => {
+    const src = await measureSrc();
+    expect(src).toMatch(/const now = after \? \(after\[key\]\?\.mib \?\? 0\) : duMiB\(path\)/);
+    // Control: the live path still exists for the by-hand invocation, so the assertion above
+    // is about which one is CHOSEN rather than about `duMiB` having been deleted.
+    expect(src).toMatch(/function duMiB/);
+  });
+
+  it('says in the report which window was measured, because the two are not comparable', async () => {
+    const src = await measureSrc();
+    expect(src).toMatch(/window closed at the end of the measured step/);
+    expect(src).toMatch(/window closed live at assertion time/);
+  });
+
+  it('attributes each directory delta to its child directories', async () => {
+    // WHY: every drift observation this gate has produced is one number per directory, which
+    // can show that something moved and can never say what. The pinned browser download is
+    // chromium + chromium-headless-shell + ffmpeg and measures 534 MiB reproducibly off the
+    // runner; a runner reading of 554 has to be attributable or it is unfalsifiable.
+    const src = await measureSrc();
+    expect(src).toMatch(/function childDeltas/);
+    expect(src).toMatch(/childDeltas\(children, nowChildren\)/);
+    expect(src).toMatch(/children: childrenMiB\(p\)/);
+  });
+
+  it('states the closing snapshot in the gate protocol, not just in the runner', async () => {
+    // A protocol that describes a window the runner does not measure is how this gate came to
+    // charge a live search to `warmup` for as long as it did.
+    const gate = GATES['G-ACQUIRE'];
+    expect(gate.artifact).toMatch(/second snapshot taken the instant warmup exits/i);
+    expect(gate.artifact).toMatch(/never a live `du` at assertion time/);
+    expect(gate.horizon).toMatch(/not the assertion/);
+    // Control: the substrate pair's artifact makes no such claim, so this is discriminating.
+    expect(GATES['G-ACQUIRE-SUBSTRATE-DESKTOP'].artifact).not.toMatch(/second snapshot/);
+  });
+});

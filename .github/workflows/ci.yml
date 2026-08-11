@@ -321,6 +321,20 @@ jobs:
           fi
           node -e "const r=JSON.parse(require('fs').readFileSync('warm.json','utf8')); for (const k of process.argv.slice(1)){ if (r[k] !== 'ok'){ console.error('DEP FAILED:', k, '=', r[k], r[k+'Error']||''); process.exit(1) } } console.log('native + model deps OK ('+process.argv.slice(1).join(', ')+')')" $KEYS
 
+      # CLOSES G-ACQUIRE'S MEASUREMENT WINDOW, and it has to be here rather than at the
+      # assertion. The gate's title is "bytes `warmup` downloads"; the assertion runs three
+      # steps and ~3 minutes below, and the step immediately after this one fetches a live page
+      # and runs a live search against the DEFAULT data directory. Differencing live at
+      # assertion time therefore charged every byte of cached web content those wrote to
+      # warmup — 1-13 MiB of pure run-to-run noise, on a gate that has been passing at 793
+      # against 800. The assertion deliberately stays where it is (steps stop at the first
+      # failure, so an acquisition red must not hide the tool-call result); only the window
+      # moves.
+      - name: budget — acquisition snapshot (the instant warmup exits)
+        if: matrix.os == 'macos-latest' && matrix.node == '22'
+        shell: bash
+        run: node "$GITHUB_WORKSPACE/scripts/budget/measure.mjs" acquire-snapshot "$RUNNER_TEMP/acquire-after.json"
+
       - name: tool calls prove the wired pipeline (fetch/extract/cache, search/rerank)
         shell: bash
         run: |
@@ -372,7 +386,7 @@ jobs:
         run: |
           node "$GITHUB_WORKSPACE/scripts/budget/measure.mjs" install-size
           node "$GITHUB_WORKSPACE/scripts/budget/measure.mjs" tarball
-          node "$GITHUB_WORKSPACE/scripts/budget/measure.mjs" acquire-diff "$RUNNER_TEMP/acquire.json"
+          node "$GITHUB_WORKSPACE/scripts/budget/measure.mjs" acquire-diff "$RUNNER_TEMP/acquire.json" "$RUNNER_TEMP/acquire-after.json"
 
       # S10-d's tier-conditional pair, run as TWO ARMS of the same measurement.
       #

@@ -294,9 +294,9 @@ export const GATES = {
     title: 'bytes `warmup` downloads',
     what: 'growth of the acquisition directories across a `wigolo warmup` run',
     artifact:
-      'a `du -sm` snapshot of each acquisition directory taken before warmup and differenced after it; a directory absent at snapshot time counts as 0',
-    statistic: 'sum of per-directory deltas, negative deltas clamped to 0',
-    horizon: 'n/a — warmup exiting is the terminating condition',
+      'a `du -sm` snapshot of each acquisition directory taken before warmup and differenced against a SECOND snapshot taken the instant warmup exits — never a live `du` at assertion time, which would also count whatever ran in between; a directory absent at snapshot time counts as 0',
+    statistic: 'sum of per-directory deltas, negative deltas clamped to 0, attributed per child directory',
+    horizon: 'warmup exiting — the second snapshot, not the assertion',
     runs: 1,
     unit: 'MiB',
     comparison: '<=',
