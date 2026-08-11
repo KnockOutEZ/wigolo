@@ -740,6 +740,11 @@ describe("G-ACQUIRE's threshold is re-derived over its distribution, not over on
     // clean readings on the current tree are within 16 MiB of 800 and two are over it.
     const overTheOldLimit = [...CURRENT_TREE_RUNNER_READINGS, WORST_CLEAN_RUNNER_MIB, 803].filter((r) => r > 800);
     expect(overTheOldLimit).toEqual([804, 803]);
+    // ⚠ The two lines above are a RECORD and could not fail if the shipped gate quietly went
+    // back to 800, so the claim is also stated against the gate itself: the old limit reds the
+    // clean reading this slice measured, and the shipped one does not.
+    expect(evaluate({ ...GATES['G-ACQUIRE'], limit: 800 }, WORST_CLEAN_RUNNER_MIB).pass).toBe(false);
+    expect(evaluate(GATES['G-ACQUIRE'], WORST_CLEAN_RUNNER_MIB).pass).toBe(true);
   });
 
   it('passes every clean reading ever recorded on the runner', () => {
