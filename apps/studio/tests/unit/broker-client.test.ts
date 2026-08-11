@@ -37,9 +37,10 @@ function makeFakeChild(): FakeChild {
   return child;
 }
 
-function newClient(opts: { children: FakeChild[]; callTimeoutMs?: number; bootTimeoutMs?: number }) {
+function newClient(opts: { children: FakeChild[]; callTimeoutMs?: number; bootTimeoutMs?: number; warn?: (l: string) => void }) {
   const spawnFn = () => { const c = makeFakeChild(); opts.children.push(c); return c as unknown as ChildProcess; };
-  return createBrokerClient({ spawnFn, brokerPath: '/broker.js', nodePath: 'node', callTimeoutMs: opts.callTimeoutMs, bootTimeoutMs: opts.bootTimeoutMs });
+  // nodePath is injected, so the runtime probe is skipped: these tests exercise the wire, not resolution.
+  return createBrokerClient({ spawnFn, brokerPath: '/broker.js', nodePath: 'node', warn: opts.warn ?? (() => { /* silence */ }), callTimeoutMs: opts.callTimeoutMs, bootTimeoutMs: opts.bootTimeoutMs });
 }
 
 describe('broker-client', () => {
@@ -116,6 +117,47 @@ describe('broker-client', () => {
     await client.ready();
     children[0].emit('exit', 1); // unexpected
     await vi.waitFor(() => expect(children.length).toBe(2), { timeout: 1000 });
+    await client.stop();
+  });
+
+  /**
+   * `spawn` reports a missing or unexecutable binary ASYNCHRONOUSLY, as an 'error' event — never as the
+   * synchronous throw the spawn try/catch was written for. `EventEmitter` re-throws an 'error' that has
+   * no listener, so before this handler existed a bad broker Node took the entire Electron main down
+   * instead of degrading captures. A background service must never be able to kill its host.
+   */
+  it('an async spawn error degrades instead of taking the process down', async () => {
+    const children: FakeChild[] = [];
+    const client = newClient({ children, bootTimeoutMs: 200 });
+    const err = Object.assign(new Error('spawn node ENOENT'), { code: 'ENOENT' });
+    expect(() => children[0].emit('error', err)).not.toThrow();
+    await expect(client.ready()).rejects.toThrow(/not ready/i);
+    await client.stop();
+  });
+
+  it('a pending call rejects when the child errors out', async () => {
+    const children: FakeChild[] = [];
+    const client = newClient({ children });
+    children[0].line({ notify: 'ready' });
+    await client.ready();
+    const p = client.call('slow');
+    await vi.waitFor(() => expect(children[0].writes.length).toBe(1));
+    children[0].emit('error', new Error('spawn node ENOENT'));
+    await expect(p).rejects.toThrow(/failed to start/i);
+    await client.stop();
+  });
+
+  /** 'exit' may or may not follow 'error'. Respawning for both would double the backoff schedule. */
+  it('error then exit respawns once, not twice', async () => {
+    const children: FakeChild[] = [];
+    const client = newClient({ children });
+    children[0].line({ notify: 'ready' });
+    await client.ready();
+    children[0].emit('error', new Error('spawn node ENOENT'));
+    children[0].emit('exit', 1);
+    await vi.waitFor(() => expect(children.length).toBe(2), { timeout: 1000 });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(children.length).toBe(2);
     await client.stop();
   });
 
