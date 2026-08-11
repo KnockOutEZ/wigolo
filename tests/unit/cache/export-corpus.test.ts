@@ -158,7 +158,7 @@ describe('exportCorpus — layout and self-description', () => {
     // front matter carries exactly the fields the exporter chose to emit and nothing else.
     expect(keys).toEqual([
       'url', 'title', 'fetched_at', 'content_hash',
-      'http_status', 'fetch_method', 'extractor_used', 'partial',
+      'http_status', 'fetch_method', 'partial',
     ]);
     expect(keys).not.toContain('role');
   });
@@ -184,8 +184,28 @@ describe('exportCorpus — layout and self-description', () => {
     expect(page.content_hash).toBe('deadbeef');
     expect(page.http_status).toBe(200);
     expect(page.fetch_method).toBe('browser');
-    expect(page.extractor_used).toBe('readability');
     expect(existsSync(join(outDir, String(page.path)))).toBe(true);
+  });
+
+  it('never surfaces an implementation dependency name — the export is something users read and share', async () => {
+    // The store's `extractor_used` column holds library names. They are provenance about
+    // wigolo's internals rather than about the page, and this artifact is user-facing, so the
+    // column is omitted outright rather than rewritten into a value the store does not hold.
+    seed(dataDir, [{
+      url: 'https://example.com/a',
+      title: 'Intro',
+      markdown: 'body',
+      extractorUsed: 'readability',
+      fetchMethod: 'browser',
+    }]);
+
+    await exportCorpus({ dataDir, outDir });
+
+    const everything = walk(outDir).map((f) => readFileSync(join(outDir, f), 'utf-8')).join('\n');
+    expect(everything).not.toMatch(/defuddle|readability|turndown|playwright|searxng/i);
+    // The capability-language field that DOES describe the page survives, so this is a
+    // narrowing of what is exported, not a blanket loss of provenance.
+    expect(everything).toContain('"browser"');
   });
 
   it('writes a README that names the layout, so the directory explains itself with no wigolo installed', async () => {
@@ -381,24 +401,55 @@ describe('exportCorpus — path-traversal containment (falsifiability probe)', (
     try { rmSync(sandbox, { recursive: true, force: true }); } catch { /* */ }
   });
 
+  /**
+   * Which vectors matter, and why the obvious ones do not.
+   *
+   * For an http(s) url the WHATWG parser already collapses parent-directory segments — the
+   * literal form AND the percent-encoded one — out of `pathname` before this code sees it.
+   * Measured, not assumed. A probe built only from those would be self-satisfying: it would
+   * stay green with the sanitiser deleted. So the list leads with the two shapes the parser
+   * does NOT normalise, which carry the real risk:
+   *   - an OPAQUE scheme (`data:`, a `studio:` artifact URI, `mailto:`), whose `pathname` is
+   *     handed back verbatim;
+   *   - a value that does not parse as a url at all, where the raw string is the only path
+   *     material available.
+   * The http rows are kept as controls: they document what the parser already handles, so a
+   * later reader does not over-credit them.
+   */
   it('writes every file inside the output directory even when urls, titles and timestamps are hostile', async () => {
     seed(dataDir, [
-      { url: 'https://example.com/../../../../outside/pwned', markdown: 'x' },
-      { url: 'https://example.com/%2e%2e%2f%2e%2e%2foutside%2fpwned2', markdown: 'x' },
-      { url: 'https://../../outside/pwned3', markdown: 'x' },
-      { url: 'https://example.com/a', title: '../../outside/pwned4', markdown: 'x' },
+      // NOT normalised by the url parser — these are the shapes that actually escape.
+      { url: 'data:../../../../outside/esc0', markdown: 'x' },
+      { url: 'studio:../../../../outside/esc1', markdown: 'x' },
+      { url: '../../../../outside/esc2', markdown: 'x' },
+      { url: '/../../../outside/esc3', markdown: 'x' },
+      // Controls: the url parser collapses these before the exporter ever sees them.
+      { url: 'https://example.com/../../../../outside/esc4', markdown: 'x' },
+      { url: 'https://example.com/%2e%2e%2f%2e%2e%2foutside%2fesc5', markdown: 'x' },
+      { url: 'https://../../outside/esc6', markdown: 'x' },
+      // Neither a page-controlled title nor a stored timestamp may reach a path at all.
+      { url: 'https://example.com/a', title: '../../outside/esc7', markdown: 'x' },
       { url: 'https://example.com/b', markdown: 'x', fetchedAt: '../../outside' },
-      { url: 'https://example.com/c /../../outside/pwned5', markdown: 'x' },
     ]);
 
-    const result = await exportCorpus({ dataDir, outDir });
-
     const root = resolve(outDir) + sep;
-    for (const page of result.pages) {
-      expect(resolve(outDir, page.path).startsWith(root)).toBe(true);
+
+    // The PLAN first, via dry-run. Checking the plan is what makes this probe decisive:
+    // it reaches the containment assertion without any filesystem write in the way, so a
+    // regression shows up as "this path escapes" rather than as an incidental write error
+    // on some unrelated row processed earlier.
+    const planned = await exportCorpus({ dataDir, outDir, dryRun: true });
+    expect(planned.pages.length).toBeGreaterThan(0);
+    for (const page of planned.pages) {
+      expect(resolve(outDir, page.path).startsWith(root), `planned path escapes: ${page.url}`).toBe(true);
     }
-    // The observable consequence, independent of what the result object claims: nothing
-    // landed in the sibling directory.
+
+    // Then the real write, and the observable consequence — independent of what the result
+    // object claims, nothing landed in the sibling directory.
+    const result = await exportCorpus({ dataDir, outDir });
+    for (const page of result.pages) {
+      expect(resolve(outDir, page.path).startsWith(root), `written path escapes: ${page.url}`).toBe(true);
+    }
     expect(readdirSync(join(sandbox, 'outside'))).toEqual([]);
     expect(readdirSync(sandbox).sort()).toEqual(['corpus', 'outside']);
   });

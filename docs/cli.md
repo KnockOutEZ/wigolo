@@ -115,6 +115,14 @@ wigolo backfill [--dry-run] [--limit N] [--batch-size N] [--json]
 
 Computes embeddings for cached pages that don't have them yet (e.g. pages cached before the embedding index existed). Default batch size 32.
 
+### export
+
+```text
+wigolo export [--out DIR] [--url-pattern GLOB] [--since DATE] [--dry-run] [--json]
+```
+
+Writes the cached corpus out as one Markdown file per page under `DIR/pages/<fetch-date>/`, each carrying its own source URL, fetch time and content hash in front matter, plus a `manifest.json` index and a `README.md` explaining the layout. Plain files, no proprietary format — the export stays readable with wigolo uninstalled. `--out` defaults to `./wigolo-export`. Exits 1 when a cached row is refused as an anomaly. See [export](./export.md).
+
 ### warmup
 
 ```text

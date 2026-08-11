@@ -56,7 +56,16 @@ export interface ExportSkip {
   reason: SkipReason;
 }
 
-/** One exported page. Every field is read straight from the store; none is synthesised. */
+/**
+ * One exported page. Every field is read straight from the store; none is synthesised.
+ *
+ * `url_cache.extractor_used` is deliberately NOT among them. Its stored values are the names of
+ * the libraries in the extraction chain, and the export is user-facing output — surfacing them
+ * would leak implementation dependencies into an artifact users read and share. Mapping them to
+ * capability language would be inventing a value the store does not hold, which this module does
+ * not do, so the field is omitted rather than rewritten. `fetch_method` already carries the part
+ * that describes the page's provenance rather than wigolo's internals.
+ */
 export interface ExportedPage {
   url: string;
   normalized_url: string;
@@ -65,7 +74,6 @@ export interface ExportedPage {
   content_hash: string | null;
   http_status: number | null;
   fetch_method: string | null;
-  extractor_used: string | null;
   /** Byte length of the exported markdown body. */
   bytes: number;
   /** True when the capture was labelled a render shell — content is known incomplete. */
@@ -105,7 +113,6 @@ interface ExportRow {
   fetched_at: string;
   http_status: number | null;
   fetch_method: string | null;
-  extractor_used: string | null;
   content_completeness_level?: string | null;
 }
 
@@ -173,7 +180,6 @@ function renderFrontMatter(page: ExportedPage): string {
     ['content_hash', page.content_hash],
     ['http_status', page.http_status],
     ['fetch_method', page.fetch_method],
-    ['extractor_used', page.extractor_used],
     ['partial', page.partial],
   ];
   return ['---', ...rows.map(([k, v]) => `${k}: ${yamlScalar(v)}`), '---', ''].join('\n');
@@ -213,7 +219,7 @@ than exported, and are worth raising as a bug.
 
 const SELECT_BASE = `
   SELECT url, normalized_url, title, markdown, content_hash, fetched_at,
-         http_status, fetch_method, extractor_used, content_completeness_level
+         http_status, fetch_method, content_completeness_level
   FROM url_cache
 `;
 
@@ -299,7 +305,6 @@ export async function exportCorpus(opts: ExportOptions): Promise<ExportResult> {
         content_hash: row.content_hash ?? null,
         http_status: row.http_status ?? null,
         fetch_method: row.fetch_method ?? null,
-        extractor_used: row.extractor_used ?? null,
         bytes: Buffer.byteLength(body, 'utf-8'),
         partial: row.content_completeness_level === 'shell',
         path: rel,
