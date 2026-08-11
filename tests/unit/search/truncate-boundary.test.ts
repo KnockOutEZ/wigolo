@@ -110,6 +110,35 @@ describe('repairTruncatedMarkdown', () => {
     expect(repairTruncatedMarkdown(ok)).toBe(ok);
   });
 
+  // Over-fire guard. The first cut of this repair asked "is the last `[` the
+  // start of a COMPLETE inline link?" and deleted the remainder when it was
+  // not. That is true of every citation marker, reference-style link and array
+  // literal in prose, so well-formed text lost everything from the bracket on.
+  // The predicate has to be "is this bracket genuinely unterminated", not "is
+  // this bracket an inline link".
+  it('leaves a bare citation marker alone', () => {
+    const s = 'According to the research [1] this holds for every case.';
+    expect(repairTruncatedMarkdown(s)).toBe(s);
+  });
+
+  it('leaves an array literal in prose alone', () => {
+    const s = 'Set the option to [a, b, c] and restart the daemon.';
+    expect(repairTruncatedMarkdown(s)).toBe(s);
+  });
+
+  it('leaves a reference-style link alone', () => {
+    const s = 'See the [migration guide][mg] for details.';
+    expect(repairTruncatedMarkdown(s)).toBe(s);
+  });
+
+  it('still drops a genuinely unterminated bracket', () => {
+    expect(repairTruncatedMarkdown('A dangling open bracket [like this')).toBe('A dangling open bracket');
+  });
+
+  it('still drops a half-written inline link', () => {
+    expect(repairTruncatedMarkdown('See [the guide](https://ex')).toBe('See');
+  });
+
   it('drops an unclosed fence and everything inside it', () => {
     const out = repairTruncatedMarkdown('Intro paragraph.\n\n```bash\nnpm install');
     expect(out).not.toContain('```');

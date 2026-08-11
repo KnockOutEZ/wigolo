@@ -29,13 +29,22 @@ export function repairTruncatedMarkdown(text: string): string {
     out = out.slice(0, opener.index).trimEnd();
   }
 
-  // 2. Partial link or image — `[text](par` or a bare `[text` with no closer.
-  //    Both render as literal junk, and the half-URL is not a usable citation.
+  // 2. Partial link or image — `[text` with no closing bracket, or `[text](par`
+  //    with no closing paren. Both render as literal junk and the half-URL is
+  //    not a usable citation.
+  //
+  //    A bare `[text]` with no `(` following is NOT broken: that is a citation
+  //    marker (`[1]`), a reference-style link, or an array literal in prose
+  //    ("set it to [a, b, c]"). Treating "not a complete inline link" as broken
+  //    deleted every one of those along with the rest of the line.
   const lastOpenBracket = out.lastIndexOf('[');
   if (lastOpenBracket !== -1) {
     const tail = out.slice(lastOpenBracket);
-    const complete = /^!?\[[^\]]*\]\([^)]*\)/.test(tail);
-    if (!complete) {
+    const closeIdx = tail.indexOf(']');
+    const broken =
+      closeIdx === -1 ||
+      (tail[closeIdx + 1] === '(' && !tail.slice(closeIdx + 1).includes(')'));
+    if (broken) {
       const imagePrefix = lastOpenBracket > 0 && out[lastOpenBracket - 1] === '!' ? 1 : 0;
       out = out.slice(0, lastOpenBracket - imagePrefix).trimEnd();
     }
