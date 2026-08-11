@@ -723,8 +723,8 @@ const CURRENT_TREE_RUNNER_READINGS = [769, 781, 783, 784, 785, 788, 792, 793, 79
 const WORST_CLEAN_RUNNER_MIB = 804;
 /** The lowest clean reading on record, and what the resolution claim is measured from. */
 const BEST_CLEAN_RUNNER_MIB = 769;
-/** browsers 533 + models 216 + driver 17, all measured directly on darwin-arm64. */
-const LAPTOP_EQUIVALENT_MIB = 766;
+/** browsers 534 + models 216 + driver 17, all `du -sm` on darwin-arm64, the same instrument CI uses. */
+const LAPTOP_EQUIVALENT_MIB = 767;
 /**
  * Regressions this gate is chartered to catch, smallest first. `secondBrowserEngine` is firefox,
  * the cheapest engine `warmup` can be made to acquire; `doubling` is amended-D1's — the desktop
@@ -790,7 +790,7 @@ describe("G-ACQUIRE's threshold is re-derived over its distribution, not over on
   it('would NOT catch a second browser engine if the headroom were sized as a percentage', () => {
     // ⚠ THE TRAP. On a ~800 MiB artifact the instinct after being burned by a 4.7% margin (800
     // over 764) is to give it a generous fraction instead. It does not survive the arithmetic:
-    // the smallest chartered regression lands at 766 + 272 = 1038, which is only 1.29x the worst
+    // the smallest chartered regression lands at 767 + 272 = 1039, which is only 1.29x the worst
     // clean reading — so ANY percentage headroom of ~30% or more produces a limit that passes a
     // run which downloaded an entire second browser engine. "Give it a third" is 1072.
     const sizedAsAThird = Math.round(WORST_CLEAN_RUNNER_MIB * (4 / 3));
@@ -816,12 +816,12 @@ describe("G-ACQUIRE's threshold is re-derived over its distribution, not over on
   });
 
   it('states the resolution it actually has, rather than implying it catches everything', () => {
-    // 880 - 766 = 114. An 88 MiB model duplication passes, and saying so is the point: a gate
+    // 880 - 767 = 113. An 88 MiB model duplication passes, and saying so is the point: a gate
     // that is believed to be finer than it is, is worse than one whose blind spot is written
     // down. No tighter number is honest while the pinned engine reads 26 MiB differently across
     // hosts — which is why the drift is instrumented rather than absorbed into the threshold.
     const detectsFrom = limitFor(GATES['G-ACQUIRE']) - LAPTOP_EQUIVALENT_MIB;
-    expect(detectsFrom).toBe(114);
+    expect(detectsFrom).toBe(113);
     expect(evaluate(GATES['G-ACQUIRE'], LAPTOP_EQUIVALENT_MIB + 88).pass).toBe(true);
     expect(GATES['G-ACQUIRE'].baseline).toMatch(/BLIND BELOW THAT/);
   });
