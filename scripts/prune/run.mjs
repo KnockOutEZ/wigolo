@@ -124,13 +124,14 @@ function locateWebRoot(startDir) {
 
 /**
  * Read every package.json reachable under `modulesDir`, including nested `node_modules` and
- * scoped directories, as `{ name: manifest }`.
+ * scoped directories, as a LIST.
  *
- * ⚠ Keyed by the manifest's DECLARED name, not by directory name. A refusal that names the
- * foreign consumer is only useful if it names the package the user would recognise.
+ * ⚠ A list and not a map, because the same package name legitimately appears more than once in
+ * an npm tree when versions conflict, and collapsing those copies can hide a dependent — see
+ * findWebDependents' note. Deduplication belongs on the answer, not on the input.
  */
-function readManifestTree(modulesDir) {
-  const tree = {};
+function readManifests(modulesDir) {
+  const manifests = [];
   const walk = (dir, depth) => {
     if (depth > 6) return; // nested node_modules nest, but not without bound
     let entries;
@@ -149,7 +150,7 @@ function readManifestTree(modulesDir) {
       if (e.name === '.bin') continue;
       try {
         const manifest = JSON.parse(readFileSync(join(child, 'package.json'), 'utf8'));
-        if (manifest?.name) tree[manifest.name] = manifest;
+        if (manifest?.name) manifests.push(manifest);
       } catch {
         // Not a package, or an unreadable manifest. Skipping it can only shrink the dependent
         // set, and a smaller dependent set can only make the planner MORE willing to prune —
@@ -160,7 +161,7 @@ function readManifestTree(modulesDir) {
     }
   };
   walk(modulesDir, 0);
-  return tree;
+  return manifests;
 }
 
 /**
@@ -174,15 +175,16 @@ function pruneWebPayload() {
   if (!webRoot) return; // not installed, or a layout we do not recognise; nothing to do
 
   const modulesDir = dirname(webRoot);
-  const tree = readManifestTree(modulesDir);
+  const manifests = readManifests(modulesDir);
   // The install root is the most plausible foreign consumer and it does not live under
-  // node_modules, so it is read separately and folded in under a name no real package can take.
+  // node_modules, so it is read separately. Its own name is replaced with a marker no real
+  // package can take, because "your application" is what makes the refusal message legible.
   try {
     const rootManifest = JSON.parse(readFileSync(join(dirname(modulesDir), 'package.json'), 'utf8'));
-    if (rootManifest) tree['<install-root>'] = rootManifest;
+    if (rootManifest) manifests.push({ ...rootManifest, name: '<install-root>' });
   } catch { /* no root manifest visible; the node_modules scan still stands */ }
 
-  const plan = planWebPayloadPrune(findWebDependents(tree));
+  const plan = planWebPayloadPrune(findWebDependents(manifests));
   if (plan.remove.length === 0) {
     console.log(`wigolo: onnxruntime-web payload prune — ${plan.reason}`);
     return;

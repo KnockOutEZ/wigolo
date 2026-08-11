@@ -84,45 +84,63 @@ describe('planWebPayloadPrune refuses rather than strand a consumer it does not 
 
 describe('findWebDependents sees a dependency however it is declared', () => {
   it('finds a plain dependencies entry', () => {
-    const tree = { [OWNER]: { dependencies: { 'onnxruntime-web': '1.22.0' } } };
-    expect(findWebDependents(tree)).toEqual([OWNER]);
+    const manifests = [{ name: OWNER, dependencies: { 'onnxruntime-web': '1.22.0' } }];
+    expect(findWebDependents(manifests)).toEqual([OWNER]);
   });
 
   it('finds optionalDependencies and peerDependencies too', () => {
     // A package that declares onnxruntime-web as OPTIONAL still loads it when it is present, and
     // present is exactly the state this prune would be changing. Scanning only `dependencies`
     // would report such a consumer as absent and hand back a confident, wrong permission.
-    expect(findWebDependents({ a: { optionalDependencies: { 'onnxruntime-web': '*' } } })).toEqual(['a']);
-    expect(findWebDependents({ b: { peerDependencies: { 'onnxruntime-web': '*' } } })).toEqual(['b']);
+    expect(findWebDependents([{ name: 'a', optionalDependencies: { 'onnxruntime-web': '*' } }])).toEqual(['a']);
+    expect(findWebDependents([{ name: 'b', peerDependencies: { 'onnxruntime-web': '*' } }])).toEqual(['b']);
   });
 
   it('ignores packages that depend on something else entirely', () => {
-    const tree = {
-      innocent: { dependencies: { 'onnxruntime-node': '1.21.0' } },
-      [OWNER]: { dependencies: { 'onnxruntime-web': '1.22.0' } },
-    };
-    expect(findWebDependents(tree)).toEqual([OWNER]);
+    const manifests = [
+      { name: 'innocent', dependencies: { 'onnxruntime-node': '1.21.0' } },
+      { name: OWNER, dependencies: { 'onnxruntime-web': '1.22.0' } },
+    ];
+    expect(findWebDependents(manifests)).toEqual([OWNER]);
   });
 
   it('counts a package once even when it declares the dep in two fields', () => {
     // Otherwise a single package looks like two dependents, and the planner — which refuses on
     // anything beyond the owner — would refuse on the owner itself and silently lose the win.
-    const tree = {
-      [OWNER]: {
+    const manifests = [
+      {
+        name: OWNER,
         dependencies: { 'onnxruntime-web': '1.22.0' },
         optionalDependencies: { 'onnxruntime-web': '1.22.0' },
       },
-    };
-    expect(findWebDependents(tree)).toEqual([OWNER]);
-    expect(planWebPayloadPrune(findWebDependents(tree)).remove).toEqual(['dist']);
+    ];
+    expect(findWebDependents(manifests)).toEqual([OWNER]);
+    expect(planWebPayloadPrune(findWebDependents(manifests)).remove).toEqual(['dist']);
+  });
+
+  it('still sees a dependent when the SAME package name appears twice at different versions', () => {
+    // ⚠ THE HOLE THIS CLOSES, and it only exists because npm trees are not flat. A version
+    // conflict puts `foo` in the tree twice — once hoisted, once nested under whoever needed the
+    // other version — and only one of the two copies may declare onnxruntime-web. Collecting
+    // manifests into a map keyed by NAME collapses them to whichever was read last, so with the
+    // traversal order below the depending copy is overwritten by the innocent one, the scan
+    // reports no foreign dependent, and the planner deletes a payload `foo@2` is still using.
+    // Silent, order-dependent, and destructive in someone else's package.
+    const manifests = [
+      { name: 'foo', version: '2.0.0', dependencies: { 'onnxruntime-web': '1.22.0' } },
+      { name: 'foo', version: '1.0.0', dependencies: {} },
+      { name: OWNER, dependencies: { 'onnxruntime-web': '1.22.0' } },
+    ];
+    expect(findWebDependents(manifests)).toEqual([OWNER, 'foo']);
+    expect(planWebPayloadPrune(findWebDependents(manifests)).remove).toEqual([]);
   });
 
   it('survives a null or malformed manifest without throwing', () => {
     // A postinstall that throws is a postinstall that fails somebody's install. Every unreadable
     // entry must degrade to "not a dependent", which can only make the planner MORE willing to
     // prune — which is safe ONLY because an empty result is itself a refusal.
-    const tree = { broken: null, alsoBroken: {}, [OWNER]: { dependencies: { 'onnxruntime-web': '1' } } };
-    expect(() => findWebDependents(tree)).not.toThrow();
-    expect(findWebDependents(tree)).toEqual([OWNER]);
+    const manifests = [null, {}, { name: OWNER, dependencies: { 'onnxruntime-web': '1' } }];
+    expect(() => findWebDependents(manifests)).not.toThrow();
+    expect(findWebDependents(manifests)).toEqual([OWNER]);
   });
 });

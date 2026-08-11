@@ -99,24 +99,34 @@ export function planWebPayloadPrune(dependents) {
 }
 
 /**
- * Every package name in `tree` that declares a dependency on onnxruntime-web.
+ * Every package name among `manifests` that declares a dependency on onnxruntime-web.
  *
- * Pure over an already-read map so the traversal can be tested without a filesystem. Optional
+ * Pure over already-read manifests so the traversal can be tested without a filesystem. Optional
  * and peer dependencies count: a package that lists onnxruntime-web as optional still loads it
  * when it IS present, which is exactly the state this prune would be changing.
  *
- * @param tree {Record<string, object>} package name -> its parsed package.json
+ * ⚠ AN ARRAY, NOT A MAP KEYED BY PACKAGE NAME, and the difference is a correctness bug rather
+ * than a style preference. npm puts the SAME package name in a tree more than once whenever
+ * versions conflict — `node_modules/foo@2` alongside `node_modules/bar/node_modules/foo@1`. A
+ * name-keyed map collapses those two into whichever the traversal happened to read last, so a
+ * tree where the top-level copy depends on onnxruntime-web and a nested copy does not would
+ * report NO dependent, and the planner would cheerfully delete a payload that the top-level copy
+ * needs. Order-dependent, silent, and it deletes from a package we do not own — every property a
+ * refusal-based guard exists to avoid. Carrying the manifests as a list keeps every copy visible
+ * and lets the dedupe happen on the ANSWER, where a repeated name is genuinely one dependent.
+ *
+ * @param manifests {object[]} parsed package.json objects
  */
-export function findWebDependents(tree) {
-  const found = [];
-  for (const [name, manifest] of Object.entries(tree)) {
-    if (!manifest) continue;
+export function findWebDependents(manifests) {
+  const found = new Set();
+  for (const manifest of manifests) {
+    if (!manifest?.name) continue;
     for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
       if (manifest[field] && manifest[field]['onnxruntime-web']) {
-        found.push(name);
+        found.add(manifest.name);
         break;
       }
     }
   }
-  return found.sort();
+  return [...found].sort();
 }
