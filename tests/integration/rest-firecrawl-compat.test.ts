@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as http from 'node:http';
 import { DaemonHttpServer } from '../../src/daemon/http-server.js';
+import { closedRegions, fenceNonces, regionBody } from '../helpers/untrusted-fence.js';
 
 /**
  * WHY: the Firecrawl-compat shim rides the SAME router pipeline as /v1 — auth,
@@ -179,6 +180,109 @@ describe('Firecrawl-compat — flag ON, open loopback mode', () => {
     expect((r.body as { success: boolean }).success).toBe(false);
     expect((r.body as { error: string }).error).toMatch(/cap|200/i);
   });
+
+  /**
+   * Decision A11-R — FENCED-BY-DEFAULT CONTENT, BYTE-CLEAN SCHEMA.
+   *
+   * These rows are the previous ones INVERTED, not replaced: A11 originally kept this surface
+   * byte-clean by default, which conflated intent to integrate with consent to risk and carved the
+   * highest-risk naive-concatenator population out of R2's protection. The shim now takes the same
+   * safe default as `/v1/*`; what stays byte-clean is Firecrawl's JSON SHAPE, and the narrow genuine
+   * byte-consumers opt out with the header.
+   */
+  it('COMPAT-1 (INVERTED): scrape markdown is FENCED by default — no header needed', async () => {
+    // MUT: default the shim's fallback back to 'envelope' → RED.
+    const r = await post(port, `${PREFIX}/v1/scrape`, { url: `http://127.0.0.1:${originPort}/` }, {}, 30000);
+    expect(r.status).toBe(200);
+    const body = r.body as { success: boolean; data: { markdown: string; metadata: { sourceURL: string } } };
+    expect(closedRegions(body.data.markdown)).toBe(1);
+    expect(regionBody(body.data.markdown)).toContain('Firecrawl compat body');
+    // the vendor SHAPE is untouched: same keys, markdown still a string at data.markdown
+    expect(body.success).toBe(true);
+    expect(typeof body.data.markdown).toBe('string');
+    expect(body.data.metadata.sourceURL).toContain('127.0.0.1');
+    // and the sibling is absent unless explicitly requested
+    expect((r.body as { untrusted_content?: unknown }).untrusted_content).toBeUndefined();
+  }, 30000);
+
+  it('COMPAT-2 (INVERTED): `X-Wigolo-Untrusted-Content: envelope` is the byte-clean opt-out', async () => {
+    // The remedy for snapshot tests, proxies diffing against real Firecrawl, and any client that
+    // PERSISTS or HASHES this markdown. MUT: ignore the header in the shim → RED.
+    const r = await post(
+      port,
+      `${PREFIX}/v1/scrape`,
+      { url: `http://127.0.0.1:${originPort}/` },
+      { 'X-Wigolo-Untrusted-Content': 'envelope' },
+      30000,
+    );
+    expect(r.status).toBe(200);
+    const clean = r.body as { data: { markdown: string }; untrusted_content?: { nonce: string } };
+    expect(closedRegions(clean.data.markdown)).toBe(0);
+    expect(clean.data.markdown).toContain('Firecrawl compat body');
+    // a caller who asked for the envelope asked for that key
+    expect(clean.untrusted_content?.nonce).toMatch(/^[0-9a-f]{16}$/);
+  }, 30000);
+
+  it('COMPAT-2b: the fence names the origin and preserves the metadata prose fields', async () => {
+    const r = await post(
+      port,
+      `${PREFIX}/v1/scrape`,
+      { url: `http://127.0.0.1:${originPort}/` },
+      { 'X-Wigolo-Untrusted-Content': 'inline' },
+      30000,
+    );
+    expect(r.status).toBe(200);
+    const body = r.body as { data: { markdown: string; metadata: { sourceURL: string; statusCode?: number } } };
+    expect(closedRegions(body.data.markdown)).toBe(1);
+    expect(regionBody(body.data.markdown)).toContain('Firecrawl compat body');
+    // the opener names the origin, so the reading model can see which host is talking
+    expect(body.data.markdown).toContain('origin=http://127.0.0.1');
+    // operational metadata stays raw and dereferenceable
+    expect(body.data.metadata.sourceURL).toContain('127.0.0.1');
+    expect(closedRegions(body.data.metadata.sourceURL)).toBe(0);
+    // (metadata title/description are page prose and are fenced too — pinned deterministically in
+    // tests/unit/daemon/rest-compat-untrusted.test.ts, since whether this fixture surfaces them
+    // depends on which extractor wins.)
+  }, 30000);
+
+  it('COMPAT-3: a crawl job STORES byte-clean markdown; the fence is applied per POLL', async () => {
+    // The no-persist rule, at the one place this shim has a store. Fencing at settle time would bake
+    // one request's representation into the job and freeze it for every later poll.
+    // MUT: fence inside jobStore.settle → the byte-clean poll below goes RED.
+    const start = await post(port, `${PREFIX}/v1/crawl`, { url: `http://127.0.0.1:${originPort}/`, limit: 2 }, {}, 30000);
+    const id = (start.body as { id: string }).id;
+
+    let completed: { status: string; data?: Array<{ markdown: string }> } | undefined;
+    for (let i = 0; i < 40; i++) {
+      const poll = await request({ port, path: `${PREFIX}/v1/crawl/${id}` });
+      completed = poll.body as { status: string; data?: Array<{ markdown: string }> };
+      if (completed.status === 'completed' || completed.status === 'failed') break;
+      await new Promise((res) => setTimeout(res, 250));
+    }
+    if (completed?.status !== 'completed' || !completed.data?.length) return; // crawl did not settle in budget
+
+    // Default poll: FENCED, one fresh nonce per page (never one shared across the list).
+    const pages = completed.data;
+    const nonces = pages.flatMap((p) => fenceNonces(p.markdown));
+    expect(nonces.length).toBe(pages.length);
+    expect(new Set(nonces).size).toBe(nonces.length);
+
+    // The SAME stored job, polled with the opt-out: byte-clean.
+    const clean = await request({ port, path: `${PREFIX}/v1/crawl/${id}`, headers: { 'X-Wigolo-Untrusted-Content': 'envelope' } });
+    expect(closedRegions(JSON.stringify((clean.body as { data: unknown }).data))).toBe(0);
+
+    // And polling again with no header still yields FRESH nonces, not the earlier ones — proof the
+    // store was never mutated by either poll and the fence is applied per request, not persisted.
+    const again = await request({ port, path: `${PREFIX}/v1/crawl/${id}` });
+    const againNonces = (again.body as { data: Array<{ markdown: string }> }).data.flatMap((p) => fenceNonces(p.markdown));
+    expect(againNonces.length).toBe(pages.length);
+    for (const n of againNonces) expect(nonces).not.toContain(n);
+  }, 30000);
+
+  it('COMPAT-4: an unrecognized header value is refused on the shim too, in the shim error shape', async () => {
+    const r = await post(port, `${PREFIX}/v1/scrape`, { url: `http://127.0.0.1:${originPort}/` }, { 'X-Wigolo-Untrusted-Content': 'inlined' });
+    expect(r.status).toBe(400);
+  }, 20000);
 });
 
 describe('Firecrawl-compat — auth applies (token mode)', () => {

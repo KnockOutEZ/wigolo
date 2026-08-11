@@ -58,6 +58,11 @@ function makeCtx(subPath: string, bindIsLoopback = true): { ctx: import('../../.
     subsystems: SUBSYSTEMS,
     bindIsLoopback,
     subPath,
+    // These rows cover the shim's routing, limits and SSRF seams, not its trust representation.
+    // `envelope` is the shim's own default (A11) and keeps payloads byte-comparable here, so a
+    // shaping change cannot masquerade as a routing change. The representation itself is pinned in
+    // rest-compat-untrusted.test.ts, which covers both modes.
+    untrustedMode: 'envelope' as const,
     respond: (status: number, respBody: unknown) => captured.push({ status, body: respBody }),
   };
   return { ctx, captured };
@@ -411,6 +416,7 @@ describe('firecrawl-compat — concurrent running-jobs cap', () => {
       subsystems: SUBSYSTEMS,
       bindIsLoopback: true,
       subPath: '/v1/crawl',
+      untrustedMode: 'envelope' as const,
       respond: (_status: number, _body: unknown, headers?: Record<string, string>) => headersCaptured.push(headers),
     };
     await handleCompatRequest(fakeReq('POST', { url: 'https://a.com' }), FAKE_RES, ctx);

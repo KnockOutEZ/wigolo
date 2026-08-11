@@ -12,6 +12,13 @@ from ._aio import AsyncClient
 from ._client import Client
 from ._errors import WigoloAPIError, WigoloConnectionError, WigoloError
 from ._local import local_client
+from ._untrusted import (
+    UNTRUSTED_CONTENT_HEADER,
+    UNTRUSTED_CONTENT_MODES,
+    fence_untrusted,
+    fence_with_envelope,
+    untrusted_content_of,
+)
 
 __version__ = "0.1.0"
 
@@ -22,5 +29,10 @@ __all__ = [
     "WigoloError",
     "WigoloAPIError",
     "WigoloConnectionError",
+    "UNTRUSTED_CONTENT_HEADER",
+    "UNTRUSTED_CONTENT_MODES",
+    "fence_untrusted",
+    "fence_with_envelope",
+    "untrusted_content_of",
     "__version__",
 ]

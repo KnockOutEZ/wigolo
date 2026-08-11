@@ -18,6 +18,7 @@ import {
 } from '../../server/tool-schemas.js';
 import { TOOL_DESCRIPTIONS, type ToolName } from '../../instructions.js';
 import { CLAMP_TABLE } from './limits.js';
+import { UNTRUSTED_MODE_HEADER_NAME } from './untrusted-mode.js';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -251,6 +252,27 @@ function descriptionFor(tool: RestToolName): string {
   return desc;
 }
 
+/**
+ * The untrusted-content representation header, described on every tool route so a generated client
+ * can discover the opt-out rather than having to read prose. The DEFAULT is `inline` (page-derived
+ * text arrives with the containment markers in it); `envelope` is the byte-clean opt-out.
+ */
+function untrustedContentParameter(): object {
+  return {
+    name: UNTRUSTED_MODE_HEADER_NAME,
+    in: 'header',
+    required: false,
+    description:
+      'Where this response carries the trust boundary for page-derived text. Omit for the default, ' +
+      '"inline": the containment markers are inside the returned strings, which is what you want ' +
+      'when any of that text reaches a model. Send "envelope" for a byte-clean payload plus an ' +
+      '"untrusted_content" metadata sibling (notice, nonce, begin_marker, end_marker) — for ' +
+      'consumers that hash, index or persist the exact bytes the site served. An unrecognized ' +
+      'value is refused with 400 invalid_input.',
+    schema: { type: 'string', enum: ['inline', 'envelope'], default: 'inline' },
+  };
+}
+
 function buildPaths(): Record<string, object> {
   const paths: Record<string, object> = {};
 
@@ -261,6 +283,7 @@ function buildPaths(): Record<string, object> {
         summary: summaryFor(tool),
         description: descriptionFor(tool),
         security: [{}, { bearerAuth: [] }],
+        parameters: [untrustedContentParameter()],
         requestBody: {
           required: true,
           content: { 'application/json': { schema: requestSchemaFor(tool) } },

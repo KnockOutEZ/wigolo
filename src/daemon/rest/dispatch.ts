@@ -33,10 +33,40 @@ import {
   statusForCrawlCacheError,
 } from './errors.js';
 import { untrustedFenceParts } from '../../security/untrusted.js';
+import {
+  fenceFetchData,
+  fenceSearchData,
+  fenceCrawlData,
+  fenceCacheData,
+  fenceExtractData,
+  fenceFindSimilarData,
+  fenceResearchData,
+  fenceAgentData,
+  fenceDiffData,
+  diffOriginFromInput,
+} from '../../server/content-fence.js';
+import type { UntrustedMode } from './untrusted-mode.js';
+import type {
+  AgentOutput,
+  CacheOutput,
+  CrawlOutput,
+  DiffOutput,
+  ExtractOutput,
+  FetchOutput,
+  FindSimilarOutput,
+  MapOutput,
+  ResearchOutput,
+  SearchOutput,
+} from '../../types.js';
 
 export interface DispatchContext {
   subsystems: Subsystems;
   bindIsLoopback: boolean;
+  /**
+   * Where this response carries the trust boundary. Resolved per request from the
+   * `X-Wigolo-Untrusted-Content` header in the router; `inline` is the native-route default (R2 / A10).
+   */
+  untrustedMode: UntrustedMode;
 }
 
 export interface DispatchResult {
@@ -222,53 +252,107 @@ async function dispatchWatch(input: WatchJobInput, ctx: DispatchContext): Promis
 /**
  * Tools whose 200 body carries page-derived text. `watch` is excluded: it returns
  * content hashes and coarse line counts, not page prose.
+ *
+ * EXPORTED so the tests can iterate the real set rather than a hand-copied literal. Adding a tool
+ * here without adding its arm to `fenceRestBody` would fall through to `default` and ship the body
+ * UNFENCED — a fail-open a duplicated list would have hidden.
  */
-const PAGE_DERIVED_TOOLS = new Set([
+export const PAGE_DERIVED_TOOLS = new Set([
   'fetch', 'search', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent', 'diff',
 ]);
 
 /**
- * P2 / decision A3b — REST carries the trust boundary as ENVELOPE METADATA, never as inline markers.
+ * ── THE REST RESPONSE-SHAPING SEAM ──────────────────────────────────────────────────────────────
  *
- * REST is what the TS/Python SDKs and any third-party client talk to, and those consumers are not all
- * LLMs: dedup pipelines, embedding indexers and cache layers read `markdown` and PERSIST it. Injecting
- * markers into the string would corrupt every one of them, and it would break our own rule that a fence
- * is never persisted. So the payload stays byte-clean and the fence travels as a sibling field; the
- * LLM-facing SDK helpers concatenate `notice + begin_marker + payload + end_marker` at the point the
- * text actually enters a model's context.
+ * CEO ruling R2 / decision A10 — the FENCED STRING is the DEFAULT REST representation; the structured
+ * `untrusted_content` envelope is an explicit opt-in (`X-Wigolo-Untrusted-Content: envelope`).
  *
- * `src/daemon/rest/firecrawl-compat.ts` is untouched by design — it calls the tool handlers directly
- * (never this dispatcher), and it exists to mimic an API whose consumers expect clean markdown.
+ * This AMENDS A3b/A9, which had it the other way round. A3b's reasoning was not refuted — fences must
+ * never be persisted, and programmatic REST consumers (dedup pipelines, embedding indexers) really do
+ * persist the markdown they read. It was OUTRANKED: those consumers can still get byte-clean payloads
+ * by asking for the envelope, whereas the population A3b left exposed — a curl user, a shell script, or
+ * a third-party framework concatenating `markdown` straight into a model's context — had no way to ask
+ * for safety at all. F7 established that no SDK helper assembled the envelope; an envelope with no
+ * consumer is not a control. The missing helper was never the bug. The DEFAULT was.
  *
- * B3 — ACCEPTED, NAMED CONSEQUENCE, recorded here so it is a decision and not a side effect.
- * Research `citations[].snippet` used to arrive fenced over REST, because the producer
- * (research/synthesize.ts) wrapped it. B1/F1 moved all containment to the MCP response seam, and this
- * dispatcher returns handler output verbatim — so over REST that snippet is now RAW, a change versus
- * both base and the earlier commits of this branch.
+ * The no-persist rule is preserved BY PLACEMENT, not by hope. Every content persist site in the tree is
+ * strictly UPSTREAM of the value this function shapes: `cacheContent`/`embedAsync` fire inside
+ * `handleFetch` before it builds its response, the crawl index queue reads the crawler's own item, and
+ * watch hashes `handleFetch`'s output directly rather than a dispatched body. `dispatchTool` has exactly
+ * one caller (router.ts) and its return value goes straight to the socket. Nothing in-tree reads a REST
+ * RESPONSE back into a store. Two corollaries that must hold for that to stay true:
+ *   - do NOT push this fence down into a tool handler. `watch/scheduler.ts` falls back to
+ *     `sha256(fetched.data.markdown)` for `last_content_hash`; fencing inside `handleFetch` would hash
+ *     marker bytes into `watch_jobs` and permanently break change detection for that job.
+ *   - the fencers must stay COPY-ON-WRITE (content-fence.ts spreads at every level). In-place mutation
+ *     here would reach arrays that upstream producers still hold references to.
  *
- * That is decision A3b applied consistently for the first time rather than a regression: REST payloads
- * are byte-clean, and the trust boundary travels as the `untrusted_content` envelope below. The
- * honest caveat is that an envelope with no consumer is not yet a control — no assembly helper exists
- * in sdks/ (see untrustedFenceParts). Landing that helper is REQUIRED COMPANION WORK before this
- * reaches SDK users. Do NOT "fix" this by fencing REST inline; that is the option A3b rejected,
- * because dedup pipelines and embedding indexers persist the markdown they read.
+ * B3, now CLOSED. Research `citations[].snippet` regressed fenced → raw over REST when F1 moved all
+ * containment to the response seam and this dispatcher returned handler output verbatim. A9 accepted
+ * that under A3b; the default flip restores it, because `fenceResearchData` fences citation snippets.
+ *
+ * `src/daemon/rest/firecrawl-compat.ts` carries the INVERSE default (decision A11) — it never routes
+ * through this dispatcher, and the loud rationale lives in that file.
  */
-function withUntrustedMetadata(tool: string, body: unknown): unknown {
-  if (!PAGE_DERIVED_TOOLS.has(tool)) return body;
+function withUntrustedEnvelope(body: unknown): unknown {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return body;
   return { ...(body as Record<string, unknown>), untrusted_content: untrustedFenceParts() };
+}
+
+/**
+ * Fence a successful page-derived body IN PLACE OF the envelope, using the same helpers the MCP
+ * dispatch uses — so a REST consumer and an MCP consumer receive byte-identical containment modulo the
+ * per-call nonce. There is no second implementation of the fence to drift.
+ *
+ * The switch is exhaustive over `PAGE_DERIVED_TOOLS` and nothing else; `watch` and any unknown tool
+ * fall through unchanged. Rule 1 of content-fence.ts applies unchanged here: the decision is by TOOL
+ * NAME, never by inspecting the value — a page-derived string is fenced whatever it contains.
+ */
+function fenceRestBody(tool: string, input: unknown, body: unknown): unknown {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return body;
+  switch (tool) {
+    case 'fetch':
+      return fenceFetchData(body as FetchOutput);
+    case 'search':
+      return fenceSearchData(body as SearchOutput);
+    case 'crawl':
+      return fenceCrawlData(body as CrawlOutput | (MapOutput & { crawled: number }));
+    case 'cache':
+      return fenceCacheData(body as CacheOutput);
+    case 'extract':
+      return fenceExtractData(body as ExtractOutput);
+    case 'find_similar':
+      return fenceFindSimilarData(body as FindSimilarOutput);
+    case 'research':
+      return fenceResearchData(body as ResearchOutput);
+    case 'agent':
+      return fenceAgentData(body as AgentOutput);
+    case 'diff':
+      return fenceDiffData(
+        body as DiffOutput,
+        diffOriginFromInput((input ?? {}) as Record<string, unknown>),
+      );
+    default:
+      return body;
+  }
+}
+
+function shapeUntrusted(tool: string, input: unknown, body: unknown, mode: UntrustedMode): unknown {
+  if (!PAGE_DERIVED_TOOLS.has(tool)) return body;
+  return mode === 'envelope' ? withUntrustedEnvelope(body) : fenceRestBody(tool, input, body);
 }
 
 /**
  * Per-tool dispatch behind the full router check pipeline. Every tool returns
  * plain JSON tool output on success; StageResult failures + crawl/cache in-band
  * errors + search data.error map through errors.ts. Successful page-derived
- * responses additionally carry the `untrusted_content` trust envelope.
+ * responses are then shaped for the request's untrusted-content representation:
+ * fenced inline by default, or byte-clean with an `untrusted_content` envelope on opt-in.
  */
 export async function dispatchTool(tool: string, input: unknown, ctx: DispatchContext): Promise<DispatchResult> {
   const result = await dispatchToolInner(tool, input, ctx);
   if (result.status !== 200) return result;
-  return { ...result, body: withUntrustedMetadata(tool, result.body) };
+  return { ...result, body: shapeUntrusted(tool, input, result.body, ctx.untrustedMode) };
 }
 
 async function dispatchToolInner(tool: string, input: unknown, ctx: DispatchContext): Promise<DispatchResult> {

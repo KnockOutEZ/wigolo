@@ -24,6 +24,8 @@ import {
 import { guardServeTarget } from './target-guard.js';
 import { guardResolvedServeTarget } from '../../watch/ssrf.js';
 import { getConfig } from '../../config.js';
+import { wrapUntrusted, untrustedFenceParts } from '../../security/untrusted.js';
+import { UNTRUSTED_MODE_HEADER_NAME, type UntrustedMode } from './untrusted-mode.js';
 
 /**
  * Firecrawl-compatibility shim (EXPERIMENTAL, flag `WIGOLO_FIRECRAWL_COMPAT=1`).
@@ -36,6 +38,39 @@ import { getConfig } from '../../config.js';
  *
  * Out of scope (documented, not silently missing): batch, screenshot /
  * changeTracking / html / rawHtml formats, v2 surface, webhooks, extract, agent.
+ *
+ * ── FENCED-BY-DEFAULT CONTENT, BYTE-CLEAN SCHEMA (decision A11-R) ───────────
+ *
+ * This shim takes the SAME safe default as the native `/v1/{tool}` routes: page-derived text comes
+ * back inside the containment fence unless the caller opts out. What stays byte-clean here is the
+ * SHAPE — Firecrawl's exact JSON structure and field names, unchanged. Only the markdown STRING
+ * VALUE is wrapped.
+ *
+ * A11 originally had this inverted, on the reasoning that choosing this endpoint IS the request for
+ * the vendor's byte contract. That was REFUTED and the reversal is deliberate:
+ *
+ *  1. It conflated intent to INTEGRATE with consent to RISK. A caller picking this endpoint is
+ *     consenting to Firecrawl's RESPONSE SCHEMA — field names, JSON shape, where the markdown
+ *     lives. They never surveyed and accepted its threat model, and consent requires the waiving
+ *     party to know what is being waived.
+ *  2. It inverted R2's own principle exactly where it matters most. R2 exists because "someone
+ *     else's framework still concatenates naively" — and a Firecrawl-compat client IS someone
+ *     else's framework, the population with the HIGHEST base rate of that harm. Protecting everyone
+ *     generically and then carving out the highest-risk subpopulation is backwards.
+ *  3. "Broken as a compat shim" was an empirical claim that was never tested. A client PARSING the
+ *     response does not care about marker characters inside a string field; the schema it parses is
+ *     preserved exactly. Compatibility is STRUCTURAL, not all-or-nothing bytes.
+ *
+ * The genuine byte-contract consumers are narrow and identifiable — snapshot/golden-file tests and
+ * proxies diffing against real Firecrawl — and they are the SAFE population, because they are not
+ * feeding the content to a model. They opt out:
+ *   `X-Wigolo-Untrusted-Content: envelope`
+ * which returns byte-clean markdown plus the `untrusted_content` metadata sibling, exactly as the
+ * native routes do. That opt-out is also the remedy for any client that PERSISTS or HASHES this
+ * markdown: nothing in-tree persists a REST response, but a caller's own dedup or index would.
+ *
+ * The one thing this shim still never does is route through `dispatchTool`. That is what keeps the
+ * fence WRAP-ONCE by placement: one shaping seam per surface, so no value can be wrapped twice.
  */
 
 const log = createLogger('rest');
@@ -90,7 +125,40 @@ export interface CompatContext {
   bindIsLoopback: boolean;
   /** Path after the `/compat/firecrawl` prefix, e.g. `/v1/scrape`. */
   subPath: string;
+  /**
+   * Resolved from `X-Wigolo-Untrusted-Content` by the router, falling back to `inline` — the SAME
+   * safe default as the native routes (A11-R). `envelope` is the byte-clean opt-out.
+   */
+  untrustedMode: UntrustedMode;
   respond: (status: number, body: unknown, headers?: Record<string, string>) => void;
+}
+
+/**
+ * Fence a page-derived string only when the caller opted in. The mode is a per-REQUEST value, so
+ * this is applied at RESPONSE-SHAPING time and never at storage time — the crawl job store below
+ * keeps byte-clean markdown, and a later poll fences (or does not) per that poll's own header. That
+ * is the same no-persist rule the native seam keeps, and it is why fencing lives here rather than
+ * in `jobStore.settle`.
+ *
+ * Empty strings pass through: an `(empty)` region per blank field is noise, not containment.
+ */
+function fenceIf(mode: UntrustedMode, value: string, origin?: string): string {
+  if (mode !== 'inline' || value.length === 0) return value;
+  return wrapUntrusted(value, origin !== undefined && origin !== '' ? { origin } : undefined);
+}
+
+/**
+ * Add the trust envelope to a compat response body when — and only when — the caller asked for the
+ * `envelope` representation. A caller who requested the envelope has requested that key; withholding
+ * it on "schema purity" grounds while simultaneously honouring an explicit envelope request was the
+ * incoherence that helped sink the original A11.
+ *
+ * Applied ONLY to routes that carry page-derived text. `map` (URLs) and crawl-START (a job id) get
+ * nothing, the same must-not-fire rule `watch` gets on the native side.
+ */
+function withCompatEnvelope(mode: UntrustedMode, body: Record<string, unknown>): Record<string, unknown> {
+  if (mode !== 'envelope') return body;
+  return { ...body, untrusted_content: untrustedFenceParts() };
 }
 
 interface CompatCrawlPage {
@@ -278,19 +346,28 @@ async function handleScrape(req: IncomingMessage, ctx: CompatContext): Promise<v
   if (!r.ok) {
     return fail(ctx, statusForStageResult(r), stageFailureMessage(r));
   }
-  const data = mapFetchToScrape(r.data);
-  ctx.respond(200, { success: true, data });
+  const data = mapFetchToScrape(r.data, ctx.untrustedMode);
+  ctx.respond(200, withCompatEnvelope(ctx.untrustedMode, { success: true, data }));
 }
 
-function mapFetchToScrape(out: FetchOutput): { markdown: string; metadata: Record<string, unknown> } {
+/**
+ * `sourceURL` / `statusCode` / `language` stay RAW under either mode — they are operational fields
+ * the caller dereferences or matches on, the same allowlist policy the native seam applies. `title`
+ * and `description` are page prose the author fully controls, so they join `markdown` in the fence.
+ */
+function mapFetchToScrape(
+  out: FetchOutput,
+  mode: UntrustedMode,
+): { markdown: string; metadata: Record<string, unknown> } {
+  const origin = out.url;
   const metadata: Record<string, unknown> = {
     sourceURL: out.url,
   };
-  if (out.title) metadata.title = out.title;
+  if (out.title) metadata.title = fenceIf(mode, out.title, origin);
   if (typeof out.http_status === 'number') metadata.statusCode = out.http_status;
-  if (out.metadata.description) metadata.description = out.metadata.description;
+  if (out.metadata.description) metadata.description = fenceIf(mode, out.metadata.description, origin);
   if (out.metadata.language) metadata.language = out.metadata.language;
-  return { markdown: out.markdown ?? '', metadata };
+  return { markdown: fenceIf(mode, out.markdown ?? '', origin), metadata };
 }
 
 async function handleSearchRoute(req: IncomingMessage, ctx: CompatContext): Promise<void> {
@@ -331,22 +408,25 @@ async function handleSearchRoute(req: IncomingMessage, ctx: CompatContext): Prom
   if (typeof out.error === 'string' && out.error.length > 0) {
     return fail(ctx, 500, out.error);
   }
-  const web = mapSearchToWeb(out, limit);
-  ctx.respond(200, { success: true, data: { web } });
+  const web = mapSearchToWeb(out, limit, ctx.untrustedMode);
+  ctx.respond(200, withCompatEnvelope(ctx.untrustedMode, { success: true, data: { web } }));
 }
 
+/** One FRESH nonce per result (`fenceIf` wraps per call) — never one shared across the list, or one
+ * result's close marker would terminate another's region. `url` stays raw: it is operational. */
 function mapSearchToWeb(
   out: SearchOutput,
   limit: number,
+  mode: UntrustedMode,
 ): Array<{ url: string; title: string; description: string }> {
   const results = Array.isArray(out.results) ? out.results : [];
   return results.slice(0, limit).map((r) => ({
     url: r.url,
-    title: r.title ?? '',
+    title: fenceIf(mode, r.title ?? '', r.url),
     // Firecrawl's `description` ≈ the result snippet. wigolo-unique fields
     // (evidence_score, source_span, citation ids, …) are deliberately NOT
     // surfaced into the compat shape.
-    description: pickSnippet(r as unknown as Record<string, unknown>),
+    description: fenceIf(mode, pickSnippet(r as unknown as Record<string, unknown>), r.url),
   }));
 }
 
@@ -466,6 +546,13 @@ async function handleCrawlStart(req: IncomingMessage, ctx: CompatContext): Promi
   ctx.respond(200, { success: true, id: job.id });
 }
 
+/**
+ * The stored `job.data` is BYTE-CLEAN markdown and stays that way; the fence is applied HERE, on the
+ * way out, per THIS poll's header. Fencing at `settle` time instead would bake one request's
+ * representation into a store, freeze the choice at crawl-start, and break the byte accounting
+ * `settle` computes from the stored payload. A fence must never be persisted — not even into an
+ * in-memory job store.
+ */
 function handleCrawlStatus(id: string, ctx: CompatContext): void {
   const job = jobStore.get(id);
   if (!job) {
@@ -475,12 +562,17 @@ function handleCrawlStatus(id: string, ctx: CompatContext): void {
   if (job.status === 'completed') {
     payload.total = job.total ?? job.data.length;
     payload.completed = job.completed ?? job.data.length;
-    payload.data = job.data;
+    // One FRESH nonce per page — never shared across the list.
+    payload.data = job.data.map((p) => ({
+      ...p,
+      markdown: fenceIf(ctx.untrustedMode, p.markdown, p.metadata.sourceURL),
+    }));
   } else if (job.status === 'failed') {
     payload.error = job.error ?? 'crawl failed';
     payload.data = [];
   }
-  ctx.respond(200, payload);
+  // Only a completed job carries page text; a still-scraping or failed poll has nothing to fence.
+  ctx.respond(200, job.status === 'completed' ? withCompatEnvelope(ctx.untrustedMode, payload) : payload);
 }
 
 /**

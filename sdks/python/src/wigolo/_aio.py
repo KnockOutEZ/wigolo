@@ -29,7 +29,8 @@ class AsyncClient:
     a bounded ``ThreadPoolExecutor`` (``max_workers``, default 16).
 
     Args match ``Client`` (including the local-mode ``port`` / ``command``
-    overrides) plus ``max_workers`` for the executor bound.
+    overrides and ``untrusted_content``) plus ``max_workers`` for the executor
+    bound.
 
     Note: when ``local=True`` (or ``WIGOLO_LOCAL=1``), the daemon
     probe-or-spawn runs SYNCHRONOUSLY inside this constructor (it may block
@@ -48,6 +49,7 @@ class AsyncClient:
         *,
         port: Optional[int] = None,
         command: Optional[list[str]] = None,
+        untrusted_content: Optional[str] = None,
     ) -> None:
         self._client = Client(
             base_url=base_url,
@@ -56,6 +58,7 @@ class AsyncClient:
             local=local,
             port=port,
             command=command,
+            untrusted_content=untrusted_content,
         )
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
 

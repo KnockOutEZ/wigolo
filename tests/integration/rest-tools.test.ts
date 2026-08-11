@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as http from 'node:http';
 import { DaemonHttpServer } from '../../src/daemon/http-server.js';
+import { closedRegions, fenceNonces, regionBody } from '../helpers/untrusted-fence.js';
 
 /**
  * WHY: T2 fills the 8 remaining REST dispatch routes (crawl/cache/extract/
@@ -297,4 +298,80 @@ describe('REST tools — SSRF under non-loopback bind (loopback target refused)'
       delete process.env.WIGOLO_SERVE_ALLOW_LOCAL_TARGETS;
     }
   }, 60000);
+});
+
+/**
+ * ON THE WIRE. The unit tests pin the shaping function; these pin what a real client actually
+ * RECEIVES through the full router + auth + limits + dispatch pipeline. The seam is only worth
+ * anything if the bytes on the socket carry it — a shaping helper nobody reaches is not a control.
+ */
+describe('REST tools — untrusted-content representation on the wire (R2 / A10)', () => {
+  let daemon: DaemonHttpServer;
+  let port: number;
+
+  beforeAll(async () => {
+    delete process.env.WIGOLO_API_TOKEN;
+    delete process.env.WIGOLO_API_TOKEN_FILE;
+    daemon = new DaemonHttpServer({ port: 0, host: '127.0.0.1', apiToken: null });
+    const url = await daemon.start();
+    port = parseInt(new URL(url).port, 10);
+  }, 30000);
+
+  afterAll(async () => { await daemon.stop(); }, 30000);
+
+  it('WIRE-1: a plain fetch with NO header comes back FENCED, and the url stays dereferenceable', async () => {
+    // MUT: default the router's native fallback to 'envelope' → RED.
+    const r = await post(port, '/v1/fetch', { url: `http://127.0.0.1:${originPort}/` }, {}, 40000);
+    expect(r.status).toBe(200);
+    const body = r.body as { markdown: string; url: string; untrusted_content?: unknown };
+    expect(closedRegions(body.markdown)).toBe(1);
+    expect(regionBody(body.markdown)).toContain('Deterministic content');
+    expect(body.url).toBe(`http://127.0.0.1:${originPort}/`);
+    expect(body.untrusted_content).toBeUndefined();
+  }, 40000);
+
+  it('WIRE-2: the same fetch under `envelope` comes back BYTE-CLEAN with the metadata sibling', async () => {
+    // The two representations must carry the same content; only the packaging differs.
+    const r = await post(
+      port,
+      '/v1/fetch',
+      { url: `http://127.0.0.1:${originPort}/` },
+      { 'X-Wigolo-Untrusted-Content': 'envelope' },
+      40000,
+    );
+    expect(r.status).toBe(200);
+    const body = r.body as { markdown: string; untrusted_content: { nonce: string; begin_marker: string; end_marker: string; notice: string } };
+    expect(closedRegions(body.markdown)).toBe(0);
+    expect(body.markdown).toContain('Deterministic content');
+    expect(body.untrusted_content.nonce).toMatch(/^[0-9a-f]{16}$/);
+  }, 40000);
+
+  it('WIRE-3: a bulk crawl fences EVERY page, each with its own nonce', async () => {
+    // The bulk path is where a hoisted single wrap would show up as a shared terminator.
+    const r = await post(port, '/v1/crawl', { url: `http://127.0.0.1:${originPort}/`, max_pages: 3, max_depth: 1 }, {}, 60000);
+    expect(r.status).toBe(200);
+    const pages = (r.body as { pages: Array<{ markdown: string; url: string }> }).pages;
+    expect(pages.length).toBeGreaterThanOrEqual(2);
+    const nonces = pages.flatMap((p) => fenceNonces(p.markdown));
+    expect(nonces.length).toBe(pages.length);
+    expect(new Set(nonces).size).toBe(nonces.length); // all distinct
+    for (const p of pages) expect(closedRegions(p.markdown)).toBe(1);
+  }, 60000);
+
+  it('WIRE-4 (must-not-fire): `watch` carries no fence and no envelope in either mode', async () => {
+    // Hashes and counts are operational; wrapping them would corrupt values the caller matches on.
+    const modes: Record<string, string>[] = [{}, { 'X-Wigolo-Untrusted-Content': 'envelope' }];
+    for (const headers of modes) {
+      const r = await post(port, '/v1/watch', { action: 'list' }, headers);
+      expect(r.status).toBe(200);
+      expect(closedRegions(JSON.stringify(r.body))).toBe(0);
+      expect((r.body as { untrusted_content?: unknown }).untrusted_content).toBeUndefined();
+    }
+  }, 40000);
+
+  it('WIRE-5: an unrecognized header value is a 400 invalid_input, not a silent fallback', async () => {
+    const r = await post(port, '/v1/fetch', { url: `http://127.0.0.1:${originPort}/` }, { 'X-Wigolo-Untrusted-Content': 'envelop' });
+    expect(r.status).toBe(400);
+    expect((r.body as { error_reason?: string }).error_reason).toBe('invalid_input');
+  }, 20000);
 });
