@@ -73,8 +73,8 @@ function main() {
   const roots = locateOrtRoots(resolveOrtRoot);
   if (roots.length === 0) return; // nothing installed it; nothing to do
 
-  let freed = 0;
   for (const root of roots) {
+    let freed = 0; // per-root: two copies in one tree must not report each other's bytes
     const binRoot = join(root, 'bin', 'napi-v3');
     const tree = readPlatformTree(binRoot);
     if (!tree) continue;
