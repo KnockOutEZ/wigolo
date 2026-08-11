@@ -75,8 +75,11 @@ function repoRoot(): string {
  * So: an installed app (when one exists) launches freely; the dev checkout requires
  * `WIGOLO_STUDIO_AUTO_LAUNCH=1`. When S16-alpha lands, `installedSubstrateExists()` becomes real and the dev
  * clause stops mattering — the policy does not change, only what it can find.
+ *
+ * EXPORTED for the tier resolver (D-S10-2), which needs the D13 deferral answer and must not grow a second
+ * probe of its own. One seam, two readers — not two seams.
  */
-function installedSubstrateExists(): boolean {
+export function installedSubstrateExists(): boolean {
   // No installed substrate exists yet (S16-alpha). Deliberately a named seam rather than an inline `false`,
   // so the distribution work has one obvious place to land.
   return false;
