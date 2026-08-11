@@ -140,7 +140,7 @@ export const GATES = {
     comparison: '<=',
     limit: 55,
     baseline:
-      'floor ranged 17.7-44.2 MiB over 6 runs, measured 2026-08-11 on darwin-arm64 at 7aa08144 (44.2/44.2/44.2 then 17.7/44.2/34.4). The limit sits above the highest observed floor and below the lowest-plus-40, so a clean build passes and a 40 MiB retained allocation reds from anywhere in the range. The spec\'s 130 would have let that leak through.',
+      'floor ranged 17.7-44.2 MiB over 6 runs, measured 2026-08-11 on darwin-arm64 at 7aa08144 (44.2/44.2/44.2 then 17.7/44.2/34.4). The limit sits above the highest observed floor and below the lowest-plus-40, so a clean build passes and a 40 MiB retained allocation reds from anywhere in the range. The spec\'s 130 would have let that leak through. ⚠ A GitHub macos-latest runner floors at 163.5/163.0/162.8 — nearly 4x this machine, and far STEADIER (0.4% spread vs 2.5x). Same statistic, same horizon, different machine class: this limit is a developer-machine number and the CI step is deliberately report-only until S10-b sets a runner threshold from runner data.',
   },
   'G-COLD-START': {
     id: 'G-COLD-START',

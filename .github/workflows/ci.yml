@@ -354,8 +354,13 @@ jobs:
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE"
-          node scripts/budget/measure.mjs idle-rss
-          node scripts/budget/measure.mjs cold-start
+          # `|| true` per command, not just continue-on-error on the step: the
+          # runner uses `bash -e`, so the first command exiting non-zero skips
+          # the rest of the step. The first run of this step measured RSS,
+          # exceeded the developer-machine threshold, and never ran cold-start
+          # at all — losing half of exactly the data the step exists to collect.
+          node scripts/budget/measure.mjs idle-rss || true
+          node scripts/budget/measure.mjs cold-start || true
 
       # Blocking. All three are deterministic: a completed install, a pack
       # manifest, and a `du` difference across a step that has already run.
