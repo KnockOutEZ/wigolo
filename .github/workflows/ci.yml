@@ -66,14 +66,17 @@ jobs:
         shell: bash
         run: npm run test:unit
 
-  # The type gate. `lint` alone (which the jobs above run) is only the first of four checks:
-  # `typecheck:studio` type-checks the safety-critical test files, `check:typecheck-gate` proves
-  # none of them silently dropped out of that project, and `typecheck:debt` ratchets the remaining
-  # untyped-test debt. Until this job existed those three gated NOTHING on a PR — a safety test
-  # could sit outside the type gate and CI stayed green.
+  # The type gate. `lint` alone (which the jobs above run) is only one of several checks:
+  # `check:no-electron` holds the src/ electron quarantine (the core consumes no desktop shell, so a
+  # Studio repo split stays a substitution rather than a rewrite), `typecheck:studio` type-checks the
+  # safety-critical test files, `check:typecheck-gate` proves none of them silently dropped out of
+  # that project, and `typecheck:debt` ratchets the remaining untyped-test debt. Until this job
+  # existed those gated NOTHING on a PR — a safety test could sit outside the type gate and CI
+  # stayed green.
   gate:
     name: type gate (gate:studio)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
@@ -90,7 +93,7 @@ jobs:
 
       # No build step: every check here is `tsc --noEmit`-class over source, and adding a build
       # would hide a type error behind a build failure.
-      - name: gate:studio (lint + typecheck:studio + typecheck-gate + debt ratchet)
+      - name: gate:studio (electron quarantine + lint + typecheck:studio + typecheck-gate + debt ratchet)
         shell: bash
         run: npm run gate:studio
 
@@ -126,6 +129,7 @@ jobs:
   studio-unit:
     name: studio unit (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     strategy:
@@ -164,6 +168,7 @@ jobs:
   studio-e2e:
     name: studio e2e (ubuntu)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
