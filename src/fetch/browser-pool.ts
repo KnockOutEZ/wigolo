@@ -1,4 +1,5 @@
-import { chromium, firefox, webkit, type Browser, type BrowserContext, type Download } from 'playwright';
+import type { Browser, BrowserContext, Download } from 'playwright';
+import { requireBrowserDriver } from './browser-driver.js';
 import { readFile } from 'node:fs/promises';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
@@ -296,10 +297,11 @@ async function readContentWithRetry(
 }
 
 function getLauncher(type: BrowserType) {
+  const driver = requireBrowserDriver();
   switch (type) {
-    case 'firefox': return firefox;
-    case 'webkit': return webkit;
-    default: return chromium;
+    case 'firefox': return driver.firefox;
+    case 'webkit': return driver.webkit;
+    default: return driver.chromium;
   }
 }
 
@@ -732,7 +734,7 @@ export class MultiBrowserPool {
       resolvedType = 'chromium';
       try {
         log.info('connecting via CDP', { cdpUrl: redactUrl(options.cdpUrl) });
-        cdpBrowser = await chromium.connectOverCDP(options.cdpUrl);
+        cdpBrowser = await requireBrowserDriver().chromium.connectOverCDP(options.cdpUrl);
         const contexts = cdpBrowser.contexts();
         ctx = contexts.length > 0 ? contexts[0] : await cdpBrowser.newContext();
       } catch (err) {

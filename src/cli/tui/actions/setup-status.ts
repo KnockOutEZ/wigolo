@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
+import { loadBrowserDriver } from '../../../fetch/browser-driver.js';
 
 // This project is pure ESM (`"type":"module"`); `require` is not defined at
 // runtime. Use createRequire so the synchronous probe body can lazily load
@@ -212,13 +213,14 @@ function dirNonEmpty(dirPath: string): boolean {
 export function defaultProbeDeps(): ProbeDeps {
   return {
     browserInstalled(): boolean {
+      // Routed through the one driver seam rather than a second `require('playwright')`. The
+      // local require already anticipated an absent package; what it could not do is see a
+      // driver acquired into the data directory, so it would have reported "not installed"
+      // for a machine that had just installed one.
+      const driver = loadBrowserDriver();
+      if (!driver) return false;
       try {
-        // Dynamic require so this module is importable in environments where
-        // playwright is not installed (e.g. minimal CI workers).
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { chromium } = require('playwright');
-        const execPath: string = chromium.executablePath();
-        return existsSync(execPath);
+        return existsSync(driver.chromium.executablePath());
       } catch {
         return false;
       }

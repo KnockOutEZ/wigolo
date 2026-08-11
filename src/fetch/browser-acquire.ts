@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { chromium } from 'playwright';
+import { loadBrowserDriver, resetBrowserDriverCache } from './browser-driver.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { PlainReporter } from '../cli/tui/reporter.js';
@@ -39,13 +39,20 @@ const LOCK_STALE_MS = 10 * 60 * 1000;
 
 /**
  * Probe whether the browser executable is present on disk. Cheap — resolves the
- * bundled Playwright's `executablePath()` and `existsSync`, mirroring
- * browser-probe.ts's `onDisk` check (no launch smoke-test, which would cost 30s
- * on the hot fetch path). Never throws.
+ * driver's `executablePath()` and `existsSync`, mirroring browser-probe.ts's
+ * `onDisk` check (no launch smoke-test, which would cost 30s on the hot fetch
+ * path). Never throws.
+ *
+ * S10-e: the DRIVER PACKAGE is now itself acquirable, so "not installed" has two
+ * distinct causes — no driver, or a driver with no binary. Both answer `false`
+ * here and both are repaired by the same acquisition, so the caller needs no new
+ * branch; what changed is that the first cause used to be impossible.
  */
 export function browserInstalledOnDisk(): boolean {
+  const driver = loadBrowserDriver();
+  if (!driver) return false;
   try {
-    const exec = chromium.executablePath();
+    const exec = driver.chromium.executablePath();
     return !!exec && existsSync(exec);
   } catch {
     return false;
@@ -61,6 +68,11 @@ export function browserInstalledOnDisk(): boolean {
 async function runBrowserWarmup(): Promise<boolean> {
   const { runWarmup } = await import('../cli/warmup.js');
   const result = await runWarmup(['--browser'], new PlainReporter('warmup'));
+  // ⚠ The driver's absence is memoized, and this call is the thing that can make it wrong.
+  // Without the invalidation a just-acquired driver stays invisible for the life of the
+  // process: the install succeeds, the very next probe returns the cached `null`, and the
+  // rung reports itself unavailable while sitting on disk.
+  resetBrowserDriverCache();
   return result.playwright === 'ok';
 }
 
