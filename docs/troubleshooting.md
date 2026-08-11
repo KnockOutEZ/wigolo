@@ -62,6 +62,10 @@ Two honest facts to calibrate expectations:
 
 **Linux on ARM (arm64).** Core search, fetch, crawl, extract, and cache work normally. **Semantic features are currently unavailable on linux-arm64** — the embeddings model's tokenizer has no prebuilt ARM binary yet, so `find_similar`, embeddings, and semantic cache ranking fall back to keyword matching. If you need semantic features on Linux today, run on an x64 host; this is tracked for a future release.
 
+**Alpine and other musl-based Linux.** Core search, fetch, crawl, extract, and the keyword cache work normally. **Semantic features are unavailable on musl** — the vector index ships prebuilt binaries for glibc Linux only, so `find_similar`, hybrid cache ranking, and embedding backfill fall back to keyword matching. This is a separate gap from the arm64 one above and applies on musl x64 too.
+
+Nothing you install on the host fixes it — there is no musl build to install. If you need semantic search in a container, use a glibc base image (the Debian-slim variants of the official Node images, or wigolo's own published image, which is already glibc-based). `wigolo doctor` names the cause under `Core sqlite-vec:` and states what was lost, so you can confirm this is what you are hitting rather than a broken install.
+
 ## Slow, proxied, or offline networks
 
 - **Slow or region-restricted link.** The model and browser downloads are the slow part, and they resume on re-run. `wigolo init --no-warmup` skips all downloads up front — each component then lazy-loads on first use. For a throttled browser-engine CDN, set a `PLAYWRIGHT_DOWNLOAD_HOST` mirror before warmup.

@@ -11,6 +11,7 @@ import { isProcessAlive } from '../searxng/process.js';
 import { resolveContainerCli } from '../searxng/docker.js';
 import { getConfig } from '../config.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
+import { getVecExtensionStatus } from '../cache/vec-availability.js';
 import { getCacheStats } from '../cache/store.js';
 import { getBackgroundIndexQueue } from '../embedding/background-queue.js';
 import { loadFeedConfig } from '../search/core/rss/feed-config.js';
@@ -1039,6 +1040,27 @@ function checkCoreEmbeddings(dataDir: string): void {
   }
 }
 
+/**
+ * Print why the vector index is unavailable, when the DB layer knows.
+ *
+ * The old line here — "run warmup to load on next start" — is advice that
+ * cannot work on a platform with no build for it, so an Alpine user followed it
+ * forever. It is kept verbatim as the fallback for the one case where it is
+ * still the right answer: no load has been attempted in this process, so there
+ * is nothing diagnosed yet.
+ */
+function reportVecUnavailable(): void {
+  const status = getVecExtensionStatus();
+  if (!status.reason) {
+    out('  extension:     not loaded (run warmup to load on next start)');
+    return;
+  }
+  out(`  extension:     not loaded — ${status.summary}`);
+  if (status.consequence) out(`  consequence:   ${status.consequence}`);
+  if (status.remedy) out(`  remedy:        ${status.remedy}`);
+  if (status.detail) out(`  detail:        ${status.detail.slice(0, 120)}`);
+}
+
 async function checkSqliteVec(dataDir: string): Promise<void> {
   out('');
   out('[wigolo doctor] Core sqlite-vec:');
@@ -1051,7 +1073,7 @@ async function checkSqliteVec(dataDir: string): Promise<void> {
       const v = row?.v ?? 'unknown';
       out(`  extension:     loaded (vec_version ${v})`);
     } catch {
-      out('  extension:     not loaded (run warmup to load on next start)');
+      reportVecUnavailable();
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

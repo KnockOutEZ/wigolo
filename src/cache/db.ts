@@ -5,6 +5,12 @@ import * as sv from 'sqlite-vec';
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
 import { isPackagedBinary } from '../util/packaged.js';
+import {
+  getVecExtensionStatus,
+  recordVecClosed,
+  recordVecFailure,
+  recordVecLoaded,
+} from './vec-availability.js';
 import { applyMigrations } from './migrations/runner.js';
 
 const log = createLogger('cache');
@@ -80,11 +86,10 @@ function restrictMode(path: string): void {
 }
 
 let instance: Database.Database | null = null;
-let vecLoaded = false;
 let exitHookRegistered = false;
 
 export function isVecExtensionLoaded(): boolean {
-  return vecLoaded;
+  return getVecExtensionStatus().loaded;
 }
 
 // Register a process-exit guard so any CLI command that opens the DB
@@ -129,11 +134,17 @@ export function initDatabase(dbPath: string): Database.Database {
   // gracefully degrade.
   try {
     loadVecExtension(db, dbPath);
-    vecLoaded = true;
+    recordVecLoaded();
   } catch (err) {
-    vecLoaded = false;
+    // Keep the diagnosis, not just the message: on musl this failure is
+    // permanent and no amount of re-running warmup will change it, and the log
+    // is the only place a headless run ever says so.
+    const status = recordVecFailure(err);
     log.warn('sqlite-vec extension failed to load — vector search disabled', {
-      error: err instanceof Error ? err.message : String(err),
+      reason: status.reason,
+      summary: status.summary,
+      consequence: status.consequence,
+      error: status.detail,
     });
   }
 
@@ -237,7 +248,7 @@ export function initDatabase(dbPath: string): Database.Database {
   // are skipped when the extension is unavailable; FTS5-only migrations
   // (e.g. feed_items) still run.
   try {
-    applyMigrations(db, { vecLoaded });
+    applyMigrations(db, { vecLoaded: isVecExtensionLoaded() });
   } catch (err) {
     log.error('migration runner failed — some schema may be missing', {
       error: err instanceof Error ? err.message : String(err),
@@ -268,7 +279,7 @@ export function closeDatabase(): void {
   if (instance) {
     instance.close();
     instance = null;
-    vecLoaded = false;
+    recordVecClosed();
   }
 }
 

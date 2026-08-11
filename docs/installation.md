@@ -23,6 +23,8 @@ wigolo init
 
 The published image is `ghcr.io/knockoutez/wigolo`. It's the slim variant: the browser engine binary and on-device models download on first use into the `/data` volume, keeping the image small and the downloads persistent.
 
+> **Building your own image? Stay on glibc.** The published image is Debian-based (`node:22-bookworm-slim`) and has the full feature set. If you rebuild on **Alpine or another musl-based** base, semantic search degrades to keyword matching — the vector index has no musl build, so `find_similar`, hybrid cache ranking, and embedding backfill fall back. Search, fetch, crawl, extract, and the keyword cache are unaffected. `wigolo doctor` reports the cause explicitly. See [platform notes](./troubleshooting.md#platform-notes).
+
 MCP over stdio (one local client):
 
 ```bash
