@@ -82,6 +82,18 @@ describe('idle-RSS statistic: floor over a fixed horizon, not a plateau', () => 
     expect(extended).toBe(29.5);
   });
 
+  it('the floor is the minimum, not whatever the last sample happened to be', () => {
+    // Added because a probe caught this suite failing to discriminate: replacing the floor
+    // with "the last sample in the horizon" left 22 of 23 tests green, since in all three
+    // 45 s traces the final sample IS the minimum. RSS ticks back up at the end of every one
+    // of these runs (44.2 -> 44.7, 44.2 -> 44.6, 29.5 -> 30.2), so the full series does
+    // distinguish the two rules — and now something asserts on it.
+    for (const trace of Object.values(TRACES)) {
+      const samples = asSamples(trace);
+      expect(floorMiB(samples)).toBeLessThan(samples[samples.length - 1].valueMB);
+    }
+  });
+
   it('rejects an empty series instead of inventing a floor', () => {
     expect(() => floorMiB([])).toThrow(/empty/);
   });
