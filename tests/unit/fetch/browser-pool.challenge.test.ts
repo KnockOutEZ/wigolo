@@ -21,15 +21,16 @@ interface PageState {
   widgetBox: { x: number; y: number; width: number; height: number } | null;
   // Cookies context().cookies() returns — but ONLY after the auto-pass rung has
   // engaged a CDP session (cdpEngaged). Before that (and in the challenge-
-  // completion auto-poll, which never opens a CDP session) it returns []. This
+  // completion auto-poll, which never engages CDP) it returns []. This
   // is what forces the CLEARED path through the LADDER's auto-pass rung rather
   // than the earlier auto-poll: the clearance cookie is only observable once the
   // ladder rung has driven its trusted gesture.
   cookies: { name: string; value: string; domain: string; expires: number }[];
-  // Set true the first time context().newCDPSession() is called (the ladder
-  // auto-pass rung opens one; the auto-poll never does).
+  // Set true the first time a CDP session is USED for something other than the
+  // per-hop SSRF fence's Fetch.* interception (the ladder auto-pass rung dispatches
+  // trusted input; the auto-poll opens no session at all).
   cdpEngaged: boolean;
-  // When set, content() returns `bodies[0]` until a CDP session has been opened
+  // When set, content() returns `bodies[0]` until the ladder has engaged CDP
   // (the auto-poll phase — a persistent challenge it can never clear), then
   // `bodies[1]` once cdpEngaged (the ladder auto-pass rung has driven its gesture
   // and the page has hydrated). null = use the plain sequential `bodies` reader.
@@ -55,23 +56,33 @@ function makeTimeoutErr() {
 }
 
 vi.mock('playwright', () => {
-  // A single per-context CDP + cookie mock, shared by both the auto-poll and the
-  // solve-ladder auto-pass rung on a given page. cookies() only reveals the
-  // seeded clearance once a CDP session has been opened (state.cdpEngaged), which
-  // only the ladder rung does — this is what routes the CLEARED assertion through
-  // the ladder harvest rather than the earlier auto-poll clearance path.
+  // A single per-context CDP + cookie mock, shared by the auto-poll, the per-hop
+  // SSRF fence, and the solve-ladder auto-pass rung on a given page. cookies()
+  // only reveals the seeded clearance once the LADDER has engaged CDP
+  // (state.cdpEngaged) — this is what routes the CLEARED assertion through the
+  // ladder harvest rather than the earlier auto-poll clearance path.
   const makeContext = () => ({
     close: vi.fn().mockResolvedValue(undefined),
     cookies: vi.fn().mockImplementation(() =>
       Promise.resolve(state.cdpEngaged ? state.cookies : []),
     ),
-    newCDPSession: vi.fn().mockImplementation(() => {
-      state.cdpEngaged = true;
-      return Promise.resolve({
-        send: vi.fn().mockResolvedValue(undefined),
+    newCDPSession: vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        // The gate flips on USE, not on creation. It used to flip when a session
+        // was opened at all, which silently meant "the ladder rung ran" only for
+        // as long as the ladder was the sole CDP caller on a page. The per-hop
+        // SSRF fence now opens one before navigation, so creation no longer
+        // distinguishes anything — a Fetch.* call is the fence, anything else
+        // (Input.dispatchMouseEvent) is the ladder driving its trusted gesture.
+        send: vi.fn().mockImplementation((method: unknown) => {
+          if (typeof method === 'string' && !method.startsWith('Fetch.')) {
+            state.cdpEngaged = true;
+          }
+          return Promise.resolve(undefined);
+        }),
         detach: vi.fn().mockResolvedValue(undefined),
-      });
-    }),
+      }),
+    ),
   });
   // A locator whose boundingBox reflects state.widgetBox — null by default so
   // locateChallengeWidget finds no widget (the inert case existing tests rely on).

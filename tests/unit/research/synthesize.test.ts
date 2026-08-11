@@ -229,6 +229,50 @@ describe('buildFallbackReport', () => {
     expect(report.length).toBeLessThanOrEqual(500);
   });
 
+  // P4c — the keyless fallback report is what a caller without an LLM actually
+  // reads, and it cut source bodies with a bare `.slice()`. On markdown that
+  // ended paragraphs mid-word and left opening ``` fences with no closer, so
+  // every renderer downstream treated the rest of the report as code.
+  it('does not leave an unterminated code fence in the report', () => {
+    const sources: ResearchSource[] = [
+      makeSource({
+        markdown_content:
+          'Install the package first.\n\n```bash\n' +
+          'wigolo search --max-results=50 --include-domains=example.com\n'.repeat(20) +
+          '```\n\nThen run it.',
+      }),
+    ];
+
+    const report = buildFallbackReport('test', sources, 600);
+
+    expect(report.length).toBeLessThanOrEqual(600);
+    expect((report.match(/```/g) ?? []).length % 2).toBe(0);
+  });
+
+  it('does not end a source body mid-word', () => {
+    const body =
+      'The reconciler compares the previous fiber tree against the next one and reuses whatever nodes it can, ' +
+      'which keeps the commit phase proportional to the number of changed nodes rather than the size of the tree.';
+    const sources: ResearchSource[] = [makeSource({ markdown_content: body })];
+
+    const report = buildFallbackReport('test', sources, 260);
+
+    expect(report.length).toBeLessThanOrEqual(260);
+
+    // Pull out exactly the quoted source body: everything after the per-source
+    // URL line, minus our own truncation marker.
+    const m = report.match(/\*\*URL:\*\* [^\n]*\n\n([\s\S]*)$/);
+    expect(m).not.toBeNull();
+    const kept = (m as RegExpMatchArray)[1].replace(/\.\.\.$/, '').trimEnd();
+
+    expect(kept.length).toBeGreaterThan(0);
+    expect(body.startsWith(kept)).toBe(true);
+    // The source character immediately after what we kept must be whitespace
+    // (or end of input) — that is what "stopped at a word boundary" means.
+    const next = body.slice(kept.length, kept.length + 1);
+    expect(next === '' || /\s/.test(next)).toBe(true);
+  });
+
   it('skips sources with no content', () => {
     const sources: ResearchSource[] = [
       makeSource({ title: 'Empty', markdown_content: '', fetched: false }),

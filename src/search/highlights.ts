@@ -3,6 +3,15 @@ import { getRerankProvider } from '../providers/rerank-provider.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { parseHeadings, lineStartCharOffsets } from '../extraction/markdown.js';
+import { truncateAtBoundary, ELLIPSIS } from './truncate.js';
+
+/**
+ * Length of the emitted text as it exists in the source document — the trailing
+ * truncation ellipsis is ours and has no offset in the original.
+ */
+function sourceLength(text: string): number {
+  return text.endsWith(ELLIPSIS) ? text.length - ELLIPSIS.length : text.length;
+}
 
 const log = createLogger('search');
 
@@ -63,7 +72,13 @@ export function splitIntoPassages(markdown: string): Passage[] {
     const trimmedEnd = rawStart + trailing;
     const trimmed = markdown.slice(trimmedStart, trimmedEnd);
     if (!shouldKeep(trimmed)) return;
-    const text = trimmed.length > MAX_PASSAGE_LENGTH ? trimmed.slice(0, MAX_PASSAGE_LENGTH) : trimmed;
+    // Cut with NO marker: a passage carries a source_span and callers rely on
+    // `markdown.slice(charStart, charEnd) === text`. An ellipsis would make the
+    // text stop being a verbatim quote of the region it points at. Boundary
+    // awareness is what fixes the garbling here; the marker is presentation and
+    // is added at the Highlight layer instead.
+    const text = truncateAtBoundary(trimmed, MAX_PASSAGE_LENGTH, '');
+    if (!text) return;
     const charEnd = trimmedStart + text.length;
     out.push({ text, charStart: trimmedStart, charEnd });
   };
@@ -197,7 +212,7 @@ export function fallbackHighlights(
     const passages = source ? splitIntoPassages(source) : [];
     if (passages.length > 0) {
       const annotated = mapPassageHeadings(source, [passages[0]])[0];
-      const text = annotated.text.slice(0, MAX_PASSAGE_LENGTH);
+      const text = truncateAtBoundary(annotated.text, MAX_PASSAGE_LENGTH);
       out.push({
         text,
         source_index: i + 1,
@@ -205,13 +220,13 @@ export function fallbackHighlights(
         source_url: r.url,
         source_title: r.title,
         section_heading: annotated.sectionHeading,
-        source_span: { start: annotated.charStart, end: annotated.charStart + text.length },
+        source_span: { start: annotated.charStart, end: annotated.charStart + sourceLength(text) },
       });
       continue;
     }
     const snippet = r.snippet ?? '';
     if (!snippet) continue;
-    const text = snippet.slice(0, MAX_PASSAGE_LENGTH);
+    const text = truncateAtBoundary(snippet, MAX_PASSAGE_LENGTH);
     out.push({
       text,
       source_index: i + 1,
@@ -219,7 +234,7 @@ export function fallbackHighlights(
       source_url: r.url,
       source_title: r.title,
       section_heading: null,
-      source_span: { start: 0, end: text.length },
+      source_span: { start: 0, end: sourceLength(text) },
     });
   }
   return out;

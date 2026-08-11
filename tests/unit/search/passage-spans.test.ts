@@ -38,6 +38,24 @@ describe('splitIntoPassages spans', () => {
     expect(p.charEnd - p.charStart).toBe(p.text.length);
     expect(md.slice(p.charStart, p.charEnd)).toBe(p.text);
   });
+
+  // P4c — the 500-char cap was a bare `.slice()` and stopped mid-word. It is
+  // now boundary-aware, but deliberately marker-free: a passage carries a
+  // source_span, and appending an ellipsis would make `text` stop being a
+  // verbatim quote of the region the span points at. Both properties are
+  // asserted together because a fix for either one alone breaks the other.
+  it('cuts an over-long paragraph on a word boundary and stays a verbatim quote', () => {
+    const longPara = 'reconciliation '.repeat(60); // 900 chars, over the cap
+    const md = '# Heading\n\n' + longPara.trim();
+    const p = splitIntoPassages(md)[0];
+
+    expect(p.text.length).toBeLessThanOrEqual(500);
+    expect(md.slice(p.charStart, p.charEnd)).toBe(p.text);
+    expect(p.text).not.toMatch(/…/);
+    // Ends on a complete word: the next source character is whitespace or EOF.
+    const next = md.slice(p.charEnd, p.charEnd + 1);
+    expect(next === '' || /\s/.test(next)).toBe(true);
+  });
 });
 
 describe('mapPassageHeadings', () => {
