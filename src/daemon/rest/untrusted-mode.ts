@@ -19,8 +19,12 @@
  * naive concatenator outside our SDKs had no way to ask for safety. The unsafe representation is the
  * one that must be requested.
  *
- * Decision A11: `/compat/firecrawl/*` carries the INVERSE default — see the loud note in
- * firecrawl-compat.ts. Same header, same values; only the fallback differs.
+ * Decision A11-R: `/compat/firecrawl/*` takes the SAME safe fallback. An earlier revision inverted
+ * it there, reasoning that choosing a compat endpoint IS the request for the vendor's byte contract;
+ * that conflated intent to INTEGRATE with consent to RISK, and carved the highest-base-rate naive
+ * concatenator out of the very protection this mechanism exists to provide. On that surface `inline`
+ * wraps only the markdown STRING VALUE — the vendor's JSON shape is preserved — so nothing is traded
+ * away by defaulting it safe. See the header of firecrawl-compat.ts.
  *
  * A HEADER rather than a request-body field, deliberately:
  *  - it is a REPRESENTATION choice about the response, the same class of thing as `Accept`; it is not
@@ -50,8 +54,9 @@ export type UntrustedModeResolution =
  *
  * An absent header takes the surface's `fallback`. A recognized value wins. An UNRECOGNIZED value is
  * REFUSED (400) rather than silently falling back: the header exists only because a caller typed it,
- * so a typo is a caller mistake worth surfacing, and on the compat surface a silent fallback would
- * hand back the unsafe representation to someone who had just asked for the safe one.
+ * so a typo is a caller mistake worth surfacing rather than resolving to a representation the caller
+ * did not choose — in either direction: markers reaching a snapshot test that asked for clean bytes,
+ * or bare page text reaching someone who asked for containment.
  *
  * Case-insensitive and whitespace-tolerant; a repeated header (node yields `string[]`) is refused
  * rather than guessed at.

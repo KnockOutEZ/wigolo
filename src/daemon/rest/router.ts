@@ -152,8 +152,10 @@ export class RestRouter {
           return;
         }
         const subPath = pathname.slice(SHIM_PREFIX.length) || '/';
-        // A11 — the shim's fallback is the INVERSE of the native routes': byte-clean unless asked.
-        const compatMode = this.untrustedModeFor(req, res, 'envelope');
+        // A11-R — the shim takes the SAME safe fallback as the native routes. No surface gets a
+        // weaker default; the compat surface differs only in WHAT `inline` wraps (the markdown
+        // string value, never the JSON shape). See the header of firecrawl-compat.ts.
+        const compatMode = this.untrustedModeFor(req, res, 'inline');
         if (compatMode === null) return;
         // The shim shares the SAME slot+deadline discipline as /v1 (D7/D11) —
         // it is NOT an escape hatch. A slot is acquired before the compat work

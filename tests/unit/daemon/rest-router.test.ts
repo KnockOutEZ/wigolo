@@ -370,44 +370,50 @@ describe('RestRouter — untrusted-content representation header (R2 / A10 + A11
     return (call?.[2] as { untrustedMode?: unknown } | undefined)?.untrustedMode;
   }
 
-  it('MODE-R6 (A11): the compat shim falls back to `envelope` — the INVERSE of the native routes', async () => {
-    // The whole asymmetry of the ruling lives in these two fallbacks, and only the router knows
-    // them: the shim handler is told a mode, it does not pick one. Without this row, flipping the
-    // shim's fallback to `inline` reds NOTHING at the unit level — found by probing exactly that.
-    // MUT: pass 'inline' as the shim fallback → RED.
+  it('MODE-R6 (A11-R, INVERTED): the compat shim takes the SAME safe fallback as the native routes', async () => {
+    // This pin used to assert the OPPOSITE — that the shim fell back to `envelope`. A11 was
+    // reversed: consenting to a vendor's response SCHEMA is not consenting to its threat model, and
+    // a compat client is the highest-base-rate naive concatenator, so carving it out inverted R2's
+    // own principle exactly where it mattered most. The pin is inverted rather than deleted, so the
+    // property is still ASSERTED: no surface gets a weaker default.
+    // The row is load-bearing for a second reason — flipping this fallback originally redded NOTHING
+    // at the unit level (the compat unit tests pass an explicit mode), which is how the gap was found.
+    // MUT: pass 'envelope' as the shim fallback → RED.
     process.env.WIGOLO_FIRECRAWL_COMPAT = '1';
     try {
       const router = loopbackRouter();
       const { res } = makeRes();
       await router.handle(makeReq({ url: '/compat/firecrawl/v1/scrape', body: JSON.stringify({ url: 'https://example.com' }) }), res);
       expect(handleCompatRequest).toHaveBeenCalled();
-      expect(lastCompatMode()).toBe('envelope');
-    } finally {
-      delete process.env.WIGOLO_FIRECRAWL_COMPAT;
-    }
-  });
-
-  it('MODE-R7: the shim honours the same header, so the fence is reachable there', async () => {
-    // A11 chooses compatibility over the safe default; that is only defensible while the opt-in
-    // actually works on this surface. MUT: stop threading the header on the compat branch → RED.
-    process.env.WIGOLO_FIRECRAWL_COMPAT = '1';
-    try {
-      const router = loopbackRouter();
-      const { res } = makeRes();
-      await router.handle(makeReq({
-        url: '/compat/firecrawl/v1/scrape',
-        headers: { 'x-wigolo-untrusted-content': 'inline' },
-        body: JSON.stringify({ url: 'https://example.com' }),
-      }), res);
       expect(lastCompatMode()).toBe('inline');
     } finally {
       delete process.env.WIGOLO_FIRECRAWL_COMPAT;
     }
   });
 
+  it('MODE-R7 (INVERTED): the shim honours the header, so the byte-clean OPT-OUT is reachable', async () => {
+    // Fencing by default is only defensible while the narrow genuine byte-contract consumers —
+    // snapshot tests, proxies diffing against real Firecrawl, and any client that persists or hashes
+    // the markdown — can still get clean bytes. MUT: stop threading the header on the compat branch → RED.
+    process.env.WIGOLO_FIRECRAWL_COMPAT = '1';
+    try {
+      const router = loopbackRouter();
+      const { res } = makeRes();
+      await router.handle(makeReq({
+        url: '/compat/firecrawl/v1/scrape',
+        headers: { 'x-wigolo-untrusted-content': 'envelope' },
+        body: JSON.stringify({ url: 'https://example.com' }),
+      }), res);
+      expect(lastCompatMode()).toBe('envelope');
+    } finally {
+      delete process.env.WIGOLO_FIRECRAWL_COMPAT;
+    }
+  });
+
   it('MODE-R8: an unrecognized value is refused on the shim too, before the shim runs', async () => {
-    // Silently falling back HERE is the worst case in the tree: it hands byte-clean text to a caller
-    // who had just asked for containment, on the one surface that does not fence by default.
+    // A silent fallback here would hand a typo'd caller a representation they did not choose, in
+    // either direction — byte-clean text to someone who asked for containment, or markers to a
+    // snapshot test that asked for clean bytes.
     process.env.WIGOLO_FIRECRAWL_COMPAT = '1';
     try {
       const router = loopbackRouter();

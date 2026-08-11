@@ -182,30 +182,48 @@ describe('Firecrawl-compat — flag ON, open loopback mode', () => {
   });
 
   /**
-   * Decision A11 — THE INVERSE DEFAULT, AND THE EXPOSURE IT BUYS.
+   * Decision A11-R — FENCED-BY-DEFAULT CONTENT, BYTE-CLEAN SCHEMA.
    *
-   * The native `/v1/*` routes fence by default. This shim does NOT: it exists to reproduce another
-   * vendor's byte contract, and selecting this endpoint is the explicit request for that contract.
-   * The exposure is chosen, not overlooked — a compat client feeding `data.markdown` to a model is
-   * exactly the naive-concatenation case the ruling exists to fix. These rows pin BOTH halves so
-   * neither can drift silently: the byte-clean default, AND the opt-in that makes the fence
-   * reachable for anyone who does wire this into an LLM pipeline.
+   * These rows are the previous ones INVERTED, not replaced: A11 originally kept this surface
+   * byte-clean by default, which conflated intent to integrate with consent to risk and carved the
+   * highest-risk naive-concatenator population out of R2's protection. The shim now takes the same
+   * safe default as `/v1/*`; what stays byte-clean is Firecrawl's JSON SHAPE, and the narrow genuine
+   * byte-consumers opt out with the header.
    */
-  it('COMPAT-1 (must-not-fire): scrape markdown is BYTE-CLEAN by default — no header, no markers', async () => {
-    // MUT: default the shim's fallback to 'inline' → RED, and the shim stops being a compat shim.
+  it('COMPAT-1 (INVERTED): scrape markdown is FENCED by default — no header needed', async () => {
+    // MUT: default the shim's fallback back to 'envelope' → RED.
     const r = await post(port, `${PREFIX}/v1/scrape`, { url: `http://127.0.0.1:${originPort}/` }, {}, 30000);
     expect(r.status).toBe(200);
-    const body = r.body as { data: { markdown: string; metadata: Record<string, unknown> } };
-    expect(closedRegions(body.data.markdown)).toBe(0);
-    expect(body.data.markdown).toContain('Firecrawl compat body');
-    // and no metadata sibling either: the response shape stays the vendor's shape
+    const body = r.body as { success: boolean; data: { markdown: string; metadata: { sourceURL: string } } };
+    expect(closedRegions(body.data.markdown)).toBe(1);
+    expect(regionBody(body.data.markdown)).toContain('Firecrawl compat body');
+    // the vendor SHAPE is untouched: same keys, markdown still a string at data.markdown
+    expect(body.success).toBe(true);
+    expect(typeof body.data.markdown).toBe('string');
+    expect(body.data.metadata.sourceURL).toContain('127.0.0.1');
+    // and the sibling is absent unless explicitly requested
     expect((r.body as { untrusted_content?: unknown }).untrusted_content).toBeUndefined();
-    expect(closedRegions(JSON.stringify(body))).toBe(0);
   }, 30000);
 
-  it('COMPAT-2: `X-Wigolo-Untrusted-Content: inline` makes the fence reachable on the shim', async () => {
-    // Without this the shim would be an unfixable hole for anyone who needs it. MUT: ignore the
-    // header in the shim (thread the mode but never read it) → RED.
+  it('COMPAT-2 (INVERTED): `X-Wigolo-Untrusted-Content: envelope` is the byte-clean opt-out', async () => {
+    // The remedy for snapshot tests, proxies diffing against real Firecrawl, and any client that
+    // PERSISTS or HASHES this markdown. MUT: ignore the header in the shim → RED.
+    const r = await post(
+      port,
+      `${PREFIX}/v1/scrape`,
+      { url: `http://127.0.0.1:${originPort}/` },
+      { 'X-Wigolo-Untrusted-Content': 'envelope' },
+      30000,
+    );
+    expect(r.status).toBe(200);
+    const clean = r.body as { data: { markdown: string }; untrusted_content?: { nonce: string } };
+    expect(closedRegions(clean.data.markdown)).toBe(0);
+    expect(clean.data.markdown).toContain('Firecrawl compat body');
+    // a caller who asked for the envelope asked for that key
+    expect(clean.untrusted_content?.nonce).toMatch(/^[0-9a-f]{16}$/);
+  }, 30000);
+
+  it('COMPAT-2b: the fence names the origin and preserves the metadata prose fields', async () => {
     const r = await post(
       port,
       `${PREFIX}/v1/scrape`,
@@ -243,19 +261,22 @@ describe('Firecrawl-compat — flag ON, open loopback mode', () => {
     }
     if (completed?.status !== 'completed' || !completed.data?.length) return; // crawl did not settle in budget
 
-    // Default poll: byte-clean.
-    expect(closedRegions(JSON.stringify(completed.data))).toBe(0);
-
-    // The SAME stored job, polled with the opt-in: fenced, one fresh nonce per page.
-    const fenced = await request({ port, path: `${PREFIX}/v1/crawl/${id}`, headers: { 'X-Wigolo-Untrusted-Content': 'inline' } });
-    const pages = (fenced.body as { data: Array<{ markdown: string }> }).data;
+    // Default poll: FENCED, one fresh nonce per page (never one shared across the list).
+    const pages = completed.data;
     const nonces = pages.flatMap((p) => fenceNonces(p.markdown));
     expect(nonces.length).toBe(pages.length);
     expect(new Set(nonces).size).toBe(nonces.length);
 
-    // And polling again with no header still yields byte-clean text — proof the store was never mutated.
+    // The SAME stored job, polled with the opt-out: byte-clean.
+    const clean = await request({ port, path: `${PREFIX}/v1/crawl/${id}`, headers: { 'X-Wigolo-Untrusted-Content': 'envelope' } });
+    expect(closedRegions(JSON.stringify((clean.body as { data: unknown }).data))).toBe(0);
+
+    // And polling again with no header still yields FRESH nonces, not the earlier ones — proof the
+    // store was never mutated by either poll and the fence is applied per request, not persisted.
     const again = await request({ port, path: `${PREFIX}/v1/crawl/${id}` });
-    expect(closedRegions(JSON.stringify((again.body as { data: unknown }).data))).toBe(0);
+    const againNonces = (again.body as { data: Array<{ markdown: string }> }).data.flatMap((p) => fenceNonces(p.markdown));
+    expect(againNonces.length).toBe(pages.length);
+    for (const n of againNonces) expect(nonces).not.toContain(n);
   }, 30000);
 
   it('COMPAT-4: an unrecognized header value is refused on the shim too, in the shim error shape', async () => {

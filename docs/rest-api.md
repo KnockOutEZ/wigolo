@@ -157,23 +157,19 @@ Rules worth knowing:
 
 `WIGOLO_FIRECRAWL_COMPAT=1` enables an opt-in, experimental compatibility shim at `/compat/firecrawl` that accepts hosted-scraper-style requests — useful for pointing existing integrations at your own wigolo instead. It sits behind the same auth and target guards as everything else.
 
-> ### ⚠️ The compat shim returns page markdown **uncontained by default**
->
-> This is the one endpoint that inverts the rule above. The shim exists to reproduce another vendor's exact response bytes, and a compat shim whose bytes differ from the API it mimics is not a compat shim. Choosing this endpoint is itself the request for those bytes.
->
-> **The consequence is real: if you feed `data.markdown` from `/compat/firecrawl` straight into a model's context, a hostile page's instructions reach that model uncontained.** That is exactly the case the default on `/v1` exists to prevent, and here compatibility is being ranked above it deliberately.
->
-> The shim honours the same header on every route, so the containment is one line away:
->
-> ```bash
-> curl -s localhost:3333/compat/firecrawl/v1/scrape \
->   -H 'X-Wigolo-Untrusted-Content: inline' \
->   -H 'Content-Type: application/json' -d '{"url":"https://example.com"}'
-> ```
->
-> **Send it whenever the shim's output reaches a model.** Use the byte-clean default only for pipelines that store, hash or index the text. The shim never adds an `untrusted_content` sibling field either — a key the mimicked API does not have would be the same compatibility break in a new place.
->
-> Crawl jobs store byte-clean markdown; the header is honoured per poll, so the same job can be read either way.
+The shim follows the **same containment default as `/v1`**: page markdown comes back wrapped. What stays byte-identical is the **response schema** — the exact JSON structure and field names, with the markdown still a plain string at `data.markdown`. That is what "drop-in" means in practice: your client parses the same shape it always did.
+
+**If you need the exact bytes** — snapshot or golden-file tests, a proxy diffing against the upstream API, or anything that **persists, hashes or indexes** the markdown — opt out per request:
+
+```bash
+curl -s localhost:3333/compat/firecrawl/v1/scrape \
+  -H 'X-Wigolo-Untrusted-Content: envelope' \
+  -H 'Content-Type: application/json' -d '{"url":"https://example.com"}'
+```
+
+That returns byte-clean markdown plus the `untrusted_content` sibling, exactly as `/v1` does under the same header. Reach for it whenever the text is going into storage rather than into a model — a containment wrapper must never end up in a cache, a dedup key, or an embedding index.
+
+Crawl jobs store byte-clean markdown and the header is honoured **per poll**, so the same job can be read either way and the stored copy is never modified.
 
 ## Error shape
 

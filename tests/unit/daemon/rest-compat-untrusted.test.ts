@@ -6,12 +6,17 @@ import type { UntrustedMode } from '../../../src/daemon/rest/untrusted-mode.js';
 import { closedRegions, enclosingRegion, fenceNonces, regionBody } from '../../helpers/untrusted-fence.js';
 
 /**
- * Decision A11 — the compat shim's INVERSE default, pinned field by field.
+ * Decision A11-R — FENCED-BY-DEFAULT CONTENT, BYTE-CLEAN SCHEMA.
  *
- * The shim mimics another vendor's byte contract, so it stays byte-clean unless the caller sends
- * `X-Wigolo-Untrusted-Content: inline`. That exposure is chosen, not overlooked, and these rows pin
- * both halves so neither can drift: what a default caller receives (nothing added), and exactly
- * which fields the opt-in fences (page prose) versus leaves raw (operational).
+ * The shim takes the SAME safe default as the native routes. What stays byte-clean is Firecrawl's
+ * JSON SHAPE — structure and field names — while the markdown string VALUE is wrapped.
+ *
+ * A11 originally had this inverted, on the reasoning that choosing this endpoint IS the request for
+ * the vendor's byte contract. That conflated intent to INTEGRATE with consent to RISK: a caller
+ * consents to the response SCHEMA, not to the threat model, and a compat client is precisely the
+ * "someone else's framework concatenating naively" population R2 exists to protect. These rows are
+ * the OLD pins INVERTED rather than deleted — every byte-clean assertion survives verbatim, moved
+ * under the `envelope` opt-out where it is still the contract.
  *
  * Driven through `handleCompatRequest` with the tool handlers mocked, so the assertions do not
  * depend on which extractor wins for a given fixture page.
@@ -95,41 +100,79 @@ beforeEach(() => {
 });
 afterEach(() => { delete process.env.WIGOLO_SERVE_ALLOW_LOCAL_TARGETS; });
 
-describe('compat shim — byte-clean by DEFAULT (A11)', () => {
-  it('CFENCE-1 (must-not-fire): scrape adds NOTHING under the shim default', async () => {
-    // The vendor byte contract. A compat shim whose bytes differ from the API it mimics is broken as
-    // a compat shim. MUT: flip the shim's fallback to 'inline' → RED.
+describe('compat shim — the `envelope` OPT-OUT is byte-clean (A11-R)', () => {
+  it('CFENCE-1 (must-not-fire): under the opt-out, scrape markdown is byte-identical', async () => {
+    // The old CFENCE-1 verbatim, moved from "the default" to "the opt-out". This is the contract the
+    // narrow genuine byte-consumers rely on — snapshot tests, proxies diffing against real
+    // Firecrawl, and any client that PERSISTS or HASHES the markdown.
+    // MUT: ignore the mode in the shim → RED.
     const r = await call('/v1/scrape', 'envelope', { url: 'https://x.example/p' });
     expect(r.status).toBe(200);
     const data = (r.body as { data: { markdown: string; metadata: Record<string, unknown> } }).data;
     expect(data.markdown).toBe(MARKDOWN); // byte-identical
     expect(data.metadata.title).toBe(`Title ${INJECT}`);
     expect(data.metadata.description).toBe(`Desc ${INJECT}`);
-    expect(closedRegions(JSON.stringify(r.body))).toBe(0);
+    expect(closedRegions(JSON.stringify(data))).toBe(0);
   });
 
-  it('CFENCE-2 (must-not-fire): the shim never adds the `untrusted_content` sibling either', async () => {
-    // Adding a top-level key the mimicked API does not have would be the same compat break in a new
-    // place. `envelope` on THIS surface means exactly "byte-clean".
+  it('CFENCE-2 (INVERTED): the sibling IS emitted under `envelope`, and NEVER under `inline`', async () => {
+    // The old pin said the shim never emits `untrusted_content` at all, on schema-purity grounds.
+    // That was incoherent with honouring an explicit `envelope` request in the first place: a caller
+    // who asked for the envelope asked for that key, and every real JSON parser ignores unknown
+    // keys. Under `inline` it must still be absent — the markers are already in the text, and a
+    // response carrying both would leave a consumer unable to tell whether to compose.
+    // MUT: drop withCompatEnvelope → the envelope half REDs; make it unconditional → the inline half REDs.
     for (const path of ['/v1/scrape', '/v1/search'] as const) {
-      const r = await call(path, 'envelope', { url: 'https://x.example/p', query: 'q' });
-      expect(JSON.stringify(r.body)).not.toContain('untrusted_content');
+      const input = { url: 'https://x.example/p', query: 'q' };
+      const env = await call(path, 'envelope', input);
+      const envelope = (env.body as { untrusted_content?: { nonce: string; begin_marker: string; end_marker: string } }).untrusted_content;
+      expect(envelope, `${path} must carry the envelope under the opt-out`).toBeDefined();
+      expect(envelope?.nonce).toMatch(/^[0-9a-f]{16}$/);
+      expect(envelope?.begin_marker).toContain(envelope?.nonce ?? '');
+      expect(envelope?.end_marker).toContain(envelope?.nonce ?? '');
+
+      const inline = await call(path, 'inline', input);
+      expect((inline.body as { untrusted_content?: unknown }).untrusted_content, `${path} must NOT carry it by default`).toBeUndefined();
     }
   });
 
-  it('CFENCE-3 (must-not-fire): search results are byte-clean under the default', async () => {
+  it('CFENCE-3 (must-not-fire): search results are byte-clean under the opt-out', async () => {
     const r = await call('/v1/search', 'envelope', { query: 'q' });
     const web = (r.body as { data: { web: Array<{ title: string; description: string }> } }).data.web;
     expect(web[0].title).toBe(`T1 ${INJECT}`);
     expect(web[0].description).toBe(`S1 ${INJECT}`);
     expect(closedRegions(JSON.stringify(web))).toBe(0);
   });
+
+  it('CFENCE-9: the JSON SHAPE is IDENTICAL in both modes — only string values differ', async () => {
+    // This is the claim the reversal rests on, so it is asserted rather than argued. "Drop-in"
+    // means a client can PARSE the response, and parsing depends on structure and field names, not
+    // on the characters inside a string. If this ever reds, the compat break the old A11 feared is
+    // real and the decision genuinely needs revisiting.
+    // MUT: emit the fence as a nested object, or rename/add a field under `inline` → RED.
+    const shape = (v: unknown): unknown => {
+      if (typeof v === 'string') return 'STR';
+      if (Array.isArray(v)) return v.map(shape);
+      if (v !== null && typeof v === 'object') {
+        return Object.fromEntries(Object.keys(v).sort().map((k) => [k, shape((v as Record<string, unknown>)[k])]));
+      }
+      return typeof v;
+    };
+    for (const [path, input] of [['/v1/scrape', { url: 'https://x.example/p' }], ['/v1/search', { query: 'q' }]] as const) {
+      const fenced = await call(path, 'inline', input);
+      const clean = await call(path, 'envelope', input);
+      // strip the envelope sibling, which is an ADDITIVE key the caller explicitly asked for
+      const { untrusted_content, ...cleanBody } = clean.body as Record<string, unknown>;
+      void untrusted_content;
+      expect(shape(fenced.body), `${path} shape must survive the fence`).toEqual(shape(cleanBody));
+    }
+  });
 });
 
-describe('compat shim — the `inline` opt-in makes the fence reachable', () => {
+describe('compat shim — `inline` is the DEFAULT and fences page prose', () => {
   it('CFENCE-4: scrape fences markdown AND the page-prose metadata; operational fields stay RAW', async () => {
-    // Without a reachable opt-in the shim would be an unfixable hole for anyone wiring it into an LLM
-    // pipeline. MUT: thread the mode but never read it in mapFetchToScrape → RED.
+    // This is now what a caller who does nothing receives. MUT: thread the mode but never read it in
+    // mapFetchToScrape → RED.
     const r = await call('/v1/scrape', 'inline', { url: 'https://x.example/p' });
     const data = (r.body as { data: { markdown: string; metadata: Record<string, unknown> } }).data;
 
