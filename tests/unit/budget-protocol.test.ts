@@ -183,6 +183,78 @@ describe('gate definitions', () => {
   });
 });
 
+/**
+ * Real core+substrate floors, two batches of three, darwin-arm64 at 96af301a. Same statistic
+ * and same 45 s horizon as G-RSS-IDLE, so the two gates' numbers are comparable and the
+ * difference between them is attributable to the substrate rather than to the statistic.
+ */
+const SUBSTRATE_FLOOR_BATCHES = [
+  [493.4, 630.2, 457.5],
+  [464.9, 471.3, 473.6],
+  // Taken by the shipped runner itself. ⚠ This batch falsified what the first two supported —
+  // see 'the third batch is why this gate is report-only'.
+  [510.9, 509.5, 478.5],
+];
+
+/** The leak size a probe would inject, matching G-RSS-IDLE's. */
+const PROBE_LEAK_MIB = 40;
+
+describe('G-RSS-SUBSTRATE — the spec’s provisional 450 had no basis, and does not survive one', () => {
+  const gate = GATES['G-RSS-SUBSTRATE'];
+
+  it('would have reddened a clean build on the lowest machine class', () => {
+    // WHY this is pinned rather than just corrected: 450 was extrapolated from a "106 MB core"
+    // figure S10-a had already falsified, and the same extrapolation habit produced G-DIET's
+    // unreachable 670. Both measured minimums exceed it, on the class that measures LOWEST.
+    for (const batch of SUBSTRATE_FLOOR_BATCHES) expect(minimum(batch)).toBeGreaterThan(450);
+  });
+
+  it('passes every clean observation, so it cannot teach anyone to re-run CI', () => {
+    // A blocking-shaped gate that reds a clean build destroys itself faster than not existing.
+    // Asserted over all three batches, including the highest.
+    for (const batch of SUBSTRATE_FLOOR_BATCHES) expect(evaluate(gate, minimum(batch)).pass).toBe(true);
+  });
+
+  it('catches a regression at the resolution it claims, and not a finer one', () => {
+    // 510 - 457.5 = 52.5, so the honest claim is "roughly 53 MiB and up". Both halves are
+    // asserted: a 53 MiB regression from the lowest clean floor must red, and the gate must NOT
+    // be credited with catching the 40 MiB one G-RSS-IDLE catches.
+    const lowest = Math.min(...SUBSTRATE_FLOOR_BATCHES.map(minimum));
+    expect(evaluate(gate, lowest + 53).pass).toBe(false);
+    expect(evaluate(gate, lowest + PROBE_LEAK_MIB).pass).toBe(true);
+  });
+
+  it('the third batch is why this gate is report-only, not a narrower number', () => {
+    // WHY THIS TEST EXISTS: on the first two batches the minimum spanned 7.4 MiB and a
+    // 40 MiB-sensitive BLOCKING gate looked comfortable. The third batch moved the spread to
+    // 21.0, and the window a 40 MiB gate would have to fit in — above the worst clean minimum,
+    // below the lowest plus the leak — is then NARROWER than the spread of the statistic
+    // itself. That is the same arithmetic that rejected a median reducer for G-RSS-IDLE, and
+    // the conclusion is the same: not a finer threshold, a coarser claim.
+    const mins = SUBSTRATE_FLOOR_BATCHES.map(minimum);
+    const spread = Math.max(...mins) - Math.min(...mins);
+    const windowAt40 = Math.min(...mins) + PROBE_LEAK_MIB - Math.max(...mins);
+    expect(windowAt40).toBeLessThan(spread);
+  });
+
+  it('corroborates the minimum reducer on a workload S10-b never measured', () => {
+    // S10-b chose the minimum over the median on core-only runner data. This is an independent
+    // check on a completely different process tree: if the minimum were merely an artifact of
+    // that workload, the substrate's batches are where it would show.
+    const mins = SUBSTRATE_FLOOR_BATCHES.map(minimum);
+    const medians = SUBSTRATE_FLOOR_BATCHES.map(median);
+    const spreadOf = (v: number[]) => Math.max(...v) - Math.min(...v);
+    expect(spreadOf(mins)).toBeLessThan(spreadOf(medians));
+  });
+
+  it('is stated for the developer class only, because no runner has measured it', () => {
+    // G-RSS-IDLE needed a ci-runner limit roughly 3x its developer one. Publishing a
+    // developer-derived limit under the runner class is the failure that reds a clean CI build
+    // and teaches people to re-run it.
+    expect(Object.keys(gate.limits)).toEqual(['developer']);
+  });
+});
+
 describe('S10-d acquisition pair — re-derived against the measured 764, not the spec’s 535', () => {
   const { substrateMiB, modelsMiB, browserEngineMiB } = SUBSTRATE_ONLY_ACQUISITION;
 
