@@ -5,6 +5,12 @@ import * as sv from 'sqlite-vec';
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
 import { isInsideAppArchive, isPackagedBinary } from '../util/packaged.js';
+import {
+  getVecExtensionStatus,
+  recordVecClosed,
+  recordVecFailure,
+  recordVecLoaded,
+} from './vec-availability.js';
 import { applyMigrations } from './migrations/runner.js';
 
 const log = createLogger('cache');
@@ -130,11 +136,10 @@ function restrictMode(path: string): void {
 }
 
 let instance: Database.Database | null = null;
-let vecLoaded = false;
 let exitHookRegistered = false;
 
 export function isVecExtensionLoaded(): boolean {
-  return vecLoaded;
+  return getVecExtensionStatus().loaded;
 }
 
 // Register a process-exit guard so any CLI command that opens the DB closes it
@@ -191,9 +196,8 @@ export function initDatabase(dbPath: string): Database.Database {
   // gracefully degrade.
   try {
     loadVecExtension(db, dbPath);
-    vecLoaded = true;
+    recordVecLoaded();
   } catch (err) {
-    vecLoaded = false;
     // Always report WHICH file could not be loaded and whether it is archived.
     // Without those two fields the warning reads as a generic missing-library
     // error and a packaging defect gets reported as "the install is broken".
@@ -203,8 +207,15 @@ export function initDatabase(dbPath: string): Database.Database {
     } catch {
       // sqlite-vec cannot even name its own artifact (unsupported platform).
     }
+    // The path is what makes the diagnosis decidable — an archived artifact is a
+    // packaging defect with a specific remedy, a musl host is a permanent
+    // platform gap, and the loader's own error distinguishes neither.
+    const status = recordVecFailure(err, extensionPath);
     log.warn('sqlite-vec extension failed to load — vector search disabled', {
-      error: err instanceof Error ? err.message : String(err),
+      reason: status.reason,
+      summary: status.summary,
+      consequence: status.consequence,
+      error: status.detail,
       extensionPath,
       insideAppArchive: extensionPath ? isInsideAppArchive(extensionPath) : undefined,
     });
@@ -310,7 +321,7 @@ export function initDatabase(dbPath: string): Database.Database {
   // are skipped when the extension is unavailable; FTS5-only migrations
   // (e.g. feed_items) still run.
   try {
-    applyMigrations(db, { vecLoaded });
+    applyMigrations(db, { vecLoaded: isVecExtensionLoaded() });
   } catch (err) {
     log.error('migration runner failed — some schema may be missing', {
       error: err instanceof Error ? err.message : String(err),
@@ -341,7 +352,7 @@ export function closeDatabase(): void {
   if (instance) {
     instance.close();
     instance = null;
-    vecLoaded = false;
+    recordVecClosed();
   }
 }
 

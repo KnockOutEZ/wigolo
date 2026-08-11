@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { resetConfig } from '../../../src/config.js';
+// NOT mocked on purpose: doctor reads the vector-index diagnosis from this
+// module rather than from `db.js` precisely so the reporting path is exercised
+// against the real classifier instead of a stub that always agrees.
+import { recordVecFailure, resetVecStatusForTests } from '../../../src/cache/vec-availability.js';
 
 vi.mock('node:child_process', () => ({ execSync: vi.fn(), spawnSync: vi.fn() }));
 vi.mock('node:fs', async () => {
@@ -85,7 +89,7 @@ describe('runDoctor', () => {
     return true;
   });
 
-  beforeEach(() => { outBuffer = ''; scrubProviderEnv(); resetConfig(); vi.clearAllMocks(); });
+  beforeEach(() => { outBuffer = ''; scrubProviderEnv(); resetConfig(); resetVecStatusForTests(); vi.clearAllMocks(); });
   afterEach(() => { resetConfig(); writeSpy.mockClear(); });
 
   it('exits 0 when everything is healthy', async () => {
@@ -381,6 +385,52 @@ describe('runDoctor', () => {
       } as unknown as ReturnType<typeof initDatabase>);
       await runDoctor('/tmp/.wigolo');
       expect(outBuffer).toMatch(/extension:\s+not loaded/);
+      expect(outBuffer).toMatch(/Overall: OK/);
+    });
+
+    it('keeps the retry advice only while nothing has actually been diagnosed', async () => {
+      // "not attempted" is a real state (nothing opened the DB in this
+      // process), and re-running warmup IS the right answer for it. The point
+      // of the next test is that it stops being the right answer once a cause
+      // is known.
+      vi.mocked(initDatabase).mockReturnValueOnce({
+        prepare: () => ({ get: () => { throw new Error('no such function: vec_version'); } }),
+      } as unknown as ReturnType<typeof initDatabase>);
+      await runDoctor('/tmp/.wigolo');
+      expect(outBuffer).toMatch(/not loaded \(run warmup to load on next start\)/);
+    });
+
+    it('replaces the useless retry advice with the real cause on an unfixable platform', async () => {
+      // The bug this closes: on musl the extension can NEVER load, and doctor
+      // told the user to "run warmup" — advice that sends them round a loop
+      // forever. A user must be able to learn from doctor alone that semantic
+      // search is gone, why, and that nothing they do on this host will fix it.
+      recordVecFailure(
+        Object.assign(new Error("Cannot find module 'sqlite-vec-linux-x64/vec0.so'"), {
+          code: 'MODULE_NOT_FOUND',
+        }),
+      );
+      vi.mocked(initDatabase).mockReturnValueOnce({
+        prepare: () => ({ get: () => { throw new Error('no such function: vec_version'); } }),
+      } as unknown as ReturnType<typeof initDatabase>);
+      await runDoctor('/tmp/.wigolo');
+
+      expect(outBuffer).toMatch(/extension:\s+not loaded — .*not installed/);
+      expect(outBuffer).toMatch(/consequence:\s+semantic search falls back to keyword matching/);
+      expect(outBuffer).toMatch(/remedy:\s+.*no-optional/);
+      // The whole point: the advice that could not work is gone.
+      expect(outBuffer).not.toMatch(/run warmup to load on next start/);
+    });
+
+    it('reports the vector index as degradation, not as an overall failure', async () => {
+      // Semantic search is optional. A missing vector index must not flip the
+      // exit-code contract — a container without it is degraded, not broken,
+      // and turning this red would fail every Alpine user's health check.
+      recordVecFailure(new Error('Error relocating vec0.so: symbol not found'));
+      vi.mocked(initDatabase).mockReturnValueOnce({
+        prepare: () => ({ get: () => { throw new Error('no such function: vec_version'); } }),
+      } as unknown as ReturnType<typeof initDatabase>);
+      await runDoctor('/tmp/.wigolo');
       expect(outBuffer).toMatch(/Overall: OK/);
     });
 
