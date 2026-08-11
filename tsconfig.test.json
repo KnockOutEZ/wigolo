@@ -61,7 +61,9 @@
     "tests/unit/research/pipeline-studio-source.test.ts",
     "tests/unit/search/answer-synthesis.test.ts",
     "tests/unit/agent/pipeline-containment.test.ts",
-    "tests/integration/content-fence-dispatch.test.ts"
+    "tests/integration/content-fence-dispatch.test.ts",
+    "tests/unit/fetch/browser-request-guard.test.ts",
+    "tests/integration/fetch/browser-redirect-ssrf.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

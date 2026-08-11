@@ -29,6 +29,11 @@
  * fence assertions are structural and shared through that helper — a test that reaches the boundary
  * only transitively would otherwise sit outside the gate, which is exactly the vacuity this guard
  * exists to prevent.
+ *
+ * fetch/browser-request-guard is listed for the same reason: it is the per-hop SSRF fence for the
+ * browser tier (the tier that used to check the host once, before navigating, and then follow every
+ * redirect unattended). A test of a fence that silently stops compiling against the fence is not a
+ * test of the fence.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -38,7 +43,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // Longest alternatives first so e.g. `nav-policy` / `session-control` are not
 // shadowed by `nav` / `control-token`.
-const SAFETY = /from\s+['"][^'"]*(?:studio\/perception\/resolve|studio\/mark\/target|studio\/mark\/inspect|studio\/mark\/store|studio\/mark\/generalize|studio\/mark\/heal|studio\/nav-policy|studio\/session-control|studio\/control-token|studio\/nav|studio\/audit|studio\/approvals|studio\/act|studio\/risk|studio\/input|studio\/handle|daemon\/studio-dispatch|security\/untrusted|server\/content-fence|helpers\/untrusted-fence)\.js['"]/;
+const SAFETY = /from\s+['"][^'"]*(?:fetch\/browser-request-guard|studio\/perception\/resolve|studio\/mark\/target|studio\/mark\/inspect|studio\/mark\/store|studio\/mark\/generalize|studio\/mark\/heal|studio\/nav-policy|studio\/session-control|studio\/control-token|studio\/nav|studio\/audit|studio\/approvals|studio\/act|studio\/risk|studio\/input|studio\/handle|daemon\/studio-dispatch|security\/untrusted|server\/content-fence|helpers\/untrusted-fence)\.js['"]/;
 
 const cfg = JSON.parse(readFileSync(join(ROOT, 'tsconfig.test.json'), 'utf8'));
 const gated = new Set(cfg.include.filter((p) => p.startsWith('tests/')));
