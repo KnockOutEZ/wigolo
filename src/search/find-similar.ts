@@ -81,6 +81,15 @@ export async function findSimilar(
       return { ...cr, total_time_ms: Date.now() - start };
     }
 
+    // selectMode downgrades an explicit crawl-rank request to the local lane
+    // when include_web is false. Say so: silently serving a different retrieval
+    // strategy than the one asked for is the same provenance lie the flag was
+    // ignored for.
+    const downgradeNote =
+      input.mode === 'crawl-rank' && input.include_web === false
+        ? 'crawl-rank was requested with include_web=false. crawl-rank ranks a live 1-hop crawl of the seed URL, so it was downgraded to the local cache lane. Set include_web=true to run the crawl.'
+        : undefined;
+
     const url = input.url?.trim();
     const concept = input.concept?.trim();
 
@@ -313,11 +322,13 @@ export async function findSimilar(
       initialEmbedIndexSize,
       conceptMode,
       finalResults.length,
+      includeWeb,
     );
     const weakNote = weakSignal
       ? buildWeakSignalNote(queryForNote, topRawScore, coldStartThreshold)
       : undefined;
-    const coldStart = [baseNote, weakNote].filter(Boolean).join(' ') || undefined;
+    const coldStart =
+      [downgradeNote, baseNote, weakNote].filter(Boolean).join(' ') || undefined;
 
     return {
       results: finalResults,
@@ -385,9 +396,16 @@ function buildColdStartNote(
   initialEmbedIndexSize: number,
   conceptMode: boolean,
   finalResultCount: number,
+  includeWeb: boolean,
 ): string | undefined {
   if (initialCacheSize === 0) {
-    return 'Cache is empty. Results come from live web search only. Use wigolo_fetch / wigolo_crawl to warm the cache, then re-run find_similar for hybrid local+web ranking.';
+    // The note's job is to tell the caller WHERE the results came from. With
+    // include_web=false there was no live web search, so the stock wording is a
+    // false provenance claim and the actionable advice is different: there is
+    // nothing to fall back on, the cache has to be warmed first.
+    return includeWeb
+      ? 'Cache is empty. Results come from live web search only. Use wigolo_fetch / wigolo_crawl to warm the cache, then re-run find_similar for hybrid local+web ranking.'
+      : 'Cache is empty and include_web=false, so there was nothing to rank. Use wigolo_fetch / wigolo_crawl to warm the cache, or set include_web=true.';
   }
   // Most specific signal: cache was populated but didn't match THIS query,
   // and web search did — tells the host LLM the cache wasn't useful for the

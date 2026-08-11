@@ -286,6 +286,77 @@ describe('findSimilar', () => {
     expect(result.search_hits).toBe(0);
   });
 
+  // P4c — crawl-rank builds its ENTIRE rank list from a live 1-hop crawl. The
+  // studio DB broker (src/daemon/studio-db-broker.ts) hard-forces
+  // include_web: false on every find_similar it proxies, so a studio session is
+  // supposed to stay on local state; a caller-supplied mode: 'crawl-rank' walked
+  // straight past that and fetched from the network anyway. The flag has to bind
+  // the mode dispatcher, not just the web-search fallback.
+  describe('include_web=false and crawl-rank', () => {
+    it('does not crawl the network when include_web is false', async () => {
+      // The seed URL is pre-cached so resolving the query needs no fetch.
+      // Deliberately out of scope: when the seed is NOT cached, findSimilar
+      // still fetches it once to extract key terms. That is resolving the
+      // caller's own input, not admitting a live-web rank list, so it is left
+      // alone here — the confound is removed rather than asserted away.
+      seedCache('https://react.dev/hooks', 'React Hooks', '# React Hooks\n\nHooks manage **state** across renders.');
+
+      const result = await findSimilar(
+        { url: 'https://react.dev/hooks', mode: 'crawl-rank', include_web: false },
+        [mockSearchEngine],
+        mockRouter,
+      );
+
+      expect(mockRouter.fetch).not.toHaveBeenCalled();
+      expect(result.error).toBeUndefined();
+    });
+
+    it('degrades to the local cache lane rather than returning nothing', async () => {
+      // Guard against the degenerate fix: refusing crawl-rank outright would
+      // hand the caller an empty list plus an error, which is a worse answer
+      // than the local hybrid lane it can legitimately still serve.
+      seedCache('https://react.dev/hooks', 'React Hooks', '# React Hooks\n\nHooks manage **state** across renders.');
+      seedCache('https://react.dev/state', 'React State', '# React State\n\nHooks manage **state** across renders.');
+      seedCache('https://react.dev/effects', 'React Effects', '# React Effects\n\nHooks synchronise **state** with effects.');
+
+      const result = await findSimilar(
+        { url: 'https://react.dev/hooks', mode: 'crawl-rank', include_web: false },
+        [mockSearchEngine],
+        mockRouter,
+      );
+
+      expect(result.results.length).toBeGreaterThan(0);
+      expect(result.cold_start).toContain('crawl-rank');
+    });
+
+    it('still crawls when include_web is true', async () => {
+      // Control: crawl-rank must remain a live-crawl mode by default, otherwise
+      // the guard above has quietly deleted the feature for every caller.
+      await findSimilar(
+        { url: 'https://react.dev/hooks', mode: 'crawl-rank', include_web: true },
+        [mockSearchEngine],
+        mockRouter,
+      );
+
+      expect(mockRouter.fetch).toHaveBeenCalled();
+    });
+  });
+
+  it('does not claim results came from the live web when include_web is false', async () => {
+    // The empty-cache cold_start note is the caller's explanation of WHERE the
+    // results came from. Asserting "Results come from live web search only" to a
+    // caller who disabled the live web is a false provenance claim, and
+    // provenance is the one thing a cold_start note exists to convey.
+    const result = await findSimilar(
+      { concept: 'topic with no cache at all', include_web: false },
+      [mockSearchEngine],
+      mockRouter,
+    );
+
+    expect(result.cold_start).toBeDefined();
+    expect(result.cold_start).not.toContain('live web search');
+  });
+
   it('returns total_time_ms', async () => {
     const result = await findSimilar(
       { concept: 'anything', include_web: false },
