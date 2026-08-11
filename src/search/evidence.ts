@@ -9,7 +9,7 @@ import type {
   SourceSpan,
 } from '../types.js';
 import { extractHighlights } from './highlights.js';
-import { countTokens, truncateByTokens } from './tokens.js';
+import { countTokens, truncateByTokens, TRUNCATION_MARKER_TOKENS } from './tokens.js';
 import { applyOutputBudget } from './truncate.js';
 import { createLogger } from '../logger.js';
 
@@ -133,7 +133,12 @@ export function applyAggregateMarkdownBudget<T>(
     if (!body) continue;
     if (budget !== undefined) {
       const remaining = budget - used;
-      if (remaining <= 0) {
+      // A budget too small to hold the truncation marker plus any content would
+      // otherwise render a body consisting of nothing but "[... content
+      // truncated]" — pure noise that still costs the agent tokens. Treat that
+      // as exhausted. The bound is read from the counter rather than assumed, so
+      // it cannot drift the way the old hardcoded marker cost did.
+      if (remaining <= TRUNCATION_MARKER_TOKENS) {
         if (floor > 0) {
           const floored = applyOutputBudget(body, { maxTokensOut: floor, maxChars: opts.maxChars });
           setBody(item, floored);

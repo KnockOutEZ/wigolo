@@ -1,4 +1,3 @@
-import { GoogleGenAI } from '@google/genai';
 import type { LLMCallOpts, LLMExtractResult } from './types.js';
 
 const DEFAULT_MODEL = 'gemini-2.5-flash-lite';
@@ -7,6 +6,8 @@ export async function callGemini(
   opts: LLMCallOpts,
   apiKey: string,
 ): Promise<LLMExtractResult> {
+  // Literal specifier, loaded on use — see the note in anthropic.ts.
+  const { GoogleGenAI } = await import('@google/genai');
   const client = new GoogleGenAI({ apiKey });
   const model = opts.modelOverride ?? DEFAULT_MODEL;
   const start = Date.now();

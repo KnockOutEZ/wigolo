@@ -84,6 +84,29 @@ describe('extractWithLLM', () => {
     expect(out.provider).toBe('anthropic');
   });
 
+  it('a provider SDK that fails to load degrades to a warning, not a crash', async () => {
+    // The vendor SDKs are now loaded on first use rather than at import. That
+    // moves a module-resolution failure from startup to call time, so the
+    // question "what happens when the SDK cannot load" has to be answered
+    // rather than assumed — extract must still return the fields it already
+    // had, with the reason attached.
+    process.env.ANTHROPIC_API_KEY = 'k';
+    vi.mocked(callAnthropic).mockRejectedValue(
+      new Error("Cannot find package '@anthropic-ai/sdk'"),
+    );
+
+    const out = await extractWithLLM({
+      html: '<p>x</p>',
+      jsonSchema: schema,
+      partial: { price: '$1' },
+      missing: ['price'],
+    });
+
+    expect(out.values).toEqual({ price: '$1' });
+    expect(out.warnings.join(' ')).toMatch(/Cannot find package/);
+    expect(out.warnings.join(' ')).toMatch(/anthropic/);
+  });
+
   it('cache miss → call provider → cache hit on second invocation', async () => {
     process.env.ANTHROPIC_API_KEY = 'k';
     vi.mocked(callAnthropic).mockResolvedValue({

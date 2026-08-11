@@ -62,6 +62,17 @@ jobs:
         shell: bash
         run: npm run build
 
+      # esbuild silently DROPS `import(variable)`, so a lazily-loaded cloud-LLM
+      # provider can pass the whole unit suite and `npm run dev` and be absent
+      # only from the packaged binary. No test can see that: it is a property of
+      # the bundle, not of the source. This runs the bundled build from a
+      # directory with no node_modules — the binary's condition — and fails if a
+      # provider cannot resolve. Reuses the dist/ built by the step above rather
+      # than rebuilding, so it costs seconds.
+      - name: Cloud-LLM providers resolve in a bundled build
+        shell: bash
+        run: node scripts/verify-llm-bundle-resolution.mjs
+
       - name: Unit tests
         shell: bash
         run: npm run test:unit

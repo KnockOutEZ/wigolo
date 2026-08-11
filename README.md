@@ -293,6 +293,7 @@ flowchart TD
 ```
 
 - **Code beats model.** Deterministic work stays off the LLM: canonicalization, rank fusion, dedup, and schema matching. The model is reserved for judgment, opt-in, and capped per request. LLM-filled fields are checked against the source and nulled if absent.
+- **Nothing heavy loads until it is asked for.** The four cloud-LLM SDKs and the image decoder used by `extract mode: 'brand'` are resolved on first use, not at startup, so a keyless install never pays for them: ~19-27MB of resident memory and up to a second of startup that the keyless path used to carry regardless. A keyed user pays their own provider's load once per process (measured 129-624ms) and microseconds thereafter. Each degrades on its own — a platform with no prebuilt image decoder loses brand palettes and nothing else.
 - **Signal-driven routing.** The fetch ladder escalates to a real browser on observable signals, not domain guesses: SPA markers, challenge bodies, thin content. It learns per domain, unlearns when a site stops needing it, and `wigolo tune list` shows you exactly what it learned.
 - **Reads pages the way a browser does.** Tiered fetching waits out interstitial challenges and reuses clearances per domain, politely: robots.txt respected, per-domain rate limits, research-grade volumes. When a wall stays up, the failure is labeled and reported.
 
