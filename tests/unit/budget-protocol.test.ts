@@ -199,6 +199,15 @@ const SUBSTRATE_FLOOR_BATCHES = [
 /** The leak size a probe would inject, matching G-RSS-IDLE's. */
 const PROBE_LEAK_MIB = 40;
 
+/**
+ * `protocol.mjs` is plain JS outside the typed graph, so its reducers arrive returning
+ * `unknown`. Narrowing them once here keeps the arithmetic below readable AND keeps this file
+ * off the type-check debt ratchet — an `unknown[]` inference in a test reaches CI as debt, and
+ * the ratchet is the only cover core test files have.
+ */
+const minOf = (values: number[]): number => Number(minimum(values));
+const medianOf = (values: number[]): number => Number(median(values));
+
 describe('G-RSS-SUBSTRATE — the spec’s provisional 450 had no basis, and does not survive one', () => {
   const gate = GATES['G-RSS-SUBSTRATE'];
 
@@ -219,7 +228,7 @@ describe('G-RSS-SUBSTRATE — the spec’s provisional 450 had no basis, and doe
     // 510 - 457.5 = 52.5, so the honest claim is "roughly 53 MiB and up". Both halves are
     // asserted: a 53 MiB regression from the lowest clean floor must red, and the gate must NOT
     // be credited with catching the 40 MiB one G-RSS-IDLE catches.
-    const lowest = Math.min(...SUBSTRATE_FLOOR_BATCHES.map(minimum));
+    const lowest = Math.min(...SUBSTRATE_FLOOR_BATCHES.map(minOf));
     expect(evaluate(gate, lowest + 53).pass).toBe(false);
     expect(evaluate(gate, lowest + PROBE_LEAK_MIB).pass).toBe(true);
   });
@@ -231,7 +240,7 @@ describe('G-RSS-SUBSTRATE — the spec’s provisional 450 had no basis, and doe
     // below the lowest plus the leak — is then NARROWER than the spread of the statistic
     // itself. That is the same arithmetic that rejected a median reducer for G-RSS-IDLE, and
     // the conclusion is the same: not a finer threshold, a coarser claim.
-    const mins = SUBSTRATE_FLOOR_BATCHES.map(minimum);
+    const mins = SUBSTRATE_FLOOR_BATCHES.map(minOf);
     const spread = Math.max(...mins) - Math.min(...mins);
     const windowAt40 = Math.min(...mins) + PROBE_LEAK_MIB - Math.max(...mins);
     expect(windowAt40).toBeLessThan(spread);
@@ -241,8 +250,8 @@ describe('G-RSS-SUBSTRATE — the spec’s provisional 450 had no basis, and doe
     // S10-b chose the minimum over the median on core-only runner data. This is an independent
     // check on a completely different process tree: if the minimum were merely an artifact of
     // that workload, the substrate's batches are where it would show.
-    const mins = SUBSTRATE_FLOOR_BATCHES.map(minimum);
-    const medians = SUBSTRATE_FLOOR_BATCHES.map(median);
+    const mins = SUBSTRATE_FLOOR_BATCHES.map(minOf);
+    const medians = SUBSTRATE_FLOOR_BATCHES.map(medianOf);
     const spreadOf = (v: number[]) => Math.max(...v) - Math.min(...v);
     expect(spreadOf(mins)).toBeLessThan(spreadOf(medians));
   });
