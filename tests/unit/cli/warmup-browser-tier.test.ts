@@ -105,11 +105,13 @@ describe('the --browser flag is not a phantom in either of its two homes', () =>
     // from BOTH `help.ts` and `browser-acquire.ts`. What it forbids is the third, which is
     // what shipped: documented in one place, passed from another, read nowhere. Asserted over
     // both files so deleting it from one and not the other still reds.
-    const root = new URL('../../../src/', import.meta.url).pathname;
+    // A URL, not a `.pathname` string: on win32 `.pathname` yields `/C:/...` and every fs call
+    // rejects it, so the check would fail on exactly one platform.
+    const src = (rel: string) => new URL(`../../../src/${rel}`, import.meta.url);
     const [help, acquire, warmup] = await Promise.all([
-      readFile(`${root}cli/help.ts`, 'utf8'),
-      readFile(`${root}fetch/browser-acquire.ts`, 'utf8'),
-      readFile(`${root}cli/warmup.ts`, 'utf8'),
+      readFile(src('cli/help.ts'), 'utf8'),
+      readFile(src('fetch/browser-acquire.ts'), 'utf8'),
+      readFile(src('cli/warmup.ts'), 'utf8'),
     ]);
 
     const documented = help.includes('--browser');

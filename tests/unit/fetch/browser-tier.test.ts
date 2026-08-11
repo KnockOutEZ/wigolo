@@ -250,7 +250,10 @@ describe('the resolver is the only display probe in src/ (D-S10-2)', () => {
     // has already paid for that twice.
     const { readdir, readFile } = await import('node:fs/promises');
     const { join } = await import('node:path');
-    const root = new URL('../../../src/', import.meta.url).pathname;
+    const { fileURLToPath } = await import('node:url');
+    // fileURLToPath, not `.pathname`: on win32 the latter yields `/C:/...`, which every fs
+    // call then rejects. The sweep would fail on one platform only.
+    const root = fileURLToPath(new URL('../../../src/', import.meta.url));
 
     const offenders: string[] = [];
     const walk = async (dir: string): Promise<void> => {

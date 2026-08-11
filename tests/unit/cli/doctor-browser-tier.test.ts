@@ -95,9 +95,11 @@ describe('doctor remedies name commands that exist', () => {
     // while runWarmup never read the flag. It "worked" only because the browser install was
     // unconditional — a drift that becomes a real break the moment acquisition is gated on a
     // tier. This asserts the property, not the one instance of it.
-    const root = new URL('../../../src/', import.meta.url).pathname;
-    const doctorSrc = await readFile(`${root}cli/doctor.ts`, 'utf8');
-    const warmupSrc = await readFile(`${root}cli/warmup.ts`, 'utf8');
+    // A URL, not a `.pathname` string: on win32 `.pathname` yields `/C:/...` and every fs call
+    // rejects it, so the check would fail on exactly one platform.
+    const src = (rel: string) => new URL(`../../../src/${rel}`, import.meta.url);
+    const doctorSrc = await readFile(src('cli/doctor.ts'), 'utf8');
+    const warmupSrc = await readFile(src('cli/warmup.ts'), 'utf8');
 
     const cited = new Set(
       [...doctorSrc.matchAll(/wigolo warmup ((?:--[a-z-]+ ?)+)/g)]
