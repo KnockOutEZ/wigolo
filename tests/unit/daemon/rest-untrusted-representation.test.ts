@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dispatchTool, type DispatchContext } from '../../../src/daemon/rest/dispatch.js';
+import { dispatchTool, PAGE_DERIVED_TOOLS, type DispatchContext } from '../../../src/daemon/rest/dispatch.js';
 import type { UntrustedMode } from '../../../src/daemon/rest/untrusted-mode.js';
 import {
   UNTRUSTED_BEGIN_PREFIX,
@@ -97,6 +97,16 @@ interface Envelope {
 }
 
 const PAGE_DERIVED = ['fetch', 'search', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent', 'diff'] as const;
+
+/**
+ * The rows below iterate `PAGE_DERIVED`, so if that literal ever drifts from the set the dispatcher
+ * actually consults, every one of them silently stops covering the difference. A tool added to
+ * `PAGE_DERIVED_TOOLS` without a `fenceRestBody` arm falls through to `default` and ships UNFENCED;
+ * this is the row that makes REST-1 notice. MUT: add a tool to the source set only → RED here.
+ */
+it('PIN-R0: the tested tool list IS the set the dispatcher consults', () => {
+  expect([...PAGE_DERIVED].sort()).toEqual([...PAGE_DERIVED_TOOLS].sort());
+});
 
 /** One input object that satisfies whichever field the tool under test reads. */
 function inputFor(tool: string): Record<string, unknown> {

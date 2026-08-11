@@ -252,8 +252,12 @@ async function dispatchWatch(input: WatchJobInput, ctx: DispatchContext): Promis
 /**
  * Tools whose 200 body carries page-derived text. `watch` is excluded: it returns
  * content hashes and coarse line counts, not page prose.
+ *
+ * EXPORTED so the tests can iterate the real set rather than a hand-copied literal. Adding a tool
+ * here without adding its arm to `fenceRestBody` would fall through to `default` and ship the body
+ * UNFENCED — a fail-open a duplicated list would have hidden.
  */
-const PAGE_DERIVED_TOOLS = new Set([
+export const PAGE_DERIVED_TOOLS = new Set([
   'fetch', 'search', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent', 'diff',
 ]);
 
