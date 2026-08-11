@@ -37,12 +37,20 @@ const PROVIDERS = [
   ['groq', 'callGroq'],
 ];
 
+// The ENTRY lives inside dist/ so its import specifiers are simple relative
+// paths. An absolute Windows path (`C:\...`) as an import specifier is not
+// something esbuild resolves the way a POSIX absolute path is, and this check
+// runs on the Windows leg of CI too.
+//
+// The OUTPUT goes to a temp directory instead, because the property under test
+// is that the bundle runs where nothing can be resolved from disk. Splitting the
+// two is what makes the check both cross-platform and meaningful.
 const workDir = mkdtempSync(join(tmpdir(), 'wigolo-llm-bundle-'));
-const entry = join(workDir, 'probe.mjs');
+const entry = join(dist, '__llm-resolution-probe.mjs');
 const outfile = join(workDir, 'probe.cjs');
 
 const imports = PROVIDERS
-  .map(([file, fn]) => `import { ${fn} } from ${JSON.stringify(join(dist, 'integrations', 'cloud', 'llm', `${file}.js`))};`)
+  .map(([file, fn]) => `import { ${fn} } from './integrations/cloud/llm/${file}.js';`)
   .join('\n');
 
 // No top-level await: the real binary bundle is CJS for the same reason, and
@@ -98,6 +106,12 @@ if (existsSync(join(workDir, 'node_modules'))) {
   throw new Error('probe directory unexpectedly has node_modules');
 }
 
+/** The entry is written into dist/, so it must not be left behind for a later build. */
+function cleanup() {
+  rmSync(workDir, { recursive: true, force: true });
+  rmSync(entry, { force: true });
+}
+
 let raw;
 try {
   raw = execFileSync(process.execPath, [outfile], {
@@ -108,7 +122,7 @@ try {
   });
 } catch (err) {
   process.stderr.write(`probe failed to run: ${err.message}\n${err.stdout ?? ''}${err.stderr ?? ''}\n`);
-  rmSync(workDir, { recursive: true, force: true });
+  cleanup();
   process.exit(1);
 }
 
@@ -123,5 +137,5 @@ process.stdout.write(
     `(probe dir contained: ${readdirSync(workDir).join(', ')})\n`,
 );
 
-rmSync(workDir, { recursive: true, force: true });
+cleanup();
 process.exit(failed === 0 ? 0 : 1);

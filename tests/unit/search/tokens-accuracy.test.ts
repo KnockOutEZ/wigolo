@@ -28,9 +28,15 @@ import {
 
 const repoRoot = join(__dirname, '..', '..', '..');
 
+/**
+ * Deterministic traversal. `readdirSync` order is filesystem-dependent, so with
+ * a cap on the sample the SET of files differed between machines — which meant
+ * the tightest bounds below sat on a sample that could change without anyone
+ * touching the counter. Sorting makes the sample a function of the repo alone.
+ */
 function collect(dir: string, out: string[] = [], depth = 0): string[] {
   if (depth > 3 || out.length > 160) return out;
-  for (const entry of readdirSync(dir)) {
+  for (const entry of [...readdirSync(dir)].sort()) {
     if (entry === 'node_modules' || entry.startsWith('.')) continue;
     const full = join(dir, entry);
     const st = statSync(full);
@@ -74,28 +80,39 @@ function realTokens(text: string): number {
 
 interface Sample { name: string; text: string }
 
-const samples: Sample[] = [];
+/** Repo files: a large, realistic, but inherently drifting sample. */
+const repoSamples: Sample[] = [];
 for (const file of collect(join(repoRoot, 'src')).concat(collect(join(repoRoot, 'tests')))) {
   const text = readFileSync(file, 'utf-8');
-  samples.push({ name: file.slice(repoRoot.length + 1), text });
+  repoSamples.push({ name: file.slice(repoRoot.length + 1), text });
   for (const n of [400, 1500, 6000]) {
-    if (text.length > n) samples.push({ name: `${file.slice(repoRoot.length + 1)}#${n}`, text: text.slice(0, n) });
+    if (text.length > n) repoSamples.push({ name: `${file.slice(repoRoot.length + 1)}#${n}`, text: text.slice(0, n) });
   }
 }
+
+/**
+ * Fixed corpus, defined entirely in this file. The extreme ratios live here —
+ * these are the scripts whose token density is furthest from Latin prose — so
+ * the tightest assertions are pinned to a sample that cannot drift when
+ * somebody adds or deletes a source file.
+ */
+const fixedSamples: Sample[] = [];
 for (const [name, unit] of Object.entries(SCRIPT_CORPUS)) {
-  for (const reps of [10, 30, 80]) samples.push({ name: `${name}x${reps}`, text: unit.repeat(reps) });
+  for (const reps of [10, 30, 80]) fixedSamples.push({ name: `${name}x${reps}`, text: unit.repeat(reps) });
 }
+
+const samples: Sample[] = [...repoSamples, ...fixedSamples];
 
 interface Agreement {
   n: number; mean: number; p05: number; p50: number; p95: number;
   min: number; max: number; worstUnder: string; worstOver: string;
 }
 
-function agreement(count: (t: string) => number): Agreement {
+function agreement(count: (t: string) => number, over: Sample[] = samples): Agreement {
   const ratios: number[] = [];
   let worstUnder = { r: Infinity, n: '' };
   let worstOver = { r: 0, n: '' };
-  for (const s of samples) {
+  for (const s of over) {
     const real = realTokens(s.text);
     if (real < 20) continue;
     const r = count(s.text) / real;
@@ -139,25 +156,42 @@ describe('countTokens agreement with real cl100k BPE', () => {
     expect(measured.p95).toBeLessThan(1.18);
   });
 
-  it('never under-counts by more than a third, even on the worst input', () => {
-    // The lower tail is the dangerous one — this is the bound that keeps a
-    // budget overshoot bounded rather than unbounded.
-    expect(measured.min, `worst under-count ${measured.worstUnder}`).toBeGreaterThan(0.6);
-  });
+  it('bounds both tails on a corpus that cannot drift', () => {
+    // The tails are the tightest assertions in this file, so they are measured
+    // on the FIXED corpus defined above rather than on the repo sample. The repo
+    // sample is capped, so adding or deleting a source file changes which files
+    // are in it; pinning a ~0.08-margin bound to that is a flake waiting for an
+    // unrelated commit. The extreme ratios live in the fixed scripts anyway.
+    const fixed = agreement(countTokens, fixedSamples);
 
-  it('never over-counts by more than 60% on the worst input', () => {
-    expect(measured.max, `worst over-count ${measured.worstOver}`).toBeLessThan(1.6);
+    // The lower tail is the dangerous one: it bounds how far a real context
+    // budget can be overshot.
+    expect(fixed.min, `worst under-count ${fixed.worstUnder}`).toBeGreaterThan(0.6);
+    expect(fixed.max, `worst over-count ${fixed.worstOver}`).toBeLessThan(1.6);
   });
 
   it('rejects a naive chars/4 counter on the same bounds', () => {
-    // Control. Without this, the bounds above could be loose enough to pass for
+    // Control. Without this the bounds above could be loose enough to pass for
     // any counter at all, and the suite would be measuring nothing.
-    const naive = agreement((t) => Math.ceil(t.length / 4));
+    //
+    // Note the CONJUNCTION is what has teeth: chars/4 is close enough on the
+    // mean and the median to slip past those two alone. It is the tails that
+    // catch it — it under-counts Japanese threefold.
+    const naive = (t: string): number => Math.ceil(t.length / 4);
+    const naiveAll = agreement(naive);
+    const naiveFixed = agreement(naive, fixedSamples);
+
     const passesAllBounds =
-      naive.mean > 0.95 && naive.mean < 1.05 &&
-      naive.p05 > 0.88 && naive.p95 < 1.18 &&
-      naive.min > 0.6 && naive.max < 1.6;
+      naiveAll.mean > 0.95 && naiveAll.mean < 1.05 &&
+      naiveAll.p50 > 0.95 && naiveAll.p50 < 1.05 &&
+      naiveAll.p05 > 0.88 && naiveAll.p95 < 1.18 &&
+      naiveFixed.min > 0.6 && naiveFixed.max < 1.6;
     expect(passesAllBounds).toBe(false);
+
+    // And name WHICH bound rejects it, so a future loosening of the tails
+    // cannot quietly turn this control into a tautology.
+    expect(naiveFixed.min, `naive chars/4 worst under-count ${naiveFixed.worstUnder}`)
+      .toBeLessThan(0.6);
   });
 });
 

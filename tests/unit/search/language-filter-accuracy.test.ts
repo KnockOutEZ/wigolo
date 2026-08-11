@@ -116,24 +116,36 @@ const CORPUS: Record<string, string[]> = {
 
 const LATIN_TARGETS = ['en', 'de', 'fr', 'es', 'pt', 'it', 'nl', 'pl', 'tr', 'vi', 'id'];
 
-interface Diff { agree: number; total: number; newKeepsOldDrops: string[]; newDropsOldKeeps: string[] }
+interface Diff {
+  agree: number;
+  total: number;
+  newKeepsOldDrops: string[];
+  newDropsOldKeeps: string[];
+  /** What the model actually said on each "new drops / old kept" disagreement. */
+  newDropsOldKeepsVerdict: Array<{ lang: string; oldLang: string }>;
+}
 
 function compare(target: string): Diff {
   let agree = 0;
   let total = 0;
   const newKeepsOldDrops: string[] = [];
   const newDropsOldKeeps: string[] = [];
+  const newDropsOldKeepsVerdict: Array<{ lang: string; oldLang: string }> = [];
   for (const [lang, texts] of Object.entries(CORPUS)) {
     for (const text of texts) {
-      const oldDrop = isMismatchOld(detectLangOld(text), target);
+      const oldLang = detectLangOld(text);
+      const oldDrop = isMismatchOld(oldLang, target);
       const newDrop = isMismatchNew(text, target);
       total += 1;
       if (oldDrop === newDrop) agree += 1;
       else if (oldDrop && !newDrop) newKeepsOldDrops.push(lang);
-      else newDropsOldKeeps.push(lang);
+      else {
+        newDropsOldKeeps.push(lang);
+        newDropsOldKeepsVerdict.push({ lang, oldLang });
+      }
     }
   }
-  return { agree, total, newKeepsOldDrops, newDropsOldKeeps };
+  return { agree, total, newKeepsOldDrops, newDropsOldKeeps, newDropsOldKeepsVerdict };
 }
 
 describe('script detection vs the n-gram language model', () => {
@@ -183,6 +195,33 @@ describe('script detection vs the n-gram language model', () => {
         for (const text of CORPUS[lang]) {
           expect(isMismatchNew(text, target), `${lang} vs ${target}`).toBe(false);
         }
+      }
+    }
+  });
+
+  it('only ever becomes stricter where the model ABSTAINED, on every target', () => {
+    // Swept across every target rather than spot-checked, and it corrects a
+    // wrong guess: "the new filter never drops what the model kept" is FALSE.
+    // On target=ru it also drops Portuguese, Italian and Chinese results the
+    // model kept.
+    //
+    // The true invariant is narrower and more useful. Every case where the new
+    // filter drops something the model kept is a case where the model returned
+    // 'und' — it scored under its own 0.1 confidence floor and had NO opinion,
+    // so the old filter kept a wrong-script result by default. The new filter
+    // never overrides a positive judgement from the model; it only decides
+    // where the model declined to.
+    //
+    // That is the whole behavioural delta in one sentence, and it is the thing
+    // that must not silently change.
+    for (const target of [...LATIN_TARGETS, ...NON_LATIN_TARGETS]) {
+      const d = compare(target);
+      expect(d.total, `target=${target}`).toBe(35);
+      for (const { lang, oldLang } of d.newDropsOldKeepsVerdict) {
+        expect(
+          oldLang,
+          `target=${target}: newly dropped a ${lang} result the model had a real opinion about`,
+        ).toBe('und');
       }
     }
   });
