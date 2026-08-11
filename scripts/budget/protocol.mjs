@@ -258,8 +258,72 @@ export const GATES = {
     comparison: '<=',
     limit: 800,
     baseline:
-      "764 MiB measured 2026-08-11 on the GitHub macos-latest runner — browser engine 546, models 218 — for the `warmup --reranker --embeddings` this job runs. ⚠ The S10 spec and brief:180 both price acquisition at ~535 MiB, which is the browser engine ALONE; the 218 MiB of ranking and embedding models is real, is downloaded by the same command, and is quantified here for the first time. Today's cost, not a target: asserted so the tier work is measured against a gate that already existed rather than one written to fit its result. The models were re-measured independently on darwin-arm64 (fastembed 128 + transformers 88 = 216 MiB), so 218 is a property of the download rather than of the runner. ⚠ S10-d's replacement pair CANNOT be stated over this artifact — see SUBSTRATE_ONLY_ACQUISITION.",
+      "764 MiB measured 2026-08-11 on the GitHub macos-latest runner — browser engine 546, models 218 — for the `warmup --reranker --embeddings` this job runs. ⚠ The S10 spec and brief:180 both price acquisition at ~535 MiB, which is the browser engine ALONE; the 218 MiB of ranking and embedding models is real, is downloaded by the same command, and is quantified here for the first time. Today's cost, not a target: asserted so the tier work is measured against a gate that already existed rather than one written to fit its result. The models were re-measured independently on darwin-arm64 (fastembed 128 + transformers 88 = 216 MiB), so 218 is a property of the download rather than of the runner. ⚠ S10-d's replacement pair CANNOT be stated over this artifact — see SUBSTRATE_ONLY_ACQUISITION. ⚠ KEPT UNCHANGED BY S10-d, deliberately: it is the gate that prices the tier-INDEPENDENT models, and it is what catches amended-D1's doubling regression — a run that acquires the desktop component AND the browser engine lands at 300 + 546 + 218 = 1064 against this 800.",
   },
+  'G-ACQUIRE-SUBSTRATE-DESKTOP': {
+    id: 'G-ACQUIRE-SUBSTRATE-DESKTOP',
+    title: 'desktop-component bytes acquired on the desktop tier',
+    what: 'growth of the desktop-component directory across a `wigolo warmup` that resolved to the desktop tier',
+    artifact:
+      'a `du -sm` snapshot of <WIGOLO_DATA_DIR>/substrate taken before warmup and differenced after it; a directory absent at snapshot time counts as 0. SCOPED TO THE COMPONENT DIRECTORY ALONE — never the full acquisition set',
+    statistic: 'single directory delta, negative clamped to 0',
+    horizon: 'n/a — warmup exiting is the terminating condition',
+    runs: 1,
+    unit: 'MiB',
+    comparison: '<=',
+    limit: 320,
+    baseline:
+      'the component measures 300 MiB (Electron 43.0.0 runtime, real install.js, darwin-arm64 at 96af301a), and 320 keeps the spec\'s ~6.7% headroom over it. ⚠ THE ARTIFACT IS THE CORRECTION, NOT THE NUMBER: the spec states this gate over the FULL acquisition set, where 320 is unreachable because 218 MiB of that set is ranking and embedding models and those are TIER-INDEPENDENT — no browser rung stops warmup downloading a reranker, so a clean desktop run totals 300 + 218 = 518 and reds a <=320 stated over the total. Scoped to the component directory the same 320 is both reachable and meaningful. ⚠ This gate is only as strong as its PAIR: read alone it passes trivially on a host that acquired nothing at all. It is the DIFFERENTIAL against G-ACQUIRE-SUBSTRATE-HEADLESS — same command, same artifact, same job, opposite tier — that carries the claim, which is why CI runs both arms and why neither is wired without the other.',
+  },
+  'G-ACQUIRE-SUBSTRATE-HEADLESS': {
+    id: 'G-ACQUIRE-SUBSTRATE-HEADLESS',
+    title: 'desktop-component bytes acquired on the no-display tier',
+    what: 'growth of the desktop-component directory across a `wigolo warmup` that resolved to the no-display tier',
+    artifact:
+      'identical to G-ACQUIRE-SUBSTRATE-DESKTOP — the same directory, the same du, the same warmup command; only the resolved tier differs',
+    statistic: 'single directory delta, negative clamped to 0',
+    horizon: 'n/a — warmup exiting is the terminating condition',
+    runs: 1,
+    unit: 'MiB',
+    comparison: '==',
+    limit: 0,
+    baseline:
+      'EXACT, and exact is the point. D-S10-5 claims a host with no display server acquires ZERO bytes of desktop component — not "few", not "less" — because a machine that cannot map a window cannot run the component at all, so any byte spent on it is pure waste on precisely the CI/server/container class the brief names as a standing complaint. ⚠ THE SPEC STATES THIS `== 0` OVER THE FULL ACQUISITION SET, WHERE IT IS UNREACHABLE: a no-display host still downloads the 218 MiB of tier-independent models, so `== 0` over the total reds for a host that behaved perfectly. "Zero" is only expressible over a component-scoped artifact, and loosening it to a small `<=` instead would have destroyed the only thing `==` is for. Baseline 0 MiB, and it stays 0 for as long as the no-display branch is correct.',
+  },
+};
+
+/**
+ * ⚠ G-TOTAL-DESKTOP (spec §4.3 gate 20, §6) — DROPPED, and deliberately NOT replaced with a
+ * number. It was never shipped, so this is a decision recorded rather than a threshold edited.
+ *
+ * The spec states `node_modules + acquired, desktop <= 1000 MiB` against "today's 780 + 535 =
+ * 1315". Both inputs have since been measured and both were wrong: prod `node_modules` is 700
+ * (post-C1) and acquisition is 764, so today's total is **1464**, and a clean desktop run after
+ * this slice's flip is **700 + 518 = 1218**. 1000 is unreachable in either world.
+ *
+ * The reason it is not simply re-derived upward is arithmetic, not taste. Two gates already
+ * block on this job — G-DIET at <= 720 and G-ACQUIRE at <= 800 — and they jointly bound the
+ * composed total at **1520** whether or not anything asserts it. The lowest value this
+ * composition can currently take is 1464. So the entire window in which a composed gate could
+ * fail while both of its components pass is **1464-1520, i.e. 56 MiB**, against a sum of two
+ * measurements that each carry tens of MiB of legitimate transitive churn. A threshold finer
+ * than the resolution of the data behind it is not a threshold — the same arithmetic that
+ * rejected a median reducer for G-RSS-IDLE and that keeps G-RSS-SUBSTRATE report-only. Shipping
+ * one anyway would add a gate that cannot fail without one of the other two failing first, and
+ * that reds a clean build when they do.
+ *
+ * ⚠ WHAT WOULD MAKE IT DERIVABLE, so this is a deferral and not a deletion: the window opens
+ * the moment the desktop arm acquires a real component instead of degrading. Then the clean
+ * desktop total is ~1218 and a limit near **1280** sits ~5% above it, far below today's 1464,
+ * and would red on a return to acquiring both rungs (700 + 1064 = 1764). Re-derive it there,
+ * against a measurement, not against this note.
+ */
+export const G_TOTAL_DESKTOP_DROPPED = {
+  specLimitMiB: 1000,
+  measuredTodayMiB: 1464,
+  measuredPostFlipMiB: 1218,
+  jointBoundOfShippedGatesMiB: 1520,
+  reDeriveAtMiB: 1280,
 };
 
 /**
@@ -297,6 +361,10 @@ export const GATES = {
  * version `apps/studio` pins. This corroborates the spec's 296 on a second machine.
  * ⚠ Platform-scoped like every other baseline here: the linux and win32 substrate downloads
  * have NOT been measured, and the packaged S16-alpha app is a different artifact again.
+ *
+ * ✅ S10-d DID BOTH. (1) is G-ACQUIRE-SUBSTRATE-DESKTOP / -HEADLESS above, scoped to the
+ * component directory; (2) is G-ACQUIRE, left at 800 over the full artifact. The spec's third
+ * replacement, G-TOTAL-DESKTOP, was dropped rather than re-derived — see G_TOTAL_DESKTOP_DROPPED.
  */
 export const SUBSTRATE_ONLY_ACQUISITION = {
   substrateMiB: 300,

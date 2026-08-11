@@ -20,6 +20,8 @@ import {
   type BrowserTierId,
   type BrowserTierReason,
 } from '../fetch/browser-tier.js';
+import { systemBrowserPresent } from '../fetch/cdp-direct.js';
+import { acquireSubstrate, type SubstrateOutcome } from '../studio/substrate-acquire.js';
 
 /**
  * Resolve the CLI entrypoint of the *bundled* Playwright module — the same
@@ -208,16 +210,31 @@ export async function installBrowser(
 }
 
 export interface WarmupResult {
-  playwright: 'ok' | 'failed';
+  /**
+   * `skipped` is S10-d's addition and it is the whole of D1's no-doubling rule in one value:
+   * when the desktop substrate was acquired it TAKES the browser engine's slot rather than
+   * being added alongside it. A run that reports both `ok` here and an acquired substrate is
+   * the regression, not the success.
+   */
+  playwright: 'ok' | 'failed' | 'skipped';
   playwrightError?: string;
   /**
-   * The rung this machine resolved to, and why (D-S10-2). Reported, not yet acted on: S10-b
-   * changes no acquisition, so a `no-display` result here still installs what it always did.
-   * S10-d gates the download on exactly this field, which is why it is recorded now — the flip
-   * then has a value to switch on that has already been observed in the wild.
+   * The rung this machine resolved to, and why (D-S10-2). S10-d ACTS on this: it is the field
+   * acquisition is gated on. Note it is the tier AFTER any degradation — a desktop host whose
+   * substrate could not be acquired reports `browser`/`substrate_unavailable`, because that is
+   * the rung it actually ended up with, and reporting the aspiration would make `doctor` state
+   * a ceiling the machine does not have.
    */
   browserTier: BrowserTierId;
   browserTierReason: BrowserTierReason;
+  /** What happened to the desktop component. Absent on rungs that never attempt it. */
+  substrate?: SubstrateOutcome;
+  substrateError?: string;
+  /**
+   * D-S10-5: on the no-display rung an authentic system browser is the preferred rung, so its
+   * presence is reported. Absent on rungs where it is not the question.
+   */
+  systemBrowser?: 'present' | 'absent';
   searxng: 'ready' | 'bootstrapped' | 'failed' | 'no_python' | 'no_venv' | 'skipped';
   searxngError?: string;
   reranker?: 'ok' | 'failed';
@@ -246,6 +263,9 @@ export function warmupResultToJson(result: WarmupResult): Record<string, unknown
     searchSidecar: result.searxng,
   };
   if (result.playwrightError !== undefined) out.browserEngineError = result.playwrightError;
+  if (result.substrate !== undefined) out.desktopComponent = result.substrate;
+  if (result.substrateError !== undefined) out.desktopComponentError = result.substrateError;
+  if (result.systemBrowser !== undefined) out.systemBrowser = result.systemBrowser;
   if (result.searxngError !== undefined) out.searchSidecarError = result.searxngError;
   if (result.reranker !== undefined) out.reranker = result.reranker;
   if (result.rerankerError !== undefined) out.rerankerError = result.rerankerError;
@@ -456,9 +476,65 @@ export async function runWarmup(
   // moment S10-d gates that install on the tier, an unread `--browser` would silently stop
   // acquiring anything — on the lazy path that `browser-acquire.ts` drives from the fetch hot
   // path. That latent break is created by the tier work, so the tier work closes it first.
-  const tier = resolveBrowserTier({ requestedTier: flagSet.has('--browser') ? 'browser' : null });
+  const requestedTier = flagSet.has('--browser') ? ('browser' as const) : null;
+  let tier = resolveBrowserTier({ requestedTier });
 
-  const pwResult = await installPlaywright(reporterImpl);
+  // ---------------------------------------------------------------- S10-d: acquisition, by tier
+  //
+  // D-S10-3 and D-S10-5, and the whole of what "tier-conditional" means:
+  //
+  //   desktop     -> acquire the desktop component; it TAKES the browser engine's slot rather
+  //                  than being added to it. Acquiring both is the doubling regression amended
+  //                  D1 is written to prevent, and G-ACQUIRE catches it at 1064 MiB against 800.
+  //   no-display  -> acquire ZERO substrate bytes. Not "few". A host that cannot map a window
+  //                  cannot run the component at all (a never-shown window gets no compositor
+  //                  surface, so its content renders at 0 fps), so downloading it is pure waste
+  //                  on exactly the machine class — CI runners, servers, containers — the brief
+  //                  names as a standing complaint. The browser engine IS this host's rung, so
+  //                  it is acquired eagerly, which is what `warmup` is for.
+  //   browser     -> same as no-display for acquisition purposes: no component, engine eagerly.
+  //                  This is also `--browser`, and `browser-acquire.ts` drives exactly that from
+  //                  the fetch hot path — so this branch is what keeps lazy acquisition working
+  //                  now that the install is conditional (D-S10-8's latent break).
+  //
+  // ⚠ FAILURE DEGRADES, LOUDLY, AND NEVER TAKES WARMUP DOWN WITH IT. A component that cannot be
+  // acquired must leave the machine on a rung that works, with a reason — degrading in silence
+  // is indistinguishable from a broken install, which is D-S10-9's whole point. So the tier is
+  // RE-RESOLVED with `substrateUnavailable`, which is the resolver's own branch for this and
+  // carries its own reason and remedy, and the engine install then runs as it always did.
+  let substrateResult: Pick<WarmupResult, 'substrate' | 'substrateError'> = {};
+  let pwResult: Pick<WarmupResult, 'playwright' | 'playwrightError'>;
+  let systemBrowser: Pick<WarmupResult, 'systemBrowser'> = {};
+
+  if (tier.tier === 'desktop') {
+    // D13 needs no separate branch: the resolver's `deferAcquisition` and this call read the
+    // SAME record, so an already-installed component returns `already_present` here and nothing
+    // is downloaded. One seam, one answer — a second probe is how the two could disagree.
+    reporterImpl.start('substrate', 'Setting up the desktop component');
+    const acquired = await acquireSubstrate();
+    substrateResult = {
+      substrate: acquired.outcome,
+      ...(acquired.error ? { substrateError: acquired.error } : {}),
+    };
+    if (acquired.outcome === 'acquired' || acquired.outcome === 'already_present') {
+      reporterImpl.success('substrate', acquired.detail);
+      pwResult = { playwright: 'skipped' };
+    } else {
+      reporterImpl.fail('substrate', acquired.detail);
+      tier = resolveBrowserTier({ requestedTier, substrateUnavailable: true });
+      reporterImpl.note(`  Using the browser rung instead — ${tier.remedy ?? ''}`.trimEnd());
+      pwResult = await installPlaywright(reporterImpl);
+    }
+  } else {
+    if (tier.tier === 'no-display') {
+      // D-S10-5's preferred rung on this host. Reported rather than acted on: WHICH rung the
+      // router picks is the D10(b) companion decision (S10-f), and that is to be decided on the
+      // occupancy data S10-c now collects, not guessed here.
+      const present = systemBrowserPresent();
+      systemBrowser = { systemBrowser: present ? 'present' : 'absent' };
+    }
+    pwResult = await installPlaywright(reporterImpl);
+  }
 
   // D1: the search-engine sidecar is opt-in. The searxng phase runs only when
   // explicitly requested (`--searxng`), or with `--all` when the sidecar is
@@ -498,6 +574,8 @@ export async function runWarmup(
   const result: WarmupResult = {
     browserTier: tier.tier,
     browserTierReason: tier.reason,
+    ...substrateResult,
+    ...systemBrowser,
     ...pwResult,
     ...searxngResult,
     ...rerankerResult,
@@ -510,6 +588,8 @@ export async function runWarmup(
   reporterImpl.note('Summary:');
   reporterImpl.note(`  Browser:       ${result.playwright}${result.playwrightError ? ` (${result.playwrightError})` : ''}`);
   reporterImpl.note(`  Browser tier:  ${tier.tier} — ${tier.detail}`);
+  if (result.substrate) reporterImpl.note(`  Desktop comp.: ${result.substrate}${result.substrateError ? ` (${result.substrateError})` : ''}`);
+  if (result.systemBrowser) reporterImpl.note(`  System browser: ${result.systemBrowser}`);
   if (tier.ceiling) reporterImpl.note(`                 ceiling: ${tier.ceiling}`);
   reporterImpl.note(`  Search engine: ${result.searxng}${result.searxngError ? ` (${result.searxngError})` : ''}`);
   if (result.reranker) reporterImpl.note(`  ML reranker:   ${result.reranker}${result.rerankerError ? ` (${result.rerankerError})` : ''}`);

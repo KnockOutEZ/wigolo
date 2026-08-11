@@ -7,7 +7,7 @@ export interface StatusBag {
    * this is NOT hidden until it has been used — the whole point is that a machine which
    * resolved to a weaker rung finds out before a fetch quietly underperforms on it.
    */
-  browserTier: { tier: string; detail: string; ceiling?: string; remedy?: string };
+  browserTier: { tier: string; detail: string; ceiling?: string; remedy?: string; desktopComponent: string };
   searxng: 'ready' | 'failed' | 'pending';
   reranker: 'ok' | 'missing';
   embeddings: 'ok' | 'missing';
@@ -67,6 +67,7 @@ export function formatStatus(bag: StatusBag): string {
   lines.push('');
   lines.push('Browser tier:');
   lines.push(`  Resolved: ${bag.browserTier.tier} — ${bag.browserTier.detail}`);
+  lines.push(`  Desktop component: ${bag.browserTier.desktopComponent}`);
   if (bag.browserTier.ceiling) lines.push(`  Ceiling: ${bag.browserTier.ceiling}`);
   if (bag.browserTier.remedy) lines.push(`  Remedy: ${bag.browserTier.remedy}`);
 
