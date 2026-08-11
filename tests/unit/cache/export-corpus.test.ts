@@ -363,7 +363,17 @@ describe('safePathSegment — filenames are derived from attacker-controlled url
   });
 
   it('rejects a NUL byte rather than letting it truncate the path at the syscall boundary', () => {
-    expect(safePathSegment('safe /../../etc/passwd', 'fallback')).not.toContain(' ');
+    // The NUL is written as the \0 ESCAPE, never as a raw 0x00 byte. A raw NUL makes grep treat
+    // this whole file as binary and report nothing from that offset on — it would silence review
+    // of every assertion below it, in the one file where that matters most.
+    const hostile = 'safe\0/..' + '/../etc/passwd';
+    const seg = safePathSegment(hostile, 'fallback');
+
+    expect(seg).not.toContain('\0');
+    // The bytes on BOTH sides of the NUL must be neutralised. A path layer that truncates at
+    // the NUL sees 'safe'; one that does not sees the traversal. Neither may reach a filename.
+    expect(seg).not.toContain('..');
+    expect(seg).not.toContain('/');
   });
 
   it('falls back rather than returning an empty or dot-only name', () => {
