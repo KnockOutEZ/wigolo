@@ -22,6 +22,8 @@ import {
 } from '../fetch/browser-tier.js';
 import { systemBrowserPresent } from '../fetch/cdp-direct.js';
 import { acquireSubstrate, type SubstrateOutcome } from '../studio/substrate-acquire.js';
+import { BROWSER_DRIVER_MISSING_ERROR, resolveDriverPackageJson } from '../fetch/browser-driver.js';
+import { acquireBrowserDriver } from '../fetch/driver-acquire.js';
 
 /**
  * Resolve the CLI entrypoint of the *bundled* Playwright module — the same
@@ -35,9 +37,15 @@ import { acquireSubstrate, type SubstrateOutcome } from '../studio/substrate-acq
  * join the bin path rather than `require.resolve('playwright/cli.js')`.
  */
 function resolveBundledPlaywrightCli(): string {
-  const req = createRequire(import.meta.url);
-  const pkgPath = req.resolve('playwright/package.json');
-  const pkg = req('playwright/package.json') as { bin?: string | Record<string, string> };
+  // S10-e: resolved through the driver seam rather than `createRequire(import.meta.url)`
+  // directly. The driver is an optional peer now, so it can legitimately live in the data
+  // directory instead of next to wigolo — and resolving the CLI from a different root than
+  // the runtime resolves the module from is how the install lands beside a revision nothing
+  // will load.
+  const pkgPath = resolveDriverPackageJson();
+  if (!pkgPath) throw new Error(BROWSER_DRIVER_MISSING_ERROR);
+  const req = createRequire(pkgPath);
+  const pkg = req('./package.json') as { bin?: string | Record<string, string> };
   const binRel =
     typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.playwright ?? 'cli.js';
   return join(dirname(pkgPath), binRel);
@@ -168,6 +176,14 @@ const BROWSER_INSTALL_ATTEMPTS = 2;
 export async function installBrowser(
   browser: BrowserName,
 ): Promise<{ ok: boolean; error?: string }> {
+  // S10-e: the driver package is no longer guaranteed to be here, so acquiring the browser
+  // rung starts by acquiring the thing that drives it. `already_present` is the overwhelmingly
+  // common answer and costs one resolution.
+  const driver = await acquireBrowserDriver();
+  if (driver.outcome === 'failed') {
+    return { ok: false, error: `${driver.detail}${driver.error ? `: ${driver.error}` : ''}` };
+  }
+
   const cli = resolveBundledPlaywrightCli();
   let r = await runCommand(process.execPath, [cli, 'install', browser], {
     timeout: BROWSER_INSTALL_TIMEOUT_MS,
