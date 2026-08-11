@@ -304,6 +304,29 @@ describe('installBrowserRequestGuard', () => {
     expect(guard.intercepting).toBe(false);
   });
 
+  it('degrades to inert instead of throwing when Fetch.enable fails', async () => {
+    // WHY not a throw: the install runs BEFORE fetchWithBrowser's try/finally,
+    // so rejecting here would strand the page, the pooled context slot and the
+    // throwaway stealth browser — a CDP hiccup would become a resource leak on
+    // every fetch. The post-navigation chain assertion still refuses blocked
+    // content, so degrading costs coverage, not the security property.
+    const stub = makeSessionStub();
+    const failing = {
+      ...stub.session,
+      on: stub.session.on.bind(stub.session),
+      send: async (method: string) => {
+        if (method === 'Fetch.enable') throw new Error('Target closed');
+        return {};
+      },
+      detach: async () => {},
+    };
+    const page = {
+      context: () => ({ newCDPSession: async () => failing }),
+    } as unknown as Page;
+    const guard = await installBrowserRequestGuard(page, { allowPrivate: false });
+    expect(guard.intercepting).toBe(false);
+  });
+
   it('detaches on dispose so a pooled browser does not accumulate interceptors', async () => {
     const stub = makeSessionStub();
     const guard = await installBrowserRequestGuard(pageWithSession(stub), { allowPrivate: false });

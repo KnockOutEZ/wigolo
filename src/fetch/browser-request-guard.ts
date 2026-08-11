@@ -227,7 +227,21 @@ export async function installBrowserRequestGuard(
     })();
   });
 
-  await session.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
+  try {
+    await session.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
+  } catch (err) {
+    // Deliberately NOT a throw. This runs before `fetchWithBrowser`'s
+    // try/finally, so rejecting here would strand the page, the pooled context
+    // slot and (on the stealth path) the throwaway browser — a CDP hiccup
+    // would become a resource leak on every fetch. Degrade to the same posture
+    // firefox/webkit are permanently in: no interceptor, and the
+    // post-navigation chain assertion still refuses blocked content.
+    log.warn('browser request fence could not enable interception; falling back to the post-navigation check', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    await session.detach().catch(() => {});
+    return INERT_GUARD;
+  }
 
   return {
     intercepting: true,
