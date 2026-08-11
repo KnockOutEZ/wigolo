@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
-import { GATES, RSS_HORIZON_MS, RSS_SAMPLE_INTERVAL_MS, floorMiB, median, evaluate, renderReport } from '../../scripts/budget/protocol.mjs';
+import { GATES, RSS_HORIZON_MS, RSS_SAMPLE_INTERVAL_MS, MACHINE_CLASSES, floorMiB, median, minimum, limitFor, evaluate, renderReport } from '../../scripts/budget/protocol.mjs';
 
 /*
  * WHY these tests exist.
@@ -180,5 +180,83 @@ describe('gate definitions', () => {
     const gate = GATES['G-RSS-IDLE'];
     expect(evaluate(gate, 44.2).pass).toBe(true);
     expect(evaluate(gate, 17.7 + 40).pass).toBe(false);
+  });
+});
+
+/**
+ * Real per-run floors from GitHub macos-latest, two batches of three, recorded by S10-a. The
+ * runner is a different machine class from the developer Mac by roughly 4x on the same
+ * statistic over the same horizon — which is the entire reason a single limit cannot serve
+ * both.
+ */
+const RUNNER_FLOOR_BATCHES = [
+  [163.5, 163.0, 162.8],
+  [163.4, 196.3, 166.1],
+];
+
+describe('machine classes', () => {
+  it('applies a per-class limit where a gate declares one, and the shared limit where it does not', () => {
+    expect(limitFor(GATES['G-RSS-IDLE'], 'developer')).toBe(55);
+    expect(limitFor(GATES['G-RSS-IDLE'], 'ci-runner')).toBe(185);
+    // G-COLD-START needs no split: the runner measured 828 ms against a 1500 ms bound, so one
+    // limit covers both classes and inventing a second would be inventing a number.
+    expect(limitFor(GATES['G-COLD-START'], 'developer')).toBe(limitFor(GATES['G-COLD-START'], 'ci-runner'));
+  });
+
+  it('rejects an unknown class instead of falling back to the default', () => {
+    // WHY: a typo in a CI argument would otherwise apply the developer limit to a runner, red
+    // a clean build, and present as a regression. Failing loudly costs one line; the silent
+    // fall-back costs an afternoon of bisecting a build that was never broken.
+    expect(() => limitFor(GATES['G-RSS-IDLE'], 'laptop')).toThrow(/unknown machine class/);
+    expect(MACHINE_CLASSES).toContain('ci-runner');
+  });
+
+  it('prints the class next to the number, so a red is never ambiguous about which limit it failed', () => {
+    const out = renderReport(GATES['G-RSS-IDLE'], 200, { pass: false, machineClass: 'ci-runner' });
+    expect(out).toContain('ci-runner');
+    expect(out).toContain('<= 185 MiB');
+  });
+
+  it('would red a clean CI build under the developer limit — which is why the split exists', () => {
+    // The control for the whole machine-class idea. If a runner-class measurement passed the
+    // developer limit, there would be nothing here to solve.
+    const cleanRunnerFloor = minimum(RUNNER_FLOOR_BATCHES[0]);
+    expect(evaluate(GATES['G-RSS-IDLE'], cleanRunnerFloor, 'developer').pass).toBe(false);
+    expect(evaluate(GATES['G-RSS-IDLE'], cleanRunnerFloor, 'ci-runner').pass).toBe(true);
+  });
+});
+
+describe('the cross-run reducer for idle RSS is the minimum, not the median', () => {
+  it('is steadier across batches than the median on the same runner data', () => {
+    // 162.8 vs 163.4 (a 0.6 MiB spread) against 163.0 vs 166.1. The spread is what a threshold
+    // has to clear, so a steadier reducer is directly a wider window to choose one from.
+    const mins = RUNNER_FLOOR_BATCHES.map(minimum);
+    const medians = RUNNER_FLOOR_BATCHES.map(median);
+    const spread = (xs: number[]) => Math.max(...xs) - Math.min(...xs);
+    expect(spread(mins)).toBeLessThan(spread(medians));
+    expect(mins).toEqual([162.8, 163.4]);
+  });
+
+  it('loses no sensitivity: a 40 MiB retained allocation raises every run, so it raises the minimum', () => {
+    // The obvious objection to a minimum is that it discards evidence. It does not discard the
+    // evidence that matters here: retained bytes cannot be collected, so they raise the true
+    // floor and therefore every run's floor. Modelled by adding the leak to each run.
+    for (const batch of RUNNER_FLOOR_BATCHES) {
+      const leaked = batch.map((f) => f + 40);
+      expect(evaluate(GATES['G-RSS-IDLE'], minimum(batch), 'ci-runner').pass).toBe(true);
+      expect(evaluate(GATES['G-RSS-IDLE'], minimum(leaked), 'ci-runner').pass).toBe(false);
+    }
+  });
+
+  it('is not fooled by a run that never decayed inside the horizon', () => {
+    // 196.3 is not a heavier idle footprint, it is a looser upper bound — the process simply
+    // had not finished decaying at 45 s. A median carries that artifact into the number; the
+    // minimum discards it for the right reason.
+    expect(minimum([163.4, 196.3, 166.1])).toBe(163.4);
+    expect(median([163.4, 196.3, 166.1])).toBe(166.1);
+  });
+
+  it('rejects an empty series', () => {
+    expect(() => minimum([])).toThrow(/empty/);
   });
 });

@@ -74,11 +74,66 @@ export const RSS_SAMPLE_INTERVAL_MS = 3000;
  */
 export const RSS_HORIZON_MS = 45000;
 
-/** Runs reduced by the median for the idle-RSS gate. */
+/** Runs reduced for the idle-RSS gate. */
 export const RSS_RUNS = 3;
+
+/**
+ * Machine classes. A gate may carry a different limit per class, and the class is ALWAYS
+ * printed next to the number.
+ *
+ * ⚠ This exists because the two classes differ by ~4x on the same statistic, same horizon,
+ * same build. A single limit set from a developer Mac reds a clean CI build; a single limit
+ * set from a CI runner passes a 100 MiB regression on a laptop. Either way the gate stops
+ * measuring what it claims to. The class is passed in EXPLICITLY (`--class`, or
+ * `WIGOLO_BUDGET_MACHINE_CLASS`) rather than sniffed from `process.env.CI`, because a gate
+ * that guesses which limit applies to it can guess wrong silently — and the guess would be
+ * wrong in exactly the direction that hides a regression.
+ */
+export const MACHINE_CLASSES = ['developer', 'ci-runner'];
+export const DEFAULT_MACHINE_CLASS = 'developer';
 
 /** Runs reduced by the median for the cold-start gate. */
 export const COLD_START_RUNS = 5;
+
+/**
+ * Why the idle-RSS gate reduces ACROSS runs by the minimum, and not by the median.
+ *
+ * S10-a shipped median-of-3 and recorded that only the median was stable on a CI runner:
+ * individual runner floors spanned **162.8-196.3** across six runs (in the 196.3 run the
+ * process never decayed at all inside the 45 s horizon), while the medians of the two batches
+ * were 163.0 and 166.1. That is true, and it is still not enough to gate on. Working the
+ * arithmetic through for a BLOCKING median gate:
+ *
+ *   - the limit must sit above the worst clean median. One run in six failed to decay, so two
+ *     of three doing so is not remote, and that median lands near 196;
+ *   - the limit must sit below the lowest clean median plus the 40 MiB leak the probe injects,
+ *     i.e. below 163.0 + 40 = 203.
+ *
+ * That leaves a **6 MiB window** to choose from, against inputs whose own observed spread is
+ * 33 MiB. A threshold finer than the resolution of the data behind it is not a threshold, and
+ * a blocking gate that reds a clean build teaches people to re-run CI — which destroys the
+ * gate more thoroughly than not having one.
+ *
+ * The minimum removes the problem at its source, and does so on a property this file already
+ * states: a floor over a bounded horizon is an UPPER BOUND on the true floor (see
+ * RSS_HORIZON_MS). Each run therefore produces an independent upper bound on the SAME
+ * quantity, and the tightest of several upper bounds is their minimum. The median of a set of
+ * upper bounds estimates nothing in particular; the 196.3 run is not a heavier idle footprint,
+ * it is a looser bound, and the minimum discards it for the right reason.
+ *
+ * ⚠ It does NOT trade away sensitivity, which is the obvious objection. Write each run as
+ * `floor_i = true_floor + slack_i` with `slack_i >= 0`. Retained memory raises `true_floor`
+ * itself, so a leak of L gives `floor_i >= true_floor + L` for EVERY run, hence
+ * `min_i floor_i >= true_floor + L`. The minimum is exactly as sensitive to retained bytes as
+ * any single run, and strictly steadier. Measured: min-of-3 returns **162.8** and **163.4** on
+ * the two runner batches — a 0.6 MiB spread where the median moved 3.1 — which opens a
+ * ~38 MiB window instead of a 6 MiB one.
+ *
+ * Both statistics are printed on every run. If the minimum ever proves less steady than the
+ * median on real runner data, the printed pair is what shows it, and this comment is what has
+ * to be argued with.
+ */
+export const RSS_CROSS_RUN_REDUCER = 'minimum';
 
 /**
  * The gates.
@@ -133,14 +188,23 @@ export const GATES = {
     title: 'idle RSS floor of the MCP server',
     what: 'retained resident memory of `wigolo mcp` at rest, with no substrate running',
     artifact: '`node dist/index.js mcp` against a fresh empty WIGOLO_DATA_DIR, sampled via `ps -o rss=`',
-    statistic: `minimum of ${RSS_HORIZON_MS / RSS_SAMPLE_INTERVAL_MS} samples ${RSS_SAMPLE_INTERVAL_MS}ms apart (the FLOOR, not a plateau), median of ${RSS_RUNS} runs`,
+    statistic: `minimum of ${RSS_HORIZON_MS / RSS_SAMPLE_INTERVAL_MS} samples ${RSS_SAMPLE_INTERVAL_MS}ms apart (the FLOOR, not a plateau), reduced across ${RSS_RUNS} runs by the ${RSS_CROSS_RUN_REDUCER}`,
     horizon: `fixed ${RSS_HORIZON_MS / 1000}s after the initialize response`,
     runs: RSS_RUNS,
     unit: 'MiB',
     comparison: '<=',
     limit: 55,
+    limits: {
+      developer: 55,
+      // Anchored to runner data, per S10-a's closing note. Observed min-of-3 on GitHub
+      // macos-latest: 162.8 and 163.4. 185 sits 21.6 above the worst clean observation and
+      // 17.8 below where the 40 MiB probe lands (162.8 + 40 = 202.8), so it has real room on
+      // both sides — which is precisely what the median statistic could not offer (see
+      // RSS_CROSS_RUN_REDUCER). Blocking from S10-b.
+      'ci-runner': 185,
+    },
     baseline:
-      'floor ranged 17.7-44.2 MiB over 6 runs, measured 2026-08-11 on darwin-arm64 at 7aa08144 (44.2/44.2/44.2 then 17.7/44.2/34.4). The limit sits above the highest observed floor and below the lowest-plus-40, so a clean build passes and a 40 MiB retained allocation reds from anywhere in the range. The spec\'s 130 would have let that leak through. ⚠ A GitHub macos-latest runner floors far higher — 163.5/163.0/162.8 in one batch and 163.4/196.3/166.1 in a second. Individual runs there span 162.8-196.3 (in the 196.3 run the process never decayed at all inside the 45s horizon), but the MEDIAN of three is stable at 163 vs 166, which is the reducer earning its place. Same statistic, same horizon, different machine class, ~4x this machine: the limit here is a developer-machine number, and the CI step stays report-only until S10-b sets a runner threshold from runner data.',
+      'developer class: floor ranged 17.7-44.2 MiB over 6 runs, measured 2026-08-11 on darwin-arm64 at 7aa08144 (44.2/44.2/44.2 then 17.7/44.2/34.4); 55 sits above the highest observed floor and below the lowest-plus-40, so a clean build passes and a 40 MiB retained allocation reds from anywhere in the range (the spec\'s 130 would have let that leak through). ci-runner class: GitHub macos-latest floors 163.5/163.0/162.8 in one batch and 163.4/196.3/166.1 in a second — ~4x the developer machine on the same statistic and horizon, which is why the two classes carry different limits rather than one loosened number. Individual runner floors span 162.8-196.3 (in the 196.3 run the process never decayed inside the 45s horizon); reduced by the minimum those two batches give 162.8 and 163.4, and 185 is set from that. BLOCKING on ci-runner from S10-b.',
   },
   'G-COLD-START': {
     id: 'G-COLD-START',
@@ -154,7 +218,7 @@ export const GATES = {
     comparison: '<=',
     limit: 1500,
     baseline:
-      '461 ms median (528/455/456/461/461) measured 2026-08-11 on darwin-arm64 at 7aa08144. Median-of-5 rather than a single run: the first spawn on a cold page cache over-measures and is not what a running agent experiences. The limit stays at the spec\'s 1500 because CI runners are materially slower than this machine.',
+      '461 ms median (528/455/456/461/461) measured 2026-08-11 on darwin-arm64 at 7aa08144, and 828 ms median on a GitHub macos-latest runner. Median-of-5 rather than a single run: the first spawn on a cold page cache over-measures and is not what a running agent experiences. ONE limit covers both machine classes here, unlike G-RSS-IDLE — the runner is 1.8x slower and still 45% under the bound, so there is no threshold to split. BLOCKING from S10-b: the runner figure is the one that was missing when this shipped report-only, and 828 against 1500 needs no further argument.',
   },
   'G-ACQUIRE': {
     id: 'G-ACQUIRE',
@@ -188,6 +252,19 @@ export function floorMiB(samples) {
   return Math.min(...samples.map((s) => s.valueMB));
 }
 
+/**
+ * Minimum of a numeric series — the cross-run reducer for the idle-RSS gate.
+ *
+ * Distinct from {@link floorMiB}, which reduces SAMPLES within one run. This reduces the
+ * per-run floors across runs, and the reason it is the minimum rather than the median is
+ * derived in RSS_CROSS_RUN_REDUCER: each run's floor is an upper bound on the same quantity,
+ * so the tightest available estimate is the smallest of them.
+ */
+export function minimum(values) {
+  if (!values.length) throw new Error('minimum of an empty series');
+  return Math.min(...values);
+}
+
 /** Median of a numeric series. Even-length series average the two middle values. */
 export function median(values) {
   if (!values.length) throw new Error('median of an empty series');
@@ -197,14 +274,29 @@ export function median(values) {
 }
 
 /**
+ * The limit that applies to a machine class.
+ *
+ * An unknown class is an ERROR rather than a silent fall-back to the default. A typo in a CI
+ * argument would otherwise apply a developer-machine limit to a runner, red a clean build, and
+ * present as a regression — the failure mode is a wasted afternoon, and it is free to prevent.
+ */
+export function limitFor(gate, machineClass = DEFAULT_MACHINE_CLASS) {
+  if (!MACHINE_CLASSES.includes(machineClass)) {
+    throw new Error(`unknown machine class ${JSON.stringify(machineClass)} (expected one of ${MACHINE_CLASSES.join(', ')})`);
+  }
+  return gate.limits?.[machineClass] ?? gate.limit;
+}
+
+/**
  * Apply a gate's assertion to a measurement.
  *
  * `==` is exact on purpose. G-ACQUIRE's no-display arm (S10-d) asserts zero substrate bytes,
  * and "zero" expressed as "<= some small number" is a different, weaker claim.
  */
-export function evaluate(gate, measured) {
-  const pass = gate.comparison === '==' ? measured === gate.limit : measured <= gate.limit;
-  return { pass, gate, measured };
+export function evaluate(gate, measured, machineClass = DEFAULT_MACHINE_CLASS) {
+  const limit = limitFor(gate, machineClass);
+  const pass = gate.comparison === '==' ? measured === limit : measured <= limit;
+  return { pass, gate, measured, limit, machineClass };
 }
 
 /**
@@ -214,11 +306,12 @@ export function evaluate(gate, measured) {
  * reds. Someone reading a red in a CI log needs to know what was measured and over what
  * horizon before they can tell a regression from a re-measurement.
  */
-export function renderReport(gate, measured, { pass, detail = '' } = {}) {
+export function renderReport(gate, measured, { pass, detail = '', machineClass = DEFAULT_MACHINE_CLASS } = {}) {
   const lines = [
     `${pass ? 'PASS' : 'FAIL'} ${gate.id} — ${gate.title}`,
     `  measured:  ${measured} ${gate.unit}`,
-    `  limit:     ${gate.comparison} ${gate.limit} ${gate.unit}`,
+    `  limit:     ${gate.comparison} ${limitFor(gate, machineClass)} ${gate.unit}`,
+    `  class:     ${machineClass}${gate.limits ? ' (this gate carries a limit per machine class)' : ''}`,
     `  what:      ${gate.what}`,
     `  artifact:  ${gate.artifact}`,
     `  statistic: ${gate.statistic}`,

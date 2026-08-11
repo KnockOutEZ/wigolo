@@ -31,8 +31,10 @@ import {
   RSS_HORIZON_MS,
   RSS_RUNS,
   COLD_START_RUNS,
+  DEFAULT_MACHINE_CLASS,
   floorMiB,
   median,
+  minimum,
   evaluate,
   renderReport,
 } from './protocol.mjs';
@@ -47,10 +49,16 @@ function duMiB(path) {
   return Number.parseInt(out.trim().split(/\s+/)[0], 10);
 }
 
+/**
+ * Which machine class this run's limits come from. Explicit, never sniffed — a gate that
+ * guesses its own limit can guess wrong in the direction that hides a regression.
+ */
+const MACHINE_CLASS = process.env.WIGOLO_BUDGET_MACHINE_CLASS || DEFAULT_MACHINE_CLASS;
+
 function report(gateId, measured, detail) {
   const gate = GATES[gateId];
-  const { pass } = evaluate(gate, measured);
-  console.log(renderReport(gate, measured, { pass, detail }));
+  const { pass } = evaluate(gate, measured, MACHINE_CLASS);
+  console.log(renderReport(gate, measured, { pass, detail, machineClass: MACHINE_CLASS }));
   if (!pass) process.exitCode = 1;
   return pass;
 }
@@ -199,7 +207,12 @@ async function measureIdleRss() {
     floors.push(floor);
     traces.push(`run${i + 1} floor=${floor} [${samples.map((s) => s.valueMB).join(' ')}]`);
   }
-  return report('G-RSS-IDLE', median(floors), traces.join('; '));
+  // Both cross-run statistics are printed, always. The gate asserts on the minimum (see
+  // RSS_CROSS_RUN_REDUCER); the median rides along so that if the minimum ever proves the less
+  // steady of the two on real runner data, the evidence is already in the log rather than
+  // needing a re-run to discover.
+  const detail = `${traces.join('; ')} | floors=[${floors.join(' ')}] min=${minimum(floors)} median=${median(floors)}`;
+  return report('G-RSS-IDLE', minimum(floors), detail);
 }
 
 async function measureColdStart() {
