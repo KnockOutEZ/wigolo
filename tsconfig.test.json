@@ -63,7 +63,8 @@
     "tests/unit/agent/pipeline-containment.test.ts",
     "tests/integration/content-fence-dispatch.test.ts",
     "tests/unit/fetch/browser-request-guard.test.ts",
-    "tests/integration/fetch/browser-redirect-ssrf.test.ts"
+    "tests/integration/fetch/browser-redirect-ssrf.test.ts",
+    "tests/integration/fetch/browser-redirect-ssrf-backstop.test.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
