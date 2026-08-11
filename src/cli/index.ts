@@ -16,6 +16,7 @@ export type Command =
   | 'status'
   | 'tune'
   | 'backfill'
+  | 'export'
   | 'verify'
   | 'skills'
   // One-shot tool commands (D7) — thin over the REPL executors.
@@ -57,6 +58,7 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'status',
   'tune',
   'backfill',
+  'export',
   'verify',
   'skills',
   // One-shot tool commands (D7).

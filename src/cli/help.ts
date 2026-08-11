@@ -245,6 +245,8 @@ Subcommands:
   uninstall [--yes] [--json] Remove wigolo install
   status [--json]         Show running daemon status
   backfill [--json]       Backfill embeddings for cached pages without them
+  export [--out DIR] [--url-pattern GLOB] [--since DATE] [--dry-run] [--json]
+                          Write the cached corpus out as dated Markdown + a manifest
 
 Tools (one-shot; add --json for machine-readable output, --help for flags):
   search <query>          Search the web
