@@ -174,6 +174,16 @@ export async function installBrowserRequestGuard(
     return INERT_GUARD;
   }
 
+  // A session that cannot carry an event subscription cannot intercept. This is
+  // the same degrade as no-CDP, and it is what keeps the fence from throwing
+  // through the partial CDP stubs the browser-pool unit suites use (they supply
+  // `send` only, for input dispatch) — matching how the rest of browser-pool.ts
+  // feature-tests every page/context capability it reaches for.
+  const shaped = session as unknown as { on?: unknown; send?: unknown };
+  if (typeof shaped.on !== 'function' || typeof shaped.send !== 'function') {
+    return INERT_GUARD;
+  }
+
   let firstBlock: string | null = null;
   const resolvedCache = new Map<string, BrowserGuardVerdict>();
 

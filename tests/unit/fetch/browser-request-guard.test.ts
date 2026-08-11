@@ -311,6 +311,19 @@ describe('installBrowserRequestGuard', () => {
     expect(guard.intercepting).toBe(false);
   });
 
+  it('degrades to inert for a CDP session that cannot carry an event subscription', async () => {
+    // Regression: the browser-pool unit suites supply a partial CDP session
+    // (`send` only, for input dispatch). Calling `.on` on it threw a TypeError
+    // out of fetchWithBrowser and reddened 19 unrelated challenge tests. A
+    // session that cannot subscribe cannot intercept, which is the same state
+    // as no-CDP — not a crash.
+    const page = {
+      context: () => ({ newCDPSession: async () => ({ send: async () => ({}) }) }),
+    } as unknown as Page;
+    const guard = await installBrowserRequestGuard(page, { allowPrivate: false });
+    expect(guard.intercepting).toBe(false);
+  });
+
   it('degrades to inert instead of throwing when Fetch.enable fails', async () => {
     // WHY not a throw: the install runs BEFORE fetchWithBrowser's try/finally,
     // so rejecting here would strand the page, the pooled context slot and the
