@@ -42,6 +42,7 @@ import { getVersion } from './help.js';
 // imports `statfs` from node:fs, and doctor is reachable from warmup, whose
 // tests partially mock node:fs.
 import { checkNodeFloor, MIN_NODE_MAJOR } from './node-floor.js';
+import { resolveBrowserTier, type BrowserTierResolution } from '../fetch/browser-tier.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
 
@@ -320,6 +321,30 @@ export function formatTlsTierLine(
   const dflt = mode === 'auto' ? ', default' : '';
   if (!wreqAvailable) return `${mode} (wreq-js missing — fallback only${dflt})`;
   return `${mode} (${browser}, wreq-js ✓${dflt})`;
+}
+
+/**
+ * Build the browser-tier section for doctor (D-S10-9). Pure so the branching is asserted
+ * without an environment.
+ *
+ * Four lines, and each earns its place. The TIER alone is not actionable — "no-display" reads
+ * as a fault to someone who does not know it is physics. So the reason says which branch was
+ * taken, the ceiling says what this rung structurally cannot do, and the remedy says whether
+ * there is anything to be done about it (sometimes the honest answer is "no action needed").
+ * A rung reported without its ceiling is how a server user comes to expect desktop pass rates.
+ */
+export function buildBrowserTierDoctorLines(tier: BrowserTierResolution): string[] {
+  const lines = [
+    '[wigolo doctor] Browser tier:',
+    `  Resolved:      ${tier.tier}`,
+    `  Why:           ${tier.detail}`,
+  ];
+  if (tier.ceiling) lines.push(`  Ceiling:       ${tier.ceiling}`);
+  if (tier.remedy) lines.push(`  Remedy:        ${tier.remedy}`);
+  if (tier.deferAcquisition) {
+    lines.push('  Acquisition:   deferred — a desktop component is already installed here');
+  }
+  return lines;
 }
 
 /**
@@ -744,6 +769,9 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
       out('  Status:        lazy — downloads on first use (`wigolo warmup --browser` pre-caches)');
     }
   }
+
+  out('');
+  for (const line of buildBrowserTierDoctorLines(resolveBrowserTier())) out(line);
 
   out('');
   out('[wigolo doctor] Fetch tiers:');

@@ -12,6 +12,7 @@ import { classifyChallenge } from './challenge-classify.js';
 import { isLowContentDensity } from './tls-tier.js';
 import { guardFetchUrl, guardResolvedHost, type LookupAll } from '../watch/ssrf.js';
 import { redactUrl } from '../util/redact-url.js';
+import { resolveBrowserTier } from './browser-tier.js';
 import type { RawFetchResult } from '../types.js';
 
 const log = createLogger('fetch');
@@ -612,9 +613,15 @@ export function coherentIdentity(rawUserAgent: string, platform: NodeJS.Platform
   };
 }
 
+/**
+ * D-S10-2: the display question is answered by the ONE tier resolver, not by a probe local to
+ * this rung. This used to be a private `hasDisplaySession()` with a single consumer, and a
+ * second copy of the same logic in `warmup` would have meant the download decision and the
+ * routing decision could disagree — silently. Same predicate, one owner, and the operator
+ * override (`WIGOLO_BROWSER_TIER`) now reaches the launch path for free.
+ */
 function hasDisplaySession(): boolean {
-  if (process.platform === 'darwin' || process.platform === 'win32') return true;
-  return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+  return resolveBrowserTier().tier !== 'no-display';
 }
 // Grace after SIGTERM before escalating to SIGKILL on teardown.
 const KILL_GRACE_MS = 2_000;

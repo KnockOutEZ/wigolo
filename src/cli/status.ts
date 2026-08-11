@@ -6,6 +6,7 @@ import { probePythonPackages } from './tui/status-python.js';
 import { readConnectedAgents } from './tui/status-agents.js';
 import { formatStatus, type StatusBag } from './tui/status-format.js';
 import { readEscalationCounters } from '../studio/escalation-counters.js';
+import { resolveBrowserTier } from '../fetch/browser-tier.js';
 
 const require = createRequire(import.meta.url);
 interface PackageJson { version?: string }
@@ -32,8 +33,17 @@ export async function runStatus(_args: string[]): Promise<number> {
   const used = counters.bridgeAttempted + counters.budgetRefused + counters.cardShown + counters.cardUnattended;
   const cfg = getConfig();
 
+  // D-S10-2: read the ONE resolver. `status` does not probe the display itself.
+  const tier = resolveBrowserTier();
+
   const bag: StatusBag = {
     version: pkg.version ?? '0.0.0',
+    browserTier: {
+      tier: tier.tier,
+      detail: tier.detail,
+      ...(tier.ceiling ? { ceiling: tier.ceiling } : {}),
+      ...(tier.remedy ? { remedy: tier.remedy } : {}),
+    },
     searxng,
     reranker: python.reranker,
     embeddings: python.embeddings,
