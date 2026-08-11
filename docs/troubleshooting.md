@@ -25,7 +25,7 @@ wigolo doctor --fix  # repairs the known failure classes automatically
 | Embeddings model download fails (`TAR_BAD_ARCHIVE` / "unrecognized archive") | A truncated or corrupt download. wigolo now auto-clears the partial file and re-downloads once; if it still fails, `wigolo config --cleanup` and re-run `wigolo warmup --embeddings`. |
 | Ranking model download fails (`fetch failed`) | A transient network blip. Re-run `wigolo warmup --reranker` — it retries with backoff. |
 | A download fails with `self signed certificate in certificate chain` | You're behind a TLS-inspecting (corporate) proxy. Point Node at your organization's CA bundle — `NODE_EXTRA_CA_CERTS=/path/to/corp-ca.pem` — then re-run warmup. |
-| `npm install` fails compiling a native dependency (often on Windows) | Your Node version has no prebuilt binary, so npm falls back to a source build. Use a supported LTS — **Node 20, 22, or 24** — where prebuilts exist, or install a C/C++ toolchain (Visual Studio Build Tools on Windows). |
+| `npm install` fails compiling a native dependency (often on Windows) | Your Node version has no prebuilt binary, so npm falls back to a source build. Use a supported LTS — **Node 22 or 24** — where prebuilts exist, or install a C/C++ toolchain (Visual Studio Build Tools on Windows). |
 | Downloads stall or fail on low disk | Components need ~1 GB free. Free space, point `WIGOLO_DATA_DIR` at a larger volume, or `wigolo config --cleanup` to reclaim a previous install. |
 
 ## A component failed during setup — is wigolo broken?
@@ -52,9 +52,9 @@ Two honest facts to calibrate expectations:
 
 ## Platform notes
 
-**Node version.** wigolo runs on **Node 20, 22, or 24** (LTS). Very new or unusual Node builds may not have prebuilt native binaries yet and will try to compile from source (which needs a C/C++ toolchain) — stick to an LTS to avoid that.
+**Node version.** wigolo requires **Node 22 or newer** and is tested on **Node 22 and 24** (LTS). Node 20 reached end of life upstream on 24 March 2026 and is no longer supported: `npm install` warns and the setup check refuses it. Very new or unusual Node builds may not have prebuilt native binaries yet and will try to compile from source (which needs a C/C++ toolchain) — stick to an LTS to avoid that.
 
-**Windows.** Supported on Node 20+. The data dir is `%USERPROFILE%\.wigolo`. Set env vars with your shell's syntax (`$env:WIGOLO_SEARCH="hybrid"` in PowerShell); everything else — commands, flags, ports — is identical to the Unix docs.
+**Windows.** Supported on Node 22+. The data dir is `%USERPROFILE%\.wigolo`. Set env vars with your shell's syntax (`$env:WIGOLO_SEARCH="hybrid"` in PowerShell); everything else — commands, flags, ports — is identical to the Unix docs.
 
 **Linux (minimal images / containers).** The browser engine needs a handful of OS libraries; `wigolo warmup --browser` installs them (with sudo where available) and otherwise prints the exact command to run. **Python is _not_ required** — it is used only by the optional search-engine sidecar, so a "Python 3 not found" note is safe to ignore for core use.
 

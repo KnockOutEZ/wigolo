@@ -44,7 +44,7 @@ npx wigolo init                              # set up the local engine — any s
 npx wigolo init --agents=claude-code,cursor  # …or set up + wire your day-to-day agents in one command
 ```
 
-Requires **Node ≥ 20** and ~1.5 GB of free disk on macOS, Linux, or Windows. Bare `init` sets up the local engine: it downloads the browser engine and on-device models, runs a health check, and reports each component. Adding `--agents` wires the named agents in the same run, so a coding agent you use daily is ready in one command.
+Requires **Node ≥ 22** and ~1.5 GB of free disk on macOS, Linux, or Windows. Bare `init` sets up the local engine: it downloads the browser engine and on-device models, runs a health check, and reports each component. Adding `--agents` wires the named agents in the same run, so a coding agent you use daily is ready in one command.
 
 - **Supported agents** — `--agents` takes any of `claude-code` · `cursor` · `codex` · `gemini-cli` · `opencode` · `vscode` · `windsurf` · `zed` · `antigravity` (comma-separated); wigolo writes the MCP config and, where supported, instructions for each.
 - **Any other setup** — any MCP client, agent framework, or self-hosted agent registers `npx -y wigolo` in its own MCP config. The [installation guide](docs/installation.md) has the exact config block for every client, plus Docker, Homebrew, and single-file-binary channels.
@@ -340,7 +340,7 @@ If wigolo earns a place in your setup, three things keep it going: a ⭐ **star*
 
 - **Slow or failed downloads** — re-run `wigolo warmup --all` (or `--browser` / `--embeddings` / `--reranker`); they resume and retry.
 - **Browser won't launch on Linux** — `wigolo warmup --browser` installs the OS libraries (or prints the exact command).
-- **Native build error / unusual Node** — use an LTS: **Node 20, 22, or 24**.
+- **Native build error / unusual Node** — use a supported LTS: **Node 22 or 24**.
 - **Behind a proxy** — `USE_PROXY=true` + `PROXY_URL`; add `NODE_EXTRA_CA_CERTS` for TLS-inspecting proxies.
 
 The full guide covers per-symptom fixes, a "what still works when X fails" map, platform notes (incl. linux-arm64), and offline installs: **[docs/troubleshooting.md](docs/troubleshooting.md)**.

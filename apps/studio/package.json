@@ -4,6 +4,9 @@
   "version": "0.0.1",
   "type": "module",
   "main": "out/main/index.js",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build:core": "npm run build --prefix ../..",
     "dev": "electron-vite dev",

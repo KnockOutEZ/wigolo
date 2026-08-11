@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### BREAKING: minimum Node.js is now 22
+
+`engines.node` moves from `>=20` to `>=22`. Node 20 ("Iron") reached upstream end of life on **24 March 2026** — it receives no further security or bug fixes ([nodejs.org/en/about/previous-releases](https://nodejs.org/en/about/previous-releases)). Node 22 ("Jod") is the active LTS line, so the new floor lands on a supported release.
+
+**What this means for you.** On Node 20 or older, `npm install wigolo` now warns (or fails, depending on your package manager's `engine-strict` setting) and `wigolo init` refuses with a message naming the required version. `wigolo doctor` reports the running Node version and its floor in the Runtime section and under `doctor --json`. Upgrade to Node 22 or Node 24 — both LTS, both carry prebuilt native binaries for every supported platform, so no source compile is needed.
+
+Nothing else changed: every tool, flag, config key, and wire format is identical.
+
 ## v0.2.0 — 2026-07-17
 
 Zero-config onboarding, full distribution surface, and a headless-first control plane — matching and going past the ergonomics of the paid tools without shedding the local semantic brain. All ten tools (search, fetch, crawl, extract, cache, find_similar, research, agent, diff, watch) keep working throughout; everything below is additive and keyless-by-default.

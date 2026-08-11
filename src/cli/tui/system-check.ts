@@ -28,7 +28,9 @@ export interface SystemCheckResult {
   hardFailure: boolean;
 }
 
-const MIN_NODE_MAJOR = 20;
+// Keep in lockstep with `engines.node` in package.json. Node 20 "Iron" reached
+// upstream end-of-life on 2026-03-24, so the floor is the current LTS line.
+export const MIN_NODE_MAJOR = 22;
 const MIN_FREE_MB = 500;
 
 function parseSemver(raw: string): { major: number; minor: number; patch: number } | null {
@@ -51,7 +53,7 @@ export function checkNode(): CheckResult {
     return {
       ok: false,
       version,
-      message: `wigolo requires Node 20 or newer (found ${version})`,
+      message: `wigolo requires Node ${MIN_NODE_MAJOR} or newer (found ${version})`,
     };
   }
   return { ok: true, version };
