@@ -32,6 +32,13 @@ import type { RawFetchResult, StageError } from '../types.js';
  *
  * Every write is best-effort: an instrumentation failure must never affect a fetch.
  *
+ * ⚠ THE DENOMINATOR IS PAGES, NOT TASKS, and whoever reads this data for D10(b) needs to know
+ * it. `crawl` fans out through `handleFetch` into this same seam, so one crawl of 200 pages
+ * contributes 200. That is the right denominator for sizing a rung's LOAD and the wrong one for
+ * "how many pieces of work needed the browser" — a single crawl of a static docs site can bury
+ * a genuine browser-rung signal under HTTP counts, and reading the ratio as demand would then
+ * conclude "no demand" from what is really one busy crawler.
+ *
  * ⚠ KNOWN LIMIT, stated rather than smoothed over: the write is read-modify-write, so two
  * wigolo processes fetching concurrently can lose an update. These are occupancy PROPORTIONS
  * read off one machine's `doctor`, not an audit log, and the loss is not biased toward any one
