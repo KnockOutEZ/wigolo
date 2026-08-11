@@ -229,8 +229,12 @@ function announce(r: BrowserTierResolution): void {
  *  2. A flag-selected rung (`warmup --browser`).
  *  3. A failed/skipped substrate acquisition — degrade to the browser rung WITH a reason,
  *     never to "no rung and no message".
- *  4. An already-installed substrate (D13): use it, defer acquisition.
- *  5. Display detection.
+ *  4. Display detection, and specifically the no-display answer.
+ *  5. An already-installed substrate (D13): use it, defer acquisition.
+ *
+ * 4 sits above 5 deliberately: a mapped window needs a display server, so an installed
+ * component on a host that cannot map one is still unusable. Letting the probe short-circuit
+ * detection would hand a headless box the desktop rung on the strength of a file existing.
  */
 export function resolveBrowserTier(inputs: BrowserTierInputs = {}): BrowserTierResolution {
   const platform = inputs.platform ?? process.platform;
