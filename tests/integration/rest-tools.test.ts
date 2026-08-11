@@ -360,7 +360,8 @@ describe('REST tools — untrusted-content representation on the wire (R2 / A10)
 
   it('WIRE-4 (must-not-fire): `watch` carries no fence and no envelope in either mode', async () => {
     // Hashes and counts are operational; wrapping them would corrupt values the caller matches on.
-    for (const headers of [{}, { 'X-Wigolo-Untrusted-Content': 'envelope' }]) {
+    const modes: Record<string, string>[] = [{}, { 'X-Wigolo-Untrusted-Content': 'envelope' }];
+    for (const headers of modes) {
       const r = await post(port, '/v1/watch', { action: 'list' }, headers);
       expect(r.status).toBe(200);
       expect(closedRegions(JSON.stringify(r.body))).toBe(0);
