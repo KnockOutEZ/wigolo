@@ -13,12 +13,13 @@
  *    is not a string literal. The result works in vitest and in `npm run dev`
  *    and fails only in the packaged binary — a green suite is not evidence
  *    about this class at all. So the specifiers are required to be literals
- *    here, and the bundle itself is checked in
- *    tests/unit/integrations/llm-bundle-resolution.test.ts.
+ *    here, and the bundle itself is checked by
+ *    scripts/verify-llm-bundle-resolution.mjs (`npm run verify:llm-bundle`),
+ *    which runs the bundled build with no node_modules at all.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import ts from 'typescript';
 
 const repoRoot = join(__dirname, '..', '..', '..');
@@ -44,6 +45,19 @@ function packageRoot(specifier: string): string {
   return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
 }
 
+/**
+ * Repo-relative path with POSIX separators on every platform.
+ *
+ * `join` yields backslashes on Windows, so the raw slice produced
+ * `src\fetch\cdp-direct.ts` there while the exemption list below is keyed by
+ * `src/fetch/cdp-direct.ts`. Every documented exemption then missed its key and
+ * reported as an undocumented violation — the test failed on Windows for a path
+ * separator rather than for anything about imports.
+ */
+function repoRelative(file: string): string {
+  return file.slice(repoRoot.length + 1).split(sep).join('/');
+}
+
 interface StaticImport { file: string; specifier: string }
 interface DynamicImport { file: string; literal: boolean; text: string }
 
@@ -58,7 +72,7 @@ for (const file of sourceFiles(srcRoot)) {
       // `import type { … }` is erased at compile time and costs nothing at run time.
       const typeOnly = node.importClause?.isTypeOnly === true;
       if (!typeOnly && VENDOR_SDKS.includes(packageRoot(spec))) {
-        staticValueImports.push({ file: file.slice(repoRoot.length + 1), specifier: spec });
+        staticValueImports.push({ file: repoRelative(file), specifier: spec });
       }
     }
     if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
@@ -66,7 +80,7 @@ for (const file of sourceFiles(srcRoot)) {
       const literal = arg !== undefined && ts.isStringLiteral(arg);
       const text = literal ? (arg as ts.StringLiteral).text : arg?.getText(source) ?? '<none>';
       if (!literal || VENDOR_SDKS.includes(packageRoot(text))) {
-        dynamicImports.push({ file: file.slice(repoRoot.length + 1), literal, text });
+        dynamicImports.push({ file: repoRelative(file), literal, text });
       }
     }
     ts.forEachChild(node, visit);
@@ -122,6 +136,22 @@ describe('cloud LLM SDKs stay off the keyless startup path', () => {
       .filter((d) => !d.literal && !allowed.has(d.file))
       .map((d) => `${d.file}: import(${d.text})`);
     expect(unexpected, 'non-literal dynamic import outside the documented exemptions').toEqual([]);
+
+    // Every exemption must still MATCH a real scanned site. Without this the
+    // exemption lookup can silently stop matching and the check above becomes
+    // permissive in the wrong direction — which is precisely how this test
+    // behaved on Windows, where `join` produced backslashes and every key
+    // missed. A stale exemption (file renamed or deleted) fails here too.
+    const nonLiteralFiles = new Set(
+      dynamicImports.filter((d) => !d.literal).map((d) => d.file),
+    );
+    for (const key of allowed.keys()) {
+      expect(
+        nonLiteralFiles.has(key),
+        `exemption "${key}" matched no scanned import site — stale entry, or the ` +
+          `scanned path shape drifted (separator/rooting) and the exemption lookup is dead`,
+      ).toBe(true);
+    }
 
     // The exemption is only legitimate while those really are optional deps. If
     // one is promoted to a required dependency, the escape hatch stops being
