@@ -26,6 +26,22 @@ export interface StatusBag {
     cardShown: number;
     cardUnattended: number;
   };
+  /**
+   * D-S10-4 tier-occupancy counters, for the tier this host is CURRENTLY resolved to.
+   *
+   * Optional for the same reason `browserSession` is: a fresh install has nothing to say here,
+   * and a block of zeroes printed for everyone is the kind of section that gets skipped by the
+   * time it finally carries something. Only the current tier's row is carried — `doctor` is
+   * where a machine whose tier has changed sees both.
+   */
+  rungsUsed?: {
+    http: number;
+    tls: number;
+    browser: number;
+    substrate: number;
+    browserUnavailable: number;
+    blocked: number;
+  };
 }
 
 export function formatStatus(bag: StatusBag): string {
@@ -53,6 +69,19 @@ export function formatStatus(bag: StatusBag): string {
   lines.push(`  Resolved: ${bag.browserTier.tier} — ${bag.browserTier.detail}`);
   if (bag.browserTier.ceiling) lines.push(`  Ceiling: ${bag.browserTier.ceiling}`);
   if (bag.browserTier.remedy) lines.push(`  Remedy: ${bag.browserTier.remedy}`);
+
+  if (bag.rungsUsed) {
+    const r = bag.rungsUsed;
+    lines.push(
+      `  Rungs used: ${r.http} direct, ${r.tls} hardened, ${r.browser} browser engine,` +
+        ` ${r.substrate} attended session`,
+    );
+    if (r.browserUnavailable > 0) {
+      lines.push(`  Needed a browser engine this machine could not start: ${r.browserUnavailable}`);
+    }
+    if (r.blocked > 0) lines.push(`  Ended at a bot-protection challenge: ${r.blocked}`);
+    lines.push('  These counters never leave this machine.');
+  }
 
   if (bag.browserSession) {
     const b = bag.browserSession;

@@ -213,6 +213,24 @@ export const GATES = {
     baseline:
       'developer class: floor ranged 17.7-44.2 MiB over 6 runs, measured 2026-08-11 on darwin-arm64 at 7aa08144 (44.2/44.2/44.2 then 17.7/44.2/34.4); 55 sits above the highest observed floor and below the lowest-plus-40, so a clean build passes and a 40 MiB retained allocation reds from anywhere in the range (the spec\'s 130 would have let that leak through). ci-runner class: GitHub macos-latest floors 163.5/163.0/162.8 in one batch and 163.4/196.3/166.1 in a second — ~4x the developer machine on the same statistic and horizon, which is why the two classes carry different limits rather than one loosened number. Individual runner floors span 162.8-196.3 (in the 196.3 run the process never decayed inside the 45s horizon); reduced by the minimum those two batches give 162.8 and 163.4, and 185 is set from that. Two further batches, taken by the blocking gate itself on the S10-b PR: [162.8, 194.8, 162.8] -> min 162.8, then [163.4, 192.3, 192.3] -> min 163.4. ⚠ THE SECOND OF THOSE IS THE CASE THIS GATE WAS DESIGNED AGAINST, OBSERVED LIVE: two of its three runs never decayed inside the horizon, so its MEDIAN was 192.3 where the previous commit\'s was 162.8 — a 29.5 MiB swing between two commits that differ only in comments and a test-file path helper. Across four runner batches the median spans 162.8-192.3 and the minimum spans 162.8-163.4. Non-decay runs are 5 of 12 runner runs, not the 1-in-6 a single batch suggested. 185 is anchored on the minimum and has held on all four. BLOCKING on ci-runner from S10-b.',
   },
+  'G-RSS-SUBSTRATE': {
+    id: 'G-RSS-SUBSTRATE',
+    title: 'idle RSS floor of the MCP server plus the desktop substrate',
+    what: 'retained resident memory of `wigolo mcp` and a hidden desktop substrate with one blank tab, whole process tree',
+    artifact:
+      '`node dist/index.js mcp` plus the built substrate under `electron-vite preview` with WIGOLO_STUDIO_HIDDEN=1, against a fresh empty WIGOLO_DATA_DIR shared by both, sampled via `ps -o rss=` over every process descended from either',
+    statistic: `minimum of ${RSS_HORIZON_MS / RSS_SAMPLE_INTERVAL_MS} samples ${RSS_SAMPLE_INTERVAL_MS}ms apart (the FLOOR, not a plateau), summed across the whole process tree, reduced across ${RSS_RUNS} runs by the ${RSS_CROSS_RUN_REDUCER}`,
+    horizon: `fixed ${RSS_HORIZON_MS / 1000}s after the substrate publishes a session handle`,
+    runs: RSS_RUNS,
+    unit: 'MiB',
+    comparison: '<=',
+    limit: 510,
+    limits: {
+      developer: 510,
+    },
+    baseline:
+      '⚠ THE SPEC\'S PROVISIONAL 450 REDS AT BASELINE, on the lowest machine class, with no regression present. Spec §4.3 gate 22 states <= 450 MiB and §7.2 records it as "provisional — not yet measured"; it was extrapolated from a "106 MB core" figure that S10-a had already falsified (the core floor is 44.2 developer-class). Measured 2026-08-11 on darwin-arm64 at 96af301a, same statistic and same 45s horizon as G-RSS-IDLE so the two are comparable. THREE batches of three: [493.4, 630.2, 457.5] -> min 457.5, median 493.4; [464.9, 471.3, 473.6] -> min 464.9, median 471.3; [510.9, 509.5, 478.5] -> min 478.5, median 509.5. Every minimum exceeds 450. ⚠ THE THIRD BATCH FALSIFIED WHAT THE FIRST TWO SUPPORTED, and it is recorded rather than dropped: on two batches the minimum spanned 7.4 MiB and a 40 MiB-sensitive blocking gate looked comfortable; on three it spans 21.0 (457.5-478.5), and a 40 MiB gate then needs a limit above 478.5 and below 457.5+40=497.5 — a 19 MiB window against a statistic whose own spread is 21. A threshold finer than the resolution of its data is not a threshold (the same arithmetic that rejected a median reducer for G-RSS-IDLE), so this gate is REPORT-ONLY and states a coarser resolution: 510 detects a retained-memory regression of roughly 53 MiB and up (510 - 457.5) and is blind below that, with 31.5 MiB of headroom over the worst clean observation, about 1.5x the observed spread. Making it blocking needs more batches or a tighter statistic, NOT a narrower number. ⚠ The third batch overlapped ~30s of a vitest run; the contention is recorded because it may have raised that batch, and the observation is kept anyway — discarding an inconvenient measurement is how a gate comes to describe a machine that does not exist, and a higher floor moves the limit in the insensitive direction rather than the falsely-green one. ⚠ CORROBORATION OF THE REDUCER on a workload S10-b never saw: across the three batches the MINIMUM spans 21.0 MiB where the MEDIAN spans 38.2 (471.3-509.5), so the minimum is again the steadier of the two; batch 1 run 2 is another run that never decayed inside the horizon (floor 630.2 against its siblings\' 457-493). Decomposition against G-RSS-IDLE\'s 55: the substrate accounts for roughly 400-455 MiB of the total, so this is overwhelmingly a substrate gate and its resolution is set by the substrate\'s own noise, not the core\'s. ⚠ DEVELOPER CLASS ONLY: G-RSS-IDLE needed a ci-runner limit ~3x its developer one, this gate has no runner observation at all, and the substrate cannot run on `clean-machine-smoke` because that job installs the published package while the only substrate that exists is the apps/studio checkout. S10-d wires it where a substrate is present. ⚠ Every run\'s last sample was still decaying, so as with G-RSS-IDLE the floor is an UPPER BOUND and a longer horizon can only lower it.',
+  },
   'G-COLD-START': {
     id: 'G-COLD-START',
     title: 'cold start to `initialize`',
@@ -240,8 +258,50 @@ export const GATES = {
     comparison: '<=',
     limit: 800,
     baseline:
-      "764 MiB measured 2026-08-11 on the GitHub macos-latest runner — browser engine 546, models 218 — for the `warmup --reranker --embeddings` this job runs. ⚠ The S10 spec and brief:180 both price acquisition at ~535 MiB, which is the browser engine ALONE; the 218 MiB of ranking and embedding models is real, is downloaded by the same command, and is quantified here for the first time. Today's cost, not a target: asserted so the tier work is measured against a gate that already existed rather than one written to fit its result. S10-d replaces it with the amended-D1 pair (desktop <= 320, no-display == 0), which must be re-derived against 764 rather than 535.",
+      "764 MiB measured 2026-08-11 on the GitHub macos-latest runner — browser engine 546, models 218 — for the `warmup --reranker --embeddings` this job runs. ⚠ The S10 spec and brief:180 both price acquisition at ~535 MiB, which is the browser engine ALONE; the 218 MiB of ranking and embedding models is real, is downloaded by the same command, and is quantified here for the first time. Today's cost, not a target: asserted so the tier work is measured against a gate that already existed rather than one written to fit its result. The models were re-measured independently on darwin-arm64 (fastembed 128 + transformers 88 = 216 MiB), so 218 is a property of the download rather than of the runner. ⚠ S10-d's replacement pair CANNOT be stated over this artifact — see SUBSTRATE_ONLY_ACQUISITION.",
   },
+};
+
+/**
+ * ⚠ Why S10-d's replacement pair cannot be stated over G-ACQUIRE's artifact, and what to
+ * measure instead.
+ *
+ * Spec §4.3 replaces G-ACQUIRE with two tier-conditional gates: G-ACQUIRE-DESKTOP <= 320 MiB
+ * ("296 substrate + headroom; today 535") and G-ACQUIRE-HEADLESS == 0 MiB. Both were derived
+ * while acquisition was believed to be the browser engine alone. It is not: S10-a measured
+ * 764 MiB, of which **218 MiB is ranking and embedding models**, and those models are
+ * TIER-INDEPENDENT. No browser rung makes `warmup` stop downloading a reranker.
+ *
+ * Worked against G-ACQUIRE's own artifact (growth of `ms-playwright` + the data dir):
+ *
+ *   desktop, post-S10-d   = substrate 300 + models 218 + browser engine 0 = ~518 MiB
+ *   no-display, post-S10-d = substrate   0 + models 218 + browser engine 0 = ~218 MiB
+ *
+ * So `<= 320` reds at baseline with no regression present, and `== 0` reds at baseline for a
+ * host that correctly downloaded nothing at all of the substrate. That is the same error class
+ * as the spec's G-DIET 670 (§ G-DIET baseline): a threshold derived from one line item and then
+ * asserted over a total.
+ *
+ * The fix is not a bigger number, because a bigger number would destroy what `==` is for.
+ * D-S10-5's claim is that a no-display host acquires ZERO SUBSTRATE BYTES — exact, and true —
+ * and "zero substrate" is only expressible over a substrate-scoped artifact. So S10-d should:
+ *
+ *   1. scope the tier-conditional pair to the SUBSTRATE directory alone, where 320 keeps its
+ *      ~6.7% headroom over a measured 300 and `== 0` becomes both exact and achievable; and
+ *   2. keep THIS gate, over the full artifact, unchanged. It is what still prices the models,
+ *      and it is what catches the doubling regression D1 fears: acquiring the substrate AND the
+ *      browser engine lands at 300 + 546 + 218 = 1064, well over the 800 limit.
+ *
+ * Substrate baseline for (1): **300 MiB**, `du -sm node_modules/electron` after a real
+ * `node node_modules/electron/install.js` on darwin-arm64 at 96af301a — Electron 43.0.0, the
+ * version `apps/studio` pins. This corroborates the spec's 296 on a second machine.
+ * ⚠ Platform-scoped like every other baseline here: the linux and win32 substrate downloads
+ * have NOT been measured, and the packaged S16-alpha app is a different artifact again.
+ */
+export const SUBSTRATE_ONLY_ACQUISITION = {
+  substrateMiB: 300,
+  modelsMiB: 218,
+  browserEngineMiB: 546,
 };
 
 /**

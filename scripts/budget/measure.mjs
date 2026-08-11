@@ -5,6 +5,7 @@
  *   node scripts/budget/measure.mjs install-size
  *   node scripts/budget/measure.mjs tarball
  *   node scripts/budget/measure.mjs idle-rss
+ *   node scripts/budget/measure.mjs substrate-rss    # needs the apps/studio checkout, built
  *   node scripts/budget/measure.mjs cold-start
  *   node scripts/budget/measure.mjs acquire-snapshot <file>   # before `wigolo warmup`
  *   node scripts/budget/measure.mjs acquire-diff <file>       # after it
@@ -215,6 +216,122 @@ async function measureIdleRss() {
   return report('G-RSS-IDLE', minimum(floors), detail);
 }
 
+// ------------------------------------------------------- idle RSS + substrate
+
+/**
+ * Every process in a tree, by walking `ps -eo pid=,ppid=`.
+ *
+ * `pgrep -P` is one level and an Electron tree is three (launcher -> main -> renderer / GPU /
+ * network / utility helpers). Charging only the process we spawned would understate the
+ * substrate by most of its cost, which is the entire quantity this gate exists to bound.
+ */
+function descendantPids(rootPid) {
+  const children = new Map();
+  for (const line of execFileSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf8' }).trim().split('\n')) {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+    if (!children.has(ppid)) children.set(ppid, []);
+    children.get(ppid).push(pid);
+  }
+  const seen = [];
+  const stack = [rootPid];
+  while (stack.length) {
+    const p = stack.pop();
+    seen.push(p);
+    for (const c of children.get(p) ?? []) stack.push(c);
+  }
+  return seen;
+}
+
+function treeRssMiB(pids) {
+  let total = 0;
+  for (const pid of pids) {
+    try {
+      const out = execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+      if (out) total += Number.parseInt(out, 10) / 1024;
+    } catch {
+      // The process exited between enumeration and sampling. Skipping it understates by that
+      // process, which runs in the safe direction for a `<=` assertion.
+    }
+  }
+  return Math.round(total * 10) / 10;
+}
+
+/**
+ * Start the desktop substrate, hidden, and resolve once it has published a session handle.
+ *
+ * ⚠ This drives the DEV CHECKOUT, because that is the only substrate that exists:
+ * `installedSubstrateExists()` returns false until S16-alpha ships a distributable app. It runs
+ * the BUILT bundles under `preview` rather than `dev`, so a vite dev server and its HMR
+ * machinery are not charged to the substrate's idle footprint — `dev` would measure the
+ * toolchain as much as the product. When S16-alpha lands, this is the function that points at
+ * the installed app instead, and the number should be re-taken rather than assumed to carry.
+ */
+async function spawnSubstrateHidden(dataDir) {
+  const studio = spawn('npx', ['electron-vite', 'preview'], {
+    cwd: join(ROOT, 'apps', 'studio'),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, WIGOLO_DATA_DIR: dataDir, WIGOLO_STUDIO_HIDDEN: '1' },
+  });
+  studio.stdout.resume();
+  studio.stderr.resume();
+  const handlePath = join(dataDir, 'studio', 'current.json');
+  const start = Date.now();
+  while (Date.now() - start < 90000) {
+    if (existsSync(handlePath)) {
+      // The host opens its own blank tab on start. Let the renderer exist before the horizon
+      // begins, or the first samples measure a half-started tree rather than an idle one.
+      await sleep(3000);
+      return studio;
+    }
+    await sleep(500);
+  }
+  throw new Error('substrate never published a session handle within 90s');
+}
+
+function killTree(child) {
+  for (const pid of descendantPids(child.pid)) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+}
+
+/** One run of the core + substrate footprint. Same statistic and horizon as G-RSS-IDLE. */
+async function substrateRssFloorOnce() {
+  const dataDir = freshDataDir();
+  const { child: mcp, ready } = spawnMcpAndInit(dataDir);
+  let studio = null;
+  try {
+    await ready;
+    studio = await spawnSubstrateHidden(dataDir);
+    const samples = [];
+    const start = Date.now();
+    while (Date.now() - start < RSS_HORIZON_MS) {
+      await sleep(RSS_SAMPLE_INTERVAL_MS);
+      // Re-enumerated every sample: Electron spawns helpers lazily, and a tree fixed at t=0
+      // would silently stop counting whatever appeared at t=6s.
+      const live = [...descendantPids(mcp.pid), ...descendantPids(studio.pid)];
+      samples.push({ tMs: Date.now() - start, valueMB: treeRssMiB(live) });
+    }
+    return { floor: floorMiB(samples), samples };
+  } finally {
+    if (studio) killTree(studio);
+    mcp.kill('SIGKILL');
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+async function measureSubstrateRss() {
+  if (process.platform === 'win32') throw new Error('RSS sampling uses `ps`; wire a win32 sampler before gating there');
+  const floors = [];
+  const traces = [];
+  for (let i = 0; i < RSS_RUNS; i++) {
+    const { floor, samples } = await substrateRssFloorOnce();
+    floors.push(floor);
+    traces.push(`run${i + 1} floor=${floor} [${samples.map((s) => s.valueMB).join(' ')}]`);
+  }
+  const detail = `${traces.join('; ')} | floors=[${floors.join(' ')}] min=${minimum(floors)} median=${median(floors)}`;
+  return report('G-RSS-SUBSTRATE', minimum(floors), detail);
+}
+
 async function measureColdStart() {
   const runs = [];
   for (let i = 0; i < COLD_START_RUNS; i++) {
@@ -279,6 +396,7 @@ const handlers = {
   'install-size': measureInstallSize,
   tarball: measureTarball,
   'idle-rss': measureIdleRss,
+  'substrate-rss': measureSubstrateRss,
   'cold-start': measureColdStart,
   'acquire-snapshot': () => acquireSnapshot(arg ?? join(ROOT, 'budget-acquire.json')),
   'acquire-diff': () => acquireDiff(arg ?? join(ROOT, 'budget-acquire.json')),

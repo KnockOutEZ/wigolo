@@ -31,6 +31,7 @@ import {
   DEFAULT_BACKOFF_MS,
 } from './politeness.js';
 import { resolveStealthUA } from './stealth.js';
+import { recordFetchOutcome, markSubstrateServed } from './tier-occupancy.js';
 import {
   CLEARANCE_COOKIE_NAME,
   clearanceCookieValue,
@@ -885,7 +886,11 @@ export class SmartRouter {
     // both qualify: under amended-D4 the bridge may start the substrate itself.
     if (this.studioBridgeOverride === undefined && readHandle(dataDir) === null && !studioLaunchable()) return null;
     const bridge = this.studioBridgeOverride ?? (await import('./studio-bridge.js'));
-    return bridge.studioBridgeFetch(url, { dataDir });
+    const served = await bridge.studioBridgeFetch(url, { dataDir });
+    // D-S10-4: the bridge reports `method: 'browser'` on purpose (see studio-bridge.ts), so the
+    // occupancy recorder cannot tell the two rungs apart from the result alone. Mark it here,
+    // on the ROUTER path, so a host with no substrate still records its own rungs.
+    return served ? markSubstrateServed(served) : null;
   }
 
   private async tryEscapeHatch(
@@ -990,7 +995,27 @@ export class SmartRouter {
 
   async fetch(url: string, options: RouterFetchOptions & { mode: 'stealth' }): Promise<RawFetchResult | StageError>;
   async fetch(url: string, options?: RouterFetchOptions): Promise<RawFetchResult>;
+  /**
+   * D-S10-4 — the ONE seam where a fetch's terminal rung is recorded.
+   *
+   * The ladder below has roughly twenty terminal returns, and instrumenting them individually
+   * would mean a new branch silently goes uncounted the first time someone adds one. Recording
+   * at the single exit instead makes "counted" a property of returning from `fetch`, which is
+   * not something a later change can forget to do.
+   *
+   * A THROW is deliberately not recorded: an exception escaping the router is not a rung
+   * outcome, and inventing one for it would put faults into a demand measurement.
+   */
   async fetch(
+    url: string,
+    options: RouterFetchOptions = {},
+  ): Promise<RawFetchResult | StageError> {
+    const result = await this.routeFetch(url, options);
+    recordFetchOutcome(result);
+    return result;
+  }
+
+  private async routeFetch(
     url: string,
     options: RouterFetchOptions = {},
   ): Promise<RawFetchResult | StageError> {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFile } from 'node:fs/promises';
-import { buildBrowserTierDoctorLines } from '../../../src/cli/doctor.js';
+import { buildBrowserTierDoctorLines, buildTierOccupancyDoctorLines } from '../../../src/cli/doctor.js';
+import type { TierOccupancy } from '../../../src/fetch/tier-occupancy.js';
 import { formatStatus, type StatusBag } from '../../../src/cli/tui/status-format.js';
 import {
   resolveBrowserTier,
@@ -54,6 +55,32 @@ describe('doctor — browser tier section (D-S10-9)', () => {
   });
 });
 
+describe('doctor — tier-occupancy section (D-S10-4)', () => {
+  const empty = (): TierOccupancy => ({
+    desktop: { http: 0, tls: 0, browser: 0, substrate: 0, browserUnavailable: 0, blocked: 0 },
+    browser: { http: 0, tls: 0, browser: 0, substrate: 0, browserUnavailable: 0, blocked: 0 },
+    'no-display': { http: 0, tls: 0, browser: 0, substrate: 0, browserUnavailable: 0, blocked: 0 },
+  });
+
+  it('heads the counters so they read as occupancy, not as a second tier verdict', () => {
+    // The section sits immediately under "Resolved: <tier>". Without a header of its own, a row
+    // of six numbers directly beneath a verdict reads as detail OF the verdict.
+    expect(buildTierOccupancyDoctorLines(empty())[0]).toBe('  Rungs used:');
+  });
+
+  it('reports the no-display browser-rung count that the D10(b) decision turns on', () => {
+    // WHY here as well as in the module's own tests: `doctor` is where this number is actually
+    // read by a human, and a counter nobody can see cannot inform a decision.
+    const occ = empty();
+    occ['no-display'].browser = 9;
+    occ['no-display'].browserUnavailable = 4;
+    const text = buildTierOccupancyDoctorLines(occ).join('\n');
+    expect(text).toContain('On the no-display tier:');
+    expect(text).toContain('9 by a browser engine');
+    expect(text).toContain('4 needed a browser engine this machine could not start');
+  });
+});
+
 describe('status — browser tier block', () => {
   const base: StatusBag = {
     version: '1.2.3',
@@ -86,6 +113,36 @@ describe('status — browser tier block', () => {
     });
     expect(out).toContain(NO_DISPLAY_CEILING);
     expect(out).toContain('attach a display session');
+  });
+
+  it('stays silent about rung occupancy until something has been fetched', () => {
+    // D-S10-4, following the browserSession precedent directly above it: a block of zeroes
+    // printed for every fresh install is the kind of section people learn to skip, and it would
+    // be skipped by the time it finally carries the number the D10(b) decision needs.
+    expect(formatStatus(base)).not.toContain('Rungs used');
+  });
+
+  it('renders the occupancy row for the tier this host resolved to', () => {
+    const out = formatStatus({
+      ...base,
+      rungsUsed: { http: 12, tls: 3, browser: 4, substrate: 0, browserUnavailable: 2, blocked: 1 },
+    });
+    expect(out).toContain('Rungs used: 12 direct, 3 hardened, 4 browser engine, 0 attended session');
+    expect(out).toMatch(/could not start: 2/);
+    expect(out).toMatch(/bot-protection challenge: 1/);
+    expect(out).toContain('never leave this machine');
+  });
+
+  it('omits the unmet-demand lines when there is no unmet demand', () => {
+    // WHY separately from the case above: those two lines are the ones a reader will treat as a
+    // problem report. Printing "0" for them on a healthy machine manufactures a problem.
+    const out = formatStatus({
+      ...base,
+      rungsUsed: { http: 5, tls: 0, browser: 0, substrate: 0, browserUnavailable: 0, blocked: 0 },
+    });
+    expect(out).toContain('Rungs used: 5 direct');
+    expect(out).not.toMatch(/could not start/);
+    expect(out).not.toMatch(/bot-protection challenge/);
   });
 });
 
