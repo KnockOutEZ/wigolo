@@ -204,7 +204,7 @@ export const GATES = {
       'ci-runner': 185,
     },
     baseline:
-      'developer class: floor ranged 17.7-44.2 MiB over 6 runs, measured 2026-08-11 on darwin-arm64 at 7aa08144 (44.2/44.2/44.2 then 17.7/44.2/34.4); 55 sits above the highest observed floor and below the lowest-plus-40, so a clean build passes and a 40 MiB retained allocation reds from anywhere in the range (the spec\'s 130 would have let that leak through). ci-runner class: GitHub macos-latest floors 163.5/163.0/162.8 in one batch and 163.4/196.3/166.1 in a second — ~4x the developer machine on the same statistic and horizon, which is why the two classes carry different limits rather than one loosened number. Individual runner floors span 162.8-196.3 (in the 196.3 run the process never decayed inside the 45s horizon); reduced by the minimum those two batches give 162.8 and 163.4, and 185 is set from that. BLOCKING on ci-runner from S10-b.',
+      'developer class: floor ranged 17.7-44.2 MiB over 6 runs, measured 2026-08-11 on darwin-arm64 at 7aa08144 (44.2/44.2/44.2 then 17.7/44.2/34.4); 55 sits above the highest observed floor and below the lowest-plus-40, so a clean build passes and a 40 MiB retained allocation reds from anywhere in the range (the spec\'s 130 would have let that leak through). ci-runner class: GitHub macos-latest floors 163.5/163.0/162.8 in one batch and 163.4/196.3/166.1 in a second — ~4x the developer machine on the same statistic and horizon, which is why the two classes carry different limits rather than one loosened number. Individual runner floors span 162.8-196.3 (in the 196.3 run the process never decayed inside the 45s horizon); reduced by the minimum those two batches give 162.8 and 163.4, and 185 is set from that. A third batch, taken by the blocking gate itself on the S10-b PR, came out [162.8, 194.8, 162.8] -> min 162.8: it reproduced the non-decay run (now 2 of 9 runner runs) and put the minimum within 0.6 MiB of both earlier batches, which is the anchor 185 rests on. BLOCKING on ci-runner from S10-b.',
   },
   'G-COLD-START': {
     id: 'G-COLD-START',
@@ -218,7 +218,7 @@ export const GATES = {
     comparison: '<=',
     limit: 1500,
     baseline:
-      '461 ms median (528/455/456/461/461) measured 2026-08-11 on darwin-arm64 at 7aa08144, and 828 ms median on a GitHub macos-latest runner. Median-of-5 rather than a single run: the first spawn on a cold page cache over-measures and is not what a running agent experiences. ONE limit covers both machine classes here, unlike G-RSS-IDLE — the runner is 1.8x slower and still 45% under the bound, so there is no threshold to split. BLOCKING from S10-b: the runner figure is the one that was missing when this shipped report-only, and 828 against 1500 needs no further argument.',
+      '461 ms median (528/455/456/461/461) measured 2026-08-11 on darwin-arm64 at 7aa08144, and 828 ms then 670 ms median (650/603/731/670/936) on a GitHub macos-latest runner. Median-of-5 rather than a single run: the first spawn on a cold page cache over-measures and is not what a running agent experiences. ONE limit covers both machine classes here, unlike G-RSS-IDLE — the runner is 1.8x slower and still 45% under the bound, so there is no threshold to split. BLOCKING from S10-b: the runner figure is the one that was missing when this shipped report-only, and 828 against 1500 needs no further argument.',
   },
   'G-ACQUIRE': {
     id: 'G-ACQUIRE',
