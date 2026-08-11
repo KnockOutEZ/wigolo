@@ -273,6 +273,27 @@ describe('buildFallbackReport', () => {
     expect(next === '' || /\s/.test(next)).toBe(true);
   });
 
+  // The boundary-aware cut is subtractive, so a source whose whole body is one
+  // code block — a gist, a config file, a raw source page — had its only
+  // construct deleted and contributed NO body to the report, at any budget. The
+  // report still listed the source and its URL, so the caller saw a cited source
+  // with nothing under it and no way to tell that from a source that was empty.
+  it('still contributes a body when the source is nothing but a code block', () => {
+    const sources: ResearchSource[] = [
+      makeSource({
+        title: 'Config',
+        markdown_content:
+          '```yaml\n' + 'replication: { mode: logical, nodes: 3 }\n'.repeat(30) + '```',
+      }),
+    ];
+
+    const report = buildFallbackReport('test', sources, 800);
+
+    expect(report.length).toBeLessThanOrEqual(800);
+    expect(report).toContain('replication: { mode: logical, nodes: 3 }');
+    expect((report.match(/```/g) ?? []).length % 2).toBe(0);
+  });
+
   it('skips sources with no content', () => {
     const sources: ResearchSource[] = [
       makeSource({ title: 'Empty', markdown_content: '', fetched: false }),
