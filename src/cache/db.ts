@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 import * as sv from 'sqlite-vec';
 import { createLogger } from '../logger.js';
 import { getConfig } from '../config.js';
-import { isPackagedBinary } from '../util/packaged.js';
+import { isInsideAppArchive, isPackagedBinary } from '../util/packaged.js';
 import { applyMigrations } from './migrations/runner.js';
 
 const log = createLogger('cache');
@@ -15,35 +15,52 @@ const log = createLogger('cache');
  * On the npm/source path this is a straight `sv.load(db)` — SQLite dlopen's the
  * dylib/.so straight out of node_modules and nothing changes.
  *
- * Inside a single-file packaged binary (@yao-pkg/pkg) the extension lives in the
- * virtual `/snapshot` filesystem, which the OS loader (dlopen) cannot read — the
- * native `.node` addons work because pkg auto-extracts them at require() time,
- * but `db.loadExtension(path)` hands a raw path to SQLite with no pkg hook, so a
- * `/snapshot/...` path fails, and SQLite then re-suffixes the missing file to a
- * doubled `vec0.dylib.dylib` while probing. Fix: copy the extension out of the
- * snapshot to a real path under `<dataDir>/native/` and load it from there. The
- * copy is idempotent — re-copied only when the on-disk size differs (a binary
- * upgrade), so warm starts pay nothing.
+ * TWO virtual filesystems need the copy-out path, not one. Both hand SQLite a
+ * path the OS loader cannot resolve, and both used to be diagnosed as a broken
+ * install because the error surfaces as a missing library or a doubled
+ * `vec0.dylib.dylib` (SQLite re-suffixing while it probes for a file that, as
+ * far as the OS is concerned, is not there):
+ *
+ *   - a single-file packaged binary (@yao-pkg/pkg), where the extension lives
+ *     under the virtual `/snapshot` tree. Native `.node` addons survive because
+ *     pkg auto-extracts them at require() time, but `db.loadExtension(path)`
+ *     hands a raw path to SQLite with no pkg hook.
+ *   - a desktop-app archive (`.asar`), which is a single FILE on disk. Only the
+ *     desktop shell's patched `fs` can see inside it; SQLite's dlopen is not
+ *     routed through that shim, so it walks the real filesystem and gets
+ *     ENOTDIR at the archive segment.
+ *
+ * The archive case is invisible to `isPackagedBinary()` (`process.pkg` is
+ * undefined in a normal Electron install), which is why it took the failing
+ * branch. The gate is keyed on the PATH for both — see `isInsideAppArchive`.
+ *
+ * Fix: copy the extension out to a real path under `<dataDir>/native/` and load
+ * it from there. The copy is idempotent — re-copied only when the on-disk size
+ * differs (an upgrade), so warm starts pay nothing.
  *
  * `dbPath` is `<dataDir>/wigolo.db`, so the sibling `native/` dir is the data
  * dir; no config dependency is pulled into the cache layer.
  */
 function loadVecExtension(db: Database.Database, dbPath: string): void {
-  if (!isPackagedBinary()) {
+  // The path SQLite would be handed. Ask it about itself rather than asking the
+  // process what it is: `process.pkg` cannot see an archive, and an archive path
+  // can also arrive in a plain-Node child that has no shim at all.
+  const sourcePath = sv.getLoadablePath();
+  const insideArchive = isInsideAppArchive(sourcePath);
+
+  if (!isPackagedBinary() && !insideArchive) {
     sv.load(db);
     return;
   }
 
-  // Snapshot source path, e.g. /snapshot/.../sqlite-vec-darwin-arm64/vec0.dylib
-  const snapshotPath = sv.getLoadablePath();
   const nativeDir = join(dirname(dbPath), 'native');
-  const realPath = join(nativeDir, basename(snapshotPath));
+  const realPath = join(nativeDir, basename(sourcePath));
 
   mkdirSync(nativeDir, { recursive: true });
 
   let needsCopy = true;
   try {
-    const src = statSync(snapshotPath);
+    const src = statSync(sourcePath);
     const dst = statSync(realPath);
     needsCopy = src.size !== dst.size;
   } catch {
@@ -51,7 +68,15 @@ function loadVecExtension(db: Database.Database, dbPath: string): void {
     needsCopy = true;
   }
   if (needsCopy) {
-    copyFileSync(snapshotPath, realPath);
+    try {
+      copyFileSync(sourcePath, realPath);
+    } catch (err) {
+      // Do not let the raw ENOTDIR through. Unreadable-because-archived is a
+      // PACKAGING defect with a specific remedy, and the OS-level wording sends
+      // whoever reads it to reinstall instead — the exact misdiagnosis this
+      // branch exists to prevent.
+      throw new Error(archiveCopyFailureMessage(sourcePath, insideArchive, err));
+    }
   }
 
   // Load the exact extracted file. Passing the full, existing `.dylib`/`.so`
@@ -59,6 +84,31 @@ function loadVecExtension(db: Database.Database, dbPath: string): void {
   // seen under /snapshot). No entrypoint override — sqlite-vec's default init
   // symbol resolves from the filename, matching `sv.load`'s behaviour.
   db.loadExtension(realPath);
+}
+
+/**
+ * Name the real cause when the extension cannot be copied out to a real path.
+ *
+ * Reading a file out of an app archive needs the desktop shell's patched `fs`.
+ * The cache DB deliberately runs in a plain-Node child (better-sqlite3 is built
+ * for the Node ABI, not the desktop shell's), and that child has NO shim — so an
+ * archived extension is not merely awkward there, it is unreachable, and copying
+ * out cannot rescue it. The only fix is to publish the file outside the archive,
+ * so that is what the message asks for.
+ */
+function archiveCopyFailureMessage(sourcePath: string, insideArchive: boolean, err: unknown): string {
+  const cause = err instanceof Error ? err.message : String(err);
+  if (!insideArchive) {
+    return `could not extract the vector search extension from ${sourcePath} to a real path: ${cause}`;
+  }
+  return (
+    `the vector search extension is packaged INSIDE a desktop application archive ` +
+    `(${sourcePath}) and cannot be read from there: ${cause}. ` +
+    `An archive is a single file, so neither the database engine's library loader nor a ` +
+    `plain background process can see into it. This is a packaging problem, not a broken ` +
+    `install — reinstalling will not change it. Add the extension to the packaging step's ` +
+    `unpacked-files list (electron-builder: "asarUnpack") so it ships as a real file on disk.`
+  );
 }
 
 // The DB stores session-bearing anti-bot clearance tokens (cf_clearance), so
@@ -87,10 +137,22 @@ export function isVecExtensionLoaded(): boolean {
   return vecLoaded;
 }
 
-// Register a process-exit guard so any CLI command that opens the DB
-// closes it before native teardown — prevents the better-sqlite3 +
-// sqlite-vec destructor race that surfaces as
-// `mutex lock failed: Invalid argument` on doctor/warmup exit.
+// Register a process-exit guard so any CLI command that opens the DB closes it
+// deterministically instead of leaving it to native teardown order.
+//
+// This hook does NOT prevent the `mutex lock failed: Invalid argument` abort,
+// and the "better-sqlite3 + sqlite-vec destructor race" this comment used to
+// name as the cause is not supported by measurement: a process that opens a
+// DB, loads the vector extension, runs a query and exits WITHOUT closing it
+// terminates cleanly (macOS/arm64, plain Node). If that race were the
+// mechanism, the unclosed case is where it would fire.
+//
+// What the real cause is remains OPEN — the abort was reported from doctor and
+// warmup, which load several other native modules, and it did not reproduce
+// under a bare require of any of them either. Deliberately not guessed at again
+// here: the previous guess is what sent people looking at this hook, and a
+// named-but-wrong cause is more expensive than an admitted unknown. The hook is
+// kept because closing the handle you opened is right regardless of the abort.
 function ensureExitHookRegistered(): void {
   if (exitHookRegistered) return;
   exitHookRegistered = true;
@@ -132,8 +194,19 @@ export function initDatabase(dbPath: string): Database.Database {
     vecLoaded = true;
   } catch (err) {
     vecLoaded = false;
+    // Always report WHICH file could not be loaded and whether it is archived.
+    // Without those two fields the warning reads as a generic missing-library
+    // error and a packaging defect gets reported as "the install is broken".
+    let extensionPath: string | undefined;
+    try {
+      extensionPath = sv.getLoadablePath();
+    } catch {
+      // sqlite-vec cannot even name its own artifact (unsupported platform).
+    }
     log.warn('sqlite-vec extension failed to load — vector search disabled', {
       error: err instanceof Error ? err.message : String(err),
+      extensionPath,
+      insideAppArchive: extensionPath ? isInsideAppArchive(extensionPath) : undefined,
     });
   }
 
