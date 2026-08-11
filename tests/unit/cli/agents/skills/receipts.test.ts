@@ -319,14 +319,26 @@ describe('withReceiptsLock — concurrent cross-process writers (F17)', () => {
     }
   }
 
-  async function spawnChild(body: string): Promise<{
+  interface WriterOutcome {
+    writerId: number;
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    stdout: string;
+    stderr: string;
+  }
+
+  async function spawnChild(
+    body: string,
+    envOverrides: Record<string, string> = {},
+  ): Promise<{
     proc: import('node:child_process').ChildProcess;
     done: Promise<number>;
+    settled: Promise<Omit<WriterOutcome, 'writerId'>>;
   }> {
     const { spawn } = await import('node:child_process');
     const p = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', body], {
-      env: { ...process.env, WIGOLO_DATA_DIR: tmpData, HOME: tmpHome },
-      stdio: ['ignore', 'ignore', 'pipe'],
+      env: { ...process.env, WIGOLO_DATA_DIR: tmpData, HOME: tmpHome, ...envOverrides },
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
     spawned.push(p);
     // Belt and braces: a survivor must not be able to hold the runner open even in the window
@@ -335,14 +347,115 @@ describe('withReceiptsLock — concurrent cross-process writers (F17)', () => {
     // spawn's stdio pipes are Sockets at runtime but are typed as Readable, which has no
     // unref. Socket#unref is the part that actually stops a PIPED stream holding the event
     // loop open — unref'ing the child alone does not release its stdio handles.
+    (p.stdout as unknown as { unref?: () => void } | null)?.unref?.();
     (p.stderr as unknown as { unref?: () => void } | null)?.unref?.();
+
+    let stdout = '';
+    let stderr = '';
+    p.stdout?.on('data', (d) => (stdout += String(d)));
+    p.stderr?.on('data', (d) => (stderr += String(d)));
+
     const done = new Promise<number>((resolve, reject) => {
-      let stderr = '';
-      p.stderr?.on('data', (d) => (stderr += String(d)));
       p.on('error', reject);
       p.on('exit', (code) => (code === 0 ? resolve(0) : reject(new Error(`child exited ${code}: ${stderr}`))));
     });
-    return { proc: p, done };
+    // `done` exists for the orphan-sweep test, which NEEDS an early rejection to catch its
+    // sibling still running. Every other caller consumes `settled` instead, which would leave
+    // `done` rejecting with nobody listening — an unhandled rejection that vitest reports as a
+    // second, unrelated-looking failure. Attaching a handler here marks it handled without
+    // changing what `done` settles to, so the sweep test's `.rejects` still works.
+    void done.catch(() => {});
+
+    // 'close' rather than 'exit': exit fires when the process is gone, which can be BEFORE its
+    // piped stdout has been drained. A verdict assembled from a half-read report would blame
+    // the child for saying nothing when it had in fact said everything.
+    const settled = new Promise<Omit<WriterOutcome, 'writerId'>>((resolve) => {
+      p.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+    });
+
+    return { proc: p, done, settled };
+  }
+
+  async function runWriter(
+    writerId: number,
+    body: string,
+    envOverrides: Record<string, string> = {},
+  ): Promise<WriterOutcome> {
+    const { settled } = await spawnChild(body, envOverrides);
+    return { writerId, ...(await settled) };
+  }
+
+  const CHILD_ENTRY = `{ scope: 'global', agents: ['claude-code'], packs: {}, installedAt: 'now' }`;
+
+  /** A writer that does `cycles` honest read-mutate-write turns and reports what the lock accepted. */
+  function writerScript(mod: string, keyBase: string, id: number, cycles: number): string {
+    return `
+      import { pathToFileURL } from 'node:url';
+      const m = await import(pathToFileURL(${JSON.stringify(mod)}).href);
+      const wrote = [];
+      for (let i = 0; i < ${cycles}; i++) {
+        const key = ${JSON.stringify(keyBase)} + ${id} + '-c' + i;
+        m.withReceiptsLock((store) => {
+          store[key] = ${CHILD_ENTRY};
+          return { store, result: undefined };
+        });
+        // Pushed only AFTER the lock returned, so the report means "writes the lock told me
+        // succeeded" — which is the only claim a lost-update verdict may be built on.
+        wrote.push(key);
+      }
+      process.stdout.write(JSON.stringify({ receiptsPath: m.receiptsPath(), wrote }));
+    `;
+  }
+
+  /**
+   * Name the failure instead of leaving four causes wearing one face.
+   *
+   * A missing key used to be reported the same way whether the writer crashed, never ran,
+   * wrote to a different store, or genuinely lost its update — and only the last of those is
+   * about locking at all. (The windows CI red that prompted this WAS the first case: the child
+   * died on an EPERM from the lock mkdir.) Order matters: a crashed writer's absent keys say
+   * nothing about the lock, so the cheaper explanations must be excluded before the expensive
+   * one is allowed to be named.
+   *
+   * Returns null when every writer's claim is consistent with the shared store.
+   */
+  function diagnoseWriters(
+    outcomes: WriterOutcome[],
+    store: Record<string, unknown>,
+    parentReceiptsPath: string,
+  ): string | null {
+    for (const o of outcomes) {
+      if (o.code !== 0) {
+        const sig = o.signal ? ` (signal ${o.signal})` : '';
+        return `CHILD_FAILED: writer ${o.writerId} exited ${o.code}${sig} — the writer died, so nothing here is evidence about locking. Child stderr:\n${o.stderr.trim()}`;
+      }
+    }
+
+    const reports = new Map<number, { receiptsPath: string; wrote: string[] }>();
+    for (const o of outcomes) {
+      let report: { receiptsPath?: unknown; wrote?: unknown } | undefined;
+      try {
+        report = JSON.parse(o.stdout) as { receiptsPath?: unknown; wrote?: unknown };
+      } catch {
+        report = undefined;
+      }
+      const wrote = Array.isArray(report?.wrote) ? (report.wrote as string[]) : undefined;
+      if (!wrote || wrote.length === 0 || typeof report?.receiptsPath !== 'string') {
+        return `CHILD_SILENT: writer ${o.writerId} exited 0 without reporting a single completed write — it never ran the loop, so a missing key proves nothing. stdout=${JSON.stringify(o.stdout)} stderr=${JSON.stringify(o.stderr.trim())}`;
+      }
+      if (report.receiptsPath !== parentReceiptsPath) {
+        return `STORE_DIVERGED: writer ${o.writerId} wrote to ${report.receiptsPath} but the assertions read ${parentReceiptsPath} — the child resolved a different store, which is an environment fault, not a lost update.`;
+      }
+      reports.set(o.writerId, { receiptsPath: report.receiptsPath, wrote });
+    }
+
+    for (const [id, r] of reports) {
+      const missing = r.wrote.filter((k) => !(k in store));
+      if (missing.length > 0) {
+        return `LOST_UPDATE: writer ${id} reported ${r.wrote.length} writes accepted by the lock but ${missing.length} are absent from the shared store (first missing: ${missing[0]}) — the lock let a concurrent writer clobber them.`;
+      }
+    }
+    return null;
   }
 
   async function receiptsModPath(): Promise<string> {
@@ -360,32 +473,128 @@ describe('withReceiptsLock — concurrent cross-process writers (F17)', () => {
     const receiptsMod = await receiptsModPath();
     const keyBase = join(tmpHome, 'w');
 
-    const child = async (writerId: number): Promise<number> => {
-      const script = `
-          import { pathToFileURL } from 'node:url';
-          const { withReceiptsLock } = await import(pathToFileURL(${JSON.stringify(receiptsMod)}).href);
-          const id = ${writerId};
-          for (let i = 0; i < ${CYCLES}; i++) {
-            withReceiptsLock((store) => {
-              store[${JSON.stringify(keyBase)} + id + '-c' + i] = { scope: 'global', agents: ['claude-code'], packs: {}, installedAt: 'now' };
-              return { store, result: undefined };
-            });
-          }
-        `;
-      const { done } = await spawnChild(script);
-      return done;
-    };
+    // Every writer is collected, not just the first to fail. `Promise.all` settled on the first
+    // rejection and discarded whatever the sibling had to say — so a run where BOTH writers
+    // died reported one of them, and the other's outcome was lost with it.
+    const outcomes = await Promise.all(
+      Array.from({ length: WRITERS }, (_, id) =>
+        runWriter(id, writerScript(receiptsMod, keyBase, id, CYCLES)),
+      ),
+    );
 
-    await Promise.all(Array.from({ length: WRITERS }, (_, i) => child(i)));
-
-    const { readReceipts } = await load();
+    const { readReceipts, receiptsPath } = await load();
     const store = readReceipts();
+
+    // Classify first: this narrows the DIAGNOSIS, never the guarantee. The per-key assertions
+    // below are unchanged and still the contract — the verdict just gets to the cause before
+    // they restate the symptom.
+    expect(diagnoseWriters(outcomes, store, receiptsPath())).toBeNull();
+
     // Every writer's every cycle must be present — no clobbering.
     for (let w = 0; w < WRITERS; w++) {
       for (let c = 0; c < CYCLES; c++) {
         expect(store[`${keyBase}${w}-c${c}`], `missing key from writer ${w} cycle ${c}`).toBeDefined();
       }
     }
+  }, 30_000);
+
+  // The four probes below force each cause with a REAL child and assert the verdicts are
+  // distinct. Without them "the test now says which failure it saw" is a claim about code
+  // nobody has ever seen fire — and three of these four causes cannot be produced by waiting
+  // for the race to misbehave on this platform.
+
+  it('a writer that dies mid-run is named a child failure, not a lost update', async () => {
+    expect(tsxAvailable(), 'tsx not resolvable').toBe(true);
+    const receiptsMod = await receiptsModPath();
+    const key = join(tmpHome, 'died');
+
+    const outcome = await runWriter(
+      0,
+      `
+        import { pathToFileURL } from 'node:url';
+        const m = await import(pathToFileURL(${JSON.stringify(receiptsMod)}).href);
+        m.withReceiptsLock((store) => { store[${JSON.stringify(key)}] = ${CHILD_ENTRY}; return { store, result: undefined }; });
+        process.stderr.write('EPERM: operation not permitted, mkdir receipts.lock');
+        process.exit(7);
+      `,
+    );
+
+    const { readReceipts, receiptsPath } = await load();
+    const verdict = diagnoseWriters([outcome], readReceipts(), receiptsPath());
+
+    expect(verdict).toMatch(/^CHILD_FAILED: writer 0 exited 7/);
+    // The child's own words must survive into the verdict — that stderr is the entire reason
+    // the windows cause was identifiable at all.
+    expect(verdict).toContain('EPERM: operation not permitted');
+    expect(verdict).not.toContain('LOST_UPDATE');
+  }, 30_000);
+
+  it('a writer that exits clean without working is named silent, not a lost update', async () => {
+    expect(tsxAvailable(), 'tsx not resolvable').toBe(true);
+
+    // Exit 0 having done nothing: the one shape that survives an exit-code check and still
+    // leaves every key missing. Reported as a lost update it would indict the lock for a
+    // writer that never touched it.
+    const outcome = await runWriter(0, `process.exit(0);`);
+
+    const { readReceipts, receiptsPath } = await load();
+    const verdict = diagnoseWriters([outcome], readReceipts(), receiptsPath());
+
+    expect(verdict).toMatch(/^CHILD_SILENT: writer 0 exited 0 without reporting/);
+    expect(verdict).not.toContain('LOST_UPDATE');
+  }, 30_000);
+
+  it('a writer that resolved a different store is named divergence, not a lost update', async () => {
+    expect(tsxAvailable(), 'tsx not resolvable').toBe(true);
+    const receiptsMod = await receiptsModPath();
+    const keyBase = join(tmpHome, 'w');
+    const otherData = join(tmpdir(), `wigolo-rcpt-other-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(otherData, { recursive: true });
+
+    try {
+      // Succeeds at everything it was asked to do — against the wrong data dir. Every key is
+      // then absent from the store the assertions read, for a reason that has no bearing on
+      // locking at all.
+      const outcome = await runWriter(0, writerScript(receiptsMod, keyBase, 0, 3), {
+        WIGOLO_DATA_DIR: otherData,
+      });
+
+      const { readReceipts, receiptsPath } = await load();
+      const verdict = diagnoseWriters([outcome], readReceipts(), receiptsPath());
+
+      expect(verdict).toMatch(/^STORE_DIVERGED: writer 0 wrote to /);
+      expect(verdict).toContain(otherData);
+      expect(verdict).not.toContain('LOST_UPDATE');
+    } finally {
+      rmSync(otherData, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('a genuine clobber IS named a lost update — the verdict is not just a way to say no', async () => {
+    expect(tsxAvailable(), 'tsx not resolvable').toBe(true);
+    const receiptsMod = await receiptsModPath();
+    const keyBase = join(tmpHome, 'w');
+
+    // The must-fire half of the probe set. Three verdicts that only ever excuse the lock would
+    // be a classifier that has quietly stopped being able to accuse it. Forced deterministically
+    // rather than raced: writer 1 writes the store WITHOUT reading it first, which is exactly
+    // what a broken lock lets a concurrent writer do.
+    const w0 = await runWriter(0, writerScript(receiptsMod, keyBase, 0, 3));
+    const w1 = await runWriter(
+      1,
+      `
+        import { pathToFileURL } from 'node:url';
+        const m = await import(pathToFileURL(${JSON.stringify(receiptsMod)}).href);
+        const key = ${JSON.stringify(keyBase)} + '1-c0';
+        m.writeReceipts({ [key]: ${CHILD_ENTRY} });
+        process.stdout.write(JSON.stringify({ receiptsPath: m.receiptsPath(), wrote: [key] }));
+      `,
+    );
+
+    const { readReceipts, receiptsPath } = await load();
+    const verdict = diagnoseWriters([w0, w1], readReceipts(), receiptsPath());
+
+    expect(verdict).toMatch(/^LOST_UPDATE: writer 0 reported 3 writes accepted by the lock but 3 are absent/);
   }, 30_000);
 
   // The forced condition for the leak itself: one writer dies immediately, its sibling never

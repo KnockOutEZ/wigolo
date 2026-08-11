@@ -5,9 +5,17 @@ import { basename, join } from 'node:path';
 
 // Mock the packaged-binary detector so we can drive both branches of the
 // sqlite-vec loader without actually running inside a pkg snapshot.
+//
+// The app-archive detector is the loader's OTHER gate and must be mirrored here
+// even though these cases never involve an archive: a partial mock silently
+// replaces the whole module, so omitting it makes the real function `undefined`
+// and every test in this file dies inside the loader rather than at the mock.
+// It is pinned false so these remain purely single-file-binary cases; the
+// archive branch is covered in db-vec-app-archive.test.ts.
 const isPackagedMock = vi.hoisted(() => vi.fn<() => boolean>());
 vi.mock('../../../src/util/packaged.js', () => ({
   isPackagedBinary: isPackagedMock,
+  isInsideAppArchive: () => false,
 }));
 
 // Import AFTER the mock is registered.

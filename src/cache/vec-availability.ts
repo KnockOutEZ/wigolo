@@ -30,9 +30,12 @@
  * classifier: it reads exactly like a missing file.
  */
 
+import { isInsideAppArchive } from '../util/packaged.js';
+
 /** Machine-readable cause. `undefined` reason = no load has been attempted yet. */
 export type VecUnavailableReason =
   | 'unsupported_platform'
+  | 'app_archive'
   | 'musl_libc'
   | 'binary_missing'
   | 'load_failed';
@@ -109,8 +112,8 @@ export function recordVecLoaded(): void {
 }
 
 /** Classify, remember, and hand back the diagnosis so the caller can log it. */
-export function recordVecFailure(err: unknown): VecExtensionStatus {
-  status = classifyVecFailure(err);
+export function recordVecFailure(err: unknown, extensionPath?: string): VecExtensionStatus {
+  status = classifyVecFailure(err, extensionPath);
   return status;
 }
 
@@ -149,8 +152,26 @@ export function resetVecStatusForTests(): void {
  * deciding signal rather than the message text, and where an unknown libc must
  * fall through to a generic answer rather than guess.
  */
-export function classifyVecFailure(err: unknown): VecExtensionStatus {
+export function classifyVecFailure(err: unknown, extensionPath?: string): VecExtensionStatus {
   const detail = err instanceof Error ? err.message : String(err);
+
+  // Decided from the PATH, before any message test. An archived artifact is a
+  // packaging defect with a specific remedy, and its symptoms (ENOTDIR, a
+  // doubled `vec0.dylib.dylib`, no mention of an archive anywhere) read exactly
+  // like a broken install — which is why it must never fall through to a
+  // generic reason that tells the user to reinstall.
+  if (extensionPath && isInsideAppArchive(extensionPath)) {
+    return {
+      loaded: false,
+      reason: 'app_archive',
+      summary:
+        'the vector index is packaged inside the desktop application archive, where neither the database engine nor a background process can read it',
+      consequence: CONSEQUENCE,
+      remedy:
+        'This is a packaging problem, not a broken install — reinstalling will not change it. Ship the extension as a real file on disk by adding it to the packaging step\'s unpacked-files list.',
+      detail,
+    };
+  }
 
   if (/unsupported platform for sqlite-vec/i.test(detail)) {
     return {

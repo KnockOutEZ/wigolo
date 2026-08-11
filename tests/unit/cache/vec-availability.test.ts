@@ -87,6 +87,40 @@ describe('libc detection', () => {
 });
 
 describe('classifying a load failure', () => {
+  it('names the desktop archive as a packaging defect, never a broken install', () => {
+    // The archive case must not collapse into a generic reason. Its symptoms
+    // (ENOTDIR, a doubled `.dylib.dylib`, no mention of an archive) read exactly
+    // like a half-installed dependency, so a generic "reinstall" remedy sends
+    // the user to do work that cannot succeed and nobody looks at packaging.
+    const status = classifyVecFailure(
+      new Error('ENOTDIR: not a directory, open ...'),
+      '/Applications/Wigolo.app/Contents/Resources/app.asar/node_modules/sqlite-vec-darwin-arm64/vec0.dylib',
+    );
+    expect(status.reason).toBe('app_archive');
+    expect(status.remedy).toMatch(/not a broken install/i);
+    expect(status.remedy).toMatch(/unpacked-files/i);
+  });
+
+  it('does NOT call the already-unpacked path an archive failure', () => {
+    // `app.asar.unpacked/` is the REMEDY. Diverting it into the archive branch
+    // would report the correctly-fixed layout as the very defect it fixes —
+    // this is why the underlying predicate is segment-exact rather than a
+    // substring test for ".asar".
+    const status = classifyVecFailure(
+      new Error('some other loader failure'),
+      '/Applications/Wigolo.app/Contents/Resources/app.asar.unpacked/node_modules/sqlite-vec-darwin-arm64/vec0.dylib',
+    );
+    expect(status.reason).not.toBe('app_archive');
+  });
+
+  it('leaves the ordinary node_modules path alone', () => {
+    const status = classifyVecFailure(
+      new Error('some other loader failure'),
+      '/repo/node_modules/sqlite-vec-darwin-arm64/vec0.dylib',
+    );
+    expect(status.reason).toBe('load_failed');
+  });
+
   it('names an unsupported platform from sqlite-vec\'s own pre-resolution error', () => {
     setPlatform('freebsd');
     const status = classifyVecFailure(
@@ -204,5 +238,16 @@ describe('recorded status', () => {
     const returned = recordVecFailure(new Error("Cannot find module 'sqlite-vec-linux-x64/vec0.so'"));
     expect(returned.reason).toBe('binary_missing');
     expect(getVecExtensionStatus()).toEqual(returned);
+  });
+
+  it('carries the extension path through to the classifier', () => {
+    // db.ts resolves the path separately from the error and passes it in. If
+    // that argument were dropped the archive case would silently degrade to a
+    // generic reason with a green typecheck.
+    const returned = recordVecFailure(
+      new Error('ENOTDIR: not a directory'),
+      '/Applications/Wigolo.app/Contents/Resources/app.asar/node_modules/sqlite-vec-darwin-arm64/vec0.dylib',
+    );
+    expect(returned.reason).toBe('app_archive');
   });
 });
