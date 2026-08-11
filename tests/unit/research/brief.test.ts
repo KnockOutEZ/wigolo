@@ -132,6 +132,44 @@ describe('buildResearchBrief', () => {
     expect(brief.key_findings[0].length).toBeLessThanOrEqual(280);
   });
 
+  // P4c — the cap used to be a bare `.slice(279)`, so a finding routinely ended
+  // mid-word ("…compares the previous fib…"). Over the repo's own docs corpus
+  // that rule garbled 75% of every segment it truncated. The brief IS the
+  // research tool's deliverable, so the cut has to land somewhere a reader
+  // would stop.
+  it('cuts a long finding on a word boundary, not mid-word', async () => {
+    const prose =
+      'The reconciler compares the previous fiber tree against the next one and reuses whatever nodes it can, ' +
+      'which keeps the commit phase proportional to the number of changed nodes rather than the size of the tree. ' +
+      'That property is what makes large lists cheap to re-render when only one row changed in the underlying data.';
+    const sources = [mkSource({ markdown_content: prose })];
+    const brief = await buildResearchBrief('q', sources, [], 3000, 40000);
+
+    const finding = brief.key_findings[0];
+    expect(finding.length).toBeLessThanOrEqual(280);
+    expect(finding).toMatch(/…$/);
+
+    const body = finding.replace(/…$/, '');
+    expect(prose.startsWith(body)).toBe(true);
+    // The character the source continues with must be whitespace — i.e. we
+    // stopped at the end of a word rather than through the middle of one.
+    expect(prose.slice(body.length, body.length + 1)).toMatch(/\s/);
+  });
+
+  it('does not emit a finding that is only an unterminated code fence', async () => {
+    // A source whose first substantive block is a long fenced block used to
+    // yield a finding consisting of an opening ``` and half a command. There is
+    // no honest way to shorten that, so it produces no finding at all.
+    const sources = [mkSource({
+      markdown_content: '```bash\n' + 'wigolo search --max-results=50 --include-domains=example.com \\\n'.repeat(12) + '```\n',
+    })];
+    const brief = await buildResearchBrief('q', sources, [], 3000, 40000);
+
+    for (const f of brief.key_findings) {
+      expect((f.match(/```/g) ?? []).length % 2).toBe(0);
+    }
+  });
+
   it('flattens inline markdown links so truncation cannot chop mid-link', async () => {
     const md = [
       'Body text describing how the linked author [Pavlo Stetsiuk](https://medium.com/?source=post_page-----abc123--------------------------------) wrote about Postgres 18 release notes covering wal segment rotation and pg_dump improvements that arrived in May 2026 with the latest cumulative update.',

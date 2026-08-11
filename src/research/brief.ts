@@ -4,6 +4,7 @@ import { extractHighlights } from '../search/highlights.js';
 import { buildCitationGraph } from './citation-graph.js';
 import { detectEntityGaps } from './entity-extractor.js';
 import { SCORE_FLOOR } from './source-validation.js';
+import { truncateAtBoundary } from '../search/truncate.js';
 
 const MAX_HIGHLIGHTS = 12;
 const MAX_KEY_FINDING_LEN = 280;
@@ -31,7 +32,7 @@ export async function buildResearchBrief(
   const searchItems: SearchResultItem[] = fetched.map((s) => ({
     title: s.title,
     url: s.url,
-    snippet: stripResearchChrome(s.markdown_content).slice(0, 200),
+    snippet: truncateAtBoundary(stripResearchChrome(s.markdown_content), 200),
     markdown_content: s.markdown_content,
     relevance_score: s.relevance_score,
   }));
@@ -149,9 +150,8 @@ function buildKeyFindings(
     if (s.relevance_score < SCORE_FLOOR) break;
     const first = firstSubstantiveParagraph(s.markdown_content);
     if (!first) continue;
-    const trimmed = first.length > MAX_KEY_FINDING_LEN
-      ? first.slice(0, MAX_KEY_FINDING_LEN - 1).trimEnd() + '…'
-      : first;
+    const trimmed = truncateAtBoundary(first, MAX_KEY_FINDING_LEN);
+    if (!trimmed) continue;
     const key = trimmed.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -299,10 +299,8 @@ function buildComparisonSection(
       seenSentences.add(dedupeKey);
 
       if (tradeoffs.length < MAX_TRADEOFFS) {
-        const text = sentence.length > MAX_TRADEOFF_LEN
-          ? sentence.slice(0, MAX_TRADEOFF_LEN - 1).trimEnd() + '…'
-          : sentence;
-        tradeoffs.push({ text, source_index: idx, term: matchedTerms[0] });
+        const text = truncateAtBoundary(sentence, MAX_TRADEOFF_LEN);
+        if (text) tradeoffs.push({ text, source_index: idx, term: matchedTerms[0] });
       }
     }
   }

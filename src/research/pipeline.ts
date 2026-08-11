@@ -1,6 +1,6 @@
 import { createLogger } from '../logger.js';
 import { decomposeQuestion, detectQueryType, extractComparisonEntities, type QueryType } from './decompose.js';
-import { synthesizeReport } from './synthesize.js';
+import { synthesizeReport, CITATION_SNIPPET_LEN } from './synthesize.js';
 import { synthesizeLocal } from './synthesis-local.js';
 import { buildResearchBrief, stripResearchChrome } from './brief.js';
 import { renderBriefReport } from './render-brief.js';
@@ -11,7 +11,7 @@ import { classifyUrlShape, classifyScoreFloor, queryContentTerms, gateContent } 
 import { exploreInParallel } from './branch-exploration.js';
 import type { RawSearchResult, SearchEngineOptions } from '../types.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
-import { truncateSmartly } from '../search/truncate.js';
+import { truncateSmartly, truncateAtBoundary } from '../search/truncate.js';
 import { cacheContent } from '../cache/store.js';
 import { getEmbeddingService } from '../embedding/embed.js';
 import { checkSamplingSupport, type SamplingCapableServer } from '../search/sampling.js';
@@ -343,7 +343,7 @@ export async function runResearchPipeline(
                 index: idx + 1,
                 url: s.url,
                 title: s.title,
-                snippet: stripResearchChrome(s.markdown).slice(0, 200),
+                snippet: truncateAtBoundary(stripResearchChrome(s.markdown), CITATION_SNIPPET_LEN),
                 trusted: s.trusted, // mirror source trust (C3 slice-2: note=true; web/clip/qa=false)
               };
             });

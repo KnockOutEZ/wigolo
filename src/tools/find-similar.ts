@@ -74,8 +74,16 @@ export async function handleFindSimilar(
       includeWeb: sanitizedInput.include_web,
     });
 
+    // The cold-start seed below warms a thin domain by running a live web
+    // search. `include_web: false` is the caller's instruction not to touch the
+    // live web, so it has to bind here too: without this the seed both made the
+    // network calls and wrote the fetched pages into url_cache, where the FTS5
+    // lane returned them tagged `source: 'cache'`. Keyed on an explicit `false`
+    // because the parameter defaults to true.
+    const seedFromWeb = input.include_web !== false;
+
     let cacheSeeded = false;
-    if (url) {
+    if (url && seedFromWeb) {
       try {
         const u = new URL(url);
         const host = u.hostname;
