@@ -156,35 +156,58 @@ describe("G-DIET's threshold is set by the regression it has to catch", () => {
    * of its own. Shipping the laptop-derived 690 would have left a clean build 5 MiB of room on
    * the only machine that runs the gate. The anchor is the WORSE runner reading, not the better.
    */
-  const CLEAN_BUILD_MIB = 685;
-  const DRIVER_BACK_ON_DEFAULT_PATH_MIB = 685 + 17;
+  /*
+   * ⚠ RE-DERIVED for the onnxruntime-node platform prune. Measured on this laptop, on the
+   * protocol the gate runs (`--ignore-scripts` install, then `scripts/prune/run.mjs`):
+   *
+   *   pre-prune    681 MiB   — reproduces S10-e's recorded local reading to the MiB
+   *   post-prune   503 MiB   — per-package diff is ONE line, onnxruntime-node 216536 -> 35064 KiB
+   *
+   * The runner read 685 for the tree that measures 681 here, so the clean runner prediction is
+   * 685 - 178 = 507. That is a PREDICTION and the anchor moves to the runner's own number the
+   * moment CI produces one; what makes it a usable one is that the offset is being applied to a
+   * pre-prune figure that reproduces exactly.
+   */
+  const CLEAN_BUILD_MIB = 507;
+  const DRIVER_BACK_ON_DEFAULT_PATH_MIB = 507 + 17;
+  const PRUNE_REVERTED_MIB = 507 + 178;
 
   it('passes the measured clean build', () => {
     expect(evaluate(GATES['G-DIET'], CLEAN_BUILD_MIB).pass).toBe(true);
   });
 
   it('reds when the browser driver returns to the default install path', () => {
-    // The whole point of the slice, and the thing most likely to be undone by accident: a later
-    // change moves `playwright` back into `dependencies`. If this gate cannot see that, it is
-    // guarding nothing that S10-e did.
+    // The thing most likely to be undone by accident: a later change moves `playwright` back
+    // into `dependencies`. If this gate cannot see that, it is guarding nothing that S10-e did.
     expect(evaluate(GATES['G-DIET'], DRIVER_BACK_ON_DEFAULT_PATH_MIB).pass).toBe(false);
   });
 
-  it('would NOT have caught it at a habitual 3% headroom', () => {
-    // ⚠ THE TRAP THIS ASSERTION EXISTS TO PIN. Sizing the limit as "clean build + ~3%" is what
-    // the previous threshold did (700 -> 720) and it is the obvious move here too. It yields
-    // 706, which is ABOVE the 702 regression and would pass it. Three thresholds in this program
-    // have already shipped or been proposed at numbers that could not fail for their own stated
-    // reason; this records why 693 is not one more of them.
-    const habitual = Math.round(CLEAN_BUILD_MIB * 1.03);
-    expect(habitual).toBeGreaterThan(DRIVER_BACK_ON_DEFAULT_PATH_MIB);
+  it('reds when the platform prune stops happening', () => {
+    // The regression this slice adds: the postinstall is dropped, or a refactor makes it
+    // silently no-op, and 178 MiB of other platforms' binaries come back. Easy to catch — which
+    // is exactly why it must not be the regression the threshold is sized against.
+    expect(evaluate(GATES['G-DIET'], PRUNE_REVERTED_MIB).pass).toBe(false);
+  });
+
+  it('would NOT catch the 17 MiB one if sized against the 178 MiB one', () => {
+    // ⚠ THE TRAP THIS ASSERTION EXISTS TO PIN, in its new form. The old trap was a habitual 3%;
+    // at these numbers 3% happens to be safe (507 * 1.03 = 522 < 524), so keeping that assertion
+    // would be keeping a claim that is no longer true. The live trap is the opposite one: the
+    // total just fell 178 MiB, and sizing the new headroom as a share of THAT is the natural
+    // move. A tenth of the saving gives 507 + 17.8 = 525, which sits ABOVE the 524 that the
+    // driver regression lands on — so the gate would sail past the very thing it was guarding
+    // before this slice, and the 178 MiB win would have cost the 17 MiB one.
+    const sizedAgainstTheWin = Math.round(CLEAN_BUILD_MIB + 178 * 0.1);
+    expect(sizedAgainstTheWin).toBeGreaterThan(DRIVER_BACK_ON_DEFAULT_PATH_MIB);
+    expect(limitFor(GATES['G-DIET'])).toBeLessThan(sizedAgainstTheWin);
     expect(limitFor(GATES['G-DIET'])).toBeLessThan(DRIVER_BACK_ON_DEFAULT_PATH_MIB);
   });
 
   it('still leaves a clean build room to grow', () => {
     // The other half of the constraint: a gate a clean build cannot pass is worse than no gate.
-    // 693 - 685 = 8 MiB on the machine that runs it, against the 4 MiB laptop-to-runner spread
-    // this slice measured and ~2 MiB of commit-to-commit drift on this artifact.
+    // 515 - 507 = 8 MiB on the machine that runs it, against the 4 MiB laptop-to-runner spread
+    // and ~2 MiB of commit-to-commit drift on this artifact — the same 8 the previous threshold
+    // carried, which is what the 17 MiB window leaves room for once the 9 MiB margin is kept.
     expect(limitFor(GATES['G-DIET'])).toBeGreaterThan(CLEAN_BUILD_MIB);
     expect(limitFor(GATES['G-DIET']) - CLEAN_BUILD_MIB).toBeGreaterThanOrEqual(8);
   });
@@ -547,17 +570,19 @@ describe('G-TOTAL-DESKTOP is dropped, not silently inherited', () => {
   });
 
   it('records the arithmetic that makes a composed gate unbuildable today', () => {
-    // WHY A DECISION AND NOT A DELETION: G-DIET (<=693) and G-ACQUIRE (<=800) already bound the
-    // composed total at 1493 whether or not anything asserts it, and the lowest value the
-    // composition can currently take is 1449. So a composed gate could only fail inside a 44 MiB
+    // WHY A DECISION AND NOT A DELETION: G-DIET (<=515) and G-ACQUIRE (<=800) already bound the
+    // composed total at 1315 whether or not anything asserts it, and the lowest value the
+    // composition can currently take is 1271. So a composed gate could only fail inside a 44 MiB
     // window, against a sum of two measurements each carrying tens of MiB of transitive churn —
     // a threshold finer than the resolution of its own data, which is the same arithmetic that
     // rejected a median reducer for G-RSS-IDLE and keeps G-RSS-SUBSTRATE report-only.
     //
-    // S10-e re-derived these because it moved `node_modules` from 700 to 685. The window NARROWED
-    // (56 -> 44), so the decision to drop the gate is better supported than when it was taken —
-    // this assertion exists to catch the case where a later slice changes one input and leaves
-    // the composed arithmetic describing a tree that no longer exists.
+    // S10-e re-derived these because it moved `node_modules` from 700 to 685; the platform prune
+    // re-derived them again, moving it from 685 to 507. THIS ASSERTION IS WHY BOTH HAPPENED — it
+    // fails the moment a slice changes one input and leaves the composed arithmetic describing a
+    // tree that no longer exists, and it did exactly that on this slice's first run (1315 against
+    // a stale 1493). The window is 44 MiB in both derivations because it is the sum of each
+    // gate's own headroom (8 + 36), which this slice preserved deliberately rather than by luck.
     const d = G_TOTAL_DESKTOP_DROPPED;
     expect(limitFor(GATES['G-DIET']) + limitFor(GATES['G-ACQUIRE'])).toBe(d.jointBoundOfShippedGatesMiB);
     expect(d.jointBoundOfShippedGatesMiB - d.measuredTodayMiB).toBe(44);

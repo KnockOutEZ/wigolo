@@ -104,8 +104,22 @@ function measureInstallSize() {
         },
       },
     );
+    // `--ignore-scripts` above suppresses OUR postinstall along with everyone else's, so run it
+    // here. Without this the gate measures a tree no user ever has and, worse, cannot see the
+    // prune being removed — see G-DIET's note on why the artifact runs a script.
+    const before = duMiB(join(dir, 'node_modules'));
+    // `dir` is passed explicitly: run.mjs resolves onnxruntime-node from it, NOT from this
+    // checkout, or the gate would prune the developer's own node_modules instead of the tree
+    // it is measuring.
+    execFileSync(process.execPath, [join(ROOT, 'scripts', 'prune', 'run.mjs'), dir], {
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
     const total = duMiB(join(dir, 'node_modules'));
-    return report('G-DIET', total, `largest: ${largestPackages(join(dir, 'node_modules'), dir)}`);
+    return report(
+      'G-DIET',
+      total,
+      `pre-prune ${before} MiB, post-prune ${total} MiB | largest: ${largestPackages(join(dir, 'node_modules'), dir)}`,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -160,33 +160,59 @@ export const GATES = {
     title: 'production node_modules on disk',
     what: 'total bytes of the dependency tree a `npm i -g wigolo` user installs',
     artifact:
-      'a fresh `npm install --omit=dev --ignore-scripts --no-workspaces` into an empty directory holding only package.json + package-lock.json, with PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 and ELECTRON_SKIP_BINARY_DOWNLOAD=1',
+      'a fresh `npm install --omit=dev --ignore-scripts --no-workspaces` into an empty directory holding only package.json + package-lock.json, with PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 and ELECTRON_SKIP_BINARY_DOWNLOAD=1, followed by `scripts/prune/run.mjs` — the postinstall that `--ignore-scripts` suppresses',
     statistic: 'single `du -sm node_modules` total',
     horizon: 'n/a — a completed install is at rest',
     runs: 1,
     unit: 'MiB',
     comparison: '<=',
-    limit: 693,
+    limit: 515,
     baseline:
-      'THE RUNNER IS THE AUTHORITY, because this gate runs on exactly one machine class: the `clean-machine-smoke` macos-latest / node 22 arm. Measured there on the S10-e PR across two runs of the same branch: 685 then 683 MiB clean — so the runner carries ~2 MiB of run-to-run variance of its own, and the threshold is anchored to the WORSE of the two. Measured locally on darwin-arm64 minutes apart, same protocol: 681 MiB / 386 packages after S10-e against 698 MiB / 388 before it, with a per-package diff of exactly playwright + playwright-core removed and nothing added. The DELTA is platform-stable (both packages are pure JS), so the runner regression is 685 + 17 = 702. 693 is the midpoint of 685..702: 8 MiB (1.2%) of headroom for transitive churn, 9 MiB of margin under the regression.',
-    // ⚠ THE THRESHOLD IS SET BY THE REGRESSION IT MUST CATCH, NOT BY A PERCENTAGE.
+      'THE RUNNER IS THE AUTHORITY, because this gate runs on exactly one machine class: the `clean-machine-smoke` macos-latest / node 22 arm. Measured there on the S10-e PR across two runs of the same branch: 685 then 683 MiB clean — so the runner carries ~2 MiB of run-to-run variance of its own, and the threshold is anchored to the WORSE of the two. Locally on darwin-arm64, same protocol: 681 MiB before the platform prune and 503 MiB after it, a 178 MiB delta whose per-package diff is exactly one line — onnxruntime-node 216536 -> 35064 KiB, nothing else moved, nothing added. That 681 reproduces the figure S10-e recorded for this artifact to the MiB, which is what licenses carrying the runner offset across: predicted clean runner reading is 685 - 178 = 507, and 515 is set from it. The prune is platform-conditional (it keeps the host pair, which differs in size per platform) but this gate is wired on macOS only, so the delta it gates is the darwin-arm64 one.',
+    // ⚠ THE THRESHOLD IS SET BY THE SMALLEST REGRESSION IT MUST CATCH, NOT BY A PERCENTAGE.
     //
-    // S10-e moved the browser driver from `dependencies` to an OPTIONAL PEER dependency, which
-    // npm does not install. The single most likely way that gets undone is someone putting it
-    // back — so the gate has to red when they do. That regression is worth exactly 17 MiB
-    // (`playwright` + `playwright-core`, the only two packages the move touches).
+    // This gate now guards TWO reversions, and they are three orders of magnitude apart:
     //
-    // Note what a habitual "keep ~3% headroom" would have produced: 685 * 1.03 = 706, which sits
-    // ABOVE the 702 regression and would therefore pass the very thing the gate is for. A gate
-    // that cannot fail is not a gate — the same failure as the spec's G-RSS-IDLE 130, which
-    // could not catch its own 40 MiB probe from a 17.7 floor. The window is 685..702 and there
-    // is no room in it for a round number chosen by habit.
+    //   A. the platform prune stops happening — the postinstall is dropped, or a refactor makes
+    //      it silently no-op. Worth 178 MiB, landing at 507 + 178 = 685.
+    //   B. the browser driver returns to `dependencies` from the optional PEER dependency S10-e
+    //      moved it to. Worth exactly 17 MiB (`playwright` + `playwright-core`), landing at
+    //      507 + 17 = 524.
+    //
+    // ⚠ B BINDS AND A DOES NOT, and that is the whole derivation. A limit only has to be under
+    // 685 to catch A, which is nearly anywhere; it has to be under 524 to catch B. Sizing this
+    // gate against the 178 MiB it just won — the obvious move, and the tempting one, because the
+    // number moved so far — is how B stops being caught. Concretely: "clean plus a tenth of the
+    // saving" gives 507 + 17.8 = 525, which is ABOVE the 524 that B lands on, so the gate would
+    // pass the exact regression it already existed to catch BEFORE this slice. The window is
+    // 507..524 and it is 17 MiB wide, no wider than it was at 685..702.
+    //
+    // 515 keeps the same shape the previous threshold had: 8 MiB (1.6%) of headroom above a
+    // clean build for transitive churn, 9 MiB of margin under the regression.
     //
     // ⚠ AND THE LOCAL NUMBER WAS NOT GOOD ENOUGH TO SET IT. This first shipped at 690, derived
     // from a laptop's 681. The runner then measured 685 — 4 MiB higher for the same commit and
     // the same command — which left a clean build only 5 MiB of room on the one machine the gate
     // actually runs on. Re-derived from the runner. Same machine-class lesson G-RSS-IDLE learned
     // the expensive way; it is cheaper here only because the gate was made to run first.
+    //
+    // ⚠ WHICH APPLIES TO 515 TOO, and is why the +4 offset is carried explicitly rather than
+    // assumed away. 507 is a PREDICTION — laptop 503 plus the 4 MiB laptop-to-runner offset the
+    // S10-e slice measured — not a runner reading. What licenses the carry is that the same
+    // laptop, on the same protocol, reproduces S10-e's pre-prune 681 exactly, so the offset is
+    // being applied to a number known to sit where it did when the offset was measured. It is
+    // still a prediction. If the runner comes back above 507, the anchor is the runner's number
+    // and 515 moves with it; the 524 ceiling does not move, so the room to absorb that is 8 MiB
+    // and no more.
+    //
+    // ⚠ WHY THE ARTIFACT NOW RUNS A SCRIPT. `--ignore-scripts` stays — it keeps third-party
+    // postinstalls, and their network access, out of a gate that must not flake. But it also
+    // suppresses OUR postinstall, and a gate blind to the prune is a gate that cannot see the
+    // prune being removed, which is regression A. So the runner invokes `scripts/prune/run.mjs`
+    // itself afterwards. That is not a thumb on the scale: the prune is deterministic, offline,
+    // and ours, and running it makes the measured tree CLOSER to what a real user installs, not
+    // further from it. The residual gap — third-party postinstall effects — measured 2 MiB on
+    // this host (683 with scripts on against 681 with them off) and is unchanged by this slice.
     //
     // For the record on the number this replaces: the spec's gate 17 states 670 MiB, derived as
     // "780 measured minus a 111 MiB Tier-A diet". C1's install-side removal actually measured
@@ -346,12 +372,29 @@ export const GATES = {
  * 56 MiB to 44, which is further below the churn these two measurements carry, so a composed
  * gate is if anything less buildable than when A34 dropped it.
  */
+/*
+ * ⚠ RE-DERIVED AGAIN by the onnxruntime-node platform prune, for the same reason S10-e did it:
+ * this slice moved one of the inputs. Prod `node_modules` is a predicted 507 on the runner, not
+ * 685, so today is 507 + 764 = 1271, post-flip is 507 + 518 = 1025, and the joint bound is
+ * 515 + 800 = 1315.
+ *
+ * The failure window is 44 MiB again — unchanged, and not by luck: the window is the sum of each
+ * gate's own headroom above its clean reading (8 for G-DIET, 36 for G-ACQUIRE), and this slice
+ * moved the readings and the limit together while deliberately keeping G-DIET's headroom at 8.
+ * So the decision stands on exactly the argument it stood on before.
+ *
+ * ⚠ WHAT DID CHANGE, and is worth the next slice's attention: the spec's 1000 was dropped as
+ * "unreachable in either world" when post-flip stood at 1203. It now stands at 1025. That is
+ * still above 1000, so nothing here is inherited yet — but the margin is 25 MiB rather than 203,
+ * and one more diet slice of any size makes the spec's original number reachable and this
+ * deferral re-derivable on its own terms.
+ */
 export const G_TOTAL_DESKTOP_DROPPED = {
   specLimitMiB: 1000,
-  measuredTodayMiB: 1449,
-  measuredPostFlipMiB: 1203,
-  jointBoundOfShippedGatesMiB: 1493,
-  reDeriveAtMiB: 1265,
+  measuredTodayMiB: 1271,
+  measuredPostFlipMiB: 1025,
+  jointBoundOfShippedGatesMiB: 1315,
+  reDeriveAtMiB: 1080,
 };
 
 /**
