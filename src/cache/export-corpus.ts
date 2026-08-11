@@ -42,6 +42,9 @@ export const STORED_FENCE_SENTINEL = '[[BEGIN UNTRUSTED DATA';
 
 const MAX_SEGMENT_CHARS = 120;
 
+/** Characters reserved at the end of a name for a `-<n>` de-collision suffix. */
+const SUFFIX_HEADROOM = 12;
+
 /** Windows refuses these as filenames outright, with or without an extension. */
 const WINDOWS_RESERVED = new Set([
   'CON', 'PRN', 'AUX', 'NUL',
@@ -280,11 +283,14 @@ export async function exportCorpus(opts: ExportOptions): Promise<ExportResult> {
       }
 
       const bucket = safePathSegment(dateBucket(row.fetched_at), 'unknown-date');
-      let name = slugForUrl(row.url);
-      let rel = join('pages', bucket, `${name}.md`);
+      // The de-collision suffix is appended to a base trimmed to leave room for it. Appending
+      // to a slug already at the length cap would truncate the suffix straight back off, so
+      // every candidate would be the same name and the loop would never terminate.
+      const base = slugForUrl(row.url);
+      const stem = base.slice(0, MAX_SEGMENT_CHARS - SUFFIX_HEADROOM);
+      let rel = join('pages', bucket, `${base}.md`);
       for (let n = 2; taken.has(rel); n += 1) {
-        name = safePathSegment(`${slugForUrl(row.url)}-${n}`, `page-${n}`);
-        rel = join('pages', bucket, `${name}.md`);
+        rel = join('pages', bucket, `${safePathSegment(`${stem}-${n}`, `page-${n}`)}.md`);
       }
 
       // Belt and braces: sanitising each segment should make this unreachable, so if the

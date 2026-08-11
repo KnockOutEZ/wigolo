@@ -462,6 +462,27 @@ describe('exportCorpus — path-traversal containment (falsifiability probe)', (
     expect(result.pages[0].path.startsWith(join('pages', 'unknown-date'))).toBe(true);
   });
 
+  it('de-collides urls that are already at the name-length cap, instead of spinning forever', async () => {
+    // Both slugs truncate to the same 120 characters, so every candidate name collides. If the
+    // de-collision suffix were appended to a name already at the cap it would be truncated
+    // straight back off, the candidate would never change, and the export would hang — a
+    // corpus-wide denial of service triggered by two long urls sharing a prefix.
+    const long = 'x'.repeat(300);
+    seed(dataDir, [
+      { url: `https://example.com/${long}a`, markdown: 'first' },
+      { url: `https://example.com/${long}b`, markdown: 'second' },
+      { url: `https://example.com/${long}c`, markdown: 'third' },
+    ]);
+
+    const result = await exportCorpus({ dataDir, outDir });
+
+    expect(result.exported).toBe(3);
+    expect(new Set(result.pages.map((p) => p.path)).size).toBe(3);
+    const bodies = result.pages.map((p) => readFileSync(join(outDir, p.path), 'utf-8'));
+    expect(bodies.filter((b) => b.includes('first'))).toHaveLength(1);
+    expect(bodies.filter((b) => b.includes('third'))).toHaveLength(1);
+  });
+
   it('gives colliding urls distinct files so no page silently overwrites another', async () => {
     seed(dataDir, [
       { url: 'https://example.com/a/b', markdown: 'first' },
