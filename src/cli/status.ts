@@ -8,6 +8,7 @@ import { formatStatus, type StatusBag } from './tui/status-format.js';
 import { readEscalationCounters } from '../studio/escalation-counters.js';
 import { resolveBrowserTier } from '../fetch/browser-tier.js';
 import { readTierOccupancy } from '../fetch/tier-occupancy.js';
+import { readSubstrateRecord } from '../studio/substrate-acquire.js';
 
 const require = createRequire(import.meta.url);
 interface PackageJson { version?: string }
@@ -36,6 +37,7 @@ export async function runStatus(_args: string[]): Promise<number> {
 
   // D-S10-2: read the ONE resolver. `status` does not probe the display itself.
   const tier = resolveBrowserTier();
+  const substrate = readSubstrateRecord(dataDir);
 
   // D-S10-4: the row for the tier this host resolved to right now. Rendered only once something
   // has been fetched, on the same reasoning as browserSession above.
@@ -49,6 +51,10 @@ export async function runStatus(_args: string[]): Promise<number> {
       detail: tier.detail,
       ...(tier.ceiling ? { ceiling: tier.ceiling } : {}),
       ...(tier.remedy ? { remedy: tier.remedy } : {}),
+      // S10-d: whether the desktop component was actually acquired. Rendered ALWAYS, unlike the
+      // counter blocks above, because "not installed" is the informative state here — a rung
+      // reported without saying whether its component is on disk is the ambiguity this closes.
+      desktopComponent: substrate ? `installed (version ${substrate.version})` : 'not installed',
     },
     ...(rungsUsed ? { rungsUsed: rungs } : {}),
     searxng,

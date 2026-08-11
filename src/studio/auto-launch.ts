@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readHandle, type SessionHandle } from './handle.js';
+import { readSubstrateRecord, substratePresent } from './substrate-acquire.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('studio');
@@ -73,16 +74,24 @@ function repoRoot(): string {
  * test suite, which is how the constraint was found.
  *
  * So: an installed app (when one exists) launches freely; the dev checkout requires
- * `WIGOLO_STUDIO_AUTO_LAUNCH=1`. When S16-alpha lands, `installedSubstrateExists()` becomes real and the dev
- * clause stops mattering — the policy does not change, only what it can find.
+ * `WIGOLO_STUDIO_AUTO_LAUNCH=1`. The policy does not change, only what it can find.
  *
  * EXPORTED for the tier resolver (D-S10-2), which needs the D13 deferral answer and must not grow a second
  * probe of its own. One seam, two readers — not two seams.
+ *
+ * S10-d MADE THIS REAL (D-S10-3). It is no longer a hardcoded `false`: it answers from the acquisition
+ * record, and the record is only written after the executable it names has been probed on disk. The two
+ * halves that meet here are exactly D-S10-3's split — S10 acquires and records, S16-alpha publishes the
+ * artifact that gets acquired — so this function needs no further change when distribution lands.
+ *
+ * ⚠ It reads the RECORD, never the substrate directory. A directory that happens to exist proves nothing:
+ * it can be a half-extracted archive or the leavings of an interrupted install, and treating it as an
+ * installed substrate is how a machine ends up deferring acquisition (D13) in favour of a rung that cannot
+ * start. The record is written last, which makes its presence the only honest "installed" signal — the same
+ * reasoning that makes `ensureStudioRunning` poll for the session handle rather than watch the child.
  */
 export function installedSubstrateExists(): boolean {
-  // No installed substrate exists yet (S16-alpha). Deliberately a named seam rather than an inline `false`,
-  // so the distribution work has one obvious place to land.
-  return false;
+  return substratePresent();
 }
 
 function devCheckoutExists(): boolean {
@@ -95,16 +104,29 @@ export function studioLaunchable(): boolean {
   return (optIn === '1' || optIn === 'true') && devCheckoutExists();
 }
 
-/** Spawn the substrate detached and hidden, so it neither blocks nor steals focus from whatever the human is doing. */
+/**
+ * Spawn the substrate detached and hidden, so it neither blocks nor steals focus from whatever the human is
+ * doing.
+ *
+ * TWO SUBSTRATES CAN BE LAUNCHABLE, and the acquired one wins. Once `installedSubstrateExists()` became
+ * real (S10-d) `studioLaunchable()` can be true because a substrate was ACQUIRED rather than because a dev
+ * checkout is on disk — and launching `npm run dev` in that case would start the wrong program, or none at
+ * all on a machine that has the acquired substrate and no checkout. So the record is consulted first and
+ * the dev checkout stays the fallback it already was.
+ */
 function defaultLaunch(): void {
-  const child = spawn('npm', ['run', 'dev', '-w', DEV_WORKSPACE], {
-    cwd: repoRoot(),
-    detached: true,
-    stdio: 'ignore',
-    // Hidden: an auto-launched session is for the agent's benefit, not a window the human asked for. The
-    // human summons a visible one themselves; a card that needs answering is surfaced by the app.
-    env: { ...process.env, WIGOLO_STUDIO_HIDDEN: '1' },
-  });
+  const acquired = readSubstrateRecord();
+  const hidden = { ...process.env, WIGOLO_STUDIO_HIDDEN: '1' };
+  const child = acquired
+    ? spawn(join(acquired.path, acquired.executable), [], { detached: true, stdio: 'ignore', env: hidden })
+    : spawn('npm', ['run', 'dev', '-w', DEV_WORKSPACE], {
+        cwd: repoRoot(),
+        detached: true,
+        stdio: 'ignore',
+        // Hidden: an auto-launched session is for the agent's benefit, not a window the human asked for.
+        // The human summons a visible one themselves; a card that needs answering is surfaced by the app.
+        env: hidden,
+      });
   child.unref();
 }
 

@@ -43,6 +43,7 @@ import { getVersion } from './help.js';
 // tests partially mock node:fs.
 import { checkNodeFloor, MIN_NODE_MAJOR } from './node-floor.js';
 import { resolveBrowserTier, type BrowserTierResolution } from '../fetch/browser-tier.js';
+import { readSubstrateRecord, type SubstrateRecord } from '../studio/substrate-acquire.js';
 import { readTierOccupancy, formatTierOccupancyLines, type TierOccupancy } from '../fetch/tier-occupancy.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
@@ -334,7 +335,10 @@ export function formatTlsTierLine(
  * there is anything to be done about it (sometimes the honest answer is "no action needed").
  * A rung reported without its ceiling is how a server user comes to expect desktop pass rates.
  */
-export function buildBrowserTierDoctorLines(tier: BrowserTierResolution): string[] {
+export function buildBrowserTierDoctorLines(
+  tier: BrowserTierResolution,
+  substrate: SubstrateRecord | null = null,
+): string[] {
   const lines = [
     '[wigolo doctor] Browser tier:',
     `  Resolved:      ${tier.tier}`,
@@ -342,6 +346,17 @@ export function buildBrowserTierDoctorLines(tier: BrowserTierResolution): string
   ];
   if (tier.ceiling) lines.push(`  Ceiling:       ${tier.ceiling}`);
   if (tier.remedy) lines.push(`  Remedy:        ${tier.remedy}`);
+  // S10-d: what the tier actually COST, and what is still lazy. A tier line that reports the
+  // rung but not whether its component is on disk leaves the two states that look identical
+  // from the outside — "acquired and ready" and "never acquired, will download on first need" —
+  // indistinguishable, which is the support genre this section exists to close.
+  if (substrate) {
+    lines.push(`  Desktop comp.: installed (version ${substrate.version})`);
+  } else if (tier.tier === 'desktop') {
+    lines.push('  Desktop comp.: not installed — run `wigolo warmup` to set it up');
+  } else {
+    lines.push('  Desktop comp.: not used on this rung — no bytes acquired for it');
+  }
   if (tier.deferAcquisition) {
     lines.push('  Acquisition:   deferred — a desktop component is already installed here');
   }
@@ -783,7 +798,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   }
 
   out('');
-  for (const line of buildBrowserTierDoctorLines(resolveBrowserTier())) out(line);
+  for (const line of buildBrowserTierDoctorLines(resolveBrowserTier(), readSubstrateRecord())) out(line);
 
   for (const line of buildTierOccupancyDoctorLines(readTierOccupancy(dataDir))) out(line);
 

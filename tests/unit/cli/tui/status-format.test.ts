@@ -3,7 +3,7 @@ import { formatStatus, type StatusBag } from '../../../../src/cli/tui/status-for
 
 const baseBag: StatusBag = {
   version: '0.6.3',
-  browserTier: { tier: 'desktop', detail: 'this platform always has a display session' },
+  browserTier: { tier: 'desktop', detail: 'this platform always has a display session', desktopComponent: 'not installed' },
   searxng: 'ready',
   reranker: 'ok',
   embeddings: 'ok',

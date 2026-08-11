@@ -9,6 +9,8 @@
  *   node scripts/budget/measure.mjs cold-start
  *   node scripts/budget/measure.mjs acquire-snapshot <file>   # before `wigolo warmup`
  *   node scripts/budget/measure.mjs acquire-diff <file>       # after it
+ *   node scripts/budget/measure.mjs substrate-snapshot <file>          # before a tiered warmup
+ *   node scripts/budget/measure.mjs substrate-diff <file> <gate-id>    # after it
  *
  * These do not belong in vitest. A unit test cannot perform an install, cannot spawn a real
  * server and watch it settle, and cannot observe what `warmup` downloads — it can only assert
@@ -368,6 +370,42 @@ function acquisitionDirs() {
   };
 }
 
+/**
+ * The desktop-component directory alone — the narrower artifact S10-d's tier-conditional pair is
+ * stated over. Separate from {@link acquisitionDirs} on purpose: the whole correction is that a
+ * threshold derived from one line item cannot be asserted over a total, and the way to keep that
+ * honest is for the two artifacts to be two functions.
+ */
+function substrateDir() {
+  return join(process.env.WIGOLO_DATA_DIR || join(homedir(), '.wigolo'), 'substrate');
+}
+
+function substrateSnapshot(file) {
+  const path = substrateDir();
+  mkdirSync(join(file, '..'), { recursive: true });
+  writeFileSync(file, JSON.stringify({ path, mib: duMiB(path) }, null, 2));
+  console.log(`substrate snapshot: ${path} = ${duMiB(path)}MiB`);
+}
+
+/**
+ * Difference the component directory and report it against ONE of the tier-conditional gates.
+ *
+ * The gate id is passed in rather than sniffed from the environment, for the same reason the
+ * machine class is: this measurement is identical in both arms and only the EXPECTATION differs,
+ * so a runner that guessed which arm it was in could report a headless run against the desktop
+ * gate and pass while acquiring bytes it should not have.
+ */
+function substrateDiff(file, gateId) {
+  if (!GATES[gateId]) {
+    console.error(`unknown gate ${JSON.stringify(gateId)} (expected one of ${Object.keys(GATES).join(', ')})`);
+    process.exit(2);
+  }
+  const before = JSON.parse(readFileSync(file, 'utf8'));
+  const now = duMiB(before.path);
+  const delta = Math.max(0, now - before.mib);
+  return report(gateId, delta, `${before.path} ${before.mib}->${now} (+${delta})`);
+}
+
 function acquireSnapshot(file) {
   const dirs = acquisitionDirs();
   const snap = Object.fromEntries(Object.entries(dirs).map(([k, p]) => [k, { path: p, mib: duMiB(p) }]));
@@ -391,8 +429,10 @@ function acquireDiff(file) {
 
 // ------------------------------------------------------------------ dispatch
 
-const [subcommand, arg] = process.argv.slice(2);
+const [subcommand, arg, arg2] = process.argv.slice(2);
 const handlers = {
+  'substrate-snapshot': () => substrateSnapshot(arg ?? join(ROOT, 'budget-substrate.json')),
+  'substrate-diff': () => substrateDiff(arg ?? join(ROOT, 'budget-substrate.json'), arg2 ?? 'G-ACQUIRE-SUBSTRATE-DESKTOP'),
   'install-size': measureInstallSize,
   tarball: measureTarball,
   'idle-rss': measureIdleRss,

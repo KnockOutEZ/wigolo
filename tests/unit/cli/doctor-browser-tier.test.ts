@@ -84,7 +84,7 @@ describe('doctor — tier-occupancy section (D-S10-4)', () => {
 describe('status — browser tier block', () => {
   const base: StatusBag = {
     version: '1.2.3',
-    browserTier: { tier: 'desktop', detail: 'a display server is present (DISPLAY is set)' },
+    browserTier: { tier: 'desktop', detail: 'a display server is present (DISPLAY is set)', desktopComponent: 'not installed' },
     searxng: 'ready',
     reranker: 'ok',
     embeddings: 'ok',
@@ -107,6 +107,7 @@ describe('status — browser tier block', () => {
       browserTier: {
         tier: 'no-display',
         detail: 'no display server was found',
+        desktopComponent: 'not installed',
         ceiling: NO_DISPLAY_CEILING,
         remedy: 'attach a display session',
       },
@@ -169,5 +170,79 @@ describe('doctor remedies name commands that exist', () => {
     );
     const orphans = [...cited].filter((flag) => !read.has(flag));
     expect(orphans).toEqual([]);
+  });
+});
+
+describe('doctor states what the tier COST and what is still lazy (S10-d)', () => {
+  const record = {
+    version: '1.2.3',
+    executable: 'bin/run',
+    path: '/somewhere/substrate/1.2.3',
+    platform: 'darwin',
+    arch: 'arm64',
+    acquiredAt: '2026-08-11T00:00:00.000Z',
+    source: 'local-path',
+  };
+
+  it('names the installed component and its version when one has been acquired', () => {
+    const lines = buildBrowserTierDoctorLines(tierFor({ platform: 'darwin' }), record);
+    expect(lines.join('\n')).toMatch(/Desktop comp\..*installed \(version 1\.2\.3\)/);
+  });
+
+  it('tells a desktop machine with no component how to get one', () => {
+    // WHY: "acquired and ready" and "never acquired, will download on first need" are
+    // indistinguishable from outside, and only one of them has an action attached. A tier line
+    // that reports the rung but not the component leaves the user unable to tell which they are in.
+    const lines = buildBrowserTierDoctorLines(tierFor({ platform: 'darwin' }), null);
+    expect(lines.join('\n')).toMatch(/Desktop comp\..*not installed/);
+    expect(lines.join('\n')).toMatch(/wigolo warmup/);
+  });
+
+  it('says plainly that a no-display host spent nothing on a component', () => {
+    // WHY: D-S10-5's claim is about BYTES, and a user on a server should be able to read that
+    // they were not charged for a component they cannot run — that is the "CI pulls 250 MB"
+    // complaint the brief names, answered where the user actually looks.
+    const lines = buildBrowserTierDoctorLines(tierFor({ platform: 'linux', env: {} }), null);
+    expect(lines.join('\n')).toMatch(/no bytes acquired for it/);
+  });
+
+  it('still states the no-display ceiling alongside the component line', () => {
+    // WHY: the component row must not push the ceiling out. A rung reported without its ceiling
+    // is how a server user comes to expect desktop pass rates.
+    const lines = buildBrowserTierDoctorLines(tierFor({ platform: 'linux', env: {} }), null);
+    expect(lines.join('\n')).toContain(NO_DISPLAY_CEILING);
+  });
+
+  it('keeps the component lines free of implementation and product names', () => {
+    // WHY: these lines are user-facing, so the capability-language rule applies to them exactly
+    // as it does to the tier strings the resolver renders.
+    const banned = /electron|chromium|playwright|\bCDP\b|puppeteer/i;
+    for (const substrate of [record, null]) {
+      for (const inputs of [{ platform: 'darwin' as const }, { platform: 'linux' as const, env: {} }]) {
+        for (const line of buildBrowserTierDoctorLines(tierFor(inputs), substrate)) {
+          expect(line, line).not.toMatch(banned);
+        }
+      }
+    }
+  });
+});
+
+describe('status reports the component too (S10-d)', () => {
+  const bag = (desktopComponent: string): StatusBag => ({
+    version: '0.0.0',
+    browserTier: { tier: 'desktop', detail: 'a display session', desktopComponent },
+    searxng: 'ready',
+    reranker: 'ok',
+    embeddings: 'ok',
+    cache: { pages: 0, bytes: 0 },
+    agents: [],
+  });
+
+  it('renders the component state unconditionally', () => {
+    // WHY UNCONDITIONAL, unlike the counter blocks: "not installed" is the informative state
+    // here. A section hidden until it has something to say would hide exactly the case a user
+    // needs to see.
+    expect(formatStatus(bag('not installed'))).toMatch(/Desktop component: not installed/);
+    expect(formatStatus(bag('installed (version 9.9.9)'))).toMatch(/Desktop component: installed \(version 9\.9\.9\)/);
   });
 });

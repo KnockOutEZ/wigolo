@@ -685,6 +685,35 @@ function chromeCandidates(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): st
 }
 
 /**
+ * Is an authentic system browser present on this machine? A PRESENCE probe, with none of the
+ * rung-selection policy {@link resolveAuthenticChrome} carries.
+ *
+ * D-S10-5 makes the no-display rung "system browser detection, else the lazy engine
+ * acquisition", so `warmup` and `doctor` need the presence answer on a DEFAULT install.
+ * `resolveAuthenticChrome` cannot supply it: it short-circuits to `chromium-pinned` and probes
+ * nothing unless `cdpDirect` is opted in, which is correct for choosing a rung and wrong for
+ * reporting what is on the box.
+ *
+ * It shares `chromeCandidates` deliberately. The paths are the part that rots — a new install
+ * location, a renamed package — and one list means a fix reaches both readers. The POLICY stays
+ * where it was; only the path knowledge is shared.
+ */
+export function systemBrowserPresent(deps: ResolveChromeDeps = {}): boolean {
+  const exists = deps.exists ?? ((path: string) => {
+    try {
+      return existsSync(path);
+    } catch {
+      return false;
+    }
+  });
+  const platform = deps.platform ?? process.platform;
+  const env = deps.env ?? process.env;
+  const override = env.WIGOLO_CHROME_PATH || env.CHROME_PATH;
+  if (override && exists(override)) return true;
+  return chromeCandidates(platform, env).some((candidate) => Boolean(candidate) && exists(candidate));
+}
+
+/**
  * Resolve an authentic installed browser for this rung, or explain the decline.
  *
  * REACHABILITY CONTRACT — read before changing the guard order.

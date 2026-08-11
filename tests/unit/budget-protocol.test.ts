@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
-import { GATES, RSS_HORIZON_MS, RSS_SAMPLE_INTERVAL_MS, MACHINE_CLASSES, SUBSTRATE_ONLY_ACQUISITION, floorMiB, median, minimum, limitFor, evaluate, renderReport } from '../../scripts/budget/protocol.mjs';
+import { GATES, RSS_HORIZON_MS, RSS_SAMPLE_INTERVAL_MS, MACHINE_CLASSES, SUBSTRATE_ONLY_ACQUISITION, G_TOTAL_DESKTOP_DROPPED, floorMiB, median, minimum, limitFor, evaluate, renderReport } from '../../scripts/budget/protocol.mjs';
 
 /*
  * WHY these tests exist.
@@ -409,5 +409,118 @@ describe('the cross-run reducer for idle RSS is the minimum, not the median', ()
     // Control: the same regex finds the OTHER median-reduced gate, so a match here means the
     // pattern works and G-RSS-IDLE really did opt out of it.
     expect(src).toMatch(/report\('G-COLD-START',\s*median\(/);
+  });
+});
+
+describe("S10-d's tier-conditional pair is scoped to the COMPONENT, not the total", () => {
+  const desktop = GATES['G-ACQUIRE-SUBSTRATE-DESKTOP'];
+  const headless = GATES['G-ACQUIRE-SUBSTRATE-HEADLESS'];
+
+  it('states both gates over the component directory alone', () => {
+    // WHY THE ARTIFACT IS THE FIX AND NOT THE NUMBER. The spec states `<=320` and `==0` over the
+    // FULL acquisition set, and both are unreachable there: 218 MiB of that set is ranking and
+    // embedding models, and no browser rung stops warmup downloading a reranker. A clean desktop
+    // run would total 300 + 218 = 518 and red a `<=320`; a clean no-display run would total 218
+    // and red an `==0` for behaving perfectly. Same error class as the spec's G-DIET 670 — a
+    // threshold derived from one line item and then asserted over a total.
+    for (const gate of [desktop, headless]) {
+      expect(gate.artifact).toMatch(/substrate/i);
+      expect(gate.artifact).not.toMatch(/ms-playwright|models/);
+    }
+    // Control: the gate this pair REPLACES is stated over the full set, so the assertion above
+    // is discriminating rather than true of every gate in the file.
+    expect(GATES['G-ACQUIRE'].artifact).toMatch(/each acquisition directory/);
+  });
+
+  it('would red on a clean run if either were stated over the full acquisition set', () => {
+    // The arithmetic that condemns the spec's version, asserted rather than described.
+    const { substrateMiB, modelsMiB } = SUBSTRATE_ONLY_ACQUISITION;
+    expect(evaluate(desktop, substrateMiB + modelsMiB).pass).toBe(false);
+    expect(evaluate(headless, modelsMiB).pass).toBe(false);
+    // Scoped to the component alone, both are reachable — which is the whole correction.
+    expect(evaluate(desktop, substrateMiB).pass).toBe(true);
+    expect(evaluate(headless, 0).pass).toBe(true);
+  });
+
+  it('keeps the headless gate EXACT, because "zero" is the claim', () => {
+    // WHY: D-S10-5 says a no-display host acquires zero component bytes — not "few", not "less".
+    // Restating it as `<= some small number` would be a different, weaker claim, and it is
+    // exactly the loosening a red would tempt someone into.
+    expect(headless.comparison).toBe('==');
+    expect(headless.limit).toBe(0);
+    expect(evaluate(headless, 1).pass).toBe(false);
+  });
+
+  it('keeps ~6.7% headroom over the measured component on the desktop gate', () => {
+    expect(desktop.limit).toBe(320);
+    expect(evaluate(desktop, SUBSTRATE_ONLY_ACQUISITION.substrateMiB).pass).toBe(true);
+    expect(evaluate(desktop, 321).pass).toBe(false);
+  });
+
+  it('is a DIFFERENTIAL: the two arms measure the same artifact and differ only in tier', () => {
+    // WHY: read alone, `<=320` passes trivially on a host that acquired nothing at all — the
+    // self-satisfaction failure. The claim is carried by the pair, so the pair must be measuring
+    // the same thing. If these ever diverge, the two arms stop being comparable and each becomes
+    // a number about a different quantity.
+    expect(headless.artifact).toMatch(/identical to G-ACQUIRE-SUBSTRATE-DESKTOP/);
+    expect(desktop.statistic).toBe(headless.statistic);
+    expect(desktop.unit).toBe(headless.unit);
+  });
+
+  it('leaves G-ACQUIRE over the full artifact, where it still prices the models', () => {
+    // WHY KEEP IT: it is the only gate that charges anyone for the 218 MiB of models, and it is
+    // what catches amended-D1's doubling regression — acquiring the component AND the engine.
+    const { substrateMiB, modelsMiB, browserEngineMiB } = SUBSTRATE_ONLY_ACQUISITION;
+    expect(GATES['G-ACQUIRE'].limit).toBe(800);
+    expect(evaluate(GATES['G-ACQUIRE'], substrateMiB + modelsMiB).pass).toBe(true);
+    expect(evaluate(GATES['G-ACQUIRE'], substrateMiB + modelsMiB + browserEngineMiB).pass).toBe(false);
+  });
+
+  it('reports the protocol alongside the number for both new gates', () => {
+    for (const gate of [desktop, headless]) {
+      const text = renderReport(gate, 0, { pass: true });
+      expect(text).toContain(gate.artifact);
+      expect(text).toContain(gate.statistic);
+      expect(text).toContain(gate.baseline);
+    }
+  });
+});
+
+describe('G-TOTAL-DESKTOP is dropped, not silently inherited', () => {
+  it('ships no gate under that name', () => {
+    // WHY: the spec's <=1000 is unreachable in either world — 1464 today, 1218 after the flip —
+    // and it was never shipped. Inheriting it would red a clean build with no regression present.
+    expect(GATES['G-TOTAL-DESKTOP']).toBeUndefined();
+  });
+
+  it('records the arithmetic that makes a composed gate unbuildable today', () => {
+    // WHY A DECISION AND NOT A DELETION: G-DIET (<=720) and G-ACQUIRE (<=800) already bound the
+    // composed total at 1520 whether or not anything asserts it, and the lowest value the
+    // composition can currently take is 1464. So a composed gate could only fail inside a 56 MiB
+    // window, against a sum of two measurements each carrying tens of MiB of transitive churn —
+    // a threshold finer than the resolution of its own data, which is the same arithmetic that
+    // rejected a median reducer for G-RSS-IDLE and keeps G-RSS-SUBSTRATE report-only.
+    const d = G_TOTAL_DESKTOP_DROPPED;
+    expect(limitFor(GATES['G-DIET']) + limitFor(GATES['G-ACQUIRE'])).toBe(d.jointBoundOfShippedGatesMiB);
+    expect(d.jointBoundOfShippedGatesMiB - d.measuredTodayMiB).toBe(56);
+    // And it is a deferral: once the desktop arm acquires a real component the window opens.
+    expect(d.reDeriveAtMiB).toBeGreaterThan(d.measuredPostFlipMiB);
+    expect(d.reDeriveAtMiB).toBeLessThan(d.measuredTodayMiB);
+  });
+});
+
+describe('G-RSS-SUBSTRATE stays report-only', () => {
+  it('is not wired as a blocking step, and its limit is unchanged at 510', async () => {
+    // WHY S10-d DOES NOT PROMOTE IT: the minimum-of-floors across three batches spans 21.0
+    // (457.5/464.9/478.5), so a 40 MiB blocking gate needs a limit above 478.5 and below
+    // 457.5+40=497.5 — a 19 MiB window, NARROWER THAN THE SPREAD ITSELF. It also has no
+    // ci-runner observation and cannot run on `clean-machine-smoke`, which installs the
+    // published package while the only component that exists is the apps/studio checkout.
+    expect(GATES['G-RSS-SUBSTRATE'].limit).toBe(510);
+    const { readFile } = await import('node:fs/promises');
+    const ci = await readFile(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+    expect(ci).not.toMatch(/measure\.mjs substrate-rss/);
+    // Control: the sweep is reading the right file — the gates that DO block are in there.
+    expect(ci).toMatch(/measure\.mjs idle-rss/);
   });
 });
