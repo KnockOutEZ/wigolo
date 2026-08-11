@@ -1,7 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const { bootstrapStateMock } = vi.hoisted(() => ({
+const { bootstrapStateMock, cfg } = vi.hoisted(() => ({
   bootstrapStateMock: vi.fn(),
+  // Mutable so one case can point `status` at a data dir it controls without the other cases
+  // acquiring a filesystem dependency they do not need.
+  cfg: { dataDir: '/tmp/wigolo-data' },
 }));
 
 vi.mock('../../../src/cli/tui/status-cache.js', () => ({
@@ -23,14 +26,60 @@ vi.mock('../../../src/searxng/bootstrap.js', () => ({
 }));
 
 vi.mock('../../../src/config.js', () => ({
-  getConfig: () => ({ dataDir: '/tmp/wigolo-data' }),
+  getConfig: () => cfg,
 }));
 
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runStatus } from '../../../src/cli/status.js';
+import { bumpTierOccupancy } from '../../../src/fetch/tier-occupancy.js';
+import { resetBrowserTierAnnouncements, BROWSER_TIER_ENV } from '../../../src/fetch/browser-tier.js';
 
 beforeEach(() => {
+  cfg.dataDir = '/tmp/wigolo-data';
   bootstrapStateMock.mockReset();
   bootstrapStateMock.mockReturnValue({ status: 'ready' });
+});
+
+function captureStderr(run: () => Promise<unknown>): Promise<string> {
+  const chunks: string[] = [];
+  const orig = process.stderr.write.bind(process.stderr);
+  (process.stderr.write as unknown) = ((s: string | Uint8Array) => {
+    chunks.push(typeof s === 'string' ? s : Buffer.from(s).toString('utf-8'));
+    return true;
+  });
+  return run().then(
+    () => { (process.stderr.write as unknown) = orig; return chunks.join(''); },
+    (e) => { (process.stderr.write as unknown) = orig; throw e; },
+  );
+}
+
+describe('runStatus — tier occupancy (D-S10-4)', () => {
+  it('renders the occupancy row for the tier this host actually resolved to', async () => {
+    // WHY end-to-end rather than against the formatter: the formatter is already covered, and a
+    // correctly-formatted section that `status` never asks for is exactly the failure mode
+    // D-S10-4 is about — an instrument whose numbers nobody can reach. This drives the real
+    // wiring, and it forces the no-display tier through the resolver's documented override so
+    // the case does not silently become "whatever the test runner's own machine is".
+    const dir = mkdtempSync(join(tmpdir(), 'wigolo-status-occupancy-'));
+    const prevTier = process.env[BROWSER_TIER_ENV];
+    cfg.dataDir = dir;
+    process.env[BROWSER_TIER_ENV] = 'no-display';
+    resetBrowserTierAnnouncements();
+    try {
+      bumpTierOccupancy('no-display', 'browser', dir);
+      bumpTierOccupancy('desktop', 'http', dir);
+      const out = await captureStderr(() => runStatus([]));
+      // The no-display row, and NOT the desktop row that also has data on disk.
+      expect(out).toContain('Rungs used: 0 direct, 0 hardened, 1 browser engine, 0 attended session');
+    } finally {
+      if (prevTier === undefined) delete process.env[BROWSER_TIER_ENV];
+      else process.env[BROWSER_TIER_ENV] = prevTier;
+      resetBrowserTierAnnouncements();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('runStatus', () => {

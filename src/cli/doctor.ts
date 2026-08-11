@@ -43,6 +43,7 @@ import { getVersion } from './help.js';
 // tests partially mock node:fs.
 import { checkNodeFloor, MIN_NODE_MAJOR } from './node-floor.js';
 import { resolveBrowserTier, type BrowserTierResolution } from '../fetch/browser-tier.js';
+import { readTierOccupancy, formatTierOccupancyLines, type TierOccupancy } from '../fetch/tier-occupancy.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
 
@@ -345,6 +346,17 @@ export function buildBrowserTierDoctorLines(tier: BrowserTierResolution): string
     lines.push('  Acquisition:   deferred — a desktop component is already installed here');
   }
   return lines;
+}
+
+/**
+ * Build the tier-occupancy section for doctor (D-S10-4). Pure, like the tier section above it.
+ *
+ * It hangs directly beneath the resolved tier on purpose. Read on their own these are six
+ * integers; read next to the tier that keys them they answer the only question D10(b) turns on —
+ * whether the rung this machine cannot reach is one it actually needs.
+ */
+export function buildTierOccupancyDoctorLines(occupancy: TierOccupancy): string[] {
+  return ['  Rungs used:', ...formatTierOccupancyLines(occupancy)];
 }
 
 /**
@@ -772,6 +784,8 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
 
   out('');
   for (const line of buildBrowserTierDoctorLines(resolveBrowserTier())) out(line);
+
+  for (const line of buildTierOccupancyDoctorLines(readTierOccupancy(dataDir))) out(line);
 
   out('');
   out('[wigolo doctor] Fetch tiers:');

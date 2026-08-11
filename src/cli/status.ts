@@ -7,6 +7,7 @@ import { readConnectedAgents } from './tui/status-agents.js';
 import { formatStatus, type StatusBag } from './tui/status-format.js';
 import { readEscalationCounters } from '../studio/escalation-counters.js';
 import { resolveBrowserTier } from '../fetch/browser-tier.js';
+import { readTierOccupancy } from '../fetch/tier-occupancy.js';
 
 const require = createRequire(import.meta.url);
 interface PackageJson { version?: string }
@@ -36,6 +37,11 @@ export async function runStatus(_args: string[]): Promise<number> {
   // D-S10-2: read the ONE resolver. `status` does not probe the display itself.
   const tier = resolveBrowserTier();
 
+  // D-S10-4: the row for the tier this host resolved to right now. Rendered only once something
+  // has been fetched, on the same reasoning as browserSession above.
+  const rungs = readTierOccupancy(dataDir)[tier.tier];
+  const rungsUsed = Object.values(rungs).some((n) => n > 0);
+
   const bag: StatusBag = {
     version: pkg.version ?? '0.0.0',
     browserTier: {
@@ -44,6 +50,7 @@ export async function runStatus(_args: string[]): Promise<number> {
       ...(tier.ceiling ? { ceiling: tier.ceiling } : {}),
       ...(tier.remedy ? { remedy: tier.remedy } : {}),
     },
+    ...(rungsUsed ? { rungsUsed: rungs } : {}),
     searxng,
     reranker: python.reranker,
     embeddings: python.embeddings,
