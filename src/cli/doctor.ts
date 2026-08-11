@@ -37,7 +37,10 @@ import { resetBreakers, getBreakerSnapshot } from '../search/core/engine-base.js
 import { searxngConfigured } from '../searxng/enabled.js';
 import { readAdminToken } from '../daemon/admin-token.js';
 import { getVersion } from './help.js';
-import { checkNode, MIN_NODE_MAJOR } from './tui/system-check.js';
+// From the dependency-free leaf, NOT from tui/system-check.js: that module
+// imports `statfs` from node:fs, and doctor is reachable from warmup, whose
+// tests partially mock node:fs.
+import { checkNodeFloor, MIN_NODE_MAJOR } from './node-floor.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
 
@@ -527,7 +530,7 @@ export async function runDoctorColdChecks(dataDir: string): Promise<DoctorCheck[
   // different runtime) but it belongs in the machine-readable report: an agent
   // reading `doctor --json` off a stale runtime should see the cause named
   // rather than infer it from whichever subsystem crashes first.
-  const nodeCheck = checkNode();
+  const nodeCheck = checkNodeFloor();
   checks.push({
     name: 'node',
     status: nodeCheck.ok ? 'ok' : 'failed',
@@ -695,7 +698,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
 
   const py = checkPython();
   const dk = checkDocker();
-  const nodeCheck = checkNode();
+  const nodeCheck = checkNodeFloor();
   out('[wigolo doctor] Runtime:');
   // Node is the one hard requirement. `engines.node` only warns on install with
   // some package managers, so an under-floor runtime must surface here too —
