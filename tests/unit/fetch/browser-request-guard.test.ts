@@ -85,6 +85,13 @@ describe('evaluateBrowserRequestUrl — parity with the fence the other tiers en
     ['IPv6 unique-local fc00::/7', 'http://[fc00::1]/'],
     ['IPv6 link-local fe80::/10', 'http://[fe80::1]/'],
     ['IPv4-mapped metadata (::ffff:169.254.169.254)', 'http://[::ffff:169.254.169.254]/'],
+    // The URL parser normalises the deprecated ::a.b.c.d form to a hex pair,
+    // which is the shape that actually reaches a guard — assert the shape, not
+    // the one a human would type.
+    ['IPv4-compatible hex form (::7f00:1)', 'http://[::7f00:1]/'],
+    ['6to4 gateway embedding metadata (2002:a9fe:a9fe::)', 'http://[2002:a9fe:a9fe::]/'],
+    ['NAT64 embedding metadata (64:ff9b::a9fe:a9fe)', 'http://[64:ff9b::a9fe:a9fe]/'],
+    ['IPv6 unspecified (::)', 'http://[::]/'],
   ];
 
   for (const [label, url] of blocked) {
