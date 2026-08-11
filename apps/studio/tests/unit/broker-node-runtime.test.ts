@@ -46,11 +46,17 @@ afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
 
 /** A fake `execFileSync` that answers like a healthy runtime, so no real process is spawned. */
 function passingExec(abi = '127') {
-  return vi.fn(() => `__wigolo_broker_abi_ok__${abi}`);
+  return vi.fn((_cmd: string, _args: string[], _opts: object): string => `__wigolo_broker_abi_ok__${abi}`);
 }
 /** A fake `execFileSync` that fails the way a real ABI mismatch does — non-zero exit carrying stderr. */
 function failingExec(stderr: string) {
-  return vi.fn(() => { throw Object.assign(new Error('Command failed'), { status: 1, stderr }); });
+  return vi.fn((_cmd: string, _args: string[], _opts: object): string => {
+    throw Object.assign(new Error('Command failed'), { status: 1, stderr });
+  });
+}
+/** A fake `spawn`, typed so its recorded calls stay inspectable. */
+function fakeSpawn() {
+  return vi.fn((_cmd: string, _args: string[], _opts: object): ChildProcess => makeInertChild());
 }
 
 describe('probeNodeRuntime — the probe must OPEN a database', () => {
@@ -173,11 +179,11 @@ describe('createBrokerClient — refuses loudly, and stays quiet when healthy', 
   const brokerPath = createRequire(import.meta.url).resolve('better-sqlite3');
 
   it('spawns nothing and rejects with the diagnostic when no runtime proves out', async () => {
-    const spawnFn = vi.fn();
+    const spawnFn = fakeSpawn();
     const warn = vi.fn();
     const client = createBrokerClient({
       brokerPath,
-      spawnFn: spawnFn as unknown as (c: string, a: string[], o: object) => ChildProcess,
+      spawnFn,
       execFileSyncFn: failingExec('Error: NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 115.'),
       warn,
     });
@@ -188,14 +194,9 @@ describe('createBrokerClient — refuses loudly, and stays quiet when healthy', 
   });
 
   it('MUST NOT fire on a healthy environment: it starts on the proven path with no warning', () => {
-    const spawnFn = vi.fn(() => makeInertChild());
+    const spawnFn = fakeSpawn();
     const warn = vi.fn();
-    createBrokerClient({
-      brokerPath,
-      spawnFn: spawnFn as unknown as (c: string, a: string[], o: object) => ChildProcess,
-      execFileSyncFn: passingExec(),
-      warn,
-    });
+    createBrokerClient({ brokerPath, spawnFn, execFileSyncFn: passingExec(), warn });
     expect(warn).not.toHaveBeenCalled();
     expect(spawnFn).toHaveBeenCalledTimes(1);
     expect(spawnFn.mock.calls[0][0]).toBe(process.execPath); // the candidate that proved out
@@ -203,13 +204,8 @@ describe('createBrokerClient — refuses loudly, and stays quiet when healthy', 
 
   it('MUST NOT fire when a caller injects nodePath: the probe is skipped entirely', () => {
     const exec = passingExec();
-    const spawnFn = vi.fn(() => makeInertChild());
-    createBrokerClient({
-      brokerPath,
-      nodePath: '/injected/node',
-      spawnFn: spawnFn as unknown as (c: string, a: string[], o: object) => ChildProcess,
-      execFileSyncFn: exec,
-    });
+    const spawnFn = fakeSpawn();
+    createBrokerClient({ brokerPath, nodePath: '/injected/node', spawnFn, execFileSyncFn: exec });
     expect(exec).not.toHaveBeenCalled();
     expect(spawnFn.mock.calls[0][0]).toBe('/injected/node');
   });
