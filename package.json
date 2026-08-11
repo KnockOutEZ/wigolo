@@ -76,6 +76,7 @@
     "bench:agent": "tsx benchmarks/agent/runner.ts",
     "bench:embedding": "tsx benchmarks/embedding/runner.ts",
     "bench:embedding:quality": "RUN_FASTEMBED=1 tsx benchmarks/embedding/runner.ts",
+    "bench:truncation": "tsx benchmarks/truncation/runner.ts",
     "bench:scrape": "tsx benchmarks/scrape-quality/runner.ts",
     "bench:scrape:firecrawl": "tsx benchmarks/scrape-quality/firecrawl.ts"
   },
