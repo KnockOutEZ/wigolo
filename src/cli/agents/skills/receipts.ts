@@ -44,6 +44,13 @@ export type ReceiptStore = Record<string, ReceiptEntry>;
 // pin the deadline's EXISTENCE without paying ten seconds to observe it.
 const LOCK_TIMEOUT_MS = Number(process.env.WIGOLO_SKILLS_LOCK_TIMEOUT_MS) || 10_000;
 
+// How long mkdir may keep answering EPERM before we believe it. See acquireLock: on Windows
+// EPERM is how an EXISTING-but-delete-pending lock dir reports itself, which is transient by
+// construction — but a genuine permission fault answers EPERM forever, and that one must still
+// surface as itself rather than being retried into the lock timeout ten seconds later.
+const LOCK_EPERM_BUDGET_MS = 500;
+const LOCK_EPERM_BACKOFF_MS = 10;
+
 function skillsDataDir(): string {
   return join(getConfig().dataDir, 'skills');
 }
@@ -213,6 +220,9 @@ function acquireLock(): { token: string } {
   mkdirSync(skillsDataDir(), { recursive: true });
   const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  // Set on the first of a CONSECUTIVE run of EPERM answers, cleared the moment mkdir answers
+  // anything else, so a lock that merely flickers through delete-pending never spends the budget.
+  let epermDeadline: number | undefined;
 
   for (;;) {
     // The deadline governs EVERY iteration, not just the one that sleeps. Two branches below
@@ -231,9 +241,25 @@ function acquireLock(): { token: string } {
       writeFileSync(join(lock, 'owner'), token, 'utf-8');
       // Re-verify we own it (guards a racing steal between mkdir and write).
       if (readOwner(lock) === token) return { token };
+      epermDeadline = undefined;
       continue;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      const code = (err as NodeJS.ErrnoException).code;
+      // EEXIST is not the only way Windows says "that lock is already there". A releasing
+      // writer's rmdir leaves the name DELETE-PENDING until the last handle closes, and
+      // CreateDirectory on a delete-pending name is ERROR_ACCESS_DENIED — EPERM, not EEXIST.
+      // That window is precisely what two racing writers aim at, so the loser was killed
+      // outright by a condition that means "wait 10ms". Retry it, on its own budget so a real
+      // permission fault still throws ITSELF, and inside the outer deadline so neither bound
+      // can be escaped.
+      if (code === 'EPERM') {
+        epermDeadline ??= Date.now() + LOCK_EPERM_BUDGET_MS;
+        if (Date.now() > epermDeadline) throw err;
+        sleepSync(LOCK_EPERM_BACKOFF_MS);
+        continue;
+      }
+      epermDeadline = undefined;
+      if (code !== 'EEXIST') throw err;
     }
 
     // Lock held — check staleness (crash-orphan recovery).
