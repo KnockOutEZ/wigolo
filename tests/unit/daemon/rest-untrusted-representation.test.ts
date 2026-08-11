@@ -174,6 +174,33 @@ describe('REST default representation — page-derived content arrives FENCED', 
     expect(body.citations[0].url).toBe('https://x.example/c'); // operational stays raw
   });
 
+  it('REST-5b: the delegation reaches NESTED page-derived fields, not just the top level', async () => {
+    // REST-1 only proves "at least one region somewhere". These are the surfaces P2 specifically
+    // found unfenced, and they are nested one or two levels down — a shallow delegation would pass
+    // REST-1 and still ship them bare. Fencing is delegated to the same content-fence helpers the
+    // MCP seam uses precisely so there is no second implementation to drift; this row proves the
+    // delegation is real rather than assumed.
+    const r = await dispatchTool('agent', { prompt: 'p' }, ctxWith('inline'));
+    const body = r.body as {
+      result: string;
+      sources: Array<{ title: string; markdown_content: string; rawHtml: string; url: string }>;
+      steps: Array<{ detail: string }>;
+    };
+    expect(isFenced(body.result)).toBe(true);
+    expect(isFenced(body.sources[0].title)).toBe(true);
+    expect(isFenced(body.sources[0].markdown_content)).toBe(true);
+    // rawHtml is the highest-density injection carrier on AgentSource. `stripRawHtml` deletes it on
+    // every return path today, so this is defence in depth — it must fail CLOSED if that is relaxed.
+    expect(isFenced(body.sources[0].rawHtml)).toBe(true);
+    expect(isFenced(body.steps[0].detail)).toBe(true);
+    expect(body.sources[0].url).toBe('https://x.example/a'); // operational stays raw
+
+    // and the title surface on the bulk path
+    const crawl = await dispatchTool('crawl', { url: 'https://x.example/' }, ctxWith('inline'));
+    const pages = (crawl.body as { pages: Array<{ title: string }> }).pages;
+    expect(isFenced(pages[0].title)).toBe(true);
+  });
+
   it('REST-6: `diff` takes its origin from whichever input side named a url', async () => {
     // DiffOutput carries no url of its own, so the origin can only come from the request — and the
     // REST seam is the one place that still has it. MUT: stop threading `input` → no origin → RED.
