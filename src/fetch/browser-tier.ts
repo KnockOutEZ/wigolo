@@ -195,21 +195,29 @@ function isPlainDefault(r: BrowserTierResolution): boolean {
  * D-S10-9 — a tier decision is never silent.
  *
  * P3a's shipped lesson one layer up: a substrate that fails or is skipped, degrading quietly,
- * is indistinguishable from a broken install. The warn carries the reason AND a remedy; a
- * warn with no remedy is a complaint.
+ * is indistinguishable from a broken install. So every non-default decision is emitted once,
+ * with the reason and — when there is one — a remedy.
+ *
+ * The LEVEL is chosen by whether a remedy exists, not by how unusual the branch is. A `warn`
+ * whose remedy field is empty is a complaint, and a stream of complaints about a healthy
+ * machine is how a genuine warning comes to be filtered out. `installed_substrate_present` is
+ * the case that forces the distinction: it is not the plain default, it changes what warmup
+ * downloads, and there is nothing whatsoever for the operator to do about it.
  */
 function announce(r: BrowserTierResolution): void {
   if (isPlainDefault(r)) return;
   const key = `${r.tier}:${r.reason}`;
   if (announced.has(key)) return;
   announced.add(key);
-  log.warn('browser tier resolved below the desktop default', {
+  const data = {
     tier: r.tier,
     reason: r.reason,
     detail: r.detail,
     ...(r.ceiling ? { ceiling: r.ceiling } : {}),
-    remedy: r.remedy ?? '',
-  });
+    ...(r.remedy ? { remedy: r.remedy } : {}),
+  };
+  if (r.remedy) log.warn('browser tier resolved below the desktop default', data);
+  else log.info('browser tier resolved by a non-default branch', data);
 }
 
 /**

@@ -9,10 +9,10 @@ import {
   type BrowserTierResolution,
 } from '../../../src/fetch/browser-tier.js';
 
-const { warnMock } = vi.hoisted(() => ({ warnMock: vi.fn() }));
+const { warnMock, infoMock } = vi.hoisted(() => ({ warnMock: vi.fn(), infoMock: vi.fn() }));
 
 vi.mock('../../../src/logger.js', () => ({
-  createLogger: () => ({ warn: warnMock, info: vi.fn(), debug: vi.fn(), error: vi.fn() }),
+  createLogger: () => ({ warn: warnMock, info: infoMock, debug: vi.fn(), error: vi.fn() }),
 }));
 
 /**
@@ -27,6 +27,7 @@ function resolve(inputs: BrowserTierInputs): BrowserTierResolution {
 beforeEach(() => {
   resetBrowserTierAnnouncements();
   warnMock.mockReset();
+  infoMock.mockReset();
 });
 
 describe('resolveBrowserTier — display detection', () => {
@@ -203,6 +204,25 @@ describe('resolveBrowserTier — no decision is silent (D-S10-9)', () => {
     resolve({ platform: 'linux' });
     resolve({ platform: 'darwin', substrateUnavailable: true });
     expect(warnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('never emits a warn with an empty remedy — a healthy non-default branch is an info', () => {
+    // WHY: a warn whose remedy is empty is a complaint, and complaints about a healthy machine
+    // are how a genuine warning comes to be filtered out. An already-installed substrate is
+    // not the plain default and changes what warmup downloads, so it must not be SILENT — but
+    // there is nothing for the operator to do, so it must not be a warning either.
+    resolve({ platform: 'darwin', substrateInstalled: () => true });
+    expect(warnMock).not.toHaveBeenCalled();
+    expect(infoMock).toHaveBeenCalledTimes(1);
+
+    resolve({ platform: 'linux' });
+    resolve({ platform: 'darwin', substrateUnavailable: true });
+    resolve({ platform: 'darwin', requestedTier: 'browser' });
+    for (const call of warnMock.mock.calls) {
+      const [, data] = call as [string, Record<string, unknown>];
+      expect(data.remedy, JSON.stringify(data)).toBeTruthy();
+    }
+    expect(warnMock).toHaveBeenCalledTimes(3);
   });
 });
 

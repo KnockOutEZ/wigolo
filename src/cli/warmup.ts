@@ -15,6 +15,11 @@ import { autoReporter } from './tui/reporter-auto.js';
 import { runVerify as runVerifyTui } from './tui/verify.js';
 import { sanitizeForTerminal } from './doctor.js';
 import { resolveLocalModelTier, type LocalModelTier } from '../integrations/cloud/llm/local-tier.js';
+import {
+  resolveBrowserTier,
+  type BrowserTierId,
+  type BrowserTierReason,
+} from '../fetch/browser-tier.js';
 
 /**
  * Resolve the CLI entrypoint of the *bundled* Playwright module — the same
@@ -205,6 +210,14 @@ export async function installBrowser(
 export interface WarmupResult {
   playwright: 'ok' | 'failed';
   playwrightError?: string;
+  /**
+   * The rung this machine resolved to, and why (D-S10-2). Reported, not yet acted on: S10-b
+   * changes no acquisition, so a `no-display` result here still installs what it always did.
+   * S10-d gates the download on exactly this field, which is why it is recorded now — the flip
+   * then has a value to switch on that has already been observed in the wild.
+   */
+  browserTier: BrowserTierId;
+  browserTierReason: BrowserTierReason;
   searxng: 'ready' | 'bootstrapped' | 'failed' | 'no_python' | 'no_venv' | 'skipped';
   searxngError?: string;
   reranker?: 'ok' | 'failed';
@@ -228,6 +241,8 @@ export interface WarmupResult {
 export function warmupResultToJson(result: WarmupResult): Record<string, unknown> {
   const out: Record<string, unknown> = {
     browserEngine: result.playwright,
+    browserTier: result.browserTier,
+    browserTierReason: result.browserTierReason,
     searchSidecar: result.searxng,
   };
   if (result.playwrightError !== undefined) out.browserEngineError = result.playwrightError;
@@ -434,6 +449,15 @@ export async function runWarmup(
 
   reporterImpl.note('Starting wigolo warmup');
 
+  // D-S10-8 — `--browser` is READ here, and this is the whole of what "made real" means at
+  // this slice: it selects the browser rung explicitly, overriding detection, and the choice
+  // is recorded in the result. Before this, `runWarmup` inspected twelve flags and not this
+  // one; it appeared to work only because the browser install below is unconditional. The
+  // moment S10-d gates that install on the tier, an unread `--browser` would silently stop
+  // acquiring anything — on the lazy path that `browser-acquire.ts` drives from the fetch hot
+  // path. That latent break is created by the tier work, so the tier work closes it first.
+  const tier = resolveBrowserTier({ requestedTier: flagSet.has('--browser') ? 'browser' : null });
+
   const pwResult = await installPlaywright(reporterImpl);
 
   // D1: the search-engine sidecar is opt-in. The searxng phase runs only when
@@ -472,6 +496,8 @@ export async function runWarmup(
   }
 
   const result: WarmupResult = {
+    browserTier: tier.tier,
+    browserTierReason: tier.reason,
     ...pwResult,
     ...searxngResult,
     ...rerankerResult,
@@ -483,6 +509,8 @@ export async function runWarmup(
   reporterImpl.note('');
   reporterImpl.note('Summary:');
   reporterImpl.note(`  Browser:       ${result.playwright}${result.playwrightError ? ` (${result.playwrightError})` : ''}`);
+  reporterImpl.note(`  Browser tier:  ${tier.tier} — ${tier.detail}`);
+  if (tier.ceiling) reporterImpl.note(`                 ceiling: ${tier.ceiling}`);
   reporterImpl.note(`  Search engine: ${result.searxng}${result.searxngError ? ` (${result.searxngError})` : ''}`);
   if (result.reranker) reporterImpl.note(`  ML reranker:   ${result.reranker}${result.rerankerError ? ` (${result.rerankerError})` : ''}`);
   if (result.firefox) reporterImpl.note(`  Firefox:       ${result.firefox}${result.firefoxError ? ` (${result.firefoxError})` : ''}`);

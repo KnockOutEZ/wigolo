@@ -2,6 +2,12 @@ import type { ConnectedAgent } from './status-agents.js';
 
 export interface StatusBag {
   version: string;
+  /**
+   * D-S10-9: the resolved browser rung, always present. Unlike the escalation counters below
+   * this is NOT hidden until it has been used — the whole point is that a machine which
+   * resolved to a weaker rung finds out before a fetch quietly underperforms on it.
+   */
+  browserTier: { tier: string; detail: string; ceiling?: string; remedy?: string };
   searxng: 'ready' | 'failed' | 'pending';
   reranker: 'ok' | 'missing';
   embeddings: 'ok' | 'missing';
@@ -41,6 +47,12 @@ export function formatStatus(bag: StatusBag): string {
   lines.push(line('ML reranker',      bag.reranker));
   lines.push(line('Embeddings',  bag.embeddings));
   lines.push(`  Cache: ${bag.cache.pages} pages, ${formatBytes(bag.cache.bytes)}`);
+
+  lines.push('');
+  lines.push('Browser tier:');
+  lines.push(`  Resolved: ${bag.browserTier.tier} — ${bag.browserTier.detail}`);
+  if (bag.browserTier.ceiling) lines.push(`  Ceiling: ${bag.browserTier.ceiling}`);
+  if (bag.browserTier.remedy) lines.push(`  Remedy: ${bag.browserTier.remedy}`);
 
   if (bag.browserSession) {
     const b = bag.browserSession;
