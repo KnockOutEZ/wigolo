@@ -161,11 +161,21 @@ describe('no-display tier — ZERO component bytes (assertion 12, D-S10-5)', () 
   it('acquires the browser engine eagerly, because that is this host\'s rung', async () => {
     // WHY: `warmup` exists to pre-download what the machine will use. The no-display rung is the
     // browser engine, so leaving it lazy here would trade 300 MiB of waste for a slow first fetch.
+    //
+    // ⚠ THE SOURCE IS SET DELIBERATELY, and a probe is why. Without it this test passed even
+    // when the no-display branch was mutated to acquire the component — because with nothing to
+    // acquire the run degrades and installs the engine anyway, so "engine acquired" was true for
+    // a reason that had nothing to do with the tier. With a component sitting there ready, the
+    // engine can only be acquired if the tier actually refused the component.
+    process.env[SUBSTRATE_PATH_ENV] = sourceDir;
+    resetConfig();
     const r = await runWarmup([]);
     expect(r.playwright).toBe('ok');
   });
 
   it('reports whether an authentic system browser is present (assertion 13)', async () => {
+    process.env[SUBSTRATE_PATH_ENV] = sourceDir;
+    resetConfig();
     const r = await runWarmup([]);
     expect(['present', 'absent']).toContain(r.systemBrowser);
   });
