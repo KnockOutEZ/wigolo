@@ -32,7 +32,7 @@ export async function buildResearchBrief(
   const searchItems: SearchResultItem[] = fetched.map((s) => ({
     title: s.title,
     url: s.url,
-    snippet: stripResearchChrome(s.markdown_content).slice(0, 200),
+    snippet: truncateAtBoundary(stripResearchChrome(s.markdown_content), 200),
     markdown_content: s.markdown_content,
     relevance_score: s.relevance_score,
   }));

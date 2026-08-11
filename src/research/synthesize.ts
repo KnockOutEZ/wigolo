@@ -9,6 +9,10 @@ import type { ResearchSource, Citation } from '../types.js';
 // response seam (B1). No overhead reservation is needed for a wrap this file no longer performs.
 import { wrapUntrusted } from '../security/untrusted.js';
 import { stripResearchChrome } from './brief.js';
+import { truncateAtBoundary } from '../search/truncate.js';
+
+/** Shared cap for the short quoted snippet attached to each citation. */
+export const CITATION_SNIPPET_LEN = 200;
 
 const log = createLogger('research');
 
@@ -55,7 +59,7 @@ export async function synthesizeReport(
     // fail OPEN: a raw hostile snippet shipped next to a fenced sibling `title` on the same object.
     // Fencing at the seam makes it one invariant at one choke point that every producer passes,
     // instead of an assumption each new producer has to remember to honour.
-    snippet: stripResearchChrome(s.markdown_content).slice(0, 200),
+    snippet: truncateAtBoundary(stripResearchChrome(s.markdown_content), CITATION_SNIPPET_LEN),
     trusted: s.trusted, // mirror the source's trust (C4)
   }));
 
@@ -182,17 +186,18 @@ export function buildFallbackReport(
     // sink, and nothing there flows into the response.
     const contentBudget = Math.min(remaining - 10, source.markdown_content.length);
     if (contentBudget > 0) {
-      let content = source.markdown_content.slice(0, contentBudget);
-      if (content.length < source.markdown_content.length) {
-        content = content.slice(0, Math.max(contentBudget - 3, 0)) + '...';
+      // Boundary-aware: this body is markdown, and a raw slice ended it
+      // mid-word and left unterminated fences in the report the caller reads.
+      const content = truncateAtBoundary(source.markdown_content, contentBudget, '...');
+      if (content) {
+        report += content + '\n\n';
+        remaining -= content.length + 2;
       }
-      report += content + '\n\n';
-      remaining -= content.length + 2;
     }
   }
 
   if (report.length > maxLength) {
-    report = report.slice(0, maxLength - 3) + '...';
+    report = truncateAtBoundary(report, maxLength, '...');
   }
 
   return report.trimEnd();
