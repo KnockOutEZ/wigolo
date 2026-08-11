@@ -30,18 +30,42 @@ function resolveOrtRoot(consumer) {
   return dirname(require.resolve('onnxruntime-node/package.json', paths ? { paths } : undefined));
 }
 
+/*
+ * Directory entries of `dir`, FOLLOWING SYMLINKS.
+ *
+ * ⚠ `Dirent.isDirectory()` is false for a symlink that points at a directory — it describes the
+ * link, not the target. An installer that materialises any part of this layout as a link would
+ * therefore make that platform invisible here. That direction is safe (the planner refuses when
+ * it cannot see the host pair, so nothing is deleted) but it silently costs the whole win, and a
+ * prune that quietly does nothing is worse than one that fails loudly. `statSync` follows the
+ * link and answers the question actually being asked: can this be descended into.
+ */
+function subdirs(dir) {
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => {
+      if (e.isDirectory()) return true;
+      if (!e.isSymbolicLink()) return false;
+      try {
+        return statSync(join(dir, e.name)).isDirectory();
+      } catch {
+        return false; // dangling link
+      }
+    })
+    .map((e) => e.name);
+}
+
 /** `<root>/bin/napi-v3` as `{ platform: [arch, ...] }`; `null` when the layout is not there. */
 function readPlatformTree(binRoot) {
   let platforms;
   try {
-    platforms = readdirSync(binRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    platforms = subdirs(binRoot);
   } catch {
     return null;
   }
   const tree = {};
   for (const p of platforms) {
     try {
-      tree[p] = readdirSync(join(binRoot, p), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+      tree[p] = subdirs(join(binRoot, p));
     } catch {
       tree[p] = [];
     }
