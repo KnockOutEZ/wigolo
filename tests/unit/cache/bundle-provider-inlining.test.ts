@@ -34,7 +34,7 @@ async function bundleRegistry(): Promise<string> {
     bundle: true,
     format: 'cjs',
     platform: 'node',
-    target: 'node20',
+    target: 'node22',
     write: false,
     // Keep the native/heavy leaves out; they are irrelevant to whether the PROVIDER got inlined,
     // and bundling them makes the test slow and brittle.

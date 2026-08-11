@@ -37,6 +37,10 @@ import { resetBreakers, getBreakerSnapshot } from '../search/core/engine-base.js
 import { searxngConfigured } from '../searxng/enabled.js';
 import { readAdminToken } from '../daemon/admin-token.js';
 import { getVersion } from './help.js';
+// From the dependency-free leaf, NOT from tui/system-check.js: that module
+// imports `statfs` from node:fs, and doctor is reachable from warmup, whose
+// tests partially mock node:fs.
+import { checkNodeFloor, MIN_NODE_MAJOR } from './node-floor.js';
 
 function out(line = ''): void { process.stderr.write(`${line}\n`); }
 
@@ -522,6 +526,20 @@ async function postDaemonBreakerReset(dataDir: string): Promise<{ ok: boolean; e
 export async function runDoctorColdChecks(dataDir: string): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
 
+  // The supported-runtime floor. Non-fixable (doctor cannot re-exec itself on a
+  // different runtime) but it belongs in the machine-readable report: an agent
+  // reading `doctor --json` off a stale runtime should see the cause named
+  // rather than infer it from whichever subsystem crashes first.
+  const nodeCheck = checkNodeFloor();
+  checks.push({
+    name: 'node',
+    status: nodeCheck.ok ? 'ok' : 'failed',
+    fixable: false,
+    detail: nodeCheck.ok
+      ? `${nodeCheck.version ?? process.version} (floor >=${MIN_NODE_MAJOR})`
+      : (nodeCheck.message ?? `below the Node ${MIN_NODE_MAJOR} floor`),
+  });
+
   const pw = await checkPlaywright();
   checks.push({
     name: 'browser',
@@ -680,7 +698,13 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
 
   const py = checkPython();
   const dk = checkDocker();
+  const nodeCheck = checkNodeFloor();
   out('[wigolo doctor] Runtime:');
+  // Node is the one hard requirement. `engines.node` only warns on install with
+  // some package managers, so an under-floor runtime must surface here too —
+  // otherwise the failure it causes shows up later as an unrelated crash.
+  out(`  Node.js:       ${nodeCheck.ok ? `${nodeCheck.version ?? 'unknown'} (floor >=${MIN_NODE_MAJOR})` : `UNSUPPORTED — ${nodeCheck.message ?? 'below the minimum'}`}`);
+  if (!nodeCheck.ok) { degraded = true; nonFixableDegraded = true; }
   out(`  Python 3:      ${py.ok ? `available (${py.version ?? 'unknown'})` : 'not available'}`);
   out(`  Docker:        ${dk.ok ? `available (${dk.cli}, ${dk.version})` : 'not available'}`);
   // python/docker are prerequisites ONLY for the opt-in search-engine sidecar

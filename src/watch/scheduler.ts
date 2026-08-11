@@ -194,7 +194,7 @@ async function deliverWebhook(
   webhookUrl: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  // Minimal POST. We rely on the runtime's built-in fetch (Node 20+) so
+  // Minimal POST. We rely on the runtime's built-in fetch (Node 22+) so
   // there's no extra dependency. Failures are swallowed by the caller's
   // catch — webhooks are best-effort by spec, not a delivery guarantee.
   //

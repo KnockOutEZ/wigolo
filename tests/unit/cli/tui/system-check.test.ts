@@ -47,13 +47,18 @@ function mockStatfs(bavail: number, bsize = 4096): void {
 }
 
 describe('checkNode', () => {
-  it('accepts Node 20 and above', () => {
+  // Node 20 "Iron" went EOL upstream on 2026-03-24 and the floor moved to 22.
+  // This asserts the REJECTION rather than the boundary being "some number":
+  // a floor that still admits an EOL line ships users onto a runtime that gets
+  // no security patches, which is the whole reason the floor exists.
+  it('rejects Node 20 (EOL, below the >=22 floor)', () => {
     const originalVersion = process.version;
-    Object.defineProperty(process, 'version', { value: 'v20.0.0', configurable: true });
+    Object.defineProperty(process, 'version', { value: 'v20.19.0', configurable: true });
     try {
       const r = checkNode();
-      expect(r.ok).toBe(true);
-      expect(r.version).toBe('20.0.0');
+      expect(r.ok).toBe(false);
+      expect(r.version).toBe('20.19.0');
+      expect(r.message).toMatch(/requires Node 22/i);
     } finally {
       Object.defineProperty(process, 'version', { value: originalVersion, configurable: true });
     }
@@ -75,7 +80,7 @@ describe('checkNode', () => {
     try {
       const r = checkNode();
       expect(r.ok).toBe(false);
-      expect(r.message).toMatch(/requires Node 20/i);
+      expect(r.message).toMatch(/requires Node 22/i);
     } finally {
       Object.defineProperty(process, 'version', { value: originalVersion, configurable: true });
     }

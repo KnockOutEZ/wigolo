@@ -3,6 +3,7 @@ import { statfs } from 'node:fs';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { resolveContainerCli } from '../../searxng/docker.js';
+import { checkNodeFloor } from '../node-floor.js';
 
 const statfsAsync = promisify(statfs);
 
@@ -28,7 +29,6 @@ export interface SystemCheckResult {
   hardFailure: boolean;
 }
 
-const MIN_NODE_MAJOR = 20;
 const MIN_FREE_MB = 500;
 
 function parseSemver(raw: string): { major: number; minor: number; patch: number } | null {
@@ -42,19 +42,7 @@ function parseSemver(raw: string): { major: number; minor: number; patch: number
 }
 
 export function checkNode(): CheckResult {
-  const parsed = parseSemver(process.version);
-  if (!parsed) {
-    return { ok: false, message: `unable to parse Node version '${process.version}'` };
-  }
-  const version = `${parsed.major}.${parsed.minor}.${parsed.patch}`;
-  if (parsed.major < MIN_NODE_MAJOR) {
-    return {
-      ok: false,
-      version,
-      message: `wigolo requires Node 20 or newer (found ${version})`,
-    };
-  }
-  return { ok: true, version };
+  return checkNodeFloor();
 }
 
 function runPython(binary: 'python3' | 'python'): PythonCheckResult | null {

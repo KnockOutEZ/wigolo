@@ -14,7 +14,7 @@ node research.mjs
 node research.mjs "your own question here"
 ```
 
-Requires node >= 20 and a wigolo CLI the SDK can spawn (`npm i -g wigolo`, or
+Requires node >= 22 and a wigolo CLI the SDK can spawn (`npm i -g wigolo`, or
 set `WIGOLO_CLI` to a path / JSON argv array).
 
 ## What you'll see (real output, trimmed)

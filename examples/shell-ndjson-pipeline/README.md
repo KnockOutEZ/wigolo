@@ -14,7 +14,7 @@ pool) is paid once per pipe instead of once per command.
 WIGOLO="wigolo" ./pipeline.sh    # or a global install
 ```
 
-Requires node >= 20 and `jq`.
+Requires node >= 22 and `jq`.
 
 ## What it does
 

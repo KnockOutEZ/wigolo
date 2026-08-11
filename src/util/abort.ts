@@ -1,5 +1,7 @@
 // Small AbortSignal combinators for bounding the search content-fetch stage.
-// Hand-rolled rather than AbortSignal.any() (Node 20.0–20.2 lack it; floor is >=20).
+// Hand-rolled rather than AbortSignal.any(). The original reason (Node 20.0–20.2
+// lack it) no longer applies now the floor is >=22 — these also return a
+// `cancel()` that drops the listeners, which AbortSignal.any() does not offer.
 
 export interface CancelableSignal {
   signal: AbortSignal;
