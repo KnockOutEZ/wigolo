@@ -29,6 +29,7 @@
     "dist",
     "assets/blocks",
     "assets/legacy-skill-hashes.json",
+    "scripts/prune",
     "skills",
     "README.md",
     "LICENSE",
@@ -50,6 +51,7 @@
   ],
   "scripts": {
     "build": "tsup && tsc -p tsconfig.build.json",
+    "postinstall": "node scripts/prune/run.mjs",
     "build:binary": "npm run build && node packaging/binary/bundle.mjs && bash packaging/binary/pack.sh",
     "build:watch": "tsup --watch",
     "dev": "tsx src/index.ts",
