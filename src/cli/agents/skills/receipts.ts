@@ -40,7 +40,9 @@ export interface ReceiptEntry {
 
 export type ReceiptStore = Record<string, ReceiptEntry>;
 
-const LOCK_TIMEOUT_MS = 10_000;
+// Operable so a slow/networked home dir can be given more room — and so the guard test can
+// pin the deadline's EXISTENCE without paying ten seconds to observe it.
+const LOCK_TIMEOUT_MS = Number(process.env.WIGOLO_SKILLS_LOCK_TIMEOUT_MS) || 10_000;
 
 function skillsDataDir(): string {
   return join(getConfig().dataDir, 'skills');
@@ -213,6 +215,17 @@ function acquireLock(): { token: string } {
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
 
   for (;;) {
+    // The deadline governs EVERY iteration, not just the one that sleeps. Two branches below
+    // `continue` without sleeping — the ownership re-verify, and the stale-lock steal — and
+    // while the only check sat next to sleepSync both were UNBOUNDED: a steal that can never
+    // succeed (rename fails with anything other than the EPERM it retries) looped forever with
+    // no throw and no sleep. Because the loop is synchronous, nothing could interrupt it: not a
+    // test timeout, not the caller. That is a wedged process, not a slow one — and a wedged
+    // worker holds its parent's pipes open, so a whole CI run hangs instead of failing.
+    if (Date.now() > deadline) {
+      throw new Error('skills receipts: lock acquisition timed out');
+    }
+
     try {
       mkdirSync(lock);
       writeFileSync(join(lock, 'owner'), token, 'utf-8');
@@ -247,9 +260,6 @@ function acquireLock(): { token: string } {
       continue; // loop back to re-mkdir the fresh lock
     }
 
-    if (Date.now() > deadline) {
-      throw new Error('skills receipts: lock acquisition timed out');
-    }
     sleepSync(20);
   }
 }
