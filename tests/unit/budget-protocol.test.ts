@@ -139,19 +139,24 @@ describe('evaluate', () => {
 
 describe("G-DIET's threshold is set by the regression it has to catch", () => {
   /*
-   * The two numbers are both MEASURED, on the same protocol the gate itself runs, on the same
-   * machine, minutes apart — `npm install --omit=dev --ignore-scripts --no-workspaces` into an
-   * empty directory holding only package.json + package-lock.json.
+   * Measured on the protocol the gate itself runs — `npm install --omit=dev --ignore-scripts
+   * --no-workspaces` into an empty directory holding only package.json + package-lock.json.
    *
+   * Locally on darwin-arm64, minutes apart:
    *   bc0ccf4b            698 MiB / 388 packages   (driver on the default install path)
    *   bc0ccf4b + S10-e    681 MiB / 386 packages   (driver an optional peer)
    *
    * The per-package diff between those two trees is exactly `playwright` and `playwright-core`
-   * removed, nothing added — so 698 is not a model of the regression, it IS the regression,
-   * observed.
+   * removed, nothing added — so the regression is observed, not modelled, and the 17 MiB delta
+   * is platform-stable because both packages are pure JS.
+   *
+   * ⚠ THE THRESHOLD IS ANCHORED TO THE RUNNER, NOT THE LAPTOP. This gate runs on exactly one
+   * machine class (clean-machine-smoke, macos-latest, node 22), and that machine measured 685
+   * for the same commit — 4 MiB above local. Shipping the laptop-derived 690 would have left a
+   * clean build 5 MiB of room on the only machine that runs the gate.
    */
-  const CLEAN_BUILD_MIB = 681;
-  const DRIVER_BACK_ON_DEFAULT_PATH_MIB = 698;
+  const CLEAN_BUILD_MIB = 685;
+  const DRIVER_BACK_ON_DEFAULT_PATH_MIB = 685 + 17;
 
   it('passes the measured clean build', () => {
     expect(evaluate(GATES['G-DIET'], CLEAN_BUILD_MIB).pass).toBe(true);
@@ -167,9 +172,9 @@ describe("G-DIET's threshold is set by the regression it has to catch", () => {
   it('would NOT have caught it at a habitual 3% headroom', () => {
     // ⚠ THE TRAP THIS ASSERTION EXISTS TO PIN. Sizing the limit as "clean build + ~3%" is what
     // the previous threshold did (700 -> 720) and it is the obvious move here too. It yields
-    // 701, which is ABOVE the 698 regression and would pass it. Three thresholds in this program
+    // 706, which is ABOVE the 702 regression and would pass it. Three thresholds in this program
     // have already shipped or been proposed at numbers that could not fail for their own stated
-    // reason; this records why 690 is not one more of them.
+    // reason; this records why 693 is not one more of them.
     const habitual = Math.round(CLEAN_BUILD_MIB * 1.03);
     expect(habitual).toBeGreaterThan(DRIVER_BACK_ON_DEFAULT_PATH_MIB);
     expect(limitFor(GATES['G-DIET'])).toBeLessThan(DRIVER_BACK_ON_DEFAULT_PATH_MIB);
@@ -177,9 +182,10 @@ describe("G-DIET's threshold is set by the regression it has to catch", () => {
 
   it('still leaves a clean build room to grow', () => {
     // The other half of the constraint: a gate a clean build cannot pass is worse than no gate.
-    // 690 - 681 = 9 MiB, against ~2 MiB of drift observed across commits on this artifact.
+    // 693 - 685 = 8 MiB on the machine that runs it, against the 4 MiB laptop-to-runner spread
+    // this slice measured and ~2 MiB of commit-to-commit drift on this artifact.
     expect(limitFor(GATES['G-DIET'])).toBeGreaterThan(CLEAN_BUILD_MIB);
-    expect(limitFor(GATES['G-DIET']) - CLEAN_BUILD_MIB).toBeGreaterThanOrEqual(9);
+    expect(limitFor(GATES['G-DIET']) - CLEAN_BUILD_MIB).toBeGreaterThanOrEqual(8);
   });
 });
 
@@ -540,20 +546,20 @@ describe('G-TOTAL-DESKTOP is dropped, not silently inherited', () => {
   });
 
   it('records the arithmetic that makes a composed gate unbuildable today', () => {
-    // WHY A DECISION AND NOT A DELETION: G-DIET (<=690) and G-ACQUIRE (<=800) already bound the
-    // composed total at 1490 whether or not anything asserts it, and the lowest value the
-    // composition can currently take is 1445. So a composed gate could only fail inside a 45 MiB
+    // WHY A DECISION AND NOT A DELETION: G-DIET (<=693) and G-ACQUIRE (<=800) already bound the
+    // composed total at 1493 whether or not anything asserts it, and the lowest value the
+    // composition can currently take is 1449. So a composed gate could only fail inside a 44 MiB
     // window, against a sum of two measurements each carrying tens of MiB of transitive churn —
     // a threshold finer than the resolution of its own data, which is the same arithmetic that
     // rejected a median reducer for G-RSS-IDLE and keeps G-RSS-SUBSTRATE report-only.
     //
-    // S10-e re-derived these because it moved `node_modules` from 700 to 681. The window NARROWED
-    // (56 -> 45), so the decision to drop the gate is better supported than when it was taken —
+    // S10-e re-derived these because it moved `node_modules` from 700 to 685. The window NARROWED
+    // (56 -> 44), so the decision to drop the gate is better supported than when it was taken —
     // this assertion exists to catch the case where a later slice changes one input and leaves
     // the composed arithmetic describing a tree that no longer exists.
     const d = G_TOTAL_DESKTOP_DROPPED;
     expect(limitFor(GATES['G-DIET']) + limitFor(GATES['G-ACQUIRE'])).toBe(d.jointBoundOfShippedGatesMiB);
-    expect(d.jointBoundOfShippedGatesMiB - d.measuredTodayMiB).toBe(45);
+    expect(d.jointBoundOfShippedGatesMiB - d.measuredTodayMiB).toBe(44);
     // And it is a deferral: once the desktop arm acquires a real component the window opens.
     expect(d.reDeriveAtMiB).toBeGreaterThan(d.measuredPostFlipMiB);
     expect(d.reDeriveAtMiB).toBeLessThan(d.measuredTodayMiB);

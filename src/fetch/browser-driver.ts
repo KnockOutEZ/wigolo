@@ -224,9 +224,9 @@ export async function loadBrowserDriver(): Promise<BrowserDriverModule | null> {
  * on the fetch hot path and the setup TUI's `ProbeDeps`, both of which answer a plain boolean
  * inside a synchronous interface.
  *
- * Shares one memo with {@link loadBrowserDriver}, so the two can never report different answers
- * about whether this machine has a driver — which is the failure mode that a second, independent
- * probe of the same fact always eventually produces.
+ * It agrees with {@link loadBrowserDriver} by CONSTRUCTION rather than by a shared memo: both
+ * consult the same two roots in the same order, and `import()` and `createRequire` resolve the
+ * same package from the same place. The memo is deliberately separate — see `_syncCached`.
  */
 export function loadBrowserDriverSync(): BrowserDriverModule | null {
   if (_testOverride !== undefined) return _testOverride;

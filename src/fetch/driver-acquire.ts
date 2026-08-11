@@ -1,4 +1,5 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { runCommand } from '../cli/tui/run-command.js';
 import { createLogger } from '../logger.js';
 import {
@@ -36,6 +37,44 @@ export interface DriverAcquireResult {
 /** Install timeout. The package is ~18 MiB of JS, so this is a network bound, not a build one. */
 const DRIVER_INSTALL_TIMEOUT_MS = 180_000;
 
+/**
+ * ⚠ WINDOWS, AND THE REASON THIS IS NOT JUST `spawn('npm')`.
+ *
+ * On Windows `npm` is `npm.cmd`, a batch script — and since the fix for CVE-2024-27980 Node
+ * REFUSES to spawn `.cmd`/`.bat` without `shell: true`, throwing `spawn EINVAL`. Observed, not
+ * theorised: this shipped green on ubuntu and macOS and red on BOTH Windows runners with
+ * exactly that message.
+ *
+ * `shell: true` would fix it and introduce a worse bug — with a shell, arguments are joined
+ * rather than passed as a vector, so the `--prefix` path breaks apart on the first space, and
+ * this path is a user's home directory. So npm is run the way `installBrowser` already runs the
+ * driver's CLI: as a JS entrypoint under `process.execPath`. No shell, no batch file, no
+ * quoting.
+ *
+ * The two candidates cover the layouts that exist — `<dir>/node_modules/npm` is the Windows and
+ * hosted-toolcache layout, `<dir>/../lib/node_modules/npm` is the POSIX prefix layout that nvm,
+ * volta and Homebrew all follow.
+ */
+export function resolveNpmCli(): string | null {
+  const dir = dirname(process.execPath);
+  const candidates = [
+    join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(dir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate)) return candidate;
+    } catch {
+      // An unreadable candidate is simply not the one.
+    }
+  }
+  return null;
+}
+
+/** Remedy when wigolo cannot drive a package manager itself. */
+export const DRIVER_MANUAL_INSTALL_HINT =
+  'could not locate a package manager to install the browser engine driver — install it alongside wigolo yourself, then re-run `wigolo warmup --browser`';
+
 export interface DriverAcquireDeps {
   /** Defaults to the real two-root resolution. */
   resolvePackage?: () => string | null;
@@ -43,6 +82,8 @@ export interface DriverAcquireDeps {
   run?: typeof runCommand;
   /** Defaults to the real data-directory root. */
   root?: () => string;
+  /** Defaults to {@link resolveNpmCli}. */
+  npmCli?: () => string | null;
 }
 
 /**
@@ -68,10 +109,16 @@ export async function acquireBrowserDriver(
     return { outcome: 'failed', detail: 'could not create the driver directory', error };
   }
 
+  const npmCli = (deps.npmCli ?? resolveNpmCli)();
+  if (!npmCli) {
+    return { outcome: 'failed', detail: DRIVER_MANUAL_INSTALL_HINT, error: 'no npm entrypoint found' };
+  }
+
   const spec = `playwright@${BROWSER_DRIVER_VERSION}`;
   let r;
   try {
-    r = await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', [
+    r = await run(process.execPath, [
+      npmCli,
       'install', spec,
       '--prefix', root,
       '--no-save', '--no-audit', '--no-fund', '--omit=dev', '--omit=optional',

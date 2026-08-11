@@ -2,7 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireBrowserDriver } from '../../../src/fetch/driver-acquire.js';
+import {
+  acquireBrowserDriver,
+  resolveNpmCli,
+  DRIVER_MANUAL_INSTALL_HINT,
+} from '../../../src/fetch/driver-acquire.js';
 import { BROWSER_DRIVER_VERSION } from '../../../src/fetch/browser-driver.js';
 
 /**
@@ -156,6 +160,55 @@ describe('acquireBrowserDriver', () => {
       root: tmpRoot,
     });
     expect(r.outcome).toBe('failed');
+  });
+
+  it('runs the package manager under the Node binary, never as a shell script', async () => {
+    /*
+     * ⚠ A WINDOWS-ONLY REGRESSION, OBSERVED IN CI RATHER THAN IMAGINED. Spawning `npm` resolves
+     * to `npm.cmd` on Windows, and since the fix for CVE-2024-27980 Node refuses to spawn a
+     * `.cmd` without `shell: true` — `spawn EINVAL`. The first version of this slice was green
+     * on ubuntu and macOS and red on BOTH Windows runners with exactly that error.
+     *
+     * `shell: true` is not the fix: with a shell the arguments are joined instead of passed as
+     * a vector, and `--prefix` is a path under the user's home directory, so it would break on
+     * the first space. Running npm's JS entrypoint under `process.execPath` avoids the batch
+     * file and the quoting together.
+     */
+    let resolved = false;
+    const run = makeRun({}, () => {
+      resolved = true;
+    });
+    await acquireBrowserDriver({
+      resolvePackage: () => (resolved ? '/root/pw/package.json' : null),
+      run,
+      root: tmpRoot,
+      npmCli: () => '/fake/npm/bin/npm-cli.js',
+    });
+    expect(run.mock.calls[0][0]).toBe(process.execPath);
+    expect(run.mock.calls[0][1][0]).toBe('/fake/npm/bin/npm-cli.js');
+    // The negative half: nothing anywhere in the invocation is a batch file.
+    expect(run.mock.calls[0][0].endsWith('.cmd')).toBe(false);
+  });
+
+  it('refuses with a manual remedy when no package manager can be located', async () => {
+    // Exotic runtime layouts exist. Failing with "install it yourself, then re-run" beats both
+    // a crash and a silent no-op.
+    const run = okRun();
+    const r = await acquireBrowserDriver({
+      resolvePackage: () => null,
+      run,
+      root: tmpRoot,
+      npmCli: () => null,
+    });
+    expect(r.outcome).toBe('failed');
+    expect(r.detail).toBe(DRIVER_MANUAL_INSTALL_HINT);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('locates a real package manager on this machine', async () => {
+    // The candidate list is the load-bearing part, and a list that matches nothing would make
+    // every acquisition fail with the remedy above. This is the outside signal for it.
+    expect(resolveNpmCli()).not.toBeNull();
   });
 
   it('always states a reason, whatever the outcome', async () => {
