@@ -259,4 +259,18 @@ describe('the cross-run reducer for idle RSS is the minimum, not the median', ()
   it('rejects an empty series', () => {
     expect(() => minimum([])).toThrow(/empty/);
   });
+
+  it('is the reducer the runner actually reports with, not merely the one exported', async () => {
+    // WHY: everything above tests the reducer in isolation. The runner could still call
+    // `median(floors)` and every one of those tests would stay green — which is the shape of
+    // check that can only agree with what it checks. `measure.mjs` cannot be unit-tested
+    // (it spawns servers and installs packages), so its CHOICE is asserted at the source.
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('../../scripts/budget/measure.mjs', import.meta.url), 'utf8');
+    const call = src.match(/report\('G-RSS-IDLE',\s*(\w+)\(/);
+    expect(call?.[1]).toBe('minimum');
+    // Control: the same regex finds the OTHER median-reduced gate, so a match here means the
+    // pattern works and G-RSS-IDLE really did opt out of it.
+    expect(src).toMatch(/report\('G-COLD-START',\s*median\(/);
+  });
 });
