@@ -501,7 +501,7 @@ export async function runWarmup(
   //
   //   desktop     -> acquire the desktop component; it TAKES the browser engine's slot rather
   //                  than being added to it. Acquiring both is the doubling regression amended
-  //                  D1 is written to prevent, and G-ACQUIRE catches it at 1064 MiB against 800.
+  //                  D1 is written to prevent, and G-ACQUIRE catches it at 1064 MiB against 880.
   //   no-display  -> acquire ZERO substrate bytes. Not "few". A host that cannot map a window
   //                  cannot run the component at all (a never-shown window gets no compositor
   //                  surface, so its content renders at 0 fps), so downloading it is pure waste

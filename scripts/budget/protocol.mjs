@@ -300,9 +300,9 @@ export const GATES = {
     runs: 1,
     unit: 'MiB',
     comparison: '<=',
-    limit: 800,
+    limit: 880,
     baseline:
-      "764 MiB measured 2026-08-11 on the GitHub macos-latest runner — browser engine 546, models 218 — for the `warmup --reranker --embeddings` this job runs. ⚠ The S10 spec and brief:180 both price acquisition at ~535 MiB, which is the browser engine ALONE; the 218 MiB of ranking and embedding models is real, is downloaded by the same command, and is quantified here for the first time. Today's cost, not a target: asserted so the tier work is measured against a gate that already existed rather than one written to fit its result. The models were re-measured independently on darwin-arm64 (fastembed 128 + transformers 88 = 216 MiB), so 218 is a property of the download rather than of the runner. ⚠ S10-d's replacement pair CANNOT be stated over this artifact — see SUBSTRATE_ONLY_ACQUISITION. ⚠ KEPT UNCHANGED BY S10-d, deliberately: it is the gate that prices the tier-INDEPENDENT models, and it is what catches amended-D1's doubling regression — a run that acquires the desktop component AND the browser engine lands at 300 + 546 + 218 = 1064 against this 800.",
+      "804 MiB measured 2026-08-11 on the GitHub macos-latest runner, on the corrected window (browsers 548 = chromium 347 + headless shell 198 + ffmpeg 3 + links 1; data 256 = fastembed 143 + transformers 98 + driver 17). ⚠ RE-DERIVED FROM 800 BECAUSE 800 REDS A CLEAN BUILD. 800 was set from a single 764 reading; the distribution behind it was never looked at. Every `clean-machine-smoke (macos-latest, node 22)` log since 2026-08-01 was harvested — 29 runs with a reading, of which 10 are the current tree — and on the current tree the gate reads 769/781/783/784/785/788/792/793/793/799, plus one red at 803 and this slice's window-correct 804. A limit of 800 sits INSIDE that distribution, which is why it failed once at 803 and passed on re-run at 769 and 788. A gate that reds randomly reds CI randomly and teaches people to re-run it. ⚠ WHAT THE DRIFT IS, half fixed and half instrumented. HALF ONE, FIXED: the diff used to `du` live at assertion time, three steps and ~3 minutes after warmup exited, with a live fetch and a live search writing cached web content into the DEFAULT data directory in between — 1-13 MiB of live-web noise charged to `warmup`. A second snapshot taken the instant warmup exits closes that. HALF TWO, INSTRUMENTED NOT EXPLAINED: the browser download is version-pinned (`playwright@1.60.0` exact, chromium revision 1223) and reproduces at 534 MiB / 358 files across two independent installs on darwin-arm64, and a real browser launch adds 0 bytes to it — yet the runner reads that same pinned content at 534-560 across hosts. The first child-level breakdown shows the excess spread across EVERY child rather than concentrated in a new one (chromium 341->347, headless shell 191->198, fastembed 128->143, transformers 88->98 against the laptop), and the child SET is identical — so it is not a second channel, not a version bump, and not accumulation (`browsers=0MiB` at snapshot in all 29 runs). `du` allocation overhead is 0.3% on the laptop and would have to be ~3% on the runner to explain the browser dirs; it cannot explain the model dirs at all (+12% over 7 and 4 files). Left unexplained on purpose rather than papered over, and every future run now reports the breakdown that will settle it. ⚠ THE NUMBER: 880 sits 76 MiB above the worst clean observation ever recorded on this artifact (804), which is ~2.2x its 35 MiB spread, and 158 below the smallest regression it is chartered to catch — a second browser engine acquired by warmup lands a best-case host at 766 + 272 = 1038. It therefore DETECTS a regression of roughly 114 MiB and up (880 - 766) and is BLIND BELOW THAT; an 88 MiB model duplication would pass, and no tighter number is honest while the pinned engine reads 26 MiB differently across hosts. ⚠ IT STAYS BLOCKING, and the arithmetic is why: the window between 'above every clean observation' (804) and 'below the smallest chartered regression' (1038) is 234 MiB against a statistic whose own spread is 35 — 6.7x coarser than its noise. That is the opposite of G-RSS-SUBSTRATE, whose 19 MiB window against a 21 MiB spread is what makes it report-only. ⚠ S10-d's replacement pair CANNOT be stated over this artifact — see SUBSTRATE_ONLY_ACQUISITION. ⚠ KEPT over the full artifact: it is the gate that prices the tier-INDEPENDENT models, and it is what catches amended-D1's doubling regression — a run that acquires the desktop component AND the browser engine lands at 300 + 546 + 218 = 1064 against this 880.",
   },
   'G-ACQUIRE-SUBSTRATE-DESKTOP': {
     id: 'G-ACQUIRE-SUBSTRATE-DESKTOP',
@@ -389,11 +389,28 @@ export const GATES = {
  * and one more diet slice of any size makes the spec's original number reachable and this
  * deferral re-derivable on its own terms.
  */
+/*
+ * ⚠ RE-DERIVED AGAIN by G-ACQUIRE's re-derivation, and this time only ONE input moved: the
+ * acquisition limit, 800 -> 880. The clean acquisition reading also moved, 764 -> 804, because
+ * 764 was a single sample of a distribution that spans 769-804 on the current tree and the
+ * anchor is now its worst member rather than an arbitrary member of it. So today is 507 + 804 =
+ * 1311, post-flip is unchanged at 507 + 518 = 1025, and the joint bound is 515 + 880 = 1395.
+ *
+ * The failure window widens from 44 MiB to 84 — it is still the sum of each gate's own headroom
+ * above its clean reading (8 for G-DIET, now 76 for G-ACQUIRE), and G-DIET's 8 is untouched. The
+ * DECISION is unchanged and better supported than before: a composed gate would have 84 MiB to
+ * aim at, against an acquisition measurement whose own spread across hosts is 35, so it is even
+ * less buildable than when the window was 44.
+ *
+ * ⚠ For the record and NOT acted on here: this slice's CI run read G-DIET at 505 where its
+ * baseline predicts 507. That is inside its stated ~2 MiB of runner variance and G-DIET is
+ * explicitly out of this slice's scope, so 507 stays as the recorded anchor.
+ */
 export const G_TOTAL_DESKTOP_DROPPED = {
   specLimitMiB: 1000,
-  measuredTodayMiB: 1271,
+  measuredTodayMiB: 1311,
   measuredPostFlipMiB: 1025,
-  jointBoundOfShippedGatesMiB: 1315,
+  jointBoundOfShippedGatesMiB: 1395,
   reDeriveAtMiB: 1080,
 };
 
