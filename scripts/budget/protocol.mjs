@@ -166,15 +166,28 @@ export const GATES = {
     runs: 1,
     unit: 'MiB',
     comparison: '<=',
-    limit: 720,
+    limit: 690,
     baseline:
-      '700 MiB measured 2026-08-11 on darwin-arm64 at 7aa08144 (post-C1). Headroom ~3%: tight enough that re-adding any package C1 removed reds it, wide enough to absorb transitive churn.',
-    // The S10 spec's gate 17 states 670 MiB, derived as "780 measured minus a 111 MiB Tier-A
-    // diet". C1's install-side removal actually measured 66.4 MiB — the 111/106 figure added
-    // startup bytes to install bytes — so 670 was never reachable, and asserting it here would
-    // red at baseline with no regression present. S10-e tightens this once the browser deps
-    // leave the core default path. Until then the gate guards the floor that exists rather
-    // than one that does not.
+      '681 MiB / 386 packages measured 2026-08-11 on darwin-arm64 at bc0ccf4b + S10-e, against 698 MiB / 388 packages on the same protocol at bc0ccf4b itself. 690 is the midpoint of that 17 MiB window: a clean build passes with 9 MiB (1.3%) of headroom for transitive churn, and the regression this gate now exists to catch reds with 8 MiB to spare.',
+    // ⚠ THE THRESHOLD IS SET BY THE REGRESSION IT MUST CATCH, NOT BY A PERCENTAGE.
+    //
+    // S10-e moved the browser driver from `dependencies` to an OPTIONAL PEER dependency, which
+    // npm does not install. The single most likely way that gets undone is someone putting it
+    // back — so the gate has to red when they do. That regression is worth exactly 17 MiB
+    // (`playwright` + `playwright-core`, the only two packages the move touches), which puts it
+    // at 698.
+    //
+    // Note what a habitual "keep ~3% headroom" would have produced: 681 * 1.03 = 701, which sits
+    // ABOVE 698 and would therefore pass the very regression the gate is for. A gate that cannot
+    // fail is not a gate — the same failure as the spec's G-RSS-IDLE 130, which could not catch
+    // its own 40 MiB probe from a 17.7 floor. The window is 681..698 and there is no room in it
+    // for a round number chosen by habit.
+    //
+    // For the record on the number this replaces: the spec's gate 17 states 670 MiB, derived as
+    // "780 measured minus a 111 MiB Tier-A diet". C1's install-side removal actually measured
+    // 66.4 MiB — the 111/106 figure added startup bytes to install bytes — so 670 was never
+    // reachable and S10-a shipped 720 instead. 690 is the first threshold on this gate derived
+    // from two measurements of the same artifact rather than from an estimate of one of them.
   },
   'G-TARBALL': {
     id: 'G-TARBALL',
@@ -318,12 +331,22 @@ export const GATES = {
  * and would red on a return to acquiring both rungs (700 + 1064 = 1764). Re-derive it there,
  * against a measurement, not against this note.
  */
+/*
+ * ⚠ S10-e RE-DERIVED THESE, because it changed one of their inputs. `node_modules` is 681, not
+ * 700, so every figure below that composes it moved with it — today 681 + 764 = 1445, post-flip
+ * 681 + 518 = 1199, joint bound 690 + 800 = 1490. Leaving the old numbers would have left the
+ * arithmetic describing a tree that no longer exists.
+ *
+ * The DECISION is unchanged and slightly better supported: the failure window narrows from
+ * 56 MiB to 45, which is further below the churn these two measurements carry, so a composed
+ * gate is if anything less buildable than when A34 dropped it.
+ */
 export const G_TOTAL_DESKTOP_DROPPED = {
   specLimitMiB: 1000,
-  measuredTodayMiB: 1464,
-  measuredPostFlipMiB: 1218,
-  jointBoundOfShippedGatesMiB: 1520,
-  reDeriveAtMiB: 1280,
+  measuredTodayMiB: 1445,
+  measuredPostFlipMiB: 1199,
+  jointBoundOfShippedGatesMiB: 1490,
+  reDeriveAtMiB: 1260,
 };
 
 /**
