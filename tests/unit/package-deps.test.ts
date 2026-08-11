@@ -33,6 +33,28 @@ describe('package.json: forbidden deps after Python-rerank migration', () => {
     expect(pkg.overrides?.protobufjs).toBeUndefined();
   });
 
+  // onnxruntime-web arrives TRANSITIVELY (a hard dependency of @huggingface/transformers), so
+  // the FORBIDDEN check above — which reads `dependencies` and `devDependencies` — cannot see
+  // it and never could. Its 91 MiB of browser WebAssembly is removed at postinstall instead,
+  // by scripts/prune/ort-web-payload.mjs.
+  //
+  // ⚠ THIS ASSERTION EXISTS TO STOP THE OBVIOUS "BETTER" FIX, which is broken in a way that is
+  // invisible from inside this repository. npm honours `overrides` ONLY from the install ROOT,
+  // and wigolo is never the root for its users — `npx wigolo` and `npm i wigolo` both install it
+  // as a dependency. Measured on a control fixture, both arms:
+  //
+  //     overrides at the install ROOT     -> applied   (is-number 7.0.0)
+  //     the SAME overrides one level down -> IGNORED   (is-number 6.0.0)
+  //
+  // The trap is that the G-DIET budget gate installs this package.json into a temp directory AS
+  // THE ROOT. An overrides-based remedy would therefore turn the gate GREEN while every real
+  // user's install stayed byte-for-byte identical — a fix that satisfies its own measurement and
+  // nothing else. This repo has already shipped that mistake once for onnxruntime-node: #101
+  // used a root-only override, and #114 is the same bug reaching users again.
+  it('does NOT try to solve onnxruntime-web with a root-only override', () => {
+    expect(pkg.overrides?.['onnxruntime-web']).toBeUndefined();
+  });
+
   // Node 20 "Iron" went EOL upstream on 2026-03-24. The floor tracks a
   // SUPPORTED LTS line, so this asserts the EOL floor is gone rather than just
   // that some floor is declared — a silent revert to >=20 would put installs
