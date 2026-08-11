@@ -137,7 +137,6 @@
     "openai": "^6.35.0",
     "ora": "^9.3.0",
     "pdf-parse": "^2.4.5",
-    "playwright": "1.60.0",
     "preact": "^10.29.2",
     "react": "^18.3.1",
     "sharp": "^0.34.5",
@@ -158,6 +157,7 @@
     "gpt-tokenizer": "^3.4.0",
     "ink-testing-library": "^4.0.0",
     "jsdom": "^26.1.0",
+    "playwright": "1.60.0",
     "tinyld": "^1.3.4",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",
@@ -169,6 +169,14 @@
     "chrome-remote-interface": "^0.33.3",
     "patchright": "1.60.2",
     "wreq-js": "^2.3.1"
+  },
+  "peerDependencies": {
+    "playwright": "1.60.0"
+  },
+  "peerDependenciesMeta": {
+    "playwright": {
+      "optional": true
+    }
   },
   "overrides": {
     "hono": "^4.12.25"
