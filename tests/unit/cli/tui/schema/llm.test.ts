@@ -13,7 +13,7 @@ describe('llmCategory', () => {
     expect(keys).toEqual(['llmProvider', 'llmApiKey']);
   });
 
-  it('provider is a select offering anthropic, openai, gemini, and the keyless ollama lever', () => {
+  it('provider is a select offering anthropic, openai, gemini, orcarouter, and the keyless ollama lever', () => {
     const provider = llmCategory.fields.find((f) => f.settingsPath === 'llmProvider');
     expect(provider).toBeDefined();
     expect(provider?.kind).toBe('select');
@@ -21,6 +21,7 @@ describe('llmCategory', () => {
       'anthropic',
       'openai',
       'gemini',
+      'orcarouter',
       'ollama',
     ]);
     expect(provider?.options?.map((o) => o.value)).not.toContain('custom');

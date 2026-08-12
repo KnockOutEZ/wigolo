@@ -12,10 +12,11 @@ describe('selectProvider', () => {
     ).toBe('anthropic');
   });
 
-  it('falls through to openai → gemini → groq', () => {
+  it('falls through to openai → gemini → groq → orcarouter', () => {
     expect(selectProvider({ OPENAI_API_KEY: 'x' })).toBe('openai');
     expect(selectProvider({ GOOGLE_API_KEY: 'x' })).toBe('gemini');
     expect(selectProvider({ GROQ_API_KEY: 'x' })).toBe('groq');
+    expect(selectProvider({ ORCAROUTER_API_KEY: 'x' })).toBe('orcarouter');
   });
 
   it('WIGOLO_LLM_PROVIDER override forces a specific provider', () => {

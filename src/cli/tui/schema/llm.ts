@@ -15,6 +15,11 @@ export const llmCategory: CategoryDef = {
         { value: 'openai', label: 'OpenAI (GPT)' },
         { value: 'gemini', label: 'Google Gemini' },
         {
+          value: 'orcarouter',
+          label: 'OrcaRouter',
+          hint: 'OpenAI-compatible gateway with gateway-level, zero-trust security for AI agents',
+        },
+        {
           value: 'ollama',
           label: 'Ollama (local LLM server)',
           hint: 'Keyless — runs against a local Ollama server, no API key needed',

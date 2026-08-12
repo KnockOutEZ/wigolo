@@ -3,6 +3,7 @@ import { callAnthropic } from '../integrations/cloud/llm/anthropic.js';
 import { callOpenAI } from '../integrations/cloud/llm/openai.js';
 import { callGemini } from '../integrations/cloud/llm/gemini.js';
 import { callGroq } from '../integrations/cloud/llm/groq.js';
+import { callOrcaRouter } from '../integrations/cloud/llm/orcarouter.js';
 import {
   ensureLLMCacheTable,
   insertLLMCache,
@@ -43,6 +44,7 @@ const ADAPTERS: Record<
   openai: callOpenAI,
   gemini: callGemini,
   groq: callGroq,
+  orcarouter: callOrcaRouter,
 };
 
 export async function extractWithLLM(
