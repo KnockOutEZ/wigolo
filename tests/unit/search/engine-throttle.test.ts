@@ -172,6 +172,125 @@ describe('throttle-as-skip', () => {
     expect(maxConcurrent).toBeGreaterThan(1);
   });
 
+  // The throttle clock must only count requests that ACTUALLY went out.
+  //
+  // WHY: live dogfood showed "throttled: called within its minimum interval"
+  // firing on an engine whose breaker was already open — i.e. we rate-limited
+  // ourselves against requests we never sent. A breaker-open rejection costs
+  // the engine nothing upstream, so it must not spend the engine's inter-request
+  // budget. When it does, the budget is still burnt when the cooldown elapses
+  // and the half-open probe is thrown away as "throttled" — turning one
+  // transient failure into a longer dark window than the breaker policy chose.
+  it('a breaker-open rejection does NOT consume the throttle budget', async () => {
+    let fail = true;
+    const spy = vi.fn(async () => {
+      if (fail) throw new Error('boom');
+      return [makeResult('thrOpen')];
+    });
+    const wrapped = wrapWithRetryAndBreaker(makeEngine('thrOpen', spy), {
+      minIntervalMs: 2_000,
+      failureThreshold: 1,
+      cooldownMs: 60_000,
+      retryAttempts: 1,
+    });
+
+    // t=0: a REAL dispatch that fails -> breaker trips for 60s.
+    await expect(wrapped.search('q')).rejects.toThrow('boom');
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // t=59.5s: still inside the cooldown. This call is rejected by the breaker
+    // and NEVER reaches the engine, so it must not advance the throttle clock.
+    vi.advanceTimersByTime(59_500);
+    await expect(wrapped.search('q')).rejects.toBeInstanceOf(BreakerOpenError);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // t=60.001s: the cooldown has elapsed, so this call is the half-open probe.
+    // It is only 501ms after the breaker-open rejection above — if that
+    // rejection had spent the throttle budget, the probe would be skipped as
+    // throttled and the engine would stay dark for another full interval.
+    fail = false;
+    vi.advanceTimersByTime(501);
+    await expect(wrapped.search('q')).resolves.toEqual([makeResult('thrOpen')]);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('a concurrent probe-loser does NOT consume the throttle budget', async () => {
+    // WHY: half-open admits exactly ONE probe; every other concurrent caller is
+    // rejected with BreakerOpenError(0) without touching the engine. Those
+    // losers must not spend the interval either, or a burst of callers starves
+    // the engine's next real dispatch.
+    let release: (() => void) | undefined;
+    let fail = true;
+    let blockNext = false;
+    const spy = vi.fn(async () => {
+      if (fail) throw new Error('boom');
+      if (blockNext) {
+        blockNext = false;
+        await new Promise<void>((r) => {
+          release = r;
+        });
+      }
+      return [makeResult('thrLoser')];
+    });
+    const wrapped = wrapWithRetryAndBreaker(makeEngine('thrLoser', spy), {
+      minIntervalMs: 2_000,
+      failureThreshold: 1,
+      cooldownMs: 60_000,
+      retryAttempts: 1,
+    });
+
+    await expect(wrapped.search('q')).rejects.toThrow('boom');
+    vi.advanceTimersByTime(60_001);
+
+    // t=60.001s: first caller becomes the in-flight probe and blocks inside the
+    // engine, so `probing` stays true for the rest of this test.
+    fail = false;
+    blockNext = true;
+    const probe = wrapped.search('q');
+    await Promise.resolve();
+    expect(spy).toHaveBeenCalledTimes(2);
+
+    // t=62.002s: a full interval after the probe's dispatch, so this caller
+    // clears the throttle gate and reaches the breaker, which rejects it as a
+    // probe-loser without touching the engine.
+    vi.advanceTimersByTime(2_001);
+    await expect(wrapped.search('q')).rejects.toBeInstanceOf(BreakerOpenError);
+    expect(spy).toHaveBeenCalledTimes(2);
+
+    // t=63.000s: settle the probe so the breaker closes. The throttle clock
+    // must still read from the probe's dispatch at t=60.001s (2999ms ago), not
+    // from the loser's rejection at t=62.002s (998ms ago). If the loser spent
+    // the budget, this call is skipped as throttled.
+    vi.advanceTimersByTime(998);
+    release?.();
+    await expect(probe).resolves.toEqual([makeResult('thrLoser')]);
+
+    await expect(wrapped.search('q')).resolves.toEqual([makeResult('thrLoser')]);
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+
+  it('NEGATIVE: a request that DID go out still consumes the throttle budget', async () => {
+    // Over-fire guard for the fix above: exempting rejections must not exempt
+    // real dispatches. A failing call still reaches the engine, so it still
+    // spends the interval — otherwise the throttle stops protecting the engine
+    // exactly when it is failing.
+    const spy = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const wrapped = wrapWithRetryAndBreaker(makeEngine('thrSpend', spy), {
+      minIntervalMs: 2_000,
+      failureThreshold: 99,
+      retryAttempts: 1,
+    });
+
+    await expect(wrapped.search('q')).rejects.toThrow('boom');
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(500);
+    await expect(wrapped.search('q')).rejects.toBeInstanceOf(ThrottledError);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
   it('registerEngineMinInterval wires a default interval by engine name', async () => {
     // WHY: the general vertical registers marginalia's interval by name so the
     // wrapped engine picks it up without every call site passing minIntervalMs.

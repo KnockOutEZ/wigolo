@@ -423,7 +423,6 @@ export function wrapWithRetryAndBreaker(
           throw new ThrottledError(engine.name, minIntervalMs - sinceLast);
         }
       }
-      state.lastDispatchAt = Date.now();
 
       let probe = false;
       if (state.tripUntil > 0) {
@@ -455,6 +454,15 @@ export function wrapWithRetryAndBreaker(
         state.probeStartedAt = now;
         log.info('breaker half-open probe', { engine: engine.name });
       }
+
+      // The inter-request clock counts only requests that ACTUALLY go out.
+      // Advanced HERE — past the breaker gate, immediately before dispatch —
+      // because a breaker-open rejection (or a lost probe race) costs the
+      // upstream engine nothing and must not spend its rate budget. Advancing
+      // before the gate let a rejected call throttle the half-open probe that
+      // followed it, holding a recovered engine dark for an extra interval and
+      // emitting a self-inflicted "throttled" skip for a request never sent.
+      state.lastDispatchAt = Date.now();
 
       let lastErr: unknown;
       for (let attempt = 1; attempt <= retryAttempts; attempt++) {
