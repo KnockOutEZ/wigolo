@@ -20,6 +20,10 @@ import type { CacheResultItem, CacheTruncation } from '../types.js';
  *     cached pages, which is why the number differs.
  * The cap costs a caller ~8% of a 200k context window instead of the ~21% the
  * reported call actually spent.
+ *
+ * Every figure above comes from `scripts/derive-cache-budget.mjs`, which reads a
+ * real cache and prints them — run it to re-check this number against a cache
+ * whose contents have moved on, rather than trusting a measurement frozen here.
  */
 export const DEFAULT_CACHE_MAX_TOKENS_OUT = 16000;
 
@@ -32,6 +36,8 @@ export const DEFAULT_CACHE_MAX_TOKENS_OUT = 16000;
  * holds ~106 of them — rounded down for headroom. Unbounded, this path emitted
  * 358,152 chars / 169,979 tokens over 1,134 entries, twice the response that
  * prompted this budget, and re-fetched every one of those URLs over the network.
+ *
+ * `scripts/derive-cache-budget.mjs` re-derives both this and the token budget.
  */
 export const DEFAULT_CHECK_CHANGES_LIMIT = 100;
 
