@@ -144,9 +144,15 @@ export function applyCacheOutputBudget(
  * so a body that IS one code fence — a gist, a config file, a source page, all
  * ordinary contents of a developer's cache — repairs to nothing. Closing the
  * fence recovers the code that fits instead, the same second chance
- * `truncateSmartly` and `truncateAtBoundary` already give it. `head.length` as
- * the char budget makes the result strictly shorter than the cut it replaces, so
- * it cannot escape the token budget.
+ * `truncateSmartly` and `truncateAtBoundary` already give it.
+ *
+ * `head.length` as the char budget makes the result strictly shorter in
+ * CHARACTERS than the cut it replaces. That is a char property, not a token one:
+ * the swap trades content characters for a newline and the fence closer, whose
+ * token weights are not zero, so the token count can rise by a few. The rise is
+ * bounded above by the closer's own cost — negligible against a 16,000-token
+ * budget — and `truncateSmartly` carries the identical property, so this matches
+ * prior art rather than diverging from it.
  */
 function repairAtBoundary(body: string): string {
   if (!body.endsWith(TRUNCATION_MARKER)) return body;
