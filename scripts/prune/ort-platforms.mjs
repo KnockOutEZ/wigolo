@@ -220,12 +220,30 @@ function isInstalledPackageDir(dir) {
  *       `proj` — which is why the resolver's answer has to be checked against this and not
  *       trusted on its own.
  *
- * WHAT IT STILL DOES NOT RECOVER, stated because it is a real remaining loss and not a solved
- * case: an npm-workspaces layout where wigolo nests at `<repo>/packages/app/node_modules/wigolo`
- * while the dependency hoists to `<repo>/node_modules`. `packages/app` is not an installed
- * package, so the climb stops there and the hoisted copy keeps its bytes. Telling that layout
- * apart from `outer/proj` needs the workspace declaration, and guessing costs somebody else's
- * install. Fail-open is the right side of that trade.
+ * ⚠ WHAT THIS COSTS, AND IT IS A NEW LOSS RATHER THAN AN INHERITED ONE. Two layouts put wigolo
+ * somewhere that is NOT an installed package, with the dependency hoisted above it:
+ *
+ *   npm workspaces   <repo>/packages/app/node_modules/wigolo, dependency at <repo>/node_modules
+ *   Yarn PnP         <proj>/.yarn/unplugged/wigolo-npm-.../node_modules/wigolo, likewise
+ *
+ * In both, `packages/app` and the unplugged directory are not packages of anything, so the climb
+ * stops there and the hoisted copy keeps its bytes.
+ *
+ * ⚠ FOR THE ONNXRUNTIME PLATFORM PRUNE THAT IS A REGRESSION AGAINST THE PREVIOUS COMMIT, and
+ * saying otherwise would misdescribe when we started losing the bytes. Measured on both layouts:
+ * before the bound, the UNBOUNDED module resolver climbed straight past `packages/app` and pruned
+ * the hoisted copy (6 pairs -> 1); with the bound it prunes nothing (6 pairs). It is only for
+ * `wreq-js` and `onnxruntime-web` that this is inherited — their walk was already bounded at the
+ * immediate install root by #307, and it measures 7 binaries kept on BOTH sides.
+ *
+ * The trade is still the right one: the same unbounded reach that pruned the workspace copy is
+ * what deleted a stranger's ~178 MiB, and this direction only ever costs install size. But it is a
+ * trade, so the driver SAYS SO rather than falling silent — see run.mjs's empty-result branch.
+ *
+ * Telling these layouts apart from `outer/proj` means reading `<repo>`'s `workspaces` field (or
+ * PnP's manifest). That is declarative data, not a guess, so it is not unsafe — it is
+ * disproportionate here, and it would need its own must-not-fire coverage before it could be
+ * trusted to widen a destructive bound.
  */
 export function findOutermostInstallRoot(startDir) {
   let root = findInstallRoot(startDir);
