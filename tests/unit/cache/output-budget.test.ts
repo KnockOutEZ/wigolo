@@ -79,12 +79,21 @@ describe('applyCacheOutputBudget', () => {
     expect(md).toMatch(/content truncated/);
   });
 
-  it('does not leave a markdown link cut in half', () => {
-    const body = `${prose.repeat(60)}see [the pooling guide](https://example.com/a/very/long/path/that/gets/cut/here/somewhere)`;
-    // Budget chosen to land the cut inside the trailing link.
-    const out = applyCacheOutputBudget([row(body)], 900);
+  // A body with no sentence or paragraph break near the cut point falls through
+  // to the hard cut, which is what actually lands inside a link — prose with
+  // paragraph breaks never gets there, so it cannot test this.
+  it.each([
+    [200, 'an unclosed link label'],
+    [500, 'a half-written link target'],
+  ])('does not leave %i-token cut ending in %s', (budget) => {
+    const body = Array.from({ length: 80 }, (_, i) =>
+      `[pooling guide ${i}](https://example.com/docs/pooling/section-${i}/deep/path)`,
+    ).join(' ');
 
-    const md = out.results[0].markdown;
+    const out = applyCacheOutputBudget([row(body)], budget);
+
+    const md = out.results[0].markdown.replace(/\n\n\[\.\.\. content truncated\]$/, '');
+    expect(md.length).toBeLessThan(body.length);
     expect(md).not.toMatch(/\[[^\]]*$/);
     expect(md).not.toMatch(/\]\([^)]*$/);
   });
