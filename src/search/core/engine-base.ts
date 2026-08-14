@@ -138,6 +138,10 @@ interface BreakerState {
   /** Epoch ms of the last dispatch admitted past the throttle gate. Drives the
    * per-engine minimum inter-request interval. 0 = never dispatched. */
   lastDispatchAt: number;
+  /** Epoch ms of the last FORCED recovery probe granted for this engine. Bounds
+   * how often a collapsed pool may cut an open breaker's cooldown short.
+   * 0 = never force-probed. */
+  lastForcedProbeAt: number;
   /** Last engine error, surfaced via getBreakerSnapshot() for doctor. */
   lastError?: string;
 }
@@ -237,6 +241,7 @@ function getState(name: string): BreakerState {
       trips: 0,
       sessionTrips: 0,
       lastDispatchAt: 0,
+      lastForcedProbeAt: 0,
     };
     breakers.set(name, s);
   }
@@ -313,6 +318,60 @@ function recordSuccess(name: string): void {
   // engine to the tighter chronic budget for the life of the process.
   state.sessionTrips = 0;
   delete state.lastError;
+}
+
+/**
+ * Minimum wall-clock spacing between FORCED recovery probes of one engine.
+ *
+ * Chosen at 10s for two hard constraints, not by taste:
+ *   - It must sit ABOVE {@link TRANSIENT_COOLDOWN_MS} (5s), the cooldown a
+ *     rate-limited (429) engine gets. A 429 is the remote telling us to back
+ *     off for a window it chose; cutting that window short would be the same
+ *     self-inflicted rate-limiting this module exists to avoid. Above 5s, a
+ *     429 cooldown always elapses on its own and is never preempted.
+ *   - It must sit above the largest registered inter-request interval
+ *     ({@link MARGINALIA_MIN_INTERVAL_MS}, 2s) so the throttle gate is never
+ *     the binding constraint on a forced probe.
+ * The result bounds forced probes at 6/min/engine, and only while the pool is
+ * collapsed. That is strictly gentler than the existing probe-only roster,
+ * which the recovery wave already dispatches with no spacing at all.
+ */
+export const FORCED_PROBE_MIN_SPACING_MS = 10_000;
+
+/**
+ * Ask for a bounded early half-open probe of a breaker-open engine.
+ *
+ * WHY: the pool's degraded-recovery wave re-dispatches every primary engine it
+ * recorded as skipped — precisely the set whose breakers are open. Milliseconds
+ * later those breakers are still open, so the re-dispatch re-rejects without
+ * reaching the engine and the wave cannot recover anything it was built to
+ * recover. One transient 403/429 then became a session-long single-engine pool.
+ *
+ * Granting a probe cuts the remaining cooldown so the NEXT call becomes the
+ * half-open probe; the normal probe machinery (single in-flight probe, failure
+ * backoff, stuck-probe reclaim) is otherwise untouched. Refused when the
+ * breaker is closed, when a probe is already in flight, when the cooldown has
+ * already elapsed (the next call probes anyway), or when this engine was
+ * force-probed within {@link FORCED_PROBE_MIN_SPACING_MS}.
+ *
+ * Returns true when a probe was granted. Engine-agnostic — the caller decides
+ * which engines are eligible; no engine name is inspected here.
+ */
+export function requestRecoveryProbe(name: string): boolean {
+  const state = breakers.get(name);
+  if (!state || state.tripUntil === 0) return false;
+  if (state.probing) return false;
+  const now = Date.now();
+  if (now >= state.tripUntil) return false;
+  if (now - state.lastForcedProbeAt < FORCED_PROBE_MIN_SPACING_MS) return false;
+  state.lastForcedProbeAt = now;
+  state.tripUntil = now;
+  log.info('breaker forced recovery probe granted', {
+    engine: name,
+    trips: state.trips,
+    sessionTrips: state.sessionTrips,
+  });
+  return true;
 }
 
 /** Clear ALL breaker state (failures, cooldowns, trips, sessionTrips). Public:

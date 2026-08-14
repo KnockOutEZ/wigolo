@@ -13,6 +13,7 @@ import {
 } from './intent-router.js';
 import {
   runEnginesParallel,
+  requestRecoveryProbe,
   type EngineEntry,
   type EngineOutcome,
   type RunEnginesOptions,
@@ -638,6 +639,20 @@ export async function runV1Search(
       dispatched: outcomes.length,
       recoveryEngines: recoveryEntries.map((e) => e.engine.name),
     });
+    // Ask each engine we are about to re-dispatch for a bounded early half-open
+    // probe. Without this the wave is a no-op for exactly the engines it exists
+    // to recover: they were skipped BECAUSE their breakers are open, and those
+    // breakers are still open milliseconds later, so the re-dispatch re-rejects
+    // without ever reaching the engine. Bounded inside requestRecoveryProbe
+    // (per-engine spacing) and licensed only by this collapse branch, so a
+    // healthy pool never shortens anyone's cooldown.
+    const probed = recoveryEntries.filter((e) => requestRecoveryProbe(e.engine.name));
+    if (probed.length > 0) {
+      log.info('forcing recovery probes on breaker-open engines', {
+        vertical,
+        engines: probed.map((e) => e.engine.name),
+      });
+    }
     const recoveryOutcomes = await runEnginesParallel(
       recoveryEntries,
       primaryDispatchQuery,
