@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
-import { planPlatformPrune, locateOrtRoots } from '../../scripts/prune/ort-platforms.mjs';
+import { planPlatformPrune, locateOrtRoots, findOutermostInstallRoot } from '../../scripts/prune/ort-platforms.mjs';
 
 /*
  * WHY these tests exist.
@@ -486,6 +486,212 @@ describe('findInstallRoot does not escape the package that called it', () => {
     } finally {
       rmSync(bare, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * The layout the resolver escapes through: a FOREIGN install at `outer/node_modules`, and wigolo
+ * installed into a project that merely sits beside it.
+ *
+ * `outer/proj` is not a package of `outer` — it is a different project that happens to live one
+ * directory down. Node's resolution does not know that: from `outer/proj/node_modules/wigolo` it
+ * walks `outer/proj/node_modules` then `outer/node_modules` and answers with a copy nobody here
+ * is entitled to touch.
+ *
+ * @returns the outer root, the project root, and wigolo's own directory.
+ */
+function buildSiblingProjectTree(opts: { projHasOwnCopy: boolean }): {
+  outer: string;
+  proj: string;
+  wigolo: string;
+} {
+  const outer = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-ort-sibling-')));
+  const store = join(outer, '.store');
+  mkdirSync(store, { recursive: true });
+  writePkg(outer, { name: 'outer', version: '1.0.0' });
+  buildOrtCopy(join(outer, 'node_modules', 'onnxruntime-node'), {
+    bytesPerPair: 1024,
+    symlinkPlatform: 'none',
+    store,
+    tag: 'foreign',
+  });
+
+  const proj = join(outer, 'proj');
+  writePkg(proj, { name: 'proj', version: '1.0.0' });
+  const wigolo = join(proj, 'node_modules', 'wigolo');
+  writePkg(wigolo, { name: 'wigolo', version: '0.0.0' });
+  if (opts.projHasOwnCopy) {
+    buildOrtCopy(join(proj, 'node_modules', 'onnxruntime-node'), {
+      bytesPerPair: 1024,
+      symlinkPlatform: 'none',
+      store,
+      tag: 'ours',
+    });
+  }
+  return { outer, proj, wigolo };
+}
+
+/** The `<platform>/<arch>` pairs still present in an onnxruntime-node copy. */
+function pairsIn(copy: string): string[] {
+  const binRoot = join(copy, 'bin', 'napi-v3');
+  const out: string[] = [];
+  for (const plat of readdirSync(binRoot)) {
+    for (const arch of readdirSync(join(binRoot, plat))) out.push(`${plat}/${arch}`);
+  }
+  return out.sort();
+}
+
+describe('the resolver branch is bound to the tree that ran it', () => {
+  const trees: string[] = [];
+  afterAll(() => {
+    for (const dir of trees) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('the resolver really does reach the foreign copy — the escape is observed, not assumed', () => {
+    // ⚠ THE CONTROL, and without it every assertion below is self-corroborating. "locateOrtRoots
+    // returned nothing" is equally explained by a fixture where nothing resolves at all, and a
+    // bound that is never actually challenged is a bound with no evidence behind it. This asserts
+    // the outside signal directly: Node's own resolution, from wigolo's position, answers with a
+    // package directory belonging to `outer`. onnxruntime-node declares NO `exports` map — unlike
+    // its consumers and unlike wreq-js — so `./package.json` resolves and the walk reaches upward.
+    // That asymmetry is the whole reason this branch is live here and was dead for wreq-js.
+    const { outer, wigolo } = buildSiblingProjectTree({ projHasOwnCopy: false });
+    trees.push(outer);
+    const req = createRequire(join(wigolo, 'noop.cjs'));
+    expect(dirname(req.resolve('onnxruntime-node/package.json'))).toBe(
+      join(outer, 'node_modules', 'onnxruntime-node'),
+    );
+  });
+
+  it('MUST-NOT-FIRE: refuses the copy the resolver reached in an enclosing project', () => {
+    // ⚠ The escape, as reproduced. `outer/node_modules/onnxruntime-node` is ~178 MiB of another
+    // project's binaries, and that tree may be multi-arch on purpose — a Docker build context, a
+    // multi-platform CI cache — whose owner has no reason to have set WIGOLO_SKIP_ORT_PRUNE. The
+    // scan half was bounded for exactly this in #304; the resolver half was not, so the same
+    // destruction was still one `npm install` away, and npm reports success while it happens.
+    const { outer, wigolo } = buildSiblingProjectTree({ projHasOwnCopy: false });
+    trees.push(outer);
+    expect(locateOrtRoots(hoistedResolverFor(wigolo), wigolo)).toEqual([]);
+  });
+
+  it('MUST-FIRE: still returns our OWN copy from that same position', () => {
+    // The other direction, and the reason this is a bound and not a deletion of the branch:
+    // tightening must not cost us the copy we are entitled to prune. Identical layout, except
+    // `proj` has its own hoisted copy — the resolver stops at that one, and it is ours.
+    const { outer, proj, wigolo } = buildSiblingProjectTree({ projHasOwnCopy: true });
+    trees.push(outer);
+    expect(locateOrtRoots(hoistedResolverFor(wigolo), wigolo)).toEqual([
+      join(proj, 'node_modules', 'onnxruntime-node'),
+    ]);
+  });
+
+  it('the DRIVER leaves the enclosing project every pair it had, and says it pruned nothing', () => {
+    // ⚠ At the seam the user actually meets, and on the fixture that reproduces the escape:
+    // `proj` has NO copy of its own, so the only thing the resolver can reach by climbing is
+    // `outer`'s. This is the case where the driver printed
+    //   `kept darwin/arm64, removed darwin/x64, linux/arm64, ... (0 MiB)`
+    // — a SUCCESSFUL-looking prune — while deleting five of six pairs out of a stranger's tree.
+    // ⚠ The pairs AND the log line, because either alone is satisfiable for the wrong reason: an
+    // intact tree is equally explained by a driver that crashed before doing anything.
+    const { outer, wigolo } = buildSiblingProjectTree({ projHasOwnCopy: false });
+    trees.push(outer);
+    const runner = fileURLToPath(new URL('../../scripts/prune/run.mjs', import.meta.url));
+    const out = execFileSync(process.execPath, [runner, wigolo], { encoding: 'utf8' });
+
+    expect(pairsIn(join(outer, 'node_modules', 'onnxruntime-node'))).toEqual(
+      [...FIXTURE_PAIRS].sort(),
+    );
+    expect(out).not.toContain('platform prune — kept');
+  });
+
+  it('the DRIVER still prunes our OWN copy in that same layout', () => {
+    // The must-fire half at the same seam, so a "bound" that simply stopped pruning anything at
+    // all could not pass this file. `proj` has its own hoisted copy here; it goes, and `outer`'s
+    // still does not.
+    const { outer, proj, wigolo } = buildSiblingProjectTree({ projHasOwnCopy: true });
+    trees.push(outer);
+    const runner = fileURLToPath(new URL('../../scripts/prune/run.mjs', import.meta.url));
+    const out = execFileSync(process.execPath, [runner, wigolo], { encoding: 'utf8' });
+
+    expect(pairsIn(join(proj, 'node_modules', 'onnxruntime-node'))).toEqual([HOST_PAIR]);
+    expect(pairsIn(join(outer, 'node_modules', 'onnxruntime-node'))).toEqual(
+      [...FIXTURE_PAIRS].sort(),
+    );
+    expect(out).toContain(`platform prune — kept ${HOST_PAIR}`);
+  });
+});
+
+describe('findOutermostInstallRoot answers which TREE a directory belongs to', () => {
+  const trees: string[] = [];
+  afterAll(() => {
+    for (const dir of trees) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function tmpTree(): string {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-ort-root-')));
+    trees.push(dir);
+    return dir;
+  }
+
+  it('leaves the ordinary dependency layout exactly where it was', () => {
+    // `~/project/node_modules/wigolo` — the overwhelmingly common case, and the one that must not
+    // move at all. `~/project` is not itself installed anywhere, so there is nothing above it.
+    const root = tmpTree();
+    expect(findOutermostInstallRoot(join(root, 'node_modules', 'wigolo'))).toBe(root);
+  });
+
+  it('climbs out of a NESTED install to the tree that contains it', () => {
+    // ⚠ The case #307 gave up. `<root>/node_modules/foo` is itself a package of `<root>`'s tree,
+    // so a copy hoisted to `<root>/node_modules` is ours as much as `foo` is. Stopping at `foo`
+    // cost those bytes; the docstring called it an edge case, and it is not — see the note on
+    // `locatePackageRoot`.
+    const root = tmpTree();
+    expect(
+      findOutermostInstallRoot(join(root, 'node_modules', 'foo', 'node_modules', 'wigolo')),
+    ).toBe(root);
+  });
+
+  it('climbs through a SCOPED nesting package too', () => {
+    // `@scope/foo` sits one directory deeper than `foo`, because a scope directory is not a
+    // package. A predicate that only checked "is my parent named node_modules" stops here and
+    // silently gives the scoped half of the ecosystem the old, lossy answer.
+    const root = tmpTree();
+    expect(
+      findOutermostInstallRoot(
+        join(root, 'node_modules', '@scope', 'foo', 'node_modules', 'wigolo'),
+      ),
+    ).toBe(root);
+  });
+
+  it('STOPS at a project that merely sits beside another install', () => {
+    // ⚠ The distinction the whole fix turns on, stated on its own. `outer/proj` and
+    // `<root>/node_modules/foo` are both "the directory above my install root", and exactly one
+    // of them is part of our tree. `proj` is not installed into `outer` — it is a different
+    // project one directory down — so `outer`'s files are not ours and the climb must not happen.
+    const outer = tmpTree();
+    const proj = join(outer, 'proj');
+    expect(findOutermostInstallRoot(join(proj, 'node_modules', 'wigolo'))).toBe(proj);
+  });
+
+  it('does not climb out of a project nested inside somebody else\'s package', () => {
+    // The same distinction one level in, and the reason the predicate is "my install root is
+    // itself an installed package" rather than the looser "my install root has a node_modules
+    // somewhere on its path". A checkout at `outer/node_modules/pkg/proj` has node_modules on its
+    // path and is still not a package of `outer` — the loose spelling climbs to `outer` and hands
+    // back the escape this slice just closed.
+    const outer = tmpTree();
+    const proj = join(outer, 'node_modules', 'pkg', 'proj');
+    expect(findOutermostInstallRoot(join(proj, 'node_modules', 'wigolo'))).toBe(proj);
+  });
+
+  it('still returns nothing for a checkout that has not been installed yet', () => {
+    // The fallback branch's refusal, carried through the new climb rather than around it: a bare
+    // source tree under some unrelated install must still claim no tree at all.
+    const bare = tmpTree();
+    const checkout = join(bare, 'somewhere', 'wigolo');
+    writePkg(checkout, { name: 'wigolo', version: '0.0.0' });
+    mkdirSync(join(checkout, 'scripts', 'prune'), { recursive: true });
+    expect(findOutermostInstallRoot(join(checkout, 'scripts', 'prune'))).toBeNull();
   });
 });
 

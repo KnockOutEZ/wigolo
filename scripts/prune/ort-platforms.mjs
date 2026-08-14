@@ -171,6 +171,93 @@ export function findInstallRoot(startDir) {
 }
 
 /**
+ * Is `dir` ITSELF an installed package — a package directory sitting directly in a `node_modules`,
+ * or in a scope directory inside one?
+ *
+ * ⚠ NOT "does `dir` have a node_modules anywhere on its path", which is the looser spelling and
+ * gets one case wrong that matters: a project checked out at `outer/node_modules/pkg/proj` has
+ * `node_modules` on its path and is emphatically NOT a package of `outer` — nothing installed it
+ * there. The loose predicate climbs to `outer` from such a checkout and hands back exactly the
+ * escape this bound exists to close.
+ */
+function isInstalledPackageDir(dir) {
+  const parent = dirname(dir);
+  if (parent === dir) return false;
+  const parentName = parent.split(sep).pop();
+  if (parentName === 'node_modules') return true;
+  // `@scope` is a directory in the layout but not a level of the dependency graph, so a scoped
+  // package sits one deeper than an unscoped one.
+  if (parentName?.startsWith('@')) return dirname(parent).split(sep).pop() === 'node_modules';
+  return false;
+}
+
+/**
+ * The OUTERMOST install root `startDir` belongs to — the whole npm tree, not just the immediate
+ * package that holds it. `null` when no tree can be claimed.
+ *
+ * ⚠ THIS IS THE ONE NOTION OF TREE IDENTITY. Every prune in this directory bounds itself with it,
+ * because two prunes disagreeing about which files are "ours" is how one of them ends up deleting
+ * a stranger's binaries while the other correctly refuses.
+ *
+ * The rule is a single distinction, applied repeatedly: from the immediate install root, keep
+ * climbing WHILE that root is itself an installed package, and stop the moment it is not.
+ *
+ *   <root>/node_modules/foo/node_modules/wigolo   -> <root>
+ *       `foo` is a package OF <root>'s tree, so a copy hoisted to <root>/node_modules is ours
+ *       exactly as much as `foo` is. This is the case #307 gave up.
+ *
+ *   outer/proj/node_modules/wigolo                -> outer/proj
+ *       `proj` is not installed into `outer`; it is a DIFFERENT PROJECT that happens to sit one
+ *       directory down. `outer/node_modules` belongs to somebody else and climbing there is the
+ *       ~178 MiB escape. Node's own resolver makes no such distinction — it walks straight past
+ *       `proj` — which is why the resolver's answer has to be checked against this and not
+ *       trusted on its own.
+ *
+ * WHAT IT STILL DOES NOT RECOVER, stated because it is a real remaining loss and not a solved
+ * case: an npm-workspaces layout where wigolo nests at `<repo>/packages/app/node_modules/wigolo`
+ * while the dependency hoists to `<repo>/node_modules`. `packages/app` is not an installed
+ * package, so the climb stops there and the hoisted copy keeps its bytes. Telling that layout
+ * apart from `outer/proj` needs the workspace declaration, and guessing costs somebody else's
+ * install. Fail-open is the right side of that trade.
+ */
+export function findOutermostInstallRoot(startDir) {
+  let root = findInstallRoot(startDir);
+  if (!root) return null;
+  const seen = new Set();
+  while (isInstalledPackageDir(root) && !seen.has(root)) {
+    seen.add(root);
+    const next = findInstallRoot(root);
+    if (!next || next === root) break;
+    root = next;
+  }
+  return root;
+}
+
+/** `path`, canonicalised, or the resolved path when it cannot be (gone, or not permitted). */
+function realOrResolved(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * Is `candidate` inside `tree`?
+ *
+ * Canonicalised on both sides because macOS's tmpdir is `/var -> /private/var` and the module
+ * resolver reports the resolved path, so the two halves would otherwise disagree about identical
+ * directories. The separator on the prefix is not decoration either: without it `outer/proj` would
+ * claim `outer/project-b`.
+ */
+export function isWithinTree(tree, candidate) {
+  if (!tree) return false;
+  const root = realOrResolved(tree);
+  const child = realOrResolved(candidate);
+  return child === root || child.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+
+/**
  * Every `onnxruntime-node` package directory physically present in `startDir`'s install tree,
  * canonicalised so that two links onto one store entry count as the one copy they are.
  */
@@ -228,21 +315,37 @@ export function findOrtCopies(startDir, maxDepth = MAX_NEST_DEPTH) {
  * above it and a sibling's nested copy is off to the side. Node's own upward resolution is what
  * still finds the hoisted one from there. Delete this branch and that tree prunes nothing.
  *
+ * ⚠ AND WHY THE RESOLVER'S ANSWER IS CHECKED RATHER THAN TRUSTED. Node's resolution walks
+ * `node_modules` ancestors until something matches and has no notion of where our install stops,
+ * so from `outer/proj/node_modules/wigolo` — wigolo installed into `proj` with no onnxruntime-node
+ * beside it — it sails past `proj` and answers with `outer/node_modules/onnxruntime-node`, ~178
+ * MiB belonging to a different project. That was REPRODUCED, not theorised: the driver printed
+ * `kept darwin/arm64, removed darwin/x64, linux/arm64, ...` against the stranger's tree while npm
+ * reported a successful install. #304 bounded the on-disk scan for precisely this and left the
+ * resolver unbounded; the resolver is live here for a reason peculiar to this package —
+ * onnxruntime-node declares NO `exports` map, so `./package.json` resolves and reaches upward,
+ * where wreq-js's exports map made the same trick unavailable and the branch dead.
+ *
+ * `scanFrom` is therefore REQUIRED and not a convenience: it is what the tree boundary is derived
+ * from, and without one there is no claim to check the resolver against. No claim, no prune.
+ *
  * Finding nothing is not an error. onnxruntime-node arrives through optional dependencies, and a
  * tree that never installed one is a tree with nothing to prune.
  */
-export function locateOrtRoots(resolveFrom, scanFrom = null) {
+export function locateOrtRoots(resolveFrom, scanFrom) {
+  const tree = scanFrom ? findOutermostInstallRoot(scanFrom) : null;
+  if (!tree) return [];
+
   const roots = new Set();
   try {
     const dir = resolveFrom();
-    if (dir) roots.add(dir);
+    // Canonicalised so the resolver's answer and the scan's dedup on the one copy they both find.
+    if (dir && isWithinTree(tree, dir)) roots.add(realOrResolved(dir));
   } catch {
     // Nothing hoisted, or nothing installed at all. The on-disk scan is the other half of the
     // answer and still gets its turn — if this throw aborted the walk, a tree that nested every
     // copy would keep all of them while the log said nothing.
   }
-  if (scanFrom) {
-    for (const dir of findOrtCopies(scanFrom)) roots.add(dir);
-  }
+  for (const dir of findOrtCopies(scanFrom)) roots.add(dir);
   return [...roots];
 }
