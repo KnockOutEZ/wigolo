@@ -6,7 +6,7 @@ import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
-import { planPlatformPrune, locateOrtRoots, findOutermostInstallRoot, MAX_NEST_DEPTH } from '../../scripts/prune/ort-platforms.mjs';
+import { planPlatformPrune, locateOrtRoots, findOutermostInstallRoot, isWithinTree, MAX_NEST_DEPTH } from '../../scripts/prune/ort-platforms.mjs';
 
 /*
  * WHY these tests exist.
@@ -743,6 +743,40 @@ describe('findOutermostInstallRoot answers which TREE a directory belongs to', (
     writePkg(checkout, { name: 'wigolo', version: '0.0.0' });
     mkdirSync(join(checkout, 'scripts', 'prune'), { recursive: true });
     expect(findOutermostInstallRoot(join(checkout, 'scripts', 'prune'))).toBeNull();
+  });
+});
+
+describe('isWithinTree decides whether a located copy is ours to touch', () => {
+  /*
+   * ⚠ TESTED DIRECTLY, and the reason is worth stating: a mutation that removed the separator
+   * boundary below SURVIVED the whole rest of this file. It is unreachable through the one caller
+   * that exists today — Node's resolution only ever answers with `<ancestor>/node_modules/<name>`
+   * for a genuine path ancestor, so it cannot manufacture the sibling-prefix case — which makes
+   * this a guard held up entirely by a claim about the caller. Every other prune in this directory
+   * is meant to bound itself with this predicate, so the next caller is the one that finds out.
+   */
+  const root = join(sep, 'a', 'proj');
+
+  it('accepts the tree root itself and anything under it', () => {
+    expect(isWithinTree(root, root)).toBe(true);
+    expect(isWithinTree(root, join(root, 'node_modules', 'onnxruntime-node'))).toBe(true);
+  });
+
+  it('rejects a directory outside the tree', () => {
+    expect(isWithinTree(root, join(sep, 'a', 'node_modules', 'onnxruntime-node'))).toBe(false);
+  });
+
+  it('rejects a SIBLING whose name merely starts with the tree root\'s', () => {
+    // Without a separator on the prefix, `/a/proj` claims `/a/proj-vendor` — a different project
+    // whose only crime is a name sharing six characters. That is the same class of destruction the
+    // unbounded resolver caused, arrived at by string comparison instead of by walking.
+    expect(isWithinTree(root, join(sep, 'a', 'proj-vendor', 'node_modules', 'onnxruntime-node'))).toBe(false);
+  });
+
+  it('claims nothing at all when there is no tree', () => {
+    // `findOutermostInstallRoot` returns null for a checkout nobody has installed. No claim means
+    // no prune, which is the fail-open direction.
+    expect(isWithinTree(null, join(root, 'node_modules', 'onnxruntime-node'))).toBe(false);
   });
 });
 
