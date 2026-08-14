@@ -105,7 +105,14 @@ export function planPlatformPrune(tree, platform, arch) {
  * the hoisted copy cannot satisfy.
  */
 
-const MAX_NEST_DEPTH = 6;
+/**
+ * How many levels of nested `node_modules` the on-disk walk descends.
+ *
+ * Exported so the test that proves the module-resolver branch still contributes can build its
+ * fixture FROM this number. Hardcoding the depth there would turn that test into a test of
+ * nothing the first time somebody raised the bound.
+ */
+export const MAX_NEST_DEPTH = 6;
 
 /**
  * Subdirectories of `dir`, FOLLOWING SYMLINKS, or `[]` when it cannot be read.
@@ -260,9 +267,15 @@ export function isWithinTree(tree, candidate) {
 /**
  * Every `onnxruntime-node` package directory physically present in `startDir`'s install tree,
  * canonicalised so that two links onto one store entry count as the one copy they are.
+ *
+ * ⚠ SCOPED TO THE WHOLE TREE, not to the immediate install root. From
+ * `<root>/node_modules/foo/node_modules/wigolo` the immediate root is `<root>/node_modules/foo`,
+ * whose subtree holds no onnxruntime-node at all — the hoisted copy is a level above and a
+ * sibling's nested copy is off to the side, and both are as much part of `<root>`'s tree as `foo`
+ * is. Scanning only `foo` left ~178 MiB of them behind while the install log reported success.
  */
 export function findOrtCopies(startDir, maxDepth = MAX_NEST_DEPTH) {
-  const installRoot = findInstallRoot(startDir);
+  const installRoot = findOutermostInstallRoot(startDir);
   if (!installRoot) return [];
 
   const found = new Set();

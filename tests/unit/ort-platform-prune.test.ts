@@ -6,7 +6,7 @@ import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
-import { planPlatformPrune, locateOrtRoots, findOutermostInstallRoot } from '../../scripts/prune/ort-platforms.mjs';
+import { planPlatformPrune, locateOrtRoots, findOutermostInstallRoot, MAX_NEST_DEPTH } from '../../scripts/prune/ort-platforms.mjs';
 
 /*
  * WHY these tests exist.
@@ -401,7 +401,7 @@ describe('locateOrtRoots finds every copy on disk, not just the hoisted one', ()
   });
 });
 
-describe('the module resolver is load-bearing where the on-disk scan is blind', () => {
+describe('a NESTED install still owns the whole tree it was installed into', () => {
   let root: string;
   beforeAll(() => {
     root = buildNestedWigoloTree();
@@ -410,26 +410,77 @@ describe('the module resolver is load-bearing where the on-disk scan is blind', 
 
   const wigoloDir = () => join(root, 'node_modules', 'foo', 'node_modules', 'wigolo');
 
-  it('the on-disk scan alone finds NOTHING from a nested install position', () => {
-    // ⚠ The premise of the test below, asserted separately so the pair cannot both be satisfied
-    // by an accident. wigolo's install root here is `<root>/node_modules/foo`, and that subtree
-    // holds no onnxruntime-node: the hoisted copy is a level ABOVE it and bar's nested copy is
-    // off to the SIDE. A scan bounded to the caller's own tree — which it must be — cannot see
-    // either one, and no widening of the bound would be safe.
+  it('the on-disk scan reaches BOTH copies, above the nested install root and beside it', () => {
+    // ⚠ THE CASE #307 ACCEPTED LOSING, now recovered. Bounded at the IMMEDIATE install root
+    // (`<root>/node_modules/foo`) the scan saw neither copy: the hoisted one is a level ABOVE and
+    // bar's nested one is off to the SIDE. But `foo` is a package OF `<root>`'s tree, so both of
+    // those are as much ours as `foo` is, and the tree boundary is `<root>`.
+    //
+    // ⚠ bar's copy is the half the resolver never reached either — Node's walk answers with the
+    // FIRST match going up and stops. On the real package that is ~178 MiB that survived a prune
+    // reporting success, and only the widened scan finds it.
+    const roots = locateOrtRoots(() => {
+      throw new Error('MODULE_NOT_FOUND');
+    }, wigoloDir());
+    expect(roots.sort()).toEqual(
+      [
+        join(root, 'node_modules', 'bar', 'node_modules', 'onnxruntime-node'),
+        join(root, 'node_modules', 'onnxruntime-node'),
+      ].sort(),
+    );
+  });
+
+  it('the resolver agrees with the scan rather than adding a copy to it', () => {
+    // The hoisted copy is now reachable BOTH ways. Two entries would prune it twice — harmless —
+    // and report its freed bytes twice, which is not; #307's own accounting bug was that shape.
+    const roots = locateOrtRoots(hoistedResolverFor(root), wigoloDir());
+    expect(roots).toHaveLength(2);
+    expect(roots.filter((r: string) => r === join(root, 'node_modules', 'onnxruntime-node'))).toHaveLength(1);
+  });
+});
+
+describe('the resolver branch still contributes where the on-disk walk stops', () => {
+  // ⚠ WHY THE UNION SURVIVES THE WIDENING. With the scan bounded at the whole tree the resolver
+  // is redundant for every ordinary layout, and a branch that can never contribute is exactly the
+  // defect #304 found and this slice was warned about. So here is the layout where it still does:
+  // the walk carries a nesting bound, and a copy below it is a copy the scan cannot report. Node's
+  // resolution has no such bound — it climbs `node_modules` ancestors however deep they go.
+  //
+  // Built FROM the exported bound rather than a hardcoded 7, so raising the bound moves the
+  // fixture with it instead of quietly turning this into a test of nothing.
+  let root: string;
+  let deepWigolo: string;
+  let deepOrt: string;
+
+  beforeAll(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-ort-deep-')));
+    writePkg(root, { name: 'some-users-app', version: '0.0.0' });
+    let dir = join(root, 'node_modules');
+    for (let i = 0; i <= MAX_NEST_DEPTH; i++) {
+      writePkg(join(dir, `n${i}`), { name: `n${i}`, version: '1.0.0' });
+      dir = join(dir, `n${i}`, 'node_modules');
+    }
+    deepWigolo = join(dir, 'wigolo');
+    writePkg(deepWigolo, { name: 'wigolo', version: '0.0.0' });
+    deepOrt = join(dir, 'onnxruntime-node');
+    buildOrtCopy(deepOrt, { bytesPerPair: 1024, symlinkPlatform: 'none', store: root, tag: 'deep' });
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('the scan alone cannot see a copy past its nesting bound', () => {
+    // The premise, asserted separately so the pair below cannot both be satisfied by an accident.
     expect(
       locateOrtRoots(() => {
         throw new Error('MODULE_NOT_FOUND');
-      }, wigoloDir()),
+      }, deepWigolo),
     ).toEqual([]);
   });
 
-  it('rescues the hoisted copy through the resolver, which the scan cannot reach', () => {
-    // ⚠ Without this the `resolveFrom` branch has no test behind it, which is precisely the
-    // defect this slice was opened to fix — a resolution strategy nothing exercises. Node's own
-    // upward resolution walks `node_modules` ancestors and finds the hoisted copy from a position
-    // the bounded scan is blind to. Delete the branch and this tree prunes nothing at all.
-    const roots = locateOrtRoots(hoistedResolverFor(root), wigoloDir());
-    expect(roots).toEqual([join(root, 'node_modules', 'onnxruntime-node')]);
+  it('the resolver finds it, and the bound still accepts it as ours', () => {
+    // Every `n<i>` is an installed package, so the climb reaches `<root>` and this copy is inside
+    // it. Both halves matter: a resolver that found it and a bound that rejected it would leave
+    // the same bytes as no resolver at all.
+    expect(locateOrtRoots(hoistedResolverFor(deepWigolo), deepWigolo)).toEqual([deepOrt]);
   });
 });
 

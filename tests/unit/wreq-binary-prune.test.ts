@@ -390,6 +390,33 @@ describe('the postinstall driver finds wreq-js and prunes it', () => {
     expect(survivors(outer)).toEqual([...FULL_TREE].sort());
   });
 
+  it('prunes a copy hoisted ABOVE our install root when wigolo itself was nested', () => {
+    // ⚠ THE FAIL-OPEN LOSS #307 ACCEPTED, now recovered. npm nests wigolo at
+    // `<root>/node_modules/foo/node_modules/wigolo` when `foo` pins a version of one of wigolo's
+    // dependencies that the hoisted copy cannot satisfy — and from there the walk used to stop at
+    // `<root>/node_modules/foo`, leaving ~46 MiB of wreq-js binaries at `<root>/node_modules`
+    // untouched.
+    //
+    // ⚠ AND THE LOSS WAS UNDERSTATED. #307's note called this an edge case. Nesting at all is the
+    // rare part; CONDITIONAL on nesting, npm's hoisting makes the above-root placement the LIKELY
+    // one, because hoisting is what puts a shared dependency at the top in the first place. So the
+    // bound was costing the bytes in most of the cases it applied to, not a corner of them.
+    //
+    // `foo` is a package OF `<root>`'s tree, so `<root>/node_modules` is ours exactly as much as
+    // `foo` is — which is the distinction that lets this be recovered without reopening the
+    // enclosing-project escape asserted two tests up.
+    const root = makeTree();
+    const wigolo = join(root, 'node_modules', 'foo', 'node_modules', 'wigolo');
+    mkdirSync(wigolo, { recursive: true });
+    writeFileSync(
+      join(root, 'node_modules', 'foo', 'package.json'),
+      JSON.stringify({ name: 'foo', version: '1.0.0' }),
+    );
+    const out = runPrune(wigolo);
+    expect(out).toMatch(expectedPruneVerb());
+    expect(survivors(root)).toEqual(expectedSurvivors());
+  });
+
   it('survives a tree with no wreq-js at all', () => {
     // `--omit=optional` is a supported install, and so is a platform npm skipped. A postinstall
     // that threw here would fail the whole install over an absent optional dependency.

@@ -13,7 +13,7 @@ import { createRequire } from 'node:module';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { planPlatformPrune, locateOrtRoots, findInstallRoot } from './ort-platforms.mjs';
+import { planPlatformPrune, locateOrtRoots, findOutermostInstallRoot } from './ort-platforms.mjs';
 import { planWebPayloadPrune, findWebDependents } from './ort-web-payload.mjs';
 import { planBinaryPrune } from './wreq-binaries.mjs';
 
@@ -121,26 +121,32 @@ function dirSizeBytes(path) {
  * package as the install root, this package installed as a dependency with `<name>` hoisted
  * beside it, and `<name>` nested under this package.
  *
- * ⚠ BOUNDED AT OUR OWN INSTALL ROOT, and the bound is load-bearing rather than tidiness. An
- * unbounded walk climbs to the filesystem root, so from `outer/proj/node_modules/wigolo` — with
- * wigolo installed `--omit=optional` and no `<name>` beside it — it sails past `proj`'s own
- * package.json AND its own node_modules and finds `outer/node_modules/<name>`, which belongs to
- * a different project. It then deletes six of its seven binaries. That tree may be multi-arch on
- * purpose (a Docker build context, a multi-platform CI cache) and its owner has no reason to
- * have set `WIGOLO_SKIP_ORT_PRUNE`. This is the same defect #304 fixed for the onnxruntime
- * on-disk scan, so this reuses THAT commit's `findInstallRoot` rather than inventing a second
- * notion of "which tree am I part of".
+ * ⚠ BOUNDED AT OUR OWN TREE, and the bound is load-bearing rather than tidiness. An unbounded walk
+ * climbs to the filesystem root, so from `outer/proj/node_modules/wigolo` — with wigolo installed
+ * `--omit=optional` and no `<name>` beside it — it sails past `proj`'s own package.json AND its
+ * own node_modules and finds `outer/node_modules/<name>`, which belongs to a different project. It
+ * then deletes six of its seven binaries. That tree may be multi-arch on purpose (a Docker build
+ * context, a multi-platform CI cache) and its owner has no reason to have set
+ * `WIGOLO_SKIP_ORT_PRUNE`. This is the same defect #304 fixed for the onnxruntime on-disk scan, so
+ * this shares THAT notion of "which tree am I part of" rather than inventing a second one.
  *
- * ⚠ WHAT THE BOUND COSTS, stated because it is a real trade and not a free win. wigolo installed
- * as `<root>/node_modules/foo/node_modules/wigolo` has an install root of
- * `<root>/node_modules/foo`, so a copy hoisted ABOVE that — at `<root>/node_modules/<name>` — is
- * now out of reach and keeps its bytes. That direction is fail-open: it costs install size and
- * strands nobody, whereas the unbounded walk destroys trees we do not own. The onnxruntime
- * PLATFORM prune does not lose that case at all, because `locateOrtRoots` unions this kind of
- * walk with the module resolver, which still reaches upward.
+ * ⚠ THE BOUND IS THE OUTERMOST INSTALL ROOT, NOT THE IMMEDIATE ONE, and the difference is a case
+ * #307 gave up on. wigolo installed as `<root>/node_modules/foo/node_modules/wigolo` has an
+ * IMMEDIATE install root of `<root>/node_modules/foo`, so a copy hoisted above that — at
+ * `<root>/node_modules/<name>` — used to be out of reach and kept its bytes. But `foo` is itself a
+ * package OF `<root>`'s tree, so `<root>/node_modules` is ours exactly as much as `foo` is;
+ * `outer/proj` is NOT a package of `outer` and stays out of reach. `findOutermostInstallRoot`
+ * draws that line, and it is what lets both facts hold at once.
+ *
+ * ⚠ #307'S NOTE UNDERSTATED WHAT THAT COST, and the correction is the reason this was worth
+ * fixing rather than accepting. It called the above-root placement an edge case. The RARE part is
+ * wigolo being nested at all — that needs a version conflict. Conditional on it happening, npm's
+ * hoisting makes the above-root placement the LIKELY one, because hoisting is precisely what puts
+ * a shared dependency at the top of the tree. So the old bound was costing the bytes in most of
+ * the cases where it applied, not in a corner of them.
  */
 function locatePackageRoot(startDir, name) {
-  const installRoot = findInstallRoot(startDir);
+  const installRoot = findOutermostInstallRoot(startDir);
   // No install root means no tree we can claim, and a prune with no claim is one that must not
   // run. Returning null here is the same fail-open the rest of this file takes.
   if (!installRoot) return null;
