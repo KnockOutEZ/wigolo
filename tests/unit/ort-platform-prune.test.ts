@@ -484,7 +484,7 @@ describe('the resolver branch still contributes where the on-disk walk stops', (
   });
 });
 
-describe('findInstallRoot does not escape the package that called it', () => {
+describe('the install-root fallback does not escape the package that called it', () => {
   it('returns nothing for a checkout that has not been installed yet', () => {
     // ⚠ The fallback branch is the only one with no `node_modules` on the path to halt it, so it
     // is the only one that can genuinely escape upward. A bare checkout sitting under some

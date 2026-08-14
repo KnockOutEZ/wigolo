@@ -256,11 +256,20 @@ function realOrResolved(path) {
  * resolver reports the resolved path, so the two halves would otherwise disagree about identical
  * directories. The separator on the prefix is not decoration either: without it `outer/proj` would
  * claim `outer/project-b`.
+ *
+ * ⚠ CASE-FOLDED ON WIN32 ONLY. The two sides reach here from different Node APIs — one from
+ * `import.meta.url`, one from `require.resolve` — and on a case-insensitive filesystem a drive
+ * letter or path segment that differs only in case names the SAME directory. Comparing them
+ * literally there would reject our own tree and silently cost the win on every Windows install,
+ * which is the failure that gets discovered in CI rather than here. Folding elsewhere would be
+ * wrong for the opposite reason: on a case-sensitive filesystem `/a/Proj` and `/a/proj` are two
+ * directories, and treating them as one is how a bound starts claiming a tree it does not own.
  */
 export function isWithinTree(tree, candidate) {
   if (!tree) return false;
-  const root = realOrResolved(tree);
-  const child = realOrResolved(candidate);
+  const fold = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const root = fold(realOrResolved(tree));
+  const child = fold(realOrResolved(candidate));
   return child === root || child.startsWith(root.endsWith(sep) ? root : root + sep);
 }
 

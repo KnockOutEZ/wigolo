@@ -354,7 +354,8 @@ describe('the postinstall driver finds wreq-js and prunes it', () => {
    * package, next to a workspace root whose hoisted `wreq-js` is deliberately multi-arch (a
    * Docker build context, a multi-platform CI cache), is a real arrangement, and its owner has
    * no reason to have set the opt-out. This is the same defect #304 fixed for the onnxruntime
-   * scan, so the bound is that commit's `findInstallRoot`, reused rather than reinvented.
+   * scan, so the bound is `findOutermostInstallRoot` — the one notion of tree identity every
+   * prune here shares, rather than a second one invented for this package.
    */
   function makeNestedLayout(): { outer: string; proj: string; wigolo: string } {
     const outer = mkdtempSync(join(tmpdir(), 'wreq-outer-'));
