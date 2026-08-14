@@ -7,6 +7,11 @@ import {
 import type { ToolName } from '../../src/instructions.js';
 import { TOOL_SCHEMAS } from '../../src/server/tool-schemas.js';
 import { SIGNAL_NAMES } from '../../src/search/hybrid/signals.js';
+import {
+  RANKING_NOTICE_FIELD,
+  RANKING_NOTICE_REASONS,
+  buildRankingNotice,
+} from '../../src/search/core/rerank-fold.js';
 import { readFileSync } from 'node:fs';
 
 describe('WIGOLO_INSTRUCTIONS v3 routing patterns (per-session)', () => {
@@ -147,6 +152,38 @@ describe('hybrid fallback signal documentation stays in sync with the code', () 
     );
     for (const name of SIGNAL_NAMES) {
       expect(block).toContain(name);
+    }
+  });
+});
+
+describe('ranking-notice documentation stays in sync with the code', () => {
+  // WHY: same seam that under-reported the hybrid fallback signals. A search
+  // response field can be wired end-to-end with a green typecheck and a green
+  // test suite while the instructions an agent actually reads never mention it
+  // — which makes the signal invisible to its only audience. Derived from
+  // RANKING_NOTICE_FIELD (the constant the provider assigns through), so a
+  // rename breaks this test instead of silently desyncing the prose.
+  it('names the ranking notice field in the per-session instructions', () => {
+    expect(WIGOLO_INSTRUCTIONS).toContain(RANKING_NOTICE_FIELD);
+  });
+
+  it('names the ranking notice field in the search tool description', () => {
+    expect(TOOL_DESCRIPTIONS.search).toContain(RANKING_NOTICE_FIELD);
+  });
+
+  it('documents it as conditional, not always-emitted', () => {
+    // It must not be promised on every response — it fires only when reranking
+    // gave no ordering signal, and an agent told otherwise would treat its
+    // absence as a bug.
+    expect(TOOL_DESCRIPTIONS.search).toMatch(/`?ranking_notice`? is emitted only when/i);
+  });
+
+  it('every reason that renders a notice is reachable and non-empty', () => {
+    // Guards the reverse drift: a reason added to the enum but left without
+    // text would emit nothing and reintroduce the silent no-op.
+    expect(RANKING_NOTICE_REASONS.length).toBeGreaterThan(0);
+    for (const reason of RANKING_NOTICE_REASONS) {
+      expect(buildRankingNotice({ reason, window: 3 })).toBeTruthy();
     }
   });
 });

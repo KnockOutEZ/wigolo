@@ -51,7 +51,7 @@ Wigolo returns structured evidence — YOU write the final answer from it.
 
 ## Response fields
 
-\`evidence_score\` (explainable), \`query_understanding\`, \`brand_collision_warning\`, \`freshness_signal\`, \`engine_telemetry\`, \`engine_warnings\` (+ env-var hint).
+\`evidence_score\` (explainable), \`query_understanding\`, \`brand_collision_warning\`, \`freshness_signal\`, \`engine_telemetry\`, \`engine_warnings\` (+ env-var hint), \`ranking_notice\` (reranking gave no ordering signal — results are base-ranked, not relevance-ranked; pass verbatim).
 
 ## Tool routing
 
@@ -228,7 +228,7 @@ Key parameters:
 - max_tokens_out / max_content_chars / include_full_markdown / citation_format.
 - force_refresh + mode ('cache' | 'default' | 'stealth').
 
-Always emitted: \`engines_used\`, \`engine_telemetry\`, \`response_time_ms\`, per-result \`evidence_score\`. Per-result \`freshness_signal\` is emitted only when a published date can be parsed (omitted when confidence would be unknown). Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. Quote [N] or {citation_id}.`,
+Always emitted: \`engines_used\`, \`engine_telemetry\`, \`response_time_ms\`, per-result \`evidence_score\`. Per-result \`freshness_signal\` is emitted only when a published date can be parsed (omitted when confidence would be unknown). Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. \`ranking_notice\` is emitted only when reranking contributed no ordering signal to the result set — either it could not run, or it scored every result below its relevance floor; the list is then ordered by cross-engine agreement rather than relevance, so treat it as low-confidence and pass the notice to the user verbatim. Quote [N] or {citation_id}.`,
 
   crawl: `Crawl a site from a seed URL and return content from many pages. Use for indexing docs, wikis, multi-page references. Built for offline reuse: every page lands in the local cache.
 
