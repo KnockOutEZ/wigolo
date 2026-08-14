@@ -138,6 +138,13 @@ interface BreakerState {
   /** Epoch ms of the last dispatch admitted past the throttle gate. Drives the
    * per-engine minimum inter-request interval. 0 = never dispatched. */
   lastDispatchAt: number;
+  /** Epoch ms the forced-probe spacing window last restarted for this engine.
+   * Set BOTH when the breaker opens and when a forced probe is granted, so the
+   * spacing is measured from the open — not only from a previous forced probe.
+   * Setting it at the open is what makes a short cooldown expire on its own
+   * instead of being cut short by the very first forced probe. 0 = never
+   * opened. */
+  forcedProbeGateAt: number;
   /** Last engine error, surfaced via getBreakerSnapshot() for doctor. */
   lastError?: string;
 }
@@ -237,6 +244,7 @@ function getState(name: string): BreakerState {
       trips: 0,
       sessionTrips: 0,
       lastDispatchAt: 0,
+      forcedProbeGateAt: 0,
     };
     breakers.set(name, s);
   }
@@ -254,6 +262,12 @@ function recordFailure(
   if (state.failures >= threshold && state.tripUntil === 0) {
     const effectiveCooldown = cooldownForFailure(failureClass, cooldownMs);
     state.tripUntil = Date.now() + effectiveCooldown;
+    // Start the forced-probe spacing window at the open. Without this the very
+    // first forced probe on an engine is always granted (the gate initialises
+    // to 0), which would re-hit a rate-limited engine inside the short cooldown
+    // the remote just asked for — the self-inflicted throttling this module
+    // exists to prevent.
+    state.forcedProbeGateAt = Date.now();
     // A rate-limit (429) block is transient: the engine is up and throttling.
     // It opens on the short window but must NOT feed the exponential-backoff
     // (`trips`) or chronic-health (`sessionTrips`) counters — otherwise a burst
@@ -284,6 +298,11 @@ function reopenWithBackoff(
   cooldownMs: number,
   failureClass: FailureClass,
 ): number {
+  // Restart the forced-probe spacing window from THIS reopen, for both classes.
+  // Measuring from the grant instead would let a slow-failing probe (or a
+  // reclaimed stuck one, granted a full cooldown earlier) be followed almost
+  // immediately by the next forced probe.
+  state.forcedProbeGateAt = Date.now();
   if (failureClass === 'rate-limit') {
     const backoffMs = Math.min(
       cooldownForFailure('rate-limit', cooldownMs),
@@ -313,6 +332,68 @@ function recordSuccess(name: string): void {
   // engine to the tighter chronic budget for the life of the process.
   state.sessionTrips = 0;
   delete state.lastError;
+}
+
+/**
+ * Minimum wall-clock spacing between FORCED recovery probes of one engine,
+ * measured from {@link BreakerState.forcedProbeGateAt} — which is stamped both
+ * when the breaker OPENS and when a forced probe is granted.
+ *
+ * Set to 10s so it sits above {@link TRANSIENT_COOLDOWN_MS} (5s), the cooldown a
+ * rate-limited (429) engine gets. A 429 is the remote naming a window it wants;
+ * cutting that window short would be the same self-inflicted rate-limiting this
+ * module exists to prevent. Because the gate is stamped at the open, a ≤10s
+ * cooldown ALWAYS elapses on its own and the engine is never force-probed early
+ * — including on the first forced probe of a given engine. (Stamping only on
+ * grant would leave the gate at 0 and make that first probe unconditional,
+ * which is exactly the hole this stamping closes.)
+ *
+ * What this constant does NOT govern: the per-engine inter-request interval.
+ * That gate is separate and runs FIRST, keyed on `lastDispatchAt`. A granted
+ * probe is therefore permission from the breaker, not a guarantee of dispatch —
+ * a throttled engine can still skip it, and should, because its rate limit
+ * outranks our wish to recover it.
+ *
+ * Net effect: at most one forced probe per engine per 10s, only while the pool
+ * is collapsed. Strictly gentler than the probe-only roster the recovery wave
+ * already dispatches with no spacing at all.
+ */
+export const FORCED_PROBE_MIN_SPACING_MS = 10_000;
+
+/**
+ * Ask for a bounded early half-open probe of a breaker-open engine.
+ *
+ * WHY: the pool's degraded-recovery wave re-dispatches every primary engine it
+ * recorded as skipped — precisely the set whose breakers are open. Milliseconds
+ * later those breakers are still open, so the re-dispatch re-rejects without
+ * reaching the engine and the wave cannot recover anything it was built to
+ * recover. One transient 403/429 then became a session-long single-engine pool.
+ *
+ * Granting a probe cuts the remaining cooldown so the NEXT call becomes the
+ * half-open probe; the normal probe machinery (single in-flight probe, failure
+ * backoff, stuck-probe reclaim) is otherwise untouched. Refused when the
+ * breaker is closed, when a probe is already in flight, when the cooldown has
+ * already elapsed (the next call probes anyway), or when this engine was
+ * force-probed within {@link FORCED_PROBE_MIN_SPACING_MS}.
+ *
+ * Returns true when a probe was granted. Engine-agnostic — the caller decides
+ * which engines are eligible; no engine name is inspected here.
+ */
+export function requestRecoveryProbe(name: string): boolean {
+  const state = breakers.get(name);
+  if (!state || state.tripUntil === 0) return false;
+  if (state.probing) return false;
+  const now = Date.now();
+  if (now >= state.tripUntil) return false;
+  if (now - state.forcedProbeGateAt < FORCED_PROBE_MIN_SPACING_MS) return false;
+  state.forcedProbeGateAt = now;
+  state.tripUntil = now;
+  log.info('breaker forced recovery probe granted', {
+    engine: name,
+    trips: state.trips,
+    sessionTrips: state.sessionTrips,
+  });
+  return true;
 }
 
 /** Clear ALL breaker state (failures, cooldowns, trips, sessionTrips). Public:
@@ -423,7 +504,6 @@ export function wrapWithRetryAndBreaker(
           throw new ThrottledError(engine.name, minIntervalMs - sinceLast);
         }
       }
-      state.lastDispatchAt = Date.now();
 
       let probe = false;
       if (state.tripUntil > 0) {
@@ -455,6 +535,15 @@ export function wrapWithRetryAndBreaker(
         state.probeStartedAt = now;
         log.info('breaker half-open probe', { engine: engine.name });
       }
+
+      // The inter-request clock counts only requests that ACTUALLY go out.
+      // Advanced HERE — past the breaker gate, immediately before dispatch —
+      // because a breaker-open rejection (or a lost probe race) costs the
+      // upstream engine nothing and must not spend its rate budget. Advancing
+      // before the gate let a rejected call throttle the half-open probe that
+      // followed it, holding a recovered engine dark for an extra interval and
+      // emitting a self-inflicted "throttled" skip for a request never sent.
+      state.lastDispatchAt = Date.now();
 
       let lastErr: unknown;
       for (let attempt = 1; attempt <= retryAttempts; attempt++) {

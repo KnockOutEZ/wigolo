@@ -147,7 +147,7 @@ The \`WIGOLO_SEARCH\` env selects the search path. Defaults to \`core\`.
 
 - \`core\` (default) -- direct engines (Bing, DDG, Brave, Wikipedia, MDN, SO, GitHub-code, HN, arXiv, ...), RRF, ML rerank. Low latency, transparent provenance.
 - \`searxng\` -- legacy aggregator. Opt-in. Higher recall on long-tail queries; slower cold start.
-- \`hybrid\` -- runs \`core\` first; falls back to \`searxng\` and merges via RRF when a signal fires. Signals: \`brand_collision_suspect\`, \`include_domains_over_filter\`, \`all_engines_failed\`, \`top1_high_score_low_overlap\`. The merged response carries \`fallback_signal\` (\`null\` when no signal fired; a \`+\`-joined name list otherwise) so callers can detect the fallback path.
+- \`hybrid\` -- runs \`core\` first; falls back to \`searxng\` and merges via RRF when a signal fires. Signals: \`brand_collision_suspect\`, \`include_domains_over_filter\`, \`all_engines_failed\`, \`top1_high_score_low_overlap\`, \`engine_pool_collapsed\`. The merged response carries \`fallback_signal\` (\`null\` when no signal fired; a \`+\`-joined name list otherwise) so callers can detect the fallback path.
 
 ## Search depth tiers
 

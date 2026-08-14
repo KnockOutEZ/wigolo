@@ -68,7 +68,13 @@ vi.mock('../../../src/search/core/verticals/images.js', () => ({
 }));
 
 const { runV1Search } = await import('../../../src/search/core/orchestrator.js');
-const { _resetBreakersForTest } = await import('../../../src/search/core/engine-base.js');
+const {
+  _resetBreakersForTest,
+  wrapWithRetryAndBreaker,
+  requestRecoveryProbe,
+  getBreakerSnapshot,
+  FORCED_PROBE_MIN_SPACING_MS,
+} = await import('../../../src/search/core/engine-base.js');
 
 function makeResult(engineName: string, url: string): RawSearchResult {
   return { title: `T ${url}`, url, snippet: 'S', relevance_score: 1, engine: engineName };
@@ -295,6 +301,321 @@ describe('degraded-dispatch recovery wave', () => {
 
     expect(out.pool_degraded?.reasons).toContain('pool_collapsed');
     expect(out.pool_degraded?.reasons).not.toContain('thin_pool');
+  });
+
+  // Forced recovery probe: the recovery wave must be able to actually recover.
+  //
+  // WHY: the recovery wave re-dispatches every primary engine the wave recorded
+  // as `skipped` — which is exactly the set whose breakers are OPEN. Milliseconds
+  // later those breakers are still open, so the re-dispatch re-rejects without
+  // touching the engine and the wave recovers nothing. In live dogfood this left
+  // sessions pinned at {healthy: 1, total: 5, pool_collapsed} for their whole
+  // duration: a single transient 403/429 became a session-long single-engine
+  // pool, because nothing could reach the engine again until a full (and
+  // exponentially growing) cooldown elapsed.
+  //
+  // The recovery wave therefore requests a BOUNDED forced half-open probe on the
+  // breaker-open engines it is about to re-dispatch. Bounded two ways: it only
+  // runs when the pool has actually collapsed, and it is spaced per engine by
+  // FORCED_PROBE_MIN_SPACING_MS.
+  it('forces a bounded half-open probe so the recovery wave can recover a breaker-open engine', async () => {
+    let upstreamDown = true;
+    const inner = vi.fn(async () => {
+      if (upstreamDown) throw new Error('403 forbidden');
+      return [makeResult('marginalia', 'https://recovered-engine.com/1')];
+    });
+    const marginalia = wrapWithRetryAndBreaker(
+      { name: 'marginalia', search: inner },
+      { failureThreshold: 1, cooldownMs: 60_000, retryAttempts: 1 },
+    );
+
+    // Trip the breaker on a transient upstream failure. It is now open for 60s.
+    await expect(marginalia.search('warmup')).rejects.toThrow('403 forbidden');
+    expect(getBreakerSnapshot().find((b) => b.engine === 'marginalia')?.state).toBe('open');
+    expect(inner).toHaveBeenCalledTimes(1);
+
+    // The upstream recovers — the block was transient. Nothing but our own
+    // breaker is keeping this engine out of the pool now.
+    upstreamDown = false;
+
+    // Advance the CLOCK past the forced-probe spacing window (Date only, so the
+    // pool's real dispatch timers still work). This models the realistic case:
+    // not the same call that just saw the engine fail, but a later search in the
+    // same session — where the engine would otherwise stay dark for the full 60s
+    // cooldown across every intervening search.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + FORCED_PROBE_MIN_SPACING_MS + 1);
+
+    const bing = healthyEntry('bing', [makeResult('bing', 'https://one.com/1')]);
+    const ddgEmpty = emptyEntry('ddg');
+    verticalState.general = [bing, ddgEmpty, { engine: marginalia, quality: 'medium' }];
+
+    // Primary wave: bing contributes, ddg is empty, marginalia is skipped by its
+    // open breaker -> healthy 1 of 3, below floor ceil(3/2)=2 -> collapse ->
+    // recovery wave.
+    const out = await runV1Search({ query: 'recovered engine query', maxResults: 10 });
+
+    // The recovery wave must actually reach the engine, not just re-reject it.
+    expect(inner).toHaveBeenCalledTimes(2);
+    expect(out.results.some((r) => r.url === 'https://recovered-engine.com/1')).toBe(true);
+    // Pre/post on the breaker itself: asserted 'open' above, closed here by the
+    // probe's success. This is the open -> recovered transition the wave exists
+    // to produce, and could not produce before.
+    expect(getBreakerSnapshot().find((b) => b.engine === 'marginalia')?.state).toBe('closed');
+    vi.useRealTimers();
+  });
+
+  it('a pool the recovery wave REPAIRED does not report pool_collapsed', async () => {
+    // The collapse verdict must reflect the pool that actually answered, not the
+    // primary wave that has since been repaired. Judging on the stale primary
+    // count told the caller "engines returned nothing; retry" about a pool that
+    // had just healed, and — because the collapse reason also drives the
+    // second-backend fallback — spent a whole extra search proving it.
+    const bing = healthyEntry('bing', [makeResult('bing', 'https://one.com/1')]);
+    const ddgEmpty = emptyEntry('ddg');
+    const wikiEmpty = emptyEntry('wikipedia');
+    // Two probe-only engines answer in the recovery wave, lifting the pool from
+    // 1 of 3 (collapsed) to 3 of 5 (above the floor of ceil(5/2)=3).
+    const probeA = probeOnlyEntry('mojeek', [makeResult('mojeek', 'https://rec.com/1')]);
+    const probeB = probeOnlyEntry('brave', [makeResult('brave', 'https://rec.com/2')]);
+    verticalState.general = [bing, ddgEmpty, wikiEmpty, probeA, probeB];
+
+    const out = await runV1Search({ query: 'repaired pool query', maxResults: 10 });
+
+    // The wave really did run and really did recover engines.
+    expect(probeA.engine.search).toHaveBeenCalled();
+    expect(probeB.engine.search).toHaveBeenCalled();
+    const healthy = out.outcomes.filter((o) => o.ok && o.results.length > 0).length;
+    expect(healthy).toBe(3);
+
+    // Recovery is reported honestly, but NOT as a collapse.
+    expect(out.pool_degraded?.reasons).toContain('degraded_recovery');
+    expect(out.pool_degraded?.reasons).not.toContain('pool_collapsed');
+    // ...and not as a thin pool either: 3 contributors is above that band.
+    expect(out.pool_degraded?.reasons).not.toContain('thin_pool');
+  });
+
+  it('a pool the recovery wave FAILED to repair still reports pool_collapsed', async () => {
+    // Still-reds control for the test above: the re-derivation must not become a
+    // blanket amnesty. When the wave runs and recovers nothing, the pool really
+    // has collapsed and the caller must still be told.
+    const bing = healthyEntry('bing', [makeResult('bing', 'https://one.com/1')]);
+    const ddgEmpty = emptyEntry('ddg');
+    const wikiEmpty = emptyEntry('wikipedia');
+    const probeDead = probeOnlyEntry('mojeek', []);
+    verticalState.general = [bing, ddgEmpty, wikiEmpty, probeDead];
+
+    const out = await runV1Search({ query: 'unrepaired pool query', maxResults: 10 });
+
+    expect(probeDead.engine.search).toHaveBeenCalled();
+    expect(out.pool_degraded?.reasons).toContain('pool_collapsed');
+  });
+
+  it('NEGATIVE: a healthy pool never forces a recovery probe on a breaker-open engine', async () => {
+    // Must-not-fire: forcing probes is only licensed by an actual collapse. A
+    // healthy pool that happens to carry one breaker-open engine must leave that
+    // breaker's cooldown alone — otherwise every search hammers a blocked engine.
+    const inner = vi.fn(async () => {
+      throw new Error('403 forbidden');
+    });
+    const marginalia = wrapWithRetryAndBreaker(
+      { name: 'marginalia', search: inner },
+      { failureThreshold: 1, cooldownMs: 60_000, retryAttempts: 1 },
+    );
+    await expect(marginalia.search('warmup')).rejects.toThrow('403 forbidden');
+    expect(inner).toHaveBeenCalledTimes(1);
+
+    // Three healthy engines keep the pool above the collapse floor even with
+    // marginalia dark: healthy 3 of 4 >= ceil(4/2)=2.
+    verticalState.general = [
+      healthyEntry('bing', [makeResult('bing', 'https://a.com/1')]),
+      healthyEntry('ddg', [makeResult('ddg', 'https://b.com/1')]),
+      healthyEntry('wikipedia', [makeResult('wikipedia', 'https://c.com/1')]),
+      { engine: marginalia, quality: 'medium' },
+    ];
+
+    await runV1Search({ query: 'healthy pool with one dark engine', maxResults: 10 });
+
+    // Breaker untouched: the engine was never re-probed.
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(getBreakerSnapshot().find((b) => b.engine === 'marginalia')?.state).toBe('open');
+  });
+
+  it('spaces forced probes per engine so a collapsed pool cannot hammer a blocked engine', async () => {
+    // The forced probe is bounded: once granted, the same engine cannot be
+    // force-probed again until FORCED_PROBE_MIN_SPACING_MS has elapsed. Without
+    // this bound, every call in a collapsed session would probe a hard-blocked
+    // engine on every search.
+    vi.useFakeTimers();
+    try {
+      const inner = vi.fn(async () => {
+        throw new Error('403 forbidden');
+      });
+      const engine = wrapWithRetryAndBreaker(
+        { name: 'spaced', search: inner },
+        { failureThreshold: 1, cooldownMs: 60_000, retryAttempts: 1 },
+      );
+      await expect(engine.search('warmup')).rejects.toThrow('403 forbidden');
+      expect(inner).toHaveBeenCalledTimes(1);
+
+      // The spacing window starts at the OPEN, so a probe is refused until it
+      // elapses — an engine that failed moments ago is not re-hit immediately.
+      expect(requestRecoveryProbe('spaced')).toBe(false);
+      vi.advanceTimersByTime(FORCED_PROBE_MIN_SPACING_MS + 1);
+
+      // Now granted, and the probe it licenses reaches the still-blocked engine
+      // and fails, reopening the breaker on a longer backoff. This is the cycle
+      // a collapsed session actually runs.
+      expect(requestRecoveryProbe('spaced')).toBe(true);
+      await expect(engine.search('probe')).rejects.toThrow('403 forbidden');
+      expect(inner).toHaveBeenCalledTimes(2);
+
+      // A further request immediately after is refused — the spacing bound is
+      // what stops every subsequent search in the collapsed session from
+      // re-probing a hard-blocked engine.
+      expect(requestRecoveryProbe('spaced')).toBe(false);
+
+      // Still refused just under the spacing window.
+      vi.advanceTimersByTime(FORCED_PROBE_MIN_SPACING_MS - 1);
+      expect(requestRecoveryProbe('spaced')).toBe(false);
+      expect(inner).toHaveBeenCalledTimes(2);
+
+      // Granted again once the spacing window has elapsed.
+      vi.advanceTimersByTime(2);
+      expect(requestRecoveryProbe('spaced')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never force-probes inside a rate-limit cooldown, including the FIRST probe', async () => {
+    // The invariant the spacing constant is chosen for: a 429 is the remote
+    // naming a back-off window, and we must not re-hit the engine inside it.
+    // The spacing gate is stamped when the breaker OPENS precisely so this holds
+    // on the first forced probe too — an unstamped gate initialises to 0, which
+    // made that first probe unconditional and cut a 5s cooldown short by ~5s.
+    vi.useFakeTimers();
+    try {
+      const inner = vi.fn(async () => {
+        throw new Error('429 too many requests');
+      });
+      const engine = wrapWithRetryAndBreaker(
+        { name: 'rl429', search: inner },
+        { failureThreshold: 1, cooldownMs: 60_000, retryAttempts: 1 },
+      );
+
+      // A rate-limit failure opens the breaker on the SHORT transient cooldown.
+      await expect(engine.search('q')).rejects.toThrow('429');
+      const open = getBreakerSnapshot().find((b) => b.engine === 'rl429');
+      expect(open?.state).toBe('open');
+      expect(open!.cooldownRemainingMs).toBeLessThanOrEqual(5_000);
+      expect(open!.cooldownRemainingMs).toBeGreaterThan(0);
+
+      // The first forced probe must be REFUSED for the whole cooldown.
+      expect(requestRecoveryProbe('rl429')).toBe(false);
+      vi.advanceTimersByTime(4_999);
+      expect(requestRecoveryProbe('rl429')).toBe(false);
+      expect(inner).toHaveBeenCalledTimes(1);
+
+      // Once the cooldown has elapsed the engine is probe-ready on its own, so a
+      // forced probe is unnecessary and still refused — nothing was cut short.
+      vi.advanceTimersByTime(2);
+      expect(requestRecoveryProbe('rl429')).toBe(false);
+      expect(getBreakerSnapshot().find((b) => b.engine === 'rl429')?.state).toBe('half-open');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still accelerates recovery from a LONG hard-failure cooldown', async () => {
+    // Control for the test above: the spacing gate must not neuter the feature.
+    // A 403 opens a 60s cooldown; the forced probe still cuts that to ~10s,
+    // which is the entire point of the mechanism.
+    vi.useFakeTimers();
+    try {
+      const inner = vi.fn(async () => {
+        throw new Error('403 forbidden');
+      });
+      const engine = wrapWithRetryAndBreaker(
+        { name: 'hard403', search: inner },
+        { failureThreshold: 1, cooldownMs: 60_000, retryAttempts: 1 },
+      );
+      await expect(engine.search('q')).rejects.toThrow('403');
+
+      // Refused while inside the spacing window...
+      expect(requestRecoveryProbe('hard403')).toBe(false);
+      vi.advanceTimersByTime(FORCED_PROBE_MIN_SPACING_MS - 1);
+      expect(requestRecoveryProbe('hard403')).toBe(false);
+
+      // ...granted once it elapses, ~50s before the breaker would have reopened.
+      vi.advanceTimersByTime(2);
+      expect(requestRecoveryProbe('hard403')).toBe(true);
+      expect(getBreakerSnapshot().find((b) => b.engine === 'hard403')?.state).toBe('half-open');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('measures spacing from the REOPEN, not from the grant, after a slow-failing probe', async () => {
+    // A probe that takes a while to fail would otherwise be followed almost
+    // immediately by the next forced probe: the spacing would have been ticking
+    // down during the probe itself. The reopen restarts the window, so a slow
+    // failure cannot buy a faster retry than a fast one.
+    vi.useFakeTimers();
+    try {
+      let release: (() => void) | undefined;
+      let slowFail = false;
+      const inner = vi.fn(async () => {
+        if (slowFail) {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+        }
+        throw new Error('403 forbidden');
+      });
+      const engine = wrapWithRetryAndBreaker(
+        { name: 'slowProbe', search: inner },
+        { failureThreshold: 1, cooldownMs: 60_000, retryAttempts: 1 },
+      );
+
+      await expect(engine.search('warmup')).rejects.toThrow('403 forbidden');
+      vi.advanceTimersByTime(FORCED_PROBE_MIN_SPACING_MS + 1);
+      expect(requestRecoveryProbe('slowProbe')).toBe(true);
+
+      // The granted probe takes 8s to fail.
+      slowFail = true;
+      const probe = engine.search('probe');
+      await Promise.resolve();
+      vi.advanceTimersByTime(8_000);
+      release?.();
+      await expect(probe).rejects.toThrow('403 forbidden');
+
+      // 2s later it is 10s since the GRANT but only 2s since the REOPEN. Spacing
+      // is measured from the reopen, so this must still be refused.
+      vi.advanceTimersByTime(2_001);
+      expect(requestRecoveryProbe('slowProbe')).toBe(false);
+
+      // Granted a full window after the reopen.
+      vi.advanceTimersByTime(8_000);
+      expect(requestRecoveryProbe('slowProbe')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('NEGATIVE: requestRecoveryProbe is a no-op for an engine whose breaker is closed', async () => {
+    // Must-not-fire: the forced probe only ever shortens an OPEN breaker's
+    // cooldown. A healthy (closed) engine has no cooldown to shorten, so the
+    // request is refused and no breaker state is invented for it.
+    const inner = vi.fn(async () => [makeResult('closed', 'https://ok.com/1')]);
+    const engine = wrapWithRetryAndBreaker({ name: 'closedEng', search: inner });
+    await engine.search('q');
+
+    expect(requestRecoveryProbe('closedEng')).toBe(false);
+    expect(getBreakerSnapshot().find((b) => b.engine === 'closedEng')?.state).toBe('closed');
+    // An engine that has never dispatched at all is likewise untouched.
+    expect(requestRecoveryProbe('neverSeenEngine')).toBe(false);
+    expect(getBreakerSnapshot().some((b) => b.engine === 'neverSeenEngine')).toBe(false);
   });
 
   it('does NOT re-dispatch good results away when the primary pool is healthy but thin on count', async () => {

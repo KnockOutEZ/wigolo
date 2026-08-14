@@ -152,6 +152,43 @@ function buildRareTermVariant(query: string): string | null {
   return v !== query ? v : null;
 }
 
+/**
+ * Actionable next steps for a caller whose results came from a COLLAPSED engine
+ * pool. Gated on the `pool_collapsed` reason alone — deliberately NOT on
+ * `degraded`, which is true whenever any dispatched engine returned zero and is
+ * therefore the common, benign case (one routinely-empty engine on a multi-word
+ * query). A notice that fires on a healthy-enough pool is worse than none.
+ *
+ * The notice must not assert a CAUSE it cannot know. `pool_collapsed` fires on
+ * the healthy-engine count, and an engine counts as unhealthy when it returns
+ * zero results — whether it was blocked or simply had no match for a long-tail
+ * query. So the text names both possibilities and says plainly that retrying
+ * helps only in the first. Promising a remedy for the empty case would be the
+ * same over-claim this field exists to avoid.
+ *
+ * Every entry is a remedy VERIFIED to widen the pool. Two obvious-looking
+ * suggestions are deliberately absent because the code says they do not help:
+ *   - `search_depth: 'deep'` changes only reranking and content-fetch budgets.
+ *     It dispatches the SAME engines and the SAME query variants, so it cannot
+ *     repair a starved pool.
+ *   - a different `time_range` does not re-admit engines (date-naive engines
+ *     are no longer filtered out); on an uncategorised query it instead
+ *     re-routes to a different vertical, SUBSTITUTING the roster rather than
+ *     widening it. Suggesting it would be advice by vibe, not by mechanism.
+ */
+function buildPoolAlternatives(
+  healthy: number,
+  total: number,
+  reasons: string[],
+): string[] {
+  if (!reasons.includes('pool_collapsed')) return [];
+  const down = Math.max(0, total - healthy);
+  return [
+    `${down} of ${total} search engines returned nothing for this query — these results came from ${healthy}, so cross-engine ranking had little to compare. An engine returns nothing either because it was temporarily blocked or because it genuinely has no match for this query. If it was a block, retrying shortly restores the pool: a blocked search engine is held on a short bounded cooldown and is re-probed automatically while the pool stays collapsed. If the engines were simply empty for this query, retrying it unchanged will not help.`,
+    'Set WIGOLO_SEARCH=hybrid to add an independent aggregated search backend (optional, installed separately). It is pulled in and merged automatically when the pool collapses.',
+  ];
+}
+
 export class CoreSearchProvider implements SearchProvider {
   readonly name = 'core' as const;
 
@@ -801,11 +838,13 @@ export class CoreSearchProvider implements SearchProvider {
           const healthy = engineTelemetry.filter((t) => t.result_count > 0).length;
           const reasons = [...poolReasons];
           const degraded = healthy < total || reasons.length > 0;
+          const alternatives = buildPoolAlternatives(healthy, total, reasons);
           return {
             healthy,
             total,
             degraded,
             ...(reasons.length > 0 ? { reasons } : {}),
+            ...(alternatives.length > 0 ? { alternatives } : {}),
           };
         })()
       : undefined;

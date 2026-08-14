@@ -301,6 +301,96 @@ describe('search pipeline filtering (core provider)', () => {
     expect(r.data.engine_pool!.reasons).toContain('starvation_redispatch');
   });
 
+  // 10. A COLLAPSED pool must tell the caller so, at the tool boundary a real
+  // MCP client reads — not only in telemetry. Before this, a user whose search
+  // was answered by one surviving engine got a plausible-looking result set with
+  // no signal that anything was wrong. Same honesty contract as find_similar's
+  // cold_start. Asserted here (not just in the unit) per the integration-surface
+  // invariant: a module behind an MCP tool needs a test at the tool boundary.
+  it('surfaces a collapsed engine pool with actionable alternatives at the tool boundary', async () => {
+    // 1 of 3 general engines contributes -> below the collapse floor ceil(3/2)=2.
+    const survivor = makeEntry('bing', [
+      makeResult('bing', 'https://postgresql.org/docs/logical-replication'),
+    ]);
+    const deadA = makeEntry('ddg', []);
+    const deadB = makeEntry('wikipedia', []);
+    verticalState.general = [survivor.entry, deadA.entry, deadB.entry];
+
+    const r = await handleSearch(
+      { query: 'postgres logical replication', max_results: 10, include_content: false },
+      [],
+      fakeRouter,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const pool = r.data.engine_pool;
+    expect(pool).toBeDefined();
+    expect(pool!.degraded).toBe(true);
+    expect(pool!.reasons).toContain('pool_collapsed');
+
+    // The actionable hint reaches the client.
+    expect(pool!.alternatives).toBeDefined();
+    expect(pool!.alternatives!.length).toBeGreaterThan(0);
+    const joined = pool!.alternatives!.join(' ');
+    expect(joined).toContain('search engines');
+    expect(joined).toContain('WIGOLO_SEARCH=hybrid');
+    // Only remedies that verifiably widen the pool. search_depth changes
+    // reranking/fetch budgets and time_range substitutes the vertical roster —
+    // neither re-admits an engine, so neither may be advertised as a fix.
+    expect(joined).not.toContain('search_depth');
+    expect(joined).not.toContain('time_range');
+    // Capability language only — no vendor or library names in user-facing text.
+    expect(joined).not.toMatch(/playwright|searxng|flashrank|trafilatura/i);
+    // The notice must not assert a cause it cannot know. A collapsed pool can
+    // mean blocked engines OR engines that genuinely have no match for the
+    // query, and retrying only helps the first — so both must be named.
+    expect(joined).toMatch(/blocked/i);
+    expect(joined).toMatch(/no match|simply empty/i);
+    expect(joined).toMatch(/will not help/i);
+  });
+
+  it('NEGATIVE: a healthy pool carries no degraded notice and no alternatives', async () => {
+    // Must-not-fire. An alternatives hint on a healthy pool would be worse than
+    // none — it would train callers to ignore it.
+    const a = makeEntry('bing', [makeResult('bing', 'https://a.example/1')]);
+    const b = makeEntry('ddg', [makeResult('ddg', 'https://b.example/1')]);
+    const c = makeEntry('wikipedia', [makeResult('wikipedia', 'https://c.example/1')]);
+    verticalState.general = [a.entry, b.entry, c.entry];
+
+    const r = await handleSearch(
+      { query: 'postgres logical replication', max_results: 10, include_content: false },
+      [],
+      fakeRouter,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data.engine_pool?.degraded).toBeFalsy();
+    expect(r.data.engine_pool?.alternatives).toBeUndefined();
+  });
+
+  it('NEGATIVE: a merely THIN pool is degraded but carries no alternatives', async () => {
+    // The over-fire guard that matters most: `degraded` is true whenever any
+    // dispatched engine returned zero, which is the common benign case. Only a
+    // real collapse earns the notice, so the two bands never blur.
+    const a = makeEntry('bing', [makeResult('bing', 'https://a.example/1')]);
+    const b = makeEntry('ddg', [makeResult('ddg', 'https://b.example/1')]);
+    const cEmpty = makeEntry('wikipedia', []);
+    const dEmpty = makeEntry('marginalia', []);
+    verticalState.general = [a.entry, b.entry, cEmpty.entry, dEmpty.entry];
+
+    const r = await handleSearch(
+      { query: 'postgres logical replication', max_results: 10, include_content: false },
+      [],
+      fakeRouter,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data.engine_pool?.reasons).toContain('thin_pool');
+    expect(r.data.engine_pool?.reasons).not.toContain('pool_collapsed');
+    expect(r.data.engine_pool?.alternatives).toBeUndefined();
+  });
+
   // 7. exclude_domains is likewise threaded into the engine search options.
   it('passes exclude_domains to engine options for native filtering', async () => {
     const eng = makeEntry('bing', []);

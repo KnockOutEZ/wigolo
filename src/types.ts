@@ -682,6 +682,12 @@ export interface EnginePoolHealth {
   total: number;
   degraded: boolean;
   reasons?: string[];
+  /** Actionable next steps for the caller, emitted ONLY when the pool actually
+   * collapsed (`pool_collapsed`) — never for a merely thin or backfilled pool,
+   * which are common and benign. Mirrors `find_similar`'s `cold_start`: say
+   * plainly that the result came from a starved pool and what would change it.
+   * Every entry must be a remedy that verifiably widens the pool. */
+  alternatives?: string[];
 }
 
 export interface QueryUnderstanding {

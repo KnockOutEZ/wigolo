@@ -6,6 +6,8 @@ import {
 } from '../../src/instructions.js';
 import type { ToolName } from '../../src/instructions.js';
 import { TOOL_SCHEMAS } from '../../src/server/tool-schemas.js';
+import { SIGNAL_NAMES } from '../../src/search/hybrid/signals.js';
+import { readFileSync } from 'node:fs';
 
 describe('WIGOLO_INSTRUCTIONS v3 routing patterns (per-session)', () => {
   it('mentions all v3 tools by name', () => {
@@ -122,6 +124,30 @@ describe('WIGOLO_INSTRUCTIONS v3 routing patterns (per-session)', () => {
     expect(WIGOLO_INSTRUCTIONS).toContain('`find_similar`');
     expect(WIGOLO_INSTRUCTIONS).toContain('`research`');
     expect(WIGOLO_INSTRUCTIONS).toContain('`agent`');
+  });
+});
+
+describe('hybrid fallback signal documentation stays in sync with the code', () => {
+  // WHY: the shipped signal list is written out by hand in the MCP instructions
+  // (what an agent actually reads) and in the installed CLAUDE.md block. Adding
+  // a signal to SIGNALS wires it correctly at runtime with a green typecheck
+  // while those prose lists silently under-report it — a seam miss no other
+  // test could catch, because the instruction tests never enumerated signals.
+  // Derived from SIGNAL_NAMES so it cannot drift again.
+  it('names every registered fallback signal in WIGOLO_INSTRUCTIONS_FULL', () => {
+    for (const name of SIGNAL_NAMES) {
+      expect(WIGOLO_INSTRUCTIONS_FULL).toContain(name);
+    }
+  });
+
+  it('names every registered fallback signal in the installed CLAUDE.md block', () => {
+    const block = readFileSync(
+      new URL('../../assets/blocks/claude-code/CLAUDE.md.block', import.meta.url),
+      'utf8',
+    );
+    for (const name of SIGNAL_NAMES) {
+      expect(block).toContain(name);
+    }
   });
 });
 

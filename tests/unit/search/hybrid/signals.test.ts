@@ -4,6 +4,7 @@ import {
   isIncludeDomainsOverFilter,
   isAllEnginesFailed,
   isTop1HighScoreLowOverlap,
+  isEnginePoolCollapsed,
   evaluateSignals,
   SIGNAL_NAMES,
 } from '../../../../src/search/hybrid/signals.js';
@@ -246,6 +247,67 @@ describe('evaluateSignals', () => {
       'include_domains_over_filter',
       'all_engines_failed',
       'top1_high_score_low_overlap',
+      'engine_pool_collapsed',
     ]);
+  });
+});
+
+describe('isEnginePoolCollapsed', () => {
+  const someResults = [makeResult('Postgres logical replication', 'https://postgresql.org/docs')];
+
+  it('fires when the core pool collapsed, even though results came back', () => {
+    // WHY: this is the case no other signal covers — a search answered by one
+    // surviving engine still returns plausible results, so every results-shape
+    // signal stays silent while quality is at its worst.
+    const output = makeOutput({
+      results: someResults,
+      engine_pool: { healthy: 1, total: 5, degraded: true, reasons: ['pool_collapsed'] },
+    });
+    const r = isEnginePoolCollapsed({ query: 'q' }, output);
+    expect(r.fires).toBe(true);
+    expect(r.reason).toContain('1 of 5');
+  });
+
+  it('NEGATIVE: does not fire for a benign thin pool', () => {
+    // thin_pool is advisory and common; treating it as a collapse would send
+    // most ordinary searches through the fallback backend.
+    const output = makeOutput({
+      results: someResults,
+      engine_pool: { healthy: 2, total: 4, degraded: true, reasons: ['thin_pool'] },
+    });
+    expect(isEnginePoolCollapsed({ query: 'q' }, output).fires).toBe(false);
+  });
+
+  it('NEGATIVE: does not fire for a starvation backfill that recovered recall', () => {
+    const output = makeOutput({
+      results: someResults,
+      engine_pool: {
+        healthy: 3,
+        total: 6,
+        degraded: true,
+        reasons: ['starvation_redispatch'],
+      },
+    });
+    expect(isEnginePoolCollapsed({ query: 'q' }, output).fires).toBe(false);
+  });
+
+  it('NEGATIVE: does not fire for a healthy pool or when pool health is absent', () => {
+    const healthy = makeOutput({
+      results: someResults,
+      engine_pool: { healthy: 5, total: 5, degraded: false },
+    });
+    expect(isEnginePoolCollapsed({ query: 'q' }, healthy).fires).toBe(false);
+    // Cache hits omit engine_pool entirely — must not fire on a missing field.
+    expect(isEnginePoolCollapsed({ query: 'q' }, makeOutput({ results: someResults })).fires).toBe(
+      false,
+    );
+  });
+
+  it('is wired into evaluateSignals under its canonical name', () => {
+    const output = makeOutput({
+      results: someResults,
+      engine_pool: { healthy: 1, total: 5, degraded: true, reasons: ['pool_collapsed'] },
+    });
+    expect(evaluateSignals({ query: 'q' }, output)).toContain('engine_pool_collapsed');
   });
 });
