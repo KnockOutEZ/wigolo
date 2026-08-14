@@ -655,15 +655,17 @@ describe('G-TOTAL-DESKTOP is dropped, not silently inherited', () => {
     // -25 (i.e. still above) to 61 to 107 below — and the direction is monotone because every
     // diet slice by construction only subtracts.
     //
-    // Pinned as a floor rather than an equality so that the NEXT diet slice does not have to
-    // touch this test to land, but a slice that somehow reverses the trend does.
+    // Both pinned as BOUNDS rather than equalities, and in the direction a diet slice moves
+    // them, so the next slice does not have to edit this test merely to land — but a slice that
+    // reverses the trend, or one that finally knocks the leg out, does.
     const d = G_TOTAL_DESKTOP_DROPPED;
     expect(d.specLimitMiB - d.measuredPostFlipMiB).toBeGreaterThanOrEqual(107);
 
-    // And the leg the deferral is still standing on, stated as the quantity it actually is: the
-    // distance TODAY has left to fall before the last half of "unreachable in either world" goes
-    // too. When this reaches zero the decision is not deferrable any more, it is just wrong.
-    expect(d.measuredTodayMiB - d.specLimitMiB).toBe(179);
+    // And the leg the deferral is still standing on: TODAY must still be above the spec limit,
+    // and the room it has left only ever shrinks. When that room reaches zero the decision is
+    // not deferrable any more, it is just wrong — and this reds the moment it does.
+    expect(d.measuredTodayMiB).toBeGreaterThan(d.specLimitMiB);
+    expect(d.measuredTodayMiB - d.specLimitMiB).toBeLessThanOrEqual(179);
   });
 });
 
