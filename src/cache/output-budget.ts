@@ -60,9 +60,11 @@ export const DEFAULT_CHECK_CHANGES_LIMIT = 100;
  * 200, or twice the default:
  *   - Network is the binding axis, and the worst case is not hypothetical. The
  *     documented usage scopes `url_pattern` to one site, which points every
- *     request at the SAME host: on the real cache `*github.com*` matches 140
- *     entries. (Unscoped it is gentle — the most recent 100 span 59 hosts, at
- *     most 7 apiece — so the ceiling exists for the scoped case.)
+ *     request at the SAME host: on the real cache `*github.com*` matches 161
+ *     entries and `https://github.com/*` matches 140. (Unscoped it is gentler —
+ *     the most recent 100 span 43 hosts at most 7 apiece once loopback is
+ *     excluded, or 44 hosts worst 32 counting a run of local test URLs — so the
+ *     ceiling exists for the scoped case.)
  *   - Output stays the same order as the rest of the tool: at ~150 tokens per
  *     report, 200 is ~30,000 tokens, within 2x the body budget, rather than
  *     growing without limit.
@@ -70,8 +72,23 @@ export const DEFAULT_CHECK_CHANGES_LIMIT = 100;
  *     (studio's 20 ceiling over a 5 default, 4x) because every unit here is a
  *     live third-party request rather than a local follow.
  *
+ * WHAT THIS CHANGES FOR CALLERS, both directions. Against mainline the ceiling
+ * BINDS where nothing did — an explicit `limit` was accepted without any bound.
+ * It also RAISES the reachable worst case from 100 to 200: mainline never
+ * forwarded `limit` to the store, so the store's own default silently held every
+ * call to 100 no matter what was asked for. Making the parameter work is what
+ * moves the ceiling up; the number is chosen so that the loosening is bounded
+ * and stated rather than open-ended.
+ *
  * A clamp is always reported; silently honouring a smaller number than the
  * caller asked for is the same silent no-op this path already shipped once.
+ *
+ * `scripts/derive-cache-budget.mjs` re-derives the host distribution and the
+ * scoped-glob counts above alongside the token figures — grouping by hostname
+ * with the port dropped, because leaving it on splits a run of ephemeral local
+ * ports into phantom hosts and hides the very concentration being measured.
+ * That is how the "140" here was wrong once: it was the count for
+ * `https://github.com/*` quoted against the glob `*github.com*`.
  */
 export const MAX_CHECK_CHANGES_LIMIT = 200;
 

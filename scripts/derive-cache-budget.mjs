@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { countTokens } from '../dist/search/tokens.js';
 
 const DEFAULT_ROW_LIMIT = 5; // DEFAULT_CACHE_QUERY_LIMIT
+const DEFAULT_CHECK_LIMIT = 100; // DEFAULT_CHECK_CHANGES_LIMIT
 const CANDIDATES = [4000, 8000, 12000, 16000, 20000, 40000];
 const DRAWS = 20000;
 
@@ -120,4 +121,65 @@ console.log(
 console.log(
   `widest report ~${perReport.toFixed(1)} tokens -> ${Math.floor(CHOSEN / perReport)} fit a ${CHOSEN}-token budget`,
 );
+
+// ---------------------------------------------------------------------------
+// Host distribution — the basis for MAX_CHECK_CHANGES_LIMIT.
+//
+// check_changes re-fetches every entry it reports on, so the cost that matters
+// is requests aimed at ONE host, not requests in total. Grouping is by hostname
+// with the port dropped: rate limits apply per host, and leaving the port on
+// splits a run of ephemeral local ports into dozens of phantom hosts, which
+// hides exactly the concentration this is measuring.
+// ---------------------------------------------------------------------------
+const rowsByRecency = db
+  .prepare('SELECT url, normalized_url FROM url_cache ORDER BY fetched_at DESC')
+  .all();
+
+const hostOf = (u) => {
+  try {
+    return new URL(u).hostname;
+  } catch {
+    return null;
+  }
+};
+const isLoopback = (h) => h === '127.0.0.1' || h === 'localhost' || h === '::1';
+
+function hostStats(rows, { dropLoopback }) {
+  const counts = new Map();
+  let skipped = 0;
+  for (const r of rows) {
+    const h = hostOf(r.url);
+    if (h === null) continue;
+    if (dropLoopback && isLoopback(h)) { skipped++; continue; }
+    counts.set(h, (counts.get(h) ?? 0) + 1);
+  }
+  const ordered = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  return { hosts: counts.size, worst: ordered[0] ?? ['-', 0], top: ordered.slice(0, 3), skipped };
+}
+
+console.log('\nhost distribution (grouped by hostname, port dropped)');
+for (const [label, rows] of [
+  ['whole corpus', rowsByRecency],
+  [`most recent ${DEFAULT_CHECK_LIMIT} (one default check run)`, rowsByRecency.slice(0, DEFAULT_CHECK_LIMIT)],
+]) {
+  for (const dropLoopback of [false, true]) {
+    const s = hostStats(rows, { dropLoopback });
+    console.log(
+      `  ${label}${dropLoopback ? ', loopback excluded' : ''}: ` +
+      `hosts=${s.hosts} worst=${s.worst[0]}@${s.worst[1]}` +
+      (dropLoopback && s.skipped ? ` (dropped ${s.skipped} loopback rows)` : '') +
+      `  top3=${s.top.map(([h, n]) => `${h}=${n}`).join(', ')}`,
+    );
+  }
+}
+
+// A scoped url_pattern is the documented usage and aims every request at one
+// site, so price the globs a caller would actually write. GLOB is matched
+// against normalized_url, exactly as searchCacheFiltered does.
+console.log('\nworst-case scoped url_pattern (GLOB on normalized_url, as the tool matches it)');
+const globCount = db.prepare('SELECT count(*) AS n FROM url_cache WHERE normalized_url GLOB ?');
+const busiest = hostStats(rowsByRecency, { dropLoopback: true }).worst[0];
+for (const pattern of [`*${busiest}*`, `https://${busiest}/*`]) {
+  console.log(`  ${pattern.padEnd(34)} matches ${globCount.get(pattern).n}`);
+}
 db.close();
