@@ -102,6 +102,34 @@ export function isTop1HighScoreLowOverlap(
   };
 }
 
+/**
+ * The core pool collapsed to a handful of surviving engines.
+ *
+ * WHY: every other signal here keys off the SHAPE of the results (zero results,
+ * a suspicious top-1, an over-filtered domain scope). None of them fire when the
+ * pool degrades but still returns something — so the single worst case for
+ * result quality, a search answered by one surviving engine, never reached the
+ * fallback. Reranking cannot rescue a one-engine pool; only more independent
+ * sources can, which is exactly what the fallback backend adds.
+ *
+ * Keyed on the orchestrator's existing `pool_collapsed` reason rather than a new
+ * predicate, so it fires on a genuine health collapse and NOT on the benign
+ * `thin_pool` / `starvation_redispatch` degrades that share the same envelope.
+ */
+export function isEnginePoolCollapsed(
+  _input: SearchInput,
+  output: SearchOutput,
+): SignalResult {
+  const pool = output.engine_pool;
+  if (!pool?.reasons?.includes('pool_collapsed')) {
+    return { fires: false, reason: '' };
+  }
+  return {
+    fires: true,
+    reason: `engine pool collapsed to ${pool.healthy} of ${pool.total} search engines`,
+  };
+}
+
 interface NamedSignal {
   name: string;
   predicate: (input: SearchInput, output: SearchOutput) => SignalResult;
@@ -112,6 +140,7 @@ const SIGNALS: readonly NamedSignal[] = [
   { name: 'include_domains_over_filter', predicate: isIncludeDomainsOverFilter },
   { name: 'all_engines_failed', predicate: isAllEnginesFailed },
   { name: 'top1_high_score_low_overlap', predicate: isTop1HighScoreLowOverlap },
+  { name: 'engine_pool_collapsed', predicate: isEnginePoolCollapsed },
 ];
 
 export const SIGNAL_NAMES: readonly string[] = SIGNALS.map((s) => s.name);
