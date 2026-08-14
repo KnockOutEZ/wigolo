@@ -3,7 +3,10 @@ import { initDatabase, closeDatabase } from '../../../src/cache/db.js';
 import { cacheContent } from '../../../src/cache/store.js';
 import { handleCache } from '../../../src/tools/cache.js';
 import { resetConfig } from '../../../src/config.js';
-import { DEFAULT_CHECK_CHANGES_LIMIT } from '../../../src/cache/output-budget.js';
+import {
+  DEFAULT_CHECK_CHANGES_LIMIT,
+  MAX_CHECK_CHANGES_LIMIT,
+} from '../../../src/cache/output-budget.js';
 import type { RawFetchResult, ExtractionResult } from '../../../src/types.js';
 
 vi.mock('../../../src/providers/extract-provider.js', () => ({
@@ -148,6 +151,62 @@ describe('cache check_changes — row cap against a real store', () => {
     );
 
     expect(result.changes).toHaveLength(DEFAULT_CHECK_CHANGES_LIMIT);
+    expect(result.changes_truncation).toBeUndefined();
+  });
+
+  // Every entry checked is a live request to a third-party host, and the
+  // documented usage — url_pattern scoped to one site — points all of them at
+  // the SAME host. An agent writing limit: 1000 is filling in a number, not
+  // consenting to a thousand requests, so the number is clamped and the clamp
+  // is reported. Silently honouring a smaller number would be the same
+  // silent-no-op defect pointing the other way.
+  it('clamps a limit above the ceiling and reports the clamp', async () => {
+    seed(600);
+    const router = countingRouter();
+
+    const result = await handleCache(
+      { check_changes: true, url_pattern: '*', limit: 1000 },
+      router as never,
+    );
+
+    expect(result.changes).toHaveLength(MAX_CHECK_CHANGES_LIMIT);
+    expect(router.fetch).toHaveBeenCalledTimes(MAX_CHECK_CHANGES_LIMIT);
+    expect(result.changes_truncation).toMatchObject({
+      matched: 600,
+      checked: MAX_CHECK_CHANGES_LIMIT,
+      limit_clamped_from: 1000,
+    });
+    expect(result.changes_truncation!.hint).toContain(String(MAX_CHECK_CHANGES_LIMIT));
+  });
+
+  // MUST NOT FIRE — a limit inside the ceiling is honoured exactly and nothing
+  // claims it was reduced.
+  it('leaves a limit inside the ceiling untouched', async () => {
+    seed(600);
+    const router = countingRouter();
+
+    const result = await handleCache(
+      { check_changes: true, url_pattern: '*', limit: 150 },
+      router as never,
+    );
+
+    expect(result.changes).toHaveLength(150);
+    expect(router.fetch).toHaveBeenCalledTimes(150);
+    expect(result.changes_truncation!.limit_clamped_from).toBeUndefined();
+  });
+
+  // MUST NOT FIRE — the ceiling existed but never bound, because fewer entries
+  // matched than the ceiling allows. Reporting a clamp that changed nothing
+  // teaches callers to ignore the field.
+  it('does not report a clamp that never bound', async () => {
+    seed(20);
+
+    const result = await handleCache(
+      { check_changes: true, url_pattern: '*', limit: 1000 },
+      countingRouter() as never,
+    );
+
+    expect(result.changes).toHaveLength(20);
     expect(result.changes_truncation).toBeUndefined();
   });
 

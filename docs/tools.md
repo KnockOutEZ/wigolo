@@ -102,8 +102,8 @@ Query the persistent local knowledge cache — every page wigolo has already see
 | `since` | string | ISO date floor. |
 | `stats` | boolean | Totals: URL count, size, date range. |
 | `clear` | boolean | Delete matching entries (requires at least one filter). |
-| `check_changes` | boolean | Re-fetch matching URLs and report changed/unchanged with diff summaries. Capped at `limit` entries (default 100). |
-| `limit` | number | Maximum rows returned. Default 5 (100 for `check_changes`). |
+| `check_changes` | boolean | Re-fetch matching URLs and report changed/unchanged with diff summaries. Capped at `limit` entries (default 100, hard ceiling 200). |
+| `limit` | number | Maximum rows returned. Default 5 (100 for `check_changes`, which is clamped to a ceiling of 200). |
 | `max_tokens_out` | number | Token-budget cap on the returned page bodies. Default 16000. |
 
 `limit` caps rows and is applied first; `max_tokens_out` then caps the total bytes of whatever rows survived. Both have defaults, so a cache check has a bounded cost even against a large cache.
@@ -112,7 +112,9 @@ When the budget trims the response it says so rather than returning a quietly sh
 
 Trimmed bodies end on a markdown boundary and carry a visible truncation marker. A construct left half-open by the cut — a link, an emphasis span, a table row — is dropped rather than shipped broken; a page that is one long code block keeps the code that fits with the block closed around it, instead of losing its whole body to that rule.
 
-`check_changes` re-fetches every entry it reports on, so its row cap bounds network calls as well as output. When more entries matched than were checked, the response carries `changes_truncation` with `matched`, `checked`, and a hint.
+`check_changes` re-fetches every entry it reports on, so its row cap bounds live network requests as well as output. `limit` raises the count up to a hard ceiling of 200 — a scoped `url_pattern` points every one of those requests at the same host, so the ceiling is there to keep a single call from turning into a burst against one site. A `limit` above the ceiling is reduced rather than silently honoured.
+
+When more entries matched than were checked, the response carries `changes_truncation` with `matched`, `checked`, a hint, and `limit_clamped_from` when the ceiling was what reduced the work. To continue past it, narrow the filter with `query` / `url_pattern` / `since` and call again.
 
 ```json
 { "query": "connection pool exhaustion", "mode": "hybrid", "limit": 10 }

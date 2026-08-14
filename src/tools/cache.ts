@@ -12,7 +12,7 @@ import { reciprocalRankFusion, sortByRRFScore, buildRankMap } from '../search/rr
 import {
   applyCacheOutputBudget,
   buildChangesTruncation,
-  DEFAULT_CHECK_CHANGES_LIMIT,
+  resolveCheckChangesLimit,
 } from '../cache/output-budget.js';
 import { getEmbedProvider } from '../providers/embed-provider.js';
 import { getVectorStore } from '../providers/vector-store.js';
@@ -56,7 +56,7 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
         urlPattern: input.url_pattern,
         since: input.since,
       };
-      const checkLimit = input.limit ?? DEFAULT_CHECK_CHANGES_LIMIT;
+      const checkLimit = resolveCheckChangesLimit(input.limit);
       const entries = searchCacheFiltered({ ...filter, limit: checkLimit });
       // A short page proves there was nothing more to take. Only a full page is
       // ambiguous between "everything" and "the first page", so only then is the
@@ -112,7 +112,7 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
       if (matchedCount > entries.length) {
         return {
           changes,
-          changes_truncation: buildChangesTruncation(matchedCount, entries.length),
+          changes_truncation: buildChangesTruncation(matchedCount, entries.length, input.limit),
         };
       }
       return { changes };

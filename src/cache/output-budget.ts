@@ -47,14 +47,66 @@ export const DEFAULT_CACHE_MAX_TOKENS_OUT = 16000;
  */
 export const DEFAULT_CHECK_CHANGES_LIMIT = 100;
 
-/** Report for a `check_changes` run the row cap stopped short of every match. */
-export function buildChangesTruncation(matched: number, checked: number): ChangesTruncation {
+/**
+ * Hard ceiling on entries one `check_changes` call may re-fetch, whatever
+ * `limit` the caller passes.
+ *
+ * `cache` reads as a cheap local lookup and the docs tell agents to call it
+ * first, before every search — so unlike `crawl`, whose name and purpose warn
+ * the caller they are about to hit a site repeatedly, the cost here is not
+ * legible at the call site. A model writing `limit: 1000` is filling in a
+ * number, not consenting to a thousand live requests to third-party hosts.
+ *
+ * 200, or twice the default:
+ *   - Network is the binding axis, and the worst case is not hypothetical. The
+ *     documented usage scopes `url_pattern` to one site, which points every
+ *     request at the SAME host: on the real cache `*github.com*` matches 140
+ *     entries. (Unscoped it is gentle — the most recent 100 span 59 hosts, at
+ *     most 7 apiece — so the ceiling exists for the scoped case.)
+ *   - Output stays the same order as the rest of the tool: at ~150 tokens per
+ *     report, 200 is ~30,000 tokens, within 2x the body budget, rather than
+ *     growing without limit.
+ *   - The ratio is tighter than the house precedent for page-following
+ *     (studio's 20 ceiling over a 5 default, 4x) because every unit here is a
+ *     live third-party request rather than a local follow.
+ *
+ * A clamp is always reported; silently honouring a smaller number than the
+ * caller asked for is the same silent no-op this path already shipped once.
+ */
+export const MAX_CHECK_CHANGES_LIMIT = 200;
+
+/** Row cap actually applied, clamping a caller's `limit` to the ceiling. */
+export function resolveCheckChangesLimit(limit?: number): number {
+  const requested = typeof limit === 'number' && Number.isFinite(limit)
+    ? Math.floor(limit)
+    : DEFAULT_CHECK_CHANGES_LIMIT;
+  return Math.max(1, Math.min(MAX_CHECK_CHANGES_LIMIT, requested));
+}
+
+/**
+ * Report for a `check_changes` run the row cap stopped short of every match.
+ *
+ * `clampedFrom` is set only when the ceiling actually reduced the work — a
+ * ceiling that never bound has nothing to report, and saying otherwise teaches
+ * callers to ignore the field.
+ */
+export function buildChangesTruncation(
+  matched: number,
+  checked: number,
+  clampedFrom?: number,
+): ChangesTruncation {
+  const clamped = clampedFrom !== undefined && clampedFrom > checked;
   return {
     matched,
     checked,
+    ...(clamped ? { limit_clamped_from: clampedFrom } : {}),
     hint:
       `Checked the first ${checked} of ${matched} matching entries. ` +
-      'Raise limit to check more, or narrow with query / url_pattern / since.',
+      (clamped
+        ? `limit was reduced from ${clampedFrom} to the ceiling of ${MAX_CHECK_CHANGES_LIMIT}, ` +
+          'because each entry checked is a live request. Narrow with query / url_pattern / since, ' +
+          'or call again to continue.'
+        : 'Raise limit to check more, or narrow with query / url_pattern / since.'),
   };
 }
 

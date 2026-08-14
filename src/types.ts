@@ -1165,6 +1165,9 @@ export interface ChangesTruncation {
   matched: number;
   /** Entries actually re-fetched and reported on. */
   checked: number;
+  /** The caller's `limit`, present only when the hard ceiling reduced it. Absent
+   * means the limit in effect is the one that was asked for. */
+  limit_clamped_from?: number;
   /** How to check the rest. */
   hint: string;
 }

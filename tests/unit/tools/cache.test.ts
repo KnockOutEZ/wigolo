@@ -475,12 +475,14 @@ describe('handleCache --- check_changes mode', () => {
     );
   });
 
+  // Inside the ceiling, so it forwards verbatim. Clamping above the ceiling is
+  // covered against a real database in cache-check-changes-bound.test.ts.
   it('forwards an explicit limit rather than the default', async () => {
     vi.mocked(searchCacheFiltered).mockReturnValue([]);
 
-    await handleCache({ check_changes: true, url_pattern: '*', limit: 250 }, mockRouter());
+    await handleCache({ check_changes: true, url_pattern: '*', limit: 150 }, mockRouter());
 
-    expect(searchCacheFiltered).toHaveBeenCalledWith(expect.objectContaining({ limit: 250 }));
+    expect(searchCacheFiltered).toHaveBeenCalledWith(expect.objectContaining({ limit: 150 }));
   });
 
   // A page shorter than the cap already proves there was nothing more to take,
