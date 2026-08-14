@@ -746,6 +746,78 @@ describe('findOutermostInstallRoot answers which TREE a directory belongs to', (
   });
 });
 
+describe('the driver never prunes nothing in silence', () => {
+  /*
+   * ⚠ WHY SILENCE IS A BUG AND NOT A NON-EVENT. The bound this slice adds has a cost, and the
+   * layouts that pay it are exactly the ones where the driver has nothing to say: npm workspaces
+   * and Yarn PnP put wigolo somewhere that is not an installed package, so the copies are outside
+   * the tree and the previous commit DID prune them. A user whose install is 178 MiB larger than a
+   * colleague's got an empty log and nothing to search for.
+   */
+  const trees: string[] = [];
+  const runner = fileURLToPath(new URL('../../scripts/prune/run.mjs', import.meta.url));
+  afterAll(() => {
+    for (const dir of trees) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('names the tree it looked in when a workspace layout puts the copy out of reach', () => {
+    // `<repo>/packages/app` is not an installed package, so the climb stops there and the copy
+    // hoisted to `<repo>/node_modules` is out of bounds. The line has to name `packages/app`,
+    // because "we looked HERE" is the whole explanation for why the bytes are still there.
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-ort-workspace-')));
+    trees.push(repo);
+    const store = join(repo, '.store');
+    mkdirSync(store, { recursive: true });
+    writePkg(repo, { name: 'repo', version: '1.0.0', workspaces: ['packages/*'] });
+    buildOrtCopy(join(repo, 'node_modules', 'onnxruntime-node'), {
+      bytesPerPair: 1024,
+      symlinkPlatform: 'none',
+      store,
+      tag: 'hoisted',
+    });
+    const app = join(repo, 'packages', 'app');
+    writePkg(app, { name: 'app', version: '1.0.0' });
+    const wigolo = join(app, 'node_modules', 'wigolo');
+    writePkg(wigolo, { name: 'wigolo', version: '0.0.0' });
+
+    const out = execFileSync(process.execPath, [runner, wigolo], { encoding: 'utf8' });
+    expect(out).toContain('onnxruntime platform prune');
+    expect(out).toContain(app);
+    // The bytes really are still there — the message describes a real outcome, not a reassurance.
+    expect(pairsIn(join(repo, 'node_modules', 'onnxruntime-node'))).toEqual([...FIXTURE_PAIRS].sort());
+  });
+
+  it('says so for an ordinary install that simply has no onnxruntime-node', () => {
+    // `--omit=optional` is a supported install. It must not read as a fault, but it must not read
+    // as nothing either.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-ort-none-')));
+    trees.push(root);
+    writePkg(root, { name: 'some-users-app', version: '0.0.0' });
+    mkdirSync(join(root, 'node_modules'), { recursive: true });
+    const wigolo = join(root, 'node_modules', 'wigolo');
+    writePkg(wigolo, { name: 'wigolo', version: '0.0.0' });
+
+    const out = execFileSync(process.execPath, [runner, wigolo], { encoding: 'utf8' });
+    expect(out).toContain(`no onnxruntime-node under ${root}`);
+  });
+
+  it('says so when no install tree can be identified at all', () => {
+    // A bare checkout nobody has installed. `findOutermostInstallRoot` claims no tree, so the
+    // prune declines — and the distinct wording is what separates "nothing to do" from "we did
+    // not dare", which are the two answers a reader actually needs to tell apart.
+    const bare = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-ort-noclaim-')));
+    trees.push(bare);
+    const checkout = join(bare, 'somewhere', 'wigolo');
+    writePkg(checkout, { name: 'wigolo', version: '0.0.0' });
+    mkdirSync(join(checkout, 'scripts', 'prune'), { recursive: true });
+
+    const out = execFileSync(process.execPath, [runner, join(checkout, 'scripts', 'prune')], {
+      encoding: 'utf8',
+    });
+    expect(out).toContain('could not identify this install tree');
+  });
+});
+
 describe('isWithinTree decides whether a located copy is ours to touch', () => {
   /*
    * ⚠ TESTED DIRECTLY, and the reason is worth stating: a mutation that removed the separator

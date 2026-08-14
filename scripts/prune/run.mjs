@@ -312,8 +312,26 @@ function main() {
     console.log(`wigolo: wreq-js binary prune skipped (${err?.message ?? err})`);
   }
 
-  const roots = locateOrtRoots(resolveOrtRoot, dirname(baseFile));
-  if (roots.length === 0) return; // nothing installed it; nothing to do
+  const scanFrom = dirname(baseFile);
+  const roots = locateOrtRoots(resolveOrtRoot, scanFrom);
+  if (roots.length === 0) {
+    /*
+     * ⚠ THIS BRANCH USED TO RETURN IN SILENCE, and silence is the worst diagnostic this script can
+     * produce. It covers two very different situations that a user has no other way to tell apart:
+     * an ordinary `--omit=optional` install with nothing to prune, and a layout whose copies sit
+     * OUTSIDE the tree we are allowed to touch — npm workspaces and Yarn PnP both land here, and
+     * for those the previous commit did prune (see findOutermostInstallRoot's note). Someone whose
+     * install is 178 MiB larger than a colleague's needs a line to search for, not an empty log.
+     * The refusal messages elsewhere in this file set the register; this matches it.
+     */
+    const tree = findOutermostInstallRoot(scanFrom);
+    console.log(
+      tree
+        ? `wigolo: onnxruntime platform prune — no onnxruntime-node under ${tree}; copies outside this install tree are left alone`
+        : 'wigolo: onnxruntime platform prune — could not identify this install tree; leaving every copy in place',
+    );
+    return;
+  }
 
   for (const root of roots) {
     let freed = 0; // per-root: two copies in one tree must not report each other's bytes
