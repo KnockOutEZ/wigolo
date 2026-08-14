@@ -1,6 +1,6 @@
 import { applyAggregateMarkdownBudget } from '../search/evidence.js';
 import { repairTruncatedMarkdown, closeTruncatedFence } from '../search/truncate.js';
-import type { CacheResultItem, CacheTruncation } from '../types.js';
+import type { CacheResultItem, CacheTruncation, ChangesTruncation } from '../types.js';
 
 /**
  * Default aggregate token budget for a `cache` response.
@@ -31,15 +31,31 @@ export const DEFAULT_CACHE_MAX_TOKENS_OUT = 16000;
  * Row cap for `check_changes`, which returns change reports rather than page
  * bodies and so cannot use the token budget above.
  *
- * Derived from the same budget: against the real cache the widest report shape
- * (changed, both hashes, a diff summary) costs ~150 tokens, so 16,000 tokens
- * holds ~106 of them — rounded down for headroom. Unbounded, this path emitted
- * 358,152 chars / 169,979 tokens over 1,134 entries, twice the response that
- * prompted this budget, and re-fetched every one of those URLs over the network.
+ * Sized against that budget: the widest report shape (changed, both hashes, a
+ * diff summary) costs ~150 tokens, so 100 reports is ~15,000 — just inside the
+ * 16,000 the bodies get. It matches the store's own long-standing default for
+ * this filter, so the default path checks exactly what it always did; the
+ * difference is that the tool now owns the cap instead of inheriting it, which
+ * is what lets an explicit larger `limit` work and lets the response say what
+ * it skipped.
  *
- * `scripts/derive-cache-budget.mjs` re-derives both this and the token budget.
+ * The cap bounds live network requests, not just output — every entry checked
+ * is re-fetched — and that is the reason to keep it low by default.
+ *
+ * `scripts/derive-cache-budget.mjs` re-derives the per-report cost.
  */
 export const DEFAULT_CHECK_CHANGES_LIMIT = 100;
+
+/** Report for a `check_changes` run the row cap stopped short of every match. */
+export function buildChangesTruncation(matched: number, checked: number): ChangesTruncation {
+  return {
+    matched,
+    checked,
+    hint:
+      `Checked the first ${checked} of ${matched} matching entries. ` +
+      'Raise limit to check more, or narrow with query / url_pattern / since.',
+  };
+}
 
 /** Marker `truncateByTokens` appends; used to find where a body was cut. */
 const TRUNCATION_MARKER = '\n\n[... content truncated]';

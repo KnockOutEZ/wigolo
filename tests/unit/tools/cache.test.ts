@@ -3,6 +3,7 @@ import type { CachedContent, CacheStats } from '../../../src/types.js';
 
 vi.mock('../../../src/cache/store.js', () => ({
   searchCacheFiltered: vi.fn(),
+  countCacheFiltered: vi.fn(),
   getCacheStats: vi.fn(),
   clearCacheEntries: vi.fn(),
 }));
@@ -32,7 +33,12 @@ vi.mock('../../../src/providers/extract-provider.js', () => ({
 
 import { handleCache } from '../../../src/tools/cache.js';
 import { DEFAULT_CHECK_CHANGES_LIMIT } from '../../../src/cache/output-budget.js';
-import { searchCacheFiltered, getCacheStats, clearCacheEntries } from '../../../src/cache/store.js';
+import {
+  searchCacheFiltered,
+  countCacheFiltered,
+  getCacheStats,
+  clearCacheEntries,
+} from '../../../src/cache/store.js';
 import { detectChange } from '../../../src/cache/change-detector.js';
 
 function mockRouter(html = '<html></html>', finalUrl?: string) {
@@ -453,44 +459,40 @@ describe('handleCache --- check_changes mode', () => {
     );
   });
 
-  // check_changes took no limit at all: it matched every cached entry, re-fetched
-  // all of them over the network, and returned a report for each. On a real cache
-  // that was 1,134 live requests and 358,152 characters back — twice the response
-  // that prompted the body budget, on the same tool.
-  it('caps how many matching entries it re-fetches, and says it did', async () => {
-    const entries = Array.from({ length: 250 }, (_, i) =>
-      makeCachedContent({
-        id: i,
-        url: `https://example.com/page-${i}`,
-        normalizedUrl: `https://example.com/page-${i}`,
-      }),
+  // The cap has to be PASSED to the store, not inherited from it. The store
+  // applies its own default when no limit arrives, which silently held this path
+  // to 100 rows and made an explicit larger `limit` inert with nothing in the
+  // response saying so. Asserting the call is what a mock can honestly prove —
+  // the behavioural claims live in cache-check-changes-bound.test.ts against a
+  // real database, because a mock can return a page the store never would.
+  it('forwards its row cap to the store instead of inheriting the store default', async () => {
+    vi.mocked(searchCacheFiltered).mockReturnValue([]);
+
+    await handleCache({ check_changes: true, url_pattern: '*' }, mockRouter());
+
+    expect(searchCacheFiltered).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: DEFAULT_CHECK_CHANGES_LIMIT }),
     );
-    vi.mocked(searchCacheFiltered).mockReturnValue(entries);
-    const router = mockRouter();
-
-    const result = await handleCache({ check_changes: true, url_pattern: '*' }, router);
-
-    expect(result.changes).toHaveLength(DEFAULT_CHECK_CHANGES_LIMIT);
-    // The cap is a network bound too, not just an output bound.
-    expect(router.fetch).toHaveBeenCalledTimes(DEFAULT_CHECK_CHANGES_LIMIT);
-    expect(result.changes_truncation).toEqual({
-      matched: 250,
-      checked: DEFAULT_CHECK_CHANGES_LIMIT,
-      hint: expect.stringContaining('limit'),
-    });
   });
 
-  // NEGATIVE — an ordinary change check is well under the cap and must not be
-  // told anything was held back.
-  it('reports no cap when every match was checked', async () => {
+  it('forwards an explicit limit rather than the default', async () => {
+    vi.mocked(searchCacheFiltered).mockReturnValue([]);
+
+    await handleCache({ check_changes: true, url_pattern: '*', limit: 250 }, mockRouter());
+
+    expect(searchCacheFiltered).toHaveBeenCalledWith(expect.objectContaining({ limit: 250 }));
+  });
+
+  // A page shorter than the cap already proves there was nothing more to take,
+  // so the extra count scan must not run.
+  it('skips the count query when the page is shorter than the cap', async () => {
     vi.mocked(searchCacheFiltered).mockReturnValue([
       makeCachedContent({ url: 'https://example.com/a', normalizedUrl: 'https://example.com/a' }),
-      makeCachedContent({ url: 'https://example.com/b', normalizedUrl: 'https://example.com/b' }),
     ]);
 
     const result = await handleCache({ check_changes: true, url_pattern: '*' }, mockRouter());
 
-    expect(result.changes).toHaveLength(2);
+    expect(countCacheFiltered).not.toHaveBeenCalled();
     expect(result.changes_truncation).toBeUndefined();
   });
 });

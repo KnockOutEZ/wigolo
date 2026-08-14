@@ -1,5 +1,6 @@
 import {
   searchCacheFiltered,
+  countCacheFiltered,
   getCacheStats,
   clearCacheEntries,
   ftsSearchRanked,
@@ -8,7 +9,11 @@ import {
 import { detectChange } from '../cache/change-detector.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { reciprocalRankFusion, sortByRRFScore, buildRankMap } from '../search/rrf.js';
-import { applyCacheOutputBudget, DEFAULT_CHECK_CHANGES_LIMIT } from '../cache/output-budget.js';
+import {
+  applyCacheOutputBudget,
+  buildChangesTruncation,
+  DEFAULT_CHECK_CHANGES_LIMIT,
+} from '../cache/output-budget.js';
 import { getEmbedProvider } from '../providers/embed-provider.js';
 import { getVectorStore } from '../providers/vector-store.js';
 import {
@@ -40,16 +45,24 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
         since: input.since,
       });
 
-      // Unbounded, this matched every cached entry and re-fetched all of them:
-      // 358,152 chars of reports over 1,134 URLs on a real cache, and 1,134
-      // live requests from one tool call. The cap bounds both.
-      const matched = searchCacheFiltered({
+      // Every entry here is re-fetched over the network, so the row cap bounds
+      // live requests as much as output. It is passed to the store explicitly:
+      // relying on the store's own default silently capped the work at 100 and
+      // made an explicit larger `limit` inert, with nothing in the response
+      // saying so. The true match count comes from a count query because a
+      // LIMITed result length cannot tell "everything" from "the first page".
+      const filter = {
         query: input.query,
         urlPattern: input.url_pattern,
         since: input.since,
-      });
+      };
       const checkLimit = input.limit ?? DEFAULT_CHECK_CHANGES_LIMIT;
-      const entries = matched.slice(0, checkLimit);
+      const entries = searchCacheFiltered({ ...filter, limit: checkLimit });
+      // A short page proves there was nothing more to take. Only a full page is
+      // ambiguous between "everything" and "the first page", so only then is the
+      // extra count worth a scan.
+      const matchedCount =
+        entries.length < checkLimit ? entries.length : countCacheFiltered(filter);
 
       const changes: ChangeReport[] = [];
       for (const entry of entries) {
@@ -96,16 +109,10 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
         }
       }
 
-      if (entries.length < matched.length) {
+      if (matchedCount > entries.length) {
         return {
           changes,
-          changes_truncation: {
-            matched: matched.length,
-            checked: entries.length,
-            hint:
-              `Checked the first ${entries.length} of ${matched.length} matching entries. ` +
-              'Raise limit to check more, or narrow with query / url_pattern / since.',
-          },
+          changes_truncation: buildChangesTruncation(matchedCount, entries.length),
         };
       }
       return { changes };
