@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /*
- * postinstall driver for the two onnxruntime prunes. See ./ort-platforms.mjs (non-host native
- * binaries) and ./ort-web-payload.mjs (browser WASM payload) for why each is safe and what it
- * costs; this file is only the I/O around those decisions.
+ * postinstall driver for the install-size prunes. See ./ort-platforms.mjs (non-host onnxruntime
+ * binaries), ./ort-web-payload.mjs (browser WASM payload) and ./wreq-binaries.mjs (non-host
+ * TLS-impersonation binaries) for why each is safe and what it costs; this file is only the I/O
+ * around those decisions.
  *
- * Runs on every `npm install` of wigolo, including as a dependency. Both prunes are idempotent —
+ * Runs on every `npm install` of wigolo, including as a dependency. Every prune is idempotent —
  * a second run finds nothing left to remove and says so — which matters because npm re-runs a
  * package's postinstall on installs that did not re-extract that package.
  */
@@ -12,8 +13,9 @@ import { createRequire } from 'node:module';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { planPlatformPrune, locateOrtRoots } from './ort-platforms.mjs';
+import { planPlatformPrune, locateOrtRoots, findInstallRoot } from './ort-platforms.mjs';
 import { planWebPayloadPrune, findWebDependents } from './ort-web-payload.mjs';
+import { planBinaryPrune } from './wreq-binaries.mjs';
 
 /*
  * Resolution base. As a postinstall this is the package's own directory, which is what walks up
@@ -104,23 +106,51 @@ function dirSizeBytes(path) {
 }
 
 /**
- * Find the installed `onnxruntime-web` package root by walking up from `startDir`, checking for
- * a `node_modules/onnxruntime-web` at each level. Returns `null` when there is none.
+ * Find an installed package root by walking up from `startDir`, checking for a
+ * `node_modules/<name>` at each level. Returns `null` when there is none.
  *
- * ⚠ DELIBERATELY NOT `require.resolve('onnxruntime-web/package.json')`, which is the obvious
- * spelling and does not work. Both onnxruntime-web and @huggingface/transformers declare an
- * `exports` map with no `./package.json` entry, so that call throws
+ * ⚠ DELIBERATELY NOT `require.resolve('<name>/package.json')`, which is the obvious spelling and
+ * does not work. onnxruntime-web, @huggingface/transformers, fastembed AND wreq-js all declare
+ * an `exports` map with no `./package.json` entry, so that call throws
  * ERR_PACKAGE_PATH_NOT_EXPORTED rather than returning a path — verified against a clean
- * production tree, where all three of `onnxruntime-web/package.json`,
- * `@huggingface/transformers/package.json` and `fastembed/package.json` throw. Resolution
- * through the module system is gated by a manifest field that has nothing to do with whether
- * the directory is on disk; walking the directory tree asks the question actually being asked.
+ * production tree for all four. Resolution through the module system is gated by a manifest
+ * field that has nothing to do with whether the directory is on disk; walking the directory tree
+ * asks the question actually being asked.
+ *
+ * Walking up covers the three layouts that matter without special-casing any of them: this
+ * package as the install root, this package installed as a dependency with `<name>` hoisted
+ * beside it, and `<name>` nested under this package.
+ *
+ * ⚠ BOUNDED AT OUR OWN INSTALL ROOT, and the bound is load-bearing rather than tidiness. An
+ * unbounded walk climbs to the filesystem root, so from `outer/proj/node_modules/wigolo` — with
+ * wigolo installed `--omit=optional` and no `<name>` beside it — it sails past `proj`'s own
+ * package.json AND its own node_modules and finds `outer/node_modules/<name>`, which belongs to
+ * a different project. It then deletes six of its seven binaries. That tree may be multi-arch on
+ * purpose (a Docker build context, a multi-platform CI cache) and its owner has no reason to
+ * have set `WIGOLO_SKIP_ORT_PRUNE`. This is the same defect #304 fixed for the onnxruntime
+ * on-disk scan, so this reuses THAT commit's `findInstallRoot` rather than inventing a second
+ * notion of "which tree am I part of".
+ *
+ * ⚠ WHAT THE BOUND COSTS, stated because it is a real trade and not a free win. wigolo installed
+ * as `<root>/node_modules/foo/node_modules/wigolo` has an install root of
+ * `<root>/node_modules/foo`, so a copy hoisted ABOVE that — at `<root>/node_modules/<name>` — is
+ * now out of reach and keeps its bytes. That direction is fail-open: it costs install size and
+ * strands nobody, whereas the unbounded walk destroys trees we do not own. The onnxruntime
+ * PLATFORM prune does not lose that case at all, because `locateOrtRoots` unions this kind of
+ * walk with the module resolver, which still reaches upward.
  */
-function locateWebRoot(startDir) {
+function locatePackageRoot(startDir, name) {
+  const installRoot = findInstallRoot(startDir);
+  // No install root means no tree we can claim, and a prune with no claim is one that must not
+  // run. Returning null here is the same fail-open the rest of this file takes.
+  if (!installRoot) return null;
+
   let dir = resolve(startDir);
+  const stop = resolve(installRoot);
   for (;;) {
-    const candidate = join(dir, 'node_modules', 'onnxruntime-web');
+    const candidate = join(dir, 'node_modules', name);
     if (existsSync(join(candidate, 'package.json'))) return candidate;
+    if (dir === stop) return null;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -176,7 +206,7 @@ function readManifests(modulesDir) {
  * wherever hoisting put it.
  */
 function pruneWebPayload() {
-  const webRoot = locateWebRoot(dirname(baseFile));
+  const webRoot = locatePackageRoot(dirname(baseFile), 'onnxruntime-web');
   if (!webRoot) return; // not installed, or a layout we do not recognise; nothing to do
 
   const modulesDir = dirname(webRoot);
@@ -215,18 +245,65 @@ function pruneWebPayload() {
   );
 }
 
-function main() {
-  if (process.env.WIGOLO_SKIP_ORT_PRUNE) {
-    console.log('wigolo: onnxruntime prunes skipped (WIGOLO_SKIP_ORT_PRUNE set)');
+/**
+ * Remove the `wreq-js` native binaries the host can never load.
+ *
+ * See ./wreq-binaries.mjs for why the manifest cannot do this, why linux keeps two files, and
+ * why removal is allowlisted. This function is only the I/O around that decision.
+ */
+function pruneWreqBinaries() {
+  const root = locatePackageRoot(dirname(baseFile), 'wreq-js');
+  if (!root) return; // optional dependency, and `--omit=optional` is a supported install
+
+  const rustDir = join(root, 'rust');
+  let present;
+  try {
+    present = readdirSync(rustDir, { withFileTypes: true })
+      .filter((e) => e.isFile() || e.isSymbolicLink())
+      .map((e) => e.name);
+  } catch {
+    return; // no `rust/` — a layout we do not recognise, so nothing to do
+  }
+
+  const plan = planBinaryPrune(present, process.platform, process.arch);
+  if (plan.remove.length === 0) {
+    console.log(`wigolo: wreq-js binary prune — ${plan.reason}`);
     return;
   }
 
-  // Independently guarded: the two prunes are unrelated wins on unrelated packages, and a
-  // failure in one must not cost the other its bytes.
+  let freed = 0;
+  for (const name of plan.remove) {
+    const target = join(rustDir, name);
+    try {
+      freed += statSync(target).size;
+      rmSync(target, { force: true });
+    } catch (err) {
+      // Fail-open, same contract as the onnxruntime prunes: a file we could not remove is a
+      // file that stays. Larger, works.
+      console.log(`wigolo: could not remove wreq-js/rust/${name} (${err?.message ?? err}) — leaving it in place`);
+    }
+  }
+  console.log(`wigolo: wreq-js binary prune — ${plan.reason} (${Math.round(freed / 1048576)} MiB)`);
+}
+
+function main() {
+  if (process.env.WIGOLO_SKIP_ORT_PRUNE) {
+    console.log('wigolo: install-size prunes skipped (WIGOLO_SKIP_ORT_PRUNE set)');
+    return;
+  }
+
+  // Independently guarded: the prunes are unrelated wins on unrelated packages, and a failure in
+  // one must not cost the others their bytes.
   try {
     pruneWebPayload();
   } catch (err) {
     console.log(`wigolo: onnxruntime-web payload prune skipped (${err?.message ?? err})`);
+  }
+
+  try {
+    pruneWreqBinaries();
+  } catch (err) {
+    console.log(`wigolo: wreq-js binary prune skipped (${err?.message ?? err})`);
   }
 
   const roots = locateOrtRoots(resolveOrtRoot, dirname(baseFile));
