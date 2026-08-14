@@ -177,6 +177,7 @@ Use \`search_depth\` to trade latency for thoroughness:
 - Per-result \`freshness_signal\` -- \`published_date\` + \`inferred\` flag + \`confidence\` tag.
 - \`brand_collision_warning\` -- emitted when a brand domain dominates the top-3 of a generic query; carries reason + suggested rewrites.
 - \`query_understanding\` -- classifier view: intent, entities, date hint, language, \`is_brand_collision_prone\`, considered rewrites.
+- \`ranking_notice\` -- emitted ONLY when reranking contributed no ordering signal to the result set: either it could not run, or it scored every result below its relevance floor. The list is then ordered by cross-engine agreement rather than relevance, so the top result is the most agreed-upon, not the most relevant. Treat the results as low-confidence and pass the notice to the user verbatim.
 
 ## Performance
 

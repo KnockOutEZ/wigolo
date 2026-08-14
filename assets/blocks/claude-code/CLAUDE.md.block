@@ -45,6 +45,7 @@ Default `WIGOLO_SEARCH=core` — direct engines + RRF + ML rerank. Opt-in:
 - `response_time_ms` — latency alias for client compatibility.
 - `engines_used` / `engine_telemetry` — per-engine latency + `dedup_kept`.
 - `fallback_signal` — only on hybrid mode, names the signal(s) that fired.
+- `ranking_notice` — only when reranking gave no ordering signal (it could not run, or it scored every result below its relevance floor). Results are then base-ranked, not relevance-ranked: treat as low-confidence and pass verbatim.
 
 Full docs: wigolo skills are loaded automatically when relevant.
 <!-- wigolo:end -->

@@ -171,6 +171,20 @@ describe('ranking-notice documentation stays in sync with the code', () => {
     expect(TOOL_DESCRIPTIONS.search).toContain(RANKING_NOTICE_FIELD);
   });
 
+  it('names the ranking notice field in the full usage guide', () => {
+    expect(WIGOLO_INSTRUCTIONS_FULL).toContain(RANKING_NOTICE_FIELD);
+  });
+
+  it('names the ranking notice field in the installed CLAUDE.md block', () => {
+    // The block is copied into real users' projects, so a signal missing here
+    // is missing from the surface with the widest reach of the four.
+    const block = readFileSync(
+      new URL('../../assets/blocks/claude-code/CLAUDE.md.block', import.meta.url),
+      'utf8',
+    );
+    expect(block).toContain(RANKING_NOTICE_FIELD);
+  });
+
   it('documents it as conditional, not always-emitted', () => {
     // It must not be promised on every response — it fires only when reranking
     // gave no ordering signal, and an agent told otherwise would treat its
