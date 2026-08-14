@@ -2,7 +2,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync, mkdirSync, mkdtempSync, rmdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir, homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolvePythonExe } from '../python-env.js';
 import { probeBrowser } from '../fetch/browser-probe.js';
@@ -212,16 +212,47 @@ function detectInstallChannel(): 'binary' | 'npm-or-source' {
 }
 
 /**
- * Probe whether the optional `wreq-js` napi backend can be resolved without
- * triggering the full ~654ms cold-start load. Uses `require.resolve` so a
- * missing prebuilt binary for the host platform returns `false` instead of
- * throwing at lazy-import time.
+ * The `wreq-js` native binaries this host could load, in the package loader's own spelling.
+ *
+ * Linux maps to BOTH libc builds because the loader picks between them at runtime, and an
+ * install-time answer cannot bind that choice. Exported so a test can pin it against
+ * `scripts/prune/wreq-binaries.mjs` — the prune decides which of these files SURVIVES, this
+ * decides whether one is THERE, and the two silently disagreeing is how doctor starts lying
+ * again.
+ */
+export function wreqHostBinaries(platform: string, arch: string): string[] {
+  if (platform === 'darwin' && (arch === 'x64' || arch === 'arm64')) return [`wreq-js.darwin-${arch}.node`];
+  if (platform === 'win32' && arch === 'x64') return ['wreq-js.win32-x64-msvc.node'];
+  if (platform === 'linux' && (arch === 'x64' || arch === 'arm64')) {
+    return [`wreq-js.linux-${arch}-gnu.node`, `wreq-js.linux-${arch}-musl.node`];
+  }
+  return [];
+}
+
+/**
+ * Probe whether the optional `wreq-js` napi backend can actually load, without paying the
+ * ~654ms cold start.
+ *
+ * ⚠ RESOLVING THE PACKAGE IS NOT ENOUGH, and this used to get it wrong.
+ * `require.resolve('wreq-js')` goes through the `exports` map to `dist/wreq-js.cjs` and never
+ * looks at `rust/` at all, so it answers `true` for a package whose native binaries are gone —
+ * and doctor then printed `tls_tier: auto (chrome_147, wreq-js ✓)` while the tier was dead.
+ * Before the postinstall prune that state was close to unreachable, because npm's os/cpu
+ * filtering meant a present package implied a present host binary. The prune creates it: it
+ * deliberately deletes six of the seven binaries, so `rust/` is now the thing that varies. A
+ * diagnostic that reports healthy while the capability is dead is worse than no diagnostic, so
+ * this checks for a binary the loader would actually try.
  */
 function probeWreqJsAvailable(): boolean {
   try {
     const req = createRequire(import.meta.url);
-    req.resolve('wreq-js');
-    return true;
+    // `wreq-js/package.json` is NOT resolvable — the exports map has no `./package.json` entry
+    // and that call throws ERR_PACKAGE_PATH_NOT_EXPORTED. The `.` export does resolve, and the
+    // package root is two levels up from `dist/wreq-js.cjs`.
+    const root = dirname(dirname(req.resolve('wreq-js')));
+    return wreqHostBinaries(process.platform, process.arch).some((name) =>
+      existsSync(join(root, 'rust', name)),
+    );
   } catch {
     return false;
   }
