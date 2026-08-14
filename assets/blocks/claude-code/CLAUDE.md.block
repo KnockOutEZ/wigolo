@@ -23,7 +23,7 @@
 Default `WIGOLO_SEARCH=core` — direct engines + RRF + ML rerank. Opt-in:
 
 - `searxng` — legacy aggregator, opt-in. Higher long-tail recall, slower cold start.
-- `hybrid` — runs `core` first; falls back to `searxng` + RRF-merges when a signal fires (`brand_collision_suspect`, `include_domains_over_filter`, `all_engines_failed`, `top1_high_score_low_overlap`). Merged response carries `fallback_signal`.
+- `hybrid` — runs `core` first; falls back to `searxng` + RRF-merges when a signal fires (`brand_collision_suspect`, `include_domains_over_filter`, `all_engines_failed`, `top1_high_score_low_overlap`, `engine_pool_collapsed`). Merged response carries `fallback_signal`.
 
 ### Rules
 
