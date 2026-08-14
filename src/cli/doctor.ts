@@ -242,14 +242,24 @@ export function wreqHostBinaries(platform: string, arch: string): string[] {
  * deliberately deletes six of the seven binaries, so `rust/` is now the thing that varies. A
  * diagnostic that reports healthy while the capability is dead is worse than no diagnostic, so
  * this checks for a binary the loader would actually try.
+ *
+ * ⚠ EXPORTED, AND `resolveEntry` INJECTABLE, because the alternative is the defect this function
+ * inherited. #307 split `hasLoadableWreqBinary` out on the argument that unexported code is code
+ * no test can hold accountable — and left THIS, its only caller, unexported, so the root
+ * derivation below had no test that could red. Reverting it to the resolve-only body it replaced
+ * would have broken nothing.
+ *
+ * The derivation is the part with a decision in it: `wreq-js/package.json` is NOT resolvable (the
+ * exports map has no `./package.json` entry, so that call throws ERR_PACKAGE_PATH_NOT_EXPORTED),
+ * the `.` export lands on `<root>/dist/wreq-js.cjs`, and the binaries are at `<root>/rust/` — two
+ * levels up, no more and no less. Getting the count wrong fails CLOSED, reporting the tier missing
+ * while it works, which is why this was a coverage hole rather than a live bug.
  */
-function probeWreqJsAvailable(): boolean {
+export function probeWreqJsAvailable(
+  resolveEntry: () => string = () => createRequire(import.meta.url).resolve('wreq-js'),
+): boolean {
   try {
-    const req = createRequire(import.meta.url);
-    // `wreq-js/package.json` is NOT resolvable — the exports map has no `./package.json` entry
-    // and that call throws ERR_PACKAGE_PATH_NOT_EXPORTED. The `.` export does resolve, and the
-    // package root is two levels up from `dist/wreq-js.cjs`.
-    const root = dirname(dirname(req.resolve('wreq-js')));
+    const root = dirname(dirname(resolveEntry()));
     return hasLoadableWreqBinary(root, process.platform, process.arch);
   } catch {
     return false;
