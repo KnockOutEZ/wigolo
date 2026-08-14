@@ -1,5 +1,5 @@
 import { applyAggregateMarkdownBudget } from '../search/evidence.js';
-import { repairTruncatedMarkdown } from '../search/truncate.js';
+import { repairTruncatedMarkdown, closeTruncatedFence } from '../search/truncate.js';
 import type { CacheResultItem, CacheTruncation } from '../types.js';
 
 /**
@@ -40,9 +40,11 @@ export interface BudgetedCacheResults {
  *
  * Reuses the shared aggregate-markdown budget every other multi-item tool goes
  * through — this adds a default and an honest report, not a second mechanism.
- * A trimmed body is repaired at a markdown boundary so the cut never ships a
- * half-open fence, link or emphasis span, and every row the budget touched is
- * labelled so an emptied body is not read as "this cached page is blank".
+ * A trimmed body is repaired at a markdown boundary — a half-open fence, link or
+ * emphasis span is dropped, and a body that is one lone fence has the fence
+ * closed around whatever code fits rather than being repaired away to nothing.
+ * Every row the budget touched is labelled so an emptied body is not read as
+ * "this cached page is blank".
  *
  * Mutates and returns `results` (same convention as the shared helper).
  */
@@ -102,13 +104,21 @@ export function applyCacheOutputBudget(
  * body was just cut to. It runs on the content BEFORE the truncation marker and
  * the marker is re-appended, because the repair walks backwards from the end of
  * the string and would otherwise delete the very signal that says the body was
- * cut. If repair consumes the whole fragment (a body that is one unterminated
- * code fence), the unrepaired cut is kept — losing the row's content entirely is
- * worse than an open fence, and the marker still says it was cut.
+ * cut.
+ *
+ * The subtractive repair deletes an unterminated fence and everything inside it,
+ * so a body that IS one code fence — a gist, a config file, a source page, all
+ * ordinary contents of a developer's cache — repairs to nothing. Closing the
+ * fence recovers the code that fits instead, the same second chance
+ * `truncateSmartly` and `truncateAtBoundary` already give it. `head.length` as
+ * the char budget makes the result strictly shorter than the cut it replaces, so
+ * it cannot escape the token budget.
  */
 function repairAtBoundary(body: string): string {
   if (!body.endsWith(TRUNCATION_MARKER)) return body;
   const head = body.slice(0, body.length - TRUNCATION_MARKER.length);
   const repaired = repairTruncatedMarkdown(head).trimEnd();
-  return (repaired || head) + TRUNCATION_MARKER;
+  if (repaired) return repaired + TRUNCATION_MARKER;
+  const fenced = closeTruncatedFence(head, head.length);
+  return (fenced ?? head) + TRUNCATION_MARKER;
 }

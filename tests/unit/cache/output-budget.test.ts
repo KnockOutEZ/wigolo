@@ -79,6 +79,26 @@ describe('applyCacheOutputBudget', () => {
     expect(md).toMatch(/content truncated/);
   });
 
+  // A body that IS one code fence — a gist, a raw config, a source-file page —
+  // is where the subtractive repair has nothing to fall back to: it deletes the
+  // fence and everything in it, leaving the cut unrepaired. The fixture above
+  // cannot catch this because its prose survives the repair and takes the fence
+  // count to zero. No prose here, so the fence is the whole body.
+  it.each([400, 1000])('closes the fence on a body that is nothing but code (@%i tokens)', (budget) => {
+    const body = '```json\n' + '  "retries": 3,\n'.repeat(3000) + '```\n';
+
+    const out = applyCacheOutputBudget([row(body)], budget);
+
+    const md = out.results[0].markdown;
+    expect((md.match(/```/g) ?? []).length % 2).toBe(0);
+    // The row must still carry code — repairing it away to a bare marker is the
+    // silent-empty-body failure this budget exists to avoid.
+    expect(md).toMatch(/"retries": 3,/);
+    // And the cut must not land mid-line inside the block.
+    const code = md.replace(/\n\n\[\.\.\. content truncated\]$/, '');
+    expect(code.trimEnd().endsWith('```')).toBe(true);
+  });
+
   // A body with no sentence or paragraph break near the cut point falls through
   // to the hard cut, which is what actually lands inside a link — prose with
   // paragraph breaks never gets there, so it cannot test this.

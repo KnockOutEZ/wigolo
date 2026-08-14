@@ -154,7 +154,7 @@ export function repairTruncatedMarkdown(text: string): string {
  * pay for the opener plus the closer. Length is `<= maxChars` by construction:
  * the closer's cost is subtracted from the content allowance before the cut.
  */
-function closeTruncatedFence(body: string, maxChars: number): string | null {
+export function closeTruncatedFence(body: string, maxChars: number): string | null {
   const m = /^\s*(`{3,})[^\n]*\n/.exec(body);
   if (!m) return null;
 
