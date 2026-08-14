@@ -34,10 +34,15 @@ const require = createRequire(base);
  */
 const baseFile = process.argv[2] ? join(resolve(process.argv[2]), 'noop.cjs') : fileURLToPath(import.meta.url);
 
-/** Resolve the onnxruntime-node package root, optionally as `consumer` would see it. */
-function resolveOrtRoot(consumer) {
-  const paths = consumer ? [dirname(require.resolve(`${consumer}/package.json`))] : undefined;
-  return dirname(require.resolve('onnxruntime-node/package.json', paths ? { paths } : undefined));
+/**
+ * Resolve the hoisted onnxruntime-node package root.
+ *
+ * Only the hoisted copy: onnxruntime-node declares no `exports` map, so `./package.json` resolves
+ * here, but the CONSUMERS of it do declare one and cannot be resolved through at all. Finding the
+ * non-hoisted copies is locateOrtRoots' on-disk scan, not this — see its note.
+ */
+function resolveOrtRoot() {
+  return dirname(require.resolve('onnxruntime-node/package.json'));
 }
 
 /*
@@ -224,7 +229,7 @@ function main() {
     console.log(`wigolo: onnxruntime-web payload prune skipped (${err?.message ?? err})`);
   }
 
-  const roots = locateOrtRoots(resolveOrtRoot);
+  const roots = locateOrtRoots(resolveOrtRoot, dirname(baseFile));
   if (roots.length === 0) return; // nothing installed it; nothing to do
 
   for (const root of roots) {
