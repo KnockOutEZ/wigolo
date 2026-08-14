@@ -91,10 +91,9 @@ const HEALTHY: [string, string, string][] = [
   ['https://www.home-assistant.io/docs/automation/', 'Home Assistant Automations', 'Create automations'],
 ];
 
-const ctxArgs = [[], undefined as never, undefined, undefined, undefined] as const;
-
 async function runSearch(input: SearchInput) {
-  const r = await handleSearch(input, ...ctxArgs);
+  const engines: SearchEngine[] = [];
+  const r = await handleSearch(input, engines, undefined as never);
   if (!r.ok) throw new Error(`search failed: ${r.error_reason ?? r.error}`);
   return r;
 }
