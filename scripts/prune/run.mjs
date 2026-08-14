@@ -13,7 +13,7 @@ import { createRequire } from 'node:module';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { planPlatformPrune, locateOrtRoots } from './ort-platforms.mjs';
+import { planPlatformPrune, locateOrtRoots, findInstallRoot } from './ort-platforms.mjs';
 import { planWebPayloadPrune, findWebDependents } from './ort-web-payload.mjs';
 import { planBinaryPrune } from './wreq-binaries.mjs';
 
@@ -117,15 +117,40 @@ function dirSizeBytes(path) {
  * field that has nothing to do with whether the directory is on disk; walking the directory tree
  * asks the question actually being asked.
  *
- * Walking up also covers the three layouts that matter without special-casing any of them: this
+ * Walking up covers the three layouts that matter without special-casing any of them: this
  * package as the install root, this package installed as a dependency with `<name>` hoisted
  * beside it, and `<name>` nested under this package.
+ *
+ * ⚠ BOUNDED AT OUR OWN INSTALL ROOT, and the bound is load-bearing rather than tidiness. An
+ * unbounded walk climbs to the filesystem root, so from `outer/proj/node_modules/wigolo` — with
+ * wigolo installed `--omit=optional` and no `<name>` beside it — it sails past `proj`'s own
+ * package.json AND its own node_modules and finds `outer/node_modules/<name>`, which belongs to
+ * a different project. It then deletes six of its seven binaries. That tree may be multi-arch on
+ * purpose (a Docker build context, a multi-platform CI cache) and its owner has no reason to
+ * have set `WIGOLO_SKIP_ORT_PRUNE`. This is the same defect #304 fixed for the onnxruntime
+ * on-disk scan, so this reuses THAT commit's `findInstallRoot` rather than inventing a second
+ * notion of "which tree am I part of".
+ *
+ * ⚠ WHAT THE BOUND COSTS, stated because it is a real trade and not a free win. wigolo installed
+ * as `<root>/node_modules/foo/node_modules/wigolo` has an install root of
+ * `<root>/node_modules/foo`, so a copy hoisted ABOVE that — at `<root>/node_modules/<name>` — is
+ * now out of reach and keeps its bytes. That direction is fail-open: it costs install size and
+ * strands nobody, whereas the unbounded walk destroys trees we do not own. The onnxruntime
+ * PLATFORM prune does not lose that case at all, because `locateOrtRoots` unions this kind of
+ * walk with the module resolver, which still reaches upward.
  */
 function locatePackageRoot(startDir, name) {
+  const installRoot = findInstallRoot(startDir);
+  // No install root means no tree we can claim, and a prune with no claim is one that must not
+  // run. Returning null here is the same fail-open the rest of this file takes.
+  if (!installRoot) return null;
+
   let dir = resolve(startDir);
+  const stop = resolve(installRoot);
   for (;;) {
     const candidate = join(dir, 'node_modules', name);
     if (existsSync(join(candidate, 'package.json'))) return candidate;
+    if (dir === stop) return null;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;

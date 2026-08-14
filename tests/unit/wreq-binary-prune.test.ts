@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
 import { planBinaryPrune, WREQ_PLATFORM_BINARIES } from '../../scripts/prune/wreq-binaries.mjs';
+import { wreqHostBinaries } from '../../src/cli/doctor.js';
 
 /*
  * WHY these tests exist.
@@ -163,6 +164,21 @@ describe('planBinaryPrune only ever removes binaries it recognises', () => {
     expect(plan.remove).toHaveLength(6);
   });
 
+  it('agrees with doctor about which binaries this host can load', () => {
+    // ⚠ TWO COPIES OF ONE FACT, PINNED TOGETHER. The prune decides which binary SURVIVES;
+    // `wreqHostBinaries` in src/cli/doctor.ts decides whether one is THERE. They cannot share a
+    // module — the prune is plain-JS build tooling that never enters the bundled src/ graph — so
+    // the only thing stopping them drifting is this assertion. Drift is not cosmetic: if the
+    // prune kept a file doctor did not look for, doctor would report the TLS tier dead while it
+    // worked; if doctor looked for one the prune deleted, it would report it alive while it was
+    // dead. That second direction is the bug this pairing was written to close.
+    for (const [platform, arch] of [...SUPPORTED_HOSTS.map(([p, a]) => [p, a]), ['freebsd', 'x64'], ['linux', 'riscv64']] as Array<[string, string]>) {
+      expect(wreqHostBinaries(platform, arch), `${platform}/${arch}`).toEqual(
+        planBinaryPrune(FULL_TREE, platform, arch).keep,
+      );
+    }
+  });
+
   it('recognises exactly the seven targets the package declares', () => {
     // Pins the allowlist against the manifest's `napi.targets`. If upstream's matrix changes,
     // this is the assertion that makes someone look rather than silently pruning to a stale list.
@@ -211,6 +227,14 @@ afterAll(() => {
   for (const dir of trees) rmSync(dir, { recursive: true, force: true });
 });
 
+/** Plant a fake `wreq-js` with all seven binaries under `<at>/node_modules`. */
+function plantWreq(at: string): void {
+  const pkg = join(at, 'node_modules', 'wreq-js');
+  mkdirSync(join(pkg, 'rust'), { recursive: true });
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'wreq-js', version: '2.3.1' }));
+  for (const name of FULL_TREE) writeFileSync(join(pkg, 'rust', name), 'x'.repeat(1024));
+}
+
 /**
  * A throwaway install tree holding a fake `wreq-js` with all seven binaries.
  *
@@ -222,10 +246,7 @@ function makeTree(): string {
   const root = mkdtempSync(join(tmpdir(), 'wreq-prune-'));
   trees.push(root);
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'host-app', version: '1.0.0' }));
-  const rust = join(root, 'node_modules', 'wreq-js', 'rust');
-  mkdirSync(rust, { recursive: true });
-  writeFileSync(join(root, 'node_modules', 'wreq-js', 'package.json'), JSON.stringify({ name: 'wreq-js', version: '2.3.1' }));
-  for (const name of FULL_TREE) writeFileSync(join(rust, name), 'x'.repeat(1024));
+  plantWreq(root);
   return root;
 }
 
@@ -256,11 +277,27 @@ function expectedSurvivors(): string[] {
   return plan.remove.length > 0 ? [...plan.keep].sort() : [...FULL_TREE].sort();
 }
 
+/**
+ * The log line the driver must emit on THIS host — `removing` where the host is supported,
+ * `refusing to prune` where it is not.
+ *
+ * ⚠ WHY THE SURVIVOR SET ALONE IS NOT ENOUGH. On a host outside the loader's matrix
+ * `expectedSurvivors()` is the whole tree, so an assertion on it passes for a prune that
+ * correctly refused AND for one that never found the package, never ran, or silently threw. That
+ * is a test that can pass for the wrong reason on a future runner. Pairing it with the reason
+ * the driver PRINTED makes both outcomes fail-loud instead of vacuous.
+ */
+function expectedPruneVerb(): RegExp {
+  return planBinaryPrune(FULL_TREE, process.platform, process.arch).remove.length > 0
+    ? /wreq-js binary prune — keeping .*removing \d+ non-host/
+    : /wreq-js binary prune — .*refusing to prune/;
+}
+
 describe('the postinstall driver finds wreq-js and prunes it', () => {
   it('prunes when wigolo IS the install root — the layout the budget gate measures', () => {
     const root = makeTree();
     const out = runPrune(root);
-    expect(out).toContain('wreq-js binary prune');
+    expect(out).toMatch(expectedPruneVerb());
     expect(survivors(root)).toEqual(expectedSurvivors());
   });
 
@@ -272,7 +309,8 @@ describe('the postinstall driver finds wreq-js and prunes it', () => {
     const root = makeTree();
     const asDependency = join(root, 'node_modules', 'wigolo');
     mkdirSync(asDependency, { recursive: true });
-    runPrune(asDependency);
+    const out = runPrune(asDependency);
+    expect(out).toMatch(expectedPruneVerb());
     expect(survivors(root)).toEqual(expectedSurvivors());
   });
 
@@ -282,6 +320,51 @@ describe('the postinstall driver finds wreq-js and prunes it', () => {
     const root = makeTree();
     runPrune(root, { WIGOLO_SKIP_ORT_PRUNE: '1' });
     expect(survivors(root)).toEqual([...FULL_TREE].sort());
+  });
+
+  /*
+   * ⚠ THE BOUND, AND WHY IT IS NOT OPTIONAL.
+   *
+   * The walk-up used to halt only on finding `node_modules/<name>`, so from a nested install it
+   * would climb past its OWN install root and out into whatever sat above — and prune a
+   * `wreq-js` belonging to a different project. `npm i wigolo --omit=optional` inside a nested
+   * package, next to a workspace root whose hoisted `wreq-js` is deliberately multi-arch (a
+   * Docker build context, a multi-platform CI cache), is a real arrangement, and its owner has
+   * no reason to have set the opt-out. This is the same defect #304 fixed for the onnxruntime
+   * scan, so the bound is that commit's `findInstallRoot`, reused rather than reinvented.
+   */
+  function makeNestedLayout(): { outer: string; proj: string; wigolo: string } {
+    const outer = mkdtempSync(join(tmpdir(), 'wreq-outer-'));
+    trees.push(outer);
+    writeFileSync(join(outer, 'package.json'), JSON.stringify({ name: 'outer', version: '1.0.0' }));
+    plantWreq(outer); // the FOREIGN tree — belongs to `outer`, not to us
+
+    const proj = join(outer, 'proj');
+    const wigolo = join(proj, 'node_modules', 'wigolo');
+    mkdirSync(wigolo, { recursive: true });
+    writeFileSync(join(proj, 'package.json'), JSON.stringify({ name: 'proj', version: '1.0.0' }));
+    return { outer, proj, wigolo };
+  }
+
+  it('MUST-NOT-FIRE: leaves a wreq-js belonging to an enclosing project untouched', () => {
+    // wigolo is installed into `proj` with no wreq-js beside it. The only wreq-js reachable by
+    // climbing is `outer`'s, and it is not ours to touch. Destroying it would be silent, would
+    // survive npm reporting success, and would strand a tree that was multi-arch on purpose.
+    const { outer, wigolo } = makeNestedLayout();
+    const out = runPrune(wigolo);
+    expect(survivors(outer)).toEqual([...FULL_TREE].sort());
+    expect(out).not.toContain('removing');
+  });
+
+  it('MUST-FIRE: still prunes our OWN copy in that same nested layout', () => {
+    // The other direction, and the reason the bound is a bound rather than a deletion: tightening
+    // must not cost us the copy we are actually entitled to prune. Same shape as above, except
+    // `proj` has its own hoisted wreq-js — that one goes, and `outer`'s still does not.
+    const { outer, proj, wigolo } = makeNestedLayout();
+    plantWreq(proj);
+    runPrune(wigolo);
+    expect(survivors(proj)).toEqual(expectedSurvivors());
+    expect(survivors(outer)).toEqual([...FULL_TREE].sort());
   });
 
   it('survives a tree with no wreq-js at all', () => {
