@@ -242,12 +242,26 @@ function survivors(root: string): string[] {
   return readdirSync(join(root, 'node_modules', 'wreq-js', 'rust')).sort();
 }
 
+/**
+ * What SHOULD survive a run on whatever host the suite is executing on.
+ *
+ * ⚠ Derived from the planner rather than hardcoded to darwin, and the refusal branch is not
+ * decoration. On a host outside the loader's supported matrix — win32 on arm64, or linux on
+ * anything but x64/arm64 — the correct behaviour is to remove NOTHING, so the expected survivors
+ * are the whole tree. Asserting `plan.keep` unconditionally would red on exactly those runners
+ * for doing the right thing, which is a cross-platform failure discovered in CI rather than here.
+ */
+function expectedSurvivors(): string[] {
+  const plan = planBinaryPrune(FULL_TREE, process.platform, process.arch);
+  return plan.remove.length > 0 ? [...plan.keep].sort() : [...FULL_TREE].sort();
+}
+
 describe('the postinstall driver finds wreq-js and prunes it', () => {
   it('prunes when wigolo IS the install root — the layout the budget gate measures', () => {
     const root = makeTree();
     const out = runPrune(root);
     expect(out).toContain('wreq-js binary prune');
-    expect(survivors(root)).toEqual(planBinaryPrune(FULL_TREE, process.platform, process.arch).keep);
+    expect(survivors(root)).toEqual(expectedSurvivors());
   });
 
   it('prunes the HOISTED copy when wigolo is installed as a dependency', () => {
@@ -259,7 +273,7 @@ describe('the postinstall driver finds wreq-js and prunes it', () => {
     const asDependency = join(root, 'node_modules', 'wigolo');
     mkdirSync(asDependency, { recursive: true });
     runPrune(asDependency);
-    expect(survivors(root)).toEqual(planBinaryPrune(FULL_TREE, process.platform, process.arch).keep);
+    expect(survivors(root)).toEqual(expectedSurvivors());
   });
 
   it('leaves every binary in place when the prune is opted out of', () => {
