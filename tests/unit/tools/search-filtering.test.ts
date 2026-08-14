@@ -342,6 +342,12 @@ describe('search pipeline filtering (core provider)', () => {
     expect(joined).not.toContain('time_range');
     // Capability language only — no vendor or library names in user-facing text.
     expect(joined).not.toMatch(/playwright|searxng|flashrank|trafilatura/i);
+    // The notice must not assert a cause it cannot know. A collapsed pool can
+    // mean blocked engines OR engines that genuinely have no match for the
+    // query, and retrying only helps the first — so both must be named.
+    expect(joined).toMatch(/blocked/i);
+    expect(joined).toMatch(/no match|simply empty/i);
+    expect(joined).toMatch(/will not help/i);
   });
 
   it('NEGATIVE: a healthy pool carries no degraded notice and no alternatives', async () => {

@@ -159,6 +159,13 @@ function buildRareTermVariant(query: string): string | null {
  * therefore the common, benign case (one routinely-empty engine on a multi-word
  * query). A notice that fires on a healthy-enough pool is worse than none.
  *
+ * The notice must not assert a CAUSE it cannot know. `pool_collapsed` fires on
+ * the healthy-engine count, and an engine counts as unhealthy when it returns
+ * zero results — whether it was blocked or simply had no match for a long-tail
+ * query. So the text names both possibilities and says plainly that retrying
+ * helps only in the first. Promising a remedy for the empty case would be the
+ * same over-claim this field exists to avoid.
+ *
  * Every entry is a remedy VERIFIED to widen the pool. Two obvious-looking
  * suggestions are deliberately absent because the code says they do not help:
  *   - `search_depth: 'deep'` changes only reranking and content-fetch budgets.
@@ -177,7 +184,7 @@ function buildPoolAlternatives(
   if (!reasons.includes('pool_collapsed')) return [];
   const down = Math.max(0, total - healthy);
   return [
-    `${down} of ${total} search engines returned nothing for this query — these results came from ${healthy}. Retrying in a few seconds usually restores the pool: a blocked search engine is held on a short bounded cooldown and is re-probed automatically while the pool stays collapsed.`,
+    `${down} of ${total} search engines returned nothing for this query — these results came from ${healthy}, so cross-engine ranking had little to compare. An engine returns nothing either because it was temporarily blocked or because it genuinely has no match for this query. If it was a block, retrying shortly restores the pool: a blocked search engine is held on a short bounded cooldown and is re-probed automatically while the pool stays collapsed. If the engines were simply empty for this query, retrying it unchanged will not help.`,
     'Set WIGOLO_SEARCH=hybrid to add an independent aggregated search backend (optional, installed separately). It is pulled in and merged automatically when the pool collapses.',
   ];
 }
