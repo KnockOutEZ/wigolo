@@ -43,6 +43,8 @@
  * throws, it is reported and skipped. The driver never exits non-zero: a size optimisation that
  * can fail an install is a worse trade than the bytes it saves.
  */
+import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
 
 /**
  * Decide which `bin/napi-v3/<platform>/<arch>` directories may be removed.
@@ -79,25 +81,168 @@ export function planPlatformPrune(tree, platform, arch) {
   };
 }
 
+/*
+ * ⚠ WHY THE SEARCH BELOW WALKS THE FILESYSTEM INSTEAD OF ASKING THE MODULE RESOLVER.
+ *
+ * This function used to reach the non-hoisted copies by resolving `<consumer>/package.json` for
+ * each of `fastembed` and `@huggingface/transformers` and then resolving onnxruntime-node from
+ * there. That branch could never contribute a root. Both packages declare an `exports` map with
+ * no `./package.json` entry, so the FIRST resolve throws:
+ *
+ *     ERR_PACKAGE_PATH_NOT_EXPORTED: Package subpath './package.json' is not defined by
+ *     "exports" in <...>/node_modules/fastembed/package.json
+ *
+ * — and identically for @huggingface/transformers. Only the hoisted lookup ever returned
+ * anything, so the multi-copy tree this code exists to handle was silently skipped: the nested
+ * copies kept their ~178 MiB while the install log reported a successful prune. Resolution
+ * through the module system is gated by a manifest field that has nothing to do with whether a
+ * directory is on disk; the sibling `locateWebRoot` in run.mjs had already hit this and already
+ * answered it by walking directories, and this is the same answer.
+ *
+ * The walk is also strictly more general than the consumer list was. It finds a copy nested
+ * under ANY package, not just the two we happen to know about — which is the case that produces
+ * a second copy in the first place, since npm only nests when some dependent pinned a version
+ * the hoisted copy cannot satisfy.
+ */
+
+const MAX_NEST_DEPTH = 6;
+
+/**
+ * Subdirectories of `dir`, FOLLOWING SYMLINKS, or `[]` when it cannot be read.
+ *
+ * ⚠ Same trap as run.mjs's `subdirs`: `Dirent.isDirectory()` describes the LINK, not its target,
+ * and both npm and pnpm materialise packages as links. Filtering on it alone makes every linked
+ * package invisible — which here means silently finding fewer copies to prune, the exact failure
+ * this rewrite is fixing.
+ */
+function subdirsFollowingLinks(dir) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((e) => {
+      if (e.isDirectory()) return true;
+      if (!e.isSymbolicLink()) return false;
+      try {
+        return statSync(join(dir, e.name)).isDirectory();
+      } catch {
+        return false; // dangling link
+      }
+    })
+    .map((e) => e.name);
+}
+
+/**
+ * The root of the install `startDir` belongs to — the directory whose `node_modules` contains it.
+ *
+ * ⚠ WHY THE PATH IS CUT RATHER THAN WALKED. The obvious spelling is "walk up until you find a
+ * node_modules", and its failure is that it stops too EARLY, not too late: from
+ * `~/project/node_modules/wigolo` it returns wigolo's OWN directory the moment wigolo has nested
+ * dependencies of its own, and then scans only wigolo's private subtree — finding neither the
+ * hoisted copy nor a sibling's nested one. (It cannot escape UPWARD from a dependency install:
+ * `~/project/node_modules` is on the path, so the walk always halts at `~/project` at the latest.)
+ * Cutting at the LAST `node_modules` segment answers "which tree am I part of" directly, and is
+ * the difference between finding both copies and finding none.
+ */
+export function findInstallRoot(startDir) {
+  const abs = resolve(startDir);
+  const parts = abs.split(sep);
+  const i = parts.lastIndexOf('node_modules');
+  if (i > 0) return parts.slice(0, i).join(sep) || sep;
+
+  // Not under a node_modules at all: a checkout, or the throwaway tree the budget gate points
+  // argv[2] at. ⚠ Bounded to the caller's OWN package — the nearest ancestor holding a
+  // package.json, accepted only if it has a node_modules. Walking up for the first node_modules
+  // instead WOULD escape here, because unlike the branch above there is no node_modules on the
+  // path to halt it: from a checkout that has not been installed yet it sails past the checkout
+  // and returns whatever unrelated install happens to sit above it.
+  let dir = abs;
+  for (;;) {
+    if (existsSync(join(dir, 'package.json'))) {
+      return existsSync(join(dir, 'node_modules')) ? dir : null;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * Every `onnxruntime-node` package directory physically present in `startDir`'s install tree,
+ * canonicalised so that two links onto one store entry count as the one copy they are.
+ */
+export function findOrtCopies(startDir, maxDepth = MAX_NEST_DEPTH) {
+  const installRoot = findInstallRoot(startDir);
+  if (!installRoot) return [];
+
+  const found = new Set();
+
+  const visitPackage = (pkgDir, name, depth) => {
+    if (name === 'onnxruntime-node' && existsSync(join(pkgDir, 'package.json'))) {
+      // realpath, because pnpm gives every dependent its own link to ONE store directory. Keyed
+      // on the link path those would be N copies, pruned N times, each after the first reporting
+      // bytes that are already gone. Keyed on the target they are what they are: one copy.
+      try {
+        found.add(realpathSync(pkgDir));
+      } catch {
+        found.add(pkgDir);
+      }
+    }
+    const nested = join(pkgDir, 'node_modules');
+    if (existsSync(nested)) scan(nested, depth + 1);
+  };
+
+  const scan = (modulesDir, depth) => {
+    if (depth > maxDepth) return; // nested node_modules nest, but not without bound
+    for (const name of subdirsFollowingLinks(modulesDir)) {
+      if (name === '.bin') continue;
+      const dir = join(modulesDir, name);
+      if (name.startsWith('@')) {
+        // A scope directory holds packages; it is not a nesting level of its own.
+        for (const scoped of subdirsFollowingLinks(dir)) visitPackage(join(dir, scoped), scoped, depth);
+        continue;
+      }
+      visitPackage(dir, name, depth);
+    }
+  };
+
+  scan(join(installRoot, 'node_modules'), 0);
+  return [...found];
+}
+
 /**
  * Every distinct `onnxruntime-node` install in the tree.
  *
- * Resolution starts from the packages that actually depend on it rather than from this file,
- * because when wigolo is installed AS A DEPENDENCY its own directory is a sibling of the
- * hoisted `onnxruntime-node`, not a parent of it — and in a tree where hoisting was defeated
- * there can be more than one copy. A missing consumer is not an error: the optional-dependency
- * arrangement means a tree that never installed one is a tree with nothing to prune.
+ * Two strategies, unioned, and NEITHER is redundant.
+ *
+ * The on-disk scan from `scanFrom` finds the copies hoisting did not produce — every nested copy
+ * in the install tree, which the resolver cannot reach.
+ *
+ * `resolveFrom` is the module resolver's answer, and it is load-bearing in exactly the case the
+ * scan is blind to: when the caller sits BELOW the level the copies live at. wigolo installed as
+ * `<root>/node_modules/foo/node_modules/wigolo` has an install root of `<root>/node_modules/foo`,
+ * whose subtree holds no onnxruntime-node at all — the hoisted copy at `<root>/node_modules` is
+ * above it and a sibling's nested copy is off to the side. Node's own upward resolution is what
+ * still finds the hoisted one from there. Delete this branch and that tree prunes nothing.
+ *
+ * Finding nothing is not an error. onnxruntime-node arrives through optional dependencies, and a
+ * tree that never installed one is a tree with nothing to prune.
  */
-export function locateOrtRoots(resolveFrom, consumers = ['fastembed', '@huggingface/transformers']) {
+export function locateOrtRoots(resolveFrom, scanFrom = null) {
   const roots = new Set();
-  for (const consumer of [null, ...consumers]) {
-    try {
-      const dir = resolveFrom(consumer);
-      if (dir) roots.add(dir);
-    } catch {
-      // This consumer is not installed, or cannot see onnxruntime-node from where it sits.
-      // Both are ordinary; the other candidates still get their turn.
-    }
+  try {
+    const dir = resolveFrom();
+    if (dir) roots.add(dir);
+  } catch {
+    // Nothing hoisted, or nothing installed at all. The on-disk scan is the other half of the
+    // answer and still gets its turn — if this throw aborted the walk, a tree that nested every
+    // copy would keep all of them while the log said nothing.
+  }
+  if (scanFrom) {
+    for (const dir of findOrtCopies(scanFrom)) roots.add(dir);
   }
   return [...roots];
 }
