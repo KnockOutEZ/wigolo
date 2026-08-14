@@ -212,4 +212,42 @@ describe('handleCache --- hybrid mode', () => {
     const out = await handleCache({ query: 'foo', mode: 'hybrid', limit: 3 });
     expect(out.results!.map(r => r.url)).toEqual(['https://a']);
   });
+
+  // The hybrid path is its own return site in the handler. A budget wired to
+  // only the FTS site would leave every `query`-driven hybrid call unbounded,
+  // and no FTS-driven test can tell the difference.
+  it('applies the same output budget on the hybrid return path', async () => {
+    const big = '# Guide\n\n' + 'The pool keeps a bounded set of open sockets. '.repeat(4000);
+    vi.mocked(ftsSearchRanked).mockReturnValue([
+      { url: 'https://a', score: 10 },
+      { url: 'https://b', score: 8 },
+    ]);
+    vi.mocked(getEmbedProvider).mockResolvedValue({
+      modelId: 'test',
+      dim: 4,
+      embed: vi.fn().mockResolvedValue([new Float32Array([1, 0, 0, 0])]),
+    });
+    vi.mocked(getVectorStore).mockResolvedValue(
+      makeVectorStore({
+        size: 2,
+        results: [
+          { id: 'a', score: 0.9, metadata: { url: 'https://a', contentHash: 'ha', modelId: 'test' } },
+          { id: 'b', score: 0.5, metadata: { url: 'https://b', contentHash: 'hb', modelId: 'test' } },
+        ],
+      }),
+    );
+    vi.mocked(getCachedContentByNormalizedUrl).mockImplementation((url: string) =>
+      makeCachedContent({ url, normalizedUrl: url, markdown: big }),
+    );
+    const { countTokens } = await import('../../../src/search/tokens.js');
+    const { DEFAULT_CACHE_MAX_TOKENS_OUT } = await import('../../../src/cache/output-budget.js');
+
+    const out = await handleCache({ query: 'foo', mode: 'hybrid' });
+
+    expect(out.results!.length).toBeGreaterThan(0);
+    const total = out.results!.reduce((n, r) => n + countTokens(r.markdown), 0);
+    expect(total).toBeLessThanOrEqual(DEFAULT_CACHE_MAX_TOKENS_OUT);
+    expect(out.truncation).toBeDefined();
+    expect(out.truncation!.dropped_chars).toBeGreaterThan(0);
+  });
 });
