@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
 import { planBinaryPrune, WREQ_PLATFORM_BINARIES } from '../../scripts/prune/wreq-binaries.mjs';
-import { wreqHostBinaries } from '../../src/cli/doctor.js';
+import { hasLoadableWreqBinary, wreqHostBinaries } from '../../src/cli/doctor.js';
 
 /*
  * WHY these tests exist.
@@ -177,6 +177,29 @@ describe('planBinaryPrune only ever removes binaries it recognises', () => {
         planBinaryPrune(FULL_TREE, platform, arch).keep,
       );
     }
+  });
+
+  it('reports the tier DEAD when the prune has left no binary this host can load', () => {
+    // ⚠ THE STATE THIS PRUNE NEWLY CREATES. Resolving the package says nothing about `rust/`, so
+    // the old resolve-only probe answered "available" for a tree with no binaries at all and
+    // doctor printed `wreq-js ✓` over a dead tier. Pre-prune that was close to unreachable —
+    // npm's os/cpu filtering meant package-present implied binary-present — so this assertion
+    // exists because THIS change made the state reachable.
+    const root = mkdtempSync(join(tmpdir(), 'wreq-doctor-'));
+    trees.push(root);
+    mkdirSync(join(root, 'rust'), { recursive: true });
+    expect(hasLoadableWreqBinary(root, process.platform, process.arch)).toBe(false);
+  });
+
+  it('reports the tier ALIVE on exactly what the prune leaves behind', () => {
+    // The must-not-fire direction: the prune and the probe have to agree, or doctor calls a
+    // working tier dead. Built from the planner's own keep-set so the two cannot drift apart.
+    const root = mkdtempSync(join(tmpdir(), 'wreq-doctor-'));
+    trees.push(root);
+    mkdirSync(join(root, 'rust'), { recursive: true });
+    const kept = planBinaryPrune(FULL_TREE, process.platform, process.arch).keep;
+    for (const name of kept) writeFileSync(join(root, 'rust', name), 'x');
+    expect(hasLoadableWreqBinary(root, process.platform, process.arch)).toBe(kept.length > 0);
   });
 
   it('recognises exactly the seven targets the package declares', () => {

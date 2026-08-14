@@ -250,12 +250,22 @@ function probeWreqJsAvailable(): boolean {
     // and that call throws ERR_PACKAGE_PATH_NOT_EXPORTED. The `.` export does resolve, and the
     // package root is two levels up from `dist/wreq-js.cjs`.
     const root = dirname(dirname(req.resolve('wreq-js')));
-    return wreqHostBinaries(process.platform, process.arch).some((name) =>
-      existsSync(join(root, 'rust', name)),
-    );
+    return hasLoadableWreqBinary(root, process.platform, process.arch);
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether `root` — a `wreq-js` package directory — holds a native binary this host could load.
+ *
+ * Split out from the probe above so the part with the decision in it is testable without
+ * standing up a module resolver: the probe's other half is `require.resolve`, which cannot be
+ * pointed at a fixture, and leaving the whole thing untestable is what let the resolve-only
+ * version ship a docstring that was false.
+ */
+export function hasLoadableWreqBinary(root: string, platform: string, arch: string): boolean {
+  return wreqHostBinaries(platform, arch).some((name) => existsSync(join(root, 'rust', name)));
 }
 
 /**
