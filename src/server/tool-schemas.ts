@@ -305,12 +305,10 @@ export const CACHE_TOOL_SCHEMA = {
     check_changes: {
       type: 'boolean',
       description:
-        'Re-fetch matching cached URLs and report which ones have changed. ' +
-        'Returns a list of URLs with changed/unchanged status and diff summaries. ' +
-        'Use with query or url_pattern to scope which cached entries to check. ' +
-        'Capped at `limit` entries (default 100, hard ceiling 200) because every entry is re-fetched ' +
-        'over the network and a scoped url_pattern aims them all at one host; a larger limit is reduced, ' +
-        'never silently honoured. When more matched, the response carries a `changes_truncation` report.',
+        'Re-fetch matching cached URLs and report which changed, with diff summaries. ' +
+        'Scope with query or url_pattern. Each entry checked is a live re-fetch, so it checks ' +
+        '`limit` entries (default 100, ceiling 200); a larger limit is reduced, and anything ' +
+        'skipped is reported in `changes_truncation`.',
     },
     mode: {
       type: 'string',
