@@ -275,13 +275,19 @@ function realOrResolved(path) {
  * directories. The separator on the prefix is not decoration either: without it `outer/proj` would
  * claim `outer/project-b`.
  *
- * ⚠ CASE-FOLDED ON WIN32 ONLY. The two sides reach here from different Node APIs — one from
- * `import.meta.url`, one from `require.resolve` — and on a case-insensitive filesystem a drive
- * letter or path segment that differs only in case names the SAME directory. Comparing them
- * literally there would reject our own tree and silently cost the win on every Windows install,
- * which is the failure that gets discovered in CI rather than here. Folding elsewhere would be
- * wrong for the opposite reason: on a case-sensitive filesystem `/a/Proj` and `/a/proj` are two
- * directories, and treating them as one is how a bound starts claiming a tree it does not own.
+ * ⚠ CASE-FOLDED ON WIN32 ONLY, AND NO TEST CAN KILL IT — DEFENSIVE, NOT COVERED. The commit that
+ * added this claimed the deep-nesting test would catch its absence on Windows CI. That claim is
+ * FALSE and is corrected here rather than left for the next reader to trust: both sides of this
+ * comparison pass through `realpathSync`, which canonicalises case on Windows too, so they arrive
+ * already agreeing and the fold never changes the answer. Removing it reds nothing, anywhere.
+ *
+ * It is kept because its failure direction is safe in a way that earns the unkillable branch:
+ * folding only WIDENS acceptance, so the worst it can do is prune a tree we already own — it can
+ * never claim one we do not. Confining it to win32 is the other half of that. Case-insensitivity
+ * is a per-VOLUME property rather than a per-OS one, and folding on a case-SENSITIVE filesystem
+ * would make `/a/Proj` and `/a/proj` one directory, which is exactly how a bound starts claiming a
+ * tree it does not own. Leaving case-insensitive APFS out of the fold is the conservative side of
+ * that trade: it can cost bytes, never somebody else's install.
  */
 export function isWithinTree(tree, candidate) {
   if (!tree) return false;
