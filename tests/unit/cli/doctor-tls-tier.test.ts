@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { resetConfig } from '../../../src/config.js';
+import { getConfig, resetConfig } from '../../../src/config.js';
 
 vi.mock('node:child_process', () => ({ execSync: vi.fn(), spawnSync: vi.fn() }));
 vi.mock('node:fs', async () => {
@@ -53,7 +53,7 @@ vi.mock('../../../src/search/core/rss/feed-config.js', () => ({
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { runDoctor, formatTlsTierLine } from '../../../src/cli/doctor.js';
+import { runDoctor, formatTlsTierLine, probeWreqJsAvailable } from '../../../src/cli/doctor.js';
 
 function okProc(stdout = ''): ReturnType<typeof spawnSync> {
   return { status: 0, stdout, stderr: '', signal: null, pid: 1, output: [], error: undefined } as ReturnType<typeof spawnSync>;
@@ -119,12 +119,20 @@ describe('runDoctor — TLS tier visibility', () => {
     expect(outBuffer).toMatch(/tls_tier:\s+on/);
   });
 
-  it('mentions wreq-js availability in the tls_tier line when mode != off', async () => {
+  it('prints the tls_tier line from the probe, not from a guess', async () => {
+    // ⚠ THIS ASSERTION USED TO BE `toMatch(/wreq-js (✓|missing)/)`, which is satisfied by BOTH
+    // answers and therefore by no behaviour at all — the line could have been hardcoded and this
+    // would still have passed. What is actually worth pinning here is the WIRING: that the string
+    // doctor prints is the string the probe's answer produces. The probe's own correctness is
+    // covered against fixtures in doctor-wreq-probe.test.ts; this is the seam between them.
+    //
+    // `node:fs` is mocked for this whole file, so the probe called here and the probe called
+    // inside runDoctor see the same filesystem and cannot disagree for an incidental reason.
     process.env.WIGOLO_TLS_TIER = 'auto';
     resetConfig();
     await runDoctor('/tmp/.wigolo');
-    // Either ✓ when present, OR a "missing — fallback only" hint when absent.
-    expect(outBuffer).toMatch(/wreq-js (✓|missing)/);
+    const expected = formatTlsTierLine('auto', getConfig().tlsBrowser, probeWreqJsAvailable());
+    expect(outBuffer).toContain(`tls_tier:      ${expected}`);
   });
 });
 
