@@ -138,10 +138,13 @@ interface BreakerState {
   /** Epoch ms of the last dispatch admitted past the throttle gate. Drives the
    * per-engine minimum inter-request interval. 0 = never dispatched. */
   lastDispatchAt: number;
-  /** Epoch ms of the last FORCED recovery probe granted for this engine. Bounds
-   * how often a collapsed pool may cut an open breaker's cooldown short.
-   * 0 = never force-probed. */
-  lastForcedProbeAt: number;
+  /** Epoch ms the forced-probe spacing window last restarted for this engine.
+   * Set BOTH when the breaker opens and when a forced probe is granted, so the
+   * spacing is measured from the open — not only from a previous forced probe.
+   * Setting it at the open is what makes a short cooldown expire on its own
+   * instead of being cut short by the very first forced probe. 0 = never
+   * opened. */
+  forcedProbeGateAt: number;
   /** Last engine error, surfaced via getBreakerSnapshot() for doctor. */
   lastError?: string;
 }
@@ -241,7 +244,7 @@ function getState(name: string): BreakerState {
       trips: 0,
       sessionTrips: 0,
       lastDispatchAt: 0,
-      lastForcedProbeAt: 0,
+      forcedProbeGateAt: 0,
     };
     breakers.set(name, s);
   }
@@ -259,6 +262,12 @@ function recordFailure(
   if (state.failures >= threshold && state.tripUntil === 0) {
     const effectiveCooldown = cooldownForFailure(failureClass, cooldownMs);
     state.tripUntil = Date.now() + effectiveCooldown;
+    // Start the forced-probe spacing window at the open. Without this the very
+    // first forced probe on an engine is always granted (the gate initialises
+    // to 0), which would re-hit a rate-limited engine inside the short cooldown
+    // the remote just asked for — the self-inflicted throttling this module
+    // exists to prevent.
+    state.forcedProbeGateAt = Date.now();
     // A rate-limit (429) block is transient: the engine is up and throttling.
     // It opens on the short window but must NOT feed the exponential-backoff
     // (`trips`) or chronic-health (`sessionTrips`) counters — otherwise a burst
@@ -289,6 +298,11 @@ function reopenWithBackoff(
   cooldownMs: number,
   failureClass: FailureClass,
 ): number {
+  // Restart the forced-probe spacing window from THIS reopen, for both classes.
+  // Measuring from the grant instead would let a slow-failing probe (or a
+  // reclaimed stuck one, granted a full cooldown earlier) be followed almost
+  // immediately by the next forced probe.
+  state.forcedProbeGateAt = Date.now();
   if (failureClass === 'rate-limit') {
     const backoffMs = Math.min(
       cooldownForFailure('rate-limit', cooldownMs),
@@ -321,20 +335,28 @@ function recordSuccess(name: string): void {
 }
 
 /**
- * Minimum wall-clock spacing between FORCED recovery probes of one engine.
+ * Minimum wall-clock spacing between FORCED recovery probes of one engine,
+ * measured from {@link BreakerState.forcedProbeGateAt} — which is stamped both
+ * when the breaker OPENS and when a forced probe is granted.
  *
- * Chosen at 10s for two hard constraints, not by taste:
- *   - It must sit ABOVE {@link TRANSIENT_COOLDOWN_MS} (5s), the cooldown a
- *     rate-limited (429) engine gets. A 429 is the remote telling us to back
- *     off for a window it chose; cutting that window short would be the same
- *     self-inflicted rate-limiting this module exists to avoid. Above 5s, a
- *     429 cooldown always elapses on its own and is never preempted.
- *   - It must sit above the largest registered inter-request interval
- *     ({@link MARGINALIA_MIN_INTERVAL_MS}, 2s) so the throttle gate is never
- *     the binding constraint on a forced probe.
- * The result bounds forced probes at 6/min/engine, and only while the pool is
- * collapsed. That is strictly gentler than the existing probe-only roster,
- * which the recovery wave already dispatches with no spacing at all.
+ * Set to 10s so it sits above {@link TRANSIENT_COOLDOWN_MS} (5s), the cooldown a
+ * rate-limited (429) engine gets. A 429 is the remote naming a window it wants;
+ * cutting that window short would be the same self-inflicted rate-limiting this
+ * module exists to prevent. Because the gate is stamped at the open, a ≤10s
+ * cooldown ALWAYS elapses on its own and the engine is never force-probed early
+ * — including on the first forced probe of a given engine. (Stamping only on
+ * grant would leave the gate at 0 and make that first probe unconditional,
+ * which is exactly the hole this stamping closes.)
+ *
+ * What this constant does NOT govern: the per-engine inter-request interval.
+ * That gate is separate and runs FIRST, keyed on `lastDispatchAt`. A granted
+ * probe is therefore permission from the breaker, not a guarantee of dispatch —
+ * a throttled engine can still skip it, and should, because its rate limit
+ * outranks our wish to recover it.
+ *
+ * Net effect: at most one forced probe per engine per 10s, only while the pool
+ * is collapsed. Strictly gentler than the probe-only roster the recovery wave
+ * already dispatches with no spacing at all.
  */
 export const FORCED_PROBE_MIN_SPACING_MS = 10_000;
 
@@ -363,8 +385,8 @@ export function requestRecoveryProbe(name: string): boolean {
   if (state.probing) return false;
   const now = Date.now();
   if (now >= state.tripUntil) return false;
-  if (now - state.lastForcedProbeAt < FORCED_PROBE_MIN_SPACING_MS) return false;
-  state.lastForcedProbeAt = now;
+  if (now - state.forcedProbeGateAt < FORCED_PROBE_MIN_SPACING_MS) return false;
+  state.forcedProbeGateAt = now;
   state.tripUntil = now;
   log.info('breaker forced recovery probe granted', {
     engine: name,

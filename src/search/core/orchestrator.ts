@@ -628,6 +628,15 @@ export async function runV1Search(
     ...probeEntries,
     ...entries.filter((e) => skippedPrimary.includes(e.engine.name)),
   ];
+  // Basis for the collapse / thin verdict further down. Starts as the primary
+  // wave's numbers and is RE-DERIVED after a recovery wave, because a wave that
+  // genuinely restored engines has changed the very thing the verdict reports.
+  // Judging a recovered pool on the primary wave's numbers would tell the caller
+  // the pool collapsed when it just repaired itself — and now that the verdict
+  // drives a user-facing notice and a second-backend fallback, that stale label
+  // would cost a wasted search as well as an untrue one.
+  let verdictHealthy = primaryHealthy;
+  let verdictTotal = outcomes.length;
   if (
     outcomes.length > 0 &&
     primaryHealthy < poolHealthFloor(outcomes.length) &&
@@ -673,6 +682,10 @@ export async function runV1Search(
       });
     }
     const healthy = allOutcomes.filter((o) => o.ok && o.results.length > 0).length;
+    // Re-derive the verdict basis: these are the engines that actually answered
+    // once recovery finished, which is what the caller's response reflects.
+    verdictHealthy = healthy;
+    verdictTotal = allOutcomes.length;
     poolDegraded = {
       healthy,
       total: allOutcomes.length,
@@ -747,19 +760,19 @@ export async function runV1Search(
   // re-dispatch (which recovered genuine recall) must NOT. Surfaced as a
   // dedicated reason so the core-provider floor can gate on it precisely.
   const poolCollapsed =
-    outcomes.length > 0 && primaryHealthy < poolHealthFloor(outcomes.length);
+    verdictTotal > 0 && verdictHealthy < poolHealthFloor(verdictTotal);
   if (poolCollapsed) {
     const reasons = poolDegraded?.reasons ?? [];
     poolDegraded = {
-      healthy: poolDegraded?.healthy ?? primaryHealthy,
-      total: poolDegraded?.total ?? outcomes.length,
+      healthy: poolDegraded?.healthy ?? verdictHealthy,
+      total: poolDegraded?.total ?? verdictTotal,
       degraded: true,
       reasons: reasons.includes('pool_collapsed') ? reasons : [...reasons, 'pool_collapsed'],
     };
   } else if (
-    outcomes.length > 0 &&
-    primaryHealthy <= THIN_POOL_MAX_CONTRIBUTORS &&
-    primaryHealthy < outcomes.length
+    verdictTotal > 0 &&
+    verdictHealthy <= THIN_POOL_MAX_CONTRIBUTORS &&
+    verdictHealthy < verdictTotal
   ) {
     // THIN-pool signal (advisory only, distinct from collapse). Two conditions,
     // both required:
@@ -780,8 +793,8 @@ export async function runV1Search(
     // genuine collapse).
     const reasons = poolDegraded?.reasons ?? [];
     poolDegraded = {
-      healthy: poolDegraded?.healthy ?? primaryHealthy,
-      total: poolDegraded?.total ?? outcomes.length,
+      healthy: poolDegraded?.healthy ?? verdictHealthy,
+      total: poolDegraded?.total ?? verdictTotal,
       degraded: true,
       reasons: reasons.includes('thin_pool') ? reasons : [...reasons, 'thin_pool'],
     };
