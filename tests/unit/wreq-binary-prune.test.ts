@@ -383,9 +383,17 @@ describe('the postinstall driver finds wreq-js and prunes it', () => {
     // The other direction, and the reason the bound is a bound rather than a deletion: tightening
     // must not cost us the copy we are actually entitled to prune. Same shape as above, except
     // `proj` has its own hoisted wreq-js — that one goes, and `outer`'s still does not.
+    //
+    // ⚠ THE VERB IS PART OF THE ASSERTION, and this was the one driver test in this file without
+    // it. On a host outside the loader's matrix `expectedSurvivors()` is the WHOLE tree, and so is
+    // `outer`'s expectation — so both survivor checks pass identically whether the walk reached
+    // `proj` at all, whether the driver found the package, and whether it ran. Every CI leg is a
+    // supported host, which is exactly what makes that latent rather than harmless: it would go on
+    // passing until the day it mattered. The sibling tests already pair the two; this one now does.
     const { outer, proj, wigolo } = makeNestedLayout();
     plantWreq(proj);
-    runPrune(wigolo);
+    const out = runPrune(wigolo);
+    expect(out).toMatch(expectedPruneVerb());
     expect(survivors(proj)).toEqual(expectedSurvivors());
     expect(survivors(outer)).toEqual([...FULL_TREE].sort());
   });
