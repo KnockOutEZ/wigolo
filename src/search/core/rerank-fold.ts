@@ -50,12 +50,77 @@ export type RerankFn = (
   candidates: { id: string; text: string }[],
 ) => Promise<Map<string, number>>;
 
+/**
+ * Why the rerank blend contributed NO ordering signal to this result set.
+ *
+ * All three collapse the blend to a flat 0.5 for EVERY member, which is why the
+ * emitted `cross_encoder` component cannot be used to tell them apart — nor to
+ * tell any of them apart from a middling result whose score legitimately
+ * normalises to 0.5 in a healthy spread. The reason is therefore captured HERE,
+ * at the only place that still knows which branch ran.
+ *
+ *  - `unavailable`      the reranker threw, so it never scored anything. The
+ *                       fold returns the composite ordering untouched and no
+ *                       `cross_encoder` component is emitted at all.
+ *  - `no_relevant_match` the reranker RAN and scored every candidate below the
+ *                       relevance floor — it judged the whole set irrelevant.
+ *                       The verdict is discarded and the base ordering ships.
+ *  - `uniform_scores`   the reranker RAN and returned bit-identical scores, so
+ *                       the min-max stretch is degenerate. Indistinguishable
+ *                       from a genuine tie, so it asserts nothing about
+ *                       relevance and renders NO user-facing notice.
+ */
+export type RerankSignalReason = 'unavailable' | 'no_relevant_match' | 'uniform_scores';
+
+export interface RerankFoldSignal {
+  reason: RerankSignalReason;
+  /** How many results the neutralised blend covered (the rerank window). */
+  window: number;
+  /** Best raw relevance score in the window. Absent when the reranker never ran. */
+  max_score?: number;
+}
+
 export interface FoldOptions {
   queries: string[];
   deep?: boolean;
   maxResults?: number;
   rerank?: RerankFn;
+  /**
+   * Called at most once per fold when the rerank blend carried no ordering
+   * signal for the window. Never called on a healthy rerank, so a caller can
+   * treat any invocation as "this result set is ordered by the base ranking".
+   */
+  onSignal?: (signal: RerankFoldSignal) => void;
 }
+
+/** Response field carrying the user-facing ranking notice. Single source of
+ * truth: the provider assigns through it and the instruction-sync test asserts
+ * the shipped signal list names it, so a rename cannot silently drift. */
+export const RANKING_NOTICE_FIELD = 'ranking_notice';
+
+/**
+ * User-facing text per reason, in capability language.
+ *
+ * `uniform_scores` is deliberately ABSENT. A uniform score set is exactly what a
+ * genuine tie looks like — the reranker judging every result equally relevant is
+ * bit-identical to the degenerate case — so a notice there would assert a cause
+ * we cannot know. Same discipline as `buildPoolAlternatives`, which fires on
+ * `pool_collapsed` alone and never on the common, benign `degraded`.
+ */
+const RANKING_NOTICE_TEXT: Partial<Record<RerankSignalReason, string>> = {
+  unavailable:
+    'Reranking did not run for this search, so these results carry only the base cross-engine ranking and were never re-scored for how well they answer the query. Ordering reflects which results the search engines agreed on, not which are most relevant.',
+  no_relevant_match:
+    'The ML reranker scored every result in this set below its relevance floor — it found nothing here that genuinely matches the query. Ordering fell back to the base cross-engine ranking, so the top result is the most agreed-upon, not the most relevant. Treat these results as low-confidence and consider rephrasing with more specific or less ambiguous terms.',
+};
+
+/** The user-facing notice for a signal, or undefined when the reason renders none. */
+export function buildRankingNotice(signal: RerankFoldSignal): string | undefined {
+  return RANKING_NOTICE_TEXT[signal.reason];
+}
+
+/** Reasons that render a user-facing notice (drives the instruction-sync test). */
+export const RANKING_NOTICE_REASONS = Object.keys(RANKING_NOTICE_TEXT) as RerankSignalReason[];
 
 function defaultRerankFn(): RerankFn {
   return async (query, candidates) => {
@@ -112,6 +177,10 @@ export async function foldRerankIntoOrdering(
     }
   } catch (err) {
     log.debug('rerank-fold failed, keeping composite ordering', { error: String(err) });
+    // The literal "the reranker did not run" case. It returns early WITHOUT a
+    // cross_encoder component, so nothing downstream could ever have inferred
+    // it from the emitted scores — the signal is the only trace.
+    opts.onSignal?.({ reason: 'unavailable', window: windowResults.length });
     return results;
   }
   // candidates the provider never scored -> treat as irrelevant (below the
@@ -127,10 +196,26 @@ export async function foldRerankIntoOrdering(
   // is meaningless and would only inflate the least-bad junk. Use a neutral 0.5
   // rerank blend for the whole batch instead. Otherwise stretch normally.
   const maxLogit = Math.max(...logits);
-  const normRerank =
-    Number.isFinite(maxLogit) && maxLogit < RERANK_CALIBRATION_FLOOR
-      ? () => 0.5
-      : makeNormaliser(logits);
+  const allJunk = Number.isFinite(maxLogit) && maxLogit < RERANK_CALIBRATION_FLOOR;
+  const normRerank = allJunk ? () => 0.5 : makeNormaliser(logits);
+
+  // Report a neutralised blend to the caller. Keyed on the SOURCE branch, never
+  // on the emitted 0.5 — that value is ambiguous by construction (see
+  // RerankSignalReason). The two branches are mutually exclusive: `allJunk`
+  // tests the absolute verdict level, so a tie is only reachable below it.
+  if (allJunk) {
+    opts.onSignal?.({
+      reason: 'no_relevant_match',
+      window: windowResults.length,
+      max_score: maxLogit,
+    });
+  } else if (maxLogit - Math.min(...logits) === 0) {
+    opts.onSignal?.({
+      reason: 'uniform_scores',
+      window: windowResults.length,
+      max_score: maxLogit,
+    });
+  }
 
   // Junk-floor guard: a result that shares NONE of the query's rare COMPOUND
   // terms cannot ride the cross-encoder ALONE into the confidently-relevant

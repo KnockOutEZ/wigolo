@@ -650,6 +650,14 @@ export interface SearchOutput {
   /** Set by search_depth=ultra-fast on a cache miss; tells the caller to
    * retry with a higher depth. */
   notice?: string;
+  /** Emitted only when reranking contributed NO ordering signal to this result
+   * set — either it could not run, or it scored every result below its
+   * relevance floor. Says plainly that the ordering is the base cross-engine
+   * ranking rather than a relevance ranking. Mirrors `find_similar`'s
+   * `cold_start`: a human-readable string, present only when it fires. A
+   * DEDICATED field rather than `notice` because `notice` is overwritten by
+   * `warning` on the stream_answer path (server/search-response.ts). */
+  ranking_notice?: string;
   /** Emitted only when the query collides with a brand domain in the
    * top-3 results. Carries reason + disambiguation suggestions so callers
    * can pivot to a clearer phrasing. */
