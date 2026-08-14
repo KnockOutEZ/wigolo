@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // @ts-expect-error — plain-JS build tooling, deliberately not part of the typed src/ graph.
@@ -237,6 +237,45 @@ function buildMultiCopyTree(): string {
   return root;
 }
 
+/**
+ * A tree where wigolo itself was nested: `<root>/node_modules/foo/node_modules/wigolo`, which npm
+ * produces when foo pins a version of one of wigolo's dependencies that the hoisted copy cannot
+ * satisfy. Both onnxruntime copies sit OUTSIDE wigolo's install root — one hoisted above it, one
+ * nested off to the side under `bar` — so the on-disk scan can see neither.
+ *
+ * @returns the install root.
+ */
+function buildNestedWigoloTree(): string {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-ort-nested-')));
+  const modules = join(root, 'node_modules');
+  const store = join(root, '.store');
+  mkdirSync(store, { recursive: true });
+  writePkg(root, { name: 'some-users-app', version: '0.0.0' });
+
+  buildOrtCopy(join(modules, 'onnxruntime-node'), {
+    bytesPerPair: 2048,
+    symlinkPlatform: 'none',
+    store,
+    tag: 'hoisted',
+  });
+  buildPkgWithNestedOrt(join(modules, 'bar'), store, 'sibling');
+
+  writePkg(join(modules, 'foo'), { name: 'foo', version: '1.0.0' });
+  writePkg(join(modules, 'foo', 'node_modules', 'wigolo'), { name: 'wigolo', version: '0.0.0' });
+
+  return root;
+}
+
+function buildPkgWithNestedOrt(pkgDir: string, store: string, tag: string): void {
+  writePkg(pkgDir, { name: pkgDir.split(sep).pop(), version: '1.0.0' });
+  buildOrtCopy(join(pkgDir, 'node_modules', 'onnxruntime-node'), {
+    bytesPerPair: 2048,
+    symlinkPlatform: 'none',
+    store,
+    tag,
+  });
+}
+
 /** Exactly what `scripts/prune/run.mjs` uses to find the hoisted copy, bound to `root`'s tree. */
 function hoistedResolverFor(root: string) {
   const req = createRequire(join(root, 'noop.cjs'));
@@ -358,6 +397,94 @@ describe('locateOrtRoots finds every copy on disk, not just the hoisted one', ()
       expect(roots).not.toContain(join(outer, 'node_modules', 'onnxruntime-node'));
     } finally {
       rmSync(outer, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the module resolver is load-bearing where the on-disk scan is blind', () => {
+  let root: string;
+  beforeAll(() => {
+    root = buildNestedWigoloTree();
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  const wigoloDir = () => join(root, 'node_modules', 'foo', 'node_modules', 'wigolo');
+
+  it('the on-disk scan alone finds NOTHING from a nested install position', () => {
+    // ⚠ The premise of the test below, asserted separately so the pair cannot both be satisfied
+    // by an accident. wigolo's install root here is `<root>/node_modules/foo`, and that subtree
+    // holds no onnxruntime-node: the hoisted copy is a level ABOVE it and bar's nested copy is
+    // off to the SIDE. A scan bounded to the caller's own tree — which it must be — cannot see
+    // either one, and no widening of the bound would be safe.
+    expect(
+      locateOrtRoots(() => {
+        throw new Error('MODULE_NOT_FOUND');
+      }, wigoloDir()),
+    ).toEqual([]);
+  });
+
+  it('rescues the hoisted copy through the resolver, which the scan cannot reach', () => {
+    // ⚠ Without this the `resolveFrom` branch has no test behind it, which is precisely the
+    // defect this slice was opened to fix — a resolution strategy nothing exercises. Node's own
+    // upward resolution walks `node_modules` ancestors and finds the hoisted copy from a position
+    // the bounded scan is blind to. Delete the branch and this tree prunes nothing at all.
+    const roots = locateOrtRoots(hoistedResolverFor(root), wigoloDir());
+    expect(roots).toEqual([join(root, 'node_modules', 'onnxruntime-node')]);
+  });
+});
+
+describe('findInstallRoot does not escape the package that called it', () => {
+  it('returns nothing for a checkout that has not been installed yet', () => {
+    // ⚠ The fallback branch is the only one with no `node_modules` on the path to halt it, so it
+    // is the only one that can genuinely escape upward. A bare checkout sitting under some
+    // unrelated install must yield NO copies rather than that install's — otherwise a prune run
+    // from a source tree deletes another project's binaries.
+    const bare = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-ort-bare-')));
+    try {
+      const store = join(bare, '.store');
+      mkdirSync(store, { recursive: true });
+      buildOrtCopy(join(bare, 'node_modules', 'onnxruntime-node'), {
+        bytesPerPair: 1024,
+        symlinkPlatform: 'none',
+        store,
+        tag: 'foreign',
+      });
+      const checkout = join(bare, 'somewhere', 'wigolo');
+      writePkg(checkout, { name: 'wigolo', version: '0.0.0' });
+      mkdirSync(join(checkout, 'scripts', 'prune'), { recursive: true });
+
+      const roots = locateOrtRoots(() => {
+        throw new Error('MODULE_NOT_FOUND');
+      }, join(checkout, 'scripts', 'prune'));
+      expect(roots).toEqual([]);
+    } finally {
+      rmSync(bare, { recursive: true, force: true });
+    }
+  });
+
+  it('still finds the tree of an installed checkout it is run from', () => {
+    // The must-FIRE half of the bound above. `npm install` in a checkout, then the postinstall
+    // runs from `<checkout>/scripts/prune` — the copy in the checkout's own node_modules is
+    // exactly what it is supposed to prune, and a bound that refused here would cost the win.
+    const bare = realpathSync(mkdtempSync(join(tmpdir(), 'wigolo-ort-checkout-')));
+    try {
+      const store = join(bare, '.store');
+      mkdirSync(store, { recursive: true });
+      writePkg(bare, { name: 'wigolo', version: '0.0.0' });
+      mkdirSync(join(bare, 'scripts', 'prune'), { recursive: true });
+      buildOrtCopy(join(bare, 'node_modules', 'onnxruntime-node'), {
+        bytesPerPair: 1024,
+        symlinkPlatform: 'none',
+        store,
+        tag: 'own',
+      });
+
+      const roots = locateOrtRoots(() => {
+        throw new Error('MODULE_NOT_FOUND');
+      }, join(bare, 'scripts', 'prune'));
+      expect(roots).toEqual([join(bare, 'node_modules', 'onnxruntime-node')]);
+    } finally {
+      rmSync(bare, { recursive: true, force: true });
     }
   });
 });

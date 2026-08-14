@@ -138,14 +138,14 @@ function subdirsFollowingLinks(dir) {
 /**
  * The root of the install `startDir` belongs to — the directory whose `node_modules` contains it.
  *
- * ⚠ THIS BOUND IS THE SAFETY PROPERTY, not a tidiness one. The obvious spelling is "walk up until
- * you find a node_modules", and from `~/project/node_modules/wigolo` that walk does not stop at
- * `~/project` — it keeps going and would happily delete binaries out of a `~/node_modules`
- * belonging to some other install that never asked to be pruned. Cutting at the LAST
- * `node_modules` segment of our own path answers "which tree am I part of" exactly.
- *
- * The fallback walk is for the other caller: a checkout, where nothing is under node_modules at
- * all, and the nearest ancestor that HAS one is the tree being operated on.
+ * ⚠ WHY THE PATH IS CUT RATHER THAN WALKED. The obvious spelling is "walk up until you find a
+ * node_modules", and its failure is that it stops too EARLY, not too late: from
+ * `~/project/node_modules/wigolo` it returns wigolo's OWN directory the moment wigolo has nested
+ * dependencies of its own, and then scans only wigolo's private subtree — finding neither the
+ * hoisted copy nor a sibling's nested one. (It cannot escape UPWARD from a dependency install:
+ * `~/project/node_modules` is on the path, so the walk always halts at `~/project` at the latest.)
+ * Cutting at the LAST `node_modules` segment answers "which tree am I part of" directly, and is
+ * the difference between finding both copies and finding none.
  */
 export function findInstallRoot(startDir) {
   const abs = resolve(startDir);
@@ -153,9 +153,17 @@ export function findInstallRoot(startDir) {
   const i = parts.lastIndexOf('node_modules');
   if (i > 0) return parts.slice(0, i).join(sep) || sep;
 
+  // Not under a node_modules at all: a checkout, or the throwaway tree the budget gate points
+  // argv[2] at. ⚠ Bounded to the caller's OWN package — the nearest ancestor holding a
+  // package.json, accepted only if it has a node_modules. Walking up for the first node_modules
+  // instead WOULD escape here, because unlike the branch above there is no node_modules on the
+  // path to halt it: from a checkout that has not been installed yet it sails past the checkout
+  // and returns whatever unrelated install happens to sit above it.
   let dir = abs;
   for (;;) {
-    if (existsSync(join(dir, 'node_modules'))) return dir;
+    if (existsSync(join(dir, 'package.json'))) {
+      return existsSync(join(dir, 'node_modules')) ? dir : null;
+    }
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -208,12 +216,17 @@ export function findOrtCopies(startDir, maxDepth = MAX_NEST_DEPTH) {
 /**
  * Every distinct `onnxruntime-node` install in the tree.
  *
- * Two strategies, unioned. `resolveFrom` is the module resolver's answer for the hoisted copy —
- * the one that delivers the whole win in an ordinary tree, and which handles the layouts the
- * resolver knows about and a directory walk does not. The on-disk scan from `scanFrom` is what
- * finds the copies hoisting did not produce. Keeping both is deliberate: this prune is fail-open
- * by contract, so two overlapping ways of finding a copy is the cheap side of the trade and the
- * Set makes the overlap free.
+ * Two strategies, unioned, and NEITHER is redundant.
+ *
+ * The on-disk scan from `scanFrom` finds the copies hoisting did not produce — every nested copy
+ * in the install tree, which the resolver cannot reach.
+ *
+ * `resolveFrom` is the module resolver's answer, and it is load-bearing in exactly the case the
+ * scan is blind to: when the caller sits BELOW the level the copies live at. wigolo installed as
+ * `<root>/node_modules/foo/node_modules/wigolo` has an install root of `<root>/node_modules/foo`,
+ * whose subtree holds no onnxruntime-node at all — the hoisted copy at `<root>/node_modules` is
+ * above it and a sibling's nested copy is off to the side. Node's own upward resolution is what
+ * still finds the hoisted one from there. Delete this branch and that tree prunes nothing.
  *
  * Finding nothing is not an error. onnxruntime-node arrives through optional dependencies, and a
  * tree that never installed one is a tree with nothing to prune.
