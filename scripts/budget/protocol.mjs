@@ -160,44 +160,48 @@ export const GATES = {
     title: 'production node_modules on disk',
     what: 'total bytes of the dependency tree a `npm i -g wigolo` user installs',
     artifact:
-      'a fresh `npm install --omit=dev --ignore-scripts --no-workspaces` into an empty directory holding only package.json + package-lock.json, with PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 and ELECTRON_SKIP_BINARY_DOWNLOAD=1, followed by `scripts/prune/run.mjs` — the postinstall that `--ignore-scripts` suppresses, and which now performs BOTH the onnxruntime-node platform prune and the onnxruntime-web payload prune',
+      'a fresh `npm install --omit=dev --ignore-scripts --no-workspaces` into an empty directory holding only package.json + package-lock.json, with PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 and ELECTRON_SKIP_BINARY_DOWNLOAD=1, followed by `scripts/prune/run.mjs` — the postinstall that `--ignore-scripts` suppresses, and which now performs ALL THREE of the onnxruntime-node platform prune, the onnxruntime-web payload prune and the wreq-js binary prune',
     statistic: 'single `du -sm node_modules` total',
     horizon: 'n/a — a completed install is at rest',
     runs: 1,
     unit: 'MiB',
     comparison: '<=',
-    limit: 429,
+    limit: 383,
     baseline:
-      'THE RUNNER IS THE AUTHORITY, because this gate runs on exactly one machine class: the `clean-machine-smoke` macos-latest / node 22 arm. Measured there on the S10-e PR across two runs of the same branch: 685 then 683 MiB clean — so the runner carries ~2 MiB of run-to-run variance of its own. Locally on darwin-arm64, same protocol, measured for THIS slice: 681 MiB raw, 503 MiB after the platform prune, 417 MiB after the onnxruntime-web payload prune. The 681 and the 503 both reproduce the previous slice\'s recorded local readings to the MiB, which is what licenses carrying the +4 laptop-to-runner offset across again: predicted clean runner reading is 685 - 178 - 86 = 421, and 429 is set from it. The 86 MiB payload delta\'s per-package diff is exactly ONE line — onnxruntime-web 93252 -> 5040 KiB — with 380 packages before and 380 after, nothing added, nothing removed. ⚠ Unlike the platform prune, this delta is NOT platform-conditional: the pruned `dist/` is WebAssembly and browser JS, byte-identical on every host, so the 86 MiB is the same figure on linux and win32 whenever this gate is wired there. ⚠ CONFIRMED ON THE RUNNER, after the fact: CI read pre-prune 683 and post-prune 419 against this prediction of 421 — 683 - 178 - 86 = 419 exactly, the 2 MiB gap being that the prediction was anchored to the WORSE of the two recorded runner readings (685) rather than the better (683). The anchor stays at the conservative 421 rather than moving down to the measured 419, on the same principle that set it: a clean build having MORE room than predicted is not a reason to take room away.',
+      'THE RUNNER IS THE AUTHORITY, because this gate runs on exactly one machine class: the `clean-machine-smoke` macos-latest / node 22 arm. Measured there on the S10-e PR across two runs of the same branch: 685 then 683 MiB clean — so the runner carries ~2 MiB of run-to-run variance of its own. CI has since read pre-prune 683 / post-prune 419 for the previous slice, which is the anchor this slice moves. ⚠ THIS SLICE MOVES THE ANCHOR BY A MEASURED DELTA RATHER THAN RE-DERIVING IT, which is the conservative operation: locally on darwin-arm64, on exactly the protocol the gate runs, THREE runs before and THREE after. Before: raw 683/681/682, post-prune 419/418/418. After: raw 682/682/682, post-prune 372/372/372 — dead flat across all three, and `wreq-js` itself goes 54 -> 8 MiB every time. The delta is 46 MiB (median 418 -> 372) and 421 - 46 = 375 is the new clean-build anchor. ⚠ NOTE THE LAPTOP HAS DRIFTED +1 SINCE THE PREVIOUS SLICE RECORDED 417 HERE — it now reads 418 for the same tree — which is exactly why the anchor is the previous runner-derived 421 minus a measured delta, not this laptop\'s 372 plus an offset. The delta is what reproduced; the absolute is what drifted. ⚠ PLATFORM-CONDITIONAL, AND MORE SO THAN THE ONNXRUNTIME PLATFORM PRUNE: the 46 MiB is the darwin/win32 figure, where exactly one binary survives. On linux BOTH the gnu and musl builds are kept deliberately (install-time libc detection cannot bind a run-time selection — see scripts/prune/wreq-binaries.mjs), so the saving there is ~38 MiB, not 46. This gate is wired on macOS only, so 375 is the darwin number; whoever wires linux must re-measure rather than carry this across. THE MANIFEST COULD NOT DO THIS: wreq-js publishes no platform-scoped subpackages at any napi naming convention (@wreq-js/darwin-arm64 and wreq-js-darwin-arm64 are both registry 404s), ships all seven binaries in one tarball via `files: ["dist","rust/*.node"]`, and declares os/cpu as the union of everything it supports, so npm filtering never excludes a byte. It was ALREADY in optionalDependencies, which installs in full.',
     // ⚠ THE THRESHOLD IS SET BY THE SMALLEST REGRESSION IT MUST CATCH, NOT BY A PERCENTAGE.
     //
-    // This gate now guards THREE reversions, spanning an order of magnitude:
+    // This gate now guards FOUR reversions, spanning an order of magnitude:
     //
     //   A. the platform prune stops happening — the postinstall is dropped, or a refactor makes
-    //      it silently no-op. Worth 178 MiB, landing at 421 + 178 = 599.
+    //      it silently no-op. Worth 178 MiB, landing at 375 + 178 = 553.
     //   B. the browser driver returns to `dependencies` from the optional PEER dependency S10-e
     //      moved it to. Worth exactly 17 MiB (`playwright` + `playwright-core`), landing at
-    //      421 + 17 = 438.
-    //   C. the onnxruntime-web payload prune stops happening — this slice's win, lost the same
-    //      way A would be. Worth 86 MiB, landing at 421 + 86 = 507.
+    //      375 + 17 = 392.
+    //   C. the onnxruntime-web payload prune stops happening — lost the same way A would be.
+    //      Worth 86 MiB, landing at 375 + 86 = 461.
+    //   D. the wreq-js binary prune stops happening — this slice's win, and it shares the same
+    //      single point of failure as A and C. Worth 46 MiB, landing at 375 + 46 = 421.
     //
-    // ⚠ B STILL BINDS, AND NEITHER A NOR C DOES. That is the whole derivation, and it is the
-    // same answer as last slice for the same reason: a limit only has to be under 599 to catch A
-    // and under 507 to catch C, but it has to be under 438 to catch B. The window is 421..438,
-    // still exactly 17 MiB wide — it has not widened once across three diet slices, because it
-    // is set by the SMALLEST regression and that regression has never been the one being won.
+    // ⚠ B STILL BINDS, AND NONE OF A, C OR D DOES. That is the whole derivation, and it is the
+    // same answer as the last three slices for the same reason: a limit only has to be under 553
+    // to catch A, under 461 to catch C and under 421 to catch D, but it has to be under 392 to
+    // catch B. The window is 375..392, still exactly 17 MiB wide — it has not widened once across
+    // four diet slices, because it is set by the SMALLEST regression and that regression has
+    // never been the one being won.
     //
-    // ⚠ THE TRAP THAT IS LIVE AT THESE NUMBERS, and it is not the one the previous slice pinned.
-    // Last slice the danger was "a tenth of the 178 MiB just won" (507 + 17.8 = 525 > 524). At
-    // this slice's numbers that same heuristic gives 421 + 8.6 = 430, which is SAFELY under 438
-    // — so restating it would be shipping a warning that is no longer true, exactly the thing
-    // the previous slice called out when it retired the 3% version. The live trap now is the
-    // one that grows with each diet slice: sizing headroom against the CUMULATIVE saving. Three
-    // slices have now taken 178 + 86 = 264 MiB off this artifact, and "a tenth of what we have
-    // won" gives 421 + 26.4 = 447, which is ABOVE 438 and would sail straight past regression B.
-    // A flat 5% (442) fails the same way. Only the smallest-regression rule survives all three.
+    // ⚠ THE TRAP THAT IS LIVE AT THESE NUMBERS. Re-checked rather than inherited, because pinning
+    // a trap that has gone safe is just a false claim in a test file — which is how the 3% form
+    // and the "a tenth of the 178 MiB just won" form were each retired in turn. At these numbers
+    // "a tenth of THIS slice's 46 MiB" gives 375 + 4.6 = 380, safely under 392, so that form is
+    // dead too. What remains live is the form that GROWS with each slice: sizing headroom against
+    // the CUMULATIVE saving. Four slices have now taken 178 + 86 + 46 = 310 MiB off this
+    // artifact, and "a tenth of what we have won" reads as modest while giving 375 + 31 = 406,
+    // ABOVE the 392 the driver regression lands on — and it is MORE dangerous than last slice,
+    // not less, clearing the binding regression by 14 MiB where it previously cleared it by 9.
+    // A flat 5% (394) fails the same way. Only the smallest-regression rule survives all four.
     //
-    // 429 keeps the same shape the threshold has carried since S10-e: 8 MiB (1.9%) of headroom
+    // 383 keeps the same shape the threshold has carried since S10-e: 8 MiB (2.1%) of headroom
     // above a clean build for transitive churn, 9 MiB of margin under the binding regression.
     //
     // ⚠ AND THE LOCAL NUMBER WAS NOT GOOD ENOUGH TO SET IT. This first shipped at 690, derived
@@ -206,19 +210,20 @@ export const GATES = {
     // actually runs on. Re-derived from the runner. Same machine-class lesson G-RSS-IDLE learned
     // the expensive way; it is cheaper here only because the gate was made to run first.
     //
-    // ⚠ WHICH APPLIES TO 429 TOO, and is why the +4 offset is carried explicitly rather than
-    // assumed away. 421 is a PREDICTION — laptop 417 plus the 4 MiB laptop-to-runner offset the
-    // S10-e slice measured — not a runner reading. What licenses the carry is that the same
-    // laptop, on the same protocol, reproduces BOTH previously recorded local readings exactly
-    // (681 raw, 503 post-platform-prune), so the offset is being applied to a number known to
-    // sit where it did when the offset was measured. It is still a prediction. If the runner
-    // comes back above 421, the anchor is the runner's number and 429 moves with it; the 438
-    // ceiling does not move, so the room to absorb that is 8 MiB and no more.
+    // ⚠ WHICH APPLIES TO 383 TOO. 375 is still a PREDICTION of a runner reading, but it is a
+    // different KIND of prediction than the one 429 carried, and a safer one. 421 was built by
+    // adding a measured laptop-to-runner offset to a laptop absolute. 375 is the runner's own
+    // last anchor (421) minus a delta measured six times on one laptop with zero spread — so the
+    // quantity being carried across machines is a DIFFERENCE between two trees, not an absolute
+    // that has to survive a machine change. That matters here because the laptop absolute
+    // visibly drifted +1 between slices while the delta did not move at all. If the runner comes
+    // back above 375, the anchor is the runner's number and 383 moves with it; the 392 ceiling
+    // does not move, so the room to absorb that is 8 MiB and no more.
     //
     // ⚠ WHY THE ARTIFACT NOW RUNS A SCRIPT. `--ignore-scripts` stays — it keeps third-party
     // postinstalls, and their network access, out of a gate that must not flake. But it also
-    // suppresses OUR postinstall, and a gate blind to the prunes is a gate that cannot see
-    // either of them being removed — regressions A and C. So the runner invokes `scripts/prune/run.mjs`
+    // suppresses OUR postinstall, and a gate blind to the prunes is a gate that cannot see any
+    // of them being removed — regressions A, C and D. So the runner invokes `scripts/prune/run.mjs`
     // itself afterwards. That is not a thumb on the scale: the prune is deterministic, offline,
     // and ours, and running it makes the measured tree CLOSER to what a real user installs, not
     // further from it. The residual gap — third-party postinstall effects — measured 2 MiB on
@@ -424,25 +429,42 @@ export const GATES = {
  * The failure window is 84 MiB, unchanged, and again not by luck: it is the sum of each gate's
  * own headroom above its clean reading (8 for G-DIET, 76 for G-ACQUIRE), and this slice moved
  * G-DIET's reading and limit together while deliberately keeping its headroom at 8.
+ */
+/*
+ * ⚠ RE-DERIVED AGAIN by the wreq-js binary prune, and once more only ONE input moved: G-DIET,
+ * whose clean reading goes 421 -> 375 and whose limit goes 429 -> 383. So today is 375 + 804 =
+ * 1179, post-flip is 375 + 518 = 893, and the joint bound is 383 + 880 = 1263.
  *
- * ⚠ AND THE PREDICTED THRESHOLD HAS NOW BEEN CROSSED — flagged, NOT acted on here. The previous
- * re-derivation wrote: "post-flip now stands at 1025 … one more diet slice of any size makes the
- * spec's original number reachable and this deferral re-derivable on its own terms." This is
- * that slice. Post-flip is 939, which is BELOW the spec's 1000 for the first time, so the
- * original justification for dropping G-TOTAL-DESKTOP — "unreachable in either world" — is now
- * true of only ONE world. It still holds today (1225 > 1000) and the deferral therefore still
- * stands, but the argument is no longer symmetric and the next slice to touch these gates should
- * re-derive this decision on its own terms rather than inherit it. Doing that here would mean
- * re-deriving a composed gate inside a slice whose evidence is about onnxruntime-web, which is
- * how thresholds get set from numbers nobody measured for the purpose. The assertion below pins
- * the crossing so it cannot be quietly forgotten.
+ * The failure window is 84 MiB, unchanged for the third consecutive slice, and again not by luck:
+ * it is the sum of each gate's own headroom above its clean reading (8 for G-DIET, 76 for
+ * G-ACQUIRE), and this slice moved G-DIET's reading and limit together while deliberately keeping
+ * its headroom at 8. The DECISION is unchanged: 84 MiB of window against an acquisition
+ * measurement whose own spread across hosts is 35 is not a gate, it is a coin toss with extra
+ * steps.
+ *
+ * ⚠ THE PREDICTED THRESHOLD WAS CROSSED LAST SLICE AND THIS SLICE DEEPENS THE CROSSING — flagged
+ * again, still NOT acted on here, and explicitly NOT inherited in silence. The re-derivation two
+ * slices ago wrote: "post-flip now stands at 1025 … one more diet slice of any size makes the
+ * spec's original number reachable". The onnxruntime-web slice was that slice and took post-flip
+ * to 939; this one takes it to 893. So the original justification for dropping G-TOTAL-DESKTOP —
+ * "unreachable in either world" — has now been false of the post-flip world for two consecutive
+ * slices, and the margin is widening (61 MiB below the spec limit, now 107) rather than hovering.
+ *
+ * The deferral STILL stands, on the same single leg it stood on last slice: today is 1179, and a
+ * shipped gate measures today, not post-flip. But "still true of one world" is a weaker claim
+ * every time a diet slice lands, and the honest read is that this decision is being kept alive by
+ * one number that four slices have now been pushing steadily toward the limit. Re-deriving it
+ * here would mean setting a composed threshold inside a slice whose evidence is about wreq-js
+ * binaries — which is exactly how thresholds get set from numbers nobody measured for the
+ * purpose. The assertion below pins both the crossing and its direction so that the next slice to
+ * touch these gates has to look at it rather than carry it.
  */
 export const G_TOTAL_DESKTOP_DROPPED = {
   specLimitMiB: 1000,
-  measuredTodayMiB: 1225,
-  measuredPostFlipMiB: 939,
-  jointBoundOfShippedGatesMiB: 1309,
-  reDeriveAtMiB: 1080,
+  measuredTodayMiB: 1179,
+  measuredPostFlipMiB: 893,
+  jointBoundOfShippedGatesMiB: 1263,
+  reDeriveAtMiB: 1034,
 };
 
 /**

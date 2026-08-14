@@ -157,23 +157,31 @@ describe("G-DIET's threshold is set by the regression it has to catch", () => {
    * the only machine that runs the gate. The anchor is the WORSE runner reading, not the better.
    */
   /*
-   * ⚠ RE-DERIVED AGAIN for the onnxruntime-web payload prune. Measured on this laptop, on the
-   * protocol the gate runs (`--ignore-scripts` install, then `scripts/prune/run.mjs`):
+   * ⚠ RE-DERIVED AGAIN for the wreq-js binary prune, and by a MEASURED DELTA rather than a fresh
+   * absolute. Six runs of the gate's own protocol on this laptop (`--ignore-scripts` install,
+   * then `scripts/prune/run.mjs`), three either side of the change:
    *
-   *   raw                  681 MiB  — reproduces S10-e's recorded local reading to the MiB
-   *   + platform prune     503 MiB  — reproduces the previous slice's recorded reading to the MiB
-   *   + web payload prune  417 MiB  — per-package diff is ONE line,
-   *                                   onnxruntime-web 93252 -> 5040 KiB, 380 packages both sides
+   *   before   raw 683 / 681 / 682     post-prune 419 / 418 / 418
+   *   after    raw 682 / 682 / 682     post-prune 372 / 372 / 372
    *
-   * The runner read 685 for the tree that measures 681 here, so the clean runner prediction is
-   * 685 - 178 - 86 = 421. That is a PREDICTION and the anchor moves to the runner's own number
-   * the moment CI produces one; what makes it usable is that BOTH earlier local figures on the
-   * chain reproduce exactly, so the offset is applied to a number known to sit where it did.
+   * `wreq-js` itself reads 54 -> 8 MiB on every one of the three. The delta is 46 MiB and it has
+   * no spread at all; CI's own last reading for the previous tree was 419, and the recorded
+   * anchor was the deliberately conservative 421, so 421 - 46 = 375.
+   *
+   * ⚠ WHY A DELTA AND NOT A NEW ABSOLUTE. The previous slice recorded 417 for the pre-change tree
+   * on this same laptop; it now reads 418. The absolute drifted between slices and the delta did
+   * not, so the delta is the quantity that survives the trip to the runner. This is still a
+   * prediction of a runner reading and the anchor moves to CI's number the moment it produces one.
+   *
+   * ⚠ AND IT IS THE DARWIN NUMBER. On linux the prune deliberately keeps BOTH libc builds, so the
+   * saving there is ~38 MiB rather than 46. The gate is wired on macOS only; wiring linux means
+   * re-measuring, not scaling this.
    */
-  const CLEAN_BUILD_MIB = 421;
-  const DRIVER_BACK_ON_DEFAULT_PATH_MIB = 421 + 17;
-  const PLATFORM_PRUNE_REVERTED_MIB = 421 + 178;
-  const WEB_PAYLOAD_PRUNE_REVERTED_MIB = 421 + 86;
+  const CLEAN_BUILD_MIB = 375;
+  const DRIVER_BACK_ON_DEFAULT_PATH_MIB = 375 + 17;
+  const PLATFORM_PRUNE_REVERTED_MIB = 375 + 178;
+  const WEB_PAYLOAD_PRUNE_REVERTED_MIB = 375 + 86;
+  const WREQ_BINARY_PRUNE_REVERTED_MIB = 375 + 46;
 
   it('passes the measured clean build', () => {
     expect(evaluate(GATES['G-DIET'], CLEAN_BUILD_MIB).pass).toBe(true);
@@ -200,19 +208,27 @@ describe("G-DIET's threshold is set by the regression it has to catch", () => {
     expect(evaluate(GATES['G-DIET'], WEB_PAYLOAD_PRUNE_REVERTED_MIB).pass).toBe(false);
   });
 
+  it('reds when the wreq-js binary prune stops happening', () => {
+    // The regression THIS slice adds, and it fails the same way A and C do: all three prunes live
+    // in the same postinstall, so a single dropped `postinstall` line loses every one of them.
+    // 46 MiB of native binaries for platforms this host cannot execute come back.
+    expect(evaluate(GATES['G-DIET'], WREQ_BINARY_PRUNE_REVERTED_MIB).pass).toBe(false);
+  });
+
   it('would NOT catch the 17 MiB one if sized against the CUMULATIVE saving', () => {
-    // ⚠ THE TRAP THIS ASSERTION EXISTS TO PIN, in its third form — and the form has to be
+    // ⚠ THE TRAP THIS ASSERTION EXISTS TO PIN, in its fourth form — and the form has to be
     // re-checked every slice, because pinning a trap that is no longer live is just a false
-    // claim in a test file. The 3% version was retired when 3% became safe; the previous
-    // slice's "a tenth of the 178 MiB just won" is retired here for the same reason, because at
-    // these numbers it gives 421 + 8.6 = 430, comfortably under 438.
+    // claim in a test file. The 3% version was retired when 3% became safe; "a tenth of the
+    // 178 MiB just won" was retired the slice after; and "a tenth of THIS slice's 46 MiB" is
+    // dead on arrival here, giving 375 + 4.6 = 380 against a ceiling of 392.
     //
-    // What IS live is the heuristic that grows with each diet slice. Three slices have now taken
-    // 178 + 86 = 264 MiB off this artifact, and "a tenth of what we have won" reads as modest
-    // while giving 421 + 26.4 = 447 — ABOVE the 438 the driver regression lands on. The gate
-    // would sail past the very thing it was guarding, and 264 MiB of wins would have cost the
-    // 17 MiB one.
-    const CUMULATIVE_SAVING_MIB = 178 + 86;
+    // What IS live is the heuristic that grows with each diet slice. Four slices have now taken
+    // 178 + 86 + 46 = 310 MiB off this artifact, and "a tenth of what we have won" reads as
+    // modest while giving 375 + 31 = 406 — ABOVE the 392 the driver regression lands on. It is
+    // MORE dangerous than it was last slice, not less: it clears the binding regression by 14 MiB
+    // where it previously cleared it by 9. The gate would sail past the very thing it was
+    // guarding, and 310 MiB of wins would have cost the 17 MiB one.
+    const CUMULATIVE_SAVING_MIB = 178 + 86 + 46;
     const sizedAgainstCumulative = Math.round(CLEAN_BUILD_MIB + CUMULATIVE_SAVING_MIB * 0.1);
     expect(sizedAgainstCumulative).toBeGreaterThan(DRIVER_BACK_ON_DEFAULT_PATH_MIB);
     expect(limitFor(GATES['G-DIET'])).toBeLessThan(sizedAgainstCumulative);
@@ -221,7 +237,7 @@ describe("G-DIET's threshold is set by the regression it has to catch", () => {
 
   it('still leaves a clean build room to grow', () => {
     // The other half of the constraint: a gate a clean build cannot pass is worse than no gate.
-    // 429 - 421 = 8 MiB on the machine that runs it, against the 4 MiB laptop-to-runner spread
+    // 383 - 375 = 8 MiB on the machine that runs it, against the 4 MiB laptop-to-runner spread
     // and ~2 MiB of commit-to-commit drift on this artifact — the same 8 the threshold has
     // carried since S10-e, which is what the 17 MiB window leaves room for once the 9 MiB
     // margin under the binding regression is kept.
@@ -618,16 +634,36 @@ describe('G-TOTAL-DESKTOP is dropped, not silently inherited', () => {
     // ⚠ WHY THIS EXISTS AND WHY IT IS NOT A RE-DERIVATION. G-TOTAL-DESKTOP was dropped as
     // "unreachable in either world". The onnxruntime-web prune took the post-flip composition
     // from 1025 to 939 and thereby falsified half of that sentence — exactly the crossing the
-    // previous re-derivation predicted would arrive with "one more diet slice of any size".
+    // re-derivation before it predicted would arrive with "one more diet slice of any size".
     //
     // The deferral still stands because TODAY is what a shipped gate would measure and today is
-    // 1225, comfortably over 1000. But an argument that has quietly lost half its support is the
-    // kind of thing that gets inherited for another three slices, so the state is pinned here
-    // rather than left in prose: the day someone re-derives this decision, this assertion is
-    // what tells them which half of it had already stopped being true.
+    // 1179, still over 1000. But an argument that has quietly lost half its support is the kind
+    // of thing that gets inherited for another three slices, so the state is pinned here rather
+    // than left in prose: the day someone re-derives this decision, this assertion is what tells
+    // them which half of it had already stopped being true.
     const d = G_TOTAL_DESKTOP_DROPPED;
     expect(d.measuredPostFlipMiB).toBeLessThan(d.specLimitMiB);
     expect(d.measuredTodayMiB).toBeGreaterThan(d.specLimitMiB);
+  });
+
+  it('records that the crossing is WIDENING, not hovering at the boundary', () => {
+    // ⚠ THE PART THAT WOULD OTHERWISE BE INHERITED SILENTLY. The assertion above has the same
+    // shape whether post-flip sits 1 MiB under the spec limit or 200 under, so on its own it
+    // cannot distinguish "a marginal crossing that might reverse with transitive churn" from "a
+    // decision whose premise is being demolished slice by slice". Two consecutive diet slices
+    // have now landed on the wrong side of it — 1025 -> 939 -> 893, a margin that has gone from
+    // -25 (i.e. still above) to 61 to 107 below — and the direction is monotone because every
+    // diet slice by construction only subtracts.
+    //
+    // Pinned as a floor rather than an equality so that the NEXT diet slice does not have to
+    // touch this test to land, but a slice that somehow reverses the trend does.
+    const d = G_TOTAL_DESKTOP_DROPPED;
+    expect(d.specLimitMiB - d.measuredPostFlipMiB).toBeGreaterThanOrEqual(107);
+
+    // And the leg the deferral is still standing on, stated as the quantity it actually is: the
+    // distance TODAY has left to fall before the last half of "unreachable in either world" goes
+    // too. When this reaches zero the decision is not deferrable any more, it is just wrong.
+    expect(d.measuredTodayMiB - d.specLimitMiB).toBe(179);
   });
 });
 
