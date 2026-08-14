@@ -26,6 +26,7 @@ coverage/
 benchmarks/extraction/output/
 benchmarks/extraction/.compare-cache/
 benchmarks/scrape-quality/output/
+benchmarks/profile/output/
 
 # Git worktrees
 .worktrees/
