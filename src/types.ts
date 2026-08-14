@@ -1125,6 +1125,25 @@ export interface CacheResultItem {
    * url_cache pages ⇒ false; human-authored notes ⇒ true), NOT curation.
    * Required so a caller never sees an untagged row. */
   trusted: boolean;
+  /** Set only when the output budget trimmed this row: 'partial' = body cut and
+   * marked, 'omitted' = body removed to fit. Absent means the body is complete —
+   * without this an emptied body reads as "this cached page is blank". */
+  truncated?: 'partial' | 'omitted';
+}
+
+/** Response-level report of an output budget that fired on a `cache` call. */
+export interface CacheTruncation {
+  /** The aggregate token budget that was applied (explicit or default). */
+  budget_tokens: number;
+  original_chars: number;
+  returned_chars: number;
+  dropped_chars: number;
+  /** Rows whose body was cut short. */
+  results_truncated: number;
+  /** Rows whose body was removed entirely to fit. */
+  results_omitted: number;
+  /** How to get the rest. */
+  hint: string;
 }
 
 export interface CacheStats {
@@ -1140,6 +1159,23 @@ export interface CacheOutput {
   cleared?: number;
   error?: string;
   changes?: ChangeReport[];
+  /** Present only when the output budget trimmed the response. */
+  truncation?: CacheTruncation;
+  /** Present only when the row cap stopped `check_changes` short of every match. */
+  changes_truncation?: ChangesTruncation;
+}
+
+/** Report of a `check_changes` run that the row cap stopped short. */
+export interface ChangesTruncation {
+  /** Cached entries the filters matched. */
+  matched: number;
+  /** Entries actually re-fetched and reported on. */
+  checked: number;
+  /** The caller's `limit`, present only when the hard ceiling reduced it. Absent
+   * means the limit in effect is the one that was asked for. */
+  limit_clamped_from?: number;
+  /** How to check the rest. */
+  hint: string;
 }
 
 export interface ChangeReport {

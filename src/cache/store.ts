@@ -472,13 +472,24 @@ export function getCachedSearchResults(
 
 const DEFAULT_FILTERED_LIMIT = 100;
 
-export function searchCacheFiltered(options: {
+export interface CacheFilter {
   query?: string;
   urlPattern?: string;
   since?: string;
-  limit?: number;
-}): CachedContent[] {
-  const db = getDatabase();
+}
+
+/**
+ * Shared FROM/WHERE for the filtered-cache queries.
+ *
+ * Extracted so the row query and the count query cannot drift: a count built
+ * from a second, hand-copied predicate would report a total for a different
+ * filter than the rows it is describing.
+ */
+function buildCacheFilterClauses(options: CacheFilter): {
+  fromClause: string;
+  whereClause: string;
+  params: unknown[];
+} {
   const conditions: string[] = [];
   const params: unknown[] = [];
   let fromClause = 'url_cache';
@@ -499,13 +510,38 @@ export function searchCacheFiltered(options: {
     params.push(options.since);
   }
 
-  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  return {
+    fromClause,
+    whereClause: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
+    params,
+  };
+}
+
+export function searchCacheFiltered(options: CacheFilter & { limit?: number }): CachedContent[] {
+  const db = getDatabase();
+  const { fromClause, whereClause, params } = buildCacheFilterClauses(options);
   const orderClause = options.query ? 'ORDER BY rank' : 'ORDER BY url_cache.fetched_at DESC';
   const limit = Math.max(1, Math.floor(options.limit ?? DEFAULT_FILTERED_LIMIT));
 
   const sql = `SELECT url_cache.* FROM ${fromClause} ${whereClause} ${orderClause} LIMIT ?`;
   const rows = db.prepare(sql).all(...params, limit) as DbRow[];
   return rows.map(rowToCachedContent);
+}
+
+/**
+ * How many cached entries a filter matches, ignoring any row cap.
+ *
+ * `searchCacheFiltered` always applies a LIMIT, so its result length cannot
+ * distinguish "this is everything" from "this is the first page". A caller that
+ * reports what it skipped needs the true total, not the length of the page it
+ * was handed.
+ */
+export function countCacheFiltered(options: CacheFilter): number {
+  const db = getDatabase();
+  const { fromClause, whereClause, params } = buildCacheFilterClauses(options);
+  const sql = `SELECT count(*) AS n FROM ${fromClause} ${whereClause}`;
+  const row = db.prepare(sql).get(...params) as { n: number } | undefined;
+  return row?.n ?? 0;
 }
 
 /**

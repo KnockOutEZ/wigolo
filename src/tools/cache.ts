@@ -1,5 +1,6 @@
 import {
   searchCacheFiltered,
+  countCacheFiltered,
   getCacheStats,
   clearCacheEntries,
   ftsSearchRanked,
@@ -8,7 +9,11 @@ import {
 import { detectChange } from '../cache/change-detector.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { reciprocalRankFusion, sortByRRFScore, buildRankMap } from '../search/rrf.js';
-import { applyAggregateMarkdownBudget } from '../search/evidence.js';
+import {
+  applyCacheOutputBudget,
+  buildChangesTruncation,
+  resolveCheckChangesLimit,
+} from '../cache/output-budget.js';
 import { getEmbedProvider } from '../providers/embed-provider.js';
 import { getVectorStore } from '../providers/vector-store.js';
 import {
@@ -40,11 +45,24 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
         since: input.since,
       });
 
-      const entries = searchCacheFiltered({
+      // Every entry here is re-fetched over the network, so the row cap bounds
+      // live requests as much as output. It is passed to the store explicitly:
+      // relying on the store's own default silently capped the work at 100 and
+      // made an explicit larger `limit` inert, with nothing in the response
+      // saying so. The true match count comes from a count query because a
+      // LIMITed result length cannot tell "everything" from "the first page".
+      const filter = {
         query: input.query,
         urlPattern: input.url_pattern,
         since: input.since,
-      });
+      };
+      const checkLimit = resolveCheckChangesLimit(input.limit);
+      const entries = searchCacheFiltered({ ...filter, limit: checkLimit });
+      // A short page proves there was nothing more to take. Only a full page is
+      // ambiguous between "everything" and "the first page", so only then is the
+      // extra count worth a scan.
+      const matchedCount =
+        entries.length < checkLimit ? entries.length : countCacheFiltered(filter);
 
       const changes: ChangeReport[] = [];
       for (const entry of entries) {
@@ -91,6 +109,12 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
         }
       }
 
+      if (matchedCount > entries.length) {
+        return {
+          changes,
+          changes_truncation: buildChangesTruncation(matchedCount, entries.length, input.limit),
+        };
+      }
       return { changes };
     }
 
@@ -122,7 +146,7 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
         limit: input.limit,
       });
       const results = await runHybridSearch(input);
-      if (results !== null) return { results: applyBudget(results, input.max_tokens_out) };
+      if (results !== null) return applyCacheOutputBudget(results, input.max_tokens_out);
       // fall through to FTS-only when hybrid was unavailable
     }
 
@@ -154,25 +178,11 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
     // `limit`. Guarded — artifact retrieval must never error the cache tool.
     const artifactHits = input.query ? await artifactCacheResults(input.query, limit) : [];
     const merged = dedupeByUrl([...mapped, ...artifactHits]).slice(0, limit);
-    return { results: applyBudget(merged, input.max_tokens_out) };
+    return applyCacheOutputBudget(merged, input.max_tokens_out);
   } catch (err) {
     log.error('Cache tool error', { error: String(err) });
     return { error: err instanceof Error ? err.message : String(err) };
   }
-}
-
-// Trim the aggregate markdown body across results so the response stays under
-// `max_tokens_out`. Bodies past the budget are emptied; results never disappear
-// from the list (a callers can still see URL/title/fetched_at for trimmed rows).
-function applyBudget(results: CacheResultItem[], maxTokensOut?: number): CacheResultItem[] {
-  if (maxTokensOut === undefined) return results;
-  applyAggregateMarkdownBudget(
-    results,
-    (r) => r.markdown,
-    (r, body) => { r.markdown = body; },
-    { maxTokensOut },
-  );
-  return results;
 }
 
 /**
