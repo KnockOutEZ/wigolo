@@ -12,18 +12,19 @@ import type { CacheResultItem, CacheTruncation, ChangesTruncation } from '../typ
  *
  * Sized against the real corpus (1,134 cached pages, ~11.3M chars of markdown):
  * a page is p50 1,402 / p90 7,098 / p99 13,086 tokens, so a default-limit
- * (5-row) response is p50 11,816 / p90 21,768 tokens.
- *   - 16,000 leaves 72% of default-limit responses untouched and holds 99.6% of
- *     single cached pages whole.
+ * (5-row) response is p50 11,879 / p90 22,171 tokens.
+ *   - 16,000 leaves 72.0% of default-limit responses untouched and holds 99.6%
+ *     of single cached pages whole.
  *   - The repo-wide 4,000 used by search/agent/find_similar would leave only
- *     5.7% untouched — those tools return excerpts, this one returns whole
+ *     5.6% untouched — those tools return excerpts, this one returns whole
  *     cached pages, which is why the number differs.
  * The cap costs a caller ~8% of a 200k context window instead of the ~21% the
  * reported call actually spent.
  *
- * Every figure above comes from `scripts/derive-cache-budget.mjs`, which reads a
- * real cache and prints them — run it to re-check this number against a cache
- * whose contents have moved on, rather than trusting a measurement frozen here.
+ * Every figure above comes from `scripts/derive-cache-budget.mjs` at its default
+ * seed. The response percentiles are sampled, so the seed is fixed and the run is
+ * reproducible — re-run it to check these against a cache whose contents have
+ * moved on, rather than trusting a measurement frozen here.
  */
 export const DEFAULT_CACHE_MAX_TOKENS_OUT = 16000;
 

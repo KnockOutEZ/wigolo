@@ -22,6 +22,27 @@ const DEFAULT_ROW_LIMIT = 5; // DEFAULT_CACHE_QUERY_LIMIT
 const CANDIDATES = [4000, 8000, 12000, 16000, 20000, 40000];
 const DRAWS = 20000;
 
+/**
+ * Seeded PRNG (mulberry32). The sampling below is what turns page sizes into
+ * "% of responses untouched", and with an unseeded Math.random those figures
+ * moved ~±0.4pp per run — enough that a reader re-checking a cited number could
+ * not tell a real drift in the corpus from sampling noise. A provenance tool has
+ * to be reproducible or it is not provenance. Override with SEED=<int>.
+ */
+function makeRng(seed) {
+  let a = seed >>> 0;
+  return function rng() {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const SEED = Number(process.env.SEED ?? 20260815);
+const rng = makeRng(SEED);
+
 const dbPath = process.argv[2] ?? join(homedir(), '.wigolo', 'wigolo.db');
 const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 
@@ -43,7 +64,7 @@ if (pages.length === 0) {
 const sorted = pages.map((p) => p.tokens).sort((a, b) => a - b);
 const pct = (arr, p) => arr[Math.floor((arr.length - 1) * p)];
 
-console.log(`corpus: ${dbPath}`);
+console.log(`corpus: ${dbPath}  (seed=${SEED}, draws=${DRAWS})`);
 console.log(`pages=${pages.length} chars=${pages.reduce((n, p) => n + p.chars, 0)}`);
 console.log(
   `page tokens: p50=${pct(sorted, 0.5)} p75=${pct(sorted, 0.75)} ` +
@@ -56,7 +77,7 @@ console.log(
 const sums = [];
 for (let i = 0; i < DRAWS; i++) {
   let s = 0;
-  for (let j = 0; j < DEFAULT_ROW_LIMIT; j++) s += sorted[Math.floor(Math.random() * sorted.length)];
+  for (let j = 0; j < DEFAULT_ROW_LIMIT; j++) s += sorted[Math.floor(rng() * sorted.length)];
   sums.push(s);
 }
 sums.sort((a, b) => a - b);
@@ -75,6 +96,11 @@ for (const b of CANDIDATES) {
 
 // check_changes returns reports, not bodies. Cost the widest report shape and
 // see how many fit the same budget.
+//
+// NOTE: this prices the WHOLE corpus as reports to get a per-report token cost.
+// It is NOT a measurement of what the tool ever returned — the tool's own row cap
+// bounds that, and always did. Reading this total as a tool-path figure is a
+// mistake that has already been made once.
 const CHOSEN = 16000;
 const widest = JSON.stringify({
   changes: pages.map((p) => ({
@@ -87,7 +113,8 @@ const widest = JSON.stringify({
 });
 const perReport = countTokens(widest) / pages.length;
 console.log(
-  `\ncheck_changes: unbounded=${widest.length} chars / ${countTokens(widest)} tokens ` +
+  `\ncheck_changes report cost (whole corpus priced as reports, NOT a tool-path ` +
+  `figure): ${widest.length} chars / ${countTokens(widest)} tokens ` +
   `over ${pages.length} entries`,
 );
 console.log(
