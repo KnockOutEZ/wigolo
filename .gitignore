@@ -26,7 +26,9 @@ coverage/
 benchmarks/extraction/output/
 benchmarks/extraction/.compare-cache/
 benchmarks/scrape-quality/output/
-benchmarks/profile/output/
+# benchmarks/profile/output/ is deliberately NOT ignored: the profiling spike's
+# deliverable IS the numbers, and they are not re-derivable without a
+# network-dependent, host-specific run. See benchmarks/profile/report.ts.
 
 # Git worktrees
 .worktrees/

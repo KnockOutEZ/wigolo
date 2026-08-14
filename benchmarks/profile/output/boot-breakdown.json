@@ -1,0 +1,182 @@
+{
+  "generated_at": "2026-08-14T23:19:17.938Z",
+  "runs": 2,
+  "totals": {
+    "n": 2,
+    "min": 185.4,
+    "median": 210.3,
+    "max": 235.1
+  },
+  "rss_mb": {
+    "n": 2,
+    "min": 106.2,
+    "median": 106.9,
+    "max": 107.6
+  },
+  "stages": [
+    {
+      "name": "node_runtime_boot",
+      "n": 2,
+      "min": 20.6,
+      "median": 22,
+      "max": 23.4
+    },
+    {
+      "name": "import_config",
+      "n": 2,
+      "min": 4.1,
+      "median": 4.9,
+      "max": 5.6
+    },
+    {
+      "name": "import_server_graph",
+      "n": 2,
+      "min": 143.7,
+      "median": 168.7,
+      "max": 193.8
+    },
+    {
+      "name": "import_db_module",
+      "n": 2,
+      "min": 0.1,
+      "median": 0.1,
+      "max": 0.1
+    },
+    {
+      "name": "init_database",
+      "n": 2,
+      "min": 8.7,
+      "median": 9,
+      "max": 9.3
+    },
+    {
+      "name": "embedding_service_init",
+      "n": 2,
+      "min": 0.7,
+      "median": 0.8,
+      "max": 0.9
+    },
+    {
+      "name": "browser_pool_ctor",
+      "n": 2,
+      "min": 0.1,
+      "median": 0.1,
+      "max": 0.1
+    },
+    {
+      "name": "load_plugins",
+      "n": 2,
+      "min": 0.1,
+      "median": 0.1,
+      "max": 0.1
+    },
+    {
+      "name": "initSubsystems_after_pieces",
+      "n": 2,
+      "min": 2.4,
+      "median": 2.4,
+      "max": 2.4
+    },
+    {
+      "name": "createMcpServer",
+      "n": 2,
+      "min": 2.1,
+      "median": 2.2,
+      "max": 2.2
+    }
+  ],
+  "raw": [
+    {
+      "total_ms": 235.12451171875,
+      "rss": 112803840,
+      "marks": [
+        {
+          "name": "node_runtime_boot",
+          "ms": 20.60107421875
+        },
+        {
+          "name": "import_config",
+          "ms": 5.639404296875
+        },
+        {
+          "name": "import_server_graph",
+          "ms": 193.835693359375
+        },
+        {
+          "name": "import_db_module",
+          "ms": 0.07568359375
+        },
+        {
+          "name": "init_database",
+          "ms": 9.2568359375
+        },
+        {
+          "name": "embedding_service_init",
+          "ms": 0.895751953125
+        },
+        {
+          "name": "browser_pool_ctor",
+          "ms": 0.106201171875
+        },
+        {
+          "name": "load_plugins",
+          "ms": 0.129150390625
+        },
+        {
+          "name": "initSubsystems_after_pieces",
+          "ms": 2.365478515625
+        },
+        {
+          "name": "createMcpServer",
+          "ms": 2.214599609375
+        }
+      ]
+    },
+    {
+      "total_ms": 185.389892578125,
+      "rss": 111378432,
+      "marks": [
+        {
+          "name": "node_runtime_boot",
+          "ms": 23.397216796875
+        },
+        {
+          "name": "import_config",
+          "ms": 4.069580078125
+        },
+        {
+          "name": "import_server_graph",
+          "ms": 143.657958984375
+        },
+        {
+          "name": "import_db_module",
+          "ms": 0.070556640625
+        },
+        {
+          "name": "init_database",
+          "ms": 8.70703125
+        },
+        {
+          "name": "embedding_service_init",
+          "ms": 0.697265625
+        },
+        {
+          "name": "browser_pool_ctor",
+          "ms": 0.10595703125
+        },
+        {
+          "name": "load_plugins",
+          "ms": 0.1396484375
+        },
+        {
+          "name": "initSubsystems_after_pieces",
+          "ms": 2.4375
+        },
+        {
+          "name": "createMcpServer",
+          "ms": 2.104736328125
+        }
+      ]
+    }
+  ]
+}

@@ -152,6 +152,16 @@ interface CallBreakdown {
   label: string;
   wall_ms: number;
   net_union_ms: number;
+  /**
+   * `net_union_ms - overlap_net_onnx_ms`. THIS is the number reported as the
+   * network share, and the asymmetry must be stated: when a socket is
+   * outstanding *while* the cross-encoder runs, that overlapping time is
+   * credited to RERANK, not to network. The partition is exclusive, but it is
+   * not neutral — it biases the network share DOWN and the rerank share UP,
+   * which is the same direction as the headline finding. Treat the rerank
+   * share as an upper bound.
+   */
+  net_exclusive_ms: number;
   net_sum_ms: number;
   net_calls: number;
   /** Blocking ONNX only (cross-encoder rerank). */
@@ -193,6 +203,7 @@ function breakdown(
     label,
     wall_ms: round(wall),
     net_union_ms: round(netU),
+    net_exclusive_ms: round(netU - overlap),
     net_sum_ms: round(sumMs(net, from, to)),
     net_calls: inWin(net),
     onnx_union_ms: round(onnxU),
