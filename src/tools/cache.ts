@@ -8,7 +8,7 @@ import {
 import { detectChange } from '../cache/change-detector.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { reciprocalRankFusion, sortByRRFScore, buildRankMap } from '../search/rrf.js';
-import { applyAggregateMarkdownBudget } from '../search/evidence.js';
+import { applyCacheOutputBudget } from '../cache/output-budget.js';
 import { getEmbedProvider } from '../providers/embed-provider.js';
 import { getVectorStore } from '../providers/vector-store.js';
 import {
@@ -122,7 +122,7 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
         limit: input.limit,
       });
       const results = await runHybridSearch(input);
-      if (results !== null) return { results: applyBudget(results, input.max_tokens_out) };
+      if (results !== null) return applyCacheOutputBudget(results, input.max_tokens_out);
       // fall through to FTS-only when hybrid was unavailable
     }
 
@@ -154,25 +154,11 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
     // `limit`. Guarded — artifact retrieval must never error the cache tool.
     const artifactHits = input.query ? await artifactCacheResults(input.query, limit) : [];
     const merged = dedupeByUrl([...mapped, ...artifactHits]).slice(0, limit);
-    return { results: applyBudget(merged, input.max_tokens_out) };
+    return applyCacheOutputBudget(merged, input.max_tokens_out);
   } catch (err) {
     log.error('Cache tool error', { error: String(err) });
     return { error: err instanceof Error ? err.message : String(err) };
   }
-}
-
-// Trim the aggregate markdown body across results so the response stays under
-// `max_tokens_out`. Bodies past the budget are emptied; results never disappear
-// from the list (a callers can still see URL/title/fetched_at for trimmed rows).
-function applyBudget(results: CacheResultItem[], maxTokensOut?: number): CacheResultItem[] {
-  if (maxTokensOut === undefined) return results;
-  applyAggregateMarkdownBudget(
-    results,
-    (r) => r.markdown,
-    (r, body) => { r.markdown = body; },
-    { maxTokensOut },
-  );
-  return results;
 }
 
 /**
