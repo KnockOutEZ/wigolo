@@ -102,8 +102,8 @@ Query the persistent local knowledge cache — every page wigolo has already see
 | `since` | string | ISO date floor. |
 | `stats` | boolean | Totals: URL count, size, date range. |
 | `clear` | boolean | Delete matching entries (requires at least one filter). |
-| `check_changes` | boolean | Re-fetch matching URLs and report changed/unchanged with diff summaries. |
-| `limit` | number | Maximum rows returned. Default 5. |
+| `check_changes` | boolean | Re-fetch matching URLs and report changed/unchanged with diff summaries. Capped at `limit` entries (default 100). |
+| `limit` | number | Maximum rows returned. Default 5 (100 for `check_changes`). |
 | `max_tokens_out` | number | Token-budget cap on the returned page bodies. Default 16000. |
 
 `limit` caps rows and is applied first; `max_tokens_out` then caps the total bytes of whatever rows survived. Both have defaults, so a cache check has a bounded cost even against a large cache.
@@ -111,6 +111,8 @@ Query the persistent local knowledge cache — every page wigolo has already see
 When the budget trims the response it says so rather than returning a quietly shortened body: each affected row carries `truncated` (`"partial"` or `"omitted"`), and the response carries a `truncation` object with `original_chars`, `returned_chars`, `dropped_chars`, the per-row counts, and a hint. Raise `max_tokens_out`, narrow with `query` / `url_pattern` / `limit`, or `fetch` a specific URL for the full body.
 
 Trimmed bodies end on a markdown boundary and carry a visible truncation marker. A construct left half-open by the cut — a link, an emphasis span, a table row — is dropped rather than shipped broken; a page that is one long code block keeps the code that fits with the block closed around it, instead of losing its whole body to that rule.
+
+`check_changes` re-fetches every entry it reports on, so its row cap bounds network calls as well as output. When more entries matched than were checked, the response carries `changes_truncation` with `matched`, `checked`, and a hint.
 
 ```json
 { "query": "connection pool exhaustion", "mode": "hybrid", "limit": 10 }

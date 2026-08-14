@@ -1155,6 +1155,18 @@ export interface CacheOutput {
   changes?: ChangeReport[];
   /** Present only when the output budget trimmed the response. */
   truncation?: CacheTruncation;
+  /** Present only when the row cap stopped `check_changes` short of every match. */
+  changes_truncation?: ChangesTruncation;
+}
+
+/** Report of a `check_changes` run that the row cap stopped short. */
+export interface ChangesTruncation {
+  /** Cached entries the filters matched. */
+  matched: number;
+  /** Entries actually re-fetched and reported on. */
+  checked: number;
+  /** How to check the rest. */
+  hint: string;
 }
 
 export interface ChangeReport {

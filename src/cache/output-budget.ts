@@ -23,6 +23,18 @@ import type { CacheResultItem, CacheTruncation } from '../types.js';
  */
 export const DEFAULT_CACHE_MAX_TOKENS_OUT = 16000;
 
+/**
+ * Row cap for `check_changes`, which returns change reports rather than page
+ * bodies and so cannot use the token budget above.
+ *
+ * Derived from the same budget: against the real cache the widest report shape
+ * (changed, both hashes, a diff summary) costs ~150 tokens, so 16,000 tokens
+ * holds ~106 of them — rounded down for headroom. Unbounded, this path emitted
+ * 358,152 chars / 169,979 tokens over 1,134 entries, twice the response that
+ * prompted this budget, and re-fetched every one of those URLs over the network.
+ */
+export const DEFAULT_CHECK_CHANGES_LIMIT = 100;
+
 /** Marker `truncateByTokens` appends; used to find where a body was cut. */
 const TRUNCATION_MARKER = '\n\n[... content truncated]';
 

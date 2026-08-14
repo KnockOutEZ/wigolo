@@ -305,9 +305,11 @@ export const CACHE_TOOL_SCHEMA = {
     check_changes: {
       type: 'boolean',
       description:
-        'Re-fetch all matching cached URLs and report which ones have changed. ' +
+        'Re-fetch matching cached URLs and report which ones have changed. ' +
         'Returns a list of URLs with changed/unchanged status and diff summaries. ' +
-        'Use with query or url_pattern to scope which cached entries to check.',
+        'Use with query or url_pattern to scope which cached entries to check. ' +
+        'Capped at `limit` entries (default 100) because every entry is re-fetched over the network; ' +
+        'when more matched, the response carries a `changes_truncation` report.',
     },
     mode: {
       type: 'string',
@@ -319,7 +321,7 @@ export const CACHE_TOOL_SCHEMA = {
     },
     limit: {
       type: 'number',
-      description: 'Maximum number of ROWS to return (default 5). Applied first — the output budget then caps the bytes of whatever rows survive.',
+      description: 'Maximum number of ROWS to return (default 5; default 100 for check_changes). Applied first — the output budget then caps the bytes of whatever rows survive.',
     },
     max_tokens_out: {
       type: 'number',

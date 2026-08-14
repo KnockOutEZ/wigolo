@@ -31,6 +31,7 @@ vi.mock('../../../src/providers/extract-provider.js', () => ({
 
 
 import { handleCache } from '../../../src/tools/cache.js';
+import { DEFAULT_CHECK_CHANGES_LIMIT } from '../../../src/cache/output-budget.js';
 import { searchCacheFiltered, getCacheStats, clearCacheEntries } from '../../../src/cache/store.js';
 import { detectChange } from '../../../src/cache/change-detector.js';
 
@@ -450,5 +451,46 @@ describe('handleCache --- check_changes mode', () => {
       'freshly fetched content',
       expect.any(Number),
     );
+  });
+
+  // check_changes took no limit at all: it matched every cached entry, re-fetched
+  // all of them over the network, and returned a report for each. On a real cache
+  // that was 1,134 live requests and 358,152 characters back — twice the response
+  // that prompted the body budget, on the same tool.
+  it('caps how many matching entries it re-fetches, and says it did', async () => {
+    const entries = Array.from({ length: 250 }, (_, i) =>
+      makeCachedContent({
+        id: i,
+        url: `https://example.com/page-${i}`,
+        normalizedUrl: `https://example.com/page-${i}`,
+      }),
+    );
+    vi.mocked(searchCacheFiltered).mockReturnValue(entries);
+    const router = mockRouter();
+
+    const result = await handleCache({ check_changes: true, url_pattern: '*' }, router);
+
+    expect(result.changes).toHaveLength(DEFAULT_CHECK_CHANGES_LIMIT);
+    // The cap is a network bound too, not just an output bound.
+    expect(router.fetch).toHaveBeenCalledTimes(DEFAULT_CHECK_CHANGES_LIMIT);
+    expect(result.changes_truncation).toEqual({
+      matched: 250,
+      checked: DEFAULT_CHECK_CHANGES_LIMIT,
+      hint: expect.stringContaining('limit'),
+    });
+  });
+
+  // NEGATIVE — an ordinary change check is well under the cap and must not be
+  // told anything was held back.
+  it('reports no cap when every match was checked', async () => {
+    vi.mocked(searchCacheFiltered).mockReturnValue([
+      makeCachedContent({ url: 'https://example.com/a', normalizedUrl: 'https://example.com/a' }),
+      makeCachedContent({ url: 'https://example.com/b', normalizedUrl: 'https://example.com/b' }),
+    ]);
+
+    const result = await handleCache({ check_changes: true, url_pattern: '*' }, mockRouter());
+
+    expect(result.changes).toHaveLength(2);
+    expect(result.changes_truncation).toBeUndefined();
   });
 });

@@ -8,7 +8,7 @@ import {
 import { detectChange } from '../cache/change-detector.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { reciprocalRankFusion, sortByRRFScore, buildRankMap } from '../search/rrf.js';
-import { applyCacheOutputBudget } from '../cache/output-budget.js';
+import { applyCacheOutputBudget, DEFAULT_CHECK_CHANGES_LIMIT } from '../cache/output-budget.js';
 import { getEmbedProvider } from '../providers/embed-provider.js';
 import { getVectorStore } from '../providers/vector-store.js';
 import {
@@ -40,11 +40,16 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
         since: input.since,
       });
 
-      const entries = searchCacheFiltered({
+      // Unbounded, this matched every cached entry and re-fetched all of them:
+      // 358,152 chars of reports over 1,134 URLs on a real cache, and 1,134
+      // live requests from one tool call. The cap bounds both.
+      const matched = searchCacheFiltered({
         query: input.query,
         urlPattern: input.url_pattern,
         since: input.since,
       });
+      const checkLimit = input.limit ?? DEFAULT_CHECK_CHANGES_LIMIT;
+      const entries = matched.slice(0, checkLimit);
 
       const changes: ChangeReport[] = [];
       for (const entry of entries) {
@@ -91,6 +96,18 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
         }
       }
 
+      if (entries.length < matched.length) {
+        return {
+          changes,
+          changes_truncation: {
+            matched: matched.length,
+            checked: entries.length,
+            hint:
+              `Checked the first ${entries.length} of ${matched.length} matching entries. ` +
+              'Raise limit to check more, or narrow with query / url_pattern / since.',
+          },
+        };
+      }
       return { changes };
     }
 
