@@ -115,6 +115,17 @@ describe('htmlToMarkdown', () => {
     expect(result).toMatch(/^\|\s*Alice Smith\s*\|\s*30\s*\|$/m);
   });
 
+  it('percent-encodes parens in a table-cell href so links recovers the whole URL', () => {
+    // `links` is recovered by re-parsing `[text](url)`, whose capture stops at
+    // the first ')' — a bare paren in the href silently truncates the URL.
+    const html =
+      '<table><tr><td><a href="https://en.wikipedia.org/wiki/Mercury_(planet)">Mercury</a></td><td>1</td></tr></table>';
+    const md = htmlToMarkdown(html);
+    const { links } = extractLinksAndImages(md);
+    expect(links).toEqual(['https://en.wikipedia.org/wiki/Mercury_%28planet%29']);
+    expect(links[0]).not.toContain('(');
+  });
+
   it('handles empty string', () => {
     const result = htmlToMarkdown('');
     expect(result).toBe('');

@@ -38,9 +38,14 @@ function renderCellInline(node: Node): string {
 
   if (tag === 'A') {
     const href = el.getAttribute('href');
-    // Pipes would split the row into extra columns; percent-encode rather than
-    // drop the link.
-    if (href) return `[${inner}](${href.replace(/\|/g, '%7C')})`;
+    // Percent-encode rather than drop the link: a pipe would split the row into
+    // extra columns, and a paren truncates the URL when `links` is recovered by
+    // re-parsing `[text](url)` — `.../Mercury_(planet)` would land in `links` as
+    // `.../Mercury_(planet`. %7C/%28/%29 resolve identically.
+    if (href) {
+      const safe = href.replace(/\|/g, '%7C').replace(/\(/g, '%28').replace(/\)/g, '%29');
+      return `[${inner}](${safe})`;
+    }
   }
 
   return inner;
