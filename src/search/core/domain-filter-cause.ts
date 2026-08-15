@@ -98,8 +98,29 @@ export function describeDomainFilterCause(
   const domains = attrition.include_domains.join(', ');
   const n = attrition.candidates;
   return (
-    `no results after domain scoping: search engines returned ${n} result${n === 1 ? '' : 's'}, ` +
+    `${DOMAIN_FILTER_CAUSE_PREFIX} search engines returned ${n} result${n === 1 ? '' : 's'}, ` +
     `but none were on ${domains}. This is a scoping result, not an engine failure — ` +
     `widen or drop include_domains to see them.`
   );
+}
+
+/** Identifies the clause emitted by `describeDomainFilterCause`. */
+export const DOMAIN_FILTER_CAUSE_PREFIX = 'no results after domain scoping:';
+
+/** Separator used when core composes multiple warnings into one string. */
+const WARNING_SEPARATOR = '; ';
+
+/**
+ * Remove the scoping clause from a warning, keeping every other clause.
+ *
+ * A warning can carry unrelated reports composed onto it (e.g. a synthesis
+ * failure). Retracting the scoping cause must not discard those — they may
+ * still be true of the response doing the retracting.
+ */
+export function stripDomainFilterCause(warning: string | undefined): string | undefined {
+  if (!warning) return undefined;
+  const kept = warning
+    .split(WARNING_SEPARATOR)
+    .filter((clause) => !clause.startsWith(DOMAIN_FILTER_CAUSE_PREFIX));
+  return kept.length > 0 ? kept.join(WARNING_SEPARATOR) : undefined;
 }

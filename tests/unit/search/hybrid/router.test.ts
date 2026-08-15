@@ -364,6 +364,41 @@ describe('HybridSearchProvider', () => {
     expect(out.data.warning).toBeUndefined();
   });
 
+  // The retraction must remove only the clause it authored. Once a synthesis
+  // failure can be composed onto the same warning, deleting the whole string
+  // discards a report the retraction has no claim over — and the synthesis
+  // failure is still true of the merged response.
+  it('retracts only the scoping clause, preserving a co-reported synthesis failure', async () => {
+    const core = mockProvider('core', () =>
+      ok({
+        results: [],
+        warning:
+          'no results after domain scoping: search engines returned 4 results, but none were on example.com. ' +
+          'This is a scoping result, not an engine failure — widen or drop include_domains to see them.; ' +
+          'synthesis failed: No sources returned content for this query',
+        domain_filter: {
+          include_domains: ['example.com'],
+          candidates: 4,
+          matched: 0,
+          dropped: 4,
+        },
+      }),
+    );
+    const sx = mockProvider('searxng', () =>
+      ok({ results: [makeResult('found', 'https://example.com/a', 0.9)] }),
+    );
+    const hybrid = new HybridSearchProvider(core, sx);
+
+    const out = await hybrid.search({ query: 'q', include_domains: ['example.com'] }, ctx);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+
+    expect(out.data.domain_filter).toBeUndefined();
+    expect(out.data.warning).toBe(
+      'synthesis failed: No sources returned content for this query',
+    );
+  });
+
   // NEGATIVE must-not-fire: the fallback found nothing either, so the scope
   // really did eat everything and the cause is still the truth.
   it('keeps the domain-scoping cause when the merged response is still empty', async () => {
