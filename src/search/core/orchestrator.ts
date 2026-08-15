@@ -69,6 +69,12 @@ function applyBrandCollisionGuard(query: string, results: RawSearchResult[]): Ra
 }
 import { resolveEngineWeight } from './engine-quality.js';
 import { canonicalizeUrl } from './canonical-url.js';
+import {
+  hostnameOf,
+  matchesDomain,
+  computeIncludeDomainAttrition,
+  type DomainFilterAttrition,
+} from './domain-filter-cause.js';
 import { getGeneralEngines, _resetGeneralEnginesForTest } from './verticals/general.js';
 import { getNewsEngines, _resetNewsEnginesForTest } from './verticals/news.js';
 import { getCodeEngines, _resetCodeEnginesForTest } from './verticals/code.js';
@@ -225,6 +231,11 @@ export interface OrchestratorOutput {
    * merged engine count + the reasons that fired. Consumed by core-provider,
    * which surfaces it as SearchOutput.engine_pool. */
   pool_degraded?: EnginePoolHealth;
+  /** Per-result tally of how the include_domains whitelist treated this
+   * dispatch's pre-filter set. Present only when include_domains was set.
+   * Consumed by core-provider to tell "engines returned nothing" apart from
+   * "the caller's domain scope dropped everything the engines returned". */
+  domain_filter?: DomainFilterAttrition;
 }
 
 function getEntriesForVertical(vertical: Vertical): EngineEntry[] {
@@ -242,20 +253,6 @@ function getEntriesForVertical(vertical: Vertical): EngineEntry[] {
     case 'images':
       return getImageEngines();
   }
-}
-
-function hostnameOf(url: string): string {
-  try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return '';
-  }
-}
-
-function matchesDomain(host: string, domain: string): boolean {
-  const needle = domain.toLowerCase().replace(/^\./, '');
-  if (!host) return false;
-  return host === needle || host.endsWith(`.${needle}`);
 }
 
 // include_domains is a HARD whitelist: any result whose hostname does not
@@ -588,6 +585,9 @@ export async function runV1Search(
 
   let merged = scoreOutcomes(allOutcomes, wavedEntries);
 
+  // Tally the whitelist per-result on the pre-filter set, so a later empty
+  // response can name the scope as its cause instead of blaming the engines.
+  let domainFilter = computeIncludeDomainAttrition(merged, input.includeDomains);
   merged = applyDomainFilters(merged, input.includeDomains, input.excludeDomains);
 
   merged = applyFreshnessWindow(merged, effectiveFromDate, effectiveToDate);
@@ -728,6 +728,9 @@ export async function runV1Search(
       allOutcomes.push(...generalOutcomes);
       wavedEntries.push(...generalEntries);
       merged = scoreOutcomes(allOutcomes, wavedEntries);
+      // Re-derive, never accumulate: this re-scores the SAME superset of
+      // outcomes, so adding to the earlier tally would double-count.
+      domainFilter = computeIncludeDomainAttrition(merged, input.includeDomains);
       merged = applyDomainFilters(merged, input.includeDomains, input.excludeDomains);
       merged = applyFreshnessWindow(merged, effectiveFromDate, effectiveToDate);
       if (exactPhrase) {
@@ -868,6 +871,7 @@ export async function runV1Search(
     outcomes: allOutcomes,
     degraded,
     ...(poolDegraded ? { pool_degraded: poolDegraded } : {}),
+    ...(domainFilter ? { domain_filter: domainFilter } : {}),
   };
 }
 

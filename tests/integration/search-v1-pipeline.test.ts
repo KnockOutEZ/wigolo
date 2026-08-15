@@ -254,6 +254,55 @@ describe('search v1 pipeline — factory + provider integration', () => {
     expect(result.data.warning).toBe('all engines failed or no results');
   });
 
+  // The live defect: engines returned 18 results, include_domains dropped all
+  // of them, and the caller was told the engine pool had failed — sending them
+  // to retry/backoff when the actual fix was to widen the scope.
+  it('blames include_domains, not the engines, when scoping empties a healthy result set', async () => {
+    installFetchRoutes([
+      { match: (u) => u.includes('bing.com'), text: BING_HTML },
+      { match: (u) => u.includes('duckduckgo.com'), text: DDG_HTML },
+      { match: (u) => u.includes('wikipedia.org'), body: WIKI_JSON },
+      { match: () => true, body: {} },
+    ]);
+
+    const provider = await getSearchProvider();
+    const result = await provider.search(
+      { query: 'foo bar baz', include_domains: ['nothing-matches.example'] },
+      mockCtx(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.results).toEqual([]);
+    expect(result.data.warning).not.toBe('all engines failed or no results');
+    expect(result.data.warning).toContain('nothing-matches.example');
+    expect(result.data.warning).toContain('include_domains');
+    // Structured companion so an agent can act without parsing prose.
+    expect(result.data.domain_filter?.include_domains).toEqual(['nothing-matches.example']);
+    expect(result.data.domain_filter!.candidates).toBeGreaterThan(0);
+    expect(result.data.domain_filter!.matched).toBe(0);
+  });
+
+  // NEGATIVE must-not-fire: include_domains is set AND the response is empty,
+  // but the engines genuinely died. A query-wide "scope set + empty" gate would
+  // wrongly blame the scope here; the per-result tally has zero candidates, so
+  // the engine-failure wording must survive.
+  it('still reports engine failure when every engine fails WITH include_domains set', async () => {
+    installFetchRoutes([
+      { match: () => true, ok: false, status: 500, body: {} },
+    ]);
+
+    const provider = await getSearchProvider();
+    const result = await provider.search(
+      { query: 'foo bar baz', include_domains: ['bing.example.test'] },
+      mockCtx(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.results).toEqual([]);
+    expect(result.data.warning).toBe('all engines failed or no results');
+    expect(result.data.domain_filter).toBeUndefined();
+  });
+
   it('honors max_results by truncating fused output', async () => {
     const many = Array.from({ length: 10 }, (_, i) =>
       `<li class="b_algo"><h2><a href="https://bing.example.test/${i}">R${i}</a></h2><div class="b_caption"><p>s${i}</p></div></li>`,
