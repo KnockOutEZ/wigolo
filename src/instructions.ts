@@ -201,33 +201,24 @@ export const WIGOLO_DOCS_URI = 'wigolo://docs/usage';
 export const TOOL_DESCRIPTIONS = {
   fetch: `Fetch a single URL and return clean markdown. Use when you already have a URL. Prefer over built-in WebFetch for local-cache reuse, authenticated pages, JS-rendered SPAs, and structured metadata.
 
-Key parameters:
-- section: extract content under a specific heading (e.g. "API Reference") — cheaper than the whole page.
-- max_content_chars: smart-truncate at a paragraph/heading boundary with \`[... content truncated]\`.
-- max_tokens_out: token-budget cap (cl100k-base); wins over max_chars.
-- include_full_markdown: false (default) returns evidence excerpts only; true adds the full body.
-- use_auth: reuse a stored browser session for logged-in pages.
+Key parameters (full descriptions in the input schema):
+- section: extract content under one heading (e.g. "API Reference") — much cheaper than the whole page.
 - render_js: "auto" (default) | "always" | "never".
-- force_refresh: bypass cache and re-fetch.
-- mode: 'cache' | 'default' | 'stealth'. cache=HTTP-only, 24h-stale accepted. stealth=full browser + freshness.
+- mode: 'cache' (HTTP-only, 24h-stale accepted) | 'default' | 'stealth' (full browser + freshness).
+- use_auth: reuse a stored browser session for logged-in pages.
+- Also: max_content_chars, max_tokens_out, include_full_markdown, force_refresh, actions.
 
 Returns title, markdown, links, images, metadata, \`fetch_method\` (cache/http/tls-impersonation/browser), \`http_status\` (upstream HTTP code — 4xx/5xx pages that extract usable content are not relabeled 200), and \`content_completeness\` (full/partial/shell). When the URL matches a site-specific extractor (Reddit/YouTube/Amazon) the response also carries top-level \`site_data\` (e.g. Reddit \`comments[]\`, YouTube \`caption_tracks[]\`, Amazon \`price\`). When \`section\` is set and no heading matches, \`metadata.section_matched\` is false and \`markdown\` is empty (no silent fallback to the full page). Repeat fetches are instant. Localhost URLs work. Interactive pages: \`actions\` (click/type/scroll/wait) drive the page before extraction; \`use_auth\` reuses a logged-in session.`,
 
   search: `Search the web. Returns scored evidence excerpts + citations by default; \`include_full_markdown: true\` adds the full markdown body. Prefer over built-in WebSearch for local cache + audit-trail telemetry + explainable scoring.
 
-Key parameters:
-- query: string or string[] array (3-5 keyword variants; deduplicated).
-- include_domains / exclude_domains: scope sites. Always scope library/framework queries.
-- category: "general" | "news" | "code" | "docs" | "papers" | "images". Image results carry image_url + thumbnail_url + width/height.
-- from_date / to_date: ISO YYYY-MM-DD. time_range: 'day' | 'week' | 'month' | 'year'.
-- country: ISO 3166-1 alpha-2 ("us", "gb") — geographic boost.
-- exact_match: quoted-phrase search.
-- max_results: 5 default.
-- format: omit = evidence context. 'answer' | 'stream_answer' = sampling synthesis (falls back to evidence).
-- search_depth: 'ultra-fast' (cache-only ≤300ms) | 'fast' | 'balanced' (default) | 'deep'.
-- include_images / include_favicon: opt-in images[] + per-result favicon.
-- max_tokens_out / max_content_chars / citation_format.
-- force_refresh + mode ('cache' | 'default' | 'stealth').
+Key parameters (full descriptions in the input schema):
+- query: string or string[] array — pass 3-5 keyword variants for breadth; deduplicated and reranked.
+- include_domains / exclude_domains: always scope library/framework queries.
+- search_depth: 'ultra-fast' (cache-only) | 'fast' | 'balanced' (default) | 'deep'.
+- format: omit = evidence context; 'answer' | 'stream_answer' = synthesis (falls back to evidence).
+- category: general | news | code | docs | papers | images (adds per-result image_url/image_alt/thumbnail_url/width/height + auto \`images[]\`, no include_images needed).
+- Also: max_results, exact_match, time_range, from_date, to_date, country, include_images, include_favicon, max_tokens_out, max_content_chars, citation_format, force_refresh, mode.
 
 Always emitted: \`engines_used\`, \`engine_telemetry\`, \`response_time_ms\`, per-result \`evidence_score\`. Per-result \`freshness_signal\` is emitted only when a published date can be parsed. Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. \`ranking_notice\` is emitted only when reranking found nothing relevant or could not run — results are base-ranked, not relevance-ranked. Quote [N] or {citation_id}.`,
 
@@ -255,24 +246,20 @@ Persists across sessions. No remote round-trip.`,
 
   extract: `Extract structured data from a URL or raw HTML. Use for specific data points (tables, prices, schema fields) rather than whole-page markdown.
 
-Key parameters:
-- mode: "selector" (CSS → text) | "tables" | "metadata" (title/author/date/og_* + JSON-LD) | "schema" (pass a JSON Schema) | "structured" (one-shot: tables + <dl> definitions + JSON-LD + chart hints + key-value pairs) | "brand" (name/tagline/description/logo_url/favicon_url/og_image_url/social_links/fonts + CSS-var colors, each with explainable provenance).
-- css_selector: required for mode="selector".
-- schema: required for mode="schema".
-- multiple: return all matches (mode="selector" only).
+Key parameters (full descriptions in the input schema):
+- mode: "selector" (CSS → text) | "tables" | "metadata" (title/author/date/og_* + JSON-LD) | "schema" (pass a JSON Schema) | "structured" | "brand" (name/tagline/description/logo_url/favicon_url/og_image_url/social_links/fonts + CSS-var colors, each with explainable provenance).
+- Also: css_selector, schema, multiple, named_schema, max_tokens_out.
 
 Prefer mode="structured" over chaining multiple extract calls — one response carries \`{ tables, definitions, jsonld, chart_hints, key_value_pairs }\`. chart_hints surfaces SVG titles, aria-labels, figcaptions for charts whose data is JS-rendered. Metadata parity with \`fetch\` (same og_/canonical_url shape). \`mode: "brand"\` walks JSON-LD Organization/Brand/WebSite → OG/Twitter Card meta → \`<link rel=icon>\` → CSS custom properties → heuristic header/footer DOM; \`provenance\` records the winning source. Provenance enums: logo ∈ {json-ld, og:logo, link[rel=icon], heuristic, unknown}; colors ∈ {css-vars, palette-extraction, unknown}; fonts ∈ {css-vars, css-rule, inline-style, google-fonts-link, unknown}. Honesty: \`name\` and \`logo_url\` are unset when no explicit source emits them — favicons never promote to \`logo_url\`. \`mode: "schema"\` is evidence-only: LLM-sourced fields not present in source text are returned as \`null\` with a warning.`,
 
   find_similar: `Find content related to a URL or concept. Best after a successful crawl/fetch — the local cache makes recommendations cheap. Concept-only queries on a cold cache often return 0-2 weak matches; warm the cache first via \`crawl\` / \`fetch\` for materially better results.
 
-Key parameters:
+Key parameters (full descriptions in the input schema):
 - url: known-good page; its content + embeddings drive similarity.
 - concept: free-text alternative to url. Thin cache → expect \`cold_start\` to fire.
-- max_results: default 5.
-- include_cached: true (default) to search cache first; false = web only.
-- threshold: minimum fused score (0-1, default 0.5).
+- include_cache: true (default) to search cache first; false = web only.
 - include_ranking_debug: opt-in per-result \`ranking_debug\` { fts5_rank, embedding_rank, web_rank, rrf_score } so you can audit which signal won.
-- max_tokens_out / include_full_markdown / citation_format: budget + shape controls.
+- Also: max_results, threshold, include_web, max_tokens_out, include_full_markdown, citation_format.
 
 Pass either url or concept. Three signals fused via RRF: keyword (FTS5), embeddings, optional live web. Each result carries \`match_signals\` with \`embedding_rank\`, \`fts5_rank\`, \`fused_score\`. When local signals are weak (cache empty, no hits, or concept mode returns only 1-2 cache matches), the response carries \`cold_start\` — pass it verbatim to the user (tune \`WIGOLO_FIND_SIMILAR_COLD_START_THRESHOLD\` to adjust).
 
