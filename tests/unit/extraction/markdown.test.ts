@@ -79,6 +79,42 @@ describe('htmlToMarkdown', () => {
     expect(result).toContain('![Image](https://example.com/img.png)');
   });
 
+  it('keeps anchors inside table cells as markdown links', () => {
+    const html = `
+      <table>
+        <thead><tr><th>Name</th><th>Date</th></tr></thead>
+        <tr><td>📄 <a href="https://example.com/post-a">Post A</a></td><td>2026-01-01</td></tr>
+        <tr><td>📄 <a href="https://example.com/post-b">Post B</a></td><td>2026-01-02</td></tr>
+      </table>
+    `;
+    const result = htmlToMarkdown(html);
+    expect(result).toContain('[Post A](https://example.com/post-a)');
+    expect(result).toContain('[Post B](https://example.com/post-b)');
+    // One row per record — the anchor must not break the row onto its own line.
+    expect(result).toMatch(/^\|.*Post A.*\|\s*2026-01-01\s*\|$/m);
+  });
+
+  it('collects table-cell anchors into links', () => {
+    const html = `
+      <table>
+        <tr><td><a href="https://example.com/one">One</a></td><td>x</td></tr>
+        <tr><td><a href="https://example.com/two">Two</a></td><td>y</td></tr>
+      </table>
+    `;
+    const { links } = extractLinksAndImages(htmlToMarkdown(html));
+    expect(links).toEqual(['https://example.com/one', 'https://example.com/two']);
+  });
+
+  it('flattens cells with no anchor to plain text', () => {
+    const html = `
+      <table>
+        <tr><td>Alice<br>Smith</td><td><em>30</em></td></tr>
+      </table>
+    `;
+    const result = htmlToMarkdown(html);
+    expect(result).toMatch(/^\|\s*Alice Smith\s*\|\s*30\s*\|$/m);
+  });
+
   it('handles empty string', () => {
     const result = htmlToMarkdown('');
     expect(result).toBe('');

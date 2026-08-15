@@ -15,6 +15,37 @@ function longestBacktickRun(s: string): number {
   return max;
 }
 
+const TEXT_NODE = 3;
+
+// Render a table cell as inline markdown. The cell body is flattened to one
+// line (a markdown table row cannot contain newlines), but anchors keep their
+// `[text](href)` form: `links` is derived by re-parsing the converted markdown,
+// so a cell reduced to its textContent renders fine and drops every link in the
+// table — on a listing page that is the whole page.
+function renderCellInline(node: Node): string {
+  if (node.nodeType === TEXT_NODE) return node.nodeValue ?? '';
+
+  const el = node as Element;
+  const tag = el.nodeName;
+  if (tag === 'SCRIPT' || tag === 'STYLE') return '';
+  if (tag === 'BR') return ' ';
+
+  const inner = Array.from(el.childNodes)
+    .map(renderCellInline)
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (tag === 'A') {
+    const href = el.getAttribute('href');
+    // Pipes would split the row into extra columns; percent-encode rather than
+    // drop the link.
+    if (href) return `[${inner}](${href.replace(/\|/g, '%7C')})`;
+  }
+
+  return inner;
+}
+
 export function buildTurndown(): TurndownService {
   const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
 
@@ -29,9 +60,16 @@ export function buildTurndown(): TurndownService {
       const rows: Element[] = Array.from(el.querySelectorAll('tr'));
       if (rows.length === 0) return '';
 
+      const renderCell = (cell: Element): string =>
+        Array.from(cell.childNodes)
+          .map(renderCellInline)
+          .join('')
+          .replace(/\s+/g, ' ')
+          .trim();
+
       const renderRow = (row: Element): string => {
         const cells = Array.from(row.querySelectorAll('th, td'));
-        return '| ' + cells.map(c => c.textContent?.replace(/\n/g, ' ').trim() ?? '').join(' | ') + ' |';
+        return '| ' + cells.map(renderCell).join(' | ') + ' |';
       };
 
       const headerRow = rows[0];
