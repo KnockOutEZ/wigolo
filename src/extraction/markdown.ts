@@ -15,6 +15,41 @@ function longestBacktickRun(s: string): number {
   return max;
 }
 
+const TEXT_NODE = 3;
+
+// Render a table cell as inline markdown. The cell body is flattened to one
+// line (a markdown table row cannot contain newlines), but anchors keep their
+// `[text](href)` form: `links` is derived by re-parsing the converted markdown,
+// so a cell reduced to its textContent renders fine and drops every link in the
+// table — on a listing page that is the whole page.
+function renderCellInline(node: Node): string {
+  if (node.nodeType === TEXT_NODE) return node.nodeValue ?? '';
+
+  const el = node as Element;
+  const tag = el.nodeName;
+  if (tag === 'SCRIPT' || tag === 'STYLE') return '';
+  if (tag === 'BR') return ' ';
+
+  // Collapse runs of whitespace but keep the boundaries: trimming here would
+  // glue adjacent inline elements together (`<code>a </code><code>b</code>`
+  // -> `ab`). The cell-level render trims once, at the edge that matters.
+  const inner = Array.from(el.childNodes).map(renderCellInline).join('').replace(/\s+/g, ' ');
+
+  if (tag === 'A') {
+    const href = el.getAttribute('href');
+    // Percent-encode rather than drop the link: a pipe would split the row into
+    // extra columns, and a paren truncates the URL when `links` is recovered by
+    // re-parsing `[text](url)` — `.../Mercury_(planet)` would land in `links` as
+    // `.../Mercury_(planet`. %7C/%28/%29 resolve identically.
+    if (href) {
+      const safe = href.replace(/\|/g, '%7C').replace(/\(/g, '%28').replace(/\)/g, '%29');
+      return `[${inner}](${safe})`;
+    }
+  }
+
+  return inner;
+}
+
 export function buildTurndown(): TurndownService {
   const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
 
@@ -29,9 +64,16 @@ export function buildTurndown(): TurndownService {
       const rows: Element[] = Array.from(el.querySelectorAll('tr'));
       if (rows.length === 0) return '';
 
+      const renderCell = (cell: Element): string =>
+        Array.from(cell.childNodes)
+          .map(renderCellInline)
+          .join('')
+          .replace(/\s+/g, ' ')
+          .trim();
+
       const renderRow = (row: Element): string => {
         const cells = Array.from(row.querySelectorAll('th, td'));
-        return '| ' + cells.map(c => c.textContent?.replace(/\n/g, ' ').trim() ?? '').join(' | ') + ' |';
+        return '| ' + cells.map(renderCell).join(' | ') + ' |';
       };
 
       const headerRow = rows[0];
@@ -196,31 +238,36 @@ const DECORATIVE_URL_MARKERS = [
   'favicon',
 ];
 
+// Single definition of "this image is decorative", shared by the markdown
+// filter below and by the content-type passthrough path, which filters its
+// derived `images` array rather than rewriting the body.
+export function isDecorativeImage(src: string, alt: string): boolean {
+  const trimmedAlt = alt.trim();
+  const lowerSrc = src.toLowerCase();
+
+  // Tiny animated-GIF tracking pixel / 1x1 beacons
+  if (lowerSrc.startsWith('data:image/gif;base64,')) return true;
+
+  // Inline SVG icon data URIs (short = tiny, likely decorative glyph)
+  if (lowerSrc.startsWith('data:image/svg+xml') && src.length < 200) return true;
+
+  // URL marks it as decorative regardless of alt
+  for (const marker of DECORATIVE_URL_MARKERS) {
+    if (lowerSrc.includes(marker)) return true;
+  }
+
+  // No alt text + no title = decorative
+  return !trimmedAlt;
+}
+
 // Drop `![alt](src)` tokens that look decorative. Heuristic only -- keep
 // images that have alt text unless the URL clearly marks them decorative.
 // Tracking pixels (tiny data-URI gifs) and empty-alt icons are removed.
 export function filterDecorativeImages(markdown: string): string {
   if (!markdown) return markdown;
-  return markdown.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt: string, src: string) => {
-    const trimmedAlt = alt.trim();
-    const lowerSrc = src.toLowerCase();
-
-    // Tiny animated-GIF tracking pixel / 1x1 beacons
-    if (lowerSrc.startsWith('data:image/gif;base64,')) return '';
-
-    // Inline SVG icon data URIs (short = tiny, likely decorative glyph)
-    if (lowerSrc.startsWith('data:image/svg+xml') && src.length < 200) return '';
-
-    // URL marks it as decorative regardless of alt
-    for (const marker of DECORATIVE_URL_MARKERS) {
-      if (lowerSrc.includes(marker)) return '';
-    }
-
-    // No alt text + no title = decorative
-    if (!trimmedAlt) return '';
-
-    return match;
-  });
+  return markdown.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt: string, src: string) =>
+    isDecorativeImage(src, alt) ? '' : match,
+  );
 }
 
 // Resolve relative `[text](path)` and `![alt](path)` targets against baseUrl.

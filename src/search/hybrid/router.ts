@@ -10,6 +10,7 @@ import type {
 import { createLogger } from '../../logger.js';
 import { evaluateSignals } from './signals.js';
 import { mergeResults } from './merge.js';
+import { stripDomainFilterCause } from '../core/domain-filter-cause.js';
 
 const log = createLogger('hybrid');
 
@@ -124,6 +125,25 @@ export class HybridSearchProvider implements SearchProvider {
       data.engine_outcomes = merged.engine_outcomes;
     } else {
       delete data.engine_outcomes;
+    }
+
+    // Core's filter-induced-zero cause is a statement about CORE's empty
+    // result set. When the fallback backend supplied results the scope
+    // accepts, the merged response is no longer empty and repeating that cause
+    // would assert a falsehood — the exact misreporting this cause exists to
+    // prevent. Only the scoping CLAUSE is retracted: the warning may carry
+    // unrelated reports (a synthesis failure) that are still true of the
+    // merged response and are not this retraction's to delete. Cleared before
+    // the fallback warning is considered, so a real searxng warning can still
+    // land.
+    if (data.results.length > 0 && data.domain_filter) {
+      delete data.domain_filter;
+      const remaining = stripDomainFilterCause(data.warning);
+      if (remaining) {
+        data.warning = remaining;
+      } else {
+        delete data.warning;
+      }
     }
 
     if (searxngResult.data.warning && !data.warning) {

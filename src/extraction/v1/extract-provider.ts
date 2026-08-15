@@ -5,6 +5,11 @@ import type {
 import type { ExtractionResult } from '../../types.js';
 import { routedExtract } from './routed.js';
 import { applyPostProcessing } from '../pipeline.js';
+import {
+  parseMimeType,
+  classifyPassthrough,
+  buildPassthroughResult,
+} from '../passthrough.js';
 import { createLogger } from '../../logger.js';
 
 const log = createLogger('extract');
@@ -26,9 +31,23 @@ export class V1Extractor implements ExtractProvider {
     url: string,
     options: ExtractProviderOptions = {},
   ): Promise<ExtractionResult> {
-    if (options.contentType === 'application/pdf') {
+    if (parseMimeType(options.contentType) === 'application/pdf') {
       const pdf = await handlePdf(html, url, options);
       return applyPostProcessing(pdf, url, html, options);
+    }
+
+    // A body the response declares to be markdown, plain text or JSON is
+    // returned verbatim. It deliberately skips applyPostProcessing too: every
+    // step in there rewrites markdown (URL resolution, boilerplate stripping,
+    // sanitization), which is exactly the damage being fixed.
+    const passthrough = classifyPassthrough(options.contentType, html);
+    if (passthrough) {
+      log.debug('content-type passthrough', { url, kind: passthrough });
+      return buildPassthroughResult(html, passthrough, url, {
+        maxChars: options.maxChars,
+        section: options.section,
+        sectionIndex: options.sectionIndex,
+      });
     }
 
     const base = await routedExtract({

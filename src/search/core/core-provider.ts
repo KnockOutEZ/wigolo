@@ -26,6 +26,11 @@ import {
   type RerankFoldSignal,
 } from './rerank-fold.js';
 import { applyScoreFloor, DEFAULT_SEARCH_SCORE_FLOOR } from './score-floor.js';
+import {
+  mergeDomainAttrition,
+  describeDomainFilterCause,
+  type DomainFilterAttrition,
+} from './domain-filter-cause.js';
 import { recencyDemotion, hasTemporalIntent } from './recency-boost.js';
 import {
   detectBrandCollision,
@@ -250,6 +255,11 @@ export class CoreSearchProvider implements SearchProvider {
     let items: SearchResultItem[] = [];
     let enginesUsed: string[] = [];
     let allDegraded = false;
+    // Per-result tally of how include_domains treated the engines' output,
+    // folded across dispatch waves. Lets an empty response name the domain
+    // scope as its cause instead of reporting an engine failure that did not
+    // happen. Undefined whenever the caller set no include_domains.
+    let domainAttrition: DomainFilterAttrition | undefined;
     // Set only when the rerank fold reported that its blend carried no ordering
     // signal for this result set. Undefined on every healthy search.
     let rerankSignal: RerankFoldSignal | undefined;
@@ -515,6 +525,9 @@ export class CoreSearchProvider implements SearchProvider {
       }
       enginesUsed = [...enginesUsedSet];
       allDegraded = dispatches.every((d) => d.degraded);
+      for (const d of dispatches) {
+        domainAttrition = mergeDomainAttrition(domainAttrition, d.domain_filter);
+      }
       for (const d of dispatches) {
         for (const reason of d.pool_degraded?.reasons ?? []) poolReasons.add(reason);
       }
@@ -909,7 +922,19 @@ export class CoreSearchProvider implements SearchProvider {
     }
 
     if (allDegraded) {
-      data.warning = 'all engines failed or no results';
+      // Two causes used to share this one message. When the engines DID return
+      // results and the caller's domain scope rejected every one of them, say
+      // so — "all engines failed" would send the caller to retry/backoff when
+      // the fix is to widen the scope. Falls through to the engine-failure
+      // wording whenever the scope is innocent (no candidates to drop, or at
+      // least one survivor), so a genuine outage still reads as an outage.
+      const filterCause = describeDomainFilterCause(domainAttrition);
+      if (filterCause) {
+        data.warning = filterCause;
+        data.domain_filter = domainAttrition;
+      } else {
+        data.warning = 'all engines failed or no results';
+      }
     }
 
     if (ultraFastMiss) {
@@ -949,7 +974,14 @@ export class CoreSearchProvider implements SearchProvider {
           data.synthesis_advice = synthResult.data.synthesis_advice;
         }
       } else {
-        data.warning = `synthesis failed: ${synthResult.error_reason}`;
+        // Compose, never replace. A response emptied by the domain scope has
+        // no sources, so synthesis fails on that path EVERY time — an
+        // unconditional assignment here would erase the scoping cause for all
+        // format=answer callers and point them at the language model instead
+        // of the scope that actually emptied the response. Mirrors the
+        // concatenation the ok-branch above already performs.
+        const synthWarning = `synthesis failed: ${synthResult.error_reason}`;
+        data.warning = data.warning ? `${data.warning}; ${synthWarning}` : synthWarning;
       }
 
       if (input.format === 'stream_answer') {

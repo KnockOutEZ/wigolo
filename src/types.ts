@@ -301,7 +301,14 @@ export interface ExtractionResult {
   site_data_blocked?: string;
 }
 
-export type ExtractorType = 'defuddle' | 'readability' | 'turndown' | 'site-specific';
+export type ExtractorType =
+  | 'defuddle'
+  | 'readability'
+  | 'turndown'
+  | 'site-specific'
+  // Body returned verbatim because the response content-type said it was
+  // already markdown/plain text or JSON — no HTML-to-markdown conversion ran.
+  | 'passthrough';
 
 export type BrowserType = 'chromium' | 'firefox' | 'webkit';
 
@@ -683,6 +690,17 @@ export interface SearchOutput {
    * when the pool fell below the collapse floor). Single surface for "pool
    * degraded to N engines". */
   engine_pool?: EnginePoolHealth;
+  /** Emitted only when `include_domains` is the reason the response is empty:
+   * search engines returned `candidates` results and the scope matched none of
+   * them. Carries the requested scope and the pre-filter count so the caller
+   * can widen it. Absent on a genuine engine failure (nothing to filter) and
+   * whenever the scope left at least one survivor. */
+  domain_filter?: {
+    include_domains: string[];
+    candidates: number;
+    matched: number;
+    dropped: number;
+  };
 }
 
 export interface EnginePoolHealth {

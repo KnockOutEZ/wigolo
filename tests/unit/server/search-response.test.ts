@@ -90,4 +90,33 @@ describe('buildSearchContentBlocks', () => {
 
     expect(payload.stream).toBe('');
   });
+
+  // The filter-induced-zero cause has to reach the caller's envelope. It
+  // originally existed only as engine telemetry (dedup_kept: 0), which is
+  // exactly why the misreport went unnoticed -- so assert it survives the
+  // content fence into the payload the caller actually parses.
+  it('carries the domain_filter cause through to the emitted payload', () => {
+    const input: SearchInput = { query: 'test', include_domains: ['example.com'] };
+    const data = makeSearchOutput({
+      answer: undefined,
+      streaming: undefined,
+      warning: 'no results after domain scoping',
+      domain_filter: {
+        include_domains: ['example.com'],
+        candidates: 18,
+        matched: 0,
+        dropped: 18,
+      },
+    });
+
+    const blocks = buildSearchContentBlocks(input, data);
+    const payload = JSON.parse(blocks[blocks.length - 1].text);
+
+    expect(payload.domain_filter).toEqual({
+      include_domains: ['example.com'],
+      candidates: 18,
+      matched: 0,
+      dropped: 18,
+    });
+  });
 });
