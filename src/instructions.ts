@@ -254,14 +254,12 @@ Prefer mode="structured" over chaining multiple extract calls — one response c
 
   find_similar: `Find content related to a URL or concept. Best after a successful crawl/fetch — the local cache makes recommendations cheap. Concept-only queries on a cold cache often return 0-2 weak matches; warm the cache first via \`crawl\` / \`fetch\` for materially better results.
 
-Key parameters:
+Key parameters (full descriptions in the input schema):
 - url: known-good page; its content + embeddings drive similarity.
 - concept: free-text alternative to url. Thin cache → expect \`cold_start\` to fire.
-- max_results: default 5.
 - include_cache: true (default) to search cache first; false = web only.
-- threshold: minimum fused score (0-1, default 0.5).
 - include_ranking_debug: opt-in per-result \`ranking_debug\` { fts5_rank, embedding_rank, web_rank, rrf_score } so you can audit which signal won.
-- max_tokens_out / include_full_markdown / citation_format: budget + shape controls.
+- Also: max_results, threshold, include_web, max_tokens_out, include_full_markdown, citation_format.
 
 Pass either url or concept. Three signals fused via RRF: keyword (FTS5), embeddings, optional live web. Each result carries \`match_signals\` with \`embedding_rank\`, \`fts5_rank\`, \`fused_score\`. When local signals are weak (cache empty, no hits, or concept mode returns only 1-2 cache matches), the response carries \`cold_start\` — pass it verbatim to the user (tune \`WIGOLO_FIND_SIMILAR_COLD_START_THRESHOLD\` to adjust).
 
