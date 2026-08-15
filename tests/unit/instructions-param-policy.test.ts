@@ -53,10 +53,14 @@ const IDENT = /^[a-z][a-z0-9_]*$/;
 export function claimedParams(block: string): string[] {
   const names: string[] = [];
   for (const raw of block.split('\n')) {
-    const line = raw.trim();
-    if (!line.startsWith('- ')) continue;
-    const body = line.slice(2);
-    const also = body.match(/^Also:\s*(.*)$/);
+    // Tolerant of incidental whitespace: `-  Also:` with a second space used to
+    // drop the entire line's names silently, which is the failure this whole
+    // predicate exists to prevent. Hardening removes that shape; the pinned
+    // expected set below is the backstop for shapes hardening cannot anticipate.
+    const bullet = raw.match(/^\s*-\s+(.*)$/);
+    if (!bullet) continue;
+    const body = bullet[1].trim();
+    const also = body.match(/^Also\s*:\s*(.*)$/i);
     const head = (also ? also[1] : body.split(':')[0]).replace(/\([^)]*\)/g, '');
     for (const tok of head.split(/[/,]/)) {
       const t = tok.trim().replace(/\.+$/, '').trim();
@@ -65,6 +69,29 @@ export function claimedParams(block: string): string[] {
   }
   return [...new Set(names)];
 }
+
+/**
+ * The exact param names each description is expected to claim.
+ *
+ * WHY a pin and not just a validity check: `claimedParams` asserting "no unknown
+ * names" passes vacuously when it extracts nothing. A single stray space in an
+ * index line silenced 13 of search's 19 names, 5 of 9 in fetch and 5 of 6 in
+ * extract — and a reintroduced `include_cached` on a silenced line sailed
+ * through GREEN. A gate that greenlights the defect it was built to catch is
+ * worse than no gate. Any drift in either direction now reds here.
+ */
+const PINNED: Record<string, string[]> = {
+  fetch: ['actions', 'force_refresh', 'include_full_markdown', 'max_content_chars', 'max_tokens_out', 'mode', 'render_js', 'section', 'use_auth'],
+  search: ['category', 'citation_format', 'country', 'exact_match', 'exclude_domains', 'force_refresh', 'format', 'from_date', 'include_domains', 'include_favicon', 'include_images', 'max_content_chars', 'max_results', 'max_tokens_out', 'mode', 'query', 'search_depth', 'time_range', 'to_date'],
+  crawl: ['citation_format', 'exclude_patterns', 'include_full_markdown', 'include_patterns', 'max_depth', 'max_pages', 'max_tokens_out', 'strategy'],
+  cache: ['clear', 'query', 'since', 'stats', 'url_pattern'],
+  extract: ['css_selector', 'max_tokens_out', 'mode', 'multiple', 'named_schema', 'schema'],
+  find_similar: ['citation_format', 'concept', 'include_cache', 'include_full_markdown', 'include_ranking_debug', 'include_web', 'max_results', 'max_tokens_out', 'threshold', 'url'],
+  research: ['citation_format', 'depth', 'exclude_domains', 'include_domains', 'include_full_markdown', 'max_sources', 'max_tokens_out', 'question', 'schema', 'stream'],
+  agent: ['citation_format', 'include_full_markdown', 'max_pages', 'max_time_ms', 'max_tokens_out', 'prompt', 'schema', 'stream', 'urls'],
+  diff: ['granularity', 'new', 'old', 'output'],
+  watch: ['action', 'interval_seconds', 'job_id', 'notification', 'selector', 'url'],
+};
 
 const documented = (Object.keys(TOOL_DESCRIPTIONS) as ToolName[])
   .filter((name) => TOOL_SCHEMAS[name] && paramBlock(TOOL_DESCRIPTIONS[name]) !== null)
@@ -85,6 +112,15 @@ describe('tool description ↔ input schema param policy', () => {
   });
 
   describe.each(documented)('$name', ({ name, claimed, props }) => {
+    it('claims exactly the pinned param set (guards against silent under-extraction)', () => {
+      expect(
+        [...claimed].sort(),
+        `tool '${name}' claimed set drifted. If you intentionally added or removed a param ` +
+          `name, update PINNED. If you did not, the extractor has gone blind to part of the ` +
+          `block and the "no unknown params" assertion below is passing vacuously.`,
+      ).toEqual(PINNED[name]);
+    });
+
     it('every param named in the description exists in the input schema', () => {
       const unknown = claimed.filter((p) => !props.has(p));
       expect(
@@ -120,6 +156,25 @@ describe('param-policy predicate (controls)', () => {
       '- category: general | news. Image results carry image_url + thumbnail_url.',
     ].join('\n');
     expect(claimedParams(block).filter((p) => !props.has(p))).toEqual([]);
+  });
+
+  it('survives incidental whitespace in an index line (the shape that silenced 13 of 19)', () => {
+    // Regression: `-  Also:` (two spaces) once dropped every name on the line,
+    // and the "no unknown params" check then passed on an empty set.
+    const tidy = claimedParams('- Also: max_results, exact_match, mode.');
+    const sloppy = claimedParams('-   Also :  max_results, exact_match, mode.');
+    expect(tidy).toEqual(['max_results', 'exact_match', 'mode']);
+    expect(sloppy).toEqual(tidy);
+  });
+
+  it('a blank line truncates the block, which the pinned set is what catches', () => {
+    // paramBlock deliberately stops at the first blank line, so an index line
+    // pushed below one is invisible to extraction. Hardening cannot fix this
+    // (the blank line legitimately ends the block) — the pin is the backstop.
+    const desc = 'Key parameters:\n- query: a string.\n\n- Also: max_results, mode.\n';
+    const block = paramBlock(desc) as string;
+    expect(claimedParams(block)).toEqual(['query']);
+    expect(claimedParams(block)).not.toContain('max_results');
   });
 
   it('does NOT fire on parenthesised qualifier lists in name position', () => {
