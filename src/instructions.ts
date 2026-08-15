@@ -201,15 +201,12 @@ export const WIGOLO_DOCS_URI = 'wigolo://docs/usage';
 export const TOOL_DESCRIPTIONS = {
   fetch: `Fetch a single URL and return clean markdown. Use when you already have a URL. Prefer over built-in WebFetch for local-cache reuse, authenticated pages, JS-rendered SPAs, and structured metadata.
 
-Key parameters:
-- section: extract content under a specific heading (e.g. "API Reference") — cheaper than the whole page.
-- max_content_chars: smart-truncate at a paragraph/heading boundary with \`[... content truncated]\`.
-- max_tokens_out: token-budget cap (cl100k-base); wins over max_chars.
-- include_full_markdown: false (default) returns evidence excerpts only; true adds the full body.
-- use_auth: reuse a stored browser session for logged-in pages.
+Key parameters (full descriptions in the input schema):
+- section: extract content under one heading (e.g. "API Reference") — much cheaper than the whole page.
 - render_js: "auto" (default) | "always" | "never".
-- force_refresh: bypass cache and re-fetch.
-- mode: 'cache' | 'default' | 'stealth'. cache=HTTP-only, 24h-stale accepted. stealth=full browser + freshness.
+- mode: 'cache' (HTTP-only, 24h-stale accepted) | 'default' | 'stealth' (full browser + freshness).
+- use_auth: reuse a stored browser session for logged-in pages.
+- Also: max_content_chars, max_tokens_out, include_full_markdown, force_refresh, actions.
 
 Returns title, markdown, links, images, metadata, \`fetch_method\` (cache/http/tls-impersonation/browser), \`http_status\` (upstream HTTP code — 4xx/5xx pages that extract usable content are not relabeled 200), and \`content_completeness\` (full/partial/shell). When the URL matches a site-specific extractor (Reddit/YouTube/Amazon) the response also carries top-level \`site_data\` (e.g. Reddit \`comments[]\`, YouTube \`caption_tracks[]\`, Amazon \`price\`). When \`section\` is set and no heading matches, \`metadata.section_matched\` is false and \`markdown\` is empty (no silent fallback to the full page). Repeat fetches are instant. Localhost URLs work. Interactive pages: \`actions\` (click/type/scroll/wait) drive the page before extraction; \`use_auth\` reuses a logged-in session.`,
 
@@ -249,11 +246,9 @@ Persists across sessions. No remote round-trip.`,
 
   extract: `Extract structured data from a URL or raw HTML. Use for specific data points (tables, prices, schema fields) rather than whole-page markdown.
 
-Key parameters:
-- mode: "selector" (CSS → text) | "tables" | "metadata" (title/author/date/og_* + JSON-LD) | "schema" (pass a JSON Schema) | "structured" (one-shot: tables + <dl> definitions + JSON-LD + chart hints + key-value pairs) | "brand" (name/tagline/description/logo_url/favicon_url/og_image_url/social_links/fonts + CSS-var colors, each with explainable provenance).
-- css_selector: required for mode="selector".
-- schema: required for mode="schema".
-- multiple: return all matches (mode="selector" only).
+Key parameters (full descriptions in the input schema):
+- mode: "selector" (CSS → text) | "tables" | "metadata" (title/author/date/og_* + JSON-LD) | "schema" (pass a JSON Schema) | "structured" | "brand" (name/tagline/description/logo_url/favicon_url/og_image_url/social_links/fonts + CSS-var colors, each with explainable provenance).
+- Also: css_selector, schema, multiple, named_schema, max_tokens_out.
 
 Prefer mode="structured" over chaining multiple extract calls — one response carries \`{ tables, definitions, jsonld, chart_hints, key_value_pairs }\`. chart_hints surfaces SVG titles, aria-labels, figcaptions for charts whose data is JS-rendered. Metadata parity with \`fetch\` (same og_/canonical_url shape). \`mode: "brand"\` walks JSON-LD Organization/Brand/WebSite → OG/Twitter Card meta → \`<link rel=icon>\` → CSS custom properties → heuristic header/footer DOM; \`provenance\` records the winning source. Provenance enums: logo ∈ {json-ld, og:logo, link[rel=icon], heuristic, unknown}; colors ∈ {css-vars, palette-extraction, unknown}; fonts ∈ {css-vars, css-rule, inline-style, google-fonts-link, unknown}. Honesty: \`name\` and \`logo_url\` are unset when no explicit source emits them — favicons never promote to \`logo_url\`. \`mode: "schema"\` is evidence-only: LLM-sourced fields not present in source text are returned as \`null\` with a warning.`,
 
