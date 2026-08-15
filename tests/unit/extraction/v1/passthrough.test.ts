@@ -38,6 +38,25 @@ const API_JSON = JSON.stringify(
   2,
 );
 
+// Smallest parseable "Hello, world!" PDF, shared with tests/unit/extraction/v1/pdf.test.ts.
+const HELLO_PDF_BASE64 = [
+  'JVBERi0xLjQKMSAwIG9iago8PC9UeXBlIC9DYXRhbG9nIC9QYWdlcyAyIDAgUj4+CmVuZG9iagoy',
+  'IDAgb2JqCjw8L1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDE+PgplbmRvYmoKMyAw',
+  'IG9iago8PC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL1Jlc291cmNlcyA8PC9Gb250IDw8L0Yx',
+  'IDQgMCBSPj4+PiAvTWVkaWFCb3ggWzAgMCAyMDAgMjAwXSAvQ29udGVudHMgNSAwIFI+PgplbmRv',
+  'YmoKNCAwIG9iago8PC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZl',
+  'dGljYT4+CmVuZG9iago1IDAgb2JqCjw8L0xlbmd0aCA0ND4+CnN0cmVhbQpCVAovRjEgMTggVGYK',
+  'NTAgMTAwIFRkCihIZWxsbywgd29ybGQhKSBUagpFVAplbmRzdHJlYW0KZW5kb2JqCnhyZWYKMCA2',
+  'CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAw',
+  'IG4gCjAwMDAwMDAxMDkgMDAwMDAgbiAKMDAwMDAwMDIxMyAwMDAwMCBuIAowMDAwMDAwMjg2IDAw',
+  'MDAwIG4gCnRyYWlsZXIKPDwvU2l6ZSA2IC9Sb290IDEgMCBSPj4Kc3RhcnR4cmVmCjM3OQolJUVP',
+  'Rg==',
+].join('');
+
+function helloPdfBuffer(): Buffer {
+  return Buffer.from(HELLO_PDF_BASE64, 'base64');
+}
+
 describe('V1Extractor — markdown passthrough (regression: backslash escaping)', () => {
   it('returns a text/plain markdown body byte-identical instead of escaping it', async () => {
     const result = await new V1Extractor().extract(README, RAW_MD_URL, {
@@ -244,14 +263,30 @@ describe('V1Extractor — must not fire (blast-radius guard)', () => {
     expect(result.markdown).toContain('# Heading');
   });
 
-  it('keeps routing PDFs to the PDF branch even with a charset parameter', async () => {
-    // The PDF branch matched the content-type exactly, so `application/pdf;
-    // charset=binary` fell through to the HTML router with an empty body. It
-    // now shares the same mime parser as the passthrough check.
+  it('extracts PDF text when the content-type carries a charset parameter', async () => {
+    // The PDF branch compared the content-type exactly, so `application/pdf;
+    // charset=binary` fell through to the HTML router and produced an empty
+    // body. It now shares the mime parser with the passthrough check.
+    //
+    // A real buffer is required for this assertion to mean anything: an empty
+    // body plus no buffer returns `extractor='turndown', markdown=''` on BOTH
+    // sides of the fix, because handlePdf also reports 'turndown'. The earlier
+    // version of this test asserted exactly that and could never fail.
     const result = await new V1Extractor().extract('', 'https://arxiv.org/pdf/2301.00001v1', {
       contentType: 'application/pdf; charset=binary',
+      pdfBuffer: helloPdfBuffer(),
     });
-    expect(result.extractor).not.toBe('passthrough');
-    expect(result.markdown).toBe('');
-  });
+
+    expect(result.markdown.length).toBeGreaterThan(0);
+    expect(result.markdown.toLowerCase()).toContain('hello');
+  }, 60000);
+
+  it('still extracts PDF text for a bare application/pdf content-type', async () => {
+    const result = await new V1Extractor().extract('', 'https://arxiv.org/pdf/2301.00001v1', {
+      contentType: 'application/pdf',
+      pdfBuffer: helloPdfBuffer(),
+    });
+
+    expect(result.markdown.toLowerCase()).toContain('hello');
+  }, 60000);
 });
