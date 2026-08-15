@@ -671,6 +671,11 @@ export async function runV1Search(
     allOutcomes.push(...recoveryOutcomes);
     wavedEntries.push(...recoveryEntries);
     merged = scoreOutcomes(allOutcomes, wavedEntries);
+    // Re-derive, never accumulate: the recovery wave brings in probe-only
+    // engines the first tally never saw. Leaving it stale would describe a
+    // candidate set that no longer exists — and would state, of results the
+    // whitelist actually ACCEPTED, that nothing matched the caller's domains.
+    domainFilter = computeIncludeDomainAttrition(merged, input.includeDomains);
     merged = applyDomainFilters(merged, input.includeDomains, input.excludeDomains);
     merged = applyFreshnessWindow(merged, effectiveFromDate, effectiveToDate);
     if (exactPhrase) {

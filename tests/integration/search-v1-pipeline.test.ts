@@ -303,6 +303,53 @@ describe('search v1 pipeline — factory + provider integration', () => {
     expect(result.data.domain_filter).toBeUndefined();
   });
 
+  // The recovery wave pulls in probe-only engines AFTER the first domain tally
+  // is taken. If the tally is not re-derived, it describes a candidate set that
+  // no longer exists — and the cause it produces is not merely stale but
+  // FALSE: it tells the caller nothing was on their domain while on-domain
+  // results were in fact returned and dropped by a LATER filter. A vague
+  // message is recoverable; a confident wrong one sends them to the wrong fix.
+  it('does not blame the domain scope for results the recovery wave put on-domain', async () => {
+    // 3 on-domain hits whose title+snippet deliberately lack the query phrase,
+    // so the exact-phrase filter — which runs AFTER the whitelist — empties the
+    // response. The whitelist is therefore innocent.
+    const MOJEEK_ON_DOMAIN = `<html><body><ul class="results-standard">
+      <li><a class="title" href="https://target.example.test/1">Alpha</a><p class="s">first</p></li>
+      <li><a class="title" href="https://target.example.test/2">Beta</a><p class="s">second</p></li>
+      <li><a class="title" href="https://target.example.test/3">Gamma</a><p class="s">third</p></li>
+    </ul></body></html>`;
+
+    installFetchRoutes([
+      // Healthy but entirely off-domain: the only survivor of the primary wave.
+      { match: (u) => u.includes('bing.com'), text: BING_HTML },
+      // Collapse the rest of the primary wave to trip the recovery floor.
+      { match: (u) => u.includes('duckduckgo.com'), ok: false, status: 500, body: {} },
+      { match: (u) => u.includes('wikipedia.org'), ok: false, status: 500, body: {} },
+      { match: (u) => u.includes('marginalia'), ok: false, status: 500, body: {} },
+      // Probe-only engine, reachable ONLY via the recovery wave.
+      { match: (u) => u.includes('mojeek.com'), text: MOJEEK_ON_DOMAIN },
+      { match: () => true, ok: false, status: 500, body: {} },
+    ]);
+
+    const provider = await getSearchProvider();
+    const result = await provider.search(
+      {
+        query: 'zzqq unique phrase token',
+        include_domains: ['target.example.test'],
+        exact_match: true,
+      },
+      mockCtx(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.results).toEqual([]);
+    // The scope matched 3 results, so it cannot be the cause. Asserting on the
+    // CAUSE, not the wording: no domain_filter may be emitted at all.
+    expect(result.data.domain_filter).toBeUndefined();
+    expect(result.data.warning ?? '').not.toContain('domain scoping');
+  });
+
   it('honors max_results by truncating fused output', async () => {
     const many = Array.from({ length: 10 }, (_, i) =>
       `<li class="b_algo"><h2><a href="https://bing.example.test/${i}">R${i}</a></h2><div class="b_caption"><p>s${i}</p></div></li>`,
