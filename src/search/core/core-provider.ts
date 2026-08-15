@@ -19,7 +19,12 @@ import { runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
 import { expandQuery, LOW_RECALL_THRESHOLD } from './query-expansion.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
-import { foldRerankIntoOrdering } from './rerank-fold.js';
+import {
+  foldRerankIntoOrdering,
+  buildRankingNotice,
+  RANKING_NOTICE_FIELD,
+  type RerankFoldSignal,
+} from './rerank-fold.js';
 import { applyScoreFloor, DEFAULT_SEARCH_SCORE_FLOOR } from './score-floor.js';
 import { recencyDemotion, hasTemporalIntent } from './recency-boost.js';
 import {
@@ -245,6 +250,9 @@ export class CoreSearchProvider implements SearchProvider {
     let items: SearchResultItem[] = [];
     let enginesUsed: string[] = [];
     let allDegraded = false;
+    // Set only when the rerank fold reported that its blend carried no ordering
+    // signal for this result set. Undefined on every healthy search.
+    let rerankSignal: RerankFoldSignal | undefined;
     let searchElapsed = 0;
     let fetchElapsed = 0;
     let contentFetched = false;
@@ -621,6 +629,9 @@ export class CoreSearchProvider implements SearchProvider {
           queries,
           deep: depth === 'deep',
           maxResults: input.max_results,
+          onSignal: (s) => {
+            rerankSignal = s;
+          },
         });
       }
 
@@ -903,6 +914,14 @@ export class CoreSearchProvider implements SearchProvider {
 
     if (ultraFastMiss) {
       data.notice = 'cache miss, retry with search_depth=fast or higher';
+    }
+
+    // Reranking produced no ordering signal for this set — say so instead of
+    // shipping a base-ranked list that reads like a relevance-ranked one. Only
+    // reasons that can name a cause render text; `uniform_scores` does not.
+    if (rerankSignal) {
+      const rankingNotice = buildRankingNotice(rerankSignal);
+      if (rankingNotice) data[RANKING_NOTICE_FIELD] = rankingNotice;
     }
 
     if (input.format === 'answer' || input.format === 'stream_answer') {

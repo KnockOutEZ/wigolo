@@ -51,7 +51,7 @@ Wigolo returns structured evidence — YOU write the final answer from it.
 
 ## Response fields
 
-\`evidence_score\` (explainable), \`query_understanding\`, \`brand_collision_warning\`, \`freshness_signal\`, \`engine_telemetry\`, \`engine_warnings\` (+ env-var hint).
+\`evidence_score\` (explainable), \`query_understanding\`, \`brand_collision_warning\`, \`freshness_signal\`, \`engine_telemetry\`, \`engine_warnings\` (+ env-var hint), \`ranking_notice\` (reranking found nothing relevant or could not run — results are base-ranked, not relevance-ranked; pass verbatim).
 
 ## Tool routing
 
@@ -177,6 +177,7 @@ Use \`search_depth\` to trade latency for thoroughness:
 - Per-result \`freshness_signal\` -- \`published_date\` + \`inferred\` flag + \`confidence\` tag.
 - \`brand_collision_warning\` -- emitted when a brand domain dominates the top-3 of a generic query; carries reason + suggested rewrites.
 - \`query_understanding\` -- classifier view: intent, entities, date hint, language, \`is_brand_collision_prone\`, considered rewrites.
+- \`ranking_notice\` -- emitted ONLY when reranking contributed no ordering signal to the result set: either it could not run, or it scored every result below its relevance floor. The list is then ordered by cross-engine agreement rather than relevance, so the top result is the most agreed-upon, not the most relevant. Treat the results as low-confidence and pass the notice to the user verbatim.
 
 ## Performance
 
@@ -212,7 +213,7 @@ Key parameters:
 
 Returns title, markdown, links, images, metadata, \`fetch_method\` (cache/http/tls-impersonation/browser), \`http_status\` (upstream HTTP code — 4xx/5xx pages that extract usable content are not relabeled 200), and \`content_completeness\` (full/partial/shell). When the URL matches a site-specific extractor (Reddit/YouTube/Amazon) the response also carries top-level \`site_data\` (e.g. Reddit \`comments[]\`, YouTube \`caption_tracks[]\`, Amazon \`price\`). When \`section\` is set and no heading matches, \`metadata.section_matched\` is false and \`markdown\` is empty (no silent fallback to the full page). Repeat fetches are instant. Localhost URLs work. Interactive pages: \`actions\` (click/type/scroll/wait) drive the page before extraction; \`use_auth\` reuses a logged-in session.`,
 
-  search: `Search the web. Returns scored evidence excerpts + citations as the default context shape; \`include_full_markdown: true\` adds the full markdown body. Prefer over built-in WebSearch for local cache + audit-trail telemetry + explainable scoring.
+  search: `Search the web. Returns scored evidence excerpts + citations by default; \`include_full_markdown: true\` adds the full markdown body. Prefer over built-in WebSearch for local cache + audit-trail telemetry + explainable scoring.
 
 Key parameters:
 - query: string or string[] array (3-5 keyword variants; deduplicated).
@@ -225,10 +226,10 @@ Key parameters:
 - format: omit = evidence context. 'answer' | 'stream_answer' = sampling synthesis (falls back to evidence).
 - search_depth: 'ultra-fast' (cache-only ≤300ms) | 'fast' | 'balanced' (default) | 'deep'.
 - include_images / include_favicon: opt-in images[] + per-result favicon.
-- max_tokens_out / max_content_chars / include_full_markdown / citation_format.
+- max_tokens_out / max_content_chars / citation_format.
 - force_refresh + mode ('cache' | 'default' | 'stealth').
 
-Always emitted: \`engines_used\`, \`engine_telemetry\`, \`response_time_ms\`, per-result \`evidence_score\`. Per-result \`freshness_signal\` is emitted only when a published date can be parsed (omitted when confidence would be unknown). Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. Quote [N] or {citation_id}.`,
+Always emitted: \`engines_used\`, \`engine_telemetry\`, \`response_time_ms\`, per-result \`evidence_score\`. Per-result \`freshness_signal\` is emitted only when a published date can be parsed. Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. \`ranking_notice\` is emitted only when reranking found nothing relevant or could not run — results are base-ranked, not relevance-ranked. Quote [N] or {citation_id}.`,
 
   crawl: `Crawl a site from a seed URL and return content from many pages. Use for indexing docs, wikis, multi-page references. Built for offline reuse: every page lands in the local cache.
 

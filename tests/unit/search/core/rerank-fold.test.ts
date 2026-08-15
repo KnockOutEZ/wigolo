@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { foldRerankIntoOrdering } from '../../../../src/search/core/rerank-fold.js';
+import {
+  foldRerankIntoOrdering,
+  buildRankingNotice,
+  RANKING_NOTICE_REASONS,
+  RERANK_CONFIDENT_JUNK_CEILING,
+  type RerankFoldSignal,
+} from '../../../../src/search/core/rerank-fold.js';
 import type { RawSearchResult } from '../../../../src/types.js';
 
 // Honest RawSearchResult — `engine` is required (types.ts). Do NOT use
@@ -552,5 +558,271 @@ describe('foldRerankIntoOrdering', () => {
       queries: ['q'], rerank: fakeRerank({ B: -4, A: +4 }),
     });
     expect(out.map((x) => x.url)).toEqual(['A', 'B']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rerank no-op signal.
+//
+// WHY THIS MATTERS: a flat `cross_encoder: 0.5` across every result preceded two
+// live relevance collapses ("home assistant" -> Telangana irrigation sites; an
+// MSR microarchitecture query -> Microsoft Safety Scanner). It was read as "the
+// reranker did not run". It is not: when the reranker genuinely fails, the fold
+// returns early and emits NO cross_encoder component at all. A flat 0.5 means
+// the reranker RAN and the blend was neutralised — and the emitted value cannot
+// say which neutraliser did it, because a healthy mid-spread result normalises
+// to exactly 0.5 too. So the reason is captured at the source branch, and the
+// caller is told the ordering is base ranking, not relevance ranking.
+//
+// The logits in the incident fixtures are REAL output from the shipped reranker
+// for those exact query/result pairs, captured rather than invented, so the
+// fixtures cannot encode a score shape the real model never produces.
+// ---------------------------------------------------------------------------
+describe('foldRerankIntoOrdering — no-ordering-signal detection', () => {
+  function collect() {
+    const seen: RerankFoldSignal[] = [];
+    return { seen, onSignal: (s: RerankFoldSignal) => { seen.push(s); } };
+  }
+
+  it('the "home assistant" -> Telangana irrigation collapse reports no_relevant_match', async () => {
+    // Real captured logits: every candidate ~-11.3, i.e. sigmoid ~1e-5. The model
+    // was RIGHT — the whole pool was junk — and we shipped it silently.
+    const results = [
+      r('https://irrigation.telangana.gov.in/kaleshwaram', 0.9, 'Kaleshwaram Lift Irrigation Project'),
+      r('https://irrigation.telangana.gov.in/', 0.8, 'Telangana Irrigation Department'),
+      r('https://irrigation.telangana.gov.in/srsp', 0.7, 'Sri Ram Sagar Project'),
+    ];
+    const { seen, onSignal } = collect();
+    const out = await foldRerankIntoOrdering(results, {
+      queries: ['home assistant'],
+      onSignal,
+      rerank: fakeRerank({
+        'Kaleshwaram Lift Irrigation Project': -11.3377,
+        'Telangana Irrigation Department': -11.3404,
+        'Sri Ram Sagar Project': -11.2956,
+      }),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('no_relevant_match');
+    expect(seen[0].window).toBe(3);
+    expect(seen[0].max_score).toBeCloseTo(-11.2956, 4);
+    // The ambiguous emitted value this signal exists to disambiguate.
+    for (const x of out) {
+      expect(x.evidence_score!.components.cross_encoder).toBeCloseTo(0.5, 6);
+    }
+  });
+
+  it('the MSR -> Microsoft Safety Scanner collapse reports no_relevant_match', async () => {
+    // Real captured logits. The SPREAD here is wide (-11.43 .. -8.12): this is
+    // not a tie, it is a set the model ranked confidently and rated all junk.
+    const results = [
+      r('https://learn.microsoft.com/defender-endpoint/safety-scanner', 0.9, 'Microsoft Safety Scanner Download'),
+      r('https://learn.microsoft.com/windows/security/msrt', 0.8, 'Remove prevalent malware with MSRT'),
+      r('https://msrwheels.example/catalog', 0.7, 'MSR Racing Wheels'),
+    ];
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['MSR microarchitecture model specific register'],
+      onSignal,
+      rerank: fakeRerank({
+        'Microsoft Safety Scanner Download': -11.4262,
+        'Remove prevalent malware with MSRT': -11.1803,
+        'MSR Racing Wheels': -8.1158,
+      }),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('no_relevant_match');
+  });
+
+  it('OVER-FIRE PROBE: a healthy on-topic pool emits no signal at all', async () => {
+    // Real captured logits for the SAME query against the genuine Home Assistant
+    // docs (+7.37 / +5.89 / +7.00). If the detector fires here it is worse than
+    // no detector — every good search would carry a low-confidence warning.
+    const results = [
+      r('https://www.home-assistant.io/', 0.9, 'Home Assistant'),
+      r('https://www.home-assistant.io/installation/', 0.8, 'Home Assistant Installation'),
+      r('https://www.home-assistant.io/docs/automation/', 0.7, 'Home Assistant Automations'),
+    ];
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['home assistant'],
+      onSignal,
+      rerank: fakeRerank({
+        'Home Assistant': 7.3696,
+        'Home Assistant Installation': 5.8913,
+        'Home Assistant Automations': 7.0046,
+      }),
+    });
+    expect(seen).toEqual([]);
+  });
+
+  it('GENUINE TIE: uniform CONFIDENT scores are uniform_scores, never no_relevant_match', async () => {
+    // The trap. The reranker ran and judged every result equally and STRONGLY
+    // relevant (+7.0 each). The degenerate min-max normaliser collapses that to
+    // a flat 0.5 — byte-identical output to the Telangana collapse above. A
+    // detector reading the emitted 0.5 CANNOT tell these two apart and would
+    // call this a relevance collapse. Keying on the source branch does.
+    const results = [r('A', 0.9, 'alpha'), r('B', 0.8, 'beta'), r('C', 0.7, 'gamma')];
+    const { seen, onSignal } = collect();
+    const out = await foldRerankIntoOrdering(results, {
+      queries: ['q'], onSignal,
+      rerank: fakeRerank({ alpha: 7, beta: 7, gamma: 7 }),
+    });
+    // Same ambiguous emitted value as the collapse case...
+    for (const x of out) {
+      expect(x.evidence_score!.components.cross_encoder).toBeCloseTo(0.5, 6);
+    }
+    // ...but a different, honest reason, and NO user-facing notice.
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('uniform_scores');
+    expect(buildRankingNotice(seen[0])).toBeUndefined();
+  });
+
+  it('BOUNDARY: a tie exactly AT the relevance floor is a tie, not a collapse', async () => {
+    // maxLogit === 0 is the sigmoid midpoint. The floor comparison is strictly
+    // `< floor`, so a batch sitting exactly on it is uncertain, not junk — it
+    // must not be reported as "found nothing relevant".
+    const results = [r('A', 0.9, 'alpha'), r('B', 0.8, 'beta')];
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['q'], onSignal, rerank: fakeRerank({ alpha: 0, beta: 0 }),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('uniform_scores');
+  });
+
+  it('a mixed set with ONE relevant result emits no signal', async () => {
+    // Most of the set is junk but the reranker found a genuine match, so the
+    // blend still carries real ordering information. Nothing to report.
+    const results = [r('A', 0.9, 'alpha'), r('B', 0.8, 'beta'), r('C', 0.7, 'gamma')];
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['q'], onSignal,
+      rerank: fakeRerank({ alpha: -9, beta: -8, gamma: 4.2 }),
+    });
+    expect(seen).toEqual([]);
+  });
+
+  it('a reranker that throws reports unavailable and keeps the composite ordering', async () => {
+    const results = [r('A', 0.9, 'alpha'), r('B', 0.8, 'beta')];
+    const { seen, onSignal } = collect();
+    const out = await foldRerankIntoOrdering(results, {
+      queries: ['q'], onSignal,
+      rerank: async () => { throw new Error('model load failed'); },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('unavailable');
+    expect(out.map((x) => x.url)).toEqual(['A', 'B']);
+    // The literal "did not run" case emits NO cross_encoder — which is why it
+    // was undetectable downstream before this signal existed.
+    for (const x of out) {
+      expect(x.evidence_score?.components.cross_encoder).toBeUndefined();
+    }
+  });
+
+  it('a single-result set emits no signal (no ordering exists to lose)', async () => {
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering([r('A', 0.9, 'alpha')], {
+      queries: ['q'], onSignal, rerank: fakeRerank({ alpha: -9 }),
+    });
+    expect(seen).toEqual([]);
+  });
+
+  it('the signal fires at most once per fold, across every query variant', async () => {
+    const results = Array.from({ length: 25 }, (_, i) => r(`U${i}`, (25 - i) / 25));
+    const logits: Record<string, number> = {};
+    for (let i = 0; i < 25; i++) logits[`U${i}`] = -3 - i / 100;
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['q1', 'q2', 'q3'], onSignal, maxResults: 10, rerank: fakeRerank(logits),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('no_relevant_match');
+  });
+
+  it('the notice text is capability language and names no library, model or vendor', async () => {
+    const texts = RANKING_NOTICE_REASONS.map((reason) =>
+      buildRankingNotice({ reason, window: 3 }),
+    );
+    expect(texts.every((t) => typeof t === 'string' && t.length > 0)).toBe(true);
+    for (const t of texts) {
+      expect(t!).not.toMatch(
+        /cross-encoder|transformers|onnx|flashrank|minilm|ms-marco|xenova|logit|sigmoid/i,
+      );
+      // It must say what the caller actually got instead.
+      expect(t!.toLowerCase()).toContain('ranking');
+    }
+    // Every rendering reason is covered; uniform_scores deliberately renders none.
+    expect([...RANKING_NOTICE_REASONS].sort()).toEqual([
+      'no_relevant_match',
+      'unavailable',
+      'uncertain_relevance',
+    ]);
+  });
+
+  it('NEAR THE FLOOR: an uncertain batch is not called irrelevant', async () => {
+    // RERANK_TIER_MARGIN exists because a score near zero means the model is
+    // UNSURE, not dismissive — and that uncertainty is symmetric below the
+    // floor. A batch whose best score is a hair under it has failed to convince,
+    // not been rejected, so the notice must not tell the user its results are
+    // wrong. This is the same "do not assert a cause you cannot know" line drawn
+    // for uniform_scores, held in the neighbouring branch.
+    const results = [r('A', 0.9, 'alpha'), r('B', 0.8, 'beta')];
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['q'], onSignal, rerank: fakeRerank({ alpha: -0.2, beta: -0.9 }),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('uncertain_relevance');
+    const text = buildRankingNotice(seen[0])!;
+    expect(text).toBeTruthy();
+    // It must NOT make the confident-junk claim.
+    expect(text).not.toMatch(/nothing here that genuinely matches/i);
+    expect(text).toMatch(/close to its decision boundary|not a verdict/i);
+  });
+
+  it('BAND EDGE: exactly at the confident-junk ceiling is still only uncertain', async () => {
+    // The strong claim is scoped to scores strictly BELOW the ceiling, so a
+    // batch sitting exactly on it keeps the softer text.
+    const results = [r('A', 0.9, 'alpha'), r('B', 0.8, 'beta')];
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['q'],
+      onSignal,
+      rerank: fakeRerank({
+        alpha: RERANK_CONFIDENT_JUNK_CEILING,
+        beta: RERANK_CONFIDENT_JUNK_CEILING - 3,
+      }),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('uncertain_relevance');
+  });
+
+  it('a provider that scores NOTHING reports unavailable, not a junk verdict', async () => {
+    // The unscored-candidate backfill writes a sentinel deliberately below the
+    // floor, so a fully-unscored window would otherwise read as a confident
+    // "nothing is relevant" — a claim about a judgement that never happened.
+    const results = [r('A', 0.9, 'alpha'), r('B', 0.8, 'beta')];
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['q'], onSignal, rerank: async () => new Map<string, number>(),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('unavailable');
+    expect(seen[0].max_score).toBeUndefined();
+  });
+
+  it('a PARTIALLY scored window still reports on the scores it did get', async () => {
+    // Only one candidate scored, and confidently junk. Something WAS judged, so
+    // this is a real verdict, not an unavailable reranker.
+    const results = [r('A', 0.9, 'alpha'), r('B', 0.8, 'beta')];
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['q'],
+      onSignal,
+      rerank: async (_q, cands) => new Map([[cands[0].id, -7]]),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('no_relevant_match');
   });
 });
