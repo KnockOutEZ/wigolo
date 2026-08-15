@@ -301,7 +301,14 @@ export interface ExtractionResult {
   site_data_blocked?: string;
 }
 
-export type ExtractorType = 'defuddle' | 'readability' | 'turndown' | 'site-specific';
+export type ExtractorType =
+  | 'defuddle'
+  | 'readability'
+  | 'turndown'
+  | 'site-specific'
+  // Body returned verbatim because the response content-type said it was
+  // already markdown/plain text or JSON — no HTML-to-markdown conversion ran.
+  | 'passthrough';
 
 export type BrowserType = 'chromium' | 'firefox' | 'webkit';
 
