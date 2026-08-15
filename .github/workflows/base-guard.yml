@@ -10,12 +10,30 @@ name: Base Guard
 on:
   pull_request:
     branches: [main]
-    # `labeled` / `unlabeled` are required, not decorative. Without them a PR
-    # that legitimately targets `main` would add the label and the check would
-    # stay stuck on its last (red) run forever, with no way to re-evaluate short
-    # of an empty push. A guard that cannot be satisfied is a guard people learn
-    # to bypass, so it has to re-run the moment the label state changes.
-    types: [opened, reopened, synchronize, labeled, unlabeled]
+    # Every entry here is load-bearing.
+    #
+    # `labeled` / `unlabeled`: without them a PR that legitimately targets
+    # `main` would add the label and the check would stay stuck on its last
+    # (red) run, with no way to re-evaluate short of an empty push. A guard that
+    # cannot be satisfied is a guard people learn to bypass.
+    #
+    # `edited`: retargeting a PR emits `edited` (carrying
+    # `changes.base.ref.from`) — NOT `synchronize`, which only fires on a push.
+    # Without `edited`, a PR opened against the program branch and then
+    # retargeted with `gh pr edit --base main` would fire no event in this list
+    # and the guard would never run — the exact bypass it exists to prevent.
+    #
+    # KNOWN GAP, deliberately left: `edited` does not clear the converse case.
+    # The branch filter below is evaluated against the branch the PR targets at
+    # event time, and the `edited` payload already carries the NEW base. So
+    # retargeting AWAY from `main` (i.e. following remedy 1 below) fails the
+    # filter, no run is triggered, and the earlier red check-run stays on the
+    # head SHA. It is cosmetic rather than blocking — this check is only ever
+    # required on `main`, and a PR that has moved off `main` is no longer
+    # gated by it. Closing it properly means dropping the branch filter and
+    # making the JOB conditional on the base ref, which costs an extra check
+    # line on every PR in the repo; that trade has not been made yet.
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
 
 # `pull_request`, deliberately NOT `pull_request_target`: this job checks out no
 # code, runs nothing from the PR, and needs no secrets. `pull_request_target`
