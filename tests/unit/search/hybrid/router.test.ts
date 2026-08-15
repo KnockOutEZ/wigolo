@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type MockedFunction } from 'vitest';
 import { HybridSearchProvider } from '../../../../src/search/hybrid/router.js';
 import type {
   SearchProvider,
@@ -48,9 +48,15 @@ function makeContext(): SearchContext {
   };
 }
 
-interface MockProvider extends SearchProvider {
-  search: ReturnType<typeof vi.fn>;
-}
+// `ReturnType<typeof vi.fn>` erases the call signature to (...args: any[]) => any,
+// which does not structurally satisfy SearchProvider.search — so the interface
+// failed to extend it and every provider passed to HybridSearchProvider was a
+// type error. Binding the mock to the real method type keeps the fake honest:
+// a drift in SearchProvider.search now breaks these tests instead of being
+// silently absorbed.
+type MockProvider = SearchProvider & {
+  search: MockedFunction<SearchProvider['search']>;
+};
 
 function mockProvider(
   name: 'core' | 'searxng',
@@ -58,8 +64,8 @@ function mockProvider(
 ): MockProvider {
   return {
     name,
-    search: vi.fn(async (input: SearchInput) => impl(input)),
-  } as MockProvider;
+    search: vi.fn(async (input: SearchInput, _ctx: SearchContext) => impl(input)),
+  };
 }
 
 describe('HybridSearchProvider', () => {
@@ -325,6 +331,99 @@ describe('HybridSearchProvider', () => {
     expect(sx.search).not.toHaveBeenCalled();
     expect(out.data.warning).toBeUndefined();
     expect(out.data.fallback_signal).toBeNull();
+  });
+
+  // Core's filter-induced-zero cause describes CORE's empty result set. If the
+  // fallback backend supplied on-domain results, the merged response is not
+  // empty and repeating the cause would assert a falsehood — the same
+  // misreporting class the cause was added to eliminate.
+  it('drops the domain-scoping cause when the fallback backend found on-domain results', async () => {
+    const core = mockProvider('core', () =>
+      ok({
+        results: [],
+        warning: 'no results after domain scoping: ... none were on example.com ...',
+        domain_filter: {
+          include_domains: ['example.com'],
+          candidates: 18,
+          matched: 0,
+          dropped: 18,
+        },
+      }),
+    );
+    const sx = mockProvider('searxng', () =>
+      ok({ results: [makeResult('found', 'https://example.com/a', 0.9)] }),
+    );
+    const hybrid = new HybridSearchProvider(core, sx);
+
+    const out = await hybrid.search({ query: 'q', include_domains: ['example.com'] }, ctx);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+
+    expect(out.data.results.length).toBeGreaterThan(0);
+    expect(out.data.domain_filter).toBeUndefined();
+    expect(out.data.warning).toBeUndefined();
+  });
+
+  // The retraction must remove only the clause it authored. Once a synthesis
+  // failure can be composed onto the same warning, deleting the whole string
+  // discards a report the retraction has no claim over — and the synthesis
+  // failure is still true of the merged response.
+  it('retracts only the scoping clause, preserving a co-reported synthesis failure', async () => {
+    const core = mockProvider('core', () =>
+      ok({
+        results: [],
+        warning:
+          'no results after domain scoping: search engines returned 4 results, but none were on example.com. ' +
+          'This is a scoping result, not an engine failure — widen or drop include_domains to see them.; ' +
+          'synthesis failed: No sources returned content for this query',
+        domain_filter: {
+          include_domains: ['example.com'],
+          candidates: 4,
+          matched: 0,
+          dropped: 4,
+        },
+      }),
+    );
+    const sx = mockProvider('searxng', () =>
+      ok({ results: [makeResult('found', 'https://example.com/a', 0.9)] }),
+    );
+    const hybrid = new HybridSearchProvider(core, sx);
+
+    const out = await hybrid.search({ query: 'q', include_domains: ['example.com'] }, ctx);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+
+    expect(out.data.domain_filter).toBeUndefined();
+    expect(out.data.warning).toBe(
+      'synthesis failed: No sources returned content for this query',
+    );
+  });
+
+  // NEGATIVE must-not-fire: the fallback found nothing either, so the scope
+  // really did eat everything and the cause is still the truth.
+  it('keeps the domain-scoping cause when the merged response is still empty', async () => {
+    const core = mockProvider('core', () =>
+      ok({
+        results: [],
+        warning: 'no results after domain scoping: ... none were on example.com ...',
+        domain_filter: {
+          include_domains: ['example.com'],
+          candidates: 18,
+          matched: 0,
+          dropped: 18,
+        },
+      }),
+    );
+    const sx = mockProvider('searxng', () => ok({ results: [] }));
+    const hybrid = new HybridSearchProvider(core, sx);
+
+    const out = await hybrid.search({ query: 'q', include_domains: ['example.com'] }, ctx);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+
+    expect(out.data.results).toEqual([]);
+    expect(out.data.domain_filter?.candidates).toBe(18);
+    expect(out.data.warning).toContain('domain scoping');
   });
 
   it('passes the same context through to both providers', async () => {
