@@ -1,4 +1,4 @@
-import { extractSection, extractLinksAndImages } from './markdown.js';
+import { extractSection, extractLinksAndImages, isDecorativeImage } from './markdown.js';
 import type { ExtractionResult } from '../types.js';
 
 /**
@@ -105,15 +105,82 @@ export interface PassthroughOptions {
   sectionIndex?: number;
 }
 
-function absolutize(refs: string[], pageUrl: string): string[] {
+function absolutize(refs: Iterable<string>, pageUrl: string): string[] {
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const ref of refs) {
+    let href: string;
     try {
-      out.push(new URL(ref, pageUrl).href);
+      // An already-absolute reference is kept exactly as written. Passing it
+      // through `new URL()` would canonicalize it (`https://x.com` gains a
+      // trailing slash), which the extractor this path replaces never did.
+      new URL(ref);
+      href = ref;
     } catch {
-      // A relative reference we cannot resolve is dropped rather than
-      // reported as a page link that does not exist.
+      try {
+        href = new URL(ref, pageUrl).href;
+      } catch {
+        // A relative reference we cannot resolve is dropped rather than
+        // reported as a page link that does not exist.
+        continue;
+      }
     }
+    if (seen.has(href)) continue;
+    seen.add(href);
+    out.push(href);
+  }
+  return out;
+}
+
+const HTML_HREF_RE = /<a\b[^>]*?\bhref\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+const HTML_IMG_RE =
+  /<img\b[^>]*?\bsrc\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))[^>]*>/gi;
+const HTML_IMG_ALT_RE = /\balt\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
+
+function attrValue(m: RegExpExecArray, first: number): string {
+  return m[first] ?? m[first + 1] ?? m[first + 2] ?? '';
+}
+
+/**
+ * Anchors and images written as raw HTML inside a text body.
+ *
+ * `extractLinksAndImages` understands markdown syntax only, so on its own it
+ * drops every URL in an HTML badge block — which is how most READMEs open, and
+ * which the HTML-to-markdown converter used to pick up. `links` is the crawler's
+ * only source of traversal edges, so losing them loses pages.
+ */
+function htmlRefs(body: string): { links: string[]; images: string[] } {
+  const links: string[] = [];
+  const images: string[] = [];
+
+  for (const m of body.matchAll(HTML_HREF_RE)) {
+    const href = attrValue(m as RegExpExecArray, 2).trim();
+    if (href) links.push(href);
+  }
+
+  for (const m of body.matchAll(HTML_IMG_RE)) {
+    const tag = m[0];
+    const src = attrValue(m as RegExpExecArray, 2).trim();
+    if (!src) continue;
+    const altMatch = HTML_IMG_ALT_RE.exec(tag);
+    const alt = altMatch ? (altMatch[2] ?? altMatch[3] ?? altMatch[4] ?? '') : '';
+    if (!isDecorativeImage(src, alt)) images.push(src);
+  }
+
+  return { links, images };
+}
+
+/**
+ * Markdown image tokens that survive the decorative filter. The filter itself
+ * rewrites markdown; here the body must stay verbatim, so the same predicate is
+ * applied to the derived list instead.
+ */
+function markdownContentImages(body: string): string[] {
+  const out: string[] = [];
+  for (const m of body.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g)) {
+    const alt = m[1] ?? '';
+    const src = m[2] ?? '';
+    if (src && !isDecorativeImage(src, alt)) out.push(src);
   }
   return out;
 }
@@ -126,11 +193,16 @@ function absolutize(refs: string[], pageUrl: string): string[] {
  *
  * The derived fields are reported honestly rather than fabricated:
  *  - `metadata` is `{}`. There are no meta tags in a text or JSON body.
- *  - `links`/`images` for a text body are the anchors genuinely present in the
- *    source, resolved against the page URL so crawl and cache consumers keep
- *    getting absolute URLs. For JSON they are empty: a JSON document has no
- *    anchors, and a string value that happens to contain `[x](y)` is data, not
- *    a link on the page.
+ *  - `links`/`images` for a text body are the references genuinely present in
+ *    the source — written either as markdown syntax or as raw `<a>`/`<img>`
+ *    HTML, since a text body may contain both — resolved against the page URL
+ *    so crawl and cache consumers keep getting absolute URLs. Note the body
+ *    itself is never rewritten, so a relative reference stays relative inside
+ *    `markdown` while `links` carries the resolved form.
+ *  - `images` drops decorative badges/shields/logos, matching the extractor
+ *    this path replaces.
+ *  - For JSON both are empty: a JSON document has no anchors, and a string
+ *    value that happens to contain `[x](y)` is data, not a link on the page.
  *  - `title` is empty rather than invented.
  *
  * `content_completeness` is untouched: it is produced by the browser tier for
@@ -152,9 +224,10 @@ export function buildPassthroughResult(
   let links: string[] = [];
   let images: string[] = [];
   if (kind === 'text') {
-    const found = extractLinksAndImages(markdown);
-    links = absolutize(found.links, url);
-    images = absolutize(found.images, url);
+    const fromMarkdown = extractLinksAndImages(markdown);
+    const fromHtml = htmlRefs(markdown);
+    links = absolutize([...fromMarkdown.links, ...fromHtml.links], url);
+    images = absolutize([...markdownContentImages(markdown), ...fromHtml.images], url);
   }
 
   if (options.maxChars && markdown.length > options.maxChars) {

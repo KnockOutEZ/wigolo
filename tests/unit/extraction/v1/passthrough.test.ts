@@ -80,12 +80,103 @@ describe('V1Extractor — markdown passthrough (regression: backslash escaping)'
     expect(result.links.some((l) => l.includes('/CODE/_OF/_CONDUCT.md'))).toBe(false);
   });
 
+  it('keeps anchor targets written as raw HTML, not just markdown link syntax', async () => {
+    // Measured regression: `extractLinksAndImages` matches `](...)` only, so a
+    // README badge block written in HTML lost every URL in it — 760 links
+    // across 10 real READMEs dropped to 600. Base captured them because the
+    // HTML-to-markdown converter parsed the anchors. Badge blocks are the norm,
+    // not an edge case, and `links` is the crawler's only traversal source.
+    const badgeBlock = [
+      '<p align="center">',
+      '  <a href="https://tailwindcss.com"><img src="tw.png" alt="Tailwind"></a>',
+      "  <a href='https://vite.dev'>Vite</a>",
+      '</p>',
+      '',
+      '# Project',
+      '',
+      'Also see [the docs](https://example.com/docs).',
+      '',
+    ].join('\n');
+
+    const result = await new V1Extractor().extract(badgeBlock, RAW_MD_URL, {
+      contentType: 'text/plain; charset=utf-8',
+    });
+
+    expect(result.markdown).toBe(badgeBlock);
+    expect(result.links).toContain('https://tailwindcss.com');
+    expect(result.links).toContain('https://vite.dev');
+    expect(result.links).toContain('https://example.com/docs');
+  });
+
+  it('merges markdown and HTML anchors without emitting duplicates', async () => {
+    const body = [
+      '<a href="https://example.com/same">HTML form</a>',
+      '',
+      '[markdown form](https://example.com/same)',
+      '',
+    ].join('\n');
+
+    const result = await new V1Extractor().extract(body, RAW_MD_URL, {
+      contentType: 'text/plain',
+    });
+
+    expect(result.links.filter((l) => l === 'https://example.com/same')).toHaveLength(1);
+  });
+
   it('honours maxChars on a passthrough body so response budgets still apply', async () => {
     const result = await new V1Extractor().extract(README, RAW_MD_URL, {
       contentType: 'text/plain',
       maxChars: 20,
     });
     expect(result.markdown).toBe(README.slice(0, 20));
+  });
+});
+
+describe('V1Extractor — passthrough images', () => {
+  it('captures images written as raw HTML alongside markdown image syntax', async () => {
+    const body = [
+      '<img src="https://cdn.example.com/screenshot.png" alt="App screenshot">',
+      '',
+      '![architecture diagram](https://cdn.example.com/diagram.png)',
+      '',
+    ].join('\n');
+
+    const result = await new V1Extractor().extract(body, RAW_MD_URL, {
+      contentType: 'text/plain',
+    });
+
+    expect(result.images).toContain('https://cdn.example.com/screenshot.png');
+    expect(result.images).toContain('https://cdn.example.com/diagram.png');
+  });
+
+  it('filters decorative badges out of images, matching the extractor it replaces', async () => {
+    // Base ran `filterDecorativeImages`, so `images` carried content images
+    // rather than the badge wall at the top of a README. Passthrough leaves the
+    // body untouched but keeps the derived index on the same contract —
+    // otherwise this corpus goes from 9 images to 52 shields.
+    const body = [
+      '[![build badge](https://img.shields.io/badge/build-passing.svg)](https://ci.example.com)',
+      '<img src="https://example.com/logo.png" alt="Logo">',
+      '',
+      '![real figure](https://cdn.example.com/figure.png)',
+      '',
+    ].join('\n');
+
+    const result = await new V1Extractor().extract(body, RAW_MD_URL, {
+      contentType: 'text/plain',
+    });
+
+    expect(result.images).not.toContain('https://img.shields.io/badge/build-passing.svg');
+    expect(result.images).not.toContain('https://example.com/logo.png');
+    expect(result.images).toContain('https://cdn.example.com/figure.png');
+  });
+
+  it('keeps a content image that has alt text and no decorative marker', async () => {
+    const body = '![a labelled screenshot](https://cdn.example.com/shot.png)\n';
+    const result = await new V1Extractor().extract(body, RAW_MD_URL, {
+      contentType: 'text/plain',
+    });
+    expect(result.images).toEqual(['https://cdn.example.com/shot.png']);
   });
 });
 
