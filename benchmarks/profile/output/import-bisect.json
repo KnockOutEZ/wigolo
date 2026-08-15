@@ -1,0 +1,190 @@
+{
+  "generated_at": "2026-08-14T23:20:30.289Z",
+  "runs": 7,
+  "rows": [
+    {
+      "name": "baseline (no import)",
+      "n": 7,
+      "min": 1.3,
+      "median": 1.3,
+      "max": 1.5,
+      "rss_mb": 37
+    },
+    {
+      "name": "dist/server.js (whole graph)",
+      "n": 7,
+      "min": 144.3,
+      "median": 147.6,
+      "max": 193.3,
+      "rss_mb": 103.6
+    },
+    {
+      "name": "dist/index.js (CLI entry)",
+      "n": 7,
+      "min": 211.3,
+      "median": 214.5,
+      "max": 235,
+      "rss_mb": 140.6
+    },
+    {
+      "name": "  better-sqlite3",
+      "n": 7,
+      "min": 6.3,
+      "median": 6.5,
+      "max": 7.8,
+      "rss_mb": 45
+    },
+    {
+      "name": "  sqlite-vec",
+      "n": 7,
+      "min": 3.9,
+      "median": 4.2,
+      "max": 4.4,
+      "rss_mb": 39.3
+    },
+    {
+      "name": "  playwright",
+      "n": 7,
+      "min": 172.4,
+      "median": 177.5,
+      "max": 181,
+      "rss_mb": 148.9
+    },
+    {
+      "name": "  @modelcontextprotocol/sdk (server)",
+      "n": 7,
+      "min": 49.1,
+      "median": 49.9,
+      "max": 51.9,
+      "rss_mb": 67.7
+    },
+    {
+      "name": "  linkedom",
+      "n": 7,
+      "min": 35.3,
+      "median": 35.9,
+      "max": 36.4,
+      "rss_mb": 55.1
+    },
+    {
+      "name": "  defuddle/node",
+      "n": 7,
+      "min": 32.1,
+      "median": 33,
+      "max": 46.1,
+      "rss_mb": 59.3
+    },
+    {
+      "name": "  @mozilla/readability",
+      "n": 7,
+      "min": 4.9,
+      "median": 5,
+      "max": 5.2,
+      "rss_mb": 39.7
+    },
+    {
+      "name": "  turndown",
+      "n": 7,
+      "min": 16.7,
+      "median": 17.2,
+      "max": 18.5,
+      "rss_mb": 54.5
+    },
+    {
+      "name": "  sharp",
+      "n": 7,
+      "min": 20,
+      "median": 20.6,
+      "max": 46.2,
+      "rss_mb": 57.1
+    },
+    {
+      "name": "  fastembed",
+      "n": 7,
+      "min": 29.9,
+      "median": 30.6,
+      "max": 53.3,
+      "rss_mb": 70.8
+    },
+    {
+      "name": "  @huggingface/transformers",
+      "n": 7,
+      "min": 55.6,
+      "median": 56.2,
+      "max": 58.4,
+      "rss_mb": 83.8
+    },
+    {
+      "name": "  onnxruntime-node",
+      "n": 7,
+      "min": 12.4,
+      "median": 12.7,
+      "max": 13.2,
+      "rss_mb": 58.7
+    },
+    {
+      "name": "  ink",
+      "n": 7,
+      "min": 108.8,
+      "median": 112.8,
+      "max": 171.8,
+      "rss_mb": 100.5
+    },
+    {
+      "name": "  react",
+      "n": 7,
+      "min": 8.6,
+      "median": 8.9,
+      "max": 11.7,
+      "rss_mb": 49.5
+    },
+    {
+      "name": "  groq-sdk",
+      "n": 7,
+      "min": 9.3,
+      "median": 9.7,
+      "max": 17.8,
+      "rss_mb": 47
+    },
+    {
+      "name": "  openai",
+      "n": 7,
+      "min": 21.6,
+      "median": 22.2,
+      "max": 35.7,
+      "rss_mb": 50.9
+    },
+    {
+      "name": "  @anthropic-ai/sdk",
+      "n": 7,
+      "min": 13.9,
+      "median": 14.2,
+      "max": 17.2,
+      "rss_mb": 48.1
+    },
+    {
+      "name": "  @google/genai",
+      "n": 7,
+      "min": 34.6,
+      "median": 35.5,
+      "max": 54,
+      "rss_mb": 71.5
+    },
+    {
+      "name": "  pdf-parse",
+      "n": 7,
+      "min": 91.8,
+      "median": 93.7,
+      "max": 185.1,
+      "rss_mb": 89.4
+    },
+    {
+      "name": "  ws",
+      "n": 7,
+      "min": 15.5,
+      "median": 16.7,
+      "max": 21.4,
+      "rss_mb": 61.1
+    }
+  ]
+}
