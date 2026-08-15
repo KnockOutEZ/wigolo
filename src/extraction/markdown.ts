@@ -15,6 +15,41 @@ function longestBacktickRun(s: string): number {
   return max;
 }
 
+const TEXT_NODE = 3;
+
+// Render a table cell as inline markdown. The cell body is flattened to one
+// line (a markdown table row cannot contain newlines), but anchors keep their
+// `[text](href)` form: `links` is derived by re-parsing the converted markdown,
+// so a cell reduced to its textContent renders fine and drops every link in the
+// table — on a listing page that is the whole page.
+function renderCellInline(node: Node): string {
+  if (node.nodeType === TEXT_NODE) return node.nodeValue ?? '';
+
+  const el = node as Element;
+  const tag = el.nodeName;
+  if (tag === 'SCRIPT' || tag === 'STYLE') return '';
+  if (tag === 'BR') return ' ';
+
+  // Collapse runs of whitespace but keep the boundaries: trimming here would
+  // glue adjacent inline elements together (`<code>a </code><code>b</code>`
+  // -> `ab`). The cell-level render trims once, at the edge that matters.
+  const inner = Array.from(el.childNodes).map(renderCellInline).join('').replace(/\s+/g, ' ');
+
+  if (tag === 'A') {
+    const href = el.getAttribute('href');
+    // Percent-encode rather than drop the link: a pipe would split the row into
+    // extra columns, and a paren truncates the URL when `links` is recovered by
+    // re-parsing `[text](url)` — `.../Mercury_(planet)` would land in `links` as
+    // `.../Mercury_(planet`. %7C/%28/%29 resolve identically.
+    if (href) {
+      const safe = href.replace(/\|/g, '%7C').replace(/\(/g, '%28').replace(/\)/g, '%29');
+      return `[${inner}](${safe})`;
+    }
+  }
+
+  return inner;
+}
+
 export function buildTurndown(): TurndownService {
   const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
 
@@ -29,9 +64,16 @@ export function buildTurndown(): TurndownService {
       const rows: Element[] = Array.from(el.querySelectorAll('tr'));
       if (rows.length === 0) return '';
 
+      const renderCell = (cell: Element): string =>
+        Array.from(cell.childNodes)
+          .map(renderCellInline)
+          .join('')
+          .replace(/\s+/g, ' ')
+          .trim();
+
       const renderRow = (row: Element): string => {
         const cells = Array.from(row.querySelectorAll('th, td'));
-        return '| ' + cells.map(c => c.textContent?.replace(/\n/g, ' ').trim() ?? '').join(' | ') + ' |';
+        return '| ' + cells.map(renderCell).join(' | ') + ' |';
       };
 
       const headerRow = rows[0];

@@ -79,6 +79,60 @@ describe('htmlToMarkdown', () => {
     expect(result).toContain('![Image](https://example.com/img.png)');
   });
 
+  it('keeps anchors inside table cells as markdown links', () => {
+    const html = `
+      <table>
+        <thead><tr><th>Name</th><th>Date</th></tr></thead>
+        <tr><td>📄 <a href="https://example.com/post-a">Post A</a></td><td>2026-01-01</td></tr>
+        <tr><td>📄 <a href="https://example.com/post-b">Post B</a></td><td>2026-01-02</td></tr>
+      </table>
+    `;
+    const result = htmlToMarkdown(html);
+    expect(result).toContain('[Post A](https://example.com/post-a)');
+    expect(result).toContain('[Post B](https://example.com/post-b)');
+    // One row per record — the anchor must not break the row onto its own line.
+    expect(result).toMatch(/^\|.*Post A.*\|\s*2026-01-01\s*\|$/m);
+  });
+
+  it('collects table-cell anchors into links', () => {
+    const html = `
+      <table>
+        <tr><td><a href="https://example.com/one">One</a></td><td>x</td></tr>
+        <tr><td><a href="https://example.com/two">Two</a></td><td>y</td></tr>
+      </table>
+    `;
+    const { links } = extractLinksAndImages(htmlToMarkdown(html));
+    expect(links).toEqual(['https://example.com/one', 'https://example.com/two']);
+  });
+
+  it('renders a <br> inside a cell as a space', () => {
+    // textContent alone yields "AliceSmith" — <br> carries no text of its own.
+    const html = `
+      <table>
+        <tr><td>Alice<br>Smith</td><td><em>30</em></td></tr>
+      </table>
+    `;
+    const result = htmlToMarkdown(html);
+    expect(result).toMatch(/^\|\s*Alice Smith\s*\|\s*30\s*\|$/m);
+  });
+
+  it('keeps the boundary space between adjacent inline elements in a cell', () => {
+    const html = '<table><tr><td><code>a </code><code>b</code></td><td>x</td></tr></table>';
+    const result = htmlToMarkdown(html);
+    expect(result).toMatch(/^\|\s*a b\s*\|\s*x\s*\|$/m);
+  });
+
+  it('percent-encodes parens in a table-cell href so links recovers the whole URL', () => {
+    // `links` is recovered by re-parsing `[text](url)`, whose capture stops at
+    // the first ')' — a bare paren in the href silently truncates the URL.
+    const html =
+      '<table><tr><td><a href="https://en.wikipedia.org/wiki/Mercury_(planet)">Mercury</a></td><td>1</td></tr></table>';
+    const md = htmlToMarkdown(html);
+    const { links } = extractLinksAndImages(md);
+    expect(links).toEqual(['https://en.wikipedia.org/wiki/Mercury_%28planet%29']);
+    expect(links[0]).not.toContain('(');
+  });
+
   it('handles empty string', () => {
     const result = htmlToMarkdown('');
     expect(result).toBe('');

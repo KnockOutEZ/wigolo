@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Weblog | example weblog</title>
+  <link rel="alternate" type="application/rss+xml" title="RSS Feed For /log/" href="index.xml">
+  <meta name="description" content="A weblog index whose every post link lives inside a table cell.">
+</head>
+<body>
+  <!--
+    Frozen shape of a real weblog index (marginalia.nu/log/, captured 2026-08-15):
+    the whole post list is a <table class=listing> and EVERY post link is an <a>
+    inside a <td>. Nothing links to a post outside the table. A page like this is
+    the reason table-cell anchors must reach the `links` array: flattening a cell
+    to its text renders the body fine while silently discarding ~every link on
+    the page.
+
+    The nav / sidebar / footer anchors are here on purpose: they are the
+    boilerplate the extractor is meant to keep OUT of `links`, so widening the
+    table path must not re-admit them.
+  -->
+  <nav id="breadcrumb" aria-label="breadcrumb">
+    <ul>
+      <li>🏠 <a href="https://example.invalid/">Home</a></li>
+      <li class="active">📁 <a href="https://example.invalid/log/">Weblog</a></li>
+    </ul>
+  </nav>
+  <div class="sidebar">
+    <a href="https://example.invalid/sponsor/">Sponsor us</a>
+    <a href="https://example.invalid/newsletter/">Newsletter signup</a>
+  </div>
+  <main>
+    <h1>Weblog</h1>
+    <article>
+      <section id="list-content">
+        <p>This is what you might call a &ldquo;blog&rdquo;. It is a bit of a tired
+        format, but what it makes up for in lack of originality it makes up for in
+        convenience.</p>
+      </section>
+      <table class="listing">
+        <thead><tr><th>Name</th><th>Date</th></tr></thead>
+        <tr><td>📁 <a href="https://example.invalid/">../</a></td><td><date>2026-07-25</date></td></tr>
+        <tr><td>📄
+          <a href="https://example.invalid/log/a_139_hdd/">Your harddrive is probably full</a></td><td><date>2026-07-25</date></td></tr>
+        <tr><td>📄
+          <a href="https://example.invalid/log/a_138_systemdocker/">Unranked, systemd, crawls</a></td><td><date>2026-07-22</date></td></tr>
+        <tr><td>📄
+          <a href="https://example.invalid/log/a_137_linkedin_fanfiction/">LinkedIn fanfiction</a></td><td><date>2026-05-14</date></td></tr>
+        <tr><td>📄
+          <a href="https://example.invalid/log/a_135_learn/">Maybe you should learn something</a></td><td><date>2026-04-26</date></td></tr>
+        <tr><td>📄
+          <a href="https://example.invalid/log/a_134_nsfw/">An NSFW filter for the search engine</a></td><td><date>2026-03-30</date></td></tr>
+        <tr><td>📄
+          <a href="https://example.invalid/log/a_133_boring/">AI makes you boring</a></td><td><date>2026-03-05</date></td></tr>
+        <tr><td>📄
+          <a href="https://example.invalid/log/a_132_compression/">Index Compression, Query Execution Improvements</a></td><td><date>2026-02-11</date></td></tr>
+        <tr><td>📄
+          <a href="https://example.invalid/log/a_131_trust/">Trust in Ranking</a></td><td><date>2026-01-28</date></td></tr>
+        <tr><td>📄
+          <a href="https://example.invalid/log/a_130_early/">You should probably tell your audience what your blog posts are about as early as possible</a></td><td><date>2026-01-09</date></td></tr>
+        <tr><td>📄
+          <a href="https://example.invalid/log/a_129_filtering/">New Search Filtering in Web and API</a></td><td><date>2025-12-20</date></td></tr>
+        <tr><td>📄
+          <a href="https://example.invalid/log/a_128_language/">Language Support for the search engine</a></td><td><date>2025-12-02</date></td></tr>
+      </table>
+      <section><p>To stay up to date, there is a nifty <span>📡 <a href="index.xml">RSS Feed</a>
+      for this section of this website.</p></section>
+    </article>
+  </main>
+  <footer>
+    <section id="footer-text">
+      <p><a href="https://example.invalid/">example.invalid</a> &copy; 2026</p>
+      <p>Consider <a href="https://example.invalid/supporting/">donating</a> to support the development effort.</p>
+    </section>
+  </footer>
+</body>
+</html>
