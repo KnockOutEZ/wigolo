@@ -350,6 +350,39 @@ describe('search v1 pipeline — factory + provider integration', () => {
     expect(result.data.warning ?? '').not.toContain('domain scoping');
   });
 
+  // A filter-emptied response has no sources, so synthesis ALWAYS fails on
+  // this path — meaning format='answer' would overwrite the scoping cause with
+  // 'synthesis failed' 100% of the time, pointing the caller at the language
+  // model instead of their own scope. The cause must survive the format.
+  it('keeps the domain-scoping cause when synthesis fails in format=answer', async () => {
+    installFetchRoutes([
+      { match: (u) => u.includes('bing.com'), text: BING_HTML },
+      { match: (u) => u.includes('duckduckgo.com'), text: DDG_HTML },
+      { match: (u) => u.includes('wikipedia.org'), body: WIKI_JSON },
+      { match: () => true, body: {} },
+    ]);
+
+    const provider = await getSearchProvider();
+    const result = await provider.search(
+      {
+        query: 'foo bar baz',
+        include_domains: ['nothing-matches.example'],
+        format: 'answer',
+      },
+      mockCtx(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.warning).toContain('nothing-matches.example');
+    // The synthesis failure is real and still worth reporting — it must be
+    // composed with the cause, not substituted for it.
+    expect(result.data.warning).toContain('synthesis failed');
+    // And the structured companion must not be left orphaned by a warning
+    // that no longer mentions the scope.
+    expect(result.data.domain_filter?.matched).toBe(0);
+  });
+
   it('honors max_results by truncating fused output', async () => {
     const many = Array.from({ length: 10 }, (_, i) =>
       `<li class="b_algo"><h2><a href="https://bing.example.test/${i}">R${i}</a></h2><div class="b_caption"><p>s${i}</p></div></li>`,

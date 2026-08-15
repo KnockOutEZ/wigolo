@@ -974,7 +974,14 @@ export class CoreSearchProvider implements SearchProvider {
           data.synthesis_advice = synthResult.data.synthesis_advice;
         }
       } else {
-        data.warning = `synthesis failed: ${synthResult.error_reason}`;
+        // Compose, never replace. A response emptied by the domain scope has
+        // no sources, so synthesis fails on that path EVERY time — an
+        // unconditional assignment here would erase the scoping cause for all
+        // format=answer callers and point them at the language model instead
+        // of the scope that actually emptied the response. Mirrors the
+        // concatenation the ok-branch above already performs.
+        const synthWarning = `synthesis failed: ${synthResult.error_reason}`;
+        data.warning = data.warning ? `${data.warning}; ${synthWarning}` : synthWarning;
       }
 
       if (input.format === 'stream_answer') {
