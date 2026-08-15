@@ -50,6 +50,10 @@ Notable response fields:
 
 Fetch one URL as clean markdown. Smart tiered routing: plain HTTP first, escalating to the browser engine on real signals (SPA shells, anti-bot challenges) rather than domain guesses. Handles JS-rendered pages, PDFs, and authenticated sessions.
 
+Responses that are already text rather than a web page — a raw `.md` file, `robots.txt`, a JSON API — are returned exactly as the server sent them, based on the response content type rather than the URL suffix. Nothing is re-escaped or reflowed, so JSON stays parseable and markdown keeps its headings, lists and code fences. A JSON body carries no `links` or page metadata, because it has none.
+
+Because the body is passed through untouched, a relative link inside it stays relative as written; the `links` array still reports those targets resolved to absolute URLs. Links and images written as raw HTML in a markdown file (badge blocks, for example) are reported alongside the ones in markdown syntax.
+
 | Param | Type | Notes |
 | --- | --- | --- |
 | `url` | string | Required. |

@@ -238,31 +238,36 @@ const DECORATIVE_URL_MARKERS = [
   'favicon',
 ];
 
+// Single definition of "this image is decorative", shared by the markdown
+// filter below and by the content-type passthrough path, which filters its
+// derived `images` array rather than rewriting the body.
+export function isDecorativeImage(src: string, alt: string): boolean {
+  const trimmedAlt = alt.trim();
+  const lowerSrc = src.toLowerCase();
+
+  // Tiny animated-GIF tracking pixel / 1x1 beacons
+  if (lowerSrc.startsWith('data:image/gif;base64,')) return true;
+
+  // Inline SVG icon data URIs (short = tiny, likely decorative glyph)
+  if (lowerSrc.startsWith('data:image/svg+xml') && src.length < 200) return true;
+
+  // URL marks it as decorative regardless of alt
+  for (const marker of DECORATIVE_URL_MARKERS) {
+    if (lowerSrc.includes(marker)) return true;
+  }
+
+  // No alt text + no title = decorative
+  return !trimmedAlt;
+}
+
 // Drop `![alt](src)` tokens that look decorative. Heuristic only -- keep
 // images that have alt text unless the URL clearly marks them decorative.
 // Tracking pixels (tiny data-URI gifs) and empty-alt icons are removed.
 export function filterDecorativeImages(markdown: string): string {
   if (!markdown) return markdown;
-  return markdown.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt: string, src: string) => {
-    const trimmedAlt = alt.trim();
-    const lowerSrc = src.toLowerCase();
-
-    // Tiny animated-GIF tracking pixel / 1x1 beacons
-    if (lowerSrc.startsWith('data:image/gif;base64,')) return '';
-
-    // Inline SVG icon data URIs (short = tiny, likely decorative glyph)
-    if (lowerSrc.startsWith('data:image/svg+xml') && src.length < 200) return '';
-
-    // URL marks it as decorative regardless of alt
-    for (const marker of DECORATIVE_URL_MARKERS) {
-      if (lowerSrc.includes(marker)) return '';
-    }
-
-    // No alt text + no title = decorative
-    if (!trimmedAlt) return '';
-
-    return match;
-  });
+  return markdown.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt: string, src: string) =>
+    isDecorativeImage(src, alt) ? '' : match,
+  );
 }
 
 // Resolve relative `[text](path)` and `![alt](path)` targets against baseUrl.
