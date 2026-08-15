@@ -1,0 +1,121 @@
+name: Base Guard
+
+# Almost nothing in this repo should land directly on `main`. Feature and slice
+# work targets the program branch. PR #309 was opened against `main` with an
+# explicit `--base main` on the same command line as the slice head branch: it
+# carried 100 commits, CI was green and `mergeable` reported MERGEABLE, so the
+# only thing standing between that PR and the entire program branch landing on
+# `main` was a human noticing the commit count was absurd. This workflow turns
+# that into a red check.
+on:
+  pull_request:
+    branches: [main]
+    # Every entry here is load-bearing.
+    #
+    # `labeled` / `unlabeled`: without them a PR that legitimately targets
+    # `main` would add the label and the check would stay stuck on its last
+    # (red) run, with no way to re-evaluate short of an empty push. A guard that
+    # cannot be satisfied is a guard people learn to bypass.
+    #
+    # `edited`: retargeting a PR emits `edited` (carrying
+    # `changes.base.ref.from`) — NOT `synchronize`, which only fires on a push.
+    # Without `edited`, a PR opened against the program branch and then
+    # retargeted with `gh pr edit --base main` would fire no event in this list
+    # and the guard would never run — the exact bypass it exists to prevent.
+    #
+    # KNOWN GAP, deliberately left: `edited` does not clear the converse case.
+    # The branch filter below is evaluated against the branch the PR targets at
+    # event time, and the `edited` payload already carries the NEW base. So
+    # retargeting AWAY from `main` (i.e. following remedy 1 below) fails the
+    # filter, no run is triggered, and the earlier red check-run stays on the
+    # head SHA. It is cosmetic rather than blocking — this check is only ever
+    # required on `main`, and a PR that has moved off `main` is no longer
+    # gated by it. Closing it properly means dropping the branch filter and
+    # making the JOB conditional on the base ref, which costs an extra check
+    # line on every PR in the repo; that trade has not been made yet.
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+
+# `pull_request`, deliberately NOT `pull_request_target`: this job checks out no
+# code, runs nothing from the PR, and needs no secrets. `pull_request_target`
+# would hand a fork's PR a privileged context for zero benefit.
+permissions:
+  contents: read
+
+jobs:
+  guard-main-base:
+    # Stable name so this can be made a required status check.
+    name: base guard (main)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the release-to-main label
+        env:
+          # Read from the event payload rather than calling `gh`: the payload is
+          # already delivered with the full, current label set for every trigger
+          # type above (including the labeled/unlabeled events themselves), so an
+          # API round trip would add a token requirement and a rate-limit
+          # dependency to learn something we were already handed.
+          #
+          # `labels.*.name` yields an ARRAY, and `contains(array, item)` matches
+          # array elements exactly. That matters: against a plain string
+          # `contains` is a substring test, and a stray label such as
+          # `no-release-to-main` would satisfy it.
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'release-to-main') }}
+          # PR-author-controlled values are passed through env, never
+          # interpolated into the script body.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          COMMIT_COUNT: ${{ github.event.pull_request.commits }}
+        run: |
+          set -euo pipefail
+
+          if [ "$HAS_LABEL" = "true" ]; then
+            echo "PR #${PR_NUMBER} targets '${BASE_REF}' and carries the 'release-to-main' label."
+            echo "Release to main is intentional. Allowing."
+            exit 0
+          fi
+
+          {
+            echo "### Base guard failed"
+            echo
+            echo "PR #${PR_NUMBER} targets \`${BASE_REF}\` without the \`release-to-main\` label."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| head | \`${HEAD_REF}\` |"
+            echo "| base | \`${BASE_REF}\` |"
+            echo "| commits | ${COMMIT_COUNT} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::error title=PR targets main without the release-to-main label::PR #${PR_NUMBER} (${HEAD_REF} -> ${BASE_REF}, ${COMMIT_COUNT} commits) must carry the 'release-to-main' label, or change its base off main."
+
+          cat <<EOF
+
+          Refusing this PR: it targets '${BASE_REF}' without the 'release-to-main' label.
+
+            head:    ${HEAD_REF}
+            base:    ${BASE_REF}
+            commits: ${COMMIT_COUNT}
+
+          Feature and slice work in this repo belongs on the program branch, not on
+          'main'. A PR based on 'main' by mistake will still show green CI and still
+          report MERGEABLE, because nothing else checks what it is based on.
+
+          Pick one:
+
+            1. You did NOT mean to target 'main' -- this is the usual case, and a
+               large commit count above is the tell. Change the base, then read the
+               value back rather than trusting the flag:
+
+                 gh pr edit ${PR_NUMBER} --base <program-branch>
+                 gh pr view ${PR_NUMBER} --json baseRefName
+
+            2. This really is a release to 'main'. Add the label; this check re-runs
+               on label changes and will go green without a new push:
+
+                 gh pr edit ${PR_NUMBER} --add-label release-to-main
+
+          EOF
+
+          exit 1
