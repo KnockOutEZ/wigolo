@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type MockedFunction } from 'vitest';
 import { HybridSearchProvider } from '../../../../src/search/hybrid/router.js';
 import type {
   SearchProvider,
@@ -48,9 +48,15 @@ function makeContext(): SearchContext {
   };
 }
 
-interface MockProvider extends SearchProvider {
-  search: ReturnType<typeof vi.fn>;
-}
+// `ReturnType<typeof vi.fn>` erases the call signature to (...args: any[]) => any,
+// which does not structurally satisfy SearchProvider.search — so the interface
+// failed to extend it and every provider passed to HybridSearchProvider was a
+// type error. Binding the mock to the real method type keeps the fake honest:
+// a drift in SearchProvider.search now breaks these tests instead of being
+// silently absorbed.
+type MockProvider = SearchProvider & {
+  search: MockedFunction<SearchProvider['search']>;
+};
 
 function mockProvider(
   name: 'core' | 'searxng',
@@ -58,8 +64,8 @@ function mockProvider(
 ): MockProvider {
   return {
     name,
-    search: vi.fn(async (input: SearchInput) => impl(input)),
-  } as MockProvider;
+    search: vi.fn(async (input: SearchInput, _ctx: SearchContext) => impl(input)),
+  };
 }
 
 describe('HybridSearchProvider', () => {
