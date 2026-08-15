@@ -93,6 +93,52 @@ describe('classifyPassthrough — text', () => {
     expect(classifyPassthrough('text/markdown', html)).toBeNull();
   });
 
+  it('refuses an HTML document that opens with <meta> rather than a doctype', () => {
+    // The guard originally keyed on a leading `<!doctype html>` / `<html`, so a
+    // document opening with a head tag passed straight through as raw markup.
+    const html = '<meta charset="utf-8">\n<title>T</title>\n<p>Body copy here.</p>';
+    expect(classifyPassthrough('text/plain', html)).toBeNull();
+  });
+
+  it('refuses an HTML document that opens with <script>', () => {
+    const html = '<script>window.x=1</script>\n<div><h1>Title</h1><p>Copy.</p></div>';
+    expect(classifyPassthrough('text/plain', html)).toBeNull();
+  });
+
+  it('refuses an HTML document that opens with <head> or <body>', () => {
+    const html = '<head><title>T</title></head><body><h1>Title</h1></body>';
+    expect(classifyPassthrough('text/plain', html)).toBeNull();
+  });
+
+  it('refuses a document that closes with </html>, whatever it opened with', () => {
+    // Catches the shape that starts with a wrapper div — a real HTML document
+    // still closes its root element.
+    const html = '<div id="root"><h1>Title</h1><p>Copy.</p></div>\n</body>\n</html>\n';
+    expect(classifyPassthrough('text/plain', html)).toBeNull();
+  });
+
+  it('still classifies a markdown tutorial that shows </html> inside a code fence', () => {
+    // The reason the closing-tag check is anchored to the end of the document
+    // rather than "appears anywhere": web-framework READMEs quote whole HTML
+    // documents in examples, and rejecting those would mangle exactly the files
+    // this change exists to protect.
+    const tutorial = [
+      '# HTML basics',
+      '',
+      'A minimal page looks like this:',
+      '',
+      '```html',
+      '<html>',
+      '  <body>Hi</body>',
+      '</html>',
+      '```',
+      '',
+      'That is all you need.',
+      '',
+    ].join('\n');
+    expect(classifyPassthrough('text/plain', tutorial)).toBe('text');
+  });
+
   it('still classifies markdown that merely embeds inline HTML tags', () => {
     // README files routinely open with a centred badge block. The HTML guard
     // must key on the body being an HTML *document*, not on containing a tag —

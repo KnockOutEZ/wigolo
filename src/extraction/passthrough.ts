@@ -25,11 +25,19 @@ export function parseMimeType(contentType?: string): string {
 
 const TEXT_TYPES = new Set(['text/plain', 'text/markdown', 'text/x-markdown']);
 
+// Tags that, when they are the very first thing in a body, mean the body is an
+// HTML document rather than text. `<div>` is deliberately absent: a centred
+// badge block is how a large share of real READMEs open.
+const HTML_DOCUMENT_OPENERS =
+  /^<(!doctype\s+html|html[\s>]|head[\s>]|body[\s>]|meta[\s>]|title[\s>]|link[\s>]|style[\s>]|script[\s>])/i;
+
 /**
- * Does the body open as an HTML *document*? Deliberately anchored to the start
- * of the body rather than searching it: README files routinely embed `<div>`,
- * `<img>` and `<details>`, and a substring test would reject a large share of
- * real markdown.
+ * Does the body look like an HTML *document*?
+ *
+ * Two shapes count: it opens with a document-level tag, or it closes with
+ * `</html>` / `</body>`. Both are anchored to an edge on purpose. A "contains
+ * `</html>` anywhere" test would reject exactly the files this change protects
+ * — web-framework READMEs quote entire HTML documents inside code fences.
  */
 function looksLikeHtmlDocument(body: string): boolean {
   // Skip leading whitespace (trimStart also removes a BOM — U+FEFF is
@@ -41,16 +49,26 @@ function looksLikeHtmlDocument(body: string): boolean {
     head = head.replace(/^<!--[\s\S]*?-->/, '').trimStart();
     if (head === before) break;
   }
-  return /^<!doctype\s+html/i.test(head) || /^<html[\s>]/i.test(head);
+  if (HTML_DOCUMENT_OPENERS.test(head)) return true;
+
+  return /<\/(html|body)>$/i.test(body.trimEnd());
 }
 
 /**
  * Decide whether a body should bypass extraction, and how.
  *
  * Returns null — meaning "extract as before" — for everything not positively
- * identified. That direction is the safe one: an unrecognised or mislabelled
- * body keeps today's behaviour, including the anti-bot detection that lives in
- * the routed extractor.
+ * identified. That direction is the safe one: an unrecognised body, or an
+ * HTML-shaped body under any label, keeps today's behaviour.
+ *
+ * On anti-bot handling, precisely: challenge pages are served as `text/html`
+ * and are classified before extraction, and `src/tools/fetch.ts` short-circuits
+ * `>= 400` machine-typed bodies, so the primary path is unaffected. The one
+ * detector that does sit inside extraction — `detectSiteBlock` in
+ * `v1/routed.ts`, for Reddit and Amazon — becomes content-type-conditional
+ * here: a block banner delivered as `text/plain` with a 2xx status would pass
+ * through instead of setting `site_data_blocked`. The HTML-document guard below
+ * covers the realistic shape of that body.
  *
  * The declared type is never trusted on its own:
  *  - JSON must actually parse. That is proof rather than a hint, and it costs
