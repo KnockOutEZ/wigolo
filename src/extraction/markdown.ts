@@ -30,11 +30,10 @@ function renderCellInline(node: Node): string {
   if (tag === 'SCRIPT' || tag === 'STYLE') return '';
   if (tag === 'BR') return ' ';
 
-  const inner = Array.from(el.childNodes)
-    .map(renderCellInline)
-    .join('')
-    .replace(/\s+/g, ' ')
-    .trim();
+  // Collapse runs of whitespace but keep the boundaries: trimming here would
+  // glue adjacent inline elements together (`<code>a </code><code>b</code>`
+  // -> `ab`). The cell-level render trims once, at the edge that matters.
+  const inner = Array.from(el.childNodes).map(renderCellInline).join('').replace(/\s+/g, ' ');
 
   if (tag === 'A') {
     const href = el.getAttribute('href');

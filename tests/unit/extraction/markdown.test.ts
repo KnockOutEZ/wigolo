@@ -105,7 +105,8 @@ describe('htmlToMarkdown', () => {
     expect(links).toEqual(['https://example.com/one', 'https://example.com/two']);
   });
 
-  it('flattens cells with no anchor to plain text', () => {
+  it('renders a <br> inside a cell as a space', () => {
+    // textContent alone yields "AliceSmith" — <br> carries no text of its own.
     const html = `
       <table>
         <tr><td>Alice<br>Smith</td><td><em>30</em></td></tr>
@@ -113,6 +114,12 @@ describe('htmlToMarkdown', () => {
     `;
     const result = htmlToMarkdown(html);
     expect(result).toMatch(/^\|\s*Alice Smith\s*\|\s*30\s*\|$/m);
+  });
+
+  it('keeps the boundary space between adjacent inline elements in a cell', () => {
+    const html = '<table><tr><td><code>a </code><code>b</code></td><td>x</td></tr></table>';
+    const result = htmlToMarkdown(html);
+    expect(result).toMatch(/^\|\s*a b\s*\|\s*x\s*\|$/m);
   });
 
   it('percent-encodes parens in a table-cell href so links recovers the whole URL', () => {
