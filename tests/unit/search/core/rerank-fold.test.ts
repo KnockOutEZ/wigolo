@@ -3,6 +3,7 @@ import {
   foldRerankIntoOrdering,
   buildRankingNotice,
   RANKING_NOTICE_REASONS,
+  RERANK_CONFIDENT_JUNK_CEILING,
   type RerankFoldSignal,
 } from '../../../../src/search/core/rerank-fold.js';
 import type { RawSearchResult } from '../../../../src/types.js';
@@ -751,7 +752,77 @@ describe('foldRerankIntoOrdering — no-ordering-signal detection', () => {
       // It must say what the caller actually got instead.
       expect(t!.toLowerCase()).toContain('ranking');
     }
-    // Both rendering reasons are covered; uniform_scores deliberately renders none.
-    expect([...RANKING_NOTICE_REASONS].sort()).toEqual(['no_relevant_match', 'unavailable']);
+    // Every rendering reason is covered; uniform_scores deliberately renders none.
+    expect([...RANKING_NOTICE_REASONS].sort()).toEqual([
+      'no_relevant_match',
+      'unavailable',
+      'uncertain_relevance',
+    ]);
+  });
+
+  it('NEAR THE FLOOR: an uncertain batch is not called irrelevant', async () => {
+    // RERANK_TIER_MARGIN exists because a score near zero means the model is
+    // UNSURE, not dismissive — and that uncertainty is symmetric below the
+    // floor. A batch whose best score is a hair under it has failed to convince,
+    // not been rejected, so the notice must not tell the user its results are
+    // wrong. This is the same "do not assert a cause you cannot know" line drawn
+    // for uniform_scores, held in the neighbouring branch.
+    const results = [r('A', 0.9, 'alpha'), r('B', 0.8, 'beta')];
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['q'], onSignal, rerank: fakeRerank({ alpha: -0.2, beta: -0.9 }),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('uncertain_relevance');
+    const text = buildRankingNotice(seen[0])!;
+    expect(text).toBeTruthy();
+    // It must NOT make the confident-junk claim.
+    expect(text).not.toMatch(/nothing here that genuinely matches/i);
+    expect(text).toMatch(/close to its decision boundary|not a verdict/i);
+  });
+
+  it('BAND EDGE: exactly at the confident-junk ceiling is still only uncertain', async () => {
+    // The strong claim is scoped to scores strictly BELOW the ceiling, so a
+    // batch sitting exactly on it keeps the softer text.
+    const results = [r('A', 0.9, 'alpha'), r('B', 0.8, 'beta')];
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['q'],
+      onSignal,
+      rerank: fakeRerank({
+        alpha: RERANK_CONFIDENT_JUNK_CEILING,
+        beta: RERANK_CONFIDENT_JUNK_CEILING - 3,
+      }),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('uncertain_relevance');
+  });
+
+  it('a provider that scores NOTHING reports unavailable, not a junk verdict', async () => {
+    // The unscored-candidate backfill writes a sentinel deliberately below the
+    // floor, so a fully-unscored window would otherwise read as a confident
+    // "nothing is relevant" — a claim about a judgement that never happened.
+    const results = [r('A', 0.9, 'alpha'), r('B', 0.8, 'beta')];
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['q'], onSignal, rerank: async () => new Map<string, number>(),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('unavailable');
+    expect(seen[0].max_score).toBeUndefined();
+  });
+
+  it('a PARTIALLY scored window still reports on the scores it did get', async () => {
+    // Only one candidate scored, and confidently junk. Something WAS judged, so
+    // this is a real verdict, not an unavailable reranker.
+    const results = [r('A', 0.9, 'alpha'), r('B', 0.8, 'beta')];
+    const { seen, onSignal } = collect();
+    await foldRerankIntoOrdering(results, {
+      queries: ['q'],
+      onSignal,
+      rerank: async (_q, cands) => new Map([[cands[0].id, -7]]),
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].reason).toBe('no_relevant_match');
   });
 });

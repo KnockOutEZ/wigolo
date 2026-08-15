@@ -26,6 +26,14 @@ export const RERANK_BLEND_RERANK = 0.5;
 // the rerank normaliser collapses to a neutral 0.5. Tier assignment (from raw
 // logits vs RERANK_RELEVANCE_THRESHOLD + RERANK_TIER_MARGIN) is unchanged.
 export const RERANK_CALIBRATION_FLOOR = RERANK_RELEVANCE_THRESHOLD;
+// Reporting-only band edge (it does NOT gate ordering). RERANK_TIER_MARGIN
+// exists because a logit near zero means the model is UNCERTAIN, not confidently
+// irrelevant — so the same uncertainty applies mirrored below the floor. A batch
+// whose best logit is merely a hair under the floor has not been rejected, it
+// has failed to convince, and the notice must not tell the user its results are
+// wrong. Only below THIS edge is the whole batch confident junk.
+export const RERANK_CONFIDENT_JUNK_CEILING =
+  RERANK_RELEVANCE_THRESHOLD - RERANK_TIER_MARGIN;
 
 // Build the cross-encoder input for one result. Title + snippet ALONE let a
 // short off-topic snippet game the reranker into a high logit (the junk-
@@ -53,24 +61,35 @@ export type RerankFn = (
 /**
  * Why the rerank blend contributed NO ordering signal to this result set.
  *
- * All three collapse the blend to a flat 0.5 for EVERY member, which is why the
- * emitted `cross_encoder` component cannot be used to tell them apart — nor to
- * tell any of them apart from a middling result whose score legitimately
- * normalises to 0.5 in a healthy spread. The reason is therefore captured HERE,
- * at the only place that still knows which branch ran.
+ * Every case collapses the blend to a flat 0.5 for EVERY member. That flatness
+ * is DETECTABLE downstream — min-max normalisation guarantees a healthy fold
+ * contains both a 0.0 and a 1.0, so an all-0.5 set is a degenerate marker, and
+ * `unavailable` shows up as the absence of any `cross_encoder` component. What
+ * the emitted value cannot do is say WHICH cause produced it, and that is
+ * exactly what user-facing text has to name. So the reason is captured HERE, at
+ * the only place that still knows which branch ran.
  *
- *  - `unavailable`      the reranker threw, so it never scored anything. The
- *                       fold returns the composite ordering untouched and no
- *                       `cross_encoder` component is emitted at all.
- *  - `no_relevant_match` the reranker RAN and scored every candidate below the
- *                       relevance floor — it judged the whole set irrelevant.
- *                       The verdict is discarded and the base ordering ships.
+ *  - `unavailable`      the reranker threw, or scored nothing at all, so no
+ *                       verdict exists. The fold returns the composite ordering
+ *                       untouched and emits no `cross_encoder` component.
+ *  - `no_relevant_match` the reranker RAN and scored every candidate CONFIDENTLY
+ *                       below the relevance floor — a clear "none of this
+ *                       matches". The verdict is discarded and base ordering
+ *                       ships.
+ *  - `uncertain_relevance` the reranker RAN and its best score fell below the
+ *                       floor but inside the uncertainty band around it. The
+ *                       model is unsure, not dismissive, so the text must not
+ *                       claim the results are wrong.
  *  - `uniform_scores`   the reranker RAN and returned bit-identical scores, so
  *                       the min-max stretch is degenerate. Indistinguishable
  *                       from a genuine tie, so it asserts nothing about
  *                       relevance and renders NO user-facing notice.
  */
-export type RerankSignalReason = 'unavailable' | 'no_relevant_match' | 'uniform_scores';
+export type RerankSignalReason =
+  | 'unavailable'
+  | 'no_relevant_match'
+  | 'uncertain_relevance'
+  | 'uniform_scores';
 
 export interface RerankFoldSignal {
   reason: RerankSignalReason;
@@ -111,7 +130,9 @@ const RANKING_NOTICE_TEXT: Partial<Record<RerankSignalReason, string>> = {
   unavailable:
     'Reranking did not run for this search, so these results carry only the base cross-engine ranking and were never re-scored for how well they answer the query. Ordering reflects which results the search engines agreed on, not which are most relevant.',
   no_relevant_match:
-    'The ML reranker scored every result in this set below its relevance floor — it found nothing here that genuinely matches the query. Ordering fell back to the base cross-engine ranking, so the top result is the most agreed-upon, not the most relevant. Treat these results as low-confidence and consider rephrasing with more specific or less ambiguous terms.',
+    'The ML reranker scored every result in this set well below its relevance floor — it found nothing here that genuinely matches the query. Ordering fell back to the base cross-engine ranking, so the top result is the most agreed-upon, not the most relevant. Treat these results as low-confidence and consider rephrasing with more specific or less ambiguous terms.',
+  uncertain_relevance:
+    'The ML reranker did not judge any result in this set clearly relevant, but its scores sat close to its decision boundary — that is low confidence in the ranking, not a verdict that these results are wrong. Ordering fell back to the base cross-engine ranking rather than a relevance ranking, so check the top results yourself before relying on their order.',
 };
 
 /** The user-facing notice for a signal, or undefined when the reason renders none. */
@@ -183,6 +204,11 @@ export async function foldRerankIntoOrdering(
     opts.onSignal?.({ reason: 'unavailable', window: windowResults.length });
     return results;
   }
+  // Whether the provider scored ANYTHING, sampled BEFORE the backfill below
+  // overwrites the evidence. The backfill sentinel is deliberately under the
+  // floor, so a fully-unscored window would otherwise read as a confident
+  // "nothing is relevant" verdict when in truth nothing was ever judged.
+  const anyScored = logits.some((l) => Number.isFinite(l));
   // candidates the provider never scored -> treat as irrelevant (below the
   // tier threshold), not relevant. Only bites a misbehaving injected rerank
   // fn; the default provider scores every candidate (topK = candidates.length).
@@ -200,12 +226,21 @@ export async function foldRerankIntoOrdering(
   const normRerank = allJunk ? () => 0.5 : makeNormaliser(logits);
 
   // Report a neutralised blend to the caller. Keyed on the SOURCE branch, never
-  // on the emitted 0.5 — that value is ambiguous by construction (see
-  // RerankSignalReason). The two branches are mutually exclusive: `allJunk`
-  // tests the absolute verdict level, so a tie is only reachable below it.
-  if (allJunk) {
+  // on the emitted 0.5 — that value cannot name its own cause (see
+  // RerankSignalReason). Reporting only; none of this changes the ordering.
+  //
+  // The branches are mutually exclusive and ordered by what they can prove.
+  // `allJunk` tests the absolute verdict level, so `uniform_scores` — the tie
+  // case — is only reachable AT or ABOVE the floor, where a tie means the model
+  // liked everything equally rather than rejecting it.
+  if (!anyScored) {
+    // Nothing was ever judged, so there is no verdict to report. Same honest
+    // answer as a throw: reranking did not run for this set.
+    opts.onSignal?.({ reason: 'unavailable', window: windowResults.length });
+  } else if (allJunk) {
     opts.onSignal?.({
-      reason: 'no_relevant_match',
+      reason:
+        maxLogit < RERANK_CONFIDENT_JUNK_CEILING ? 'no_relevant_match' : 'uncertain_relevance',
       window: windowResults.length,
       max_score: maxLogit,
     });
