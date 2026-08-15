@@ -327,6 +327,64 @@ describe('HybridSearchProvider', () => {
     expect(out.data.fallback_signal).toBeNull();
   });
 
+  // Core's filter-induced-zero cause describes CORE's empty result set. If the
+  // fallback backend supplied on-domain results, the merged response is not
+  // empty and repeating the cause would assert a falsehood — the same
+  // misreporting class the cause was added to eliminate.
+  it('drops the domain-scoping cause when the fallback backend found on-domain results', async () => {
+    const core = mockProvider('core', () =>
+      ok({
+        results: [],
+        warning: 'no results after domain scoping: ... none were on example.com ...',
+        domain_filter: {
+          include_domains: ['example.com'],
+          candidates: 18,
+          matched: 0,
+          dropped: 18,
+        },
+      }),
+    );
+    const sx = mockProvider('searxng', () =>
+      ok({ results: [makeResult('found', 'https://example.com/a', 0.9)] }),
+    );
+    const hybrid = new HybridSearchProvider(core, sx);
+
+    const out = await hybrid.search({ query: 'q', include_domains: ['example.com'] }, ctx);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+
+    expect(out.data.results.length).toBeGreaterThan(0);
+    expect(out.data.domain_filter).toBeUndefined();
+    expect(out.data.warning).toBeUndefined();
+  });
+
+  // NEGATIVE must-not-fire: the fallback found nothing either, so the scope
+  // really did eat everything and the cause is still the truth.
+  it('keeps the domain-scoping cause when the merged response is still empty', async () => {
+    const core = mockProvider('core', () =>
+      ok({
+        results: [],
+        warning: 'no results after domain scoping: ... none were on example.com ...',
+        domain_filter: {
+          include_domains: ['example.com'],
+          candidates: 18,
+          matched: 0,
+          dropped: 18,
+        },
+      }),
+    );
+    const sx = mockProvider('searxng', () => ok({ results: [] }));
+    const hybrid = new HybridSearchProvider(core, sx);
+
+    const out = await hybrid.search({ query: 'q', include_domains: ['example.com'] }, ctx);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+
+    expect(out.data.results).toEqual([]);
+    expect(out.data.domain_filter?.candidates).toBe(18);
+    expect(out.data.warning).toContain('domain scoping');
+  });
+
   it('passes the same context through to both providers', async () => {
     const core = mockProvider('core', () =>
       ok({

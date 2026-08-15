@@ -126,6 +126,18 @@ export class HybridSearchProvider implements SearchProvider {
       delete data.engine_outcomes;
     }
 
+    // Core's filter-induced-zero cause is a statement about CORE's empty
+    // result set. When the fallback backend supplied results the scope
+    // accepts, the merged response is no longer empty and repeating that cause
+    // would assert a falsehood — the exact misreporting this cause exists to
+    // prevent. `domain_filter` is set only alongside that warning, so its
+    // presence identifies the warning to retract. Cleared before the fallback
+    // warning is considered, so a real searxng warning can still land.
+    if (data.results.length > 0 && data.domain_filter) {
+      delete data.domain_filter;
+      delete data.warning;
+    }
+
     if (searxngResult.data.warning && !data.warning) {
       data.warning = searxngResult.data.warning;
     }
