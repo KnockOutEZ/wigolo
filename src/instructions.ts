@@ -217,7 +217,7 @@ Key parameters (full descriptions in the input schema):
 - include_domains / exclude_domains: always scope library/framework queries.
 - search_depth: 'ultra-fast' (cache-only) | 'fast' | 'balanced' (default) | 'deep'.
 - format: omit = evidence context; 'answer' | 'stream_answer' = synthesis (falls back to evidence).
-- category: general | news | code | docs | papers | images.
+- category: general | news | code | docs | papers | images (adds per-result image_url/image_alt/thumbnail_url/width/height + auto \`images[]\`, no include_images needed).
 - Also: max_results, exact_match, time_range, from_date, to_date, country, include_images, include_favicon, max_tokens_out, max_content_chars, citation_format, force_refresh, mode.
 
 Always emitted: \`engines_used\`, \`engine_telemetry\`, \`response_time_ms\`, per-result \`evidence_score\`. Per-result \`freshness_signal\` is emitted only when a published date can be parsed. Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. \`ranking_notice\` is emitted only when reranking found nothing relevant or could not run — results are base-ranked, not relevance-ranked. Quote [N] or {citation_id}.`,
