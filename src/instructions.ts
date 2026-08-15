@@ -263,7 +263,7 @@ Key parameters:
 - url: known-good page; its content + embeddings drive similarity.
 - concept: free-text alternative to url. Thin cache → expect \`cold_start\` to fire.
 - max_results: default 5.
-- include_cached: true (default) to search cache first; false = web only.
+- include_cache: true (default) to search cache first; false = web only.
 - threshold: minimum fused score (0-1, default 0.5).
 - include_ranking_debug: opt-in per-result \`ranking_debug\` { fts5_rank, embedding_rank, web_rank, rrf_score } so you can audit which signal won.
 - max_tokens_out / include_full_markdown / citation_format: budget + shape controls.
