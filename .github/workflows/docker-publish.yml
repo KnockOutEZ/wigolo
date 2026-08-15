@@ -22,7 +22,7 @@ jobs:
       # false, so the build runs multi-arch but no image is pushed or tagged.
       PUSH_ENABLED: ${{ github.ref_type == 'tag' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: docker/setup-qemu-action@v3
 
