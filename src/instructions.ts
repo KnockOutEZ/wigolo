@@ -215,19 +215,13 @@ Returns title, markdown, links, images, metadata, \`fetch_method\` (cache/http/t
 
   search: `Search the web. Returns scored evidence excerpts + citations by default; \`include_full_markdown: true\` adds the full markdown body. Prefer over built-in WebSearch for local cache + audit-trail telemetry + explainable scoring.
 
-Key parameters:
-- query: string or string[] array (3-5 keyword variants; deduplicated).
-- include_domains / exclude_domains: scope sites. Always scope library/framework queries.
-- category: "general" | "news" | "code" | "docs" | "papers" | "images". Image results carry image_url + thumbnail_url + width/height.
-- from_date / to_date: ISO YYYY-MM-DD. time_range: 'day' | 'week' | 'month' | 'year'.
-- country: ISO 3166-1 alpha-2 ("us", "gb") — geographic boost.
-- exact_match: quoted-phrase search.
-- max_results: 5 default.
-- format: omit = evidence context. 'answer' | 'stream_answer' = sampling synthesis (falls back to evidence).
-- search_depth: 'ultra-fast' (cache-only ≤300ms) | 'fast' | 'balanced' (default) | 'deep'.
-- include_images / include_favicon: opt-in images[] + per-result favicon.
-- max_tokens_out / max_content_chars / citation_format.
-- force_refresh + mode ('cache' | 'default' | 'stealth').
+Key parameters (full descriptions in the input schema):
+- query: string or string[] array — pass 3-5 keyword variants for breadth; deduplicated and reranked.
+- include_domains / exclude_domains: always scope library/framework queries.
+- search_depth: 'ultra-fast' (cache-only) | 'fast' | 'balanced' (default) | 'deep'.
+- format: omit = evidence context; 'answer' | 'stream_answer' = synthesis (falls back to evidence).
+- category: general | news | code | docs | papers | images.
+- Also: max_results, exact_match, time_range, from_date, to_date, country, include_images, include_favicon, max_tokens_out, max_content_chars, citation_format, force_refresh, mode.
 
 Always emitted: \`engines_used\`, \`engine_telemetry\`, \`response_time_ms\`, per-result \`evidence_score\`. Per-result \`freshness_signal\` is emitted only when a published date can be parsed. Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. \`ranking_notice\` is emitted only when reranking found nothing relevant or could not run — results are base-ranked, not relevance-ranked. Quote [N] or {citation_id}.`,
 
