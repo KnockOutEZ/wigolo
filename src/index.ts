@@ -30,17 +30,27 @@ async function exitCli(code: number): Promise<void> {
   // Exit naturally: set the code and let the event loop drain. Do NOT call
   // process.exit() here — the exit path is the one variable measured to decide
   // whether the `mutex lock failed: Invalid argument` SIGABRT fires. Plain Node
-  // on macOS/arm64, 10 reps per cell: a process that has run a real inference
-  // session aborts 10/10 on process.exit() and exits clean 10/10 when it drains
-  // instead — same process, same work, only the exit path differs. Releasing
-  // the session first does not help (10/10 abort), so this is not a
-  // teardown-ordering fix, and loading the runtime without running anything
-  // never reproduces it at all.
+  // on macOS/arm64, 10 cells x 10 reps, 0 invalid: a process that has created
+  // and run an inference session in the native runtime aborts 10/10 on
+  // process.exit(), and exits clean 10/10 when it drains instead — same
+  // process, same work, only the exit path differs.
   //
-  // WHY the exit path decides it is NOT established. An earlier version of this
-  // comment asserted a thread-pool teardown race as fact on no measurement;
-  // that mechanism is unverified and is not restated here. The remedy is what
-  // is supported, and it is the reason the code below looks the way it does.
+  // That session is a measured PRECONDITION, not a cause. Loading the native
+  // runtime without running anything through it never reproduces the abort
+  // (0/10) — which is why an earlier investigation that probed only a bare
+  // module load found every arm clean and recorded the mechanism as
+  // unreproducible. Both records are correct about what each actually
+  // measured; they differ in whether a session was ever run. WHY the exit path
+  // decides it remains OPEN and is deliberately not asserted here: an earlier
+  // version of this comment stated a thread-pool teardown race as fact on no
+  // measurement, and a named-but-wrong cause has already cost this codebase two
+  // investigations.
+  //
+  // Two negatives are settled and should not be re-tested: releasing the
+  // session before exiting still aborts 10/10, so this is not a
+  // teardown-ordering problem; and a process that touches only the DB never
+  // aborts, closed or not (10/10 clean), so the cache layer is not involved in
+  // either direction.
   //
   // Draining relies on shutdownCli() having released every long-lived handle
   // (search engine process, browser pool, model idle timers, DB) — if anything

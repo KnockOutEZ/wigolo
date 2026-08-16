@@ -13,15 +13,12 @@ const log = createLogger('cli');
 //
 // It is NOT what stops the `mutex lock failed: Invalid argument` SIGABRT on
 // macOS, which is what this comment used to claim. Measured, plain Node on
-// macOS/arm64, 10 reps per cell: a process that has run a real inference
-// session aborts on process.exit() whether or not the session is released
-// first (10/10 either way), and a process that touches only the DB never
-// aborts (10/10 clean, closed or not). Explicit teardown is not the variable —
-// the exit path is, so the abort is avoided in `exitCli`, not here.
-//
-// Why the exit path decides it is still unexplained and is deliberately not
-// guessed at again: a named-but-wrong cause in this comment is what sent the
-// last people who hit the abort looking at teardown order.
+// macOS/arm64, 10 reps per cell: releasing the inference session before exiting
+// still aborts 10/10, and a process that touches only the DB never aborts at
+// all, closed or not (10/10 clean). Neither of the two things this function
+// does is the variable — the exit path is. See `exitCli` in index.ts, which is
+// where the abort is actually avoided, and which records the measured
+// precondition and the fact that the underlying cause is still OPEN.
 //
 // Best-effort: every step swallows its own errors so a partial failure
 // doesn't block subsequent cleanup steps.
