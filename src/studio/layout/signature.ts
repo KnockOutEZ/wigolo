@@ -43,10 +43,14 @@
 export const LAYOUT_SIGNATURE_VERSION = 1;
 
 /**
- * Grid resolution. §6.1 of the spec asks for the COARSEST grid that still separates, because
- * coarser is more redesign-robust and smaller on disk; `benchmarks/visual/` sweeps it. 12x16 x 2
- * channels is also exactly 384 cells, which is the dimension `vec_documents` is frozen at
- * (`001-sqlite-vec.sql:10`) — noted, not depended on: S11d's storage decision is not S11a's.
+ * Grid resolution. PROVISIONAL — the spec's open item asks for the COARSEST grid that still
+ * separates, and `benchmarks/visual/runner.ts` sweeps 4x6 through 16x20 to find it. It did not
+ * find one: separation saturates at 100% at EVERY resolution in the sweep, so the corpus cannot
+ * rank them and the open item stays open until a corpus exists that can. 12x16 is kept meanwhile
+ * for two stated reasons, neither of them a measurement: a finer grid preserves more positional
+ * locality for a future geometric heal, and 12 x 16 x 2 channels is exactly 384 cells, the
+ * dimension `vec_documents` is frozen at (`001-sqlite-vec.sql:10`) — noted as convenient, not
+ * depended on, since the storage decision is not this slice's.
  */
 export const LAYOUT_GRID_X = 12;
 export const LAYOUT_GRID_Y = 16;
