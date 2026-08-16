@@ -140,7 +140,18 @@ describe('SmartRouter — tier-occupancy counters on a host with no substrate', 
   it('records unmet demand when the browser rung cannot be supplied', async () => {
     const { BrowserAcquirer } = await import('../../../src/fetch/browser-acquire.js');
     const unavailable = { ensureBrowser: vi.fn(async () => 'unavailable') } as unknown as InstanceType<typeof BrowserAcquirer>;
-    const r = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, browserAcquirer: unavailable });
+    // The companion rung is declined explicitly, because on a host that HAS an installed browser
+    // this demand is no longer unmet — the rung serves it, and the counter would correctly read
+    // `browser` instead. Left to the real seam the case would assert a falsehood on any developer
+    // machine with Chrome (and spawn one, timing out at 20s). Declining states the host this case
+    // is actually about: no bundled engine AND no installed browser.
+    const r = new SmartRouter({
+      httpClient,
+      browserPool,
+      pdfProbe: async () => false,
+      browserAcquirer: unavailable,
+      systemBrowserFetch: async () => null,
+    });
     await r.fetch('https://spa.example/', { renderJs: 'always' });
     const occ = readTierOccupancy(dataDir)['no-display'];
     expect(occ.browserUnavailable).toBe(1);
