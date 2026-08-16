@@ -1,6 +1,11 @@
 import { COMMON_NOUNS } from '../hybrid/common-nouns.js';
 import { extractEntities } from './query-understanding.js';
 import { queryHasErrorToken } from './intent-router.js';
+import {
+  normalizeSubjectTerm,
+  computeSubjectAnchorAttrition,
+  isSubjectCollision,
+} from './subject-anchor.js';
 
 export interface BrandCollisionWarning {
   detected: true;
@@ -181,28 +186,47 @@ function entityHead(query: string): string {
   return head.join(' ');
 }
 
+// Curated rewrites for the highest-traffic collision tokens, shared by every
+// detector so one query never suggests two different disambiguations depending
+// on which path noticed the collision. Null when the token has no curation.
+function curatedRewrites(query: string): string[] | null {
+  switch (query.trim().toLowerCase()) {
+    case 'next':
+      return ['Next.js framework', 'next-router library', 'JavaScript "next" framework'];
+    case 'core':
+      return ['.NET Core', 'wigolo core search', '"core" library'];
+    case 'apple':
+      return ['Apple Inc.', 'apple programming language', 'apple fruit'];
+    case 'mint':
+      return ['Linux Mint OS', 'mint.com finance', 'mint programming'];
+    default:
+      return null;
+  }
+}
+
 function suggestRewrites(query: string): string[] {
   const q = query.trim();
-  const lower = q.toLowerCase();
-  // Curated rewrites for the highest-traffic collision tokens. The general
-  // fallback below handles every other common noun.
-  if (lower === 'next') {
-    return ['Next.js framework', 'next-router library', 'JavaScript "next" framework'];
-  }
-  if (lower === 'core') {
-    return ['.NET Core', 'wigolo core search', '"core" library'];
-  }
-  if (lower === 'apple') {
-    return ['Apple Inc.', 'apple programming language', 'apple fruit'];
-  }
-  if (lower === 'mint') {
-    return ['Linux Mint OS', 'mint.com finance', 'mint programming'];
-  }
+  const curated = curatedRewrites(q);
+  if (curated) return curated;
   // Generic disambiguation suggestions.
   return [
     `${q} framework`,
     `${q} programming`,
     `"${q}" library documentation`,
+  ];
+}
+
+// Rewrites for a result-set collision. Unlike the generic set above these do
+// NOT assume a software intent — the caller's subject is exactly what is in
+// doubt — so they anchor the term as a named subject and let the caller pick.
+function subjectCollisionRewrites(query: string): string[] {
+  const q = query.trim();
+  const curated = curatedRewrites(q);
+  if (curated) return curated;
+  return [
+    `"${q}" official site`,
+    `${q} (software)`,
+    `"${q}" documentation`,
   ];
 }
 
@@ -234,6 +258,41 @@ export function detectBrandCollision(
 }
 
 /**
+ * Detect a RESULT-SET collision: the query names one subject and not one of the
+ * examined top results belongs to it.
+ *
+ * This is the detector that answers the caller's actual question — "do the top
+ * results belong to a different subject than I intended?" — and it is decided
+ * entirely from the results. It replaces nothing: `detectBrandCollision` still
+ * owns the shopping-TLD case, but that path can only ever see a handful of
+ * vanity TLDs, so a `.com` retailer or a `.org` dictionary taking every top
+ * slot used to pass unreported.
+ */
+export function detectSubjectCollision(
+  query: string,
+  topUrls: readonly string[],
+): BrandCollisionWarning | null {
+  const q = query.trim();
+  if (queryHasErrorToken(q)) return null;
+  const term = normalizeSubjectTerm(q);
+  if (!term) return null;
+
+  const attrition = computeSubjectAnchorAttrition(topUrls, term);
+  if (!isSubjectCollision(attrition)) return null;
+
+  const sites = [...new Set(attrition.unanchored_hosts)].join(', ');
+  return {
+    detected: true,
+    reason:
+      `query "${q}" — none of the top ${attrition.candidates} results comes from a site about "${q}"; ` +
+      `the top slots went to ${sites}. ` +
+      `The results may cover a different subject than intended.`,
+    brand_domains_in_top_3: [...attrition.unanchored_hosts],
+    suggested_rewrites: subjectCollisionRewrites(q),
+  };
+}
+
+/**
  * Build an entity-qualified rewrite of an "Entity + generic tail" query. The
  * entity head is quoted so an engine treats it as one atom, keeping the whole
  * original query intent while anchoring on the ambiguous entity — e.g.
@@ -257,8 +316,18 @@ export function entityQualifiedRewrite(query: string): string | null {
  * require a brand TLD in the top-3, since the collision is in the query itself.
  * Emits a warning whose rewrites anchor the entity head verbatim so the caller
  * can disambiguate. Returns null when the query is not entity-collision prone.
+ *
+ * `topUrls` is optional because this predicate has two callers with different
+ * knowledge. The pre-search dual-dispatch hedge runs before any result exists
+ * and passes nothing — a hedge costs one concurrent query and is harmless when
+ * wrong. The WARNING is emitted after the results are in and passes them, and
+ * they override the name heuristic: the head being a distinctive Capitalized
+ * coinage is not evidence of a collision when that coinage's own site answered.
  */
-export function detectEntityCollision(query: string): BrandCollisionWarning | null {
+export function detectEntityCollision(
+  query: string,
+  topUrls?: readonly string[],
+): BrandCollisionWarning | null {
   const q = query.trim();
   if (!q) return null;
   const tokens = q.split(/\s+/).filter(Boolean);
@@ -272,6 +341,16 @@ export function detectEntityCollision(query: string): BrandCollisionWarning | nu
   if (!hasGenericTail) return null;
 
   const head = entityHead(q) || tokens[0];
+
+  // The results, when known, decide. A single top result belonging to the
+  // entity head means the caller already got the subject they asked for. A
+  // multi-token head ("Comet ML") has no single term to anchor, so it keeps the
+  // query-only verdict rather than being silenced on weaker evidence.
+  if (topUrls && topUrls.length > 0) {
+    const headTerm = normalizeSubjectTerm(head);
+    if (headTerm && computeSubjectAnchorAttrition(topUrls, headTerm).anchored > 0) return null;
+  }
+
   const qualified = entityQualifiedRewrite(q);
   const rewrites: string[] = [];
   if (qualified) rewrites.push(qualified);

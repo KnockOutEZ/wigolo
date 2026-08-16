@@ -35,6 +35,7 @@ import { recencyDemotion, hasTemporalIntent } from './recency-boost.js';
 import {
   detectBrandCollision,
   detectEntityCollision,
+  detectSubjectCollision,
   detectLexicalCollision,
   entityQualifiedRewrite,
   topCollisionRewrite,
@@ -890,15 +891,18 @@ export class CoreSearchProvider implements SearchProvider {
       ...(enginePool ? { engine_pool: enginePool } : {}),
     };
 
-    // Try the brand-domain check first (cheap, requires
-    // top-3 to actually carry a brand TLD). Then the entity-collision v2 check
-    // — fires on a proper-noun-head + generic-tail query ("Phoenix framework
-    // deployment") regardless of the top-3 hosts. Finally the lexical dev-term
-    // collision check — fires on "useState" etc. Every path emits the same
-    // warning shape.
+    // Try the brand-domain check first (cheap, requires top-3 to actually carry
+    // a brand TLD). Then the result-set subject check — the general case, and
+    // the only path that can see a `.com` retailer or a `.org` dictionary take
+    // every top slot on an everyday-word query. Then the entity-collision v2
+    // check, now overruled by those same results when the entity's own site
+    // answered. Finally the lexical dev-term check — fires on "useState" etc.
+    // Every path emits the same warning shape.
+    const topUrls = items.map((i) => i.url);
     const collisionWarning =
-      detectBrandCollision(displayQuery, items.map((i) => i.url)) ??
-      detectEntityCollision(displayQuery) ??
+      detectBrandCollision(displayQuery, topUrls) ??
+      detectSubjectCollision(displayQuery, topUrls) ??
+      detectEntityCollision(displayQuery, topUrls) ??
       detectLexicalCollision(displayQuery);
     if (collisionWarning) data.brand_collision_warning = collisionWarning;
 

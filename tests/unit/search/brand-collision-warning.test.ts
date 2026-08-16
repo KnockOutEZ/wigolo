@@ -227,6 +227,107 @@ describe('detectEntityCollision (brand-collision v2)', () => {
   });
 });
 
+// The entity path fires on a CASING heuristic — a capitalized head plus a
+// generic category word — with no reference to what came back. That inverts the
+// signal: a distinctive coinage like "DuckDB" or "ArchiveBox" is exactly the
+// name whose own project site owns every top slot, so it drew a warning while
+// genuinely poisoned result sets drew none. When the results are known they
+// decide, and a single result belonging to the entity silences the warning.
+describe('detectEntityCollision — the result set overrides the name heuristic', () => {
+  it('stays silent when the top results ARE the entity ("DuckDB docs" -> duckdb.org)', () => {
+    expect(
+      detectEntityCollision('DuckDB docs', [
+        'https://duckdb.org/docs/stable/',
+        'https://duckdb.org/',
+        'https://github.com/duckdb/duckdb',
+      ]),
+    ).toBeNull();
+  });
+
+  it('stays silent for "ArchiveBox setup" when the project site answers', () => {
+    expect(
+      detectEntityCollision('ArchiveBox setup', [
+        'https://archivebox.io/',
+        'https://github.com/ArchiveBox/ArchiveBox',
+        'https://docs.archivebox.io/en/latest/',
+      ]),
+    ).toBeNull();
+  });
+
+  it('still fires when no result belongs to the entity head', () => {
+    const w = detectEntityCollision('Phoenix framework deployment', [
+      'https://example.com/phoenix-a',
+      'https://other.example/b',
+    ]);
+    expect(w).not.toBeNull();
+    expect(w!.detected).toBe(true);
+  });
+
+  it('still fires when the caller supplies no results — the query-only hedge is unchanged', () => {
+    expect(detectEntityCollision('Phoenix framework deployment')).not.toBeNull();
+  });
+});
+
+// End-to-end through the provider: the two directions of the inversion.
+describe('SearchOutput.brand_collision_warning — result-set collision, not name distinctiveness', () => {
+  it('warns on "scrape" when dictionaries take the top slots', async () => {
+    verticalState.general = [
+      makeEntry('bing', [
+        makeResult('bing', 'https://dictionary.cambridge.org/dictionary/english/scrape'),
+        makeResult('bing', 'https://www.merriam-webster.com/dictionary/scrape'),
+        makeResult('bing', 'https://www.collinsdictionary.com/dictionary/english/scrape'),
+      ]),
+    ];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: 'scrape', include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.data.brand_collision_warning).toBeDefined();
+    expect(out.data.brand_collision_warning!.brand_domains_in_top_3).toContain(
+      'www.merriam-webster.com',
+    );
+  });
+
+  it('does NOT warn on "DuckDB docs" — every top result is the project itself', async () => {
+    verticalState.general = [
+      makeEntry('bing', [
+        makeResult('bing', 'https://duckdb.org/docs/stable/'),
+        makeResult('bing', 'https://duckdb.org/'),
+        makeResult('bing', 'https://github.com/duckdb/duckdb'),
+      ]),
+    ];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: 'DuckDB docs', include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.data.brand_collision_warning).toBeUndefined();
+  });
+
+  it('does NOT warn on "ArchiveBox" — a distinctive name is the case least in need of a warning', async () => {
+    verticalState.general = [
+      makeEntry('bing', [
+        makeResult('bing', 'https://archivebox.io/'),
+        makeResult('bing', 'https://github.com/ArchiveBox/ArchiveBox'),
+        makeResult('bing', 'https://docs.archivebox.io/en/latest/'),
+      ]),
+    ];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: 'ArchiveBox', include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.data.brand_collision_warning).toBeUndefined();
+  });
+});
+
 // Dual-dispatch: when the entity collision fires, core-provider must run the
 // entity-qualified rewrite CONCURRENTLY and record it in queries_executed so
 // the extra dispatch is auditable. WHY: the caller needs to see that wigolo
