@@ -1,21 +1,63 @@
 import { beforeEach, afterEach } from 'vitest';
 import { mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // Isolate the data dir so the suite NEVER writes to a developer's real
-// ~/.wigolo (a vitest worker otherwise opens the live wigolo.db). One dir per
-// worker process, reused across the files that worker runs. The path contains
-// `.wigolo` so config's default-path assertion still holds. Tests that need a
-// specific dir set WIGOLO_DATA_DIR themselves — the guard respects it. Several
-// tests `delete process.env.WIGOLO_DATA_DIR` in cleanup to restore the
-// "unset" state; re-asserting in beforeEach (only when unset) stops the next
-// test in that worker from falling back to the real home dir. Invisible on CI
-// (throwaway HOME), decisive locally.
-const TEST_DATA_DIR = join(tmpdir(), 'wigolo-test', String(process.pid), '.wigolo');
+// ~/.wigolo (a vitest worker otherwise opens the live wigolo.db). One home per
+// worker process, reused across the files that worker runs. The data dir sits
+// at `<TEST_HOME>/.wigolo`, so its path still contains `.wigolo` and config's
+// default-path assertions hold. Tests that need a specific dir set
+// WIGOLO_DATA_DIR themselves — the guard respects it.
+//
+// WHY HOME IS REPOINTED, not just WIGOLO_DATA_DIR.
+// Setting the env var alone is a suggestion, not a default, and it failed twice:
+//
+//   1. ~25 test files `delete process.env.WIGOLO_DATA_DIR` in cleanup to restore
+//      the "unset" state. Re-asserting it in beforeEach only protects the NEXT
+//      test — anything the deleting test (or the rest of its own afterEach) does
+//      afterwards still resolves through the fallback.
+//   2. More decisively, most `~/.wigolo` paths in src/ never consult the env var
+//      at all: `defaultConfigPath()` (src/persisted-config.ts), and six inline
+//      copies of `join(homedir(), '.wigolo', 'config.json')` across
+//      src/cli/config.ts and src/cli/doctor.ts, read `homedir()` directly. So
+//      does `shellHistoryPath` (src/config.ts). `WIGOLO_DATA_DIR` is
+//      STRUCTURALLY INCAPABLE of isolating those. That is how
+//      tests/unit/cli/plugin.test.ts — which mocks `readFileSync` to return a
+//      plugin package.json but leaves `writeFileSync` real — overwrote a
+//      developer's actual ~/.wigolo/config.json with `{"version":1,"settings":
+//      {"name":"plugin-a","main":"index.mjs"}}` while the env-var guard was
+//      fully in force.
+//
+// Both holes share one cause: the FALLBACK is the developer's real home. Repoint
+// HOME and the fallback lands in the throwaway tree instead, so no delete and no
+// env-var-blind call site can escape. `os.homedir()` reads $HOME/%USERPROFILE%,
+// and individual assignment (never `process.env = {...}`) re-`setenv`s it so the
+// C layer sees it too.
+const TEST_HOME = join(tmpdir(), 'wigolo-test', String(process.pid));
+const TEST_DATA_DIR = join(TEST_HOME, '.wigolo');
+
+// Capture the browser engine's real download registry BEFORE HOME moves — it
+// defaults to a path under the developer's actual home, and a repointed HOME
+// would otherwise make every already-installed browser look missing.
+function realBrowsersPath(): string {
+  const home = homedir();
+  if (process.platform === 'darwin') return join(home, 'Library', 'Caches', 'ms-playwright');
+  if (process.platform === 'win32') return join(home, 'AppData', 'Local', 'ms-playwright');
+  return join(home, '.cache', 'ms-playwright');
+}
+
 function ensureTestDataDir(): void {
+  mkdirSync(TEST_DATA_DIR, { recursive: true });
+  if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
+    process.env.PLAYWRIGHT_BROWSERS_PATH = realBrowsersPath();
+  }
+  // Unconditional: HOME is always set, so a "only when unset" guard would never
+  // fire. A test that needs the real home, or its own, assigns HOME in its own
+  // beforeEach — which runs after this one (setup-file hooks register first).
+  process.env.HOME = TEST_HOME;
+  process.env.USERPROFILE = TEST_HOME;
   if (!process.env.WIGOLO_DATA_DIR) {
-    mkdirSync(TEST_DATA_DIR, { recursive: true });
     process.env.WIGOLO_DATA_DIR = TEST_DATA_DIR;
   }
 }
