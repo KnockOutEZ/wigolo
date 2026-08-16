@@ -228,4 +228,101 @@ describe('applyMigrations', () => {
     expect(applied).toContain('009-content-completeness');
     db.close();
   });
+
+  // Why: the real upgrade path. Every other 012 test builds the index on an
+  // EMPTY url_cache, and "it worked on an empty table" is exactly the claim
+  // that holds until someone upgrades a populated cache. CREATE INDEX on a
+  // populated table walks every existing row, and a throw here would abort the
+  // whole migration pass — not just this migration.
+  it('migration 012 indexes a url_cache that already holds rows, and indexes them', () => {
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE url_cache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT UNIQUE NOT NULL,
+        normalized_url TEXT NOT NULL,
+        content_hash TEXT,
+        fetched_at TEXT NOT NULL
+      );
+    `);
+    const insert = db.prepare(
+      'INSERT INTO url_cache (url, normalized_url, content_hash, fetched_at) VALUES (?, ?, ?, ?)',
+    );
+    for (let i = 0; i < 50; i++) {
+      insert.run(`https://example.com/${i}`, `https://example.com/${i}`, `hash-${i}`, '2026-01-01');
+    }
+    // A pre-existing NULL hash must not break the index build either.
+    insert.run('https://example.com/legacy', 'https://example.com/legacy', null, '2026-01-01');
+    // And a pre-existing DUPLICATE hash must not either — the index is
+    // deliberately non-unique because two URLs can serve identical markdown.
+    insert.run('https://example.com/dupe', 'https://example.com/dupe', 'hash-7', '2026-01-01');
+
+    expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
+
+    const applied = (db.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>)
+      .map((r) => r.name);
+    expect(applied).toContain('012-url-cache-content-hash-index');
+
+    // The index exists AND covers the rows that predate it — a build that
+    // silently skipped existing rows would leave the lookup returning nothing.
+    const idx = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name=?")
+      .all('idx_url_cache_content_hash');
+    expect(idx).toHaveLength(1);
+
+    const hit = db.prepare('SELECT url FROM url_cache WHERE content_hash = ? ORDER BY id ASC LIMIT 1')
+      .get('hash-42') as { url: string } | undefined;
+    expect(hit?.url).toBe('https://example.com/42');
+
+    // The duplicate resolves to the first-inserted row, not the later one.
+    const dupe = db.prepare('SELECT url FROM url_cache WHERE content_hash = ? ORDER BY id ASC LIMIT 1')
+      .get('hash-7') as { url: string } | undefined;
+    expect(dupe?.url).toBe('https://example.com/7');
+
+    db.close();
+  });
+
+  it('migration 012 is idempotent on a DB that already has the index', () => {
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE url_cache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT UNIQUE NOT NULL,
+        normalized_url TEXT NOT NULL,
+        content_hash TEXT,
+        fetched_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_url_cache_content_hash ON url_cache(content_hash);
+    `);
+    expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
+    const applied = (db.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>)
+      .map((r) => r.name);
+    expect(applied).toContain('012-url-cache-content-hash-index');
+    db.close();
+  });
+
+  // Why: the guard bug this slice shipped a fix for. CREATE INDEX throws on a
+  // url_cache WITHOUT content_hash, and a throw aborts the ENTIRE pass — it
+  // took migration 009's assertions down with it. The failure mode is not
+  // local to the migration that fails, so the guard checks the COLUMN.
+  it('migration 012 no-ops on a url_cache lacking content_hash without aborting the pass', () => {
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE url_cache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT UNIQUE NOT NULL,
+        normalized_url TEXT NOT NULL,
+        fetched_at TEXT NOT NULL
+      );
+    `);
+    expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
+
+    const applied = (db.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>)
+      .map((r) => r.name);
+    expect(applied).toContain('012-url-cache-content-hash-index');
+    // The migrations that share the pass must still have applied — that is the
+    // cross-migration blast radius the column guard closes.
+    expect(applied).toContain('009-content-completeness');
+    expect(applied).toContain('011-tool-audit');
+    db.close();
+  });
 });
