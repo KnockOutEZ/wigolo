@@ -12,6 +12,14 @@ import {
   RANKING_NOTICE_REASONS,
   buildRankingNotice,
 } from '../../src/search/core/rerank-fold.js';
+import {
+  detectBrandCollision,
+  detectEntityCollision,
+  detectLexicalCollision,
+  isBrandCollisionProne,
+} from '../../src/search/core/brand-collision.js';
+import { describeDomainFilterCause } from '../../src/search/core/domain-filter-cause.js';
+import { mergeCompleteness } from '../../src/extraction/completeness.js';
 import { readFileSync } from 'node:fs';
 
 describe('WIGOLO_INSTRUCTIONS v3 routing patterns (per-session)', () => {
@@ -199,6 +207,154 @@ describe('ranking-notice documentation stays in sync with the code', () => {
     for (const reason of RANKING_NOTICE_REASONS) {
       expect(buildRankingNotice({ reason, window: 3 })).toBeTruthy();
     }
+  });
+});
+
+/**
+ * The full guide's bullet for one response field. Assertions about a field must
+ * bind to ITS line: several of the words that matter here ("empty", "query
+ * shape") occur elsewhere in the guide, so a whole-document match can pass while
+ * the field itself goes undescribed.
+ */
+function fullGuideBullet(field: string): string {
+  const line = WIGOLO_INSTRUCTIONS_FULL.split('\n').find((l) => l.startsWith(`- \`${field}\``));
+  expect(line, `no \`${field}\` bullet found in the full usage guide`).toBeDefined();
+  return line as string;
+}
+
+describe('response fields the agent can only learn about from a description', () => {
+  // WHY this whole block exists: a response field can be wired end-to-end with a
+  // green typecheck while the only surfaces an agent reads never mention it —
+  // making it invisible to its audience — or, worse, describe a firing rule the
+  // code stopped implementing. Each test below pairs the prose claim with an
+  // OUTSIDE signal taken from the code that produces the field, so the assertion
+  // cannot be satisfied by agreeing with itself.
+
+  it('search names `domain_filter` and routes the caller to widening, not retrying', () => {
+    // An empty response has two causes with opposite fixes: a dead engine pool
+    // (retry) and an over-narrow scope (widen). Without the field named here an
+    // agent reads "no results" and retries the engines forever.
+    const desc = TOOL_DESCRIPTIONS.search;
+    expect(desc).toContain('domain_filter');
+    expect(desc).toContain('include_domains');
+    expect(desc).toMatch(/widen/i);
+  });
+
+  it('describes `domain_filter` as conditional — the code withholds it whenever the scope is innocent', () => {
+    // Outside signal: the runtime cause predicate returns undefined the moment
+    // one result survived the scope, and on a genuine engine failure. A
+    // description promising the field unconditionally teaches agents to read its
+    // absence as a bug.
+    expect(
+      describeDomainFilterCause({ include_domains: ['react.dev'], candidates: 5, matched: 1, dropped: 4 }),
+    ).toBeUndefined();
+    expect(
+      describeDomainFilterCause({ include_domains: ['react.dev'], candidates: 0, matched: 0, dropped: 0 }),
+    ).toBeUndefined();
+    expect(
+      describeDomainFilterCause({ include_domains: ['react.dev'], candidates: 5, matched: 0, dropped: 5 }),
+    ).toBeDefined();
+    expect(TOOL_DESCRIPTIONS.search).toMatch(/`domain_filter`[^.]*only when/i);
+  });
+
+  it('never describes `brand_collision_warning` as brand-domain-only — its other paths need no brand domain', () => {
+    // Outside signal: an entity-collision query fires the warning while the
+    // brand-domain detector stays silent on the very same results. "A brand
+    // domain dominates the top-3" therefore under-reports the field on every
+    // surface that still says it.
+    expect(detectEntityCollision('Phoenix framework')).not.toBeNull();
+    expect(detectBrandCollision('Phoenix framework', ['https://example.com/a'])).toBeNull();
+    for (const surface of [TOOL_DESCRIPTIONS.search, WIGOLO_INSTRUCTIONS_FULL]) {
+      expect(surface).not.toMatch(/brand[- ]domain (dominates|top-3 collision)/i);
+      expect(surface).toMatch(/different subject/i);
+    }
+  });
+
+  it('covers the query-shape paths, which never look at the results at all', () => {
+    // Outside signal: `detectEntityCollision` takes NO results argument — it
+    // fires on a capitalized head plus a generic tail noun and reports an EMPTY
+    // host list. `GENERIC_TAIL_NOUNS` is ~70 everyday words (docs, api, pricing,
+    // guide, setup, status …), so this is plausibly the highest-volume path in
+    // production. A description framed only as "the top results look like …"
+    // tells an agent the warning is evidence ABOUT the result set, which for
+    // this path it is not.
+    for (const q of ['Prisma pricing', 'Vercel deployment', 'Stripe api reference']) {
+      const w = detectEntityCollision(q);
+      expect(w, `entity collision should fire on "${q}"`).not.toBeNull();
+      expect(w!.brand_domains_in_top_3).toEqual([]);
+    }
+    expect(TOOL_DESCRIPTIONS.search).toMatch(/query shape|query or the result/i);
+    // Bound to the field's own bullet: "query shape" already appears elsewhere
+    // in the guide (the is_brand_collision_prone sentence), so a whole-document
+    // match would pass without this path ever being described.
+    expect(fullGuideBullet('brand_collision_warning')).toMatch(/generic tail|without looking|query shape/i);
+  });
+
+  it('makes no exclusive claim about when the collision warning fires', () => {
+    // An enumeration that misses a path is a gap; an enumeration that misses a
+    // path while saying "only when" is a false statement. Four detectors run at
+    // core-provider.ts:916-919 and any of them can speak.
+    expect(TOOL_DESCRIPTIONS.search).not.toMatch(/`brand_collision_warning` fires only when/);
+  });
+
+  it('does not promise a populated host list — two paths always return empty', () => {
+    // Outside signal: both query-shape detectors hardcode an empty array, so
+    // "carries whichever hosts the firing path found" would have an agent read
+    // `[]` as "no hosts were involved" rather than "this path never looks".
+    expect(detectLexicalCollision('usestate')!.brand_domains_in_top_3).toEqual([]);
+    expect(detectEntityCollision('Prisma pricing')!.brand_domains_in_top_3).toEqual([]);
+    // "empty" occurs several times in the guide, so match the field's own bullet.
+    expect(fullGuideBullet('brand_collision_warning')).toMatch(/empty/i);
+  });
+
+  it('names the image response fields, which no input schema can document', () => {
+    // Outside signal: TOOL_SCHEMAS holds INPUT schemas only and there is no
+    // outputSchema anywhere in the server, so these names are genuinely absent
+    // from every machine-readable surface. Cutting them from this description
+    // to buy token headroom makes them unlearnable, not "recoverable from the
+    // schema" — trim where the information actually survives the cut.
+    const schemaText = JSON.stringify(TOOL_SCHEMAS);
+    for (const field of ['image_alt', 'thumbnail_url']) {
+      expect(schemaText, `${field} is in an input schema — re-check this guard`).not.toContain(field);
+      expect(TOOL_DESCRIPTIONS.search, `${field} is unlearnable if not named here`).toContain(field);
+    }
+  });
+
+  it('documents `is_brand_collision_prone` as a query-shape signal, not a predictor of the warning', () => {
+    // Outside signal: the predicate is query-only and reads FALSE for a query
+    // the warning does fire on, so "will the warning fire?" is the one thing it
+    // cannot answer. An agent told otherwise skips a real collision report.
+    expect(isBrandCollisionProne('usestate')).toBe(false);
+    expect(detectLexicalCollision('usestate')).not.toBeNull();
+    expect(WIGOLO_INSTRUCTIONS_FULL).toMatch(/query shape alone|does not predict/i);
+  });
+
+});
+
+describe('fetch completeness verdict is described by meaning, not by enum', () => {
+  it('fetch explains what `partial` MEANS — extraction loss, not just an enum value', () => {
+    // Outside signal: an extraction-tier `partial` verdict beats a browser tier
+    // that already declared the render complete, so `partial` is reachable on a
+    // page that otherwise looks fine. Listing "full/partial/shell" without that
+    // meaning gives an agent nothing it can act on.
+    expect(
+      mergeCompleteness(
+        { level: 'full', reason: 'content_verified', settled_by: 'stability' },
+        { level: 'partial', reason: 'list_titles_dropped', settled_by: 'extraction' },
+      )?.reason,
+    ).toBe('list_titles_dropped');
+    const desc = TOOL_DESCRIPTIONS.fetch;
+    expect(desc).toContain('content_completeness');
+    expect(desc).toMatch(/dropped|lost/i);
+    expect(desc).toMatch(/title/i);
+  });
+
+  it('fetch does not let an absent completeness verdict read as "the page is fine"', () => {
+    // Outside signal: with neither producer entitled to a verdict the merge
+    // yields undefined — the field is simply missing, which is not a `full`
+    // claim and must not be described as one.
+    expect(mergeCompleteness(undefined, undefined)).toBeUndefined();
+    expect(TOOL_DESCRIPTIONS.fetch).toMatch(/absent/i);
   });
 });
 
