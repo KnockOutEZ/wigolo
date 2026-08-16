@@ -90,17 +90,33 @@ describe('network fence — must NOT fire', () => {
   it('lets a loopback connection through and completes it end to end', async () => {
     // The strongest control available: a REAL server, a REAL connection, both on loopback. If
     // the fence over-fired here it would break every suite that stands up a local server.
-    const server = net.createServer((c) => c.end('ok'));
+    //
+    // Torn down by letting the server's FIN close the client, NOT by `client.destroy()`.
+    // Destroying mid-write sends a RST, the server's connection socket then reads ECONNRESET, and
+    // with no 'error' listener on it that surfaces as an UNCAUGHT EXCEPTION. Vitest counts that as
+    // an unhandled error and exits 1 while still reporting every test as passed — a green run with
+    // a red exit code and no failing test to point at. It is a race (whether the write lands
+    // before the reset), so it stayed invisible locally and failed on CI's slower, loaded runners.
+    const server = net.createServer((c) => {
+      c.on('error', () => undefined); // a peer reset is not a failure of this test
+      c.end('ok');
+    });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     const port = (server.address() as net.AddressInfo).port;
 
+    const chunks: Buffer[] = [];
     const client = new net.Socket();
+    client.on('error', () => undefined);
+    client.on('data', (d: Buffer) => chunks.push(d));
     client.connect(port, '127.0.0.1');
     await once(client, 'connect');
-    client.destroy();
+    await once(client, 'close'); // graceful: the server ends, the client closes itself
     server.close();
     await once(server, 'close');
+
+    // Asserting the payload makes this a real round-trip rather than "the connect did not throw".
+    expect(Buffer.concat(chunks).toString()).toBe('ok');
   });
 
   it('treats every spelling of loopback as loopback', () => {
@@ -222,7 +238,11 @@ describe('network fence — real transports, end to end', () => {
 
     const body = await new Promise<string>((resolve, reject) => {
       http
-        .get({ host: '127.0.0.1', port, path: '/' }, (res) => {
+        // `agent: false` so no keep-alive socket outlives the request. The global agent keeps
+        // connections open, and a lingering one both delays `server.close()` and leaves a socket
+        // that can reset after the test has moved on — the same class of stray teardown error that
+        // made this file exit 1 while reporting every test green.
+        .get({ host: '127.0.0.1', port, path: '/', agent: false }, (res) => {
           let out = '';
           res.on('data', (c) => (out += c));
           res.on('end', () => resolve(out));
