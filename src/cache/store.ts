@@ -238,6 +238,27 @@ export function getCachedContentByNormalizedUrl(normalizedUrl: string): CachedCo
   return row ? rowToCachedContent(row) : null;
 }
 
+/**
+ * Reverse lookup: reach a cached body by the content fingerprint `fetch`
+ * returned for it, without knowing the URL. Backs `diff`'s `old.content_hash`
+ * input — an agent holds a hash from an earlier response (or an export
+ * manifest) and diffs against that exact body with no network round-trip.
+ *
+ * A hash does NOT identify a row: url_cache is UNIQUE on normalized_url only,
+ * so two URLs serving identical markdown share one hash. That is harmless for
+ * a content lookup — the hash is computed over `markdown` at write time
+ * (`cacheContent`), so every matching row carries byte-identical markdown by
+ * construction. `ORDER BY id` makes the pick deterministic anyway rather than
+ * leaving it to SQLite's scan order.
+ */
+export function getCachedContentByHash(contentHash: string): CachedContent | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    'SELECT * FROM url_cache WHERE content_hash = ? ORDER BY id ASC LIMIT 1',
+  ).get(contentHash) as DbRow | undefined;
+  return row ? rowToCachedContent(row) : null;
+}
+
 export function getHashForNormalizedUrl(normalizedUrl: string): string | null {
   const db = getDatabase();
   const row = db.prepare(

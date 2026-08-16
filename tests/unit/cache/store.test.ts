@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initDatabase, closeDatabase } from '../../../src/cache/db.js';
+import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
 import {
   normalizeUrl,
   cacheContent,
   getCachedContent,
+  getCachedContentByHash,
   isExpired,
   isCacheUsable,
   searchCache,
@@ -637,6 +638,106 @@ describe('getHashForNormalizedUrl', () => {
 
     const hash = getHashForNormalizedUrl(normalizeUrl('https://example.com/cafe'));
     expect(hash).toBeDefined();
+  });
+});
+
+describe('getCachedContentByHash', () => {
+  beforeEach(() => {
+    initDatabase(':memory:');
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  // Why: this is the reverse lookup `diff`'s advertised `old.content_hash`
+  // input rides on. An agent holds a hash from a previous `fetch` response and
+  // must be able to reach that exact body again WITHOUT knowing (or
+  // re-fetching) the URL it came from.
+  it('returns the cached row whose markdown hashes to the given hash', () => {
+    cacheContent(makeRaw('https://example.com/page'), makeExtraction({ markdown: 'body under hash' }));
+    const hash = getHashForNormalizedUrl(normalizeUrl('https://example.com/page'))!;
+
+    const row = getCachedContentByHash(hash);
+    expect(row).not.toBeNull();
+    expect(row!.markdown).toBe('body under hash');
+    expect(row!.contentHash).toBe(hash);
+  });
+
+  // Why: a miss must be a plain null so the caller can render its own
+  // structured `cache_miss` envelope rather than guessing from a throw.
+  it('returns null for a hash no cached row carries', () => {
+    cacheContent(makeRaw('https://example.com/page'), makeExtraction({ markdown: 'something' }));
+    expect(getCachedContentByHash('0'.repeat(64))).toBeNull();
+  });
+
+  it('returns null on an empty cache', () => {
+    expect(getCachedContentByHash('0'.repeat(64))).toBeNull();
+  });
+
+  // Why: url_cache is UNIQUE on normalized_url only, so two DIFFERENT URLs
+  // serving identical markdown share one content_hash. The lookup must still
+  // be usable: the hash is computed over the markdown, so every matching row
+  // carries byte-identical markdown by construction — and the row we pick must
+  // be the SAME one on every call, never dependent on SQLite's scan order.
+  it('is deterministic and content-correct when two URLs share a hash', () => {
+    const shared = '# Shared\n\nidentical body across two URLs\n';
+    cacheContent(makeRaw('https://first.example.com/a'), makeExtraction({ markdown: shared }));
+    cacheContent(makeRaw('https://second.example.com/b'), makeExtraction({ markdown: shared }));
+
+    const hash = getHashForNormalizedUrl(normalizeUrl('https://first.example.com/a'))!;
+    expect(getHashForNormalizedUrl(normalizeUrl('https://second.example.com/b'))).toBe(hash);
+
+    const picks = [
+      getCachedContentByHash(hash),
+      getCachedContentByHash(hash),
+      getCachedContentByHash(hash),
+    ];
+    for (const p of picks) {
+      expect(p).not.toBeNull();
+      // Content correctness: whichever row wins, the markdown is the body the
+      // hash names. That is what makes the ambiguity harmless for `diff`.
+      expect(p!.markdown).toBe(shared);
+    }
+    // Determinism: identical row identity across repeated calls...
+    expect(picks[1]!.id).toBe(picks[0]!.id);
+    expect(picks[2]!.id).toBe(picks[0]!.id);
+    // ...and it is the FIRST-inserted of the two, not an arbitrary winner.
+    const firstId = getCachedContent('https://first.example.com/a')!.id;
+    const secondId = getCachedContent('https://second.example.com/b')!.id;
+    expect(secondId).toBeGreaterThan(firstId);
+    expect(picks[0]!.id).toBe(firstId);
+  });
+
+  // Why: the row must arrive fully hydrated, not as a markdown-only shim —
+  // callers share the CachedContent shape with the URL lookup path.
+  it('hydrates the same shape as the URL lookup', () => {
+    cacheContent(makeRaw('https://example.com/page'), makeExtraction({ markdown: 'hydration check' }));
+    const hash = getHashForNormalizedUrl(normalizeUrl('https://example.com/page'))!;
+
+    expect(getCachedContentByHash(hash)).toEqual(getCachedContent('https://example.com/page'));
+  });
+});
+
+describe('url_cache content_hash index (migration 012)', () => {
+  beforeEach(() => {
+    initDatabase(':memory:');
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  // Why: without an index the hash lookup is a full table scan of every cached
+  // page body. The index is the whole reason the reverse lookup is affordable.
+  it('resolves a content_hash lookup through an index, not a table scan', () => {
+    const db = getDatabase();
+    const plan = db
+      .prepare('EXPLAIN QUERY PLAN SELECT * FROM url_cache WHERE content_hash = ? ORDER BY id ASC LIMIT 1')
+      .all('0'.repeat(64)) as Array<{ detail: string }>;
+    const detail = plan.map((p) => p.detail).join(' | ');
+    expect(detail).toMatch(/idx_url_cache_content_hash/);
+    expect(detail).not.toMatch(/SCAN url_cache(?!\S)/);
   });
 });
 

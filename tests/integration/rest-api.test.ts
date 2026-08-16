@@ -3,6 +3,20 @@ import * as http from 'node:http';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { DaemonHttpServer } from '../../src/daemon/http-server.js';
+import { allowNetworkInThisFile } from '../net-fence.js';
+
+// This file drives a REAL DaemonHttpServer and calls the REAL tool pipeline through it, so
+// `search` reaches live engines and the embedding index downloads its model. Measured
+// destinations: www.bing.com:443, lite.duckduckgo.com:443, storage.googleapis.com:443.
+//
+// That end-to-end reach is the stated point of the file — it exists so a regression in the
+// router pipeline fails loudly — but it also means these rows measure the network as well as the
+// code, and their assertions are written loosely enough to absorb that ("200 with fields, OR
+// mapped failure"). Declared rather than silently tolerated, so the cost is visible and someone
+// can decide whether the engine layer should be stubbed here.
+allowNetworkInThisFile(
+  'drives the real REST pipeline end to end: live search engines and the embedding model download',
+);
 
 /**
  * WHY: the REST surface is the P2 self-host contract. These rows pin the

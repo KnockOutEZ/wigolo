@@ -19,6 +19,16 @@ import { initDatabase, closeDatabase } from '../../src/cache/db.js';
 import { resetConfig } from '../../src/config.js';
 import type { RawFetchResult } from '../../src/types.js';
 
+// This file used to declare a network exemption: the two anti-bot rows reached `old.reddit.com`
+// through the content extractor library's own bundled Reddit handler, below every seam the file
+// could inject. #331 closed that egress in `src/extraction/`, so the exemption was retired here —
+// verified by removing it and re-running, which is green with zero recorded connections.
+//
+// Left as a note because an exemption that outlives its cause is the failure mode the declaration
+// contract exists to prevent: it silently disarms the fence for the WHOLE file, so a new egress
+// introduced later would never be reported. If a row here ever needs one again, re-derive it
+// rather than restoring this one.
+
 const siteFixturesDir = join(import.meta.dirname, '..', 'fixtures', 'site-extractors');
 const amazonFixturesDir = join(import.meta.dirname, '..', 'fixtures', 'amazon');
 const load = (dir: string, name: string) => readFileSync(join(dir, name), 'utf-8');

@@ -250,7 +250,13 @@ const OPERATIONAL_KEYS = new Set<string>([
 // are shallow; the bound only stops runaway descent — string leaves are fenced regardless of depth (below).
 const MAX_FENCE_DEPTH = 16;
 
-function isOperationalKey(key: string): boolean {
+/**
+ * Exported ONLY so the envelope-wide containment guard can ask this module's own allowlist in this
+ * module's own words. The alternative was a second copy of OPERATIONAL_KEYS in the test tree, which
+ * would drift silently the first time a key is added here. No behaviour change — the set and the
+ * lookup are untouched.
+ */
+export function isOperationalKey(key: string): boolean {
   return OPERATIONAL_KEYS.has(key.toLowerCase());
 }
 
