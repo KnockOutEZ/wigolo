@@ -217,7 +217,7 @@ Key parameters (full descriptions in the input schema):
 - query: string or string[] array — pass 3-5 keyword variants for breadth; deduplicated and reranked.
 - include_domains / exclude_domains: always scope library/framework queries.
 - search_depth: tier; 'balanced' is the default.
-- format: omit for evidence; 'answer' | 'stream_answer' for synthesis.
+- format: omit for evidence context; 'answer' | 'stream_answer' for synthesis.
 - category: general | news | code | docs | papers | images (adds per-result image_url/image_alt/thumbnail_url/width/height + auto \`images[]\`, no include_images needed).
 - Also: max_results, exact_match, time_range, from_date, to_date, country, include_images, include_favicon, max_tokens_out, max_content_chars, citation_format, force_refresh, mode.
 
