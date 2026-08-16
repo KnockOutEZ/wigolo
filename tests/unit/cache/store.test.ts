@@ -226,6 +226,45 @@ describe('cacheContent + getCachedContent', () => {
     const result = getCachedContent(url);
     expect(result!.contentCompleteness).toBeUndefined();
   });
+
+  // Without this the label would survive exactly one response and then vanish
+  // on every replay, so the same page would look partial once and complete
+  // forever after — the worst possible failure mode for a trust signal.
+  it('persists the extraction completeness verdict on an HTTP-tier row', () => {
+    const url = 'https://example.com/extraction-completeness';
+    const extraction = makeExtraction();
+    extraction.contentCompleteness = {
+      level: 'partial',
+      reason: 'list_titles_dropped',
+      settled_by: 'extraction',
+    };
+    cacheContent(makeRaw(url), extraction);
+    const result = getCachedContent(url);
+    expect(result!.contentCompleteness).toEqual({
+      level: 'partial',
+      reason: 'list_titles_dropped',
+      settled_by: 'extraction',
+    });
+  });
+
+  it('lets the browser render verdict win over the extraction verdict', () => {
+    const url = 'https://example.com/completeness-precedence';
+    const raw = makeRaw(url);
+    raw.method = 'browser';
+    raw.contentCompleteness = { level: 'shell', reason: 'app_shell', settled_by: 'budget' };
+    const extraction = makeExtraction();
+    extraction.contentCompleteness = {
+      level: 'partial',
+      reason: 'list_titles_dropped',
+      settled_by: 'extraction',
+    };
+    cacheContent(raw, extraction);
+    expect(getCachedContent(url)!.contentCompleteness).toEqual({
+      level: 'shell',
+      reason: 'app_shell',
+      settled_by: 'budget',
+    });
+  });
 });
 
 describe('isExpired', () => {

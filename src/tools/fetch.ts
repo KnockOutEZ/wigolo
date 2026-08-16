@@ -14,6 +14,7 @@ import { resolveMode } from '../util/mode.js';
 import { createLogger } from '../logger.js';
 import type { NavSource } from '../security/ssrf.js';
 import { guardFetchUrl } from '../watch/ssrf.js';
+import { mergeCompleteness } from '../extraction/completeness.js';
 
 const log = createLogger('fetch');
 
@@ -371,6 +372,11 @@ export async function handleFetch(
       finalMarkdown = truncateSmartly(finalMarkdown, input.max_content_chars);
     }
 
+    const mergedCompleteness = mergeCompleteness(
+      raw.contentCompleteness,
+      extraction.contentCompleteness,
+    );
+
     const out: FetchOutput = {
       url: raw.finalUrl,
       title: extraction.title,
@@ -387,9 +393,11 @@ export async function handleFetch(
       // Propagate the router-chosen tier name onto the public response so
       // callers can audit which path served the bytes (P2 visibility).
       fetch_method: raw.method,
-      // Render-completeness label from the browser tier (absent on HTTP/TLS
-      // results), so callers can distinguish a genuine page from a shell.
-      ...(raw.contentCompleteness ? { content_completeness: raw.contentCompleteness } : {}),
+      // Completeness label, reconciled across its two producers. The browser
+      // tier answers "did it render", the extraction seam "did it survive
+      // extraction" — see mergeCompleteness for why the pessimistic verdict
+      // wins rather than the render one.
+      ...(mergedCompleteness ? { content_completeness: mergedCompleteness } : {}),
       // Always surface the upstream status code on fresh
       // fetches so callers / cache consumers can distinguish 200 / 404 /
       // 5xx pages that may extract to a usable HTML body.

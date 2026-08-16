@@ -205,8 +205,10 @@ function markdownContentImages(body: string): string[] {
  *    value that happens to contain `[x](y)` is data, not a link on the page.
  *  - `title` is empty rather than invented.
  *
- * `content_completeness` is untouched: it is produced by the browser tier for
- * rendered pages and is absent on these HTTP responses either way.
+ * `content_completeness` is untouched — but NOT because the field belongs to
+ * the browser tier; the extraction seam also produces it, on every tier. It is
+ * absent here because a verbatim body has no extraction step to lose content
+ * in, so no producer is entitled to a verdict.
  */
 export function buildPassthroughResult(
   body: string,

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { getDatabase } from './db.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
+import { mergeCompleteness } from '../extraction/completeness.js';
 import type { RawFetchResult, ExtractionResult, CachedContent, SearchResultItem, CacheStats, ContentCompleteness } from '../types.js';
 
 const log = createLogger('cache');
@@ -122,7 +123,12 @@ export function cacheContent(result: RawFetchResult, extraction: ExtractionResul
       )
     `);
 
-    const completeness = result.contentCompleteness;
+    // Same reconciliation as the fetch response. Persisting the merged value
+    // keeps a cache replay as honest as the fresh fetch it stands in for.
+    const completeness = mergeCompleteness(
+      result.contentCompleteness,
+      extraction.contentCompleteness,
+    );
     stmt.run({
       url: result.url,
       normalizedUrl,

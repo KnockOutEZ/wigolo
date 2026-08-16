@@ -45,6 +45,18 @@ import { getCachedContent, cacheContent, isCacheUsable } from '../../../src/cach
 import { extractSection } from '../../../src/extraction/markdown.js';
 import { detectChange } from '../../../src/cache/change-detector.js';
 import type { ChangeResult } from '../../../src/cache/change-detector.js';
+import type { SmartRouter } from '../../../src/fetch/router.js';
+
+/**
+ * `SmartRouter` carries private fields, so a structural stub can never satisfy
+ * it nominally — which is why every mockRouter call site in this file sits in
+ * the type-check debt pile. New tests route through here instead of adding to
+ * it. The cast is confined to this one helper, and nothing in `src/` is
+ * widened to accommodate a test.
+ */
+function asRouter(stub: ReturnType<typeof mockRouter>): SmartRouter {
+  return stub as unknown as SmartRouter;
+}
 
 function mockRouter(result?: Partial<RawFetchResult>) {
   const defaults: RawFetchResult = {
@@ -188,6 +200,98 @@ describe('handleFetch', () => {
     const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.content_completeness).toBeUndefined();
+  });
+
+  // The HTTP tier can never produce a render verdict, so before this the
+  // caller got a plausible-looking partial page with no signal at all. The
+  // extraction verdict is the only thing standing between them and silently
+  // acting on content that lost its titles.
+  it('surfaces the extraction completeness verdict on an HTTP-tier result', async () => {
+    extractMock.mockResolvedValue(
+      makeExtraction({
+        contentCompleteness: {
+          level: 'partial',
+          reason: 'list_titles_dropped',
+          settled_by: 'extraction',
+        },
+      }),
+    );
+    const router = asRouter(mockRouter({ method: 'http' }));
+    const input: FetchInput = { url: 'https://github.com/facebook/react/issues' };
+
+    const __r_result = await handleFetch(input, router);
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(result.fetch_method).toBe('http');
+    expect(result.content_completeness).toEqual({
+      level: 'partial',
+      reason: 'list_titles_dropped',
+      settled_by: 'extraction',
+    });
+  });
+
+  // The browser tier returns a verdict on EVERY capture and `full` is its
+  // ordinary outcome, so on the browser path a "render wins" rule would make
+  // this feature inert AND publish `full` over structural proof of loss — a
+  // claim of completeness the pipeline itself knows to be false.
+  it('does not let a browser full overwrite an extraction partial', async () => {
+    extractMock.mockResolvedValue(
+      makeExtraction({
+        contentCompleteness: {
+          level: 'partial',
+          reason: 'list_titles_dropped',
+          settled_by: 'extraction',
+        },
+      }),
+    );
+    const router = asRouter(
+      mockRouter({
+        method: 'browser',
+        contentCompleteness: {
+          level: 'full',
+          reason: 'stable_content',
+          settled_by: 'stability',
+        },
+      }),
+    );
+
+    const __r_result = await handleFetch({ url: 'https://example.com' }, router);
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(result.content_completeness).toEqual({
+      level: 'partial',
+      reason: 'list_titles_dropped',
+      settled_by: 'extraction',
+    });
+  });
+
+  // A browser shell outranks an extraction partial: the page never rendered, so
+  // the render verdict is both more severe and more explanatory.
+  it('prefers the browser shell verdict over the extraction partial', async () => {
+    extractMock.mockResolvedValue(
+      makeExtraction({
+        contentCompleteness: {
+          level: 'partial',
+          reason: 'list_titles_dropped',
+          settled_by: 'extraction',
+        },
+      }),
+    );
+    const router = asRouter(
+      mockRouter({
+        method: 'browser',
+        contentCompleteness: { level: 'shell', reason: 'app_shell', settled_by: 'budget' },
+      }),
+    );
+
+    const __r_result = await handleFetch({ url: 'https://example.com' }, router);
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(result.content_completeness).toEqual({
+      level: 'shell',
+      reason: 'app_shell',
+      settled_by: 'budget',
+    });
   });
 
   it('returns error response for empty URL', async () => {
