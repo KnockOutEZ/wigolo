@@ -24,16 +24,23 @@ import { findUnfencedInEnvelope } from '../helpers/envelope-fence.js';
  *  - The canary in each fixture is planted by the fixture. It proves the WALKER SEES the field, which
  *    is the only claim being made.
  *
- * ── THE UNFENCED-KEY CLASS: TWO LINES, THREE LIVE SITES (GAP-5, GAP-6a, GAP-6b) ──
+ * ── THE UNFENCED-KEY CLASS: ONE LINE, TWO LIVE SITES (GAP-6a, GAP-6b) — SITE (1) IS CLOSED ──
  *
- * Object KEYS are strings reachable in the serialised envelope, and NOTHING fences them. The root
- * cause is two lines in `content-fence.ts`, not one, which is why this is pinned as a class:
+ * Object KEYS are strings reachable in the serialised envelope, and nothing fenced them. The root
+ * cause was two lines in `content-fence.ts`, which is why this was pinned as a class:
  *
- *   1. `fenceTable`      — rebuilds rows as `[k, fence(v)]`; row keys are the page's `<th>` text.
+ *   1. `fenceTable`      — rebuilt rows as `[k, fence(v)]`; row keys are the page's `<th>` text.
+ *                          ✅ CLOSED. Row keys are now wigolo-authored `col_N` handles aligned by index
+ *                          to the already-fenced `headers[]`, so page text never occupies a key
+ *                          position. GAP-5 graduated to ENV-10 in envelope-fence-invariant.test.ts.
  *   2. `fenceDeepValue`  — `out[k] = fenceDeepValue(v, isOperationalKey(k), …)`; it decides the
- *                          VALUE's fate per key and copies the KEY through untouched.
+ *                          VALUE's fate per key and copies the KEY through untouched. ⚠️ STILL LIVE.
  *
- * Site (1) is `extract mode:"tables"` → GAP-5. Site (2) is reached by THREE routes:
+ * The `col_N` remedy does NOT transfer to site (2): there the key name IS the datum (a `jsonld`
+ * property name, a `site_data` field), so renaming destroys the data it is meant to protect. Site (2)
+ * needs a different remedy and its own slice — which is exactly why GAP-6a/6b remain pinned here.
+ *
+ * Site (2) is reached by THREE routes:
  *   - `extract mode:"structured"` — `jsonld[]` property names → GAP-6a
  *   - `extract mode:"metadata"`   — `MetadataData.jsonld?: Record<string, unknown>[]` (types.ts:1285)
  *                                   carries the same page-authored property names
@@ -42,15 +49,18 @@ import { findUnfencedInEnvelope } from '../helpers/envelope-fence.js';
  * `Object.keys(schema.properties)` — CALLER-authored, never page-derived — so it is named here and
  * deliberately not pinned. `fenceDeepValue` has exactly four call sites and this enumerates them all.
  *
- * 🔑 WHY ALL THREE ARE PINNED SEPARATELY — AND MIND THE POLARITY. These are DEFECT pins: each one
- * asserts the leak is still there, so a FIX makes the pin FAIL. Measured against an actual table-only
- * fix: GAP-5 goes RED (1 red) while GAP-6a and GAP-6b stay GREEN — still asserting one finding each,
- * because they are still leaking. The obvious table remedy (renaming row keys `col_N`) explicitly
- * does NOT transfer to `jsonld`, where the key name IS the datum and renaming destroys it.
+ * 🔑 WHY ALL THREE WERE PINNED SEPARATELY — AND MIND THE POLARITY. These are DEFECT pins: each one
+ * asserts the leak is still there, so a FIX makes the pin FAIL. That is exactly what happened, and the
+ * prediction held: the table-only fix turned GAP-5 RED (1 red) while GAP-6a and GAP-6b stayed GREEN —
+ * still asserting one finding each, because they are still leaking. GAP-5 has since graduated to
+ * ENV-10; GAP-6a/6b remain here, unchanged, and are still DEFECT pins.
  *
- * So if GAP-5 were the only pin, that single red would be read as "the key class is closed, retire the
- * marker" at the exact moment two of the three sites were still shipping unfenced page prose. GAP-6 is
- * what keeps the remaining two visibly asserted after the first fix lands.
+ * Had GAP-5 been the only pin, that single red would have been read as "the key class is closed, retire
+ * the marker" at the exact moment two of the three sites were still shipping unfenced page prose.
+ * Splitting the class is what kept the remaining two visibly asserted after the first fix landed — so
+ * if a future change makes GAP-6a or GAP-6b pass, that is a FINDING to investigate, never a green to
+ * accept: it means either a second site closed (graduate it, as GAP-5 was) or the walker stopped
+ * seeing the field.
  *
  * ⛔ DO NOT ADD `AgentOutput.warning` TO THIS FILE. It is unenumerated like the rest, so the symmetry
  * is tempting and wrong: its two producers interpolate WIGOLO-AUTHORED values only, which was checked
@@ -139,37 +149,13 @@ describe('SUCCESS-envelope siblings the fence functions do not enumerate', () =>
     expect(leakedKeys(await callTool('extract', { url: 'https://e.example/p', mode: 'schema' }))).toEqual(['warnings']);
   });
 
-  it('GAP-5: extract — a page-authored table header arrives as an UNFENCED OBJECT KEY', async () => {
-    // The sharpest item in this file, and the only one that is NOT length-bounded.
-    //
-    // `fenceTable` fences `caption`, every entry of `headers[]`, and every row VALUE. But it rebuilds
-    // each row with `Object.fromEntries(Object.entries(row).map(([k, v]) => [k, fence(v)]))` — the KEY
-    // is passed through untouched. Row keys are the page's own `<th>` text, so the identical header
-    // string ships twice: fenced inside `headers[]`, and raw as the key beside its fenced cell.
-    //
-    // Unlike the ~10-character V8 echo window or the ≤253-character hostname path, a table header is
-    // arbitrary page prose of arbitrary length. This is page-derived, unfenced, on the SUCCESS
-    // envelope, and reachable by anyone who can put a <table> on a page wigolo extracts.
-    //
-    // NOT FIXED HERE ON PURPOSE: this slice is test-only and must not change production behaviour.
-    // Fencing a key changes the SHAPE of the row object every consumer reads by name, so it needs its
-    // own slice and its own review. This test pins the current behaviour so the finding cannot be
-    // quietly lost; when it is fixed, this test fails and moves into the invariant guard.
-    const { handleExtract } = await import('../../src/tools/extract.js');
-    vi.mocked(handleExtract).mockResolvedValueOnce({
-      ok: true,
-      data: {
-        mode: 'tables', source_url: 'https://e.example/p',
-        data: [{ caption: 'Pricing', headers: [`H ${CANARY}`], rows: [{ [`H ${CANARY}`]: 'cell' }] }],
-      },
-    } as never);
-    const blocks = await callTool('extract', { url: 'https://e.example/p', mode: 'tables' });
-    const findings = findUnfencedInEnvelope(blocks, CANARY);
-    // exactly one: the KEY. the same text inside headers[] is fenced, which is what makes the
-    // asymmetry legible rather than looking like the fence simply not running.
-    expect(findings).toHaveLength(1);
-    expect(findings[0].path).toContain('[key]');
-  });
+  // GAP-5 (extract tables — a page-authored `<th>` arriving as an unfenced row key) GRADUATED out of
+  // this file when that site was closed: row keys are now wigolo-authored `col_N` handles aligned to
+  // the fenced `headers[]`. Per its own instruction, the marker did not disappear — it inverted from
+  // "the leak is still here" to "the envelope contains it" and moved to the invariant guard as
+  // **ENV-10** in envelope-fence-invariant.test.ts, which plants the canary in the row KEY specifically.
+  // ENV-5's matching carve-out (its row key was kept canary-free for exactly this reason) is retired
+  // with it. GAP-6a and GAP-6b below are UNAFFECTED and still assert live leaks.
 
   it('GAP-6a: extract structured — a page-authored JSON-LD PROPERTY NAME is an unfenced key', async () => {
     // SECOND SITE OF THE SAME CLASS, and a different function from GAP-5. `fenceDeepValue` rebuilds
