@@ -210,6 +210,18 @@ describe('ranking-notice documentation stays in sync with the code', () => {
   });
 });
 
+/**
+ * The full guide's bullet for one response field. Assertions about a field must
+ * bind to ITS line: several of the words that matter here ("empty", "query
+ * shape") occur elsewhere in the guide, so a whole-document match can pass while
+ * the field itself goes undescribed.
+ */
+function fullGuideBullet(field: string): string {
+  const line = WIGOLO_INSTRUCTIONS_FULL.split('\n').find((l) => l.startsWith(`- \`${field}\``));
+  expect(line, `no \`${field}\` bullet found in the full usage guide`).toBeDefined();
+  return line as string;
+}
+
 describe('response fields the agent can only learn about from a description', () => {
   // WHY this whole block exists: a response field can be wired end-to-end with a
   // green typecheck while the only surfaces an agent reads never mention it —
@@ -255,6 +267,56 @@ describe('response fields the agent can only learn about from a description', ()
     for (const surface of [TOOL_DESCRIPTIONS.search, WIGOLO_INSTRUCTIONS_FULL]) {
       expect(surface).not.toMatch(/brand[- ]domain (dominates|top-3 collision)/i);
       expect(surface).toMatch(/different subject/i);
+    }
+  });
+
+  it('covers the query-shape paths, which never look at the results at all', () => {
+    // Outside signal: `detectEntityCollision` takes NO results argument — it
+    // fires on a capitalized head plus a generic tail noun and reports an EMPTY
+    // host list. `GENERIC_TAIL_NOUNS` is ~70 everyday words (docs, api, pricing,
+    // guide, setup, status …), so this is plausibly the highest-volume path in
+    // production. A description framed only as "the top results look like …"
+    // tells an agent the warning is evidence ABOUT the result set, which for
+    // this path it is not.
+    for (const q of ['Prisma pricing', 'Vercel deployment', 'Stripe api reference']) {
+      const w = detectEntityCollision(q);
+      expect(w, `entity collision should fire on "${q}"`).not.toBeNull();
+      expect(w!.brand_domains_in_top_3).toEqual([]);
+    }
+    expect(TOOL_DESCRIPTIONS.search).toMatch(/query shape|query or the result/i);
+    // Bound to the field's own bullet: "query shape" already appears elsewhere
+    // in the guide (the is_brand_collision_prone sentence), so a whole-document
+    // match would pass without this path ever being described.
+    expect(fullGuideBullet('brand_collision_warning')).toMatch(/generic tail|without looking|query shape/i);
+  });
+
+  it('makes no exclusive claim about when the collision warning fires', () => {
+    // An enumeration that misses a path is a gap; an enumeration that misses a
+    // path while saying "only when" is a false statement. Four detectors run at
+    // core-provider.ts:916-919 and any of them can speak.
+    expect(TOOL_DESCRIPTIONS.search).not.toMatch(/`brand_collision_warning` fires only when/);
+  });
+
+  it('does not promise a populated host list — two paths always return empty', () => {
+    // Outside signal: both query-shape detectors hardcode an empty array, so
+    // "carries whichever hosts the firing path found" would have an agent read
+    // `[]` as "no hosts were involved" rather than "this path never looks".
+    expect(detectLexicalCollision('usestate')!.brand_domains_in_top_3).toEqual([]);
+    expect(detectEntityCollision('Prisma pricing')!.brand_domains_in_top_3).toEqual([]);
+    // "empty" occurs several times in the guide, so match the field's own bullet.
+    expect(fullGuideBullet('brand_collision_warning')).toMatch(/empty/i);
+  });
+
+  it('names the image response fields, which no input schema can document', () => {
+    // Outside signal: TOOL_SCHEMAS holds INPUT schemas only and there is no
+    // outputSchema anywhere in the server, so these names are genuinely absent
+    // from every machine-readable surface. Cutting them from this description
+    // to buy token headroom makes them unlearnable, not "recoverable from the
+    // schema" — trim where the information actually survives the cut.
+    const schemaText = JSON.stringify(TOOL_SCHEMAS);
+    for (const field of ['image_alt', 'thumbnail_url']) {
+      expect(schemaText, `${field} is in an input schema — re-check this guard`).not.toContain(field);
+      expect(TOOL_DESCRIPTIONS.search, `${field} is unlearnable if not named here`).toContain(field);
     }
   });
 
