@@ -68,19 +68,6 @@ Everything lives under the data dir (`WIGOLO_DATA_DIR`, default `~/.wigolo`): th
 
 Be aware of an honest ceiling before you deploy scraping-adjacent workflows to a VPS: anti-bot systems score **IP reputation**, and datacenter ranges start with low scores. Some challenge-protected sites will not clear from a datacenter IP no matter what the client does — the same fetch works fine from a residential connection. wigolo's tiered fetching and per-domain learning ([`wigolo tune`](./cli.md#tune)) get you the reliability that's achievable, and when a page can't be cleared you get a labeled `blocked_by_challenge` failure instead of junk parading as content.
 
-### The IP is one signal of four
-
-The IP is the clause people expect, so it's worth being explicit that it isn't the only one. A host with no desktop session — a VPS, a container, a CI runner with no virtual display — cannot map a browser window, and that one fact changes four things a site can score, not one:
-
-- **A throwaway profile.** Nothing is carried over from a previous visit for a site to recognise.
-- **A fresh fingerprint.** Every run presents as new rather than as an established visitor.
-- **An automation-launched browser engine.** How the session started is itself scoreable, separately from how it then behaves.
-- **A datacenter IP.** The clause above.
-
-None of the four has a client-side fix; they're what "this host can't map a window" means. Sites that score those signals will refuse more often here than they would on a desktop, so budget for a lower pass rate on challenge-protected targets when you deploy to a server — a gap here is the rung, not a broken install.
-
-`wigolo doctor` and `wigolo status` both print the ceiling your machine actually resolved to, under `Browser tier:`, along with whether there's anything to be done about it. On a host that does have a desktop session there is no ceiling line at all, which is how you tell the two situations apart.
-
 The opt-in workaround for legitimate research that keeps hitting this wall is routing through a proxy whose IP reputation matches your use:
 
 ```bash
@@ -89,6 +76,21 @@ PROXY_URL=https://user:pass@proxy.example.com:8443 wigolo serve
 ```
 
 Proxy credentials never persist to disk — the userinfo is moved to the OS keychain and only the credential-free URL is stored. Politeness still applies through a proxy: robots.txt on by default, per-domain rate limits, research-grade volumes.
+
+### The IP is one signal of four
+
+The IP is the clause people expect, so it's worth being explicit that it isn't the only one. A host with no desktop session — a VPS, a container, a CI runner with no virtual display — cannot map a browser window. Three of the signals below follow from that; the fourth, the IP, is a property of where the host sits rather than of the missing window:
+
+- **A throwaway profile.** The browser profile is discarded after the run rather than aged across visits.
+- **A fresh fingerprint.** Each run starts from a new one instead of a long-lived, consistent one.
+- **An automation-launched browser engine.** The launch itself is scoreable, separately from how the session then behaves.
+- **A datacenter IP.** The clause above — and the one with a lever, in the proxy note just above.
+
+Not everything is discarded, though: a challenge solved for a domain is cached and replayed on later visits instead of being re-solved, so repeat traffic to the same host does get the benefit of the first success.
+
+None of the four is a bug or a misconfiguration — they're properties of running without a desktop session. There are two levers, and both change where or how you run rather than tuning anything in the fetch itself: the proxy above changes the IP, and moving to a host with a display session changes the other three. Absent those, budget for a lower pass rate on challenge-protected targets when you deploy to a server — a gap here is the rung, not a broken install.
+
+`wigolo doctor` and `wigolo status` both report the resolved rung under `Browser tier:`. A `Ceiling:` line appears there only when the rung is below desktop, so on a machine with a desktop session its absence is itself the signal — that's how you tell the two situations apart.
 
 ## Network posture
 
