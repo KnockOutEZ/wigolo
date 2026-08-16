@@ -190,6 +190,63 @@ describe('handleFetch', () => {
     expect(result.content_completeness).toBeUndefined();
   });
 
+  // The HTTP tier can never produce a render verdict, so before this the
+  // caller got a plausible-looking partial page with no signal at all. The
+  // extraction verdict is the only thing standing between them and silently
+  // acting on content that lost its titles.
+  it('surfaces the extraction completeness verdict on an HTTP-tier result', async () => {
+    extractMock.mockResolvedValue(
+      makeExtraction({
+        contentCompleteness: {
+          level: 'partial',
+          reason: 'list_titles_dropped',
+          settled_by: 'extraction',
+        },
+      }),
+    );
+    const router = mockRouter({ method: 'http' });
+    const input: FetchInput = { url: 'https://github.com/facebook/react/issues' };
+
+    const __r_result = await handleFetch(input, router);
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(result.fetch_method).toBe('http');
+    expect(result.content_completeness).toEqual({
+      level: 'partial',
+      reason: 'list_titles_dropped',
+      settled_by: 'extraction',
+    });
+  });
+
+  // Precedence. A browser actually watched the page render; the extraction
+  // seam only inspected the bytes it was handed. When both have an opinion the
+  // direct observation is the more trustworthy one and must not be overwritten.
+  it('prefers the browser render verdict over the extraction verdict', async () => {
+    extractMock.mockResolvedValue(
+      makeExtraction({
+        contentCompleteness: {
+          level: 'partial',
+          reason: 'list_titles_dropped',
+          settled_by: 'extraction',
+        },
+      }),
+    );
+    const router = mockRouter({
+      method: 'browser',
+      contentCompleteness: { level: 'shell', reason: 'app_shell', settled_by: 'budget' },
+    });
+    const input: FetchInput = { url: 'https://example.com' };
+
+    const __r_result = await handleFetch(input, router);
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(result.content_completeness).toEqual({
+      level: 'shell',
+      reason: 'app_shell',
+      settled_by: 'budget',
+    });
+  });
+
   it('returns error response for empty URL', async () => {
     const router = mockRouter();
     router.fetch.mockRejectedValue(new Error('Invalid URL'));

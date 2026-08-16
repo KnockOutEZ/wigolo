@@ -122,7 +122,10 @@ export function cacheContent(result: RawFetchResult, extraction: ExtractionResul
       )
     `);
 
-    const completeness = result.contentCompleteness;
+    // Same precedence as the fetch response: the browser's render verdict wins,
+    // the extraction verdict covers HTTP/TLS rows. Persisting the merged value
+    // keeps a cache replay as honest as the fresh fetch it stands in for.
+    const completeness = result.contentCompleteness ?? extraction.contentCompleteness;
     stmt.run({
       url: result.url,
       normalizedUrl,

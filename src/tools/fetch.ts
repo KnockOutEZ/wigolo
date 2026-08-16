@@ -387,9 +387,17 @@ export async function handleFetch(
       // Propagate the router-chosen tier name onto the public response so
       // callers can audit which path served the bytes (P2 visibility).
       fetch_method: raw.method,
-      // Render-completeness label from the browser tier (absent on HTTP/TLS
-      // results), so callers can distinguish a genuine page from a shell.
-      ...(raw.contentCompleteness ? { content_completeness: raw.contentCompleteness } : {}),
+      // Completeness label. The browser tier's render verdict wins when it
+      // exists — it is a direct observation of the page settling. The
+      // extraction seam's structural verdict fills the gap on HTTP/TLS
+      // results, which cannot produce a render verdict at all, so a partial
+      // page no longer comes back silently looking complete.
+      ...(raw.contentCompleteness ?? extraction.contentCompleteness
+        ? {
+            content_completeness:
+              raw.contentCompleteness ?? extraction.contentCompleteness,
+          }
+        : {}),
       // Always surface the upstream status code on fresh
       // fetches so callers / cache consumers can distinguish 200 / 404 /
       // 5xx pages that may extract to a usable HTML body.
