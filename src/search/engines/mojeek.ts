@@ -2,6 +2,7 @@ import { parseHTML } from 'linkedom';
 import type { SearchEngine, SearchEngineOptions, RawSearchResult } from '../../types.js';
 import { createLogger } from '../../logger.js';
 import { nextUserAgent, isBlockedError } from './user-agents.js';
+import { detectEngineChallenge } from './challenge.js';
 
 const log = createLogger('search');
 
@@ -44,6 +45,9 @@ export class MojeekEngine implements SearchEngine {
     if (!response.ok) throw new Error(`Mojeek returned ${response.status}`);
 
     const html = await response.text();
+    const challenge = detectEngineChallenge('Mojeek', response.status, html);
+    if (challenge) throw new Error(challenge);
+
     return this.parseResults(html, maxResults);
   }
 
