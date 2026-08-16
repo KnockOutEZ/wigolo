@@ -5,6 +5,19 @@ import { resetConfig } from '../../../src/config.js';
 import { initDatabase, closeDatabase } from '../../../src/cache/db.js';
 import { cacheContent } from '../../../src/cache/store.js';
 import type { RawFetchResult, ExtractionResult } from '../../../src/types.js';
+import { allowNetworkInThisFile } from '../../net-fence.js';
+
+// MEASURED: one row here reaches `storage.googleapis.com:443`. The router IS mocked — the
+// request is the embedding model being lazily downloaded by the provider, several layers below
+// any seam this file injects.
+//
+// Worth flagging beyond this file: `tests/setup.ts` repoints HOME per worker process, so the
+// model cache never survives a run and this download recurs. Making embeddings injectable (or
+// pinning the model cache outside the throwaway home) would remove the dependence properly;
+// both are outside a test-isolation slice.
+allowNetworkInThisFile(
+  'the embedding provider lazily downloads its model from storage.googleapis.com, below every seam this file can inject',
+);
 
 // Mock the extraction pipeline to avoid Playwright dependency
 const extractMock = vi.fn().mockResolvedValue({

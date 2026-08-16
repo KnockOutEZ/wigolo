@@ -18,6 +18,22 @@ import type { SmartRouter } from '../../src/fetch/router.js';
 import { initDatabase, closeDatabase } from '../../src/cache/db.js';
 import { resetConfig } from '../../src/config.js';
 import type { RawFetchResult } from '../../src/types.js';
+import { allowNetworkInThisFile } from '../net-fence.js';
+
+// MEASURED, not suspected. The two anti-bot rows here reach `old.reddit.com:443` on a real
+// socket, and the router stub above does NOT prevent it: the call comes from the content
+// extractor's own bundled Reddit handler, several layers below the seam this file injects
+// (`routedExtract` → `fallbackChain` → the extractor library's async Reddit path). There is no
+// argument this test can pass to stop it, which is exactly the case the declaration exists for
+// rather than the case it is an excuse for.
+//
+// It is currently fail-open — the extractor swallows the failed request and the rows pass either
+// way — so this is declared debt, not a broken test. Closing it properly means fencing that
+// library call in `src/extraction/`, which is production code and a different slice.
+allowNetworkInThisFile(
+  'the content extractor library issues its own request to old.reddit.com during Reddit ' +
+    'extraction, below every seam this file can inject',
+);
 
 const siteFixturesDir = join(import.meta.dirname, '..', 'fixtures', 'site-extractors');
 const amazonFixturesDir = join(import.meta.dirname, '..', 'fixtures', 'amazon');
