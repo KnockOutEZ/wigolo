@@ -151,7 +151,11 @@ describe('A89 — envelope-wide containment, all nine content tools', () => {
         source_url: 'https://e.example/p',
         data: {
           jsonld: [{ '@type': 'Product', name: `N ${CANARY}`, description: `D ${CANARY}`, url: 'https://e.example/p' }],
-          tables: [{ caption: `CAP ${CANARY}`, headers: [`H ${CANARY}`], rows: [{ [`H ${CANARY}`]: `CELL ${CANARY}` }] }],
+          // The row KEY is deliberately canary-free here. `fenceTable` rebuilds rows as
+          // `{[header]: cell}`, so a page-authored header arrives as an unfenced object key — a real
+          // channel, pinned separately as GAP-5. Planting it here would make ENV-5 red for a reason
+          // that has nothing to do with the value containment ENV-5 exists to assert.
+          tables: [{ caption: `CAP ${CANARY}`, headers: [`H ${CANARY}`], rows: [{ Plan: `CELL ${CANARY}` }] }],
           made_up_key_nobody_allowlisted: `UNKNOWN ${CANARY}`,
         },
       },

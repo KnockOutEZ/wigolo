@@ -110,6 +110,38 @@ describe('SUCCESS-envelope siblings the fence functions do not enumerate', () =>
     expect(leakedKeys(await callTool('extract', { url: 'https://e.example/p', mode: 'schema' }))).toEqual(['warnings']);
   });
 
+  it('GAP-5: extract — a page-authored table header arrives as an UNFENCED OBJECT KEY', async () => {
+    // The sharpest item in this file, and the only one that is NOT length-bounded.
+    //
+    // `fenceTable` fences `caption`, every entry of `headers[]`, and every row VALUE. But it rebuilds
+    // each row with `Object.fromEntries(Object.entries(row).map(([k, v]) => [k, fence(v)]))` — the KEY
+    // is passed through untouched. Row keys are the page's own `<th>` text, so the identical header
+    // string ships twice: fenced inside `headers[]`, and raw as the key beside its fenced cell.
+    //
+    // Unlike the ~10-character V8 echo window or the ≤253-character hostname path, a table header is
+    // arbitrary page prose of arbitrary length. This is page-derived, unfenced, on the SUCCESS
+    // envelope, and reachable by anyone who can put a <table> on a page wigolo extracts.
+    //
+    // NOT FIXED HERE ON PURPOSE: this slice is test-only and must not change production behaviour.
+    // Fencing a key changes the SHAPE of the row object every consumer reads by name, so it needs its
+    // own slice and its own review. This test pins the current behaviour so the finding cannot be
+    // quietly lost; when it is fixed, this test fails and moves into the invariant guard.
+    const { handleExtract } = await import('../../src/tools/extract.js');
+    vi.mocked(handleExtract).mockResolvedValueOnce({
+      ok: true,
+      data: {
+        mode: 'tables', source_url: 'https://e.example/p',
+        data: [{ caption: 'Pricing', headers: [`H ${CANARY}`], rows: [{ [`H ${CANARY}`]: 'cell' }] }],
+      },
+    } as never);
+    const blocks = await callTool('extract', { url: 'https://e.example/p', mode: 'tables' });
+    const findings = findUnfencedInEnvelope(blocks, CANARY);
+    // exactly one: the KEY. the same text inside headers[] is fenced, which is what makes the
+    // asymmetry legible rather than looking like the fence simply not running.
+    expect(findings).toHaveLength(1);
+    expect(findings[0].path).toContain('[key]');
+  });
+
   it('POLICY-1: research — rejected_sources[].url is raw BY ALLOWLIST, not by oversight', async () => {
     // Worth stating precisely, because it is easy to file as a gap and it is not one. `url` is on
     // OPERATIONAL_KEYS, so a page-derived URL stays raw HERE for exactly the reason it stays raw in

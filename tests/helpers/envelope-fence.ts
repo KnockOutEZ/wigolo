@@ -78,7 +78,14 @@ function walkValue(value: unknown, needle: string, path: string, key: string): U
     return value.flatMap((v, i) => walkValue(v, needle, `${path}[${i}]`, key));
   }
   if (value !== null && typeof value === 'object') {
-    return Object.entries(value).flatMap(([k, v]) => walkValue(v, needle, `${path}.${k}`, k));
+    return Object.entries(value).flatMap(([k, v]) => [
+      // An object KEY is a string reachable in the serialised envelope too, and page text does reach
+      // one: `fenceTable` rebuilds each row as `{[header]: cell}`, so a page-authored header becomes a
+      // KEY. Checking values only made the walker blind to a channel with no length limit at all. The
+      // key is checked under the EMPTY key name — a key cannot allowlist itself.
+      ...leafFindings(k, needle, `${path}.${k}[key]`, ''),
+      ...walkValue(v, needle, `${path}.${k}`, k),
+    ]);
   }
   return [];
 }
