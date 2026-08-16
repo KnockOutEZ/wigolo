@@ -87,6 +87,33 @@ describe('xExtractor.extract', () => {
     expect(xExtractor.extract(noCard, POST_URL)).toBeNull();
   });
 
+  it('stands aside when the page rendered readable prose of its own', () => {
+    // Measured: X normally server-renders around a thousand characters of app
+    // chrome, and the generic chain produces a real result from it. Replacing
+    // that measured output with a card summary would be an unmeasured trade,
+    // so this extractor must not fire there at all.
+    const rendered = SHELL_WITH_CARD.replace(
+      '<div id="react-root"></div>',
+      `<div id="react-root">${'<span>Rendered post body and surrounding interface text. </span>'.repeat(
+        8,
+      )}</div>`,
+    );
+    expect(xExtractor.extract(rendered, POST_URL)).toBeNull();
+  });
+
+  it('still fires when the only text on the page is the JavaScript-required notice', () => {
+    // The notice must not count as prose — it is the very signal that the page
+    // did not render, so counting it would switch the extractor off in exactly
+    // the case it exists for.
+    const longNotice = SHELL_WITH_CARD.replace(
+      '<noscript>JavaScript is not available.</noscript>',
+      `<noscript>${'JavaScript is not available. We have detected that JavaScript is disabled in this browser. '.repeat(
+        4,
+      )}</noscript>`,
+    );
+    expect(xExtractor.extract(longNotice, POST_URL)).not.toBeNull();
+  });
+
   it('returns null for a URL it does not own even if handed X-shaped markup', () => {
     expect(xExtractor.extract(SHELL_WITH_CARD, 'https://example.com/some/page')).toBeNull();
   });

@@ -2,27 +2,31 @@ import { parseHTML } from 'linkedom';
 import type { Extractor, ExtractionResult } from '../../types.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// X (twitter.com / x.com) post extractor
+// X (twitter.com / x.com) post extractor — content-free bodies only
 //
-// Scope is deliberately narrow: individual post and article permalinks
-// (`/<handle>/status/<id>`, `/<handle>/article/<id>`). Profiles, timelines and
-// everything else keep the generic extraction path unchanged.
+// Scope is deliberately narrow on two axes at once:
+//   1. post and article permalinks only (`/<handle>/status|article/<id>`);
+//   2. only when the body carries no readable prose of its own.
 //
-// WHY THIS EXISTS. X serves post pages as a client-rendered app. When the body
-// carries no readable prose, the bundled content extractor's async path used to
-// recover the post by calling an unaffiliated third-party API and an oEmbed
-// endpoint — undeclared requests, on the bare global fetch, outside wigolo's
-// proxy and logging. Those requests are now off (see extraction/defuddle.ts).
+// WHY (2) IS THERE. X normally server-renders around a thousand characters of
+// app chrome, which is enough for the generic extractor chain to produce a
+// result. That path is measured and working, so this extractor deliberately
+// does NOT touch it — it would be substituting an unmeasured output for a
+// measured one. It fires only on the case the generic chain genuinely cannot
+// serve: a body with nothing readable in it, where the chain bottoms out at
+// the "JavaScript is not available" notice.
 //
-// The recovery does not need them. X puts the post's author and full text in
-// its own card metadata (`og:` / `twitter:`), in the SAME response wigolo has
-// already fetched. Reading it here is zero additional network, works on every
-// fetch tier including http-only and cache modes where no browser is available,
-// and — because site extractors short-circuit ahead of the fallback chain —
-// structurally keeps X post pages away from the third-party path for good.
+// WHY IT EXISTS AT ALL. On that content-free body the bundled content
+// extractor's async path used to reach for an unaffiliated third-party API and
+// an oEmbed endpoint — undeclared requests on the bare global fetch, outside
+// wigolo's proxy and logging. Those are now off (see extraction/defuddle.ts).
+// X puts the post's author and full text in its own card metadata (`og:` /
+// `twitter:`), in the SAME response wigolo already fetched, so the content is
+// recoverable with zero additional network — on every fetch tier, including the
+// http-only and cache modes where no browser is available to render the page.
 //
-// Returns null when the response carries no card text, so a page that genuinely
-// rendered its content still falls through to the normal extractor chain.
+// Returns null whenever either gate fails, so anything outside this narrow case
+// reaches the normal extractor chain exactly as it does today.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const X_HOSTS = new Set([
@@ -37,6 +41,21 @@ const X_HOSTS = new Set([
 // Mirrors the URL shape the bundled extractor's async path keyed on, so this
 // extractor covers exactly the pages that used to reach it.
 const POST_PATH_RE = /^\/([A-Za-z0-9_]{1,15})\/(status|article)\/(\d+)/;
+
+// Prose floor below which the generic chain has nothing to work with. Matches
+// the fetch layer's own empty-body threshold so the two agree on what "the page
+// rendered nothing" means. `<noscript>` is excluded: the JavaScript-required
+// notice is precisely the string that signals an unrendered page, so counting
+// it would defeat the check.
+const READABLE_PROSE_THRESHOLD = 200;
+
+function readableProseLength(html: string): number {
+  const withoutInert = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+  return withoutInert.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length;
+}
 
 interface PostRef {
   handle: string;
@@ -106,6 +125,11 @@ export const xExtractor: Extractor = {
     if (!html) return null;
     const ref = parsePostUrl(url);
     if (!ref) return null;
+
+    // The page rendered something the generic chain can extract — leave it
+    // alone. See the header: not substituting an unmeasured output for a
+    // measured one is the point.
+    if (readableProseLength(html) >= READABLE_PROSE_THRESHOLD) return null;
 
     const { document } = parseHTML(html);
 
