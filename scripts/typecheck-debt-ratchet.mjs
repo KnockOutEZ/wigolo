@@ -25,7 +25,19 @@ import { execSync } from 'node:child_process';
 // satisfied SearchProvider and all 15 uses were already errors. Binding it to
 // `MockedFunction<SearchProvider['search']>` cleared all 15. Locked only once every branch
 // carrying the old errors had merged; a shared constant lowered while they are open fails them.
-const BASELINE = 399;
+//
+// 399 -> 378 on 2026-08-16 (Q1 mock-typing audit). Same root cause as the 412 -> 399
+// step, found by auditing the whole `ReturnType<typeof vi.fn>` corpus rather than one
+// file: in vitest 4 that type resolves to `Mock<Procedure | Constructable>`, which has
+// NO call signature at all, so any double declaring a member that way and checked
+// against a real interface was ALREADY erroring. tests/unit/embedding/embed.test.ts
+// declared `interface MockProvider extends EmbedProvider { embed: ReturnType<typeof
+// vi.fn> }` — the override widened back the one member the extends clause existed to
+// pin, and produced 21 of the errors. Binding it to MockedFunction<EmbedProvider['embed']>
+// (plus the vi.fn<EmbedFn>() construction sites, without which the annotation still
+// does not discriminate) cleared all 21. The fix and this lowering ship in one PR, so a
+// branch that merges studio-handoff cannot pick up the lower baseline without the fix.
+const BASELINE = 378;
 
 let count = 0;
 try {
