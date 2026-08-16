@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockedFunction } from 'vitest';
 import { resetConfig } from '../../../src/config.js';
 
 vi.mock('../../../src/fetch/auth.js', () => ({
@@ -47,8 +47,10 @@ const CLEAN_HTML = `<html><head><title>ok</title></head><body><article>${'ordina
 describe('SmartRouter — the Studio bridge rung', () => {
   let httpClient: HttpClient;
   let browserPool: BrowserPoolInterface;
-  let studioBridgeFetch: ReturnType<typeof vi.fn>;
-  let studioBridgeAvailable: ReturnType<typeof vi.fn>;
+  // Bound to the REAL rung types: declared ReturnType<typeof vi.fn> and cast in,
+  // neither spy had to satisfy StudioBridgeFetchers.
+  let studioBridgeFetch: MockedFunction<StudioBridgeFetchers['studioBridgeFetch']>;
+  let studioBridgeAvailable: MockedFunction<StudioBridgeFetchers['studioBridgeAvailable']>;
   let studioBridge: StudioBridgeFetchers;
 
   beforeEach(() => {
@@ -57,13 +59,10 @@ describe('SmartRouter — the Studio bridge rung', () => {
     httpClient = { fetch: vi.fn() };
     browserPool = {
       fetchWithBrowser: vi.fn(async (url: string) => { throw new ChallengeBlockedError(url); }),
-    } as unknown as BrowserPoolInterface;
+    };
     studioBridgeFetch = vi.fn(async () => null);
     studioBridgeAvailable = vi.fn(() => true);
-    studioBridge = {
-      studioBridgeAvailable: studioBridgeAvailable as unknown as StudioBridgeFetchers['studioBridgeAvailable'],
-      studioBridgeFetch: studioBridgeFetch as unknown as StudioBridgeFetchers['studioBridgeFetch'],
-    };
+    studioBridge = { studioBridgeAvailable, studioBridgeFetch };
   });
 
   afterEach(() => {
@@ -100,7 +99,9 @@ describe('SmartRouter — the Studio bridge rung', () => {
   });
 
   it('is NOT consulted on a clean page — a working fetch must never be re-driven through the human browser', async () => {
-    (httpClient.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    // vi.mocked keeps HttpClient['fetch']'s signature, so the stubbed payload is
+    // checked against the seam's return type; the old cast erased it.
+    vi.mocked(httpClient.fetch).mockResolvedValueOnce({
       url: 'https://ok.example/', finalUrl: 'https://ok.example/', html: CLEAN_HTML,
       contentType: 'text/html', statusCode: 200, headers: {},
     });
@@ -118,7 +119,7 @@ describe('SmartRouter — the Studio bridge rung', () => {
         html: '<html><head><title>Just a moment...</title></head><body><div id="challenge-running"></div></body></html>',
         contentType: 'text/html', statusCode: 403, method: 'browser', headers: { 'cf-mitigated': 'challenge' },
       })),
-    } as unknown as BrowserPoolInterface;
+    };
     studioBridgeFetch.mockResolvedValueOnce(BRIDGED);
     const result = await router(shellPool).fetch('https://walled.example/x', { renderJs: 'always' });
     expect(studioBridgeFetch).toHaveBeenCalledOnce();

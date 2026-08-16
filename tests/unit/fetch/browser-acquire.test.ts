@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockedFunction } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   BrowserAcquirer,
   BROWSER_INSTALLING_NOTE,
+  type BrowserAcquirerDeps,
 } from '../../../src/fetch/browser-acquire.js';
 
 /**
@@ -19,15 +20,20 @@ import {
 
 let tmpDir: string;
 
-function makeAcquirer(overrides: { isInstalled?: () => boolean; install?: () => Promise<boolean> } = {}): {
+// The installer spy is bound to the REAL BrowserAcquirerDeps['install'] type.
+// It used to be declared ReturnType<typeof vi.fn> and injected through an
+// `as unknown as` cast, so the double never had to satisfy the dep it replaced.
+type InstallFn = NonNullable<BrowserAcquirerDeps['install']>;
+
+function makeAcquirer(overrides: { isInstalled?: () => boolean; install?: InstallFn } = {}): {
   acquirer: BrowserAcquirer;
-  install: ReturnType<typeof vi.fn>;
+  install: MockedFunction<InstallFn>;
 } {
-  const install = vi.fn(overrides.install ?? (async () => true));
+  const install = vi.fn<InstallFn>(overrides.install ?? (async () => true));
   const acquirer = new BrowserAcquirer({
     dataDir: tmpDir,
     isInstalled: overrides.isInstalled ?? (() => false),
-    install: install as unknown as () => Promise<boolean>,
+    install,
   });
   return { acquirer, install };
 }

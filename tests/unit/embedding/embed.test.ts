@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockedFunction } from 'vitest';
 import type { EmbedProvider } from '../../../src/providers/embed-provider.js';
 import type { VectorStore } from '../../../src/providers/vector-store.js';
 
@@ -67,8 +67,16 @@ vi.mock('../../../src/logger.js', () => ({
 
 import { updateCacheEmbedding, getAllEmbeddings } from '../../../src/cache/store.js';
 
+// `extends EmbedProvider` looks like it binds the double, but re-declaring
+// `embed` as `ReturnType<typeof vi.fn>` WIDENS it back to (...args: any[]) => any
+// — the override erases exactly the member the interface exists to pin, so the
+// double could never go red when EmbedProvider.embed changed. The declaration
+// alone is not enough either: a bare `vi.fn()` is `Mock<(...args: any[]) => any>`,
+// which stays assignable both ways, so the construction sites carry `<EmbedFn>`.
+type EmbedFn = EmbedProvider['embed'];
+
 interface MockProvider extends EmbedProvider {
-  embed: ReturnType<typeof vi.fn>;
+  embed: MockedFunction<EmbedFn>;
 }
 
 function makeMockProvider(overrides: Partial<MockProvider> = {}): MockProvider {
@@ -76,7 +84,7 @@ function makeMockProvider(overrides: Partial<MockProvider> = {}): MockProvider {
   return {
     modelId: 'BGE-small-en-v1.5',
     dim: 384,
-    embed: vi.fn().mockResolvedValue([defaultVector]),
+    embed: vi.fn<EmbedFn>().mockResolvedValue([defaultVector]),
     ...overrides,
   };
 }
@@ -130,7 +138,7 @@ describe('EmbeddingService', () => {
 
   it('embedAndStore handles provider error gracefully', async () => {
     const provider = makeMockProvider({
-      embed: vi.fn().mockRejectedValue(new Error('provider crashed')),
+      embed: vi.fn<EmbedFn>().mockRejectedValue(new Error('provider crashed')),
     });
     const service = new EmbeddingService(provider);
     await service.init();
@@ -221,7 +229,7 @@ describe('EmbeddingService', () => {
   it('embedAsync does not block caller', async () => {
     let resolveEmbed: (v: Float32Array[]) => void = () => {};
     const provider = makeMockProvider({
-      embed: vi.fn().mockReturnValue(new Promise<Float32Array[]>(resolve => {
+      embed: vi.fn<EmbedFn>().mockReturnValue(new Promise<Float32Array[]>(resolve => {
         resolveEmbed = resolve;
       })),
     });
@@ -241,7 +249,7 @@ describe('EmbeddingService', () => {
 
   it('handles concurrent embedAndStore calls', async () => {
     const provider = makeMockProvider({
-      embed: vi.fn().mockImplementation(async () => [new Float32Array(384).fill(0.1)]),
+      embed: vi.fn<EmbedFn>().mockImplementation(async () => [new Float32Array(384).fill(0.1)]),
     });
     const service = new EmbeddingService(provider);
     await service.init();
@@ -279,7 +287,7 @@ describe('EmbeddingService', () => {
       let resolveEmbed: (v: Float32Array[]) => void = () => {};
       const probeVector = new Float32Array(384).fill(0.1);
       const provider = makeMockProvider({
-        embed: vi.fn().mockImplementation(
+        embed: vi.fn<EmbedFn>().mockImplementation(
           () => new Promise<Float32Array[]>(resolve => { resolveEmbed = resolve; }),
         ),
       });
@@ -300,7 +308,7 @@ describe('EmbeddingService', () => {
     it('emits exactly ONE model-load stderr line across concurrent first uses', async () => {
       let resolveEmbed: (v: Float32Array[]) => void = () => {};
       const provider = makeMockProvider({
-        embed: vi.fn().mockImplementation(
+        embed: vi.fn<EmbedFn>().mockImplementation(
           () => new Promise<Float32Array[]>(resolve => { resolveEmbed = resolve; }),
         ),
       });
@@ -334,7 +342,7 @@ describe('EmbeddingService', () => {
       vi.useFakeTimers();
       try {
         const provider = makeMockProvider({
-          embed: vi.fn().mockRejectedValue(new Error('onnx load failed')),
+          embed: vi.fn<EmbedFn>().mockRejectedValue(new Error('onnx load failed')),
         });
         const service = new EmbeddingService(provider);
         await service.init();
@@ -362,7 +370,7 @@ describe('EmbeddingService', () => {
       vi.useFakeTimers();
       try {
         const provider = makeMockProvider({
-          embed: vi.fn().mockRejectedValue(new Error('onnx load failed')),
+          embed: vi.fn<EmbedFn>().mockRejectedValue(new Error('onnx load failed')),
         });
         const service = new EmbeddingService(provider);
         await service.init();

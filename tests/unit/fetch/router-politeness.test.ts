@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockedFunction } from 'vitest';
 import { resetConfig } from '../../../src/config.js';
 
 vi.mock('../../../src/fetch/auth.js', () => ({
@@ -78,25 +78,29 @@ function makeStore(backoffs: Backoffs): ClearanceStore {
   };
 }
 
+// The three injected tiers are bound to the REAL seam types. They were declared
+// ReturnType<typeof vi.fn> and handed to the constructor through `as unknown as`,
+// so none of them ever had to satisfy HttpClient, BrowserPoolInterface or
+// TlsFetcher and a change to any of those left this file green.
 function build(opts: {
-  httpFetch?: ReturnType<typeof vi.fn>;
+  httpFetch?: MockedFunction<HttpClient['fetch']>;
   backoffs?: Backoffs;
 } = {}) {
   const backoffs: Backoffs = opts.backoffs ?? { recorded: [], window: {} };
   const httpFetch = opts.httpFetch ?? vi.fn(async () => okResult());
-  const httpClient = { fetch: httpFetch };
+  const httpClient = { fetch: httpFetch } satisfies HttpClient;
   const browserPool = {
     fetchWithBrowser: vi.fn(async (url: string): Promise<RawFetchResult> => ({
       url, finalUrl: url, html: FULL_HTML, contentType: 'text/html', statusCode: 200, method: 'browser', headers: {},
     })),
-  };
+  } satisfies BrowserPoolInterface;
   const tlsFetcher = vi.fn(async (url: string) => ({
     url, finalUrl: url, html: FULL_HTML, contentType: 'text/html', statusCode: 200, headers: {},
-  }));
+  })) satisfies TlsFetcher;
   const router = new SmartRouter({
-    httpClient: httpClient as unknown as HttpClient,
-    browserPool: browserPool as unknown as BrowserPoolInterface,
-    tlsFetcher: tlsFetcher as unknown as TlsFetcher,
+    httpClient,
+    browserPool,
+    tlsFetcher,
     clearanceStore: makeStore(backoffs),
   });
   return { router, httpFetch, browserPool, tlsFetcher, backoffs };

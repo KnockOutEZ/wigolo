@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockedFunction } from 'vitest';
 import { resetConfig } from '../../../src/config.js';
 
 vi.mock('../../../src/fetch/auth.js', () => ({
@@ -64,22 +64,38 @@ function makeTlsResult(url = 'https://example.com/page'): TlsFetchResult {
   return { url, finalUrl: url, html: FULL_HTML, contentType: 'text/html', statusCode: 200, headers: {} };
 }
 
+/** Options arg of a recorded call. Now that the spies carry the real seam
+ *  signatures the arg is `T | undefined`, so reading it asserts the tier was
+ *  actually called WITH options rather than silently reading undefined. */
+function optsOf<T>(opts: T | undefined): T {
+  expect(opts).toBeDefined();
+  return opts as T;
+}
+
+// The three injected tiers are bound to the REAL seam types. Previously each was
+// declared `ReturnType<typeof vi.fn>` and handed to the constructor through an
+// `as unknown as` cast — between them the double never had to satisfy HttpClient,
+// BrowserPoolInterface or TlsFetcher, so a change to any of those three signatures
+// left this file green. `satisfies` at the construction site keeps `.mock` access
+// while making the constraint checkable.
 interface Built {
   router: SmartRouter;
-  httpClient: { fetch: ReturnType<typeof vi.fn> };
-  browserPool: { fetchWithBrowser: ReturnType<typeof vi.fn> };
-  tlsFetcher: ReturnType<typeof vi.fn>;
+  httpClient: { fetch: MockedFunction<HttpClient['fetch']> };
+  browserPool: { fetchWithBrowser: MockedFunction<BrowserPoolInterface['fetchWithBrowser']> };
+  tlsFetcher: MockedFunction<TlsFetcher>;
   cleared: string[];
 }
 
 function build(stored: Record<string, DomainClearance>, tlsResultHtml?: string): Built {
-  const httpClient = { fetch: vi.fn(async () => makeHttpResult()) };
-  const browserPool = { fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)) };
+  const httpClient = { fetch: vi.fn(async () => makeHttpResult()) } satisfies HttpClient;
+  const browserPool = {
+    fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
+  } satisfies BrowserPoolInterface;
   const tlsFetcher = vi.fn(async (url: string) => {
     const r = makeTlsResult(url);
     if (tlsResultHtml !== undefined) r.html = tlsResultHtml;
     return r;
-  });
+  }) satisfies TlsFetcher;
   const cleared: string[] = [];
   const clearanceStore: ClearanceStore = {
     get: (host) => stored[host] ?? null,
@@ -88,9 +104,9 @@ function build(stored: Record<string, DomainClearance>, tlsResultHtml?: string):
     recordBackoff: () => {},
   };
   const router = new SmartRouter({
-    httpClient: httpClient as unknown as HttpClient,
-    browserPool: browserPool as unknown as BrowserPoolInterface,
-    tlsFetcher: tlsFetcher as unknown as TlsFetcher,
+    httpClient,
+    browserPool,
+    tlsFetcher,
     clearanceStore,
   });
   return { router, httpClient, browserPool, tlsFetcher, cleared };
@@ -107,7 +123,7 @@ describe('SmartRouter clearance reuse — browser tier', () => {
     });
     await router.fetch('https://example.com/page', { renderJs: 'always' });
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledTimes(1);
-    const opts = browserPool.fetchWithBrowser.mock.calls[0][1];
+    const opts = optsOf(browserPool.fetchWithBrowser.mock.calls[0][1]);
     expect(opts.injectedCookies).toEqual([{ name: 'cf_clearance', value: 'TOK', domain: 'example.com', path: '/' }]);
   });
 
@@ -116,7 +132,7 @@ describe('SmartRouter clearance reuse — browser tier', () => {
       'other.com': { cookie: 'cf_clearance=TOK', ua: CHROME_UA, tier: 'browser', expiresAt: future() },
     });
     await router.fetch('https://example.com/page', { renderJs: 'always' });
-    const opts = browserPool.fetchWithBrowser.mock.calls[0][1];
+    const opts = optsOf(browserPool.fetchWithBrowser.mock.calls[0][1]);
     expect(opts.injectedCookies).toBeUndefined();
   });
 
@@ -125,7 +141,7 @@ describe('SmartRouter clearance reuse — browser tier', () => {
       'example.com': { cookie: 'cf_clearance=TOK', ua: CHROME_UA, tier: 'browser', expiresAt: past() },
     });
     await router.fetch('https://example.com/page', { renderJs: 'always' });
-    const opts = browserPool.fetchWithBrowser.mock.calls[0][1];
+    const opts = optsOf(browserPool.fetchWithBrowser.mock.calls[0][1]);
     expect(opts.injectedCookies).toBeUndefined();
     expect(cleared).toContain('example.com');
   });
@@ -135,7 +151,7 @@ describe('SmartRouter clearance reuse — browser tier', () => {
       'example.com': { cookie: 'cf_clearance=TOK', ua: FIREFOX_UA, tier: 'tls', expiresAt: future() },
     });
     await router.fetch('https://example.com/page', { renderJs: 'always' });
-    const opts = browserPool.fetchWithBrowser.mock.calls[0][1];
+    const opts = optsOf(browserPool.fetchWithBrowser.mock.calls[0][1]);
     expect(opts.injectedCookies).toBeUndefined();
     // Not cleared — it may still be valid for a header tier.
     expect(cleared).not.toContain('example.com');
@@ -153,7 +169,7 @@ describe('SmartRouter clearance reuse — TLS tier', () => {
     });
     await router.fetch('https://example.com/page');
     expect(tlsFetcher).toHaveBeenCalled();
-    const opts = tlsFetcher.mock.calls[0][1];
+    const opts = optsOf(tlsFetcher.mock.calls[0][1]);
     expect(opts.headers?.Cookie).toBe('cf_clearance=TOK');
   });
 
@@ -162,7 +178,7 @@ describe('SmartRouter clearance reuse — TLS tier', () => {
       'example.com': { cookie: 'cf_clearance=TOK', ua: CHROME_UA, tier: 'tls', expiresAt: future() },
     });
     await router.fetch('https://example.com/page', { headers: { Cookie: 'sid=1' } });
-    const opts = tlsFetcher.mock.calls[0][1];
+    const opts = optsOf(tlsFetcher.mock.calls[0][1]);
     expect(opts.headers?.Cookie).toBe('sid=1; cf_clearance=TOK');
   });
 

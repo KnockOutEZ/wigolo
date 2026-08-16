@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockedFunction } from 'vitest';
 import { EventEmitter } from 'node:events';
 import {
   cdpDirectFetch,
@@ -87,12 +87,19 @@ function makeRecordingTransport(
   };
 }
 
+// The spawn double cannot return a real ChildProcess, so only its PARAMETERS are
+// bound to the seam — which is exactly what these tests assert on (exe, args,
+// options.detached). isReachable is bound whole. Both were previously declared
+// ReturnType<typeof vi.fn> and injected through `as unknown as`, so neither had
+// to satisfy CdpDirectFetchDeps at all.
+type SpawnParams = Parameters<CdpDirectFetchDeps['spawn']>;
+
 interface Harness {
   child: FakeChild;
-  spawn: ReturnType<typeof vi.fn>;
+  spawn: MockedFunction<(...args: SpawnParams) => FakeChild>;
   rmCalls: string[];
   mkdtempDirs: string[];
-  reachable: ReturnType<typeof vi.fn>;
+  reachable: MockedFunction<CdpDirectFetchDeps['isReachable']>;
   transport: CdpTransport;
   calls: string[];
   transportClosed: () => boolean;
@@ -105,10 +112,12 @@ function makeHarness(overrides?: {
   transport?: CdpTransport | null;
 }): Harness {
   const child = new FakeChild();
-  const spawn = vi.fn(() => child);
+  const spawn = vi.fn((..._args: SpawnParams) => child);
   const rmCalls: string[] = [];
   const mkdtempDirs: string[] = [];
-  const reachable = vi.fn(async () => overrides?.reachable ?? true);
+  const reachable = vi.fn<CdpDirectFetchDeps['isReachable']>(
+    async () => overrides?.reachable ?? true,
+  );
   const rec = makeRecordingTransport();
   const transport = overrides?.transport === undefined ? rec.transport : overrides.transport;
 
@@ -119,8 +128,9 @@ function makeHarness(overrides?: {
         ? { path, probed: [path], pinOverridden: false }
         : { path: null, reason: 'no-authentic-browser' as const, probed: [], pinOverridden: false };
     },
+    // FakeChild is not a ChildProcess — the return, and only the return, is cast.
     spawn: spawn as unknown as CdpDirectFetchDeps['spawn'],
-    isReachable: reachable as unknown as CdpDirectFetchDeps['isReachable'],
+    isReachable: reachable,
     mkdtemp: async (prefix: string) => {
       const dir = `${prefix}fake-XYZ`;
       mkdtempDirs.push(dir);
@@ -442,7 +452,7 @@ describe('cdpDirectFetch — spawn + orchestrate the raw-CDP content rung', () =
     _setCdpDirectFetchDepsForTests(h.deps);
     await cdpDirectFetch('https://example.com', { lookup: PUBLIC_LOOKUP });
     expect(h.spawn).toHaveBeenCalledTimes(1);
-    const opts = h.spawn.mock.calls[0][2] as { detached?: boolean };
+    const opts = h.spawn.mock.calls[0][2];
     expect(opts.detached).toBe(true);
   });
 });
