@@ -70,7 +70,7 @@ Be aware of an honest ceiling before you deploy scraping-adjacent workflows to a
 
 ### The IP is one signal of four
 
-The IP is the clause people expect, so it's worth being explicit that it isn't the only one. A host with no desktop session — a VPS, a container, a CI runner — cannot map a browser window, and that one fact changes four things a site can score, not one:
+The IP is the clause people expect, so it's worth being explicit that it isn't the only one. A host with no desktop session — a VPS, a container, a CI runner with no virtual display — cannot map a browser window, and that one fact changes four things a site can score, not one:
 
 - **A throwaway profile.** Nothing is carried over from a previous visit for a site to recognise.
 - **A fresh fingerprint.** Every run presents as new rather than as an established visitor.
