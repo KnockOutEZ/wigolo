@@ -173,11 +173,21 @@ export interface FetchOutput {
 }
 
 /**
- * Post-settle assessment of how completely a browser-tier capture rendered.
- * `level` is the coarse verdict; `reason` names the specific class (closed
- * 8-value taxonomy); `settled_by` records which settle gate ended the wait.
- * Only produced by the browser tiers (playwright / stealth) — HTTP/TLS captures
- * leave `contentCompleteness` absent.
+ * Assessment of how completely a capture rendered and extracted. `level` is the
+ * coarse verdict; `reason` names the specific class (closed taxonomy);
+ * `settled_by` records what produced the verdict.
+ *
+ * Two producers, in precedence order:
+ *  - The browser tiers (playwright / stealth) judge RENDER completeness from
+ *    the settle observation. Only a browser can see whether a page finished
+ *    rendering, so this verdict wins whenever it exists.
+ *  - The extraction seam judges STRUCTURAL completeness by diffing the HTML
+ *    handed to the extractor against the markdown it returned. That evidence is
+ *    available on every tier, which is how HTTP/TLS captures — structurally
+ *    unable to produce a settle verdict — still get labelled.
+ *
+ * Absent means "no producer was entitled to a verdict", never "the page is
+ * fine".
  */
 export interface ContentCompleteness {
   level: 'full' | 'partial' | 'shell';
@@ -191,8 +201,12 @@ export interface ContentCompleteness {
     // A rendered-but-thin page with no frame evidence (no nav chrome, no SPA
     // root) — thin/unstructured, NOT an un-rendered shell, so not shell-gated.
     | 'thin_content'
+    // The extractor kept a listing's rows but dropped their titles. The output
+    // looks complete — right row count, real metadata — while the single most
+    // load-bearing field per row is missing. Extraction-tier verdict.
+    | 'list_titles_dropped'
     | 'empty';
-  settled_by: 'probe' | 'stability' | 'budget';
+  settled_by: 'probe' | 'stability' | 'budget' | 'extraction';
 }
 
 /**
@@ -299,6 +313,15 @@ export interface ExtractionResult {
    * rather than treating the fallback markdown as a real site_data payload.
    */
   site_data_blocked?: string;
+  /**
+   * Structural completeness verdict from the extraction seam — set when the
+   * extractor demonstrably dropped content that was present in the HTML it was
+   * given. Unlike the browser tier's render verdict this needs no settle
+   * observation, so it is the only completeness signal available to the HTTP
+   * and TLS tiers. Merged onto `FetchOutput.content_completeness`, where a
+   * browser-tier verdict takes precedence when both exist.
+   */
+  contentCompleteness?: ContentCompleteness;
 }
 
 export type ExtractorType =

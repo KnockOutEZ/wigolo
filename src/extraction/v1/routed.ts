@@ -12,6 +12,7 @@ import { extractRecipe } from './recipe.js';
 import { extractProduct } from './product.js';
 import { extractNews } from './news.js';
 import { getSiteExtractors } from './site-extractors.js';
+import { assessListTitleAttrition } from '../completeness.js';
 import { detectAntiBotBlock as detectRedditBlock } from '../site-extractors/reddit.js';
 import { detectAntiBotBlock as detectAmazonBlock } from '../site-extractors/amazon.js';
 
@@ -83,6 +84,18 @@ export async function routedExtract(input: RoutedExtractInput): Promise<Extracti
   if (blocked) {
     result.site_data_blocked = blocked;
   }
+
+  // Structural completeness is judged against `scoped` — the exact HTML the
+  // extractor was handed — so the verdict is a true input/output differential
+  // and never blames the extractor for content the pre-passes had already
+  // removed. Site-extractor hits returned above are deliberately exempt: they
+  // reshape a page into a per-site record on purpose, so markdown attrition
+  // there is intent, not loss.
+  const completeness = assessListTitleAttrition(scoped, result.markdown);
+  if (completeness) {
+    result.contentCompleteness = completeness;
+  }
+
   return result;
 }
 
