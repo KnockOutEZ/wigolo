@@ -239,6 +239,84 @@ export interface PoolTypeStat {
 
 const log = createLogger('fetch');
 
+/**
+ * Hard cap on a single capture's pixel dimensions, mirroring the clamp in
+ * `src/studio/perception/vision.ts` (MAX_REGION_PX). The pool's own contexts use a
+ * 1280x720 viewport, but the CDP-attach path adopts an EXTERNAL browser's existing
+ * context, whose viewport we neither choose nor validate — so the dimension is
+ * environment-influenced and needs a fence.
+ *
+ * Deliberately NOT operator-tunable, for vision.ts's stated reason: a clamp you
+ * cannot crank up to unsafe is safer than one you can.
+ */
+export const MAX_SHOT_PX = 4096;
+
+/**
+ * Hard cap on the base64 payload a single capture may contribute to a tool response.
+ * The dimension clamp alone is NOT sufficient: PNG size is content-influenced, and a
+ * measured 4096x4096 incompressible-noise canvas encodes to ~66.7 MB even fully
+ * clamped. Real pages captured at that same ceiling measured 1.11-2.43 MB, and at the
+ * pool's actual 1280x720 viewport 22-391 KB. 4 MiB therefore sits ~1.7x above the
+ * largest realistic clamped capture and ~6% of the adversarial worst case: content
+ * never trips it, a payload bomb always does.
+ *
+ * Not operator-tunable for the same reason as MAX_SHOT_PX — this one is squarely
+ * page-influenced, which is exactly the case vision.ts's reasoning was written for.
+ */
+export const MAX_SHOT_B64_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Capture the VIEWPORT (never `fullPage`), clamped and byte-bounded.
+ *
+ * `fullPage: true` rasterises the whole scroll height, which is page-controlled and
+ * therefore unbounded: a 59k-px article measured 27.3 MB of base64 and a 153k-px API
+ * doc 23.6 MB, in a response where every other auxiliary field is budgeted.
+ *
+ * Returns undefined when the capture fails or exceeds the byte cap; the caller leaves
+ * `screenshot` absent, which is already a state callers must handle (a fetch served by
+ * the HTTP/PDF tier returns no screenshot even when one was requested).
+ */
+export async function captureBoundedScreenshot(
+  // `viewportSize` is declared optional on purpose: not every page-like object the pool
+  // hands us implements it (a CDP-attached driver, a closed tab), and the clamp must
+  // degrade rather than throw when the viewport is unmeasurable.
+  page: Pick<import('playwright').Page, 'screenshot'> & {
+    viewportSize?: () => { width: number; height: number } | null;
+  },
+): Promise<string | undefined> {
+  let base64: string;
+  try {
+    // A page that cannot report its viewport must not fail the FETCH — an unmeasurable
+    // viewport just means no clip, and the byte cap below is still the backstop.
+    let vp: { width: number; height: number } | null = null;
+    try {
+      vp = page.viewportSize?.() ?? null;
+    } catch {
+      vp = null;
+    }
+    // Clip only when the viewport actually exceeds the clamp, so the common path stays
+    // a plain viewport capture rather than a synthetic crop.
+    const clip =
+      vp && (vp.width > MAX_SHOT_PX || vp.height > MAX_SHOT_PX)
+        ? { x: 0, y: 0, width: Math.min(vp.width, MAX_SHOT_PX), height: Math.min(vp.height, MAX_SHOT_PX) }
+        : undefined;
+    const buf = await page.screenshot({ type: 'png', ...(clip ? { clip } : {}) });
+    base64 = buf.toString('base64');
+  } catch (err) {
+    log.warn('screenshot capture failed', { error: String(err) });
+    return undefined;
+  }
+
+  if (base64.length > MAX_SHOT_B64_BYTES) {
+    log.warn('screenshot exceeded byte cap — omitted from response', {
+      bytes: base64.length,
+      cap: MAX_SHOT_B64_BYTES,
+    });
+    return undefined;
+  }
+  return base64;
+}
+
 function isSuccessStatus(status: number): boolean {
   return status >= 200 && status < 300;
 }
@@ -1364,8 +1442,7 @@ export class MultiBrowserPool {
         // the full Playwright cold-start (~5-8s) on top of the navigation
         // itself. This is intrinsic to producing a pixel-accurate image and
         // not a routing bug; downstream callers should expect that cost.
-        const buf = await page.screenshot({ fullPage: true });
-        screenshotBase64 = buf.toString('base64');
+        screenshotBase64 = await captureBoundedScreenshot(page);
       }
 
       return {
