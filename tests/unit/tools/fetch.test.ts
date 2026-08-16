@@ -45,6 +45,18 @@ import { getCachedContent, cacheContent, isCacheUsable } from '../../../src/cach
 import { extractSection } from '../../../src/extraction/markdown.js';
 import { detectChange } from '../../../src/cache/change-detector.js';
 import type { ChangeResult } from '../../../src/cache/change-detector.js';
+import type { SmartRouter } from '../../../src/fetch/router.js';
+
+/**
+ * `SmartRouter` carries private fields, so a structural stub can never satisfy
+ * it nominally — which is why every mockRouter call site in this file sits in
+ * the type-check debt pile. New tests route through here instead of adding to
+ * it. The cast is confined to this one helper, and nothing in `src/` is
+ * widened to accommodate a test.
+ */
+function asRouter(stub: ReturnType<typeof mockRouter>): SmartRouter {
+  return stub as unknown as SmartRouter;
+}
 
 function mockRouter(result?: Partial<RawFetchResult>) {
   const defaults: RawFetchResult = {
@@ -204,7 +216,7 @@ describe('handleFetch', () => {
         },
       }),
     );
-    const router = mockRouter({ method: 'http' });
+    const router = asRouter(mockRouter({ method: 'http' }));
     const input: FetchInput = { url: 'https://github.com/facebook/react/issues' };
 
     const __r_result = await handleFetch(input, router);
@@ -218,10 +230,11 @@ describe('handleFetch', () => {
     });
   });
 
-  // Precedence. A browser actually watched the page render; the extraction
-  // seam only inspected the bytes it was handed. When both have an opinion the
-  // direct observation is the more trustworthy one and must not be overwritten.
-  it('prefers the browser render verdict over the extraction verdict', async () => {
+  // The browser tier returns a verdict on EVERY capture and `full` is its
+  // ordinary outcome, so on the browser path a "render wins" rule would make
+  // this feature inert AND publish `full` over structural proof of loss — a
+  // claim of completeness the pipeline itself knows to be false.
+  it('does not let a browser full overwrite an extraction partial', async () => {
     extractMock.mockResolvedValue(
       makeExtraction({
         contentCompleteness: {
@@ -231,13 +244,47 @@ describe('handleFetch', () => {
         },
       }),
     );
-    const router = mockRouter({
-      method: 'browser',
-      contentCompleteness: { level: 'shell', reason: 'app_shell', settled_by: 'budget' },
-    });
-    const input: FetchInput = { url: 'https://example.com' };
+    const router = asRouter(
+      mockRouter({
+        method: 'browser',
+        contentCompleteness: {
+          level: 'full',
+          reason: 'stable_content',
+          settled_by: 'stability',
+        },
+      }),
+    );
 
-    const __r_result = await handleFetch(input, router);
+    const __r_result = await handleFetch({ url: 'https://example.com' }, router);
+    const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
+
+    expect(result.content_completeness).toEqual({
+      level: 'partial',
+      reason: 'list_titles_dropped',
+      settled_by: 'extraction',
+    });
+  });
+
+  // A browser shell outranks an extraction partial: the page never rendered, so
+  // the render verdict is both more severe and more explanatory.
+  it('prefers the browser shell verdict over the extraction partial', async () => {
+    extractMock.mockResolvedValue(
+      makeExtraction({
+        contentCompleteness: {
+          level: 'partial',
+          reason: 'list_titles_dropped',
+          settled_by: 'extraction',
+        },
+      }),
+    );
+    const router = asRouter(
+      mockRouter({
+        method: 'browser',
+        contentCompleteness: { level: 'shell', reason: 'app_shell', settled_by: 'budget' },
+      }),
+    );
+
+    const __r_result = await handleFetch({ url: 'https://example.com' }, router);
     const result = __r_result.ok ? __r_result.data : ({ ...__r_result } as any);
 
     expect(result.content_completeness).toEqual({

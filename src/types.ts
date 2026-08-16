@@ -132,11 +132,14 @@ export interface FetchOutput {
    * successful responses; absent only on StageError replies. */
   fetch_method?: FetchMethod;
   /**
-   * How completely a browser-tier capture rendered its real content (level
-   * full/partial/shell + reason). Present only when the browser tier served
-   * the bytes; absent on HTTP/TLS-tier responses and on cache hits whose row
-   * predates completeness persistence. Lets callers tell a genuine page from
-   * an un-rendered shell without re-parsing the HTML.
+   * How completely the page came back (level full/partial/shell + reason),
+   * reconciled across both producers: the browser tier's render verdict and
+   * the extraction seam's structural verdict. Available on every tier — an
+   * HTTP or TLS response carries it whenever extraction lost content. Absent
+   * when neither producer was entitled to a verdict, and on cache hits whose
+   * row predates completeness persistence. Lets callers tell a genuine page
+   * from a shell, or from a listing that kept its rows and lost their titles,
+   * without re-parsing the HTML.
    */
   content_completeness?: ContentCompleteness;
   /**

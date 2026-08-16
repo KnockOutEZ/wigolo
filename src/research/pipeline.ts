@@ -32,6 +32,7 @@ import type {
   Citation,
 } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
+import { mergeCompleteness } from '../extraction/completeness.js';
 
 const log = createLogger('research');
 
@@ -463,10 +464,14 @@ async function fetchSources(
         relevance_score: result.relevance_score,
         fetched: true,
         trusted: false, // web/page-derived (C4); artifact sources arrive with C3
-        // Carry the render-completeness label so the pipeline can exclude a
-        // shell capture from the evidence set before synthesis. Absent on
-        // non-browser (HTTP/TLS) results, which are never shell-excluded.
-        ...(raw.contentCompleteness ? { content_completeness: raw.contentCompleteness } : {}),
+        // Carry the completeness label so the pipeline can exclude a shell
+        // capture from the evidence set before synthesis. Reconciled across
+        // both producers so an HTTP/TLS source — which has no render verdict
+        // at all — still arrives labelled when extraction lost content.
+        ...(() => {
+          const merged = mergeCompleteness(raw.contentCompleteness, extraction.contentCompleteness);
+          return merged ? { content_completeness: merged } : {};
+        })(),
       };
     } catch (err) {
       log.debug('failed to fetch research source', {

@@ -1,8 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { assessListTitleAttrition } from '../../../src/extraction/completeness.js';
+import {
+  assessListTitleAttrition,
+  analyzeListTitleAttrition,
+  mergeCompleteness,
+} from '../../../src/extraction/completeness.js';
 import { routedExtract } from '../../../src/extraction/v1/routed.js';
+import type { ContentCompleteness } from '../../../src/types.js';
 
 const fixture = (name: string) =>
   readFileSync(join(import.meta.dirname, '../../fixtures/extraction', name), 'utf-8');
@@ -70,12 +75,39 @@ describe('assessListTitleAttrition — the silent partial shell predicate', () =
     expect(assessListTitleAttrition(listPage(12), completeMarkdown(12))).toBeUndefined();
   });
 
-  // NEGATIVE. A list dropped WHOLESALE (related-links block, nav rail) is a
-  // correct extraction decision, not attrition — there is no residue pretending
-  // the rows are still there, so the output does not mislead anyone.
-  it('stays silent when the list is dropped wholesale, leaving no residue', () => {
-    const md = '# Article\n\nA paragraph of genuine prose that stands alone as the content.';
-    expect(assessListTitleAttrition(listPage(12), md)).toBeUndefined();
+  // NEGATIVE. A list dropped WHOLESALE (related-links rail, nav TOC) is a
+  // correct extraction decision, not attrition.
+  //
+  // The output here deliberately has PLENTY of bullets — they just belong to a
+  // different part of the page. That is the whole point: a page-wide "are there
+  // still bullets?" test passes this input and would fire, so this input is
+  // what forces the per-row scoping to actually exist. A version of this test
+  // with an empty output would short-circuit on the pre-filter and could never
+  // fail, no matter how the residue rule were mutated.
+  it('stays silent when a dropped rail coexists with unrelated bullets that survived', () => {
+    const railRows = Array.from(
+      { length: 8 },
+      (_, i) =>
+        `<li><h3><a href="/p/${i}">Archive essay ${TITLE_WORDS[i]} retrospective</a></h3><p>March ${2010 + i} &middot; ${4 + i} min read</p></li>`,
+    ).join('');
+    const html =
+      `<html><body><main><article><h1>Shipping safely</h1>` +
+      `<ul>${Array.from({ length: 6 }, (_, i) => `<li>Deployment checklist item ${i}: verify the migration ran cleanly.</li>`).join('')}</ul>` +
+      `</article><aside><ul>${railRows}</ul></aside></main></body></html>`;
+    // Exactly what a correct extraction returns: the article and its own list,
+    // with the rail gone. Six bullets present, none of them the dropped rows.
+    const md =
+      '# Shipping safely\n\n' +
+      Array.from(
+        { length: 6 },
+        (_, i) => `*   Deployment checklist item ${i}: verify the migration ran cleanly.`,
+      ).join('\n');
+
+    const analysis = analyzeListTitleAttrition(html, md);
+    // The rail rows DID enter the denominator — this is not passing by N = 0.
+    expect(analysis.titledRows).toBe(8);
+    expect(analysis.guttedRows).toBe(0);
+    expect(analysis.verdict).toBeUndefined();
   });
 
   // NEGATIVE. Rows that never had a heading cannot have lost one. This is the
@@ -111,8 +143,11 @@ describe('assessListTitleAttrition — the silent partial shell predicate', () =
     expect(assessListTitleAttrition(listPage(10), mixed)).toBeUndefined();
   });
 
-  // NEGATIVE sweep over the real, complete pages already in the corpus. These
-  // are the pages the detector must never touch.
+  // Regression sweep over the real pages already in the corpus, driven through
+  // the PRODUCTION path so it sees the same narrowed HTML routedExtract feeds
+  // the detector. These are all N = 0 pages, so this guards against the
+  // detector reaching pages it has no business touching — it is not a test of
+  // the ratio itself, which the cases above cover.
   it.each([
     'article.html',
     'blog-post.html',
@@ -124,25 +159,116 @@ describe('assessListTitleAttrition — the silent partial shell predicate', () =
     'product-page.html',
     'tables.html',
   ])('stays silent on the complete fixture %s', async (name) => {
-    const html = fixture(name);
-    const result = await routedExtract({ html, url: 'https://example.com/page' });
-    expect(assessListTitleAttrition(html, result.markdown)).toBeUndefined();
+    const result = await routedExtract({
+      html: fixture(name),
+      url: 'https://example.com/page',
+    });
+    expect(result.contentCompleteness).toBeUndefined();
   });
 
-  it('counts non-ASCII titles rather than mangling them into nothing', () => {
-    const html =
-      '<html><body><main><ul>' +
-      Array.from(
-        { length: 6 },
-        (_, i) =>
-          `<li><h3>Ocorrência de criação inválida número ${i}</h3><p>Status: Open. #${2000 + i} relator pessoa${i}</p></li>`,
-      ).join('') +
-      '</ul></main></body></html>';
+  // Titles in a non-Latin script. Latin-1 accents are NOT enough to test this:
+  // an ASCII-only class shreds "Ocorrência" into ocorr/ncia/inv/lida, which
+  // still clears the 2-token minimum, so the row stays in the denominator and
+  // the mutant survives. Cyrillic fragments to NOTHING under an ASCII class,
+  // which is what makes the denominator assertion below load-bearing.
+  const cyrillicRows = (count: number) =>
+    '<html><body><main><ul>' +
+    Array.from(
+      { length: count },
+      (_, i) =>
+        `<li><h3>Ошибка гидратации диалога ${i}</h3><p>Status: Open. #${2000 + i} relator pessoa${i}</p></li>`,
+    ).join('') +
+    '</ul></main></body></html>';
+
+  it('tokenizes non-Latin titles well enough for them to enter the denominator', () => {
     const md = Array.from(
       { length: 6 },
-      (_, i) => `*   ### Ocorrência de criação inválida número ${i}\n\n    Status: Open. #${2000 + i} relator pessoa${i}\n`,
+      (_, i) =>
+        `*   ### Ошибка гидратации диалога ${i}\n\n    Status: Open. #${2000 + i} relator pessoa${i}\n`,
     ).join('\n');
-    expect(assessListTitleAttrition(html, md)).toBeUndefined();
+
+    const analysis = analyzeListTitleAttrition(cyrillicRows(6), md);
+    expect(analysis.titledRows).toBe(6);
+    expect(analysis.guttedRows).toBe(0);
+    expect(analysis.verdict).toBeUndefined();
+  });
+
+  // The same rows with their titles stripped MUST fire. An ASCII-only
+  // tokenizer empties these titles, drops the rows from the denominator, and
+  // silences this fire — so this is the assertion that kills that mutant.
+  it('fires on non-Latin rows whose titles were dropped', () => {
+    const md = Array.from(
+      { length: 6 },
+      (_, i) => `*   Status: Open. #${2000 + i} relator pessoa${i}\n`,
+    ).join('\n');
+
+    const analysis = analyzeListTitleAttrition(cyrillicRows(6), md);
+    expect(analysis.titledRows).toBe(6);
+    expect(analysis.guttedRows).toBe(6);
+    expect(analysis.verdict?.level).toBe('partial');
+  });
+
+  // The floor exists to keep SMALL lists out. A heading inside a nested row
+  // belongs to that row; letting the outer row borrow it lets a 3-item list
+  // present as 6 and walk straight through the floor.
+  it('does not let an outer row borrow the titles of its nested rows', () => {
+    const inner = Array.from(
+      { length: 3 },
+      (_, i) => `<li><h3>${titleFor(i)}</h3><p>${residueFor(i)}</p></li>`,
+    ).join('');
+    const html = `<html><body><main><ul><li><h3>${titleFor(9)}</h3><ul>${inner}</ul></li></ul></main></body></html>`;
+    const md = `*   ${residueFor(0)}\n*   ${residueFor(1)}\n*   ${residueFor(2)}\n`;
+
+    // 4 rows carry their own heading, not 8. Below the floor, so no verdict.
+    expect(analyzeListTitleAttrition(html, md).titledRows).toBe(4);
+  });
+});
+
+describe('mergeCompleteness', () => {
+  const renderFull: ContentCompleteness = {
+    level: 'full',
+    reason: 'stable_content',
+    settled_by: 'stability',
+  };
+  const extractionPartial: ContentCompleteness = {
+    level: 'partial',
+    reason: 'list_titles_dropped',
+    settled_by: 'extraction',
+  };
+
+  // THE case the whole signal turns on. The browser tier returns a verdict on
+  // every capture and `full` is its ordinary outcome, so a plain "render wins"
+  // rule would publish `full` over structural proof of loss — a positive claim
+  // of completeness the pipeline knows to be false. That is the same class of
+  // harm this signal exists to prevent, one layer up.
+  it('lets an extraction partial win over a browser full', () => {
+    expect(mergeCompleteness(renderFull, extractionPartial)).toEqual(extractionPartial);
+  });
+
+  it('lets a browser shell win over an extraction partial', () => {
+    const shell: ContentCompleteness = {
+      level: 'shell',
+      reason: 'app_shell',
+      settled_by: 'budget',
+    };
+    expect(mergeCompleteness(shell, extractionPartial)).toEqual(shell);
+  });
+
+  // Ties go to the browser: watching a page settle beats inspecting bytes after
+  // the fact, so its reason string is the more informative one to surface.
+  it('prefers the render verdict when both agree on severity', () => {
+    const renderPartial: ContentCompleteness = {
+      level: 'partial',
+      reason: 'never_settled',
+      settled_by: 'budget',
+    };
+    expect(mergeCompleteness(renderPartial, extractionPartial)).toEqual(renderPartial);
+  });
+
+  it('passes either verdict through when only one exists', () => {
+    expect(mergeCompleteness(undefined, extractionPartial)).toEqual(extractionPartial);
+    expect(mergeCompleteness(renderFull, undefined)).toEqual(renderFull);
+    expect(mergeCompleteness(undefined, undefined)).toBeUndefined();
   });
 });
 
