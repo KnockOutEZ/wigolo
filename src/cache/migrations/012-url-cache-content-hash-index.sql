@@ -6,5 +6,6 @@
 -- Mirrored in runner.ts as MIGRATION_012_URL_CACHE_CONTENT_HASH_INDEX. The
 -- effect lives in that migration's postStep, not here: url_cache is created
 -- inline by initDatabase() in src/cache/db.ts, which the runner-only test
--- harness skips, and CREATE INDEX on a missing table throws.
+-- harness skips, and CREATE INDEX throws on a missing table OR a url_cache
+-- without the column — either throw would abort the whole migration pass.
 CREATE INDEX IF NOT EXISTS idx_url_cache_content_hash ON url_cache(content_hash);

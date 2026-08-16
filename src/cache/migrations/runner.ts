@@ -452,14 +452,17 @@ export const MIGRATIONS: Migration[] = [
     name: '012-url-cache-content-hash-index',
     sql: MIGRATION_012_URL_CACHE_CONTENT_HASH_INDEX,
     /**
-     * Creates the content_hash index on url_cache. Guarded on table_info: the
-     * table is created inline by initDatabase(), which a runner-only harness
-     * skips — CREATE INDEX on a missing table throws and would abort the pass.
-     * `IF NOT EXISTS` keeps the exec itself idempotent.
+     * Creates the content_hash index on url_cache. Guarded on the COLUMN, not
+     * just the table: CREATE INDEX throws both when url_cache is absent (a
+     * runner-only harness skips initDatabase's inline schema) AND when it
+     * exists without content_hash, and either throw aborts the whole migration
+     * pass — including every migration queued behind this one. The column
+     * check subsumes the missing-table case. `IF NOT EXISTS` keeps the exec
+     * itself idempotent.
      */
     postStep: (db) => {
       const cols = db.pragma('table_info(url_cache)') as Array<{ name: string }>;
-      if (cols.length === 0) return;
+      if (!cols.some((c) => c.name === 'content_hash')) return;
       db.exec('CREATE INDEX IF NOT EXISTS idx_url_cache_content_hash ON url_cache(content_hash)');
     },
   },
