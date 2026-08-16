@@ -35,6 +35,26 @@ import { join } from 'node:path';
 // and individual assignment (never `process.env = {...}`) re-`setenv`s it so the
 // C layer sees it too.
 //
+// KNOWN AND ACCEPTED SIDE EFFECT — the macOS login keychain also resolves through
+// $HOME, so this suite no longer sees it. Measured:
+//
+//     $ security list-keychains                 -> login.keychain-db + System.keychain
+//     $ HOME=/tmp/fake security list-keychains  -> System.keychain only
+//
+// `getConfig()` reads provider credentials from the keychain (see
+// `resolveCredentialUrl` / `resolveKeychainSecret` in src/config.ts), and
+// `keychainAvailable()` only constructs an `Entry` without performing I/O — so it
+// still returns true and the degradation surfaces as a silent "credential not
+// found" rather than a clean "keychain unavailable".
+//
+// This is DELIBERATE, not an oversight. Reading the developer's real credentials
+// is the same contamination class as writing their real config: it is what made
+// two agents disagree about whether an LLM key was configured. Tests must not
+// depend on the machine they run on. The cost is that the local keyed-LLM
+// failure profile changes — those failures already swing 0-23 locally and are
+// classified by CAUSE, never by count. A test that genuinely needs a credential
+// must inject it, not harvest one from the developer's login keychain.
+//
 // The home is CANONICALIZED on Windows. `os.tmpdir()` there commonly returns an
 // 8.3 short path (`C:\Users\RUNNER~1\AppData\Local\Temp`), which breaks two
 // separate things. It embeds a literal `~`, so any assertion using "contains no
