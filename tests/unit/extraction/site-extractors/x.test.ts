@@ -101,6 +101,47 @@ describe('xExtractor.extract', () => {
     expect(xExtractor.extract(rendered, POST_URL)).toBeNull();
   });
 
+  it('declines a card that describes a profile rather than this post', () => {
+    // This is the falsifying case, and it is not hypothetical: real captured
+    // x.com profile responses carry a profile blurb in og:description. Emitting
+    // that under a "post by @handle" heading would be confidently WRONG, which
+    // is strictly worse than the honestly-useless notice it replaced. An absent
+    // card is safe; a card about something else is not.
+    const profileCard = `<!doctype html><html><head>
+      <meta property="og:title" content="Jane Doe (@janedoe) on X">
+      <meta property="og:type" content="profile">
+      <meta property="og:description" content="Bio line for the account, which is not the text of any post.">
+      <meta property="og:url" content="https://x.com/janedoe">
+      </head><body><div id="react-root"></div></body></html>`;
+    expect(xExtractor.extract(profileCard, POST_URL)).toBeNull();
+  });
+
+  it('declines a card that names a different post', () => {
+    const otherPost = SHELL_WITH_CARD.replace(
+      'content="https://x.com/janedoe/status/1899999999999999999"',
+      'content="https://x.com/janedoe/status/1234567890123456789"',
+    );
+    expect(xExtractor.extract(otherPost, POST_URL)).toBeNull();
+  });
+
+  it('declines when the response never says what the card is about', () => {
+    // Unverifiable is treated exactly like wrong. The extractor only speaks
+    // when the page itself identifies the card's subject.
+    const noOgUrl = SHELL_WITH_CARD.replace(
+      /<meta property="og:url"[^>]*>/,
+      '',
+    );
+    expect(xExtractor.extract(noOgUrl, POST_URL)).toBeNull();
+  });
+
+  it('declines a card whose declared URL is on someone else\'s domain', () => {
+    const foreign = SHELL_WITH_CARD.replace(
+      'content="https://x.com/janedoe/status/1899999999999999999"',
+      'content="https://evil.example/janedoe/status/1899999999999999999"',
+    );
+    expect(xExtractor.extract(foreign, POST_URL)).toBeNull();
+  });
+
   it('still fires when the only text on the page is the JavaScript-required notice', () => {
     // The notice must not count as prose — it is the very signal that the page
     // did not render, so counting it would switch the extractor off in exactly
@@ -112,6 +153,50 @@ describe('xExtractor.extract', () => {
       )}</noscript>`,
     );
     expect(xExtractor.extract(longNotice, POST_URL)).not.toBeNull();
+  });
+
+  it('counts no prose from an unterminated noscript opener', () => {
+    // A non-greedy strip that REQUIRES its closing tag leaves the whole region
+    // in the count, so an unclosed opener reads as "this page rendered" and
+    // switches the gate off. A browser swallows the rest of the document here,
+    // and so must this.
+    const unterminated = SHELL_WITH_CARD.replace(
+      '<noscript>JavaScript is not available.</noscript>',
+      `<noscript>${'JavaScript is not available in this browser and the page cannot render. '.repeat(
+        4,
+      )}`,
+    );
+    expect(xExtractor.extract(unterminated, POST_URL)).not.toBeNull();
+  });
+
+  it('counts no prose from an HTML comment containing a bare > character', () => {
+    // `<[^>]+>` stops at the first `>` INSIDE the comment and leaks the whole
+    // tail as visible text. Measured: without the comment strip this body
+    // scores 370 against a floor of 200, so the gate would decline a page that
+    // is in fact blank. The repeat count is sized off that measurement — at 4
+    // repeats the leak is 190 and the test passes either way, guarding nothing.
+    const commented = SHELL_WITH_CARD.replace(
+      '<div id="react-root"></div>',
+      `<div id="react-root"></div><!-- if a > b then ${'this commented-out note is not visible text. '.repeat(
+        8,
+      )} -->`,
+    );
+    expect(xExtractor.extract(commented, POST_URL)).not.toBeNull();
+  });
+
+  it('counts no prose from an unterminated comment followed by real markup', () => {
+    // An unterminated comment swallows the rest of the document in a browser.
+    // The tail-eating behaviour of `<[^>]+>` hides this whenever nothing after
+    // the opener contains a `>`, so the fixture deliberately puts a tag between
+    // the opener and the text: without the comment strip the text after that
+    // tag leaks as prose (measured 311), with it the body scores 0.
+    const unterminatedComment = SHELL_WITH_CARD.replace(
+      '<div id="react-root"></div>',
+      `<div id="react-root"></div><!-- note <span>${'leaked prose after the unterminated comment opener. '.repeat(
+        6,
+      )}`,
+    );
+    expect(xExtractor.extract(unterminatedComment, POST_URL)).not.toBeNull();
   });
 
   it('returns null for a URL it does not own even if handed X-shaped markup', () => {

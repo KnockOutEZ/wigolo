@@ -42,18 +42,26 @@ const X_HOSTS = new Set([
 // extractor covers exactly the pages that used to reach it.
 const POST_PATH_RE = /^\/([A-Za-z0-9_]{1,15})\/(status|article)\/(\d+)/;
 
-// Prose floor below which the generic chain has nothing to work with. Matches
-// the fetch layer's own empty-body threshold so the two agree on what "the page
-// rendered nothing" means. `<noscript>` is excluded: the JavaScript-required
-// notice is precisely the string that signals an unrendered page, so counting
-// it would defeat the check.
+// Prose floor below which the generic chain has nothing to work with. Same
+// value and same three strips as the fetch layer's VISIBLE_TEXT_THRESHOLD /
+// extractVisibleTextExcludingNoscript (fetch/content-check.ts), so the two
+// agree on what "the page rendered nothing" means. It is a duplicated
+// implementation only because that helper is not exported — the two can drift.
+// `<noscript>` is excluded because the JavaScript-required notice is precisely
+// the string that signals an unrendered page, so counting it would switch this
+// extractor off in exactly the case it exists for.
 const READABLE_PROSE_THRESHOLD = 200;
 
 function readableProseLength(html: string): number {
+  // Every strip below tolerates an UNTERMINATED opener by running to end of
+  // input, matching how a browser treats one. A non-greedy match that requires
+  // its closing tag silently leaves the whole region in the prose count, which
+  // reads as "this page rendered" and turns the gate off.
   const withoutInert = html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+    .replace(/<script[\s\S]*?(?:<\/script>|$)/gi, '')
+    .replace(/<style[\s\S]*?(?:<\/style>|$)/gi, '')
+    .replace(/<noscript[\s\S]*?(?:<\/noscript>|$)/gi, '');
   return withoutInert.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length;
 }
 
@@ -90,6 +98,19 @@ function getMeta(document: Document, keys: readonly string[]): string {
     if (altContent) return altContent;
   }
   return '';
+}
+
+// Does the card in this response belong to the post we asked for? `og:url` is
+// X's own claim about which resource the card describes; requiring it to name
+// the same post id is what separates "the post's text" from "some other page's
+// blurb". Absent, unparseable, or pointing at a different resource all decline
+// — the extractor only speaks when the page tells it what the card is about.
+function cardIsForPost(document: Document, ref: PostRef): boolean {
+  const declared = getMeta(document, ['og:url']);
+  if (!declared) return false;
+  const declaredRef = parsePostUrl(declared);
+  if (!declaredRef) return false;
+  return declaredRef.postId === ref.postId && declaredRef.kind === ref.kind;
 }
 
 // `og:title` reads "Jane Doe on X", or "Jane Doe (@janedoe) on X" — recover the
@@ -133,10 +154,21 @@ export const xExtractor: Extractor = {
 
     const { document } = parseHTML(html);
 
+    // The card must positively identify itself as THIS post before its
+    // description is treated as the post's text.
+    //
+    // A card being absent is safe — we decline and the generic chain runs. A
+    // card describing something ELSE is not: X serves a profile blurb as
+    // `og:description` on a profile page, so a response that is not the post we
+    // asked for still carries a plausible-looking description, and emitting it
+    // under a "post by @handle" heading would be confidently wrong rather than
+    // honestly useless. `og:url` is X's own statement of which resource the
+    // card belongs to, so it is checked against the requested permalink and the
+    // extractor declines on absence as readily as on mismatch — an unverifiable
+    // card is treated exactly like a wrong one.
+    if (!cardIsForPost(document, ref)) return null;
+
     const text = getMeta(document, ['og:description', 'twitter:description', 'description']);
-    // No card text means this response tells us nothing about the post that the
-    // generic chain would not also find. Fall through instead of returning a
-    // header with an empty body.
     if (!text) return null;
 
     const rawTitle = getMeta(document, ['og:title', 'twitter:title']);
