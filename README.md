@@ -244,7 +244,7 @@ The slim image lazy-loads models into the volume; `:full` preinstalls the browse
 
 An 11-pack skill catalog teaches your coding agent to drive each tool well. It's installed by `init` and managed with `wigolo skills add|list|remove`. → [skills](docs/skills.md)
 
-One note for self-hosters: some challenge-protected sites score IP reputation, so a datacenter IP won't clear walls a home connection would. wigolo labels those failures, and the [self-hosting guide](docs/self-hosting.md) covers the opt-in proxy answer.
+One note for self-hosters: a server with no desktop session is scored on four counts at once — datacenter IP among them — so some walls a home machine clears won't clear there. wigolo labels those failures, and the [self-hosting guide](docs/self-hosting.md) covers the full ceiling and the opt-in proxy answer.
 
 ## Star history
 

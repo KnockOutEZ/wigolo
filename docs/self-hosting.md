@@ -68,6 +68,19 @@ Everything lives under the data dir (`WIGOLO_DATA_DIR`, default `~/.wigolo`): th
 
 Be aware of an honest ceiling before you deploy scraping-adjacent workflows to a VPS: anti-bot systems score **IP reputation**, and datacenter ranges start with low scores. Some challenge-protected sites will not clear from a datacenter IP no matter what the client does — the same fetch works fine from a residential connection. wigolo's tiered fetching and per-domain learning ([`wigolo tune`](./cli.md#tune)) get you the reliability that's achievable, and when a page can't be cleared you get a labeled `blocked_by_challenge` failure instead of junk parading as content.
 
+### The IP is one signal of four
+
+The IP is the clause people expect, so it's worth being explicit that it isn't the only one. A host with no desktop session — a VPS, a container, a CI runner — cannot map a browser window, and that one fact changes four things a site can score, not one:
+
+- **A throwaway profile.** Nothing is carried over from a previous visit for a site to recognise.
+- **A fresh fingerprint.** Every run presents as new rather than as an established visitor.
+- **An automation-launched browser engine.** How the session started is itself scoreable, separately from how it then behaves.
+- **A datacenter IP.** The clause above.
+
+None of the four has a client-side fix; they're what "this host can't map a window" means. Sites that score those signals will refuse more often here than they would on a desktop, so budget for a lower pass rate on challenge-protected targets when you deploy to a server — a gap here is the rung, not a broken install.
+
+`wigolo doctor` and `wigolo status` both print the ceiling your machine actually resolved to, under `Browser tier:`, along with whether there's anything to be done about it. On a host that does have a desktop session there is no ceiling line at all, which is how you tell the two situations apart.
+
 The opt-in workaround for legitimate research that keeps hitting this wall is routing through a proxy whose IP reputation matches your use:
 
 ```bash
