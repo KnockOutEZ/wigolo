@@ -18,22 +18,16 @@ import type { SmartRouter } from '../../src/fetch/router.js';
 import { initDatabase, closeDatabase } from '../../src/cache/db.js';
 import { resetConfig } from '../../src/config.js';
 import type { RawFetchResult } from '../../src/types.js';
-import { allowNetworkInThisFile } from '../net-fence.js';
 
-// MEASURED, not suspected. The two anti-bot rows here reach `old.reddit.com:443` on a real
-// socket, and the router stub above does NOT prevent it: the call comes from the content
-// extractor's own bundled Reddit handler, several layers below the seam this file injects
-// (`routedExtract` → `fallbackChain` → the extractor library's async Reddit path). There is no
-// argument this test can pass to stop it, which is exactly the case the declaration exists for
-// rather than the case it is an excuse for.
+// This file used to declare a network exemption: the two anti-bot rows reached `old.reddit.com`
+// through the content extractor library's own bundled Reddit handler, below every seam the file
+// could inject. #331 closed that egress in `src/extraction/`, so the exemption was retired here —
+// verified by removing it and re-running, which is green with zero recorded connections.
 //
-// It is currently fail-open — the extractor swallows the failed request and the rows pass either
-// way — so this is declared debt, not a broken test. Closing it properly means fencing that
-// library call in `src/extraction/`, which is production code and a different slice.
-allowNetworkInThisFile(
-  'the content extractor library issues its own request to old.reddit.com during Reddit ' +
-    'extraction, below every seam this file can inject',
-);
+// Left as a note because an exemption that outlives its cause is the failure mode the declaration
+// contract exists to prevent: it silently disarms the fence for the WHOLE file, so a new egress
+// introduced later would never be reported. If a row here ever needs one again, re-derive it
+// rather than restoring this one.
 
 const siteFixturesDir = join(import.meta.dirname, '..', 'fixtures', 'site-extractors');
 const amazonFixturesDir = join(import.meta.dirname, '..', 'fixtures', 'amazon');
