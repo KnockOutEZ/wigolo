@@ -42,8 +42,18 @@ const STUDIO_RELEASED = [
   '011-tool-audit',
 ];
 
-/** Union of both released sets: 7 shared + main's 3 + studio's 4. */
-const UNION_SIZE = 14;
+/**
+ * Migrations added AFTER the pre-flight #2 merge. Kept separate from the two
+ * released sets on purpose: those record history and must never change, whereas
+ * this list grows. An entry here is a deliberate addition; an unrecognised name
+ * in neither list is still a failure.
+ */
+const POST_MERGE_ADDED = [
+  '012-url-cache-content-hash-index',
+];
+
+/** Union of both released sets (7 shared + main's 3 + studio's 4) plus post-merge additions. */
+const UNION_SIZE = 14 + POST_MERGE_ADDED.length;
 
 /**
  * url_cache is created inline by initDatabase(), not by the runner, and two migrations
@@ -140,9 +150,11 @@ describe('MIGRATIONS — merged union of origin/main and studio-handoff (D15)', 
     for (const name of MAIN_RELEASED) expect(names).toContain(name);
     for (const name of STUDIO_RELEASED) expect(names).toContain(name);
 
+    for (const name of POST_MERGE_ADDED) expect(names).toContain(name);
+
     // Nothing beyond the union may appear without a deliberate update here: an
     // unrecognised name means a migration was added or renamed since the merge.
-    const union = new Set([...MAIN_RELEASED, ...STUDIO_RELEASED]);
+    const union = new Set([...MAIN_RELEASED, ...STUDIO_RELEASED, ...POST_MERGE_ADDED]);
     expect(names.filter((n) => !union.has(n))).toEqual([]);
   });
 
@@ -191,6 +203,7 @@ describe('MIGRATIONS — merged union of origin/main and studio-handoff (D15)', 
       '009-studio-artifacts-content',
       '010-studio-audit',
       '011-tool-audit',
+      ...POST_MERGE_ADDED,
     ]);
     // main's released rows must NOT be re-applied — that is the D15 data-integrity bug.
     expect(after).toHaveLength(UNION_SIZE - 1);
@@ -211,6 +224,7 @@ describe('MIGRATIONS — merged union of origin/main and studio-handoff (D15)', 
       '008-antibot-clearance',
       '009-content-completeness',
       '010-clearance-route',
+      ...POST_MERGE_ADDED,
     ]);
     expect(after).toHaveLength(UNION_SIZE - 1);
     db.close();

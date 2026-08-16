@@ -5,7 +5,7 @@ import type {
   StageResult,
 } from '../types.js';
 import { computeDiffEnvelope } from '../cache/diff-engine.js';
-import { getCachedContent, isExpired } from '../cache/store.js';
+import { getCachedContent, getCachedContentByHash, isExpired } from '../cache/store.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('cache');
@@ -21,15 +21,22 @@ export interface DiffInput {
 }
 
 function resolveSide(
-  side: { url?: string; markdown?: string } | undefined,
+  side: { url?: string; markdown?: string; content_hash?: string } | undefined,
   label: 'old' | 'new',
 ): { ok: true; markdown: string } | { ok: false; error: string; error_reason: string } {
-  if (!side || (side.markdown === undefined && side.url === undefined)) {
-    return {
-      ok: false,
-      error: 'invalid_input',
-      error_reason: `${label}.markdown or ${label}.url is required`,
-    };
+  // `content_hash` is a left-hand-side input only. The tool schema, the MCP
+  // instructions and the public docs all scope it to `old`; accepting it on
+  // `new` would make the handler more permissive than every surface that
+  // documents it.
+  const allowHash = label === 'old';
+  const required = allowHash
+    ? `${label}.markdown, ${label}.url or ${label}.content_hash is required`
+    : `${label}.markdown or ${label}.url is required`;
+
+  const hash = allowHash && typeof side?.content_hash === 'string' ? side.content_hash : undefined;
+
+  if (!side || (side.markdown === undefined && side.url === undefined && hash === undefined)) {
+    return { ok: false, error: 'invalid_input', error_reason: required };
   }
   if (typeof side.markdown === 'string') {
     return { ok: true, markdown: side.markdown };
@@ -56,11 +63,22 @@ function resolveSide(
     }
     return { ok: true, markdown: cached.markdown };
   }
-  return {
-    ok: false,
-    error: 'invalid_input',
-    error_reason: `${label}.markdown or ${label}.url is required`,
-  };
+  if (hash !== undefined) {
+    // Content-addressed lookup: the caller holds a fingerprint from an earlier
+    // `fetch` (or an export manifest) and wants that exact body back with no
+    // network round-trip. Same TTL rule as the URL form — the cache only
+    // serves live rows — and the same structured miss.
+    const cached = getCachedContentByHash(hash);
+    if (!cached || isExpired(cached)) {
+      return {
+        ok: false,
+        error: 'cache_miss',
+        error_reason: `No cached content for content_hash ${hash}. Run \`fetch\` or \`crawl\` first to populate the cache, or pass the markdown directly.`,
+      };
+    }
+    return { ok: true, markdown: cached.markdown };
+  }
+  return { ok: false, error: 'invalid_input', error_reason: required };
 }
 
 export async function handleDiff(
@@ -88,16 +106,20 @@ export async function handleDiff(
     };
   }
 
-  const oldSide = resolveSide(inp.old, 'old');
-  if (!oldSide.ok) {
-    return { ok: false, error: oldSide.error, error_reason: oldSide.error_reason, stage: 'diff' };
-  }
-  const newSide = resolveSide(inp.new, 'new');
-  if (!newSide.ok) {
-    return { ok: false, error: newSide.error, error_reason: newSide.error_reason, stage: 'diff' };
-  }
-
+  // `resolveSide` reads the cache, so it belongs INSIDE the try: a SQLite-level
+  // failure (locked/corrupt DB, disk full) throws synchronously, and both
+  // callers of handleDiff dispatch it without a surrounding try — outside, such
+  // a throw escapes the structured envelope entirely as an opaque crash.
   try {
+    const oldSide = resolveSide(inp.old, 'old');
+    if (!oldSide.ok) {
+      return { ok: false, error: oldSide.error, error_reason: oldSide.error_reason, stage: 'diff' };
+    }
+    const newSide = resolveSide(inp.new, 'new');
+    if (!newSide.ok) {
+      return { ok: false, error: newSide.error, error_reason: newSide.error_reason, stage: 'diff' };
+    }
+
     const data = computeDiffEnvelope({
       oldMarkdown: oldSide.markdown,
       newMarkdown: newSide.markdown,
@@ -106,7 +128,7 @@ export async function handleDiff(
     });
     return { ok: true, data };
   } catch (err) {
-    log.error('diff computation failed', {
+    log.error('diff failed', {
       error: err instanceof Error ? err.message : String(err),
     });
     return {
