@@ -32,6 +32,7 @@ import {
 } from './politeness.js';
 import { resolveStealthUA } from './stealth.js';
 import { recordFetchOutcome, markSubstrateServed } from './tier-occupancy.js';
+import { resolveBrowserTier } from './browser-tier.js';
 import {
   CLEARANCE_COOKIE_NAME,
   clearanceCookieValue,
@@ -259,6 +260,13 @@ export interface SmartRouterOptions {
    * when a live session handle exists, so a default install never loads the module.
    */
   studioBridge?: StudioBridgeFetchers;
+  /**
+   * D-S10-5 — the companion rung: an authentic browser already installed on this host, driven
+   * with a throwaway profile. Injectable so router tests drive the branch without spawning a
+   * real browser. Defaults to a lazy `import('./cdp-direct.js')`, so a host that never enters
+   * the unavailable-engine branch never loads the module.
+   */
+  systemBrowserFetch?: SystemBrowserFetch;
 }
 
 /** The two escape-hatch rung fetchers, injectable for tests. */
@@ -272,6 +280,12 @@ export interface StudioBridgeFetchers {
   studioBridgeAvailable: typeof import('./studio-bridge.js').studioBridgeAvailable;
   studioBridgeFetch: typeof import('./studio-bridge.js').studioBridgeFetch;
 }
+
+/** D-S10-5's companion rung. Returns `null` on any decline — it never hard-fails a fetch. */
+export type SystemBrowserFetch = (
+  url: string,
+  opts: { signal?: AbortSignal; timeoutMs?: number; companionRung: true },
+) => Promise<RawFetchResult | null>;
 
 interface DomainStats {
   failureCount: number;
@@ -518,6 +532,7 @@ export class SmartRouter {
   private readonly clearanceStore: ClearanceStore;
   private readonly escapeHatchOverride: EscapeHatchFetchers | undefined;
   private readonly studioBridgeOverride: StudioBridgeFetchers | undefined;
+  private readonly systemBrowserFetchOverride: SystemBrowserFetch | undefined;
   /** Lazily-minted Reddit OAuth token manager. Created on the first Reddit-API
    * route and reused so the app-only token is minted at most once per window.
    * Keyed on the resolved client id so a credential change re-mints. */
@@ -544,7 +559,8 @@ export class SmartRouter {
         'clearanceStore' in httpClientOrOptions ||
         'pdfProbe' in httpClientOrOptions ||
         'escapeHatch' in httpClientOrOptions ||
-        'studioBridge' in httpClientOrOptions)
+        'studioBridge' in httpClientOrOptions ||
+        'systemBrowserFetch' in httpClientOrOptions)
     ) {
       const opts = httpClientOrOptions as SmartRouterOptions;
       if (!opts.httpFetcher && !opts.httpClient) {
@@ -561,6 +577,7 @@ export class SmartRouter {
       this.clearanceStore = opts.clearanceStore ?? defaultClearanceStore();
       this.escapeHatchOverride = opts.escapeHatch;
       this.studioBridgeOverride = opts.studioBridge;
+      this.systemBrowserFetchOverride = opts.systemBrowserFetch;
       return;
     } else {
       // Backwards-compat: single HttpClient positional (unusual but safe)
@@ -724,6 +741,65 @@ export class SmartRouter {
    * escalation site captured an HTTP/TLS response) with an actionable note, or,
    * when no lower-tier content exists, return an actionable stage error.
    */
+  /**
+   * D-S10-5's companion rung: drive a browser this host ALREADY has, with a throwaway profile.
+   *
+   * Returns `null` — never throws and never a StageError — so every decline leaves the caller's
+   * existing unavailable-engine handling byte-identical to before this rung existed.
+   *
+   * THREE conditions, each a real signal rather than a guess:
+   *  1. the bundled engine was actually attempted for this fetch and did not come up (`acquired`);
+   *  2. this host resolved to the no-display rung — the population the companion path exists for,
+   *     and the one D10(b) is about. A desktop whose engine merely failed to install has a remedy
+   *     (`wigolo warmup`), and silently driving its personal browser instead is a behaviour change
+   *     nobody asked for;
+   *  3. the fetch is content-only. The rung cannot run actions, capture a screenshot or carry a
+   *     stored session, so serving plain content for a request that asked for any of those would
+   *     quietly return the wrong thing — a worse failure than declining.
+   */
+  private async companionRungFetch(
+    url: string,
+    options: BrowserFetchArgs,
+    acquired: string,
+  ): Promise<RawFetchResult | null> {
+    const logger = createLogger('fetch');
+
+    const contentOnly =
+      !options.actions?.length &&
+      !options.screenshot &&
+      !options.storageStatePath &&
+      !options.userDataDir &&
+      !options.cdpUrl;
+    if (!contentOnly) return null;
+
+    const tier = resolveBrowserTier();
+    if (tier.tier !== 'no-display') return null;
+
+    try {
+      const fetcher =
+        this.systemBrowserFetchOverride ?? (await import('./cdp-direct.js')).cdpDirectFetch;
+      const result = await fetcher(url, {
+        ...(options.signal ? { signal: options.signal } : {}),
+        companionRung: true,
+      });
+      if (!result) return null;
+      // Visible by design: this rung silently substituting one browser for another is exactly
+      // the change an operator must be able to see in a log after the fact.
+      logger.info('companion rung served content from an installed browser', {
+        url,
+        engineState: acquired,
+        ceiling: tier.ceiling,
+      });
+      return result;
+    } catch (err) {
+      logger.debug('companion rung failed; falling through to the existing handling', {
+        url,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
   private async browserFetch(
     url: string,
     options: BrowserFetchArgs & { fallback?: RawFetchResult },
@@ -734,6 +810,24 @@ export class SmartRouter {
     const acquired = await this.browserAcquirer.ensureBrowser();
     if (acquired !== 'ready') {
       const logger = createLogger('fetch');
+
+      // D-S10-5's companion rung, and the ONLY place it is reachable.
+      //
+      // THE DEFECT THIS CLOSES. The rung that drives an already-installed browser needs no
+      // bundled engine at all — it spawns its own. But its only call site was inside
+      // `browserPool.fetchWithBrowser`, which this method reaches only AFTER `ensureBrowser()`
+      // returns 'ready'. So the one rung that does not need the engine was gated behind
+      // acquiring the engine, and a no-display host with a real browser sitting on disk
+      // returned `browser_engine_unavailable` anyway.
+      //
+      // WHY THE PREDICATE IS THIS AND NOT A PLATFORM GUESS. `acquired !== 'ready'` is the
+      // outcome of an actual acquisition attempt for THIS fetch — not a query-wide flag and
+      // not "does this look like a server". A host whose bundled path works never reaches this
+      // line, so the companion rung cannot start winning fetches on a healthy install. The
+      // tier check narrows it further to the population D10(b) is about.
+      const companion = await this.companionRungFetch(url, browserOptions, acquired);
+      if (companion) return this.guardChallengeShell(companion);
+
       if (fallback) {
         logger.info('browser engine not ready within budget — returning lower-tier content with note', { url });
         // The browser was the escalation target because the lower tier returned

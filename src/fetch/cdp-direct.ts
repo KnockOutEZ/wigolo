@@ -459,6 +459,11 @@ export interface CdpDirectFetchOptions {
   /** Injectable DNS lookup for the pre-navigation resolved-host SSRF re-check
    *  (tests). Defaults to Node's `dns.lookup`. */
   lookup?: LookupAll;
+  /**
+   * Run as the D-S10-5 companion rung — see {@link ResolveChromeDeps.companionRung}. Only the
+   * router's unavailable-engine branch sets this; the pool's opt-in call site never does.
+   */
+  companionRung?: boolean;
 }
 
 /**
@@ -654,6 +659,19 @@ export interface ResolveChromeDeps {
   exists?: (path: string) => boolean;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Resolve for the D-S10-5 COMPANION rung rather than the opt-in evaluation rung.
+   *
+   * The `cdpDirect` opt-in gate below exists for the live-evaluation rung, whose justification
+   * is "an operator asked to try this". The companion rung's justification is different and
+   * does not pass through that knob: on a host that cannot map a window and has no bundled
+   * engine, an installed browser is the ONLY rung left, and requiring an opt-in to reach it
+   * means the documented no-display rung is unreachable on a default install.
+   *
+   * Scoped deliberately narrow — it changes only whether the probe RUNS. What it finds, and
+   * the refusal to dress a chromium build up as Chrome, are untouched.
+   */
+  companionRung?: boolean;
 }
 
 /** Well-known install locations for an AUTHENTIC browser build, per platform.
@@ -757,7 +775,11 @@ export function resolveAuthenticChrome(deps: ResolveChromeDeps = {}): ChromeReso
   // No opt-in → the pin stands and nothing is probed. In production the rung is
   // never consulted at all in this state (the pool gates on `cdpDirect`); this
   // keeps the override TIED to intent rather than making it unconditional.
-  if (pinnedToBundled && !optedIn) {
+  //
+  // The companion rung is the one exemption, and it is not a widening of the opt-in: it is a
+  // DIFFERENT rung reached from a different call site (the router's unavailable-engine branch),
+  // and it only ever runs on a host that has already failed to supply the bundled engine.
+  if (pinnedToBundled && !optedIn && deps.companionRung !== true) {
     return { path: null, reason: 'chromium-pinned', probed: [], pinOverridden: false };
   }
 
@@ -836,9 +858,9 @@ async function defaultConnectTransport(
   }
 }
 
-function realFetchDeps(): CdpDirectFetchDeps {
+function realFetchDeps(companionRung?: boolean): CdpDirectFetchDeps {
   return {
-    resolveChrome: () => resolveAuthenticChrome(),
+    resolveChrome: () => resolveAuthenticChrome(companionRung === true ? { companionRung: true } : {}),
     spawn: (command, args, options) => nodeSpawn(command, args, options),
     // detached: true so killChild can signal the whole process group (-pid),
     // reaping reparented renderer/GPU children Chrome forks.
@@ -1146,7 +1168,7 @@ export async function cdpDirectFetch(
     return null;
   }
 
-  const deps = _testFetchDeps ?? realFetchDeps();
+  const deps = _testFetchDeps ?? realFetchDeps(opts.companionRung);
 
   const resolution = deps.resolveChrome();
   if (!resolution.path) {
