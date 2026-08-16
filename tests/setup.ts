@@ -87,15 +87,22 @@ installNetworkFence();
 // A suite whose result depends on which pid the OS happened to hand out is not
 // deterministic, so the name now comes from `mkdtemp` and cannot alias.
 //
-// ONE HOME PER PROCESS IS PRESERVED, and it has to be earned rather than assumed:
-// under `isolate: true` the setup file is re-evaluated for every test file, so a
-// naive `mkdtempSync` here would mint a fresh home per FILE and break the reuse the
-// `spawn-serial` project (singleFork, all of integration+e2e in one process)
-// depends on. The claim is memoised through `process.env`, which is the one channel
-// that survives vitest's module-registry reset, and is validated against the LIVE
-// pid so an inherited value in a spawned child can never be mistaken for our own.
-// Note this uses the pid as an OWNERSHIP CHECK against a running process, never as
-// a NAME recording history — that distinction is exactly what the reuse bug was.
+// ONE HOME PER PROCESS, WHICH IS EXACTLY WHAT THE PID NAMING GAVE. Measured, because
+// the obvious reading of the config is wrong: under `isolate: true` vitest's forks
+// pool starts a FRESH PROCESS for every test file, including in the `spawn-serial`
+// project — `singleFork` removes parallelism, not per-file isolation. Five
+// integration files under that project produced five homes, not one. So the
+// per-worker reuse the old comment claimed was never happening, and this change
+// preserves the real behaviour rather than an imagined one.
+//
+// The memoisation is still here, and is a guard rather than an optimisation: it is
+// what keeps `mkdtemp` from minting a home per FILE if a process ever does evaluate
+// this file twice (`isolate: false`, or a future pool change). `process.env` is the
+// one channel that survives vitest's module-registry reset, and the entry is
+// validated against the LIVE pid so a value inherited by a spawned child can never
+// be mistaken for our own. Note the pid is used here as an OWNERSHIP CHECK against a
+// running process, never as a NAME recording history — that distinction is precisely
+// what the reuse bug was.
 // WHO DELETES IT. Homes are minted inside the per-invocation `run-*` directory that
 // `global-setup.ts` publishes, and its teardown removes that one directory — which
 // contains exactly this run's homes and, by containment, none of a concurrent run's.

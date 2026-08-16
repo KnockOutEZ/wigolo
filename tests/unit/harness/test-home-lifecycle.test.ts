@@ -258,11 +258,44 @@ describe('test-home lifecycle -- the running suite own home', () => {
     expect(basename(home).startsWith('home-')).toBe(true);
   });
 
-  it('is claimed by the live process, so one home is reused across a fork test files', () => {
-    // `isolate: true` re-evaluates this setup file per test file. The claim has to
-    // be memoised through env or the `spawn-serial` single fork would mint a home
-    // per file — and the ownership tag has to name the LIVE pid or an inherited
-    // value in a spawned child would be mistaken for our own.
+  it('two claims that land on the same pid get different directories', () => {
+    // THE COLLISION, pinned directly rather than inferred from the name. The sharp
+    // evidence for this bug was not the volume of leftover directories, it was that
+    // 2,054 of them held files written 76-118 HOURS after their own birthtime —
+    // i.e. two unrelated test runs sharing one $HOME, one of them reading state the
+    // other left. Volume is a disk problem; this is a determinism problem, and a
+    // cleanup-only fix would pass every other probe in this file while leaving it
+    // wide open.
+    //
+    // Both schemes are replayed side by side because the assertion has to be able to
+    // FAIL for the old one — a probe that only exercises the new scheme cannot show
+    // that the old scheme was broken, and would pass just as happily if the fix were
+    // reverted to a differently-spelled pid derivation.
+    const parent = mkdtempSync(join(sandboxParent(), 'collision-'));
+    try {
+      const pidScheme = [join(parent, String(process.pid)), join(parent, String(process.pid))];
+      expect(pidScheme[0]).toBe(pidScheme[1]);
+
+      const mintedScheme = [
+        mkdtempSync(join(parent, 'home-')),
+        mkdtempSync(join(parent, 'home-')),
+      ];
+      expect(mintedScheme[0]).not.toBe(mintedScheme[1]);
+      expect(existsSync(mintedScheme[0])).toBe(true);
+      expect(existsSync(mintedScheme[1])).toBe(true);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('is tagged with the live pid, so an inherited value cannot be claimed by a child', () => {
+    // The memoisation that stops `mkdtemp` minting a home per FILE should a process
+    // ever evaluate the setup file twice. Measured caveat, so nobody re-derives the
+    // wrong model from this test: under `isolate: true` vitest starts a fresh
+    // process per test file even in the `spawn-serial` singleFork project (five
+    // files produced five homes), so today the memo is a guard, not a live saving.
+    // The tag names the RUNNING pid rather than recording history — a value
+    // inherited by a spawned child names its parent and is correctly rejected.
     expect(process.env.VITEST_WIGOLO_TEST_HOME_PID).toBe(String(process.pid));
   });
 

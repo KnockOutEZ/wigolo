@@ -48,12 +48,21 @@ import { join, resolve, sep } from 'node:path';
  * death, but Node exposes it only via `O_EXLOCK` on macOS/BSD — this suite gates
  * on three OSes, so it is not available.
  *
- * What is left is a heartbeat: `tests/setup.ts` touches its home's mtime from
- * `beforeEach` (throttled to 30s). "Alive" therefore means "made test progress
+ * What is left is a heartbeat: `tests/setup.ts` touches the run directory's mtime
+ * from `beforeEach` (throttled to 30s). "Alive" therefore means "made test progress
  * recently", which is the property that actually matters, and it needs no timer and
- * no event-loop liveness. A directory older than `DEFAULT_STALE_MS` has made no
- * progress for 30 minutes; vitest's own ceilings are 20s per test and 20s per hook,
- * so a live suite cannot reach that.
+ * no event-loop liveness.
+ *
+ * THE WINDOW IS IDLE TIME, NOT RUN TIME — and that distinction is the whole reason
+ * this is safe. A reaper whose window had to exceed the longest legitimate run would
+ * be a worse defect than the leak it fixes: it would delete a live directory
+ * intermittently, under load, and the failure would surface as unrelated ENOENTs in
+ * whatever subsystem happened to touch disk next. `DEFAULT_STALE_MS` is therefore
+ * NOT a ceiling on how long a suite may run. A six-hour run refreshes its mtime
+ * every 30 seconds and is never eligible; what has to elapse is 30 minutes with no
+ * test making progress, against vitest ceilings of 20s per test and 20s per hook.
+ * The heartbeat is the mechanism; the window is only how long a corpse stays warm.
+ * If that ever stops holding, lengthen the heartbeat's reach — do not widen this.
  *
  * WHAT THIS DOES NOT COVER.
  *  - A run wedged for >30 minutes with a fully blocked event loop runs no
