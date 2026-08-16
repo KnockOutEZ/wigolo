@@ -5,6 +5,7 @@ import {
   normalizeSubjectTerm,
   computeSubjectAnchorAttrition,
   isSubjectCollision,
+  type AnchorCandidate,
 } from './subject-anchor.js';
 
 export interface BrandCollisionWarning {
@@ -216,17 +217,18 @@ function suggestRewrites(query: string): string[] {
   ];
 }
 
-// Rewrites for a result-set collision. Unlike the generic set above these do
+// Rewrites for a result-set collision. Unlike the generic set above these must
 // NOT assume a software intent — the caller's subject is exactly what is in
-// doubt — so they anchor the term as a named subject and let the caller pick.
+// doubt, and the detector fires on anything from a tool name to a proper noun —
+// so every one of them just anchors the term harder and lets the caller pick.
 function subjectCollisionRewrites(query: string): string[] {
   const q = query.trim();
   const curated = curatedRewrites(q);
   if (curated) return curated;
   return [
     `"${q}" official site`,
-    `${q} (software)`,
     `"${q}" documentation`,
+    `what is "${q}"`,
   ];
 }
 
@@ -259,35 +261,36 @@ export function detectBrandCollision(
 
 /**
  * Detect a RESULT-SET collision: the query names one subject and not one of the
- * examined top results belongs to it.
+ * examined top results is about anything by that name — neither hosted at it
+ * nor titled about it.
  *
  * This is the detector that answers the caller's actual question — "do the top
  * results belong to a different subject than I intended?" — and it is decided
  * entirely from the results. It replaces nothing: `detectBrandCollision` still
- * owns the shopping-TLD case, but that path can only ever see a handful of
- * vanity TLDs, so a `.com` retailer or a `.org` dictionary taking every top
- * slot used to pass unreported.
+ * owns the shopping-TLD case, and `detectLexicalCollision` (which runs FIRST)
+ * owns dev-term look-alikes, whose whole point is that the results ARE on
+ * subject while the query is the ambiguous part.
  */
 export function detectSubjectCollision(
   query: string,
-  topUrls: readonly string[],
+  results: readonly AnchorCandidate[],
 ): BrandCollisionWarning | null {
   const q = query.trim();
   if (queryHasErrorToken(q)) return null;
   const term = normalizeSubjectTerm(q);
   if (!term) return null;
 
-  const attrition = computeSubjectAnchorAttrition(topUrls, term);
+  const attrition = computeSubjectAnchorAttrition(results, term);
   if (!isSubjectCollision(attrition)) return null;
 
-  const sites = [...new Set(attrition.unanchored_hosts)].join(', ');
+  const sites = [...new Set(attrition.unnamed_hosts)].join(', ');
   return {
     detected: true,
     reason:
-      `query "${q}" — none of the top ${attrition.candidates} results comes from a site about "${q}"; ` +
+      `query "${q}" — none of the top ${attrition.candidates} results is about anything called "${q}"; ` +
       `the top slots went to ${sites}. ` +
       `The results may cover a different subject than intended.`,
-    brand_domains_in_top_3: [...attrition.unanchored_hosts],
+    brand_domains_in_top_3: [...attrition.unnamed_hosts],
     suggested_rewrites: subjectCollisionRewrites(q),
   };
 }
@@ -326,7 +329,7 @@ export function entityQualifiedRewrite(query: string): string | null {
  */
 export function detectEntityCollision(
   query: string,
-  topUrls?: readonly string[],
+  results?: readonly AnchorCandidate[],
 ): BrandCollisionWarning | null {
   const q = query.trim();
   if (!q) return null;
@@ -346,9 +349,9 @@ export function detectEntityCollision(
   // entity head means the caller already got the subject they asked for. A
   // multi-token head ("Comet ML") has no single term to anchor, so it keeps the
   // query-only verdict rather than being silenced on weaker evidence.
-  if (topUrls && topUrls.length > 0) {
+  if (results && results.length > 0) {
     const headTerm = normalizeSubjectTerm(head);
-    if (headTerm && computeSubjectAnchorAttrition(topUrls, headTerm).anchored > 0) return null;
+    if (headTerm && computeSubjectAnchorAttrition(results, headTerm).named > 0) return null;
   }
 
   const qualified = entityQualifiedRewrite(q);

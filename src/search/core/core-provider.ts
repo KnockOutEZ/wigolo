@@ -891,19 +891,22 @@ export class CoreSearchProvider implements SearchProvider {
       ...(enginePool ? { engine_pool: enginePool } : {}),
     };
 
-    // Try the brand-domain check first (cheap, requires top-3 to actually carry
-    // a brand TLD). Then the result-set subject check — the general case, and
-    // the only path that can see a `.com` retailer or a `.org` dictionary take
-    // every top slot on an everyday-word query. Then the entity-collision v2
-    // check, now overruled by those same results when the entity's own site
-    // answered. Finally the lexical dev-term check — fires on "useState" etc.
-    // Every path emits the same warning shape.
-    const topUrls = items.map((i) => i.url);
+    // Order matters. Brand-domain first (cheap, requires the top-3 to actually
+    // carry a brand TLD). Then the lexical dev-term check — it MUST outrank the
+    // subject check, because for a look-alike like "useState" the results are
+    // correct and the QUERY is the ambiguous part; letting the subject check
+    // answer first would replace a usable "useState React hook" rewrite with a
+    // claim that nothing in the top-3 is about useState while react.dev sits at
+    // rank 1. Then the entity-collision v2 check, now overruled by the results
+    // when the entity's own site answered. The result-set subject check runs
+    // last: it is the general case and the widest net, so it only speaks when
+    // no more specific reading applies. Every path emits the same warning shape.
+    const collisionCandidates = items.map((i) => ({ url: i.url, title: i.title }));
     const collisionWarning =
-      detectBrandCollision(displayQuery, topUrls) ??
-      detectSubjectCollision(displayQuery, topUrls) ??
-      detectEntityCollision(displayQuery, topUrls) ??
-      detectLexicalCollision(displayQuery);
+      detectBrandCollision(displayQuery, items.map((i) => i.url)) ??
+      detectLexicalCollision(displayQuery) ??
+      detectEntityCollision(displayQuery, collisionCandidates) ??
+      detectSubjectCollision(displayQuery, collisionCandidates);
     if (collisionWarning) data.brand_collision_warning = collisionWarning;
 
     if (input.include_images || isImagesCategory) {

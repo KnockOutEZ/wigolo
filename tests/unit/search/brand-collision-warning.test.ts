@@ -52,6 +52,12 @@ function makeResult(engineName: string, url: string): RawSearchResult {
   return { title: 'T', url, snippet: 'S', relevance_score: 1, engine: engineName };
 }
 
+// The subject check reads result TITLES, so collision fixtures must carry the
+// real ones — a placeholder title would make every result read as off-subject.
+function titled(url: string, title: string): RawSearchResult {
+  return { title, url, snippet: 'S', relevance_score: 1, engine: 'bing' };
+}
+
 function makeEntry(name: string, results: RawSearchResult[]): EngineEntry {
   const engine: SearchEngine = {
     name,
@@ -237,9 +243,9 @@ describe('detectEntityCollision — the result set overrides the name heuristic'
   it('stays silent when the top results ARE the entity ("DuckDB docs" -> duckdb.org)', () => {
     expect(
       detectEntityCollision('DuckDB docs', [
-        'https://duckdb.org/docs/stable/',
-        'https://duckdb.org/',
-        'https://github.com/duckdb/duckdb',
+        { url: 'https://duckdb.org/docs/stable/', title: 'DuckDB Documentation' },
+        { url: 'https://duckdb.org/', title: 'DuckDB' },
+        { url: 'https://github.com/duckdb/duckdb', title: 'GitHub - duckdb/duckdb' },
       ]),
     ).toBeNull();
   });
@@ -247,17 +253,17 @@ describe('detectEntityCollision — the result set overrides the name heuristic'
   it('stays silent for "ArchiveBox setup" when the project site answers', () => {
     expect(
       detectEntityCollision('ArchiveBox setup', [
-        'https://archivebox.io/',
-        'https://github.com/ArchiveBox/ArchiveBox',
-        'https://docs.archivebox.io/en/latest/',
+        { url: 'https://archivebox.io/', title: 'ArchiveBox' },
+        { url: 'https://github.com/ArchiveBox/ArchiveBox', title: 'GitHub - ArchiveBox/ArchiveBox' },
+        { url: 'https://docs.archivebox.io/en/latest/', title: 'ArchiveBox Documentation' },
       ]),
     ).toBeNull();
   });
 
   it('still fires when no result belongs to the entity head', () => {
     const w = detectEntityCollision('Phoenix framework deployment', [
-      'https://example.com/phoenix-a',
-      'https://other.example/b',
+      { url: 'https://example.com/phoenix-a', title: 'Unrelated page' },
+      { url: 'https://other.example/b', title: 'Another unrelated page' },
     ]);
     expect(w).not.toBeNull();
     expect(w!.detected).toBe(true);
@@ -270,33 +276,31 @@ describe('detectEntityCollision — the result set overrides the name heuristic'
 
 // End-to-end through the provider: the two directions of the inversion.
 describe('SearchOutput.brand_collision_warning — result-set collision, not name distinctiveness', () => {
-  it('warns on "scrape" when dictionaries take the top slots', async () => {
+  it('warns on "ArchiveBox" when every top result is about a different archive', async () => {
     verticalState.general = [
       makeEntry('bing', [
-        makeResult('bing', 'https://dictionary.cambridge.org/dictionary/english/scrape'),
-        makeResult('bing', 'https://www.merriam-webster.com/dictionary/scrape'),
-        makeResult('bing', 'https://www.collinsdictionary.com/dictionary/english/scrape'),
+        titled('https://en.wikipedia.org/wiki/Archive_of_Our_Own', 'Archive of Our Own'),
+        titled('https://en.wikipedia.org/wiki/Archives_of_American_Art', 'Archives of American Art'),
+        titled('https://en.wikipedia.org/wiki/Archive_of_Folk_Culture', 'Archive of Folk Culture'),
       ]),
     ];
     const provider = new CoreSearchProvider();
     const out = await provider.search(
-      { query: 'scrape', include_content: false },
+      { query: 'ArchiveBox', include_content: false },
       { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
     );
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     expect(out.data.brand_collision_warning).toBeDefined();
-    expect(out.data.brand_collision_warning!.brand_domains_in_top_3).toContain(
-      'www.merriam-webster.com',
-    );
+    expect(out.data.brand_collision_warning!.brand_domains_in_top_3).toContain('en.wikipedia.org');
   });
 
   it('does NOT warn on "DuckDB docs" — every top result is the project itself', async () => {
     verticalState.general = [
       makeEntry('bing', [
-        makeResult('bing', 'https://duckdb.org/docs/stable/'),
-        makeResult('bing', 'https://duckdb.org/'),
-        makeResult('bing', 'https://github.com/duckdb/duckdb'),
+        titled('https://duckdb.org/docs/stable/', 'DuckDB Documentation'),
+        titled('https://duckdb.org/', 'DuckDB'),
+        titled('https://github.com/duckdb/duckdb', 'GitHub - duckdb/duckdb'),
       ]),
     ];
     const provider = new CoreSearchProvider();
@@ -309,12 +313,12 @@ describe('SearchOutput.brand_collision_warning — result-set collision, not nam
     expect(out.data.brand_collision_warning).toBeUndefined();
   });
 
-  it('does NOT warn on "ArchiveBox" — a distinctive name is the case least in need of a warning', async () => {
+  it('does NOT warn on "ArchiveBox" when the project site answers', async () => {
     verticalState.general = [
       makeEntry('bing', [
-        makeResult('bing', 'https://archivebox.io/'),
-        makeResult('bing', 'https://github.com/ArchiveBox/ArchiveBox'),
-        makeResult('bing', 'https://docs.archivebox.io/en/latest/'),
+        titled('https://archivebox.io/', 'ArchiveBox'),
+        titled('https://github.com/ArchiveBox/ArchiveBox', 'GitHub - ArchiveBox/ArchiveBox'),
+        titled('https://docs.archivebox.io/en/latest/', 'ArchiveBox Documentation'),
       ]),
     ];
     const provider = new CoreSearchProvider();
@@ -325,6 +329,32 @@ describe('SearchOutput.brand_collision_warning — result-set collision, not nam
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     expect(out.data.brand_collision_warning).toBeUndefined();
+  });
+
+  // The subject check is the widest net, so it must run BELOW the lexical
+  // dev-term check. For a look-alike like "useState" the results are correct
+  // and the QUERY is the ambiguous part; if the subject check answered first it
+  // would replace a usable hook rewrite with a claim that nothing in the top-3
+  // is about useState — while react.dev sits at rank 1.
+  it('keeps the dev-term rewrite for "useState" instead of shadowing it with a subject verdict', async () => {
+    verticalState.general = [
+      makeEntry('bing', [
+        titled('https://react.dev/reference/react/useState', 'useState – React'),
+        titled('https://www.geeksforgeeks.org/reactjs/reactjs-usestate-hook/', 'React useState Hook - GeeksforGeeks'),
+        titled('https://www.geeksforgeeks.org/reactjs/what-is-usestate-in-react/', 'What is useState () in React - GeeksforGeeks'),
+      ]),
+    ];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: 'useState', include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const warning = out.data.brand_collision_warning;
+    expect(warning).toBeDefined();
+    expect(warning!.suggested_rewrites).toContain('usestate React hook');
+    expect(warning!.reason).toContain('popular dev term');
   });
 });
 

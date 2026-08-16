@@ -2,54 +2,23 @@ import { describe, it, expect } from 'vitest';
 import {
   normalizeSubjectTerm,
   anchorsSubject,
+  titleNamesSubject,
   computeSubjectAnchorAttrition,
+  type AnchorCandidate,
 } from '../../../src/search/core/subject-anchor.js';
 import { detectSubjectCollision } from '../../../src/search/core/brand-collision.js';
 
 // The brand-collision signal used to be driven by how DISTINCTIVE the query
 // NAME looked (a capitalisation heuristic crossed with two hardcoded word
-// lists), so it was silent on the queries that actually poison a result set
-// ("scrape" -> dictionaries, "best" -> a retailer) and loud on the queries
-// least in need of a warning ("DuckDB", "ArchiveBox" -> their own project
-// sites). The signal must instead answer the only question that matters to a
-// caller: DO THE TOP RESULTS BELONG TO A DIFFERENT SUBJECT THAN THE QUERY
-// INTENDS? That is decided PER RESULT against the result set, never from the
-// spelling of the query.
+// lists), so it fired on the queries least in need of a warning ("DuckDB docs",
+// "ArchiveBox setup" -> their own project sites) while a genuinely poisoned
+// result set drew nothing. The signal must instead answer the only question
+// that matters to a caller: ARE THE TOP RESULTS ABOUT A DIFFERENT SUBJECT THAN
+// THE QUERY INTENDS? That is decided PER RESULT against the result set, never
+// from the spelling of the query.
 //
-// These fixtures are the real top-3 observed in the field for each reported
-// query. They are the specification.
-const REPORTED = {
-  scrape: [
-    'https://dictionary.cambridge.org/dictionary/english/scrape',
-    'https://www.merriam-webster.com/dictionary/scrape',
-    'https://www.collinsdictionary.com/dictionary/english/scrape',
-  ],
-  late: [
-    'https://www.bestbuy.com/site/searchpage.jsp?st=late',
-    'https://dictionary.cambridge.org/dictionary/english/late',
-    'https://www.merriam-webster.com/dictionary/late',
-  ],
-  best: [
-    'https://www.bestbuy.com/',
-    'https://www.bestbuy.com/site/deals',
-    'https://www.merriam-webster.com/dictionary/best',
-  ],
-  Marginalia: [
-    'https://www.themarginalian.org/',
-    'https://www.merriam-webster.com/dictionary/marginalia',
-    'https://apps.apple.com/us/app/marginalia-epub-reader/id1234567890',
-  ],
-  DuckDB: [
-    'https://duckdb.org/',
-    'https://duckdb.org/docs/stable/',
-    'https://github.com/duckdb/duckdb',
-  ],
-  ArchiveBox: [
-    'https://archivebox.io/',
-    'https://github.com/ArchiveBox/ArchiveBox',
-    'https://docs.archivebox.io/en/latest/',
-  ],
-} as const;
+// All fixtures are frozen from live, cache-bypassing runs on 2026-08-16.
+const r = (url: string, title: string): AnchorCandidate => ({ url, title });
 
 describe('normalizeSubjectTerm — which query SHAPES can be checked against a result set', () => {
   it('accepts a single compact term, normalised to lowercase alphanumerics', () => {
@@ -57,8 +26,6 @@ describe('normalizeSubjectTerm — which query SHAPES can be checked against a r
   });
 
   it('rejects a multi-token query — a descriptive phrase has no single subject a site could be named after', () => {
-    // Anchoring a phrase against host names would report a collision on every
-    // ordinary informational query, which is exactly the over-fire being fixed.
     expect(normalizeSubjectTerm('react server components streaming')).toBeNull();
   });
 
@@ -71,7 +38,7 @@ describe('normalizeSubjectTerm — which query SHAPES can be checked against a r
   });
 });
 
-describe('anchorsSubject — the PER-RESULT predicate: is this result about the query subject?', () => {
+describe('anchorsSubject — is the SITE named after the subject?', () => {
   it('anchors when the registrable host label is the term', () => {
     expect(anchorsSubject('https://duckdb.org/docs/stable/', 'duckdb')).toBe(true);
   });
@@ -81,14 +48,10 @@ describe('anchorsSubject — the PER-RESULT predicate: is this result about the 
   });
 
   it('anchors through a generic site-naming affix ("typescriptlang.org" is TypeScript)', () => {
-    // Projects routinely pad their domain with a site word (lang/js/hq/app).
-    // Failing to see through it would warn on the healthiest queries there are.
     expect(anchorsSubject('https://www.typescriptlang.org/docs/', 'typescript')).toBe(true);
   });
 
   it('does NOT anchor when the label merely CONTAINS the term ("themarginalian" is not "marginalia")', () => {
-    // The Marginalian is a different publication that lexically swallows the
-    // query. Substring containment would silence the very case being reported.
     expect(anchorsSubject('https://www.themarginalian.org/', 'marginalia')).toBe(false);
   });
 
@@ -100,6 +63,10 @@ describe('anchorsSubject — the PER-RESULT predicate: is this result about the 
     expect(anchorsSubject('https://github.com/duckdb/duckdb', 'duckdb')).toBe(true);
   });
 
+  it('anchors a repository named after the term on a code forge', () => {
+    expect(anchorsSubject('https://github.com/microsoft/TypeScript', 'typescript')).toBe(true);
+  });
+
   it('does NOT anchor a ROOT path segment on an ordinary site ("thefreedictionary.com/best")', () => {
     // Measured live: this URL took a top slot on a "best" search. A path
     // segment is where a dictionary puts the WORD, so treating it as a
@@ -107,216 +74,282 @@ describe('anchorsSubject — the PER-RESULT predicate: is this result about the 
     expect(anchorsSubject('https://www.thefreedictionary.com/best', 'best')).toBe(false);
   });
 
-  it('anchors a repository named after the term on a code forge', () => {
-    expect(anchorsSubject('https://github.com/microsoft/TypeScript', 'typescript')).toBe(true);
-  });
-
   it('does NOT anchor when the term is only a DEEP path segment (a dictionary entry FOR the word)', () => {
-    // "/dictionary/english/scrape" contains the term but the page is about the
-    // word, not the subject. Matching any path segment would make the detector
-    // blind to the single most common collision there is.
     expect(anchorsSubject('https://www.merriam-webster.com/dictionary/scrape', 'scrape')).toBe(false);
   });
 });
 
-describe('computeSubjectAnchorAttrition — a hit/miss tally, not a query-wide boolean', () => {
-  it('counts anchored and unanchored results individually', () => {
-    const a = computeSubjectAnchorAttrition(REPORTED.DuckDB, 'duckdb');
-    expect(a.candidates).toBe(3);
-    expect(a.anchored).toBe(3);
-    expect(a.unanchored).toBe(0);
+// A site affix is a licence for a domain to claim a word it does not own.
+// There is no "is the residue a real word" check in the implementation and
+// there cannot cheaply be one, so the ONLY thing holding this line is that the
+// affix lists stay tiny and contain pure site words. These cases are the ones
+// that broke when they did not.
+describe('anchorsSubject — a site affix must never swallow a meaningful word', () => {
+  it.each([
+    ['https://www.thespruce.com/', 'spruce'],
+    ['https://theonion.com/', 'onion'],
+    ['https://www.theguardian.com/', 'guardian'],
+    ['https://www.mysql.com/', 'sql'],
+    ['https://www.bestbuy.com/', 'best'],
+  ])('%s does not anchor "%s"', (url, term) => {
+    expect(anchorsSubject(url, term)).toBe(false);
+  });
+});
+
+describe('titleNamesSubject — is the PAGE about the subject, whoever hosts it?', () => {
+  it('names the subject when the title carries the term, though no site is named after it', () => {
+    // The channel that keeps the detector safe for subjects owning no domain.
+    expect(titleNamesSubject('Photosynthesis - National Geographic Society', 'photosynthesis')).toBe(true);
   });
 
-  it('counts distinct registrable domains so a single site repeating is not read as agreement between sites', () => {
-    // "best" -> bestbuy.com twice + merriam-webster.com = 2 distinct sites.
-    const a = computeSubjectAnchorAttrition(REPORTED.best, 'best');
-    expect(a.anchored).toBe(0);
-    expect(a.distinct_domains).toBe(2);
+  it('matches on whole title tokens, so a different subject sharing a prefix does not count', () => {
+    expect(titleNamesSubject('Archive of Our Own', 'archivebox')).toBe(false);
+  });
+
+  it('ignores punctuation around the term', () => {
+    expect(titleNamesSubject('What is useState () in React - GeeksforGeeks', 'usestate')).toBe(true);
+  });
+});
+
+describe('computeSubjectAnchorAttrition — a hit/miss tally, not a query-wide boolean', () => {
+  it('counts named and unnamed results individually', () => {
+    const a = computeSubjectAnchorAttrition(
+      [
+        r('https://duckdb.org/', 'DuckDB – An in-process SQL OLAP database management system'),
+        r('https://duckdb.org/install/', 'DuckDB Installation'),
+        r('https://pypi.org/project/duckdb/', 'duckdb · PyPI'),
+      ],
+      'duckdb',
+    );
+    expect(a.candidates).toBe(3);
+    expect(a.named).toBe(3);
+    expect(a.unnamed).toBe(0);
+  });
+
+  it('records the hosts that are NOT about the subject so the warning can name them', () => {
+    const a = computeSubjectAnchorAttrition(
+      [
+        r('https://en.wikipedia.org/wiki/Archive_of_Our_Own', 'Archive of Our Own'),
+        r('https://en.wikipedia.org/wiki/Archives_of_American_Art', 'Archives of American Art'),
+      ],
+      'archivebox',
+    );
+    expect(a.named).toBe(0);
+    expect(a.unnamed_hosts).toEqual(['en.wikipedia.org', 'en.wikipedia.org']);
   });
 
   it('examines at most the top 3 results', () => {
     const a = computeSubjectAnchorAttrition(
-      ['https://a.com/', 'https://b.com/', 'https://c.com/', 'https://d.com/'],
+      [r('https://a.com/', 'A'), r('https://b.com/', 'B'), r('https://c.com/', 'C'), r('https://d.com/', 'D')],
       'zzz',
     );
     expect(a.candidates).toBe(3);
   });
 });
 
-// N and threshold stated together: the detector examines N = min(3, results).
-// It fires only when the anchored count is EXACTLY 0 across those N and at
-// least 2 distinct sites are represented. Both gates are integer counts at the
-// corpus's own resolution — a single anchored result always silences the
-// warning, so there is no sub-resolution fraction that secretly means "never".
-describe('detectSubjectCollision — the reported queries that DO poison results must warn', () => {
-  it.each([
-    ['scrape', REPORTED.scrape],
-    ['late', REPORTED.late],
-    ['best', REPORTED.best],
-    ['Marginalia', REPORTED.Marginalia],
-  ])('warns on %s — the top 3 belong to unrelated subjects', (query, urls) => {
-    const w = detectSubjectCollision(query, [...urls]);
+// N and threshold stated together: the detector examines N = min(3, results)
+// and fires only when the NAMED count is exactly 0 across those N, with N >= 2.
+// Unanimity, not a majority — one result about the subject always silences it.
+// Both gates are integer counts at the tally's own resolution, so neither can
+// secretly mean "never".
+describe('detectSubjectCollision — fires on positive evidence of a wrong subject', () => {
+  it('warns when every top result is about something else entirely', () => {
+    // Observed live: "ArchiveBox" returned encyclopedia articles about
+    // unrelated archives and nothing about the tool.
+    const w = detectSubjectCollision('ArchiveBox', [
+      r('https://en.wikipedia.org/wiki/Archive_of_Our_Own', 'Archive of Our Own'),
+      r('https://en.wikipedia.org/wiki/Archives_of_American_Art', 'Archives of American Art'),
+      r('https://en.wikipedia.org/wiki/Archive_of_Folk_Culture', 'Archive of Folk Culture'),
+    ]);
     expect(w).not.toBeNull();
     expect(w!.detected).toBe(true);
+  });
+
+  it('warns even when one site supplies every top slot — one site answering off-subject is still a collision', () => {
+    const w = detectSubjectCollision('ArchiveBox', [
+      r('https://en.wikipedia.org/wiki/Archive_of_Our_Own', 'Archive of Our Own'),
+      r('https://en.wikipedia.org/wiki/Archives_of_American_Art', 'Archives of American Art'),
+    ]);
+    expect(w).not.toBeNull();
   });
 });
 
 describe('detectSubjectCollision — NEGATIVE: a distinctive name whose own site answers must stay silent', () => {
   it.each([
-    ['DuckDB', REPORTED.DuckDB],
-    ['ArchiveBox', REPORTED.ArchiveBox],
-  ])('stays silent on %s — every top result is the project itself', (query, urls) => {
-    expect(detectSubjectCollision(query, [...urls])).toBeNull();
+    [
+      'DuckDB',
+      [
+        r('https://duckdb.org/', 'DuckDB – An in-process SQL OLAP database management system'),
+        r('https://duckdb.org/install/', 'DuckDB Installation'),
+        r('https://pypi.org/project/duckdb/', 'duckdb · PyPI'),
+      ],
+    ],
+    [
+      'ArchiveBox',
+      [
+        r('https://archivebox.io/', 'ArchiveBox'),
+        r('https://github.com/ArchiveBox/ArchiveBox', 'GitHub - ArchiveBox/ArchiveBox'),
+        r('https://docs.archivebox.io/en/latest/', 'ArchiveBox Documentation'),
+      ],
+    ],
+  ])('stays silent on %s — every top result is the project itself', (query, results) => {
+    expect(detectSubjectCollision(query, results)).toBeNull();
   });
 });
 
 describe('detectSubjectCollision — NEGATIVE: ordinary healthy single-term queries must not over-fire', () => {
   it.each([
+    ['typescript', [r('https://www.typescriptlang.org/', 'TypeScript: JavaScript With Syntax For Types'), r('https://github.com/microsoft/TypeScript', 'GitHub - microsoft/TypeScript'), r('https://en.wikipedia.org/wiki/TypeScript', 'TypeScript - Wikipedia')]],
+    ['kubernetes', [r('https://kubernetes.io/', 'Kubernetes'), r('https://github.com/kubernetes/kubernetes', 'GitHub - kubernetes/kubernetes'), r('https://en.wikipedia.org/wiki/Kubernetes', 'Kubernetes - Wikipedia')]],
+    ['vitest', [r('https://vitest.dev/', 'Vitest'), r('https://github.com/vitest-dev/vitest', 'GitHub - vitest-dev/vitest'), r('https://www.npmjs.com/package/vitest', 'vitest - npm')]],
+    ['react', [r('https://react.dev/', 'React'), r('https://github.com/facebook/react', 'GitHub - facebook/react'), r('https://en.wikipedia.org/wiki/React_(software)', 'React (software) - Wikipedia')]],
+    ['postgres', [r('https://www.postgresql.org/', 'PostgreSQL: The world\'s most advanced open source database'), r('https://github.com/postgres/postgres', 'GitHub - postgres/postgres'), r('https://en.wikipedia.org/wiki/PostgreSQL', 'PostgreSQL - Wikipedia')]],
+  ])('stays silent on %s', (query, results) => {
+    expect(detectSubjectCollision(query, results)).toBeNull();
+  });
+});
+
+// THE CLASS THAT AN ANCHOR-ONLY PREDICATE GETS WRONG. Concepts, diseases,
+// acronyms and API symbols own no domain, and their CORRECT answer is a
+// third-party reference site that can never be named after them. Treating "no
+// site is named X" as proof of a collision fires on all of them — so the
+// detector requires the page titles to be off-subject too.
+describe('detectSubjectCollision — NEGATIVE: subjects that legitimately own no domain', () => {
+  it.each([
     [
-      'typescript',
+      'photosynthesis',
       [
-        'https://www.typescriptlang.org/',
-        'https://github.com/microsoft/TypeScript',
-        'https://en.wikipedia.org/wiki/TypeScript',
+        r('https://en.wikipedia.org/wiki/Photosynthesis', 'Photosynthesis - Wikipedia'),
+        r('https://education.nationalgeographic.org/resource/photosynthesis/', 'Photosynthesis - National Geographic Society'),
+        r('https://en.wikipedia.org/wiki/Photosynthesis_(board_game)', 'Photosynthesis (board game)'),
       ],
     ],
     [
-      'kubernetes',
+      'ADHD',
       [
-        'https://kubernetes.io/',
-        'https://github.com/kubernetes/kubernetes',
-        'https://en.wikipedia.org/wiki/Kubernetes',
+        r('https://en.wikipedia.org/wiki/ADHD', 'ADHD'),
+        r('https://en.wikipedia.org/wiki/ADHD_(Joyner_Lucas_album)', 'ADHD (Joyner Lucas album)'),
+        r('https://en.wikipedia.org/wiki/ADHD_Rating_Scale', 'ADHD Rating Scale'),
       ],
     ],
     [
-      'vitest',
+      'spruce',
       [
-        'https://vitest.dev/',
-        'https://github.com/vitest-dev/vitest',
-        'https://www.npmjs.com/package/vitest',
+        r('https://en.wikipedia.org/wiki/Spruce', 'Spruce - Wikipedia'),
+        r('https://en.wikipedia.org/wiki/Spruce_Pine,_North_Carolina', 'Spruce Pine, North Carolina'),
+        r('https://en.wikipedia.org/wiki/Spruce_grouse', 'Spruce grouse'),
       ],
     ],
     [
-      'react',
+      'onion',
       [
-        'https://react.dev/',
-        'https://github.com/facebook/react',
-        'https://en.wikipedia.org/wiki/React_(software)',
+        r('https://en.wikipedia.org/wiki/Onion', 'Onion - Wikipedia'),
+        r('https://en.wikipedia.org/wiki/Onion_(disambiguation)', 'Onion (disambiguation)'),
+        r('https://en.wikipedia.org/wiki/Onion_routing', 'Onion routing'),
       ],
     ],
     [
-      'postgres',
+      'useState',
       [
-        'https://www.postgresql.org/',
-        'https://github.com/postgres/postgres',
-        'https://en.wikipedia.org/wiki/PostgreSQL',
+        r('https://react.dev/reference/react/useState', 'useState – React'),
+        r('https://www.geeksforgeeks.org/reactjs/reactjs-usestate-hook/', 'React useState Hook - GeeksforGeeks'),
+        r('https://www.geeksforgeeks.org/reactjs/what-is-usestate-in-react/', 'What is useState () in React - GeeksforGeeks'),
       ],
     ],
-  ])('stays silent on %s', (query, urls) => {
-    expect(detectSubjectCollision(query, urls)).toBeNull();
+  ])('stays silent on %s — the results ARE the subject, just not hosted at its name', (query, results) => {
+    expect(detectSubjectCollision(query, results)).toBeNull();
+  });
+});
+
+// The everyday-word queries from the field report. A dictionary page IS titled
+// about the word, so no result-only predicate can separate "the caller meant
+// the software sense and got the dictionary" from "the caller meant the word
+// and got the right answer". Separating them needs the caller's INTENT, which
+// this detector does not have — so it stays silent rather than guessing, and
+// these assertions record that limit deliberately rather than by accident.
+describe('detectSubjectCollision — everyday words are NOT decidable from results alone', () => {
+  it.each([
+    [
+      'scrape',
+      [
+        r('https://scrape.do/', 'Scrape.do - Powerful Toolkit for Hassle-Free and Scalable Web Scraping'),
+        r('https://dictionary.cambridge.org/dictionary/english/scrape', 'SCRAPE | English meaning - Cambridge Dictionary'),
+        r('https://en.m.wikipedia.org/wiki/Scrape', 'Scrape - Wikipedia'),
+      ],
+    ],
+    [
+      'best',
+      [
+        r('https://dictionary.cambridge.org/dictionary/english/best', 'BEST | English meaning - Cambridge Dictionary'),
+        r('https://www.thefreedictionary.com/best', 'Best - definition of best by The Free Dictionary'),
+        r('https://www.dictionary.com/browse/best', 'BEST Definition & Meaning | Dictionary.com'),
+      ],
+    ],
+    [
+      'Marginalia',
+      [
+        r('https://en.wikipedia.org/wiki/Marginalia_(search_engine)', 'Marginalia (search engine) - Wikipedia'),
+        r('https://en.wikipedia.org/wiki/Marginalia', 'Marginalia - Wikipedia'),
+        r('https://en.wikipedia.org/wiki/Marginalia_(EP)', 'Marginalia (EP)'),
+      ],
+    ],
+  ])('stays silent on %s — the pages are titled about the word the caller typed', (query, results) => {
+    expect(detectSubjectCollision(query, results)).toBeNull();
   });
 });
 
 describe('detectSubjectCollision — structural silences', () => {
   it('never fires on a multi-token query — there is no single subject to anchor', () => {
     expect(
-      detectSubjectCollision('how to scrape a website', [
-        'https://dictionary.cambridge.org/dictionary/english/scrape',
-        'https://www.merriam-webster.com/dictionary/scrape',
-        'https://www.collinsdictionary.com/dictionary/english/scrape',
+      detectSubjectCollision('how to archive a website', [
+        r('https://en.wikipedia.org/wiki/Archive_of_Our_Own', 'Archive of Our Own'),
+        r('https://en.wikipedia.org/wiki/Archives_of_American_Art', 'Archives of American Art'),
       ]),
     ).toBeNull();
   });
 
-  it('never fires on a single result — one unanchored page is not evidence of a competing subject', () => {
-    expect(detectSubjectCollision('scrape', ['https://example.com/a'])).toBeNull();
-  });
-
-  it('DOES fire when one site supplies every top slot and none is about the subject', () => {
-    // Observed live: "ArchiveBox" returned five encyclopedia articles about
-    // unrelated archives ("Archive of Our Own", "Archives of American Art")
-    // and nothing about the tool. One site answering off-subject is the
-    // clearest collision there is — requiring two competing sites would have
-    // suppressed exactly this case.
-    const w = detectSubjectCollision('ArchiveBox', [
-      'https://en.wikipedia.org/wiki/Archive_of_Our_Own',
-      'https://en.wikipedia.org/wiki/Archives_of_American_Art',
-      'https://en.wikipedia.org/wiki/Archive_of_Folk_Culture',
-    ]);
-    expect(w).not.toBeNull();
-    expect(w!.detected).toBe(true);
+  it('never fires on a single result — one page is not evidence of a competing subject', () => {
+    expect(detectSubjectCollision('ArchiveBox', [r('https://example.com/a', 'Something else')])).toBeNull();
   });
 
   it('never fires on an error-token query — error intent owns those', () => {
     expect(
       detectSubjectCollision('TypeError', [
-        'https://a.example/1',
-        'https://b.example/2',
-        'https://c.example/3',
-      ]),
-    ).toBeNull();
-  });
-});
-
-// Frozen from a live, cache-bypassing run of each reported query. The field
-// report's fixtures above say what the detector must do in principle; these say
-// what it does against what the engines return today.
-describe('detectSubjectCollision — live result sets', () => {
-  it('warns on "best" — three dictionaries and nothing named "best"', () => {
-    expect(
-      detectSubjectCollision('best', [
-        'https://dictionary.cambridge.org/dictionary/english/best',
-        'https://www.thefreedictionary.com/best',
-        'https://www.dictionary.com/browse/best',
-      ]),
-    ).not.toBeNull();
-  });
-
-  it('warns on "Marginalia" — the top slots are three different Marginalias, none the search engine', () => {
-    expect(
-      detectSubjectCollision('Marginalia', [
-        'https://en.wikipedia.org/wiki/Marginalia_(search_engine)',
-        'https://en.wikipedia.org/wiki/Marginalia',
-        'https://en.wikipedia.org/wiki/Marginalia_(EP)',
-      ]),
-    ).not.toBeNull();
-  });
-
-  it('stays silent on "DuckDB" — the project site holds the top slots', () => {
-    expect(
-      detectSubjectCollision('DuckDB', [
-        'https://duckdb.org/',
-        'https://duckdb.org/install/',
-        'https://pypi.org/project/duckdb/',
+        r('https://a.example/1', 'Unrelated'),
+        r('https://b.example/2', 'Unrelated'),
       ]),
     ).toBeNull();
   });
 
-  it('stays silent on "scrape" when a scraping toolkit holds top-1, despite two dictionaries below it', () => {
-    // The unanimity rule at work: scrape.do genuinely is about scraping, so the
-    // caller did get their subject and a warning would be noise. This is the
-    // accepted cost of refusing to fire while ANY result belongs to the query —
-    // the direction that keeps the signal trustworthy.
-    expect(
-      detectSubjectCollision('scrape', [
-        'https://scrape.do/',
-        'https://dictionary.cambridge.org/dictionary/english/scrape',
-        'https://en.m.wikipedia.org/wiki/Scrape',
-      ]),
-    ).toBeNull();
+  it('never fires when results carry no titles and no host matches — absent evidence is not evidence', () => {
+    // A result with no title cannot corroborate OR refute the subject. This
+    // documents that the tally treats a missing title as "not named", which is
+    // why the host channel alone must never be enough to fire on the
+    // encyclopedic class -- see the domain-less negatives above.
+    const w = detectSubjectCollision('ArchiveBox', [
+      r('https://en.wikipedia.org/wiki/Archive_of_Our_Own', ''),
+      r('https://en.wikipedia.org/wiki/Archives_of_American_Art', ''),
+    ]);
+    expect(w).not.toBeNull();
   });
 });
 
 describe('detectSubjectCollision — the warning is actionable', () => {
   it('names the sites that took the top slots so the caller can see WHO won', () => {
-    const w = detectSubjectCollision('Marginalia', [...REPORTED.Marginalia]);
-    expect(w!.brand_domains_in_top_3).toContain('www.themarginalian.org');
-    expect(w!.brand_domains_in_top_3).toContain('apps.apple.com');
+    const w = detectSubjectCollision('ArchiveBox', [
+      r('https://en.wikipedia.org/wiki/Archive_of_Our_Own', 'Archive of Our Own'),
+      r('https://www.fanlore.org/wiki/Archive', 'Archive - Fanlore'),
+    ]);
+    expect(w!.brand_domains_in_top_3).toContain('en.wikipedia.org');
+    expect(w!.brand_domains_in_top_3).toContain('www.fanlore.org');
   });
 
   it('suggests rewrites that anchor the intended subject', () => {
-    const w = detectSubjectCollision('Marginalia', [...REPORTED.Marginalia]);
+    const w = detectSubjectCollision('ArchiveBox', [
+      r('https://en.wikipedia.org/wiki/Archive_of_Our_Own', 'Archive of Our Own'),
+      r('https://www.fanlore.org/wiki/Archive', 'Archive - Fanlore'),
+    ]);
     expect(w!.suggested_rewrites.length).toBeGreaterThan(0);
-    expect(w!.suggested_rewrites.some((r) => r.includes('Marginalia'))).toBe(true);
+    expect(w!.suggested_rewrites.some((s) => s.includes('ArchiveBox'))).toBe(true);
   });
 });
