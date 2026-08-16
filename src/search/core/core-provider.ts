@@ -35,6 +35,7 @@ import { recencyDemotion, hasTemporalIntent } from './recency-boost.js';
 import {
   detectBrandCollision,
   detectEntityCollision,
+  detectSubjectCollision,
   detectLexicalCollision,
   entityQualifiedRewrite,
   topCollisionRewrite,
@@ -890,16 +891,32 @@ export class CoreSearchProvider implements SearchProvider {
       ...(enginePool ? { engine_pool: enginePool } : {}),
     };
 
-    // Try the brand-domain check first (cheap, requires
-    // top-3 to actually carry a brand TLD). Then the entity-collision v2 check
-    // — fires on a proper-noun-head + generic-tail query ("Phoenix framework
-    // deployment") regardless of the top-3 hosts. Finally the lexical dev-term
-    // collision check — fires on "useState" etc. Every path emits the same
-    // warning shape.
+    // Order matters. Brand-domain first (cheap, requires the top-3 to actually
+    // carry a brand TLD). Then the lexical dev-term check — it MUST outrank the
+    // subject check, because for a look-alike like "useState" the results are
+    // correct and the QUERY is the ambiguous part; letting the subject check
+    // answer first would replace a usable "useState React hook" rewrite with a
+    // claim that nothing in the top-3 is about useState while react.dev sits at
+    // rank 1. Then the entity-collision check. The result-set subject check
+    // runs last: it is the general case and the widest net, so it only speaks
+    // when no more specific reading applies.
+    //
+    // The subject check additionally needs a result set worth reading. When
+    // only one engine actually contributed, "nothing here is about X" is far
+    // more likely to mean "we retrieved almost nothing" than "your query is
+    // ambiguous", and its rewrites would not help — the pool condition is
+    // already reported by engine_pool/engine_warnings and must not be
+    // re-labelled as a query problem. Every path emits the same warning shape.
+    const contributingEngines = engineTelemetry
+      ? engineTelemetry.filter((t) => t.result_count > 0).length
+      : 0;
+    const subjectEvidenceUsable = !engineTelemetry || contributingEngines >= 2;
+    const collisionCandidates = items.map((i) => ({ url: i.url, title: i.title }));
     const collisionWarning =
       detectBrandCollision(displayQuery, items.map((i) => i.url)) ??
+      detectLexicalCollision(displayQuery) ??
       detectEntityCollision(displayQuery) ??
-      detectLexicalCollision(displayQuery);
+      (subjectEvidenceUsable ? detectSubjectCollision(displayQuery, collisionCandidates) : null);
     if (collisionWarning) data.brand_collision_warning = collisionWarning;
 
     if (input.include_images || isImagesCategory) {

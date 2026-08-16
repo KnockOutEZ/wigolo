@@ -1,6 +1,12 @@
 import { COMMON_NOUNS } from '../hybrid/common-nouns.js';
 import { extractEntities } from './query-understanding.js';
 import { queryHasErrorToken } from './intent-router.js';
+import {
+  normalizeSubjectTerm,
+  computeSubjectAnchorAttrition,
+  isSubjectCollision,
+  type AnchorCandidate,
+} from './subject-anchor.js';
 
 export interface BrandCollisionWarning {
   detected: true;
@@ -181,28 +187,48 @@ function entityHead(query: string): string {
   return head.join(' ');
 }
 
+// Curated rewrites for the highest-traffic collision tokens, shared by every
+// detector so one query never suggests two different disambiguations depending
+// on which path noticed the collision. Null when the token has no curation.
+function curatedRewrites(query: string): string[] | null {
+  switch (query.trim().toLowerCase()) {
+    case 'next':
+      return ['Next.js framework', 'next-router library', 'JavaScript "next" framework'];
+    case 'core':
+      return ['.NET Core', 'wigolo core search', '"core" library'];
+    case 'apple':
+      return ['Apple Inc.', 'apple programming language', 'apple fruit'];
+    case 'mint':
+      return ['Linux Mint OS', 'mint.com finance', 'mint programming'];
+    default:
+      return null;
+  }
+}
+
 function suggestRewrites(query: string): string[] {
   const q = query.trim();
-  const lower = q.toLowerCase();
-  // Curated rewrites for the highest-traffic collision tokens. The general
-  // fallback below handles every other common noun.
-  if (lower === 'next') {
-    return ['Next.js framework', 'next-router library', 'JavaScript "next" framework'];
-  }
-  if (lower === 'core') {
-    return ['.NET Core', 'wigolo core search', '"core" library'];
-  }
-  if (lower === 'apple') {
-    return ['Apple Inc.', 'apple programming language', 'apple fruit'];
-  }
-  if (lower === 'mint') {
-    return ['Linux Mint OS', 'mint.com finance', 'mint programming'];
-  }
+  const curated = curatedRewrites(q);
+  if (curated) return curated;
   // Generic disambiguation suggestions.
   return [
     `${q} framework`,
     `${q} programming`,
     `"${q}" library documentation`,
+  ];
+}
+
+// Rewrites for a result-set collision. Unlike the generic set above these must
+// NOT assume a software intent — the caller's subject is exactly what is in
+// doubt, and the detector fires on anything from a tool name to a proper noun —
+// so every one of them just anchors the term harder and lets the caller pick.
+function subjectCollisionRewrites(query: string): string[] {
+  const q = query.trim();
+  const curated = curatedRewrites(q);
+  if (curated) return curated;
+  return [
+    `"${q}" official site`,
+    `"${q}" documentation`,
+    `what is "${q}"`,
   ];
 }
 
@@ -234,6 +260,42 @@ export function detectBrandCollision(
 }
 
 /**
+ * Detect a RESULT-SET collision: the query names one subject and not one of the
+ * examined top results is about anything by that name — neither hosted at it
+ * nor titled about it.
+ *
+ * This is the detector that answers the caller's actual question — "do the top
+ * results belong to a different subject than I intended?" — and it is decided
+ * entirely from the results. It replaces nothing: `detectBrandCollision` still
+ * owns the shopping-TLD case, and `detectLexicalCollision` (which runs FIRST)
+ * owns dev-term look-alikes, whose whole point is that the results ARE on
+ * subject while the query is the ambiguous part.
+ */
+export function detectSubjectCollision(
+  query: string,
+  results: readonly AnchorCandidate[],
+): BrandCollisionWarning | null {
+  const q = query.trim();
+  if (queryHasErrorToken(q)) return null;
+  const term = normalizeSubjectTerm(q);
+  if (!term) return null;
+
+  const attrition = computeSubjectAnchorAttrition(results, term);
+  if (!isSubjectCollision(attrition)) return null;
+
+  const sites = [...new Set(attrition.unnamed_hosts)];
+  return {
+    detected: true,
+    reason:
+      `query "${q}" — none of the top ${attrition.candidates} results is about anything called "${q}"; ` +
+      `the top slots went to ${sites.join(', ')}. ` +
+      `The results may cover a different subject than intended.`,
+    brand_domains_in_top_3: sites,
+    suggested_rewrites: subjectCollisionRewrites(q),
+  };
+}
+
+/**
  * Build an entity-qualified rewrite of an "Entity + generic tail" query. The
  * entity head is quoted so an engine treats it as one atom, keeping the whole
  * original query intent while anchoring on the ambiguous entity — e.g.
@@ -257,6 +319,14 @@ export function entityQualifiedRewrite(query: string): string | null {
  * require a brand TLD in the top-3, since the collision is in the query itself.
  * Emits a warning whose rewrites anchor the entity head verbatim so the caller
  * can disambiguate. Returns null when the query is not entity-collision prone.
+ *
+ * DELIBERATELY result-blind. Silencing this when some result is hosted at a
+ * matching name is self-defeating: an entity collision IS the case where
+ * another entity shares the name, so a competitor always occupies a matching
+ * hostname. Such a rule silences "Apollo documentation" (a Discord bot and a
+ * sales platform, both at an apollo domain) while still firing on a project
+ * that plainly owns its name. Whatever over-firing this predicate does is
+ * pre-existing and belongs to a slice that can weigh a real intent signal.
  */
 export function detectEntityCollision(query: string): BrandCollisionWarning | null {
   const q = query.trim();
