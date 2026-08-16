@@ -36,6 +36,21 @@ import net from 'node:net';
  *   - the TLS-impersonation tier (`tls-tier.ts`) — INVISIBLE. It egresses through the `wreq-js`
  *     napi backend, whose sockets are opened in native code and never touch `node:net`. Forcing
  *     it produced a real `403` from a live host with the fence installed and silent.
+ *
+ *     HOW A TEST FALLS INTO THIS ROW WITHOUT ASKING, and why `WIGOLO_TLS_TIER=off` does NOT save
+ *     you. `router.ts` keeps a curated anti-bot set — `stackoverflow.com`, `serverfault.com`,
+ *     `superuser.com`, `askubuntu.com`, `stackexchange.com`, `mathoverflow.net` — and
+ *     `tryTlsFirst` is `tlsMode === 'on' || tlsDomainPreferred || isAntiBotDomain`. That last
+ *     term applies EVEN WHEN THE GLOBAL TIER IS 'off' (the router says so in its own comment), so
+ *     a URL on any of those six domains tries the TLS tier FIRST regardless of configuration.
+ *     `tlsTier` also defaults to `'auto'` and `WIGOLO_TLS_TIER` is NOT one of the values
+ *     `tests/setup.ts` pins, so the suite default is not 'off' either.
+ *
+ *     Concretely: `new SmartRouter({ httpClient: realHttpClient, browserPool })` fetching a
+ *     stackoverflow.com URL egresses natively, this fence records NOTHING, and the test passes on
+ *     live data. Nothing occupies that hole today — every current reference to those domains is a
+ *     string fixture or uses a mock router — but the way to close it is an injected `tlsFetcher`,
+ *     never a config flag.
  *   - a browser spawned as a CHILD PROCESS — INVISIBLE. It resolves and connects in its own
  *     process, out of reach of any in-process patch.
  *
@@ -119,10 +134,21 @@ export function allowNetworkInThisFile(reason: string): void {
  * which is the same technique this file's own opt-out control uses. Blocking them would punish
  * the correct pattern.
  *
- * THE LINE THAT KEEPS THIS SAFE: only a LITERAL reserved IP is allowed. A hostname is judged
- * strictly no matter what it looks like, so nothing here can resolve a name — and the defect this
- * fence exists for is a result that depends on NAME RESOLUTION reaching the internet. Widening to
- * reserved literals cannot reintroduce it, because no DNS query is ever made for a literal.
+ * THE LINE THAT KEEPS THIS SAFE: nothing allowed here can produce a DNS query that reaches the
+ * network. Two categories qualify, and the second is a genuine exception to "literals only" —
+ * stated because this paragraph is what a future reader will trust when judging whether some
+ * further widening is safe, and a sentence that overstates the rule is worse than none:
+ *
+ *   1. LITERAL reserved IP addresses. No name, so no lookup, so nothing to reach the internet.
+ *   2. `localhost` and `*.localhost` — the ONLY hostnames allowed. They are names, but RFC 6761
+ *      special-use ones: resolvers are required to answer them locally (hosts file / built-in),
+ *      so they never become a query on the wire. Every other hostname is judged strictly, however
+ *      internal it looks — `metadata.google.internal` and `10-0-0-5.example.com` are both blocked,
+ *      and there is a test row asserting exactly that.
+ *
+ * The defect this fence exists for is a result that depends on NAME RESOLUTION reaching the
+ * internet. Neither category can produce such a resolution, which is why the widening is safe —
+ * not because hostnames are categorically refused, which they are not.
  *
  * ONE HONEST RESIDUAL, stated rather than buried: RFC 1918 space (10/8, 172.16/12, 192.168/16) is
  * unreachable on a laptop but CAN answer on a corporate LAN, so allowing it admits a small
