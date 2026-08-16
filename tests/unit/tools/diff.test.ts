@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../src/cache/store.js', () => ({
   getCachedContent: vi.fn(),
+  getCachedContentByHash: vi.fn(),
   isExpired: vi.fn(),
 }));
 
@@ -15,12 +16,34 @@ vi.mock('../../../src/logger.js', () => ({
 }));
 
 import { handleDiff } from '../../../src/tools/diff.js';
-import { getCachedContent, isExpired } from '../../../src/cache/store.js';
+import type { CachedContent } from '../../../src/types.js';
+import { getCachedContent, getCachedContentByHash, isExpired } from '../../../src/cache/store.js';
+
+function makeCached(overrides: Partial<CachedContent> = {}): CachedContent {
+  return {
+    id: 1,
+    url: 'https://example.com/a',
+    normalizedUrl: 'https://example.com/a',
+    title: 'a',
+    markdown: 'cached body\n',
+    rawHtml: '',
+    metadata: '{}',
+    links: '[]',
+    images: '[]',
+    fetchMethod: 'http',
+    extractorUsed: 'defuddle',
+    contentHash: 'a'.repeat(64),
+    fetchedAt: new Date().toISOString(),
+    expiresAt: null,
+    ...overrides,
+  };
+}
 
 describe('handleDiff', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getCachedContent).mockReturnValue(null);
+    vi.mocked(getCachedContentByHash).mockReturnValue(null);
     vi.mocked(isExpired).mockReturnValue(false);
   });
 
@@ -312,6 +335,156 @@ describe('handleDiff', () => {
       expect(r.ok).toBe(false);
       if (!r.ok) {
         expect(r.error).toBe('cache_miss');
+      }
+    });
+  });
+
+  describe('content_hash input', () => {
+    const HASH = 'b'.repeat(64);
+
+    // Why: `old.content_hash` is advertised on the tool schema, the MCP
+    // instructions and docs/tools.md. The workflow it promises — `fetch` a
+    // page, keep the returned `content_hash`, later diff against that exact
+    // body without knowing the URL or re-fetching — only exists if the handler
+    // actually resolves it. Before this it fell through to "url is required".
+    it('resolves old.content_hash from the cache', async () => {
+      vi.mocked(getCachedContentByHash).mockImplementation((hash: string) =>
+        hash === HASH ? makeCached({ markdown: 'hashed old body\n' }) : null,
+      );
+
+      const r = await handleDiff({
+        old: { content_hash: HASH },
+        new: { markdown: 'hashed new body\n' },
+        output: 'unified',
+      });
+
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.data.changed).toBe(true);
+        expect(r.data.unified_diff).toContain('-hashed old body');
+        expect(r.data.unified_diff).toContain('+hashed new body');
+      }
+      expect(getCachedContentByHash).toHaveBeenCalledWith(HASH);
+      // A hash is not a URL — the URL lookup must not be consulted.
+      expect(getCachedContent).not.toHaveBeenCalled();
+    });
+
+    // Why: a hash whose row was never cached (or has since been evicted) must
+    // reuse the EXISTING structured `cache_miss` envelope, not a new error
+    // class and not a silent network re-fetch.
+    it('returns the structured cache_miss envelope when the hash is unknown', async () => {
+      vi.mocked(getCachedContentByHash).mockReturnValue(null);
+
+      const r = await handleDiff({
+        old: { content_hash: HASH },
+        new: { markdown: 'anything\n' },
+        output: 'unified',
+      });
+
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error).toBe('cache_miss');
+        expect(r.error_reason).toContain(HASH);
+        expect(r.stage).toBe('diff');
+      }
+    });
+
+    it('treats an expired row reached by hash as a miss', async () => {
+      vi.mocked(getCachedContentByHash).mockReturnValue(makeCached({ markdown: 'stale\n' }));
+      vi.mocked(isExpired).mockReturnValue(true);
+
+      const r = await handleDiff({
+        old: { content_hash: HASH },
+        new: { markdown: 'anything\n' },
+      });
+
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toBe('cache_miss');
+    });
+
+    // Why: markdown is the caller's explicit content, so it must win over a
+    // lookup even when both are supplied — otherwise a stray hash silently
+    // replaces the body the caller handed us.
+    it('prefers explicit markdown over content_hash', async () => {
+      vi.mocked(getCachedContentByHash).mockReturnValue(makeCached({ markdown: 'from cache\n' }));
+
+      const r = await handleDiff({
+        old: { markdown: 'explicit old\n', content_hash: HASH },
+        new: { markdown: 'explicit new\n' },
+        output: 'unified',
+      });
+
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.data.unified_diff).toContain('-explicit old');
+      expect(getCachedContentByHash).not.toHaveBeenCalled();
+    });
+
+    // Why: the schema, instructions and docs all scope content_hash to `old`.
+    // Accepting it on `new` would make the handler more permissive than every
+    // surface that documents it.
+    it('does not accept content_hash on the new side', async () => {
+      vi.mocked(getCachedContentByHash).mockReturnValue(makeCached({ markdown: 'from cache\n' }));
+
+      const r = await handleDiff({
+        old: { markdown: 'a\n' },
+        new: { content_hash: HASH },
+      });
+
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error).toBe('invalid_input');
+        expect(r.error_reason).toMatch(/new\.markdown/);
+        expect(r.error_reason).not.toMatch(/content_hash/);
+      }
+    });
+
+    // Why: the "required" message is the only place a caller who supplied
+    // nothing learns which keys the old side takes. Omitting content_hash
+    // there is the same advertise-but-hide defect one layer down.
+    it('names content_hash among the accepted old-side keys', async () => {
+      const r = await handleDiff({ old: {}, new: { markdown: 'b\n' } });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error_reason).toMatch(/old\.content_hash/);
+    });
+  });
+
+  describe('store failures stay inside the envelope', () => {
+    // Why: `resolveSide` used to run OUTSIDE handleDiff's try, so a SQLite-level
+    // throw (locked/corrupt DB, disk full) escaped the tool's structured
+    // envelope entirely — server.ts and the REST dispatch both call handleDiff
+    // with no surrounding try, so it surfaced as an opaque crash.
+    it('returns a structured envelope when the URL lookup throws', async () => {
+      vi.mocked(getCachedContent).mockImplementation(() => {
+        throw new Error('SQLITE_BUSY: database is locked');
+      });
+
+      const r = await handleDiff({
+        old: { url: 'https://example.com/a' },
+        new: { markdown: 'b\n' },
+      });
+
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error).toBe('diff_failed');
+        expect(r.error_reason).toContain('SQLITE_BUSY');
+        expect(r.stage).toBe('diff');
+      }
+    });
+
+    it('returns a structured envelope when the hash lookup throws', async () => {
+      vi.mocked(getCachedContentByHash).mockImplementation(() => {
+        throw new Error('SQLITE_CORRUPT: database disk image is malformed');
+      });
+
+      const r = await handleDiff({
+        old: { content_hash: 'c'.repeat(64) },
+        new: { markdown: 'b\n' },
+      });
+
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error).toBe('diff_failed');
+        expect(r.error_reason).toContain('SQLITE_CORRUPT');
       }
     });
   });
