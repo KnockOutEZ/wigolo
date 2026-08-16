@@ -23,9 +23,16 @@ import { findUnfencedInEnvelope } from '../helpers/envelope-fence.js';
  *    every arm, so a canary planted in a thrown message arrives bare. That channel is pinned for what
  *    it is in `error-envelope-open-channel.test.ts`; it is NOT closed here, and this walker would
  *    report it as a finding if it were pointed at it.
- *  - Sibling fields the fence functions do not reach (`ExtractOutput.warnings` is the live example).
- *    The walker sees them; the fixtures below only plant page bytes where page bytes actually flow
- *    today, so a future producer that routes page text into such a sibling makes this go RED.
+ *  - Sibling fields the fence functions do not enumerate. `fenceResearchData`, `fenceAgentData` and
+ *    `fenceExtractData` all spread `...data`, so anything unenumerated ships raw: `AgentSource
+ *    .fetch_error`, `AgentOutput.error`, `ResearchOutput.error`, `ResearchOutput.sub_queries` and
+ *    `ExtractOutput.warnings`. Each is named and pinned in `unfenced-siblings.test.ts`. The walker
+ *    SEES them — demonstrated there, not assumed here — but the fixtures below plant page bytes only
+ *    where page bytes flow today, so these tests do not cover those fields.
+ *
+ * ⚠️ ENV-7 and ENV-8 assert containment for the fields their fixtures plant. They are NOT a clean
+ * bill for `research` or `agent`. `agent` in particular is UNDETERMINED: whether a page-chosen
+ * redirect target can reach `fetch_error` was never established either way.
  */
 
 // The A88/A89 canary, kept byte-identical so a hit in any log is traceable to this class of probe.
