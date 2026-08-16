@@ -27,18 +27,32 @@ import { shutdownCli } from './cli/shutdown.js';
 
 async function exitCli(code: number): Promise<void> {
   await shutdownCli();
-  // Exit naturally: set the code and let the event loop drain. Forcing
-  // process.exit() here races the native ONNX runtime's thread-pool teardown
-  // and aborts with `mutex lock failed: Invalid argument`; letting Node shut
-  // down on its own tears the native runtime down cleanly. This relies on
-  // shutdownCli() releasing every long-lived handle (search engine process,
-  // browser pool, model idle timers, DB) so nothing keeps the loop alive.
+  // Exit naturally: set the code and let the event loop drain. Do NOT call
+  // process.exit() here — the exit path is the one variable measured to decide
+  // whether the `mutex lock failed: Invalid argument` SIGABRT fires. Plain Node
+  // on macOS/arm64, 10 reps per cell: a process that has run a real inference
+  // session aborts 10/10 on process.exit() and exits clean 10/10 when it drains
+  // instead — same process, same work, only the exit path differs. Releasing
+  // the session first does not help (10/10 abort), so this is not a
+  // teardown-ordering fix, and loading the runtime without running anything
+  // never reproduces it at all.
+  //
+  // WHY the exit path decides it is NOT established. An earlier version of this
+  // comment asserted a thread-pool teardown race as fact on no measurement;
+  // that mechanism is unverified and is not restated here. The remedy is what
+  // is supported, and it is the reason the code below looks the way it does.
+  //
+  // Draining relies on shutdownCli() having released every long-lived handle
+  // (search engine process, browser pool, model idle timers, DB) — if anything
+  // still holds the loop open the CLI hangs instead of exiting.
   process.exitCode = code;
 }
 
-// Surface SIGABRT explicitly so the libc++ destructor noise on macOS doesn't
-// look like a crash. The CLI has already completed by the time SIGABRT can
-// fire — the signal handler simply forces an exit with the recorded code.
+// Backstop for the abort described above, in case it reaches us anyway: it is
+// cosmetic-but-loud rather than a real failure, since the CLI has already
+// completed by the time SIGABRT can fire, so the handler simply forces an exit
+// with the recorded code instead of letting it look like a crash. What
+// produces the signal is not attributed here — see `exitCli`.
 process.on('SIGABRT', () => process.exit(process.exitCode ?? 0));
 
 /**
