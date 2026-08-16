@@ -2,6 +2,13 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as http from 'node:http';
 import { DaemonHttpServer } from '../../src/daemon/http-server.js';
 import { closedRegions, fenceNonces, regionBody } from '../helpers/untrusted-fence.js';
+import { allowNetworkInThisFile } from '../net-fence.js';
+
+// Same shape as rest-api.test.ts: the compat shim is exercised against a real DaemonHttpServer
+// and the real crawl pipeline, which egresses. Declared rather than silently tolerated.
+allowNetworkInThisFile(
+  'drives the real compat shim end to end through the real crawl pipeline, which reaches live hosts',
+);
 
 /**
  * WHY: the Firecrawl-compat shim rides the SAME router pipeline as /v1 — auth,

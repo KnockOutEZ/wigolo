@@ -371,7 +371,18 @@ describe('SmartRouter --- actions routing', () => {
       fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
     };
 
-    router = new SmartRouter(httpClient, browserPool);
+    // `pdfProbe` declined, matching every other router in this file (:98, :541, :566, :659…).
+    // This block was the one that inherited the default, and the default GOES TO THE NETWORK:
+    // for an extensionless URL about to be handed to the browser the router sends a real
+    // content-type probe, so the two known-SPA rows below (`react.dev`, `docs.react.dev` — both
+    // resolvable) were issuing live requests to react.dev on every run.
+    //
+    // They passed only because the probe fails open (`catch { isPdf = false }`), which means
+    // their result was a property of what react.dev happened to answer rather than of the
+    // routing decision under test. Declining states what those rows already assume — they are
+    // about SPA routing, not PDF sniffing — and weakens nothing: `httpClient.fetch` must still
+    // never be called, which is what actually guards the behaviour.
+    router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
   });
 
   afterEach(() => {

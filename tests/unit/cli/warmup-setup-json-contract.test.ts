@@ -44,6 +44,47 @@ vi.mock('../../../src/config.js', () => ({
   getConfig: vi.fn(() => ({ dataDir: '/tmp/test-wigolo-warmup', searchBackend: null, searxngUrl: null })),
 }));
 
+// The two phases `--all` reaches that the scaffold above does NOT stop, both of which download a
+// model from a third party. `warmup.test.ts` — the file this scaffold is copied from — mocks both
+// (:50, :57); this file took the rest of the scaffold and left these out, so the mock comment above
+// was true of everything except the two heaviest phases.
+//
+// It was invisible for the usual reason: `getConfig` is mocked to a FIXED `/tmp/test-wigolo-warmup`
+// rather than the per-worker test home, so once any run populates that path every later run on that
+// machine is a cache hit and never egresses. A cold runner has nothing there, downloads the
+// cross-encoder from huggingface.co, and reds — which is exactly what CI did on all three platforms
+// while this suite was green locally. Verified by deleting that directory and re-running: 18
+// outbound connections, the same count CI reported.
+//
+// `existsSync` being mocked to `true` above is why only ONE of the two fires: the embeddings phase
+// probes the filesystem and skips, while the cross-encoder loader does its own I/O and downloads
+// anyway.
+//
+// So these two mocks are NOT equally load-bearing, and the difference is recorded rather than
+// implied. Removing the rerank mock and re-running cold reds immediately (18 connections again).
+// Removing the fastembed one changes nothing today — measured, 0 failures — because `existsSync`
+// is covering it. It is kept anyway, as insurance rather than as proven-necessary: the embeddings
+// phase is one edit to that `existsSync` mock away from downloading, and a reader who sees only
+// the rerank mock would reasonably conclude the embeddings phase is safe on its own merits, which
+// it is not.
+const rerankMock = vi.fn().mockResolvedValue([{ id: '0', score: 0.5 }]);
+vi.mock('../../../src/providers/rerank-provider.js', () => ({
+  getRerankProvider: vi.fn(async () => ({
+    modelId: 'Xenova/ms-marco-MiniLM-L-6-v2',
+    rerank: rerankMock,
+  })),
+}));
+
+vi.mock('../../../src/embedding/fastembed-provider.js', () => {
+  const FastembedEmbedProvider = vi.fn(function (this: Record<string, unknown>) {
+    this.modelId = 'BGE-small-en-v1.5';
+    this.dim = 384;
+    this.warmup = vi.fn().mockResolvedValue(undefined);
+    this.embed = vi.fn().mockResolvedValue([new Float32Array(384).fill(0.1)]);
+  });
+  return { FastembedEmbedProvider };
+});
+
 // --- setup-mcp mock scaffold (mirrors setup-mcp-non-interactive.test.ts). ---
 const { detectAgentsMock, selectAgentsMock, applyConfigsMock, printAddMcpBannerMock } = vi.hoisted(() => ({
   detectAgentsMock: vi.fn(),

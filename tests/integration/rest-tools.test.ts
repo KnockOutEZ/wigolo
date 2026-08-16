@@ -2,6 +2,15 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as http from 'node:http';
 import { DaemonHttpServer } from '../../src/daemon/http-server.js';
 import { closedRegions, fenceNonces, regionBody } from '../helpers/untrusted-fence.js';
+import { allowNetworkInThisFile } from '../net-fence.js';
+
+// Same shape as rest-api.test.ts: a real DaemonHttpServer driving the real tool pipeline, so the
+// crawl/research/agent rows egress. Measured destinations: www.bing.com:443,
+// lite.duckduckgo.com:443, storage.googleapis.com:443. Declared so the dependence is inventoried
+// rather than inferred from a red on a plane.
+allowNetworkInThisFile(
+  'drives the real REST tool pipeline end to end: live search engines and the embedding model download',
+);
 
 /**
  * WHY: T2 fills the 8 remaining REST dispatch routes (crawl/cache/extract/

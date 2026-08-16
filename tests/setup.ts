@@ -2,6 +2,17 @@ import { beforeEach, afterEach } from 'vitest';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { installNetworkFence } from './net-fence.js';
+
+// A test's result must not depend on whether the runner can reach the internet. See
+// `net-fence.ts` for the defect this closes and for what it deliberately does not cover.
+//
+// Imported statically, and safely so: `net-fence.ts` pulls in `node:net` and `vitest` and
+// NOTHING from `src/`. That distinction is the whole reason the stealth-driver pin below is an
+// env var instead of an import — a static `src/` import here hoists above the assignments in
+// this file and populates the config cache with the wrong values. A leaf module with no src
+// edges cannot do that, so it does not need the env-var workaround.
+installNetworkFence();
 
 // Isolate the data dir so the suite NEVER writes to a developer's real
 // ~/.wigolo (a vitest worker otherwise opens the live wigolo.db). One home per
