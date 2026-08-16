@@ -138,8 +138,14 @@ describe('content-fence — F7: table row keys are wigolo-authored, never page p
   it('F7-7: duplicate <th> no longer returns a row narrower than its own headers', () => {
     // The producer collides duplicate headers into one object key (extract.ts:374), so the row arrives with
     // FEWER keys than headers and one cell already destroyed upstream — a pre-existing data-loss bug this
-    // seam cannot fix. What it can do is stop hiding it: header-index alignment gives every header a slot.
-    // MUT: key off the row's own entries → 2 keys for 3 headers, and the loss stays invisible → RED.
+    // seam cannot fix, and does not detect. Be precise about what changes: the destroyed cell is named
+    // NOWHERE in the envelope, before or after. What changes is that a 2-key/3-header row was previously
+    // INDISTINGUISHABLE from ordinary sparsity (which 3 of the 4 producers emit routinely), so it could
+    // never have been read as loss; now every header has a slot and the duplication is at least apparent
+    // in `headers[0] === headers[1]`. The claim is "no longer camouflaged by legitimate sparsity", NOT
+    // "the loss becomes visible". Note this also makes Object.keys(row).length === headers.length always,
+    // removing the only count-based signal — a wash, since sparsity made that signal uninformative anyway.
+    // MUT: key off the row's own entries → 2 keys for 3 headers → RED.
     const data = {
       mode: 'tables',
       data: [{ headers: ['Name', 'Name', 'Value'], rows: [{ Name: 'SECOND', Value: 'V' }] }],

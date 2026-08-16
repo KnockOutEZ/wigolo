@@ -57,6 +57,7 @@
     "tests/unit/cache/export-corpus.test.ts",
     "tests/unit/cli/export-command.test.ts",
     "tests/unit/daemon/rest-untrusted-representation.test.ts",
+    "tests/unit/daemon/rest-table-row-keys.test.ts",
     "tests/unit/daemon/rest-compat-untrusted.test.ts",
     "tests/integration/rest-tools.test.ts",
     "tests/integration/rest-firecrawl-compat.test.ts",
