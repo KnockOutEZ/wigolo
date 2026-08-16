@@ -1,0 +1,283 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
+import globalSetup, {
+  DEFAULT_STALE_MS,
+  RUN_DIR_ENV,
+  TEST_HOME_ROOT,
+  reapStaleTestHomes,
+} from '../../global-setup.js';
+
+/**
+ * The harness used to mint one throwaway HOME per test-file process and never
+ * remove any of them: 73,547 directories on a developer machine, 15,950 of them
+ * from the preceding 24 hours. Named by pid, and pids are reused — 2,054 held files
+ * written 76-118 hours after the directory was created, i.e. a live process
+ * resolving $HOME onto a dead one's state.
+ *
+ * These probes assert the two properties the fix has to hold SIMULTANEOUSLY, since
+ * either one alone is trivial to satisfy: abandoned homes are reclaimed, and a
+ * concurrently RUNNING suite's home is never touched. A reaper that deletes
+ * everything passes the first and is catastrophic; the untouched-fresh-directory
+ * and live-own-home probes are the must-not-fire controls that exclude it.
+ */
+
+/** Sandbox roots are grandchildren of the harness home, so nothing here is ever a
+ *  direct child of TEST_HOME_ROOT and no probe can be confused with a real home. */
+function sandboxParent(): string {
+  const home = process.env.VITEST_WIGOLO_TEST_HOME;
+  if (!home) throw new Error('harness home missing — tests/setup.ts did not run');
+  return home;
+}
+
+function ageDirectory(path: string, ms: number): void {
+  const stamp = new Date(Date.now() - ms);
+  utimesSync(path, stamp, stamp);
+}
+
+describe('test-home lifecycle -- reaping abandoned harness homes', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(sandboxParent(), 'reap-probe-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('removes a home nothing has touched for longer than the staleness window', () => {
+    const abandoned = join(root, 'home-abandoned');
+    mkdirSync(join(abandoned, '.wigolo'), { recursive: true });
+    writeFileSync(join(abandoned, '.wigolo', 'config.json'), '{}');
+    ageDirectory(abandoned, DEFAULT_STALE_MS * 2);
+
+    const report = reapStaleTestHomes({ root });
+
+    expect(existsSync(abandoned)).toBe(false);
+    expect(report.removed).toBe(1);
+  });
+
+  it('leaves a home whose heartbeat is fresh, so a concurrent run is never reaped', () => {
+    // MUST-NOT-FIRE CONTROL. Three suites ran concurrently on this machine the day
+    // the leak was found; a reaper that cannot tell them apart from garbage would
+    // delete a running suite's $HOME mid-test. This is the property that rules out
+    // the trivial "delete the whole root" implementation.
+    const live = join(root, 'home-live');
+    mkdirSync(join(live, '.wigolo'), { recursive: true });
+
+    const report = reapStaleTestHomes({ root });
+
+    expect(existsSync(live)).toBe(true);
+    expect(report.removed).toBe(0);
+    expect(report.skippedLive).toBe(1);
+  });
+
+  it('reaps only the abandoned sibling when stale and live homes share a root', () => {
+    const abandoned = join(root, 'home-abandoned');
+    const live = join(root, 'home-live');
+    mkdirSync(abandoned, { recursive: true });
+    mkdirSync(live, { recursive: true });
+    ageDirectory(abandoned, DEFAULT_STALE_MS + 60_000);
+
+    reapStaleTestHomes({ root });
+
+    expect(existsSync(abandoned)).toBe(false);
+    expect(existsSync(live)).toBe(true);
+  });
+
+  it('a home just under the staleness window survives, one just over it does not', () => {
+    // Pins the boundary to the documented window rather than to "old-ish". Without
+    // this, DEFAULT_STALE_MS could be silently changed to 0 and every other probe
+    // here would still pass.
+    const inside = join(root, 'home-inside');
+    const outside = join(root, 'home-outside');
+    mkdirSync(inside, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    ageDirectory(inside, DEFAULT_STALE_MS - 60_000);
+    ageDirectory(outside, DEFAULT_STALE_MS + 60_000);
+
+    reapStaleTestHomes({ root });
+
+    expect(existsSync(inside)).toBe(true);
+    expect(existsSync(outside)).toBe(false);
+  });
+
+  it('never follows a symlink out of the root, even an ancient one', () => {
+    // The fence that protects a real ~/.wigolo. A symlinked child is the only way a
+    // caller-supplied name can name a path outside the root, and an aged symlink is
+    // exactly what a naive mtime check would happily delete THROUGH.
+    const outside = mkdtempSync(join(sandboxParent(), 'reap-outside-'));
+    const sentinel = join(outside, 'cache.db');
+    writeFileSync(sentinel, 'precious');
+    try {
+      const link = join(root, 'home-link');
+      symlinkSync(outside, link, 'dir');
+      ageDirectory(root, 0);
+
+      const report = reapStaleTestHomes({ root });
+
+      expect(existsSync(sentinel)).toBe(true);
+      expect(report.removed).toBe(0);
+      expect(report.skippedNonDirectory).toBe(1);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores plain files sitting in the root', () => {
+    const stray = join(root, 'not-a-home.log');
+    writeFileSync(stray, 'x');
+    ageDirectory(stray, DEFAULT_STALE_MS * 2);
+
+    const report = reapStaleTestHomes({ root });
+
+    expect(existsSync(stray)).toBe(true);
+    expect(report.removed).toBe(0);
+  });
+
+  it('stops at the wall-clock budget instead of stalling a run on a large backlog', () => {
+    // The backlog measured on the machine was 73k directories; draining it inside
+    // one globalSetup would stall the run for minutes. A budget of 0 forces the
+    // ceiling deterministically rather than depending on how slow the disk is.
+    for (const name of ['home-a', 'home-b', 'home-c']) {
+      const dir = join(root, name);
+      mkdirSync(dir, { recursive: true });
+      ageDirectory(dir, DEFAULT_STALE_MS * 2);
+    }
+
+    const report = reapStaleTestHomes({ root, budgetMs: 0 });
+
+    expect(report.budgetExhausted).toBe(true);
+    expect(report.removed).toBe(0);
+    expect(readdirSync(root)).toHaveLength(3);
+  });
+
+  it('is a no-op on a missing root rather than throwing', () => {
+    const missing = join(root, 'does-not-exist');
+
+    const report = reapStaleTestHomes({ root: missing });
+
+    expect(report.removed).toBe(0);
+    expect(report.scanned).toBe(0);
+  });
+});
+
+describe('test-home lifecycle -- run scoping and teardown', () => {
+  let savedRunDir: string | undefined;
+
+  beforeEach(() => {
+    savedRunDir = process.env[RUN_DIR_ENV];
+  });
+
+  afterEach(() => {
+    if (savedRunDir === undefined) delete process.env[RUN_DIR_ENV];
+    else process.env[RUN_DIR_ENV] = savedRunDir;
+  });
+
+  it('publishes a fresh run directory and deletes exactly that on teardown', () => {
+    const teardown = globalSetup();
+    const runDir = process.env[RUN_DIR_ENV] as string;
+
+    expect(runDir).toBeTruthy();
+    expect(existsSync(runDir)).toBe(true);
+    expect(resolve(dirname(runDir))).toBe(resolve(TEST_HOME_ROOT));
+
+    // A worker's home lands inside; teardown must take it with the run directory.
+    const workerHome = mkdtempSync(join(runDir, 'home-'));
+    teardown();
+
+    expect(existsSync(workerHome)).toBe(false);
+    expect(existsSync(runDir)).toBe(false);
+  });
+
+  it('teardown leaves a concurrent invocation run directory untouched', () => {
+    // MUST-NOT-FIRE CONTROL for the second mechanism. Teardown is scoped by
+    // containment rather than age, so it must be safe to fire while another suite
+    // is mid-run — the case that made a naive "empty the root" teardown unusable.
+    const other = globalSetup();
+    const otherRunDir = process.env[RUN_DIR_ENV] as string;
+
+    const mine = globalSetup();
+    const myRunDir = process.env[RUN_DIR_ENV] as string;
+    expect(myRunDir).not.toBe(otherRunDir);
+
+    mine();
+
+    expect(existsSync(myRunDir)).toBe(false);
+    expect(existsSync(otherRunDir)).toBe(true);
+    other();
+    expect(existsSync(otherRunDir)).toBe(false);
+  });
+
+  it('teardown is idempotent, so a second call cannot escalate into deleting the root', () => {
+    const teardown = globalSetup();
+    const runDir = process.env[RUN_DIR_ENV] as string;
+    teardown();
+    teardown();
+    expect(existsSync(runDir)).toBe(false);
+    expect(existsSync(TEST_HOME_ROOT)).toBe(true);
+  });
+});
+
+describe('test-home lifecycle -- the running suite own home', () => {
+  const home = process.env.VITEST_WIGOLO_TEST_HOME as string;
+  const runDir = process.env[RUN_DIR_ENV];
+
+  it('is minted inside this invocation run directory, which teardown deletes wholesale', () => {
+    // Scoping by containment is what makes teardown safe to run while other suites
+    // are mid-flight: it removes one directory that structurally cannot hold a
+    // concurrent run's homes. If the home escaped the run directory, teardown would
+    // silently stop reclaiming anything and only the 30-minute reap would be left.
+    expect(home).toBeTruthy();
+    expect(runDir).toBeTruthy();
+    const parent = resolve(dirname(home));
+    // Windows canonicalisation can rewrite the spelling; compare resolved paths.
+    expect(parent).toBe(resolve(runDir as string));
+  });
+
+  it('sits under the shared root, so the staleness reap can still see it', () => {
+    const expected = resolve(TEST_HOME_ROOT);
+    expect(resolve(runDir as string).startsWith(expected + sep)).toBe(true);
+  });
+
+  it('is not named after the pid, so a reused pid cannot alias a dead run state', () => {
+    // The measured determinism hazard: 2,054 leftover homes held files written
+    // 76-118 hours after creation because a new process landed on an old pid.
+    expect(basename(home)).not.toBe(String(process.pid));
+    expect(basename(home).startsWith('home-')).toBe(true);
+  });
+
+  it('is claimed by the live process, so one home is reused across a fork test files', () => {
+    // `isolate: true` re-evaluates this setup file per test file. The claim has to
+    // be memoised through env or the `spawn-serial` single fork would mint a home
+    // per file — and the ownership tag has to name the LIVE pid or an inherited
+    // value in a spawned child would be mistaken for our own.
+    expect(process.env.VITEST_WIGOLO_TEST_HOME_PID).toBe(String(process.pid));
+  });
+
+  it('beats its heartbeat onto the directory the reaper actually ages', () => {
+    // The end-to-end tie between setup.ts and global-setup.ts, asserted as the
+    // TARGET rather than as freshness. Freshness is unfalsifiable here: the run
+    // directory is minted seconds before this file loads, so "mtime is recent" holds
+    // even if the heartbeat writes to the wrong path or is deleted outright.
+    //
+    // The target has to be the run directory, because that is the direct child of
+    // the root whose mtime reapStaleTestHomes compares. Touching the nested home
+    // instead leaves the reaped unit frozen at creation time, and a `spawn-serial`
+    // fork outliving the window gets deleted out from under itself by another run.
+    expect(process.env.VITEST_WIGOLO_REAP_UNIT).toBe(runDir);
+    const age = Date.now() - statSync(runDir as string).mtimeMs;
+    expect(age).toBeLessThan(DEFAULT_STALE_MS);
+  });
+});

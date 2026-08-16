@@ -1,8 +1,9 @@
 import { beforeEach, afterEach } from 'vitest';
-import { mkdirSync, realpathSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, utimesSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { installNetworkFence } from './net-fence.js';
+import { RUN_DIR_ENV, TEST_HOME_ROOT } from './global-setup.js';
 
 // A test's result must not depend on whether the runner can reach the internet. See
 // `net-fence.ts` for the defect this closes and for what it deliberately does not cover.
@@ -77,18 +78,79 @@ installNetworkFence();
 // so every later comparison is on one spelling. POSIX is deliberately left
 // alone: realpath there only rewrites `/var/folders/...` to `/private/var/...`,
 // which buys nothing and perturbs a path shape that is already proven green.
-function resolveTestHome(): string {
-  const raw = join(tmpdir(), 'wigolo-test', String(process.pid));
-  mkdirSync(join(raw, '.wigolo'), { recursive: true });
-  if (process.platform !== 'win32') return raw;
-  try {
-    return realpathSync.native(raw);
-  } catch {
-    return raw;
-  }
+//
+// THE NAME IS MINTED, NOT DERIVED FROM THE PID.
+// This used to be `join(tmpdir(), 'wigolo-test', String(process.pid))`. Pids are
+// reused, and the reuse was not hypothetical: of 73,547 leftover homes measured on
+// a developer machine, 2,054 held files written 76-118 HOURS after the directory
+// was created — a later, unrelated process resolving $HOME onto a dead one's state.
+// A suite whose result depends on which pid the OS happened to hand out is not
+// deterministic, so the name now comes from `mkdtemp` and cannot alias.
+//
+// ONE HOME PER PROCESS IS PRESERVED, and it has to be earned rather than assumed:
+// under `isolate: true` the setup file is re-evaluated for every test file, so a
+// naive `mkdtempSync` here would mint a fresh home per FILE and break the reuse the
+// `spawn-serial` project (singleFork, all of integration+e2e in one process)
+// depends on. The claim is memoised through `process.env`, which is the one channel
+// that survives vitest's module-registry reset, and is validated against the LIVE
+// pid so an inherited value in a spawned child can never be mistaken for our own.
+// Note this uses the pid as an OWNERSHIP CHECK against a running process, never as
+// a NAME recording history — that distinction is exactly what the reuse bug was.
+// WHO DELETES IT. Homes are minted inside the per-invocation `run-*` directory that
+// `global-setup.ts` publishes, and its teardown removes that one directory — which
+// contains exactly this run's homes and, by containment, none of a concurrent run's.
+//
+// A per-worker `process.on('exit')` remover was written first and MEASURED not to
+// fire: vitest's `forks` pool signals workers rather than letting them exit, so a
+// 31-file suite still left all 31 directories behind with the hook installed. It was
+// deleted rather than kept as decoration. `RUN_DIR_ENV` being absent is therefore a
+// real fallback, not a theoretical one (a bare `vitest` invocation against a config
+// without the global setup): mint under the root instead, where the staleness reap
+// still reclaims it.
+const HOME_OWNER_KEY = 'VITEST_WIGOLO_TEST_HOME_PID';
+
+function homeParent(): string {
+  const runDir = process.env[RUN_DIR_ENV];
+  return runDir && existsSync(runDir) ? runDir : TEST_HOME_ROOT;
 }
 
-const TEST_HOME = resolveTestHome();
+function claimTestHome(): string {
+  const existing = process.env.VITEST_WIGOLO_TEST_HOME;
+  if (existing && process.env[HOME_OWNER_KEY] === String(process.pid) && existsSync(existing)) {
+    return existing;
+  }
+
+  const parent = homeParent();
+  mkdirSync(parent, { recursive: true });
+  const raw = mkdtempSync(join(parent, 'home-'));
+  mkdirSync(join(raw, '.wigolo'), { recursive: true });
+
+  let home = raw;
+  if (process.platform === 'win32') {
+    try {
+      home = realpathSync.native(raw);
+    } catch {
+      home = raw;
+    }
+  }
+
+  process.env[HOME_OWNER_KEY] = String(process.pid);
+  return home;
+}
+
+const TEST_HOME = claimTestHome();
+
+// What the reaper in `global-setup.ts` actually measures the age of: a direct child
+// of the root. Touching our own home would not update the run directory's mtime, so
+// the heartbeat has to target the unit the reaper compares.
+const REAP_UNIT = process.env[RUN_DIR_ENV] ?? TEST_HOME;
+
+// Published so the choice of target is CHECKABLE. Asserting "the run directory looks
+// fresh" cannot fail — a run directory is minted seconds before the assertions read
+// it, so that probe passes whether the heartbeat lands on the right path, the wrong
+// path, or nowhere at all. Naming the target is the only form of the claim a
+// mis-wiring can falsify.
+process.env.VITEST_WIGOLO_REAP_UNIT = REAP_UNIT;
 const TEST_DATA_DIR = join(TEST_HOME, '.wigolo');
 
 // Capture the browser engine's real download registry BEFORE HOME moves — it
@@ -174,8 +236,36 @@ const CI_ENV_KEYS = [
 
 const savedCIEnv: Partial<Record<(typeof CI_ENV_KEYS)[number], string | undefined>> = {};
 
+// Liveness signal for the reap in `global-setup.ts`. A concurrent suite's home must
+// never be deleted, and there were three concurrent runs on this machine the day
+// this landed. `process.kill(pid, 0)` is the obvious probe and is unusable for the
+// same reason the pid NAMING was; `flock` is authoritative but Node only exposes it
+// as `O_EXLOCK` on macOS/BSD and this suite gates on three OSes.
+//
+// So "alive" is defined as "made test progress recently", refreshed from the hook
+// that every single test runs. That needs no timer and does not depend on the event
+// loop being free — it is driven by the thing whose liveness is in question.
+// Throttled because 10k+ tests do not need 10k+ utimes calls; the module-level
+// timestamp resets with each file's registry, so every test FILE refreshes at least
+// once regardless of how long the file runs.
+const HEARTBEAT_INTERVAL_MS = 30_000;
+let lastHeartbeatMs = 0;
+
+function heartbeat(): void {
+  const now = Date.now();
+  if (now - lastHeartbeatMs < HEARTBEAT_INTERVAL_MS) return;
+  lastHeartbeatMs = now;
+  try {
+    const stamp = new Date(now);
+    utimesSync(REAP_UNIT, stamp, stamp);
+  } catch {
+    // Only degrades how soon this home looks abandoned. Never fails a test.
+  }
+}
+
 beforeEach(() => {
   ensureTestDataDir();
+  heartbeat();
   for (const key of CI_ENV_KEYS) {
     savedCIEnv[key] = process.env[key];
     delete process.env[key];
