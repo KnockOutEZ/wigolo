@@ -103,15 +103,57 @@ export function allowNetworkInThisFile(reason: string): void {
   });
 }
 
-/** Loopback in every spelling Node hands us, plus the unspecified addresses a local listener
- *  binds. Anything else is the public internet as far as this fence is concerned. */
-function isLoopback(host: string): boolean {
+/**
+ * Can this destination reach a host on the public internet?
+ *
+ * The predicate is NOT "is it loopback". It started that way and produced two false positives in
+ * the full run, both on suites doing the right thing:
+ *
+ *   - `tests/unit/daemon/proxy.test.ts` connects to `192.0.2.1` (TEST-NET-1) to force a
+ *     connection timeout;
+ *   - `tests/unit/fetch/redirect-guard.test.ts` redirects to `10.0.0.5:59999` to prove that
+ *     `WIGOLO_FETCH_ALLOW_PRIVATE=1` lets the hop be ATTEMPTED, asserting on the guard's decision
+ *     rather than on the network outcome.
+ *
+ * Neither depends on the internet — both pick a reserved address *because* nothing answers on it,
+ * which is the same technique this file's own opt-out control uses. Blocking them would punish
+ * the correct pattern.
+ *
+ * THE LINE THAT KEEPS THIS SAFE: only a LITERAL reserved IP is allowed. A hostname is judged
+ * strictly no matter what it looks like, so nothing here can resolve a name — and the defect this
+ * fence exists for is a result that depends on NAME RESOLUTION reaching the internet. Widening to
+ * reserved literals cannot reintroduce it, because no DNS query is ever made for a literal.
+ *
+ * ONE HONEST RESIDUAL, stated rather than buried: RFC 1918 space (10/8, 172.16/12, 192.168/16) is
+ * unreachable on a laptop but CAN answer on a corporate LAN, so allowing it admits a small
+ * host-dependence. It is admitted deliberately — a test about private-address handling has to be
+ * able to name a private address, and substituting a documentation range would change which guard
+ * branch it exercises. The alternative (block RFC 1918) would force that suite to test something
+ * other than what it is for.
+ */
+function isNonRoutableTarget(host: string): boolean {
   const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+
   if (h === '' || h === 'localhost' || h === '::1' || h === '0.0.0.0' || h === '::') return true;
   if (h.endsWith('.localhost')) return true;
-  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
-  // IPv4-mapped loopback, e.g. ::ffff:127.0.0.1
-  if (/^::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+
+  // IPv6 unique-local (fc00::/7) and link-local (fe80::/10).
+  if (/^f[cd][0-9a-f]{2}:/.test(h)) return true;
+  if (/^fe[89ab][0-9a-f]:/.test(h)) return true;
+
+  const v4 = /^(?:::ffff:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (!v4) return false; // a NAME, or an address shape we do not recognise — judged strictly
+
+  const [a, b] = [Number(v4[1]), Number(v4[2])];
+  if (a === 127) return true; // loopback
+  if (a === 10) return true; // RFC 1918
+  if (a === 172 && b >= 16 && b <= 31) return true; // RFC 1918
+  if (a === 192 && b === 168) return true; // RFC 1918
+  if (a === 169 && b === 254) return true; // link-local, incl. the cloud metadata endpoint
+  if (a === 192 && b === 0 && Number(v4[3]) === 2) return true; // TEST-NET-1 (RFC 5737)
+  if (a === 198 && b === 51 && Number(v4[3]) === 100) return true; // TEST-NET-2
+  if (a === 203 && b === 0 && Number(v4[3]) === 113) return true; // TEST-NET-3
+  if (a === 0) return true; // "this network"
   return false;
 }
 
@@ -252,7 +294,7 @@ export function installNetworkFence(): void {
     }
     const target = destinationOf(args);
     const allowed =
-      target.kind === 'unix' || (target.kind === 'inet' && isLoopback(target.host));
+      target.kind === 'unix' || (target.kind === 'inet' && isNonRoutableTarget(target.host));
 
     if (!allowed) {
       // Written so the ONLY way to reach the pass-through is to be positively classified as

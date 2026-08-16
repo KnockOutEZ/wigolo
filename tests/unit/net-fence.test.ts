@@ -237,6 +237,60 @@ describe('network fence — real transports, end to end', () => {
   });
 });
 
+/**
+ * The reserved-literal allowance, and the line that keeps it from reintroducing the defect.
+ *
+ * Two suites in the full run connect to reserved addresses ON PURPOSE — `192.0.2.1` to force a
+ * timeout, `10.0.0.5` to prove an SSRF hop is attempted — so "loopback only" was too narrow. The
+ * widened predicate must admit those WITHOUT admitting anything that can resolve.
+ */
+describe('network fence — reserved literals pass, names never do', () => {
+  afterEach(() => {
+    resetNetworkViolations();
+  });
+
+  it.each([
+    ['TEST-NET-1, used by proxy.test.ts to force a timeout', '192.0.2.1'],
+    ['TEST-NET-2', '198.51.100.7'],
+    ['TEST-NET-3', '203.0.113.7'],
+    ['RFC 1918 /8, used by redirect-guard.test.ts', '10.0.0.5'],
+    ['RFC 1918 /12 low', '172.16.0.1'],
+    ['RFC 1918 /12 high', '172.31.255.254'],
+    ['RFC 1918 /16', '192.168.1.1'],
+    ['link-local incl. the metadata endpoint', '169.254.169.254'],
+    ['IPv6 unique-local', 'fd00::1'],
+    ['IPv6 link-local', 'fe80::1'],
+  ])('allows %s', (_label, host) => {
+    const socket = new net.Socket();
+    socket.on('error', () => undefined);
+    expect(() => socket.connect({ host, port: 1 })).not.toThrow();
+    socket.destroy();
+    expect(networkViolations()).toEqual([]);
+  });
+
+  it.each([
+    ['a routable public address', '93.184.216.34'],
+    ['just outside RFC 1918 /12 low', '172.15.0.1'],
+    ['just outside RFC 1918 /12 high', '172.32.0.1'],
+    ['a near-miss on 192.168', '192.169.1.1'],
+    ['a near-miss on TEST-NET-1', '192.0.3.1'],
+  ])('still blocks %s', (_label, host) => {
+    expect(() => new net.Socket().connect({ host, port: 443 })).toThrow(/\[net-fence\]/);
+    expect(networkViolations()).toHaveLength(1);
+  });
+
+  it('NEVER allows a hostname, however reserved-looking — this is what keeps the widening safe', () => {
+    // The defect is a result that depends on NAME RESOLUTION reaching the internet. Only literal
+    // addresses are allowed above, so no allowance here can cause a DNS query. A name that merely
+    // LOOKS internal is still a name, and still resolves through whatever the runner's resolver
+    // decides — which is precisely the host-dependence being fenced.
+    for (const host of ['internal', 'private.example.com', 'metadata.google.internal', '10-0-0-5.example.com']) {
+      expect(() => new net.Socket().connect({ host, port: 80 })).toThrow(/\[net-fence\]/);
+      resetNetworkViolations();
+    }
+  });
+});
+
 describe('network fence — unrecognized shapes fail CLOSED', () => {
   afterEach(() => {
     resetNetworkViolations();
