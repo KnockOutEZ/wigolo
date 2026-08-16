@@ -45,9 +45,10 @@ Re-run `wigolo warmup --all` any time to retry the downloads, or just let each c
 
 This label means the target sits behind an anti-bot challenge that did not clear within the challenge window. wigolo escalates through its fetch tiers (plain HTTP → TLS-impersonation tier → full browser engine), polls the challenge like a patient browser, and reuses previously solved clearances per domain — and when none of that works, it tells you so instead of returning the challenge page dressed up as content.
 
-Two honest facts to calibrate expectations:
+Three honest facts to calibrate expectations:
 
 - **IP reputation is scored.** From datacenter IPs (VPS, CI, cloud), some challenge-protected sites will not clear even though the identical request works from a residential connection. That's a property of where you're running, not a knob wigolo forgot.
+- **A host with no desktop session stacks more than the IP.** It can't map a browser window, so pages are fetched with a throwaway profile, a fresh fingerprint, an automation-launched browser engine *and* a datacenter IP — four scoreable signals at once, not just the last one. `wigolo doctor` prints the ceiling your machine resolved to under `Browser tier:`; on a machine with a desktop session there's no ceiling line. Details in [self-hosting](./self-hosting.md#the-ip-is-one-signal-of-four).
 - **The opt-in lever is a proxy** whose IP reputation matches your legitimate-research use — see [self-hosting](./self-hosting.md#the-datacenter-ip-reality). Credentials are keychain-stored, and politeness (robots.txt, per-domain rate limits) still applies.
 
 ## Platform notes

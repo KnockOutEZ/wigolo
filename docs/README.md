@@ -16,7 +16,7 @@ Everything the server returns is transparent: per-result evidence scores, per-en
 | [Export](./export.md) | Writing your cached corpus out as plain Markdown plus a manifest — readable with wigolo uninstalled. |
 | [REST API](./rest-api.md) | `wigolo serve`, endpoints, the fail-closed auth model, resource limits, and a live curl quickstart. |
 | [SDKs](./sdks.md) | TypeScript and Python clients, plus LangChain, CrewAI, LlamaIndex, and Vercel AI SDK integrations. |
-| [Self-hosting](./self-hosting.md) | Running wigolo where your agents run: VPS, Docker, tokens, reverse proxies, and honest notes on datacenter IPs. |
+| [Self-hosting](./self-hosting.md) | Running wigolo where your agents run: VPS, Docker, tokens, reverse proxies, and honest notes on what a host with no desktop session can't clear. |
 | [Skills](./skills.md) | Agent skill packs: the 11-pack catalog, install scopes, and the receipts model. |
 | [Plugins](./plugins.md) | Extending wigolo with your own search engines and content extractors. |
 | [Troubleshooting](./troubleshooting.md) | Symptom-to-fix table, platform notes, and the FAQ. |
