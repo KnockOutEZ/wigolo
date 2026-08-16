@@ -1,5 +1,5 @@
 import { beforeEach, afterEach } from 'vitest';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -34,7 +34,30 @@ import { join } from 'node:path';
 // env-var-blind call site can escape. `os.homedir()` reads $HOME/%USERPROFILE%,
 // and individual assignment (never `process.env = {...}`) re-`setenv`s it so the
 // C layer sees it too.
-const TEST_HOME = join(tmpdir(), 'wigolo-test', String(process.pid));
+//
+// The home is CANONICALIZED on Windows. `os.tmpdir()` there commonly returns an
+// 8.3 short path (`C:\Users\RUNNER~1\AppData\Local\Temp`), which breaks two
+// separate things. It embeds a literal `~`, so any assertion using "contains no
+// tilde" as a proxy for "the leading tilde was expanded" fails on a correctly
+// expanded path. And it is an ALIAS: a string-prefix containment test then
+// compares two different spellings of the same tree and confidently answers the
+// wrong question — which is how a probe written specifically to prevent vacuous
+// passes can itself pass vacuously. Resolve to the long form once, at creation,
+// so every later comparison is on one spelling. POSIX is deliberately left
+// alone: realpath there only rewrites `/var/folders/...` to `/private/var/...`,
+// which buys nothing and perturbs a path shape that is already proven green.
+function resolveTestHome(): string {
+  const raw = join(tmpdir(), 'wigolo-test', String(process.pid));
+  mkdirSync(join(raw, '.wigolo'), { recursive: true });
+  if (process.platform !== 'win32') return raw;
+  try {
+    return realpathSync.native(raw);
+  } catch {
+    return raw;
+  }
+}
+
+const TEST_HOME = resolveTestHome();
 const TEST_DATA_DIR = join(TEST_HOME, '.wigolo');
 
 // Capture the browser engine's real download registry BEFORE HOME moves — it
@@ -57,6 +80,12 @@ function ensureTestDataDir(): void {
   // beforeEach — which runs after this one (setup-file hooks register first).
   process.env.HOME = TEST_HOME;
   process.env.USERPROFILE = TEST_HOME;
+  // Published for the isolation probe so it compares against the harness's OWN
+  // canonical spelling rather than re-deriving one from `tmpdir()` — on Windows
+  // those two differ (short vs long form) and a prefix test between them is
+  // meaningless. Not a `WIGOLO_*` name: this is harness state, and must never
+  // be mistaken for product config or inherited as such by a spawned child.
+  process.env.VITEST_WIGOLO_TEST_HOME = TEST_HOME;
   if (!process.env.WIGOLO_DATA_DIR) {
     process.env.WIGOLO_DATA_DIR = TEST_DATA_DIR;
   }

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,7 +20,23 @@ import { join } from 'node:path';
  * Assigned as env vars rather than via a module import so they are in place before any module that
  * resolves config at import time — a static import here would hoist above the assignment.
  */
-const TEST_HOME = mkdtempSync(join(tmpdir(), 'wigolo-studio-test-'));
+// Canonicalized on Windows: `os.tmpdir()` there is commonly an 8.3 short path
+// (`C:\Users\RUNNER~1\...`), which embeds a literal `~` and is an ALIAS — so a
+// string-prefix containment test compares two spellings of one tree and answers
+// the wrong question. Resolve once, at creation, so later comparisons are on a
+// single spelling. POSIX left alone (realpath there only adds a `/private`
+// prefix on macOS, changing a shape that is already proven).
+function resolveTestHome(): string {
+  const raw = mkdtempSync(join(tmpdir(), 'wigolo-studio-test-'));
+  if (process.platform !== 'win32') return raw;
+  try {
+    return realpathSync.native(raw);
+  } catch {
+    return raw;
+  }
+}
+
+const TEST_HOME = resolveTestHome();
 const TEST_DATA_DIR = join(TEST_HOME, '.wigolo');
 mkdirSync(TEST_DATA_DIR, { recursive: true });
 
@@ -38,4 +54,9 @@ if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
 
 process.env.HOME = TEST_HOME;
 process.env.USERPROFILE = TEST_HOME;
+// Published for the isolation probe so it compares against this file's OWN
+// canonical spelling instead of re-deriving one from `tmpdir()`, which differs
+// on Windows. Deliberately not a `WIGOLO_*` name — harness state, not product
+// config.
+process.env.VITEST_WIGOLO_TEST_HOME = TEST_HOME;
 process.env.WIGOLO_DATA_DIR = TEST_DATA_DIR;
