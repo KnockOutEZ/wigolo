@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 
@@ -87,10 +87,40 @@ import { join, resolve, sep } from 'node:path';
  */
 
 /**
+ * ONE SPELLING, FIXED AT THE ROOT.
+ *
+ * Windows' `os.tmpdir()` commonly answers with an 8.3 SHORT path
+ * (`C:\Users\RUNNER~1\AppData\Local\Temp`) while `mkdtemp` and `realpath` answer with
+ * the long one (`C:\Users\runneradmin\...`). Those are two spellings of one directory,
+ * and `path.resolve()` does NOT reconcile them — it is purely lexical, so a
+ * `resolve(a) === resolve(b)` comparison of two spellings reports a mismatch for the
+ * same tree. That is not hypothetical: canonicalising the worker home while leaving
+ * its parent short is exactly how `dirname(home) !== runDir` reached CI.
+ *
+ * Canonicalising HERE, once, is the fix for the whole class rather than for the one
+ * comparison that caught it. Every path the harness uses is minted by `mkdtemp` INSIDE
+ * this root, so each inherits the root's spelling by construction and no downstream
+ * site has to remember to normalise. `tmpdir()` itself is canonicalised (it always
+ * exists) rather than the `wigolo-test` child, which may not exist yet.
+ *
+ * POSIX is deliberately left alone: realpath there only rewrites `/var/folders/...`
+ * to `/private/var/...`, which buys nothing and perturbs a proven-green path shape.
+ */
+function canonicalTmpdir(): string {
+  const raw = tmpdir();
+  if (process.platform !== 'win32') return raw;
+  try {
+    return realpathSync.native(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * The one directory this module is ever allowed to delete inside. Shared with
  * `tests/setup.ts` so the mint site and the reap site cannot drift apart.
  */
-export const TEST_HOME_ROOT = join(tmpdir(), 'wigolo-test');
+export const TEST_HOME_ROOT = join(canonicalTmpdir(), 'wigolo-test');
 
 /**
  * Where this invocation's per-worker homes live. Published to workers through the

@@ -1,5 +1,5 @@
 import { beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, utimesSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, utimesSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { installNetworkFence } from './net-fence.js';
@@ -67,17 +67,16 @@ installNetworkFence();
 // classified by CAUSE, never by count. A test that genuinely needs a credential
 // must inject it, not harvest one from the developer's login keychain.
 //
-// The home is CANONICALIZED on Windows. `os.tmpdir()` there commonly returns an
-// 8.3 short path (`C:\Users\RUNNER~1\AppData\Local\Temp`), which breaks two
-// separate things. It embeds a literal `~`, so any assertion using "contains no
-// tilde" as a proxy for "the leading tilde was expanded" fails on a correctly
-// expanded path. And it is an ALIAS: a string-prefix containment test then
-// compares two different spellings of the same tree and confidently answers the
-// wrong question — which is how a probe written specifically to prevent vacuous
-// passes can itself pass vacuously. Resolve to the long form once, at creation,
-// so every later comparison is on one spelling. POSIX is deliberately left
-// alone: realpath there only rewrites `/var/folders/...` to `/private/var/...`,
-// which buys nothing and perturbs a path shape that is already proven green.
+// THE HOME IS NOT CANONICALIZED HERE, and that is the fix rather than an omission.
+// Windows' `os.tmpdir()` answers with an 8.3 short path
+// (`C:\Users\RUNNER~1\AppData\Local\Temp`) while `realpath` answers with the long
+// one; canonicalising the LEAF while its parent kept the short spelling is precisely
+// what made `dirname(home) !== runDir` on CI, for one directory under two names.
+// `TEST_HOME_ROOT` is canonicalised once instead (see `global-setup.ts`), so every
+// path minted inside it — the run directory, then this home — inherits that one
+// spelling by construction. Containment is then structural, and no call site has to
+// remember to normalise. Re-resolving here would reintroduce the asymmetry the
+// moment `RUN_DIR_ENV` arrived spelled any other way.
 //
 // THE NAME IS MINTED, NOT DERIVED FROM THE PID.
 // This used to be `join(tmpdir(), 'wigolo-test', String(process.pid))`. Pids are
@@ -129,17 +128,8 @@ function claimTestHome(): string {
 
   const parent = homeParent();
   mkdirSync(parent, { recursive: true });
-  const raw = mkdtempSync(join(parent, 'home-'));
-  mkdirSync(join(raw, '.wigolo'), { recursive: true });
-
-  let home = raw;
-  if (process.platform === 'win32') {
-    try {
-      home = realpathSync.native(raw);
-    } catch {
-      home = raw;
-    }
-  }
+  const home = mkdtempSync(join(parent, 'home-'));
+  mkdirSync(join(home, '.wigolo'), { recursive: true });
 
   process.env[HOME_OWNER_KEY] = String(process.pid);
   return home;
@@ -252,11 +242,32 @@ const savedCIEnv: Partial<Record<(typeof CI_ENV_KEYS)[number], string | undefine
 // So "alive" is defined as "made test progress recently", refreshed from the hook
 // that every single test runs. That needs no timer and does not depend on the event
 // loop being free — it is driven by the thing whose liveness is in question.
-// Throttled because 10k+ tests do not need 10k+ utimes calls; the module-level
-// timestamp resets with each file's registry, so every test FILE refreshes at least
-// once regardless of how long the file runs.
+// Throttled because 10k+ tests do not need 10k+ utimes calls.
+//
+// THE CLOCK STARTS AT MODULE LOAD, NOT AT ZERO, and that is load-bearing rather than
+// cosmetic. Under `isolate: true` every test FILE is a fresh process, so module state
+// resets per file: seeding this at 0 made the throttle vacuous and fired one utimes
+// per file — ~790 metadata WRITES aimed at a single shared directory from a dozen
+// concurrent workers. On APFS that is 0.011ms and invisible, which is precisely why a
+// green local run is no evidence here; on NTFS a directory metadata write serialises
+// against the concurrent `CreateDirectory` calls every other worker is making in that
+// same directory to mint its own home.
+//
+// Dropping those writes costs nothing, because the filesystem already performs the
+// refresh: creating a child directory advances its PARENT's mtime, and `claimTestHome`
+// mints a home directly inside the reaped unit as every file starts. Measured, both
+// halves — the parent's mtime advances on a child mkdir, and does NOT advance on a
+// GRANDCHILD mkdir, which is why the reaped unit has to be the run directory and not
+// the home nested inside it.
+//
+// So a file finishing inside the window writes nothing and is still fresh, while a
+// file that genuinely outruns the window heartbeats on a later hook. The one case
+// neither mechanism reaches — a SINGLE test running longer than the window, with no
+// further hook to fire from — is unchanged by this, since the old code's one write
+// landed milliseconds after the mkdir it duplicated. A 20s testTimeout puts that case
+// out of reach anyway.
 const HEARTBEAT_INTERVAL_MS = 30_000;
-let lastHeartbeatMs = 0;
+let lastHeartbeatMs = Date.now();
 
 function heartbeat(): void {
   const now = Date.now();

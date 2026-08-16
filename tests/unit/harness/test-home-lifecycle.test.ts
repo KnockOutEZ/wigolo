@@ -10,7 +10,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import globalSetup, {
   DEFAULT_STALE_MS,
   RUN_DIR_ENV,
@@ -171,6 +171,39 @@ describe('test-home lifecycle -- reaping abandoned harness homes', () => {
     expect(report.removed).toBe(0);
     expect(report.scanned).toBe(0);
   });
+
+  it('sees a run directory as fresh from the home minted inside it, with no heartbeat', () => {
+    // WHY THIS IS NOT INCIDENTAL. `tests/setup.ts` deliberately does NOT write a
+    // heartbeat for a test file that finishes inside the throttle window, because
+    // the filesystem has already done it: minting a child advances the PARENT's
+    // mtime, and every file mints its home directly inside the run directory as it
+    // starts. Delete that property and the throttle silently becomes a leak of live
+    // directories to a concurrent reaper, with no test to say so. No `utimesSync`
+    // appears below on purpose — the refresh has to come from the mkdir alone.
+    const runDir = join(root, 'run-fresh');
+    mkdirSync(runDir, { recursive: true });
+    ageDirectory(runDir, DEFAULT_STALE_MS * 2);
+    expect(statSync(runDir).mtimeMs).toBeLessThan(Date.now() - DEFAULT_STALE_MS);
+
+    mkdtempSync(join(runDir, 'home-'));
+
+    expect(reapStaleTestHomes({ root }).removed).toBe(0);
+    expect(existsSync(runDir)).toBe(true);
+  });
+
+  it('does not see a GRANDCHILD write as freshness, which is why the run dir is the reaped unit', () => {
+    // The must-not-fire half. If a nested write refreshed the reaped unit, the
+    // heartbeat could safely target the home — it cannot, and aiming it one level
+    // too deep would leave the reaped unit frozen at creation time.
+    const runDir = join(root, 'run-stale');
+    const home = join(runDir, 'home-x');
+    mkdirSync(home, { recursive: true });
+    ageDirectory(runDir, DEFAULT_STALE_MS * 2);
+
+    mkdirSync(join(home, '.wigolo'), { recursive: true });
+
+    expect(statSync(runDir).mtimeMs).toBeLessThan(Date.now() - DEFAULT_STALE_MS);
+  });
 });
 
 describe('test-home lifecycle -- run scoping and teardown', () => {
@@ -191,7 +224,7 @@ describe('test-home lifecycle -- run scoping and teardown', () => {
 
     expect(runDir).toBeTruthy();
     expect(existsSync(runDir)).toBe(true);
-    expect(resolve(dirname(runDir))).toBe(resolve(TEST_HOME_ROOT));
+    expect(dirname(runDir)).toBe(TEST_HOME_ROOT);
 
     // A worker's home lands inside; teardown must take it with the run directory.
     const workerHome = mkdtempSync(join(runDir, 'home-'));
@@ -241,14 +274,23 @@ describe('test-home lifecycle -- the running suite own home', () => {
     // silently stop reclaiming anything and only the 30-minute reap would be left.
     expect(home).toBeTruthy();
     expect(runDir).toBeTruthy();
-    const parent = resolve(dirname(home));
-    // Windows canonicalisation can rewrite the spelling; compare resolved paths.
-    expect(parent).toBe(resolve(runDir as string));
+    // RAW strings, deliberately. The previous spelling of this assertion wrapped both
+    // sides in `resolve()` under the comment "compare resolved paths", and that is a
+    // false reassurance: `resolve()` is purely LEXICAL. It normalises separators and
+    // `..` segments and does not touch the filesystem, so it cannot reconcile Windows'
+    // 8.3 short form with the long form. It duly reported
+    // `...\RUNNER~1\...\run-lcSOqi` != `...\runneradmin\...\run-lcSOqi` — one
+    // directory, two names, and the run identifier identical in both.
+    //
+    // Comparing the raw strings is the STRONGER claim, not a weaker one: it pins that
+    // the root, the run directory and this home all share ONE spelling, which is the
+    // invariant `global-setup.ts` establishes by canonicalising the root. Re-normalise
+    // here and the assertion would go green again the moment that invariant broke.
+    expect(dirname(home)).toBe(runDir);
   });
 
   it('sits under the shared root, so the staleness reap can still see it', () => {
-    const expected = resolve(TEST_HOME_ROOT);
-    expect(resolve(runDir as string).startsWith(expected + sep)).toBe(true);
+    expect((runDir as string).startsWith(TEST_HOME_ROOT + sep)).toBe(true);
   });
 
   it('is not named after the pid, so a reused pid cannot alias a dead run state', () => {
