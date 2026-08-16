@@ -257,30 +257,45 @@ const log = createLogger('fetch');
 export const MAX_SHOT_PX = 4096;
 
 /**
+ * Encoded bytes per pixel that separates real content from an incompressible payload.
+ *
+ * This is the discriminator the byte cap is really made of. Measured base64 bytes/px at
+ * the clamp ceiling, `scale: 'css'` applied, through this function:
+ *
+ *   pexels.com/search/texture  0.007 - 0.010   (lazy-loaded, mostly chrome)
+ *   apod.nasa.gov              0.099 - 0.195   (one large astrophotograph)
+ *   flickr.com/explore         1.386           <- densest REAL content measured
+ *   4096x4096 noise canvas     3.975           <- incompressible payload
+ *
+ * 2.0 sits 1.44x above the densest real page measured and 1.99x below synthetic noise,
+ * so the cap discriminates by COMPRESSIBILITY rather than by absolute size. That matters
+ * because absolute-size reasoning ("~1.5x the biggest page I sampled") has now failed
+ * twice here — each time because the sample stopped one display size short.
+ */
+const MAX_SHOT_B64_BYTES_PER_PX = 2;
+
+/**
  * Hard cap on the base64 payload a single capture may contribute to a tool response.
  *
- * Justified from the regime this cap actually governs — the CDP-attach path — because
- * the pool's own 1280x720 contexts CANNOT reach it: a full-viewport incompressible-noise
- * canvas there measures ~3.7 MB, so at 1280x720 even an adversarial page stays under
- * any cap at or above that. Sampling that regime would set the number using data from
- * the one place it never applies.
+ * DERIVED FROM THE CLAMP, deliberately: a cap chosen independently of MAX_SHOT_PX
+ * contradicts it. The clamp explicitly admits up to 4096x4096, and real photo-dense
+ * content at exactly that size encodes to ~23.3 MB — so any cap below that refuses
+ * captures the clamp was written to permit, which is fencing our own ceiling rather
+ * than fencing abuse. A flat 16 MiB did precisely that: measured live, flickr.com/explore
+ * was DELIVERED on a 4K window (11,496,964) yet REFUSED on a 5K iMac, a Pro Display XDR
+ * and at the clamp ceiling itself.
  *
- * Measured on an attached browser (photo-dense pages, `scale: 'css'` applied):
- *   flickr.com/explore  @3840x2160 dpr1 -> 11,073,732   <- largest legitimate
- *   flickr.com/explore  @2560x1440 dpr1 ->  4,941,424
- *   apod.nasa.gov       @3840x2160 dpr1 ->  1,614,884
- *   apod.nasa.gov       @1920x1080 dpr2 ->  1,532,700
- * against an adversarial ceiling of ~66.7 MB (4096x4096 noise, the most the dimension
- * clamp can admit; independently reproduced at 67.1 MB via a zlib encode).
+ * Because it is a function of MAX_SHOT_PX, raising the clamp raises this with it and the
+ * two cannot silently drift apart. Currently 4096 * 4096 * 2 = 32 MiB, which still sits
+ * ~2x under the ~66.7 MB an adversarial 4096x4096 noise canvas produces, so a payload
+ * bomb is still refused.
  *
- * 16 MiB therefore sits ~1.5x above the largest LEGITIMATE capture measured and ~25% of
- * the adversarial ceiling. A 4 MiB cap was tried first and rejected: ordinary photo
- * pages exceeded it by up to 2.6x, which would drop real content routinely rather than
- * fencing abuse.
+ * NOTE ON SCOPE: at this size the cap is a MEMORY-SAFETY bound, not a token-budget one.
+ * Nothing budgets `screenshot` against `max_content_chars` — that job is unowned.
  *
  * Not operator-tunable for the same reason as MAX_SHOT_PX.
  */
-export const MAX_SHOT_B64_BYTES = 16 * 1024 * 1024;
+export const MAX_SHOT_B64_BYTES = MAX_SHOT_PX * MAX_SHOT_PX * MAX_SHOT_B64_BYTES_PER_PX;
 
 /**
  * Outcome of a bounded capture. A refusal is DATA, not a thrown fetch and not a silent

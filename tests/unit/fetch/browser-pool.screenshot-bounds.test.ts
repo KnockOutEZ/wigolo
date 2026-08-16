@@ -141,19 +141,29 @@ describe('screenshot response bounds', () => {
     if (out.ok) expect(out.base64.length).toBeLessThanOrEqual(MAX_SHOT_B64_BYTES);
   });
 
-  it('admits the largest LEGITIMATE capture measured in the regime the cap governs', () => {
-    // 4 MiB was tried first and rejected: flickr.com/explore on an attached 4K window
-    // exceeded it by 2.6x, and even a 2560x1440 window exceeded it. A cap that drops
-    // ordinary photo pages is not fencing abuse.
-    const flickr4k = 11_073_732;
-    const flickr1440p = 4_941_424;
-    expect(MAX_SHOT_B64_BYTES).toBeGreaterThan(flickr4k);
-    expect(MAX_SHOT_B64_BYTES).toBeGreaterThan(flickr1440p);
+  it('derives the byte cap FROM the clamp, so the two bounds cannot contradict', () => {
+    // The bug this encodes: the clamp and the cap were chosen independently, and a flat
+    // 16 MiB refused captures the clamp explicitly admits. Measured live, flickr.com/
+    // explore was DELIVERED on a 4K window but REFUSED on a 5K iMac, a Pro Display XDR,
+    // and at the clamp's own 4096x4096 ceiling. Tying the cap to MAX_SHOT_PX means
+    // raising the clamp raises the cap with it.
+    expect(MAX_SHOT_B64_BYTES).toBe(MAX_SHOT_PX * MAX_SHOT_PX * 2);
   });
 
-  it('stays well below the adversarial ceiling the dimension clamp admits', () => {
-    // 4096x4096 incompressible noise; independently reproduced at 67,134,896 via zlib.
-    expect(MAX_SHOT_B64_BYTES).toBeLessThan(66_683_224 / 2);
+  it('admits real photo-dense content at the clamp ceiling', () => {
+    // 1.386 b64 bytes/px measured on flickr.com/explore — the densest REAL page sampled.
+    // Anything the clamp lets through must fit, or the cap is fencing our own ceiling.
+    const densestRealBytesPerPx = 1.386;
+    expect(MAX_SHOT_B64_BYTES).toBeGreaterThan(MAX_SHOT_PX * MAX_SHOT_PX * densestRealBytesPerPx);
+  });
+
+  it('still refuses an incompressible payload at that same ceiling', () => {
+    // 3.975 bytes/px measured on a 4096x4096 noise canvas (66,683,224 total;
+    // independently reproduced at 67,134,896 via a zlib encode). The cap discriminates
+    // by COMPRESSIBILITY, not absolute size — that is why it can admit the clamp's
+    // ceiling for real content and still stop a bomb.
+    const noiseBytesPerPx = 3.975;
+    expect(MAX_SHOT_B64_BYTES).toBeLessThan(MAX_SHOT_PX * MAX_SHOT_PX * noiseBytesPerPx);
   });
 
   // --- Fail-as-data: a refusal is reportable, never silent, never a failed fetch -----
