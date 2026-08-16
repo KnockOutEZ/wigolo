@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockedFunction } from 'vitest';
 import { resetConfig } from '../../../src/config.js';
 
 vi.mock('../../../src/fetch/auth.js', () => ({
@@ -46,8 +46,10 @@ function clearedResult(url: string): RawFetchResult {
 describe('SmartRouter escape-hatch ladder', () => {
   let httpClient: HttpClient;
   let browserPool: BrowserPoolInterface;
-  let solverFetch: ReturnType<typeof vi.fn>;
-  let hostedReaderFetch: ReturnType<typeof vi.fn>;
+  // Bound to the REAL rung types: declared ReturnType<typeof vi.fn> and cast in,
+  // neither spy had to satisfy EscapeHatchFetchers.
+  let solverFetch: MockedFunction<EscapeHatchFetchers['solverFetch']>;
+  let hostedReaderFetch: MockedFunction<EscapeHatchFetchers['hostedReaderFetch']>;
   let escapeHatch: EscapeHatchFetchers;
 
   beforeEach(() => {
@@ -62,10 +64,7 @@ describe('SmartRouter escape-hatch ladder', () => {
     };
     solverFetch = vi.fn(async () => null);
     hostedReaderFetch = vi.fn(async () => null);
-    escapeHatch = {
-      solverFetch: solverFetch as unknown as EscapeHatchFetchers['solverFetch'],
-      hostedReaderFetch: hostedReaderFetch as unknown as EscapeHatchFetchers['hostedReaderFetch'],
-    };
+    escapeHatch = { solverFetch, hostedReaderFetch };
   });
 
   afterEach(() => {
