@@ -233,43 +233,25 @@ describe('detectEntityCollision (brand-collision v2)', () => {
   });
 });
 
-// The entity path fires on a CASING heuristic — a capitalized head plus a
-// generic category word — with no reference to what came back. That inverts the
-// signal: a distinctive coinage like "DuckDB" or "ArchiveBox" is exactly the
-// name whose own project site owns every top slot, so it drew a warning while
-// genuinely poisoned result sets drew none. When the results are known they
-// decide, and a single result belonging to the entity silences the warning.
-describe('detectEntityCollision — the result set overrides the name heuristic', () => {
-  it('stays silent when the top results ARE the entity ("DuckDB docs" -> duckdb.org)', () => {
-    expect(
-      detectEntityCollision('DuckDB docs', [
-        { url: 'https://duckdb.org/docs/stable/', title: 'DuckDB Documentation' },
-        { url: 'https://duckdb.org/', title: 'DuckDB' },
-        { url: 'https://github.com/duckdb/duckdb', title: 'GitHub - duckdb/duckdb' },
-      ]),
-    ).toBeNull();
-  });
-
-  it('stays silent for "ArchiveBox setup" when the project site answers', () => {
-    expect(
-      detectEntityCollision('ArchiveBox setup', [
-        { url: 'https://archivebox.io/', title: 'ArchiveBox' },
-        { url: 'https://github.com/ArchiveBox/ArchiveBox', title: 'GitHub - ArchiveBox/ArchiveBox' },
-        { url: 'https://docs.archivebox.io/en/latest/', title: 'ArchiveBox Documentation' },
-      ]),
-    ).toBeNull();
-  });
-
-  it('still fires when no result belongs to the entity head', () => {
-    const w = detectEntityCollision('Phoenix framework deployment', [
-      { url: 'https://example.com/phoenix-a', title: 'Unrelated page' },
-      { url: 'https://other.example/b', title: 'Another unrelated page' },
-    ]);
+// An entity collision is BY DEFINITION a case where another entity shares the
+// name — so a same-named competitor always occupies a matching hostname.
+// Suppressing the warning whenever some result is "named after" the head is
+// therefore self-defeating: it is strongest exactly where it is least needed
+// (a project that owns its name) and silent exactly where the collision is
+// real. These are live 2026-08-16 cases where several different organisations
+// share one name and the caller genuinely needs telling.
+describe('detectEntityCollision — a same-named site must NOT silence the warning', () => {
+  it('still warns on "Apollo documentation" when three unrelated Apollos hold the top slots', () => {
+    const w = detectEntityCollision('Apollo documentation');
     expect(w).not.toBeNull();
     expect(w!.detected).toBe(true);
   });
 
-  it('still fires when the caller supplies no results — the query-only hedge is unchanged', () => {
+  it('still warns on "Delta api" when several different Deltas answer', () => {
+    expect(detectEntityCollision('Delta api')).not.toBeNull();
+  });
+
+  it('fires on a proper-noun head with a generic tail regardless of what came back', () => {
     expect(detectEntityCollision('Phoenix framework deployment')).not.toBeNull();
   });
 });
@@ -279,6 +261,32 @@ describe('SearchOutput.brand_collision_warning — result-set collision, not nam
   it('warns on "ArchiveBox" when every top result is about a different archive', async () => {
     verticalState.general = [
       makeEntry('bing', [
+        titled('https://en.wikipedia.org/wiki/Archive_of_Our_Own', 'Archive of Our Own'),
+        titled('https://en.wikipedia.org/wiki/Archives_of_American_Art', 'Archives of American Art'),
+      ]),
+      makeEntry('mojeek', [
+        titled('https://en.wikipedia.org/wiki/Archive_of_Folk_Culture', 'Archive of Folk Culture'),
+      ]),
+    ];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: 'ArchiveBox', include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.data.brand_collision_warning).toBeDefined();
+    expect(out.data.brand_collision_warning!.brand_domains_in_top_3).toEqual(['en.wikipedia.org']);
+  });
+
+  // "Nothing here is about X" is only a statement about the QUERY if the
+  // engines actually answered. With a single engine contributing it far more
+  // likely means retrieval collapsed — a condition engine_pool already reports
+  // — and the rewrites would not help. Re-labelling that as query ambiguity is
+  // the same misattribution the domain-filter cause exists to prevent.
+  it('does NOT warn when only one engine contributed — that is a retrieval failure, not an ambiguous query', async () => {
+    verticalState.general = [
+      makeEntry('wikipedia', [
         titled('https://en.wikipedia.org/wiki/Archive_of_Our_Own', 'Archive of Our Own'),
         titled('https://en.wikipedia.org/wiki/Archives_of_American_Art', 'Archives of American Art'),
         titled('https://en.wikipedia.org/wiki/Archive_of_Folk_Culture', 'Archive of Folk Culture'),
@@ -291,11 +299,18 @@ describe('SearchOutput.brand_collision_warning — result-set collision, not nam
     );
     expect(out.ok).toBe(true);
     if (!out.ok) return;
-    expect(out.data.brand_collision_warning).toBeDefined();
-    expect(out.data.brand_collision_warning!.brand_domains_in_top_3).toContain('en.wikipedia.org');
+    expect(out.data.brand_collision_warning).toBeUndefined();
   });
 
-  it('does NOT warn on "DuckDB docs" — every top result is the project itself', async () => {
+  // PRE-EXISTING over-fire, unchanged from base and deliberately NOT fixed
+  // here. The entity path is a casing heuristic that never reads the results,
+  // so it fires on a project that owns its name. The obvious patch — silence it
+  // when some result is hosted at a matching name — is self-defeating, because
+  // a genuine name collision always puts a same-named competitor in the results
+  // (see "Apollo documentation" above). Fixing it needs an intent signal and a
+  // slice that can weigh one. This test pins the CURRENT behaviour so the
+  // regression is visible rather than forgotten.
+  it('still over-fires on "DuckDB docs" — pre-existing entity-path behaviour, out of scope here', async () => {
     verticalState.general = [
       makeEntry('bing', [
         titled('https://duckdb.org/docs/stable/', 'DuckDB Documentation'),
@@ -310,7 +325,8 @@ describe('SearchOutput.brand_collision_warning — result-set collision, not nam
     );
     expect(out.ok).toBe(true);
     if (!out.ok) return;
-    expect(out.data.brand_collision_warning).toBeUndefined();
+    expect(out.data.brand_collision_warning).toBeDefined();
+    expect(out.data.brand_collision_warning!.reason).toContain('generic term');
   });
 
   it('does NOT warn on "ArchiveBox" when the project site answers', async () => {
@@ -329,6 +345,27 @@ describe('SearchOutput.brand_collision_warning — result-set collision, not nam
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     expect(out.data.brand_collision_warning).toBeUndefined();
+  });
+
+  it('warns on "Apollo documentation" even though several results are hosted at an Apollo domain', async () => {
+    // Three unrelated Apollos (a Discord bot, a sales platform, an MDN page).
+    // Every one of them is "named after" the head, which is precisely what a
+    // name collision looks like — so hostname agreement must not silence it.
+    verticalState.general = [
+      makeEntry('bing', [
+        titled('https://docs.apollo.fyi/', 'Apollo Documentation'),
+        titled('https://docs.apollo.io/', 'Apollo.io Knowledge Base'),
+        titled('https://developer.mozilla.org/en-US/docs/Web/API', 'Web APIs | MDN'),
+      ]),
+    ];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: 'Apollo documentation', include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.data.brand_collision_warning).toBeDefined();
   });
 
   // The subject check is the widest net, so it must run BELOW the lexical

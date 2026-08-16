@@ -283,14 +283,14 @@ export function detectSubjectCollision(
   const attrition = computeSubjectAnchorAttrition(results, term);
   if (!isSubjectCollision(attrition)) return null;
 
-  const sites = [...new Set(attrition.unnamed_hosts)].join(', ');
+  const sites = [...new Set(attrition.unnamed_hosts)];
   return {
     detected: true,
     reason:
       `query "${q}" — none of the top ${attrition.candidates} results is about anything called "${q}"; ` +
-      `the top slots went to ${sites}. ` +
+      `the top slots went to ${sites.join(', ')}. ` +
       `The results may cover a different subject than intended.`,
-    brand_domains_in_top_3: [...attrition.unnamed_hosts],
+    brand_domains_in_top_3: sites,
     suggested_rewrites: subjectCollisionRewrites(q),
   };
 }
@@ -320,17 +320,15 @@ export function entityQualifiedRewrite(query: string): string | null {
  * Emits a warning whose rewrites anchor the entity head verbatim so the caller
  * can disambiguate. Returns null when the query is not entity-collision prone.
  *
- * `topUrls` is optional because this predicate has two callers with different
- * knowledge. The pre-search dual-dispatch hedge runs before any result exists
- * and passes nothing — a hedge costs one concurrent query and is harmless when
- * wrong. The WARNING is emitted after the results are in and passes them, and
- * they override the name heuristic: the head being a distinctive Capitalized
- * coinage is not evidence of a collision when that coinage's own site answered.
+ * DELIBERATELY result-blind. Silencing this when some result is hosted at a
+ * matching name is self-defeating: an entity collision IS the case where
+ * another entity shares the name, so a competitor always occupies a matching
+ * hostname. Such a rule silences "Apollo documentation" (a Discord bot and a
+ * sales platform, both at an apollo domain) while still firing on a project
+ * that plainly owns its name. Whatever over-firing this predicate does is
+ * pre-existing and belongs to a slice that can weigh a real intent signal.
  */
-export function detectEntityCollision(
-  query: string,
-  results?: readonly AnchorCandidate[],
-): BrandCollisionWarning | null {
+export function detectEntityCollision(query: string): BrandCollisionWarning | null {
   const q = query.trim();
   if (!q) return null;
   const tokens = q.split(/\s+/).filter(Boolean);
@@ -344,16 +342,6 @@ export function detectEntityCollision(
   if (!hasGenericTail) return null;
 
   const head = entityHead(q) || tokens[0];
-
-  // The results, when known, decide. A single top result belonging to the
-  // entity head means the caller already got the subject they asked for. A
-  // multi-token head ("Comet ML") has no single term to anchor, so it keeps the
-  // query-only verdict rather than being silenced on weaker evidence.
-  if (results && results.length > 0) {
-    const headTerm = normalizeSubjectTerm(head);
-    if (headTerm && computeSubjectAnchorAttrition(results, headTerm).named > 0) return null;
-  }
-
   const qualified = entityQualifiedRewrite(q);
   const rewrites: string[] = [];
   if (qualified) rewrites.push(qualified);

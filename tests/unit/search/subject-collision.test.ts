@@ -86,13 +86,23 @@ describe('anchorsSubject — is the SITE named after the subject?', () => {
 // that broke when they did not.
 describe('anchorsSubject — a site affix must never swallow a meaningful word', () => {
   it.each([
+    // articles and possessives, removed after they claimed real words
     ['https://www.thespruce.com/', 'spruce'],
     ['https://theonion.com/', 'onion'],
     ['https://www.theguardian.com/', 'guardian'],
     ['https://www.mysql.com/', 'sql'],
     ['https://www.bestbuy.com/', 'best'],
+    // prefix affixes, removed for producing exactly the same class
+    ['https://www.getaway.com/', 'away'],
+    ['https://en.wikipedia.org/wiki/Usenet', 'net'],
+    ['https://www.trybooking.com/', 'booking'],
   ])('%s does not anchor "%s"', (url, term) => {
     expect(anchorsSubject(url, term)).toBe(false);
+  });
+
+  it('still anchors a legitimate site suffix in both directions', () => {
+    expect(anchorsSubject('https://www.typescriptlang.org/', 'typescript')).toBe(true);
+    expect(anchorsSubject('https://react.dev/', 'reactjs')).toBe(true);
   });
 });
 
@@ -262,12 +272,20 @@ describe('detectSubjectCollision — NEGATIVE: subjects that legitimately own no
 });
 
 // The everyday-word queries from the field report. A dictionary page IS titled
-// about the word, so no result-only predicate can separate "the caller meant
-// the software sense and got the dictionary" from "the caller meant the word
-// and got the right answer". Separating them needs the caller's INTENT, which
-// this detector does not have — so it stays silent rather than guessing, and
-// these assertions record that limit deliberately rather than by accident.
-describe('detectSubjectCollision — everyday words are NOT decidable from results alone', () => {
+// about the word, so the two channels this slice has — is the site named after
+// the term, is the page titled about it — both say "on subject" and the
+// detector stays silent.
+//
+// NOT a claim that these are undecidable in principle. Two signals could
+// decide them and neither is used here:
+//   1. lexicographic hosts are a small enumerable class, and they are NOT the
+//      same as encyclopedic ones — the "best" fixture below is cambridge /
+//      thefreedictionary / dictionary.com, whereas live "photosynthesis" is
+//      wikipedia + nationalgeographic;
+//   2. sense dispersion is already visible in the title qualifiers —
+//      "Marginalia (search engine)" + "Marginalia (EP)" is two referents.
+// Both are out of scope for this slice, not ruled out by it.
+describe('detectSubjectCollision — everyday words are not decided by this slice', () => {
   it.each([
     [
       'scrape',
@@ -295,6 +313,76 @@ describe('detectSubjectCollision — everyday words are NOT decidable from resul
     ],
   ])('stays silent on %s — the pages are titled about the word the caller typed', (query, results) => {
     expect(detectSubjectCollision(query, results)).toBeNull();
+  });
+});
+
+// A dotted or hyphenated product name is tokenized differently on each side:
+// the term is normalised by REMOVING punctuation ("React.js" -> "reactjs")
+// while a title is normalised by SPLITTING on it (["react", "js"]). That
+// asymmetry means such a name can never match its own title, and matches a
+// host only when some single label happens to equal the concatenation. The
+// result was the ORIGINAL bug reproduced: firing on a distinctive coinage
+// whose official site holds rank 1. Live 2026-08-16.
+describe('detectSubjectCollision — NEGATIVE: dotted and hyphenated names', () => {
+  it.each([
+    [
+      'React.js',
+      [
+        r('https://react.dev/', 'React'),
+        r('https://en.wikipedia.org/wiki/React_(software)', 'React (software) - Wikipedia'),
+        r('https://en.wikipedia.org/wiki/React.js', 'React.js'),
+      ],
+    ],
+    [
+      'Socket.IO',
+      [
+        r('https://socket.io/', 'Socket.IO'),
+        r('https://socket.io/docs/v4/', 'Socket.IO Documentation'),
+        r('https://en.wikipedia.org/wiki/Socket.IO', 'Socket.IO - Wikipedia'),
+      ],
+    ],
+    [
+      'Nuxt.js',
+      [
+        r('https://nuxt.com/', 'Nuxt: The Intuitive Vue Framework'),
+        r('https://en.wikipedia.org/wiki/Nuxt.js', 'Nuxt.js'),
+        r('https://github.com/nuxt/nuxt', 'GitHub - nuxt/nuxt'),
+      ],
+    ],
+    [
+      'ASP.NET',
+      [
+        r('https://dotnet.microsoft.com/apps/aspnet', 'ASP.NET | Open-source web framework'),
+        r('https://en.wikipedia.org/wiki/ASP.NET', 'ASP.NET - Wikipedia'),
+        r('https://learn.microsoft.com/aspnet/core/', 'ASP.NET Core documentation'),
+      ],
+    ],
+  ])('stays silent on %s — its own site and a same-named page are right there', (query, results) => {
+    expect(detectSubjectCollision(query, results)).toBeNull();
+  });
+});
+
+describe('anchorsSubject — the term side is normalised the same way as the host side', () => {
+  it('anchors "React.js" to react.dev — a trailing site word on the TERM must strip too', () => {
+    expect(anchorsSubject('https://react.dev/', 'reactjs')).toBe(true);
+  });
+
+  it('anchors an organisation landing page on a code forge', () => {
+    expect(anchorsSubject('https://github.com/ArchiveBox', 'archivebox')).toBe(true);
+  });
+});
+
+describe('titleNamesSubject — a punctuated name in a title still names the subject', () => {
+  it('matches a dotted title against the concatenated term', () => {
+    expect(titleNamesSubject('React.js', 'reactjs')).toBe(true);
+  });
+
+  it('matches a dotted term inside a longer title', () => {
+    expect(titleNamesSubject('Socket.IO - Wikipedia', 'socketio')).toBe(true);
+  });
+
+  it('does not join distant words into a false name', () => {
+    expect(titleNamesSubject('Archive of Our Own', 'archivebox')).toBe(false);
   });
 });
 

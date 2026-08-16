@@ -29,20 +29,25 @@
  */
 
 /**
- * Site-naming affixes, kept deliberately tiny and split by position because
- * each one is a licence for a domain to claim a word it does not own.
+ * Site-naming suffixes, kept deliberately tiny because each one is a licence
+ * for a domain to claim a word it does not own. Applied to BOTH sides: a
+ * hostname label may shed one to match the term (`typescriptlang.org` is
+ * TypeScript) and the term may shed one to match a label (`React.js` is
+ * `react.dev`).
  *
  * ⚠️ There is NO "is the residue a real word" check here and there cannot
  * cheaply be one — the only thing keeping `bestbuy` from reading as "best" is
- * that `buy` is not on these lists. Adding a commerce verb (buy/shop/store), an
+ * that `buy` is not on this list. Adding a commerce verb (buy/shop/store), an
  * article (`the` — which made `thespruce.com` claim "spruce" and
  * `theguardian.com` claim "guardian"), or a possessive (`my` — which made
- * `mysql.com` claim "sql") re-creates that bug wholesale. An entry belongs here
- * only if it is a pure SITE word that never carries meaning inside a subject
- * name.
+ * `mysql.com` claim "sql") re-creates that bug wholesale. Prefix affixes
+ * (`get`/`try`/`use`) were removed for the same reason: they made `getaway.com`
+ * claim "away" and `usenet` claim "net", and nothing needed them.
  */
 const SUFFIX_AFFIXES: readonly string[] = ['js', 'lang'];
-const PREFIX_AFFIXES: readonly string[] = ['get', 'try', 'use'];
+
+/** Longest run of title words joined when testing a punctuated name. */
+const MAX_TITLE_JOIN = 4;
 
 /** Hosts where the SECOND path segment names a project (`/owner/repo`). */
 const CODE_FORGE_HOSTS: ReadonlySet<string> = new Set([
@@ -70,8 +75,6 @@ export interface SubjectAnchorAttrition {
   named: number;
   /** Results that are not. */
   unnamed: number;
-  /** Distinct registrable domains among the examined results. */
-  distinct_domains: number;
   /** Hostnames of the results that are not about the subject, in rank order. */
   unnamed_hosts: string[];
 }
@@ -103,31 +106,27 @@ function hostOf(url: string): string {
   }
 }
 
-/** Last two hostname labels — a cheap stand-in for the registrable domain. */
-export function registrableDomainOf(url: string): string {
-  const host = hostOf(url);
-  if (!host) return '';
-  const labels = host.split('.');
-  return labels.length <= 2 ? host : labels.slice(-2).join('.');
+/** `value` with one trailing site suffix removed, or null when it has none. */
+function withoutSiteSuffix(value: string): string | null {
+  for (const affix of SUFFIX_AFFIXES) {
+    if (value.length > affix.length + MIN_TERM_LENGTH - 1 && value.endsWith(affix)) {
+      return value.slice(0, value.length - affix.length);
+    }
+  }
+  return null;
 }
 
-/** True when one site affix can be removed from `label` to leave exactly `term`. */
+/**
+ * True when a hostname label and a term denote the same name once one site
+ * suffix is allowed on EITHER side. Symmetry matters: `typescriptlang` -> the
+ * term needs the label to shed one, and `React.js` -> `reactjs` needs the TERM
+ * to shed one to reach `react.dev`. Stripping only the label made every dotted
+ * product name fail to match its own site.
+ */
 function matchesThroughSiteAffix(label: string, term: string): boolean {
   if (term.length < MIN_TERM_LENGTH) return false;
-  for (const affix of PREFIX_AFFIXES) {
-    if (label.length > affix.length && label.startsWith(affix) && label.slice(affix.length) === term) {
-      return true;
-    }
-  }
-  for (const affix of SUFFIX_AFFIXES) {
-    if (
-      label.length > affix.length &&
-      label.endsWith(affix) &&
-      label.slice(0, label.length - affix.length) === term
-    ) {
-      return true;
-    }
-  }
+  if (withoutSiteSuffix(label) === term) return true;
+  if (withoutSiteSuffix(term) === label) return true;
   return false;
 }
 
@@ -159,8 +158,10 @@ export function anchorsSubject(url: string, term: string): boolean {
   }
 
   if (CODE_FORGE_HOSTS.has(host.replace(/^www\./, ''))) {
+    // `/owner` is an organisation landing page and `/owner/repo` a project —
+    // on a forge both segments are names, not article paths.
     const segments = new URL(url).pathname.split('/').filter(Boolean);
-    if (segments.length > 1 && normalizeAlnum(segments[1]) === term) return true;
+    if (segments.slice(0, 2).some((s) => normalizeAlnum(s) === term)) return true;
   }
 
   return false;
@@ -173,14 +174,27 @@ export function anchorsSubject(url: string, term: string): boolean {
  * domain: Wikipedia is not named "photosynthesis" and Mayo Clinic is not named
  * "ADHD", but their pages are titled about exactly those things. Matched on
  * whole title tokens so "Archive of Our Own" does not read as "ArchiveBox".
+ *
+ * Short runs of adjacent words are also joined, because the term arrives with
+ * its punctuation REMOVED ("React.js" -> "reactjs") while a title is split ON
+ * punctuation (["react", "js"]). Without the join a dotted or hyphenated name
+ * could never match a page titled with that exact name — the asymmetry fired
+ * the warning on "React.js" while `react.dev` sat at rank 1.
  */
 export function titleNamesSubject(title: string | undefined, term: string): boolean {
   if (!title || !term) return false;
-  return title
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean)
-    .includes(term);
+  const words = title.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (words.includes(term)) return true;
+
+  for (let start = 0; start < words.length; start++) {
+    let joined = '';
+    for (let n = 0; n < MAX_TITLE_JOIN && start + n < words.length; n++) {
+      joined += words[start + n];
+      if (joined.length > term.length) break;
+      if (n > 0 && joined === term) return true;
+    }
+  }
+  return false;
 }
 
 /** PER-RESULT predicate: is this result about `term` at all? */
@@ -194,13 +208,10 @@ export function computeSubjectAnchorAttrition(
   term: string,
 ): SubjectAnchorAttrition {
   const examined = candidates.slice(0, SUBJECT_ANCHOR_SAMPLE);
-  const domains = new Set<string>();
   const unnamedHosts: string[] = [];
   let named = 0;
 
   for (const candidate of examined) {
-    const domain = registrableDomainOf(candidate.url);
-    if (domain) domains.add(domain);
     if (namesSubject(candidate, term)) {
       named++;
     } else {
@@ -214,7 +225,6 @@ export function computeSubjectAnchorAttrition(
     candidates: examined.length,
     named,
     unnamed: examined.length - named,
-    distinct_domains: domains.size,
     unnamed_hosts: unnamedHosts,
   };
 }

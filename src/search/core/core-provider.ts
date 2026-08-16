@@ -897,16 +897,26 @@ export class CoreSearchProvider implements SearchProvider {
     // correct and the QUERY is the ambiguous part; letting the subject check
     // answer first would replace a usable "useState React hook" rewrite with a
     // claim that nothing in the top-3 is about useState while react.dev sits at
-    // rank 1. Then the entity-collision v2 check, now overruled by the results
-    // when the entity's own site answered. The result-set subject check runs
-    // last: it is the general case and the widest net, so it only speaks when
-    // no more specific reading applies. Every path emits the same warning shape.
+    // rank 1. Then the entity-collision check. The result-set subject check
+    // runs last: it is the general case and the widest net, so it only speaks
+    // when no more specific reading applies.
+    //
+    // The subject check additionally needs a result set worth reading. When
+    // only one engine actually contributed, "nothing here is about X" is far
+    // more likely to mean "we retrieved almost nothing" than "your query is
+    // ambiguous", and its rewrites would not help — the pool condition is
+    // already reported by engine_pool/engine_warnings and must not be
+    // re-labelled as a query problem. Every path emits the same warning shape.
+    const contributingEngines = engineTelemetry
+      ? engineTelemetry.filter((t) => t.result_count > 0).length
+      : 0;
+    const subjectEvidenceUsable = !engineTelemetry || contributingEngines >= 2;
     const collisionCandidates = items.map((i) => ({ url: i.url, title: i.title }));
     const collisionWarning =
       detectBrandCollision(displayQuery, items.map((i) => i.url)) ??
       detectLexicalCollision(displayQuery) ??
-      detectEntityCollision(displayQuery, collisionCandidates) ??
-      detectSubjectCollision(displayQuery, collisionCandidates);
+      detectEntityCollision(displayQuery) ??
+      (subjectEvidenceUsable ? detectSubjectCollision(displayQuery, collisionCandidates) : null);
     if (collisionWarning) data.brand_collision_warning = collisionWarning;
 
     if (input.include_images || isImagesCategory) {

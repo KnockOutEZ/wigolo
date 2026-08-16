@@ -665,12 +665,17 @@ export interface SearchOutput {
    * DEDICATED field rather than `notice` because `notice` is overwritten by
    * `warning` on the stream_answer path (server/search-response.ts). */
   ranking_notice?: string;
-  /** Emitted only when the query collides with a brand domain in the
-   * top-3 results. Carries reason + disambiguation suggestions so callers
-   * can pivot to a clearer phrasing. */
+  /** Emitted when the top results look like they belong to a different
+   * subject than the query intended — a brand domain holding the top-3, a
+   * query that reads as a popular dev term, or no top result being about
+   * anything by that name. Carries reason + disambiguation suggestions so
+   * callers can pivot to a clearer phrasing. */
   brand_collision_warning?: {
     detected: true;
     reason: string;
+    /** Distinct hosts holding the top slots, deduplicated, in rank order.
+     * Named for the original brand-domain case; now carries whichever hosts
+     * the firing path found, which may be ordinary sites. */
     brand_domains_in_top_3: string[];
     suggested_rewrites: string[];
   };
