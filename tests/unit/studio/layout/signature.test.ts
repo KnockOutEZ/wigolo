@@ -37,6 +37,24 @@ function oneColumn(): LayoutInput {
   return { boxes, viewport: VP };
 }
 
+/**
+ * A centred login card: the whole page is SMALLER than the viewport in both axes. This is the only
+ * shape in which the viewport floor of the extent normalisation actually binds, which is what makes
+ * it the only shape that can test DPR handling — see the DPR case for why.
+ */
+function loginCard(): LayoutInput {
+  return {
+    boxes: [
+      box(450, 300, 300, 240, 0),
+      box(470, 320, 260, 40, 12),
+      box(470, 380, 260, 36, 8),
+      box(470, 430, 260, 36, 8),
+      box(470, 480, 260, 40, 6),
+    ],
+    viewport: VP,
+  };
+}
+
 /** A challenge interstitial: a handful of small centred boxes, nothing else. */
 function interstitial(): LayoutInput {
   return {
@@ -75,7 +93,11 @@ const dist = (a: LayoutInput, b: LayoutInput) =>
 
 describe('LayoutSignature — INVARIANT TO (a signature that moves with content is useless for heal/look-alike)', () => {
   it('is invariant to device pixel ratio: the same render reported in device px at DPR 2 signs identically to CSS px at DPR 1', () => {
-    const cssPx = threeColumn();
+    // The page must be SHORTER AND NARROWER than the viewport, or this test cannot see the bug it
+    // guards: when the content extent exceeds the viewport, the extent normalisation divides the
+    // DPR factor out on its own and a build that ignored DPR entirely would still pass. Only when
+    // the viewport floor binds does an un-divided device-px box change which of the two wins.
+    const cssPx = loginCard();
     const devicePx: LayoutInput = {
       boxes: cssPx.boxes.map((b) => ({ x: b.x * 2, y: b.y * 2, width: b.width * 2, height: b.height * 2, textLength: b.textLength })),
       viewport: { width: 1200, height: 900, devicePixelRatio: 2 },
@@ -194,6 +216,19 @@ describe('LayoutSignature — D5: geometry is page-controlled, so it is clamped 
     expect(hostile.clamped).toBe(true);
     expect(hostile.boxCount).toBe(clampedEquivalent.boxCount);
     expect(Array.from(hostile.cells)).toEqual(Array.from(clampedEquivalent.cells));
+  });
+
+  it('an out-of-range ORIGIN is clamped and REPORTED — the width clamp alone leaves the x/y divisor unbounded', () => {
+    // The width/height clamp and the coordinate clamp are separate code paths. A box at a sane
+    // origin with an absurd width exercises only the first; this one exercises only the second, so
+    // a build that dropped `clampCoord` cannot pass by accident.
+    const sig = computeLayoutSignature({
+      boxes: [box(1e12, 1e12, 100, 100, 10), box(100, 100, 200, 50, 30)],
+      viewport: VP,
+    });
+    expect(sig.clamped).toBe(true);
+    expect(sig.boxCount).toBe(2);
+    expect(Array.from(sig.cells).every((c) => Number.isFinite(c) && c >= 0 && c <= 255)).toBe(true);
   });
 
   it('non-finite and non-positive geometry is DROPPED, never propagated into the vector', () => {
