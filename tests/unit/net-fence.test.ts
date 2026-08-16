@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import net from 'node:net';
+import http from 'node:http';
 import { once } from 'node:events';
 import {
   ALLOW_NETWORK_ENV,
@@ -104,8 +105,7 @@ describe('network fence — must NOT fire', () => {
 
   it('treats every spelling of loopback as loopback', () => {
     for (const host of ['localhost', '127.0.0.1', '127.0.0.53', '::1', '[::1]', 'LOCALHOST', 'foo.localhost']) {
-      const dest = destinationOf([{ host, port: 8080 }]);
-      expect(dest).toEqual({ host, port: 8080 });
+      expect(destinationOf([{ host, port: 8080 }])).toEqual({ kind: 'inet', host, port: 8080 });
       // Routed through the real patched connect: a throw here is the fence over-firing. Port 1
       // will refuse, so the (async, irrelevant) connection error is absorbed rather than left to
       // surface as an unhandled 'error' event.
@@ -117,8 +117,154 @@ describe('network fence — must NOT fire', () => {
   });
 
   it('ignores unix-socket connects, which have no host to judge', () => {
-    expect(destinationOf(['/tmp/some.sock'])).toBeNull();
-    expect(destinationOf([{ path: '/tmp/some.sock' }])).toBeNull();
+    expect(destinationOf(['/tmp/some.sock'])).toEqual({ kind: 'unix' });
+    expect(destinationOf([{ path: '/tmp/some.sock' }])).toEqual({ kind: 'unix' });
+    // The normalized form Node actually produces for BOTH unix spellings.
+    expect(destinationOf([[{ path: '/tmp/some.sock' }, null]])).toEqual({ kind: 'unix' });
+  });
+
+  it('keeps the implicit-localhost default ONLY where Node itself defaults it', () => {
+    // `net.connect({port})` genuinely connects to loopback, so this default is correct. It is the
+    // same default that, applied to an UNRECOGNIZED shape, opened the hole fixed above — the
+    // difference is that here the shape was positively recognized as inet first.
+    expect(destinationOf([[{ port: 8080 }, null]])).toEqual({ kind: 'inet', host: 'localhost', port: 8080 });
+    expect(destinationOf([8080])).toEqual({ kind: 'inet', host: 'localhost', port: 8080 });
+  });
+});
+
+/**
+ * Regression rows for the arg shapes Node ACTUALLY passes to `Socket.prototype.connect`.
+ *
+ * Every literal below was dumped from a real call of the named transport, not written to match
+ * `destinationOf`. That distinction is the whole point: the first version of this fence was
+ * tested only against hand-built `{host, port}` objects, so it never saw the `[options, cb]`
+ * array that `net.connect`, `net.createConnection` and all of `node:http` really use — and those
+ * three egressed for real, silently, with the fence installed and reporting clean.
+ */
+describe('network fence — real connect arg shapes', () => {
+  afterEach(() => {
+    resetNetworkViolations();
+  });
+
+  const PUBLIC_SHAPES: ReadonlyArray<[string, unknown[]]> = [
+    ["net.connect(443,'example.com')", [[{ port: 443, host: 'example.com' }, null]]],
+    ['net.createConnection({host,port})', [[{ host: 'example.com', port: 443 }, null]]],
+    ["new net.Socket().connect(443,'example.com')", [443, 'example.com']],
+    ['new net.Socket().connect({host,port})', [{ host: 'example.com', port: 443 }]],
+    // `node:http` carries `hostname` alongside `host`; cdp-client.ts uses exactly this call form.
+    [
+      'http.get(url,{timeout},cb) — the src/fetch/cdp-client.ts shape',
+      [[{ protocol: 'http:', hostname: 'example.com', port: 80, host: 'example.com', timeout: 5000 }, () => {}]],
+    ],
+    ["tls.connect(443,'example.com')", [{ port: 443, host: 'example.com', servername: 'example.com' }, () => {}]],
+  ];
+
+  it.each(PUBLIC_SHAPES)('classifies %s as a public destination', (_label, args) => {
+    const target = destinationOf(args as unknown[]);
+    expect(target).toMatchObject({ kind: 'inet', host: 'example.com' });
+  });
+
+  it.each(PUBLIC_SHAPES)('FIRES on %s through the real patched connect', (_label, args) => {
+    const socket = new net.Socket();
+    socket.on('error', () => undefined);
+    expect(() =>
+      (socket.connect as unknown as (...a: unknown[]) => unknown)(...(args as unknown[])),
+    ).toThrow(/\[net-fence\]/);
+    expect(networkViolations().map((v) => v.host)).toEqual(['example.com']);
+  });
+});
+
+/**
+ * End-to-end controls, driving the REAL transports rather than replaying dumped literals.
+ *
+ * The dumped-shape rows above and these are deliberately not redundant: the rows pin the
+ * classifier against shapes captured today, and these catch the case where a future Node changes
+ * the shape underneath them. Both were silent before the arg-shape fix — the reviewer confirmed
+ * `node:http.get` returning a real 200 and `net.connect` completing a real TCP connection with
+ * the fence installed. Nothing egresses now: the fence throws before any resolution happens.
+ */
+describe('network fence — real transports, end to end', () => {
+  afterEach(() => {
+    resetNetworkViolations();
+  });
+
+  it('fires on node:http.get, which passes the normalized array form', async () => {
+    await new Promise<void>((resolve) => {
+      try {
+        const req = http.get('http://example.com/', () => resolve());
+        req.on('error', () => resolve());
+      } catch {
+        resolve();
+      }
+    });
+    expect(networkViolations().map((v) => `${v.host}:${v.port}`)).toEqual(['example.com:80']);
+  });
+
+  it('fires on net.connect, which also passes the normalized array form', () => {
+    expect(() => net.connect(443, 'example.com').on('error', () => undefined)).toThrow(/\[net-fence\]/);
+    expect(networkViolations().map((v) => v.host)).toEqual(['example.com']);
+  });
+
+  it('fires on net.createConnection', () => {
+    expect(() =>
+      net.createConnection({ host: 'example.com', port: 443 }).on('error', () => undefined),
+    ).toThrow(/\[net-fence\]/);
+    expect(networkViolations().map((v) => v.host)).toEqual(['example.com']);
+  });
+
+  it('still lets a real loopback server through on those same transports', async () => {
+    // The must-not-fire half of the same change: unwrapping arrays must not start blocking the
+    // local servers the REST suites stand up, which arrive by exactly this code path.
+    const server = http.createServer((_req, res) => res.end('ok'));
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const port = (server.address() as net.AddressInfo).port;
+
+    const body = await new Promise<string>((resolve, reject) => {
+      http
+        .get({ host: '127.0.0.1', port, path: '/' }, (res) => {
+          let out = '';
+          res.on('data', (c) => (out += c));
+          res.on('end', () => resolve(out));
+        })
+        .on('error', reject);
+    });
+    server.close();
+    await once(server, 'close');
+
+    expect(body).toBe('ok');
+    expect(networkViolations()).toEqual([]);
+  });
+});
+
+describe('network fence — unrecognized shapes fail CLOSED', () => {
+  afterEach(() => {
+    resetNetworkViolations();
+  });
+
+  it.each([
+    ['an object with no host, hostname, port or path', [{ foo: 'bar' }]],
+    ['an empty object', [{}]],
+    ['no arguments at all', []],
+    ['a null first argument', [null]],
+    ['a boolean first argument', [true]],
+  ])('treats %s as unknown rather than as loopback', (_label, args) => {
+    const target = destinationOf(args as unknown[]);
+    expect(target.kind).toBe('unknown');
+  });
+
+  it('records and throws on an unclassifiable connect, naming why it could not be judged', () => {
+    // The direction that matters. Before the fix an unrecognized shape defaulted to 'localhost'
+    // and took the pass-through branch, so a shape the fence did not understand became a shape
+    // the fence waved through. A guard may refuse to classify; it may not assume harmless.
+    const socket = new net.Socket();
+    socket.on('error', () => undefined);
+    expect(() => (socket.connect as unknown as (...a: unknown[]) => unknown)({ foo: 'bar' })).toThrow(
+      /\[net-fence\].*unclassified/,
+    );
+    expect(networkViolations()).toHaveLength(1);
+    expect(networkViolations()[0].detail).toMatch(/no host\/hostname\/port\/path/);
+    expect(violationMessage(networkViolations())).toContain('unclassified connect');
   });
 });
 

@@ -25,12 +25,14 @@ import net from 'node:net';
  * reassignment. A fence at that seam could never fire, and a fence that cannot fire is worse
  * than none.
  *
- * EXACTLY WHAT IT COVERS. Three egress paths exist under `src/fetch/`, and the answer differs
- * per path. Each row was measured by forcing the egress and reading the result, not reasoned
- * about:
+ * EXACTLY WHAT IT COVERS. Four egress paths exist in this codebase, and the answer differs per
+ * path. Each row was measured by forcing the egress and reading the result, not reasoned about:
  *
  *   - the default HTTP tier (`httpFetch`, undici) — VISIBLE. Forcing it produced a recorded
  *     `example.com:443` and a red test. This is the path an accidental egress most often takes.
+ *   - `node:http` / `net.connect` callers, notably `src/fetch/cdp-client.ts`'s
+ *     `http.get(url, { timeout }, cb)` — VISIBLE, but ONLY since the arg-shape fix below. They
+ *     were silently sailing through before it.
  *   - the TLS-impersonation tier (`tls-tier.ts`) — INVISIBLE. It egresses through the `wreq-js`
  *     napi backend, whose sockets are opened in native code and never touch `node:net`. Forcing
  *     it produced a real `403` from a live host with the fence installed and silent.
@@ -41,6 +43,11 @@ import net from 'node:net';
  * the construction site (`systemBrowserFetch: async () => null`, an injected `tlsFetcher`). This
  * fence does not replace that and must not be read as covering it — which is why the coverage is
  * written down here rather than left to be inferred from a green run.
+ *
+ * ALSO NOT COVERED: bare DNS. `dns.lookup` / `dns.resolve4` answer over UDP and never construct a
+ * `net.Socket`, so a test that only resolves a name is invisible here. That costs nothing for the
+ * paths above — the destination is judged BEFORE resolution, so a fenced connect never reaches a
+ * resolver — but a test whose assertion depends on a bare lookup would still measure the host.
  *
  * The destination is inspected BEFORE resolution, so a blocked hostname is never looked up.
  * Loopback and unix sockets pass through untouched: the suites that stand up a local server are
@@ -58,6 +65,9 @@ export interface NetworkViolation {
   port: number;
   /** Call site of the offending connect, for the failure message. */
   stack: string;
+  /** Present only for an unclassified arg shape — names WHY it could not be judged, so the fix
+   *  is to teach `destinationOf` the shape rather than to widen the allowlist. */
+  detail?: string;
 }
 
 const violations: NetworkViolation[] = [];
@@ -105,23 +115,76 @@ function isLoopback(host: string): boolean {
   return false;
 }
 
+/** What a `connect` call resolves to. `unknown` is a real answer, not an absence — see below. */
+export type ConnectTarget =
+  /** A unix-domain socket. No host to judge, so nothing to fence. */
+  | { kind: 'unix' }
+  | { kind: 'inet'; host: string; port: number }
+  /** A shape this function does not recognize. Treated as a VIOLATION, never as loopback. */
+  | { kind: 'unknown'; detail: string };
+
 /**
- * Normalize the three `Socket.prototype.connect` overloads to a destination.
- * Returns `null` for a unix-socket connect, which has no host to judge.
+ * Classify the destination of a `Socket.prototype.connect` call.
+ *
+ * THE BUG THIS SHAPE EXISTS TO PREVENT, because it already shipped once. The first version
+ * returned `{host, port}` or `null`, defaulted a missing host to `'localhost'`, and had no
+ * `unknown` case. Two things were wrong with that, and they compounded:
+ *
+ *  1. Node does NOT hand `connect` the options object for every transport. `net.connect`,
+ *     `net.createConnection` and everything in `node:http` pass the result of the internal
+ *     `normalizeArgs()` — an ARRAY `[options, callback]` — which `connect` unwraps itself. An
+ *     array satisfies `typeof first === 'object'`, so the old code read `.host`/`.port` off the
+ *     ARRAY, got `undefined` for both, and fell through to its `'localhost'` default.
+ *  2. Defaulting an UNRECOGNIZED shape to `'localhost'` made the failure direction OPEN. The
+ *     fence then took its pass-through branch: no throw, no record, real egress.
+ *
+ * Net effect: `node:http.get` fetched a live page and `net.connect` completed a real TCP
+ * connection with the fence installed and silent. A guard that reports "clean" while traffic
+ * leaves the box is worse than no guard, because it is believed.
+ *
+ * So: arrays are unwrapped BEFORE the object branch, and an unrecognized shape now fails CLOSED.
+ * `'localhost'` remains the default ONLY where Node itself defaults it — a recognized inet shape
+ * carrying a port but no host, which genuinely connects to loopback.
+ *
+ * Every branch below is pinned by a test row built from args DUMPED FROM A REAL CALL of each
+ * transport, not from args written to match this function. Constructing the expected shape by
+ * hand is precisely what let the array form go unnoticed.
  */
-export function destinationOf(args: unknown[]): { host: string; port: number } | null {
+export function destinationOf(args: unknown[]): ConnectTarget {
   const [first, second] = args;
-  if (typeof first === 'string') return null; // connect(path[, listener]) — unix socket
+
+  // `normalizeArgs()` output: [options, callback]. Recurse rather than special-case, so the
+  // object/unix/unknown branches below stay the single source of truth for classification.
+  if (Array.isArray(first)) return destinationOf(first);
+
+  if (typeof first === 'string') return { kind: 'unix' }; // connect(path[, listener])
+
   if (typeof first === 'number') {
-    const host = typeof second === 'string' ? second : 'localhost';
-    return { host, port: first };
+    // connect(port[, host][, listener]). Node defaults a missing host to localhost.
+    return { kind: 'inet', host: typeof second === 'string' ? second : 'localhost', port: first };
   }
-  if (first && typeof first === 'object') {
-    const opts = first as { host?: string; port?: number; path?: string };
-    if (typeof opts.path === 'string') return null; // unix socket
-    return { host: opts.host ?? 'localhost', port: opts.port ?? 0 };
+
+  if (first !== null && typeof first === 'object') {
+    const opts = first as { host?: unknown; hostname?: unknown; port?: unknown; path?: unknown };
+    if (typeof opts.path === 'string') return { kind: 'unix' };
+
+    // `host` is what `connect` itself reads; `hostname` is carried by the `node:http` options and
+    // is accepted as a fallback so an http egress is never classified on a missing field.
+    const host =
+      typeof opts.host === 'string' ? opts.host : typeof opts.hostname === 'string' ? opts.hostname : undefined;
+    const port =
+      typeof opts.port === 'number' ? opts.port : typeof opts.port === 'string' ? Number(opts.port) : undefined;
+
+    if (host !== undefined || port !== undefined) {
+      return { kind: 'inet', host: host ?? 'localhost', port: port ?? 0 };
+    }
+    return {
+      kind: 'unknown',
+      detail: `object carrying no host/hostname/port/path (keys: ${Object.keys(opts).slice(0, 8).join(', ') || 'none'})`,
+    };
   }
-  return null;
+
+  return { kind: 'unknown', detail: `${first === null ? 'null' : typeof first} argument` };
 }
 
 /**
@@ -161,7 +224,9 @@ export function resetNetworkViolations(): void {
 /** The message a violating test reds with. Names the destination AND the remedy, because a
  *  fence whose failure reads as flake will be re-run rather than fixed. */
 export function violationMessage(list: readonly NetworkViolation[]): string {
-  const lines = list.map((v) => `  - ${v.host}:${v.port}\n${v.stack}`);
+  const lines = list.map(
+    (v) => `  - ${v.detail ? `<unclassified connect: ${v.detail}>` : `${v.host}:${v.port}`}\n${v.stack}`,
+  );
   return (
     `This test attempted ${list.length} outbound connection(s) to a live host. Its result would ` +
     `depend on the machine it ran on, not on the code under test.\n${lines.join('\n')}\n` +
@@ -185,13 +250,24 @@ export function installNetworkFence(): void {
     if (fileAllowance !== null || process.env[ALLOW_NETWORK_ENV] === '1') {
       return (original as (...a: unknown[]) => net.Socket).apply(this, args);
     }
-    const dest = destinationOf(args);
-    if (dest && !isLoopback(dest.host)) {
-      const stack = callSiteOf(new Error());
-      violations.push({ host: dest.host, port: dest.port, stack });
+    const target = destinationOf(args);
+    const allowed =
+      target.kind === 'unix' || (target.kind === 'inet' && isLoopback(target.host));
+
+    if (!allowed) {
+      // Written so the ONLY way to reach the pass-through is to be positively classified as
+      // harmless. `unknown` lands here with everything else, which is the fail-closed direction
+      // the first version got backwards.
+      const where = target.kind === 'inet' ? `${target.host}:${target.port}` : `<unclassified: ${target.detail}>`;
+      violations.push({
+        host: target.kind === 'inet' ? target.host : '<unclassified>',
+        port: target.kind === 'inet' ? target.port : 0,
+        stack: callSiteOf(new Error()),
+        ...(target.kind === 'unknown' ? { detail: target.detail } : {}),
+      });
       // Thrown as well as recorded: a caller that does NOT swallow gets the clear failure
       // immediately, at the call site, which is where it is cheapest to read.
-      throw new Error(`[net-fence] blocked outbound connection to ${dest.host}:${dest.port}`);
+      throw new Error(`[net-fence] blocked outbound connection to ${where}`);
     }
     return (original as (...a: unknown[]) => net.Socket).apply(this, args);
   } as typeof net.Socket.prototype.connect;
