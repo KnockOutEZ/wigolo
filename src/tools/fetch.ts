@@ -388,6 +388,10 @@ export async function handleFetch(
       links: responseLinks,
       images: responseImages,
       screenshot: raw.screenshot,
+      // A screenshot is caller-REQUESTED, so its absence must be explainable. Carried
+      // on the envelope only (like fetch_failed / js_required), which costs nothing in
+      // the tool description budget.
+      ...(raw.screenshotOmitted ? { screenshot_omitted: raw.screenshotOmitted } : {}),
       cached: false,
       action_results: raw.actionResults,
       // Propagate the router-chosen tier name onto the public response so

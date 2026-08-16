@@ -30,7 +30,7 @@ import {
   assertNavigationChainAllowed,
   installBrowserRequestGuard,
 } from './browser-request-guard.js';
-import type { RawFetchResult, BrowserType, ActionResult, BrowserAction, ChallengeClass, SolveMethod } from '../types.js';
+import type { RawFetchResult, BrowserType, ActionResult, BrowserAction, ChallengeClass, SolveMethod, ScreenshotOmittedReason } from '../types.js';
 
 /**
  * Host of a fetched URL, or null on a malformed URL. Used to key the anti-bot
@@ -240,30 +240,56 @@ export interface PoolTypeStat {
 const log = createLogger('fetch');
 
 /**
- * Hard cap on a single capture's pixel dimensions, mirroring the clamp in
- * `src/studio/perception/vision.ts` (MAX_REGION_PX). The pool's own contexts use a
- * 1280x720 viewport, but the CDP-attach path adopts an EXTERNAL browser's existing
- * context, whose viewport we neither choose nor validate — so the dimension is
- * environment-influenced and needs a fence.
+ * Hard cap on a single capture's pixel dimensions.
  *
- * Deliberately NOT operator-tunable, for vision.ts's stated reason: a clamp you
- * cannot crank up to unsafe is safer than one you can.
+ * The pool's own contexts are <=1280x800, so this can never fire on them. It exists
+ * for the CDP-attach path, which adopts an EXTERNAL browser's context whose window we
+ * neither choose nor validate.
+ *
+ * Reading that dimension takes real care: `page.viewportSize()` returns **null** for a
+ * context Playwright does not own — measured null on 9/9 CDP-adopted contexts — so a
+ * clamp keyed on it alone is dead code on the one path it exists for. The size must
+ * come from `window.innerWidth/innerHeight` instead.
+ *
+ * Deliberately NOT operator-tunable, for vision.ts's stated reason: a clamp you cannot
+ * crank up to unsafe is safer than one you can.
  */
 export const MAX_SHOT_PX = 4096;
 
 /**
  * Hard cap on the base64 payload a single capture may contribute to a tool response.
- * The dimension clamp alone is NOT sufficient: PNG size is content-influenced, and a
- * measured 4096x4096 incompressible-noise canvas encodes to ~66.7 MB even fully
- * clamped. Real pages captured at that same ceiling measured 1.11-2.43 MB, and at the
- * pool's actual 1280x720 viewport 22-391 KB. 4 MiB therefore sits ~1.7x above the
- * largest realistic clamped capture and ~6% of the adversarial worst case: content
- * never trips it, a payload bomb always does.
  *
- * Not operator-tunable for the same reason as MAX_SHOT_PX — this one is squarely
- * page-influenced, which is exactly the case vision.ts's reasoning was written for.
+ * Justified from the regime this cap actually governs — the CDP-attach path — because
+ * the pool's own 1280x720 contexts CANNOT reach it: a full-viewport incompressible-noise
+ * canvas there measures ~3.7 MB, so at 1280x720 even an adversarial page stays under
+ * any cap at or above that. Sampling that regime would set the number using data from
+ * the one place it never applies.
+ *
+ * Measured on an attached browser (photo-dense pages, `scale: 'css'` applied):
+ *   flickr.com/explore  @3840x2160 dpr1 -> 11,073,732   <- largest legitimate
+ *   flickr.com/explore  @2560x1440 dpr1 ->  4,941,424
+ *   apod.nasa.gov       @3840x2160 dpr1 ->  1,614,884
+ *   apod.nasa.gov       @1920x1080 dpr2 ->  1,532,700
+ * against an adversarial ceiling of ~66.7 MB (4096x4096 noise, the most the dimension
+ * clamp can admit; independently reproduced at 67.1 MB via a zlib encode).
+ *
+ * 16 MiB therefore sits ~1.5x above the largest LEGITIMATE capture measured and ~25% of
+ * the adversarial ceiling. A 4 MiB cap was tried first and rejected: ordinary photo
+ * pages exceeded it by up to 2.6x, which would drop real content routinely rather than
+ * fencing abuse.
+ *
+ * Not operator-tunable for the same reason as MAX_SHOT_PX.
  */
-export const MAX_SHOT_B64_BYTES = 4 * 1024 * 1024;
+export const MAX_SHOT_B64_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Outcome of a bounded capture. A refusal is DATA, not a thrown fetch and not a silent
+ * absence — `screenshot` is caller-requested, so the caller must be able to tell "you
+ * did not ask" from "we could not give it to you" (vision.ts's fail-as-data shape).
+ */
+export type BoundedShot =
+  | { ok: true; base64: string }
+  | { ok: false; reason: ScreenshotOmittedReason };
 
 /**
  * Capture the VIEWPORT (never `fullPage`), clamped and byte-bounded.
@@ -272,39 +298,34 @@ export const MAX_SHOT_B64_BYTES = 4 * 1024 * 1024;
  * therefore unbounded: a 59k-px article measured 27.3 MB of base64 and a 153k-px API
  * doc 23.6 MB, in a response where every other auxiliary field is budgeted.
  *
- * Returns undefined when the capture fails or exceeds the byte cap; the caller leaves
- * `screenshot` absent, which is already a state callers must handle (a fetch served by
- * the HTTP/PDF tier returns no screenshot even when one was requested).
+ * `scale: 'css'` keeps the output in CSS pixels, so a HiDPI window does not silently
+ * quadruple the payload: the same astrophotograph measured 4,096,696 bytes at dpr 2 and
+ * 1,532,700 with css scaling. It is not a substitute for the byte cap — at dpr 1 the two
+ * are identical (11,073,732 either way), so it lowers the frequency of a refusal without
+ * removing the need for one.
  */
 export async function captureBoundedScreenshot(
-  // `viewportSize` is declared optional on purpose: not every page-like object the pool
-  // hands us implements it (a CDP-attached driver, a closed tab), and the clamp must
-  // degrade rather than throw when the viewport is unmeasurable.
+  // `viewportSize` and `evaluate` are optional: not every page-like object the pool
+  // hands us implements them, and the clamp must degrade rather than throw.
   page: Pick<import('playwright').Page, 'screenshot'> & {
     viewportSize?: () => { width: number; height: number } | null;
+    evaluate?: (fn: string) => Promise<unknown>;
   },
-): Promise<string | undefined> {
+): Promise<BoundedShot> {
   let base64: string;
   try {
-    // A page that cannot report its viewport must not fail the FETCH — an unmeasurable
-    // viewport just means no clip, and the byte cap below is still the backstop.
-    let vp: { width: number; height: number } | null = null;
-    try {
-      vp = page.viewportSize?.() ?? null;
-    } catch {
-      vp = null;
-    }
+    const vp = await readViewport(page);
     // Clip only when the viewport actually exceeds the clamp, so the common path stays
     // a plain viewport capture rather than a synthetic crop.
     const clip =
       vp && (vp.width > MAX_SHOT_PX || vp.height > MAX_SHOT_PX)
         ? { x: 0, y: 0, width: Math.min(vp.width, MAX_SHOT_PX), height: Math.min(vp.height, MAX_SHOT_PX) }
         : undefined;
-    const buf = await page.screenshot({ type: 'png', ...(clip ? { clip } : {}) });
+    const buf = await page.screenshot({ type: 'png', scale: 'css', ...(clip ? { clip } : {}) });
     base64 = buf.toString('base64');
   } catch (err) {
     log.warn('screenshot capture failed', { error: String(err) });
-    return undefined;
+    return { ok: false, reason: 'capture_failed' };
   }
 
   if (base64.length > MAX_SHOT_B64_BYTES) {
@@ -312,9 +333,49 @@ export async function captureBoundedScreenshot(
       bytes: base64.length,
       cap: MAX_SHOT_B64_BYTES,
     });
-    return undefined;
+    return { ok: false, reason: 'size_limit' };
   }
-  return base64;
+  return { ok: true, base64 };
+}
+
+/**
+ * The capture viewport in CSS pixels, or null when it cannot be established.
+ *
+ * `viewportSize()` is authoritative for a Playwright-OWNED context and returns null for
+ * an adopted one, so the DOM read is the fallback that makes the clamp real on the
+ * CDP-attach path rather than dead code.
+ */
+async function readViewport(
+  page: {
+    viewportSize?: () => { width: number; height: number } | null;
+    evaluate?: (fn: string) => Promise<unknown>;
+  },
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const reported = page.viewportSize?.() ?? null;
+    if (reported) return reported;
+  } catch {
+    /* fall through to the DOM read */
+  }
+  try {
+    const inner = (await page.evaluate?.(
+      '({ width: window.innerWidth, height: window.innerHeight })',
+    )) as { width?: unknown; height?: unknown } | undefined;
+    if (
+      inner &&
+      typeof inner.width === 'number' &&
+      typeof inner.height === 'number' &&
+      Number.isFinite(inner.width) &&
+      Number.isFinite(inner.height) &&
+      inner.width > 0 &&
+      inner.height > 0
+    ) {
+      return { width: inner.width, height: inner.height };
+    }
+  } catch {
+    /* unmeasurable — the byte cap is still the backstop */
+  }
+  return null;
 }
 
 function isSuccessStatus(status: number): boolean {
@@ -1435,6 +1496,7 @@ export class MultiBrowserPool {
       }
 
       let screenshotBase64: string | undefined;
+      let screenshotOmitted: ScreenshotOmittedReason | undefined;
       if (options.screenshot) {
         // Screenshots require a real browser tab — the
         // HTTP and TLS tiers cannot rasterise a page. When `force_refresh`
@@ -1442,7 +1504,9 @@ export class MultiBrowserPool {
         // the full Playwright cold-start (~5-8s) on top of the navigation
         // itself. This is intrinsic to producing a pixel-accurate image and
         // not a routing bug; downstream callers should expect that cost.
-        screenshotBase64 = await captureBoundedScreenshot(page);
+        const shot = await captureBoundedScreenshot(page);
+        if (shot.ok) screenshotBase64 = shot.base64;
+        else screenshotOmitted = shot.reason;
       }
 
       return {
@@ -1454,6 +1518,8 @@ export class MultiBrowserPool {
         method: 'browser',
         headers: responseHeaders,
         screenshot: screenshotBase64,
+        // A requested-but-absent image is announced, never silently dropped.
+        ...(screenshotOmitted !== undefined ? { screenshotOmitted } : {}),
         actionResults,
         contentCompleteness: completeness,
         ...(gotoTimedOut ? { warning: 'goto_timeout_partial_content' } : {}),

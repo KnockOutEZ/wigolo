@@ -99,6 +99,16 @@ export interface FetchOutput {
   links: string[];
   images: string[];
   screenshot?: string;
+  /**
+   * Why a screenshot the caller ASKED for is not in this response. A screenshot is
+   * caller-requested, so dropping one silently is a degradation the caller cannot
+   * see — this marker is the fail-as-data channel for that, in the same spirit as
+   * `fetch_failed`. `'size_limit'`: the capture exceeded the response byte cap
+   * (photo-dense pages on a large attached browser window do this legitimately).
+   * `'capture_failed'`: the browser could not produce it. Absent whenever a
+   * screenshot was not requested, or was requested and delivered.
+   */
+  screenshot_omitted?: ScreenshotOmittedReason;
   cached: boolean;
   cached_at?: string;
   stale?: boolean;
@@ -238,6 +248,9 @@ export type ChallengeClass = 'image' | 'interactive' | 'behavioral' | 'none';
  */
 export type SolveMethod = 'reuse' | 'auto-pass' | 'cdp-direct' | 'ai-vision' | 'solver' | 'human';
 
+/** Why a requested screenshot is absent from a response. */
+export type ScreenshotOmittedReason = 'size_limit' | 'capture_failed';
+
 export interface RawFetchResult {
   url: string;
   finalUrl: string;
@@ -255,6 +268,13 @@ export interface RawFetchResult {
   headers: Record<string, string>;
   rawBuffer?: Buffer;
   screenshot?: string;
+  /**
+   * Why a REQUESTED screenshot is absent. `'size_limit'` means the capture
+   * succeeded but exceeded the response byte cap; `'capture_failed'` means the
+   * browser could not produce it. Absent when a screenshot was not requested, or
+   * was requested and delivered.
+   */
+  screenshotOmitted?: ScreenshotOmittedReason;
   actionResults?: ActionResult[];
   jsRequired?: boolean;
   escalated?: boolean;
