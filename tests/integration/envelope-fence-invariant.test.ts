@@ -259,6 +259,11 @@ describe('A89 — the walker must not fire on what production deliberately leave
     // search emits `warning` as a BARE `[wigolo notice] …` block, outside the JSON. It is deliberately
     // unfenced (operator text, no page-derived component), and the walker must stay silent on it —
     // while still being able to see that block, which CTRL-3 proves.
+    //
+    // SCOPE OF THIS TEST, stated so it is not over-credited: this fixture plants NO canary, so the
+    // `toEqual([])` below is unconditionally true and carries no weight on its own. The load-bearing
+    // assertion is the one above it — that the bare notice block is actually present — and the proof
+    // that a bare block is not simply skipped lives in CTRL-3, which plants a canary in one.
     const { handleSearch } = await import('../../src/tools/search.js');
     vi.mocked(handleSearch).mockResolvedValueOnce({
       ok: true,

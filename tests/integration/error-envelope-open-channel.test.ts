@@ -103,6 +103,10 @@ describe('A89 — the error envelope is an unfenced channel for thrown-message b
     // The control that separates "the channel is open" from "the walker fires on any error envelope".
     // This path never enters the catch — and the stub is never called, which is the outside signal
     // that CHAN-1/2 were not simply mislabelling an early return.
+    //
+    // SCOPE, stated so it is not over-credited: this fixture plants NO canary, so the `toEqual([])`
+    // below is unconditionally true and proves nothing by itself. The weight is in the two assertions
+    // above it — the stub was NOT called, and the reason is NOT the thrown message.
     const blocks = await callTool('diff', { old: {}, new: { markdown: 'b' } });
     const env = JSON.parse(blocks[0].text) as { error_reason: string };
 
