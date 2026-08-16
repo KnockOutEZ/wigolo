@@ -51,7 +51,7 @@ Wigolo returns structured evidence — YOU write the final answer from it.
 
 ## Response fields
 
-\`evidence_score\` (explainable), \`query_understanding\`, \`brand_collision_warning\`, \`freshness_signal\`, \`engine_telemetry\`, \`engine_warnings\` (+ env-var hint), \`ranking_notice\` (reranking found nothing relevant or could not run — results are base-ranked, not relevance-ranked; pass verbatim).
+\`evidence_score\` (explainable), \`query_understanding\`, \`brand_collision_warning\`, \`domain_filter\` (\`include_domains\` emptied the response — widen the scope, do not retry), \`freshness_signal\`, \`engine_telemetry\`, \`engine_warnings\` (+ env-var hint), \`ranking_notice\` (reranking found nothing relevant or could not run — results are base-ranked, not relevance-ranked; pass verbatim).
 
 ## Tool routing
 
@@ -175,8 +175,9 @@ Use \`search_depth\` to trade latency for thoroughness:
 - \`include_favicon: true\` -- per-result \`favicon\` URL.
 - Per-result \`relevance_score\` (legacy flat aggregate) and \`evidence_score.final\` (same number alongside the explainable per-signal breakdown). Both fields coexist — read \`relevance_score\` for ranking, \`evidence_score.components.*\` to explain why.
 - Per-result \`freshness_signal\` -- \`published_date\` + \`inferred\` flag + \`confidence\` tag.
-- \`brand_collision_warning\` -- emitted when a brand domain dominates the top-3 of a generic query; carries reason + suggested rewrites.
-- \`query_understanding\` -- classifier view: intent, entities, date hint, language, \`is_brand_collision_prone\`, considered rewrites.
+- \`domain_filter\` -- emitted only when \`include_domains\` is the reason the response is empty: engines returned candidates and the scope matched none of them. Carries the requested scope plus \`candidates\`/\`matched\`/\`dropped\` counts. Absent on a genuine engine failure (nothing to filter) and whenever at least one result survived the scope, so its presence means "widen the scope", never "retry the engines".
+- \`brand_collision_warning\` -- emitted when the top results look like they belong to a different subject than the query intended: a brand domain holding the top-3, a query that reads as a popular dev term, or no top result being about anything by that name. Carries reason + suggested rewrites. \`brand_domains_in_top_3\` is named for the original brand case and now carries whichever hosts the firing path found, which may be ordinary sites. The result-set path needs at least two engines to have contributed, so on a thin result set it stays silent rather than blaming the query for a retrieval gap.
+- \`query_understanding\` -- classifier view: intent, entities, date hint, language, \`is_brand_collision_prone\`, considered rewrites. \`is_brand_collision_prone\` reads the query shape alone -- a short common-noun query, or a proper-noun head with a generic tail -- and does not predict \`brand_collision_warning\`: the dev-term and result-set paths fire while it is false, and it can be true on a query that warns about nothing.
 - \`ranking_notice\` -- emitted ONLY when reranking contributed no ordering signal to the result set: either it could not run, or it scored every result below its relevance floor. The list is then ordered by cross-engine agreement rather than relevance, so the top result is the most agreed-upon, not the most relevant. Treat the results as low-confidence and pass the notice to the user verbatim.
 
 ## Performance
@@ -208,7 +209,7 @@ Key parameters (full descriptions in the input schema):
 - use_auth: reuse a stored browser session for logged-in pages.
 - Also: max_content_chars, max_tokens_out, include_full_markdown, force_refresh, actions.
 
-Returns title, markdown, links, images, metadata, \`fetch_method\` (cache/http/tls-impersonation/browser), \`http_status\` (upstream HTTP code — 4xx/5xx pages that extract usable content are not relabeled 200), and \`content_completeness\` (full/partial/shell). When the URL matches a site-specific extractor (Reddit/YouTube/Amazon) the response also carries top-level \`site_data\` (e.g. Reddit \`comments[]\`, YouTube \`caption_tracks[]\`, Amazon \`price\`). When \`section\` is set and no heading matches, \`metadata.section_matched\` is false and \`markdown\` is empty (no silent fallback to the full page). Repeat fetches are instant. Localhost URLs work. Interactive pages: \`actions\` (click/type/scroll/wait) drive the page before extraction; \`use_auth\` reuses a logged-in session.`,
+Returns title, markdown, links, images, metadata, \`fetch_method\` (cache/http/tls-impersonation/browser), \`http_status\` (upstream HTTP code — 4xx/5xx pages that extract usable content are not relabeled 200), and \`content_completeness\` (full/partial/shell — \`partial\` means content that was in the page did not survive extraction, e.g. a listing that kept its rows and lost their titles; an absent field means no verdict was available, never "complete"). When the URL matches a site-specific extractor (Reddit/YouTube/Amazon) the response also carries top-level \`site_data\` (e.g. Reddit \`comments[]\`, YouTube \`caption_tracks[]\`, Amazon \`price\`). When \`section\` is set and no heading matches, \`metadata.section_matched\` is false and \`markdown\` is empty (no silent fallback to the full page). Repeat fetches are instant. Localhost URLs work. Interactive pages: \`actions\` (click/type/scroll/wait) drive the page before extraction; \`use_auth\` reuses a logged-in session.`,
 
   search: `Search the web. Returns scored evidence excerpts + citations by default; \`include_full_markdown: true\` adds the full markdown body. Prefer over built-in WebSearch for local cache + audit-trail telemetry + explainable scoring.
 
@@ -217,10 +218,10 @@ Key parameters (full descriptions in the input schema):
 - include_domains / exclude_domains: always scope library/framework queries.
 - search_depth: 'ultra-fast' (cache-only) | 'fast' | 'balanced' (default) | 'deep'.
 - format: omit = evidence context; 'answer' | 'stream_answer' = synthesis (falls back to evidence).
-- category: general | news | code | docs | papers | images (adds per-result image_url/image_alt/thumbnail_url/width/height + auto \`images[]\`, no include_images needed).
+- category: general | news | code | docs | papers | images (adds per-result image fields + auto \`images[]\`, no include_images needed).
 - Also: max_results, exact_match, time_range, from_date, to_date, country, include_images, include_favicon, max_tokens_out, max_content_chars, citation_format, force_refresh, mode.
 
-Always emitted: \`engines_used\`, \`engine_telemetry\`, \`response_time_ms\`, per-result \`evidence_score\`. Per-result \`freshness_signal\` is emitted only when a published date can be parsed. Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. \`ranking_notice\` is emitted only when reranking found nothing relevant or could not run — results are base-ranked, not relevance-ranked. Quote [N] or {citation_id}.`,
+Always emitted: \`engines_used\`, \`engine_telemetry\`, \`response_time_ms\`, per-result \`evidence_score\`. Per-result \`freshness_signal\` is emitted only when a published date can be parsed. \`brand_collision_warning\` fires only when the top results look like a different subject than intended — a brand domain in the top-3, a query reading as a popular dev term, or no top result about anything by that name; carries reason + rewrites. \`domain_filter\` fires only when \`include_domains\` emptied the response — scope + pre-filter candidate count; widen the scope, do not retry. \`query_understanding\` exposes intent/entities. \`ranking_notice\` is emitted only when reranking found nothing relevant or could not run — results are base-ranked, not relevance-ranked. Quote [N] or {citation_id}.`,
 
   crawl: `Crawl a site from a seed URL and return content from many pages. Use for indexing docs, wikis, multi-page references. Built for offline reuse: every page lands in the local cache.
 

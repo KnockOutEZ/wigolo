@@ -27,6 +27,18 @@ describe('WIGOLO_INSTRUCTIONS (per-session)', () => {
   it('points readers to the wigolo://docs/usage resource for the long guide', () => {
     expect(WIGOLO_INSTRUCTIONS).toContain(WIGOLO_DOCS_URI);
   });
+
+  it('lists every conditional search response field an agent must know to read', () => {
+    // WHY: the per-session body is the ONLY surface guaranteed to reach the host
+    // model — the tool description is seen at call time and the full guide only
+    // if the client fetches the resource. A field emitted only in a failure mode
+    // (`domain_filter` on a scope-emptied response) is unreadable to an agent
+    // that never learned the name, so it stays in this list.
+    const fieldsSection = WIGOLO_INSTRUCTIONS.slice(WIGOLO_INSTRUCTIONS.indexOf('## Response fields'));
+    for (const field of ['evidence_score', 'brand_collision_warning', 'domain_filter', 'ranking_notice']) {
+      expect(fieldsSection, `'${field}' missing from the per-session response-field list`).toContain(field);
+    }
+  });
 });
 
 describe('WIGOLO_INSTRUCTIONS_FULL (resource)', () => {

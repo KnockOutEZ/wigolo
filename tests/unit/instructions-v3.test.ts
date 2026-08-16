@@ -12,6 +12,14 @@ import {
   RANKING_NOTICE_REASONS,
   buildRankingNotice,
 } from '../../src/search/core/rerank-fold.js';
+import {
+  detectBrandCollision,
+  detectEntityCollision,
+  detectLexicalCollision,
+  isBrandCollisionProne,
+} from '../../src/search/core/brand-collision.js';
+import { describeDomainFilterCause } from '../../src/search/core/domain-filter-cause.js';
+import { mergeCompleteness } from '../../src/extraction/completeness.js';
 import { readFileSync } from 'node:fs';
 
 describe('WIGOLO_INSTRUCTIONS v3 routing patterns (per-session)', () => {
@@ -199,6 +207,92 @@ describe('ranking-notice documentation stays in sync with the code', () => {
     for (const reason of RANKING_NOTICE_REASONS) {
       expect(buildRankingNotice({ reason, window: 3 })).toBeTruthy();
     }
+  });
+});
+
+describe('response fields the agent can only learn about from a description', () => {
+  // WHY this whole block exists: a response field can be wired end-to-end with a
+  // green typecheck while the only surfaces an agent reads never mention it —
+  // making it invisible to its audience — or, worse, describe a firing rule the
+  // code stopped implementing. Each test below pairs the prose claim with an
+  // OUTSIDE signal taken from the code that produces the field, so the assertion
+  // cannot be satisfied by agreeing with itself.
+
+  it('search names `domain_filter` and routes the caller to widening, not retrying', () => {
+    // An empty response has two causes with opposite fixes: a dead engine pool
+    // (retry) and an over-narrow scope (widen). Without the field named here an
+    // agent reads "no results" and retries the engines forever.
+    const desc = TOOL_DESCRIPTIONS.search;
+    expect(desc).toContain('domain_filter');
+    expect(desc).toContain('include_domains');
+    expect(desc).toMatch(/widen/i);
+  });
+
+  it('describes `domain_filter` as conditional — the code withholds it whenever the scope is innocent', () => {
+    // Outside signal: the runtime cause predicate returns undefined the moment
+    // one result survived the scope, and on a genuine engine failure. A
+    // description promising the field unconditionally teaches agents to read its
+    // absence as a bug.
+    expect(
+      describeDomainFilterCause({ include_domains: ['react.dev'], candidates: 5, matched: 1, dropped: 4 }),
+    ).toBeUndefined();
+    expect(
+      describeDomainFilterCause({ include_domains: ['react.dev'], candidates: 0, matched: 0, dropped: 0 }),
+    ).toBeUndefined();
+    expect(
+      describeDomainFilterCause({ include_domains: ['react.dev'], candidates: 5, matched: 0, dropped: 5 }),
+    ).toBeDefined();
+    expect(TOOL_DESCRIPTIONS.search).toMatch(/`domain_filter`[^.]*only when/i);
+  });
+
+  it('never describes `brand_collision_warning` as brand-domain-only — its other paths need no brand domain', () => {
+    // Outside signal: an entity-collision query fires the warning while the
+    // brand-domain detector stays silent on the very same results. "A brand
+    // domain dominates the top-3" therefore under-reports the field on every
+    // surface that still says it.
+    expect(detectEntityCollision('Phoenix framework')).not.toBeNull();
+    expect(detectBrandCollision('Phoenix framework', ['https://example.com/a'])).toBeNull();
+    for (const surface of [TOOL_DESCRIPTIONS.search, WIGOLO_INSTRUCTIONS_FULL]) {
+      expect(surface).not.toMatch(/brand[- ]domain (dominates|top-3 collision)/i);
+      expect(surface).toMatch(/different subject/i);
+    }
+  });
+
+  it('documents `is_brand_collision_prone` as a query-shape signal, not a predictor of the warning', () => {
+    // Outside signal: the predicate is query-only and reads FALSE for a query
+    // the warning does fire on, so "will the warning fire?" is the one thing it
+    // cannot answer. An agent told otherwise skips a real collision report.
+    expect(isBrandCollisionProne('usestate')).toBe(false);
+    expect(detectLexicalCollision('usestate')).not.toBeNull();
+    expect(WIGOLO_INSTRUCTIONS_FULL).toMatch(/query shape alone|does not predict/i);
+  });
+
+});
+
+describe('fetch completeness verdict is described by meaning, not by enum', () => {
+  it('fetch explains what `partial` MEANS — extraction loss, not just an enum value', () => {
+    // Outside signal: an extraction-tier `partial` verdict beats a browser tier
+    // that already declared the render complete, so `partial` is reachable on a
+    // page that otherwise looks fine. Listing "full/partial/shell" without that
+    // meaning gives an agent nothing it can act on.
+    expect(
+      mergeCompleteness(
+        { level: 'full', reason: 'content_verified', settled_by: 'stability' },
+        { level: 'partial', reason: 'list_titles_dropped', settled_by: 'extraction' },
+      )?.reason,
+    ).toBe('list_titles_dropped');
+    const desc = TOOL_DESCRIPTIONS.fetch;
+    expect(desc).toContain('content_completeness');
+    expect(desc).toMatch(/dropped|lost/i);
+    expect(desc).toMatch(/title/i);
+  });
+
+  it('fetch does not let an absent completeness verdict read as "the page is fine"', () => {
+    // Outside signal: with neither producer entitled to a verdict the merge
+    // yields undefined — the field is simply missing, which is not a `full`
+    // claim and must not be described as one.
+    expect(mergeCompleteness(undefined, undefined)).toBeUndefined();
+    expect(TOOL_DESCRIPTIONS.fetch).toMatch(/absent/i);
   });
 });
 
