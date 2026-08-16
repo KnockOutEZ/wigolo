@@ -79,16 +79,24 @@ Proxy credentials never persist to disk — the userinfo is moved to the OS keyc
 
 ### The IP is one signal of four
 
-The IP is the clause people expect, so it's worth being explicit that it isn't the only one. A host with no desktop session — a VPS, a container, a CI runner with no virtual display — cannot map a browser window. Three of the signals below follow from that; the fourth, the IP, is a property of where the host sits rather than of the missing window:
+The IP is the clause people expect, so it's worth being explicit that it isn't the only one. A host with no desktop session — a VPS, a container, a CI runner with no virtual display — cannot map a browser window. Three of the signals below follow from that by default; the fourth, the IP, is a property of where the host sits rather than of the missing window:
 
 - **A throwaway profile.** The browser profile is discarded after the run rather than aged across visits.
 - **A fresh fingerprint.** Each run starts from a new one instead of a long-lived, consistent one.
 - **An automation-launched browser engine.** The launch itself is scoreable, separately from how the session then behaves.
-- **A datacenter IP.** The clause above — and the one with a lever, in the proxy note just above.
+- **A datacenter IP.** The clause above — the one the proxy note just above addresses.
 
-Not everything is discarded, though: a challenge solved for a domain is cached and replayed on later visits instead of being re-solved, so repeat traffic to the same host does get the benefit of the first success.
+Not everything is discarded: a challenge solved for a domain is cached, and a later visit can replay it instead of re-solving. Treat that as best-effort rather than guaranteed — a stored clearance is refused if it has expired, if the request goes out over a different egress route than the one it was solved on, or (on the browser engine) if the browser's major version no longer matches the one it was minted against.
 
-None of the four is a bug or a misconfiguration — they're properties of running without a desktop session. There are two levers, and both change where or how you run rather than tuning anything in the fetch itself: the proxy above changes the IP, and moving to a host with a display session changes the other three. Absent those, budget for a lower pass rate on challenge-protected targets when you deploy to a server — a gap here is the rung, not a broken install.
+That middle condition is worth planning around, because this page recommends the thing that trips it: **enabling the proxy above changes the egress route, so clearances solved before the switch stop replaying and those domains get solved again.** If you're going to run through a proxy, turn it on before you build up traffic rather than after.
+
+None of the four is a bug or a misconfiguration — they're properties of how and where the fetch runs. Several things move them, and none is a tuning knob on the fetch itself:
+
+- **The proxy above** changes the IP.
+- **A stored browser session** changes the profile clause without moving hosts: a saved storage state, or a copy of a real long-lived Chrome profile, is a profile with history — which is exactly what a throwaway one lacks. See [configuration](./configuration.md#fetch-and-browser-engine).
+- **A host with a display session** is necessary for the rest, but not sufficient on its own. Reaching the desktop rung and having the desktop component installed are separate states — `wigolo doctor` reports them on separate lines, `Resolved:` and `Desktop comp.:` — and a machine can sit on the desktop rung with the component not installed. Check both lines, not just the rung.
+
+Absent those, budget for a lower pass rate on challenge-protected targets when you deploy to a server — a gap here is the environment, not a broken install.
 
 `wigolo doctor` and `wigolo status` both report the resolved rung under `Browser tier:`. A `Ceiling:` line appears there only when the rung is below desktop, so on a machine with a desktop session its absence is itself the signal — that's how you tell the two situations apart.
 
