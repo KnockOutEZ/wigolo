@@ -21,8 +21,27 @@ import {
   type BrowserPoolInterface,
   type HttpFetcher,
   type TlsFetcher,
+  type SystemBrowserFetch,
 } from '../../src/fetch/router.js';
 import type { RawFetchResult } from '../../src/types.js';
+
+/**
+ * The no-installed-browser half of this file's precondition, stated rather than inherited — the
+ * same correction PR #326 applied to `tests/unit/fetch/router-browser-acquire.test.ts`.
+ *
+ * `https://stackoverflow.com/questions/1/x` RESOLVES, and stackoverflow.com is in the built-in
+ * anti-bot TLS-first set, so the TLS tier runs FIRST on it. The row below is safe today only
+ * because the injected `tlsFetcher` returns 200 with substantive content, so that tier returns
+ * before anything escalates.
+ *
+ * That was VERIFIED to be the only thing holding it: dropping the stub and leaving everything
+ * else identical produced a real request to stackoverflow.com and a real `403` from it, logged
+ * as `tls tier returned anti-bot signal, escalating` — while the test still passed. Note what
+ * that means for `tests/net-fence.ts`: it did NOT fire, because the TLS tier egresses through a
+ * native backend that never touches `node:net`. So neither the fence nor the TLS stub is a
+ * substitute for stating the browser precondition here.
+ */
+const noInstalledBrowser: SystemBrowserFetch = async () => null;
 
 const SSR_BODY_WITH_DEFENSIVE_NOSCRIPT = `
 <html><head><title>SSR Article</title></head>
@@ -74,7 +93,7 @@ describe('handleFetch — router tuning at the tool boundary', () => {
         throw new Error('Playwright must NOT be invoked: defensive <noscript> alongside substantive SSR body');
       }),
     };
-    const router = new SmartRouter({ httpClient, browserPool });
+    const router = new SmartRouter({ httpClient, browserPool, systemBrowserFetch: noInstalledBrowser });
 
     const out = await handleFetch({ url, force_refresh: true } as never, router);
     expect(out.ok).toBe(true);
@@ -99,7 +118,7 @@ describe('handleFetch — router tuning at the tool boundary', () => {
     const browserPool: BrowserPoolInterface = {
       fetchWithBrowser: vi.fn(async (u: string) => makeBrowserResult(u)),
     };
-    const router = new SmartRouter({ httpClient, browserPool });
+    const router = new SmartRouter({ httpClient, browserPool, systemBrowserFetch: noInstalledBrowser });
 
     const out = await handleFetch({ url, force_refresh: true } as never, router);
     // The tool layer maps 429 with a short body to a stage error — that's fine,
@@ -137,7 +156,7 @@ describe('SmartRouter — signal/budget threads through stealth + TLS tiers', ()
       stealthSignal = opts?.signal;
       return { url: 'https://stealth.example/x', html: '<html><body>' + 'a'.repeat(2000) + '</body></html>', text: 'a'.repeat(2000) };
     });
-    const router = new SmartRouter({ httpFetcher });
+    const router = new SmartRouter({ httpFetcher, systemBrowserFetch: noInstalledBrowser });
     await router.fetch('https://stealth.example/x', { mode: 'stealth', signal: controller.signal });
     // The stealth path received the SAME signal instance the caller passed —
     // so a per-URL budget expressed as an abort would cancel this tier too.
@@ -163,7 +182,7 @@ describe('SmartRouter — signal/budget threads through stealth + TLS tiers', ()
     const httpClient: HttpClient = {
       fetch: vi.fn(async (url) => ({ url, finalUrl: url, html: '<html><body>http</body></html>', contentType: 'text/html', statusCode: 200, headers: {} })),
     };
-    const router = new SmartRouter({ httpClient, tlsFetcher });
+    const router = new SmartRouter({ httpClient, tlsFetcher, systemBrowserFetch: noInstalledBrowser });
     await router.fetch('https://stackoverflow.com/questions/1/x', { signal: controller.signal });
     // TLS tier fired and carried the SAME signal — proving the per-URL budget
     // reaches the TLS-impersonation tier, not only http/browser.
@@ -185,7 +204,7 @@ describe('SmartRouter — signal/budget threads through stealth + TLS tiers', ()
       html: '<html><body>' + 'x'.repeat(2000) + '</body></html>',
       text: 'x'.repeat(2000),
     }));
-    const router = new SmartRouter({ httpFetcher, playwrightFetcher: playwrightFetcher as never });
+    const router = new SmartRouter({ httpFetcher, playwrightFetcher: playwrightFetcher as never, systemBrowserFetch: noInstalledBrowser });
     await router.fetch('https://stealth2.example/x', { mode: 'stealth', signal: controller.signal });
     expect(observed).toBe(controller.signal);
     expect(observed?.aborted).toBe(true);

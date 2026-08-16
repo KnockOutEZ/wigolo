@@ -9,8 +9,31 @@ import { handleFetch } from '../../src/tools/fetch.js';
 import { initDatabase, closeDatabase } from '../../src/cache/db.js';
 import { resetConfig } from '../../src/config.js';
 import { SmartRouter } from '../../src/fetch/router.js';
-import type { HttpClient, BrowserPoolInterface, SmartRouter as SmartRouterType } from '../../src/fetch/router.js';
+import type {
+  HttpClient,
+  BrowserPoolInterface,
+  SmartRouter as SmartRouterType,
+  SystemBrowserFetch,
+} from '../../src/fetch/router.js';
 import type { RawFetchResult } from '../../src/types.js';
+
+/**
+ * The no-installed-browser half of this file's precondition, stated rather than inherited — the
+ * same correction PR #326 applied to `tests/unit/fetch/router-browser-acquire.test.ts`.
+ *
+ * `https://react.dev/papers/hooks.pdf` RESOLVES. The row below is safe today only because the
+ * injected `httpClient` returns PDF bytes, so the byte tier terminates before `browserFetch` is
+ * ever reached. That is a property of an unrelated stub, not a stated precondition: return an SPA
+ * shell from it instead — a plausible future edit — and the router escalates, the bundled engine
+ * comes up unavailable on a no-display host, and the companion rung drives a REAL installed
+ * browser at react.dev from an integration suite.
+ *
+ * `tests/net-fence.ts` cannot see that: the browser is a child process and resolves in its own
+ * address space. Declining here is the only thing that closes it, and it weakens nothing — every
+ * assertion below is unchanged, including `browserCalls` staying empty, which is what this row
+ * actually guards.
+ */
+const noInstalledBrowser: SystemBrowserFetch = async () => null;
 
 // Hand-rolled minimal "Hello, world!" PDF — same shape used in the unit
 // pdf.test.ts so the integration assertion can verify text round-trip.
@@ -113,7 +136,7 @@ describe('handleFetch — PDF (C6 boundary)', () => {
         throw new Error('Download is starting');
       },
     };
-    const router = new SmartRouter(httpClient, browserPool);
+    const router = new SmartRouter({ httpClient, browserPool, systemBrowserFetch: noInstalledBrowser });
 
     const out = await handleFetch({ url }, router);
 
