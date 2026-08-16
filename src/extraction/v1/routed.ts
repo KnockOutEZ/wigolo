@@ -13,6 +13,7 @@ import { extractProduct } from './product.js';
 import { extractNews } from './news.js';
 import { getSiteExtractors } from './site-extractors.js';
 import { assessListTitleAttrition } from '../completeness.js';
+import { xExtractor } from '../site-extractors/x.js';
 import { detectAntiBotBlock as detectRedditBlock } from '../site-extractors/reddit.js';
 import { detectAntiBotBlock as detectAmazonBlock } from '../site-extractors/amazon.js';
 
@@ -140,7 +141,11 @@ function trySiteExtractors(
   url: string,
   originalHtml: string,
 ): ExtractionResult | null {
-  const extractors = getSiteExtractors();
+  // X post permalinks are handled by a built-in extractor that runs ahead of
+  // the shared registry. It reads X's own card metadata out of the response
+  // wigolo already holds, so a post page is served without the third-party API
+  // calls the bundled content extractor would otherwise make for it.
+  const extractors = [xExtractor, ...getSiteExtractors()];
   const match = extractors.find((e) => e.canHandle(url, originalHtml));
   if (!match) return null;
   // Site extractors that emit a structured record populate `site_data`
