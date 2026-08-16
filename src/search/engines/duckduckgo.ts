@@ -3,6 +3,7 @@ import type { SearchEngine, SearchEngineOptions, RawSearchResult } from '../../t
 import { createLogger } from '../../logger.js';
 import { normalizeResultUrl } from '../url-unwrap.js';
 import { nextUserAgent, isBlockedError } from './user-agents.js';
+import { detectEngineChallenge } from './challenge.js';
 
 const log = createLogger('search');
 
@@ -43,6 +44,12 @@ export class DuckDuckGoEngine implements SearchEngine {
     });
 
     if (!response.ok) throw new Error(`DDG returned ${response.status}`);
+
+    // DDG's anti-bot interstitial arrives as a 2xx, so it survives the check
+    // above. Left undetected it parses to zero rows and reports success —
+    // which silently bypasses the breaker, the retry, and the UA rotation.
+    const challenge = detectEngineChallenge('DDG', response.status);
+    if (challenge) throw new Error(challenge);
 
     const html = await response.text();
     return this.parseResults(html, maxResults);
