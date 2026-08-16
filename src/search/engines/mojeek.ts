@@ -44,10 +44,13 @@ export class MojeekEngine implements SearchEngine {
 
     if (!response.ok) throw new Error(`Mojeek returned ${response.status}`);
 
-    const html = await response.text();
-    const challenge = detectEngineChallenge('Mojeek', response.status, html);
+    // Generic defence, not an observed Mojeek behaviour: Mojeek blocks with a
+    // 403, which already throws above. Kept for the same reason as Bing — a 202
+    // from an HTML search endpoint cannot be a result page.
+    const challenge = detectEngineChallenge('Mojeek', response.status);
     if (challenge) throw new Error(challenge);
 
+    const html = await response.text();
     return this.parseResults(html, maxResults);
   }
 

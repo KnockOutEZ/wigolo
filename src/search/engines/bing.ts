@@ -101,10 +101,14 @@ export class BingEngine implements SearchEngine {
 
     if (!response.ok) throw new Error(`Bing returned ${response.status}`);
 
-    const html = await response.text();
-    const challenge = detectEngineChallenge('Bing', response.status, html);
+    // Generic defence, not an observed Bing behaviour: no interstitial has been
+    // captured from Bing. A 202 from an HTML search endpoint cannot be a result
+    // page, so the guard costs nothing and closes the same silent-empty hole
+    // measured on DDG.
+    const challenge = detectEngineChallenge('Bing', response.status);
     if (challenge) throw new Error(challenge);
 
+    const html = await response.text();
     return this.parseResults(html, maxResults);
   }
 
