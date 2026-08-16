@@ -70,6 +70,31 @@ function validateFetchUrl(raw: unknown): { ok: true } | { ok: false; reason: str
   return { ok: true };
 }
 
+/**
+ * Announce a screenshot the caller ASKED for but is not getting.
+ *
+ * This lives at response assembly, not at the capture sites, because there are at least
+ * four ways a requested screenshot goes missing and only one of them is a capture:
+ * the cache branch (which never consults `input.screenshot` and is by far the most
+ * frequent), the PDF content-type probe, the static stealth paths, and a browser capture
+ * that was refused or failed. Marking each producer covers whichever one you happened to
+ * be looking at; a single predicate over the ASSEMBLED response — requested AND absent —
+ * covers all of them by construction, including ones added later.
+ *
+ * A caller reading `!screenshot_omitted` as "delivered" must be right, so the marker
+ * has to be exhaustive rather than merely present.
+ */
+function markScreenshotOmission(
+  out: FetchOutput,
+  input: FetchInput,
+  servedFrom: 'cache' | 'live',
+): void {
+  if (!input.screenshot) return; // never asked — nothing to explain
+  if (out.screenshot) return; // delivered
+  if (out.screenshot_omitted) return; // the capture path already named a precise cause
+  out.screenshot_omitted = servedFrom === 'cache' ? 'cache_hit' : 'not_captured';
+}
+
 function capAuxFields(out: FetchOutput, maxContentChars?: number): void {
   if (maxContentChars === undefined) return;
   const cap = maxContentChars <= 4000 ? AUX_FIELD_CAP_WHEN_TIGHT : AUX_FIELD_CAP_WHEN_CHARS_BOUNDED;
@@ -236,6 +261,7 @@ export async function handleFetch(
           if (stale) out.stale = true;
           const fullMarkdown = out.markdown;
           await attachEvidence(out, input, fullMarkdown);
+          markScreenshotOmission(out, input, 'cache');
           return { ok: true, data: stampTime(out) };
         }
         if (shellStale) {
@@ -388,6 +414,10 @@ export async function handleFetch(
       links: responseLinks,
       images: responseImages,
       screenshot: raw.screenshot,
+      // A screenshot is caller-REQUESTED, so its absence must be explainable. Carried
+      // on the envelope only (like fetch_failed / js_required), which costs nothing in
+      // the tool description budget.
+      ...(raw.screenshotOmitted ? { screenshot_omitted: raw.screenshotOmitted } : {}),
       cached: false,
       action_results: raw.actionResults,
       // Propagate the router-chosen tier name onto the public response so
@@ -436,6 +466,7 @@ export async function handleFetch(
 
     capAuxFields(out, input.max_content_chars);
     await attachEvidence(out, input, finalMarkdown);
+    markScreenshotOmission(out, input, 'live');
     return { ok: true, data: stampTime(out) };
   } catch (err) {
     log.error('Fetch failed', { url: input.url, error: String(err) });
