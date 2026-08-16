@@ -23,7 +23,7 @@
  */
 import type { LayoutBox, LayoutInput } from '../../src/studio/layout/signature.js';
 
-export type SectionKind = 'header' | 'hero' | 'grid' | 'article' | 'rail' | 'table' | 'footer';
+export type SectionKind = 'header' | 'hero' | 'grid' | 'article' | 'rail' | 'table' | 'footer' | 'card';
 
 export interface Section {
   kind: SectionKind;
@@ -107,6 +107,22 @@ export function layoutPage(desc: PageDesc, viewportWidth: number, opts: LayoutOp
       if (stacked) y = ry + GUTTER;
       continue;
     }
+    if (s.kind === 'card') {
+      // A centred fixed-width block that does NOT stretch to the viewport — a login box, a consent
+      // wall, a challenge interstitial. This is the only shape that leaves the page SHORTER AND
+      // NARROWER than the viewport, and without at least one such page in the corpus the extent
+      // normalisation always exceeds the viewport on both axes and divides the device pixel ratio
+      // out on its own. A corpus made only of full-width pages therefore reports 100% DPR exactness
+      // for a build with no DPR handling at all — measured, not theorised.
+      const cardW = Math.min(360, viewportWidth);
+      const cx = Math.max(0, Math.floor((viewportWidth - cardW) / 2));
+      for (let i = 0; i < s.items; i++) {
+        push(cx, y, cardW, s.itemHeight, s.textPerItem);
+        y += s.itemHeight + 12;
+      }
+      y += GUTTER;
+      continue;
+    }
     if (s.kind === 'header' || s.kind === 'footer' || s.kind === 'hero') {
       push(0, y, viewportWidth, s.itemHeight, s.textPerItem);
       y += s.itemHeight + GUTTER;
@@ -122,7 +138,6 @@ export function layoutPage(desc: PageDesc, viewportWidth: number, opts: LayoutOp
     y += Math.ceil(s.items / cols) * (s.itemHeight + GUTTER);
   }
 
-  const contentHeight = Math.max(y, 1);
   return {
     boxes,
     viewport: { width: viewportWidth, height: 900, devicePixelRatio: dpr },
@@ -136,6 +151,9 @@ const ARCHETYPES: Array<Omit<PageDesc, 'id'>> = [
   { railWidth: 220, sections: [{ kind: 'header', columns: 1, items: 1, itemHeight: 56, textPerItem: 24 }, { kind: 'table', columns: 1, items: 40, itemHeight: 36, textPerItem: 180 }] },
   { railWidth: 300, sections: [{ kind: 'rail', columns: 1, items: 8, itemHeight: 90, textPerItem: 60 }, { kind: 'grid', columns: 2, items: 10, itemHeight: 260, textPerItem: 240 }] },
   { railWidth: 240, sections: [{ kind: 'header', columns: 1, items: 1, itemHeight: 64, textPerItem: 30 }, { kind: 'article', columns: 1, items: 4, itemHeight: 420, textPerItem: 1400 }, { kind: 'grid', columns: 3, items: 6, itemHeight: 150, textPerItem: 80 }] },
+  // Compact: shorter AND narrower than the viewport, so the viewport floor binds. See the `card`
+  // branch of `layoutPage` for why the corpus is worthless as a DPR measurement without this.
+  { railWidth: 0, sections: [{ kind: 'card', columns: 1, items: 4, itemHeight: 90, textPerItem: 28 }] },
 ];
 
 /** N deterministic page descriptions: each archetype re-parameterised by a seeded PRNG. */

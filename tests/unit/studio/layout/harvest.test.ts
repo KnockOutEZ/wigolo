@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { harvestLayout, type LayoutCdp } from '../../../../src/studio/layout/harvest.js';
-import { computeLayoutSignature, serializeLayoutSignature } from '../../../../src/studio/layout/signature.js';
+import { computeLayoutSignature, serializeLayoutSignature, MAX_LAYOUT_BOXES } from '../../../../src/studio/layout/signature.js';
 
 interface Call { method: string; params?: Record<string, unknown> }
 
@@ -77,6 +77,23 @@ describe('harvestLayout — D4: one CDP round trip per page, never one per node'
     expect(withFrame.input.boxes).toHaveLength(3);
     expect(serializeLayoutSignature(computeLayoutSignature(withFrame.input)))
       .toBe(serializeLayoutSignature(computeLayoutSignature(withoutFrame.input)));
+  });
+
+  it('a page reporting more boxes than the cap reaches the quantiser still over it, so the truncation is REPORTED and not silently absorbed', async () => {
+    // Pre-truncating here at exactly the quantiser's cap meant its own `> MAX_LAYOUT_BOXES` test
+    // could never fire: a 50,000-box page arrived looking like a clean 20,000-box one, and the
+    // `clamped` field that exists so a caller can distrust the vector was silenced on the only
+    // path that would ever set it.
+    const n = MAX_LAYOUT_BOXES + 5000;
+    const bounds = Array.from({ length: n }, (_, i) => [i % 1200, (i * 7) % 5000, 30, 20]);
+    const huge = {
+      strings: [''],
+      documents: [{ contentWidth: 1200, contentHeight: 5000, layout: { bounds, text: bounds.map(() => -1) } }],
+    };
+    const r = await harvestLayout(fakeCdp(huge, []));
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.input.boxes.length).toBe(n);
+    expect(computeLayoutSignature(r.input).clamped).toBe(true);
   });
 
   it('reports a failed or empty capture as DATA — a rejecting transport is never rethrown at the caller', async () => {

@@ -17,7 +17,7 @@
  *    user happened to be scrolled to is not in the input at all.
  *  - text CONTENT — only text LENGTH enters, never the characters. Two different headlines of
  *    similar length are the same layout.
- *  - total text volume — each channel is normalised by its own maximum, so "the same page with
+ *  - total text volume — each channel is normalised against its own mean cell, so "the same page with
  *    more of the same" is the same profile.
  *  - harvest order — mass is accumulated, never sequenced.
  *
@@ -55,11 +55,18 @@ export const LAYOUT_SIGNATURE_VERSION = 1;
 export const LAYOUT_GRID_X = 12;
 export const LAYOUT_GRID_Y = 16;
 
-/** `box` (each element contributes one unit of mass over its footprint) and `text` (its text length). */
+/** `box` (each element's area in cells, capped at one, over its footprint) and `text` (that mass times its text length). */
 export const LAYOUT_CHANNELS = 2;
 
 /** One byte per cell — the resolution the wire form is sized for. */
 export const LAYOUT_QUANT_MAX = 255;
+
+/**
+ * A cell holding this many times the page's mean cell density quantises to full. Chosen to keep
+ * the byte range populated on ordinary pages without letting one dense cell define the scale — see
+ * the normalisation step for why the mean, and not the max, is the reference.
+ */
+export const SATURATION_MULTIPLE = 8;
 
 /**
  * D5 clamp. Mirrors `MAX_REGION_PX` in `vision.ts:85` and its reasoning: a page-influenced number
@@ -72,7 +79,7 @@ export const MAX_LAYOUT_COORD_PX = 65536;
 /** A page reporting more laid-out boxes than this is truncated deterministically rather than trusted. */
 export const MAX_LAYOUT_BOXES = 20000;
 
-/** Text length is page-reported too; an absurd value would swamp the text channel's maximum. */
+/** Text length is page-reported too; an absurd value would swamp the text channel's scale. */
 export const MAX_TEXT_LENGTH = 1_000_000;
 
 const MIN_DPR = 0.25;
@@ -175,12 +182,22 @@ function sanitize(boxes: readonly LayoutBox[], dpr: number): { kept: CleanBox[];
 }
 
 /**
- * Normalise → accumulate → max-normalise → quantise.
+ * Normalise → accumulate → mean-normalise → quantise.
  *
- * Each box spreads a FIXED mass over its footprint rather than contributing its area, so a
- * full-page background wrapper contributes one unit diluted across the whole grid while a hundred
- * small cards contribute a hundred units concentrated where they sit. Contributing raw area would
- * let one `<body>`-sized box wash out every real signal on the page.
+ * A box's MASS is its area measured in cells, capped at one cell, and that mass is spread across
+ * the cells it covers. Both ends of the range are load-bearing and each was reached by measurement:
+ *
+ *  - Contributing raw AREA lets one `<body>`-sized wrapper wash out every real signal on the page.
+ *  - Contributing a FIXED unit mass — which this did before — is worse, and quantifiably so: a box
+ *    smaller than one cell lands entirely inside it and deposits the full unit, while a card grid's
+ *    cells hold ~0.03 each. Adding a single 1x1 tracking pixel to a page therefore moved it 0.412
+ *    from itself, against 0.385 for a completely unrelated page. One lazily-inserted icon made a
+ *    page look LESS like itself than like a different site. The cap fixes both: a sub-cell element
+ *    contributes in proportion to how little of a cell it occupies, and everything at or above a
+ *    cell contributes the same bounded amount.
+ *
+ * Scale-invariance survives because the cell area is in the same normalised units as the box area,
+ * so both scale together.
  */
 export function computeLayoutSignature(input: LayoutInput, opts: LayoutSignatureOptions = {}): LayoutSignature {
   const gridX = opts.gridX ?? LAYOUT_GRID_X;
@@ -222,6 +239,9 @@ export function computeLayoutSignature(input: LayoutInput, opts: LayoutSignature
     const v1 = Math.max(0, Math.min(1, (b.y + b.h) / extentY));
     const area = (u1 - u0) * (v1 - v0);
     if (!(area > 0)) continue; // entirely off-page after clamping
+    // Area in cells, capped at one. A sub-cell element cannot outweigh a card; a page-sized
+    // wrapper cannot outweigh the content inside it.
+    const mass = Math.min(1, area * cellCount);
 
     const i0 = Math.min(gridX - 1, Math.floor(u0 * gridX));
     const i1 = Math.min(gridX - 1, Math.ceil(u1 * gridX) - 1);
@@ -237,7 +257,7 @@ export function computeLayoutSignature(input: LayoutInput, opts: LayoutSignature
         const cx1 = (i + 1) / gridX;
         const ox = Math.min(u1, cx1) - Math.max(u0, cx0);
         if (!(ox > 0)) continue;
-        const share = (ox * oy) / area;
+        const share = (mass * (ox * oy)) / area;
         const idx = j * gridX + i;
         acc[idx] += share;
         acc[cellCount + idx] += share * b.t;
@@ -245,28 +265,51 @@ export function computeLayoutSignature(input: LayoutInput, opts: LayoutSignature
     }
   }
 
-  // Per-channel MAX normalisation, not sum: at 192 cells a sum-normalised profile would land every
-  // cell in the bottom 1% of the byte range and quantise away the whole signal.
+  // Per-channel normalisation against the MEAN cell, saturating at `SATURATION_MULTIPLE` x mean.
+  //
+  // Not the max, which is what this did before: the max is a single cell, so any one cell that
+  // grows rescales the ENTIRE vector. Capping each box's mass at one cell fixed the extreme version
+  // of that (a 1x1 pixel deposits a full unit into one cell), but not the general one — a
+  // consent-banner close button landing on a cell the header already occupied still doubled that
+  // cell and moved the page 0.114 from itself, against a same-page noise floor near 0.01.
+  //
+  // The mean is a whole-page aggregate, so one new element moves it by its share of the page's
+  // total mass and nothing else rescales. Not the plain sum either: at 192 cells a sum-normalised
+  // profile lands every cell in the bottom 1% of the byte range and quantises the signal away.
+  // Expressing a cell as a multiple of the mean keeps the byte range populated and is invariant to
+  // scale, because both the cell and the mean are in the same normalised units.
   for (let c = 0; c < LAYOUT_CHANNELS; c++) {
     const off = c * cellCount;
-    let max = 0;
-    for (let k = 0; k < cellCount; k++) if (acc[off + k] > max) max = acc[off + k];
-    if (!(max > 0)) continue;
-    for (let k = 0; k < cellCount; k++) cells[off + k] = Math.round((acc[off + k] / max) * LAYOUT_QUANT_MAX);
+    let sum = 0;
+    for (let k = 0; k < cellCount; k++) sum += acc[off + k];
+    if (!(sum > 0)) continue;
+    const scale = (sum / cellCount) * SATURATION_MULTIPLE;
+    for (let k = 0; k < cellCount; k++) {
+      cells[off + k] = Math.round(Math.min(1, acc[off + k] / scale) * LAYOUT_QUANT_MAX);
+    }
   }
   return base;
 }
 
 /**
- * Normalised L1 over each channel, averaged. `sum|a-b| / (sum a + sum b)` rather than plain L1
- * so the result is in [0,1] for ANY pair — including a blank render against a real one, which
- * comes out at exactly 1 instead of the 0.5 a plain L1 would report. Identical → 0; two blanks → 0.
- * O(1) in page size: the vector length is fixed by the grid.
+ * Normalised L1 over each channel, averaged across the channels that CARRY INFORMATION.
+ * `sum|a-b| / (sum a + sum b)` rather than plain L1 so the result is in [0,1] for ANY pair —
+ * including a blank render against a real one, which comes out at exactly 1 instead of the 0.5
+ * a plain L1 would report. Identical → 0; two blanks → 0. O(1) in page size.
+ *
+ * A channel empty in BOTH signatures is SKIPPED, not folded in as a zero. Averaging it in as 0 was
+ * wrong twice over, and neither case is hypothetical: the harvest reads text length from the layout
+ * tree's text index, which is absent for every non-text node, so a canvas / image / captcha page
+ * has an entirely empty text channel. Folding that in as 0 made a blank render score 0.5 against
+ * such a page — exactly the value this function's own reasoning rejects — and squashed the whole
+ * distance range for any pair of text-free pages into [0, 0.5], so a threshold calibrated on
+ * text-bearing pages would have been off by 2x on text-free ones.
  */
 export function layoutDistance(a: LayoutSignature, b: LayoutSignature): number {
   if (a.gridX !== b.gridX || a.gridY !== b.gridY || a.cells.length !== b.cells.length) return 1;
   const cellCount = a.gridX * a.gridY;
   let total = 0;
+  let informative = 0;
   for (let c = 0; c < LAYOUT_CHANNELS; c++) {
     const off = c * cellCount;
     let diff = 0;
@@ -277,9 +320,11 @@ export function layoutDistance(a: LayoutSignature, b: LayoutSignature): number {
       diff += Math.abs(x - y);
       mass += x + y;
     }
-    total += mass > 0 ? diff / mass : 0;
+    if (mass === 0) continue; // neither page has this channel — it says nothing about their similarity
+    total += diff / mass;
+    informative += 1;
   }
-  return total / LAYOUT_CHANNELS;
+  return informative === 0 ? 0 : total / informative;
 }
 
 /** Wire form: `lsig<version>:<gridX>x<gridY>:<boxCount>:<clamped>:<base64 cells>`. */

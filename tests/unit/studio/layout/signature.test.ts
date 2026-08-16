@@ -175,6 +175,35 @@ describe('LayoutSignature — DISCRIMINATES ON (a signature that never collides 
   });
 });
 
+describe('LayoutSignature — element churn (the axis jitter() cannot reach: boxes APPEARING and DISAPPEARING)', () => {
+  // `jitter()` perturbs the boxes a page already has and can never add or remove one, so it could
+  // not see that a single sub-cell element used to move a page 0.412 from itself against 0.385 for
+  // a completely unrelated page. A lazily-inserted icon is exactly the noise this must survive.
+  const subCell: Array<[string, LayoutBox]> = [
+    ['a 1x1 tracking pixel', box(1180, 1118, 1, 1, 0)],
+    ['a favicon-sized icon', box(4, 4, 16, 16, 0)],
+    ['a consent-banner close button', box(1150, 20, 24, 24, 1)],
+  ];
+
+  it.each(subCell)('adding %s cannot make the page look less like itself than an unrelated page does', (_label, extra) => {
+    const base = threeColumn();
+    const added = { ...base, boxes: [...base.boxes, extra] };
+    const unrelated = dist(base, docsPage());
+    expect(dist(base, added)).toBeLessThan(unrelated);
+    expect(dist(base, added)).toBeLessThan(0.02); // and it must stay inside the same-page band, not merely beat the reference
+  });
+
+  it('REMOVING a sub-cell element is equally survivable — the axis runs in both directions', () => {
+    const withIcon = { ...threeColumn(), boxes: [...threeColumn().boxes, box(4, 4, 16, 16, 0)] };
+    expect(dist(withIcon, threeColumn())).toBeLessThan(0.02);
+  });
+
+  it('a page-sized wrapper cannot dominate the content inside it either — the cap is bounded at BOTH ends', () => {
+    const wrapped = { ...threeColumn(), boxes: [box(0, 0, 1200, 1120, 0), ...threeColumn().boxes] };
+    expect(dist(threeColumn(), wrapped)).toBeLessThan(0.1);
+  });
+});
+
 describe('LayoutSignature — degenerate pages (a signature is required for every page, including the ones with no layout)', () => {
   it('an empty page signs to an all-zero vector of the fixed length, and two empty pages are distance 0 (not NaN)', () => {
     const sig = computeLayoutSignature({ boxes: [], viewport: VP });
@@ -187,6 +216,20 @@ describe('LayoutSignature — degenerate pages (a signature is required for ever
   it('an empty page is maximally distant from a rendered one — a blank render must never look like a match', () => {
     const empty = computeLayoutSignature({ boxes: [], viewport: VP });
     expect(layoutDistance(empty, computeLayoutSignature(threeColumn()))).toBe(1);
+  });
+
+  it('a blank render is distance 1 from a TEXT-FREE page too, not 0.5 — the harvest yields no text at all for a canvas or captcha page', () => {
+    // The harvest reads text length from the layout tree's text index, which is absent for every
+    // non-text node, so a canvas / image / captcha page has an entirely empty text channel. Folding
+    // an empty-in-both channel in as distance 0 halved every such comparison.
+    const textFreePage: LayoutInput = { ...threeColumn(), boxes: threeColumn().boxes.map((b) => ({ ...b, textLength: 0 })) };
+    const blank = computeLayoutSignature({ boxes: [], viewport: VP });
+    expect(layoutDistance(blank, computeLayoutSignature(textFreePage))).toBe(1);
+  });
+
+  it('two text-free pages use the FULL distance range — a threshold calibrated on text-bearing pages must not be off by 2x here', () => {
+    const strip = (p: LayoutInput): LayoutInput => ({ ...p, boxes: p.boxes.map((b) => ({ ...b, textLength: 0 })) });
+    expect(dist(strip(threeColumn()), strip(docsPage()))).toBeGreaterThan(0.5);
   });
 
   it('a single element still produces a well-formed normalised signature', () => {
@@ -274,7 +317,7 @@ describe('LayoutSignature — determinism (G-S11a-1 is meaningless if the same i
     });
     // eslint-disable-next-line max-len -- a pinned wire value is only a pin if it is the literal value
     expect(serializeLayoutSignature(sig)).toBe(
-      'lsig1:12x16:3:0:////////////////4+Pj4+Pj4+Pj4+Pjf39/f4B/gH+AgH+Af39/f4B/gH+AgH+Af39/f4B/gH+AgH+Af39/f4B/gH+AgH+Af39/f4B/gH+AgH+Af39/f4B/gH+AgH+AcXFxcXFxcXFxcXFxAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVVVVVVVVVVVVVVVVe3t7e3t7e3t7e3t7////////////////////////////////////////////////////////////////////////////////////////////////4+Pj4+Pj4+Pj4+PjAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      'lsig1:12x16:3:0:YGBgYGBgYGBgYGBgVVVVVVVVVVVVVVVVMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwKioqKisqKyorKyorAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFhYWFhYWFhYWFhYWICAgICAgICAgICAgQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCOzs7Ozs7Ozs7Ozs7AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
     );
   });
 });
