@@ -23,7 +23,7 @@ vi.mock('../../../src/fetch/browser-acquire.js', async (importOriginal) => {
 });
 
 import { SmartRouter } from '../../../src/fetch/router.js';
-import type { HttpClient, BrowserPoolInterface, TlsFetcher } from '../../../src/fetch/router.js';
+import type { HttpClient, BrowserPoolInterface, TlsFetcher, SystemBrowserFetch } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 import { getAuthOptions } from '../../../src/fetch/auth.js';
 import { ChallengeBlockedError } from '../../../src/fetch/browser-pool.js';
@@ -746,6 +746,18 @@ describe('SmartRouter: browser-unavailable fallback must not leak a challenge sh
     return acquirer;
   }
 
+  // The host these cases are about is "no bundled engine AND no browser this machine can
+  // drive". The second half used to be donated by the runner: the D-S10-5 companion rung sits
+  // on the unavailable-engine branch every case below takes, and its production default spawns
+  // a REAL browser. On a host that resolves to the no-display rung with Chrome installed —
+  // which is every Linux CI runner and every headless dev box — these cases silently launched
+  // one and navigated to it. They passed only because `blocked.example` and `spa.example` do
+  // not resolve, so the navigation failed and the rung declined by accident; a resolvable host
+  // name flips the outcome. Declining explicitly states the precondition instead of inheriting
+  // it from DNS, and it is what keeps the suite from leaking browser processes and profile
+  // directories. Every assertion below is untouched.
+  const noInstalledBrowser: SystemBrowserFetch = async () => null;
+
   it('MUST-FIRE: 200 shell escalates, browser unavailable → blocked_by_challenge (never the shell html)', async () => {
     const httpClient: HttpClient = {
       fetch: vi.fn(async () => makeHttpResult(DATADOME_SHELL_200)),
@@ -758,6 +770,7 @@ describe('SmartRouter: browser-unavailable fallback must not leak a challenge sh
       browserPool,
       pdfProbe: async () => false,
       browserAcquirer: unavailableAcquirer(),
+      systemBrowserFetch: noInstalledBrowser,
     });
     const result = await router.fetch('https://blocked.example/');
     // The browser could not be acquired, so the shell would have been the
@@ -792,6 +805,7 @@ describe('SmartRouter: browser-unavailable fallback must not leak a challenge sh
       browserPool,
       pdfProbe: async () => false,
       browserAcquirer: unavailableAcquirer(),
+      systemBrowserFetch: noInstalledBrowser,
     });
     const result = await router.fetch('https://blocked.example/');
     expect('error' in result).toBe(true);
@@ -815,6 +829,7 @@ describe('SmartRouter: browser-unavailable fallback must not leak a challenge sh
       browserPool,
       pdfProbe: async () => false,
       browserAcquirer: unavailableAcquirer(),
+      systemBrowserFetch: noInstalledBrowser,
     });
     const result = await router.fetch('https://spa.example/');
     expect('error' in result).toBe(false);
