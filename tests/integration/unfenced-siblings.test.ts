@@ -33,15 +33,24 @@ import { findUnfencedInEnvelope } from '../helpers/envelope-fence.js';
  *   2. `fenceDeepValue`  — `out[k] = fenceDeepValue(v, isOperationalKey(k), …)`; it decides the
  *                          VALUE's fate per key and copies the KEY through untouched.
  *
- * Site (1) is `extract mode:"tables"` → GAP-5. Site (2) is reached from at least two tools:
- * `extract mode:"structured"` via `jsonld[]` property names → GAP-6a, and `fetch` via `site_data` /
- * `metadata` → GAP-6b. `agent`'s `result` Record runs through the same function.
+ * Site (1) is `extract mode:"tables"` → GAP-5. Site (2) is reached by THREE routes:
+ *   - `extract mode:"structured"` — `jsonld[]` property names → GAP-6a
+ *   - `extract mode:"metadata"`   — `MetadataData.jsonld?: Record<string, unknown>[]` (types.ts:1285)
+ *                                   carries the same page-authored property names
+ *   - `fetch`                     — `site_data` / `metadata` nested keys → GAP-6b
+ * `agent`'s `result` Record runs through the same function, but its keys come from
+ * `Object.keys(schema.properties)` — CALLER-authored, never page-derived — so it is named here and
+ * deliberately not pinned. `fenceDeepValue` has exactly four call sites and this enumerates them all.
  *
- * 🔑 WHY ALL THREE ARE PINNED SEPARATELY. A fix for the TABLE path closes site (1) only — and the
- * obvious table remedy (renaming keys `col_N`) is explicitly NOT applicable to `jsonld`, where the
- * key name IS the datum and renaming destroys its meaning. So if only GAP-5 existed, the table fix
- * would flip it green while sites (2) kept shipping unfenced page prose, and the marker that was
- * supposed to graduate would instead read as "class closed" with two thirds of it open.
+ * 🔑 WHY ALL THREE ARE PINNED SEPARATELY — AND MIND THE POLARITY. These are DEFECT pins: each one
+ * asserts the leak is still there, so a FIX makes the pin FAIL. Measured against an actual table-only
+ * fix: GAP-5 goes RED (1 red) while GAP-6a and GAP-6b stay GREEN — still asserting one finding each,
+ * because they are still leaking. The obvious table remedy (renaming row keys `col_N`) explicitly
+ * does NOT transfer to `jsonld`, where the key name IS the datum and renaming destroys it.
+ *
+ * So if GAP-5 were the only pin, that single red would be read as "the key class is closed, retire the
+ * marker" at the exact moment two of the three sites were still shipping unfenced page prose. GAP-6 is
+ * what keeps the remaining two visibly asserted after the first fix lands.
  *
  * ⛔ DO NOT ADD `AgentOutput.warning` TO THIS FILE. It is unenumerated like the rest, so the symmetry
  * is tempting and wrong: its two producers interpolate WIGOLO-AUTHORED values only, which was checked
@@ -200,6 +209,12 @@ describe('SUCCESS-envelope siblings the fence functions do not enumerate', () =>
   it('GAP-6c (must-not-fire): the SAME string in VALUE position is fenced — it is the key that leaks', async () => {
     // The control that makes GAP-6a/6b mean "keys are the channel" rather than "fenceDeepValue is
     // broken". Identical bytes, identical tool, value position instead of key position → 0 findings.
+    //
+    // The separation is MEASURED, not argued. Mutating fenceDeepValue to fence nothing gives 4 red —
+    // ENV-1, ENV-5, ENV-8 and this test — while GAP-6a and GAP-6b stay GREEN. So {6a green, 6c green}
+    // is consistent with "keys are the channel" and with nothing else; the broken-function hypothesis
+    // would have taken 6c down with it. The fixture also sits at the SAME depth as 6a, so it is not
+    // discriminating at a shallower shape than the positives it defends.
     const { handleExtract } = await import('../../src/tools/extract.js');
     vi.mocked(handleExtract).mockResolvedValueOnce({
       ok: true,
