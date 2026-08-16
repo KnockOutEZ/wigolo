@@ -6,7 +6,7 @@ vi.mock('../../../src/fetch/auth.js', () => ({
 }));
 
 import { SmartRouter } from '../../../src/fetch/router.js';
-import type { HttpClient, BrowserPoolInterface } from '../../../src/fetch/router.js';
+import type { HttpClient, BrowserPoolInterface, SystemBrowserFetch } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 import type { BrowserAcquirer, AcquireOutcome } from '../../../src/fetch/browser-acquire.js';
 import { getAuthOptions } from '../../../src/fetch/auth.js';
@@ -47,6 +47,28 @@ function makeAcquirer(outcome: AcquireOutcome): { acquirer: BrowserAcquirer; ens
   const acquirer = { ensureBrowser: ensure } as unknown as BrowserAcquirer;
   return { acquirer, ensure };
 }
+
+/**
+ * The unavailable-acquisition cases below are about ONE host: no bundled engine AND no browser
+ * this machine can drive. The first half is stated by `makeAcquirer('unavailable')`; the second
+ * half used to be donated by whatever machine ran the suite.
+ *
+ * That is now load-bearing. The D-S10-5 companion rung sits on this exact branch, and its
+ * production default spawns a REAL browser. `resolveBrowserTier()` forces `hasDisplay` true on
+ * darwin and win32, so macOS and Windows never reach the rung and every case here is green
+ * there — while a Linux host with no DISPLAY resolves to `no-display`, finds an installed
+ * Chrome, launches it and navigates for real. Three of the four cases survived that only
+ * because `spa.example` and `fail.example` do not resolve; the fourth uses `example.com`, which
+ * does, so the rung served the page and the actionable error never ran. That is the ubuntu-only
+ * red on this branch, and it is a host difference, not a behaviour difference.
+ *
+ * Declining STATES the second half of the precondition instead of inheriting it from DNS. It
+ * weakens nothing: every assertion below is unchanged, and each still reds if the router stops
+ * naming the remedy. It also stops the suite launching browsers and leaking profile
+ * directories, which is the same discipline `router-companion-rung.test.ts` and
+ * `router-tier-occupancy.test.ts` already apply at this seam.
+ */
+const noInstalledBrowser: SystemBrowserFetch = async () => null;
 
 describe('SmartRouter — lazy browser acquisition threading (D3)', () => {
   let httpClient: HttpClient;
@@ -175,7 +197,7 @@ describe('SmartRouter — lazy browser acquisition threading (D3)', () => {
     it('returns the lower-tier HTTP content with an actionable note when a fallback exists (SPA-shell path)', async () => {
       vi.mocked(httpClient.fetch).mockResolvedValue(makeHttpResult(SPA_SHELL_HTML));
       const { acquirer } = makeAcquirer('unavailable');
-      const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, browserAcquirer: acquirer });
+      const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, browserAcquirer: acquirer, systemBrowserFetch: noInstalledBrowser });
 
       const result = await router.fetch('https://spa.example/page') as RawFetchResult;
 
@@ -191,7 +213,7 @@ describe('SmartRouter — lazy browser acquisition threading (D3)', () => {
 
     it('fails with an actionable error naming `wigolo warmup --browser` when no lower-tier content exists (render_js:always)', async () => {
       const { acquirer } = makeAcquirer('unavailable');
-      const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, browserAcquirer: acquirer });
+      const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, browserAcquirer: acquirer, systemBrowserFetch: noInstalledBrowser });
 
       const result = await router.fetch('https://example.com/page', { renderJs: 'always' });
 
@@ -218,6 +240,7 @@ describe('SmartRouter — lazy browser acquisition threading (D3)', () => {
         pdfProbe: async () => false,
         browserAcquirer: acquirer,
         playwrightFetcher,
+        systemBrowserFetch: noInstalledBrowser,
       });
 
       const result = await router.fetch('https://s.example/', { mode: 'stealth' }) as RawFetchResult;
@@ -253,7 +276,7 @@ describe('SmartRouter — lazy browser acquisition threading (D3)', () => {
     it('fails with an actionable error on the failure-threshold path (no fallback in hand)', async () => {
       vi.mocked(httpClient.fetch).mockRejectedValue(new Error('refused'));
       const { acquirer } = makeAcquirer('unavailable');
-      const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, browserAcquirer: acquirer });
+      const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false, browserAcquirer: acquirer, systemBrowserFetch: noInstalledBrowser });
 
       for (let i = 0; i < 2; i++) {
         await expect(router.fetch(`https://fail.example/${i}`)).rejects.toThrow();
