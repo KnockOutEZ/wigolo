@@ -263,7 +263,10 @@ export type SolveMethod = 'reuse' | 'auto-pass' | 'cdp-direct' | 'ai-vision' | '
  *                       `force_refresh: true` to get one.
  *  - `not_captured`   : the tier that served this response cannot rasterise (cache-less
  *                       HTTP/TLS, the PDF content-type probe, the static stealth paths).
- *                       Retry with `render_js: 'always'` to force the browser tier.
+ *                       `render_js: 'always'` recovers the first two. It does NOT recover
+ *                       stealth: that branch is evaluated before the render_js override
+ *                       and its escalation never threads `screenshot`, so in stealth mode
+ *                       no branch can satisfy the request — re-fetch outside stealth.
  */
 export type ScreenshotOmittedReason =
   | 'size_limit'

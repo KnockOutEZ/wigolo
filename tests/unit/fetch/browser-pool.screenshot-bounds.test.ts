@@ -19,15 +19,17 @@ import {
  *
  * Page height — which the PAGE controls — was the sole size determinant.
  *
- * The byte cap is justified from the CDP-ATTACH regime, not from 1280x720, because the
- * pool's own contexts cannot reach any sane cap (a full-viewport noise canvas there is
- * only ~3.7 MB). On an attached browser, measured with `scale: 'css'`:
+ * The byte cap is DERIVED from the clamp (MAX_SHOT_PX^2 x bytes/px), not chosen beside
+ * it: an independent cap contradicts the clamp by refusing captures the clamp admits.
+ * A flat 16 MiB did exactly that — flickr.com/explore was delivered on a 4K window but
+ * refused on a 5K iMac, a Pro Display XDR, and at 4096x4096.
  *
- *   flickr.com/explore @3840x2160 -> 11,073,732   (largest legitimate)
- *   flickr.com/explore @2560x1440 ->  4,941,424
- *   apod.nasa.gov      @3840x2160 ->  1,614,884
- *
- * ...against a ~66.7 MB adversarial ceiling at the 4096px clamp.
+ * The bytes/px budget is anchored to the INCOMPRESSIBLE CEILING (~4.0 b64 bytes/px: PNG
+ * cannot beat raw RGB at 3 bytes/px, base64 expands 4/3), NOT to a sample maximum.
+ * Sample-derived constants failed three times, always because the sample set was
+ * thumbnail GRIDS — which downscale, and downscaling is a low-pass filter. A full-bleed
+ * hero photograph reaches 2.036 bytes/px at an ordinary 2560x1440 window, above the 2.0
+ * a grid-derived constant would have set.
  */
 
 type ShotOpts = {
@@ -147,21 +149,34 @@ describe('screenshot response bounds', () => {
     // explore was DELIVERED on a 4K window but REFUSED on a 5K iMac, a Pro Display XDR,
     // and at the clamp's own 4096x4096 ceiling. Tying the cap to MAX_SHOT_PX means
     // raising the clamp raises the cap with it.
-    expect(MAX_SHOT_B64_BYTES).toBe(MAX_SHOT_PX * MAX_SHOT_PX * 2);
+    expect(MAX_SHOT_B64_BYTES).toBe(MAX_SHOT_PX * MAX_SHOT_PX * 3);
   });
 
-  it('admits real photo-dense content at the clamp ceiling', () => {
-    // 1.386 b64 bytes/px measured on flickr.com/explore — the densest REAL page sampled.
-    // Anything the clamp lets through must fit, or the cap is fencing our own ceiling.
-    const densestRealBytesPerPx = 1.386;
-    expect(MAX_SHOT_B64_BYTES).toBeGreaterThan(MAX_SHOT_PX * MAX_SHOT_PX * densestRealBytesPerPx);
+  it('sets the density budget as a fraction of the INCOMPRESSIBLE ceiling', () => {
+    // The anchor is arithmetic, not a sample: PNG cannot beat raw storage, Chromium
+    // emits RGB (3 bytes/px), base64 expands 4/3 => ~4.0 b64 bytes/px is the hard max
+    // for ANY content. Measured noise hits 3.975, i.e. 99.4% of it.
+    // Deriving from "the densest page I sampled" failed three times; deriving from a
+    // ceiling that no content can cross cannot fail the same way.
+    const INCOMPRESSIBLE_CEILING = 4;
+    const budget = MAX_SHOT_B64_BYTES / (MAX_SHOT_PX * MAX_SHOT_PX);
+    expect(budget).toBeLessThan(INCOMPRESSIBLE_CEILING);
+    expect(budget / INCOMPRESSIBLE_CEILING).toBeCloseTo(0.75, 2);
+  });
+
+  it('admits a FULL-BLEED hero photograph, not just thumbnail grids', () => {
+    // The bias that broke the previous constant: every early sample was a thumbnail
+    // GRID, and browser downscaling is a low-pass filter, so grids compress well
+    // (densest live grid: wallhaven 1.526). One full-resolution photo rendered
+    // edge-to-edge measured 2.036 bytes/px at an ORDINARY 2560x1440 window and 2.372 at
+    // the clamp ceiling — so a 2.0 budget refused an everyday hero image.
+    const heroAtCeilingBytesPerPx = 2.372;
+    expect(MAX_SHOT_B64_BYTES).toBeGreaterThan(MAX_SHOT_PX * MAX_SHOT_PX * heroAtCeilingBytesPerPx);
   });
 
   it('still refuses an incompressible payload at that same ceiling', () => {
     // 3.975 bytes/px measured on a 4096x4096 noise canvas (66,683,224 total;
-    // independently reproduced at 67,134,896 via a zlib encode). The cap discriminates
-    // by COMPRESSIBILITY, not absolute size — that is why it can admit the clamp's
-    // ceiling for real content and still stop a bomb.
+    // independently reproduced at 67,134,896 via a zlib encode).
     const noiseBytesPerPx = 3.975;
     expect(MAX_SHOT_B64_BYTES).toBeLessThan(MAX_SHOT_PX * MAX_SHOT_PX * noiseBytesPerPx);
   });

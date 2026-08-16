@@ -257,22 +257,42 @@ const log = createLogger('fetch');
 export const MAX_SHOT_PX = 4096;
 
 /**
- * Encoded bytes per pixel that separates real content from an incompressible payload.
+ * Encoded base64 bytes per pixel, expressed as a fraction of the INCOMPRESSIBLE CEILING
+ * rather than as a margin above whatever pages happened to get sampled.
  *
- * This is the discriminator the byte cap is really made of. Measured base64 bytes/px at
- * the clamp ceiling, `scale: 'css'` applied, through this function:
+ * The ceiling is arithmetic, not a measurement: PNG is lossless and cannot encode
+ * smaller than raw storage, Chromium emits colorType 2 (RGB, 3 bytes/px), and base64
+ * expands by 4/3. So **no content of any kind can exceed ~4.0 b64 bytes/px**. A
+ * 4096x4096 noise canvas measures 3.975 — 99.4% of that ceiling — which confirms the
+ * anchor empirically rather than establishing it.
  *
- *   pexels.com/search/texture  0.007 - 0.010   (lazy-loaded, mostly chrome)
- *   apod.nasa.gov              0.099 - 0.195   (one large astrophotograph)
- *   flickr.com/explore         1.386           <- densest REAL content measured
- *   4096x4096 noise canvas     3.975           <- incompressible payload
+ * 3.0 is therefore 75% of the hard maximum: content denser than this is within 25% of
+ * literally incompressible, and refusing it is defensible whatever page produced it.
  *
- * 2.0 sits 1.44x above the densest real page measured and 1.99x below synthetic noise,
- * so the cap discriminates by COMPRESSIBILITY rather than by absolute size. That matters
- * because absolute-size reasoning ("~1.5x the biggest page I sampled") has now failed
- * twice here — each time because the sample stopped one display size short.
+ * WHY NOT A SAMPLE MAXIMUM: that reasoning failed three times here, each time because
+ * the sample set was structurally biased low. The bias has a mechanism — every page in
+ * the first sweeps was a thumbnail GRID, and browser downscaling is a low-pass filter,
+ * so grids compress unusually well. A single full-resolution photograph rendered
+ * edge-to-edge (the ordinary hero-image pattern) is far denser:
+ *
+ *   MEASURED, grids @ clamp ceiling:
+ *     shadertoy.com               0.008
+ *     pexels.com/search/texture   0.007 - 0.010
+ *     apod.nasa.gov               0.099 - 0.195
+ *     500px.com                   0.181
+ *     bing.com/images             0.706
+ *     gettyimages.com             1.117
+ *     flickr.com/explore          1.386 - 1.393
+ *     wallhaven.cc                1.526   <- densest live GRID
+ *
+ *   MEASURED, full-bleed hero photograph (HST Pillars of Creation, object-fit: cover):
+ *     @2560x1440   2.036   <- exceeds a 2.0 discriminator at an ORDINARY window size
+ *     @4096x4096   2.372
+ *
+ * A 2.0 constant would refuse that hero image, so it did not separate real content from
+ * a payload bomb — it separated the pages that happened to get sampled from noise.
  */
-const MAX_SHOT_B64_BYTES_PER_PX = 2;
+const MAX_SHOT_B64_BYTES_PER_PX = 3;
 
 /**
  * Hard cap on the base64 payload a single capture may contribute to a tool response.
@@ -286,12 +306,19 @@ const MAX_SHOT_B64_BYTES_PER_PX = 2;
  * and at the clamp ceiling itself.
  *
  * Because it is a function of MAX_SHOT_PX, raising the clamp raises this with it and the
- * two cannot silently drift apart. Currently 4096 * 4096 * 2 = 32 MiB, which still sits
- * ~2x under the ~66.7 MB an adversarial 4096x4096 noise canvas produces, so a payload
- * bomb is still refused.
+ * two cannot silently drift apart. Currently 4096 * 4096 * 3 = 48 MiB, still ~1.33x under
+ * the ~66.7 MB an adversarial 4096x4096 noise canvas produces, so a bomb is refused.
  *
- * NOTE ON SCOPE: at this size the cap is a MEMORY-SAFETY bound, not a token-budget one.
- * Nothing budgets `screenshot` against `max_content_chars` — that job is unowned.
+ * WHAT THIS CONSTANT DOES *NOT* CLAIM. The bytes/px reasoning binds at EXACTLY 4096x4096
+ * and nowhere else, because the cap is a flat byte count rather than a per-capture
+ * budget. A 2560x1440 capture is allowed the same 48 MiB, i.e. an effective ~13.7
+ * bytes/px — far above the incompressible ceiling, so at that size nothing is refused in
+ * practice. That is a deliberate trade, not an oversight: a small capture is not a memory
+ * threat, and deriving the cap per-capture would start refusing on the pool-owned
+ * 1280x720 path, which today cannot produce an oversized response at all.
+ *
+ * NOTE ON SCOPE: this is a MEMORY-SAFETY bound, not a token-budget one. Nothing budgets
+ * `screenshot` against `max_content_chars` — that job is unowned.
  *
  * Not operator-tunable for the same reason as MAX_SHOT_PX.
  */
