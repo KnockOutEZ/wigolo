@@ -29,7 +29,7 @@ New features and updates ship steadily. Follow <a href="https://x.com/yourtowhid
 
 ---
 
-wigolo gives an AI agent one surface for everything web-related: **search, fetch, crawl, extract, cache, find-similar, research,** and autonomous gather loops. It runs wherever your agent runs — as an MCP server next to your coding agent, as a REST/MCP endpoint on the box where your self-hosted agents live, or embedded through an SDK inside your own app. The core tools need no API keys, nothing it touches leaves `~/.wigolo/`, and no bill grows with how much your agent thinks.
+wigolo gives an AI agent one surface for everything web-related: **search, fetch, crawl, extract, cache, find-similar, research,** and autonomous gather loops. It runs wherever your agent runs — as an MCP server next to your coding agent, as a REST/MCP endpoint on the box where your self-hosted agents live, or embedded through an SDK inside your own app. The core tools need no API keys, your queries reach only the engines and sites you're targeting while cache, embeddings, and models stay under `~/.wigolo/`, and no bill grows with how much your agent thinks.
 
 <div align="center">
 
@@ -115,7 +115,7 @@ wigolo isn't a free stand-in for the paid tools — it's built to match them. It
 - **Built for agents.** One MCP call fans out many queries across many engines in parallel, which a serial host tool-loop can't replicate. Every result carries transparent per-result scoring, and output is budget-aware.
 - **Honest output.** Stale cache, failed fetches, degraded backends, and truncation are surfaced in the result. When a bot-protected page can't be read, you get a labeled `blocked_by_challenge` failure, not a challenge shell returned as content.
 - **$0 per query, free to re-query.** Default search talks to public engines through direct adapters; the reranker and embeddings run on-device. Every response is cached, so asking again is instant and costs nothing.
-- **Private by default.** Cache, embeddings, models, and config live under `~/.wigolo/`. Nothing reaches a third party unless you explicitly opt into an LLM for synthesis.
+- **Private by default.** Your queries and target URLs reach the engines and sites you're asking about — that's the product working. Nothing else about your work leaves: cache, embeddings, models, and config stay under `~/.wigolo/`, and no third party sees them unless you explicitly opt into an LLM for synthesis. [Full egress list](docs/privacy-security.md#network-egress).
 
 Here's what one real result looks like, dissected. It includes the failed engine and the weak result, because those are part of the answer too:
 
