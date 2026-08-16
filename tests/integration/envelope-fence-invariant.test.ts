@@ -205,6 +205,19 @@ describe('A89 — envelope-wide containment, all nine content tools', () => {
       },
     } as never);
     expectContained(await callTool('extract', { url: 'https://e.example/p', mode: 'tables' }));
+
+    // POSITIVE CONTROL — without it this test would be WEAKER than the GAP-5 pin it replaces, and that
+    // was measured, not guessed. GAP-5 asserted a key finding EXISTS, so blinding the walker to key
+    // positions killed it. ENV-10 asserts findings are EMPTY, which a blinded walker satisfies more
+    // easily — so the graduation silently dropped the walker-key-blindness mutation from 3 kills to 2.
+    // Asserting the walker still SEES an unfenced key restores it: containment now means "the detector
+    // works AND found nothing", not merely "nothing was found".
+    const seen = findUnfencedInEnvelope(
+      [{ type: 'text', text: JSON.stringify({ data: [{ rows: [{ [`H ${CANARY}`]: 'cell' }] }] }) }],
+      CANARY,
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0].path).toContain('[key]');
   });
 
   it('ENV-6: find_similar — per-result titles/bodies and evidence land contained', async () => {
