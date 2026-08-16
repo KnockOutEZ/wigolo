@@ -18,7 +18,14 @@ import { execSync } from 'node:child_process';
 // one-way ratchet is otherwise wrong — it is justified here only because the corpus itself
 // changed. The Studio safety surface stays at ZERO via tsconfig.test.json, which is the gate
 // that actually protects the new code. Ratchet DOWN from 412 as the legacy debt is cleaned.
-const BASELINE = 412;
+//
+// 412 -> 399 on 2026-08-16. Earned, not estimated: the F3 slice found that
+// tests/unit/search/hybrid/router.test.ts typed its fake as `ReturnType<typeof vi.fn>`, which
+// erases the call signature to `(...args: any[]) => any` — so MockProvider never structurally
+// satisfied SearchProvider and all 15 uses were already errors. Binding it to
+// `MockedFunction<SearchProvider['search']>` cleared all 15. Locked only once every branch
+// carrying the old errors had merged; a shared constant lowered while they are open fails them.
+const BASELINE = 399;
 
 let count = 0;
 try {
