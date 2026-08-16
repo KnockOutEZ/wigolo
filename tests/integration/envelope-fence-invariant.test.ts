@@ -151,16 +151,73 @@ describe('A89 — envelope-wide containment, all nine content tools', () => {
         source_url: 'https://e.example/p',
         data: {
           jsonld: [{ '@type': 'Product', name: `N ${CANARY}`, description: `D ${CANARY}`, url: 'https://e.example/p' }],
-          // The row KEY is deliberately canary-free here. `fenceTable` rebuilds rows as
-          // `{[header]: cell}`, so a page-authored header arrives as an unfenced object key — a real
-          // channel, pinned separately as GAP-5. Planting it here would make ENV-5 red for a reason
-          // that has nothing to do with the value containment ENV-5 exists to assert.
-          tables: [{ caption: `CAP ${CANARY}`, headers: [`H ${CANARY}`], rows: [{ Plan: `CELL ${CANARY}` }] }],
+          // The row KEY used to be deliberately canary-free here, because `fenceTable` rebuilt rows as
+          // `{[header]: cell}` and a page-authored header arrived as an unfenced object key — the
+          // channel pinned separately as GAP-5. That carve-out is RETIRED: row keys are now
+          // wigolo-authored `col_N` handles aligned to the fenced `headers[]`, so the canary can be
+          // planted in the key here and ENV-5 still lands contained. The structured path reaches its
+          // tables through `fenceDeepValue`, so this is the deep route's half of that closure; the
+          // `mode:"tables"` array route is ENV-10.
+          tables: [{ caption: `CAP ${CANARY}`, headers: [`H ${CANARY}`], rows: [{ [`H ${CANARY}`]: `CELL ${CANARY}` }] }],
           made_up_key_nobody_allowlisted: `UNKNOWN ${CANARY}`,
         },
       },
     } as never);
     expectContained(await callTool('extract', { url: 'https://e.example/p', mode: 'structured' }));
+  });
+
+  /**
+   * ENV-10 is GAP-5 GRADUATED, not a new test — the marker moved rather than being deleted.
+   *
+   * GAP-5 (unfenced-siblings.test.ts) pinned the DEFECT: `fenceTable` rebuilt rows as
+   * `[k, fence(v)]`, so the page's own `<th>` text shipped raw as the row key beside its own fenced
+   * cell, once per row — arbitrary page prose of arbitrary length on the SUCCESS envelope, reachable
+   * by anyone who can put a `<table>` on a page, with no LLM key involved. It was the sharpest item
+   * in that file and the only one not length-bounded.
+   *
+   * That site is now closed: row keys are wigolo-authored `col_N` handles aligned by index to the
+   * already-fenced `headers[]`, so page text never occupies a key position. Per GAP-5's own
+   * instruction — "when it is fixed, this test fails and moves into the invariant guard" — the
+   * assertion is inverted from "the leak is still here" to "the envelope contains it", and lives here
+   * with the other containment pins.
+   *
+   * The canary is planted in the caption, the header, the row KEY and the cell, so the key position is
+   * genuinely exercised: `expectContained` first requires the canary to be PRESENT, which is what stops
+   * this passing vacuously if the shape is ever changed out from under the fixture.
+   */
+  it('ENV-10: extract tables — caption, headers, row KEYS and cells all land contained', async () => {
+    const { handleExtract } = await import('../../src/tools/extract.js');
+    vi.mocked(handleExtract).mockResolvedValueOnce({
+      ok: true,
+      data: {
+        mode: 'tables',
+        source_url: 'https://e.example/p',
+        data: [
+          {
+            caption: `CAP ${CANARY}`,
+            headers: [`H ${CANARY}`, 'Price'],
+            rows: [
+              { [`H ${CANARY}`]: `CELL ${CANARY}`, Price: '$20' },
+              { [`H ${CANARY}`]: `CELL2 ${CANARY}`, Price: '$0' },
+            ],
+          },
+        ],
+      },
+    } as never);
+    expectContained(await callTool('extract', { url: 'https://e.example/p', mode: 'tables' }));
+
+    // POSITIVE CONTROL — without it this test would be WEAKER than the GAP-5 pin it replaces, and that
+    // was measured, not guessed. GAP-5 asserted a key finding EXISTS, so blinding the walker to key
+    // positions killed it. ENV-10 asserts findings are EMPTY, which a blinded walker satisfies more
+    // easily — so the graduation silently dropped the walker-key-blindness mutation from 3 kills to 2.
+    // Asserting the walker still SEES an unfenced key restores it: containment now means "the detector
+    // works AND found nothing", not merely "nothing was found".
+    const seen = findUnfencedInEnvelope(
+      [{ type: 'text', text: JSON.stringify({ data: [{ rows: [{ [`H ${CANARY}`]: 'cell' }] }] }) }],
+      CANARY,
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0].path).toContain('[key]');
   });
 
   it('ENV-6: find_similar — per-result titles/bodies and evidence land contained', async () => {
