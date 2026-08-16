@@ -90,7 +90,7 @@ Not everything is discarded: a challenge solved for a domain is cached, and a la
 
 That middle condition is worth planning around, because this page recommends the thing that trips it: **enabling the proxy above changes the egress route, so clearances solved before the switch stop replaying and those domains get solved again.** If you're going to run through a proxy, turn it on before you build up traffic rather than after.
 
-None of the four is a bug or a misconfiguration — they're properties of how and where the fetch runs. Several things move them, and none is a tuning knob on the fetch itself:
+None of the four is a bug or a misconfiguration — they're properties of how and where the fetch runs. Several things move them:
 
 - **The proxy above** changes the IP.
 - **A stored browser session** changes the profile clause without moving hosts: a saved storage state, or a copy of a real long-lived Chrome profile, is a profile with history — which is exactly what a throwaway one lacks. See [configuration](./configuration.md#fetch-and-browser-engine).
