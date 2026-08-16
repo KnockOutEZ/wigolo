@@ -61,8 +61,15 @@ async function callTool(name: string, args: Record<string, unknown> = {}): Promi
   return res.content as Array<{ type: string; text: string }>;
 }
 
-/** Fail with the offending path + bytes rather than a bare `[] !== [x]`. */
+/**
+ * "No unfenced occurrence" is trivially true of an envelope with NO occurrence at all — a handler
+ * stub that silently stopped being called, or a field renamed out from under a fixture, would make
+ * every assertion below pass while testing nothing. So containment is only asserted after the canary
+ * is shown to be PRESENT, which is the property a mutation run cannot supply for free.
+ */
 function expectContained(blocks: Array<{ type: string; text: string }>): void {
+  const wire = blocks.map((b) => b.text).join('\n');
+  expect(wire).toContain(CANARY);
   const findings = findUnfencedInEnvelope(blocks, CANARY);
   expect(findings.map((f) => `${f.path} (key=${f.key || '<bare block>'}): …${f.excerpt}…`)).toEqual([]);
 }
