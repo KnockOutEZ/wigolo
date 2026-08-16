@@ -261,13 +261,25 @@ export const MAX_SHOT_PX = 4096;
  * rather than as a margin above whatever pages happened to get sampled.
  *
  * The ceiling is arithmetic, not a measurement: PNG is lossless and cannot encode
- * smaller than raw storage, Chromium emits colorType 2 (RGB, 3 bytes/px), and base64
- * expands by 4/3. So **no content of any kind can exceed ~4.0 b64 bytes/px**. A
- * 4096x4096 noise canvas measures 3.975 — 99.4% of that ceiling — which confirms the
- * anchor empirically rather than establishing it.
+ * smaller than raw storage, and base64 expands by 4/3. The raw form is ENGINE-dependent,
+ * which is the part that is easy to get wrong — the pool is not Chromium-only.
+ * `WIGOLO_BROWSER_TYPES` (config.ts) accepts {chromium, firefox, webkit} and the
+ * resolved page reaches this capture site unchanged. Measured, identical 1600x1200
+ * noise canvas, identical options:
  *
- * 3.0 is therefore 75% of the hard maximum: content denser than this is within 25% of
- * literally incompressible, and refusing it is defensible whatever page produced it.
+ *   chromium  bitDepth 8  colorType 2 (RGB,  3 B/px)  ->  3.975 b64 bytes/px
+ *   firefox   bitDepth 8  colorType 6 (RGBA, 4 B/px)  ->  4.598
+ *   webkit    bitDepth 8  colorType 6 (RGBA, 4 B/px)  ->  4.590
+ *
+ * So the engine-agnostic ceiling is the RGBA one: 4 * 4/3 = **~5.33 b64 bytes/px**, NOT
+ * the 4.0 that Chromium alone would suggest. Treat 5.33 as a FLOOR of the true ceiling
+ * rather than an exact upper bound: PNG's per-scanline filter byte and deflate's
+ * stored-block framing put measured density fractionally above the raw arithmetic
+ * (chromium lands within ~1% of 4.0, on either side depending on the sample).
+ *
+ * 3.0 is therefore ~56% of the hard maximum. Content denser than this is within ~44% of
+ * literally incompressible on the worst engine, and refusing it is defensible whatever
+ * page produced it.
  *
  * WHY NOT A SAMPLE MAXIMUM: that reasoning failed three times here, each time because
  * the sample set was structurally biased low. The bias has a mechanism — every page in
@@ -280,7 +292,7 @@ export const MAX_SHOT_PX = 4096;
  *     pexels.com/search/texture   0.007 - 0.010
  *     apod.nasa.gov               0.099 - 0.195
  *     500px.com                   0.181
- *     bing.com/images             0.706
+ *     bing.com (homepage)         0.706   <- full-bleed daily photo, NOT /images
  *     gettyimages.com             1.117
  *     flickr.com/explore          1.386 - 1.393
  *     wallhaven.cc                1.526   <- densest live GRID
@@ -306,8 +318,10 @@ const MAX_SHOT_B64_BYTES_PER_PX = 3;
  * and at the clamp ceiling itself.
  *
  * Because it is a function of MAX_SHOT_PX, raising the clamp raises this with it and the
- * two cannot silently drift apart. Currently 4096 * 4096 * 3 = 48 MiB, still ~1.33x under
- * the ~66.7 MB an adversarial 4096x4096 noise canvas produces, so a bomb is refused.
+ * two cannot silently drift apart. Currently 4096 * 4096 * 3 = 48 MiB, which still
+ * refuses a bomb on EVERY engine — the worst measured density (webkit/firefox RGBA at
+ * ~4.59 b64 bytes/px) puts a full 4096x4096 noise capture at ~77 MB, well over the cap —
+ * while admitting a full-bleed hero photograph (2.372) with room to spare.
  *
  * WHAT THIS CONSTANT DOES *NOT* CLAIM. The bytes/px reasoning binds at EXACTLY 4096x4096
  * and nowhere else, because the cap is a flat byte count rather than a per-capture

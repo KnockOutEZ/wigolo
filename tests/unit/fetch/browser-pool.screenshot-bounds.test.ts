@@ -24,8 +24,10 @@ import {
  * A flat 16 MiB did exactly that — flickr.com/explore was delivered on a 4K window but
  * refused on a 5K iMac, a Pro Display XDR, and at 4096x4096.
  *
- * The bytes/px budget is anchored to the INCOMPRESSIBLE CEILING (~4.0 b64 bytes/px: PNG
- * cannot beat raw RGB at 3 bytes/px, base64 expands 4/3), NOT to a sample maximum.
+ * The bytes/px budget is anchored to the INCOMPRESSIBLE CEILING (PNG cannot beat raw
+ * storage, base64 expands 4/3) rather than to a sample maximum. That ceiling is
+ * ENGINE-dependent: ~4.0 on Chromium (RGB) but ~5.33 on firefox/webkit (RGBA), both of
+ * which WIGOLO_BROWSER_TYPES can select, so 5.33 is the one that binds.
  * Sample-derived constants failed three times, always because the sample set was
  * thumbnail GRIDS — which downscale, and downscaling is a low-pass filter. A full-bleed
  * hero photograph reaches 2.036 bytes/px at an ordinary 2560x1440 window, above the 2.0
@@ -152,16 +154,25 @@ describe('screenshot response bounds', () => {
     expect(MAX_SHOT_B64_BYTES).toBe(MAX_SHOT_PX * MAX_SHOT_PX * 3);
   });
 
-  it('sets the density budget as a fraction of the INCOMPRESSIBLE ceiling', () => {
-    // The anchor is arithmetic, not a sample: PNG cannot beat raw storage, Chromium
-    // emits RGB (3 bytes/px), base64 expands 4/3 => ~4.0 b64 bytes/px is the hard max
-    // for ANY content. Measured noise hits 3.975, i.e. 99.4% of it.
-    // Deriving from "the densest page I sampled" failed three times; deriving from a
-    // ceiling that no content can cross cannot fail the same way.
-    const INCOMPRESSIBLE_CEILING = 4;
+  it('sets the density budget as a fraction of the ENGINE-AGNOSTIC incompressible ceiling', () => {
+    // The anchor is arithmetic, not a sample: PNG cannot beat raw storage and base64
+    // expands 4/3. But the raw form is ENGINE-dependent and the pool is not
+    // Chromium-only — WIGOLO_BROWSER_TYPES accepts firefox and webkit, which emit
+    // colorType 6 (RGBA, 4 B/px) where Chromium emits colorType 2 (RGB, 3 B/px).
+    // Measured on one identical noise canvas: chromium 3.975, firefox 4.598,
+    // webkit 4.590. So the ceiling that binds is the RGBA one, 4 * 4/3 = 5.33 — a
+    // Chromium-only 4.0 would understate it by a third.
+    const INCOMPRESSIBLE_CEILING = 4 * (4 / 3); // RGBA, the worst engine
     const budget = MAX_SHOT_B64_BYTES / (MAX_SHOT_PX * MAX_SHOT_PX);
     expect(budget).toBeLessThan(INCOMPRESSIBLE_CEILING);
-    expect(budget / INCOMPRESSIBLE_CEILING).toBeCloseTo(0.75, 2);
+    expect(budget / INCOMPRESSIBLE_CEILING).toBeCloseTo(0.5625, 3);
+  });
+
+  it('refuses a payload bomb on the WORST engine, not just the default one', () => {
+    // Why the cap stands at 48 MiB despite the ceiling being higher than first stated:
+    // a full 4096x4096 noise capture on an RGBA engine is ~77 MB, still far over.
+    const worstEngineNoiseBytesPerPx = 4.59; // webkit/firefox, measured
+    expect(MAX_SHOT_B64_BYTES).toBeLessThan(MAX_SHOT_PX * MAX_SHOT_PX * worstEngineNoiseBytesPerPx);
   });
 
   it('admits a FULL-BLEED hero photograph, not just thumbnail grids', () => {
@@ -174,11 +185,12 @@ describe('screenshot response bounds', () => {
     expect(MAX_SHOT_B64_BYTES).toBeGreaterThan(MAX_SHOT_PX * MAX_SHOT_PX * heroAtCeilingBytesPerPx);
   });
 
-  it('still refuses an incompressible payload at that same ceiling', () => {
-    // 3.975 bytes/px measured on a 4096x4096 noise canvas (66,683,224 total;
-    // independently reproduced at 67,134,896 via a zlib encode).
-    const noiseBytesPerPx = 3.975;
-    expect(MAX_SHOT_B64_BYTES).toBeLessThan(MAX_SHOT_PX * MAX_SHOT_PX * noiseBytesPerPx);
+  it('still refuses an incompressible payload on the DEFAULT engine', () => {
+    // Chromium (RGB): 3.975 bytes/px measured on a 4096x4096 noise canvas (66,683,224
+    // total; independently reproduced at 67,134,896 via a zlib encode). The RGBA engines
+    // are covered separately — they are denser, so this is the tighter of the two.
+    const chromiumNoiseBytesPerPx = 3.975;
+    expect(MAX_SHOT_B64_BYTES).toBeLessThan(MAX_SHOT_PX * MAX_SHOT_PX * chromiumNoiseBytesPerPx);
   });
 
   // --- Fail-as-data: a refusal is reportable, never silent, never a failed fetch -----
