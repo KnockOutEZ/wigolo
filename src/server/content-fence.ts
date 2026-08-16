@@ -160,15 +160,79 @@ export function fenceCrawlData(data: CrawlResult): CrawlResult {
   };
 }
 
+/**
+ * F7 — table row KEYS were page prose shipped RAW.
+ *
+ * `TableData.rows` is keyed by the table's own `<th>` text (src/extraction/extract.ts:374 does
+ * `obj[header] = cell`). Fencing only the VALUES therefore shipped the identical page-authored
+ * string twice on the `isError: false` success envelope: fenced inside `headers[]`, and BARE as the
+ * object key beside its own fenced cell — once per row, so an N-row table repeated it N times.
+ * Unlike the narrow channels elsewhere in this file it was arbitrary prose of arbitrary length
+ * (measured: a 5000-char header, embedded marker syntax, and raw NUL/ESC all survived verbatim),
+ * reachable through `extract mode:"tables"` and `mode:"structured"` with no LLM key involved.
+ *
+ * The key cannot be fenced IN PLACE — a 300-character wrapped blob is not dereferenceable, and it
+ * would still be prose. It also cannot merely be SANITISED: the threat here is the prose itself
+ * reaching the agent unfenced, not marker forgery, so `neutralizeMarkers` (the studio structured-JSON
+ * remedy, which is paired with an instruction-channel notice) would leave "ignore your instructions"
+ * fully intact. The only fix that closes the channel is for page text to stop being a key at all.
+ *
+ * So the key is replaced by a WIGOLO-AUTHORED positional handle, `col_1..col_N`, aligned by INDEX to
+ * the already-fenced `headers[]` — the label is not lost, it is read from `headers[i]`, where it is
+ * contained. `col_N` is not new vocabulary: it is already what the extractor synthesises for a table
+ * with no `<th>` at all (extract.ts:325), so the two cases now agree instead of diverging.
+ *
+ * Alignment is to the HEADER index, never to the row's own entry order: three of the four producers
+ * (segmentInterleavedListing, div-grid buildTable, list.ts) emit SPARSE rows against a unioned header
+ * set, so entry-order numbering would slide `col_2` onto a different column from one row to the next.
+ * Absent headers are omitted rather than back-filled, which preserves that sparsity exactly as today.
+ *
+ * This runs at the MCP dispatch envelope ONLY (see module header), so it does not touch the REPL
+ * formatter's `row[h]` render, `extraction/schema.ts`'s header→property matching, or the REST path —
+ * all three read the producer's shape upstream of this seam.
+ */
+function fenceRow(row: Record<string, string>, headers: string[], origin?: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const consumed = new Set<string>();
+  headers.forEach((header, i) => {
+    if (!Object.prototype.hasOwnProperty.call(row, header)) return;
+    consumed.add(header);
+    const v = row[header];
+    out[`col_${i + 1}`] = typeof v === 'string' ? fence(v, origin) : v;
+  });
+  // A row key with no header slot is still page data, so it is APPENDED rather than dropped — this
+  // seam must never lose a cell to close a hole. Today's producers cannot reach it (every one keys
+  // rows from the same header list it returns); it exists so a future producer cannot silently
+  // delete content by drifting from that contract.
+  let extra = headers.length;
+  for (const [k, v] of Object.entries(row)) {
+    if (consumed.has(k)) continue;
+    extra += 1;
+    out[`col_${extra}`] = typeof v === 'string' ? fence(v, origin) : v;
+  }
+  return out;
+}
+
 function fenceTable(t: TableData, origin?: string): TableData {
+  const headers = Array.isArray(t.headers) ? t.headers : [];
   return {
     ...t,
     ...(typeof t.caption === 'string' ? { caption: fence(t.caption, origin) } : {}),
     headers: Array.isArray(t.headers) ? t.headers.map((h) => fence(h, origin)) : t.headers,
-    rows: Array.isArray(t.rows)
-      ? t.rows.map((row) => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === 'string' ? fence(v, origin) : v])))
-      : t.rows,
+    rows: Array.isArray(t.rows) ? t.rows.map((row) => fenceRow(row, headers, origin)) : t.rows,
   };
+}
+
+/**
+ * Table-shaped enough for `fenceTable` to key its rows positionally. Used ONLY to pick BETWEEN two
+ * fencing strategies on the structured path — never to decide WHETHER to fence (rule 1 above). The
+ * alternative branch is the deep fence, which wraps every string leaf regardless, so a value that
+ * fails this check is not left barer than it is today.
+ */
+function isTableShape(v: unknown): v is TableData {
+  return (
+    v !== null && typeof v === 'object' && Array.isArray((v as TableData).headers) && Array.isArray((v as TableData).rows)
+  );
 }
 
 // D16: keys whose string values are OPERATIONAL (URLs/URIs/identity the agent dereferences or matches by) —
@@ -222,8 +286,22 @@ export function fenceExtractData(data: ExtractOutput): ExtractOutput {
   }
   // D16: deep object shapes (MetadataData / StructuredData / arbitrary json-ld Records) — recursively fence
   // string leaves except under a known-operational key; UNKNOWN keys fail CLOSED (fenced). Shape preserved.
+  //
+  // F7: `mode:'structured'` reaches its tables THROUGH this branch, not through the array branch above, so
+  // fixing only `fenceTable` would have closed the row-key hole for `mode:'tables'` and left it wide open on
+  // `mode:'structured'` — the same defect at a second, equally keyless entry point (measured before the fix:
+  // a `<th>` canary shipped bare as a row key on BOTH modes). The loop below mirrors fenceDeepValue's own
+  // object case exactly — same per-key operational test, same child depth, same key order — and diverges only
+  // to route StructuredData.tables through fenceTable.
   if (data.data !== null && typeof data.data === 'object') {
-    return { ...data, data: fenceDeepValue(data.data, false, 0, origin) as ExtractOutput['data'] };
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(data.data as Record<string, unknown>)) {
+      out[k] =
+        k === 'tables' && Array.isArray(v)
+          ? v.map((t) => (isTableShape(t) ? fenceTable(t, origin) : fenceDeepValue(t, false, 1, origin)))
+          : fenceDeepValue(v, isOperationalKey(k), 1, origin);
+    }
+    return { ...data, data: out as ExtractOutput['data'] };
   }
   return data;
 }
