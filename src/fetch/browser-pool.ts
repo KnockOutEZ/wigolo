@@ -30,7 +30,7 @@ import {
   assertNavigationChainAllowed,
   installBrowserRequestGuard,
 } from './browser-request-guard.js';
-import type { RawFetchResult, BrowserType, ActionResult, BrowserAction, ChallengeClass, SolveMethod } from '../types.js';
+import type { RawFetchResult, BrowserType, ActionResult, BrowserAction, ChallengeClass, SolveMethod, ScreenshotOmittedReason } from '../types.js';
 
 /**
  * Host of a fetched URL, or null on a malformed URL. Used to key the anti-bot
@@ -238,6 +238,201 @@ export interface PoolTypeStat {
 }
 
 const log = createLogger('fetch');
+
+/**
+ * Hard cap on a single capture's pixel dimensions.
+ *
+ * The pool's own contexts are <=1280x800, so this can never fire on them. It exists
+ * for the CDP-attach path, which adopts an EXTERNAL browser's context whose window we
+ * neither choose nor validate.
+ *
+ * Reading that dimension takes real care: `page.viewportSize()` returns **null** for a
+ * context Playwright does not own — measured null on 9/9 CDP-adopted contexts — so a
+ * clamp keyed on it alone is dead code on the one path it exists for. The size must
+ * come from `window.innerWidth/innerHeight` instead.
+ *
+ * Deliberately NOT operator-tunable, for vision.ts's stated reason: a clamp you cannot
+ * crank up to unsafe is safer than one you can.
+ */
+export const MAX_SHOT_PX = 4096;
+
+/**
+ * Encoded base64 bytes per pixel, expressed as a fraction of the INCOMPRESSIBLE CEILING
+ * rather than as a margin above whatever pages happened to get sampled.
+ *
+ * The ceiling is arithmetic, not a measurement: PNG is lossless and cannot encode
+ * smaller than raw storage, and base64 expands by 4/3. The raw form is ENGINE-dependent,
+ * which is the part that is easy to get wrong — the pool is not Chromium-only.
+ * `WIGOLO_BROWSER_TYPES` (config.ts) accepts {chromium, firefox, webkit} and the
+ * resolved page reaches this capture site unchanged. Measured, identical 1600x1200
+ * noise canvas, identical options:
+ *
+ *   chromium  bitDepth 8  colorType 2 (RGB,  3 B/px)  ->  3.975 b64 bytes/px
+ *   firefox   bitDepth 8  colorType 6 (RGBA, 4 B/px)  ->  4.598
+ *   webkit    bitDepth 8  colorType 6 (RGBA, 4 B/px)  ->  4.590
+ *
+ * So the engine-agnostic ceiling is the RGBA one: 4 * 4/3 = **~5.33 b64 bytes/px**, NOT
+ * the 4.0 that Chromium alone would suggest. Treat 5.33 as a FLOOR of the true ceiling
+ * rather than an exact upper bound: PNG's per-scanline filter byte and deflate's
+ * stored-block framing put measured density fractionally above the raw arithmetic
+ * (chromium lands within ~1% of 4.0, on either side depending on the sample).
+ *
+ * 3.0 is therefore ~56% of the hard maximum. Content denser than this is within ~44% of
+ * literally incompressible on the worst engine, and refusing it is defensible whatever
+ * page produced it.
+ *
+ * WHY NOT A SAMPLE MAXIMUM: that reasoning failed three times here, each time because
+ * the sample set was structurally biased low. The bias has a mechanism — every page in
+ * the first sweeps was a thumbnail GRID, and browser downscaling is a low-pass filter,
+ * so grids compress unusually well. A single full-resolution photograph rendered
+ * edge-to-edge (the ordinary hero-image pattern) is far denser:
+ *
+ *   MEASURED, grids @ clamp ceiling:
+ *     shadertoy.com               0.008
+ *     pexels.com/search/texture   0.007 - 0.010
+ *     apod.nasa.gov               0.099 - 0.195
+ *     500px.com                   0.181
+ *     bing.com (homepage)         0.706   <- full-bleed daily photo, NOT /images
+ *     gettyimages.com             1.117
+ *     flickr.com/explore          1.386 - 1.393
+ *     wallhaven.cc                1.526   <- densest live GRID
+ *
+ *   MEASURED, full-bleed hero photograph (HST Pillars of Creation, object-fit: cover):
+ *     @2560x1440   2.036   <- exceeds a 2.0 discriminator at an ORDINARY window size
+ *     @4096x4096   2.372
+ *
+ * A 2.0 constant would refuse that hero image, so it did not separate real content from
+ * a payload bomb — it separated the pages that happened to get sampled from noise.
+ */
+const MAX_SHOT_B64_BYTES_PER_PX = 3;
+
+/**
+ * Hard cap on the base64 payload a single capture may contribute to a tool response.
+ *
+ * DERIVED FROM THE CLAMP, deliberately: a cap chosen independently of MAX_SHOT_PX
+ * contradicts it. The clamp explicitly admits up to 4096x4096, and real photo-dense
+ * content at exactly that size encodes to ~23.3 MB — so any cap below that refuses
+ * captures the clamp was written to permit, which is fencing our own ceiling rather
+ * than fencing abuse. A flat 16 MiB did precisely that: measured live, flickr.com/explore
+ * was DELIVERED on a 4K window (11,496,964) yet REFUSED on a 5K iMac, a Pro Display XDR
+ * and at the clamp ceiling itself.
+ *
+ * Because it is a function of MAX_SHOT_PX, raising the clamp raises this with it and the
+ * two cannot silently drift apart. Currently 4096 * 4096 * 3 = 48 MiB, which still
+ * refuses a bomb on EVERY engine — the worst measured density (webkit/firefox RGBA at
+ * ~4.59 b64 bytes/px) puts a full 4096x4096 noise capture at ~77 MB, well over the cap —
+ * while admitting a full-bleed hero photograph (2.372) with room to spare.
+ *
+ * WHAT THIS CONSTANT DOES *NOT* CLAIM. The bytes/px reasoning binds at EXACTLY 4096x4096
+ * and nowhere else, because the cap is a flat byte count rather than a per-capture
+ * budget. A 2560x1440 capture is allowed the same 48 MiB, i.e. an effective ~13.7
+ * bytes/px — far above the incompressible ceiling, so at that size nothing is refused in
+ * practice. That is a deliberate trade, not an oversight: a small capture is not a memory
+ * threat, and deriving the cap per-capture would start refusing on the pool-owned
+ * 1280x720 path, which today cannot produce an oversized response at all.
+ *
+ * NOTE ON SCOPE: this is a MEMORY-SAFETY bound, not a token-budget one. Nothing budgets
+ * `screenshot` against `max_content_chars` — that job is unowned.
+ *
+ * Not operator-tunable for the same reason as MAX_SHOT_PX.
+ */
+export const MAX_SHOT_B64_BYTES = MAX_SHOT_PX * MAX_SHOT_PX * MAX_SHOT_B64_BYTES_PER_PX;
+
+/**
+ * Outcome of a bounded capture. A refusal is DATA, not a thrown fetch and not a silent
+ * absence — `screenshot` is caller-requested, so the caller must be able to tell "you
+ * did not ask" from "we could not give it to you" (vision.ts's fail-as-data shape).
+ */
+export type BoundedShot =
+  | { ok: true; base64: string }
+  | { ok: false; reason: ScreenshotOmittedReason };
+
+/**
+ * Capture the VIEWPORT (never `fullPage`), clamped and byte-bounded.
+ *
+ * `fullPage: true` rasterises the whole scroll height, which is page-controlled and
+ * therefore unbounded: a 59k-px article measured 27.3 MB of base64 and a 153k-px API
+ * doc 23.6 MB, in a response where every other auxiliary field is budgeted.
+ *
+ * `scale: 'css'` keeps the output in CSS pixels, so a HiDPI window does not silently
+ * quadruple the payload: the same astrophotograph measured 4,096,696 bytes at dpr 2 and
+ * 1,532,700 with css scaling. It is not a substitute for the byte cap — at dpr 1 the two
+ * are identical (11,073,732 either way), so it lowers the frequency of a refusal without
+ * removing the need for one.
+ */
+export async function captureBoundedScreenshot(
+  // `viewportSize` and `evaluate` are optional: not every page-like object the pool
+  // hands us implements them, and the clamp must degrade rather than throw.
+  page: Pick<import('playwright').Page, 'screenshot'> & {
+    viewportSize?: () => { width: number; height: number } | null;
+    evaluate?: (fn: string) => Promise<unknown>;
+  },
+): Promise<BoundedShot> {
+  let base64: string;
+  try {
+    const vp = await readViewport(page);
+    // Clip only when the viewport actually exceeds the clamp, so the common path stays
+    // a plain viewport capture rather than a synthetic crop.
+    const clip =
+      vp && (vp.width > MAX_SHOT_PX || vp.height > MAX_SHOT_PX)
+        ? { x: 0, y: 0, width: Math.min(vp.width, MAX_SHOT_PX), height: Math.min(vp.height, MAX_SHOT_PX) }
+        : undefined;
+    const buf = await page.screenshot({ type: 'png', scale: 'css', ...(clip ? { clip } : {}) });
+    base64 = buf.toString('base64');
+  } catch (err) {
+    log.warn('screenshot capture failed', { error: String(err) });
+    return { ok: false, reason: 'capture_failed' };
+  }
+
+  if (base64.length > MAX_SHOT_B64_BYTES) {
+    log.warn('screenshot exceeded byte cap — omitted from response', {
+      bytes: base64.length,
+      cap: MAX_SHOT_B64_BYTES,
+    });
+    return { ok: false, reason: 'size_limit' };
+  }
+  return { ok: true, base64 };
+}
+
+/**
+ * The capture viewport in CSS pixels, or null when it cannot be established.
+ *
+ * `viewportSize()` is authoritative for a Playwright-OWNED context and returns null for
+ * an adopted one, so the DOM read is the fallback that makes the clamp real on the
+ * CDP-attach path rather than dead code.
+ */
+async function readViewport(
+  page: {
+    viewportSize?: () => { width: number; height: number } | null;
+    evaluate?: (fn: string) => Promise<unknown>;
+  },
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const reported = page.viewportSize?.() ?? null;
+    if (reported) return reported;
+  } catch {
+    /* fall through to the DOM read */
+  }
+  try {
+    const inner = (await page.evaluate?.(
+      '({ width: window.innerWidth, height: window.innerHeight })',
+    )) as { width?: unknown; height?: unknown } | undefined;
+    if (
+      inner &&
+      typeof inner.width === 'number' &&
+      typeof inner.height === 'number' &&
+      Number.isFinite(inner.width) &&
+      Number.isFinite(inner.height) &&
+      inner.width > 0 &&
+      inner.height > 0
+    ) {
+      return { width: inner.width, height: inner.height };
+    }
+  } catch {
+    /* unmeasurable — the byte cap is still the backstop */
+  }
+  return null;
+}
 
 function isSuccessStatus(status: number): boolean {
   return status >= 200 && status < 300;
@@ -1357,6 +1552,7 @@ export class MultiBrowserPool {
       }
 
       let screenshotBase64: string | undefined;
+      let screenshotOmitted: ScreenshotOmittedReason | undefined;
       if (options.screenshot) {
         // Screenshots require a real browser tab — the
         // HTTP and TLS tiers cannot rasterise a page. When `force_refresh`
@@ -1364,8 +1560,9 @@ export class MultiBrowserPool {
         // the full Playwright cold-start (~5-8s) on top of the navigation
         // itself. This is intrinsic to producing a pixel-accurate image and
         // not a routing bug; downstream callers should expect that cost.
-        const buf = await page.screenshot({ fullPage: true });
-        screenshotBase64 = buf.toString('base64');
+        const shot = await captureBoundedScreenshot(page);
+        if (shot.ok) screenshotBase64 = shot.base64;
+        else screenshotOmitted = shot.reason;
       }
 
       return {
@@ -1377,6 +1574,8 @@ export class MultiBrowserPool {
         method: 'browser',
         headers: responseHeaders,
         screenshot: screenshotBase64,
+        // A requested-but-absent image is announced, never silently dropped.
+        ...(screenshotOmitted !== undefined ? { screenshotOmitted } : {}),
         actionResults,
         contentCompleteness: completeness,
         ...(gotoTimedOut ? { warning: 'goto_timeout_partial_content' } : {}),

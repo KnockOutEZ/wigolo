@@ -99,6 +99,20 @@ export interface FetchOutput {
   links: string[];
   images: string[];
   screenshot?: string;
+  /**
+   * Why a screenshot the caller ASKED for is not in this response. A screenshot is
+   * caller-requested, so dropping one silently is a degradation the caller cannot see —
+   * this marker is the fail-as-data channel for that, in the same spirit as
+   * `fetch_failed`. See ScreenshotOmittedReason for the values.
+   *
+   * Absence means "not requested, or requested and delivered" — and that contract holds
+   * because the marker is set by a single predicate at response assembly (screenshot
+   * requested AND absent), not by each capture site. A per-site marker looked correct
+   * while missing the cache path entirely, which is the HIGHEST-frequency
+   * requested-but-absent case: a caller reading `!screenshot_omitted` as "delivered"
+   * was wrong on every repeat fetch.
+   */
+  screenshot_omitted?: ScreenshotOmittedReason;
   cached: boolean;
   cached_at?: string;
   stale?: boolean;
@@ -238,6 +252,28 @@ export type ChallengeClass = 'image' | 'interactive' | 'behavioral' | 'none';
  */
 export type SolveMethod = 'reuse' | 'auto-pass' | 'cdp-direct' | 'ai-vision' | 'solver' | 'human';
 
+/**
+ * Why a requested screenshot is absent from a response. Set by ONE predicate at the
+ * fetch response-assembly seam, so every requested-but-absent path is covered by
+ * construction rather than only the paths where the symptom was first noticed.
+ *
+ *  - `size_limit`     : captured, but the image exceeded the response byte cap.
+ *  - `capture_failed` : the browser could not produce the image.
+ *  - `cache_hit`      : served from cache, so no capture was attempted. Retry with
+ *                       `force_refresh: true` to get one.
+ *  - `not_captured`   : the tier that served this response cannot rasterise (cache-less
+ *                       HTTP/TLS, the PDF content-type probe, the static stealth paths).
+ *                       `render_js: 'always'` recovers the first two. It does NOT recover
+ *                       stealth: that branch is evaluated before the render_js override
+ *                       and its escalation never threads `screenshot`, so in stealth mode
+ *                       no branch can satisfy the request — re-fetch outside stealth.
+ */
+export type ScreenshotOmittedReason =
+  | 'size_limit'
+  | 'capture_failed'
+  | 'cache_hit'
+  | 'not_captured';
+
 export interface RawFetchResult {
   url: string;
   finalUrl: string;
@@ -255,6 +291,13 @@ export interface RawFetchResult {
   headers: Record<string, string>;
   rawBuffer?: Buffer;
   screenshot?: string;
+  /**
+   * Why a REQUESTED screenshot is absent. `'size_limit'` means the capture
+   * succeeded but exceeded the response byte cap; `'capture_failed'` means the
+   * browser could not produce it. Absent when a screenshot was not requested, or
+   * was requested and delivered.
+   */
+  screenshotOmitted?: ScreenshotOmittedReason;
   actionResults?: ActionResult[];
   jsRequired?: boolean;
   escalated?: boolean;
