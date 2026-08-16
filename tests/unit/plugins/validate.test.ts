@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { resetConfig } from '../../../src/config.js';
 import { getConfig } from '../../../src/config.js';
 import {
@@ -28,8 +30,13 @@ describe('config -- pluginsDir', () => {
     process.env.WIGOLO_PLUGINS_DIR = '~/custom-plugins';
     resetConfig();
     const dir = getConfig().pluginsDir;
-    expect(dir).not.toContain('~');
-    expect(dir).toContain('custom-plugins');
+    // Assert the OUTCOME, not "the string has no tilde in it". The old proxy
+    // read a tilde ANYWHERE in the path as an unexpanded prefix, which held only
+    // because the home directory happened to contain none. Windows hands back an
+    // 8.3 short path (C:\Users\RUNNER~1\AppData\Local\Temp\...), so the proxy
+    // failed on a correctly expanded path. Only a LEADING tilde means unexpanded.
+    expect(dir).toBe(join(homedir(), 'custom-plugins'));
+    expect(dir.startsWith('~')).toBe(false);
   });
 });
 
