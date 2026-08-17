@@ -113,18 +113,24 @@ describe('handleCache --- hybrid mode', () => {
       }),
     );
 
+    // A stored row's raw `url` is what was actually fetched; the lookup key is its NORMALIZED form.
+    // The producer never makes the two equal for a www/trailing-slash URL — normalizeUrl strips both
+    // (src/cache/store.ts:47-72), so 'https://www.a/' is stored under key 'https://a'. Forcing them
+    // equal, as this mock did, left `url: cached.url` and `url: key` indistinguishable, so nothing
+    // pinned which one a cache result reports.
     vi.mocked(getCachedContentByNormalizedUrl).mockImplementation((url: string) =>
-      makeCachedContent({ url, normalizedUrl: url }),
+      makeCachedContent({ url: `${url.replace('https://', 'https://www.')}/`, normalizedUrl: url }),
     );
 
     const out = await handleCache({ query: 'foo', mode: 'hybrid', limit: 4 });
 
     expect(out.results).toBeDefined();
     const urls = out.results!.map(r => r.url);
+    // Ordering is driven by the normalized KEYS; the reported url is the RAW stored one.
     // a + c appear in both rankings -> they fuse to the top two
-    expect(urls.slice(0, 2).sort()).toEqual(['https://a', 'https://c']);
+    expect(urls.slice(0, 2).sort()).toEqual(['https://www.a/', 'https://www.c/']);
     // b (fts-only) + d (vec-only) both appear, fts/vec singletons tie
-    expect(urls.slice(2).sort()).toEqual(['https://b', 'https://d']);
+    expect(urls.slice(2).sort()).toEqual(['https://www.b/', 'https://www.d/']);
   });
 
   it('falls back to FTS5 when vector index is empty', async () => {

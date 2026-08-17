@@ -32,7 +32,7 @@ function liveDrive(html = '<html>bridged</html>'): SessionDrive {
     currentUrl: () => 'https://walled.example/',
     gatedNavigate: async () => ({ ok: true }),
     readCurrentPage: async () => ({ url: 'https://walled.example/', html }),
-    insertTrusted0: async () => ({ artifactId: 1, inserted: true, contentHash: 'h' }) as never,
+    insertTrusted0: async () => ({ id: 1, inserted: true, contentHash: 'h' }),
     isCredentialContext: async () => false,
   };
 }

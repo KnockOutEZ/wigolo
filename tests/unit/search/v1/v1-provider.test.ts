@@ -842,11 +842,16 @@ describe('CoreSearchProvider', () => {
         enginesUsed: ['b'],
         degraded: false,
       });
+      // Verbatim from the real producer (src/search/answer-synthesis.ts:256-262): the machine CODE
+      // in `error`, a full sentence in `error_reason`. The prose used to read 'no content' — a
+      // near-copy of the code — so the two fields were interchangeable and nothing below could see
+      // which one the warning was built from.
       runSynthesisMock.mockResolvedValue({
         ok: false,
         error: 'no_content',
-        error_reason: 'no content',
+        error_reason: 'No sources returned content for this query',
         stage: 'synthesize',
+        hint: 'Broaden the query, increase max_results, or remove restrictive filters',
       });
 
       const provider = new CoreSearchProvider();
@@ -859,7 +864,9 @@ describe('CoreSearchProvider', () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.data.answer).toBeUndefined();
-        expect(result.data.warning).toMatch(/synthesis/i);
+        // The warning is user-facing, so it must carry the PROSE, not the enum. Matching only
+        // /synthesis/i pinned the hardcoded prefix and left the interpolated field free.
+        expect(result.data.warning).toBe('synthesis failed: No sources returned content for this query');
       }
     });
   });

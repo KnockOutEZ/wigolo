@@ -228,16 +228,43 @@ describe('REST default representation — page-derived content arrives FENCED', 
   });
 
   it('REST-9 (must-not-fire): non-200 bodies and unknown tools are shaped by nothing', async () => {
-    // An error envelope is wigolo-authored operator text; fencing it would corrupt the error contract.
+    // An error envelope is wigolo-authored operator text; shaping it would corrupt the error
+    // contract — an SDK would read wigolo's own diagnostic as untrusted page content.
+    //
+    // The mock mirrors the REAL producer orientation (src/tools/fetch.ts:305-308): handleFetch puts
+    // the machine CODE in `error` and prose in `error_reason`. Written the other way round — as it
+    // was — `fetch_failed` never reaches the status table and the case silently exercises the
+    // unknown-code path instead. Pinning 502 rather than `not.toBe(200)` is what makes that
+    // orientation load-bearing: re-invert the literal and this line goes red.
     const { handleFetch } = await import('../../../src/tools/fetch.js');
-    vi.mocked(handleFetch).mockResolvedValueOnce({ ok: false, error: 'boom', error_reason: 'fetch_failed', stage: 'fetch' } as never);
+    // Each `Once` is queued immediately before the dispatch that consumes it, so an assertion
+    // failing mid-test can never leave a queued value behind to corrupt the next test. A
+    // persistent `mockResolvedValue` would leak for a different reason: the suite's
+    // `clearAllMocks` clears CALLS, not implementations.
+    const failure = { ok: false, error: 'fetch_failed', error_reason: 'the request did not complete', stage: 'fetch' };
+
+    vi.mocked(handleFetch).mockResolvedValueOnce(failure as never);
     const r = await dispatchTool('fetch', { url: 'https://x.example/p' }, ctxWith('inline'));
-    expect(r.status).not.toBe(200);
+    expect(r.status).toBe(502);
     expect(closedRegions(JSON.stringify(r.body))).toBe(0);
 
     const unknown = await dispatchTool('bogus', {}, ctxWith('inline'));
     expect(unknown.status).toBe(501);
     expect(closedRegions(JSON.stringify(unknown.body))).toBe(0);
+
+    // The load-bearing half. An error body carries no page-derived field, so the inline fencer has
+    // nothing to bite and `closedRegions` above stays 0 whether or not the non-200 gate exists —
+    // those assertions cannot fail on their own. `withUntrustedEnvelope` DOES attach
+    // unconditionally, so the opt-in mode is the only representation that can observe the gate
+    // being dropped.
+    vi.mocked(handleFetch).mockResolvedValueOnce(failure as never);
+    const envErr = await dispatchTool('fetch', { url: 'https://x.example/p' }, ctxWith('envelope'));
+    expect(envErr.status).toBe(502);
+    expect((envErr.body as { untrusted_content?: unknown }).untrusted_content).toBeUndefined();
+
+    const envUnknown = await dispatchTool('bogus', {}, ctxWith('envelope'));
+    expect(envUnknown.status).toBe(501);
+    expect((envUnknown.body as { untrusted_content?: unknown }).untrusted_content).toBeUndefined();
   });
 });
 

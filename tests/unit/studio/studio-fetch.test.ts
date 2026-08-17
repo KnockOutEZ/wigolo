@@ -20,7 +20,7 @@ function drive(over: Partial<SessionDrive> = {}): SessionDrive {
     currentUrl: () => 'https://example.com/',
     gatedNavigate: vi.fn(async () => ({ ok: true as const })),
     readCurrentPage: vi.fn(async () => ({ url: 'https://example.com/', html: '<html><body>real</body></html>' })),
-    insertTrusted0: vi.fn(async () => ({ artifactId: 1, inserted: true, contentHash: 'h' }) as never),
+    insertTrusted0: vi.fn(async () => ({ id: 1, inserted: true, contentHash: 'h' })),
     isCredentialContext: vi.fn(async () => false),
     ...over,
   };
