@@ -311,18 +311,22 @@ describe('S9B slice 1 — the gate predicate choice is justified by measurement,
   // markers. Only the GENERAL density rule catches this shape — and that rule is STATUS-GATED,
   // which is the point of the test below.
   //
-  // Deliberately sized to carry MORE than 600 visible characters. That matters: `classifyChallenge`
-  // releases any body at or above that floor as content, at BOTH revisions, so its 'none' verdict
-  // here is a genuine pre-existing property of a status-free classifier and not an artifact of the
-  // P3-CLASSIFY change. An earlier version of this test used a SHORT markerless wall, whose 'none'
-  // that change had itself created — the assertion would have failed at base `fb16fb01`, so it
-  // proved the opposite of what it claimed.
+  // It carries essentially NO visible text, which is now load-bearing in a way it was not before.
+  // A previous revision of this fixture was deliberately PADDED past 600 visible chars, to make its
+  // `classifyChallenge` verdict of 'none' hold at base `fb16fb01` as well as at tip. That padding no
+  // longer describes a wall the shipped rules catch: the wall-shape rule now requires the body to be
+  // below the interstitial content floor ABSOLUTELY, because the ratio alone called ordinary
+  // JS-heavy pages (github, walmart, bbc) walls. A padded markerless wall escapes both arms — the
+  // honest ceiling of a shape heuristic, recorded in `isLowContentDensity`'s docstring, not
+  // something to encode here as if it were caught.
+  //
+  // So the fixture is a markerless wall with no readable content, and the pair below is asserted as
+  // a TIP property: at tip, `isChallengeShell(403, …)` fires on it and the status-free
+  // `classifyChallenge` returns 'none'. That is the whole claim the gate choice rests on.
   const MARKERLESS_WALL =
     '<html><head><title>Security Check</title>' +
     '<script>' + 'var _z=[];for(var i=0;i<64;i++){_z.push((i*31)%97);}'.repeat(700) + '</script>' +
-    '</head><body><p>' +
-    'Your request has been held for review by an automated security system. '.repeat(10) +
-    '</p></body></html>';
+    '</head><body><div id="sec-check"></div></body></html>';
 
   it('fires on a real interstitial — the shell is caught', () => {
     expect(isChallengeShell(200, CF_SHELL)).toBe(true);
@@ -349,10 +353,9 @@ describe('S9B slice 1 — the gate predicate choice is justified by measurement,
     // gate it would UNDER-fire and hand a real wall back as content — the failure a gate exists to
     // prevent, and the worse direction of the two.
     //
-    // Both verdicts below hold at base `fb16fb01` as well as at tip, verified by running the two
-    // revisions of the classifier side by side. That is the whole point of choosing a wall with more
-    // than 600 visible characters: the property is inherent to a status-free classifier, not
-    // something this slice introduced.
+    // Asserted as a TIP property (see the fixture comment): the wall-shape rule reads the content
+    // floor absolutely now, so a wall padded past that floor to satisfy an older base-differential
+    // is no longer a wall either predicate catches, and pinning one here would pin a miss.
     expect(isChallengeShell(403, MARKERLESS_WALL)).toBe(true);
     expect(classifyChallenge(MARKERLESS_WALL)).toBe('none');
 

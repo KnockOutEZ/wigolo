@@ -577,11 +577,56 @@ export function isNearEmptyBody(html: string | null | undefined): boolean {
  *  anything (a 30-byte error page's ratio is noise). Real bot walls ship a
  *  large scaffold of scripts/styles/widget markup. */
 const WALL_MIN_HTML_BYTES = 1000;
-/** Visible-text-to-markup ratio below which a document carries essentially no
- *  human-readable content. Measured across real traffic: genuine pages and
- *  substantive error pages sit at ~0.28-0.93; vendor bot walls sit at ~0.006 —
- *  two orders of magnitude apart, so the boundary is not finely tuned. */
+/** Visible-text-to-markup RATIO below which a document is mostly scaffolding.
+ *
+ *  This constant's original docstring claimed genuine pages sit at 0.28-0.93
+ *  and walls at ~0.006. Re-measured 2026-08-17 over 22 real bodies at BOTH the
+ *  HTTP tier (server response) and the browser tier (rendered DOM), that claim
+ *  is false: no live page reached 0.28 at either tier, and 10 of 14 ordinary
+ *  pages sat BELOW 0.05 — react-icons 0.005, plotly 0.008/0.016, vuejs 0.024,
+ *  bbc.com/news 0.029/0.032, walmart 0.007, zillow 0.017, linkedin 0.033-0.037,
+ *  and the checked-in `benchmarks/.../github-repo.html` fixture at 0.022. The
+ *  0.28-0.93 band is reachable only by small hand-written fixtures such as
+ *  tests/fixtures/spa-shells/normal-page.html (0.76).
+ *
+ *  So the ratio does NOT separate walls from pages: the two populations
+ *  overlap. It measures BLOAT (how much script a page inlines), not emptiness.
+ *  It is kept only as the narrower half of a conjunction — the load-bearing
+ *  half is WALL_MAX_VISIBLE_TEXT below. Keeping it also freezes the rule's
+ *  firing set as a strict subset of the old one, so this change can only ever
+ *  un-fire and cannot introduce a new false positive.
+ *
+ *  Do not retune this number to fit a sample; the sample it would be fitted to
+ *  is not separable in this dimension. */
 const WALL_MAX_TEXT_DENSITY = 0.05;
+/** ABSOLUTE visible-text floor: the property that actually characterises a
+ *  wall. A bot wall has nothing to READ, whatever it weighs; a page bloated by
+ *  an inlined framework payload still carries its article.
+ *
+ *  Not a new number and not a sample maximum — it is CHALLENGE_SKELETON_MAX_TEXT,
+ *  the interstitial content floor this module already ships and that
+ *  challenge-classify.ts independently derives ("measured bot-wall pages carry
+ *  35-330 visible chars; an ordinary page carries thousands").
+ *
+ *  Measured against it 2026-08-17 (whole-document visible chars):
+ *    walls  — script-heavy shell 6, cloudflare-interstitial fixture 58,
+ *             indeed.com HTTP 403 "Security Check" 171 (markerless at the HTTP
+ *             tier, so this shape rule — not the marker catalogue — is what
+ *             catches it), same page rendered 523;
+ *    pages  — react-icons 2118, walmart 3162, linkedin 5120, apexcharts 6678,
+ *             zillow 6983, github-repo fixture 9612, bbc 10390, wikipedia 77982.
+ *  The gap between the two populations is ~4x with one exception, stated
+ *  plainly rather than tuned away: squoosh.app carries 526 (HTTP) / 557 (DOM)
+ *  visible chars — a prose-free image-compression app — so a squoosh served at
+ *  403 still reads as a wall. That is a residual false positive, not a
+ *  calibrated boundary.
+ *
+ *  Adversarial worst case, also stated rather than defended: a markerless wall
+ *  that pads itself past this floor escapes the rule entirely. That class is
+ *  already known open (an Anubis/BotStopper 403 escapes both arms today) and is
+ *  the honest ceiling of a shape heuristic — the marker and header arms, which
+ *  outrank length, are what cover a padded interstitial. */
+const WALL_MAX_VISIBLE_TEXT = CHALLENGE_SKELETON_MAX_TEXT;
 
 /**
  * GENERAL, vendor-agnostic bot-wall SHAPE: a large document that is almost
@@ -596,16 +641,25 @@ const WALL_MAX_TEXT_DENSITY = 0.05;
  * Deliberately NOT sufficient on its own — callers pair it with an anti-bot
  * STATUS. A thin 2xx body is the normal shape of an un-hydrated SPA shell, and
  * treating that as a wall would break ordinary pages.
+ *
+ * "No readable text" is read ABSOLUTELY (WALL_MAX_VISIBLE_TEXT), not as a
+ * ratio. The ratio arm alone called ordinary JS-heavy pages walls — measured at
+ * BOTH tiers, so this is not a browser-vs-HTTP calibration gap: the ratio is
+ * simply not a separator (see WALL_MAX_TEXT_DENSITY). Both arms are required,
+ * which keeps the firing set a strict subset of the ratio-only rule.
  */
 export function isLowContentDensity(html: string | null | undefined): boolean {
   if (!html || html.length < WALL_MIN_HTML_BYTES) return false;
-  // Measured over the WHOLE document, deliberately NOT a leading slice. Any
-  // modern page opens with 32KB+ of <head> scripts and stylesheets carrying
-  // almost no text, so judging density on a prefix calls a large REAL page
-  // empty and relabels a genuine 403 as a bot wall. Mirrors the same rule in
+  // Both readings are over the WHOLE document, deliberately NOT a leading
+  // slice. Any modern page opens with 32KB+ of <head> scripts and stylesheets
+  // carrying almost no text, so judging a prefix calls a large REAL page empty
+  // and relabels a genuine 403 as a bot wall. Mirrors the same rule in
   // challenge-classify.ts, which documents the walmart case (405KB page: <600
-  // visible chars in its first 32KB, 2,777 overall).
-  return approxVisibleTextLength(html, { whole: true }) / html.length < WALL_MAX_TEXT_DENSITY;
+  // visible chars in its first 32KB, 2,777 overall — a page, not a wall).
+  const visible = approxVisibleTextLength(html, { whole: true });
+  // A body with something to READ is a page, however much script surrounds it.
+  if (visible >= WALL_MAX_VISIBLE_TEXT) return false;
+  return visible / html.length < WALL_MAX_TEXT_DENSITY;
 }
 
 export function isChallengeSkeleton(html: string | null | undefined): boolean {
@@ -720,9 +774,23 @@ export function isAntiBotSignal(statusCode: number, html: string | null | undefi
  *     alone must never fire (an article quoting 'Just a moment' or 'dd-loader'
  *     is legit content), and a skeleton alone is a plain SPA shell handled by
  *     the SPA-empty-content path, not the challenge path.
+ *
+ * A rate-limit is excluded up front, mirroring `isAntiBotSignal`. 429 is in the
+ * anti-bot STATUS set, so without this a plain 429 on a script-heavy site met
+ * "anti-bot status AND low density" and was reported as `blocked_by_challenge`
+ * — telling the user they are bot-blocked when they are rate-limited, which is
+ * a different remedy (back off, don't rotate identity). The two predicates also
+ * contradicted each other on the same body: `isAntiBotSignal` already returned
+ * false there. No new error reason is needed — a rate-limit surfaces on its own
+ * terms, as the upstream 429 (`http_status` 429, or the `http_429` stage error
+ * for a machine body), which is what the HTTP tier already returns for it.
  */
 export function isChallengeShell(statusCode: number, html: string | null | undefined): boolean {
   if (!html) return false;
+  // Markerless 429 = rate-limit, not a wall. `isRateLimit` still yields to a
+  // challenge BODY, and `isChallengeResponse`'s header/challenge-script arms sit
+  // outside this function, so a 429 that really is a challenge stays one.
+  if (isRateLimit(statusCode, html)) return false;
   if (isAntiBotStatus(statusCode) && hasChallengeBody(html)) return true;
   // GENERAL, vendor-agnostic wall rule (see isLowContentDensity). The marker
   // list above is a catalog of known vendor templates, so each new vendor or

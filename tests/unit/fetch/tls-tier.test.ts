@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { getConfig, resetConfig, validateTlsBrowser } from '../../../src/config.js';
 import {
@@ -6,6 +7,8 @@ import {
   hasChallengeBody,
   isAntiBotSignal,
   isChallengeShell,
+  isLowContentDensity,
+  isRateLimit,
   hasChallengeHeader,
   isChallengeResponse,
   looksJsRequired,
@@ -1146,9 +1149,12 @@ describe('tls-tier: GENERAL vendor-agnostic bot-wall shape (isLowContentDensity)
   // WHY this exists: the CHALLENGE_MARKERS list is a catalog of vendor templates
   // we have already met, so every new vendor/variant leaks its block page as
   // "content" until someone adds another string. Shape generalises — a wall is a
-  // large all-scaffolding document with no human-readable text, whoever served
-  // it. Live-measured density: real/substantive pages 0.28-0.93, vendor walls
-  // ~0.006 (two orders of magnitude apart).
+  // document with no human-readable text, whoever served it.
+  //
+  // "No readable text" is ABSOLUTE, not a ratio. The ratio claim this block used
+  // to repeat (real pages 0.28-0.93, walls ~0.006) was re-measured 2026-08-17 at
+  // both the HTTP and browser tiers and is false — ordinary pages run 0.005-0.14
+  // and overlap the wall band at BOTH tiers, so it is not a tier-calibration gap.
   const wall =
     '<html><head><title>Denied</title>' +
     '<style>' + '.a{color:#fff;padding:1px}'.repeat(60) + '</style>' +
@@ -1161,7 +1167,42 @@ describe('tls-tier: GENERAL vendor-agnostic bot-wall shape (isLowContentDensity)
     expect(wall).not.toContain('cf-browser-verification');
     expect(isLowContentDensity(wall)).toBe(true);
     expect(shell(403, wall)).toBe(true);
-    expect(shell(429, wall)).toBe(true);
+    // 503 stands in for the second anti-bot status. 429 deliberately does NOT
+    // belong here: a markerless 429 is a rate-limit, pinned in the rate-limit
+    // block below.
+    expect(shell(503, wall)).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: script bloat alone cannot turn a page into a wall, at any scale', async () => {
+    const { isLowContentDensity, isChallengeShell: shell } = await import('../../../src/fetch/tls-tier.js');
+    // The CLASS this encodes: a wall has nothing to READ. A page that carries an
+    // article and happens to inline a framework payload is still a page, so the
+    // verdict must be invariant under adding markup. Scaled 10x apart, both
+    // bodies sit far under the old 0.05 ratio (~0.008 and ~0.0008) — the ratio
+    // arm alone called them walls, which is the defect.
+    const article = '<p>' + 'A genuine sentence of article prose that a reader can read. '.repeat(60) + '</p>';
+    const page = (scriptKb: number) =>
+      '<html><head>' + '<script src="/static/chunk.js"></script>'.repeat(scriptKb) +
+      '</head><body>' + article + '</body></html>';
+    for (const bloat of [10_000, 100_000]) {
+      expect(isLowContentDensity(page(bloat))).toBe(false);
+      expect(shell(403, page(bloat))).toBe(false);
+      expect(shell(503, page(bloat))).toBe(false);
+    }
+  });
+
+  it('pins the boundary at the interstitial content floor, in both directions', async () => {
+    const { isLowContentDensity } = await import('../../../src/fetch/tls-tier.js');
+    // The floor is the module's own CHALLENGE_SKELETON_MAX_TEXT (600), not a
+    // number fitted to a sample: challenge-classify.ts derives it independently
+    // ("bot-wall pages carry 35-330 visible chars; an ordinary page carries
+    // thousands"). Stated honestly: a markerless wall that pads itself past the
+    // floor escapes this rule — the marker/header arms are what cover that.
+    const scaffold = '<script src="/a.js"></script>'.repeat(2000);
+    const body = (chars: number) =>
+      `<html><head>${scaffold}</head><body><p>${'x'.repeat(chars)}</p></body></html>`;
+    expect(isLowContentDensity(body(599))).toBe(true);
+    expect(isLowContentDensity(body(600))).toBe(false);
   });
 
   it('MUST-NOT-FIRE: the same wall shape at 2xx stays FALSE (an un-hydrated SPA shell looks identical)', async () => {
@@ -1185,5 +1226,90 @@ describe('tls-tier: GENERAL vendor-agnostic bot-wall shape (isLowContentDensity)
     const { isLowContentDensity, isChallengeShell: shell } = await import('../../../src/fetch/tls-tier.js');
     expect(isLowContentDensity('<html><body>no markers</body></html>')).toBe(false);
     expect(shell(403, '<html><body>no markers</body></html>')).toBe(false);
+  });
+});
+
+/**
+ * The two directions judged on REAL bodies rather than hand-written fixtures.
+ * A synthetic page can be built to whatever ratio the author expects, which is
+ * how the false 0.28-0.93 band survived: the only body that ever reached it was
+ * a fixture. These two are captured pages checked into the repo.
+ */
+describe('tls-tier: bot-wall shape on captured real bodies', () => {
+  const fixture = (name: string) =>
+    readFileSync(
+      new URL(`../../../benchmarks/scrape-quality/fixtures/html/${name}`, import.meta.url),
+      'utf8',
+    );
+
+  it('MUST-FIRE: a real Cloudflare interstitial is still a wall (58 visible chars)', () => {
+    const cf = fixture('cloudflare-interstitial.html');
+    expect(isLowContentDensity(cf)).toBe(true);
+    expect(isChallengeShell(403, cf)).toBe(true);
+    // Markers make it a challenge even at 429, so the rate-limit exclusion below
+    // cannot let a real wall through on that status.
+    expect(isChallengeShell(429, cf)).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: a real GitHub repo page at 403 is not a wall (9.6k visible chars, ratio 0.022)', () => {
+    // Regression pin for the defect: 437KB of page, thousands of readable chars,
+    // no vendor marker anywhere — and the ratio-only rule called it a bot wall,
+    // so a genuine 403 on GitHub would have been reported as a challenge block
+    // and sent the caller to the wrong remedy.
+    const gh = fixture('github-repo.html');
+    expect(hasChallengeBody(gh)).toBe(false);
+    expect(isLowContentDensity(gh)).toBe(false);
+    expect(isChallengeShell(403, gh)).toBe(false);
+    expect(isChallengeShell(503, gh)).toBe(false);
+  });
+});
+
+/**
+ * A rate-limit is not a bot wall. 429 sits in the anti-bot STATUS set, so the
+ * wall-shape arm used to relabel any script-heavy 429 as `blocked_by_challenge`
+ * — the wrong remedy (back off vs. you are blocked), and a self-contradiction:
+ * `isAntiBotSignal` already excluded rate-limits on the very same body.
+ */
+describe('tls-tier: a rate-limit is not a challenge (isChallengeShell vs isRateLimit)', () => {
+  const scaffoldy =
+    '<html><head>' + '<script src="/a.js"></script>'.repeat(200) +
+    '</head><body><div id="app"></div></body></html>';
+
+  it('MUST-FIRE as rate-limit: a markerless 429 is not a challenge shell', () => {
+    expect(isRateLimit(429, scaffoldy)).toBe(true);
+    expect(isChallengeShell(429, scaffoldy)).toBe(false);
+    expect(isChallengeResponse(429, scaffoldy)).toBe(false);
+  });
+
+  it('the two predicates now agree on the same body', () => {
+    // They disagreed before: isAntiBotSignal said "not anti-bot", isChallengeShell
+    // said "challenge". Whichever a caller consulted decided the user's remedy.
+    expect(isAntiBotSignal(429, scaffoldy)).toBe(false);
+    expect(isChallengeShell(429, scaffoldy)).toBe(false);
+  });
+
+  it('MUST-NOT-FIRE: the exclusion is 429-only — 403 and 503 are untouched', () => {
+    expect(isChallengeShell(403, scaffoldy)).toBe(true);
+    expect(isChallengeShell(503, scaffoldy)).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: a 429 that really IS a challenge stays one — body marker', () => {
+    const challenged =
+      '<html><head><title>Just a moment...</title></head><body>' +
+      '<div class="cf-browser-verification"></div></body></html>';
+    expect(isRateLimit(429, challenged)).toBe(false);
+    expect(isChallengeShell(429, challenged)).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: a 429 that really IS a challenge stays one — response header', () => {
+    // The header arm lives outside isChallengeShell, so a markerless 429 that
+    // Cloudflare itself labels a challenge is still reported as one.
+    expect(isChallengeResponse(429, scaffoldy, { 'cf-mitigated': 'challenge' })).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: a 429 serving the challenge script is still a challenge', () => {
+    const modern =
+      '<html><body><script src="/cdn-cgi/challenge-platform/h/b/orchestrate/jsch/v1"></script></body></html>';
+    expect(isChallengeResponse(429, modern)).toBe(true);
   });
 });
