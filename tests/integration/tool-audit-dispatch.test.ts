@@ -97,7 +97,9 @@ describe('tool-audit wrap via real dispatch', () => {
 
   it('an error outcome also produces exactly one row, with outcome_ok=0 and the typed reason (pin #5, error path)', async () => {
     const db = migratedDb();
-    vi.mocked(handleFetch).mockResolvedValueOnce({ ok: false, error: 'boom', error_reason: 'fetch_failed', stage: 'fetch' } as never);
+    // Mirrors the real producer orientation: handleFetch puts the CODE in `error` and prose in
+    // `error_reason`. Inverted, this test passed while the audit was in fact recording prose.
+    vi.mocked(handleFetch).mockResolvedValueOnce({ ok: false, error: 'fetch_failed', error_reason: 'boom', stage: 'fetch' } as never);
     const client = await connect(stubSubsystems(db));
     await client.callTool({ name: 'fetch', arguments: { url: 'https://e.com/p' } });
     await client.close();

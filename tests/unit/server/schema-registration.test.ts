@@ -244,9 +244,10 @@ describe('diff + watch tool registration', () => {
       const res = await client.callTool({ name: 'watch', arguments: {} });
       const block = (res.content as Array<{ type: string; text: string }>)[0];
       const payload = JSON.parse(block.text);
-      expect(payload.error).toBe('invalid_input');
+      // The envelope publishes the machine code as `error_reason` and the prose as `error`.
+      expect(payload.error_reason).toBe('invalid_input');
       expect(payload.stage).toBe('watch');
-      expect(payload.error_reason).toMatch(/action/);
+      expect(payload.error).toMatch(/action/);
     } finally {
       await teardown();
     }

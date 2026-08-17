@@ -104,7 +104,7 @@ describe('D19 session_id-targeting on fetch/extract/crawl (real daemon + dispatc
     try {
       const r = await callTool(host, 'fetch', { url: 'https://example.com', session_id: host.session.id });
       expect(r.isError, 'a non-holder session fetch is a tool error').toBe(true);
-      expect(r.body.error, 'blocked at the control-token gate').toBe('not_holder');
+      expect(r.body.error_reason, 'blocked at the control-token gate').toBe('not_holder');
       expect(state.gotoCalls, 'the session browser was never navigated').toBe(0);
     } finally {
       await host.daemon.stop();
@@ -142,7 +142,7 @@ describe('D19 session_id-targeting on fetch/extract/crawl (real daemon + dispatc
     try {
       const r = await callTool(host, 'fetch', { url: 'https://example.com', session_id: 'does-not-exist' });
       expect(r.isError).toBe(true);
-      expect(r.body.error, 'explicit error, not an ephemeral downgrade').toBe('no_such_session');
+      expect(r.body.error_reason, 'explicit error, not an ephemeral downgrade').toBe('no_such_session');
     } finally {
       await host.daemon.stop();
     }
@@ -158,7 +158,7 @@ describe('D19 session_id-targeting on fetch/extract/crawl (real daemon + dispatc
       host.controller.handleControl({ op: 'grant', to: 'agent' });
       const r = await callTool(host, 'fetch', { url: 'http://169.254.169.254/latest/meta-data/', session_id: host.session.id });
       expect(r.isError).toBe(true);
-      expect(r.body.error, 'cloud-internal is never reachable').toBe('navigation_blocked');
+      expect(r.body.error_reason, 'cloud-internal is never reachable').toBe('navigation_blocked');
       expect(state.gotoCalls, 'the blocked target was never navigated (guard runs before goto)').toBe(0);
     } finally {
       await host.daemon.stop();
@@ -173,7 +173,7 @@ describe('D19 session_id-targeting on fetch/extract/crawl (real daemon + dispatc
     try {
       const r = await callTool(host, 'fetch', { url: 'https://example.com', mode: 'cache' });
       expect(r.isError).toBe(true);
-      expect(r.body.error, 'the ephemeral cache path ran (not the session path)').toBe('cache_miss');
+      expect(r.body.error_reason, 'the ephemeral cache path ran (not the session path)').toBe('cache_miss');
       expect(state.gotoCalls, 'the session browser was never navigated for an ephemeral fetch').toBe(0);
     } finally {
       await host.daemon.stop();

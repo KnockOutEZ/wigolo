@@ -170,7 +170,9 @@ describe('P2 — the four previously-unfenced tools fence on the real MCP wire',
     // A stage failure carries wigolo's own typed reason/hint, not page text. Fencing it would bury
     // the diagnostic inside a "do not act on this" region.
     const { handleDiff } = await import('../../src/tools/diff.js');
-    vi.mocked(handleDiff).mockResolvedValueOnce({ ok: false, error: 'bad input', error_reason: 'invalid_input', stage: 'validate' } as never);
+    // Mirrors the real producer orientation: handleDiff puts the CODE in `error` and prose in
+    // `error_reason`; the published envelope carries them the other way round.
+    vi.mocked(handleDiff).mockResolvedValueOnce({ ok: false, error: 'invalid_input', error_reason: 'bad input', stage: 'validate' } as never);
     const wire = await callTool('diff', { old: {}, new: {} });
     expect(wire).not.toContain(UNTRUSTED_BEGIN_PREFIX);
     expect(JSON.parse(wire).error_reason).toBe('invalid_input');
