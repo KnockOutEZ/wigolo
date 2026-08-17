@@ -108,9 +108,11 @@ export async function handleAgent(
     }
 
     if (result.error) {
+      // Free text, not a code — see the matching note in tools/research.ts. The pipeline's top-level
+      // catch is the only site that sets `result.error`, and it sets `err.message`.
       return {
         ok: false,
-        error: result.error,
+        error: 'agent_failed',
         error_reason: result.error,
         stage: 'agent',
       };

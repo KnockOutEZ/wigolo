@@ -60,9 +60,14 @@ export async function handleResearch(
     await attachEvidence(out, input);
     out.response_time_ms = Date.now() - _start;
     if (out.error) {
+      // `out.error` is free text: the pipeline's own top-level catch is the only site that sets it,
+      // and it sets `err.message`. It is the REASON, never the code — copying it into `error` too
+      // published a sentence as the stable machine identifier that `statusForStageResult`, both SDKs
+      // and docs/rest-api.md all key on. The code is the same one the handler catch emits because the
+      // two describe the same event: a throw inside the pipeline.
       return {
         ok: false,
-        error: out.error,
+        error: 'research_failed',
         error_reason: out.error,
         stage: 'research',
       };

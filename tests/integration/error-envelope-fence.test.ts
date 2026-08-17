@@ -10,7 +10,7 @@ import {
   UNTRUSTED_END_PREFIX,
   UNTRUSTED_NONCE_HEX_LENGTH,
 } from '../../src/security/untrusted.js';
-import type { RawFetchResult, StageError } from '../../src/types.js';
+import type { AgentOutput, RawFetchResult, ResearchOutput, StageError } from '../../src/types.js';
 
 /**
  * THE ERROR ENVELOPE IS FENCED — the closure of the channel that
@@ -307,6 +307,110 @@ describe('research and agent failures route through the same seam', () => {
     expect(env.error_reason).toBe('agent_failed');
     expect(env.error).toContain(CANARY);
     expect(findUnfencedInEnvelope(blocks, CANARY)).toEqual([]);
+  });
+});
+
+/**
+ * THE CODE FIELD IS A CLOSED VOCABULARY — the half of the contract the fence slice could not close.
+ *
+ * `research` and `agent` each have THREE failure exits, and all three return a `StageResult`:
+ * `invalidInput`, the in-band `out.error` / `result.error` branch, and the handler `catch`. The fence
+ * slice closed the PROSE half at the seam, but the middle exit copied the pipeline's in-band `error`
+ * into BOTH producer slots, so an arbitrary string landed in the published `error_reason` — the field
+ * docs/rest-api.md, both SDKs and `statusForStageResult` all treat as a stable machine code.
+ *
+ * The fixtures below drive the REAL handlers and mock only `runResearchPipeline` / `runAgentPipeline`
+ * — and they RETURN rather than throw, because returning is what the real pipeline does. Its own
+ * top-level catch (`src/research/pipeline.ts:409-424`, `src/agent/pipeline.ts:160-174`) is the ONLY
+ * site in either module that sets the output's `error`, and it sets it to `err.message`. So the
+ * in-band branch is reached by a RETURN carrying free text, never by a throw — which is exactly why
+ * SEAM-1/SEAM-2 above, which stub a THROW, land in the handler catch instead and never exercised it.
+ */
+describe('research and agent publish a machine code on every failure exit', () => {
+  const PIPELINE_MESSAGE = `Cannot read properties of undefined (reading '${CANARY}')`;
+
+  /** The real shape `runResearchPipeline`'s top-level catch returns — annotated, so the compiler checks it. */
+  function researchFailure(): ResearchOutput {
+    return {
+      report: '', citations: [], sources: [], sub_queries: [], depth: 'standard',
+      total_time_ms: 1, sampling_supported: false, error: PIPELINE_MESSAGE,
+    };
+  }
+
+  /** The real shape `runAgentPipeline`'s top-level catch returns. */
+  function agentFailure(): AgentOutput {
+    return {
+      result: '', sources: [], pages_fetched: 0, steps: [],
+      total_time_ms: 1, sampling_supported: false, error: PIPELINE_MESSAGE,
+    };
+  }
+
+  it('VOCAB-1: research in-band failure publishes `research_failed`, not the pipeline message', async () => {
+    researchPipeline.mockResolvedValue(researchFailure());
+    const blocks = await callMcp('research', { question: 'anything' });
+    const env = parseMcp(blocks);
+
+    // Outside signal: the in-band branch really was taken, not the catch.
+    expect(researchPipeline).toHaveBeenCalledTimes(1);
+    // The CODE is a stable identifier. Byte-equality — a `toContain` would pass on the raw message.
+    expect(env.error_reason).toBe('research_failed');
+    // …and the free text it displaced is still delivered, in the prose slot, contained.
+    expect(env.error).toContain(CANARY);
+    expect(findUnfencedInEnvelope(blocks, CANARY)).toEqual([]);
+  });
+
+  it('VOCAB-2: agent in-band failure publishes `agent_failed`, not the pipeline message', async () => {
+    agentPipeline.mockResolvedValue(agentFailure());
+    const blocks = await callMcp('agent', { prompt: 'anything' });
+    const env = parseMcp(blocks);
+
+    expect(agentPipeline).toHaveBeenCalledTimes(1);
+    expect(env.error_reason).toBe('agent_failed');
+    expect(env.error).toContain(CANARY);
+    expect(findUnfencedInEnvelope(blocks, CANARY)).toEqual([]);
+  });
+
+  it('VOCAB-3: the REST surface publishes the same code, and the status does NOT shift', async () => {
+    // `statusForStageResult` keys on the PRODUCER's `error`. Before the fix that field held free text
+    // and fell through to 500; after it holds `research_failed`, which is in no status table and also
+    // falls through to 500. Equal by construction is not the same as equal in fact, so it is asserted.
+    researchPipeline.mockResolvedValue(researchFailure());
+    const r = await dispatchTool('research', { question: 'anything' }, restCtx({}));
+    const body = r.body as Envelope;
+
+    expect(r.status).toBe(500);
+    expect(body.error_reason).toBe('research_failed');
+    expect(findUnfencedInEnvelope(asBlocks(body), CANARY)).toEqual([]);
+  });
+
+  it('VOCAB-4: all three failure exits of each tool publish a code from the closed set', async () => {
+    // The exits are enumerated because a fix applied to only the middle one leaves the contract broken
+    // for the other two, and nothing else in the suite reads all three together.
+    const codes: string[] = [];
+
+    // exit 1 — invalidInput, reached by a schema-valid but semantically empty question/prompt.
+    codes.push(parseMcp(await callMcp('research', { question: '   ' })).error_reason);
+    codes.push(parseMcp(await callMcp('agent', { prompt: '   ' })).error_reason);
+
+    // exit 2 — the in-band branch.
+    researchPipeline.mockResolvedValue(researchFailure());
+    codes.push(parseMcp(await callMcp('research', { question: 'q' })).error_reason);
+    agentPipeline.mockResolvedValue(agentFailure());
+    codes.push(parseMcp(await callMcp('agent', { prompt: 'p' })).error_reason);
+
+    // exit 3 — the handler catch.
+    researchPipeline.mockImplementation(() => { throw new Error(PIPELINE_MESSAGE); });
+    codes.push(parseMcp(await callMcp('research', { question: 'q' })).error_reason);
+    agentPipeline.mockImplementation(() => { throw new Error(PIPELINE_MESSAGE); });
+    codes.push(parseMcp(await callMcp('agent', { prompt: 'p' })).error_reason);
+
+    expect(codes).toEqual([
+      'invalid_input', 'invalid_input',
+      'research_failed', 'agent_failed',
+      'research_failed', 'agent_failed',
+    ]);
+    // No exit smuggled the pipeline's prose into the code slot.
+    for (const c of codes) expect(c).not.toContain(CANARY);
   });
 });
 
