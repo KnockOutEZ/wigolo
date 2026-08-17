@@ -75,11 +75,20 @@ export interface DispatchResult {
   headers?: Record<string, string>;
 }
 
-/** Envelope a StageResult failure. */
+/**
+ * Envelope a StageResult failure.
+ *
+ * The producer and the envelope use the two field names for opposite things: a StageResult carries
+ * the stable machine code in `error` and prose in `error_reason`, while the published envelope
+ * carries the code in `error_reason` and the human message in `error` (docs/rest-api.md, "Error
+ * shape"). So the producer's `error` becomes the envelope's reason and vice versa — `errorEnvelope`
+ * takes the CODE first. This used to be passed straight through, which published a sentence as the
+ * machine code and left every client keying on free text.
+ */
 function stageFailure(f: { error: string; error_reason: string; stage: string; hint?: string }): DispatchResult {
   return {
     status: statusForStageResult(f),
-    body: errorEnvelope(f.error_reason, f.error, { stage: f.stage, hint: f.hint }),
+    body: errorEnvelope(f.error, f.error_reason, { stage: f.stage, hint: f.hint }),
   };
 }
 
