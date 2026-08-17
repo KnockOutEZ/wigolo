@@ -9,25 +9,36 @@ import type { Configuration } from 'electron-builder';
  */
 
 /**
- * Native packages that MUST stay whole on the real filesystem instead of being sealed into
+ * Native packages that must stay whole on the real filesystem instead of being sealed into
  * `app.asar`, keyed by the module whose load they rescue.
  *
- * WHY, precisely: electron-builder already unpacks every `.node` file by default, so the BINDING is
- * never the problem. What breaks is everything a binding reaches for that is not itself a `.node` —
- * `onnxruntime_binding.node` -> `@rpath/libonnxruntime.*.dylib`, `sharp-darwin-arm64.node` ->
- * `@rpath/libvips-cpp.*.dylib`, and `vec0.dylib`, which SQLite opens by absolute path through
- * `sqlite3_load_extension` entirely outside Node's module system. Default-unpacking the `.node`
- * alone lands it in `app.asar.unpacked/` while its siblings stay sealed in the archive, one
- * directory level apart — an arrangement `@rpath` cannot resolve and `dlopen` reports as a missing
- * library. Unpacking the whole package keeps the binding and its libraries together.
+ * READ THIS BEFORE TRUSTING THE LIST: these globs are a PIN, not the mechanism. Measured
+ * 2026-08-17 against electron-builder 26.15.3 — all four entries are ALREADY covered by
+ * electron-builder's own `smartUnpack` heuristic, and an artifact built with every glob here deleted
+ * still loads all four modules. `app-builder-lib/out/asar/unpackDetector.js` walks the file set, and
+ * on any file matching `isLibOrExe()` (`.dll .exe .dylib .so .node`, plus an extensionless
+ * `isBinaryFileSync` fallback) it adds that file's **`moduleRootPath`** — the whole package — to
+ * `autoUnpackDirs`. Whole packages, not lone files. That also means the `.dylib`-only packages
+ * (`@img/sharp-libvips-darwin-arm64`, `sqlite-vec-darwin-arm64`) are detected on their own merits;
+ * they do not depend on a sibling `.node` being noticed first.
  *
- * That "the `.node` is already unpacked, its neighbours are not" mechanism is why the failure is
- * invisible to a loose (unpackaged) run and why reasoning about it is not enough.
+ * So what is the pin FOR? It survives the heuristic being disabled (`asar.smartUnpack: false`) or
+ * outgrown — a future native package whose payload the detector does not recognise, or an upstream
+ * change to what counts as a binary. It also states the requirement by name, which a heuristic
+ * cannot: reading this file tells you which four packages must never be archived, and why.
  *
- * This list is NOT a size optimisation and NOT precautionary. `tests/e2e/packaged-native-modules
- * .e2e.test.ts` builds a second artifact with entries dropped (see OMIT_ENV below) and asserts the
- * matching module fails there while the retained ones still pass. Do not prune an entry because it
- * "looks unused" — drop it, rebuild, and watch the probe go red first.
+ * WHAT ACTUALLY BREAKS when a package is archived (measured, see below): the binding gets extracted
+ * to a temp file on `dlopen`, stranded from the sibling libraries it names by `@rpath`, and the load
+ * fails on the LIBRARY, not the binding — `@rpath/libonnxruntime.*.dylib`,
+ * `@rpath/libvips-cpp.*.dylib`. `vec0.dylib` is worse: SQLite opens it by absolute path through
+ * `sqlite3_load_extension`, so the asar layer never sees the call and cannot help at all. None of
+ * this is visible to a loose (unpackaged) run, which is why the claim needed an executed artifact.
+ *
+ * The proof and the falsification both live in `tests/e2e/packaging.spec.ts`: it builds a second
+ * artifact with entries dropped (see OMIT_ENV below) AND `smartUnpack` off — off is what isolates
+ * the pin as the thing under test — then asserts the matching module fails while the retained ones
+ * still pass. Do not prune an entry on the strength of this comment; drop it, rebuild that control,
+ * and watch the probe go red first.
  */
 export const NATIVE_ASAR_UNPACK: Readonly<Record<string, readonly string[]>> = {
   // The embedding backend. `bin/napi-v3/darwin/arm64/onnxruntime_binding.node` needs its sibling

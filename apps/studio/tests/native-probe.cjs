@@ -11,11 +11,13 @@
  * THAT ONE FILE to a temp dir. Every module here reaches a sibling shared library by `@rpath`
  * (`libonnxruntime.*.dylib`, `libvips-cpp.*.dylib`) or by an absolute path handed straight to
  * `sqlite3_load_extension`. The lone copied `.node` is stranded from its siblings and the load fails.
- * `asarUnpack` keeps each package whole on disk, which is the only arrangement `@rpath` can resolve.
+ * Keeping each package WHOLE on disk is the only arrangement `@rpath` can resolve — which
+ * electron-builder's `smartUnpack` heuristic does by default and the asarUnpack list in
+ * `electron-builder.config.ts` pins by name. See that file for which of the two is load-bearing.
  *
  * Usage:  <runtime> native-probe.cjs <anchor-path> [module...]
  *   runtime — the packaged Electron binary under ELECTRON_RUN_AS_NODE, or plain `node` for the
- *             broker's runtime (see the two-runtime split in packaged-native-modules.e2e.test.ts).
+ *             broker's runtime (see the two-runtime split in tests/e2e/packaging.spec.ts).
  *   modules — optional subset; defaults to all four.
  *
  * Prints one line of JSON on stdout and exits non-zero if any probed module failed. Every module is
