@@ -3,7 +3,7 @@ import { createLogger } from '../logger.js';
 import { contentAppearsEmpty } from './content-check.js';
 import { getAuthOptions } from './auth.js';
 import { fetchWithPlaywright, shouldEscalate } from './playwright-tier.js';
-import { describeFetchError } from './error-describe.js';
+import { describeFetchError, isStageError } from './error-describe.js';
 import {
   tlsFetch,
   isAntiBotSignal,
@@ -425,11 +425,6 @@ export async function defaultPdfProbe(url: string, signal?: AbortSignal): Promis
   } finally {
     combined.cleanup();
   }
-}
-
-/** A fetch outcome is a StageError (not content) when it carries a string `error`. */
-function isStageError(x: RawFetchResult | StageError): x is StageError {
-  return 'error' in x && typeof (x as { error?: unknown }).error === 'string';
 }
 
 function isKnownSpaDomain(host: string): boolean {
@@ -1087,9 +1082,15 @@ export class SmartRouter {
     }
   }
 
-  async fetch(url: string, options: RouterFetchOptions & { mode: 'stealth' }): Promise<RawFetchResult | StageError>;
-  async fetch(url: string, options?: RouterFetchOptions): Promise<RawFetchResult>;
   /**
+   * A fetch can end in a StageError in EVERY mode, not only `stealth`: the terminal
+   * `guardChallengeShell` and the `navigation_blocked` return below never consult `mode`.
+   * There is deliberately no overload narrowing the non-stealth return to `RawFetchResult` —
+   * one used to exist, and because it promised callers a clean result the implementation does
+   * not deliver, the compiler stopped requiring anyone to check. Four call sites then read
+   * `.html` off a StageError (which has none), and a blocked page became markdown of length 0
+   * with no error anywhere. Keep the union: it is what makes an unhandled block a compile error.
+   *
    * D-S10-4 — the ONE seam where a fetch's terminal rung is recorded.
    *
    * The ladder below has roughly twenty terminal returns, and instrumenting them individually

@@ -37,7 +37,7 @@ import { execSync } from 'node:child_process';
 // (plus the vi.fn<EmbedFn>() construction sites, without which the annotation still
 // does not discriminate) cleared all 21. The fix and this lowering ship in one PR, so a
 // branch that merges studio-handoff cannot pick up the lower baseline without the fix.
-const BASELINE = 378;
+const BASELINE = 363;
 
 let count = 0;
 try {

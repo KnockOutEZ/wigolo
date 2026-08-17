@@ -1,4 +1,6 @@
-import type { SearchResultItem } from '../types.js';
+import type { SearchResultItem, StageError } from '../types.js';
+import { isStageError } from '../fetch/error-describe.js';
+import { isShellCapture } from '../extraction/completeness.js';
 import { type SmartRouter, isAntiBotTlsFirstUrl } from '../fetch/router.js';
 import { getConfig } from '../config.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
@@ -153,12 +155,18 @@ async function doFetchAndExtract(
   router: SmartRouter,
   ctx: FetchContentContext,
   signal: AbortSignal,
-): Promise<string> {
+): Promise<string | StageError> {
   const raw = await router.fetch(url, {
     renderJs: renderModeFor(ctx),
     signal,
     ...(ctx.forceRefresh && { force_refresh: true }),
   });
+  // A refused fetch (bot-protection block, blocked navigation) is NOT content. It has no
+  // `.html` at all, and the extractor does not throw on `undefined` — it returns markdown of
+  // length 0 with an empty title. Passing a refusal through here made a blocked source
+  // indistinguishable from a page that genuinely had nothing to say. Hand the refusal back so
+  // the slot is flagged, and so the backup wave gets a chance to fill it from a deeper result.
+  if (isStageError(raw)) return raw;
   const extractor = await getExtractProvider();
   const extraction = await extractor.extract(raw.html, raw.finalUrl, {
     maxChars: ctx.contentMaxChars,
@@ -173,7 +181,14 @@ async function doFetchAndExtract(
 
   try {
     const embeddingService = getEmbeddingService();
-    if (embeddingService.isAvailable()) {
+    // A `shell` capture is a page that did not render its content — most often a bot wall the
+    // challenge classifier never flagged, which therefore arrives as an ordinary result rather
+    // than a StageError. Embedding it puts the wall's own text in the vector index, where it
+    // is then returned by find_similar as if it were the page. Vectors also outlive the cache
+    // row they came from, so a shell embedded once keeps answering long after its content is
+    // gone. Scoped to `shell` on purpose: `partial` is a real page that lost some of itself
+    // and is still worth retrieving on.
+    if (embeddingService.isAvailable() && !isShellCapture(raw, extraction)) {
       embeddingService.embedAsync(raw.finalUrl, extraction.markdown);
     }
   } catch (err) {
@@ -207,8 +222,17 @@ async function fetchOne(
   work.catch(() => {});
 
   try {
-    const content = await Promise.race([work, abortRejection(signal)]);
-    return { content };
+    const outcome = await Promise.race([work, abortRejection(signal)]);
+    // Surface the stage-error CODE as the fetch_failed flag, alongside `timeout` /
+    // `stage_timeout` / `total_timeout`. It is deliberately the code and not the prose:
+    // `fetch_failed` is a flag callers branch on, and `blocked_by_challenge` has to stay
+    // distinguishable from a timeout — a block is not retryable and, unlike a timeout, must
+    // NOT be papered over with the snippet fallback (see TIMEOUT_FLAGS below).
+    if (typeof outcome !== 'string') {
+      log.debug('content fetch refused', { url, error: outcome.error, reason: outcome.error_reason });
+      return { error: outcome.error };
+    }
+    return { content: outcome };
   } catch (err) {
     const msg = reasonToFlag(err);
     log.debug('content fetch failed', { url, error: msg });

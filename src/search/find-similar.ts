@@ -9,6 +9,7 @@ import type {
 import type { SmartRouter } from '../fetch/router.js';
 import type { BackendStatus } from '../server/backend-status.js';
 import { extractKeyTerms, buildFTS5Query } from '../embedding/key-terms.js';
+import { isStageError } from '../fetch/error-describe.js';
 import { reciprocalRankFusion, sortByRRFScore } from './rrf.js';
 import { searchCache, getCachedContent, normalizeUrl, getCacheStats } from '../cache/store.js';
 import { filterByDomains } from './filters.js';
@@ -539,6 +540,23 @@ async function prepareSignalFromUrl(
   try {
     log.info('fetching URL for signal extraction', { url });
     const raw = await router.fetch(url, { renderJs: 'auto' });
+    // A refused seed leaves us with no page signals at all. Degrade to URL-derived terms —
+    // the same floor the catch below uses — but log the REFUSAL distinctly: "blocked" and
+    // "the request failed" produce identical thin results and only the log can tell an
+    // operator which one they are looking at.
+    if (isStageError(raw)) {
+      log.warn('URL refused during signal extraction', {
+        url,
+        error: raw.error,
+        reason: raw.error_reason,
+      });
+      return {
+        terms: extractKeyTerms('', url),
+        title: url,
+        inputUrl: url,
+        inputNormalizedUrl: normalizedInputUrl,
+      };
+    }
     const extractor = await getExtractProvider();
     const extraction = await extractor.extract(raw.html, raw.finalUrl, {
       contentType: raw.contentType,

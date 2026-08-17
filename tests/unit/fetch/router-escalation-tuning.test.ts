@@ -39,6 +39,7 @@ vi.mock('../../../src/fetch/browser-acquire.js', async (importOriginal) => {
 
 import { SmartRouter, type HttpClient, type BrowserPoolInterface } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
+import { expectContent } from '../../helpers/fetch-result.js';
 
 const SUBSTANTIVE_ARTICLE = `
 <html><head><title>Real Article</title></head>
@@ -119,7 +120,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
         httpFetcher: async () => makeHttpResult({ html, url: 'https://substantive-noscript.example/post' }),
         browserFetcher: async () => { throw new Error('Playwright must NOT be invoked: substantive <noscript> is not a JS-required marker'); },
       });
-      const result = await router.fetch('https://substantive-noscript.example/post');
+      const result = expectContent(await router.fetch('https://substantive-noscript.example/post'));
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
       expect(result.method).toBe('http');
@@ -131,7 +132,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
       const { router, httpClient, browserPool } = buildRouter({
         httpFetcher: async () => makeHttpResult({ html, url: 'https://true-spa.example/' }),
       });
-      const result = await router.fetch('https://true-spa.example/');
+      const result = expectContent(await router.fetch('https://true-spa.example/'));
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
       expect(result.method).toBe('browser');
@@ -150,7 +151,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
         httpFetcher: async () => makeHttpResult({ html, url: 'https://docs-ssr.example/intro' }),
         browserFetcher: async () => { throw new Error('Playwright must NOT be invoked: defensive <noscript> alongside substantive SSR body'); },
       });
-      const result = await router.fetch('https://docs-ssr.example/intro');
+      const result = expectContent(await router.fetch('https://docs-ssr.example/intro'));
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
       expect(result.method).toBe('http');
@@ -173,7 +174,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
         httpFetcher: async () => makeHttpResult({ html, url: 'https://shell-with-content.example/post' }),
         browserFetcher: async () => { throw new Error('Playwright must NOT be invoked when SSR populates the shell with substantive content'); },
       });
-      const result = await router.fetch('https://shell-with-content.example/post');
+      const result = expectContent(await router.fetch('https://shell-with-content.example/post'));
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
       expect(result.method).toBe('http');
@@ -185,7 +186,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
       const { router, httpClient, browserPool } = buildRouter({
         httpFetcher: async () => makeHttpResult({ html, url: 'https://empty.example/' }),
       });
-      const result = await router.fetch('https://empty.example/');
+      const result = expectContent(await router.fetch('https://empty.example/'));
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
       expect(result.method).toBe('browser');
@@ -202,7 +203,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
           makeHttpResult({ statusCode: 429, html: '<html><body>Too Many Requests</body></html>', headers: { 'retry-after': '120' }, url: 'https://rate-limited.example/api' }),
         browserFetcher: async () => { throw new Error('Playwright must NOT be invoked on a 429 + Retry-After rate-limit'); },
       });
-      const result = await router.fetch('https://rate-limited.example/api');
+      const result = expectContent(await router.fetch('https://rate-limited.example/api'));
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
       expect('statusCode' in result ? result.statusCode : 0).toBe(429);
@@ -214,7 +215,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
         httpFetcher: async () =>
           makeHttpResult({ statusCode: 403, html, url: 'https://cf-protected.example/' }),
       });
-      const result = await router.fetch('https://cf-protected.example/');
+      const result = expectContent(await router.fetch('https://cf-protected.example/'));
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
       expect(result.method).toBe('browser');
     });
@@ -225,7 +226,7 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
         httpFetcher: async () =>
           makeHttpResult({ statusCode: 503, html, url: 'https://cf-503.example/' }),
       });
-      const result = await router.fetch('https://cf-503.example/');
+      const result = expectContent(await router.fetch('https://cf-503.example/'));
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
       expect(result.method).toBe('browser');
     });
@@ -255,12 +256,12 @@ describe('SmartRouter escalation tuning — HTTP-first on slow-path set', () => 
 
       // First call: pre-marked SPA → Playwright. Suppose the user passes
       // render_js: 'never' to force HTTP. HTTP returns substantive content.
-      const r1 = await router.fetch('https://react.dev/learn', { renderJs: 'never' });
+      const r1 = expectContent(await router.fetch('https://react.dev/learn', { renderJs: 'never' }));
       expect(r1.method).toBe('http');
 
       // Tuning effect: domain stats should now reflect that HTTP worked, so
       // the next default-mode fetch on the same domain skips Playwright.
-      const r2 = await router.fetch('https://react.dev/reference', { renderJs: 'auto' });
+      const r2 = expectContent(await router.fetch('https://react.dev/reference', { renderJs: 'auto' }));
       expect(r2.method).toBe('http');
       expect(browserCalls.length).toBe(0);
       expect(httpHits).toBe(2);

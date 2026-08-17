@@ -3,6 +3,7 @@ import { join, dirname } from 'node:path';
 import { getConfig } from '../config.js';
 import { resolveBrowserTier, type BrowserTierId } from './browser-tier.js';
 import type { RawFetchResult, StageError } from '../types.js';
+import { isStageError } from './error-describe.js';
 
 /**
  * D-S10-4 — LOCAL tier-occupancy counters: which rung of the fetch ladder each request
@@ -162,10 +163,6 @@ export function markSubstrateServed<T extends object>(result: T): T {
 
 function wasSubstrateServed(result: unknown): boolean {
   return typeof result === 'object' && result !== null && substrateServed.has(result);
-}
-
-function isStageError(result: RawFetchResult | StageError): result is StageError {
-  return typeof (result as StageError).error === 'string';
 }
 
 /**

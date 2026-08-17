@@ -22,6 +22,7 @@ vi.mock('../../../src/fetch/browser-acquire.js', async (importOriginal) => {
 import { SmartRouter, type HttpClient, type BrowserPoolInterface, type TlsFetcher, type TlsRoutingPersistence } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 import type { TlsFetchResult } from '../../../src/fetch/tls-tier.js';
+import { expectContent } from '../../helpers/fetch-result.js';
 
 const FULL_HTML = `
 <html><head><title>Test</title></head>
@@ -116,7 +117,7 @@ describe('SmartRouter — TLS tier', () => {
       // assert tls-tier-off keeps the legacy 403 passthrough behaviour.
       vi.mocked(httpClient.fetch).mockResolvedValue(makeHttpResult({ statusCode: 403 }));
 
-      const result = await router.fetch('https://blocked.com/page');
+      const result = expectContent(await router.fetch('https://blocked.com/page'));
 
       expect(tlsFetcher).not.toHaveBeenCalled();
       expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
@@ -129,7 +130,7 @@ describe('SmartRouter — TLS tier', () => {
       resetConfig();
 
       const { router, httpClient, tlsFetcher, browserPool } = build();
-      const result = await router.fetch('https://example.com/page');
+      const result = expectContent(await router.fetch('https://example.com/page'));
 
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(tlsFetcher).not.toHaveBeenCalled();
@@ -144,7 +145,7 @@ describe('SmartRouter — TLS tier', () => {
       resetConfig();
 
       const { router, httpClient, tlsFetcher, browserPool } = build();
-      const result = await router.fetch('https://example.com/page');
+      const result = expectContent(await router.fetch('https://example.com/page'));
 
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(tlsFetcher).not.toHaveBeenCalled();
@@ -160,7 +161,7 @@ describe('SmartRouter — TLS tier', () => {
       vi.mocked(httpClient.fetch).mockResolvedValue(makeHttpResult({ statusCode: 403, html: 'forbidden' }));
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult({ url: 'https://blocked.com/page' }));
 
-      const result = await router.fetch('https://blocked.com/page');
+      const result = expectContent(await router.fetch('https://blocked.com/page'));
 
       expect(tlsFetcher).toHaveBeenCalledOnce();
       expect(result.method).toBe('tls-impersonation');
@@ -178,7 +179,7 @@ describe('SmartRouter — TLS tier', () => {
       );
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult({ url: 'https://cf.com/page' }));
 
-      const result = await router.fetch('https://cf.com/page');
+      const result = expectContent(await router.fetch('https://cf.com/page'));
       expect(tlsFetcher).toHaveBeenCalledOnce();
       expect(result.method).toBe('tls-impersonation');
     });
@@ -197,7 +198,7 @@ describe('SmartRouter — TLS tier', () => {
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult({ statusCode: 403, html: 'still blocked' }));
       vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(makeBrowserResult('https://hard.com/page'));
 
-      const result = await router.fetch('https://hard.com/page');
+      const result = expectContent(await router.fetch('https://hard.com/page'));
 
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(tlsFetcher).toHaveBeenCalledOnce();
@@ -217,7 +218,7 @@ describe('SmartRouter — TLS tier', () => {
       vi.mocked(tlsFetcher).mockRejectedValue(new TlsTierUnavailableError(new Error('not installed')));
       vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(makeBrowserResult('https://hard.com/page'));
 
-      const result = await router.fetch('https://hard.com/page');
+      const result = expectContent(await router.fetch('https://hard.com/page'));
       expect(result.method).toBe('browser');
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     });
@@ -231,7 +232,7 @@ describe('SmartRouter — TLS tier', () => {
       vi.mocked(tlsFetcher).mockRejectedValue(new Error('network unreachable'));
       vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(makeBrowserResult('https://x.com/page'));
 
-      const result = await router.fetch('https://x.com/page');
+      const result = expectContent(await router.fetch('https://x.com/page'));
       expect(result.method).toBe('browser');
     });
 
@@ -242,7 +243,7 @@ describe('SmartRouter — TLS tier', () => {
       const { router, httpClient, tlsFetcher } = build({ preferTls: true });
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult({ url: 'https://promoted.com/page' }));
 
-      const result = await router.fetch('https://promoted.com/page');
+      const result = expectContent(await router.fetch('https://promoted.com/page'));
 
       // TLS first, HTTP never called.
       expect(tlsFetcher).toHaveBeenCalledOnce();
@@ -259,7 +260,7 @@ describe('SmartRouter — TLS tier', () => {
       const { router, httpClient, tlsFetcher, recordedDomains } = build();
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult({ url: 'https://cold.com/page' }));
 
-      const result = await router.fetch('https://cold.com/page');
+      const result = expectContent(await router.fetch('https://cold.com/page'));
       expect(tlsFetcher).toHaveBeenCalledOnce();
       expect(httpClient.fetch).not.toHaveBeenCalled();
       expect(result.method).toBe('tls-impersonation');
@@ -274,7 +275,7 @@ describe('SmartRouter — TLS tier', () => {
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult({ statusCode: 403, html: 'cf-browser-verification' }));
       vi.mocked(httpClient.fetch).mockResolvedValue(makeHttpResult());
 
-      const result = await router.fetch('https://cold.com/page');
+      const result = expectContent(await router.fetch('https://cold.com/page'));
       expect(tlsFetcher).toHaveBeenCalledOnce();
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(result.method).toBe('http');
@@ -289,7 +290,7 @@ describe('SmartRouter — TLS tier', () => {
       const { router, httpClient, tlsFetcher, browserPool } = build();
       vi.mocked(httpClient.fetch).mockResolvedValue(makeHttpResult({ statusCode: 403 }));
 
-      const result = await router.fetch('https://x.com/page', { renderJs: 'never' });
+      const result = expectContent(await router.fetch('https://x.com/page', { renderJs: 'never' }));
       expect(tlsFetcher).not.toHaveBeenCalled();
       expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
       expect(result.method).toBe('http');

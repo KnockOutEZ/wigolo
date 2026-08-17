@@ -1,6 +1,8 @@
 import { createLogger } from '../logger.js';
 import { deduplicateResults, type MergedSearchResult } from '../search/dedup.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
+import { isStageError } from '../fetch/error-describe.js';
+import { isShellCapture } from '../extraction/completeness.js';
 import { cacheContent } from '../cache/store.js';
 import { rerankResults } from '../search/rerank.js';
 import { rankAgentSearchResults } from './rank.js';
@@ -171,7 +173,7 @@ export async function executeAgentPlan(
 
     steps.push({
       action: 'fetch',
-      detail: `Fetched ${sources.filter((s) => s.fetched).length}/${urlsToFetch.length} pages`,
+      detail: describeFetchStep(sources, urlsToFetch.length),
       time_ms: Date.now() - fetchStart,
     });
 
@@ -271,6 +273,26 @@ async function executeSearches(
   }));
 }
 
+/**
+ * The `fetch` step is USER-VISIBLE — it is the only place the agent says what happened to the
+ * pages it tried, and until refusals stopped taking the success path it could say "Fetched 5/5
+ * pages" about five pages that were all declined. The count is now honest on its own; naming
+ * the distinct reasons on top of it is what lets a reader tell a wall from an outage, which is
+ * the difference between "try a different source" and "try again later".
+ */
+function describeFetchStep(sources: AgentSource[], attempted: number): string {
+  const fetched = sources.filter((s) => s.fetched).length;
+  const base = `Fetched ${fetched}/${attempted} pages`;
+  const reasons = [
+    ...new Set(
+      sources
+        .filter((s) => !s.fetched && typeof s.fetch_error === 'string' && s.fetch_error.length > 0)
+        .map((s) => s.fetch_error as string),
+    ),
+  ];
+  return reasons.length > 0 ? `${base} (not retrieved: ${reasons.join(', ')})` : base;
+}
+
 async function fetchPages(
   urls: string[],
   router: SmartRouter,
@@ -298,6 +320,26 @@ async function fetchPages(
         ),
       ]);
 
+      // A REFUSED fetch has no `.html`, and the extractor returns empty markdown instead of
+      // throwing on `undefined` — so a declined page used to enter the source list looking
+      // fetched with nothing in it, and the step log just showed a smaller numerator with no
+      // stated cause. Record the refusal so both the source AND the user-visible step can say
+      // the page was declined rather than empty.
+      if (isStageError(raw)) {
+        log.debug('agent source refused', { url, error: raw.error, reason: raw.error_reason });
+        return {
+          url,
+          title: '',
+          markdown_content: '',
+          // `fetched: false` is the load-bearing part — the step log and the all-failed
+          // warning in pipeline.ts both count it, and a refusal taking the success path made
+          // a fully blocked run report "Fetched 5/5 pages". The bare CODE goes in
+          // `fetch_error` so a caller can branch on it; the prose is in the log above.
+          fetched: false,
+          fetch_error: raw.error,
+        };
+      }
+
       const extractor = await getExtractProvider();
       const extraction = await extractor.extract(raw.html, raw.finalUrl, {
         maxChars: 30000,
@@ -308,6 +350,27 @@ async function fetchPages(
         cacheContent(raw, extraction);
       } catch (err) {
         log.debug('failed to cache agent source', { url, error: String(err) });
+      }
+
+      // Shell-completeness exclusion, mirroring research/pipeline.ts. A bot wall the challenge
+      // classifier never flagged arrives as an ordinary successful fetch — no stage error to
+      // catch — labelled `shell` because the page never rendered its content. Research already
+      // refuses to cite those; the agent had no equivalent, so a wall's own text flowed into
+      // synthesis as if it were the page. Marked `fetched: false` so it reaches the step log,
+      // the all-failed warning and synthesis through the one path that already reports
+      // non-retrieval, rather than a second mechanism beside it.
+      //
+      // Only an EXPLICIT `shell` level excludes: an unlabeled source (HTTP/TLS tier, which
+      // never produces a render verdict at all) must not be swept up by a missing label.
+      if (isShellCapture(raw, extraction)) {
+        log.info('agent source excluded: capture never rendered content', { url });
+        return {
+          url,
+          title: '',
+          markdown_content: '',
+          fetched: false,
+          fetch_error: 'shell-content',
+        };
       }
 
       return {

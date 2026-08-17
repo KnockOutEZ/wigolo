@@ -6,6 +6,7 @@ import type {
 import type { SmartRouter } from '../fetch/router.js';
 import type { NavSource } from '../security/ssrf.js';
 import { Crawler } from '../crawl/crawler.js';
+import { isStageError, describeStageError } from '../fetch/error-describe.js';
 import { deduplicatePages } from '../crawl/dedup.js';
 import { mapUrls } from '../crawl/mapper.js';
 import { handleFetch } from './fetch.js';
@@ -86,8 +87,16 @@ export async function handleCrawl(
       return r.data;
     };
 
-    const rawFetchFn = async (url: string) =>
-      router.fetch(url, { renderJs: 'never', source });
+    // rawFetchFn serves the AUXILIARY probes only (robots.txt, sitemap discovery) — page
+    // content comes through fetchFn above, which already maps stage errors. Every probe call
+    // site is inside a try/catch that falls back (BFS instead of sitemap, no crawl-delay), so
+    // converting a refusal to a throw routes it into the fallback that already exists rather
+    // than letting an object with no `.html` reach the sitemap/robots parsers as `undefined`.
+    const rawFetchFn = async (url: string) => {
+      const raw = await router.fetch(url, { renderJs: 'never', source });
+      if (isStageError(raw)) throw new Error(describeStageError(raw));
+      return raw;
+    };
 
     const crawler = new Crawler(fetchFn, rawFetchFn);
     const result = await crawler.crawl(input);
@@ -230,6 +239,10 @@ async function handleMapStrategy(
 ): Promise<MapOutput & { crawled: number }> {
   const httpFetchFn = async (url: string) => {
     const raw = await router.fetch(url, { renderJs: 'never', source });
+    // Throw rather than hand `{ html: undefined }` to the sitemap parser: map's outer catch
+    // turns this into a reported `error` on the MapOutput, so a refused seed says it was
+    // refused instead of reporting an empty but successful-looking URL list.
+    if (isStageError(raw)) throw new Error(describeStageError(raw));
     return { html: raw.html, finalUrl: raw.finalUrl, statusCode: raw.statusCode };
   };
 

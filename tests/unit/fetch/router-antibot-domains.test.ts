@@ -28,6 +28,7 @@ import {
 } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 import type { TlsFetchResult } from '../../../src/fetch/tls-tier.js';
+import { expectContent } from '../../helpers/fetch-result.js';
 
 const FULL_HTML = `
 <html><head><title>Test</title></head>
@@ -121,7 +122,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       const { router, httpClient, tlsFetcher, browserPool, recordedDomains } = build();
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult('https://stackoverflow.com/questions/123'));
 
-      const result = await router.fetch('https://stackoverflow.com/questions/123');
+      const result = expectContent(await router.fetch('https://stackoverflow.com/questions/123'));
 
       expect(tlsFetcher).toHaveBeenCalledOnce();
       // HTTP must NOT be called — the doomed connection-timeout call is skipped.
@@ -138,7 +139,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       const { router, httpClient, tlsFetcher } = build();
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult('https://serverfault.com/questions/9'));
 
-      const result = await router.fetch('https://serverfault.com/questions/9');
+      const result = expectContent(await router.fetch('https://serverfault.com/questions/9'));
 
       expect(tlsFetcher).toHaveBeenCalledOnce();
       expect(httpClient.fetch).not.toHaveBeenCalled();
@@ -150,7 +151,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       resetConfig();
 
       const { router, httpClient, tlsFetcher } = build();
-      const result = await router.fetch('https://example.com/page');
+      const result = expectContent(await router.fetch('https://example.com/page'));
 
       expect(tlsFetcher).not.toHaveBeenCalled();
       expect(httpClient.fetch).toHaveBeenCalledOnce();
@@ -167,7 +168,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       resetConfig();
 
       const { router, httpClient, tlsFetcher } = build();
-      const result = await router.fetch('https://evil-stackoverflow.com/questions/1');
+      const result = expectContent(await router.fetch('https://evil-stackoverflow.com/questions/1'));
 
       expect(tlsFetcher).not.toHaveBeenCalled();
       expect(httpClient.fetch).toHaveBeenCalledOnce();
@@ -179,7 +180,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       resetConfig();
 
       const { router, httpClient, tlsFetcher } = build();
-      const result = await router.fetch('https://stackoverflow.com.attacker.test/questions/1');
+      const result = expectContent(await router.fetch('https://stackoverflow.com.attacker.test/questions/1'));
 
       expect(tlsFetcher).not.toHaveBeenCalled();
       expect(httpClient.fetch).toHaveBeenCalledOnce();
@@ -197,7 +198,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       vi.mocked(tlsFetcher).mockRejectedValue(new TlsTierUnavailableError(new Error('not installed')));
       vi.mocked(httpClient.fetch).mockResolvedValue(makeHttpResult('https://stackoverflow.com/questions/1'));
 
-      const result = await router.fetch('https://stackoverflow.com/questions/1');
+      const result = expectContent(await router.fetch('https://stackoverflow.com/questions/1'));
 
       expect(tlsFetcher).toHaveBeenCalledOnce();
       // TLS unavailable → HTTP fallback so the fetch still has a chance.
@@ -219,7 +220,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       vi.mocked(httpClient.fetch).mockRejectedValue(timeoutErr);
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult('https://flaky.example/page'));
 
-      const result = await router.fetch('https://flaky.example/page');
+      const result = expectContent(await router.fetch('https://flaky.example/page'));
 
       // HTTP (timeout) → TLS retry (success), never Playwright.
       expect(httpClient.fetch).toHaveBeenCalledOnce();
@@ -238,7 +239,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       vi.mocked(httpClient.fetch).mockRejectedValue(sockErr);
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult('https://flaky.example/page'));
 
-      const result = await router.fetch('https://flaky.example/page');
+      const result = expectContent(await router.fetch('https://flaky.example/page'));
       expect(tlsFetcher).toHaveBeenCalledOnce();
       expect(result.method).toBe('tls-impersonation');
     });
@@ -263,7 +264,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       // tier=on already tries TLS-first; assert it does so for a generic domain.
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult('https://generic.example/page'));
 
-      const result = await router.fetch('https://generic.example/page');
+      const result = expectContent(await router.fetch('https://generic.example/page'));
       expect(tlsFetcher).toHaveBeenCalledOnce();
       expect(result.method).toBe('tls-impersonation');
     });
@@ -278,7 +279,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       const { router, httpClient, tlsFetcher } = build();
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult('https://mycustom.example/x'));
 
-      const result = await router.fetch('https://mycustom.example/x');
+      const result = expectContent(await router.fetch('https://mycustom.example/x'));
       expect(tlsFetcher).toHaveBeenCalledOnce();
       expect(httpClient.fetch).not.toHaveBeenCalled();
       expect(result.method).toBe('tls-impersonation');
@@ -292,7 +293,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       const { router, httpClient, tlsFetcher } = build();
       vi.mocked(tlsFetcher).mockResolvedValue(makeTlsResult('https://docs.custom.test/x'));
 
-      const result = await router.fetch('https://docs.custom.test/x');
+      const result = expectContent(await router.fetch('https://docs.custom.test/x'));
       expect(tlsFetcher).toHaveBeenCalledOnce();
       expect(httpClient.fetch).not.toHaveBeenCalled();
       expect(result.method).toBe('tls-impersonation');
@@ -324,7 +325,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
       resetConfig();
 
       const { router, httpClient, tlsFetcher } = build();
-      const result = await router.fetch('https://stackoverflow.com/questions/2', { renderJs: 'never' });
+      const result = expectContent(await router.fetch('https://stackoverflow.com/questions/2', { renderJs: 'never' }));
 
       expect(tlsFetcher).not.toHaveBeenCalled();
       expect(httpClient.fetch).toHaveBeenCalledOnce();
@@ -357,7 +358,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
         }),
       );
 
-      const result = await router.fetch('https://www.upwork.com/freelancers/foo');
+      const result = expectContent(await router.fetch('https://www.upwork.com/freelancers/foo'));
 
       // upwork.com is NOT in the allowlist and TLS is off → the TLS tier must
       // never run; the escalation must go straight to the browser.
@@ -385,7 +386,7 @@ describe('SmartRouter — anti-bot domain TLS-first routing', () => {
         makeHttpResult('https://example.com/private', { statusCode: 403, html: admin403 }),
       );
 
-      const result = await router.fetch('https://example.com/private');
+      const result = expectContent(await router.fetch('https://example.com/private'));
 
       // A substantive 403 error page passes through as content — no browser.
       expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
