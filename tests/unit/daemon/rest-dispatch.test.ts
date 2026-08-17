@@ -67,8 +67,14 @@ describe('dispatchTool — fetch', () => {
   });
 
   it('failure maps via errors.ts status table (fetch upstream → 502)', async () => {
+    // handleFetch puts the reason CODE in `error` and prose in `error_reason`.
+    // The mock previously had these the other way round, which is how a dead
+    // status mapping stayed green here.
     vi.mocked(handleFetch).mockResolvedValue({
-      ok: false, error: 'blocked', error_reason: 'blocked_by_challenge', stage: 'fetch',
+      ok: false,
+      error: 'blocked_by_challenge',
+      error_reason: "the site's bot protection served a challenge page",
+      stage: 'fetch',
     } as never);
     const r = await dispatchTool('fetch', { url: 'https://x.com' }, fakeCtx());
     expect(r.status).toBe(502);

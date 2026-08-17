@@ -38,8 +38,6 @@ export class SqliteVecStore implements VectorStore {
   private upsertDeleteDocStmt: Database.Statement;
   private upsertInsertDocStmt: Database.Statement;
   private upsertUpsertMetadataStmt: Database.Statement;
-  private deleteIdMapStmt: Database.Statement;
-  private deleteDocStmt: Database.Statement;
   private sizeStmt: Database.Statement;
 
   constructor(private db: Database.Database) {
@@ -65,8 +63,6 @@ export class SqliteVecStore implements VectorStore {
         created_at = excluded.created_at,
         extra_json = excluded.extra_json
     `);
-    this.deleteIdMapStmt = db.prepare('DELETE FROM vec_id_map WHERE external_id = ?');
-    this.deleteDocStmt = db.prepare('DELETE FROM vec_documents WHERE rowid = ?');
     this.sizeStmt = db.prepare('SELECT COUNT(*) AS c FROM vec_id_map');
   }
 
@@ -209,32 +205,78 @@ export class SqliteVecStore implements VectorStore {
   }
 
   async delete(ids: string[]): Promise<void> {
-    if (ids.length === 0) return;
-
-    const tx = this.db.transaction((items: string[]) => {
-      for (const id of items) {
-        const existing = this.upsertSelectStmt.get(id) as { rowid: number } | undefined;
-        if (!existing) continue;
-        this.deleteDocStmt.run(BigInt(existing.rowid));
-        this.deleteIdMapStmt.run(id);
-        // vec_metadata cascades via ON DELETE CASCADE on the id_map FK.
-      }
-    });
-
-    try {
-      tx(ids);
-    } catch (err) {
-      log.error('SqliteVecStore.delete failed', {
-        count: ids.length,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw err;
-    }
+    deleteVectorsByExternalId(this.db, ids);
   }
 
   async size(): Promise<number> {
     const row = this.sizeStmt.get() as { c: number };
     return row.c;
+  }
+}
+
+/**
+ * Evict vector rows by external id against a caller-supplied handle.
+ *
+ * Synchronous and free-standing so a caller that already holds the shared
+ * cache database — the cache-clear path — can evict without awaiting the
+ * async provider factory. That factory dynamic-imports `cache/db.js`, so
+ * reaching it from a synchronous seam is not just awkward, it risks binding a
+ * different module instance than the one holding the rows being deleted.
+ *
+ * Returns the number of ids that actually had a vector row. Returns 0 when the
+ * vec tables are absent: migration 001 is skipped on platforms without the
+ * native vector extension, and a cache clear must still succeed there.
+ */
+export function deleteVectorsByExternalId(
+  db: Database.Database,
+  ids: string[],
+): number {
+  if (ids.length === 0) return 0;
+  if (!hasVectorTables(db)) return 0;
+
+  const selectStmt = db.prepare('SELECT rowid FROM vec_id_map WHERE external_id = ?');
+  const deleteDocStmt = db.prepare('DELETE FROM vec_documents WHERE rowid = ?');
+  const deleteMetaStmt = db.prepare('DELETE FROM vec_metadata WHERE rowid = ?');
+  const deleteIdMapStmt = db.prepare('DELETE FROM vec_id_map WHERE external_id = ?');
+
+  let removed = 0;
+  const tx = db.transaction((items: string[]) => {
+    for (const id of items) {
+      const existing = selectStmt.get(id) as { rowid: number } | undefined;
+      if (!existing) continue;
+      deleteDocStmt.run(BigInt(existing.rowid));
+      // vec_metadata has ON DELETE CASCADE on the id_map FK, but that only
+      // fires when `foreign_keys` is ON. Deleting it explicitly means the row
+      // cannot outlive its vector because of a pragma set somewhere else.
+      deleteMetaStmt.run(existing.rowid);
+      deleteIdMapStmt.run(id);
+      removed++;
+    }
+  });
+
+  try {
+    tx(ids);
+  } catch (err) {
+    log.error('vector eviction failed', {
+      count: ids.length,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+
+  return removed;
+}
+
+function hasVectorTables(db: Database.Database): boolean {
+  try {
+    const row = db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('vec_documents','vec_id_map')",
+      )
+      .get() as { n: number };
+    return row.n === 2;
+  } catch {
+    return false;
   }
 }
 

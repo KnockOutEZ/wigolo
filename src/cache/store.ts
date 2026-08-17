@@ -3,6 +3,7 @@ import { getDatabase } from './db.js';
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { mergeCompleteness } from '../extraction/completeness.js';
+import { deleteVectorsByExternalId } from './sqlite-vec-store.js';
 import type { RawFetchResult, ExtractionResult, CachedContent, SearchResultItem, CacheStats, ContentCompleteness } from '../types.js';
 
 const log = createLogger('cache');
@@ -618,9 +619,38 @@ export function clearCacheEntries(options: {
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const sql = `DELETE FROM url_cache ${whereClause}`;
-  const result = db.prepare(sql).run(...params);
-  return result.changes;
+
+  // The embedding derived from a row is more durable than the row itself:
+  // url_cache has expires_at and a shell-stale refetch, the vector index has
+  // neither. Clearing a row without evicting its vector leaves a searchable
+  // vector pointing at content that no longer exists, and nothing else in the
+  // system ever removes it. Read the ids BEFORE the delete — afterwards there
+  // is nothing left to match the filter against.
+  //
+  // Both key columns are collected because the vector id is not written from
+  // one place: embedAndStore keys on the normalized url, the crawl index and
+  // background queue key on the raw one. Evicting only the normalized form
+  // would leave the other writer's vectors behind.
+  const doomed = db
+    .prepare(`SELECT url, normalized_url FROM url_cache ${whereClause}`)
+    .all(...params) as Array<{ url: string; normalized_url: string }>;
+
+  const clear = db.transaction(() => {
+    const result = db.prepare(`DELETE FROM url_cache ${whereClause}`).run(...params);
+    const ids = new Set<string>();
+    for (const row of doomed) {
+      ids.add(row.normalized_url);
+      ids.add(row.url);
+    }
+    const evicted = deleteVectorsByExternalId(db, [...ids]);
+    return { changes: result.changes, evicted };
+  });
+
+  const { changes, evicted } = clear();
+  if (evicted > 0) {
+    log.debug('cleared cache entries and evicted their vectors', { changes, evicted });
+  }
+  return changes;
 }
 
 // Counts cached URLs for an exact host (apex scoping — `blog.example.com`

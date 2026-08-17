@@ -126,7 +126,9 @@ const SEMANTIC_VALIDATION_REASONS = new Set([
 ]);
 
 export interface StageFailure {
+  /** The stable reason CODE. This is the field the tables above are keyed on. */
   error: string;
+  /** Human prose describing the failure. Never matched against — it is free text. */
   error_reason: string;
   stage: string;
 }
@@ -135,11 +137,19 @@ export interface StageFailure {
  * Map a StageResult failure to an HTTP status. Conservative + table-driven:
  * 503 for known unavailability, 502 for fetch-stage upstream failures, 400 for
  * the explicit semantic-validation allowlist, else 500. Never substring-scans.
+ *
+ * Matches on `f.error`, NOT `f.error_reason`. A StageResult and the REST
+ * envelope use these two field names for opposite things: a StageResult carries
+ * the code in `error` and prose in `error_reason`, while the envelope carries
+ * the code in `error_reason` and prose in `error` (see `errorEnvelope`, and the
+ * deliberate swap in `stageFailure` in dispatch.ts). Reading `error_reason` here
+ * meant matching codes against a sentence, so every failure fell through to 500
+ * and the 502/503 rows were unreachable.
  */
 export function statusForStageResult(f: StageFailure): number {
-  if (UNAVAILABILITY_REASONS.has(f.error_reason)) return 503;
-  if (f.stage === 'fetch' && FETCH_UPSTREAM_REASONS.has(f.error_reason)) return 502;
-  if (SEMANTIC_VALIDATION_REASONS.has(f.error_reason)) return 400;
+  if (UNAVAILABILITY_REASONS.has(f.error)) return 503;
+  if (f.stage === 'fetch' && FETCH_UPSTREAM_REASONS.has(f.error)) return 502;
+  if (SEMANTIC_VALIDATION_REASONS.has(f.error)) return 400;
   return 500;
 }
 
