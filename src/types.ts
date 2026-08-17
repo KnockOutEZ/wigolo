@@ -921,6 +921,13 @@ export interface ResearchOutput {
   sampling_supported: boolean;
   brief?: ResearchBrief;
   error?: string;
+  /**
+   * A run that SUCCEEDED but on degraded terms. Present when the pipeline had to substitute
+   * something for what it would normally have returned — today, when the content quality gate
+   * rejected every fetched source and the rejection was waived so the answer would not be empty.
+   * Never a substitute for `error`: a warning means the payload is real but weaker than it looks.
+   */
+  warning?: string;
   evidence?: EvidenceItem[];
   /** Candidates dropped by source validation (homepage/SERP shape or empty
    * content shell), surfaced so drops are auditable, not silently swallowed. */

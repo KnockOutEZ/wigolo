@@ -283,10 +283,18 @@ export async function runResearchPipeline(
       }
       gated.push(s);
     }
-    // Fail open — never let the content gate empty the result; mediocre
-    // sources beat no sources (rerank already ordered them).
-    const webPool: ResearchSource[] = gated.length > 0 ? gated : fetched;
-    if (gated.length > 0) rejected_sources.push(...contentRejects);
+    // Fail open — never let the content gate empty the result; mediocre sources beat no sources
+    // (rerank already ordered them). When the waiver fires those sources ARE the answer, so they
+    // must not ALSO be listed as rejected: `sources` and `rejected_sources` would contradict each
+    // other and a reader could not tell which one is true. Say what was done instead — the same
+    // discipline as the search content-fetch declining the snippet fallback: never silently
+    // substitute, name the substitution.
+    const gateWaived = gated.length === 0 && contentRejects.length > 0;
+    const webPool: ResearchSource[] = gateWaived ? fetched : gated;
+    if (!gateWaived) rejected_sources.push(...contentRejects);
+    const gateWaiverWarning = gateWaived
+      ? `The content quality gate rejected all ${contentRejects.length} fetched source${contentRejects.length === 1 ? '' : 's'} as too thin or off-topic. The rejection was waived and those sources are reported below, because honouring it would have returned nothing. Treat this answer as low-confidence and verify it against the cited pages.`
+      : undefined;
     // C3: merge the LOCAL artifact sources (collected ONCE above) with web — sort the union by
     // relevance and cap together (rank-fair; no reserved quota; an artifact is dedup-inert vs web
     // by its provider URI → C1b). web-empty + artifact-present lands here with webPool=[] →
@@ -395,6 +403,7 @@ export async function runResearchPipeline(
       total_time_ms: Date.now() - start,
       sampling_supported: !!server && checkSamplingSupport(server),
       ...(brief ? { brief } : {}),
+      ...(gateWaiverWarning ? { warning: gateWaiverWarning } : {}),
       ...(rejected_sources.length > 0 ? { rejected_sources } : {}),
     };
   } catch (err) {
