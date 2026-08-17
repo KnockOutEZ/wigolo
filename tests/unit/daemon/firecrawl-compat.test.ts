@@ -150,10 +150,14 @@ describe('firecrawl-compat — scrape', () => {
   });
 
   it('fetch StageResult failure → {success:false} with mapped status', async () => {
+    // The code goes in `error`, prose in `error_reason` — the orientation
+    // handleFetch actually emits. Putting the code in both fields (as this
+    // mock once did) makes the assertion pass whichever field the mapping
+    // reads, which is how a dead status map stayed green at this call site.
     mockHandleFetch.mockResolvedValue({
       ok: false,
       error: 'fetch_failed',
-      error_reason: 'fetch_failed',
+      error_reason: 'the request to the upstream site did not complete',
       stage: 'fetch',
       hint: 'try later',
     });
