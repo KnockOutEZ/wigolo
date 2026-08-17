@@ -31,6 +31,7 @@ import { SmartRouter } from '../../../src/fetch/router.js';
 import type { HttpClient, BrowserPoolInterface } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 import { RedditRateLimitError } from '../../../src/fetch/reddit-api.js';
+import { expectContent } from '../../helpers/fetch-result.js';
 
 function httpResult(url = 'https://www.reddit.com/r/rust'): Awaited<ReturnType<HttpClient['fetch']>> {
   return {
@@ -93,7 +94,7 @@ describe('SmartRouter — reddit-api routing', () => {
     process.env.WIGOLO_REDDIT_CLIENT_SECRET = 'secret';
     resetConfig();
 
-    const result = await router.fetch('https://www.reddit.com/r/rust');
+    const result = expectContent(await router.fetch('https://www.reddit.com/r/rust'));
     expect(fetchViaRedditApiMock).toHaveBeenCalledOnce();
     expect(result.method).toBe('reddit-api');
     // The honest block path (http/browser) was never touched.
@@ -103,7 +104,7 @@ describe('SmartRouter — reddit-api routing', () => {
 
   it('does NOT route to the API when credentials are absent (falls through to normal ladder)', async () => {
     // No reddit env vars set.
-    const result = await router.fetch('https://www.reddit.com/r/rust');
+    const result = expectContent(await router.fetch('https://www.reddit.com/r/rust'));
     expect(fetchViaRedditApiMock).not.toHaveBeenCalled();
     expect(httpClient.fetch).toHaveBeenCalled();
     expect(result.method).not.toBe('reddit-api');
@@ -125,7 +126,7 @@ describe('SmartRouter — reddit-api routing', () => {
     };
     router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
 
-    const result = await router.fetch('https://example.com');
+    const result = expectContent(await router.fetch('https://example.com'));
     expect(fetchViaRedditApiMock).not.toHaveBeenCalled();
     expect(result.method).not.toBe('reddit-api');
   });
@@ -136,7 +137,7 @@ describe('SmartRouter — reddit-api routing', () => {
     resetConfig();
     fetchViaRedditApiMock.mockResolvedValue(null);
 
-    const result = await router.fetch('https://www.reddit.com/r/rust');
+    const result = expectContent(await router.fetch('https://www.reddit.com/r/rust'));
     expect(fetchViaRedditApiMock).toHaveBeenCalledOnce();
     expect(httpClient.fetch).toHaveBeenCalled();
     expect(result.method).not.toBe('reddit-api');
@@ -148,7 +149,7 @@ describe('SmartRouter — reddit-api routing', () => {
     resetConfig();
     fetchViaRedditApiMock.mockRejectedValue(new Error('token failed'));
 
-    const result = await router.fetch('https://www.reddit.com/r/rust');
+    const result = expectContent(await router.fetch('https://www.reddit.com/r/rust'));
     expect(httpClient.fetch).toHaveBeenCalled();
     expect(result.method).not.toBe('reddit-api');
   });
@@ -162,7 +163,7 @@ describe('SmartRouter — reddit-api routing', () => {
     // continues down the normal ladder rather than surfacing the rate limit.
     fetchViaRedditApiMock.mockRejectedValue(new RedditRateLimitError(120));
 
-    const result = await router.fetch('https://www.reddit.com/r/rust');
+    const result = expectContent(await router.fetch('https://www.reddit.com/r/rust'));
     expect(fetchViaRedditApiMock).toHaveBeenCalledOnce();
     expect(httpClient.fetch).toHaveBeenCalled();
     expect(result.method).not.toBe('reddit-api');

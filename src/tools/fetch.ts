@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import type { FetchInput, FetchOutput, CachedContent, StageResult } from '../types.js';
-import { describeFetchError } from '../fetch/error-describe.js';
+import type { FetchInput, FetchOutput, CachedContent, StageResult, StageError } from '../types.js';
+import { describeFetchError, isStageError } from '../fetch/error-describe.js';
 import type { SmartRouter } from '../fetch/router.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { getCachedContent, cacheContent, isCacheUsable } from '../cache/store.js';
@@ -290,10 +290,12 @@ export async function handleFetch(
       source, // P6-a: agent (default) blocks private; human (REPL) may reach localhost
     });
 
-    // stealth mode can return a StageError (e.g., playwright_not_installed,
-    // playwright_fetch_failed). Surface it directly.
-    if ('error' in raw && typeof (raw as { error?: unknown }).error === 'string') {
-      const stageErr = raw as unknown as { error: string; error_reason?: string; stage?: string; hint?: string; http_status?: number; statusCode?: number; challenge_class?: FetchOutput['challenge_class']; solve_method?: FetchOutput['solve_method'] };
+    // ANY mode can return a StageError — blocked_by_challenge, navigation_blocked,
+    // playwright_not_installed, playwright_fetch_failed. This used to read "stealth mode can
+    // return a StageError", which was the router's own (false) non-stealth overload speaking:
+    // the terminal challenge guard never consults `mode`. Surface it directly.
+    if (isStageError(raw)) {
+      const stageErr = raw as StageError & { statusCode?: number; challenge_class?: FetchOutput['challenge_class']; solve_method?: FetchOutput['solve_method'] };
       // A StageError carries its upstream status as `http_status` (see StageError
       // in types.ts); some raw fetch shapes use `statusCode`. Read whichever is a
       // number so a blocked_by_challenge status reaches the crawl cooldown.

@@ -17,6 +17,8 @@ import type {
 import type { RawFetchResult } from '../../../src/types.js';
 import { BrowserAcquirer } from '../../../src/fetch/browser-acquire.js';
 import { resetBrowserTierAnnouncements, BROWSER_TIER_ENV } from '../../../src/fetch/browser-tier.js';
+import { expectContent } from '../../helpers/fetch-result.js';
+import { isStageError } from '../../../src/fetch/error-describe.js';
 
 /**
  * D-S10-5's companion rung, at the ONE seam where it is reachable.
@@ -123,7 +125,7 @@ describe('SmartRouter — the D-S10-5 companion rung', () => {
   it('serves content from the installed browser when the bundled engine cannot be supplied', async () => {
     // THE case the slice exists for. Before the wiring this returned browser_engine_unavailable
     // on a host with a perfectly good browser sitting on disk.
-    const result = await router().fetch('https://spa.example/', { renderJs: 'always' });
+    const result = expectContent(await router().fetch('https://spa.example/', { renderJs: 'always' }));
 
     expect(companion).toHaveBeenCalledTimes(1);
     expect(result.html).toContain('from the installed browser');
@@ -149,7 +151,7 @@ describe('SmartRouter — the D-S10-5 companion rung', () => {
 
     expect(companion).not.toHaveBeenCalled();
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledTimes(1);
-    expect(result.html).not.toContain('from the installed browser');
+    expect(expectContent(result).html).not.toContain('from the installed browser');
   });
 
   it('does NOT fire on a desktop host, even when that host cannot supply the engine', async () => {
@@ -161,7 +163,9 @@ describe('SmartRouter — the D-S10-5 companion rung', () => {
     const result = await router().fetch('https://spa.example/', { renderJs: 'always' });
 
     expect(companion).not.toHaveBeenCalled();
-    expect(result.html ?? '').not.toContain('from the installed browser');
+    // A desktop host with no engine may end as a stage error; either way the assertion that
+    // matters is that the companion's bytes were not served.
+    expect(isStageError(result) ? '' : (result.html ?? '')).not.toContain('from the installed browser');
   });
 
   it('does NOT fire for a fetch asking for actions, which the rung cannot honour', async () => {
@@ -194,8 +198,10 @@ describe('SmartRouter — the D-S10-5 companion rung', () => {
     });
 
     expect(declining).toHaveBeenCalledTimes(1);
-    expect((result as unknown as { error?: string }).error ?? result.warning ?? '').toBeTruthy();
-    expect(result.html ?? '').not.toContain('from the installed browser');
+    // A declining rung may end as a stage error OR as content carrying a warning — both are
+    // acceptable degradations; what must never happen is the companion's bytes being served.
+    expect(isStageError(result) ? result.error : (result.warning ?? '')).toBeTruthy();
+    expect(isStageError(result) ? '' : (result.html ?? '')).not.toContain('from the installed browser');
   });
 
   it('never lets a throwing rung take down the fetch', async () => {
@@ -210,7 +216,7 @@ describe('SmartRouter — the D-S10-5 companion rung', () => {
     });
 
     expect(result).toBeDefined();
-    expect(result.html ?? '').not.toContain('from the installed browser');
+    expect(isStageError(result) ? '' : (result.html ?? '')).not.toContain('from the installed browser');
   });
 
   it('guards a still-challenge page from the companion rung instead of leaking the shell', async () => {

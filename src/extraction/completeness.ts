@@ -240,6 +240,23 @@ const SEVERITY: Record<ContentCompleteness['level'], number> = {
  * browser, whose verdict comes from watching the page rather than inspecting
  * bytes afterwards.
  */
+/**
+ * Did this capture come back as a SHELL — i.e. the page's content never rendered?
+ *
+ * Takes the two producers separately and reconciles them with the same pessimistic rule as
+ * `mergeCompleteness`, so a caller cannot accidentally consult only the render verdict (which
+ * reports `full` as its ordinary outcome) and miss structural proof that extraction lost the
+ * body. `partial` is deliberately NOT a shell: it is a real page that lost part of itself.
+ */
+export function isShellCapture(
+  render: { contentCompleteness?: ContentCompleteness },
+  extraction: { contentCompleteness?: ContentCompleteness },
+): boolean {
+  return (
+    mergeCompleteness(render.contentCompleteness, extraction.contentCompleteness)?.level === 'shell'
+  );
+}
+
 export function mergeCompleteness(
   render: ContentCompleteness | undefined,
   extraction: ContentCompleteness | undefined,

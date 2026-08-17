@@ -11,6 +11,9 @@ const MAX_KEY_FINDING_LEN = 280;
 const MAX_TOPICS = 8;
 const MAX_CROSS_REFS = 10;
 const MIN_PHRASE_LEN = 4;
+// Bound the un-retrieved-source gap list so a run where every source was declined does not
+// crowd the sub-query and entity gaps out of the rendered brief.
+const MAX_UNRETRIEVED_GAPS = 5;
 
 // Build a host-LLM-friendly structured brief when internal sampling is
 // unavailable. The host model (Claude Code / Cursor / etc.) consumes this
@@ -62,6 +65,11 @@ export async function buildResearchBrief(
   }));
 
   const gaps: Array<string | { entity: string; reason: string }> = [
+    // Un-retrieved sources lead: they are the only gaps we know the exact cause of. The
+    // sub-query heuristic below can at best infer "limited coverage" from missing words,
+    // which reads as "the web is thin on this" — the opposite of the truth when a specific
+    // source was reachable and declined to serve us. Naming it lets a reader retry that URL.
+    ...detectUnretrievedGaps(sources),
     ...detectGaps(subQueries, fetched),
     ...detectEntityGaps(question, subQueries),
   ];
@@ -218,6 +226,22 @@ function deduplicateOverlapping(refs: CrossReference[]): CrossReference[] {
   }
 
   return kept;
+}
+
+/**
+ * Coverage gaps we know the cause of: a source that was found and then NOT retrieved — the
+ * origin refused it, or the fetch failed. This is a different claim from "the web is thin
+ * here", and only these gaps name a URL a reader can go and check themselves.
+ *
+ * Keys on `fetched === false` plus a stated reason, so it covers refusals (which the router
+ * RETURNS) and transient failures (which it throws) alike — the two used to be
+ * indistinguishable downstream because a refusal arrived marked `fetched: true`.
+ */
+function detectUnretrievedGaps(sources: ResearchSource[]): string[] {
+  return sources
+    .filter((s) => !s.fetched && typeof s.fetch_error === 'string' && s.fetch_error.length > 0)
+    .slice(0, MAX_UNRETRIEVED_GAPS)
+    .map((s) => `Source not retrieved (${s.fetch_error}): ${s.url}`);
 }
 
 function detectGaps(subQueries: string[], sources: ResearchSource[]): string[] {

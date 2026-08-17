@@ -1,3 +1,5 @@
+import type { StageError } from '../types.js';
+
 // Translate a thrown fetch error into a stable, specific reason string.
 // Node's undici surfaces "fetch failed" on the outer TypeError while the
 // actual code (ENOTFOUND/ECONNREFUSED/etc.) hides on err.cause. Drill the
@@ -59,4 +61,27 @@ export function describeFetchError(err: unknown): DescribedError {
     return { reason: msg || 'fetch failed' };
   }
   return { reason: String(err) };
+}
+
+/**
+ * A router fetch outcome is a StageError (not content) when it carries a string `error`.
+ *
+ * THE canonical predicate for the `RawFetchResult | StageError` union that `SmartRouter.fetch`
+ * returns in every mode. Callers must use this rather than an inline `'error' in raw && …`
+ * conjunction: a compound condition narrows the POSITIVE branch only, so `if (A && B) return;`
+ * leaves the union un-narrowed afterwards and the caller silently reads `.html` off a shape
+ * that has none. A single-expression type guard narrows both branches.
+ */
+export function isStageError<T extends object>(x: T | StageError): x is StageError {
+  return 'error' in x && typeof (x as { error?: unknown }).error === 'string';
+}
+
+/**
+ * One-line reason for a stage error, for the `fetch_error` / `error` field a caller surfaces.
+ * Keeps the machine-readable code AND the prose: a caller that only logged `error_reason` lost
+ * the ability to tell a bot-protection block apart from a DNS failure.
+ */
+export function describeStageError(err: StageError): string {
+  const reason = err.error_reason && err.error_reason !== err.error ? `: ${err.error_reason}` : '';
+  return `${err.error}${reason}`;
 }

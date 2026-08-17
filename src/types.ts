@@ -887,6 +887,13 @@ export interface ResearchSource {
   markdown_content: string;
   relevance_score: number;
   fetched: boolean;
+  /**
+   * Why this source has no retrieved content. A REFUSED fetch (the router returning a stage
+   * error rather than throwing) records the bare stage CODE — `blocked_by_challenge`,
+   * `navigation_blocked` — so a caller can branch on it; a thrown failure records the message.
+   * Refusals used to take the SUCCESS path and arrive with `fetched: true` and empty content,
+   * which asserted the page had been retrieved.
+   */
   fetch_error?: string;
   /** Whether the source bytes are safe AS INSTRUCTIONS (C4). Every research
    * source is web/page-derived → false. Required so a caller never sees an
@@ -995,6 +1002,12 @@ export interface AgentSource {
   title: string;
   markdown_content: string;
   fetched: boolean;
+  /**
+   * Why this source has no retrieved content. A REFUSED fetch records the bare stage CODE
+   * (`blocked_by_challenge`, `navigation_blocked`); a thrown failure records the message.
+   * `fetched` is the field the step log and the all-failed warning both count, so a refusal
+   * MUST set it false — it previously did not, and a fully blocked run reported success.
+   */
   fetch_error?: string;
   /**
    * Raw HTML of the fetched page. Carried so schema extraction can consume

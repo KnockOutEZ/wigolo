@@ -8,6 +8,7 @@ import {
 } from '../cache/store.js';
 import { detectChange } from '../cache/change-detector.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
+import { isStageError, describeStageError } from '../fetch/error-describe.js';
 import { reciprocalRankFusion, sortByRRFScore, buildRankMap } from '../search/rrf.js';
 import {
   applyCacheOutputBudget,
@@ -77,6 +78,24 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
             continue;
           }
           const raw = await router.fetch(entry.url, { renderJs: 'auto' });
+          // A refused re-fetch means we do not KNOW whether the page changed. Reporting
+          // `changed: false` on its own would assert the opposite — that we checked and it
+          // was identical — so the refusal goes in the report's `error` field, which is
+          // exactly the "could not check" channel the no-router branch above already uses.
+          if (isStageError(raw)) {
+            log.warn('change check refused for URL', {
+              url: entry.url,
+              error: raw.error,
+              reason: raw.error_reason,
+            });
+            changes.push({
+              url: entry.url,
+              changed: false,
+              current_hash: entry.contentHash,
+              error: describeStageError(raw),
+            });
+            continue;
+          }
           const extractor = await getExtractProvider();
           const extraction = await extractor.extract(raw.html, raw.finalUrl, {
             contentType: raw.contentType,

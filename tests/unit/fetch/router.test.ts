@@ -28,6 +28,7 @@ import type { RawFetchResult } from '../../../src/types.js';
 import { getAuthOptions } from '../../../src/fetch/auth.js';
 import { ChallengeBlockedError } from '../../../src/fetch/browser-pool.js';
 import { BrowserAcquirer, BROWSER_INSTALLING_NOTE } from '../../../src/fetch/browser-acquire.js';
+import { expectContent, expectStageError } from '../../helpers/fetch-result.js';
 
 const FULL_HTML = `
 <html><head><title>Test</title></head>
@@ -107,7 +108,7 @@ describe('SmartRouter', () => {
   });
 
   it('routes to HTTP by default for unknown domains', async () => {
-    const result = await router.fetch('https://example.com/page');
+    const result = expectContent(await router.fetch('https://example.com/page'));
 
     expect(httpClient.fetch).toHaveBeenCalledOnce();
     expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
@@ -115,7 +116,7 @@ describe('SmartRouter', () => {
   });
 
   it('routes to Playwright when render_js is "always"', async () => {
-    const result = await router.fetch('https://example.com/page', { renderJs: 'always' });
+    const result = expectContent(await router.fetch('https://example.com/page', { renderJs: 'always' }));
 
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
@@ -123,7 +124,7 @@ describe('SmartRouter', () => {
   });
 
   it('routes to HTTP only when render_js is "never"', async () => {
-    const result = await router.fetch('https://example.com/page', { renderJs: 'never' });
+    const result = expectContent(await router.fetch('https://example.com/page', { renderJs: 'never' }));
 
     expect(httpClient.fetch).toHaveBeenCalledOnce();
     expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
@@ -148,7 +149,7 @@ describe('SmartRouter', () => {
     }
 
     // threshold-th call should trigger fallback to Playwright
-    const result = await router.fetch('https://failing.com/final');
+    const result = expectContent(await router.fetch('https://failing.com/final'));
     expect(result.method).toBe('browser');
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
   });
@@ -156,7 +157,7 @@ describe('SmartRouter', () => {
   it('routes to Playwright for SPA shell content — content-based detection', async () => {
     vi.mocked(httpClient.fetch).mockResolvedValue(makeHttpResult(SPA_SHELL_HTML));
 
-    const result = await router.fetch('https://spa.com/page');
+    const result = expectContent(await router.fetch('https://spa.com/page'));
 
     expect(httpClient.fetch).toHaveBeenCalledOnce();
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
@@ -173,7 +174,7 @@ describe('SmartRouter', () => {
     vi.mocked(httpClient.fetch).mockResolvedValue(makeHttpResult(FULL_HTML));
     vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(makeBrowserResult('https://spa-domain.com/page2'));
 
-    const result = await router.fetch('https://spa-domain.com/page2');
+    const result = expectContent(await router.fetch('https://spa-domain.com/page2'));
 
     // Second call should go straight to Playwright without HTTP
     expect(result.method).toBe('browser');
@@ -183,7 +184,7 @@ describe('SmartRouter', () => {
 
   it('render_js "auto" triggers full detection logic', async () => {
     // With good content, HTTP should be used
-    const result = await router.fetch('https://example.com/page', { renderJs: 'auto' });
+    const result = expectContent(await router.fetch('https://example.com/page', { renderJs: 'auto' }));
 
     expect(httpClient.fetch).toHaveBeenCalledOnce();
     expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
@@ -191,7 +192,7 @@ describe('SmartRouter', () => {
   });
 
   it('routes auth requests to Playwright', async () => {
-    const result = await router.fetch('https://example.com/protected', { useAuth: true });
+    const result = expectContent(await router.fetch('https://example.com/protected', { useAuth: true }));
 
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
@@ -218,7 +219,7 @@ describe('SmartRouter', () => {
       const url = 'https://react.dev/whitepaper.pdf';
       vi.mocked(httpClient.fetch).mockResolvedValue(makePdfHttpResult(url));
 
-      const result = await router.fetch(url);
+      const result = expectContent(await router.fetch(url));
 
       expect(httpClient.fetch).toHaveBeenCalledOnce();
       expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
@@ -229,7 +230,7 @@ describe('SmartRouter', () => {
       // The pre-sniff must not hijack an explicit browser request.
       const url = 'https://example.com/report.pdf';
 
-      const result = await router.fetch(url, { renderJs: 'always' });
+      const result = expectContent(await router.fetch(url, { renderJs: 'always' }));
 
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
       expect(httpClient.fetch).not.toHaveBeenCalled();
@@ -253,7 +254,7 @@ describe('SmartRouter', () => {
         rawBuffer: Buffer.from('%PDF-1.7 real pdf bytes'),
       });
 
-      const result = await router.fetch(url);
+      const result = expectContent(await router.fetch(url));
 
       expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
       expect(result.method).toBe('http');
@@ -276,7 +277,7 @@ describe('SmartRouter', () => {
         rawBuffer: Buffer.from('%PDF-1.4 octet stream pdf'),
       });
 
-      const result = await router.fetch(url);
+      const result = expectContent(await router.fetch(url));
 
       expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
       expect(result.method).toBe('http');
@@ -300,7 +301,7 @@ describe('SmartRouter', () => {
         rawBuffer: Buffer.from('%PDF-1.5 spa domain pdf'),
       });
 
-      const result = await probingRouter.fetch(url);
+      const result = expectContent(await probingRouter.fetch(url));
 
       expect(pdfProbe).toHaveBeenCalledOnce();
       expect(pdfProbe.mock.calls[0][0]).toBe(url);
@@ -317,7 +318,7 @@ describe('SmartRouter', () => {
       const probingRouter = new SmartRouter({ httpClient, browserPool, pdfProbe });
       vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(makeBrowserResult(url));
 
-      const result = await probingRouter.fetch(url);
+      const result = expectContent(await probingRouter.fetch(url));
 
       expect(result.method).toBe('browser');
       expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
@@ -345,7 +346,7 @@ describe('SmartRouter', () => {
     vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(makeBrowserResult('https://fallback.com/final'));
 
     // This call should hit threshold, mark domain, and return playwright result
-    const result = await router.fetch('https://fallback.com/final');
+    const result = expectContent(await router.fetch('https://fallback.com/final'));
 
     expect(result.method).toBe('browser');
     expect(result.url).toBe('https://fallback.com/final');
@@ -393,7 +394,7 @@ describe('SmartRouter --- actions routing', () => {
 
   it('routes to Playwright when actions are present, even with renderJs=auto', async () => {
     const actions = [{ type: 'click' as const, selector: '.btn' }];
-    const result = await router.fetch('https://example.com/page', { actions });
+    const result = expectContent(await router.fetch('https://example.com/page', { actions }));
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
     expect(result.method).toBe('browser');
@@ -401,21 +402,21 @@ describe('SmartRouter --- actions routing', () => {
 
   it('routes to Playwright when actions are present, even with renderJs=never', async () => {
     const actions = [{ type: 'click' as const, selector: '.btn' }];
-    const result = await router.fetch('https://example.com/page', { renderJs: 'never', actions });
+    const result = expectContent(await router.fetch('https://example.com/page', { renderJs: 'never', actions }));
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
     expect(result.method).toBe('browser');
   });
 
   it('does not force Playwright when actions array is empty', async () => {
-    const result = await router.fetch('https://example.com/page', { actions: [] });
+    const result = expectContent(await router.fetch('https://example.com/page', { actions: [] }));
     expect(httpClient.fetch).toHaveBeenCalledOnce();
     expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
     expect(result.method).toBe('http');
   });
 
   it('does not force Playwright when actions is undefined', async () => {
-    const result = await router.fetch('https://example.com/page', { actions: undefined });
+    const result = expectContent(await router.fetch('https://example.com/page', { actions: undefined }));
     expect(httpClient.fetch).toHaveBeenCalledOnce();
     expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
   });
@@ -435,7 +436,7 @@ describe('SmartRouter --- actions routing', () => {
   it('routes to Playwright for actions + useAuth combined', async () => {
     vi.mocked(getAuthOptions).mockResolvedValue({ storageStatePath: '/tmp/state.json' });
     const actions = [{ type: 'click' as const, selector: '.btn' }];
-    const result = await router.fetch('https://example.com/page', { useAuth: true, actions });
+    const result = expectContent(await router.fetch('https://example.com/page', { useAuth: true, actions }));
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(httpClient.fetch).not.toHaveBeenCalled();
     expect(result.method).toBe('browser');
@@ -458,7 +459,7 @@ describe('SmartRouter --- actions routing', () => {
       { type: 'scroll' as const, direction: 'down' as const, amount: 200 },
       { type: 'screenshot' as const },
     ];
-    const result = await router.fetch('https://example.com/page', { actions });
+    const result = expectContent(await router.fetch('https://example.com/page', { actions }));
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(result.method).toBe('browser');
   });
@@ -467,7 +468,7 @@ describe('SmartRouter --- actions routing', () => {
     vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(
       makeBrowserResult('https://react.dev/learn'),
     );
-    const result = await router.fetch('https://react.dev/learn');
+    const result = expectContent(await router.fetch('https://react.dev/learn'));
     expect(httpClient.fetch).not.toHaveBeenCalled();
     expect(browserPool.fetchWithBrowser).toHaveBeenCalledOnce();
     expect(result.method).toBe('browser');
@@ -477,14 +478,14 @@ describe('SmartRouter --- actions routing', () => {
     vi.mocked(browserPool.fetchWithBrowser).mockResolvedValue(
       makeBrowserResult('https://docs.react.dev/intro'),
     );
-    const result = await router.fetch('https://docs.react.dev/intro');
+    const result = expectContent(await router.fetch('https://docs.react.dev/intro'));
     expect(httpClient.fetch).not.toHaveBeenCalled();
     expect(result.method).toBe('browser');
   });
 
   it('does NOT pre-mark unrelated domains', async () => {
     vi.mocked(httpClient.fetch).mockResolvedValue(makeHttpResult());
-    const result = await router.fetch('https://example.com/page');
+    const result = expectContent(await router.fetch('https://example.com/page'));
     expect(httpClient.fetch).toHaveBeenCalledOnce();
     expect(result.method).toBe('http');
   });
@@ -556,7 +557,7 @@ describe('SmartRouter: browser-tier challenge → blocked_by_challenge StageErro
     const router = build(async (url: string) => {
       throw new ChallengeBlockedError(url);
     });
-    const result = await router.fetch('https://blocked.example/', { renderJs: 'always' });
+    const result = expectStageError(await router.fetch('https://blocked.example/', { renderJs: 'always' }));
     expect('error' in result).toBe(true);
     const err = result as { error: string; error_reason: string; stage: string; hint?: string };
     expect(err.error).toBe('blocked_by_challenge');
@@ -575,7 +576,7 @@ describe('SmartRouter: browser-tier challenge → blocked_by_challenge StageErro
       fetchWithBrowser: vi.fn(async (url: string) => { throw new ChallengeBlockedError(url); }),
     };
     const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
-    const result = await router.fetch('https://blocked.example/');
+    const result = expectStageError(await router.fetch('https://blocked.example/'));
     expect('error' in result).toBe(true);
     expect((result as { error: string }).error).toBe('blocked_by_challenge');
   });
@@ -604,7 +605,7 @@ describe('SmartRouter: browser-tier challenge → blocked_by_challenge StageErro
       method: 'browser',
       headers: { 'cf-mitigated': 'challenge' },
     }));
-    const result = await router.fetch('https://blocked.example/', { renderJs: 'always' });
+    const result = expectStageError(await router.fetch('https://blocked.example/', { renderJs: 'always' }));
     expect('error' in result).toBe(true);
     expect((result as { error: string }).error).toBe('blocked_by_challenge');
   });
@@ -621,7 +622,7 @@ describe('SmartRouter: browser-tier challenge → blocked_by_challenge StageErro
       method: 'browser',
       headers: { server: 'cloudflare' },
     }));
-    const result = await router.fetch('https://blocked.example/', { renderJs: 'always' });
+    const result = expectContent(await router.fetch('https://blocked.example/', { renderJs: 'always' }));
     expect('error' in result).toBe(false);
     expect((result as RawFetchResult).method).toBe('browser');
     expect((result as RawFetchResult).html).toContain('real content');
@@ -629,7 +630,7 @@ describe('SmartRouter: browser-tier challenge → blocked_by_challenge StageErro
 
   it('SUCCESS-RETURN GUARD: a normal 200 content result passes through unchanged', async () => {
     const router = build(async (url: string) => makeBrowserResult(url));
-    const result = await router.fetch('https://ok.example/', { renderJs: 'always' });
+    const result = expectContent(await router.fetch('https://ok.example/', { renderJs: 'always' }));
     expect('error' in result).toBe(false);
     expect((result as RawFetchResult).method).toBe('browser');
   });
@@ -668,7 +669,7 @@ describe('SmartRouter: 200 challenge shell (P0 long-tail #5)', () => {
       fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
     };
     const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
-    const result = await router.fetch('https://blocked.example/');
+    const result = expectContent(await router.fetch('https://blocked.example/'));
     // Escalated to the browser and returned the browser's real content.
     expect(browserPool.fetchWithBrowser).toHaveBeenCalled();
     expect('error' in result).toBe(false);
@@ -683,7 +684,7 @@ describe('SmartRouter: 200 challenge shell (P0 long-tail #5)', () => {
       fetchWithBrowser: vi.fn(async (url: string) => { throw new ChallengeBlockedError(url); }),
     };
     const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
-    const result = await router.fetch('https://blocked.example/');
+    const result = expectStageError(await router.fetch('https://blocked.example/'));
     expect('error' in result).toBe(true);
     expect((result as { error: string }).error).toBe('blocked_by_challenge');
   });
@@ -696,7 +697,7 @@ describe('SmartRouter: 200 challenge shell (P0 long-tail #5)', () => {
       fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
     };
     const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
-    const result = await router.fetch('https://blocked.example/', { renderJs: 'never' });
+    const result = expectStageError(await router.fetch('https://blocked.example/', { renderJs: 'never' }));
     // http-only path must never touch the browser AND must not return the shell.
     expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
     expect('error' in result).toBe(true);
@@ -714,7 +715,7 @@ describe('SmartRouter: 200 challenge shell (P0 long-tail #5)', () => {
       fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
     };
     const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
-    const result = await router.fetch('https://news.example/article');
+    const result = expectContent(await router.fetch('https://news.example/article'));
     expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
     expect('error' in result).toBe(false);
     expect((result as RawFetchResult).html).toContain('How bot walls work');
@@ -728,7 +729,7 @@ describe('SmartRouter: 200 challenge shell (P0 long-tail #5)', () => {
       fetchWithBrowser: vi.fn(async (url: string) => makeBrowserResult(url)),
     };
     const router = new SmartRouter({ httpClient, browserPool, pdfProbe: async () => false });
-    const result = await router.fetch('https://spa.example/');
+    const result = expectContent(await router.fetch('https://spa.example/'));
     // SPA escalation returns the browser's real content, NOT a challenge error.
     expect(browserPool.fetchWithBrowser).toHaveBeenCalled();
     expect('error' in result).toBe(false);
@@ -783,7 +784,7 @@ describe('SmartRouter: browser-unavailable fallback must not leak a challenge sh
       browserAcquirer: unavailableAcquirer(),
       systemBrowserFetch: noInstalledBrowser,
     });
-    const result = await router.fetch('https://blocked.example/');
+    const result = expectStageError(await router.fetch('https://blocked.example/'));
     // The browser could not be acquired, so the shell would have been the
     // fallback — the guard must convert it to a structured error instead.
     expect('error' in result).toBe(true);
@@ -818,7 +819,7 @@ describe('SmartRouter: browser-unavailable fallback must not leak a challenge sh
       browserAcquirer: unavailableAcquirer(),
       systemBrowserFetch: noInstalledBrowser,
     });
-    const result = await router.fetch('https://blocked.example/');
+    const result = expectStageError(await router.fetch('https://blocked.example/'));
     expect('error' in result).toBe(true);
     expect((result as { error: string }).error).toBe('blocked_by_challenge');
     expect(JSON.stringify(result)).not.toContain('cf-browser-verification');
@@ -842,7 +843,7 @@ describe('SmartRouter: browser-unavailable fallback must not leak a challenge sh
       browserAcquirer: unavailableAcquirer(),
       systemBrowserFetch: noInstalledBrowser,
     });
-    const result = await router.fetch('https://spa.example/');
+    const result = expectContent(await router.fetch('https://spa.example/'));
     expect('error' in result).toBe(false);
     const raw = result as RawFetchResult;
     expect(raw.html).toBe(SPA_SHELL_HTML);

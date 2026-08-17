@@ -1,4 +1,5 @@
-import type { ExtractInput, ExtractOutput, StageResult, TableData } from '../types.js';
+import type { ExtractInput, ExtractOutput, StageResult, StageError, TableData } from '../types.js';
+import { isStageError } from '../fetch/error-describe.js';
 import type { SmartRouter } from '../fetch/router.js';
 import { guardNavigation, type NavSource } from '../security/ssrf.js';
 import { extractMetadata, extractSelector, extractTables } from '../extraction/extract.js';
@@ -318,11 +319,17 @@ function buildSuccessOutput(
   return { ok: true, data: out };
 }
 
+/**
+ * Resolve the HTML to extract from. Returns a StageError when the fetch was REFUSED: extract
+ * has a StageResult return type precisely so a refusal can be reported as one, and passing
+ * `undefined` html into the extractors would instead have produced a successful-looking
+ * response with an empty table/metadata payload.
+ */
 async function resolveHtml(
   input: ExtractInput,
   router: SmartRouter,
   source: NavSource = 'agent',
-): Promise<{ html: string; sourceUrl?: string }> {
+): Promise<{ html: string; sourceUrl?: string } | StageError> {
   if (input.execution_mode === 'stealth' && input.url) {
     const pw = await fetchWithPlaywright(input.url);
     return { html: pw.html, sourceUrl: input.url };
@@ -353,6 +360,7 @@ async function resolveHtml(
       useAuth: false,
       source,
     });
+    if (isStageError(raw)) return raw;
     return { html: raw.html, sourceUrl: raw.finalUrl };
   }
 
@@ -435,7 +443,16 @@ export async function handleExtract(
   }
 
   try {
-    const { html, sourceUrl } = await resolveHtml(input, router, source);
+    const resolved = await resolveHtml(input, router, source);
+    if (isStageError(resolved)) {
+      log.warn('extract source refused', {
+        url: input.url,
+        error: resolved.error,
+        reason: resolved.error_reason,
+      });
+      return { ok: false, ...resolved, stage: 'extract' };
+    }
+    const { html, sourceUrl } = resolved;
 
     if (input.named_schema) {
       const namedData = await extractNamedSchema(input.named_schema, html, sourceUrl ?? input.url ?? '');

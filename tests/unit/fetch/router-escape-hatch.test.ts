@@ -27,6 +27,7 @@ import type {
 } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
 import { ChallengeBlockedError } from '../../../src/fetch/browser-pool.js';
+import { expectContent, expectStageError } from '../../helpers/fetch-result.js';
 
 const originalEnv = process.env;
 
@@ -80,8 +81,8 @@ describe('SmartRouter escape-hatch ladder', () => {
       pdfProbe: async () => false,
       escapeHatch,
     });
-    const result = await router.fetch('https://blocked.example.com/x', { renderJs: 'always' });
-    expect((result as { error?: string }).error).toBe('blocked_by_challenge');
+    const result = expectStageError(await router.fetch('https://blocked.example.com/x', { renderJs: 'always' }));
+    expect(result.error).toBe('blocked_by_challenge');
     expect(solverFetch).not.toHaveBeenCalled();
     expect(hostedReaderFetch).not.toHaveBeenCalled();
   });
@@ -97,7 +98,7 @@ describe('SmartRouter escape-hatch ladder', () => {
       pdfProbe: async () => false,
       escapeHatch,
     });
-    const result = await router.fetch('https://blocked.example.com/x', { renderJs: 'always' });
+    const result = expectContent(await router.fetch('https://blocked.example.com/x', { renderJs: 'always' }));
     expect(result.html).toContain('cleared by escape hatch');
     expect(solverFetch).toHaveBeenCalledOnce();
     // Solver cleared it — reader is never tried.
@@ -116,7 +117,7 @@ describe('SmartRouter escape-hatch ladder', () => {
       pdfProbe: async () => false,
       escapeHatch,
     });
-    const result = await router.fetch('https://blocked.example.com/x', { renderJs: 'always' });
+    const result = expectContent(await router.fetch('https://blocked.example.com/x', { renderJs: 'always' }));
     expect(result.html).toContain('cleared by escape hatch');
     expect(solverFetch).toHaveBeenCalledOnce();
     expect(hostedReaderFetch).toHaveBeenCalledOnce();
@@ -132,8 +133,8 @@ describe('SmartRouter escape-hatch ladder', () => {
       pdfProbe: async () => false,
       escapeHatch,
     });
-    const result = await router.fetch('https://blocked.example.com/x', { renderJs: 'always' });
-    expect((result as { error?: string }).error).toBe('blocked_by_challenge');
+    const result = expectStageError(await router.fetch('https://blocked.example.com/x', { renderJs: 'always' }));
+    expect(result.error).toBe('blocked_by_challenge');
     expect(solverFetch).toHaveBeenCalledOnce();
   });
 
@@ -147,7 +148,7 @@ describe('SmartRouter escape-hatch ladder', () => {
       pdfProbe: async () => false,
       escapeHatch,
     });
-    const result = await router.fetch('https://blocked.example.com/x', { renderJs: 'always' });
+    const result = expectContent(await router.fetch('https://blocked.example.com/x', { renderJs: 'always' }));
     expect(result.html).toContain('cleared by escape hatch');
     expect(solverFetch).not.toHaveBeenCalled();
     expect(hostedReaderFetch).toHaveBeenCalledOnce();

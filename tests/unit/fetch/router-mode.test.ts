@@ -22,6 +22,7 @@ vi.mock('../../../src/fetch/browser-acquire.js', async (importOriginal) => {
 import { SmartRouter } from '../../../src/fetch/router.js';
 import type { HttpClient, BrowserPoolInterface } from '../../../src/fetch/router.js';
 import type { RawFetchResult } from '../../../src/types.js';
+import { expectContent } from '../../helpers/fetch-result.js';
 
 const SPA_SHELL_HTML = `<html><head></head><body><div id="root"></div></body></html>`;
 
@@ -66,7 +67,7 @@ describe('SmartRouter mode=cache', () => {
   });
 
   it('does not spawn a browser even when content is a SPA shell', async () => {
-    const result = await router.fetch('https://spa.test/page', { mode: 'cache' });
+    const result = expectContent(await router.fetch('https://spa.test/page', { mode: 'cache' }));
 
     expect(httpClient.fetch).toHaveBeenCalledTimes(1);
     expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
@@ -120,7 +121,7 @@ describe('SmartRouter mode=cache', () => {
       headers: {},
     }));
 
-    const result = await router.fetch('https://example.com/page', { mode: 'cache' });
+    const result = expectContent(await router.fetch('https://example.com/page', { mode: 'cache' }));
 
     expect(browserPool.fetchWithBrowser).not.toHaveBeenCalled();
     expect(result.jsRequired).toBe(false);

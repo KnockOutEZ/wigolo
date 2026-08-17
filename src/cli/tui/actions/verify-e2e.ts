@@ -25,6 +25,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { resolveProviderKey } from '../../../security/key-store.js';
+import { isStageError, describeStageError } from '../../../fetch/error-describe.js';
 import type { AgentId, InstallType } from '../agents.js';
 
 // ---------------------------------------------------------------------------
@@ -361,6 +362,16 @@ function buildDefaultFetchProbe(): () => Promise<CapabilityResult> {
       const { buildMinimalRouter } = await import('./verify-router.js');
       const router = await buildMinimalRouter();
       const raw = await router.fetch(STABLE_FETCH_URL, { renderJs: 'never' });
+      // A verification probe must FAIL loudly on a refusal. Reading `.html` off a refusal
+      // yields undefined → 0 chars → the connectivity message, which sends the operator to
+      // check a network that is fine.
+      if (isStageError(raw)) {
+        return {
+          capability: 'fetch',
+          status: 'fail',
+          detail: `fetch probe refused for ${STABLE_FETCH_URL}: ${describeStageError(raw)}`,
+        };
+      }
       const chars = raw.html?.length ?? 0;
       if (chars === 0) {
         return {

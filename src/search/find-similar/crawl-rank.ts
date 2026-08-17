@@ -5,6 +5,7 @@ import type {
 } from '../../types.js';
 import type { SmartRouter } from '../../fetch/router.js';
 import { getExtractProvider } from '../../providers/extract-provider.js';
+import { isStageError, describeStageError } from '../../fetch/error-describe.js';
 import { getEmbedProvider } from '../../providers/embed-provider.js';
 import { createLogger } from '../../logger.js';
 import { guardFetchUrl } from '../../watch/ssrf.js';
@@ -73,6 +74,17 @@ export async function crawlRank(
   } catch (err) {
     return emptyOutput({
       error: `Seed fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+      embeddingAvailable: false,
+      elapsed: Date.now() - start,
+    });
+  }
+
+  // A refused seed is reported with its CAUSE in the user-visible `error`. Falling through to
+  // the status check below would report `Seed fetch failed: unknown` — technically true and
+  // useless, since a refusal is the one failure a user can actually respond to.
+  if (isStageError(seedRaw)) {
+    return emptyOutput({
+      error: `Seed fetch refused: ${describeStageError(seedRaw)}`,
       embeddingAvailable: false,
       elapsed: Date.now() - start,
     });
@@ -289,6 +301,9 @@ async function fetchPagesInChunks(
           router.fetch(u, { renderJs: 'auto' }),
           fetchTimeoutMs,
         );
+        // Refusals reject with their cause so allSettled drops the page for a NAMED reason
+        // rather than the misleading `bad status: unknown` the status check would emit.
+        if (isStageError(raw)) throw new Error(`refused: ${describeStageError(raw)}`);
         if (
           !raw ||
           typeof raw.statusCode !== 'number' ||

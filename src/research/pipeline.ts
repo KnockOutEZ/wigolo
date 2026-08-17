@@ -11,6 +11,7 @@ import { classifyUrlShape, classifyScoreFloor, queryContentTerms, gateContent } 
 import { exploreInParallel } from './branch-exploration.js';
 import type { RawSearchResult, SearchEngineOptions } from '../types.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
+import { isStageError } from '../fetch/error-describe.js';
 import { truncateSmartly, truncateAtBoundary } from '../search/truncate.js';
 import { cacheContent } from '../cache/store.js';
 import { getEmbeddingService } from '../embedding/embed.js';
@@ -32,7 +33,7 @@ import type {
   Citation,
 } from '../types.js';
 import type { SmartRouter } from '../fetch/router.js';
-import { mergeCompleteness } from '../extraction/completeness.js';
+import { mergeCompleteness, isShellCapture } from '../extraction/completeness.js';
 
 const log = createLogger('research');
 
@@ -435,6 +436,32 @@ async function fetchSources(
         ),
       ]);
 
+      // A REFUSED fetch is a known coverage gap, not a thin page. It carries no `.html`, and
+      // the extractor returns empty markdown rather than throwing on `undefined` — so passing
+      // it through produced a source that looked fetched and said nothing, which is the one
+      // shape research must never emit. Record the refusal explicitly: `fetched: false` keeps
+      // it out of the evidence set, `fetch_blocked` lets the brief name it as a KNOWN gap, and
+      // the snippet stays as the only honest text we actually have for that URL.
+      if (isStageError(raw)) {
+        log.debug('research source refused', {
+          url: result.url,
+          error: raw.error,
+          reason: raw.error_reason,
+        });
+        return {
+          url: result.url,
+          title: result.title,
+          markdown_content: result.snippet,
+          relevance_score: result.relevance_score,
+          fetched: false,
+          trusted: false, // web/page-derived (C4)
+          // The bare CODE, not prose: a caller comparing `fetch_error === 'blocked_by_challenge'`
+          // must be able to, and free-text messages made a block and a timeout the same thing
+          // to everyone downstream. The prose reason goes to the log above.
+          fetch_error: raw.error,
+        };
+      }
+
       const extractor = await getExtractProvider();
       const extraction = await extractor.extract(raw.html, raw.finalUrl, {
         maxChars: 30000,
@@ -450,7 +477,12 @@ async function fetchSources(
 
       try {
         const embeddingService = getEmbeddingService();
-        if (embeddingService.isAvailable()) {
+        // Same guard as search enrichment: a `shell` capture is a page that never rendered its
+        // content — typically an unflagged bot wall, which arrives as an ordinary result and
+        // not as a StageError. The pipeline already excludes shell sources from the evidence
+        // set below; embedding one anyway would keep it discoverable through find_similar, and
+        // vectors survive the cache row they came from.
+        if (embeddingService.isAvailable() && !isShellCapture(raw, extraction)) {
           embeddingService.embedAsync(raw.finalUrl, extraction.markdown);
         }
       } catch (err) {
