@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import config, { NATIVE_ASAR_UNPACK, OMIT_ENV, resolveAsarUnpack } from '../../electron-builder.config';
+import config, { ASAR_UNPACK, BROKER_ASAR_UNPACK, NATIVE_ASAR_UNPACK, OMIT_ENV, resolveAsarUnpack } from '../../electron-builder.config';
 
 const appPkg = JSON.parse(readFileSync(join(import.meta.dirname, '../../package.json'), 'utf8')) as {
   dependencies: Record<string, string>;
@@ -38,15 +38,56 @@ describe('asarUnpack native module coverage', () => {
   it('every glob is anchored under node_modules so it cannot swallow app code', () => {
     // A bare `**/onnxruntime-node/**` would also match anything under out/, quietly excluding built
     // app code from the archive.
-    for (const globs of Object.values(NATIVE_ASAR_UNPACK)) {
+    for (const globs of Object.values(ASAR_UNPACK)) {
       for (const g of globs) expect(g.startsWith('**/node_modules/')).toBe(true);
     }
   });
 });
 
+describe('the DB broker runs on plain Node, so its module graph cannot be archived', () => {
+  // Found by LAUNCHING the packaged app: the gateway came up and the broker did not. Typecheck, unit,
+  // e2e and CI were all green. The broker is spawned as a plain-Node child (spec §13.7) and plain Node
+  // has no asar layer, so every file it loads has to exist on the real filesystem.
+  it('unpacks node_modules wholesale rather than a curated dependency list', () => {
+    // Measured 2026-08-17: the broker entry reaches 305 files inside the wigolo package and 19
+    // external packages directly, each with its own transitive tree. A curated subset is a list that
+    // goes stale on the next import anyone adds — and goes stale INVISIBLY, because nothing but a
+    // packaged launch can notice. The blunt glob is the point, not an oversight.
+    expect(BROKER_ASAR_UNPACK['studio-db-broker']).toEqual(['**/node_modules/**']);
+  });
+
+  it('covers the wigolo package itself, which ships no binary for smartUnpack to notice', () => {
+    // electron-builder's smartUnpack rescues module roots that contain a `.node`/`.dylib`. The wigolo
+    // package contains none, and neither do the pure-JS packages the broker imports, so the heuristic
+    // cannot rescue any of this. That is why the glob has to be declared and not left to inference.
+    const globs = resolveAsarUnpack(undefined);
+    expect(globs).toContain('**/node_modules/**');
+  });
+
+  it('is droppable on its own so a negative control can re-break exactly this', () => {
+    const got = resolveAsarUnpack('studio-db-broker');
+    expect(got).not.toContain('**/node_modules/**');
+    // The native pins must survive it, or the control cannot tell "the broker glob mattered" from
+    // "the artifact is broken everywhere".
+    expect(got).toContain('**/node_modules/better-sqlite3/**');
+    expect(got).toContain('**/node_modules/sqlite-vec/**');
+  });
+
+  it('subsumes every native glob, which makes an un-omitted native control vacuous', () => {
+    // This is the trap the native control already fell into once via smartUnpack, in a new guise:
+    // `**/node_modules/**` unpacks onnxruntime-node whether or not its own glob was dropped. Any
+    // control aimed at a native entry must drop this key too. Asserted so the coupling is enforced
+    // rather than remembered.
+    for (const globs of Object.values(NATIVE_ASAR_UNPACK)) {
+      for (const g of globs) expect(g.startsWith('**/node_modules/')).toBe(true);
+    }
+    expect(resolveAsarUnpack('onnxruntime-node')).toContain('**/node_modules/**');
+  });
+});
+
 describe(`${OMIT_ENV} negative-control seam`, () => {
   it('unset means every glob ships', () => {
-    const all = Object.values(NATIVE_ASAR_UNPACK).flat();
+    const all = Object.values(ASAR_UNPACK).flat();
     expect(resolveAsarUnpack(undefined).sort()).toEqual([...all].sort());
     expect(resolveAsarUnpack('').sort()).toEqual([...all].sort());
   });

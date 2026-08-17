@@ -57,10 +57,39 @@ export const NATIVE_ASAR_UNPACK: Readonly<Record<string, readonly string[]>> = {
 };
 
 /**
- * Negative-control seam. Comma-separated keys of NATIVE_ASAR_UNPACK to DROP from the packaged
- * artifact, so a test can build a deliberately broken app and prove the probe tells working from
- * broken. Unset in every normal build; a set value is echoed loudly because an artifact built with
- * it is not shippable.
+ * The studio DB broker is a PLAIN-NODE child process (spec §13.7), and plain Node has no asar layer —
+ * the archive is a virtual filesystem Electron patches into its own `fs`, nothing more. Every module
+ * the broker loads therefore has to be a real file on disk, or the child dies on `Cannot find module`
+ * before it ever writes its `ready` frame.
+ *
+ * WHY THE GLOB IS THE WHOLE TREE, and not a curated list. The broker entry
+ * (`wigolo/dist/daemon/studio-db-broker.js`) pulls in `initSubsystems` from the core server: measured
+ * 2026-08-17, 305 files inside the wigolo package reaching 19 external packages directly
+ * (@modelcontextprotocol/sdk, playwright, defuddle, linkedom, turndown, pdf-parse, fastembed, the LLM
+ * adapters, …), each with its own transitive tree. A hand-maintained subset of that closure is a list
+ * that is wrong the moment anyone adds an import — and it fails ONLY in a packaged launch, which is
+ * exactly how this defect shipped green through typecheck, unit, e2e and CI. `**\/node_modules/**`
+ * cannot be wrong in that direction.
+ *
+ * NOTE the consequence for the native pins above: this glob SUBSUMES all four of them in a normal
+ * build. They stay because they state the requirement by name and survive this entry being narrowed;
+ * but any negative control aimed at a native glob must now ALSO omit this key, or the module under
+ * test stays unpacked and the control passes for a reason that has nothing to do with the glob.
+ */
+export const BROKER_ASAR_UNPACK: Readonly<Record<string, readonly string[]>> = {
+  'studio-db-broker': ['**/node_modules/**'],
+};
+
+/** Everything that must land in `app.asar.unpacked`, keyed by the requirement it satisfies. */
+export const ASAR_UNPACK: Readonly<Record<string, readonly string[]>> = {
+  ...NATIVE_ASAR_UNPACK,
+  ...BROKER_ASAR_UNPACK,
+};
+
+/**
+ * Negative-control seam. Comma-separated keys of ASAR_UNPACK to DROP from the packaged artifact, so a
+ * test can build a deliberately broken app and prove the probe tells working from broken. Unset in
+ * every normal build; a set value is echoed loudly because an artifact built with it is not shippable.
  */
 export const OMIT_ENV = 'WIGOLO_PACK_OMIT_UNPACK';
 
@@ -72,13 +101,13 @@ export function resolveAsarUnpack(omitList: string | undefined): string[] {
       .filter(Boolean),
   );
   for (const key of omit) {
-    if (!(key in NATIVE_ASAR_UNPACK)) {
+    if (!(key in ASAR_UNPACK)) {
       throw new Error(
-        `${OMIT_ENV}: '${key}' is not one of ${Object.keys(NATIVE_ASAR_UNPACK).join(', ')}. A typo here would silently build a CORRECT artifact and make a negative control pass for the wrong reason.`,
+        `${OMIT_ENV}: '${key}' is not one of ${Object.keys(ASAR_UNPACK).join(', ')}. A typo here would silently build a CORRECT artifact and make a negative control pass for the wrong reason.`,
       );
     }
   }
-  return Object.entries(NATIVE_ASAR_UNPACK)
+  return Object.entries(ASAR_UNPACK)
     .filter(([key]) => !omit.has(key))
     .flatMap(([, globs]) => globs);
 }

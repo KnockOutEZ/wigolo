@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn, execFileSync as nodeExecFileSync, type ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { ArtifactDelta } from 'wigolo/studio';
 
 /**
@@ -37,9 +37,51 @@ export interface BrokerClientOptions {
   probeTimeoutMs?: number;
 }
 
+/**
+ * Matches a path segment that IS an asar archive — `…/app.asar/…`. Deliberately not a substring test:
+ * `…/app.asar.unpacked/…` must NOT match, or a second rewrite would produce `app.asar.unpacked.unpacked`.
+ * The `.asar` has to be followed by a separator, and `app.asar.unpacked` has a `.` there instead.
+ *
+ * Non-global on purpose, so `String.replace` rewrites the FIRST matching segment only. Known limit: a
+ * bundle installed under an ancestor directory whose own name ends in `.asar` would be rewritten at the
+ * ancestor instead of at the archive. Left alone rather than anchored to the real archive, which is not
+ * knowable here without importing electron (forbidden in this module by the `check:no-electron` gate).
+ */
+const ASAR_SEGMENT = /([\\/])([^\\/]+)\.asar([\\/])/;
+
+/**
+ * Rewrite a path pointing INSIDE `…/app.asar` to the sibling `…/app.asar.unpacked` tree. A no-op on any
+ * path that is not inside an archive, so dev/test runs are untouched.
+ *
+ * WHY this exists: the asar archive is a virtual filesystem implemented by a patch Electron installs
+ * into its OWN `fs`. The DB broker is a PLAIN-NODE child process (spec §13.7 — the Electron main must
+ * never load a native module), and plain Node has no such patch. Every path inside `app.asar` is,
+ * to that child, a file that does not exist. So both things the broker needs from the packaged tree —
+ * the entry point it is spawned with, and the database engine the ABI probe validates against — have
+ * to be named by their real on-disk location.
+ */
+export function toUnpackedPath(p: string): string {
+  return p.replace(ASAR_SEGMENT, (_match, sep: string, archive: string, tail: string) => `${sep}${archive}.asar.unpacked${tail}`);
+}
+
+/**
+ * Resolve the broker entry from `anchor`, having first moved the anchor out of the archive.
+ *
+ * The rewritten anchor is SYNTHETIC in a packaged app: only `node_modules/**` is unpacked, so
+ * `…/app.asar.unpacked/out/main/index.js` does not exist on disk and never will. That is fine and it is
+ * the point — `createRequire` never stats its anchor, it only walks `node_modules` upward from the
+ * anchor's directory. Anchoring there is what makes the walk land in `app.asar.unpacked/node_modules`
+ * (real files a plain-Node child can open) instead of `app.asar/node_modules` (archive members it
+ * cannot). Do NOT "fix" this by pointing the anchor at a file that exists; that reintroduces the bug.
+ * `tests/e2e/packaging.spec.ts` resolves the packaged native modules through the same synthetic anchor.
+ */
+export function resolveBrokerPathFrom(anchor: string): string {
+  return createRequire(toUnpackedPath(anchor)).resolve('wigolo/studio-db-broker');
+}
+
 /** The built broker entry, resolved via the `wigolo/studio-db-broker` export subpath (spawned, not imported). */
 export function resolveBrokerPath(): string {
-  return createRequire(import.meta.url).resolve('wigolo/studio-db-broker');
+  return resolveBrokerPathFrom(fileURLToPath(import.meta.url));
 }
 
 export type NodeRuntimeSource = 'WIGOLO_STUDIO_BROKER_NODE' | 'npm_node_execpath' | 'process.execPath' | 'PATH';
