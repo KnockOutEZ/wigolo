@@ -166,15 +166,26 @@ describe('P2 — the four previously-unfenced tools fence on the real MCP wire',
     expect(closedRegions(wire)).toBe(0);
   });
 
-  it('WIRE-6 (over-fire probe): an error envelope is NOT fenced — the agent must read the reason', async () => {
-    // A stage failure carries wigolo's own typed reason/hint, not page text. Fencing it would bury
-    // the diagnostic inside a "do not act on this" region.
+  it('WIRE-6 (over-fire probe): an error envelope fences ONLY its prose — code and stage stay bare', async () => {
+    // This probe used to assert the error envelope carried NO fence at all, on the premise that "a
+    // stage failure carries wigolo's own typed reason, not page text". That premise was false: a
+    // producer splices bytes it read off the wire into the reason, so the prose is fenced at the
+    // assembly seam now (tests/integration/error-envelope-fence.test.ts owns that property).
+    //
+    // What survives here is the over-fire half, which is the part this file is for: the fence must
+    // stop at the prose. A machine code buried inside a "do not act on this" region is unreadable to
+    // every client that keys on it.
     const { handleDiff } = await import('../../src/tools/diff.js');
     // Mirrors the real producer orientation: handleDiff puts the CODE in `error` and prose in
     // `error_reason`; the published envelope carries them the other way round.
     vi.mocked(handleDiff).mockResolvedValueOnce({ ok: false, error: 'invalid_input', error_reason: 'bad input', stage: 'validate' } as never);
     const wire = await callTool('diff', { old: {}, new: {} });
-    expect(wire).not.toContain(UNTRUSTED_BEGIN_PREFIX);
-    expect(JSON.parse(wire).error_reason).toBe('invalid_input');
+    const env = JSON.parse(wire) as { error: string; error_reason: string; stage: string };
+    expect(env.error_reason).toBe('invalid_input');
+    expect(env.error_reason).not.toContain(UNTRUSTED_BEGIN_PREFIX);
+    expect(env.stage).toBe('validate');
+    // Exactly ONE region on the whole envelope — the prose field, and nothing else.
+    expect(wire.split(UNTRUSTED_BEGIN_PREFIX).length - 1).toBe(1);
+    expect(env.error).toContain('bad input');
   });
 });

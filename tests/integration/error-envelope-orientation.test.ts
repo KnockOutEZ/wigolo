@@ -85,7 +85,11 @@ describe('published error envelope — code in error_reason, message in error', 
     });
 
     expect(env.error_reason).toBe('blocked_by_challenge');
-    expect(env.error).toBe(raised.message);
+    // `toContain`, not `toBe`: the prose field is wrapped in the untrusted-data region at the assembly
+    // seam (it is the field producers splice origin bytes into). The CODE is still asserted
+    // byte-exactly above — that is the orientation this file guards, and the fence must never widen to
+    // it. See tests/integration/error-envelope-fence.test.ts.
+    expect(env.error).toContain(raised.message);
     // The two must not collapse into each other — a duplicating envelope loses the message.
     expect(env.error).not.toBe(env.error_reason);
     expect(env.stage).toBe('fetch');
@@ -97,7 +101,7 @@ describe('published error envelope — code in error_reason, message in error', 
 
     expect(body.ok).toBe(false);
     expect(body.error_reason).toBe('blocked_by_challenge');
-    expect(body.error).toBe(raised.message);
+    expect(body.error).toContain(raised.message); // fenced prose — see the MCP case above
     expect(body.error).not.toBe(body.error_reason);
     // The status table keys on the PRODUCER's field, so it is unaffected by the re-orientation.
     expect(r.status).toBe(502);

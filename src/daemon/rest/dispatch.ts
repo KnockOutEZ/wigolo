@@ -44,6 +44,7 @@ import {
   fenceAgentData,
   fenceDiffData,
   diffOriginFromInput,
+  fenceErrorMessage,
 } from '../../server/content-fence.js';
 import type { UntrustedMode } from './untrusted-mode.js';
 import type {
@@ -84,11 +85,27 @@ export interface DispatchResult {
  * shape"). So the producer's `error` becomes the envelope's reason and vice versa — `errorEnvelope`
  * takes the CODE first. This used to be passed straight through, which published a sentence as the
  * machine code and left every client keying on free text.
+ *
+ * The PROSE is fenced here, and only the prose — the same containment `stageErrorEnvelope` applies on
+ * the MCP seam, through the same shared `fenceErrorMessage`, so the two surfaces cannot drift and there
+ * is no second implementation. A producer that interpolates bytes it read off the wire into its reason
+ * (src/tools/fetch.ts splices a 4xx machine-typed response body into one) reaches this envelope on the
+ * default keyless REST path exactly as it reaches the MCP one, and `dispatchTool` returns non-200
+ * bodies BEFORE `shapeUntrusted` runs, so nothing downstream of here would have contained it.
+ *
+ * `statusForStageResult` still reads the PRODUCER shape, so the fence cannot move a status: it keys on
+ * `f.error`, which is passed through byte-identical. The 502/503/400 tables, docs/rest-api.md's "Error
+ * shape" and both SDKs all read that same code field and are unaffected.
+ *
+ * The request's `untrustedMode` is deliberately NOT consulted. `envelope` mode exists so a programmatic
+ * consumer can persist byte-clean page BODIES (decision A3b/R2); an error message is not a body, is not
+ * persisted anywhere in-tree, and over-fencing it fails safe. Threading the mode here would add a
+ * second representation of the failure envelope for no consumer.
  */
 function stageFailure(f: { error: string; error_reason: string; stage: string; hint?: string }): DispatchResult {
   return {
     status: statusForStageResult(f),
-    body: errorEnvelope(f.error, f.error_reason, { stage: f.stage, hint: f.hint }),
+    body: errorEnvelope(f.error, fenceErrorMessage(f.error_reason), { stage: f.stage, hint: f.hint }),
   };
 }
 
