@@ -1,6 +1,18 @@
 /*
  * Drop the non-host `better-sqlite3` prebuilds.
  *
+ * ⚠⚠ THIS MODULE IS NOT LIVE, AND THE PIN IT SERVES DID NOT MERGE. It is kept as a worked record
+ * so the next attempt does not rediscover it. `better-sqlite3@13` cannot currently be installed on
+ * Windows without Python and VC++ Build Tools: v13 dropped the `install` script (pure-Node
+ * prebuild-install, which exited 0 as soon as it found the bundled binary), npm then supplies its
+ * own implicit `node-gyp rebuild` for any package shipping a binding.gyp, and it does so despite
+ * the `gypfile: false` that better-sqlite3 publishes to suppress exactly that — npm/cli#9837,
+ * WiseLibs/better-sqlite3#1503 and #1505. binding.gyp's `prebuild_exists` guard does not help:
+ * gyp must CONFIGURE before it can evaluate any variable, and configure is the step that needs the
+ * toolchain. Measured on CI: every macOS and Linux row green, every Windows row red at `npm ci`.
+ * Everything below is correct and tested and does nothing while the pin stays on v12, whose
+ * source build produces no `prebuilds/` directory at all.
+ *
  * WHY THIS EXISTS, AND WHY IT DID NOT BEFORE. `better-sqlite3` used to be a source build:
  * `~12.9.0` compiled through node-gyp (or fetched ONE prebuild via prebuild-install) and left a
  * single `build/Release/better_sqlite3.node`, ~1.8 MiB, with nothing foreign to remove. v13 moved
