@@ -86,24 +86,35 @@ describe('error envelope builders', () => {
   });
 });
 
+/**
+ * A StageResult carries the reason CODE in `error` and human prose in
+ * `error_reason` — the opposite of the REST envelope's field naming (see the
+ * deliberate swap in dispatch.ts's `stageFailure`). These cases used to be
+ * written the other way round, which is why the mapping could be dead in
+ * production while this file stayed green. Producer-derived coverage lives in
+ * rest-status-from-producer.test.ts; these stay as the table's unit cases.
+ */
 describe('statusForStageResult', () => {
   it('unavailability code → 503', () => {
-    expect(statusForStageResult({ error: 'x', error_reason: 'browser_engine_unavailable', stage: 'fetch' })).toBe(503);
+    expect(statusForStageResult({ error: 'browser_engine_unavailable', error_reason: 'the browser engine is not installed', stage: 'fetch' })).toBe(503);
   });
   it('fetch-stage upstream code → 502', () => {
-    expect(statusForStageResult({ error: 'x', error_reason: 'blocked_by_challenge', stage: 'fetch' })).toBe(502);
-    expect(statusForStageResult({ error: 'x', error_reason: 'fetch_failed', stage: 'fetch' })).toBe(502);
+    expect(statusForStageResult({ error: 'blocked_by_challenge', error_reason: 'bot protection served a challenge page', stage: 'fetch' })).toBe(502);
+    expect(statusForStageResult({ error: 'fetch_failed', error_reason: 'the request did not complete', stage: 'fetch' })).toBe(502);
   });
   it('semantic-validation allowlist → 400', () => {
-    expect(statusForStageResult({ error: 'x', error_reason: 'invalid_url', stage: 'validate' })).toBe(400);
+    expect(statusForStageResult({ error: 'invalid_url', error_reason: 'the url could not be parsed', stage: 'validate' })).toBe(400);
   });
-  it('unknown reason → 500', () => {
-    expect(statusForStageResult({ error: 'x', error_reason: 'some_novel_reason', stage: 'extract' })).toBe(500);
+  it('unknown code → 500', () => {
+    expect(statusForStageResult({ error: 'some_novel_code', error_reason: 'something went wrong', stage: 'extract' })).toBe(500);
   });
-  it('NEGATIVE: a reason containing the word "timeout" does NOT map to 504', () => {
-    expect(statusForStageResult({ error: 'connection timeout occurred', error_reason: 'network_timeout', stage: 'fetch' })).not.toBe(504);
+  it('NEGATIVE: prose containing the word "timeout" does NOT map to 504', () => {
+    expect(statusForStageResult({ error: 'network_timeout', error_reason: 'connection timeout occurred', stage: 'fetch' })).not.toBe(504);
     // network_timeout is not in the fetch upstream allowlist nor unavailability → 500
-    expect(statusForStageResult({ error: 'connection timeout occurred', error_reason: 'network_timeout', stage: 'fetch' })).toBe(500);
+    expect(statusForStageResult({ error: 'network_timeout', error_reason: 'connection timeout occurred', stage: 'fetch' })).toBe(500);
+  });
+  it('NEGATIVE: prose naming a mapped code does not promote the status', () => {
+    expect(statusForStageResult({ error: 'some_novel_code', error_reason: 'blocked_by_challenge', stage: 'fetch' })).toBe(500);
   });
 });
 
