@@ -69,6 +69,8 @@
     "tests/integration/content-fence-dispatch.test.ts",
     "tests/integration/error-envelope-fence.test.ts",
     "tests/integration/crawl-cache-envelope-fence.test.ts",
+    "tests/integration/compat-crawl-envelope-fence.test.ts",
+    "tests/integration/crawl-link-target-untrusted.test.ts",
     "tests/unit/fetch/browser-request-guard.test.ts",
     "tests/integration/fetch/browser-redirect-ssrf.test.ts",
     "tests/integration/fetch/browser-redirect-ssrf-backstop.test.ts"
