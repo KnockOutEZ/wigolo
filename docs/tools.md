@@ -105,7 +105,7 @@ Query the persistent local knowledge cache — every page wigolo has already see
 | `url_pattern` | string | Glob filter, e.g. `"*example.com*"`. |
 | `since` | string | ISO date floor. |
 | `stats` | boolean | Totals: URL count, size, date range. |
-| `clear` | boolean | Delete matching entries (requires at least one filter). |
+| `clear` | boolean | Delete matching entries, including the semantic-search vectors built from them (requires at least one filter). |
 | `check_changes` | boolean | Re-fetch matching URLs and report changed/unchanged with diff summaries. Capped at `limit` entries (default 100, hard ceiling 200). |
 | `limit` | number | Maximum rows returned. Default 5 (100 for `check_changes`, which is clamped to a ceiling of 200). |
 | `max_tokens_out` | number | Token-budget cap on the returned page bodies. Default 16000. |
@@ -157,6 +157,8 @@ Hybrid semantic discovery: given a URL or a concept, fuses the local embedding i
 | `include_ranking_debug` | boolean | Per-result `ranking_debug` (`fts5_rank`, `embedding_rank`, `web_rank`, `rrf_score`) to audit ranking disagreement. |
 
 When local signals are weak the response carries a `cold_start` note telling you what to crawl first — surface it rather than treating thin results as final.
+
+Cached pages whose capture produced only a shell — a challenge interstitial, or a page whose content never rendered — are left out of the local side of the ranking, so a page is never suggested as similar on the strength of boilerplate. Pages with no completeness verdict are unaffected.
 
 ```json
 { "url": "https://12factor.net/config", "max_results": 8 }
