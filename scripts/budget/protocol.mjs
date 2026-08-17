@@ -160,7 +160,7 @@ export const GATES = {
     title: 'production node_modules on disk',
     what: 'total bytes of the dependency tree a `npm i -g wigolo` user installs',
     artifact:
-      'a fresh `npm install --omit=dev --ignore-scripts --no-workspaces` into an empty directory holding only package.json + package-lock.json, with PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 and ELECTRON_SKIP_BINARY_DOWNLOAD=1, followed by `scripts/prune/run.mjs` — the postinstall that `--ignore-scripts` suppresses, and which now performs ALL THREE of the onnxruntime-node platform prune, the onnxruntime-web payload prune and the wreq-js binary prune',
+      'a fresh `npm install --omit=dev --ignore-scripts --no-workspaces` into an empty directory holding only package.json + package-lock.json, with PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 and ELECTRON_SKIP_BINARY_DOWNLOAD=1, followed by `scripts/prune/run.mjs` — the postinstall that `--ignore-scripts` suppresses, and which now performs ALL FOUR of the onnxruntime-node platform prune, the onnxruntime-web payload prune, the wreq-js binary prune and the better-sqlite3 prebuild prune',
     statistic: 'single `du -sm node_modules` total',
     horizon: 'n/a — a completed install is at rest',
     runs: 1,
@@ -168,7 +168,7 @@ export const GATES = {
     comparison: '<=',
     limit: 383,
     baseline:
-      'THE RUNNER IS THE AUTHORITY, because this gate runs on exactly one machine class: the `clean-machine-smoke` macos-latest / node 22 arm. Measured there on the S10-e PR across two runs of the same branch: 685 then 683 MiB clean — so the runner carries ~2 MiB of run-to-run variance of its own. CI has since read pre-prune 683 / post-prune 419 for the previous slice, which is the anchor this slice moves. ⚠ THIS SLICE MOVES THE ANCHOR BY A MEASURED DELTA RATHER THAN RE-DERIVING IT, which is the conservative operation: locally on darwin-arm64, on exactly the protocol the gate runs, THREE runs before and THREE after. Before: raw 683/681/682, post-prune 419/418/418. After: raw 682/682/682, post-prune 372/372/372 — dead flat across all three, and `wreq-js` itself goes 54 -> 8 MiB every time. The delta is 46 MiB (median 418 -> 372) and 421 - 46 = 375 is the new clean-build anchor. ⚠ NOTE THE LAPTOP HAS DRIFTED +1 SINCE THE PREVIOUS SLICE RECORDED 417 HERE — it now reads 418 for the same tree — which is exactly why the anchor is the previous runner-derived 421 minus a measured delta, not this laptop\'s 372 plus an offset. The delta is what reproduced; the absolute is what drifted. ⚠ PLATFORM-CONDITIONAL, AND MORE SO THAN THE ONNXRUNTIME PLATFORM PRUNE: the 46 MiB is the darwin/win32 figure, where exactly one binary survives. On linux BOTH the gnu and musl builds are kept deliberately (install-time libc detection cannot bind a run-time selection — see scripts/prune/wreq-binaries.mjs), so the saving there is ~38 MiB, not 46. This gate is wired on macOS only, so 375 is the darwin number; whoever wires linux must re-measure rather than carry this across. THE MANIFEST COULD NOT DO THIS: wreq-js publishes no platform-scoped subpackages at any napi naming convention (@wreq-js/darwin-arm64 and wreq-js-darwin-arm64 are both registry 404s), ships all seven binaries in one tarball via `files: ["dist","rust/*.node"]`, and declares os/cpu as the union of everything it supports, so npm filtering never excludes a byte. It was ALREADY in optionalDependencies, which installs in full.',
+      'THE RUNNER IS THE AUTHORITY, because this gate runs on exactly one machine class: the `clean-machine-smoke` macos-latest / node 22 arm. Measured there on the S10-e PR across two runs of the same branch: 685 then 683 MiB clean — so the runner carries ~2 MiB of run-to-run variance of its own. CI has since read pre-prune 683 / post-prune 419 for the previous slice, which is the anchor this slice moves. ⚠ THIS SLICE MOVES THE ANCHOR BY A MEASURED DELTA RATHER THAN RE-DERIVING IT, which is the conservative operation: locally on darwin-arm64, on exactly the protocol the gate runs, THREE runs before and THREE after. Before: raw 683/681/682, post-prune 419/418/418. After: raw 682/682/682, post-prune 372/372/372 — dead flat across all three, and `wreq-js` itself goes 54 -> 8 MiB every time. The delta is 46 MiB (median 418 -> 372) and 421 - 46 = 375 is the new clean-build anchor. ⚠ NOTE THE LAPTOP HAS DRIFTED +1 SINCE THE PREVIOUS SLICE RECORDED 417 HERE — it now reads 418 for the same tree — which is exactly why the anchor is the previous runner-derived 421 minus a measured delta, not this laptop\'s 372 plus an offset. The delta is what reproduced; the absolute is what drifted. ⚠ PLATFORM-CONDITIONAL, AND MORE SO THAN THE ONNXRUNTIME PLATFORM PRUNE: the 46 MiB is the darwin/win32 figure, where exactly one binary survives. On linux BOTH the gnu and musl builds are kept deliberately (install-time libc detection cannot bind a run-time selection — see scripts/prune/wreq-binaries.mjs), so the saving there is ~38 MiB, not 46. This gate is wired on macOS only, so 375 is the darwin number; whoever wires linux must re-measure rather than carry this across. THE MANIFEST COULD NOT DO THIS: wreq-js publishes no platform-scoped subpackages at any napi naming convention (@wreq-js/darwin-arm64 and wreq-js-darwin-arm64 are both registry 404s), ships all seven binaries in one tarball via `files: ["dist","rust/*.node"]`, and declares os/cpu as the union of everything it supports, so npm filtering never excludes a byte. It was ALREADY in optionalDependencies, which installs in full. ⚠ ANCHOR MOVED 375 -> 377 by the better-sqlite3 13.0.3 pin (see regression E in the threshold note): the bump adds 16 MiB of all-platform prebuilds and the new prune takes 14 of them back, for +2 net. Measured as a back-to-back PAIR on darwin-arm64 at ee346f77 — 372 at the old pin, 374 at the new pin with the prune — because the absolute drifts a MiB between batches on this laptop while the delta reproduces; an earlier batch at cd9aa425 read 371 -> 372 for the same operation, and 387 for the bump WITHOUT the prune. The runner remains the authority for the absolute, so 377 is still the previous runner-derived anchor plus a measured delta rather than a laptop reading.',
     // ⚠ THE THRESHOLD IS SET BY THE SMALLEST REGRESSION IT MUST CATCH, NOT BY A PERCENTAGE.
     //
     // This gate now guards FOUR reversions, spanning an order of magnitude:
@@ -177,18 +177,41 @@ export const GATES = {
     //      it silently no-op. Worth 178 MiB, landing at 375 + 178 = 553.
     //   B. the browser driver returns to `dependencies` from the optional PEER dependency S10-e
     //      moved it to. Worth exactly 17 MiB (`playwright` + `playwright-core`), landing at
-    //      375 + 17 = 392.
+    //      377 + 17 = 394.
     //   C. the onnxruntime-web payload prune stops happening — lost the same way A would be.
-    //      Worth 86 MiB, landing at 375 + 86 = 461.
-    //   D. the wreq-js binary prune stops happening — this slice's win, and it shares the same
-    //      single point of failure as A and C. Worth 46 MiB, landing at 375 + 46 = 421.
+    //      Worth 86 MiB, landing at 377 + 86 = 463.
+    //   D. the wreq-js binary prune stops happening — it shares the same single point of failure
+    //      as A and C. Worth 46 MiB, landing at 377 + 46 = 423.
+    //   E. the better-sqlite3 prebuild prune stops happening — same single point of failure again.
+    //      Worth 14 MiB, landing at 377 + 14 = 391.
     //
-    // ⚠ B STILL BINDS, AND NONE OF A, C OR D DOES. That is the whole derivation, and it is the
-    // same answer as the last three slices for the same reason: a limit only has to be under 553
-    // to catch A, under 461 to catch C and under 421 to catch D, but it has to be under 392 to
-    // catch B. The window is 375..392, still exactly 17 MiB wide — it has not widened once across
-    // four diet slices, because it is set by the SMALLEST regression and that regression has
-    // never been the one being won.
+    // ⚠ E BINDS, AND B NO LONGER DOES. That is the first time in five diet slices the binding
+    // regression has changed identity, so it is spelled out rather than left to be re-derived: a
+    // limit only has to be under 553/463/423 to catch A/C/D and under 394 to catch B, but it now
+    // has to be under 391 to catch E. The window is 377..391, 14 MiB wide where it was 17, and it
+    // narrowed because the newest win is the SMALLEST one — the opposite of the pattern the four
+    // previous slices established, every one of which left B binding.
+    //
+    // ⚠ WHERE E CAME FROM. The `better-sqlite3` pin moved `~12.9.0` -> `13.0.3` (the desktop shell
+    // must load the same native module the core does, and only v13's Node-API prebuilds span both
+    // ABIs). v12 was a source build with a single ~1.8 MiB binary and nothing foreign to prune;
+    // v13 ships all eight targets in one tarball, 16 MiB of `prebuilds/`. Measured on the gate's
+    // own protocol, darwin-arm64, at cd9aa425: 371 at the old pin, 387 at the new pin UNPRUNED —
+    // a FAIL against this 383 — and 372 with the prune.
+    //
+    // ⚠ THE ANCHOR MOVES BY A MEASURED DELTA, 375 -> 377, and the delta is the +2 from a
+    // back-to-back PAIR at ee346f77 (372 at the old pin, 374 with the bump and the prune), not the
+    // +1 the cd9aa425 batch suggested. Same operation the wreq-js slice used and for the same
+    // reason: across those two batches the ABSOLUTE drifted a MiB while the delta reproduced, so
+    // the delta is the thing to carry. Taking the +1 would have put E at 390 and B at 393 and left
+    // the next reader a derivation that does not reproduce.
+    //
+    // ⚠ AND THE LIMIT DELIBERATELY DID NOT MOVE. 387 unpruned would have needed a limit of at
+    // least 388, which is ABOVE the 391 E lands on and within 6 of the 394 B lands on — i.e.
+    // accommodating the unpruned bump would not have loosened this gate, it would have blinded it
+    // to the smallest regression it is chartered to catch, and E is a regression this very slice
+    // introduced the possibility of. That is the whole reason the prune ships WITH the pin change
+    // and not as a follow-up: without it there is no honest threshold available.
     //
     // ⚠ THE TRAP THAT IS LIVE AT THESE NUMBERS. Re-checked rather than inherited, because pinning
     // a trap that has gone safe is just a false claim in a test file — which is how the 3% form

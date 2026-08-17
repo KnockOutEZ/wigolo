@@ -247,9 +247,13 @@ jobs:
       matrix:
         # Every desktop OS across the supported Node range. The floor is Node 22
         # (`engines.node: ">=22"`): Node 20 "Iron" went EOL upstream on
-        # 2026-03-24, so it is no longer built or tested here. 12.9.0 ships
-        # prebuilt native binaries for every row (win32-x64 + darwin/linux arm64
-        # across Node 22/24), so npm ci never falls back to a source compile.
+        # 2026-03-24, so it is no longer built or tested here. better-sqlite3
+        # 13.0.3 ships prebuilt native binaries for every row, and does it more
+        # robustly than the 12.9.0 pin it replaced: v13's are Node-API, carry no
+        # ABI suffix and all eight targets travel in the ONE tarball, so there is
+        # no per-platform artifact to resolve and npm ci never falls back to a
+        # source compile on any row. The postinstall then drops the seven the
+        # host cannot load (scripts/prune/sqlite-prebuilds.mjs).
         os: [ubuntu-latest, macos-latest, windows-latest]
         node: ['22', '24']
         include:

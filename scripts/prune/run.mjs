@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { planPlatformPrune, locateOrtRoots, findOutermostInstallRoot } from './ort-platforms.mjs';
 import { planWebPayloadPrune, findWebDependents } from './ort-web-payload.mjs';
 import { planBinaryPrune } from './wreq-binaries.mjs';
+import { planPrebuildPrune } from './sqlite-prebuilds.mjs';
 
 /*
  * Resolution base. As a postinstall this is the package's own directory, which is what walks up
@@ -292,6 +293,50 @@ function pruneWreqBinaries() {
   console.log(`wigolo: wreq-js binary prune — ${plan.reason} (${Math.round(freed / 1048576)} MiB)`);
 }
 
+/**
+ * Remove the `better-sqlite3` prebuilds the host can never load.
+ *
+ * See ./sqlite-prebuilds.mjs for why v13 ships eight of them, why linux keeps two, and why
+ * removing the wrong one breaks the install rather than shrinking it. This function is only the
+ * I/O around that decision.
+ */
+function pruneSqlitePrebuilds() {
+  const root = locatePackageRoot(dirname(baseFile), 'better-sqlite3');
+  if (!root) return; // not installed, or a layout we do not recognise
+
+  const prebuildDir = join(root, 'prebuilds');
+  let present;
+  try {
+    present = readdirSync(prebuildDir, { withFileTypes: true })
+      .filter((e) => e.isFile() || e.isSymbolicLink())
+      .map((e) => e.name);
+  } catch {
+    // No `prebuilds/` at all. That is what a source build looks like (v12 and earlier, or a host
+    // that compiled from source), and it is a tree with nothing foreign in it — not an error.
+    return;
+  }
+
+  const plan = planPrebuildPrune(present, process.platform, process.arch);
+  if (plan.remove.length === 0) {
+    console.log(`wigolo: better-sqlite3 prebuild prune — ${plan.reason}`);
+    return;
+  }
+
+  let freed = 0;
+  for (const name of plan.remove) {
+    const target = join(prebuildDir, name);
+    try {
+      freed += statSync(target).size;
+      rmSync(target, { force: true });
+    } catch (err) {
+      // Fail-open, same contract as every other prune here: a file we could not remove is a file
+      // that stays. Larger, works.
+      console.log(`wigolo: could not remove better-sqlite3/prebuilds/${name} (${err?.message ?? err}) — leaving it in place`);
+    }
+  }
+  console.log(`wigolo: better-sqlite3 prebuild prune — ${plan.reason} (${Math.round(freed / 1048576)} MiB)`);
+}
+
 function main() {
   if (process.env.WIGOLO_SKIP_ORT_PRUNE) {
     console.log('wigolo: install-size prunes skipped (WIGOLO_SKIP_ORT_PRUNE set)');
@@ -310,6 +355,12 @@ function main() {
     pruneWreqBinaries();
   } catch (err) {
     console.log(`wigolo: wreq-js binary prune skipped (${err?.message ?? err})`);
+  }
+
+  try {
+    pruneSqlitePrebuilds();
+  } catch (err) {
+    console.log(`wigolo: better-sqlite3 prebuild prune skipped (${err?.message ?? err})`);
   }
 
   const scanFrom = dirname(baseFile);
