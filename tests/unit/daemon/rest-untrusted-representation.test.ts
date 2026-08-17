@@ -228,14 +228,26 @@ describe('REST default representation — page-derived content arrives FENCED', 
   });
 
   it('REST-9 (must-not-fire): non-200 bodies and unknown tools are shaped by nothing', async () => {
-    // An error envelope is wigolo-authored operator text; shaping it would corrupt the error
-    // contract — an SDK would read wigolo's own diagnostic as untrusted page content.
+    // TWO INDEPENDENT INTENTS LIVE IN THIS TEST. Both are load-bearing; neither may be dropped to
+    // simplify the other, and a resolution that keeps one reads as green while checking less than
+    // either version did.
     //
-    // The mock mirrors the REAL producer orientation (src/tools/fetch.ts:305-308): handleFetch puts
-    // the machine CODE in `error` and prose in `error_reason`. Written the other way round — as it
-    // was — `fetch_failed` never reaches the status table and the case silently exercises the
-    // unknown-code path instead. Pinning 502 rather than `not.toBe(200)` is what makes that
-    // orientation load-bearing: re-invert the literal and this line goes red.
+    // (1) THE REPRESENTATION MUST NEVER REACH A FAILURE. `dispatchTool` returns any non-200 result
+    //     before `shapeUntrusted` runs, so an SDK must not read wigolo's own diagnostic as untrusted
+    //     page content. The mock mirrors the REAL producer orientation (src/tools/fetch.ts):
+    //     handleFetch puts the machine CODE in `error` and prose in `error_reason`. Written the
+    //     other way round — as it once was — `fetch_failed` never reaches the status table and the
+    //     case silently exercises the unknown-code path instead. Pinning 502 rather than
+    //     `not.toBe(200)` is what makes that orientation load-bearing: re-invert the literal, or key
+    //     the status map on the wrong field, and this line goes red.
+    //
+    // (2) THE PROSE FIELD IS FENCED, AND ONLY IT. A failure envelope's message can carry bytes a
+    //     producer read off the wire, so `stageFailure` wraps it — that property is owned by
+    //     tests/integration/error-envelope-fence.test.ts; what this test owns is the COUNT. The
+    //     earlier `toBe(0)` encoded the since-falsified premise that a failure envelope is always
+    //     wigolo-authored text. `toBe(1)` is not a relaxation of it: an exact count fails both when
+    //     the seam fence is removed AND when it widens past the prose onto the code, which `toBe(0)`
+    //     could not distinguish from a body with nothing in it.
     const { handleFetch } = await import('../../../src/tools/fetch.js');
     // Each `Once` is queued immediately before the dispatch that consumes it, so an assertion
     // failing mid-test can never leave a queued value behind to corrupt the next test. A
@@ -245,22 +257,31 @@ describe('REST default representation — page-derived content arrives FENCED', 
 
     vi.mocked(handleFetch).mockResolvedValueOnce(failure as never);
     const r = await dispatchTool('fetch', { url: 'https://x.example/p' }, ctxWith('inline'));
+    const body = r.body as Record<string, unknown>;
     expect(r.status).toBe(502);
-    expect(closedRegions(JSON.stringify(r.body))).toBe(0);
+    // The machine code arrives BARE — the seam fence stops at the prose, which is the whole reason
+    // the status above can still be 502.
+    expect(body.error_reason).toBe('fetch_failed');
+    expect(closedRegions(JSON.stringify(body))).toBe(1);
+    expect(body.untrusted_content).toBeUndefined();
 
     const unknown = await dispatchTool('bogus', {}, ctxWith('inline'));
     expect(unknown.status).toBe(501);
+    // 501 is raised by the router's own envelope, upstream of every producer, so it carries no prose
+    // to contain. The 0-vs-1 split is what separates "the seam fenced one producer's reason" from
+    // "something started wrapping every REST error".
     expect(closedRegions(JSON.stringify(unknown.body))).toBe(0);
 
-    // The load-bearing half. An error body carries no page-derived field, so the inline fencer has
-    // nothing to bite and `closedRegions` above stays 0 whether or not the non-200 gate exists —
-    // those assertions cannot fail on their own. `withUntrustedEnvelope` DOES attach
-    // unconditionally, so the opt-in mode is the only representation that can observe the gate
-    // being dropped.
+    // The load-bearing half of intent (1). An error body has no page-derived field for the inline
+    // fencer to bite, so every count above holds whether or not the non-200 gate exists — they
+    // cannot observe it on their own. `withUntrustedEnvelope` DOES attach unconditionally, so the
+    // opt-in mode is the only representation that can see the gate being dropped.
     vi.mocked(handleFetch).mockResolvedValueOnce(failure as never);
     const envErr = await dispatchTool('fetch', { url: 'https://x.example/p' }, ctxWith('envelope'));
     expect(envErr.status).toBe(502);
     expect((envErr.body as { untrusted_content?: unknown }).untrusted_content).toBeUndefined();
+    // …and the mode does not change the containment either: the same single region, opt-in or not.
+    expect(closedRegions(JSON.stringify(envErr.body))).toBe(1);
 
     const envUnknown = await dispatchTool('bogus', {}, ctxWith('envelope'));
     expect(envUnknown.status).toBe(501);

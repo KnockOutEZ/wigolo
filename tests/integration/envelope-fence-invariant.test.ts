@@ -19,10 +19,12 @@ import { findUnfencedInEnvelope } from '../helpers/envelope-fence.js';
  * already fails closed for unknown keys — rather than carrying a list of its own.
  *
  * What this file does NOT cover, stated plainly rather than implied away:
- *  - The ERROR envelope. `server.ts` hand-rolls `{error, error_reason, stage, hint}` with no fence on
- *    every arm, so a canary planted in a thrown message arrives bare. That channel is pinned for what
- *    it is in `error-envelope-open-channel.test.ts`; it is NOT closed here, and this walker would
- *    report it as a finding if it were pointed at it.
+ *  - The ERROR envelope, which is now CLOSED but is closed somewhere else. `server.ts` and
+ *    `daemon/rest/dispatch.ts` hand-roll `{error, error_reason, stage, hint}`, and the prose field is
+ *    fenced at those two assembly seams rather than by any `fenceXData` below. This walker is pointed
+ *    at it — with the same needle and the same allowlist — from
+ *    `error-envelope-fence.test.ts`, which replaced the trip-wire that used to pin the channel OPEN.
+ *    The fixtures here plant page bytes on SUCCESS envelopes only, so nothing below exercises it.
  *  - Sibling fields the fence functions do not enumerate. `fenceResearchData`, `fenceAgentData` and
  *    `fenceExtractData` all spread `...data`, so anything unenumerated ships raw: `AgentSource
  *    .fetch_error`, `AgentOutput.error`, `ResearchOutput.error`, `ResearchOutput.sub_queries` and
