@@ -1,8 +1,9 @@
 import { beforeEach, afterEach } from 'vitest';
-import { mkdirSync, realpathSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, utimesSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { installNetworkFence } from './net-fence.js';
+import { RUN_DIR_ENV, TEST_HOME_ROOT } from './global-setup.js';
 
 // A test's result must not depend on whether the runner can reach the internet. See
 // `net-fence.ts` for the defect this closes and for what it deliberately does not cover.
@@ -66,29 +67,87 @@ installNetworkFence();
 // classified by CAUSE, never by count. A test that genuinely needs a credential
 // must inject it, not harvest one from the developer's login keychain.
 //
-// The home is CANONICALIZED on Windows. `os.tmpdir()` there commonly returns an
-// 8.3 short path (`C:\Users\RUNNER~1\AppData\Local\Temp`), which breaks two
-// separate things. It embeds a literal `~`, so any assertion using "contains no
-// tilde" as a proxy for "the leading tilde was expanded" fails on a correctly
-// expanded path. And it is an ALIAS: a string-prefix containment test then
-// compares two different spellings of the same tree and confidently answers the
-// wrong question — which is how a probe written specifically to prevent vacuous
-// passes can itself pass vacuously. Resolve to the long form once, at creation,
-// so every later comparison is on one spelling. POSIX is deliberately left
-// alone: realpath there only rewrites `/var/folders/...` to `/private/var/...`,
-// which buys nothing and perturbs a path shape that is already proven green.
-function resolveTestHome(): string {
-  const raw = join(tmpdir(), 'wigolo-test', String(process.pid));
-  mkdirSync(join(raw, '.wigolo'), { recursive: true });
-  if (process.platform !== 'win32') return raw;
-  try {
-    return realpathSync.native(raw);
-  } catch {
-    return raw;
-  }
+// THE HOME IS NOT CANONICALIZED HERE, and that is the fix rather than an omission.
+// Windows' `os.tmpdir()` answers with an 8.3 short path
+// (`C:\Users\RUNNER~1\AppData\Local\Temp`) while `realpath` answers with the long
+// one; canonicalising the LEAF while its parent kept the short spelling is precisely
+// what made `dirname(home) !== runDir` on CI, for one directory under two names.
+// `TEST_HOME_ROOT` is canonicalised once instead (see `global-setup.ts`), so every
+// path minted inside it — the run directory, then this home — inherits that one
+// spelling by construction. Containment is then structural, and no call site has to
+// remember to normalise. Re-resolving here would reintroduce the asymmetry the
+// moment `RUN_DIR_ENV` arrived spelled any other way.
+//
+// THE NAME IS MINTED, NOT DERIVED FROM THE PID.
+// This used to be `join(tmpdir(), 'wigolo-test', String(process.pid))`. Pids are
+// reused, and the reuse was not hypothetical: of 73,547 leftover homes measured on
+// a developer machine, 2,054 held files written 76-118 HOURS after the directory
+// was created — a later, unrelated process resolving $HOME onto a dead one's state.
+// A suite whose result depends on which pid the OS happened to hand out is not
+// deterministic, so the name now comes from `mkdtemp` and cannot alias.
+//
+// ONE HOME PER PROCESS, WHICH IS EXACTLY WHAT THE PID NAMING GAVE. Measured, because
+// the obvious reading of the config is wrong: under `isolate: true` vitest's forks
+// pool starts a FRESH PROCESS for every test file, including in the `spawn-serial`
+// project — `singleFork` removes parallelism, not per-file isolation. Five
+// integration files under that project produced five homes, not one. So the
+// per-worker reuse the old comment claimed was never happening, and this change
+// preserves the real behaviour rather than an imagined one.
+//
+// The memoisation is still here, and is a guard rather than an optimisation: it is
+// what keeps `mkdtemp` from minting a home per FILE if a process ever does evaluate
+// this file twice (`isolate: false`, or a future pool change). `process.env` is the
+// one channel that survives vitest's module-registry reset, and the entry is
+// validated against the LIVE pid so a value inherited by a spawned child can never
+// be mistaken for our own. Note the pid is used here as an OWNERSHIP CHECK against a
+// running process, never as a NAME recording history — that distinction is precisely
+// what the reuse bug was.
+// WHO DELETES IT. Homes are minted inside the per-invocation `run-*` directory that
+// `global-setup.ts` publishes, and its teardown removes that one directory — which
+// contains exactly this run's homes and, by containment, none of a concurrent run's.
+//
+// A per-worker `process.on('exit')` remover was written first and MEASURED not to
+// fire: vitest's `forks` pool signals workers rather than letting them exit, so a
+// 31-file suite still left all 31 directories behind with the hook installed. It was
+// deleted rather than kept as decoration. `RUN_DIR_ENV` being absent is therefore a
+// real fallback, not a theoretical one (a bare `vitest` invocation against a config
+// without the global setup): mint under the root instead, where the staleness reap
+// still reclaims it.
+const HOME_OWNER_KEY = 'VITEST_WIGOLO_TEST_HOME_PID';
+
+function homeParent(): string {
+  const runDir = process.env[RUN_DIR_ENV];
+  return runDir && existsSync(runDir) ? runDir : TEST_HOME_ROOT;
 }
 
-const TEST_HOME = resolveTestHome();
+function claimTestHome(): string {
+  const existing = process.env.VITEST_WIGOLO_TEST_HOME;
+  if (existing && process.env[HOME_OWNER_KEY] === String(process.pid) && existsSync(existing)) {
+    return existing;
+  }
+
+  const parent = homeParent();
+  mkdirSync(parent, { recursive: true });
+  const home = mkdtempSync(join(parent, 'home-'));
+  mkdirSync(join(home, '.wigolo'), { recursive: true });
+
+  process.env[HOME_OWNER_KEY] = String(process.pid);
+  return home;
+}
+
+const TEST_HOME = claimTestHome();
+
+// What the reaper in `global-setup.ts` actually measures the age of: a direct child
+// of the root. Touching our own home would not update the run directory's mtime, so
+// the heartbeat has to target the unit the reaper compares.
+const REAP_UNIT = process.env[RUN_DIR_ENV] ?? TEST_HOME;
+
+// Published so the choice of target is CHECKABLE. Asserting "the run directory looks
+// fresh" cannot fail — a run directory is minted seconds before the assertions read
+// it, so that probe passes whether the heartbeat lands on the right path, the wrong
+// path, or nowhere at all. Naming the target is the only form of the claim a
+// mis-wiring can falsify.
+process.env.VITEST_WIGOLO_REAP_UNIT = REAP_UNIT;
 const TEST_DATA_DIR = join(TEST_HOME, '.wigolo');
 
 // Capture the browser engine's real download registry BEFORE HOME moves — it
@@ -174,8 +233,57 @@ const CI_ENV_KEYS = [
 
 const savedCIEnv: Partial<Record<(typeof CI_ENV_KEYS)[number], string | undefined>> = {};
 
+// Liveness signal for the reap in `global-setup.ts`. A concurrent suite's home must
+// never be deleted, and there were three concurrent runs on this machine the day
+// this landed. `process.kill(pid, 0)` is the obvious probe and is unusable for the
+// same reason the pid NAMING was; `flock` is authoritative but Node only exposes it
+// as `O_EXLOCK` on macOS/BSD and this suite gates on three OSes.
+//
+// So "alive" is defined as "made test progress recently", refreshed from the hook
+// that every single test runs. That needs no timer and does not depend on the event
+// loop being free — it is driven by the thing whose liveness is in question.
+// Throttled because 10k+ tests do not need 10k+ utimes calls.
+//
+// THE CLOCK STARTS AT MODULE LOAD, NOT AT ZERO, and that is load-bearing rather than
+// cosmetic. Under `isolate: true` every test FILE is a fresh process, so module state
+// resets per file: seeding this at 0 made the throttle vacuous and fired one utimes
+// per file — ~790 metadata WRITES aimed at a single shared directory from a dozen
+// concurrent workers. On APFS that is 0.011ms and invisible, which is precisely why a
+// green local run is no evidence here; on NTFS a directory metadata write serialises
+// against the concurrent `CreateDirectory` calls every other worker is making in that
+// same directory to mint its own home.
+//
+// Dropping those writes costs nothing, because the filesystem already performs the
+// refresh: creating a child directory advances its PARENT's mtime, and `claimTestHome`
+// mints a home directly inside the reaped unit as every file starts. Measured, both
+// halves — the parent's mtime advances on a child mkdir, and does NOT advance on a
+// GRANDCHILD mkdir, which is why the reaped unit has to be the run directory and not
+// the home nested inside it.
+//
+// So a file finishing inside the window writes nothing and is still fresh, while a
+// file that genuinely outruns the window heartbeats on a later hook. The one case
+// neither mechanism reaches — a SINGLE test running longer than the window, with no
+// further hook to fire from — is unchanged by this, since the old code's one write
+// landed milliseconds after the mkdir it duplicated. A 20s testTimeout puts that case
+// out of reach anyway.
+const HEARTBEAT_INTERVAL_MS = 30_000;
+let lastHeartbeatMs = Date.now();
+
+function heartbeat(): void {
+  const now = Date.now();
+  if (now - lastHeartbeatMs < HEARTBEAT_INTERVAL_MS) return;
+  lastHeartbeatMs = now;
+  try {
+    const stamp = new Date(now);
+    utimesSync(REAP_UNIT, stamp, stamp);
+  } catch {
+    // Only degrades how soon this home looks abandoned. Never fails a test.
+  }
+}
+
 beforeEach(() => {
   ensureTestDataDir();
+  heartbeat();
   for (const key of CI_ENV_KEYS) {
     savedCIEnv[key] = process.env[key];
     delete process.env[key];

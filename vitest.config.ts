@@ -32,6 +32,12 @@ const shared = {
 
 export default defineConfig({
   test: {
+    // Reap abandoned throwaway HOME trees once per invocation, in the main process
+    // before any worker forks — see tests/global-setup.ts for the leak it closes and
+    // for what it deliberately does not cover. Root level, not per-project: the scan
+    // must happen ONCE per run, and a copy in each project would run it three times
+    // and race itself.
+    globalSetup: ['./tests/global-setup.ts'],
     // Coverage stays global (it spans both projects).
     coverage: {
       provider: 'v8',
