@@ -16,6 +16,7 @@ import {
   statusForCrawlCacheError,
   codeForCrawlCacheError,
   statusForSearchData,
+  FETCH_UPSTREAM_REASONS,
 } from '../../../src/daemon/rest/errors.js';
 import { SSRF_CODES } from '../../../src/watch/ssrf.js';
 
@@ -160,7 +161,9 @@ describe('codeForCrawlCacheError (the code half of the same in-band envelope)', 
   });
 
   it('a value that IS a known code is passed through unchanged, on both stages', () => {
-    for (const code of [...Object.values(SSRF_CODES), 'fetch_failed', 'blocked_by_challenge']) {
+    // Enumerated from production for the same reason the drift gate below is: a new upstream reason
+    // must be covered by being ADDED to the set, not by someone remembering to re-type it here.
+    for (const code of [...Object.values(SSRF_CODES), ...FETCH_UPSTREAM_REASONS]) {
       expect(codeForCrawlCacheError(code, 'crawl')).toBe(code);
       expect(codeForCrawlCacheError(code, 'cache')).toBe(code);
     }
@@ -170,12 +173,22 @@ describe('codeForCrawlCacheError (the code half of the same in-band envelope)', 
     // The two functions are separate but read the SAME two sets. This is what makes that structural
     // rather than a comment: a key recognised by one must be recognised by the other, so a status
     // could never say "known upstream failure, 502" while the code said "generic crawl_failed".
+    //
+    // BOTH recognised sets are enumerated from production, not re-typed. The upstream reasons used to
+    // be four hand-written literals here while the ssrf half was already dynamic, so a FIFTH member
+    // added to `FETCH_UPSTREAM_REASONS` alone would never have been swept by this gate — it would pass
+    // on the four keys it still knew about while the new code went unchecked. Reading the set is what
+    // makes "every key" true of the population rather than of this list.
     const keys = [
       ...Object.values(SSRF_CODES),
-      'fetch_failed', 'blocked_by_challenge', 'upstream_error', 'http_error',
+      ...FETCH_UPSTREAM_REASONS,
       'Database not initialized. Call initDatabase() first.',
       'some error mentioning timeout',
     ];
+    // Outside signal: an empty or accidentally-emptied set would make the loop below vacuous, and a
+    // vacuous drift gate reads exactly like a passing one.
+    expect(FETCH_UPSTREAM_REASONS.size).toBeGreaterThanOrEqual(4);
+    expect(keys.length).toBe(Object.values(SSRF_CODES).length + FETCH_UPSTREAM_REASONS.size + 2);
     for (const k of keys) {
       const passedThrough = codeForCrawlCacheError(k, 'crawl') === k;
       const statusIsSpecific = statusForCrawlCacheError(k) !== 500;

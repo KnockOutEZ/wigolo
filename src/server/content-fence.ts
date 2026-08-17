@@ -105,16 +105,36 @@ function fence(value: string, origin?: string): string {
  *    tripwire rather than left tacit: tests/integration/error-envelope-fence.test.ts, TRIP-1.
  *
  * WHAT THIS DOES NOT COVER, named rather than implied away. The two seams are the whole population of
- * StageError assemblies, but three other REST envelopes are hand-rolled from a non-StageError shape
- * and are deliberately left alone here — each is a separate call, not an oversight:
- *   - `crawlCacheFailure` (daemon/rest/dispatch.ts) puts the SAME string in both fields, so fencing the
- *     prose half would leave a bare copy under the code and buy nothing. Closing it needs a code→message
- *     mapping that does not exist yet.
+ * StageError assemblies. THREE other REST envelopes are hand-rolled from a non-StageError shape and are
+ * deliberately left alone here — each is a separate call, not an oversight:
  *   - the `search_failed` envelope in `dispatchSearch` publishes search's in-band `data.error`, whose
  *     MCP counterpart ships on the SUCCESS envelope and is not fenced there either. Fencing one surface
  *     and not the other would be a new asymmetry.
  *   - `guardFailure` / the router's validation envelopes carry the CALLER's own input, never bytes read
  *     off a response.
+ *   - the firecrawl-compat surface, which is STILL OPEN to the very text the crawl/cache seams below now
+ *     contain, at two sites: `src/daemon/rest/firecrawl-compat.ts` publishes `mapResult.error` as the
+ *     envelope message on the map route, and settles a background crawl job with `crawl.error` for the
+ *     polling client to read. Both call `handleCrawl` DIRECTLY, so neither passes through
+ *     `fenceCrawlData` — the same origin-chosen `Location:` text described at `fencedInBandError` below
+ *     reaches both raw. This is not the "carries no page bytes" exemption the two bullets above are; it
+ *     is a live channel left for its own change, because that file carries the INVERSE untrusted-mode
+ *     default by decision A11 (see the note in daemon/rest/dispatch.ts) and routing it through the
+ *     shared fencer is a behaviour change on a compatibility surface, not a containment no-op.
+ *
+ * `crawlCacheFailure` (daemon/rest/dispatch.ts) was listed here as a third, on the rationale that it
+ * "puts the SAME string in both fields, so fencing the prose half would leave a bare copy under the code
+ * and buy nothing — closing it needs a code→message mapping that does not exist yet". Both halves of
+ * that were FALSE, and the correction is recorded rather than quietly deleted because the shape of the
+ * mistake is the reusable part: the two fields were never two representations of one value with a code
+ * missing from the middle. `CrawlOutput.error` / `CacheOutput.error` carry PROSE at every producer site
+ * in the tree (`handleCrawl`'s and `handleCache`'s catches emit `err.message`, the seed guard emits an
+ * SsrfRejection's `reason`, `handleMapStrategy` emits `describeStageError`'s sentence, the clear path
+ * emits an English instruction), so the value always WAS the message and the CODE was what was absent.
+ * Nothing needed mapping: `codeForCrawlCacheError` reads it out of the same two constants
+ * `statusForCrawlCacheError` already keyed its 400/502 rows on. That seam now fences its prose through
+ * `fenceErrorMessage` like the other two, and the identical prose is fenced on the MCP SUCCESS envelope
+ * by `fenceCrawlData` / `fenceCacheData` below.
  *
  * No origin is threaded. The producer shape carries a status and a stage but never the resolved URL,
  * and the seams would have to plumb it through ten dispatch arms to name one; the origin line is
@@ -205,11 +225,44 @@ export function fenceFetchData(data: FetchOutput): FetchOutput {
   return out;
 }
 
+/**
+ * The IN-BAND `error` field of a crawl/cache result — page-derived prose on a SUCCESS envelope.
+ *
+ * `CrawlOutput.error` / `MapOutput.error` / `CacheOutput.error` / `ChangeReport.error` are the failure
+ * channel of tools that report their failures IN BAND: `server.ts` derives `isError` from them but still
+ * ships the whole `data` object, so these strings never pass through `stageErrorEnvelope` and were left
+ * raw here. (`SearchOutput.error` is the SAME shape and is still raw on both surfaces — see the header's
+ * `search_failed` bullet; it is a separate call, not covered by this.) Measured live: `handleMapStrategy`'s fetch shim
+ * throws `describeStageError(raw)`, `describeFetchError` passes a generic error's `.message` through
+ * verbatim, and `http-client.ts` throws ``HTTP ${status} from ${currentUrl}`` where `currentUrl` came out
+ * of an origin-chosen `Location:` header — so an origin authors the path and query of that URL and they
+ * arrive here byte-for-byte (WHATWG normalisation strips CR/LF/TAB and percent-encodes NUL/ESC/<>"/space,
+ * but `:`, `;`, `_`, backtick and alphanumerics survive, bounded only by the 16 KiB header block).
+ *
+ * Fenced UNCONDITIONALLY, per rule 1: a wigolo-authored refusal (the SSRF seed guard's reason, the clear
+ * path's instruction) is wrapped too. Over-fencing a failure message fails safe and costs a preamble;
+ * asking "is this one page-derived?" would hand the origin the control's decision input. The only
+ * structural check is emptiness, exactly as `fenceErrorMessage` and `fenceOptional` do.
+ *
+ * NOT fenced, and they are the reason this is a per-field spread rather than a deep fence:
+ * `ChangeReport.diff_summary` is wigolo-authored line COUNTS (`computeDiffSummary` interpolates only
+ * numbers — no page bytes reach it), `current_hash` / `previous_hash` are digests, `url` is dereferenced,
+ * and `MapOutput.urls` is the tool's whole answer. Wrapping any of them would break a consumer to
+ * contain nothing.
+ */
+function fencedInBandError(error: string | undefined): { error?: string } {
+  return typeof error === 'string' && error.length > 0 ? { error: fenceErrorMessage(error) } : {};
+}
+
 export function fenceCrawlData(data: CrawlResult): CrawlResult {
-  // mode='map' returns URLs only (no `pages`) — nothing page-derived to fence.
-  if (!('pages' in data) || !Array.isArray(data.pages)) return data;
+  // mode='map' returns URLs only (no `pages`) — but it DOES carry `error`, which is where the
+  // origin-chosen redirect target arrives. This early return used to skip that field entirely.
+  if (!('pages' in data) || !Array.isArray(data.pages)) {
+    return { ...data, ...fencedInBandError(data.error) };
+  }
   return {
     ...data,
+    ...fencedInBandError(data.error),
     // One FRESH nonce per page — never shared across `pages[]`, or one page's close marker would
     // terminate another page's region.
     pages: data.pages.map((p) => ({
@@ -441,16 +494,38 @@ export function fenceSearchData(data: SearchOutput): SearchOutput {
  * `cache` returns stored page bodies and titles from `url_cache` unioned with `studio_artifacts`.
  * It was UNFENCED, which also made it the open path for artifact rows (see decision A2b). `url` and
  * `trusted` stay raw — the agent dereferences one and must see the other.
+ *
+ * The `!Array.isArray(data.results)` early return this used to open with skipped EVERY other shape the
+ * tool can return — `error` and, more sharply, `changes[].error`, which `handleCache`'s check_changes
+ * loop fills from `describeStageError(raw)` on a refused re-fetch. That is the same origin-chosen
+ * redirect text `fencedInBandError` describes, arriving on a success envelope by a second route. Each
+ * arm is now an independent spread so no shape can be skipped by another's absence.
  */
 export function fenceCacheData(data: CacheOutput): CacheOutput {
-  if (!Array.isArray(data.results)) return data;
   return {
     ...data,
-    results: data.results.map((r) => ({
-      ...r,
-      title: fenceOptional(r.title, r.url) as string,
-      markdown: fenceOptional(r.markdown, r.url) as string,
-    })),
+    ...fencedInBandError(data.error),
+    ...(Array.isArray(data.results)
+      ? {
+          results: data.results.map((r) => ({
+            ...r,
+            title: fenceOptional(r.title, r.url) as string,
+            markdown: fenceOptional(r.markdown, r.url) as string,
+          })),
+        }
+      : {}),
+    // A ChangeReport names its own url, so the region is attributed — unlike the top-level `error`,
+    // where the seams carry no resolved URL. `changed` / the hashes / `diff_summary` stay raw.
+    ...(Array.isArray(data.changes)
+      ? {
+          changes: data.changes.map((c) => ({
+            ...c,
+            ...(typeof c.error === 'string' && c.error.length > 0
+              ? { error: fence(c.error, c.url) }
+              : {}),
+          })),
+        }
+      : {}),
   };
 }
 

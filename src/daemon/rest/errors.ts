@@ -112,8 +112,15 @@ export function routeTimeout(tool: string): HttpError {
 /** Exact unavailability reason codes → 503. */
 const UNAVAILABILITY_REASONS = new Set(['browser_engine_unavailable', 'search_backend_unavailable']);
 
-/** Exact fetch-stage upstream failure reason codes → 502. */
-const FETCH_UPSTREAM_REASONS = new Set(['blocked_by_challenge', 'fetch_failed', 'upstream_error', 'http_error']);
+/**
+ * Exact fetch-stage upstream failure reason codes → 502.
+ *
+ * Exported so the drift gate in rest-errors.test.ts can enumerate the membership from HERE rather than
+ * re-typing it. `SSRF_CODES` was already read dynamically on the other half of that gate, so a fifth
+ * member added to this set alone used to fall outside the sweep — the gate would still pass while the
+ * new code classified one way for the status and another for the published code.
+ */
+export const FETCH_UPSTREAM_REASONS = new Set(['blocked_by_challenge', 'fetch_failed', 'upstream_error', 'http_error']);
 
 /** Explicit (stage, reason) semantic-validation allowlist → 400. */
 const SEMANTIC_VALIDATION_REASONS = new Set([
