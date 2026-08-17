@@ -45,6 +45,8 @@ Re-run `wigolo warmup --all` any time to retry the downloads, or just let each c
 
 This label means the target sits behind an anti-bot challenge that did not clear within the challenge window. wigolo escalates through its fetch tiers (plain HTTP → TLS-impersonation tier → full browser engine), polls the challenge like a patient browser, and reuses previously solved clearances per domain — and when none of that works, it tells you so instead of returning the challenge page dressed up as content.
 
+It is deliberately a narrow label. A plain **rate limit** (HTTP 429 with no challenge on the page) is reported as the 429 it is, not as a challenge — the remedy there is to slow down and retry later, and wigolo parks the host in a short backoff window for you. Being told "you are blocked" when you are merely going too fast would send you to the wrong fix.
+
 Three honest facts to calibrate expectations:
 
 - **IP reputation is scored.** From datacenter IPs (VPS, CI, cloud), some challenge-protected sites will not clear even though the identical request works from a residential connection. That's a property of where you're running, not a knob wigolo forgot.

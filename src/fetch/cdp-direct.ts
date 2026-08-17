@@ -1382,7 +1382,11 @@ export async function cdpDirectFetch(
       //     and burns the full clear-poll before declining. Measured: a 220-image
       //     gallery (47,950 B) and a large un-hydrated SPA shell. They are not
       //     served wrongly — the fetch falls back to the browser tier — but they
-      //     pay the budget.
+      //     pay the budget. NARROWED 2026-08-17: the wall rule now also requires
+      //     the body to be below the interstitial content floor absolutely, so an
+      //     ordinary script-heavy page that carries an article breaks promptly
+      //     here. What still pays the budget is a large page with almost nothing
+      //     to read — the gallery and the un-hydrated shell above.
       //
       // Both are UNCHANGED versus base `fb16fb01`, which declined these too, and
       // it fails CLOSED. `isLowContentDensity`'s own docstring asks callers to

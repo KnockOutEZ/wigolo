@@ -78,8 +78,14 @@ describe('the wall-shape rule keeps a real anti-bot status distinguishable', () 
 
   it('fires only when the two coincide', () => {
     expect(isChallengeShell(403, SCAFFOLD)).toBe(true);
-    expect(isChallengeShell(429, SCAFFOLD)).toBe(true);
     expect(isChallengeShell(503, SCAFFOLD)).toBe(true);
+  });
+
+  it('excludes a markerless 429 — that is a rate-limit, and the remedy differs', () => {
+    // 429 is in the anti-bot STATUS set, so status+shape used to make every
+    // script-heavy 429 a `blocked_by_challenge`. "You are bot-blocked" sends the
+    // caller to rotate identity; "you are rate-limited" sends it to back off.
+    expect(isChallengeShell(429, SCAFFOLD)).toBe(false);
   });
 
   it('ignores a body too small for the density ratio to mean anything', () => {

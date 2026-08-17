@@ -640,4 +640,63 @@ describe('browser-pool anti-bot fast-fail (D6)', () => {
     delete process.env.WIGOLO_CHALLENGE_COMPLETION_MS;
     await pool.shutdown();
   });
+
+  // The browser tier is where the two defects below actually reached a user: the
+  // HTTP tier's own rate-limit branch runs before its challenge checks, so only
+  // a page that got here could be mislabelled.
+  it('MUST-NOT-FIRE: a markerless 429 on a script-heavy site is returned as the rate-limit it is', async () => {
+    // Was reported as bot-protection. 429 is an anti-bot STATUS, and a
+    // script-heavy body satisfied the wall SHAPE, so status+shape fired — which
+    // told the caller to rotate identity when the honest remedy is to back off.
+    state.status = 429;
+    state.bodies = [
+      '<html><head>' + '<script src="/static/chunk.js"></script>'.repeat(400) +
+      '</head><body><div id="app"></div></body></html>',
+    ];
+
+    const pool = new MultiBrowserPool();
+    const res = await pool.fetchWithBrowser('https://limited.example/');
+    // The status survives, so the caller can see WHICH remedy applies.
+    expect(res.statusCode).toBe(429);
+    expect(res.contentCompleteness?.reason).not.toBe('challenge_shell');
+    await pool.shutdown();
+  });
+
+  it('MUST-FIRE: a 429 that carries a challenge body is still a challenge', async () => {
+    // The exclusion is markerless-only. A rate-limited status is how some walls
+    // are served, so dropping 429 wholesale would open a real hole.
+    vi.useFakeTimers();
+    process.env.WIGOLO_CHALLENGE_COMPLETION_MS = '5000';
+    resetConfig();
+    state.status = 429;
+    state.bodies = [CHALLENGE_INTERSTITIAL, CHALLENGE_INTERSTITIAL];
+
+    const pool = new MultiBrowserPool();
+    const p = pool.fetchWithBrowser('https://blocked.example/');
+    const assertion = expect(p).rejects.toBeInstanceOf(ChallengeBlockedError);
+    await vi.advanceTimersByTimeAsync(6000);
+    await assertion;
+    delete process.env.WIGOLO_CHALLENGE_COMPLETION_MS;
+    await pool.shutdown();
+  });
+
+  it('MUST-NOT-FIRE: a 403 page bloated with script but carrying an article is not a wall', async () => {
+    // The (A) defect at the tier where it was measured. The rendered DOM of an
+    // ordinary JS-heavy site sits in the same density band as a bot wall, so the
+    // ratio alone relabelled genuine 403s (an admin page, a repo page) as blocks.
+    state.status = 403;
+    state.bodies = [
+      '<html><head>' + '<script src="/static/chunk.js"></script>'.repeat(3000) +
+      '</head><body><article>' +
+      'This page is real, readable content that happens to ship a large bundle. '.repeat(40) +
+      '</article></body></html>',
+    ];
+
+    const pool = new MultiBrowserPool();
+    const res = await pool.fetchWithBrowser('https://forbidden.example/admin');
+    expect(res.statusCode).toBe(403);
+    expect(res.html).toContain('This page is real, readable content');
+    expect(res.contentCompleteness?.reason).not.toBe('challenge_shell');
+    await pool.shutdown();
+  });
 });
