@@ -31,6 +31,8 @@ import {
   statusForStageResult,
   statusForSearchData,
   statusForCrawlCacheError,
+  codeForCrawlCacheError,
+  type CrawlCacheStage,
 } from './errors.js';
 import { untrustedFenceParts } from '../../security/untrusted.js';
 import {
@@ -153,13 +155,25 @@ async function guardUrlField(raw: unknown, ctx: DispatchContext): Promise<Dispat
 }
 
 /**
- * Envelope a crawl/cache in-band `error` string. The value is either a stable
- * ssrf reason code (→ 400) or an upstream fetch code (→ 502); free text → 500.
+ * Envelope a crawl/cache in-band `error` string.
+ *
+ * This used to pass the SAME string as both the code and the message, which published prose as the
+ * machine code and left the message unfenced. Both halves were wrong for one reason: `CrawlOutput
+ * .error` and `CacheOutput.error` are PROSE at every producer site (see `codeForCrawlCacheError`), so
+ * the value is the MESSAGE and the code had to come from somewhere else.
+ *
+ * The prose is fenced through the same shared `fenceErrorMessage` the other two assembly seams use.
+ * That is not belt-and-braces: `handleMapStrategy` throws `describeStageError(raw)` and reports
+ * `err.message`, and `describeFetchError` passes a generic error's `.message` straight through — so an
+ * origin-chosen redirect target reaches this envelope inside `HTTP <status> from <url>`. `dispatchTool`
+ * returns non-200 bodies BEFORE `shapeUntrusted` runs, so this seam is the only place that can contain it.
+ *
+ * `statusForCrawlCacheError` still reads the RAW producer string, so the fence cannot move a status.
  */
-function crawlCacheFailure(errorKey: string): DispatchResult {
+function crawlCacheFailure(errorKey: string, stage: CrawlCacheStage): DispatchResult {
   return {
     status: statusForCrawlCacheError(errorKey),
-    body: errorEnvelope(errorKey, errorKey, { stage: 'crawl' }),
+    body: errorEnvelope(codeForCrawlCacheError(errorKey, stage), fenceErrorMessage(errorKey), { stage }),
   };
 }
 
@@ -201,7 +215,7 @@ async function dispatchCrawl(input: CrawlInput, ctx: DispatchContext): Promise<D
   if (refused) return refused;
   const result = await handleCrawl(input, ctx.subsystems.router);
   if (typeof result.error === 'string' && result.error.length > 0) {
-    return crawlCacheFailure(result.error);
+    return crawlCacheFailure(result.error, 'crawl');
   }
   return { status: 200, body: result };
 }
@@ -209,7 +223,8 @@ async function dispatchCrawl(input: CrawlInput, ctx: DispatchContext): Promise<D
 async function dispatchCache(input: CacheInput, ctx: DispatchContext): Promise<DispatchResult> {
   const result = await handleCache(input, ctx.subsystems.router);
   if (typeof result.error === 'string' && result.error.length > 0) {
-    return crawlCacheFailure(result.error);
+    // `stage: 'cache'`, not the `'crawl'` this shared helper used to hardcode for both callers.
+    return crawlCacheFailure(result.error, 'cache');
   }
   return { status: 200, body: result };
 }

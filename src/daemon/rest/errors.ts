@@ -167,6 +167,41 @@ export function statusForCrawlCacheError(errorKey: string): number {
   return 500;
 }
 
+/** The stage whose in-band `error` string is being enveloped, and the code used when it is prose. */
+export type CrawlCacheStage = 'crawl' | 'cache';
+
+const CRAWL_CACHE_FALLBACK_CODES: Record<CrawlCacheStage, string> = {
+  crawl: 'crawl_failed',
+  cache: 'cache_failed',
+};
+
+/**
+ * The stable machine code for a crawl/cache in-band `error` string.
+ *
+ * The published envelope needs a CODE in `error_reason` (docs/rest-api.md "Error shape"; both SDKs
+ * read it as one), but `CrawlOutput.error` / `CacheOutput.error` are PROSE fields at every producer
+ * site in the tree — `handleCrawl`'s and `handleCache`'s top-level catches emit `err.message`,
+ * `handleCrawl`'s seed guard emits the SsrfRejection's `reason` (not its `code`), `handleMapStrategy`
+ * emits `describeStageError`'s sentence, and `handleCache`'s clear path emits an English instruction.
+ * So there is no code→message mapping to build here: the value IS the message, and what was missing
+ * was the code.
+ *
+ * The two recognised sets are NOT invented for this function — they are the same `SSRF_CODE_SET` and
+ * `FETCH_UPSTREAM_REASONS` that `statusForCrawlCacheError` directly above already keys its 400 and 502
+ * rows on. Reading the same two constants is what stops the code and the status classifying the same
+ * key differently; `rest-errors.test.ts` asserts they agree rather than leaving it to inspection. No
+ * producer in the tree is known to reach those rows today (they emit prose), but the pass-through is
+ * kept so a producer that is fixed to emit its code publishes that code rather than a generic one.
+ *
+ * The fallbacks mirror the codes the sibling tools' catches already emit — `research_failed`,
+ * `agent_failed`, `extract_failed`, `diff_failed` — rather than adding a new naming convention.
+ */
+export function codeForCrawlCacheError(errorKey: string, stage: CrawlCacheStage): string {
+  if (SSRF_CODE_SET.has(errorKey)) return errorKey;
+  if (FETCH_UPSTREAM_REASONS.has(errorKey)) return errorKey;
+  return CRAWL_CACHE_FALLBACK_CODES[stage];
+}
+
 /**
  * Search returns `ok:true` with an optional `data.error`. A set `error`
  * (all-engines-failed) is mapped like a failure (500). A `warning`-only /
