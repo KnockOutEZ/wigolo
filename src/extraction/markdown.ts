@@ -203,9 +203,25 @@ export function extractSection(
   return { content: extractFromHeading(lines, headings, i), matched: true };
 }
 
+/**
+ * A markdown link/image DESTINATION cannot span lines. The character class
+ * excludes CR and LF for that reason, and the reason is not cosmetic: `[^)]+`
+ * matched across newlines, so a page whose `href` carried line breaks put
+ * multi-line page prose into `links[]` / `images[]` — arrays typed and
+ * consumed as URLs, and shipped to callers without a containment fence
+ * (`FetchOutput.links` is returned on every fetch, not behind an opt-in).
+ * `resolveRelativeUrls` below then declined to resolve such a target, because
+ * ITS pattern is `[^)\s]+`, so the raw text passed straight through.
+ *
+ * Excluding the line break restores what CommonMark already says — a link
+ * destination ends at a line ending in both the bare and the `<...>` form — so
+ * nothing a conforming producer emits stops being recognised. A destination
+ * containing spaces is still matched: turndown emits those in the bracketed
+ * `<a b>` form on one line, and dropping them would lose real links.
+ */
 export function extractLinksAndImages(markdown: string): { links: string[]; images: string[] } {
-  const imagePattern = /!\[[^\]]*\]\(([^)]+)\)/g;
-  const linkPattern = /(?<!!)\[[^\]]*\]\(([^)]+)\)/g;
+  const imagePattern = /!\[[^\]]*\]\(([^)\r\n]+)\)/g;
+  const linkPattern = /(?<!!)\[[^\]]*\]\(([^)\r\n]+)\)/g;
 
   const images = new Set<string>();
   const links = new Set<string>();

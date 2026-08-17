@@ -11,6 +11,47 @@ export function stripFragment(url: string): string {
   }
 }
 
+/**
+ * Resolve a raw markdown link target into the URL that `LinkEdge.to` promises,
+ * or null when the target is not a URL at all.
+ *
+ * `stripFragment` above is fail-OPEN by design — an unparseable string comes
+ * back verbatim, which is right for its callers (they hold URLs already) and
+ * wrong for the link graph, whose targets are lifted straight out of page
+ * markdown. A link destination is whatever the page author typed between the
+ * parentheses: `extractLinksAndImages` captures it as text, and
+ * `resolveRelativeUrls` skips any target carrying whitespace rather than
+ * resolving it. So a target can reach the graph as arbitrary page prose while
+ * `LinkEdge.to` is typed, documented and consumed as a URL.
+ *
+ * Resolving through `new URL(target, from)` is the same construction that makes
+ * `MapOutput.urls` sound (src/crawl/mapper.ts). It is not a filter over the
+ * value — nothing here inspects the target and decides — it is a total
+ * normalisation whose OUTPUT SHAPE is guaranteed by the URL parser: the
+ * serialized href carries no ASCII whitespace, because the parser removes tab
+ * / CR / LF outright and percent-encodes every remaining space. That is a
+ * structural property of the return type, not a judgement about the input.
+ *
+ * The fragment is dropped here rather than by a second `stripFragment` pass so
+ * the graph keeps its existing dedup identity (/foo, /foo#a and /foo#b are ONE
+ * edge) in a single parse.
+ *
+ * Returns null only when the target cannot be a URL under any base — a
+ * malformed authority such as `https://exa mple.com` or `http://[`. There is no
+ * correct `to` for those, and inventing one (percent-encoding the whole string
+ * into a same-origin path) would fabricate an edge to a page that was never
+ * linked. Callers must account for a null rather than pass it through.
+ */
+export function normalizeLinkTarget(target: string, from: string): string | null {
+  try {
+    const u = new URL(target, from);
+    u.hash = '';
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
 // Canonical form for visited-set comparison — drops fragments and the
 // trailing slash so /docs, /docs/, and /docs#anchor are treated as one page.
 export function canonicalForCrawl(url: string): string {
