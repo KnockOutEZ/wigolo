@@ -104,6 +104,18 @@ function fence(value: string, origin?: string): string {
  *    away from being false — `ChallengeBlockedError` accepts a `hint` argument — so it is pinned by a
  *    tripwire rather than left tacit: tests/integration/error-envelope-fence.test.ts, TRIP-1.
  *
+ * WHAT THIS DOES NOT COVER, named rather than implied away. The two seams are the whole population of
+ * StageError assemblies, but three other REST envelopes are hand-rolled from a non-StageError shape
+ * and are deliberately left alone here — each is a separate call, not an oversight:
+ *   - `crawlCacheFailure` (daemon/rest/dispatch.ts) puts the SAME string in both fields, so fencing the
+ *     prose half would leave a bare copy under the code and buy nothing. Closing it needs a code→message
+ *     mapping that does not exist yet.
+ *   - the `search_failed` envelope in `dispatchSearch` publishes search's in-band `data.error`, whose
+ *     MCP counterpart ships on the SUCCESS envelope and is not fenced there either. Fencing one surface
+ *     and not the other would be a new asymmetry.
+ *   - `guardFailure` / the router's validation envelopes carry the CALLER's own input, never bytes read
+ *     off a response.
+ *
  * No origin is threaded. The producer shape carries a status and a stage but never the resolved URL,
  * and the seams would have to plumb it through ten dispatch arms to name one; the origin line is
  * informational ("which host is talking"), never load-bearing for containment, which comes from the
