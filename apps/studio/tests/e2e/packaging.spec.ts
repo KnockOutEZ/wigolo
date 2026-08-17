@@ -270,6 +270,14 @@ describe.skipIf(!RUN)('negative control: the broker unpack glob removed', () => 
     const { modules } = probe('node', {}, unpackedAnchor(BROKER_CONTROL_OUT), ['better-sqlite3', 'sqlite-vec']);
     expect(modules['better-sqlite3'].ok, modules['better-sqlite3'].detail).toBe(true);
     expect(modules['sqlite-vec'].ok, modules['sqlite-vec'].detail).toBe(true);
+    // `ok` ALONE IS NOT ENOUGH, and this artifact is the one that proves it: `**/node_modules/**` is
+    // dropped here, so if a native module also lost its own glob, resolution walks up out of the .app
+    // bundle, finds the developer's checkout, dlopens happily and reports ok — green on an artifact
+    // that is dead everywhere else. That is the same escape that made the broker control vacuous on
+    // its first run, twenty lines up. native-probe.cjs has no containment check of its own, so the
+    // path has to be asserted here.
+    expect(modules['better-sqlite3'].detail).toContain('app.asar.unpacked');
+    expect(modules['sqlite-vec'].detail).toContain('app.asar.unpacked');
   });
 });
 

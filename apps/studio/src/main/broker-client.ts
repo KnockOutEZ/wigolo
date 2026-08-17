@@ -41,6 +41,11 @@ export interface BrokerClientOptions {
  * Matches a path segment that IS an asar archive — `…/app.asar/…`. Deliberately not a substring test:
  * `…/app.asar.unpacked/…` must NOT match, or a second rewrite would produce `app.asar.unpacked.unpacked`.
  * The `.asar` has to be followed by a separator, and `app.asar.unpacked` has a `.` there instead.
+ *
+ * Non-global on purpose, so `String.replace` rewrites the FIRST matching segment only. Known limit: a
+ * bundle installed under an ancestor directory whose own name ends in `.asar` would be rewritten at the
+ * ancestor instead of at the archive. Left alone rather than anchored to the real archive, which is not
+ * knowable here without importing electron (forbidden in this module by the `check:no-electron` gate).
  */
 const ASAR_SEGMENT = /([\\/])([^\\/]+)\.asar([\\/])/;
 
