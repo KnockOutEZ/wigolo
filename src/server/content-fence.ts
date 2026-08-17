@@ -221,8 +221,9 @@ export function fenceFetchData(data: FetchOutput): FetchOutput {
  *
  * `CrawlOutput.error` / `MapOutput.error` / `CacheOutput.error` / `ChangeReport.error` are the failure
  * channel of tools that report their failures IN BAND: `server.ts` derives `isError` from them but still
- * ships the whole `data` object, so these strings never pass through `stageErrorEnvelope` and were the
- * one class of page-derived string this file left raw. Measured live: `handleMapStrategy`'s fetch shim
+ * ships the whole `data` object, so these strings never pass through `stageErrorEnvelope` and were left
+ * raw here. (`SearchOutput.error` is the SAME shape and is still raw on both surfaces — see the header's
+ * `search_failed` bullet; it is a separate call, not covered by this.) Measured live: `handleMapStrategy`'s fetch shim
  * throws `describeStageError(raw)`, `describeFetchError` passes a generic error's `.message` through
  * verbatim, and `http-client.ts` throws ``HTTP ${status} from ${currentUrl}`` where `currentUrl` came out
  * of an origin-chosen `Location:` header — so an origin authors the path and query of that URL and they
