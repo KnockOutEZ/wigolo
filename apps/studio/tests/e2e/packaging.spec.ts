@@ -1,19 +1,31 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OMIT_ENV } from '../../electron-builder.config';
 
 /**
- * GATED (RUN_STUDIO_PACKAGE_E2E) — separately from RUN_STUDIO_E2E, because this file BUILDS two
+ * GATED (RUN_STUDIO_PACKAGE_E2E) — separately from RUN_STUDIO_E2E, because this file BUILDS three
  * complete Electron artifacts (~380 MB and several minutes each). It is the only place the packaged
  * code path is actually executed rather than reasoned about.
+ *
+ * BE HONEST ABOUT WHAT THE GATE COSTS: nothing in ordinary CI runs any of this, so a packaged-only
+ * regression reaches a launch before it reaches a failing test. That is exactly how the DB-broker
+ * defect shipped. The cheap half of that lesson lives in `tests/unit/broker-asar-path.test.ts`, which
+ * simulates the two packaged trees with ordinary directories and DOES run on every push.
  *
  * What it proves, and why each half is needed:
  *
  *  - POSITIVE: every native module the studio depends on loads from INSIDE the packaged app. Not
  *    "the file is present" — an opened DB with a working FTS5 MATCH, a real KNN query through the
  *    loaded sqlite-vec extension, and both @rpath-linked bindings resolving their dylibs.
+ *
+ *  - BROKER: the studio DB broker actually STARTS from the packaged tree and data goes through it and
+ *    comes back — resolve, boot, ping, a persisted capture read back, an FTS5 MATCH on the row the
+ *    broker wrote, and a vec0 table only a broker with a loaded extension could have created. Two
+ *    controls sit under it: the pre-fix in-archive anchor (hosted on the packaged Electron binary, so
+ *    the asar layer is really in play) and an artifact built without the broker's unpack glob.
  *
  *  - NEGATIVE: the same probe against an artifact built with two asarUnpack entries removed must
  *    FAIL, with the @rpath signature, while the entries we kept still pass in that same artifact.
@@ -35,18 +47,35 @@ const RUN = !!process.env.RUN_STUDIO_PACKAGE_E2E;
 
 const APP_DIR = join(import.meta.dirname, '../..');
 const PROBE = join(import.meta.dirname, '../native-probe.cjs');
+const BROKER_PROBE = join(import.meta.dirname, '../broker-probe.cjs');
 const GOOD_OUT = 'release-e2e';
 const CONTROL_OUT = 'release-e2e-control';
+const BROKER_CONTROL_OUT = 'release-e2e-broker-control';
 
 const appPath = (out: string) => join(APP_DIR, out, 'mac-arm64', 'Wigolo Studio.app');
 const binary = (out: string) => join(appPath(out), 'Contents/MacOS/Wigolo Studio');
 /** Anchor inside the sealed archive — this is the resolution root the packaged main process gets. */
 const asarAnchor = (out: string) => join(appPath(out), 'Contents/Resources/app.asar/out/main/index.js');
-/** Anchor in the on-disk unpacked tree — the resolution root a plain-Node child has to work from. */
+/**
+ * Anchor in the on-disk unpacked tree — the resolution root a plain-Node child has to work from, and
+ * what `toUnpackedPath()` in `src/main/broker-client.ts` rewrites the real anchor into.
+ *
+ * This path is SYNTHETIC and that is deliberate: only `node_modules/**` is unpacked, so
+ * `app.asar.unpacked/out/main/index.js` does not exist on disk and is not supposed to. `createRequire`
+ * never stats its anchor — it only walks `node_modules` upward from the anchor's directory — so this
+ * is purely a resolution base. Do NOT "correct" it to a file that exists; pointing it back at the
+ * archive is the bug this file now guards.
+ */
 const unpackedAnchor = (out: string) => join(appPath(out), 'Contents/Resources/app.asar.unpacked/out/main/index.js');
 
 interface ProbeResult {
   modules: Record<string, { ok: boolean; detail: string }>;
+}
+
+interface BrokerProbeResult {
+  brokerPath?: string;
+  stages: Record<string, { ok: boolean; detail: string }>;
+  brokerStderrTail: string;
 }
 
 function pack(out: string, env: NodeJS.ProcessEnv, extraArgs: string[] = []): void {
@@ -74,6 +103,36 @@ function probe(runtime: string, env: NodeJS.ProcessEnv, anchor: string, modules:
     stdout = e.stdout;
   }
   return JSON.parse(stdout.trim().split('\n').pop() as string) as ProbeResult;
+}
+
+/**
+ * Boot the DB broker exactly the way the packaged Electron main does — plain Node, resolving from
+ * `anchor` — and drive a real round trip through it. Always plain `node`: the broker's whole reason to
+ * exist is that better-sqlite3 12.9.0 has no Electron build (see the ABI test below).
+ */
+function brokerProbe(anchor: string, out: string, host?: { runtime: string; env: NodeJS.ProcessEnv }): BrokerProbeResult {
+  const dataDir = mkdtempSync(join(tmpdir(), `wigolo-broker-${out}-`));
+  // An Electron-hosted run cannot open the broker's DB itself (engine is Node-ABI 127, Electron is
+  // 148), so it stops after the round trip.
+  const args = host ? [BROKER_PROBE, anchor, dataDir, '--skip-db-inspect'] : [BROKER_PROBE, anchor, dataDir];
+  let stdout: string;
+  try {
+    stdout = execFileSync(host?.runtime ?? 'node', args, {
+      encoding: 'utf8',
+      env: { ...process.env, ...host?.env },
+      timeout: 5 * 60_000,
+      // The broker boots the full core subsystem stack; a cold run is not fast.
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (err) {
+    // A failing stage exits non-zero BY DESIGN — its JSON is the result, not an error.
+    const e = err as { stdout?: string; message?: string };
+    if (!e.stdout?.trim()) throw new Error(`broker probe produced no output: ${e.message}`);
+    stdout = e.stdout;
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+  return JSON.parse(stdout.trim().split('\n').pop() as string) as BrokerProbeResult;
 }
 
 describe.skipIf(!RUN)('packaged darwin-arm64 artifact', () => {
@@ -121,10 +180,109 @@ describe.skipIf(!RUN)('packaged darwin-arm64 artifact', () => {
   });
 });
 
+describe.skipIf(!RUN)('the DB broker boots from the packaged tree', () => {
+  beforeAll(() => {
+    if (!existsSync(binary(GOOD_OUT))) pack(GOOD_OUT, {});
+  }, 20 * 60_000);
+
+  it('starts the broker and round-trips a capture through it', () => {
+    // The defect this covers was invisible to every gate and was found by launching the app: the
+    // gateway came up, the broker did not. Nothing short of executing the child process can see it.
+    const { stages, brokerPath, brokerStderrTail } = brokerProbe(unpackedAnchor(GOOD_OUT), GOOD_OUT);
+    expect(stages.resolve?.ok, stages.resolve?.detail).toBe(true);
+    // Resolution succeeding is NOT the property that matters — the pre-fix path resolved too, and so
+    // does a path in the developer's own workspace. `containment` is the assertion with teeth: the
+    // broker has to come out of the ARTIFACT. See the note on it in broker-probe.cjs.
+    expect(stages.containment?.ok, stages.containment?.detail).toBe(true);
+    expect(brokerPath).toContain('app.asar.unpacked');
+    expect(stages.ready?.ok, `${stages.ready?.detail}\n${brokerStderrTail}`).toBe(true);
+    expect(stages.ping?.ok, stages.ping?.detail).toBe(true);
+    expect(stages.roundTrip?.ok, stages.roundTrip?.detail).toBe(true);
+  }, 6 * 60_000);
+
+  it('gives that broker a working FTS5 index and vector store', () => {
+    // Both live behind the broker, and both are load-bearing for studio: FTS5 backs capture search,
+    // vec0 backs find_similar. A broker that booted with either silently degraded is not "working".
+    const { stages, brokerStderrTail } = brokerProbe(unpackedAnchor(GOOD_OUT), GOOD_OUT);
+    expect(stages.fts5?.ok, `${stages.fts5?.detail}\n${brokerStderrTail}`).toBe(true);
+    expect(stages.vec?.ok, `${stages.vec?.detail}\n${brokerStderrTail}`).toBe(true);
+  }, 6 * 60_000);
+});
+
+describe.skipIf(!RUN)('negative control: the pre-fix anchor, inside the archive', () => {
+  beforeAll(() => {
+    if (!existsSync(binary(GOOD_OUT))) pack(GOOD_OUT, {});
+  }, 20 * 60_000);
+
+  // Hosted on the packaged ELECTRON binary, which is what makes this a faithful reproduction rather
+  // than an approximation. Only Electron has the asar layer, and the layer is the entire trap: it
+  // makes the in-archive path resolve AND makes `existsSync` return true for it, so the host has no
+  // local way to notice that what it is about to hand a plain-Node child is not a file. No
+  // `smartUnpack=false` needed anywhere here — this control is about the ANCHOR, not about a glob.
+  const host = { runtime: binary(GOOD_OUT), env: { ELECTRON_RUN_AS_NODE: '1' } };
+
+  it('resolves, passes an existence check, and still cannot start the broker', () => {
+    const { stages, brokerPath } = brokerProbe(asarAnchor(GOOD_OUT), GOOD_OUT, host);
+    expect(stages.resolve?.ok).toBe(true); // the trap, stated out loud
+    expect(brokerPath).toContain('app.asar/node_modules');
+    expect(stages.ready?.ok).toBe(false);
+    // The exact production signature: the child dies on the entry point it was handed.
+    expect(stages.ready?.detail).toMatch(/Cannot find module|MODULE_NOT_FOUND/);
+    expect(stages.roundTrip).toBeUndefined();
+  }, 6 * 60_000);
+
+  it('starts fine from the unpacked anchor on that same host and artifact', () => {
+    // The discriminating half. Same Electron, same build, same broker — only the anchor differs, so
+    // "the broker is broken" and "the anchor is wrong" cannot be confused.
+    const { stages, brokerStderrTail } = brokerProbe(unpackedAnchor(GOOD_OUT), GOOD_OUT, host);
+    expect(stages.containment?.ok, stages.containment?.detail).toBe(true);
+    expect(stages.ready?.ok, `${stages.ready?.detail}\n${brokerStderrTail}`).toBe(true);
+    expect(stages.roundTrip?.ok, stages.roundTrip?.detail).toBe(true);
+  }, 6 * 60_000);
+});
+
+describe.skipIf(!RUN)('negative control: the broker unpack glob removed', () => {
+  beforeAll(() => {
+    // smartUnpack is deliberately LEFT ON here, unlike the native control below. That is the claim
+    // under test: the broker's module graph is the wigolo package plus ~19 external packages, and
+    // apart from the four native ones NONE of them contains a binary, so the heuristic has nothing to
+    // notice and cannot rescue any of it. If this control ever goes green, smartUnpack grew a new
+    // rule and the glob's necessity has to be re-argued — not deleted.
+    pack(BROKER_CONTROL_OUT, { [OMIT_ENV]: 'studio-db-broker' });
+  }, 20 * 60_000);
+
+  it('leaves the broker with no entry point inside the artifact', () => {
+    // MEASURED 2026-08-17, and not what was predicted. Dropping the glob does NOT make resolution
+    // fail: Node walks `node_modules` upward, escapes the .app bundle entirely, and finds the
+    // developer's own checkout — which then boots a broker and passes every functional stage. Six
+    // green stages for an artifact that is dead on any machine but the one that built it. So the
+    // assertion is containment, not failure; a control that asserted `resolve.ok === false` would
+    // have gone red on CI-the-machine and green here, for reasons unrelated to packaging.
+    const { stages, brokerPath } = brokerProbe(unpackedAnchor(BROKER_CONTROL_OUT), BROKER_CONTROL_OUT);
+    expect(stages.containment?.ok).toBe(false);
+    expect(brokerPath).not.toContain('app.asar.unpacked');
+    expect(stages.ready).toBeUndefined();
+  }, 6 * 60_000);
+
+  it('still unpacks the native engines in that same artifact', () => {
+    // The discriminating half: "the broker glob mattered" has to look different from "this build is
+    // broken everywhere". better-sqlite3 and sqlite-vec keep their own globs here.
+    const { modules } = probe('node', {}, unpackedAnchor(BROKER_CONTROL_OUT), ['better-sqlite3', 'sqlite-vec']);
+    expect(modules['better-sqlite3'].ok, modules['better-sqlite3'].detail).toBe(true);
+    expect(modules['sqlite-vec'].ok, modules['sqlite-vec'].detail).toBe(true);
+  });
+});
+
 describe.skipIf(!RUN)('negative control: asarUnpack entries removed', () => {
   beforeAll(() => {
     // smartUnpack off is what makes this a control at all — see the file header.
-    pack(CONTROL_OUT, { [OMIT_ENV]: 'onnxruntime-node,sharp' }, ['-c.asar.smartUnpack=false']);
+    //
+    // `studio-db-broker` MUST be in the omit list even though this control is aimed at the native
+    // globs: its `**/node_modules/**` subsumes every entry in NATIVE_ASAR_UNPACK, so leaving it in
+    // would unpack onnxruntime-node and sharp regardless of their own globs being dropped, and both
+    // probes below would pass for a reason that has nothing to do with what is under test. Same class
+    // of vacuous control as the smartUnpack one, different mechanism.
+    pack(CONTROL_OUT, { [OMIT_ENV]: 'onnxruntime-node,sharp,studio-db-broker' }, ['-c.asar.smartUnpack=false']);
   }, 20 * 60_000);
 
   it('breaks onnxruntime-node on its @rpath dylib', () => {
