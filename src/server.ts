@@ -27,6 +27,7 @@ import {
   fenceAgentData,
   fenceDiffData,
   diffOriginFromInput,
+  fenceErrorMessage,
 } from './server/content-fence.js';
 import { handleCrawl } from './tools/crawl.js';
 import { handleCache } from './tools/cache.js';
@@ -124,6 +125,13 @@ function extractErrorReason(result: { content: { type: 'text'; text: string }[] 
  * `extractErrorReason` above already assumes when it audits a typed reason). Assembled here ONCE so
  * the two conventions cannot drift per call site: the fields used to be copied straight across at
  * every dispatch arm, which published a sentence as the machine code.
+ *
+ * The PROSE is fenced here, and only the prose. It is the one field a producer builds by interpolating
+ * bytes it read off the wire, so it is untrusted content on an `isError: true` envelope and gets the
+ * same containment the success envelope's page-derived fields get. The machine code, the stage and the
+ * hint pass through untouched — see `fenceErrorMessage` (src/server/content-fence.ts) for the full
+ * argument on each, including why the code MUST stay byte-identical. This is the sole assembly point
+ * for the MCP failure envelope, so no dispatch arm can opt out of the fence by forgetting it.
  */
 function stageErrorEnvelope(f: {
   error: string;
@@ -132,7 +140,7 @@ function stageErrorEnvelope(f: {
   hint?: string;
 }): { error: string; error_reason: string; stage: string; hint?: string } {
   return {
-    error: f.error_reason,
+    error: fenceErrorMessage(f.error_reason),
     error_reason: f.error,
     stage: f.stage,
     ...(f.hint ? { hint: f.hint } : {}),

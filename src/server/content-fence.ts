@@ -64,6 +64,56 @@ function fence(value: string, origin?: string): string {
 }
 
 /**
+ * ── THE ERROR-SHAPE FENCE ───────────────────────────────────────────────────────────────────────
+ *
+ * Every other fencer in this file is typed on a SUCCESS shape, so the failure envelope — assembled by
+ * hand at `stageErrorEnvelope` (src/server.ts) and `stageFailure` (src/daemon/rest/dispatch.ts) — had
+ * no fence at all. It is not a theoretical gap: a producer builds its prose by interpolating bytes it
+ * read off the wire (`src/tools/fetch.ts` splices the first 200 characters of a 4xx machine-typed
+ * response body into its reason), and the assembly seam published that prose verbatim on the field an
+ * agent reads as the human-readable message. Both the trigger (status + Content-Type + body) and the
+ * bytes are origin-chosen, on the default keyless path, with no auth and no opt-in.
+ *
+ * WHY THE FIX IS HERE AND NOT AT THE PRODUCER. Trimming or sanitising one producer's snippet closes
+ * one instance and leaves the class open — the next producer that interpolates origin text into a
+ * reason re-opens it silently, with a green typecheck. Worse, a sanitiser is a control whose decision
+ * input the origin writes. So the prose field is fenced UNCONDITIONALLY at the two assembly seams,
+ * which is the whole population of hand-rolled failure envelopes: every future producer is contained
+ * by construction and needs to remember nothing.
+ *
+ * Rule 1 of this module (above) applies unchanged: no branch on the value. The only structural check
+ * is emptiness — an empty reason has nothing to contain, and emitting a full `(empty)` region for it
+ * would be pure noise (same rationale as `fenceOptional`).
+ *
+ * WHAT MUST NOT BE FENCED, and why the two fields cannot be treated alike:
+ *
+ *  - the STABLE MACHINE CODE passes through BYTE-IDENTICAL. It is a closed vocabulary
+ *    (`http_404`, `blocked_by_challenge`, `invalid_url`, …) pinned in three places at once —
+ *    docs/rest-api.md's "Error shape", both SDKs (they read the published `error_reason` as the code),
+ *    and `statusForStageResult`'s 502/503/400 tables. Fencing or rewriting it would break all three
+ *    simultaneously, and it carries no origin bytes to contain: the producer authors it from a fixed
+ *    vocabulary. Note this is the field the PUBLISHED envelope calls `error_reason` — the seams swap
+ *    the two names on the way out, so read the doc comment at each seam before touching either.
+ *  - `stage` is a wigolo-authored enum (`fetch` / `extract` / `validate` / …).
+ *  - `hint` is operator guidance, authored at every producer in the tree: the literals in
+ *    src/daemon/rest/errors.ts, `CODE_DESCRIPTIONS` in src/fetch/error-describe.ts:13, the ssrf
+ *    literals in src/watch/ssrf.ts, src/tools/extract.ts:437, src/fetch/router.ts:1132, and
+ *    `ChallengeBlockedError`'s constructor default (src/fetch/browser-pool.ts:165). No path
+ *    interpolates response bytes into it, so fencing it would wrap ~350 characters of preamble around
+ *    "Send a JSON object matching the tool input schema." for no gain. That premise is ONE caller
+ *    away from being false — `ChallengeBlockedError` accepts a `hint` argument — so it is pinned by a
+ *    tripwire rather than left tacit: tests/integration/error-envelope-fence.test.ts, TRIP-1.
+ *
+ * No origin is threaded. The producer shape carries a status and a stage but never the resolved URL,
+ * and the seams would have to plumb it through ten dispatch arms to name one; the origin line is
+ * informational ("which host is talking"), never load-bearing for containment, which comes from the
+ * per-call nonce. Omitted rather than invented — same rule the html-input extract path follows.
+ */
+export function fenceErrorMessage(message: string): string {
+  return typeof message === 'string' && message.length > 0 ? fence(message) : message;
+}
+
+/**
  * Fence an OPTIONAL page-derived field: absent, non-string, and empty values pass through unchanged.
  * Empty is skipped deliberately — several handlers blank a body on the way out (research clears
  * `markdown_content` unless include_full_markdown), and fencing '' would emit a full `(empty)` region
