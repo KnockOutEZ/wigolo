@@ -17,9 +17,13 @@ import {
   computeLayoutSignature,
   layoutDistance,
   serializeLayoutSignature,
+  LAYOUT_GRID_X,
+  LAYOUT_GRID_Y,
   type LayoutSignature,
 } from '../../src/studio/layout/signature.js';
 import { buildCorpus, layoutPage, mulberry32 } from './synth.js';
+import { scoreSeparation, scoreCrossViewport, scoreDprExact, signerAt, type Signer } from './score.js';
+import { constantSigner, noDprSigner, noWidthNormSigner } from './mutants.js';
 
 const DESKTOP = 1280;
 const NARROW = 720;
@@ -107,6 +111,50 @@ function harvestCost(): { quantiserP50Ms: number; boxes: number } {
   return { quantiserP50Ms: samples[Math.floor(samples.length / 2)], boxes: boxes.length };
 }
 
+/**
+ * The spec's inversion probes (`:475-478`) as a BEFORE/AFTER table.
+ *
+ * The gate table above is a metric scored against itself; on its own it cannot distinguish "the
+ * signature separates pages" from "the scoring cannot tell the difference". These rows break the
+ * signature one way at a time and re-score, so the gate numbers acquire a signal from outside
+ * themselves. The pass/fail assertions live in `tests/unit/studio/layout/inversion-probes.test.ts`
+ * (which is where they can red in CI); this table exists so the NUMBERS can be read without one.
+ *
+ * The per-node harvest probe is not here: its gate is a CDP send counter, not a corpus score, and it
+ * is asserted on a counting fake transport in that same test file.
+ */
+function inversionTable(): void {
+  const fmt = (n: number) => `${n.toFixed(1)}%`.padEnd(8);
+  const real = signerAt(LAYOUT_GRID_X, LAYOUT_GRID_Y);
+  const rows: Array<[string, Signer]> = [
+    ['real (shipped)      ', real],
+    ['M1 constant vector  ', constantSigner()],
+    ['M2a no DPR division ', noDprSigner()],
+    ['M2b no width norm.  ', noWidthNormSigner()],
+  ];
+  process.stdout.write(`\nINVERSION PROBES at grid ${LAYOUT_GRID_X}x${LAYOUT_GRID_Y} (each mutant must move the gate it targets)\n\n`);
+  process.stdout.write('signer                clause1  c2@1152  c2@1024  c2@720   dprExact\n');
+  for (const [label, sign] of rows) {
+    process.stdout.write(
+      `${label}  ${fmt(scoreSeparation(sign).separatedPct)} ${fmt(scoreCrossViewport(sign, 1152).inBandPct)} ` +
+      `${fmt(scoreCrossViewport(sign, 1024).inBandPct)} ${fmt(scoreCrossViewport(sign, 720).inBandPct)} ` +
+      `${fmt(scoreDprExact(sign))}\n`,
+    );
+  }
+  // The DPR probe's own precondition. `synth.ts:154-156` says only the `card` archetype makes the
+  // viewport floor bind; drop those pages and a build with NO DPR handling scores a perfect gate.
+  const cardFree = buildCorpus(30).filter((_, i) => i % 7 !== 6);
+  process.stdout.write(
+    `\nM2a on a corpus with the \`card\` archetype REMOVED: real ${scoreDprExact(real, cardFree).toFixed(1)}%, ` +
+    `mutant ${scoreDprExact(noDprSigner(), cardFree).toFixed(1)}% — the probe goes BLIND without those pages.\n`,
+  );
+  // The clamp probe is not a corpus score for a structural reason worth printing next to the table.
+  process.stdout.write(
+    'M4 (D5 clamp removed) moves NO number above: `clampCoord` is the identity on every box this\n' +
+    'corpus produces, so G-S11a-1 cannot detect its removal. Only the D5 unit assertions can.\n',
+  );
+}
+
 function main(): void {
   const rows = GRIDS.map(([x, y]) => scoreGrid(x, y));
   const fmt = (n: number, d = 3) => n.toFixed(d);
@@ -164,6 +212,8 @@ function main(): void {
       `median percentile rank ${fmt(ranks[Math.floor(ranks.length / 2)], 1)}%  worst ${fmt(ranks[ranks.length - 1], 1)}%\n`,
     );
   }
+
+  inversionTable();
 
   const cost = harvestCost();
   process.stdout.write(`\nquantiser p50 on a ${cost.boxes}-box page: ${cost.quantiserP50Ms.toFixed(2)} ms (budget: 250 ms)\n`);
