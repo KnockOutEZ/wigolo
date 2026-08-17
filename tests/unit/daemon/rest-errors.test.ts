@@ -14,6 +14,7 @@ import {
   routeTimeout,
   statusForStageResult,
   statusForCrawlCacheError,
+  codeForCrawlCacheError,
   statusForSearchData,
 } from '../../../src/daemon/rest/errors.js';
 import { SSRF_CODES } from '../../../src/watch/ssrf.js';
@@ -132,6 +133,54 @@ describe('statusForCrawlCacheError (in-band error string keyed on ssrf codes)', 
   it('unknown / free-text → 500', () => {
     expect(statusForCrawlCacheError('clear requires at least one filter')).toBe(500);
     expect(statusForCrawlCacheError('some error mentioning timeout')).toBe(500);
+  });
+});
+
+describe('codeForCrawlCacheError (the code half of the same in-band envelope)', () => {
+  /**
+   * WHY THIS EXISTS. `statusForCrawlCacheError` above is fed hand-written codes, and that is fine for
+   * a status table — but it says nothing about what the PRODUCERS emit. They emit prose: every site
+   * that sets `CrawlOutput.error` / `CacheOutput.error` in the tree writes `err.message`, an
+   * SsrfRejection's `reason` (not its `code`), `describeStageError`'s sentence, or an English
+   * instruction. So the envelope needed a code that does NOT come from that string, and the fallback
+   * branch — not the pass-through — is the one real traffic takes.
+   */
+  it('prose falls back to the stage code, and the two stages do not share one', () => {
+    // Real producer strings, copied from the sites that emit them.
+    const prose = [
+      'Database not initialized. Call initDatabase() first.',   // tools/cache.ts top-level catch
+      'clear requires at least one filter (query, url_pattern, or since)', // tools/cache.ts clear path
+      'url resolves to a private IPv4 (10.0.0.5, 10/8)',        // tools/crawl.ts seed guard (.reason)
+      'Error: fetch_failed: HTTP 404 from https://x.example/y', // tools/crawl.ts map catch
+    ];
+    for (const p of prose) {
+      expect(codeForCrawlCacheError(p, 'crawl')).toBe('crawl_failed');
+      expect(codeForCrawlCacheError(p, 'cache')).toBe('cache_failed');
+    }
+  });
+
+  it('a value that IS a known code is passed through unchanged, on both stages', () => {
+    for (const code of [...Object.values(SSRF_CODES), 'fetch_failed', 'blocked_by_challenge']) {
+      expect(codeForCrawlCacheError(code, 'crawl')).toBe(code);
+      expect(codeForCrawlCacheError(code, 'cache')).toBe(code);
+    }
+  });
+
+  it('DRIFT GATE: the code and the status classify every key the same way', () => {
+    // The two functions are separate but read the SAME two sets. This is what makes that structural
+    // rather than a comment: a key recognised by one must be recognised by the other, so a status
+    // could never say "known upstream failure, 502" while the code said "generic crawl_failed".
+    const keys = [
+      ...Object.values(SSRF_CODES),
+      'fetch_failed', 'blocked_by_challenge', 'upstream_error', 'http_error',
+      'Database not initialized. Call initDatabase() first.',
+      'some error mentioning timeout',
+    ];
+    for (const k of keys) {
+      const passedThrough = codeForCrawlCacheError(k, 'crawl') === k;
+      const statusIsSpecific = statusForCrawlCacheError(k) !== 500;
+      expect(passedThrough).toBe(statusIsSpecific);
+    }
   });
 });
 

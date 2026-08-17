@@ -10,7 +10,9 @@ import {
   UNTRUSTED_END_PREFIX,
   UNTRUSTED_NONCE_HEX_LENGTH,
 } from '../../src/security/untrusted.js';
-import type { AgentOutput, RawFetchResult, ResearchOutput, StageError } from '../../src/types.js';
+import type {
+  AgentOutput, CacheOutput, RawFetchResult, ResearchOutput, StageError,
+} from '../../src/types.js';
 
 /**
  * THE ERROR ENVELOPE IS FENCED — the closure of the channel that
@@ -55,6 +57,12 @@ vi.mock('../../src/agent/pipeline.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   runAgentPipeline: (...a: unknown[]) => agentPipeline(...(a as [])),
 }));
+
+// `cache` is the one arm with no reachable in-process failure to drive (its real catch needs a
+// broken database). The crawl arm below runs the REAL producer chain end to end, so this stub only
+// carries the two shapes the crawl arm cannot reach: the `stage` and the known-code pass-through.
+vi.mock('../../src/tools/cache.js', () => ({ handleCache: vi.fn() }));
+import { handleCache } from '../../src/tools/cache.js';
 
 const TARGET = 'https://hostile.example/readme.md';
 
@@ -411,6 +419,88 @@ describe('research and agent publish a machine code on every failure exit', () =
     ]);
     // No exit smuggled the pipeline's prose into the code slot.
     for (const c of codes) expect(c).not.toContain(CANARY);
+  });
+});
+
+/**
+ * THE CRAWL/CACHE IN-BAND ENVELOPE — the third seam, which used to publish the SAME string as both
+ * the code and the message and fence neither.
+ *
+ * This one is not merely a broken machine-code contract. `handleMapStrategy`'s fetch shim throws
+ * `describeStageError(raw)` and its catch reports `err.message`, while `describeFetchError` passes a
+ * generic error's `.message` through verbatim — and `http-client.ts` throws `HTTP <status> from
+ * <currentUrl>`, where `currentUrl` is whatever the origin last put in a `Location:` header. So origin
+ * -chosen text reached this envelope raw, on the keyless REST path, with `dispatchTool` returning the
+ * non-200 body before `shapeUntrusted` could ever see it.
+ *
+ * The fixture drives the REAL `handleCrawl` → `handleMapStrategy` → `describeStageError` chain and
+ * feeds it the router's own `RawFetchResult | StageError` union, so the published string is assembled
+ * by production code rather than written by this test.
+ */
+describe('the crawl/cache in-band envelope carries a code AND contains its prose', () => {
+  /** A StageError is exactly what `SmartRouter.fetch` returns on failure — annotated, so it must stay faithful. */
+  function stageErrorRouter(): { fetch: ReturnType<typeof vi.fn>; getDomainStats: ReturnType<typeof vi.fn> } {
+    const err: StageError = {
+      error: 'fetch_failed',
+      error_reason: `HTTP 404 from https://redirected.example/${CANARY}`,
+      stage: 'fetch',
+    };
+    return { fetch: vi.fn(async () => err), getDomainStats: vi.fn() };
+  }
+
+  it('CRAWL-1: origin-chosen text in a map failure is contained, and the code is not a sentence', async () => {
+    const r = await dispatchTool(
+      'crawl',
+      { url: 'https://ok.example/', strategy: 'map' },
+      restCtx(stageErrorRouter()),
+    );
+    const body = r.body as Envelope;
+
+    // The chain really ran and really spliced the origin's URL — otherwise containment is vacuous.
+    expect(body.error).toContain(CANARY);
+    expect(findUnfencedInEnvelope(asBlocks(body), CANARY)).toEqual([]);
+    // The code is a stable identifier, not the message it used to duplicate.
+    expect(body.error_reason).toBe('crawl_failed');
+    expect(body.error_reason).not.toContain(CANARY);
+    expect(body.stage).toBe('crawl');
+  });
+
+  it('CRAWL-2: the status still keys on the RAW producer string, so the fence moved nothing', async () => {
+    // Free text → 500, exactly as before the change. `statusForCrawlCacheError` reads the unfenced
+    // producer value; if it had been handed the fenced or the coded one this would shift.
+    const r = await dispatchTool(
+      'crawl',
+      { url: 'https://ok.example/', strategy: 'map' },
+      restCtx(stageErrorRouter()),
+    );
+    expect(r.status).toBe(500);
+  });
+
+  it('CACHE-1: the cache arm publishes `cache_failed` and its OWN stage, not crawl\'s', async () => {
+    // `handleCache`'s top-level catch returns `{ error: err.message }` — a CacheOutput whose only
+    // populated field is the prose. The literal is type-annotated so the compiler checks it is a
+    // shape `handleCache` can actually return.
+    const failure: CacheOutput = { error: `Database is on fire near ${CANARY}` };
+    vi.mocked(handleCache).mockResolvedValueOnce(failure);
+    const r = await dispatchTool('cache', { query: 'x' }, restCtx({}));
+    const body = r.body as Envelope;
+
+    expect(body.error_reason).toBe('cache_failed');
+    // The shared helper used to hardcode `stage: 'crawl'` for BOTH callers, so a cache failure
+    // reported a crawl stage. This is the assertion that catches that regressing.
+    expect(body.stage).toBe('cache');
+    expect(findUnfencedInEnvelope(asBlocks(body), CANARY)).toEqual([]);
+  });
+
+  it('CRAWL-3 (must-not-fire): a value that IS a known code passes through as the code, status unmoved', async () => {
+    // The pass-through branch. No producer in the tree reaches it today — they all emit prose — but it
+    // must not be silently replaced by the generic fallback, or fixing a producer would be a no-op.
+    const failure: CacheOutput = { error: 'blocked_by_challenge' };
+    vi.mocked(handleCache).mockResolvedValueOnce(failure);
+    const r = await dispatchTool('cache', { query: 'x' }, restCtx({}));
+
+    expect((r.body as Envelope).error_reason).toBe('blocked_by_challenge');
+    expect(r.status).toBe(502); // the 502 row is still reachable
   });
 });
 
