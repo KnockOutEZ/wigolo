@@ -138,13 +138,14 @@ export interface StageFailure {
  * 503 for known unavailability, 502 for fetch-stage upstream failures, 400 for
  * the explicit semantic-validation allowlist, else 500. Never substring-scans.
  *
- * Matches on `f.error`, NOT `f.error_reason`. A StageResult and the REST
- * envelope use these two field names for opposite things: a StageResult carries
- * the code in `error` and prose in `error_reason`, while the envelope carries
- * the code in `error_reason` and prose in `error` (see `errorEnvelope`, and the
- * deliberate swap in `stageFailure` in dispatch.ts). Reading `error_reason` here
- * meant matching codes against a sentence, so every failure fell through to 500
- * and the 502/503 rows were unreachable.
+ * Matches on `f.error`, NOT `f.error_reason`. The argument is the PRODUCER
+ * shape, not the envelope: a StageResult carries the code in `error` and prose
+ * in `error_reason`, while the envelope carries the code in `error_reason` and
+ * prose in `error` (see `errorEnvelope`, and the re-orientation `stageFailure`
+ * in dispatch.ts applies on the way out). Reading `error_reason` here meant
+ * matching codes against a sentence, so every failure fell through to 500 and
+ * the 502/503 rows were unreachable. This mapping is keyed on the producer, so
+ * it is unaffected by how the envelope names the two values.
  */
 export function statusForStageResult(f: StageFailure): number {
   if (UNAVAILABILITY_REASONS.has(f.error)) return 503;

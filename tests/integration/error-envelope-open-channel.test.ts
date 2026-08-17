@@ -7,10 +7,12 @@ import { findUnfencedInEnvelope } from '../helpers/envelope-fence.js';
 /**
  * A89 — WHAT THE ERROR ENVELOPE ACTUALLY IS, forced rather than hoped for.
  *
- * `server.ts` hand-rolls `JSON.stringify({error, error_reason, stage, hint})` on the failure branch of
- * every tool arm, with no fence; `fenceXData` runs on the success branch only. `handleExtract` and
- * `handleDiff` both put `err.message` into `error_reason` VERBATIM. So the error envelope is an OPEN
- * CHANNEL: whatever bytes a throw carries arrive in the agent's context bare.
+ * `server.ts` serializes `{error, error_reason, stage, hint}` on the failure branch of every tool arm,
+ * with no fence; `fenceXData` runs on the success branch only. `handleExtract` and `handleDiff` both
+ * put `err.message` into the producer's `error_reason`, which the envelope publishes as `error` (the
+ * envelope carries the machine code in `error_reason` and the human message in `error` — see
+ * docs/rest-api.md, "Error shape"). So the error envelope is an OPEN CHANNEL: whatever bytes a throw
+ * carries arrive in the agent's context bare.
  *
  * That is safe today for one reason and one reason only: no producer under the fetch/extraction stack
  * interpolates page bytes into a thrown message (A88 measured this — every page-content `JSON.parse`
@@ -21,8 +23,8 @@ import { findUnfencedInEnvelope } from '../helpers/envelope-fence.js';
  * validity guard green and it had NO POWER: the only error it ever produced was a fixed string on the
  * EARLY-RETURN path, never the catch. A guard built on natural inputs would repeat that failure
  * exactly and pass forever while proving nothing. So the seam INSIDE the try is stubbed to throw, and
- * each test proves it actually entered the catch — by asserting `error_reason` is BYTE-EQUAL to the
- * message the stub threw, a string nothing else in the codebase can produce.
+ * each test proves it actually entered the catch — by asserting the published message is BYTE-EQUAL
+ * to the message the stub threw, a string nothing else in the codebase can produce.
  *
  * READ THE FAILURE CORRECTLY. If a test here fails because the canary is now absent or fenced, the
  * error envelope was closed — that is an IMPROVEMENT, and the fix is to widen
@@ -70,21 +72,21 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Ar
 describe('A89 — the error envelope is an unfenced channel for thrown-message bytes', () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
-  it('CHAN-1: extract — a forced throw inside the try reaches error_reason verbatim and UNFENCED', async () => {
+  it('CHAN-1: extract — a forced throw inside the try reaches the message field verbatim and UNFENCED', async () => {
     const blocks = await callTool('extract', { html: '<p>hello</p>', mode: 'structured' });
     const env = JSON.parse(blocks[0].text) as { error: string; error_reason: string; stage: string };
 
     // (a) the seam was reached at all
     expect(extractStructured).toHaveBeenCalledTimes(1);
-    // (b) THE CATCH WAS ENTERED — error_reason is byte-equal to the thrown message. No early-return
-    //     path can produce this string; the 78-case matrix's fixed `no_tables_detected` reason is
-    //     exactly what this assertion exists to distinguish from.
-    expect(env.error_reason).toBe(THROWN_MESSAGE);
-    expect(env.error).toBe('extract_failed'); // the code emitted only by that catch
+    // (b) THE CATCH WAS ENTERED — the published message is byte-equal to the thrown message. No
+    //     early-return path can produce this string; the 78-case matrix's fixed `no_tables_detected`
+    //     reason is exactly what this assertion exists to distinguish from.
+    expect(env.error).toBe(THROWN_MESSAGE);
+    expect(env.error_reason).toBe('extract_failed'); // the code emitted only by that catch
     expect(env.stage).toBe('extract');
-    // (c) and it arrives BARE: one finding, under error_reason, on the wire the agent reads.
+    // (c) and it arrives BARE: one finding, under the message field, on the wire the agent reads.
     const findings = findUnfencedInEnvelope(blocks, CANARY);
-    expect(findings.map((f) => f.key)).toEqual(['error_reason']);
+    expect(findings.map((f) => f.key)).toEqual(['error']);
   });
 
   it('CHAN-2: diff — the same channel, on a second independent arm', async () => {
@@ -94,9 +96,9 @@ describe('A89 — the error envelope is an unfenced channel for thrown-message b
     const env = JSON.parse(blocks[0].text) as { error: string; error_reason: string; stage: string };
 
     expect(computeDiffEnvelope).toHaveBeenCalledTimes(1);
-    expect(env.error_reason).toBe(DIFF_THROWN_MESSAGE);
-    expect(env.error).toBe('diff_failed');
-    expect(findUnfencedInEnvelope(blocks, CANARY).map((f) => f.key)).toEqual(['error_reason']);
+    expect(env.error).toBe(DIFF_THROWN_MESSAGE);
+    expect(env.error_reason).toBe('diff_failed');
+    expect(findUnfencedInEnvelope(blocks, CANARY).map((f) => f.key)).toEqual(['error']);
   });
 
   it('CHAN-3 (must-not-fire): an EARLY-RETURN error carries a fixed reason and produces no finding', async () => {
@@ -108,10 +110,10 @@ describe('A89 — the error envelope is an unfenced channel for thrown-message b
     // below is unconditionally true and proves nothing by itself. The weight is in the two assertions
     // above it — the stub was NOT called, and the reason is NOT the thrown message.
     const blocks = await callTool('diff', { old: {}, new: { markdown: 'b' } });
-    const env = JSON.parse(blocks[0].text) as { error_reason: string };
+    const env = JSON.parse(blocks[0].text) as { error: string };
 
     expect(computeDiffEnvelope).not.toHaveBeenCalled();
-    expect(env.error_reason).not.toBe(DIFF_THROWN_MESSAGE);
+    expect(env.error).not.toBe(DIFF_THROWN_MESSAGE);
     expect(findUnfencedInEnvelope(blocks, CANARY)).toEqual([]);
   });
 });

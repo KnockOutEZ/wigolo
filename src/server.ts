@@ -114,6 +114,31 @@ function extractErrorReason(result: { content: { type: 'text'; text: string }[] 
   }
 }
 
+/**
+ * The failure envelope every tool publishes, assembled from a producer StageError.
+ *
+ * The producer and the envelope use these two field names for opposite things: a StageError carries
+ * the stable machine code in `error` and prose in `error_reason`, while the published envelope
+ * carries the code in `error_reason` and the human message in `error` (docs/rest-api.md, "Error
+ * shape" — the same orientation `stageFailure` produces on the REST seam, and the one
+ * `extractErrorReason` above already assumes when it audits a typed reason). Assembled here ONCE so
+ * the two conventions cannot drift per call site: the fields used to be copied straight across at
+ * every dispatch arm, which published a sentence as the machine code.
+ */
+function stageErrorEnvelope(f: {
+  error: string;
+  error_reason: string;
+  stage: string;
+  hint?: string;
+}): { error: string; error_reason: string; stage: string; hint?: string } {
+  return {
+    error: f.error_reason,
+    error_reason: f.error,
+    stage: f.stage,
+    ...(f.hint ? { hint: f.hint } : {}),
+  };
+}
+
 export interface Subsystems {
   searchEngines: SearchEngine[];
   browserPool: MultiBrowserPool;
@@ -498,7 +523,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
         if (subsystems.studioSessions) {
           const sr = await runSessionFetch(subsystems.studioSessions, input);
           if (!sr.ok) {
-            return { content: [{ type: 'text', text: JSON.stringify({ error: sr.error, error_reason: sr.error_reason, stage: sr.stage, ...(sr.hint ? { hint: sr.hint } : {}) }, null, 2) }], isError: true };
+            return { content: [{ type: 'text', text: JSON.stringify(stageErrorEnvelope(sr), null, 2) }], isError: true };
           }
           return { content: [{ type: 'text', text: JSON.stringify(fenceFetchData(sr.data), null, 2) }], isError: false };
         }
@@ -508,7 +533,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
       const r = await handleFetch(input, router);
       if (!r.ok) {
         return {
-          content: [{ type: 'text', text: JSON.stringify({ error: r.error, error_reason: r.error_reason, stage: r.stage, ...(r.hint ? { hint: r.hint } : {}) }, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(stageErrorEnvelope(r), null, 2) }],
           isError: true,
         };
       }
@@ -525,7 +550,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
       const r = await handleSearch(input, searchEngines, router, backendStatus, samplingServer, onProgress);
       if (!r.ok) {
         return {
-          content: [{ type: 'text', text: JSON.stringify({ error: r.error, error_reason: r.error_reason, stage: r.stage, ...(r.hint ? { hint: r.hint } : {}) }, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(stageErrorEnvelope(r), null, 2) }],
           isError: true,
         };
       }
@@ -573,7 +598,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
         if (subsystems.studioSessions) {
           const sr = await runSessionExtract(subsystems.studioSessions, input, router);
           if (!sr.ok) {
-            return { content: [{ type: 'text', text: JSON.stringify({ error: sr.error, error_reason: sr.error_reason, stage: sr.stage, ...(sr.hint ? { hint: sr.hint } : {}) }, null, 2) }], isError: true };
+            return { content: [{ type: 'text', text: JSON.stringify(stageErrorEnvelope(sr), null, 2) }], isError: true };
           }
           return { content: [{ type: 'text', text: JSON.stringify(fenceExtractData(sr.data), null, 2) }], isError: false };
         }
@@ -583,7 +608,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
       const r = await handleExtract(input, router);
       if (!r.ok) {
         return {
-          content: [{ type: 'text', text: JSON.stringify({ error: r.error, error_reason: r.error_reason, stage: r.stage, ...(r.hint ? { hint: r.hint } : {}) }, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(stageErrorEnvelope(r), null, 2) }],
           isError: true,
         };
       }
@@ -599,7 +624,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
       const r = await handleFindSimilar(input, searchEngines, router, backendStatus);
       if (!r.ok) {
         return {
-          content: [{ type: 'text', text: JSON.stringify({ error: r.error, error_reason: r.error_reason, stage: r.stage, ...(r.hint ? { hint: r.hint } : {}) }, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(stageErrorEnvelope(r), null, 2) }],
           isError: true,
         };
       }
@@ -616,7 +641,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
       const r = await handleResearch(input, searchEngines, router, backendStatus, samplingServer);
       if (!r.ok) {
         return {
-          content: [{ type: 'text', text: JSON.stringify({ error: r.error, error_reason: r.error_reason, stage: r.stage, ...(r.hint ? { hint: r.hint } : {}) }, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(stageErrorEnvelope(r), null, 2) }],
           isError: true,
         };
       }
@@ -634,7 +659,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
       const r = await handleAgent(input, searchEngines, router, backendStatus, samplingServer);
       if (!r.ok) {
         return {
-          content: [{ type: 'text', text: JSON.stringify({ error: r.error, error_reason: r.error_reason, stage: r.stage, ...(r.hint ? { hint: r.hint } : {}) }, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(stageErrorEnvelope(r), null, 2) }],
           isError: true,
         };
       }
@@ -654,7 +679,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
       // P2: a diff quotes verbatim page text on BOTH sides. The origin comes from whichever input side
       // named a url; a diff of two inline blobs genuinely has none and omits it.
       return {
-        content: [{ type: 'text', text: JSON.stringify(r.ok ? fenceDiffData(r.data, diffOriginFromInput(input)) : { error: r.error, error_reason: r.error_reason, stage: r.stage }, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(r.ok ? fenceDiffData(r.data, diffOriginFromInput(input)) : stageErrorEnvelope(r), null, 2) }],
         isError: !r.ok,
       };
     }
@@ -663,7 +688,7 @@ export function createMcpServer(subsystems: Subsystems): Server {
       const input = (args ?? {}) as unknown as WatchJobInput;
       const r = await handleWatch(input, router);
       return {
-        content: [{ type: 'text', text: JSON.stringify(r.ok ? r.data : { error: r.error, error_reason: r.error_reason, stage: r.stage, ...((r as { hint?: string }).hint ? { hint: (r as { hint?: string }).hint } : {}) }, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(r.ok ? r.data : stageErrorEnvelope(r), null, 2) }],
         isError: !r.ok,
       };
     }
