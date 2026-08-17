@@ -467,6 +467,22 @@ function buildWeakSignalNote(
   );
 }
 
+/**
+ * A cached capture whose render never produced content. The fetch tool already
+ * treats such a row as stale and refetches it (src/tools/fetch.ts); find_similar
+ * had no counterpart, so a challenge interstitial or an un-rendered SPA frame
+ * could be returned as a similar page on the strength of its boilerplate.
+ *
+ * Deliberately narrow: only an explicit `shell` verdict is suppressed. `partial`
+ * lost some content but kept usable text, and an ABSENT label means no verdict
+ * was available (HTTP tier, legacy row) — never "incomplete". Widening this to
+ * "anything not known-full" would empty the local lane for every page fetched
+ * without a browser.
+ */
+function isShell(cached: CachedContent): boolean {
+  return cached.contentCompleteness?.level === 'shell';
+}
+
 function safeNormalize(url: string): string {
   try {
     return normalizeUrl(url);
@@ -612,6 +628,10 @@ async function runEmbeddingSearch(
             log.debug('embedding hydration skipped — url not in cache', { url: key });
             continue;
           }
+          if (isShell(cached)) {
+            log.debug('embedding hydration skipped — cached capture is a shell', { url: key });
+            continue;
+          }
           hydrated.push({
             id: cached.url,
             title: cached.title,
@@ -697,6 +717,7 @@ function runFTS5Search(
     }
 
     cached = filterByDomains(cached, includeDomains, excludeDomains) as CachedContent[];
+    cached = cached.filter(c => !isShell(c));
     cached = cached.slice(0, maxCandidates);
 
     const results: FindSimilarResult[] = [];
