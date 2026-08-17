@@ -7,6 +7,7 @@ import type { AgentDriveGate } from '../../../src/studio/agent-drive-gate.js';
 import { runSessionFetch } from '../../../src/tools/session-target.js';
 import type { StudioSessionsAccessor } from '../../../src/studio/session-drive.js';
 import type { FetchInput } from '../../../src/types.js';
+import type { ResolveResult } from '../../../src/studio/perception/resolve.js';
 
 /**
  * S9 / D9 — the SEAM tests. The gate is unit-tested elsewhere; what these assert is that its verdict
@@ -91,7 +92,10 @@ describe('D9 through the act-navigate lane', () => {
     browser: { navigate } as never,
     controlToken: token,
     grant: { humanAllowPrivate: true, agentAllowPrivate: true },
-    resolve: async () => ({ ref: 'e1', x: 0, y: 0 }) as never,
+    // Mirrors ResolvedTarget (src/studio/perception/resolve.ts:30-34): the click point is NESTED
+    // under `center`, and there is no `ref` — that is the resolver's INPUT, never its output.
+    // Written flat, act.ts:328 would read `resolved.center` as undefined.
+    resolve: async (): Promise<ResolveResult> => ({ backendNodeId: 1, center: { x: 0, y: 0 } }),
     channel: { dispatchAgentUnit: async () => true, viewportCenter: () => ({ x: 0, y: 0 }) },
     driveGate: gate,
   });
