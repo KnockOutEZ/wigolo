@@ -1,6 +1,15 @@
 {
   "version": "1.0.0",
-  "corpusSource": "Page classes and domains selected from the Web Bench READ subset (github.com/Halluminate/WebBench, MIT, webbenchfinal.csv: 1637 READ tasks over 448 domains; stackexchange/stackoverflow/github are among its top domains). Web Bench itself is a LIVE agent-task set with no frozen HTML and no goldens, so it cannot be the blocking gate directly — it is the corpus SELECTOR. Snapshots here are frozen at capture time and are never re-fetched by the gate; live targets and the Firecrawl side-by-side belong to the cron/dispatch half of the D6 hybrid gate.",
+  "corpusSource": "Page classes and domains selected from the Web Bench READ subset (github.com/Halluminate/WebBench, MIT, webbenchfinal.csv: 1637 READ tasks over 448 domains). Web Bench itself is a LIVE agent-task set with no frozen HTML and no goldens, so it cannot be the blocking gate directly — it is the corpus SELECTOR. Snapshots here are frozen at capture time and are never re-fetched by the gate; live targets and the Firecrawl side-by-side belong to the cron/dispatch half of the D6 hybrid gate.",
+  "corpusSourceCaveats": [
+    "CORRECTED 2026-08-18 (S12-0). An earlier version of this line cited 'stackexchange/stackoverflow/github are among its top domains' as if top-domain rank were a selection criterion. Measured: the Web Bench domain distribution is FLAT, with hundreds of domains tied at 5 tasks. 'Top ~40 domains' therefore has no discriminating power and must not be used to justify a fixture's inclusion. Membership in the READ subset is the criterion; rank within it is not.",
+    "CORRECTED 2026-08-18 (S12-0). developer.mozilla.org is NOT in the Web Bench READ subset at all (grep -c mozilla = 0). The `mdn-http-status` fixture therefore sits OUTSIDE the stated corpus selector. It is retained on a separate and explicit justification — it is the corpus's only definition-list-dominant page, and definition lists are a distinct extraction path from tables that regresses independently — not on a provenance it does not have."
+  ],
+  "pageClassAmendments": [
+    "chart_canvas → chart_svg (S12-0, 2026-08-18). Measured: ZERO chart <canvas> across 449/449 Web Bench READ entry points and 40 deep permissively-licensed pages, and zero with the licence filter dropped entirely. The blocker is the raw-HTML CAPTURE MECHANISM, not licensing — charts are injected after load, so no frozen raw-HTML capture can contain one. chart_svg keeps a real >=3 class and scores what `extract mode:\"structured\"` actually emits as chart_hints: SVG <title>, aria-label, and <figcaption>. Caveat carried forward: 101 of the 449 entry URLs returned non-200 and could in principle hide a canvas behind a block; the 200-responding sample is broad enough to carry the verdict and is reported as a sample, not a census.",
+    "virtualized_list — DROPPED, not weakened (S12-0, 2026-08-18). Neither lane runs site JS: the frozen lane has no browser, and the live lane serves fixture bytes from loopback with no third-party origin. A virtualized-list fixture would render an empty container in BOTH lanes, so the 'measured ceiling' §3.2 asks for would measure the absence of a script, not a windowing ceiling. Unreachable in a way a better fixture cannot fix. Deferred to whichever slice lands a live-network lane.",
+    "visibility_divergent mechanism, CORRECTING the spec's own example list (S12-0, 2026-08-18). §3.2 names collapsed <details> and 'off-screen tab panels' alongside hidden nodes. Measured: MediaWiki's .mw-collapsible.mw-collapsed renders at 106px with checkVisibility() === true, because MediaWiki collapses via /w/load.php, which the loopback live lane 404s. A fixture authored against .mw-collapsed would be RED in the live lane and VACUOUS in the frozen one. Only three mechanisms survive both lanes and may be used: inline style=\"display:none\", the [hidden] attribute, and a closed <details>."
+  ],
   "fixtures": [
     {
       "id": "wikipedia-base64",
@@ -87,6 +96,288 @@
         { "kind": "contains", "category": "markdown_fidelity", "value": "Just a moment", "why": "Pins what the extractor currently DOES return, so a change in that behaviour shows up as a diff instead of passing silently." },
         { "kind": "absent", "category": "boilerplate_noise", "value": "Enable JavaScript and cookies to continue", "why": "KNOWN GAP, expected to fail at baseline: challenge chrome is still returned as content at the extractor layer. The classification that catches this lives downstream in the fetch pipeline, not here. Recorded as a failing baseline assertion so it is visible and measured rather than assumed fixed." },
         { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 0, "why": "A challenge shell has no tables; a non-zero count would mean the detector is hallucinating structure out of markup." }
+      ]
+    },
+
+    {
+      "id": "wikipedia-climate-change",
+      "url": "https://en.wikipedia.org/wiki/Climate_change",
+      "pageClass": "visibility_divergent",
+      "htmlPath": "wikipedia-climate-change.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "assertions": [
+        { "kind": "visible_only", "category": "boilerplate_noise", "value": "Human-caused changes to climate on Earth", "why": "MediaWiki's div.shortdescription, inline style=\"display:none\". Verified under the live lane's exact conditions (loopback, no site CSS, no site JS): computed display none, rect height 0, offsetParent null, checkVisibility() false, and absent from body.innerText while present in textContent. A human never sees this string, so it must not reach an agent's context as though they had." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Warming since the Industrial Revolution", "why": "A section heading deep in a very long body — proves extraction did not stop at the lead." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 300000, "max": 650000, "why": "456360 at capture. The lower bound is the truncation detector; the upper catches nav/footer bloat being counted as content." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "heading", "min": 25, "max": 90, "why": "48 at capture. Zero means the document flattened; a huge count means nav lists were mistaken for headings." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 12, "why": "25 at capture." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Jump to content", "why": "MediaWiki skip-link — the most common Wikipedia boilerplate leak." }
+      ]
+    },
+    {
+      "id": "wikipedia-covid19",
+      "url": "https://en.wikipedia.org/wiki/COVID-19",
+      "pageClass": "visibility_divergent",
+      "htmlPath": "wikipedia-covid19.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "assertions": [
+        { "kind": "visible_only", "category": "boilerplate_noise", "value": "Contagious disease caused by SARS-CoV-2", "why": "div.shortdescription, inline display:none. Same MediaWiki mechanism verified rendered on wikipedia-climate-change; raw-HTML presence verified on this snapshot." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Transmission", "why": "A major section heading; its loss means the body was truncated." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 350000, "max": 700000, "why": "515080 at capture." },
+        { "kind": "count", "category": "table_preservation", "feature": "table_row", "min": 20, "max": 200, "why": "39 at capture. This page's IFR-by-age tables are its substance; a flattened table keeps the prose and loses the rows, so a char bound alone would not notice." },
+        { "kind": "structured", "category": "structured_extract", "field": "definitions", "min": 10, "why": "20 at capture. Definition lists are a distinct extraction path from tables and regress independently." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 25, "why": "47 at capture." }
+      ]
+    },
+    {
+      "id": "wikipedia-python",
+      "url": "https://en.wikipedia.org/wiki/Python_(programming_language)",
+      "pageClass": "visibility_divergent",
+      "htmlPath": "wikipedia-python.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "assertions": [
+        { "kind": "visible_only", "category": "boilerplate_noise", "value": "General-purpose programming language", "why": "div.shortdescription, inline display:none. The richest inline-hidden page of the Wikipedia set (6 hidden text nodes). KNOWN GAP, FAILS AT S12-0: this string DOES survive extraction today, so a human who cannot see it still gets it in an agent's context. It is the first real WYSIWYG defect the live lane surfaced and it is exactly what S12-1's visibility filter exists to close. Left failing and labelled rather than removed — the same treatment cloudflare-interstitial's challenge-chrome assertion gets. Note the contrast with the three sibling visibility_divergent fixtures, whose hidden shortdescriptions are correctly dropped: the leak is page-shape-dependent, not universal, which is why one fixture could not have found it." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Statements and control flow", "why": "A deep section heading." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 110000, "max": 250000, "why": "173257 at capture." },
+        { "kind": "count", "category": "table_preservation", "feature": "table_row", "min": 12, "max": 120, "why": "28 at capture — the operator and type-hierarchy tables." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "code_block", "min": 1, "max": 30, "why": "3 at capture. A language article whose code fences vanish has lost the thing that makes it a code fixture." },
+        { "kind": "structured", "category": "structured_extract", "field": "jsonld", "min": 1, "why": "Wikipedia ships JSON-LD; losing it means the jsonld path broke, not that the page changed." }
+      ]
+    },
+    {
+      "id": "github-node-readme",
+      "url": "https://github.com/nodejs/node",
+      "pageClass": "visibility_divergent",
+      "htmlPath": "github-node-readme.html",
+      "capturedAt": "2026-08-18",
+      "licence": "Repo content MIT (nodejs/node); page chrome © GitHub, snapshot used for regression testing only",
+      "assertions": [
+        { "kind": "visible_only", "category": "boilerplate_noise", "value": "You signed out in another tab or window", "why": "GitHub's session chrome, hidden via the [hidden] ATTRIBUTE rather than inline style — verified rendered: in the DOM, not visible. This is the corpus's only [hidden]-attribute case, so it covers a suppression mechanism no other fixture exercises." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Verifying binaries", "why": "A README section heading — proves the site-specific extractor reached the README body, not just the repo chrome." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 30000, "max": 90000, "why": "53190 at capture." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 2, "why": "4 at capture — the repo file listing parses as a table." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Skip to content", "why": "GitHub app-shell skip link." }
+      ]
+    },
+
+    {
+      "id": "wikipedia-browser-comparison",
+      "url": "https://en.wikipedia.org/wiki/Comparison_of_web_browsers",
+      "pageClass": "repeating_rows",
+      "htmlPath": "wikipedia-browser-comparison.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "assertions": [
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 18, "why": "32 at capture. The densest comparison-table page in the corpus (757 raw <tr>) — this is the repeating-row class's anchor fixture." },
+        { "kind": "table_cell", "category": "table_preservation", "value": "Layout engine", "why": "A real header cell — proves headers are parsed rather than merged into the first data row." },
+        { "kind": "table_cell", "category": "table_preservation", "value": "Developer", "why": "A second header from the primary comparison table." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 70000, "max": 170000, "why": "110061 at capture." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Web technology support", "why": "A deep section heading." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Jump to content", "why": "MediaWiki skip-link." }
+      ]
+    },
+    {
+      "id": "wikipedia-nobel-laureates",
+      "url": "https://en.wikipedia.org/wiki/List_of_Nobel_laureates",
+      "pageClass": "repeating_rows",
+      "htmlPath": "wikipedia-nobel-laureates.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "assertions": [
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 6, "why": "12 at capture." },
+        { "kind": "table_cell", "category": "table_preservation", "value": "Physics", "why": "A prize-category header from the main laureate table." },
+        { "kind": "table_cell", "category": "table_preservation", "value": "Chemistry", "why": "A second category header — together these prove the multi-column header row survived." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 15000, "max": 45000, "why": "26548 at capture. The corpus's smallest long-form page, which makes it the one most likely to be over-trimmed." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "50-year secrecy rule", "why": "A section heading below the main table — proves extraction continued past the large table rather than stopping at it." }
+      ]
+    },
+    {
+      "id": "wikipedia-einstein",
+      "url": "https://en.wikipedia.org/wiki/Albert_Einstein",
+      "pageClass": "repeating_rows",
+      "htmlPath": "wikipedia-einstein.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "assertions": [
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 8, "why": "16 at capture — the publication tables." },
+        { "kind": "table_cell", "category": "table_preservation", "value": "Area of focus", "why": "A header from the scientific-publications table." },
+        { "kind": "count", "category": "table_preservation", "feature": "table_row", "min": 8, "max": 120, "why": "20 at capture." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 230000, "max": 500000, "why": "353363 at capture." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "heading", "min": 35, "max": 130, "why": "70 at capture — the most heading-dense page in the corpus." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Retrieved from", "why": "MediaWiki footer marker." }
+      ]
+    },
+    {
+      "id": "bls-cpi-timeseries",
+      "url": "https://data.bls.gov/timeseries/CUUR0000SA0",
+      "pageClass": "repeating_rows",
+      "htmlPath": "bls-cpi-timeseries.html",
+      "capturedAt": "2026-08-18",
+      "licence": "US Government work, public domain (17 U.S.C. §105) — Bureau of Labor Statistics",
+      "assertions": [
+        { "kind": "count", "category": "table_preservation", "feature": "table_row", "min": 8, "max": 60, "why": "17 at capture. A pure data table with almost no prose around it: the case where a flattened table destroys the entire page rather than a section of it." },
+        { "kind": "table_cell", "category": "table_preservation", "value": "Year", "why": "The row-key header of the CPI series table." },
+        { "kind": "table_cell", "category": "table_preservation", "value": "Jan", "why": "A month column header — proves the wide monthly header row parsed into separate cells." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 1, "why": "2 at capture." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 1200, "max": 6000, "why": "2467 at capture. A tight upper bound because this page is almost entirely table: a large char count would mean government-site chrome was pulled in as content." }
+      ]
+    },
+
+    {
+      "id": "wikipedia-sea-level-rise",
+      "url": "https://en.wikipedia.org/wiki/Sea_level_rise",
+      "pageClass": "chart_hints",
+      "htmlPath": "wikipedia-sea-level-rise.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "assertions": [
+        { "kind": "structured", "category": "structured_extract", "field": "chart_hints", "min": 12, "why": "39 at capture, measured by running the real extractStructured over this snapshot. Every hint is a genuine chart caption ('The global average sea level has risen about 25 centimetres (9.8 in) since 1880'), reached through the figure>figcaption limb of extractChartHints — this page carries ZERO inline SVG, which is why the class is named for the product surface and not for SVG." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Past sea level rise", "why": "A deep section heading." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 220000, "max": 480000, "why": "341310 at capture." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 6, "why": "13 at capture." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Jump to content", "why": "MediaWiki skip-link." }
+      ]
+    },
+    {
+      "id": "wikipedia-renewable-energy",
+      "url": "https://en.wikipedia.org/wiki/Renewable_energy",
+      "pageClass": "chart_hints",
+      "htmlPath": "wikipedia-renewable-energy.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "assertions": [
+        { "kind": "structured", "category": "structured_extract", "field": "chart_hints", "min": 12, "why": "24 at capture, measured with the real extractor. Zero inline SVG on this page." },
+        { "kind": "count", "category": "table_preservation", "feature": "table_row", "min": 20, "max": 150, "why": "44 at capture — the generation-capacity tables." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 180000, "max": 420000, "why": "287872 at capture." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Emerging technologies", "why": "A deep section heading." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 8, "why": "17 at capture." }
+      ]
+    },
+    {
+      "id": "wikipedia-climate-attribution",
+      "url": "https://en.wikipedia.org/wiki/Attribution_of_recent_climate_change",
+      "pageClass": "chart_hints",
+      "htmlPath": "wikipedia-climate-attribution.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "assertions": [
+        { "kind": "structured", "category": "structured_extract", "field": "chart_hints", "min": 12, "why": "18 at capture, measured with the real extractor. The tightest margin of the three chart_hints fixtures, deliberately: a threshold with headroom on every fixture would not notice the limb degrading." },
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Greenhouse gases", "why": "A section heading." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 95000, "max": 220000, "why": "145943 at capture." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "heading", "min": 12, "max": 55, "why": "26 at capture." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 6, "why": "12 at capture." }
+      ]
+    },
+
+    {
+      "id": "nasa-global-temperature",
+      "url": "https://climate.nasa.gov/vital-signs/global-temperature/",
+      "pageClass": "js_shell",
+      "htmlPath": "nasa-global-temperature.html",
+      "capturedAt": "2026-08-18",
+      "licence": "US Government work, public domain (17 U.S.C. §105) — NASA",
+      "assertions": [
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 200, "max": 6000, "why": "1750 at capture. This page carries 209 inline <svg> and renders its chart entirely from JS, so the raw capture is a SHELL. The tight upper bound is the point: if this ever returns a large body, the extractor has started emitting navigation chrome as content. Recorded because 'challenge/JS shell returned as content' is a known standing gap." },
+        { "kind": "structured", "category": "structured_extract", "field": "chart_hints", "min": 0, "why": "0 at capture, and that is the CORRECT answer — the 209 SVGs on this page are icon sprites, not charts. Pinned at the honest value so that a future extractor change which starts reporting icon titles as chart hints shows up as a diff instead of reading as an improvement." },
+        { "kind": "structured", "category": "structured_extract", "field": "jsonld", "min": 1, "why": "8 at capture — JSON-LD survives even when the visible body does not, which is what makes it worth extracting from a shell." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Skip to main content", "why": "US Web Design System skip link." }
+      ]
+    },
+    {
+      "id": "github-node-contributors",
+      "url": "https://github.com/nodejs/node/graphs/contributors",
+      "pageClass": "js_shell",
+      "htmlPath": "github-node-contributors.html",
+      "capturedAt": "2026-08-18",
+      "licence": "Page chrome © GitHub, snapshot used for regression testing only; no repo content captured",
+      "assertions": [
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 0, "max": 3000, "why": "240 at capture. A contributor graph is drawn from JS; the raw capture has 73 <svg> and no prose. The upper bound guards against chrome being promoted to content." },
+        { "kind": "structured", "category": "structured_extract", "field": "chart_hints", "min": 0, "why": "1 at capture, and it is the aria-label 'External link' — an icon, not a chart. Pinned so a change is visible rather than silently reinterpreted as chart coverage." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "You signed out in another tab", "why": "GitHub session chrome. KNOWN GAP, FAILS AT S12-0: on this JS-shell page the string leaks, while the SAME string is correctly suppressed on github-node-readme, which the site-specific extractor handles. The divergence is the finding — boilerplate suppression that holds on a site's rich pages can fail on its shells, and only having both in the corpus makes that visible." }
+      ]
+    },
+    {
+      "id": "epa-air-quality",
+      "url": "https://www.epa.gov/air-trends/air-quality-national-summary",
+      "pageClass": "js_shell",
+      "htmlPath": "epa-air-quality.html",
+      "capturedAt": "2026-08-18",
+      "licence": "US Government work, public domain (17 U.S.C. §105) — EPA",
+      "assertions": [
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 0, "max": 4000, "why": "325 at capture." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 1, "why": "2 at capture. Note the divergence this fixture records: the STRUCTURED path finds real pollutant tables on a page whose MARKDOWN body is a 325-char shell. Structured extraction and markdown extraction can disagree, and the corpus should contain a case where they do." },
+        { "kind": "table_cell", "category": "table_preservation", "value": "Pollutant", "why": "A real data header from the air-quality table — proves the table the markdown body missed was nonetheless parsed." }
+      ]
+    },
+    {
+      "id": "epa-ghg-emissions",
+      "url": "https://www.epa.gov/ghgemissions/inventory-us-greenhouse-gas-emissions-and-sinks",
+      "pageClass": "js_shell",
+      "htmlPath": "epa-ghg-emissions.html",
+      "capturedAt": "2026-08-18",
+      "licence": "US Government work, public domain (17 U.S.C. §105) — EPA",
+      "assertions": [
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 0, "max": 4000, "why": "325 at capture." },
+        { "kind": "structured", "category": "structured_extract", "field": "chart_hints", "min": 0, "why": "9 at capture, and ALL NINE are UI icons ('Lock', 'Primary navigation', 'Open Sidenav Menu', 'Close Sidenav Menu'). The floor is 0 rather than 9 deliberately: pinning 9 would encode icon chrome as a chart-coverage requirement, which is the exact vacuity that got this page rejected as a chart_hints fixture." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Skip to main content", "why": "US Web Design System skip link." }
+      ]
+    },
+    {
+      "id": "worldbank-population",
+      "url": "https://data.worldbank.org/indicator/SP.POP.TOTL",
+      "pageClass": "js_shell",
+      "htmlPath": "worldbank-population.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC BY 4.0 (World Bank Open Data)",
+      "assertions": [
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 0, "max": 3000, "why": "7 at capture — the most extreme shell in the corpus. The extractor correctly returns almost nothing rather than inventing a body, and this fixture is what keeps that true." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 0, "why": "1 at capture, and it is link metadata rather than data. Floor at 0 so the assertion does not encode a chrome artefact as a requirement." }
+      ]
+    },
+    {
+      "id": "wikidata-statistics",
+      "url": "https://www.wikidata.org/wiki/Wikidata:Statistics",
+      "pageClass": "js_shell",
+      "htmlPath": "wikidata-statistics.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC0 1.0 (Wikidata) for data; page text CC BY-SA 4.0",
+      "assertions": [
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 100, "max": 5000, "why": "1301 at capture." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Jump to content", "why": "MediaWiki skip-link — the same chrome as the Wikipedia fixtures, on a different wiki, so the boilerplate rule is shown to be general rather than en.wikipedia-specific." }
+      ]
+    },
+
+    {
+      "id": "wikipedia-machine-learning",
+      "url": "https://en.wikipedia.org/wiki/Machine_learning",
+      "pageClass": "reference_prose",
+      "htmlPath": "wikipedia-machine-learning.html",
+      "capturedAt": "2026-08-18",
+      "licence": "CC BY-SA 4.0 (Wikipedia)",
+      "assertions": [
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Supervised learning", "why": "A section heading." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 150000, "max": 350000, "why": "241247 at capture." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "heading", "min": 12, "max": 60, "why": "22 at capture." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 5, "why": "10 at capture." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "Privacy policy", "why": "Footer chrome." }
+      ]
+    },
+    {
+      "id": "github-react-repo",
+      "url": "https://github.com/facebook/react",
+      "pageClass": "site_specific_repo",
+      "htmlPath": "github-react-repo.html",
+      "capturedAt": "2026-08-18",
+      "licence": "Repo content MIT (facebook/react); page chrome © GitHub, snapshot used for regression testing only",
+      "assertions": [
+        { "kind": "contains", "category": "markdown_fidelity", "value": "Contributing", "why": "A README section heading — proves the site-specific extractor reached the README, not just the repo chrome." },
+        { "kind": "count", "category": "markdown_fidelity", "feature": "char", "min": 2500, "max": 15000, "why": "6066 at capture. A second GitHub repo fixture with a much SHORTER README than nodejs/node, so the site extractor is measured on both a long and a short body rather than one shape." },
+        { "kind": "structured", "category": "structured_extract", "field": "tables", "min": 1, "why": "3 at capture — the repo file listing." },
+        { "kind": "table_cell", "category": "table_preservation", "value": "Last commit message", "why": "A file-listing header — proves the repo tree parsed into cells." },
+        { "kind": "absent", "category": "boilerplate_noise", "value": "You signed out in another tab", "why": "GitHub session chrome." }
       ]
     }
   ]

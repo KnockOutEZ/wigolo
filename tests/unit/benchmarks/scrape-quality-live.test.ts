@@ -394,23 +394,52 @@ describe('corpus gate', () => {
   it('publishes 1/N for every bucket, so no threshold can be quoted finer than its corpus', () => {
     const v = validateCorpus(shipped(), HTML_DIR);
     const overall = v.resolution.find((r) => r.bucket === 'overall')!;
-    expect(overall.n).toBe(37);
-    expect(overall.resolution).toBeCloseTo(1 / 37, 10);
+    expect(overall.n).toBeGreaterThanOrEqual(CORPUS_TARGETS.assertions);
     for (const r of v.resolution) {
       if (r.n > 0) expect(r.resolution).toBeCloseTo(1 / r.n, 10);
     }
   });
 
-  it('reports the shipped corpus as short of the §3.2 targets, because it is', () => {
-    // The honest current state. A gate that reported the 5/37 corpus as meeting a 20/120
-    // target would be the only thing standing between this program and a corpus nobody
-    // noticed was never built.
+  it('reports the shipped corpus as meeting the §3.2 targets', () => {
     const v = validateCorpus(shipped(), HTML_DIR);
+    expect(v.violations).toEqual([]);
+    expect(v.fixtures.actual).toBeGreaterThanOrEqual(CORPUS_TARGETS.fixtures);
+    expect(v.assertions.actual).toBeGreaterThanOrEqual(CORPUS_TARGETS.assertions);
+    expect(v.pageClasses.every((p) => p.ok)).toBe(true);
+    expect(v.ok).toBe(true);
+  });
+
+  it('still FAILS on a corpus that is short — the gate can fire, not just agree', () => {
+    // The negative control, and it is required precisely BECAUSE the shipped corpus now
+    // passes. A gate whose only observed verdict is "pass" is indistinguishable from a gate
+    // that cannot fail, and the corpus it guards is the thing every S12 threshold is read off.
+    const m = shipped();
+    m.fixtures = m.fixtures.slice(0, 3);
+    const v = validateCorpus(m, HTML_DIR);
     expect(v.ok).toBe(false);
-    expect(v.fixtures.actual).toBe(5);
-    expect(v.fixtures.required).toBe(CORPUS_TARGETS.fixtures);
-    expect(v.assertions.actual).toBe(37);
-    expect(v.pageClasses.every((p) => p.actual === 0)).toBe(true);
+    expect(v.fixtures.ok).toBe(false);
+    expect(v.assertions.ok).toBe(false);
+  });
+
+  it('FAILS when a required page class is emptied, not just when the totals are short', () => {
+    // Class coverage and raw count are independent failure modes. A corpus can hit 20/120 on
+    // easy pages while omitting every hard class, which is the exact way a corpus flatters the
+    // extractor it is supposed to be refereeing.
+    const m = shipped();
+    for (const f of m.fixtures) if (f.pageClass === 'chart_hints') f.pageClass = 'reference_prose';
+    const v = validateCorpus(m, HTML_DIR);
+    expect(v.ok).toBe(false);
+    expect(v.pageClasses.find((p) => p.pageClass === 'chart_hints')!.actual).toBe(0);
+  });
+
+  it('targets exactly the three reachable classes; virtualized_list is dropped, not weakened', () => {
+    // virtualized_list was removed on a measurement: no site JS runs in either lane, so such a
+    // fixture would render an empty container in both and the "measured ceiling" would be
+    // measuring the absence of a script. Pinned here so it cannot quietly reappear as a
+    // requirement nothing can satisfy, nor be replaced by something adjacent.
+    expect(Object.keys(CORPUS_TARGETS.pageClasses).sort()).toEqual([
+      'chart_hints', 'repeating_rows', 'visibility_divergent',
+    ]);
   });
 
   it('rejects a replay assertion smuggled into the C0 manifest', () => {

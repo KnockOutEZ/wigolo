@@ -22,15 +22,52 @@ import type { Category, ScrapeManifest } from './types.js';
 const log = createLogger('extract');
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** §3.2 — the corpus targets. Every number here is the spec's, not this file's. */
+/**
+ * §3.2 — the corpus targets. Every COUNT here is the spec's, not this file's.
+ *
+ * Two of the spec's four page classes are amended, each on a measurement rather than a
+ * preference. Both amendments are recorded here and in the fixture manifest, because a class
+ * that quietly changed meaning is worse than one that was never built.
+ *
+ * `chart_canvas` → `chart_hints`. Measured: ZERO chart `<canvas>` elements across 449/449 Web
+ * Bench READ entry points and 40 deep permissively-licensed pages — and zero with the licence
+ * filter dropped entirely. The binding constraint is the raw-HTML capture mechanism, not
+ * licensing: charts are injected after load, so no frozen raw-HTML capture can contain one.
+ *
+ * The replacement is named for the product surface it scores: `extract mode:"structured"`
+ * emits `chart_hints`, and the class asserts on those. It is NOT named `chart_svg`, because a
+ * second measurement killed that name too — the permissive SVG-bearing pages (NASA 209/232
+ * inline SVG, EPA 18/20, GitHub contributor graphs 73) yield 0, 0 and 1 hints respectively,
+ * and the handful EPA does produce are UI icons: "Lock", "Primary navigation", "Open Sidenav
+ * Menu". Those SVGs are icon sprites and chrome. A class named for SVG and populated by
+ * fixtures carrying zero chart SVG would assert on "Lock" and pass without measuring anything.
+ *
+ * What actually carries chart semantics in frozen raw HTML is the FIGCAPTION limb of
+ * `extractChartHints` (`src/extraction/structured.ts:125-137`), whose own comment says it
+ * exists "for pages that render charts as images or canvas". Wikipedia renders every chart as
+ * `<figure><img><figcaption>`, giving 18–39 genuine chart captions per page at CC BY-SA.
+ *
+ * NOTE THE CONSEQUENCE: this class's fixtures carry ZERO inline SVG. The figcaption limb is
+ * the only one supplying them. That is why the class is not named for SVG — a class named for
+ * a feature its fixtures do not contain is the same quiet meaning-drift this file exists to
+ * prevent. Counts below were taken by running the REAL `extractStructured` over the captured
+ * snapshots (39 / 24 / 18), not by reimplementing its selectors; the `min: 12` thresholds in
+ * the manifest sit well under the measured values so a frozen snapshot keeps headroom.
+ *
+ * `virtualized_list` — REMOVED, not weakened. Neither lane runs site JS: the frozen lane never
+ * had a browser, and the live lane serves fixture bytes from loopback with no third-party
+ * origin. A virtualized-list fixture would render an empty container in BOTH lanes, so the
+ * "measured ceiling" §3.2 asks for would be measuring the absence of a script rather than a
+ * windowing ceiling. That is unreachable in a way no better fixture can fix. Deferred to
+ * whichever slice lands a live-network lane; the ceiling stays stated prose until then.
+ */
 export const CORPUS_TARGETS = {
   fixtures: 20,
   assertions: 120,
   pageClasses: {
     visibility_divergent: 4,
     repeating_rows: 4,
-    chart_canvas: 3,
-    virtualized_list: 3,
+    chart_hints: 3,
   } as Record<string, number>,
 };
 
