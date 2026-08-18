@@ -126,6 +126,17 @@ interface Case {
  */
 const NO_FENCER = new Set(['watch']);
 
+/**
+ * REST bodies on which NOTHING is contained, so "at least one leaf is fenced" cannot hold.
+ *
+ * One entry, and it is a FINDING rather than a quirk: the `search_failed` envelope publishes
+ * `data.error` verbatim (content-fence.ts:110 names it), and that error is the only page-derived
+ * field on the body — so the whole envelope is raw. Named here instead of widened into NO_FENCER,
+ * because "this tool has no fencer" and "this one envelope has nothing left to fence" are different
+ * facts and collapsing them would hide the second.
+ */
+const NO_CONTAINED_FIELD = new Set(['search:rest-error']);
+
 const CASES: Case[] = [
   {
     id: 'fetch', tool: 'fetch', args: { url: F.FETCH_URL },
@@ -398,9 +409,14 @@ describe('GATE 1 — every emitted string leaf is fenced, allowlisted, or a reco
 
   for (const c of CASES) {
     it(`${c.id}: REST dispatch body carries no unjustified raw string`, async () => {
-      const { rest, restId, restStatus } = await leavesFor(c);
-      void restStatus;
+      const { rest, restId } = await leavesFor(c);
       expect(rest.length, 'the walk must reach the body at all').toBeGreaterThan(3);
+      // Same detector-works requirement as the MCP leg. REST delegates to the SAME content-fence
+      // helpers by design (there is no second implementation), so a REST body with nothing contained
+      // means the delegation was skipped — which is exactly how the two surfaces drifted before.
+      if (!NO_FENCER.has(c.tool) && !NO_CONTAINED_FIELD.has(restId)) {
+        expect(rest.some((l) => l.verdict === 'contained'), 'at least one leaf must actually be fenced').toBe(true);
+      }
       expect(findings(restId, rest)).toEqual([]);
     });
   }
