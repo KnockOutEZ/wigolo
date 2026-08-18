@@ -31,6 +31,7 @@ import { probeOllama, resolveProbeBaseUrl, maybeOllamaHint, DEFAULT_PROBE_TIMEOU
 import { resolveLocalModelTier, type LocalModelTier } from '../integrations/cloud/llm/local-tier.js';
 import { installBrowser, installEmbeddings, wipeSearxngState } from './warmup.js';
 import { resetBreakers, getBreakerSnapshot } from '../search/core/engine-base.js';
+import { BUILTIN_ENGINES_BY_VERTICAL, formatEngineCatalogListing } from '../search/core/engine-catalog.js';
 import { searxngConfigured } from '../searxng/enabled.js';
 import { readAdminToken } from '../daemon/admin-token.js';
 import { getVersion } from './help.js';
@@ -258,9 +259,10 @@ export function formatEngineHealthLines(entries: EngineHealthEntry[]): string[] 
   return lines;
 }
 
-/** Footer under the engine table: how to pass names to `search_engines`. */
+/** Footer under the engine table: legal names + how to pass them to `search_engines`. */
 export function formatSearchEnginesSelectHint(): string[] {
   return [
+    `  Built-in names: ${formatEngineCatalogListing()}.`,
     '  Select with --search-engines=name,name or search_engines: ["name"] (case-insensitive).',
   ];
 }
@@ -472,6 +474,9 @@ export interface DoctorReport {
   /** Live per-vertical engine names (same table as the human "Search engines"
    * block). Pass these strings to `search_engines` / `--search-engines`. */
   search_engines?: EngineHealthEntry[];
+  /** Built-in adapter names grouped by vertical — the legal `search_engines`
+   * set, including key-gated / opt-in engines that may be dark in this process. */
+  search_engine_catalog?: Record<string, readonly string[]>;
 }
 
 /** Whether the daemon appears to be running (a live admin token + a reachable
@@ -999,6 +1004,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
       install_channel: detectInstallChannel(),
       checks: fixableChecks,
       fixes,
+      search_engine_catalog: BUILTIN_ENGINES_BY_VERTICAL,
       ...(engineHealthSummary ? { search_engines: engineHealthSummary } : {}),
     };
     // Machine shape on stdout; the human diagnostic above stays on stderr.

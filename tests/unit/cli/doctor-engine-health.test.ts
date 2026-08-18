@@ -99,12 +99,16 @@ describe('formatEngineHealthLines', () => {
 });
 
 describe('formatSearchEnginesSelectHint', () => {
-  it('tells the caller how to pass engine names to search_engines', () => {
+  it('lists built-in names and tells the caller how to pass them to search_engines', () => {
     const lines = formatSearchEnginesSelectHint();
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/--search-engines=/);
-    expect(lines[0]).toMatch(/search_engines:/);
-    expect(lines[0]).toMatch(/case-insensitive/);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/Built-in names:/);
+    expect(lines[0]).toContain('duckduckgo');
+    expect(lines[0]).toContain('github-code');
+    expect(lines[0]).toContain('bing_news');
+    expect(lines[1]).toMatch(/--search-engines=/);
+    expect(lines[1]).toMatch(/search_engines:/);
+    expect(lines[1]).toMatch(/case-insensitive/);
   });
 });
 

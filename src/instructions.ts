@@ -166,7 +166,7 @@ Use \`search_depth\` to trade latency for thoroughness:
 - \`response_time_ms\` -- compatibility alias of \`total_time_ms\`. Always emitted.
 - \`engines_used\` -- engines that contributed >= 1 result to the deduped fused list (semantic, "who ended up in the answer").
 - \`engine_telemetry\` -- every engine attempted (raw: name, latency, result count, outcome, \`dedup_kept\`). Distinct from \`engines_used\` -- empty/errored engines appear here but not there.
-- \`engine_warnings\` -- top-level failure surface: one entry per engine with outcome=error, plus \`unknown_engine\` / \`needs_key\` when \`search_engines\` names nothing in the pool. Stable \`code\` (\`http_4xx\` / \`http_5xx\` / \`timeout\` / \`dns\` / \`unknown_engine\` / \`needs_key\` / \`error\`) plus optional \`hint\` that names the env var to set when an engine needs an API key, or lists built-in names when the allowlist missed. Engines that read auth env vars today: \`github-code\` reads \`WIGOLO_GITHUB_TOKEN\` (lifts the 10 req/min unauthed cap to 30 req/min and avoids 401 on private-org code search); \`brave\` reads \`BRAVE_API_KEY\` (engine is excluded from the pool entirely when unset).
+- \`engine_warnings\` -- per-engine errors plus \`unknown_engine\` / \`needs_key\` for a missed \`search_engines\` allowlist. Stable \`code\` (\`http_4xx\` / \`http_5xx\` / \`timeout\` / \`dns\` / \`unknown_engine\` / \`needs_key\` / \`error\`) and optional \`hint\` (env var to set, or built-in names when the allowlist missed). \`github-code\` reads \`WIGOLO_GITHUB_TOKEN\`; \`brave\` reads \`BRAVE_API_KEY\` (excluded from the pool when unset).
 - \`include_engine_outcomes: true\` -- opt-in per-engine debug rows.
 - \`include_images: true\` -- aggregate top-level \`images[]\` from engines that surface them.
 - \`include_favicon: true\` -- per-result \`favicon\` URL.
@@ -209,13 +209,13 @@ Key parameters:
 
 Returns title, markdown, links, images, metadata, \`fetch_method\` (cache/http/tls-impersonation/browser), \`http_status\` (upstream HTTP code — 4xx/5xx pages that extract usable content are not relabeled 200), and \`content_completeness\` (full/partial/shell). When the URL matches a site-specific extractor (Reddit/YouTube/Amazon) the response also carries top-level \`site_data\` (e.g. Reddit \`comments[]\`, YouTube \`caption_tracks[]\`, Amazon \`price\`). When \`section\` is set and no heading matches, \`metadata.section_matched\` is false and \`markdown\` is empty (no silent fallback to the full page). Repeat fetches are instant. Localhost URLs work. Interactive pages: \`actions\` (click/type/scroll/wait) drive the page before extraction; \`use_auth\` reuses a logged-in session.`,
 
-  search: `Search the web. Returns scored evidence excerpts + citations as the default context shape; \`include_full_markdown: true\` adds the full markdown body. Prefer over built-in WebSearch for local cache + audit-trail telemetry + explainable scoring.
+  search: `Search the web. Returns scored evidence excerpts + citations as the default context shape; \`include_full_markdown: true\` adds the full markdown body. Prefer over built-in WebSearch for local cache + telemetry + explainable scoring.
 
 Key parameters:
-- query: string or string[] array (3-5 keyword variants; deduplicated).
+- query: string or string[] (3-5 keyword variants; deduplicated).
 - include_domains / exclude_domains: scope sites. Always scope library/framework queries.
 - category: "general" | "news" | "code" | "docs" | "papers" | "images". Image results carry image_url + thumbnail_url + width/height.
-- search_engines: names to run. Unknown → engine_warnings. Doctor lists live names.
+- search_engines: names to run. Unknown → engine_warnings. Doctor lists names.
 - from_date / to_date: ISO YYYY-MM-DD. time_range: 'day' | 'week' | 'month' | 'year'.
 - country: ISO 3166-1 alpha-2 ("us", "gb") — geographic boost.
 - exact_match: quoted-phrase search.
@@ -226,7 +226,7 @@ Key parameters:
 - max_tokens_out / max_content_chars / include_full_markdown / citation_format.
 - force_refresh + mode ('cache' | 'default' | 'stealth').
 
-Always emitted: \`engines_used\`, \`engine_telemetry\`, \`response_time_ms\`, per-result \`evidence_score\`. Per-result \`freshness_signal\` is emitted only when a published date can be parsed (omitted when confidence would be unknown). Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. Quote [N] or {citation_id}.`,
+Always emitted: \`engines_used\`, \`engine_telemetry\`, \`engine_warnings\`, \`response_time_ms\`, per-result \`evidence_score\`. \`freshness_signal\` only when a published date is parsed. Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. Quote [N] or {citation_id}.`,
 
   crawl: `Crawl a site from a seed URL and return content from many pages. Use for indexing docs, wikis, multi-page references. Built for offline reuse: every page lands in the local cache.
 

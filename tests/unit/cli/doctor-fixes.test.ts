@@ -260,6 +260,10 @@ describe('doctor --json', () => {
     expect(parsed.search_engines[0]).toHaveProperty('name');
     expect(parsed.search_engines[0]).toHaveProperty('vertical');
     expect(parsed.search_engines.some((e: { name: string }) => e.name === 'duckduckgo')).toBe(true);
+    expect(parsed.search_engine_catalog).toBeDefined();
+    expect(parsed.search_engine_catalog.general).toContain('duckduckgo');
+    expect(parsed.search_engine_catalog.code).toContain('github-code');
+    expect(parsed.search_engine_catalog.images).toContain('ddg-image');
   });
 
   it('includes per-fix before/after status under --fix --json', async () => {

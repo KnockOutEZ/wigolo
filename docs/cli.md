@@ -36,7 +36,7 @@ Unattended by default: wires the agents you name, persists settings, downloads t
 wigolo doctor [--fix] [--json]
 ```
 
-Diagnoses the installation: data dir writability, browser engine, fetch tiers, on-device models, LLM provider status, search backend, per-engine health (with the exact env var that enables each keyed engine), cache stats, and telemetry state. `--fix` repairs known failures.
+Diagnoses the installation: data dir writability, browser engine, fetch tiers, on-device models, LLM provider status, search backend, per-engine health (with the exact env var that enables each keyed engine), the built-in `search_engines` name list, cache stats, and telemetry state. `--fix` repairs known failures. `--json` also emits `search_engine_catalog`.
 
 ### verify
 
