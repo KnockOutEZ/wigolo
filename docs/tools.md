@@ -22,6 +22,7 @@ Multi-engine web search: query variants dispatched in parallel across direct eng
 | `time_range` | enum | `day`/`week`/`month`/`year` — precision filter; undated pages pass through. |
 | `from_date` / `to_date` | string | Strict ISO date bounds (pair with a date-aware category). |
 | `exact_match` | boolean | Quoted-phrase semantics; non-matching results dropped. |
+| `search_engines` | string[] | Restrict to named engines (case-insensitive). Built-in: general `bing`, `duckduckgo`, `wikipedia`, `mojeek`, `marginalia`, `brave`; news `hn-algolia`, `lobsters`, `bing_news`, `duckduckgo`, `mojeek`, `rss-feed`; code `github-code`, `stackoverflow`, `devdocs`, `duckduckgo`, `mdn`, `crates-io`, `brave`; docs `mdn`, `devdocs`, `bing`, `duckduckgo`; papers `arxiv`, `semantic-scholar`; images `ddg-image`, `brave-image`. Unknown names land in `engine_warnings` (`unknown_engine`); if none match, the default pool runs. `wigolo doctor` prints the live list. |
 | `country` / `language` | string | Advisory geographic/language hints. |
 | `search_depth` | enum | `ultra-fast` (cache-only, ≤300ms), `fast` (engines only, ≤1s), `balanced` (default, full pipeline), `deep` (max enrichment). |
 | `mode` | enum | `cache`, `default`, `stealth` (full browser for JS-heavy result pages). |

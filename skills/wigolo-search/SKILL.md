@@ -41,6 +41,9 @@ Multi-engine web search with ML reranking, explainable scoring, and per-engine t
 // Direct-answer synthesis
 { "query": "RSC vs SSR differences", "format": "answer" }
 
+// Exclude a noisy engine
+{ "query": "US ISM manufacturing PMI", "search_engines": ["duckduckgo", "wikipedia"] }
+
 // Fresh content (bypass cache)
 { "query": "latest news", "force_refresh": true }
 ```
@@ -73,6 +76,7 @@ Multi-engine web search with ML reranking, explainable scoring, and per-engine t
 | `max_tokens_out` | number | none | Token-budget cap (cl100k-base) |
 | `include_full_markdown` | boolean | false | Include full markdown alongside evidence |
 | `force_refresh` | boolean | false | Bypass caches |
+| `search_engines` | string[] | none | Restrict to named engines (case-insensitive). Built-in names are on the tool schema and in `wigolo doctor`. Unknown names warn (`engine_warnings.unknown_engine`); if none match, the default pool runs |
 | `mode` | string | "default" | "cache" / "default" / "stealth" |
 
 ## Always-Emitted Fields

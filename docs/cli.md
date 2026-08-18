@@ -145,7 +145,7 @@ All ten tools run headlessly. Tool parameters map 1:1 from the wire names to `--
 
 ```bash
 wigolo search <query>       [--max-results=N] [--category=...] [--include-domains=a,b]
-                            [--time-range=...] [--exact-match] [--search-depth=...] ...
+                            [--search-engines=duckduckgo,wikipedia] [--time-range=...] ...
 wigolo fetch <url>          [--render-js=auto|always|never] [--section=H] [--use-auth] ...
 wigolo crawl <url>          [--strategy=bfs|dfs|sitemap|map] [--max-depth=N] [--max-pages=N] ...
 wigolo extract <url>        [--mode=structured|schema|tables|metadata|selector|brand] ...
@@ -156,6 +156,8 @@ wigolo agent <prompt>       [--urls=u1,u2] [--schema=JSON|@file] [--max-pages=N]
 wigolo diff <url> | diff --old="text" --new="text"  [--output=...] [--granularity=...]
 wigolo watch add <url> --interval=SECONDS | watch list | watch rm <id> | watch run <id>
 ```
+
+`--search-engines` takes adapter names (case-insensitive). `wigolo doctor` prints the live per-vertical list; unknown names show up in `engine_warnings`.
 
 JSON-valued flags (`--schema`, `--headers`, `--actions`, `--agent-context`) accept inline JSON or `@file`:
 

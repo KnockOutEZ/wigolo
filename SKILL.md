@@ -113,7 +113,7 @@ Parameters:
 - `from_date` / `to_date`: ISO `YYYY-MM-DD`
 - `category`: `"general"` | `"news"` | `"code"` | `"docs"` | `"papers"` | `"images"`
 - `language`: string
-- `search_engines`: `string[]` — override engine selection
+- `search_engines`: `string[]` — restrict to named engines (case-insensitive). Built-in names are on the tool schema and in `wigolo doctor`. Unknown names warn (`engine_warnings.unknown_engine`) and are dropped; if none match, the default pool runs.
 - `format`: `"full"` (default) | `"context"` (token-budgeted string) | `"highlights"` (ML-scored passages + citations) | `"answer"` (synthesized via MCP sampling; falls back to `highlights` when unsupported) | `"stream_answer"` (answer + phase progress notifications)
 - `max_highlights`: number (default `10`) — cap when `format: "highlights"`
 - `force_refresh`: boolean
