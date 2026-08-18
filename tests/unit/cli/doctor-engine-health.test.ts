@@ -7,7 +7,7 @@
 // stable across release cycles.
 
 import { describe, it, expect, vi } from 'vitest';
-import { formatEngineHealthLines, runEngineProbeSection } from '../../../src/cli/doctor.js';
+import { formatEngineHealthLines, formatSearchEnginesSelectHint, runEngineProbeSection } from '../../../src/cli/doctor.js';
 import type { EngineHealthEntry } from '../../../src/search/core/engine-health.js';
 import type { EngineEntry } from '../../../src/search/core/engine-base.js';
 import type { RawSearchResult } from '../../../src/types.js';
@@ -95,6 +95,16 @@ describe('formatEngineHealthLines', () => {
     for (const line of lines) {
       expect(line).not.toMatch(/breaker/);
     }
+  });
+});
+
+describe('formatSearchEnginesSelectHint', () => {
+  it('tells the caller how to pass engine names to search_engines', () => {
+    const lines = formatSearchEnginesSelectHint();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/--search-engines=/);
+    expect(lines[0]).toMatch(/search_engines:/);
+    expect(lines[0]).toMatch(/case-insensitive/);
   });
 });
 

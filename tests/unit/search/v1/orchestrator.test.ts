@@ -1155,6 +1155,8 @@ describe('runV1Search — search_engines allowlist', () => {
     expect(ddg.spy).toHaveBeenCalledOnce();
     expect(bing.spy).not.toHaveBeenCalled();
     expect(out.enginesUsed).toEqual(['duckduckgo']);
+    expect(out.unknownEngines).toEqual(['not-a-real-engine']);
+    expect(out.allowlistFallback).toBeUndefined();
     expect(logSpies.warn).toHaveBeenCalledWith(
       'unknown search_engines names ignored',
       expect.objectContaining({
@@ -1178,6 +1180,8 @@ describe('runV1Search — search_engines allowlist', () => {
 
     expect(bing.spy).toHaveBeenCalledOnce();
     expect(out.enginesUsed).toEqual(['bing']);
+    expect(out.unknownEngines).toEqual(['nonexistent']);
+    expect(out.allowlistFallback).toBe(true);
     expect(logSpies.warn).toHaveBeenCalledWith(
       'no engines matched search_engines filter, using all',
       expect.objectContaining({
@@ -1194,12 +1198,14 @@ describe('runV1Search — search_engines allowlist', () => {
     });
     verticalState.general = [ddg.entry];
 
-    await runV1Search({
+    const out = await runV1Search({
       query: 'gold price',
       searchEngines: ['duckduckgo'],
     });
 
     expect(logSpies.warn).not.toHaveBeenCalled();
+    expect(out.unknownEngines).toBeUndefined();
+    expect(out.allowlistFallback).toBeUndefined();
   });
 
   it('pulls a requested engine from another vertical (overrides auto-dispatch)', async () => {

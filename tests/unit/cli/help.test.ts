@@ -113,6 +113,13 @@ describe('TOOL_HELP', () => {
     expect(TOOL_HELP.watch).toContain('wigolo serve');
     expect(TOOL_HELP.watch).toContain('MCP session');
   });
+
+  it('search help advertises --search-engines', () => {
+    expect(TOOL_HELP.search).toContain('--search-engines');
+    expect(TOOL_HELP.search.toLowerCase()).toContain('override engine selection');
+    expect(TOOL_HELP.search).toMatch(/engine_warnings/);
+    expect(TOOL_HELP.search).toMatch(/wigolo doctor/);
+  });
 });
 
 describe('sanitizeCapabilityText', () => {

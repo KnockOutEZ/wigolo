@@ -5,8 +5,7 @@ import { BrowserPool } from '../fetch/browser-pool.js';
 import { httpFetch } from '../fetch/http-client.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
 import { SearxngClient } from '../search/searxng.js';
-import { DuckDuckGoEngine } from '../search/engines/duckduckgo.js';
-import { BingEngine } from '../search/engines/bing.js';
+import { createKeylessDirectEngines } from '../search/direct-engines.js';
 import { resolveSearchBackend, getBootstrapState } from '../searxng/bootstrap.js';
 import { searxngConfigured, searxngBackendAvailable } from '../searxng/enabled.js';
 import { SearxngProcess } from '../searxng/process.js';
@@ -33,10 +32,7 @@ export async function runShell(args: string[]): Promise<number> {
   const router = new SmartRouter(httpClient, browserPool);
   const backendStatus = new BackendStatus();
 
-  const searchEngines: SearchEngine[] = [
-    new BingEngine(),
-    new DuckDuckGoEngine(),
-  ];
+  const searchEngines: SearchEngine[] = createKeylessDirectEngines();
 
   let searxngProcess: SearxngProcess | null = null;
 

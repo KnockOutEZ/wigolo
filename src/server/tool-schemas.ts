@@ -1,4 +1,5 @@
 import type { ToolName } from '../instructions.js';
+import { searchEnginesSchemaDescription } from '../search/core/engine-catalog.js';
 
 export type ToolSchema = {
   type: 'object';
@@ -141,7 +142,11 @@ export const SEARCH_TOOL_SCHEMA = {
       type: 'boolean',
       description: 'Treat the query as a quoted phrase. Engines that honour `"..."` filter to phrase matches, and results without the exact phrase in title or snippet are dropped.',
     },
-    search_engines: { type: 'array', items: { type: 'string' }, description: 'Override engine selection. Only matching engines run; if none match, the default pool is used.' },
+    search_engines: {
+      type: 'array',
+      items: { type: 'string' },
+      description: searchEnginesSchemaDescription(),
+    },
     language: { type: 'string', description: 'Language preference' },
     country: {
       type: 'string',

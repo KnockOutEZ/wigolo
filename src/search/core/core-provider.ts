@@ -33,7 +33,7 @@ import { computeFreshnessSignal } from './freshness.js';
 import { buildQueryUnderstanding } from './query-understanding.js';
 import { detectRareTerms } from './rare-terms.js';
 import { extractErrorTokens, resultMatchesErrorToken } from './error-intent.js';
-import { buildEngineWarnings } from './engine-warnings.js';
+import { buildAllowlistWarnings, buildEngineWarnings } from './engine-warnings.js';
 import { faviconUrlFor } from './favicon.js';
 import { runSynthesis } from '../answer-synthesis.js';
 import { applyEvidenceDefault, renderCitationsXml } from '../evidence.js';
@@ -219,6 +219,8 @@ export class CoreSearchProvider implements SearchProvider {
     // Reasons any dispatch reported its engine pool degraded (e.g. a thin
     // vertical starved and backfilled from general). Surfaced on engine_pool.
     const poolReasons = new Set<string>();
+    let allowlistUnmatched: string[] = [];
+    let allowlistFallback = false;
 
     if (!input.force_refresh) {
       try {
@@ -475,6 +477,10 @@ export class CoreSearchProvider implements SearchProvider {
       allDegraded = dispatches.every((d) => d.degraded);
       for (const d of dispatches) {
         for (const reason of d.pool_degraded?.reasons ?? []) poolReasons.add(reason);
+        if (d.allowlistFallback) allowlistFallback = true;
+        for (const name of d.unknownEngines ?? []) {
+          if (!allowlistUnmatched.includes(name)) allowlistUnmatched.push(name);
+        }
       }
 
       if (input.include_engine_outcomes) {
@@ -793,7 +799,10 @@ export class CoreSearchProvider implements SearchProvider {
     // Promote per-engine errors out of debug-only telemetry
     // into a top-level array so every caller sees broken engines. Empty
     // array on cache hits or all-ok runs (cleaner than `undefined?.length`).
-    const engineWarnings = buildEngineWarnings(engineTelemetry);
+    const engineWarnings = [
+      ...buildEngineWarnings(engineTelemetry),
+      ...buildAllowlistWarnings({ unmatched: allowlistUnmatched, fallback: allowlistFallback }),
+    ];
     // Pool health: total = engines dispatched, healthy = engines that returned
     // ≥1 result. Degraded when any didn't contribute OR a dispatch flagged a
     // degrade reason (e.g. starvation re-dispatch). Single "pool degraded to N
@@ -824,9 +833,9 @@ export class CoreSearchProvider implements SearchProvider {
       ...(queriesExecuted.length > 0 ? { queries_executed: [...queriesExecuted] } : {}),
       ...(engineOutcomes ? { engine_outcomes: engineOutcomes } : {}),
       ...(engineTelemetry ? { engine_telemetry: engineTelemetry } : {}),
-      // Always emit on engine-pool path (telemetry present); cache hits
-      // intentionally omit since there's no telemetry to source from.
-      ...(engineTelemetry ? { engine_warnings: engineWarnings } : {}),
+      // Always emit on the engine-pool path (telemetry present). Also emit
+      // when the allowlist produced warnings even if no adapter ran.
+      ...(engineTelemetry || engineWarnings.length > 0 ? { engine_warnings: engineWarnings } : {}),
       ...(enginePool ? { engine_pool: enginePool } : {}),
     };
 

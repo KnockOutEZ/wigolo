@@ -52,6 +52,12 @@ describe('buildSearchCacheKey', () => {
     expect(a).toBe(b);
   });
 
+  it('treats whitespace-only search_engines as no allowlist filter', () => {
+    const omitted = buildSearchCacheKey('q');
+    const blank = buildSearchCacheKey('q', { search_engines: [' ', ''] });
+    expect(blank).toBe(omitted);
+  });
+
   it('treats null/undefined/empty-array filters as equivalent to no filter', () => {
     const a = buildSearchCacheKey('q');
     const b = buildSearchCacheKey('q', {});

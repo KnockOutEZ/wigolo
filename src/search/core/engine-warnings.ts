@@ -22,6 +22,7 @@
 // future API-key-requiring engines drop in trivially.
 
 import type { EngineTelemetry, EngineWarning } from '../../types.js';
+import { formatEngineCatalogHint } from './engine-catalog.js';
 
 /**
  * Engine env-var hints. Keyed by engine name (matches EngineTelemetry.name).
@@ -128,6 +129,47 @@ export function buildEngineWarnings(
       warning.hint = ENGINE_AUTH_HINTS[t.name];
     }
     warnings.push(warning);
+  }
+  return warnings;
+}
+
+/**
+ * Warnings for `search_engines` names that did not match any registered
+ * adapter. Distinct from dispatch failures: the engine never ran because
+ * the allowlist string was unknown (or named a key-gated engine that is
+ * not in the live pool).
+ *
+ * `needs_key` wins for names in ENGINE_AUTH_HINTS that are unmatched —
+ * requesting `brave` without `BRAVE_API_KEY` is a missing-key problem,
+ * not a typo. Everything else is `unknown_engine` with the catalog hint
+ * so the caller can correct the name without reading adapter source.
+ */
+export function buildAllowlistWarnings(opts: {
+  unmatched: string[];
+  fallback: boolean;
+}): EngineWarning[] {
+  if (opts.unmatched.length === 0) return [];
+  const catalogHint = formatEngineCatalogHint();
+  const warnings: EngineWarning[] = [];
+  for (const name of opts.unmatched) {
+    const authHint = ENGINE_AUTH_HINTS[name];
+    if (authHint) {
+      warnings.push({
+        engine: name,
+        code: 'needs_key',
+        message: `engine '${name}' is not in the active pool`,
+        hint: authHint,
+      });
+      continue;
+    }
+    warnings.push({
+      engine: name,
+      code: 'unknown_engine',
+      message: opts.fallback
+        ? `unknown engine '${name}'; no match, using the default pool`
+        : `unknown engine '${name}'; ignored`,
+      hint: catalogHint,
+    });
   }
   return warnings;
 }

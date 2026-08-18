@@ -85,7 +85,7 @@ describe('runTool', () => {
     // research/agent/find_similar pipelines search the passed SearchEngine
     // instances directly (unlike search/fetch, which use the core provider).
     // A one-shot run with an empty engines list silently returns zero sources —
-    // this guards that the runner seeds the keyless direct engines.
+    // this guards that the runner seeds the same keyless pair as the MCP server.
     vi.mocked(handleResearch).mockResolvedValue({
       report: 'r', sources: [], sub_queries: [], citations: [],
     } as unknown as Awaited<ReturnType<typeof handleResearch>>);
@@ -97,8 +97,51 @@ describe('runTool', () => {
     }
     expect(handleResearch).toHaveBeenCalled();
     const enginesArg = vi.mocked(handleResearch).mock.calls[0][1];
-    expect(Array.isArray(enginesArg)).toBe(true);
-    expect(enginesArg.length).toBeGreaterThanOrEqual(2);
+    expect(enginesArg.map((e: { name: string }) => e.name)).toEqual(['bing', 'duckduckgo']);
+  });
+
+  it('forwards --search-engines to handleSearch on the same path as MCP', async () => {
+    vi.mocked(handleSearch).mockResolvedValue(okSearch);
+    const cap = captureStdout();
+    try {
+      await runTool('search', [
+        'gold price',
+        '--search-engines=duckduckgo,wikipedia',
+        '--json',
+        '--no-content',
+      ]);
+    } finally {
+      cap.restore();
+    }
+    expect(handleSearch).toHaveBeenCalledOnce();
+    const [input, engines] = vi.mocked(handleSearch).mock.calls[0];
+    expect(input).toEqual(
+      expect.objectContaining({
+        query: 'gold price',
+        search_engines: ['duckduckgo', 'wikipedia'],
+        include_content: false,
+      }),
+    );
+    expect(engines.map((e: { name: string }) => e.name)).toEqual(['bing', 'duckduckgo']);
+  });
+
+  it('forwards a space-separated --search-engines value the same way', async () => {
+    vi.mocked(handleSearch).mockResolvedValue(okSearch);
+    const cap = captureStdout();
+    try {
+      await runTool('search', ['gold price', '--search-engines', 'duckduckgo', '--json']);
+    } finally {
+      cap.restore();
+    }
+    expect(handleSearch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: 'gold price',
+        search_engines: ['duckduckgo'],
+      }),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it('search --json: exit 0 and full stdout parses as the MCP-shape data', async () => {

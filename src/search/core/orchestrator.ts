@@ -231,6 +231,12 @@ export interface OrchestratorOutput {
    * merged engine count + the reasons that fired. Consumed by core-provider,
    * which surfaces it as SearchOutput.engine_pool. */
   pool_degraded?: EnginePoolHealth;
+  /** `search_engines` names that matched no registered adapter. Promoted
+   * to `engine_warnings` (`unknown_engine` / `needs_key`) by the provider. */
+  unknownEngines?: string[];
+  /** True when the allowlist matched nothing and the vertical's default
+   * pool ran instead. */
+  allowlistFallback?: boolean;
 }
 
 function getEntriesForVertical(vertical: Vertical): EngineEntry[] {
@@ -280,8 +286,8 @@ function collectEngineCatalog(): Map<string, EngineEntry> {
 function resolveAllowlistedEntries(
   verticalEntries: EngineEntry[],
   allowlist: string[] | undefined,
-): { entries: EngineEntry[]; overridden: boolean } {
-  if (!allowlist) return { entries: verticalEntries, overridden: false };
+): { entries: EngineEntry[]; overridden: boolean; unmatched: string[] } {
+  if (!allowlist) return { entries: verticalEntries, overridden: false, unmatched: [] };
 
   const fromVertical = new Map(
     verticalEntries.map((e) => [e.engine.name.toLowerCase(), e] as const),
@@ -289,11 +295,11 @@ function resolveAllowlistedEntries(
   const catalog = collectEngineCatalog();
   const matched: EngineEntry[] = [];
   const seen = new Set<string>();
-  const unknown: string[] = [];
+  const unmatched: string[] = [];
   for (const name of allowlist) {
     const entry = fromVertical.get(name) ?? catalog.get(name);
     if (!entry) {
-      unknown.push(name);
+      unmatched.push(name);
       continue;
     }
     if (seen.has(name)) continue;
@@ -304,16 +310,16 @@ function resolveAllowlistedEntries(
   if (matched.length === 0) {
     log.warn('no engines matched search_engines filter, using all', {
       requested: allowlist,
-      unknown,
+      unknown: unmatched,
     });
-    return { entries: verticalEntries, overridden: false };
+    return { entries: verticalEntries, overridden: false, unmatched };
   }
 
-  if (unknown.length > 0) {
-    log.warn('unknown search_engines names ignored', { unknown, requested: allowlist });
+  if (unmatched.length > 0) {
+    log.warn('unknown search_engines names ignored', { unknown: unmatched, requested: allowlist });
   }
 
-  return { entries: matched, overridden: true };
+  return { entries: matched, overridden: true, unmatched };
 }
 
 function hostnameOf(url: string): string {
@@ -925,6 +931,8 @@ export async function runV1Search(
     outcomes: allOutcomes,
     degraded,
     ...(poolDegraded ? { pool_degraded: poolDegraded } : {}),
+    ...(resolved.unmatched.length > 0 ? { unknownEngines: resolved.unmatched } : {}),
+    ...(allowlist && !poolOverridden ? { allowlistFallback: true } : {}),
   };
 }
 

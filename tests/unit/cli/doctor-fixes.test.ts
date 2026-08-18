@@ -255,6 +255,11 @@ describe('doctor --json', () => {
     expect(['ok', 'degraded']).toContain(parsed.status);
     expect(parsed).toHaveProperty('exitCode', code);
     expect(Array.isArray(parsed.checks)).toBe(true);
+    expect(Array.isArray(parsed.search_engines)).toBe(true);
+    expect(parsed.search_engines.length).toBeGreaterThan(0);
+    expect(parsed.search_engines[0]).toHaveProperty('name');
+    expect(parsed.search_engines[0]).toHaveProperty('vertical');
+    expect(parsed.search_engines.some((e: { name: string }) => e.name === 'duckduckgo')).toBe(true);
   });
 
   it('includes per-fix before/after status under --fix --json', async () => {

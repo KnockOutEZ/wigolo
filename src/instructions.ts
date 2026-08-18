@@ -166,7 +166,7 @@ Use \`search_depth\` to trade latency for thoroughness:
 - \`response_time_ms\` -- compatibility alias of \`total_time_ms\`. Always emitted.
 - \`engines_used\` -- engines that contributed >= 1 result to the deduped fused list (semantic, "who ended up in the answer").
 - \`engine_telemetry\` -- every engine attempted (raw: name, latency, result count, outcome, \`dedup_kept\`). Distinct from \`engines_used\` -- empty/errored engines appear here but not there.
-- \`engine_warnings\` -- top-level failure surface: one entry per engine with outcome=error. Stable \`code\` (\`http_4xx\` / \`http_5xx\` / \`timeout\` / \`dns\` / \`error\`) plus optional \`hint\` that names the env var to set when an engine needs an API key. Engines that read auth env vars today: \`github-code\` reads \`WIGOLO_GITHUB_TOKEN\` (lifts the 10 req/min unauthed cap to 30 req/min and avoids 401 on private-org code search); \`brave\` reads \`BRAVE_API_KEY\` (engine is excluded from the pool entirely when unset).
+- \`engine_warnings\` -- top-level failure surface: one entry per engine with outcome=error, plus \`unknown_engine\` / \`needs_key\` when \`search_engines\` names nothing in the pool. Stable \`code\` (\`http_4xx\` / \`http_5xx\` / \`timeout\` / \`dns\` / \`unknown_engine\` / \`needs_key\` / \`error\`) plus optional \`hint\` that names the env var to set when an engine needs an API key, or lists built-in names when the allowlist missed. Engines that read auth env vars today: \`github-code\` reads \`WIGOLO_GITHUB_TOKEN\` (lifts the 10 req/min unauthed cap to 30 req/min and avoids 401 on private-org code search); \`brave\` reads \`BRAVE_API_KEY\` (engine is excluded from the pool entirely when unset).
 - \`include_engine_outcomes: true\` -- opt-in per-engine debug rows.
 - \`include_images: true\` -- aggregate top-level \`images[]\` from engines that surface them.
 - \`include_favicon: true\` -- per-result \`favicon\` URL.
@@ -215,6 +215,7 @@ Key parameters:
 - query: string or string[] array (3-5 keyword variants; deduplicated).
 - include_domains / exclude_domains: scope sites. Always scope library/framework queries.
 - category: "general" | "news" | "code" | "docs" | "papers" | "images". Image results carry image_url + thumbnail_url + width/height.
+- search_engines: string[] of adapter names (case-insensitive). Built-in names by category live on the tool schema and in \`wigolo doctor\`; unknown names surface in \`engine_warnings\` (\`unknown_engine\`).
 - from_date / to_date: ISO YYYY-MM-DD. time_range: 'day' | 'week' | 'month' | 'year'.
 - country: ISO 3166-1 alpha-2 ("us", "gb") — geographic boost.
 - exact_match: quoted-phrase search.

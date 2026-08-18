@@ -377,7 +377,7 @@ function hasAnyFilter(filters?: SearchCacheFilters): boolean {
     filters.exact_match != null ||
     filters.search_depth != null ||
     filters.reranker != null ||
-    (filters.search_engines?.length ?? 0) > 0
+    (filters.search_engines?.some((name) => name.trim().length > 0) ?? false)
   );
 }
 

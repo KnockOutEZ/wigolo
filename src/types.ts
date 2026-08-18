@@ -404,6 +404,9 @@ export interface SearchInput {
   max_total_chars?: number;
   max_fetches?: number;
   time_range?: 'day' | 'week' | 'month' | 'year';
+  /** Adapter names to run (case-insensitive). Built-in names are listed on
+   * the MCP schema and by `wigolo doctor`; unknown names become
+   * `engine_warnings` with code `unknown_engine`. */
   search_engines?: string[];
   language?: string;
   // v2 additions:
@@ -514,8 +517,9 @@ export interface EngineTelemetry {
  */
 export interface EngineWarning {
   engine: string;
-  /** Stable failure code: 'http_4xx' / 'http_5xx' / 'http_<code>' / generic
-   * 'error' for non-HTTP failures (DNS, abort, timeout). */
+  /** Stable failure code: 'http_4xx' / 'http_5xx' / 'http_<code>' /
+   * 'unknown_engine' (search_engines name matched nothing) / 'needs_key' /
+   * generic 'error' for non-HTTP failures (DNS, abort, timeout). */
   code: string;
   /** One-line human-readable explanation drawn from the engine's error. */
   message?: string;

@@ -71,7 +71,7 @@ function getHelpText(): string {
   return [
     'Available commands:',
     '',
-    '  search <query> [--limit=N] [--domains=a,b] [--from=YYYY-MM-DD] [--to=YYYY-MM-DD]',
+    '  search <query> [--limit=N] [--domains=a,b] [--search-engines=a,b] [--from=YYYY-MM-DD] [--to=YYYY-MM-DD]',
     '  fetch <url> [--mode=raw|markdown] [--max-chars=N] [--section=HEADING]',
     '  crawl <url> [--depth N] [--max-pages N] [--strategy=bfs|dfs|sitemap|map]',
     '  cache search <query> | cache stats | cache clear [--query=Q] [--url-pattern=P]',

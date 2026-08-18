@@ -258,6 +258,13 @@ export function formatEngineHealthLines(entries: EngineHealthEntry[]): string[] 
   return lines;
 }
 
+/** Footer under the engine table: how to pass names to `search_engines`. */
+export function formatSearchEnginesSelectHint(): string[] {
+  return [
+    '  Select with --search-engines=name,name or search_engines: ["name"] (case-insensitive).',
+  ];
+}
+
 /**
  * Live per-engine probe behind `doctor --probe-engines`. Dedupes
  * the registered entries by engine name, skips parked (disabled) adapters,
@@ -462,6 +469,9 @@ export interface DoctorReport {
   install_channel: 'binary' | 'npm-or-source';
   checks: DoctorCheck[];
   fixes: DoctorFix[];
+  /** Live per-vertical engine names (same table as the human "Search engines"
+   * block). Pass these strings to `search_engines` / `--search-engines`. */
+  search_engines?: EngineHealthEntry[];
 }
 
 /** Whether the daemon appears to be running (a live admin token + a reachable
@@ -862,9 +872,13 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
   // Broken engines surface visibly without blocking startup or doctor exit.
   out('');
   out('[wigolo doctor] Search engines:');
+  let engineHealthSummary: EngineHealthEntry[] | undefined;
   try {
-    const engineHealth = getEngineHealthSummary();
-    for (const line of formatEngineHealthLines(engineHealth)) {
+    engineHealthSummary = getEngineHealthSummary();
+    for (const line of formatEngineHealthLines(engineHealthSummary)) {
+      out(line);
+    }
+    for (const line of formatSearchEnginesSelectHint()) {
       out(line);
     }
   } catch (err) {
@@ -985,6 +999,7 @@ async function runDoctorInner(dataDir: string, opts?: DoctorOptions): Promise<nu
       install_channel: detectInstallChannel(),
       checks: fixableChecks,
       fixes,
+      ...(engineHealthSummary ? { search_engines: engineHealthSummary } : {}),
     };
     // Machine shape on stdout; the human diagnostic above stays on stderr.
     process.stdout.write(`${JSON.stringify(report)}\n`);

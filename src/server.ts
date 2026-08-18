@@ -28,8 +28,7 @@ import { handleWatch } from './tools/watch.js';
 import { scheduleOverdueCheck } from './watch/scheduler.js';
 import type { SamplingCapableServer } from './search/sampling.js';
 import { SearxngClient } from './search/searxng.js';
-import { DuckDuckGoEngine } from './search/engines/duckduckgo.js';
-import { BingEngine } from './search/engines/bing.js';
+import { createKeylessDirectEngines } from './search/direct-engines.js';
 import { resolveSearchBackend, getBootstrapState } from './searxng/bootstrap.js';
 import { searxngConfigured, searxngBackendAvailable } from './searxng/enabled.js';
 import { SearxngProcess } from './searxng/process.js';
@@ -117,10 +116,7 @@ export async function initSubsystems(): Promise<Subsystems> {
 
   const backendStatus = new BackendStatus();
 
-  const searchEngines: SearchEngine[] = [
-    new BingEngine(),
-    new DuckDuckGoEngine(),
-  ];
+  const searchEngines: SearchEngine[] = createKeylessDirectEngines();
   // Load plugins from ~/.wigolo/plugins/
   const pluginRegistry = new PluginRegistry();
   try {

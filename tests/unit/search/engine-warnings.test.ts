@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildEngineWarnings } from '../../../src/search/core/engine-warnings.js';
+import { buildAllowlistWarnings, buildEngineWarnings } from '../../../src/search/core/engine-warnings.js';
 import type { EngineTelemetry } from '../../../src/types.js';
 
 // Unit tests for engine_warnings construction.
@@ -91,5 +91,40 @@ describe('buildEngineWarnings (M2)', () => {
     expect(warnings[0].code).toBe('http_401');
     // Unknown engines don't get fabricated hints — only the registry does.
     expect(warnings[0].hint).toBeUndefined();
+  });
+});
+
+describe('buildAllowlistWarnings', () => {
+  it('returns empty when nothing was unmatched', () => {
+    expect(buildAllowlistWarnings({ unmatched: [], fallback: false })).toEqual([]);
+  });
+
+  it('emits unknown_engine with the catalog hint for a typo', () => {
+    const warnings = buildAllowlistWarnings({ unmatched: ['google'], fallback: false });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      engine: 'google',
+      code: 'unknown_engine',
+    });
+    expect(warnings[0].message).toMatch(/ignored/);
+    expect(warnings[0].hint).toMatch(/available:/);
+    expect(warnings[0].hint).toMatch(/duckduckgo/);
+    expect(warnings[0].hint).toMatch(/github-code/);
+    expect(warnings[0].hint).toMatch(/wigolo doctor/);
+  });
+
+  it('names the default-pool fallback when no requested engine matched', () => {
+    const warnings = buildAllowlistWarnings({ unmatched: ['nonexistent'], fallback: true });
+    expect(warnings[0].code).toBe('unknown_engine');
+    expect(warnings[0].message).toMatch(/default pool/);
+  });
+
+  it('uses needs_key (not unknown_engine) for a key-gated engine missing from the pool', () => {
+    const warnings = buildAllowlistWarnings({ unmatched: ['brave'], fallback: true });
+    expect(warnings[0]).toMatchObject({
+      engine: 'brave',
+      code: 'needs_key',
+    });
+    expect(warnings[0].hint).toMatch(/BRAVE_API_KEY/);
   });
 });

@@ -115,6 +115,30 @@ describe('CoreSearchProvider', () => {
     expect(runV1SearchMock.mock.calls[0][0].searchEngines).toEqual(['duckduckgo', 'wikipedia']);
   });
 
+  it('promotes unmatched search_engines names into engine_warnings', async () => {
+    runV1SearchMock.mockClear();
+    runV1SearchMock.mockResolvedValueOnce({
+      results: [{ title: 'Gold', url: 'https://ddg.test/1', snippet: 's', relevance_score: 1, engine: 'duckduckgo' }],
+      enginesUsed: ['duckduckgo'],
+      degraded: false,
+      outcomes: [],
+      unknownEngines: ['google'],
+      allowlistFallback: false,
+    });
+
+    const provider = new CoreSearchProvider();
+    const result = await provider.search(
+      { query: 'gold price', search_engines: ['duckduckgo', 'google'], include_content: false },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const warn = result.data.engine_warnings?.find((w) => w.engine === 'google');
+    expect(warn).toMatchObject({ engine: 'google', code: 'unknown_engine' });
+    expect(warn?.hint).toMatch(/available:/);
+  });
+
   it('rejects an empty query before the images check', async () => {
     const provider = new CoreSearchProvider();
     const result = await provider.search(

@@ -3,8 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { SmartRouter, type HttpClient } from '../fetch/router.js';
 import { BrowserPool } from '../fetch/browser-pool.js';
 import { httpFetch } from '../fetch/http-client.js';
-import { DuckDuckGoEngine } from '../search/engines/duckduckgo.js';
-import { BingEngine } from '../search/engines/bing.js';
+import { createKeylessDirectEngines } from '../search/direct-engines.js';
 import { initDatabase, closeDatabase } from '../cache/db.js';
 import { BackendStatus } from '../server/backend-status.js';
 import { getConfig } from '../config.js';
@@ -164,9 +163,10 @@ async function dispatch(
  * same way the interactive shell does, but is searxng-free BY CONSTRUCTION: it
  * never calls `resolveSearchBackend` and never constructs a sidecar process.
  * The `search`/`fetch` tools route through the core provider (its own direct
- * adapters), but the research/agent/find_similar pipelines search the passed
- * engine instances directly — so we seed the same keyless direct engines the
- * MCP server uses (DuckDuckGo + Bing, no sidecar). Without these, one-shot
+ * adapters, including `search_engines` allowlisting), but the
+ * research/agent/find_similar pipelines search the passed engine instances
+ * directly — so we seed the same keyless direct engines the MCP server uses
+ * (`createKeylessDirectEngines`, no sidecar). Without these, one-shot
  * research/agent/find_similar would find zero web sources.
  *
  * Contract: RESULT → stdout, ALL logs → stderr. `--json` emits the tool's
@@ -200,7 +200,7 @@ export async function runTool(command: string, rawArgs: string[]): Promise<numbe
   const backendStatus = new BackendStatus();
   const deps: ReplDeps = {
     router,
-    engines: [new DuckDuckGoEngine(), new BingEngine()],
+    engines: createKeylessDirectEngines(),
     backendStatus,
   };
 
