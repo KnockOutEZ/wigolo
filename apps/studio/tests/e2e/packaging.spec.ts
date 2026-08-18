@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createConnection, createServer, type AddressInfo } from 'node:net';
 import { get } from 'node:http';
+import { createRequire } from 'node:module';
 import { OMIT_ENV } from '../../electron-builder.config';
 
 /**
@@ -332,7 +333,36 @@ describe.skipIf(!RUN)('negative control: asarUnpack entries removed', () => {
  * build where the fence does not apply — which must come back with a live CDP browser. Anything
  * less is the vacuous control this file's other half was already caught by once.
  */
-const LOOSE_ELECTRON = join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
+/**
+ * The dev Electron binary that hosts the unfenced arm.
+ *
+ * ASK THE `electron` PACKAGE, never build the path by hand. `apps/*` is an npm workspace, so a root
+ * `npm ci` HOISTS electron to the repo-root `node_modules` and `apps/studio/node_modules/electron`
+ * does not exist at all — a hardcoded `apps/studio/...` path is correct only on a machine where
+ * someone happened to run a second, non-workspace install inside `apps/studio`. That is exactly how
+ * this passed locally and failed on the first CI run. `require('electron')` returns the absolute
+ * path to the executable wherever the package landed, and throws if the dist was never extracted.
+ */
+function looseElectronBinary(): string {
+  const req = createRequire(import.meta.url);
+  let bin: string;
+  try {
+    bin = req('electron') as string;
+  } catch (err) {
+    throw new Error(
+      `the unfenced control needs the dev Electron binary, and the 'electron' package could not ` +
+        `produce one (${(err as Error).message}). Run its install script — 'node node_modules/electron/install.js' ` +
+        `from the repo root — before this spec.`,
+    );
+  }
+  if (!bin || !existsSync(bin)) {
+    throw new Error(
+      `the 'electron' package reports its binary at ${bin || '(empty)'}, which does not exist. Run ` +
+        `'node node_modules/electron/install.js' from the repo root before this spec.`,
+    );
+  }
+  return bin;
+}
 const LOOSE_MAIN = join(APP_DIR, 'out/main/index.js');
 /** Long enough for the engine to bind a port if it is ever going to; a boot is not instant. */
 const BOOT_MS = 12_000;
@@ -457,17 +487,13 @@ describe.skipIf(!RUN)('the CDP fence, executed on a real packaged build', () => 
 
   beforeAll(async () => {
     if (!existsSync(binary(GOOD_OUT))) pack(GOOD_OUT, {});
-    if (!existsSync(LOOSE_ELECTRON)) {
-      // Fail loudly rather than skip. A skipped control is indistinguishable from a control that
-      // passed, and this whole block is worthless without the unfenced arm.
-      throw new Error(
-        `the unfenced control needs the dev Electron binary at ${LOOSE_ELECTRON}; run electron's install script (npm rebuild electron) in apps/studio first`,
-      );
-    }
+    // Throws rather than skips if the binary is missing. A skipped control is indistinguishable
+    // from one that passed, and this whole block is worthless without the unfenced arm.
+    const looseElectron = looseElectronBinary();
     port = await freeCdpPort();
     // The unfenced arm runs FIRST and the fenced arm re-uses the very port it just held open, so
     // "the port happened to be closed already" cannot explain the fenced result.
-    loose = await observeFence(LOOSE_ELECTRON, [LOOSE_MAIN], port);
+    loose = await observeFence(looseElectron, [LOOSE_MAIN], port);
     packaged = await observeFence(binary(GOOD_OUT), [], port);
   }, 25 * 60_000);
 

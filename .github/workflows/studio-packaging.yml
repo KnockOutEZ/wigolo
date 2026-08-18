@@ -80,10 +80,24 @@ jobs:
       # Same fix as ci.yml's studio-e2e job: npm ci's electron postinstall can extract
       # partially or race the exec, which surfaces as ETXTBSY or "failed to install
       # correctly" at pack time.
+      #
+      # The last line is a PRE-FLIGHT for the CDP fence block's unfenced arm, which hosts on this
+      # binary and resolves it the way the spec does — from `apps/studio`, not from the repo root.
+      # `apps/*` is an npm workspace, so electron hoists and the two vantage points can disagree;
+      # asserting it here fails the job in seconds with a legible message instead of after three
+      # ~380 MB packs. The spec still throws on its own if this is ever skipped or bypassed — the
+      # control must never degrade into a skip.
       - name: Ensure Electron binary is fully installed
         run: |
           node node_modules/electron/install.js
           node -p "require('electron')"
+          node -e "
+            const { createRequire } = require('node:module');
+            const { accessSync, constants } = require('node:fs');
+            const bin = createRequire('${{ github.workspace }}/apps/studio/package.json')('electron');
+            accessSync(bin, constants.X_OK);
+            console.log('studio-resolved electron binary: ' + bin);
+          "
 
       # RUN_STUDIO_E2E is deliberately NOT set. The other nine specs under tests/e2e are
       # gated on it and stay skipped here, so this job pays only for packaging — they are
