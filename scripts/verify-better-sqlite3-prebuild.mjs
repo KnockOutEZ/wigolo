@@ -67,6 +67,19 @@ function assetName(version, abi, target) {
   return `better-sqlite3-v${version}-node-v${abi}-${target}.tar.gz`;
 }
 
+/**
+ * Extract `<dir>/<name>` in place.
+ *
+ * The tarball is named RELATIVELY with `cwd`, never as an absolute path with `-C`. Under
+ * `shell: bash` on a Windows runner, PATH resolves `tar` to GNU tar from Git for Windows,
+ * which reads `C:\...` as a `host:path` remote spec and fails with
+ * "Cannot connect to C: resolve failed". A relative name has no colon, so GNU tar and the
+ * bsdtar shipped in System32 both behave.
+ */
+function extract(dir, name) {
+  execFileSync('tar', ['-xzf', name], { stdio: 'inherit', cwd: dir });
+}
+
 async function download(url, dest) {
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok) throw new Error(`GET ${url} -> HTTP ${res.status} ${res.statusText}`);
@@ -101,7 +114,7 @@ async function fetchWrapper(pkg, dir) {
     throw new Error(`${pkg.resolved} ${algo} is ${algo}-${actual}, lockfile says ${pkg.integrity}`);
   }
 
-  execFileSync('tar', ['-xzf', tarball, '-C', dir], { stdio: 'inherit' });
+  extract(dir, 'wrapper.tgz');
   if (!fs.existsSync(path.join(wrapperDir, 'lib', 'database.js'))) {
     throw new Error(`registry tarball extracted without package/lib/database.js in ${dir}`);
   }
@@ -166,7 +179,7 @@ async function main() {
     const url = `https://github.com/WiseLibs/better-sqlite3/releases/download/v${version}/${name}`;
     const tarball = path.join(work, name);
     const bytes = await download(url, tarball);
-    execFileSync('tar', ['-xzf', tarball, '-C', work], { stdio: 'inherit' });
+    extract(work, name);
     bindingPath = path.join(work, 'build', 'Release', 'better_sqlite3.node');
     if (!fs.existsSync(bindingPath)) {
       throw new Error(`${name} extracted without build/Release/better_sqlite3.node`);
