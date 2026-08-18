@@ -367,15 +367,32 @@ describe('REST tools — untrusted-content representation on the wire (R2 / A10)
     for (const p of pages) expect(closedRegions(p.markdown)).toBe(1);
   }, 60000);
 
-  it('WIRE-4 (must-not-fire): `watch` carries no fence and no envelope in either mode', async () => {
-    // Hashes and counts are operational; wrapping them would corrupt values the caller matches on.
-    const modes: Record<string, string>[] = [{}, { 'X-Wigolo-Untrusted-Content': 'envelope' }];
-    for (const headers of modes) {
-      const r = await post(port, '/v1/watch', { action: 'list' }, headers);
-      expect(r.status).toBe(200);
-      expect(closedRegions(JSON.stringify(r.body))).toBe(0);
-      expect((r.body as { untrusted_content?: unknown }).untrusted_content).toBeUndefined();
-    }
+  it('WIRE-4: a `watch` LISTING has nothing to contain, but watch is now a page-derived tool', async () => {
+    // REWRITTEN, and the old title names the mistake: "`watch` carries no fence and no envelope in
+    // either mode", justified as "hashes and counts are operational". Both halves of that were built
+    // on the same reading — a description of watch's TYPICAL fields — and it was silent about
+    // `changes_since_last[].error`, which the scheduler fills from the fetch tool's prose reason and
+    // which therefore carries bytes read off the wire. Watch joined PAGE_DERIVED_TOOLS to close it.
+    //
+    // The must-not-fire half is KEPT and is what this row still owns end to end, on a real socket: a
+    // LISTING has no prose field at all, so the default representation must add no region to it.
+    // Fencing an id, a hash or a status enum would corrupt a value the caller matches on. Containment
+    // of the error itself is owned by REST-8 and the in-band fence suite, which can drive a failed
+    // check without a live origin.
+    const listed = await post(port, '/v1/watch', { action: 'list' });
+    expect(listed.status).toBe(200);
+    expect(closedRegions(JSON.stringify(listed.body))).toBe(0);
+    expect((listed.body as { untrusted_content?: unknown }).untrusted_content).toBeUndefined();
+
+    // …and under the opt-in, watch now carries the trust envelope every other page-derived tool
+    // carries. This is the observable consequence of joining the set, and it is asserted rather than
+    // left implicit: an opted-in SDK that gets no envelope has nothing to fence with.
+    const enveloped = await post(port, '/v1/watch', { action: 'list' }, { 'X-Wigolo-Untrusted-Content': 'envelope' });
+    expect(enveloped.status).toBe(200);
+    const env = (enveloped.body as { untrusted_content?: { trusted: boolean; nonce: string } }).untrusted_content;
+    expect(env).toBeDefined();
+    expect(env?.trusted).toBe(false);
+    expect(env?.nonce).toMatch(/^[0-9a-f]{16}$/);
   }, 40000);
 
   it('WIRE-5: an unrecognized header value is a 400 invalid_input, not a silent fallback', async () => {

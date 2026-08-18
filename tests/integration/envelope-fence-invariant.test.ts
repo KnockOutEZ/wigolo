@@ -314,10 +314,16 @@ describe('A89 — the walker must not fire on what production deliberately leave
     expect(findUnfencedInEnvelope(blocks, CANARY)).toEqual([]);
   });
 
-  it('CTRL-2 (must-not-fire): wigolo-authored operator text in a bare notice block is not page-derived', async () => {
-    // search emits `warning` as a BARE `[wigolo notice] …` block, outside the JSON. It is deliberately
-    // unfenced (operator text, no page-derived component), and the walker must stay silent on it —
-    // while still being able to see that block, which CTRL-3 proves.
+  it('CTRL-2 (must-not-fire): the bare notice block is emitted, and this walker plants nothing in it', async () => {
+    // THE PREMISE THIS ROW USED TO CARRY WAS FALSE and is corrected rather than deleted, because the
+    // false version is the more instructive one. It read: "It is deliberately unfenced (operator text,
+    // no page-derived component)" — the same sentence content-fence.ts carried, and F5 measured it
+    // wrong: answer-synthesis.ts interpolates a thrown LLM provider's `err.message` into `warning`.
+    // The field is fenced now, so the bare block is wigolo's `[wigolo notice] ` prefix followed by a
+    // closed region rather than raw prose.
+    //
+    // What this row still asserts is unchanged and does not depend on that premise: the block is
+    // EMITTED at all. That is the outside signal for CTRL-3.
     //
     // SCOPE OF THIS TEST, stated so it is not over-credited: this fixture plants NO canary, so the
     // `toEqual([])` below is unconditionally true and carries no weight on its own. The load-bearing

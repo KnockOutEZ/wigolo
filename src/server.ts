@@ -26,6 +26,7 @@ import {
   fenceResearchData,
   fenceAgentData,
   fenceDiffData,
+  fenceWatchData,
   diffOriginFromInput,
   fenceErrorMessage,
 } from './server/content-fence.js';
@@ -695,8 +696,12 @@ export function createMcpServer(subsystems: Subsystems): Server {
     if (name === 'watch') {
       const input = (args ?? {}) as unknown as WatchJobInput;
       const r = await handleWatch(input, router);
+      // F1: watch reports a refused re-fetch IN BAND, on an ok:true envelope, so its
+      // `changes_since_last[].error` never passes through `stageErrorEnvelope` — this arm returned
+      // `r.data` verbatim and was the one dispatch case with no fencer at all. The scheduler fills
+      // that field from the fetch tool's PROSE reason, which splices response-body bytes in.
       return {
-        content: [{ type: 'text', text: JSON.stringify(r.ok ? r.data : stageErrorEnvelope(r), null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(r.ok ? fenceWatchData(r.data) : stageErrorEnvelope(r), null, 2) }],
         isError: !r.ok,
       };
     }

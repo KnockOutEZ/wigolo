@@ -74,6 +74,7 @@
     "tests/unit/agent/pipeline-containment.test.ts",
     "tests/integration/content-fence-dispatch.test.ts",
     "tests/integration/error-envelope-fence.test.ts",
+    "tests/integration/success-envelope-inband-fence.test.ts",
     "tests/integration/crawl-cache-envelope-fence.test.ts",
     "tests/integration/compat-crawl-envelope-fence.test.ts",
     "tests/integration/crawl-link-target-untrusted.test.ts",
