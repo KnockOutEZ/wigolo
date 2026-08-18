@@ -11,8 +11,8 @@
  *
  * The asset is downloaded from the release, not taken from `node_modules`: the point is
  * to verify the artifact users receive, on the platform they receive it for. The JS
- * wrapper is installed with `--ignore-scripts` so nothing can quietly compile a fresh
- * binding and verify itself.
+ * wrapper is unpacked straight from the registry tarball, so no install lifecycle runs and
+ * nothing can quietly compile a fresh binding and verify itself.
  *
  * Usage:
  *   node scripts/verify-better-sqlite3-prebuild.mjs                       # host target
@@ -53,14 +53,14 @@ function parseArgs(argv) {
 
 /** The pin is the lockfile's, never a literal here — a version bump must not silently
  *  leave this probe verifying the previous release. */
-function lockedVersion() {
+function lockedPackage() {
   const lockPath = path.join(REPO_ROOT, 'package-lock.json');
   const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
   const entry = lock.packages?.['node_modules/better-sqlite3'];
-  if (!entry?.version) {
-    throw new Error(`no "node_modules/better-sqlite3" entry with a version in ${lockPath}`);
+  if (!entry?.version || !entry.resolved || !entry.integrity) {
+    throw new Error(`no complete "node_modules/better-sqlite3" entry in ${lockPath}`);
   }
-  return entry.version;
+  return { version: entry.version, resolved: entry.resolved, integrity: entry.integrity };
 }
 
 function assetName(version, abi, target) {
@@ -75,28 +75,37 @@ async function download(url, dest) {
   return bytes.length;
 }
 
-/** The wrapper only — `--ignore-scripts` keeps node-gyp and prebuild-install out, so the
- *  binding under test is the downloaded one and nothing else. */
-function installWrapper(version, dir) {
-  const marker = path.join(dir, 'node_modules', 'better-sqlite3', 'package.json');
-  if (fs.existsSync(marker)) return path.dirname(marker);
+/**
+ * The JS wrapper, unpacked straight from the registry tarball the lockfile resolves to and
+ * checked against the lockfile's integrity hash.
+ *
+ * `npm install` is deliberately not used. It would need `npm.cmd` on Windows, which Node
+ * refuses to spawn without `shell: true` (the CVE-2024-27980 hardening) — the same trap
+ * that made `tests/e2e/init-command.e2e.test.ts` spawn a child that never started. Beyond
+ * dodging that, unpacking directly means no install lifecycle exists at all, so neither
+ * prebuild-install nor node-gyp can supply a binding and let this probe verify itself. The
+ * wrapper's only non-relative dependency is `bindings`, which `lib/database.js` requires
+ * lazily and only when `nativeBinding` is null — this probe always passes it a path.
+ */
+async function fetchWrapper(pkg, dir) {
+  const wrapperDir = path.join(dir, 'package');
+  if (fs.existsSync(path.join(wrapperDir, 'lib', 'database.js'))) return wrapperDir;
+  fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
-  execFileSync(
-    process.platform === 'win32' ? 'npm.cmd' : 'npm',
-    [
-      'install',
-      `better-sqlite3@${version}`,
-      '--ignore-scripts',
-      '--no-audit',
-      '--no-fund',
-      '--no-package-lock',
-      '--prefix',
-      dir,
-    ],
-    { stdio: 'inherit', cwd: dir }
-  );
-  if (!fs.existsSync(marker)) throw new Error(`wrapper install produced no ${marker}`);
-  return path.dirname(marker);
+  const tarball = path.join(dir, 'wrapper.tgz');
+  await download(pkg.resolved, tarball);
+
+  const [algo, expected] = pkg.integrity.split('-');
+  const actual = createHash(algo).update(fs.readFileSync(tarball)).digest('base64');
+  if (actual !== expected) {
+    throw new Error(`${pkg.resolved} ${algo} is ${algo}-${actual}, lockfile says ${pkg.integrity}`);
+  }
+
+  execFileSync('tar', ['-xzf', tarball, '-C', dir], { stdio: 'inherit' });
+  if (!fs.existsSync(path.join(wrapperDir, 'lib', 'database.js'))) {
+    throw new Error(`registry tarball extracted without package/lib/database.js in ${dir}`);
+  }
+  return wrapperDir;
 }
 
 function driveFts5(Database, bindingPath) {
@@ -130,7 +139,8 @@ function driveFts5(Database, bindingPath) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  const version = lockedVersion();
+  const pkg = lockedPackage();
+  const version = pkg.version;
   const abi = opts.abi ?? process.versions.modules;
   const target = opts.target ?? `${process.platform}-${process.arch}`;
   const hostTarget = `${process.platform}-${process.arch}`;
@@ -139,12 +149,12 @@ async function main() {
   fs.rmSync(work, { recursive: true, force: true });
   fs.mkdirSync(work, { recursive: true });
 
-  const wrapperDir = installWrapper(version, path.join(os.tmpdir(), 'bs3-prebuild-wrapper'));
+  const wrapperDir = await fetchWrapper(pkg, path.join(os.tmpdir(), 'bs3-prebuild-wrapper'));
 
   console.log(`better-sqlite3 version : ${version} (from package-lock.json)`);
   console.log(`host                   : node ${process.version} / ${hostTarget} / ABI ${process.versions.modules}`);
   console.log(`target under test      : ${target} / ABI ${abi}`);
-  console.log(`wrapper (--ignore-scripts): ${wrapperDir}`);
+  console.log(`wrapper (no install lifecycle): ${wrapperDir}`);
 
   let bindingPath;
   if (opts.missingBinding) {

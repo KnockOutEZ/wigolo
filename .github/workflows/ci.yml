@@ -315,12 +315,14 @@ jobs:
   # repository is public. On a private fork the label does not resolve and this leg will not
   # start — that is a visibility fact about the fork, not a workflow bug.
   #
-  # Deliberately no `npm ci`: the probe installs the JS wrapper alone with
-  # `--ignore-scripts`, so prebuild-install and node-gyp cannot supply a locally built
-  # binding and let the probe verify itself. That also keeps this job independent of the
-  # better-sqlite3 v13 problem parked in PR #337 (v13 dropped its `install` script, so npm
-  # supplies an implicit `node-gyp rebuild` and `npm ci` hard-fails on a Windows box with no
-  # Visual Studio). The pin stays 12.9.0 and the probe reads it from package-lock.json.
+  # Deliberately no `npm ci`, and no npm at all: the probe unpacks the JS wrapper straight
+  # from the registry tarball the lockfile resolves to, checked against the lockfile's
+  # integrity hash. No install lifecycle runs, so prebuild-install and node-gyp cannot
+  # supply a locally built binding and let the probe verify itself. That also keeps this job
+  # independent of the better-sqlite3 v13 problem parked in PR #337 (v13 dropped its
+  # `install` script, so npm supplies an implicit `node-gyp rebuild` and `npm ci` hard-fails
+  # on a Windows box with no Visual Studio). The pin stays 12.9.0 and the probe reads it
+  # from package-lock.json.
   #
   # No `continue-on-error` anywhere in this job. The whole point of the Q6 phase is deleting
   # greens that report success regardless of what their steps did.
