@@ -71,6 +71,17 @@ function installFetch(routes: MockRoute[]): { calls: FetchCall[]; restore: () =>
   return { calls, restore: () => spy.mockRestore() };
 }
 
+function codeVerticalStubs(): MockRoute[] {
+  return [
+    { match: (u) => u.startsWith('https://api.github.com/search/code'), body: { items: [] } },
+    { match: (u) => u.startsWith('https://api.stackexchange.com/'), body: { items: [] } },
+    { match: (u) => u.startsWith('https://developer.mozilla.org/api/v1/search'), body: { documents: [] } },
+    { match: (u) => u.startsWith('https://lite.duckduckgo.com/'), text: '<html></html>' },
+    { match: (u) => u.startsWith('https://crates.io/api/v1/crates'), body: { crates: [] } },
+    { match: (u) => u.startsWith('https://registry.npmjs.org/-/v1/search'), body: { objects: [] } },
+  ];
+}
+
 function fullReset(): void {
   _resetSearchProviderForTest();
   _resetOrchestratorVerticalsForTest();
@@ -127,15 +138,7 @@ describe('search adapter quality (S11b) — integration at handleSearch boundary
     process.env.WIGOLO_GITHUB_TOKEN = 'ghp_integration_test';
     fullReset();
 
-    const { calls, restore } = installFetch([
-      { match: (u) => u.startsWith('https://api.github.com/search/code'), body: { items: [] } },
-      // Stub the other code-vertical engines so the orchestrator stays healthy.
-      { match: (u) => u.startsWith('https://api.stackexchange.com/'), body: { items: [] } },
-      { match: (u) => u.startsWith('https://developer.mozilla.org/api/v1/search'), body: { documents: [] } },
-      { match: (u) => u.startsWith('https://lite.duckduckgo.com/'), text: '<html></html>' },
-      { match: (u) => u.startsWith('https://crates.io/api/v1/crates'), body: { crates: [] } },
-      { match: (u) => u.startsWith('https://registry.npmjs.org/-/v1/search'), body: { objects: [] } },
-    ]);
+    const { calls, restore } = installFetch(codeVerticalStubs());
     try {
       const r = await handleSearch(
         { query: 'rust tokio select macro', category: 'code', include_content: false },
@@ -151,6 +154,27 @@ describe('search adapter quality (S11b) — integration at handleSearch boundary
     expect(ghCall, 'github-code adapter should be invoked').toBeDefined();
     const headers = ghCall!.init?.headers as Record<string, string> | undefined;
     expect(headers?.Authorization).toBe('Bearer ghp_integration_test');
+  });
+
+  it('audit: npm-registry call from a category=code search sends a User-Agent header', async () => {
+    const { calls, restore } = installFetch(codeVerticalStubs());
+    try {
+      const r = await handleSearch(
+        { query: 'zod schema validation', category: 'code', include_content: false },
+        [],
+        fakeRouter,
+      );
+      expect(r.ok).toBe(true);
+    } finally {
+      restore();
+    }
+
+    const npmCall = calls.find((c) => c.url.startsWith('https://registry.npmjs.org/-/v1/search'));
+    expect(npmCall, 'npm-registry adapter should be invoked').toBeDefined();
+    const ua = (npmCall!.init?.headers as Record<string, string> | undefined)?.['User-Agent'];
+    expect(ua, 'npm registry request must carry a User-Agent').toBeDefined();
+    expect(ua).toMatch(/wigolo/i);
+    expect(npmCall!.url).toContain('text=');
   });
 
   it('quality tier metadata is present on every registered engine entry exposed to the orchestrator', () => {

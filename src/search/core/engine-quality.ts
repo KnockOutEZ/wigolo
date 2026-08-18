@@ -42,6 +42,8 @@ import type { EngineQualityTier } from './engine-base.js';
  *  - github-code: structured JSON but the snippet is the repository
  *    description or the file path — useful for ranking but rarely
  *    quotable evidence → medium.
+ *  - crates-io / npm-registry: structured package-registry JSON with
+ *    reliable name/description/version fields → high.
  *  - devdocs: static slug lookup, snippet is just "Title — type" → low.
  *  - arxiv / semantic-scholar: structured paper APIs with abstracts when
  *    present, but `abstract` is frequently missing on S2 → medium.

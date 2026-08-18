@@ -28,6 +28,21 @@ function asString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
 
+function packagePageUrl(name: string, candidate: unknown): string {
+  const fallback = `https://www.npmjs.com/package/${name}`;
+  const raw = asString(candidate);
+  if (!raw) return fallback;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:') return fallback;
+    if (parsed.hostname !== 'www.npmjs.com' && parsed.hostname !== 'npmjs.com') return fallback;
+    if (!parsed.pathname.startsWith('/package/')) return fallback;
+    return raw;
+  } catch {
+    return fallback;
+  }
+}
+
 // npm's public registry search API: free, no key, returns name/description/
 // version for matching packages. Adds a canonical JavaScript-package-registry
 // signal to the code vertical — useful when a query names or resembles an
@@ -63,7 +78,8 @@ export class NpmRegistryEngine implements SearchEngine {
     if (!response.ok) throw new Error(`npm registry returned ${response.status}`);
 
     const data = (await response.json()) as NpmSearchResponse;
-    return this.parseObjects(data.objects ?? [], size);
+    const objects = Array.isArray(data.objects) ? data.objects : [];
+    return this.parseObjects(objects, size);
   }
 
   private parseObjects(objects: NpmSearchObject[], maxResults: number): RawSearchResult[] {
@@ -79,7 +95,7 @@ export class NpmRegistryEngine implements SearchEngine {
       const description = asString(pkg?.description) ?? '';
       const version = asString(pkg?.version);
       const snippet = version ? `${description} (v${version})` : description;
-      const url = asString(pkg?.links?.npm) ?? `https://www.npmjs.com/package/${name}`;
+      const url = packagePageUrl(name, pkg?.links?.npm);
       const published_date = asString(pkg?.date);
 
       results.push({

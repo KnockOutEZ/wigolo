@@ -94,6 +94,37 @@ describe('NpmRegistryEngine', () => {
     expect(results[0].title).toBe('valid');
   });
 
+  it('does not count nameless packages toward maxResults', async () => {
+    const body = {
+      objects: [
+        { package: { name: null, version: '1.0.0' } },
+        { package: { name: 'one', version: '1.0.0' } },
+        { package: { name: 'two', version: '1.0.0' } },
+      ],
+    };
+    captureFetch(body);
+    const results = await new NpmRegistryEngine().search('q', { maxResults: 1 });
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('one');
+  });
+
+  it('ignores links.npm that are not npmjs.com package pages', async () => {
+    const body = {
+      objects: [
+        {
+          package: {
+            name: 'left-pad',
+            version: '1.3.0',
+            links: { npm: 'https://evil.example/phish' },
+          },
+        },
+      ],
+    };
+    captureFetch(body);
+    const results = await new NpmRegistryEngine().search('q');
+    expect(results[0].url).toBe('https://www.npmjs.com/package/left-pad');
+  });
+
   it('sets a descriptive User-Agent header', async () => {
     const { calls } = captureFetch({ objects: [] });
     await new NpmRegistryEngine().search('q');
@@ -149,6 +180,12 @@ describe('NpmRegistryEngine', () => {
 
   it('returns empty array when objects field is absent', async () => {
     captureFetch({});
+    const results = await new NpmRegistryEngine().search('q');
+    expect(results).toEqual([]);
+  });
+
+  it('returns empty array when objects is not an array', async () => {
+    captureFetch({ objects: { package: { name: 'sneaky' } } });
     const results = await new NpmRegistryEngine().search('q');
     expect(results).toEqual([]);
   });

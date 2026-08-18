@@ -82,6 +82,8 @@ describe('getCodeEngines', () => {
     expect(w('stackoverflow')).toBeGreaterThan(w('mdn'));
     expect(w('duckduckgo')).toBeGreaterThan(w('mdn'));
     expect(w('devdocs')).toBeGreaterThan(w('mdn'));
+    expect(w('npm-registry')).toBe(w('crates-io'));
+    expect(w('npm-registry')).toBe(w('mdn'));
   });
 
   it('sets supportsDateFilter true only on stackoverflow', () => {
@@ -92,6 +94,7 @@ describe('getCodeEngines', () => {
     expect(f('mdn')).toBe(false);
     expect(f('devdocs')).toBe(false);
     expect(f('duckduckgo')).toBe(false);
+    expect(f('crates-io')).toBe(false);
     expect(f('npm-registry')).toBe(false);
   });
 });
