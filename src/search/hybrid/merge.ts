@@ -20,6 +20,7 @@ export interface MergeOptions {
 export interface MergeOutcome {
   results: SearchResultItem[];
   engines_used: string[];
+  engines_dispatched?: string[];
   engine_outcomes?: EngineOutcomeSummary[];
 }
 
@@ -97,11 +98,19 @@ export function mergeResults(
     ...core.engines_used,
     ...searxng.engines_used,
   ]);
+  const dispatchedSet = new Set<string>([
+    ...(core.engines_dispatched ?? []),
+    ...(searxng.engines_dispatched ?? []),
+  ]);
 
   const merged: MergeOutcome = {
     results,
     engines_used: [...enginesSet],
   };
+
+  if (dispatchedSet.size > 0) {
+    merged.engines_dispatched = [...dispatchedSet];
+  }
 
   if (core.engine_outcomes || searxng.engine_outcomes) {
     merged.engine_outcomes = [

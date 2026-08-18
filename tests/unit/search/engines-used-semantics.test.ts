@@ -118,6 +118,7 @@ describe('engines_used vs engine_telemetry semantics', () => {
     // Raw attempt log: every engine that fired.
     const telemetryNames = (out.data.engine_telemetry ?? []).map((t) => t.name).sort();
     expect(telemetryNames).toEqual(['bing', 'emptyEngine']);
+    expect(out.data.engines_dispatched?.sort()).toEqual(['bing', 'emptyEngine']);
 
     // Semantic surface: only contributors.
     expect(out.data.engines_used).toContain('bing');
@@ -139,6 +140,7 @@ describe('engines_used vs engine_telemetry semantics', () => {
 
     const telemetryNames = (out.data.engine_telemetry ?? []).map((t) => t.name).sort();
     expect(telemetryNames).toEqual(['bing', 'ddg']);
+    expect(out.data.engines_dispatched?.sort()).toEqual(['bing', 'ddg']);
 
     expect(out.data.engines_used).toContain('bing');
     expect(out.data.engines_used).not.toContain('ddg');

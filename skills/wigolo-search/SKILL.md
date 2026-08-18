@@ -81,7 +81,9 @@ Multi-engine web search with ML reranking, explainable scoring, and per-engine t
 
 ## Always-Emitted Fields
 
-- `engines_used`, `engine_telemetry` — per-engine name, latency, result count, outcome, `dedup_kept`.
+- `engines_used` — engines that contributed ≥1 result to the fused list.
+- `engines_dispatched` — engines that actually ran (ok or error; breaker skips omitted). Live dispatch only.
+- `engine_telemetry` — per-engine name, latency, result count, outcome, `dedup_kept`.
 - `response_time_ms` — alias of `total_time_ms` for client compatibility.
 - Per-result `evidence_score` — explainable breakdown (relevance + domain quality + lexical alignment + freshness).
 - Per-result `freshness_signal` — `published_date` + `inferred` + `confidence`.

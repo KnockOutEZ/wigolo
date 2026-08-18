@@ -16,6 +16,7 @@ import type {
   StageResult,
 } from '../../types.js';
 import { runV1Search } from './orchestrator.js';
+import { inspectSearchEngineAllowlist } from './engine-allowlist.js';
 import { applyContextRank } from './context-rank.js';
 import { expandQuery, LOW_RECALL_THRESHOLD } from './query-expansion.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
@@ -244,6 +245,12 @@ export class CoreSearchProvider implements SearchProvider {
           servedFromCache = true;
           cachedAt = cached.searched_at;
           contentFetched = items.some((i) => typeof i.markdown_content === 'string' && i.markdown_content.length > 0);
+          // Cache stores results + engines_used, not allowlist diagnostics.
+          // Re-resolve against the live catalog so a repeated unknown name
+          // still surfaces in engine_warnings without another dispatch.
+          const inspected = inspectSearchEngineAllowlist(input.search_engines);
+          allowlistUnmatched = inspected.unknownEngines;
+          allowlistFallback = inspected.allowlistFallback;
         }
       } catch (err) {
         log.debug('cache lookup failed', { error: String(err) });
@@ -833,6 +840,13 @@ export class CoreSearchProvider implements SearchProvider {
       ...(queriesExecuted.length > 0 ? { queries_executed: [...queriesExecuted] } : {}),
       ...(engineOutcomes ? { engine_outcomes: engineOutcomes } : {}),
       ...(engineTelemetry ? { engine_telemetry: engineTelemetry } : {}),
+      ...(engineTelemetry
+        ? {
+            engines_dispatched: engineTelemetry
+              .filter((t) => t.outcome !== 'skipped')
+              .map((t) => t.name),
+          }
+        : {}),
       // Always emit on the engine-pool path (telemetry present). Also emit
       // when the allowlist produced warnings even if no adapter ran.
       ...(engineTelemetry || engineWarnings.length > 0 ? { engine_warnings: engineWarnings } : {}),

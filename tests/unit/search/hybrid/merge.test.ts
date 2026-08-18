@@ -93,6 +93,21 @@ describe('mergeResults', () => {
     expect(merged.engines_used.sort()).toEqual(['bing', 'ddg', 'wikipedia']);
   });
 
+  it('unions engines_dispatched', () => {
+    const core = makeOutput({
+      results: [makeResult('a', 'https://a.com/')],
+      engines_used: ['bing'],
+      engines_dispatched: ['bing', 'empty'],
+    });
+    const searxng = makeOutput({
+      results: [makeResult('b', 'https://b.com/')],
+      engines_used: ['ddg'],
+      engines_dispatched: ['ddg', 'empty'],
+    });
+    const merged = mergeResults(core, searxng);
+    expect(merged.engines_dispatched?.sort()).toEqual(['bing', 'ddg', 'empty']);
+  });
+
   it('concatenates engine_outcomes when either side has them', () => {
     const core = makeOutput({
       results: [makeResult('a', 'https://a.com/')],

@@ -165,6 +165,7 @@ Use \`search_depth\` to trade latency for thoroughness:
 
 - \`response_time_ms\` -- compatibility alias of \`total_time_ms\`. Always emitted.
 - \`engines_used\` -- engines that contributed >= 1 result to the deduped fused list (semantic, "who ended up in the answer").
+- \`engines_dispatched\` -- engines that actually ran (ok or error). Circuit-breaker skips are omitted. Distinct from \`engines_used\` and from \`engine_telemetry\` (which still includes skipped rows). Omitted on cache hits.
 - \`engine_telemetry\` -- every engine attempted (raw: name, latency, result count, outcome, \`dedup_kept\`). Distinct from \`engines_used\` -- empty/errored engines appear here but not there.
 - \`engine_warnings\` -- per-engine errors plus \`unknown_engine\` / \`needs_key\` for a missed \`search_engines\` allowlist. Stable \`code\` (\`http_4xx\` / \`http_5xx\` / \`timeout\` / \`dns\` / \`unknown_engine\` / \`needs_key\` / \`error\`) and optional \`hint\` (env var to set, or built-in names when the allowlist missed). \`github-code\` reads \`WIGOLO_GITHUB_TOKEN\`; \`brave\` reads \`BRAVE_API_KEY\` (excluded from the pool when unset).
 - \`include_engine_outcomes: true\` -- opt-in per-engine debug rows.
@@ -226,7 +227,7 @@ Key parameters:
 - max_tokens_out / max_content_chars / include_full_markdown / citation_format.
 - force_refresh + mode ('cache' | 'default' | 'stealth').
 
-Always emitted: \`engines_used\`, \`engine_telemetry\`, \`engine_warnings\`, \`response_time_ms\`, per-result \`evidence_score\`. \`freshness_signal\` only when a published date is parsed. Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. Quote [N] or {citation_id}.`,
+Always emitted: \`engines_used\`, \`response_time_ms\`, per-result \`evidence_score\`. Live dispatch also emits \`engines_dispatched\`, \`engine_telemetry\` and \`engine_warnings\` (empty array when nothing failed). Cache hits omit telemetry; unknown \`search_engines\` names still appear in \`engine_warnings\`. \`freshness_signal\` only when a published date is parsed. Brand-domain top-3 collision → \`brand_collision_warning\` with rewrites. \`query_understanding\` exposes intent/entities. Quote [N] or {citation_id}.`,
 
   crawl: `Crawl a site from a seed URL and return content from many pages. Use for indexing docs, wikis, multi-page references. Built for offline reuse: every page lands in the local cache.
 

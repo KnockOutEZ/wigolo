@@ -50,7 +50,7 @@ const TOOL_SCHEMAS: Record<ToolName, object> = {
  */
 const RESPONSE_FIELDS: Record<ToolName, Record<string, string>> = {
   search: {
-    results: 'array', query: 'string', engines_used: 'array', total_time_ms: 'number',
+    results: 'array', query: 'string', engines_used: 'array', engines_dispatched: 'array', total_time_ms: 'number',
     response_time_ms: 'number', evidence: 'array', citations: 'array', highlights: 'array',
     answer: 'string', warning: 'string', error: 'string',
   },

@@ -120,6 +120,10 @@ export class HybridSearchProvider implements SearchProvider {
       fallback_signal: signalLabel,
     };
 
+    if (merged.engines_dispatched) {
+      data.engines_dispatched = merged.engines_dispatched;
+    }
+
     if (merged.engine_outcomes) {
       data.engine_outcomes = merged.engine_outcomes;
     } else {

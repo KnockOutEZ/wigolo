@@ -73,6 +73,7 @@ export type SearchResponse = WithExtras<{
   results?: unknown[];
   query?: string | string[];
   engines_used?: string[];
+  engines_dispatched?: string[];
   total_time_ms?: number;
   response_time_ms?: number;
   evidence?: unknown[];

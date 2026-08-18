@@ -57,6 +57,16 @@ describe('formatSearchResults', () => {
     expect(stripped).toContain('React Server Components');
   });
 
+  it('shows dispatched engines separately from contributors', () => {
+    const output: SearchOutput = {
+      ...searchOutput,
+      engines_dispatched: ['bing', 'duckduckgo'],
+      engines_used: ['bing'],
+    };
+    const formatted = stripAnsi(formatSearchResults(output));
+    expect(formatted).toContain('engines: bing, duckduckgo; used: bing');
+  });
+
   it('handles empty results', () => {
     const empty: SearchOutput = {
       results: [],

@@ -413,6 +413,37 @@ describe('CoreSearchProvider', () => {
       }
     });
 
+    it('still warns on unknown search_engines names when serving a cache hit', async () => {
+      runV1SearchMock.mockClear();
+      getCachedSearchResultsMock.mockClear();
+      getCachedSearchResultsMock.mockReturnValue({
+        query: 'rust async runtime',
+        results: [
+          { title: 'Cached', url: 'https://cached.example', snippet: 'sc', relevance_score: 1 },
+        ],
+        engines_used: ['bing', 'duckduckgo'],
+        searched_at: '2026-05-23T10:00:00Z',
+      });
+
+      const provider = new CoreSearchProvider();
+      const result = await provider.search(
+        {
+          query: 'rust async runtime',
+          search_engines: ['not-a-real-engine'],
+          include_content: false,
+          max_results: 5,
+        },
+        ctx,
+      );
+
+      expect(runV1SearchMock).not.toHaveBeenCalled();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const warn = result.data.engine_warnings?.find((w) => w.engine === 'not-a-real-engine');
+      expect(warn).toMatchObject({ engine: 'not-a-real-engine', code: 'unknown_engine' });
+      expect(warn?.message).toMatch(/default pool/);
+    });
+
     it('bypasses cache when force_refresh is true', async () => {
       runV1SearchMock.mockClear();
       getCachedSearchResultsMock.mockClear();

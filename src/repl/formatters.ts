@@ -50,10 +50,24 @@ function pathFromUrl(url: string, baseUrl?: string): string {
   }
 }
 
+function formatEngineSummary(output: SearchOutput): string {
+  const dispatched = output.engines_dispatched;
+  const used = output.engines_used;
+  if (!dispatched || dispatched.length === 0) {
+    return `engines: ${used.join(', ')}`;
+  }
+  const usedKey = used.join(',');
+  const dispatchedKey = dispatched.join(',');
+  if (used.length === 0 || usedKey === dispatchedKey) {
+    return `engines: ${dispatched.join(', ')}`;
+  }
+  return `engines: ${dispatched.join(', ')}; used: ${used.join(', ')}`;
+}
+
 export function formatSearchResults(output: SearchOutput): string {
   const lines: string[] = [];
 
-  const header = `Search: ${chalk.cyan(`"${output.query}"`)} (${output.results.length} results, ${output.total_time_ms}ms, engines: ${output.engines_used.join(', ')})`;
+  const header = `Search: ${chalk.cyan(`"${output.query}"`)} (${output.results.length} results, ${output.total_time_ms}ms, ${formatEngineSummary(output)})`;
   lines.push(header);
 
   if (output.warning) {

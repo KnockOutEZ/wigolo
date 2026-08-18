@@ -601,6 +601,10 @@ export interface SearchOutput {
    * different questions and intentionally disagree when an engine
    * returned nothing or got fully de-duped out. */
   engines_used: string[];
+  /** Engines that actually ran (ok or error). Circuit-breaker skips are
+   * omitted. Distinct from `engines_used` (contributors only) and from
+   * `engine_telemetry` (includes skipped rows). Omitted on cache hits. */
+  engines_dispatched?: string[];
   total_time_ms: number;
   /** Compatibility alias of total_time_ms. Always emitted. */
   response_time_ms?: number;

@@ -74,6 +74,7 @@ import { getCodeEngines, _resetCodeEnginesForTest } from './verticals/code.js';
 import { getDocsEngines, _resetDocsEnginesForTest } from './verticals/docs.js';
 import { getPapersEngines, _resetPapersEnginesForTest } from './verticals/papers.js';
 import { getImageEngines, _resetImageEnginesForTest } from './verticals/images.js';
+import { normalizeEngineAllowlist } from './engine-allowlist.js';
 
 const log = createLogger('search');
 
@@ -260,20 +261,6 @@ function getEntriesForVertical(vertical: Vertical): EngineEntry[] {
 }
 
 const ALL_VERTICALS: Vertical[] = ['general', 'news', 'code', 'docs', 'papers', 'images'];
-
-function normalizeEngineAllowlist(names?: string[]): string[] | undefined {
-  if (!names || names.length === 0) return undefined;
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of names) {
-    if (typeof raw !== 'string') continue;
-    const n = raw.trim().toLowerCase();
-    if (!n || seen.has(n)) continue;
-    seen.add(n);
-    out.push(n);
-  }
-  return out.length > 0 ? out : undefined;
-}
 
 function collectEngineCatalog(): Map<string, EngineEntry> {
   const byName = new Map<string, EngineEntry>();
@@ -484,6 +471,7 @@ export async function runV1Search(
 
   log.info('orchestrator dispatching engines', {
     vertical,
+    engines: entries.map((e) => e.engine.name),
     engineCount: entries.length,
     hasDateBound,
     ...(poolOverridden ? { searchEngines: allowlist } : {}),
@@ -784,6 +772,7 @@ export async function runV1Search(
         from: vertical,
         count: merged.length,
         floor: starvationFloor,
+        engines: generalEntries.map((e) => e.engine.name),
       });
       const generalOutcomes = await runEnginesParallel(
         generalEntries,
