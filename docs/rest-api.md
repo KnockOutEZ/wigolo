@@ -91,7 +91,7 @@ curl -s -H "Authorization: Bearer $WIGOLO_API_TOKEN" http://<host>:3333/v1/tools
 
 ## OpenAPI as the machine contract
 
-`GET /openapi.json` returns OpenAPI **3.1.0** (`info.title: "wigolo REST API"`, versioned with the release — currently `0.2.0`) covering every route, parameter schema, and the enforced clamps. Generate clients from it, validate against it, or hand it to an agent as the tool contract. The [SDKs](./sdks.md) are drift-tested against this document.
+`GET /openapi.json` returns OpenAPI **3.1.0** (`info.title: "wigolo REST API"`, versioned with the release — currently `0.2.1`) covering every route, parameter schema, and the enforced clamps. Generate clients from it, validate against it, or hand it to an agent as the tool contract. The [SDKs](./sdks.md) are drift-tested against this document.
 
 ## Page content arrives contained
 

@@ -206,11 +206,13 @@ Response: `result` (structured data in schema mode, synthesized text otherwise),
 
 ## diff
 
-Compare two versions of content: a live URL against its cached copy (populate the cache with `fetch`/`crawl` first), two URLs, two markdown blobs, or a cached `content_hash` against anything.
+Compare two versions of content: a live URL against its cached copy (populate the cache with `fetch`/`crawl` first), two URLs, two markdown blobs, or a currently-cached `content_hash` against anything.
+
+**`content_hash` reaches the *current* cached body, not a past one.** The cache keeps **one row per URL** — every re-fetch replaces it in place — so a hash resolves only while it is still the body some cached URL holds right now. Once that page is re-fetched with different content, the old hash matches nothing and the lookup fails. Treat `content_hash` as a URL-free handle on what is cached at this moment, not as a way to reach an earlier version. To diff against a version you want to keep, hold onto its markdown (or export it — see [export](./export.md)) and pass that as `old.markdown`. Retaining history across versions is a future storage feature.
 
 | Param | Type | Notes |
 | --- | --- | --- |
-| `old` | object | One of `{ url, markdown, content_hash }`. |
+| `old` | object | One of `{ url, markdown, content_hash }` — see the `content_hash` limit above. |
 | `new` | object | One of `{ url, markdown }`. |
 | `output` | enum | `unified` (git-style patch, default), `hunks` (structured per-section), `summary` (counts only: `added_lines`, `removed_lines`, `modified_lines`, `total_changed_chars`). |
 | `granularity` | enum | `line` (default), `word` (token-level — tighter for intra-line edits), `section` (walks H1/H2/H3 boundaries). |

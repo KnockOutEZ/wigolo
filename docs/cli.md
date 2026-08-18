@@ -8,7 +8,7 @@ wigolo <command>        Run a subcommand
 wigolo <tool> <args>    Run a tool once (headless)
 ```
 
-`wigolo --help` prints the full map; every subcommand and tool accepts `--help`.
+`wigolo --help` prints the full map. Every tool and most subcommands accept `--help` too — the exceptions are `doctor`, `status`, `health`, and `warmup`, which ignore the flag and just run.
 
 ## The --json contract
 
@@ -61,7 +61,9 @@ wigolo config [--plain] [--json] [--set <key>=<value>] [--storage] [--cache-stat
               [--force-wizard] [--uninstall --yes]
 ```
 
-Interactive settings shell by default. `--cleanup` frees storage for `cache|embeddings|models|browser|searxng`. `wigolo dashboard` is an alias. See [configuration](./configuration.md).
+Interactive settings shell by default. `--set` takes the env-var-style key (`--set WIGOLO_SEARCH=hybrid`); `--plain` lists the accepted keys. `--cleanup` frees storage for `cache|embeddings|models|browser|searxng`. `wigolo dashboard` is an alias. See [configuration](./configuration.md).
+
+`--cache-stats` is currently broken — it reports a database-initialization error rather than the stats. Use `wigolo cache stats` instead.
 
 ### setup
 

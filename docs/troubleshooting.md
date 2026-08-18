@@ -96,7 +96,7 @@ Using wigolo as a tool — personally, in your company, wired into every agent y
 wigolo defaults are built around being a polite client: robots.txt respected by default, per-domain rate limits and crawl delays, page budgets sized for research rather than bulk harvesting, and honest labeled failures instead of hammering at walls. Reliability work here means reading pages the way a real browser does — it is not a cloaking toolkit, and the docs won't teach you to build one.
 
 **How stable is this?**
-Public beta at 0.2.0. The documented surface is held to a test suite of roughly 7,600 automated tests; beta is about the polish bar and API-shape confidence, not known instability. Real limitations that exist are written down here rather than discovered in production — see the challenge ceiling above.
+Public beta at 0.2.1. The documented surface is held to a test suite of roughly 7,600 automated tests; beta is about the polish bar and API-shape confidence, not known instability. Real limitations that exist are written down here rather than discovered in production — see the challenge ceiling above.
 
 **Why is the install so big?**
 Because the intelligence is local. The download is dominated by the on-device embedding + ranking models (~250 MB) and the optional browser engine binary (~0.5–1 GB) that JS-rendered fetching needs. That's the trade for keyless, private, no-per-call-cost operation. `init --no-warmup` defers all of it; `wigolo config --cleanup` reclaims it.

@@ -19,6 +19,8 @@ The whole state of a wigolo install lives in the data dir (`~/.wigolo` by defaul
 | `telemetry/` | Opt-in local event files — absent unless you enable telemetry. |
 | `searxng/` | The optional legacy aggregator sidecar, only if you opted into that backend. |
 | `daemon-admin.token` | Per-process admin-route token (owner-only file permissions, rotated each daemon start). |
+| `tier-occupancy.json` | What the fetch router learned per domain — which tier works, and backoff state. Inspect it with [`wigolo tune`](./cli.md#tune). |
+| `backups/` | A copy of each agent's MCP config file taken just before wigolo rewrites it (agent wiring, or a `config --set` that propagates). Pruned to the 5 most recent per agent. |
 
 `rm -rf ~/.wigolo` erases all of it. `wigolo config --storage` shows what's using space.
 

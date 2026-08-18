@@ -71,7 +71,7 @@ Be aware of an honest ceiling before you deploy scraping-adjacent workflows to a
 The opt-in workaround for legitimate research that keeps hitting this wall is routing through a proxy whose IP reputation matches your use:
 
 ```bash
-wigolo config --set useProxy=true
+wigolo config --set USE_PROXY=true
 PROXY_URL=https://user:pass@proxy.example.com:8443 wigolo serve
 ```
 

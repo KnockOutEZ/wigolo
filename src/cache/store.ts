@@ -242,15 +242,22 @@ export function getCachedContentByNormalizedUrl(normalizedUrl: string): CachedCo
 /**
  * Reverse lookup: reach a cached body by the content fingerprint `fetch`
  * returned for it, without knowing the URL. Backs `diff`'s `old.content_hash`
- * input — an agent holds a hash from an earlier response (or an export
- * manifest) and diffs against that exact body with no network round-trip.
+ * input, letting a caller diff against a cached body with no network
+ * round-trip.
  *
- * A hash does NOT identify a row: url_cache is UNIQUE on normalized_url only,
- * so two URLs serving identical markdown share one hash. That is harmless for
- * a content lookup — the hash is computed over `markdown` at write time
- * (`cacheContent`), so every matching row carries byte-identical markdown by
- * construction. `ORDER BY id` makes the pick deterministic anyway rather than
- * leaving it to SQLite's scan order.
+ * This resolves only a body that is STILL LIVE. url_cache holds one row per
+ * URL and every write is an INSERT OR REPLACE, so a re-fetch overwrites the
+ * row and its content_hash in place; the previous hash is then present nowhere
+ * in the table and this returns null. A hash handed out in an earlier response
+ * is therefore NOT a handle on that earlier version — it is a handle on a
+ * current row that happens to still carry that content. Retaining prior
+ * versions would need a separate history table; there is none today.
+ *
+ * A hash also does not identify a row uniquely: two URLs serving identical
+ * markdown share one hash. That is harmless for a content lookup — the hash is
+ * computed over `markdown` at write time (`cacheContent`), so every matching
+ * row carries byte-identical markdown by construction. `ORDER BY id` makes the
+ * pick deterministic rather than leaving it to SQLite's scan order.
  */
 export function getCachedContentByHash(contentHash: string): CachedContent | null {
   const db = getDatabase();
