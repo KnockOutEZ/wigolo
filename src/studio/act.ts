@@ -88,8 +88,9 @@ export interface ActHandlerDeps {
   audit?: { record(input: AuditRecordInput): void };
   /**
    * NO `approvals` DEP HERE — deliberate, and load-bearing. This seam once declared an
-   * `approvals?: { request(...) }` that NOTHING read: no host passed it and `applyRiskGate` never
-   * called it, so it advertised a per-action human verdict that did not exist. A gate that is
+   * `approvals?: { request(...) }` that NOTHING read: the CLI host even PASSED one and this handler
+   * never destructured it, so it advertised a per-action human verdict that did not exist (the
+   * Electron host did not pass it at all). A gate that is
    * declared but unread is worse than no gate — it reads as protection to the next person and
    * protects nothing. Risky actions are gated by the PRE-GRANT/PARK path below (plus the hard
    * credential refusal, plus the D9 drive gate on `navigate`); the blocking round-trip was
