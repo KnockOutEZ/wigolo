@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { RawSearchResult } from '../../../../src/types.js';
 
 const runV1Search = vi.fn();
-vi.mock('../../../../src/search/core/orchestrator.js', () => ({ runV1Search }));
+vi.mock('../../../../src/search/core/orchestrator.js', () => ({
+  runV1Search,
+  inspectSearchEngineAllowlist: () => ({ unmatched: [], fallback: false }),
+}));
 vi.mock('../../../../src/search/content-fetch.js', () => ({ fetchContentForResults: vi.fn(async () => {}) }));
 
 const { CoreSearchProvider } = await import('../../../../src/search/core/core-provider.js');

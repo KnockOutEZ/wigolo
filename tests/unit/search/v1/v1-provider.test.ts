@@ -6,6 +6,7 @@ vi.mock('../../../../src/search/core/orchestrator.js', () => ({
     enginesUsed: [],
     degraded: false,
   })),
+  inspectSearchEngineAllowlist: vi.fn(() => ({ unmatched: [], fallback: false })),
 }));
 
 vi.mock('../../../../src/search/answer-synthesis.js', () => ({
@@ -38,13 +39,14 @@ vi.mock('../../../../src/search/evidence.js', async (importOriginal) => {
 });
 
 import { CoreSearchProvider } from '../../../../src/search/core/core-provider.js';
-import { runV1Search } from '../../../../src/search/core/orchestrator.js';
+import { inspectSearchEngineAllowlist, runV1Search } from '../../../../src/search/core/orchestrator.js';
 import { runSynthesis } from '../../../../src/search/answer-synthesis.js';
 import { fetchContentForResults } from '../../../../src/search/content-fetch.js';
 import { applyEvidenceDefault } from '../../../../src/search/evidence.js';
 import { getCachedSearchResults, cacheSearchResults } from '../../../../src/cache/store.js';
 
 const runV1SearchMock = vi.mocked(runV1Search);
+const inspectAllowlistMock = vi.mocked(inspectSearchEngineAllowlist);
 const runSynthesisMock = vi.mocked(runSynthesis);
 const fetchContentMock = vi.mocked(fetchContentForResults);
 const applyEvidenceDefaultMock = vi.mocked(applyEvidenceDefault);
@@ -137,6 +139,41 @@ describe('CoreSearchProvider', () => {
     const warn = result.data.engine_warnings?.find((w) => w.engine === 'google');
     expect(warn).toMatchObject({ engine: 'google', code: 'unknown_engine' });
     expect(warn?.hint).toMatch(/available:/);
+  });
+
+  it('still warns on unknown search_engines names when serving a cache hit', async () => {
+    runV1SearchMock.mockClear();
+    inspectAllowlistMock.mockClear();
+    inspectAllowlistMock.mockReturnValueOnce({
+      unmatched: ['not-a-real-engine'],
+      fallback: true,
+    });
+    getCachedSearchResultsMock.mockReturnValueOnce({
+      results: [
+        { title: 'Gold', url: 'https://ddg.test/1', snippet: 's', relevance_score: 1, engine: 'duckduckgo' },
+      ],
+      engines_used: ['duckduckgo'],
+      searched_at: '2026-08-18T00:00:00.000Z',
+      stale: false,
+    });
+
+    const provider = new CoreSearchProvider();
+    const result = await provider.search(
+      { query: 'gold price', search_engines: ['not-a-real-engine'], include_content: false },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(runV1SearchMock).not.toHaveBeenCalled();
+    expect(inspectAllowlistMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: 'gold price',
+        searchEngines: ['not-a-real-engine'],
+      }),
+    );
+    const warn = result.data.engine_warnings?.find((w) => w.engine === 'not-a-real-engine');
+    expect(warn).toMatchObject({ engine: 'not-a-real-engine', code: 'unknown_engine' });
   });
 
   it('rejects an empty query before the images check', async () => {

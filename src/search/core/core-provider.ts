@@ -15,7 +15,7 @@ import type {
   SearchResultItem,
   StageResult,
 } from '../../types.js';
-import { runV1Search } from './orchestrator.js';
+import { inspectSearchEngineAllowlist, runV1Search } from './orchestrator.js';
 import { applyContextRank } from './context-rank.js';
 import { expandQuery, LOW_RECALL_THRESHOLD } from './query-expansion.js';
 import { dedupAgainstRecentUrls } from './recent-cache-dedup.js';
@@ -244,6 +244,21 @@ export class CoreSearchProvider implements SearchProvider {
           servedFromCache = true;
           cachedAt = cached.searched_at;
           contentFetched = items.some((i) => typeof i.markdown_content === 'string' && i.markdown_content.length > 0);
+          // Dispatch is skipped on a hit, so re-derive allowlist diagnostics
+          // from this request. Otherwise `search_engines: ['not-a-real-engine']`
+          // can reuse a default-pool cache row with no `unknown_engine`.
+          if (input.search_engines?.length) {
+            const inspected = inspectSearchEngineAllowlist({
+              query: queries[0],
+              category,
+              searchEngines: input.search_engines,
+              fromDate: input.from_date,
+              toDate: input.to_date,
+              timeRange: input.time_range,
+            });
+            allowlistUnmatched = inspected.unmatched;
+            allowlistFallback = inspected.fallback;
+          }
         }
       } catch (err) {
         log.debug('cache lookup failed', { error: String(err) });
@@ -798,7 +813,7 @@ export class CoreSearchProvider implements SearchProvider {
     const totalTimeMs = Date.now() - start;
     // Promote per-engine errors out of debug-only telemetry
     // into a top-level array so every caller sees broken engines. Empty
-    // array on cache hits or all-ok runs (cleaner than `undefined?.length`).
+    // on all-ok live runs; cache hits only include allowlist diagnostics.
     const engineWarnings = [
       ...buildEngineWarnings(engineTelemetry),
       ...buildAllowlistWarnings({ unmatched: allowlistUnmatched, fallback: allowlistFallback }),

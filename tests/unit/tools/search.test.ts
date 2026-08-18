@@ -13,7 +13,10 @@ import { _resetSearchProviderForTest } from '../../../src/providers/search-provi
 // deterministic narrow result set instead of the live network. Inert for the
 // legacy (searxng) tests above — they never import the core orchestrator.
 const mockRunV1Search = vi.hoisted(() => vi.fn());
-vi.mock('../../../src/search/core/orchestrator.js', () => ({ runV1Search: mockRunV1Search }));
+vi.mock('../../../src/search/core/orchestrator.js', () => ({
+  runV1Search: mockRunV1Search,
+  inspectSearchEngineAllowlist: () => ({ unmatched: [], fallback: false }),
+}));
 
 const extractMock = vi.fn().mockResolvedValue({
   title: 'Mock Title',

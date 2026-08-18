@@ -8,7 +8,10 @@ vi.mock('../../../../src/search/content-fetch.js', () => ({
 }));
 
 const runV1Search = vi.fn();
-vi.mock('../../../../src/search/core/orchestrator.js', () => ({ runV1Search }));
+vi.mock('../../../../src/search/core/orchestrator.js', () => ({
+  runV1Search,
+  inspectSearchEngineAllowlist: () => ({ unmatched: [], fallback: false }),
+}));
 
 const { CoreSearchProvider } = await import('../../../../src/search/core/core-provider.js');
 

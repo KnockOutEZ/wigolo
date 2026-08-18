@@ -289,6 +289,7 @@ function collectEngineCatalog(): Map<string, EngineEntry> {
 function resolveAllowlistedEntries(
   verticalEntries: EngineEntry[],
   allowlist: string[] | undefined,
+  opts?: { silent?: boolean },
 ): { entries: EngineEntry[]; overridden: boolean; unmatched: string[] } {
   if (!allowlist) return { entries: verticalEntries, overridden: false, unmatched: [] };
 
@@ -311,18 +312,51 @@ function resolveAllowlistedEntries(
   }
 
   if (matched.length === 0) {
-    log.warn('no engines matched search_engines filter, using all', {
-      requested: allowlist,
-      unknown: unmatched,
-    });
+    if (!opts?.silent) {
+      log.warn('no engines matched search_engines filter, using all', {
+        requested: allowlist,
+        unknown: unmatched,
+      });
+    }
     return { entries: verticalEntries, overridden: false, unmatched };
   }
 
-  if (unmatched.length > 0) {
+  if (unmatched.length > 0 && !opts?.silent) {
     log.warn('unknown search_engines names ignored', { unknown: unmatched, requested: allowlist });
   }
 
   return { entries: matched, overridden: true, unmatched };
+}
+
+/** Resolve `search_engines` against the live catalog without dispatching.
+ * Cache hits skip the orchestrator, so the provider calls this to keep
+ * `unknown_engine` / `needs_key` warnings on the reused payload. Silent —
+ * live dispatch already logs the same miss. */
+export function inspectSearchEngineAllowlist(input: {
+  query: string;
+  category?: Vertical;
+  searchEngines?: string[];
+  fromDate?: string;
+  toDate?: string;
+  timeRange?: TimeRange;
+}): { unmatched: string[]; fallback: boolean } {
+  const query = typeof input.query === 'string' ? input.query.trim() : '';
+  const timeRangeHint = resolveTimeRange(input.timeRange);
+  const callerHasDateBound = !!(input.fromDate || input.toDate || timeRangeHint);
+  const classification = classifyIntentDetailed(query.length > 0 ? query : 'search', {
+    hint: input.category,
+    hasDateBound: callerHasDateBound,
+  });
+  const vertical = query.length === 0 ? 'general' : classification.vertical;
+  const allowlist = normalizeEngineAllowlist(input.searchEngines);
+  if (!allowlist) return { unmatched: [], fallback: false };
+  const resolved = resolveAllowlistedEntries(getEntriesForVertical(vertical), allowlist, {
+    silent: true,
+  });
+  return {
+    unmatched: resolved.unmatched,
+    fallback: !resolved.overridden,
+  };
 }
 
 function hostnameOf(url: string): string {

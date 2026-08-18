@@ -19,6 +19,7 @@ vi.mock('../../../../src/search/core/orchestrator.js', () => ({
     outcomes: [],
     degraded: true,
   }),
+  inspectSearchEngineAllowlist: () => ({ unmatched: [], fallback: false }),
 }));
 
 const { CoreSearchProvider } = await import(

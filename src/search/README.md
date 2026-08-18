@@ -57,10 +57,10 @@ narrow source without letting it dominate off-topic queries:
 
 | Vertical | Primary | Secondary (and why) |
 | --- | --- | --- |
-| general | bing, ddg, wikipedia, brave | mojeek, marginalia — independent/long-tail indexes, sparse snippets |
-| news | hn-algolia, lobsters, bing_news, rss-feed | ddg, mojeek — web recall without outvoting the news sources |
-| code | github-code, stackoverflow, devdocs, ddg, brave | mdn, crates-io — real on JS/Rust queries; hijack "pgvector" otherwise |
-| docs | mdn, devdocs | bing, ddg — web recall when first-party docs APIs miss the subject |
+| general | bing, duckduckgo, wikipedia, brave | mojeek, marginalia — independent/long-tail indexes, sparse snippets |
+| news | hn-algolia, lobsters, bing_news, rss-feed | duckduckgo, mojeek — web recall without outvoting the news sources |
+| code | github-code, stackoverflow, devdocs, duckduckgo, brave | mdn, crates-io — real on JS/Rust queries; hijack "pgvector" otherwise |
+| docs | mdn, devdocs | bing, duckduckgo — web recall when first-party docs APIs miss the subject |
 | papers, images | all primary | — |
 
 Same adapter, different flag across verticals is intentional (DDG is
@@ -96,7 +96,9 @@ Doctor prints the *live* pool (keys, breakers, plugins on other paths).
 ## 4. Unknown names → `engine_warnings`
 
 Unmatched allowlist names never fail the call. They become top-level
-`engine_warnings` (plus a stderr log).
+`engine_warnings` (plus a stderr log on live dispatch). Cache hits re-derive
+the same diagnostics from the request so an unknown name still warns when
+the cached payload is reused.
 
 | Situation | `code` | `message` |
 | --- | --- | --- |

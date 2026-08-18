@@ -517,9 +517,9 @@ export interface EngineTelemetry {
  */
 export interface EngineWarning {
   engine: string;
-  /** Stable failure code: 'http_4xx' / 'http_5xx' / 'http_<code>' /
-   * 'unknown_engine' (search_engines name matched nothing) / 'needs_key' /
-   * generic 'error' for non-HTTP failures (DNS, abort, timeout). */
+  /** Stable failure code: 'http_<status>' for HTTP 400–599 (e.g. http_401),
+   * 'timeout', 'dns', 'unknown_engine' (search_engines name matched nothing),
+   * 'needs_key', or generic 'error' for remaining non-HTTP failures. */
   code: string;
   /** One-line human-readable explanation drawn from the engine's error. */
   message?: string;
@@ -626,11 +626,11 @@ export interface SearchOutput {
    * Distinct from `engines_used`, which is the SEMANTIC view (contributors
    * only, derived from rows where `dedup_kept > 0`). */
   engine_telemetry?: EngineTelemetry[];
-  /** Top-level failure surface, always emitted on the
-   * engine-pool path (empty array when no engine errored). Promotes
-   * `engine_telemetry.outcome === 'error'` entries into a flat list with a
-   * stable failure code + optional env-var hint so callers branch on
-   * engine health without parsing telemetry. */
+  /** Top-level failure surface. Promotes `engine_telemetry.outcome ===
+   * 'error'` into a flat list with a stable failure code + optional
+   * env-var hint. Emitted on live dispatch (empty array when no engine
+   * errored) and on cache hits that still have allowlist diagnostics.
+   * Omitted on a clean cache hit with no warnings. */
   engine_warnings?: EngineWarning[];
   /** Set to `quota_exceeded` when format=answer hit a provider quota wall
    * (e.g. gemini free-tier 429) and the result is a heuristic fallback. */

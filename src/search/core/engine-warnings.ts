@@ -10,11 +10,17 @@
 // alerting logic.
 //
 // The mapping keeps codes stable so callers can match-case on them:
-//   * 'http_<code>'  — extracted from the engine's error message when the
-//                      engine raised an explicit HTTP status (the existing
-//                      engine adapters all do `throw new Error("X returned 401")`).
-//   * 'error'        — generic catch-all for non-HTTP failures (DNS, abort,
-//                      timeout, JSON parse).
+//   * 'http_<status>' — extracted from the engine's error message when the
+//                       engine raised an explicit HTTP 400–599 (adapters
+//                       throw `new Error("X returned 401")`).
+//   * 'timeout'       — abort / timeout wording.
+//   * 'dns'           — ENOTFOUND / getaddrinfo / dns wording.
+//   * 'needs_key'     — adapter refused to dispatch because an API-key
+//                       env var is unset.
+//   * 'error'         — generic catch-all for remaining non-HTTP failures
+//                       (JSON parse, unexpected throw).
+// Unknown `search_engines` names are attached separately as
+// `unknown_engine` in the core provider, not here.
 //
 // 401 → env hint table: engines that document an API-key env var get the
 // var name attached as an actionable next step. Today this is just the
@@ -55,8 +61,9 @@ const MISSING_KEY_PATTERN = /\b([A-Z][A-Z0-9_]+_API_KEY|GITHUB_TOKEN|BRAVE_API_K
 /**
  * Extract a stable failure code from an engine's error message. Engines
  * raise strings like "GitHub code returned 401" or "Lobsters returned 400"
- * — we pull the numeric status out so callers can match on it. Falls back
- * to `'error'` when no HTTP-status pattern is found (DNS, timeout, abort).
+ * — we pull the numeric status out so callers can match on it. Timeout /
+ * abort wording becomes `'timeout'`; DNS wording becomes `'dns'`. Other
+ * non-HTTP failures fall back to `'error'`.
  *
  * Adds `needs_key` for messages naming a missing API-key env
  * var (e.g. `"BRAVE_API_KEY not set"`). HTTP status detection takes

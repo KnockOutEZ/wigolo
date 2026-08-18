@@ -3,7 +3,10 @@ import type { RawSearchResult } from '../../../../src/types.js';
 import type { Config } from '../../../../src/config.js';
 
 const runV1Search = vi.fn();
-vi.mock('../../../../src/search/core/orchestrator.js', () => ({ runV1Search }));
+vi.mock('../../../../src/search/core/orchestrator.js', () => ({
+  runV1Search,
+  inspectSearchEngineAllowlist: () => ({ unmatched: [], fallback: false }),
+}));
 vi.mock('../../../../src/search/content-fetch.js', () => ({ fetchContentForResults: vi.fn(async () => {}) }));
 
 const foldRerankIntoOrdering = vi.fn(async (results: RawSearchResult[]) => results);

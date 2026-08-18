@@ -70,7 +70,7 @@ vi.mock('../../../../src/logger.js', () => ({
   createLogger: () => logSpies,
 }));
 
-const { runV1Search } = await import(
+const { runV1Search, inspectSearchEngineAllowlist } = await import(
   '../../../../src/search/core/orchestrator.js'
 );
 
@@ -1206,6 +1206,38 @@ describe('runV1Search — search_engines allowlist', () => {
     expect(logSpies.warn).not.toHaveBeenCalled();
     expect(out.unknownEngines).toBeUndefined();
     expect(out.allowlistFallback).toBeUndefined();
+  });
+
+  it('inspectSearchEngineAllowlist reports unmatched names without logging', () => {
+    const ddg = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/1')],
+    });
+    verticalState.general = [ddg.entry];
+    logSpies.warn.mockClear();
+
+    const inspected = inspectSearchEngineAllowlist({
+      query: 'gold price',
+      searchEngines: ['duckduckgo', 'not-a-real-engine'],
+    });
+
+    expect(inspected).toEqual({ unmatched: ['not-a-real-engine'], fallback: false });
+    expect(logSpies.warn).not.toHaveBeenCalled();
+  });
+
+  it('inspectSearchEngineAllowlist flags allowlistFallback when nothing matches', () => {
+    const bing = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/1')],
+    });
+    verticalState.general = [bing.entry];
+
+    const inspected = inspectSearchEngineAllowlist({
+      query: 'gold price',
+      searchEngines: ['nonexistent'],
+    });
+
+    expect(inspected).toEqual({ unmatched: ['nonexistent'], fallback: true });
   });
 
   it('pulls a requested engine from another vertical (overrides auto-dispatch)', async () => {
