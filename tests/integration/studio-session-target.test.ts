@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resetConfig } from '../../src/config.js';
 import { getDatabase, closeDatabase } from '../../src/cache/db.js';
+import { _resetBackgroundIndexQueueForTest } from '../../src/embedding/background-queue.js';
 import { _resetMigrationGuard } from '../../src/cache/migrations/runner.js';
 import { DaemonProxy } from '../../src/daemon/proxy.js';
 import type { LaunchedSessionBrowser } from '../../src/studio/session-browser.js';
@@ -84,9 +85,15 @@ describe('D19 session_id-targeting on fetch/extract/crawl (real daemon + dispatc
     } catch {
       /* already closed */
     }
+    // The artifact writer (PIN 3) enqueues an embedding job, which opens
+    // <dataDir>/jobs.db through a module singleton the daemon never owns — so
+    // `closeDatabase()` does not close it and it survives every test in the file.
+    // POSIX unlinks an open file happily; Windows raises EBUSY, so the leak only
+    // ever surfaced there, as a teardown failure after the assertions had passed.
+    _resetBackgroundIndexQueueForTest();
     delete process.env.WIGOLO_DATA_DIR;
     resetConfig();
-    rmSync(tmp, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
 
   async function makeHost(): Promise<{ host: Awaited<ReturnType<typeof startStudioHost>>; state: ReturnType<typeof makeFakeLauncher>['state'] }> {

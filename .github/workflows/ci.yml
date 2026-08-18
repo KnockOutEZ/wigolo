@@ -85,25 +85,20 @@ jobs:
   # existed those gated NOTHING on a PR — a safety test could sit outside the type gate and CI
   # stayed green.
   #
-  # Runs on ubuntu + macOS. Every check in `gate:studio` other than `lint` is a tsconfig
+  # Runs on all three desktop OS. Every check in `gate:studio` other than `lint` is a tsconfig
   # PROJECT (`tsc -p tsconfig.test.json`, `tsc -p contracts/studio-mcp/tsconfig.json`) or a
   # node script that walks the tree by path — `check-typecheck-gate.mjs`,
   # `check-src-no-electron.mjs`, `typecheck-debt-ratchet.mjs`. Project `include`/`exclude`
   # globs and hand-rolled path walks resolve differently per platform, so an ubuntu-only
   # gate was checking the one platform least likely to break them.
   #
-  # WINDOWS IS DELIBERATELY ABSENT, and this is a TODO with a known cause rather than a
-  # judgement that Windows does not matter. Measured on windows-latest at 889fd996
-  # (run 32135970011): `check:typecheck-gate` fails there, naming ALL 58 safety-critical
-  # test files as "NOT in tsconfig.test.json `include`" — including files that are
-  # unambiguously in it. A blanket miss across 100% of inputs is the signature of a
-  # separator comparison, not a real gap: `scripts/check-typecheck-gate.mjs` compares
-  # `\`-separated relative paths against the `/`-separated `include` entries. macOS passes
-  # the same commit, which rules out a general path bug.
-  #
-  # Note the direction: it over-reports (fail-closed), so no false green ever shipped from
-  # this. Make the script separator-agnostic, then add `windows-latest` to the matrix below
-  # — the lane is one list entry away and the fix belongs to whoever owns `scripts/`.
+  # Windows was dropped from this matrix until Q6 and is now restored. The cause was the one
+  # the previous note predicted: `scripts/check-typecheck-gate.mjs` compared `path.relative`
+  # output (`\`-separated on win32) against the `/`-separated tsconfig `include` entries, so
+  # it named ALL 58 safety-critical test files as missing from a config that plainly listed
+  # them. Both sides are now normalised to POSIX separators before comparison. The direction
+  # of the old failure is worth keeping in mind: it over-reported (fail-closed), so no false
+  # green ever shipped from it.
   gate:
     name: type gate (gate:studio) (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -113,7 +108,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -140,25 +135,27 @@ jobs:
   # ubuntu alone tested the platform least likely to break them. macOS was added here and
   # passed first time.
   #
-  # WINDOWS IS DELIBERATELY ABSENT, with a measured reason. Run on windows-latest at
-  # 889fd996 (run 32135970011): 11041 passed, 5 failed, in 3 files. All five are
-  # TEST-HARNESS portability gaps, none is product breakage, and all five live under
-  # `tests/**`:
+  # Windows was dropped from this matrix until Q6 and is now restored. It was dropped rather
+  # than marked `continue-on-error`, on purpose: a continue-on-error job reports SUCCESS
+  # whatever its steps do, so a known-red Windows leg kept that way would have manufactured
+  # exactly the vacuous green this matrix exists to remove. The three files it named were
+  # fixed instead — all three were TEST-HARNESS portability gaps, none was product breakage:
   #
-  #   - tests/e2e/init-command.e2e.test.ts (x3) — spawnSync `status` comes back `null`,
-  #     which means killed-by-signal/timeout, NOT a wrong exit code.
-  #   - tests/integration/studio-session-target.test.ts — `EBUSY ... unlink jobs.db` thrown
-  #     by rmSync in afterAll. Windows will not unlink an open file; the assertions passed
-  #     and only the teardown failed.
+  #   - tests/e2e/init-command.e2e.test.ts (x3) — spawned bare `npx`, which resolves to
+  #     `npx.cmd` on Windows and which Node refuses to spawn without `shell: true` (the
+  #     CVE-2024-27980 hardening). The child never started, so `status` came back `null`.
+  #     Now spawns `node node_modules/tsx/dist/cli.mjs` directly, and asserts on
+  #     `error`/`signal` first so "never ran" can never again read as a wrong exit code.
+  #   - tests/integration/studio-session-target.test.ts — `EBUSY ... unlink jobs.db` from
+  #     rmSync in teardown. The artifact writer enqueues an embedding job, which opens
+  #     jobs.db through a module singleton `closeDatabase()` does not own. POSIX unlinks an
+  #     open file happily; Windows does not. The test now closes the queue in afterEach.
   #   - tests/integration/fetch/browser-redirect-ssrf-backstop.test.ts — expected the guard's
   #     `unspecified IPv4 (0.0.0.0)` message, got `net::ERR_ADDRESS_INVALID`. The request was
   #     still REFUSED; the browser engine declined to route 0.0.0.0 before wigolo's own guard
-  #     could attribute it. The security property holds on Windows, the attribution differs.
-  #
-  # This lane is dropped rather than marked `continue-on-error` on purpose. A
-  # continue-on-error job reports SUCCESS whatever its steps do, so keeping a known-red
-  # Windows leg that way would manufacture exactly the vacuous green this matrix exists to
-  # remove. Fix the three files, then add `- os: windows-latest / label: windows` back.
+  #     could attribute it. The security property held on Windows and the attribution differed,
+  #     so the test now accepts EITHER refusal path while still failing if the request
+  #     succeeds — verified by re-running it against a deleted backstop, which stays red.
   #
   # The former "ubuntu-only hang" note here is retired: it described a state that no longer
   # reproduces — this job completes in ~8 min on `studio-handoff`. The timeout stays at 30
@@ -183,6 +180,8 @@ jobs:
             label: ubuntu
           - os: macos-latest
             label: macos
+          - os: windows-latest
+            label: windows
     steps:
       - uses: actions/checkout@v7
 
