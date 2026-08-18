@@ -65,6 +65,12 @@ describe('candidatesFromQuery', () => {
   it('caps the candidate list', () => {
     expect(candidatesFromQuery('alpha beta gamma delta epsilon zeta', 2)).toHaveLength(2);
   });
+
+  it('rejects path-like and URL tokens so they never reach the lookup URL', () => {
+    expect(candidatesFromQuery('../etc/passwd', 5)).toEqual([]);
+    expect(candidatesFromQuery('foo/bar', 5)).toEqual([]);
+    expect(candidatesFromQuery('https://evil.example/httpx', 5)).toEqual([]);
+  });
 });
 
 describe('PypiEngine', () => {
@@ -89,10 +95,10 @@ describe('PypiEngine', () => {
     expect(results[0].relevance_score).toBe(1);
   });
 
-  it('falls back to empty description when summary is missing', async () => {
+  it('uses a version-only snippet when summary is missing', async () => {
     captureFetch(() => ({ body: projectBody({ summary: null, package_url: undefined, project_url: undefined }) }));
     const results = await new PypiEngine().search('httpx');
-    expect(results[0].snippet).toBe(' (v0.28.1)');
+    expect(results[0].snippet).toBe('(v0.28.1)');
     expect(results[0].url).toBe('https://pypi.org/project/httpx');
   });
 
@@ -116,12 +122,29 @@ describe('PypiEngine', () => {
     expect(results[0].url).toBe('https://pypi.org/project/httpx');
   });
 
+  it('ignores http package_url values even when the host is pypi.org', async () => {
+    captureFetch(() => ({
+      body: projectBody({
+        package_url: 'http://pypi.org/project/httpx/',
+        project_url: 'http://pypi.org/project/httpx/',
+      }),
+    }));
+    const results = await new PypiEngine().search('httpx');
+    expect(results[0].url).toBe('https://pypi.org/project/httpx');
+  });
+
   it('sets a descriptive User-Agent header', async () => {
     const { calls } = captureFetch(() => ({ body: projectBody() }));
     await new PypiEngine().search('httpx');
     const headers = calls[0].init?.headers as Record<string, string>;
     expect(headers['User-Agent']).toContain('wigolo');
     expect(headers['User-Agent']).toContain('https://github.com/KnockOutEZ/wigolo');
+  });
+
+  it('encodes the project name in the JSON lookup URL', async () => {
+    const { calls } = captureFetch(() => ({ body: projectBody({ name: 'Django' }) }));
+    await new PypiEngine().search('Django');
+    expect(calls.map((c) => c.url)).toEqual(['https://pypi.org/pypi/django/json']);
   });
 
   it('looks up the hyphenated query then name-like tokens', async () => {
@@ -172,6 +195,16 @@ describe('PypiEngine', () => {
     captureFetch((url) => {
       if (url.includes('/pypi/httpx/json')) return { body: projectBody() };
       return { body: [] };
+    });
+    const results = await new PypiEngine().search('missing httpx');
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('httpx');
+  });
+
+  it('skips a null JSON payload and continues', async () => {
+    captureFetch((url) => {
+      if (url.includes('/pypi/httpx/json')) return { body: projectBody() };
+      return { body: null };
     });
     const results = await new PypiEngine().search('missing httpx');
     expect(results).toHaveLength(1);

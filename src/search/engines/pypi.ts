@@ -137,6 +137,7 @@ function latestUpload(urls: unknown): string | undefined {
 }
 
 function parseProject(data: PypiResponse, fallbackName: string): RawSearchResult | null {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
   const info = data.info;
   if (!info || typeof info !== 'object') return null;
   const rawName = asString(info.name);
@@ -145,7 +146,7 @@ function parseProject(data: PypiResponse, fallbackName: string): RawSearchResult
   const name = pep503Normalize(rawName) || fallbackName;
   const summary = asString(info.summary) ?? '';
   const version = asString(info.version);
-  const snippet = version ? `${summary} (v${version})` : summary;
+  const snippet = [summary, version ? `(v${version})` : ''].filter((part) => part.length > 0).join(' ');
   const url = projectPageUrl(name, info.package_url ?? info.project_url);
   const published_date = latestUpload(data.urls);
 
