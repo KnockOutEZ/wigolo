@@ -247,17 +247,23 @@ export class CoreSearchProvider implements SearchProvider {
           // Dispatch is skipped on a hit, so re-derive allowlist diagnostics
           // from this request. Otherwise `search_engines: ['not-a-real-engine']`
           // can reuse a default-pool cache row with no `unknown_engine`.
+          // Array queries classify independently (same as a cache miss), so
+          // inspect every normalized query and union unmatched / OR fallback.
           if (input.search_engines?.length) {
-            const inspected = inspectSearchEngineAllowlist({
-              query: queries[0],
-              category,
-              searchEngines: input.search_engines,
-              fromDate: input.from_date,
-              toDate: input.to_date,
-              timeRange: input.time_range,
-            });
-            allowlistUnmatched = inspected.unmatched;
-            allowlistFallback = inspected.fallback;
+            for (const query of queries) {
+              const inspected = inspectSearchEngineAllowlist({
+                query,
+                category,
+                searchEngines: input.search_engines,
+                fromDate: input.from_date,
+                toDate: input.to_date,
+                timeRange: input.time_range,
+              });
+              if (inspected.fallback) allowlistFallback = true;
+              for (const name of inspected.unmatched) {
+                if (!allowlistUnmatched.includes(name)) allowlistUnmatched.push(name);
+              }
+            }
           }
         }
       } catch (err) {

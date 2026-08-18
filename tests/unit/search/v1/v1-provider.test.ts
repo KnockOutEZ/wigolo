@@ -176,6 +176,48 @@ describe('CoreSearchProvider', () => {
     expect(warn).toMatchObject({ engine: 'not-a-real-engine', code: 'unknown_engine' });
   });
 
+  it('inspects every array query on a cache hit and unions unmatched names', async () => {
+    runV1SearchMock.mockClear();
+    inspectAllowlistMock.mockClear();
+    inspectAllowlistMock
+      .mockReturnValueOnce({ unmatched: ['google'], fallback: false })
+      .mockReturnValueOnce({ unmatched: ['not-a-real-engine'], fallback: true });
+    getCachedSearchResultsMock.mockReturnValueOnce({
+      results: [
+        { title: 'Cached', url: 'https://cached.example', snippet: 's', relevance_score: 1, engine: 'duckduckgo' },
+      ],
+      engines_used: ['duckduckgo'],
+      searched_at: '2026-08-18T00:00:00.000Z',
+      stale: false,
+    });
+
+    const provider = new CoreSearchProvider();
+    const result = await provider.search(
+      {
+        query: ['rust tokio select', 'latest hn hiring'],
+        search_engines: ['google', 'not-a-real-engine'],
+        include_content: false,
+      },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(runV1SearchMock).not.toHaveBeenCalled();
+    expect(inspectAllowlistMock).toHaveBeenCalledTimes(2);
+    expect(inspectAllowlistMock.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ query: 'rust tokio select' }),
+    );
+    expect(inspectAllowlistMock.mock.calls[1][0]).toEqual(
+      expect.objectContaining({ query: 'latest hn hiring' }),
+    );
+    const engines = (result.data.engine_warnings ?? []).map((w) => w.engine);
+    expect(engines).toEqual(expect.arrayContaining(['google', 'not-a-real-engine']));
+    expect(
+      result.data.engine_warnings?.find((w) => w.engine === 'not-a-real-engine')?.message,
+    ).toMatch(/default pool/);
+  });
+
   it('rejects an empty query before the images check', async () => {
     const provider = new CoreSearchProvider();
     const result = await provider.search(
