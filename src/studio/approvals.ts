@@ -1,22 +1,33 @@
 /**
  * Phase 6c — the host↔human approval round-trip.
  *
- * When the deterministic classifier (risk.ts) flags an agent action money/credential/
- * destructive, the act handler HOLDS the action and asks the human: this module emits
- * {t:'approval_request', id, ...} to the human's browser over the session WebSocket and
- * returns a promise that settles when the human answers {t:'approval', id, decision}, the
- * request times out, or a reclaim supersedes it.
+ * WHAT ACTUALLY USES THIS (read this before assuming it gates agent actions):
+ *
+ *   - The D9 AUTHENTICATED-USE CARD, and only that. `checkAgentDrive` (agent-drive-gate.ts:112)
+ *     calls `requestApproval(origin)` before letting the agent spend the human's signed-in identity
+ *     on an origin; the CLI host (`src/cli/studio.ts:439`) implements that hook with `request()`
+ *     here. It fires once per origin per session and BLOCKS the navigation until answered.
+ *   - NOT the risky-action path. A money/credential/destructive click/type is NOT held here: the
+ *     act handler classifies it and either finds a matching human pre-grant or PARKS it
+ *     (act.ts `applyRiskGate`). That non-blocking park was the design choice over a blocking
+ *     `request()` — the agent is not pinned waiting on a human, and the decision arrives on a
+ *     later observe drain. `ActHandlerDeps` carries no approvals seam, by design.
+ *   - NOT the Electron app at all. `apps/studio/src/main/studio-host.ts` implements the same
+ *     `requestApproval` hook with its OWN parked-card map (:447) and never imports this module.
+ *     So this class is live only in the CLI host.
+ *
+ * The mechanism: emit {t:'approval_request', id, ...} to the human's browser over the session
+ * WebSocket and return a promise that settles when the human answers {t:'approval', id, decision},
+ * the request times out, or a reclaim supersedes it.
  *
  * Fail-closed by construction: only an explicit `approve` resolves `approved`; an explicit
  * `deny`/`refuse` resolves `refused`; an unanswered request times out (`timeout`); a human
  * reclaim aborts every pending request (`superseded`). Garbage from the wire never resolves a
- * request as approved — it waits for an explicit answer (and ultimately times out). The act
- * handler treats anything other than `approved` as "do not fire", and layers the epoch fence
- * on top so a late approval for a now-stale epoch still cannot fire.
+ * request as approved — it waits for an explicit answer (and ultimately times out). Callers treat
+ * anything other than `approved` as "do not proceed".
  *
  * Pure mechanism: the broadcast sink and the timer are injected, so it is fully headless-
- * testable. The visual approval CARD that renders the request is Phase 7; this is the wire
- * contract underneath it. This is a host↔human channel (like the audit log), NOT the agent's
+ * testable. This is a host↔human channel (like the audit log), NOT the agent's
  * StudioEvent/observe channel — so StudioEvent stays untouched (CEO carry-forward (b)).
  */
 import type { RiskTier } from './risk.js';
