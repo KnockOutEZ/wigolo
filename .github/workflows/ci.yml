@@ -84,12 +84,36 @@ jobs:
   # that project, and `typecheck:debt` ratchets the remaining untyped-test debt. Until this job
   # existed those gated NOTHING on a PR — a safety test could sit outside the type gate and CI
   # stayed green.
+  #
+  # Runs on ubuntu + macOS. Every check in `gate:studio` other than `lint` is a tsconfig
+  # PROJECT (`tsc -p tsconfig.test.json`, `tsc -p contracts/studio-mcp/tsconfig.json`) or a
+  # node script that walks the tree by path — `check-typecheck-gate.mjs`,
+  # `check-src-no-electron.mjs`, `typecheck-debt-ratchet.mjs`. Project `include`/`exclude`
+  # globs and hand-rolled path walks resolve differently per platform, so an ubuntu-only
+  # gate was checking the one platform least likely to break them.
+  #
+  # WINDOWS IS DELIBERATELY ABSENT, and this is a TODO with a known cause rather than a
+  # judgement that Windows does not matter. Measured on windows-latest at 889fd996
+  # (run 32135970011): `check:typecheck-gate` fails there, naming ALL 58 safety-critical
+  # test files as "NOT in tsconfig.test.json `include`" — including files that are
+  # unambiguously in it. A blanket miss across 100% of inputs is the signature of a
+  # separator comparison, not a real gap: `scripts/check-typecheck-gate.mjs` compares
+  # `\`-separated relative paths against the `/`-separated `include` entries. macOS passes
+  # the same commit, which rules out a general path bug.
+  #
+  # Note the direction: it over-reports (fail-closed), so no false green ever shipped from
+  # this. Make the script separator-agnostic, then add `windows-latest` to the matrix below
+  # — the lane is one list entry away and the fix belongs to whoever owns `scripts/`.
   gate:
-    name: type gate (gate:studio)
-    runs-on: ubuntu-latest
+    name: type gate (gate:studio) (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -108,15 +132,57 @@ jobs:
         shell: bash
         run: npm run gate:studio
 
+  # The FULL suite (`npm test`), on ubuntu + macOS. `lint-build-unit` already runs
+  # `tests/unit` cross-OS; what this adds over it is `tests/integration` (104 files) plus
+  # `tests/e2e` and the security regression — the spawn-heavy lane that launches browsers
+  # and child processes. Those are precisely the tests whose behaviour is platform-specific
+  # (process spawning, signal handling, path separators, file locking), so running them on
+  # ubuntu alone tested the platform least likely to break them. macOS was added here and
+  # passed first time.
+  #
+  # WINDOWS IS DELIBERATELY ABSENT, with a measured reason. Run on windows-latest at
+  # 889fd996 (run 32135970011): 11041 passed, 5 failed, in 3 files. All five are
+  # TEST-HARNESS portability gaps, none is product breakage, and all five live under
+  # `tests/**`:
+  #
+  #   - tests/e2e/init-command.e2e.test.ts (x3) — spawnSync `status` comes back `null`,
+  #     which means killed-by-signal/timeout, NOT a wrong exit code.
+  #   - tests/integration/studio-session-target.test.ts — `EBUSY ... unlink jobs.db` thrown
+  #     by rmSync in afterAll. Windows will not unlink an open file; the assertions passed
+  #     and only the teardown failed.
+  #   - tests/integration/fetch/browser-redirect-ssrf-backstop.test.ts — expected the guard's
+  #     `unspecified IPv4 (0.0.0.0)` message, got `net::ERR_ADDRESS_INVALID`. The request was
+  #     still REFUSED; the browser engine declined to route 0.0.0.0 before wigolo's own guard
+  #     could attribute it. The security property holds on Windows, the attribution differs.
+  #
+  # This lane is dropped rather than marked `continue-on-error` on purpose. A
+  # continue-on-error job reports SUCCESS whatever its steps do, so keeping a known-red
+  # Windows leg that way would manufacture exactly the vacuous green this matrix exists to
+  # remove. Fix the three files, then add `- os: windows-latest / label: windows` back.
+  #
+  # The former "ubuntu-only hang" note here is retired: it described a state that no longer
+  # reproduces — this job completes in ~8 min on `studio-handoff`. The timeout stays at 30
+  # min as a cap, not as a workaround.
   full-suite:
-    name: full test suite (ubuntu)
-    runs-on: ubuntu-latest
-    # See the note on `lint-build-unit`: this job has the same ubuntu-only hang and
-    # has never completed on `studio-handoff`. 30 min is ~6x the 5 min it takes on
-    # `main`, and generous against the ~7 min a local quiet-machine full run needs.
+    # The label is carried in the matrix rather than derived from `matrix.os` so the ubuntu
+    # leg keeps the EXACT name `full test suite (ubuntu)`. That string is a required status
+    # check in `main`'s branch protection: a job rename does not update the protection rule,
+    # it orphans it — the required context stops reporting and every PR to main sits on
+    # "Expected — waiting for status" forever. Renaming this job is therefore a
+    # settings change, not a workflow change. Do not "tidy" the label to match `matrix.os`.
+    name: full test suite (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: ubuntu
+          - os: macos-latest
+            label: macos
     steps:
       - uses: actions/checkout@v7
 
@@ -126,14 +192,27 @@ jobs:
           cache: npm
 
       - run: npm ci
+        shell: bash
 
       - run: npm run lint
+        shell: bash
 
       - run: npm run build
+        shell: bash
 
-      - run: npx playwright install --with-deps chromium
+      # `--with-deps` installs Linux system packages; it has no counterpart on macOS or
+      # Windows, where the browser download alone is the whole install.
+      - name: Install browser engine
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            npx playwright install --with-deps chromium
+          else
+            npx playwright install chromium
+          fi
 
       - run: npm test
+        shell: bash
 
   # Studio unit tests are pure (no Electron binary launched) — run on all 3 OS
   # and skip the ~150MB electron binary download to avoid its install flakiness.
