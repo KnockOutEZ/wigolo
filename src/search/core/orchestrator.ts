@@ -211,6 +211,12 @@ export interface OrchestratorInput {
    * result whose title+snippet does not contain the unquoted query as a
    * case-insensitive substring is dropped post-rerank. */
   exactMatch?: boolean;
+  /** Caller engine allowlist (`SearchInput.search_engines`). When set and at
+   * least one name matches a registered adapter, only those engines run —
+   * including engines from other verticals, so this overrides auto-dispatch.
+   * Unknown names are ignored. If nothing matches, the vertical's default
+   * pool is used (same fallback as the legacy SearXNG path). */
+  searchEngines?: string[];
 }
 
 export interface OrchestratorOutput {
@@ -241,6 +247,60 @@ function getEntriesForVertical(vertical: Vertical): EngineEntry[] {
     case 'images':
       return getImageEngines();
   }
+}
+
+const ALL_VERTICALS: Vertical[] = ['general', 'news', 'code', 'docs', 'papers', 'images'];
+
+function normalizeEngineAllowlist(names?: string[]): string[] | undefined {
+  if (!names || names.length === 0) return undefined;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of names) {
+    if (typeof raw !== 'string') continue;
+    const n = raw.trim().toLowerCase();
+    if (!n || seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function collectEngineCatalog(): Map<string, EngineEntry> {
+  const byName = new Map<string, EngineEntry>();
+  for (const vertical of ALL_VERTICALS) {
+    for (const entry of getEntriesForVertical(vertical)) {
+      const name = entry.engine.name.toLowerCase();
+      if (!byName.has(name)) byName.set(name, entry);
+    }
+  }
+  return byName;
+}
+
+function resolveAllowlistedEntries(
+  verticalEntries: EngineEntry[],
+  allowlist: string[] | undefined,
+): { entries: EngineEntry[]; overridden: boolean } {
+  if (!allowlist) return { entries: verticalEntries, overridden: false };
+
+  const fromVertical = new Map(
+    verticalEntries.map((e) => [e.engine.name.toLowerCase(), e] as const),
+  );
+  const catalog = collectEngineCatalog();
+  const matched: EngineEntry[] = [];
+  const seen = new Set<string>();
+  for (const name of allowlist) {
+    const entry = fromVertical.get(name) ?? catalog.get(name);
+    if (!entry || seen.has(name)) continue;
+    seen.add(name);
+    matched.push(entry);
+  }
+
+  if (matched.length === 0) {
+    log.warn('no engines matched search_engines filter, using all', { requested: allowlist });
+    return { entries: verticalEntries, overridden: false };
+  }
+
+  return { entries: matched, overridden: true };
 }
 
 function hostnameOf(url: string): string {
@@ -350,6 +410,9 @@ export async function runV1Search(
   const hasDateBound = !!(effectiveFromDate || effectiveToDate);
 
   const allEntries = getEntriesForVertical(vertical);
+  const allowlist = normalizeEngineAllowlist(input.searchEngines);
+  const resolved = resolveAllowlistedEntries(allEntries, allowlist);
+  const poolOverridden = resolved.overridden;
 
   // A date bound no longer narrows the
   // engine set. The previous behaviour dropped every date-naive engine the
@@ -365,8 +428,15 @@ export async function runV1Search(
   // Probe-only engines are held back from the primary wave: they are a
   // per-call latency/failure tax on the happy path but still an independent
   // signal the degraded-recovery wave can pull in when the pool collapses.
-  const entries = allEntries.filter((e) => e.probeOnly !== true);
-  const probeEntries = allEntries.filter((e) => e.probeOnly === true);
+  // An explicit allowlist overrides that hold-back — the caller asked for
+  // those engines, so they run in the primary wave and starvation/general
+  // fallback must not reintroduce engines the caller excluded.
+  const entries = poolOverridden
+    ? resolved.entries
+    : resolved.entries.filter((e) => e.probeOnly !== true);
+  const probeEntries = poolOverridden
+    ? []
+    : resolved.entries.filter((e) => e.probeOnly === true);
 
   const options: SearchEngineOptions = {
     maxResults: input.maxResults ?? DEFAULT_MAX_RESULTS,
@@ -394,6 +464,7 @@ export async function runV1Search(
     vertical,
     engineCount: entries.length,
     hasDateBound,
+    ...(poolOverridden ? { searchEngines: allowlist } : {}),
   });
 
   // Initial dispatch: engineQuery carries the error-token quoting (if any). For
@@ -682,7 +753,8 @@ export async function runV1Search(
     merged.length < starvationFloor &&
     vertical !== 'general' &&
     vertical !== 'images' &&
-    !opts._isFallback
+    !opts._isFallback &&
+    !poolOverridden
   ) {
     const generalEntries = getGeneralEngines();
     if (generalEntries.length > 0) {
@@ -828,7 +900,7 @@ export async function runV1Search(
   // search would be confused to receive HTML-page results, so a degraded
   // image vertical surfaces empty + engine_warnings rather than silently
   // morphing into a general search.
-  if (degraded && vertical !== 'general' && vertical !== 'images' && !opts._isFallback) {
+  if (degraded && vertical !== 'general' && vertical !== 'images' && !opts._isFallback && !poolOverridden) {
     log.info('vertical degraded, falling back to general', { from: vertical });
     return runV1Search({ ...input, category: 'general' }, { _isFallback: true });
   }

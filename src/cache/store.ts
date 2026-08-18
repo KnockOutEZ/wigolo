@@ -353,6 +353,7 @@ export interface SearchCacheFilters {
   exact_match?: boolean | null;
   search_depth?: string | null;
   reranker?: string | null;
+  search_engines?: string[] | null;
 }
 
 function normaliseDomainList(list?: string[] | null): string[] | null {
@@ -375,7 +376,8 @@ function hasAnyFilter(filters?: SearchCacheFilters): boolean {
     filters.time_range != null ||
     filters.exact_match != null ||
     filters.search_depth != null ||
-    filters.reranker != null
+    filters.reranker != null ||
+    (filters.search_engines?.length ?? 0) > 0
   );
 }
 
@@ -400,6 +402,7 @@ export function buildSearchCacheKey(
     exact_match: filters!.exact_match ?? null,
     search_depth: filters!.search_depth ?? null,
     reranker: filters!.reranker ?? null,
+    search_engines: normaliseDomainList(filters!.search_engines),
   };
   return `${query} ${JSON.stringify(fingerprint)}`;
 }
