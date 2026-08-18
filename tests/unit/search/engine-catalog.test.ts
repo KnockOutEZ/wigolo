@@ -106,6 +106,8 @@ describe('search_engines schema + warning copy', () => {
     expect(listing).toContain('wikipedia');
     expect(listing).toContain('bing_news');
     expect(listing).toContain('github-code');
+    expect(listing).toContain('npm-registry');
+    expect(listing).toContain('pypi');
     expect(listing).toContain('ddg-image');
     for (const vertical of VERTICALS) {
       expect(listing).toContain(`${vertical}:`);

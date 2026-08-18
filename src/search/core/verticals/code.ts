@@ -5,6 +5,8 @@ import { DevDocsEngine } from '../../engines/devdocs.js';
 import { DuckDuckGoEngine } from '../../engines/duckduckgo.js';
 import { BraveEngine } from '../../engines/brave.js';
 import { CratesIoEngine } from '../../engines/crates-io.js';
+import { NpmRegistryEngine } from '../../engines/npm-registry.js';
+import { PypiEngine } from '../../engines/pypi.js';
 import { wrapWithRetryAndBreaker, type EngineEntry } from '../engine-base.js';
 import { getConfig } from '../../../config.js';
 
@@ -13,12 +15,13 @@ import { getConfig } from '../../../config.js';
 // general developer-search breadth so database/library queries like
 // "pgvector HNSW ef_search tuning" reach blog posts and vendor docs.
 //
-// MDN and crates.io are admitted as SECONDARY engines — they still run, but
-// the orchestrator demotes results contributed only by secondary engines when
-// their lexical alignment with the query is low. This keeps MDN available for
-// genuine JS/HTML/CSS queries (and crates.io for genuine Rust-crate queries)
-// while preventing narrow-topic pages from hijacking results for unrelated
-// queries like "pgvector HNSW".
+// MDN, crates.io, npm-registry, and pypi are admitted as SECONDARY engines —
+// they still run, but the orchestrator demotes results contributed only by
+// secondary engines when their lexical alignment with the query is low. This
+// keeps MDN available for genuine JS/HTML/CSS queries (crates.io for Rust
+// crates, npm-registry for JS packages, pypi for Python packages) while
+// preventing narrow-topic pages from hijacking results for unrelated queries
+// like "pgvector HNSW".
 let cached: EngineEntry[] | null = null;
 
 export function getCodeEngines(): EngineEntry[] {
@@ -70,6 +73,22 @@ export function getCodeEngines(): EngineEntry[] {
 
   entries.push({
     engine: wrapWithRetryAndBreaker(new CratesIoEngine()),
+    weight: 0.3,
+    supportsDateFilter: false,
+    secondary: true,
+    quality: 'high',
+  });
+
+  entries.push({
+    engine: wrapWithRetryAndBreaker(new NpmRegistryEngine()),
+    weight: 0.3,
+    supportsDateFilter: false,
+    secondary: true,
+    quality: 'high',
+  });
+
+  entries.push({
+    engine: wrapWithRetryAndBreaker(new PypiEngine()),
     weight: 0.3,
     supportsDateFilter: false,
     secondary: true,

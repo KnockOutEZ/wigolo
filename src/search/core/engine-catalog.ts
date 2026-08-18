@@ -16,7 +16,17 @@ import type { Vertical } from './intent-router.js';
 export const BUILTIN_ENGINES_BY_VERTICAL: Record<Vertical, readonly string[]> = {
   general: ['bing', 'duckduckgo', 'wikipedia', 'mojeek', 'marginalia', 'brave'],
   news: ['hn-algolia', 'lobsters', 'bing_news', 'duckduckgo', 'mojeek', 'rss-feed'],
-  code: ['github-code', 'stackoverflow', 'devdocs', 'duckduckgo', 'mdn', 'crates-io', 'brave'],
+  code: [
+    'github-code',
+    'stackoverflow',
+    'devdocs',
+    'duckduckgo',
+    'mdn',
+    'crates-io',
+    'npm-registry',
+    'pypi',
+    'brave',
+  ],
   docs: ['mdn', 'devdocs', 'bing', 'duckduckgo'],
   papers: ['arxiv', 'semantic-scholar'],
   images: ['ddg-image', 'brave-image'],

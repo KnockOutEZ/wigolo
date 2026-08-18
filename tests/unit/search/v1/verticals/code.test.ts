@@ -23,11 +23,11 @@ describe('getCodeEngines', () => {
     _resetCodeEnginesForTest();
   });
 
-  it('returns six entries by default (github-code, stackoverflow, devdocs, duckduckgo, mdn, crates-io)', () => {
-    expect(getCodeEngines()).toHaveLength(6);
+  it('returns eight entries by default (github-code, stackoverflow, devdocs, duckduckgo, mdn, crates-io, npm-registry, pypi)', () => {
+    expect(getCodeEngines()).toHaveLength(8);
   });
 
-  it('lists github-code, stackoverflow, devdocs, duckduckgo, mdn, crates-io (preserving names)', () => {
+  it('lists github-code, stackoverflow, devdocs, duckduckgo, mdn, crates-io, npm-registry, pypi (preserving names)', () => {
     const names = getCodeEngines().map((e) => e.engine.name).sort();
     expect(names).toEqual([
       'crates-io',
@@ -35,6 +35,8 @@ describe('getCodeEngines', () => {
       'duckduckgo',
       'github-code',
       'mdn',
+      'npm-registry',
+      'pypi',
       'stackoverflow',
     ]);
   });
@@ -61,9 +63,9 @@ describe('getCodeEngines', () => {
     expect(a).not.toBe(b);
   });
 
-  it('marks MDN and crates-io as secondary and leaves the other engines primary', () => {
+  it('marks MDN, crates-io, npm-registry, and pypi as secondary and leaves the other engines primary', () => {
     const entries = getCodeEngines();
-    const secondaries = ['mdn', 'crates-io'];
+    const secondaries = ['mdn', 'crates-io', 'npm-registry', 'pypi'];
     for (const name of secondaries) {
       const entry = entries.find((e) => e.engine.name === name);
       expect(entry?.secondary).toBe(true);
@@ -81,6 +83,8 @@ describe('getCodeEngines', () => {
     expect(w('stackoverflow')).toBeGreaterThan(w('mdn'));
     expect(w('duckduckgo')).toBeGreaterThan(w('mdn'));
     expect(w('devdocs')).toBeGreaterThan(w('mdn'));
+    expect(w('npm-registry')).toBe(w('crates-io'));
+    expect(w('pypi')).toBe(w('crates-io'));
   });
 
   it('sets supportsDateFilter true only on stackoverflow', () => {
@@ -91,5 +95,8 @@ describe('getCodeEngines', () => {
     expect(f('mdn')).toBe(false);
     expect(f('devdocs')).toBe(false);
     expect(f('duckduckgo')).toBe(false);
+    expect(f('crates-io')).toBe(false);
+    expect(f('npm-registry')).toBe(false);
+    expect(f('pypi')).toBe(false);
   });
 });

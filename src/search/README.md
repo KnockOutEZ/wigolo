@@ -57,10 +57,10 @@ narrow source without letting it dominate off-topic queries:
 
 | Vertical | Primary | Secondary (and why) |
 | --- | --- | --- |
-| general | bing, ddg, wikipedia, brave | mojeek, marginalia — independent/long-tail indexes, sparse snippets |
-| news | hn-algolia, lobsters, bing_news, rss-feed | ddg, mojeek — web recall without outvoting the news sources |
-| code | github-code, stackoverflow, devdocs, ddg, brave | mdn, crates-io — real on JS/Rust queries; hijack "pgvector" otherwise |
-| docs | mdn, devdocs | bing, ddg — web recall when first-party docs APIs miss the subject |
+| general | bing, duckduckgo, wikipedia, brave | mojeek, marginalia — independent/long-tail indexes, sparse snippets |
+| news | hn-algolia, lobsters, bing_news, rss-feed | duckduckgo, mojeek — web recall without outvoting the news sources |
+| code | github-code, stackoverflow, devdocs, duckduckgo, brave | mdn, crates-io, npm-registry, pypi — real on JS/Rust/Python package queries; hijack "pgvector" otherwise |
+| docs | mdn, devdocs | bing, duckduckgo — web recall when first-party docs APIs miss the subject |
 | papers, images | all primary | — |
 
 Same adapter, different flag across verticals is intentional (DDG is
@@ -112,6 +112,9 @@ dispatch is a separate `http_401` warning with the `WIGOLO_GITHUB_TOKEN` hint.
 
 Dispatch failures (`http_*`, `timeout`, `dns`, `error`) are a different
 pipeline (`buildEngineWarnings` over telemetry). Skipped engines do not warn.
+Cache hits skip dispatch and therefore skip telemetry, but still run
+`inspectSearchEngineAllowlist` against the live catalog so a repeated
+unknown name is not silently dropped.
 
 ## Adding an engine
 
