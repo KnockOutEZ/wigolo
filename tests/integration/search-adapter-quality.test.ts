@@ -133,6 +133,8 @@ describe('search adapter quality (S11b) — integration at handleSearch boundary
       { match: (u) => u.startsWith('https://api.stackexchange.com/'), body: { items: [] } },
       { match: (u) => u.startsWith('https://developer.mozilla.org/api/v1/search'), body: { documents: [] } },
       { match: (u) => u.startsWith('https://lite.duckduckgo.com/'), text: '<html></html>' },
+      { match: (u) => u.startsWith('https://crates.io/api/v1/crates'), body: { crates: [] } },
+      { match: (u) => u.startsWith('https://registry.npmjs.org/-/v1/search'), body: { objects: [] } },
     ]);
     try {
       const r = await handleSearch(
