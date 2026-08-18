@@ -18,13 +18,16 @@ Env vars win per-field, so you can persist a baseline in `config.json` and overr
 wigolo config              # interactive settings shell (TUI)
 wigolo config --plain      # print current settings and exit
 wigolo config --plain --json
-wigolo config --set searchBackend=hybrid   # headless single-setting update
+wigolo config --set WIGOLO_SEARCH=hybrid   # headless single-setting update
 wigolo config --storage    # storage usage map
-wigolo config --cache-stats
 wigolo config --export settings.json       # secrets excluded
 wigolo config --import settings.json
 wigolo config --cleanup cache              # cache|embeddings|models|browser|searxng
 ```
+
+`--set` takes the **env-var-style key**, not the camelCase field name — `WIGOLO_SEARCH=hybrid`, not `searchBackend=hybrid`. `wigolo config --plain` prints the accepted keys, and an unknown one is rejected by name rather than silently ignored. Note that a handful of these keys are the persisted-setting name and differ from the env var the runtime reads (`WIGOLO_CACHE_TTL_SEARCH` as a `--set` key vs `CACHE_TTL_SEARCH` as an env var); the tables below document the **env vars**.
+
+For cache counts use `wigolo cache stats` — `wigolo config --cache-stats` is currently broken and reports a database-initialization error instead of the stats.
 
 `wigolo dashboard` is an alias of `wigolo config`. Secrets (LLM keys, proxy credentials) never go into `config.json` — they live in the OS keychain (see [privacy & security](./privacy-security.md#credentials)).
 
@@ -71,9 +74,9 @@ The legacy sidecar has its own knobs when you opt in: `SEARXNG_URL` (use an exte
 | `CRAWL_DELAY_MS` | `500` | Politeness delay between same-site requests. |
 | `WIGOLO_FETCH_ALLOW_PRIVATE` | `false` | Allow fetching private/loopback address targets (SSRF guard override for local dev servers). |
 | `USE_PROXY` / `PROXY_URL` | off | Route fetches through an HTTP(S) proxy. Credentials in the URL are moved to the OS keychain; only the credential-free URL is persisted. |
-| `WIGOLO_TLS_TIER` | `off` | TLS-impersonation fetch tier: `off`, `auto` (only on an anti-bot signal), `on` (try first for cold domains). Improves reliability on sites that reject generic HTTP clients. |
+| `WIGOLO_TLS_TIER` | `auto` | TLS-impersonation fetch tier: `off`, `auto` (the default — engaged only on an anti-bot signal), `on` (try first for cold domains). Improves reliability on sites that reject generic HTTP clients. |
 | `WIGOLO_STEALTH` | `auto` | Browser-tier fingerprint hardening: `off`, `auto` (only on challenge escalations), `on` (every browser fetch). |
-| `WIGOLO_TLS_BROWSER` | `chrome_142` | Browser profile the TLS tier presents. Allowlisted to `chrome\|firefox\|safari\|edge\|opera` + version; invalid values fall back safely. |
+| `WIGOLO_TLS_BROWSER` | `chrome_147` | Browser profile the TLS tier presents. Allowlisted to `chrome\|firefox\|safari\|edge\|opera` + version; invalid values fall back safely. |
 | `WIGOLO_TLS_SUCCESS_THRESHOLD` | `3` | Successes before a domain is auto-promoted to TLS-first routing. |
 | `WIGOLO_TLS_DOMAINS` | unset | Comma list of extra domains that should try the TLS tier first. |
 | `WIGOLO_CHALLENGE_COMPLETION_MS` | `15000` | How long the browser tier polls a challenge page before fast-failing with a labeled `blocked_by_challenge` result. |
@@ -90,6 +93,7 @@ For fetching pages behind a login with your own browser session: `WIGOLO_CDP_URL
 | `WIGOLO_RERANKER_MODEL` | `bge-reranker-v2-m3` | Which ranking model to load. |
 | `WIGOLO_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model for the semantic cache index and `find_similar`. |
 | `WIGOLO_RELEVANCE_THRESHOLD` | `0` | Drop search results below this reranker score (0 = keep all). |
+| `WIGOLO_EAGER_WARMUP` | unset | `1` loads the on-device models when the MCP server starts instead of on first use — pays the model-load cost up front so the first query isn't the one that waits. |
 
 Models download once (during `init`/`warmup` or lazily on first use) and run fully in-process — no external services.
 

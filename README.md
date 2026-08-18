@@ -12,7 +12,7 @@ Local-first web intelligence for AI agents — **no keys, no cloud, no metered b
 [![npm downloads](https://img.shields.io/npm/dm/wigolo?color=cb3837&logo=npm&label=downloads)](https://www.npmjs.com/package/wigolo)
 [![GitHub stars](https://img.shields.io/github/stars/KnockOutEZ/wigolo?style=flat&logo=github&color=e3b341)](https://github.com/KnockOutEZ/wigolo/stargazers)
 [![CI](https://img.shields.io/github/actions/workflow/status/KnockOutEZ/wigolo/ci.yml?branch=main&logo=github&label=CI)](https://github.com/KnockOutEZ/wigolo/actions/workflows/ci.yml)
-[![node](https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![node](https://img.shields.io/badge/node-%E2%89%A522-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed)](https://modelcontextprotocol.io)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-2563eb)](#license)
 [![status](https://img.shields.io/badge/status-public%20beta-b7791f)](#beta--feedback)
@@ -219,10 +219,10 @@ Drop wigolo's tools into the framework you already use. You get the full ten-too
 
 | Framework | Package | What you get |
 |-----------|---------|--------------|
-| **LangChain** | `wigolo-langchain` | each tool as a `BaseTool`, plus a `BaseRetriever` over search / find_similar for RAG |
-| **CrewAI** | `wigolo-crewai` | `wigolo_tools()` → hand the set to any crew |
-| **LlamaIndex** | `wigolo-llamaindex` | a `BaseReader` that loads fetched / crawled / searched pages as documents |
-| **Vercel AI SDK** | `wigolo-vercel-ai-sdk` | tool factories for `generateText` / `streamText`, edge-friendly |
+| **LangChain** | `pip install wigolo-langchain` | each tool as a `BaseTool`, plus a `BaseRetriever` over search / find_similar for RAG |
+| **CrewAI** | `pip install 'wigolo-crewai[crewai]'` | `wigolo_tools()` → hand the set to any crew |
+| **LlamaIndex** | `pip install wigolo-llamaindex` | a `BaseReader` that loads fetched / crawled / searched pages as documents |
+| **Vercel AI SDK** | `npm install wigolo-vercel-ai-sdk` | tool factories for `generateText` / `streamText`, edge-friendly |
 
 → [Framework integrations](docs/sdks.md)
 
@@ -311,7 +311,7 @@ export WIGOLO_SEARCH=hybrid                         # core engines + aggregator 
 export WIGOLO_GITHUB_TOKEN=...                      # GitHub code search 10 → 30 req/min
 
 # 3. Land more fetches, stay warm
-export WIGOLO_TLS_TIER=auto                         # per-domain learned fetch hardening
+export WIGOLO_TLS_TIER=on                           # try hardened fetch first (default `auto` waits for a block signal)
 export WIGOLO_EAGER_WARMUP=1                        # pay the ~1s model load up front
 ```
 
