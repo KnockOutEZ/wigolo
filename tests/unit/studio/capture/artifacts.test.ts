@@ -86,7 +86,14 @@ describe('studio/capture/artifacts — Phase 4b-3 capture pipeline (RED)', () =>
     // 008 + 009 applied → studio_sessions, studio_artifacts (+content cols), the FTS
     // index and its triggers all exist. 001 (vec) is skipped (vecLoaded:false) — capture
     // enqueues embeds off-loop, it never touches the vector tables inline.
-    applyMigrations(db, { vecLoaded: false });
+    //
+    // ONE commit for the whole fixture — see the note in
+    // tests/unit/cache/studio-artifacts-009-content-fts.test.ts. A bare
+    // `new Database(<file>)` runs journal_mode=delete + synchronous=FULL, so the
+    // runner's per-migration transactions cost 15 journal fsyncs per test; the outer
+    // transaction demotes them to SAVEPOINTs. These cases assert what the capture path
+    // writes into the migrated schema, not how many transactions produced it.
+    db.transaction(() => { applyMigrations(db, { vecLoaded: false }); })();
   });
 
   afterEach(() => {
