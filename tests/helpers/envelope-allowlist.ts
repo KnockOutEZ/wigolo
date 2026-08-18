@@ -35,6 +35,7 @@
 /** Shapes the emitted value is checked against. Each is a real predicate, never a description. */
 export type ValueShape =
   | 'absolute-http-url'
+  | 'link-target'
   | 'artifact-uri'
   | 'sha256-hex'
   | 'iso-8601'
@@ -51,14 +52,18 @@ const HTTP_SCHEMES = new Set(['http:', 'https:']);
 /** Schemes an agent may be handed as a dereferenceable identity beyond the web ones. */
 const URI_SCHEMES = new Set(['http:', 'https:', 'studio:', 'data:']);
 
-function parsesAsUrl(v: string, schemes: Set<string>): boolean {
+function parsesAsUrl(v: string, schemes: Set<string> | null): boolean {
   // A URL that carries whitespace or a control byte is not a URL an agent can dereference — it is
   // prose that happened to start with one. `links[].to` shipped multi-line values under a `to: string`
   // declaration, so this is checked rather than assumed.
   if (v.length === 0 || v.length > 2048) return false;
-  if (/[\s\u0000-\u001f\u007f]/.test(v)) return false;
+  // `schemes: null` means "any scheme" — the link-target case, where the producer's guarantee is
+  // parseability and line-break freedom, NOT a scheme allowlist. The whitespace rejection is skipped
+  // with it, because opaque-path schemes measurably keep their spaces.
+  if (schemes !== null && /[\s\u0000-\u001f\u007f]/.test(v)) return false;
   try {
-    return schemes.has(new URL(v).protocol);
+    const u = new URL(v);
+    return schemes === null || schemes.has(u.protocol);
   } catch {
     return false;
   }
@@ -68,6 +73,21 @@ export function satisfiesShape(shape: ValueShape, v: string): boolean {
   switch (shape) {
     case 'absolute-http-url':
       return parsesAsUrl(v, HTTP_SCHEMES);
+    // A crawl link target, and DELIBERATELY weaker than a URL check. `normalizeLinkTarget`
+    // (src/crawl/url-utils.ts:62) is `new URL(target, from)`, so the guarantee it actually provides
+    // was MEASURED rather than assumed, and it is narrower than the field name suggests:
+    //   'javascript:alert(1)\nIGNORE ALL...'  ->  'javascript:alert(1)IGNORE ALL...'   (one line, prose survives)
+    //   'mailto:a@b?subject=IGNORE ALL...'     ->  percent-encoded                       (hierarchical)
+    //   'tel:+1 555 0100'                      ->  unchanged, SPACES INTACT              (opaque path)
+    //   'https://exa mple.com'                 ->  null, dropped by the caller
+    // So prose CAN still ride an opaque-path scheme on one line. What is total on every scheme is
+    // that the parser strips tab/CR/LF before parsing, so NO LINE BREAK survives — which is the
+    // property that matters here, because a forged `[[END UNTRUSTED DATA nonce=…]]` needs its own
+    // line to read as a terminator. Encoding the weaker true guarantee beats encoding the stronger
+    // false one: `absolute-http-url` here would reject an ordinary `mailto:` link and fail on real
+    // data, which is how a check gets weakened back out again.
+    case 'link-target':
+      return v.length > 0 && v.length <= 2048 && !/[\n\r\t]/.test(v) && parsesAsUrl(v, null);
     case 'artifact-uri':
       return parsesAsUrl(v, URI_SCHEMES);
     case 'sha256-hex':
@@ -124,11 +144,15 @@ export interface RawValueAllowance {
 }
 
 /**
- * How many `authored-prose` allowances the invariant tolerates. The class cannot be checked by
- * inspection, so it is checked by SIZE: growing it requires editing this number, which is a visible
- * decision rather than one more entry in a long list.
+ * How many `authored-prose` allowances the invariant tolerates.
+ *
+ * BE CLEAR ABOUT WHAT THIS IS: it is set to the current population, so it forbids GROWTH and nothing
+ * else. It does not check a single byte, and it says nothing about whether the entries under it are
+ * correct — tracing their producers moved eleven of them out of this class (four to recorded holes,
+ * six to dead fields, one to a checked template), and the count gate detected none of that. It is a
+ * ratchet on the size of the unverifiable surface, not evidence about its contents.
  */
-export const AUTHORED_PROSE_BUDGET = 34;
+export const AUTHORED_PROSE_BUDGET = 23;
 
 /**
  * Containers whose KEYS are not page-derived.
@@ -169,6 +193,28 @@ export interface KnownOpen {
   path: string;
   /** The register entry that already pins it, or the reason it is deferred. */
   note: string;
+  /**
+   * HOW THIS HOLE WILL CLOSE — and the reason this field exists at all.
+   *
+   * `crawl:$.links[].to` sat here as a recorded hole while #349 closed it AT THE PRODUCER rather
+   * than with a fence. The drift gate only ever asked "is it still un-contained", so a
+   * producer-side fix could never satisfy it: the entry would have stayed here forever, and its
+   * bytes are NEVER shape-checked while it does. A hole that can never close is indistinguishable
+   * from an allowlist entry with no justification, and it silently exempted the field a merged PR
+   * had just fixed.
+   *
+   *  - `fence`       — a wrap at a seam will close it. The drift gate's "still un-contained" arm is
+   *                    the trigger, and `shapeWhenClosed` is meaningless (a fenced value is a fence).
+   *  - `producer`    — the fix constrains what the producer may write, and NO fence will ever appear.
+   *                    The trigger is the SHAPE arm below: the emitted value must NOT yet satisfy
+   *                    `shapeWhenClosed`. When it starts to, the fix has landed and the entry must
+   *                    migrate to ALLOWED_RAW, where its bytes are checked on every run.
+   *  - `unreachable` — no producer fills the field today. Neither trigger applies; the entry exists
+   *                    so the day one appears is visible instead of silent.
+   */
+  closes: 'fence' | 'producer' | 'unreachable';
+  /** REQUIRED for `closes: 'producer'`: the shape the value takes once the producer is constrained. */
+  shapeWhenClosed?: ValueShape;
 }
 
 export const ALLOWED_RAW: RawValueAllowance[] = [
@@ -217,6 +263,8 @@ export const ALLOWED_RAW: RawValueAllowance[] = [
   { path: 'watch:$.job.url', why: 'The watched URL, echoed back so the caller can correlate the job.', producer: 'src/watch/store.ts:1', shape: 'absolute-http-url' },
   { path: 'watch:$.jobs[].url', why: 'The watched URL on the list shape; the same stored row the singular job shape returns.', producer: 'src/watch/store.ts:1', shape: 'absolute-http-url' },
   { path: 'watch:$.changes_since_last[].url', why: 'The URL the scheduler re-fetched for this change report, raw so the caller can correlate it to its job.', producer: 'src/watch/store.ts:1', shape: 'absolute-http-url' },
+  { path: 'crawl:$.links[].to', why: 'GRADUATED from KNOWN_OPEN when #349 landed. Every target now goes through normalizeLinkTarget (new URL(target, from)) and a null is DROPPED with a warn rather than passed through, so the field is URL-parseable and line-break-free by construction. The shape asserted is the MEASURED guarantee, not the one the field name implies: prose can still ride an opaque-path scheme on one line, which url-utils.ts says in its own words. Checking the weaker true property is what keeps this check able to fail on real data.', producer: 'src/crawl/url-utils.ts:62', shape: 'link-target' },
+  { path: 'crawl:$.links[].from', why: 'The edge SOURCE is not a page-supplied target at all: addUniqueEdges is called with the URL the crawler is currently visiting, which came off its own frontier and was resolved before the page was fetched. Stronger than the `to` half, so it takes the stronger shape.', producer: 'src/crawl/crawler.ts:429', shape: 'absolute-http-url' },
   { path: 'watch:$.jobs[].notification', why: 'The webhook target, or the literal `inline`. A URL here is SSRF-guarded before delivery, and the caller supplied it in the first place.', producer: 'src/watch/ssrf.ts:1', shape: 'artifact-uri' },
 
 
@@ -315,6 +363,8 @@ export const ALLOWED_RAW: RawValueAllowance[] = [
   { path: 'extract:structured:$.error', why: 'The ONLY success-shape producer is the named-schema miss at src/tools/extract.ts:466, which interpolates input.named_schema into a fixed sentence — and named_schema is validated against NAMED_SCHEMAS before it gets there, so the variable part is one of seven literals. Every other `error:` in that file is on an ok:false return and reaches the failure envelope instead.', producer: 'src/tools/extract.ts:466', shape: 'machine-code', pattern: /^No (Article|Recipe|Product|CodeSnippet|Paper|EventListing|JobPosting) data found on page$/ },
   { path: 'research:$.brief.sections.gaps[].entity', why: 'The object form of a gap has exactly one producer, detectEntityGaps (src/research/entity-extractor.ts:62), and its entity comes only from extractNamedEntities(question) — the CALLER own question, never a fetched body. The two other gap producers return the STRING form, which fenceBrief fences. The inversion is real but harmless: the fenced `reason` is a constant and the raw `entity` is the variable one, and that variable is the caller own text.', producer: 'src/research/entity-extractor.ts:62', shape: 'machine-code', pattern: /^(?:[A-Z][A-Za-z0-9]+|[^"\u201d]{1,80})$/ },
 
+  { path: 'search:$.results[].evidence_score.explanation', why: 'Every parameter of explainEvidence is typed `number` (orchestrator.ts:36-42) — a type-level barrier at the function boundary, not a convention, so no title, snippet, url or host can reach it even though the scorers upstream READ those. They collapse to a number first. rerank-fold.ts:329 appends one more numeric token. It was in the unverifiable prose class only because I had not read the producer.', producer: 'src/search/core/orchestrator.ts:36', shape: 'machine-code', pattern: /^base=\d+\.\d{3}, domain=\d+\.\d{2}, lex=\d+\.\d{2}(?:, recency=\d+\.\d{2})?, engines=\d+(?:, xenc=\d+\.\d{2})?$/ },
+
   // ── Wigolo-minted handles ─────────────────────────────────────────────────────────────────────
   { path: 'fetch:$.evidence[].citation_id', why: 'A wigolo-minted stable handle the caller quotes; fenceEvidence names it operational beside url and span.', producer: 'src/server/content-fence.ts:163', shape: 'machine-code' },
   { path: 'crawl:$.pages[].evidence[].citation_id', why: 'Same minted-handle construction as the fetch evidence citation_id above; fenceEvidence applies it identically on every tool that carries evidence.', producer: 'src/server/content-fence.ts:163', shape: 'machine-code' },
@@ -330,43 +380,32 @@ export const ALLOWED_RAW: RawValueAllowance[] = [
   // ── Caller-supplied, echoed back ──────────────────────────────────────────────────────────────
   // These carry the CALLER own bytes, not an origin. The caller already had them; echoing them adds
   // no channel a page can write to.
-  { path: 'search:$.query', why: 'The caller own query string, echoed for correlation. No producer reads it off a page.', producer: 'src/types.ts:675', shape: 'authored-prose' },
-  { path: 'search:$.queries_executed[]', why: 'The multi-query variants wigolo derived from the caller own query, plus the caller own array when it passed one.', producer: 'src/types.ts:684', shape: 'authored-prose' },
+  { path: 'search:$.query', why: 'The caller own query string, echoed for correlation. No producer reads it off a page.', producer: 'src/search/core/core-provider.ts:878', shape: 'authored-prose' },
+  { path: 'search:$.queries_executed[]', why: 'The multi-query variants wigolo derived from the caller own query, plus the caller own array when it passed one.', producer: 'src/search/core/core-provider.ts:885', shape: 'authored-prose' },
   { path: 'search:$.query_understanding.entities[]', why: 'Entities the classifier extracted from the CALLER query, not from any result.', producer: 'src/search/core/query-understanding.ts:1', shape: 'authored-prose' },
   { path: 'search:$.query_understanding.rewrites[]', why: 'Alternative phrasings the classifier proposed for the CALLER own query. Nothing in this field is read from a result.', producer: 'src/search/core/query-understanding.ts:1', shape: 'authored-prose' },
   { path: 'search:$.query_understanding.compound_terms[]', why: 'Rare/compound tokens detected structurally in the CALLER query.', producer: 'src/search/core/query-understanding.ts:1', shape: 'authored-prose' },
-  { path: 'search:$.domain_filter.include_domains[]', why: 'The caller own include_domains scope, echoed so the caller can widen it.', producer: 'src/types.ts:1010', shape: 'authored-prose' },
-  { path: 'watch:$.job.selector', why: 'The CSS selector the caller supplied when creating the job, echoed back so the job is self-describing.', producer: 'src/types.ts:1519', shape: 'authored-prose' },
-  { path: 'watch:$.jobs[].selector', why: 'The caller own CSS selector on the list shape; the same stored column the singular job returns.', producer: 'src/types.ts:1519', shape: 'authored-prose' },
+  { path: 'search:$.domain_filter.include_domains[]', why: 'The caller own include_domains scope, echoed so the caller can widen it.', producer: 'src/search/core/domain-filter-cause.ts:56', shape: 'authored-prose' },
+  { path: 'watch:$.job.selector', why: 'The CSS selector the caller supplied when creating the job, echoed back so the job is self-describing.', producer: 'src/tools/watch.ts:109', shape: 'authored-prose' },
+  { path: 'watch:$.jobs[].selector', why: 'The caller own CSS selector on the list shape; the same stored column the singular job returns.', producer: 'src/watch/store.ts:25', shape: 'authored-prose' },
 
   // ── Operator prose ────────────────────────────────────────────────────────────────────────────
   // No predicate can tell authored prose from page prose byte-for-byte, so the check for this class
   // is the PRODUCER POPULATION: the set of src/ files that assign the field. A new assigning file is
   // exactly how "wigolo authors this" stops being true, and it fails the gate.
-  { path: 'search:$.warning', why: 'Operator text about backend degradation. content-fence.ts states it explicitly: "Still NOT fenced: `warning`, wigolo-authored operator text with no page-derived component."', producer: 'src/server/content-fence.ts:489', shape: 'authored-prose' },
-  { path: 'search:$<bare block>', why: 'The MCP search envelope re-emits data.warning as a legacy bare text block prefixed [wigolo notice] (src/server/search-response.ts:31), outside the JSON, so older callers keep parsing. It is the SAME value as search:$.warning and carries the same claim; it is listed separately because a bare block is a second, non-JSON channel the walker must not skip.', producer: 'src/server/search-response.ts:31', shape: 'authored-prose' },
-  { path: 'search:$.notice', why: 'Depth-tier advisory telling the caller to retry at a higher search_depth.', producer: 'src/types.ts:971', shape: 'authored-prose' },
-  { path: 'search:$.ranking_notice', why: 'States plainly that reranking contributed no ordering signal. A dedicated field precisely because `notice` gets overwritten on the stream_answer path.', producer: 'src/types.ts:978', shape: 'authored-prose' },
-  { path: 'search:$.synthesis_advice', why: 'Operator guidance for enabling synthesis (which env var to set).', producer: 'src/types.ts:958', shape: 'authored-prose' },
-  { path: 'search:$.synthesis_provider', why: 'Which cloud LLM adapter ran the synthesis — a wigolo adapter id.', producer: 'src/types.ts:956', shape: 'authored-prose' },
-  { path: 'search:$.synthesis_model', why: 'The model id passed to that adapter, from wigolo config or the caller env.', producer: 'src/types.ts:957', shape: 'authored-prose' },
+  { path: 'search:$.notice', why: 'Depth-tier advisory telling the caller to retry at a higher search_depth.', producer: 'src/search/core/core-provider.ts:958', shape: 'authored-prose' },
+  { path: 'search:$.ranking_notice', why: 'States plainly that reranking contributed no ordering signal. A dedicated field precisely because `notice` gets overwritten on the stream_answer path.', producer: 'src/search/core/rerank-fold.ts:139', shape: 'authored-prose' },
+  { path: 'search:$.synthesis_advice', why: 'Operator guidance for enabling synthesis (which env var to set).', producer: 'src/search/answer-synthesis.ts:244', shape: 'authored-prose' },
+  { path: 'search:$.synthesis_provider', why: 'Which cloud LLM adapter ran the synthesis — a wigolo adapter id.', producer: 'src/search/answer-synthesis.ts:346', shape: 'authored-prose' },
+  { path: 'search:$.synthesis_model', why: 'resolveModel echoes WIGOLO_LLM_MODEL_<PROVIDER> / WIGOLO_LLM_MODEL with NO allow-list, falling back to four hard-coded defaults. So it is NOT a closed set — it is OPERATOR ENV, which is caller-side configuration rather than a network origin. Recorded as the weaker claim it is rather than the closed-vocabulary one I first wrote.', producer: 'src/integrations/cloud/llm/model-select.ts:28', shape: 'authored-prose' },
   { path: 'search:$.engine_warnings[].hint', why: 'Assigned ONLY from ENGINE_AUTH_HINTS (src/search/core/engine-warnings.ts:32), a three-literal table naming WIGOLO_GITHUB_TOKEN or BRAVE_API_KEY. It is a lookup keyed on the engine name, so no response byte can reach it — a closed vocabulary, not free prose, which is why it is here rather than in KNOWN_OPEN beside its `message` sibling.', producer: 'src/search/core/engine-warnings.ts:32', shape: 'authored-prose' },
-  { path: 'search:$.brand_collision_warning.reason', why: 'Why the collision detector fired, authored from its own branch conditions.', producer: 'src/types.ts:747', shape: 'authored-prose' },
-  { path: 'search:$.brand_collision_warning.suggested_rewrites[]', why: 'Disambiguating phrasings composed from the CALLER query plus wigolo own qualifier vocabulary.', producer: 'src/types.ts:753', shape: 'authored-prose' },
-  { path: 'search:$.brand_collision_warning.brand_domains_in_top_3[]', why: 'Distinct HOSTS of the top results — a registrable domain, not page text.', producer: 'src/types.ts:752', shape: 'authored-prose' },
-  { path: 'search:$.engine_pool.alternatives[]', why: 'Remedies that widen a collapsed pool, authored beside the pool-health computation.', producer: 'src/types.ts:790', shape: 'authored-prose' },
-  { path: 'find_similar:$.cold_start', why: 'The documented cold-start advisory the tool contract tells callers to relay verbatim.', producer: 'src/types.ts:1627', shape: 'authored-prose' },
-  { path: 'cache:$.truncation.hint', why: 'Operator guidance for retrieving the rows an output budget trimmed away, a wigolo instruction rather than page text.', producer: 'src/types.ts:1272', shape: 'authored-prose' },
-  { path: 'cache:$.changes_truncation.hint', why: 'Operator guidance for checking the rows the change-check row cap stopped short of, a wigolo instruction.', producer: 'src/types.ts:1298', shape: 'authored-prose' },
-  { path: 'research:$.warning', why: 'Says the run succeeded on degraded terms (the content gate rejected every source and was waived).', producer: 'src/types.ts:929', shape: 'authored-prose' },
-  { path: 'agent:$.warning', why: 'Says the run succeeded on degraded terms because its sources failed, so the payload is weaker than it looks.', producer: 'src/types.ts:1044', shape: 'authored-prose' },
-  { path: 'extract:structured:$.notice', why: 'Advisory naming a mode current support level, so a thin result is not mistaken for an empty page.', producer: 'src/types.ts:1394', shape: 'authored-prose' },
-  { path: 'extract:structured:$.slice', why: 'A wigolo slice identifier paired with notice, naming the work that completes the surface.', producer: 'src/types.ts:1396', shape: 'authored-prose' },
-  { path: 'diff:$.notice', why: 'Advisory that the LCS cap fired and the shape fell back to the summary.', producer: 'src/types.ts:1489', shape: 'authored-prose' },
-  { path: 'diff:$.slice', why: 'A wigolo slice identifier paired with notice, naming the work that completes the surface.', producer: 'src/types.ts:1491', shape: 'authored-prose' },
-  { path: 'watch:$.notice', why: 'Stub marker saying the watch surface is still a placeholder, so an empty result is not read as no changes.', producer: 'src/types.ts:1554', shape: 'authored-prose' },
-  { path: 'watch:$.slice', why: 'A wigolo slice identifier naming the work that completes the watch surface.', producer: 'src/types.ts:1556', shape: 'authored-prose' },
-  { path: 'search:$.results[].evidence_score.explanation', why: 'One-line explanation of the score breakdown, composed from the numeric components.', producer: 'src/types.ts:1081', shape: 'authored-prose' },
+  { path: 'search:$.brand_collision_warning.suggested_rewrites[]', why: 'Every element is a wigolo template over the CALLER query or a static-lexicon term; subjectCollisionRewrites takes the query alone and never sees the host attrition set, so the leak that put hostnames into its `reason` sibling does NOT reach this array. That separation was measured, not assumed — the two fields are built by different functions.', producer: 'src/search/core/brand-collision.ts:224', shape: 'authored-prose' },
+  { path: 'search:$.engine_pool.alternatives[]', why: 'Remedies that widen a collapsed pool, authored beside the pool-health computation.', producer: 'src/search/core/core-provider.ts:190', shape: 'authored-prose' },
+  { path: 'find_similar:$.cold_start', why: 'The documented cold-start advisory the tool contract tells callers to relay verbatim.', producer: 'src/search/find-similar.ts:331', shape: 'authored-prose' },
+  { path: 'cache:$.truncation.hint', why: 'Operator guidance for retrieving the rows an output budget trimmed away, a wigolo instruction rather than page text.', producer: 'src/cache/output-budget.ts:133', shape: 'authored-prose' },
+  { path: 'cache:$.changes_truncation.hint', why: 'Operator guidance for checking the rows the change-check row cap stopped short of, a wigolo instruction.', producer: 'src/cache/output-budget.ts:120', shape: 'authored-prose' },
+  { path: 'research:$.warning', why: 'Says the run succeeded on degraded terms (the content gate rejected every source and was waived).', producer: 'src/research/pipeline.ts:295', shape: 'authored-prose' },
+  { path: 'agent:$.warning', why: 'Says the run succeeded on degraded terms because its sources failed, so the payload is weaker than it looks.', producer: 'src/agent/pipeline.ts:158', shape: 'authored-prose' },
 ];
 
 export const KEY_POLICIES: KeyPolicy[] = [
@@ -567,32 +606,48 @@ export const KEY_POLICIES: KeyPolicy[] = [
  * on it fails as a new defect. That is the same graduation discipline GAP-5 followed into ENV-10.
  */
 export const KNOWN_OPEN: KnownOpen[] = [
-  { path: 'compat:map:$.error', note: 'The compat surface, named OPEN in content-fence.ts:116. firecrawl-compat.ts:457 publishes mapResult.error as the envelope message from a DIRECT handleCrawl call that never passes through fenceCrawlData — the same origin-chosen Location text the native seams now contain. Deferred as its own change because that file carries the A11-R untrusted-mode decision and routing it through the shared fencer is a behaviour change on a compatibility surface, not a containment no-op. Its sibling site, handleCrawlStart settling a background job with crawl.error at :524, is the same channel on the polling route and is not walked here.' },
+  // ── FOUND BY TIGHTENING THIS FILE'S OWN ALLOWLIST. Each of these four was an entry I had
+  //    written and justified; tracing the producer falsified the justification.
+  { path: 'search:$.warning', note: 'NEW, and it contradicts a comment in production code. content-fence.ts:489 states "Still NOT fenced: `warning`, wigolo-authored operator text with no page-derived component." Measured false: answer-synthesis.ts:298 sets llmFailureReason from a thrown HTTP call (`err.message`), interpolates it into `diag` at :334 and into `warning` at :341; core-provider.ts:1000 adds a second path, `synthesis failed: ${synthResult.error_reason}`. An LLM provider response is a third-party network origin, the same class as the engine error bodies. I had allowlisted this field by quoting that comment.', closes: 'fence' },
+  { path: 'search:$<bare block>', note: 'NEW. The same bytes as search:$.warning, re-emitted by search-response.ts:31 as a bare `[wigolo notice] …` text block OUTSIDE the JSON. Fencing the JSON field alone would leave this copy bare, which is the shape three of the nine already had. NOT COVERED HERE, and named rather than implied: search-response.ts:25 also assigns `envelope.notice = warning` on the format=stream_answer envelope (types.ts:812), a wire shape these fixtures do not emit.', closes: 'fence' },
+  { path: 'search:$.brand_collision_warning.reason', note: 'NEW. Hostnames lifted from ENGINE-RETURNED result URLs are interpolated into wigolo own operator voice: core-provider.ts:914 -> detectSubjectCollision -> computeSubjectAnchorAttrition (subject-anchor.ts:219 hostOf(candidate.url)) -> brand-collision.ts:291 `the top slots went to ${sites.join(", ")}`. new URL().hostname bounds the charset, but the label is fully attacker-chosen — registering the domain is the whole attack — and it lands mid-sentence in text the agent reads as wigolo speaking. The result TITLE is only ever used as a predicate; the URL is the leak.', closes: 'fence' },
+  { path: 'search:$.brand_collision_warning.brand_domains_in_top_3[]', note: 'NEW. The same origin-chosen hostnames as bare tokens (brand-collision.ts:257, :293). looksBrandy is a TLD-suffix REGEX — a filter, not a sanitizer — so the label left of the TLD is unconstrained. Milder than its `reason` sibling because it is not wrapped in wigolo prose, and it is the field the cheapest fix would move the hosts INTO, as fenced data.', closes: 'fence' },
+
+  // ── DECLARED BUT DEAD. No producer in src/ assigns these; types.ts:1543 calls them
+  //    "Stub-only marker". They are emitted by the fixtures only because gate 3 requires every
+  //    DECLARED field to be exercised. An allowlist entry for a field that cannot carry bytes is
+  //    vacuously true and worth nothing as evidence, so they are recorded rather than justified.
+  { path: 'extract:structured:$.notice', note: 'NO PRODUCER. Swept both assignment forms repo-wide over src/: every `notice:` / `.notice =` hit is accounted for elsewhere (the fence envelope, the REPL watch path, the search notice, an openapi schema TYPE string).', closes: 'unreachable' },
+  { path: 'extract:structured:$.slice', note: 'NO PRODUCER. Every `slice` hit in src/ is either a comment or a function parameter named slice; no property assignment exists.', closes: 'unreachable' },
+  { path: 'diff:$.notice', note: 'NO PRODUCER. src/tools/diff.ts and src/cache/diff* contain no reference to the field.', closes: 'unreachable' },
+  { path: 'diff:$.slice', note: 'NO PRODUCER, same sweep.', closes: 'unreachable' },
+  { path: 'watch:$.notice', note: 'NO PRODUCER on the MCP path. The near-miss is repl/commands/watch.ts:100, which sets a module constant on the interactive SHELL output shape — a different type, not this response.', closes: 'unreachable' },
+  { path: 'watch:$.slice', note: 'NO PRODUCER, same sweep.', closes: 'unreachable' },
+
+  { path: 'compat:map:$.error', note: 'The compat surface, named OPEN in content-fence.ts:116. firecrawl-compat.ts:457 publishes mapResult.error as the envelope message from a DIRECT handleCrawl call that never passes through fenceCrawlData — the same origin-chosen Location text the native seams now contain. Deferred as its own change because that file carries the A11-R untrusted-mode decision and routing it through the shared fencer is a behaviour change on a compatibility surface, not a containment no-op. Its sibling site, handleCrawlStart settling a background job with crawl.error at :524, is the same channel on the polling route and is not walked here.', closes: 'fence' },
   // ── FOUND BY THIS INVARIANT, at 16ef68db. Reported, deliberately NOT fixed here: this slice adds
   //    no production code. Each verdict is a traced producer, not an inference from a field name.
-  { path: 'search:$.images[].title', note: 'NEW. core-provider.ts:937 copies SearchResultItem.title onto the aggregated image item; that title is what an engine adapter parsed out of the engine response body. fenceSearchData:462 fences im.alt and not im.title, so the IDENTICAL string ships FENCED at results[].title and BARE at images[].title on the same isError:false envelope. Reachable keyless via include_images:true or category:"images". This is the F5 alt-text fix one field short.' },
-  { path: 'watch:$.changes_since_last[].error', note: 'NEW, and the widest of the three: the whole `watch` tool has NO fencer on either surface (src/server.ts:699 returns r.data verbatim; watch is absent from PAGE_DERIVED_TOOLS). scheduler.ts:64 sets it from `fetched.error_reason ?? fetched.error` — error_reason FIRST, which is the PROSE, i.e. the 200-byte response-body snippet src/tools/fetch.ts:331 splices in. That is the exact producer content-fence.ts:70 documents as contained at the two StageError assembly seams; watch routes around both because its failure is in-band on an ok:true envelope. scheduler.ts:129 adds a second arm from a thrown Error.message.' },
-  { path: 'fetch:$.action_results[].error', note: 'NEW. action-executor.ts:105 assigns a caught Error.message. The `scroll` action runs page.evaluate in the page, so a page that redefines window.scrollBy to throw has its exception message rethrown in Node verbatim — attacker-chosen, arbitrary length. fenceFetchData spreads ...data and never enumerates action_results.' },
-  { path: 'search:$.engine_warnings[].message', note: 'NEW (one string, three fields — see the two below). engine-warnings.ts:117 copies EngineTelemetry.error, which is an engine adapter Error.message. Twelve adapters call response.json() with no try, so a 200 carrying a non-JSON body throws a V8 SyntaxError that QUOTES the body. sanitizeErrorMessage does NOT cover this path: engine-base.ts:230 has one caller, :569, and the response path at :620 is unsanitized and uncapped.' },
-  { path: 'search:$.engine_telemetry[].error', note: 'NEW. The SAME EngineOutcome.error string one hop earlier (core-provider.ts:587). Fencing engine_warnings[].message alone would leave a bare copy of the identical bytes on the same envelope.' },
-  { path: 'search:$.engine_outcomes[].error', note: 'NEW. The SAME string again (core-provider.ts:547), behind include_engine_outcomes:true. Lowest frequency, same bytes, same fix.' },
-  { path: 'find_similar:$.error', note: 'NEW. find-similar.ts:351 returns `find_similar failed: ${err.message}` as a FindSimilarOutput, not an ok:false wrapper, so it never reaches a failure envelope. The pipeline it wraps runs router.fetch, and http-client.ts:271 throws `HTTP ${status} from ${currentUrl}` with currentUrl taken from an origin-chosen Location header.' },
-  { path: 'search:$.results[].fetch_failed', note: 'NEW. Intended as a stage CODE and it is one on content-fetch.ts:233 — but reasonToFlag (content-fetch.ts:145) falls through to `reason.message` for any non-DOMException throw, so the same redirect-Location text reaches a field callers branch on as a flag.' },
-  { path: 'research:$.sources[].fetch_error', note: 'NEW. pipeline.ts:470 records the bare stage CODE on a refusal — deliberate and documented — but pipeline.ts:529 records a thrown Error.message on the other arm, which is the unbounded one.' },
-  { path: 'fetch:$.error', note: 'RECORDED, NOT LIVE. Declared on FetchOutput but no producer fills it on the MCP success path: the only assignment in the tree is the REPL envelope (src/repl/commands/fetch.ts:10), which never reaches fenceFetchData. It is emitted by the fixture because gate 3 requires every DECLARED field to be exercised, and it is recorded here rather than allowlisted because there is no construction to cite — the day a producer starts filling it, this note is what makes that visible instead of silent.' },
-  { path: 'crawl:map:$.urls[]', note: 'REJECTED FROM THE ALLOWLIST, not merely unfenced. The justification offered was "URL-shaped by construction: mapper.ts:45 resolves through new URL(trimmed, origin) and same-origin filters". That is TRUE OF ONE OF TWO PRODUCERS. The sitemap <loc> branch (mapper.ts:100) does no resolution at all, and canonicalForOutput passes raw bytes through its catch — measured verbatim. A construction that covers one producer is exactly the defect this file exists to kill, so the entry was withdrawn rather than reworded.' },
+  { path: 'search:$.images[].title', note: 'NEW. core-provider.ts:937 copies SearchResultItem.title onto the aggregated image item; that title is what an engine adapter parsed out of the engine response body. fenceSearchData:462 fences im.alt and not im.title, so the IDENTICAL string ships FENCED at results[].title and BARE at images[].title on the same isError:false envelope. Reachable keyless via include_images:true or category:"images". This is the F5 alt-text fix one field short.', closes: 'fence' },
+  { path: 'watch:$.changes_since_last[].error', note: 'NEW, and the widest of the three: the whole `watch` tool has NO fencer on either surface (src/server.ts:699 returns r.data verbatim; watch is absent from PAGE_DERIVED_TOOLS). scheduler.ts:64 sets it from `fetched.error_reason ?? fetched.error` — error_reason FIRST, which is the PROSE, i.e. the 200-byte response-body snippet src/tools/fetch.ts:331 splices in. That is the exact producer content-fence.ts:70 documents as contained at the two StageError assembly seams; watch routes around both because its failure is in-band on an ok:true envelope. scheduler.ts:129 adds a second arm from a thrown Error.message.', closes: 'fence' },
+  { path: 'fetch:$.action_results[].error', note: 'NEW. action-executor.ts:105 assigns a caught Error.message. The `scroll` action runs page.evaluate in the page, so a page that redefines window.scrollBy to throw has its exception message rethrown in Node verbatim — attacker-chosen, arbitrary length. fenceFetchData spreads ...data and never enumerates action_results.', closes: 'fence' },
+  { path: 'search:$.engine_warnings[].message', note: 'NEW (one string, three fields — see the two below). engine-warnings.ts:117 copies EngineTelemetry.error, which is an engine adapter Error.message. Twelve adapters call response.json() with no try, so a 200 carrying a non-JSON body throws a V8 SyntaxError that QUOTES the body. sanitizeErrorMessage does NOT cover this path: engine-base.ts:230 has one caller, :569, and the response path at :620 is unsanitized and uncapped.', closes: 'fence' },
+  { path: 'search:$.engine_telemetry[].error', note: 'NEW. The SAME EngineOutcome.error string one hop earlier (core-provider.ts:587). Fencing engine_warnings[].message alone would leave a bare copy of the identical bytes on the same envelope.', closes: 'fence' },
+  { path: 'search:$.engine_outcomes[].error', note: 'NEW. The SAME string again (core-provider.ts:547), behind include_engine_outcomes:true. Lowest frequency, same bytes, same fix.', closes: 'fence' },
+  { path: 'find_similar:$.error', note: 'NEW. find-similar.ts:351 returns `find_similar failed: ${err.message}` as a FindSimilarOutput, not an ok:false wrapper, so it never reaches a failure envelope. The pipeline it wraps runs router.fetch, and http-client.ts:271 throws `HTTP ${status} from ${currentUrl}` with currentUrl taken from an origin-chosen Location header.', closes: 'fence' },
+  { path: 'search:$.results[].fetch_failed', note: 'NEW. Intended as a stage CODE and it is one on content-fetch.ts:233 — but reasonToFlag (content-fetch.ts:145) falls through to `reason.message` for any non-DOMException throw, so the same redirect-Location text reaches a field callers branch on as a flag.', closes: 'producer', shapeWhenClosed: 'machine-code' },
+  { path: 'research:$.sources[].fetch_error', note: 'NEW. pipeline.ts:470 records the bare stage CODE on a refusal — deliberate and documented — but pipeline.ts:529 records a thrown Error.message on the other arm, which is the unbounded one.', closes: 'producer', shapeWhenClosed: 'machine-code' },
+  { path: 'fetch:$.error', note: 'RECORDED, NOT LIVE. Declared on FetchOutput but no producer fills it on the MCP success path: the only assignment in the tree is the REPL envelope (src/repl/commands/fetch.ts:10), which never reaches fenceFetchData. It is emitted by the fixture because gate 3 requires every DECLARED field to be exercised, and it is recorded here rather than allowlisted because there is no construction to cite — the day a producer starts filling it, this note is what makes that visible instead of silent.', closes: 'unreachable' },
+  { path: 'crawl:map:$.urls[]', note: 'REJECTED FROM THE ALLOWLIST, not merely unfenced. The justification offered was "URL-shaped by construction: mapper.ts:45 resolves through new URL(trimmed, origin) and same-origin filters". That is TRUE OF ONE OF TWO PRODUCERS. The sitemap <loc> branch (mapper.ts:100) does no resolution at all, and canonicalForOutput passes raw bytes through its catch — measured verbatim. A construction that covers one producer is exactly the defect this file exists to kill, so the entry was withdrawn rather than reworded.', closes: 'producer', shapeWhenClosed: 'absolute-http-url' },
 
   // ── Pinned already, elsewhere in the tree ────────────────────────────────────────────────────
-  { path: 'agent:$.sources[].fetch_error', note: 'GAP-1 (unfenced-siblings.test.ts): fenceAgentData spreads ...data and does not enumerate AgentSource.fetch_error.' },
-  { path: 'agent:$.error', note: 'GAP-2 (unfenced-siblings.test.ts): AgentOutput.error rides out on the success envelope unenumerated.' },
-  { path: 'research:$.error', note: 'GAP-3 (unfenced-siblings.test.ts): ResearchOutput.error, same spread.' },
-  { path: 'research:$.sub_queries[]', note: 'GAP-3 (unfenced-siblings.test.ts): ResearchOutput.sub_queries, same spread.' },
-  { path: 'extract:structured:$.warnings[]', note: 'GAP-4 (unfenced-siblings.test.ts): ExtractOutput.warnings — the original A89 finding.' },
-  { path: 'extract:structured:$.data.jsonld[]{key}', note: 'GAP-6a (unfenced-siblings.test.ts): a page-authored JSON-LD PROPERTY NAME is an unfenced key. Second site of the row-key class; still live.' },
-  { path: 'fetch:$.site_data{key}', note: 'GAP-6b (unfenced-siblings.test.ts): nested site_data keys pass through fenceDeepValue unfenced.' },
-  { path: 'fetch:$.site_data.nested{key}', note: 'GAP-6b (unfenced-siblings.test.ts): the same channel one level deeper.' },
-  { path: 'search:$.error', note: 'Named OPEN in content-fence.ts:110 — the search_failed envelope publishes data.error and the MCP counterpart is not fenced either. Deferred as its own call, not an oversight.' },
-  { path: 'search:rest-error:$.error', note: 'The REST half of the SearchOutput.error hole. content-fence.ts:110 names it: the search_failed envelope in dispatchSearch publishes data.error unfenced, and fencing one surface while the MCP counterpart stays raw would be a new asymmetry. Deferred as its own call.' },
-  { path: 'crawl:$.links[].to', note: 'The links[].to defect. Open at 16ef68db; PR #349 is in flight against src/crawl/url-utils.ts and src/crawl/crawler.ts. Do not close it here.' },
-  { path: 'crawl:$.links[].from', note: 'The same LinkEdge producer as links[].to; the resolution guarantee it lacks applies to both halves of the edge.' },
+  { path: 'agent:$.sources[].fetch_error', note: 'GAP-1 (unfenced-siblings.test.ts): fenceAgentData spreads ...data and does not enumerate AgentSource.fetch_error.', closes: 'fence' },
+  { path: 'agent:$.error', note: 'GAP-2 (unfenced-siblings.test.ts): AgentOutput.error rides out on the success envelope unenumerated.', closes: 'fence' },
+  { path: 'research:$.error', note: 'GAP-3 (unfenced-siblings.test.ts): ResearchOutput.error, same spread.', closes: 'fence' },
+  { path: 'research:$.sub_queries[]', note: 'GAP-3 (unfenced-siblings.test.ts): ResearchOutput.sub_queries, same spread.', closes: 'fence' },
+  { path: 'extract:structured:$.warnings[]', note: 'GAP-4 (unfenced-siblings.test.ts): ExtractOutput.warnings — the original A89 finding.', closes: 'fence' },
+  { path: 'extract:structured:$.data.jsonld[]{key}', note: 'GAP-6a (unfenced-siblings.test.ts): a page-authored JSON-LD PROPERTY NAME is an unfenced key. Second site of the row-key class; still live.', closes: 'fence' },
+  { path: 'fetch:$.site_data{key}', note: 'GAP-6b (unfenced-siblings.test.ts): nested site_data keys pass through fenceDeepValue unfenced.', closes: 'fence' },
+  { path: 'fetch:$.site_data.nested{key}', note: 'GAP-6b (unfenced-siblings.test.ts): the same channel one level deeper.', closes: 'fence' },
+  { path: 'search:$.error', note: 'Named OPEN in content-fence.ts:110 — the search_failed envelope publishes data.error and the MCP counterpart is not fenced either. Deferred as its own call, not an oversight.', closes: 'fence' },
+  { path: 'search:rest-error:$.error', note: 'The REST half of the SearchOutput.error hole. content-fence.ts:110 names it: the search_failed envelope in dispatchSearch publishes data.error unfenced, and fencing one surface while the MCP counterpart stays raw would be a new asymmetry. Deferred as its own call.', closes: 'fence' },
 ];
