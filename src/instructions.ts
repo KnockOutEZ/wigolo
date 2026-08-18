@@ -215,7 +215,7 @@ Key parameters:
 - query: string or string[] array (3-5 keyword variants; deduplicated).
 - include_domains / exclude_domains: scope sites. Always scope library/framework queries.
 - category: "general" | "news" | "code" | "docs" | "papers" | "images". Image results carry image_url + thumbnail_url + width/height.
-- search_engines: string[] of adapter names (case-insensitive). Built-in names by category live on the tool schema and in \`wigolo doctor\`; unknown names surface in \`engine_warnings\` (\`unknown_engine\`).
+- search_engines: names to run. Unknown → engine_warnings. Doctor lists live names.
 - from_date / to_date: ISO YYYY-MM-DD. time_range: 'day' | 'week' | 'month' | 'year'.
 - country: ISO 3166-1 alpha-2 ("us", "gb") — geographic boost.
 - exact_match: quoted-phrase search.
