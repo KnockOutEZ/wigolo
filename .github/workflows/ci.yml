@@ -301,6 +301,78 @@ jobs:
           RUN_STUDIO_E2E: '1'
 
 
+  # better-sqlite3 publishes 10 Node-22 (ABI 127) prebuild targets for the pinned 12.9.0.
+  # Eight of them — darwin-arm64/x64, linux-x64/arm64/arm, linuxmusl-x64/arm64/arm — were
+  # verified on the build machine by loading the PUBLISHED release asset and driving it
+  # through an FTS5 MATCH. The two win32 targets could not be: there was no Windows kernel
+  # there, and the previous probe confirmed only the binaries' PE shape rather than
+  # synthesise a pass. This job closes that gap on real Windows kernels, at the same
+  # standard — a `require()` that returns an object only proves a file resolved, so each
+  # run builds an FTS5 index and queries it.
+  #
+  # windows-11-arm is a GitHub-hosted arm64 runner, free and generally available for PUBLIC
+  # repositories since 2025-08-07 (it is not a self-hosted label and needs no setup). This
+  # repository is public. On a private fork the label does not resolve and this leg will not
+  # start — that is a visibility fact about the fork, not a workflow bug.
+  #
+  # Deliberately no `npm ci`: the probe installs the JS wrapper alone with
+  # `--ignore-scripts`, so prebuild-install and node-gyp cannot supply a locally built
+  # binding and let the probe verify itself. That also keeps this job independent of the
+  # better-sqlite3 v13 problem parked in PR #337 (v13 dropped its `install` script, so npm
+  # supplies an implicit `node-gyp rebuild` and `npm ci` hard-fails on a Windows box with no
+  # Visual Studio). The pin stays 12.9.0 and the probe reads it from package-lock.json.
+  #
+  # No `continue-on-error` anywhere in this job. The whole point of the Q6 phase is deleting
+  # greens that report success regardless of what their steps did.
+  win32-prebuild:
+    name: better-sqlite3 prebuild loads (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: win32-x64
+            wrong_arch: win32-arm64
+          - runner: windows-11-arm
+            target: win32-arm64
+            wrong_arch: win32-x64
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Published ${{ matrix.target }} prebuild loads + serves an FTS5 MATCH
+        shell: bash
+        run: node scripts/verify-better-sqlite3-prebuild.mjs --target ${{ matrix.target }}
+
+      # Five controls, each of which MUST be rejected. Without them a green above is
+      # unfalsifiable: a probe that cannot fail says nothing about the binding it loaded.
+      # `--expect-fail` inverts only the LOAD — the asset must still download and extract,
+      # so a control cannot "pass" by 404ing on a mistyped target.
+      - name: Negative control — wrong arch (${{ matrix.wrong_arch }})
+        shell: bash
+        run: node scripts/verify-better-sqlite3-prebuild.mjs --target ${{ matrix.wrong_arch }} --expect-fail
+
+      - name: Negative control — wrong platform (linux-x64 ELF)
+        shell: bash
+        run: node scripts/verify-better-sqlite3-prebuild.mjs --target linux-x64 --expect-fail
+
+      - name: Negative control — wrong libc (linuxmusl-x64)
+        shell: bash
+        run: node scripts/verify-better-sqlite3-prebuild.mjs --target linuxmusl-x64 --expect-fail
+
+      - name: Negative control — wrong ABI (Node 18, v115)
+        shell: bash
+        run: node scripts/verify-better-sqlite3-prebuild.mjs --target ${{ matrix.target }} --abi 115 --expect-fail
+
+      - name: Negative control — binding absent
+        shell: bash
+        run: node scripts/verify-better-sqlite3-prebuild.mjs --missing-binding --expect-fail
+
   # Clean-machine smoke on every desktop OS: a fresh global install, a real
   # `init`, then tool calls that LOAD and EXERCISE every dependency subsystem —
   # native SQLite, browser engine, ML reranker, semantic embeddings, and (when a
