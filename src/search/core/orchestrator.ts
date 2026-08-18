@@ -214,8 +214,9 @@ export interface OrchestratorInput {
   /** Caller engine allowlist (`SearchInput.search_engines`). When set and at
    * least one name matches a registered adapter, only those engines run —
    * including engines from other verticals, so this overrides auto-dispatch.
-   * Unknown names are ignored. If nothing matches, the vertical's default
-   * pool is used (same fallback as the legacy SearXNG path). */
+   * Unknown names are dropped with a warning. If nothing matches, the
+   * vertical's default pool is used (same fallback as the legacy SearXNG
+   * path) and a warning names the requested list. */
   searchEngines?: string[];
 }
 
@@ -288,16 +289,28 @@ function resolveAllowlistedEntries(
   const catalog = collectEngineCatalog();
   const matched: EngineEntry[] = [];
   const seen = new Set<string>();
+  const unknown: string[] = [];
   for (const name of allowlist) {
     const entry = fromVertical.get(name) ?? catalog.get(name);
-    if (!entry || seen.has(name)) continue;
+    if (!entry) {
+      unknown.push(name);
+      continue;
+    }
+    if (seen.has(name)) continue;
     seen.add(name);
     matched.push(entry);
   }
 
   if (matched.length === 0) {
-    log.warn('no engines matched search_engines filter, using all', { requested: allowlist });
+    log.warn('no engines matched search_engines filter, using all', {
+      requested: allowlist,
+      unknown,
+    });
     return { entries: verticalEntries, overridden: false };
+  }
+
+  if (unknown.length > 0) {
+    log.warn('unknown search_engines names ignored', { unknown, requested: allowlist });
   }
 
   return { entries: matched, overridden: true };

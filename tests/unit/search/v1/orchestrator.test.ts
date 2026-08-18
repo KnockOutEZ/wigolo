@@ -60,6 +60,16 @@ vi.mock('../../../../src/search/core/verticals/images.js', () => ({
   },
 }));
 
+const logSpies = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+vi.mock('../../../../src/logger.js', () => ({
+  createLogger: () => logSpies,
+}));
+
 const { runV1Search } = await import(
   '../../../../src/search/core/orchestrator.js'
 );
@@ -131,6 +141,10 @@ beforeEach(() => {
   verticalState.docs = [];
   verticalState.papers = [];
   verticalState.images = [];
+  logSpies.debug.mockClear();
+  logSpies.info.mockClear();
+  logSpies.warn.mockClear();
+  logSpies.error.mockClear();
 });
 
 describe('runV1Search — vertical routing', () => {
@@ -1122,7 +1136,7 @@ describe('runV1Search — search_engines allowlist', () => {
     expect(out.results.map((r) => r.engine).sort()).toEqual(['duckduckgo', 'wikipedia']);
   });
 
-  it('is case-insensitive and ignores unknown names when some engines match', async () => {
+  it('is case-insensitive and warns on unknown names instead of silently ignoring them', async () => {
     const ddg = makeEntry({
       name: 'duckduckgo',
       results: [makeResult('duckduckgo', 'https://ddg.test/1')],
@@ -1141,6 +1155,13 @@ describe('runV1Search — search_engines allowlist', () => {
     expect(ddg.spy).toHaveBeenCalledOnce();
     expect(bing.spy).not.toHaveBeenCalled();
     expect(out.enginesUsed).toEqual(['duckduckgo']);
+    expect(logSpies.warn).toHaveBeenCalledWith(
+      'unknown search_engines names ignored',
+      expect.objectContaining({
+        unknown: ['not-a-real-engine'],
+        requested: ['duckduckgo', 'not-a-real-engine'],
+      }),
+    );
   });
 
   it('falls back to the vertical pool when no requested name matches', async () => {
@@ -1157,6 +1178,28 @@ describe('runV1Search — search_engines allowlist', () => {
 
     expect(bing.spy).toHaveBeenCalledOnce();
     expect(out.enginesUsed).toEqual(['bing']);
+    expect(logSpies.warn).toHaveBeenCalledWith(
+      'no engines matched search_engines filter, using all',
+      expect.objectContaining({
+        requested: ['nonexistent'],
+        unknown: ['nonexistent'],
+      }),
+    );
+  });
+
+  it('does not warn when every requested name matches a registered engine', async () => {
+    const ddg = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/1')],
+    });
+    verticalState.general = [ddg.entry];
+
+    await runV1Search({
+      query: 'gold price',
+      searchEngines: ['duckduckgo'],
+    });
+
+    expect(logSpies.warn).not.toHaveBeenCalled();
   });
 
   it('pulls a requested engine from another vertical (overrides auto-dispatch)', async () => {
