@@ -45,6 +45,7 @@ import {
   fenceResearchData,
   fenceAgentData,
   fenceDiffData,
+  fenceWatchData,
   diffOriginFromInput,
   fenceErrorMessage,
 } from '../../server/content-fence.js';
@@ -60,6 +61,7 @@ import type {
   MapOutput,
   ResearchOutput,
   SearchOutput,
+  WatchJobOutput,
 } from '../../types.js';
 
 export interface DispatchContext {
@@ -291,15 +293,23 @@ async function dispatchWatch(input: WatchJobInput, ctx: DispatchContext): Promis
 }
 
 /**
- * Tools whose 200 body carries page-derived text. `watch` is excluded: it returns
- * content hashes and coarse line counts, not page prose.
+ * Tools whose 200 body carries page-derived text — now ALL TEN.
+ *
+ * `watch` used to be excluded on the ground that it "returns content hashes and coarse line counts,
+ * not page prose". That held for every field but one, and the exception is the tool's whole failure
+ * channel: `changes_since_last[].error` is filled by `src/watch/scheduler.ts` from the fetch tool's
+ * PROSE reason, which splices the first 200 characters of a machine-typed 4xx response body in. Watch
+ * reports that failure IN BAND on a 200, so it reached neither `stageFailure` nor this set — two
+ * independent reasons to be skipped, which is why the same bytes were contained everywhere else.
+ * The generalisable half: a justification that describes a tool's TYPICAL field says nothing about
+ * its failure field, and the failure field is where response bytes arrive.
  *
  * EXPORTED so the tests can iterate the real set rather than a hand-copied literal. Adding a tool
  * here without adding its arm to `fenceRestBody` would fall through to `default` and ship the body
  * UNFENCED — a fail-open a duplicated list would have hidden.
  */
 export const PAGE_DERIVED_TOOLS = new Set([
-  'fetch', 'search', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent', 'diff',
+  'fetch', 'search', 'crawl', 'cache', 'extract', 'find_similar', 'research', 'agent', 'diff', 'watch',
 ]);
 
 /**
@@ -345,9 +355,9 @@ function withUntrustedEnvelope(body: unknown): unknown {
  * dispatch uses — so a REST consumer and an MCP consumer receive byte-identical containment modulo the
  * per-call nonce. There is no second implementation of the fence to drift.
  *
- * The switch is exhaustive over `PAGE_DERIVED_TOOLS` and nothing else; `watch` and any unknown tool
- * fall through unchanged. Rule 1 of content-fence.ts applies unchanged here: the decision is by TOOL
- * NAME, never by inspecting the value — a page-derived string is fenced whatever it contains.
+ * The switch is exhaustive over `PAGE_DERIVED_TOOLS` and nothing else; any unknown tool falls through
+ * unchanged. Rule 1 of content-fence.ts applies unchanged here: the decision is by TOOL NAME, never by
+ * inspecting the value — a page-derived string is fenced whatever it contains.
  */
 function fenceRestBody(tool: string, input: unknown, body: unknown): unknown {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return body;
@@ -373,6 +383,8 @@ function fenceRestBody(tool: string, input: unknown, body: unknown): unknown {
         body as DiffOutput,
         diffOriginFromInput((input ?? {}) as Record<string, unknown>),
       );
+    case 'watch':
+      return fenceWatchData(body as WatchJobOutput);
     default:
       return body;
   }

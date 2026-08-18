@@ -8,13 +8,14 @@ import {
   fenceResearchData,
   fenceAgentData,
   fenceDiffData,
+  fenceWatchData,
   diffOriginFromInput,
 } from '../../../src/server/content-fence.js';
 import { UNTRUSTED_BEGIN_PREFIX } from '../../../src/security/untrusted.js';
 import { buildFallbackReport } from '../../../src/research/synthesize.js';
 import { buildFallbackSynthesis } from '../../../src/agent/pipeline.js';
 import { buildStructuredFallback } from '../../../src/search/answer-synthesis.js';
-import { closedRegions, fenceNonces, regionBody, regionSpan, isFenced } from '../../helpers/untrusted-fence.js';
+import { closedRegions, fenceNonces, maskNonces, regionBody, regionSpan, isFenced } from '../../helpers/untrusted-fence.js';
 import type {
   AgentOutput,
   CacheOutput,
@@ -24,6 +25,7 @@ import type {
   FindSimilarOutput,
   ResearchOutput,
   SearchOutput,
+  WatchJobOutput,
 } from '../../../src/types.js';
 
 // P2 — the seams that carried page-derived text UNFENCED. Four whole tools (cache / research / agent /
@@ -136,7 +138,9 @@ describe('content-fence — search: the evidence / citation / highlight arrays',
   it('SEAM-6: citations, highlights, evidence, citations_xml AND answer are all fenced', () => {
     // These arrays re-slice the SAME page prose as results[] and were returned raw.
     // `answer` was originally exempted as "wigolo's own synthesis" — B2 showed that is true only on
-    // the LLM path, so it is fenced now too (see SEAM-19/20). `warning` stays raw: wigolo-authored.
+    // the LLM path, so it is fenced now too (see SEAM-19/20). `warning` was exempted on the same kind
+    // of claim ("wigolo-authored operator text") and F5 falsified it the same way: a thrown LLM
+    // provider's message is interpolated straight into it, so it is fenced here too.
     const out = fenceSearchData({
       results: [{ title: 'T', url: 'https://b.example/p', snippet: 'S', relevance_score: 1 }],
       query: 'q', engines_used: [], total_time_ms: 1,
@@ -157,7 +161,8 @@ describe('content-fence — search: the evidence / citation / highlight arrays',
     expect(isFenced(out.evidence?.[0].excerpt ?? '')).toBe(true);
     expect(isFenced(out.citations_xml ?? '')).toBe(true);
     expect(isFenced(out.answer ?? '')).toBe(true); // B2
-    expect(out.warning).toBe('one engine timed out'); // deliberately NOT fenced
+    expect(isFenced(out.warning ?? '')).toBe(true); // F5
+    expect(regionBody(out.warning ?? '')).toBe('one engine timed out'); // byte-exact inside the region
   });
 
   it('SEAM-7: find_similar evidence is fenced (results already were)', () => {
@@ -192,6 +197,116 @@ describe('content-fence — cache: the tool that unions studio_artifacts into it
     const stats = { stats: { total_urls: 3, total_size_mb: 1, oldest: 'a', newest: 'b' } };
     expect(fenceCacheData(stats as CacheOutput)).toEqual(stats);
     expect(fenceCacheData({ cleared: 2 } as CacheOutput)).toEqual({ cleared: 2 });
+  });
+});
+
+describe('content-fence — watch: the ChangeReport error, shared with cache by construction', () => {
+  it('SEAM-22 (F1): changes_since_last[].error is fenced and attributed; ids, hashes and counts stay raw', () => {
+    // `watch` had NO fencer at all — the one dispatch arm that returned r.data verbatim. Its failure
+    // channel is IN BAND on an ok:true envelope, so neither assembly seam could ever reach it.
+    // MUT: return data unchanged → RED.
+    const out = fenceWatchData({
+      jobs: [{
+        id: 'job-1', url: 'https://w.example/p', interval_seconds: 60, status: 'active',
+        notification: 'inline', created_at: 1, last_content_hash: 'a'.repeat(64),
+      }],
+      changes_since_last: [{
+        url: 'https://w.example/p',
+        changed: true,
+        previous_hash: 'b'.repeat(64),
+        current_hash: 'c'.repeat(64),
+        diff_summary: '2 lines added, 0 lines removed, 1 line modified',
+        error: `WE ${INJECT}`,
+      }],
+    } as unknown as WatchJobOutput);
+    const report = out.changes_since_last![0];
+    expect(isFenced(report.error!)).toBe(true);
+    expect(report.error).toContain('origin=https://w.example]]');
+    // Everything a caller ACTS on stays byte-identical. A fenced job id cannot be handed back to
+    // action:'check', and a fenced hash is invisible to the change detector — over-fencing here breaks
+    // the tool rather than merely costing a preamble.
+    expect(report.url).toBe('https://w.example/p');
+    expect(report.previous_hash).toBe('b'.repeat(64));
+    expect(report.current_hash).toBe('c'.repeat(64));
+    expect(report.diff_summary).toBe('2 lines added, 0 lines removed, 1 line modified');
+    expect(out.jobs[0].id).toBe('job-1');
+    expect(out.jobs[0].url).toBe('https://w.example/p');
+    expect(out.jobs[0].last_content_hash).toBe('a'.repeat(64));
+    expect(closedRegions(JSON.stringify(out))).toBe(1);
+  });
+
+  it('SEAM-23 (F1 must-not-fire): a list/create response with no change report is untouched', () => {
+    const listing = {
+      jobs: [{
+        id: 'job-1', url: 'https://w.example/p', interval_seconds: 60, status: 'paused',
+        notification: 'https://hook.example/n', created_at: 1,
+      }],
+    };
+    expect(fenceWatchData(listing as unknown as WatchJobOutput)).toEqual(listing);
+  });
+
+  it('SEAM-24 (F1, the shared construction): cache and watch contain the IDENTICAL report identically', () => {
+    // The two tools emit the SAME ChangeReport shape from the SAME producer (a refused re-fetch), and
+    // they were closed at different times — cache had a private copy of the arm, watch had nothing.
+    // Routing both through one `fenceChangeReports` is what makes them unable to disagree; this row
+    // fails if someone re-inlines either copy and lets it drift.
+    const report = {
+      url: 'https://w.example/p', changed: true, current_hash: 'c'.repeat(64),
+      diff_summary: '1 line added, 0 lines removed, 0 lines modified', error: `WE ${INJECT}`,
+    };
+    const viaCache = fenceCacheData({ changes: [{ ...report }] } as unknown as CacheOutput);
+    const viaWatch = fenceWatchData({ jobs: [], changes_since_last: [{ ...report }] } as unknown as WatchJobOutput);
+    const c = viaCache.changes![0];
+    const w = viaWatch.changes_since_last![0];
+    expect(isFenced(c.error!)).toBe(true);
+    expect(isFenced(w.error!)).toBe(true);
+    // identical modulo the per-call nonce, which MUST differ — a shared nonce across two responses
+    // would let one region's terminator close the other's
+    expect(maskNonces(c.error!)).toBe(maskNonces(w.error!));
+    expect(fenceNonces(c.error!)[0]).not.toBe(fenceNonces(w.error!)[0]);
+  });
+});
+
+describe('content-fence — fetch: a browser action failure is the page quoting itself', () => {
+  it('SEAM-25 (F2): action_results[].error is fenced; the action type and capture stay raw', () => {
+    // `scroll` runs page.evaluate INSIDE the document, so a page that redefines window.scrollBy to
+    // throw writes these bytes itself. fenceFetchData spread ...data and never enumerated the array.
+    // MUT: drop the action_results arm → RED.
+    const out = fenceFetchData({
+      url: 'https://f.example/p',
+      title: 'T',
+      markdown: 'body',
+      metadata: {},
+      links: [],
+      images: [],
+      cached: false,
+      action_results: [
+        { action_index: 0, type: 'scroll', success: false, error: `AE ${INJECT}` },
+        { action_index: 1, type: 'screenshot', success: true, screenshot: 'ZmFrZQ==' },
+      ],
+    } as unknown as FetchOutput);
+    const [failed, ok] = out.action_results!;
+    expect(isFenced(failed.error!)).toBe(true);
+    expect(failed.error).toContain('origin=https://f.example]]');
+    // the CALLER's own action name, echoed back — a closed vocabulary consumers branch on
+    expect(failed.type).toBe('scroll');
+    expect(failed.action_index).toBe(0);
+    // a succeeded action gains nothing, and a base64 capture is not a text channel
+    expect(ok.error).toBeUndefined();
+    expect(ok.screenshot).toBe('ZmFrZQ==');
+    expect(ok.type).toBe('screenshot');
+  });
+
+  it('SEAM-26 (F2 must-not-fire): a fetch with no actions gains no extra region', () => {
+    // The array is optional; an absent one must not mint an empty `action_results: []`, which would
+    // change the response shape for every caller that checks for the field's presence.
+    const out = fenceFetchData({
+      url: 'https://f.example/p', title: 'T', markdown: 'body', metadata: {},
+      links: [], images: [], cached: false,
+    } as unknown as FetchOutput);
+    expect(out.action_results).toBeUndefined();
+    // exactly the pre-existing regions (markdown + title), so this fails if the new arm over-fires
+    expect(closedRegions(JSON.stringify(out))).toBe(2);
   });
 });
 
@@ -385,20 +500,66 @@ describe('response-bound producers emit NO fence (B1 rule 2)', () => {
 });
 
 describe('content-fence — search.answer is page-derived on the keyless paths (B2)', () => {
-  it('SEAM-19 (B2): answer and context_text are fenced; warning stays raw', () => {
+  it('SEAM-19 (B2 + F5): answer, context_text AND warning are all fenced', () => {
     // The old skip claimed `answer` was assembled from already-fenced blocks — true only on the LLM
     // path. buildStructuredFallback and the level-3 evidence dump weave raw page titles and bodies in.
     // MUT: restore the answer skip → the same sentence ships fenced as a sibling and bare here → RED.
+    //
+    // F5 INVERTED THE LAST LINE OF THIS ROW, and the inversion is the point rather than a detail.
+    // `warning` was asserted RAW here on the strength of a comment in content-fence.ts calling it
+    // "wigolo-authored operator text with no page-derived component". Measured false:
+    // answer-synthesis.ts keeps a thrown LLM provider's `err.message` and interpolates it into this
+    // field, and core-provider.ts CONCATENATES a second arm onto it — so one warning routinely carries
+    // wigolo's own sentence and a third party's bytes at once, which is also why no per-value branch
+    // could ever separate them. A network origin's message in text the agent reads as wigolo speaking
+    // is the same class as an engine error body, so it is contained.
     const out = fenceSearchData({
       results: [], query: 'q', engines_used: [], total_time_ms: 1,
       answer: `Based on the top 1 sources for "q":\n\n- **Widget Co** — ${INJECT} [1]`,
       context_text: `Widget Co — ${INJECT}`,
-      warning: 'Client does not support MCP sampling; returning heuristic key-point summary instead',
+      warning: `synthesis failed: 502 from api.provider.example — ${INJECT}`,
     } as unknown as SearchOutput);
     expect(isFenced(out.answer ?? '')).toBe(true);
     expect(closedRegions(out.answer ?? '')).toBe(1);
     expect(isFenced(out.context_text ?? '')).toBe(true);
-    expect(out.warning).toBe('Client does not support MCP sampling; returning heuristic key-point summary instead');
+    expect(isFenced(out.warning ?? '')).toBe(true);
+    expect(closedRegions(out.warning ?? '')).toBe(1);
+    expect(regionBody(out.warning ?? '')).toContain(INJECT);
+  });
+
+  it('SEAM-19b (F5 must-not-fire): an absent or empty warning gains no region', () => {
+    // Same emptiness rule every other optional field follows — a full `(empty)` region per response
+    // would be pure noise, and there is nothing to contain.
+    const absent = fenceSearchData({ results: [], query: 'q', engines_used: [], total_time_ms: 1 } as unknown as SearchOutput);
+    expect(absent.warning).toBeUndefined();
+    expect(JSON.stringify(absent)).not.toContain(UNTRUSTED_BEGIN_PREFIX);
+  });
+
+  it('SEAM-21 (F3): images[].title is fenced beside alt; every locator on the item stays raw', () => {
+    // The image adapters set `title` and NEVER `alt`, so fencing alt alone contained nothing on the
+    // engines that actually produce this array. MUT: drop the title arm → RED.
+    const out = fenceSearchData({
+      results: [], query: 'q', engines_used: [], total_time_ms: 1,
+      images: [{
+        url: 'https://img.example/i.png',
+        source_url: 'https://img.example/p',
+        thumbnail_url: 'https://img.example/t.png',
+        engine: 'ddg-image',
+        alt: `alt ${INJECT}`,
+        title: `title ${INJECT}`,
+      }],
+    } as unknown as SearchOutput);
+    const im = out.images![0];
+    expect(isFenced(im.title ?? '')).toBe(true);
+    expect(isFenced(im.alt ?? '')).toBe(true);
+    // two INDEPENDENT regions, never one shared wrap: a shared nonce would let one field's terminator
+    // close the other's
+    expect(fenceNonces(im.title ?? '')).toHaveLength(1);
+    expect(fenceNonces(im.title ?? '')[0]).not.toBe(fenceNonces(im.alt ?? '')[0]);
+    expect(im.url).toBe('https://img.example/i.png');
+    expect(im.source_url).toBe('https://img.example/p');
+    expect(im.thumbnail_url).toBe('https://img.example/t.png');
+    expect(im.engine).toBe('ddg-image');
   });
 
   it('SEAM-20 (B2, real producer): buildStructuredFallback output is page text and gets fenced', () => {

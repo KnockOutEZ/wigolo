@@ -134,14 +134,21 @@ interface Case {
 }
 
 /**
- * Tools with NO fencer on either surface, so "at least one leaf is contained" cannot hold for them.
+ * Tools with NO fencer on either surface — now EMPTY, and kept as a named empty set rather than
+ * deleted.
  *
- * `watch` is the whole set: src/server.ts:699 returns `r.data` verbatim, and `watch` is absent from
- * `PAGE_DERIVED_TOOLS`, so the REST dispatcher leaves it alone too. That is stated here as an
- * EXCEPTION rather than worked around, because it is the reason `watch:$.changes_since_last[].error`
- * appears in the findings at all.
+ * It had exactly one member. `watch` returned `r.data` verbatim on the MCP seam AND was absent from
+ * `PAGE_DERIVED_TOOLS`, so the REST dispatcher skipped it too — two independent reasons, which is why
+ * `watch:$.changes_since_last[].error` was the widest of the holes this walk found. Both are closed:
+ * `fenceWatchData` runs on both surfaces, so the "at least one leaf is actually fenced" requirement
+ * below now applies to every one of the ten tools with no carve-out.
+ *
+ * Kept rather than removed because an EMPTY exception set is itself the assertion: the day a new tool
+ * ships without a fencer, the honest fix is a fencer, and the tempting one is to re-add a name here.
+ * Leaving the mechanism visible with nothing in it makes that a deliberate edit somebody has to
+ * justify, instead of a set that never existed.
  */
-const NO_FENCER = new Set(['watch']);
+const NO_FENCER = new Set<string>([]);
 
 /**
  * REST bodies on which NOTHING is contained, so "at least one leaf is fenced" cannot hold.
@@ -471,7 +478,11 @@ describe('GATE 1 — every emitted string leaf is fenced, allowlisted, or a reco
       'fetch:stage-error (REST 500: in-band error becomes the failure envelope)',
       'search (REST 500: in-band error becomes the failure envelope)',
     ]);
-    expect(PAGE_DERIVED_TOOLS.has('watch'), 'watch is deliberately outside the REST fence set').toBe(false);
+    // `watch` is now INSIDE the REST fence set. The assertion is kept (inverted) rather than deleted
+    // because this is the seam that made watch's hole a two-surface hole: the MCP arm and this set
+    // are independent switches, and closing one while leaving the other is the exact
+    // one-surface-open shape the row above exists to catch.
+    expect(PAGE_DERIVED_TOOLS.has('watch'), 'watch is fenced on the REST surface too').toBe(true);
   });
 });
 

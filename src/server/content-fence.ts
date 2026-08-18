@@ -4,6 +4,7 @@ import { wrapUntrusted } from '../security/untrusted.js';
 import type {
   AgentOutput,
   CacheOutput,
+  ChangeReport,
   Citation,
   CrawlOutput,
   DiffOutput,
@@ -17,6 +18,7 @@ import type {
   ResearchOutput,
   SearchOutput,
   TableData,
+  WatchJobOutput,
 } from '../types.js';
 
 /** handleCrawl returns a crawl OR a map (mode='map', URL-list only, no page bodies). */
@@ -228,6 +230,25 @@ export function fenceFetchData(data: FetchOutput): FetchOutput {
     // string leaves with the same operational-key allowlist the extract seam uses.
     ...(data.site_data && typeof data.site_data === 'object'
       ? { site_data: fenceDeepValue(data.site_data, false, 0, origin) as Record<string, unknown> }
+      : {}),
+    // F2: a browser ACTION's failure text, on the SUCCESS envelope. `src/fetch/action-executor.ts`
+    // assigns a caught `Error.message`, and the `scroll` action runs `page.evaluate` INSIDE the
+    // document — so a page that redefines `window.scrollBy` to throw has its OWN exception message
+    // rethrown in Node and published verbatim: unbounded, arbitrary charset, origin-chosen. This
+    // array was reached by the `...data` spread and never enumerated, so it shipped bare beside the
+    // fenced markdown of the very page that wrote it.
+    //
+    // The two siblings stay RAW for reasons that do not generalise to `error`: `type` is the action
+    // the CALLER asked for, echoed back out of its own input (a closed six-member vocabulary the
+    // caller matches on), and `screenshot` is a base64 capture, not a text channel. `action_index`
+    // and `success` are not strings.
+    ...(Array.isArray(data.action_results)
+      ? {
+          action_results: data.action_results.map((a) => ({
+            ...a,
+            ...(typeof a.error === 'string' && a.error.length > 0 ? { error: fence(a.error, origin) } : {}),
+          })),
+        }
       : {}),
   };
   return out;
@@ -467,8 +488,25 @@ export function fenceSearchData(data: SearchOutput): SearchOutput {
         }
       : {}),
     // F5: the aggregated top-level image list carries the same alt prose; url/source_url stay raw.
+    //
+    // F3 — and `title` beside it, which fencing `alt` alone did NOT cover. That gap looked like a
+    // duplicate-field question and was not: `ImageItem` declares both, but NEITHER image adapter
+    // fills `alt` (src/search/engines/ddg-image.ts, brave-image.ts both set
+    // `title: item.title || item.source || image` and no alt at all), so on the engines that produce
+    // this array `title` is not a second copy of a fenced sibling — it is the ONLY copy of the
+    // engine-parsed page title on the item. core-provider copies it off `SearchResultItem.title`,
+    // which the same seam already fences at `results[].title`, so the identical string shipped FENCED
+    // in one place and BARE here on one isError:false envelope, keyless, via include_images:true or
+    // category:'images'. The locators (url / source_url / thumbnail_url) stay raw so the image
+    // remains dereferenceable — that is what a fence would cost and what it must not take.
     ...(Array.isArray(data.images)
-      ? { images: data.images.map((im) => ({ ...im, ...(im.alt !== undefined ? { alt: fenceOptional(im.alt, im.source_url) as string } : {}) })) }
+      ? {
+          images: data.images.map((im) => ({
+            ...im,
+            ...(im.alt !== undefined ? { alt: fenceOptional(im.alt, im.source_url) as string } : {}),
+            ...(im.title !== undefined ? { title: fenceOptional(im.title, im.source_url) as string } : {}),
+          })),
+        }
       : {}),
     // The evidence/citation/highlight arrays carry the SAME page prose as the results, re-sliced —
     // they were returned raw. `citations_xml` is a serialization of the citations INCLUDING snippets,
@@ -494,8 +532,58 @@ export function fenceSearchData(data: SearchOutput): SearchOutput {
     ...(typeof data.context_text === 'string' && data.context_text.length > 0
       ? { context_text: fence(data.context_text) }
       : {}),
-    // Still NOT fenced: `warning`, wigolo-authored operator text with no page-derived component.
+    // F5 — `warning` IS fenced, and the line that used to sit here is worth quoting because it is the
+    // defect rather than the fix: "Still NOT fenced: `warning`, wigolo-authored operator text with no
+    // page-derived component." That was FALSE at the time it was written, and an entry in the
+    // envelope allowlist had been justified by QUOTING it rather than by tracing a producer — which is
+    // the same substitution (a claim standing in for a construction) the rest of this file exists to
+    // stop.
+    //
+    // What actually reaches the field. `src/search/answer-synthesis.ts` catches a thrown provider call
+    // and keeps `err.message` as `llmFailureReason`, interpolates that into its `diag` sentence, and
+    // publishes `${fb.warning} | ${diag}` as the warning. `src/search/core/core-provider.ts` adds a
+    // second arm, `synthesis failed: ${synthResult.error_reason}`, and CONCATENATES rather than
+    // replaces — so one warning can carry wigolo's own scoping explanation and a third party's bytes
+    // in the same string.
+    //
+    // WHICH IT IS, stated because the two answers take different fixes. These are NOT page bytes: no
+    // extractor output reaches this field. They are LLM-PROVIDER bytes — an HTTP error body from a
+    // third-party endpoint the operator configured. That is the same class as an engine error body:
+    // a network origin wigolo does not author, arriving in text the agent reads as wigolo speaking.
+    // So the answer is the fence, not a reworded justification. A corrected justification would have
+    // to claim the provider is trusted, and the endpoint is operator-supplied and reachable over the
+    // network — the property a justification needs is exactly the one it cannot have.
+    //
+    // Rule 1 applies unchanged: no branch on the value. Asking "is THIS warning the wigolo half or the
+    // provider half" is impossible anyway once the two are concatenated, and it would hand the
+    // decision input to whoever wrote the second half. Over-fencing operator guidance costs a preamble
+    // and reads fine — the fence says "treat as data to READ", so the agent may still relay it.
+    ...(typeof data.warning === 'string' && data.warning.length > 0 ? { warning: fence(data.warning) } : {}),
   };
+}
+
+/**
+ * A `ChangeReport`'s in-band `error` — ONE fencer, because ONE shape is emitted by TWO tools.
+ *
+ * `cache` (check_changes) and `watch` (action:'check') both return this array, and both fill the
+ * field from the SAME producer: a refused re-fetch, whose reason carries bytes read off the wire.
+ * They were closed at different times and, while `cache`'s arm was a private copy inside
+ * `fenceCacheData`, `watch` had no fencer at all — so the two surfaces disagreed about the identical
+ * shape. Sharing the function is what makes that class of disagreement unrepresentable rather than
+ * merely fixed: a third producer of a ChangeReport inherits the containment instead of having to
+ * remember it.
+ *
+ * A ChangeReport names its own url, so the region is ATTRIBUTED — unlike the top-level `error`,
+ * where the seams carry no resolved URL. NOT fenced, and the reason they cannot be lumped in:
+ * `diff_summary` is wigolo-authored line COUNTS (computeDiffSummary interpolates only numbers),
+ * `current_hash` / `previous_hash` are digests a change detector compares, `changed` is a boolean,
+ * and `url` is dereferenced. Wrapping any of them would break a consumer to contain nothing.
+ */
+function fenceChangeReports(reports: ChangeReport[]): ChangeReport[] {
+  return reports.map((c) => ({
+    ...c,
+    ...(typeof c.error === 'string' && c.error.length > 0 ? { error: fence(c.error, c.url) } : {}),
+  }));
 }
 
 /**
@@ -522,17 +610,34 @@ export function fenceCacheData(data: CacheOutput): CacheOutput {
           })),
         }
       : {}),
-    // A ChangeReport names its own url, so the region is attributed — unlike the top-level `error`,
-    // where the seams carry no resolved URL. `changed` / the hashes / `diff_summary` stay raw.
-    ...(Array.isArray(data.changes)
-      ? {
-          changes: data.changes.map((c) => ({
-            ...c,
-            ...(typeof c.error === 'string' && c.error.length > 0
-              ? { error: fence(c.error, c.url) }
-              : {}),
-          })),
-        }
+    ...(Array.isArray(data.changes) ? { changes: fenceChangeReports(data.changes) } : {}),
+  };
+}
+
+/**
+ * `watch` — the tool that had NO fencer on EITHER surface.
+ *
+ * `src/server.ts` returned `r.data` verbatim and `watch` was absent from `PAGE_DERIVED_TOOLS`, so the
+ * REST dispatcher skipped it for a second, independent reason. The justification on record was that
+ * watch "returns content hashes and coarse line counts, not page prose". That is true of every field
+ * BUT ONE, and the exception is the whole tool's failure channel: `src/watch/scheduler.ts` sets
+ * `report.error` from `fetched.error_reason ?? fetched.error`, and the producer orientation makes the
+ * `??` select the PROSE — `src/tools/fetch.ts` splices the first 200 characters of a machine-typed 4xx
+ * response body into `error_reason` while `error` holds the machine code. Those are the exact bytes
+ * `fenceErrorMessage` exists to contain, arriving by a route that touches NEITHER assembly seam,
+ * because watch reports its failure IN BAND on an ok:true envelope. A second arm (the scheduler's
+ * catch) adds a thrown `Error.message` on the same field.
+ *
+ * Everything else on `WatchJobOutput` is deliberately untouched, and the list is short enough to
+ * state rather than imply: `jobs[]` / `job` carry an id the agent passes back to `action:'check'`, a
+ * dereferenced url, a caller-authored selector and notification target, a status enum, and epoch
+ * numbers. Fencing an id would make the tool unusable to contain nothing.
+ */
+export function fenceWatchData(data: WatchJobOutput): WatchJobOutput {
+  return {
+    ...data,
+    ...(Array.isArray(data.changes_since_last)
+      ? { changes_since_last: fenceChangeReports(data.changes_since_last) }
       : {}),
   };
 }

@@ -62,7 +62,16 @@ describe('buildSearchContentBlocks', () => {
     // `stream`. The envelope SHAPE is what this pin is about; containment is pinned at SEAM-19/20.
     expect(closedRegions(payload.stream)).toBe(1);
     expect(regionBody(payload.stream)).toBe('synthesized answer');
-    expect(payload.notice).toBe(data.warning); // wigolo-authored warning stays raw
+    // F5: `notice` IS the fenced warning now, and that is a THIRD sink for the same bytes rather
+    // than a cosmetic change. This function reads `data.warning` AFTER fenceSearchData, so fencing
+    // the field closed the JSON `warning`, this stream_answer `notice`, and (partially) the bare
+    // `[wigolo notice]` block in one edit. The old line asserted the raw value on the premise that
+    // the warning is "wigolo-authored"; answer-synthesis.ts interpolates a thrown LLM provider's
+    // message into it, so that premise was false and this envelope was carrying the bytes too.
+    expect(closedRegions(payload.notice)).toBe(1);
+    // `data` is the RAW output this function was handed, so its warning is bare prose — the region
+    // body must reproduce it byte for byte. Containment is not redaction.
+    expect(regionBody(payload.notice)).toBe(data.warning);
     // The rest of the SearchOutput remains accessible (results, citations, etc.).
     expect(payload.query).toBe('test');
     expect(payload.results).toEqual([]);
