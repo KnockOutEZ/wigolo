@@ -1,4 +1,5 @@
 import { closedRegionSpans } from './envelope-fence.js';
+import { sourceConstant } from './declared-fields.js';
 import { UNTRUSTED_END_PREFIX, UNTRUSTED_NONCE_HEX_LENGTH, UNTRUSTED_PREAMBLE } from '../../src/security/untrusted.js';
 
 /**
@@ -57,6 +58,27 @@ const WHOLE_FENCE_RE = new RegExp(
     `${escapeRe(UNTRUSTED_END_PREFIX)}\\1\\]\\]$`,
 );
 
+/**
+ * The fencer's OWN descent bound, read out of `src/server/content-fence.ts` at test time.
+ *
+ * `fenceDeepValue` is `if (depth >= MAX_FENCE_DEPTH) return value;` — it returns the subtree
+ * VERBATIM past that depth. So a leaf deeper than this is not "already fenced further up", it is
+ * RAW, and it is reachable through the three deep, page-shaped structures the fence walks:
+ * page-authored JSON-LD, `fetch.site_data`, and `agent.result`. (That production leak is
+ * pre-existing and is not this file's to fix; what this file must not do is be BLIND to it.)
+ */
+export const MAX_FENCE_DEPTH = sourceConstant('src/server/content-fence.ts', 'MAX_FENCE_DEPTH');
+
+/**
+ * How deep the walker descends. It MUST exceed `MAX_FENCE_DEPTH` by a margin, because the leaves
+ * that matter most are the ones the fencer stopped fencing: everything in
+ * `(MAX_FENCE_DEPTH, WALK_DEPTH_CAP]` is raw-and-reported, which is the band a depth-blind walker
+ * would silently pass. Beyond the cap a leaf is raw-and-INVISIBLE, so the margin is the honest
+ * statement of how far the guard sees. Derived from the fencer's constant, never copied, so the two
+ * cannot drift apart; the relation is asserted in the test rather than left to this comment.
+ */
+export const WALK_DEPTH_CAP = MAX_FENCE_DEPTH * 4;
+
 export type FenceVerdict = 'contained' | 'raw' | 'forged' | 'partial';
 
 /**
@@ -96,9 +118,7 @@ function walk(
   out: StringLeaf[],
   depth: number,
 ): void {
-  // Deeper than any fencer descends (MAX_FENCE_DEPTH is 16); a bound here only stops a cyclic
-  // fixture, and every string leaf above it has already been recorded.
-  if (depth > 24) return;
+  if (depth > WALK_DEPTH_CAP) return;
   if (typeof node === 'string') {
     out.push({ path, position: 'value', key, value: node, verdict: fenceVerdict(node, producerNonces) });
     return;

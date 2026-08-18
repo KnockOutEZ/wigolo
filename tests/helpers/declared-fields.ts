@@ -18,6 +18,21 @@ import { fileURLToPath } from 'node:url';
 
 const TYPES_PATH = fileURLToPath(new URL('../../src/types.ts', import.meta.url));
 
+/**
+ * A numeric `const NAME = <int>;` read out of a `src/` file at test time.
+ *
+ * Used for `MAX_FENCE_DEPTH`, which is module-private in `src/server/content-fence.ts` and cannot be
+ * imported. Copying the number into the test tree would make the walker's depth bound a constant that
+ * silently stops relating to the fencer's the first time either moves — and the whole point of the
+ * bound is the RELATION between the two, not either value.
+ */
+export function sourceConstant(relPath: string, name: string): number {
+  const abs = fileURLToPath(new URL(`../../${relPath}`, import.meta.url));
+  const m = new RegExp(`\\bconst ${name}\\s*=\\s*(\\d+)\\b`).exec(readFileSync(abs, 'utf8'));
+  if (!m) throw new Error(`${relPath} declares no numeric const ${name}`);
+  return Number(m[1]);
+}
+
 let source: string | undefined;
 function typesSource(): string {
   source ??= readFileSync(TYPES_PATH, 'utf8');
