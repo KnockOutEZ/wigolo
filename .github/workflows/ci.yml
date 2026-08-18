@@ -355,9 +355,11 @@ jobs:
       # unfalsifiable: a probe that cannot fail says nothing about the binding it loaded.
       # `--expect-fail` inverts only the LOAD — the asset must still download and extract,
       # so a control cannot "pass" by 404ing on a mistyped target.
+      # TEMPORARY MUTATION — hands this control the runner's OWN target, which loads.
+      # The step MUST go red. Reverted in the next commit.
       - name: Negative control — wrong arch (${{ matrix.wrong_arch }})
         shell: bash
-        run: node scripts/verify-better-sqlite3-prebuild.mjs --target ${{ matrix.wrong_arch }} --expect-fail
+        run: node scripts/verify-better-sqlite3-prebuild.mjs --target ${{ matrix.target }} --expect-fail
 
       - name: Negative control — wrong platform (linux-x64 ELF)
         shell: bash
