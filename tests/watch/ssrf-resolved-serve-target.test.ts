@@ -53,6 +53,7 @@ describe('guardResolvedServeTarget (fetch-time SSRF re-check, serve mode)', () =
       lookup: mockLookup([{ address: '93.184.216.34', family: 4 }]),
     });
     expect(r.ok).toBe(true);
+    if (r.ok) expect(r.addresses).toEqual([{ address: '93.184.216.34', family: 4 }]);
   });
 
   it('refuses a hostname that resolves to loopback (127.0.0.1) under a non-loopback bind', async () => {
@@ -107,6 +108,7 @@ describe('guardResolvedServeTarget (fetch-time SSRF re-check, serve mode)', () =
       lookup: (_h, _o, cb) => cb(new Error('ENOTFOUND'), []),
     });
     expect(r.ok).toBe(true);
+    if (r.ok) expect(r.addresses).toEqual([]);
   });
 });
 

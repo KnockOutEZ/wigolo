@@ -373,30 +373,19 @@ export type LookupAll = (
   callback: (err: NodeJS.ErrnoException | null, addresses: { address: string; family: number }[]) => void,
 ) => void;
 
-export type ResolveGuardResult = { ok: true } | SsrfRejection;
+/** A single A/AAAA record that passed the fetch-time resolved-IP check. */
+export type ResolvedAddress = { address: string; family: number };
 
-/**
- * Fetch-time SSRF re-check. `guardFetchUrl` validates only the LITERAL hostname,
- * so a public hostname whose DNS record points at a blocked address (cloud
- * metadata / RFC-1918 / loopback in serve mode) passes the input guard and is
- * only caught once we resolve. This resolves the host and runs EVERY resolved
- * address back through `guardFetchUrl` (an `http://<ip>/` literal), so the
- * resolved-IP policy is identical to the literal-IP policy — no drift.
- *
- * Call this right before the actual fetch (and on each redirect hop) for any
- * non-IP-literal host. For full rebinding (TOCTOU) safety the connection should
- * additionally be pinned to the validated address — a `lookup` hook / custom
- * dispatcher — which callers can layer on; this guard closes the static-record
- * bypass (the metadata-credential-theft case) on its own.
- */
+export type ResolveGuardResult = { ok: true; addresses: ResolvedAddress[] } | SsrfRejection;
+
 /** Resolve every A/AAAA record for a host, or null on NXDOMAIN / timeout / empty. */
 async function resolveAll(
   hostname: string,
   lookup?: LookupAll,
-): Promise<{ address: string; family: number }[] | null> {
+): Promise<ResolvedAddress[] | null> {
   const lookupFn = lookup ?? (nodeLookup as unknown as LookupAll);
   try {
-    const addresses = await new Promise<{ address: string; family: number }[]>(
+    const addresses = await new Promise<ResolvedAddress[]>(
       (resolve, reject) => {
         lookupFn(hostname, { all: true }, (err, addrs) => (err ? reject(err) : resolve(addrs)));
       },
@@ -418,7 +407,9 @@ function isResolvedLoopback(address: string): boolean {
  * resolved address back through `guardFetchUrl` (as an `http://<ip>/` literal), so the resolved-IP
  * policy is identical to the literal-IP one (metadata/RFC-1918 blocked, loopback allowed for the
  * local-dev promise). A host that does not resolve is NOT a bypass — there is no IP to connect to,
- * so we fall through (`ok: true`) and let the real fetch surface the natural DNS error.
+ * so we fall through (`ok: true`, empty `addresses`) and let the real fetch surface the natural
+ * DNS error. On success, `addresses` is the validated set the HTTP client pins the socket to
+ * (#207) so connect cannot re-resolve into a blocked IP.
  */
 export async function guardResolvedHost(
   hostname: string,
@@ -426,7 +417,7 @@ export async function guardResolvedHost(
   opts: { allowPrivate?: boolean; lookup?: LookupAll } = {},
 ): Promise<ResolveGuardResult> {
   const addresses = await resolveAll(hostname, opts.lookup);
-  if (!addresses) return { ok: true };
+  if (!addresses) return { ok: true, addresses: [] };
   for (const { address, family } of addresses) {
     const ipUrl = family === 6 ? `http://[${address}]/` : `http://${address}/`;
     const res = guardFetchUrl(ipUrl, fieldLabel, { allowPrivate: opts.allowPrivate });
@@ -437,7 +428,7 @@ export async function guardResolvedHost(
       };
     }
   }
-  return { ok: true };
+  return { ok: true, addresses };
 }
 
 /**
@@ -454,7 +445,7 @@ export async function guardResolvedServeTarget(
   opts: { allowPrivate?: boolean; bindIsLoopback: boolean; lookup?: LookupAll },
 ): Promise<ResolveGuardResult> {
   const addresses = await resolveAll(hostname, opts.lookup);
-  if (!addresses) return { ok: true };
+  if (!addresses) return { ok: true, addresses: [] };
   const refuseLoopback =
     !opts.bindIsLoopback && process.env.WIGOLO_SERVE_ALLOW_LOCAL_TARGETS !== '1';
   for (const { address, family } of addresses) {
@@ -475,5 +466,5 @@ export async function guardResolvedServeTarget(
       };
     }
   }
-  return { ok: true };
+  return { ok: true, addresses };
 }

@@ -1,7 +1,8 @@
 import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { anySignal } from '../util/abort.js';
-import { guardFetchUrl, guardResolvedHost } from '../watch/ssrf.js';
+import { guardFetchUrl, guardResolvedHost, type LookupAll, type ResolvedAddress } from '../watch/ssrf.js';
+import { pinnedFetch } from './pinned-dispatcher.js';
 
 export interface HttpFetchOptions {
   headers?: Record<string, string>;
@@ -18,6 +19,12 @@ export interface HttpFetchOptions {
    * targets stay blocked regardless.
    */
   allowPrivate?: boolean;
+  /**
+   * Injectable DNS lookup for the fetch-time resolved SSRF re-check (tests).
+   * Defaults to Node's `dns.lookup`. The connect-time pin uses the addresses
+   * this lookup returned — it does not resolve again.
+   */
+  lookup?: LookupAll;
 }
 
 export interface HttpFetchResult {
@@ -161,21 +168,28 @@ async function fetchWithRedirects(
 
     logger.debug('fetching', { url: currentUrl, attempt: redirectCount });
 
-    // Fetch-time SSRF re-check. `guardFetchUrl` (applied on input + each redirect
-    // Location) only validates the LITERAL host, so a public hostname whose DNS
-    // record points at a blocked address (cloud metadata / RFC-1918 / loopback in
-    // serve mode) passes it and is only caught here, before we connect. Skip literal
-    // IPs — already validated. Same allowPrivate policy as the literal guard.
+    // Fetch-time SSRF re-check + socket pin. `guardFetchUrl` (applied on input +
+    // each redirect Location) only validates the LITERAL host, so a public
+    // hostname whose DNS record points at a blocked address (cloud metadata /
+    // RFC-1918 / loopback in serve mode) passes it and is only caught here,
+    // before we connect. Skip literal IPs — already validated. Same allowPrivate
+    // policy as the literal guard. The validated address set is then handed to
+    // undici as the only lookup result so connect cannot re-resolve (DNS
+    // rebinding / TOCTOU, #207). TLS SNI and the Host header stay on the
+    // original hostname.
+    let pinAddresses: ResolvedAddress[] | undefined;
     {
       const rhost = new URL(currentUrl).hostname;
       const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(rhost) || rhost.includes(':');
       if (!isIpLiteral) {
         const resolved = await guardResolvedHost(rhost, 'target url', {
           allowPrivate,
+          lookup: options.lookup,
         });
         if (!resolved.ok) {
           throw new HttpFetchError(resolved.reason, false);
         }
+        pinAddresses = resolved.addresses;
       }
     }
 
@@ -206,11 +220,11 @@ async function fetchWithRedirects(
       if (options.conditionalHeaders?.ifModifiedSince) {
         mergedHeaders['If-Modified-Since'] = options.conditionalHeaders.ifModifiedSince;
       }
-      response = await fetch(currentUrl, {
+      response = await pinnedFetch(currentUrl, {
         headers: mergedHeaders,
         redirect: 'manual',
         signal,
-      });
+      }, pinAddresses);
     } catch (err) {
       const isTimeout = err instanceof Error && err.name === 'TimeoutError';
       const isConnErr = err instanceof Error && RETRYABLE_ERROR_CODES.has((err as NodeJS.ErrnoException).code ?? '');

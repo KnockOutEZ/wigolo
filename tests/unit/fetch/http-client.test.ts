@@ -418,4 +418,49 @@ describe('httpFetch', () => {
       await closeServer(server);
     }, 5000);
   });
+
+  describe('DNS-rebinding pin (#207)', () => {
+    let server: http.Server;
+
+    afterEach(async () => {
+      if (server) await closeServer(server);
+      delete process.env.FETCH_TIMEOUT_MS;
+      resetConfig();
+    });
+
+    it('connects using the validated lookup IPs without a second DNS resolution', async () => {
+      // `http-pin.test` is not a real name. The injectable lookup returns
+      // 127.0.0.1 once (the guard); the undici Agent then pins connect to that
+      // set. A second lookup would be the TOCTOU window — we count calls so a
+      // revert to unpinned fetch fails this row (ENOTFOUND or lookups > 1).
+      let seenHost: string | undefined;
+      server = await startServer((req, res) => {
+        seenHost = req.headers.host;
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<html>pinned</html>');
+      });
+      const port = getPort(server);
+      let lookups = 0;
+      const result = await httpFetch(`http://http-pin.test:${port}/`, {
+        lookup: (_h, _o, cb) => {
+          lookups++;
+          cb(null, [{ address: '127.0.0.1', family: 4 }]);
+        },
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.html).toContain('pinned');
+      expect(lookups).toBe(1);
+      expect(seenHost).toBe(`http-pin.test:${port}`);
+    });
+
+    it('refuses a hostname whose validated resolution is a metadata IP (no connect)', async () => {
+      let hits = 0;
+      server = await startServer((_req, res) => { hits++; res.end('should not run'); });
+      const port = getPort(server);
+      await expect(httpFetch(`http://rebind.test:${port}/`, {
+        lookup: (_h, _o, cb) => cb(null, [{ address: '169.254.169.254', family: 4 }]),
+      })).rejects.toThrow(/metadata|link-local|blocked/i);
+      expect(hits).toBe(0);
+    });
+  });
 });

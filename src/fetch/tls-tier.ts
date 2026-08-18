@@ -311,6 +311,11 @@ export async function tlsFetch(url: string, options: TlsFetchOptions = {}): Prom
       // before we connect. Applies to the input URL AND every redirect hop.
       // Skip literal IPs — already validated. Same allowPrivate policy as the
       // literal guard.
+      //
+      // CHECK-ONLY on this tier: wreq-js's native transport does not expose a
+      // connect/lookup hook, so we cannot pin the socket the way the HTTP
+      // client does (#207). The #206 re-check stays as the floor; DNS
+      // rebinding remains a documented residual here.
       {
         const rhost = new URL(current).hostname;
         const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(rhost) || rhost.includes(':');

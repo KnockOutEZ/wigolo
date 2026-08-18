@@ -18,7 +18,8 @@
  */
 
 import { createLogger } from '../logger.js';
-import { guardFetchUrl, guardResolvedHost, type LookupAll } from '../watch/ssrf.js';
+import { guardFetchUrl, guardResolvedHost, type LookupAll, type ResolvedAddress } from '../watch/ssrf.js';
+import { pinnedFetch } from './pinned-dispatcher.js';
 import { redactUrl } from '../util/redact-url.js';
 import type { RawFetchResult } from '../types.js';
 
@@ -63,21 +64,22 @@ function isIpLiteralHost(host: string): boolean {
  * check on `url`. `guardFetchUrl` only validates the LITERAL host, so a public
  * hostname whose DNS record points at a blocked address (cloud metadata /
  * RFC-1918 / loopback in serve mode) passes it and is only caught here, before
- * we connect. Returns `true` when allowed (or skipped for an IP literal —
- * already validated), `false` when the resolved address is blocked. Uses the
- * SAME `allowPrivate` the caller's literal guard used, so the resolved-IP
- * policy never drifts from the literal-IP one.
+ * we connect. Returns `{ ok: true, addresses }` when allowed (empty addresses
+ * for an IP literal — already validated), `{ ok: false }` when the resolved
+ * address is blocked. Uses the SAME `allowPrivate` the caller's literal guard
+ * used, so the resolved-IP policy never drifts from the literal-IP one.
  */
-async function resolvedGuardOk(
+async function resolvedGuard(
   url: URL,
   fieldLabel: string,
   allowPrivate: boolean,
   lookup?: LookupAll,
-): Promise<boolean> {
+): Promise<{ ok: true; addresses: ResolvedAddress[] } | { ok: false }> {
   const host = url.hostname;
-  if (isIpLiteralHost(host)) return true;
+  if (isIpLiteralHost(host)) return { ok: true, addresses: [] };
   const resolved = await guardResolvedHost(host, fieldLabel, { allowPrivate, lookup });
-  return resolved.ok;
+  if (!resolved.ok) return { ok: false };
+  return { ok: true, addresses: resolved.addresses };
 }
 
 /**
@@ -125,8 +127,10 @@ export async function _guardedFollow(
 
     // Fetch-time SSRF re-check alongside the literal guard above. Applies to
     // hop 0 AND every redirect hop, same allowPrivate policy as the literal
-    // guard.
-    if (!(await resolvedGuardOk(guard.url, hop === 0 ? 'sidecar URL' : 'redirect location', allowPrivate, lookup))) {
+    // guard. When the default fetch is in use, the hop is then pinned to the
+    // validated IPs so connect cannot re-resolve (#207).
+    const resolved = await resolvedGuard(guard.url, hop === 0 ? 'sidecar URL' : 'redirect location', allowPrivate, lookup);
+    if (!resolved.ok) {
       logger.debug('escape-hatch hop blocked (resolved)', { hop });
       return null;
     }
@@ -138,15 +142,20 @@ export async function _guardedFollow(
       hopHeaders.delete('cookie');
     }
 
+    const hopInit: RequestInit = {
+      ...init,
+      method,
+      body,
+      headers: hopHeaders,
+      redirect: 'manual',
+    };
+
     let resp: Response;
     try {
-      resp = await fetchImpl(current, {
-        ...init,
-        method,
-        body,
-        headers: hopHeaders,
-        redirect: 'manual',
-      });
+      // Injected fetch (tests) is not undici; pin only the real HTTP path.
+      resp = fetchImpl === globalThis.fetch
+        ? await pinnedFetch(current, hopInit, resolved.addresses)
+        : await fetchImpl(current, hopInit);
     } catch (err) {
       logger.debug('escape-hatch fetch error', {
         url: redactUrl(current),
@@ -220,7 +229,7 @@ export async function solverFetch(
   }
   // Fetch-time resolved re-check alongside the literal guard above — same
   // allowPrivate:true policy (the sidecar may be on a private LAN IP too).
-  if (!(await resolvedGuardOk(solverGuard.url, 'challenge-solver URL', true, opts.lookup))) {
+  if (!(await resolvedGuard(solverGuard.url, 'challenge-solver URL', true, opts.lookup)).ok) {
     logger.warn('challenge-solver URL rejected by guard (resolved)');
     return null;
   }
@@ -231,7 +240,7 @@ export async function solverFetch(
     return null;
   }
   // Same fetch-allow-private policy as the literal target guard above.
-  if (!(await resolvedGuardOk(targetGuard.url, 'target URL', cfg.fetchAllowPrivate, opts.lookup))) {
+  if (!(await resolvedGuard(targetGuard.url, 'target URL', cfg.fetchAllowPrivate, opts.lookup)).ok) {
     logger.debug('challenge-solver target rejected by guard (resolved)');
     return null;
   }
@@ -293,7 +302,7 @@ export async function hostedReaderFetch(
   }
   // Fetch-time resolved re-check alongside the literal guard above — same
   // allowPrivate:true policy.
-  if (!(await resolvedGuardOk(readerGuard.url, 'reader-service URL', true, opts.lookup))) {
+  if (!(await resolvedGuard(readerGuard.url, 'reader-service URL', true, opts.lookup)).ok) {
     logger.warn('reader-service URL rejected by guard (resolved)');
     return null;
   }
@@ -303,7 +312,7 @@ export async function hostedReaderFetch(
     return null;
   }
   // Same fetch-allow-private policy as the literal target guard above.
-  if (!(await resolvedGuardOk(targetGuard.url, 'target URL', cfg.fetchAllowPrivate, opts.lookup))) {
+  if (!(await resolvedGuard(targetGuard.url, 'target URL', cfg.fetchAllowPrivate, opts.lookup)).ok) {
     logger.debug('reader-service target rejected by guard (resolved)');
     return null;
   }

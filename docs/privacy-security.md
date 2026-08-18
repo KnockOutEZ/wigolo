@@ -64,6 +64,13 @@ URL-taking surfaces refuse targets that resolve to private or loopback address s
 - `watch` **webhook destinations** — a watch notification can't be pointed at your internal network.
 - Remote-exposed daemons additionally refuse loopback-literal targets outright, so a remote caller can't use wigolo to probe services on its own host ([posture](./self-hosting.md#network-posture)).
 
+The HTTP client tier additionally **pins the socket to the IPs it just validated**, so a resolver that flips the record between the check and the connect (classic DNS rebinding) cannot land the connection on a blocked address. TLS `servername` and the `Host` header stay on the original hostname.
+
+Two fetch tiers cannot pin and stay honest about that:
+
+- **TLS-impersonation** (`wreq-js`) — the native transport has no connect/lookup hook. The resolved-IP re-check still runs; rebinding is a residual.
+- **Browser** — Chromium owns its own resolver. Pre-navigation resolve-and-validate is check-only.
+
 ## Responsible disclosure
 
 Please don't open public issues for vulnerabilities. Report privately via GitHub's "Report a vulnerability" on the repository's Security tab — the process, scope, and response expectations are in [SECURITY.md](../SECURITY.md).

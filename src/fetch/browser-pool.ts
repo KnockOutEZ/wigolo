@@ -869,9 +869,10 @@ export class MultiBrowserPool {
       // OWN DNS resolution when it actually navigates, a separate lookup from
       // the one below — a host that flips its A/AAAA record between this
       // check and Chromium's own resolution (or that resolves differently to
-      // Chromium than to Node) would still slip through. Pinning the
-      // navigation itself to the validated address is a follow-up, tracked in
-      // issue #207.
+      // Chromium than to Node) would still slip through. The HTTP client tier
+      // pins the socket to the validated IP (#207); the browser tier cannot.
+      // A local validating proxy would be the real close — tracked as a
+      // follow-up on #207 rather than implied here.
       {
         const navHost = hostOf(url);
         const isIpLiteral = navHost !== null && (/^\d{1,3}(\.\d{1,3}){3}$/.test(navHost) || navHost.includes(':'));

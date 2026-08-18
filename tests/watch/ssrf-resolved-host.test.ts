@@ -29,6 +29,7 @@ describe('guardResolvedHost (fetch-time SSRF re-check)', () => {
       lookup: mockLookup([{ address: '10.0.0.5', family: 4 }]),
     });
     expect(r.ok).toBe(true);
+    if (r.ok) expect(r.addresses).toEqual([{ address: '10.0.0.5', family: 4 }]);
   });
 
   it('blocks metadata even when allowPrivate is set (parity with guardFetchUrl)', async () => {
@@ -44,6 +45,7 @@ describe('guardResolvedHost (fetch-time SSRF re-check)', () => {
       lookup: mockLookup([{ address: '93.184.216.34', family: 4 }]),
     });
     expect(r.ok).toBe(true);
+    if (r.ok) expect(r.addresses).toEqual([{ address: '93.184.216.34', family: 4 }]);
   });
 
   it('rejects when ANY resolved address is blocked (multi-record DNS)', async () => {
@@ -68,5 +70,6 @@ describe('guardResolvedHost (fetch-time SSRF re-check)', () => {
       lookup: (_h, _o, cb) => cb(new Error('ENOTFOUND'), []),
     });
     expect(r.ok).toBe(true);
+    if (r.ok) expect(r.addresses).toEqual([]);
   });
 });
