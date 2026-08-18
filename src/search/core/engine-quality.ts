@@ -53,6 +53,9 @@ const ENGINE_QUALITY: Record<string, EngineQualityTier> = {
   // crates.io: structured JSON API with reliable Cargo.toml-sourced
   // descriptions → high, same class as wikipedia/mdn.
   'crates-io': 'high',
+  // npm registry: same class as crates-io — structured JSON API with
+  // reliable descriptions from package metadata.
+  'npm-registry': 'high',
   bing: 'medium',
   bing_news: 'medium',
   duckduckgo: 'medium',
