@@ -158,6 +158,59 @@ describe('PypiEngine', () => {
     expect(results[0].title).toBe('httpx');
   });
 
+  it('treats 400 as no match and keeps looking', async () => {
+    captureFetch((url) => {
+      if (url.includes('/pypi/httpx/json')) return { body: projectBody() };
+      return { body: {}, ok: false, status: 400 };
+    });
+    const results = await new PypiEngine().search('bad httpx');
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('httpx');
+  });
+
+  it('skips a non-object JSON payload and continues', async () => {
+    captureFetch((url) => {
+      if (url.includes('/pypi/httpx/json')) return { body: projectBody() };
+      return { body: [] };
+    });
+    const results = await new PypiEngine().search('missing httpx');
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('httpx');
+  });
+
+  it('omits published_date when urls is not an array', async () => {
+    captureFetch(() => ({
+      body: { ...projectBody(), urls: { upload_time_iso_8601: '2024-01-01T00:00:00Z' } },
+    }));
+    const results = await new PypiEngine().search('httpx');
+    expect(results[0].published_date).toBeUndefined();
+  });
+
+  it('uses the latest file upload time, not urls[0]', async () => {
+    captureFetch(() => ({
+      body: {
+        ...projectBody(),
+        urls: [
+          { upload_time_iso_8601: '2024-01-01T00:00:00.000000Z' },
+          { upload_time_iso_8601: '2024-12-06T15:37:21.509172Z' },
+        ],
+      },
+    }));
+    const results = await new PypiEngine().search('httpx');
+    expect(results[0].published_date).toBe('2024-12-06T15:37:21.509172Z');
+  });
+
+  it('stops after maxResults valid packages', async () => {
+    const { calls } = captureFetch((url) => {
+      const name = url.split('/pypi/')[1]?.split('/json')[0];
+      return { body: projectBody({ name, package_url: undefined, project_url: undefined }) };
+    });
+    const results = await new PypiEngine().search('httpx pydantic', { maxResults: 1 });
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('httpx-pydantic');
+    expect(calls).toHaveLength(1);
+  });
+
   it('clamps candidate lookups to 5', async () => {
     const { calls } = captureFetch(() => ({ body: {}, ok: false, status: 404 }));
     await new PypiEngine().search('alpha beta gamma delta epsilon zeta eta', { maxResults: 1000 });

@@ -125,17 +125,29 @@ function projectPageUrl(name: string, candidate: unknown): string {
   }
 }
 
+function latestUpload(urls: unknown): string | undefined {
+  if (!Array.isArray(urls)) return undefined;
+  let latest: string | undefined;
+  for (const file of urls) {
+    if (!file || typeof file !== 'object') continue;
+    const stamp = asString((file as PypiFile).upload_time_iso_8601);
+    if (stamp && (!latest || stamp > latest)) latest = stamp;
+  }
+  return latest;
+}
+
 function parseProject(data: PypiResponse, fallbackName: string): RawSearchResult | null {
   const info = data.info;
-  const rawName = asString(info?.name);
-  if (!rawName || !isProjectName(rawName) || info?.yanked === true) return null;
+  if (!info || typeof info !== 'object') return null;
+  const rawName = asString(info.name);
+  if (!rawName || !isProjectName(rawName) || info.yanked === true) return null;
 
   const name = pep503Normalize(rawName) || fallbackName;
-  const summary = asString(info?.summary) ?? '';
-  const version = asString(info?.version);
+  const summary = asString(info.summary) ?? '';
+  const version = asString(info.version);
   const snippet = version ? `${summary} (v${version})` : summary;
-  const url = projectPageUrl(name, info?.package_url ?? info?.project_url);
-  const published_date = asString(data.urls?.[0]?.upload_time_iso_8601);
+  const url = projectPageUrl(name, info.package_url ?? info.project_url);
+  const published_date = latestUpload(data.urls);
 
   return {
     title: rawName,
@@ -187,8 +199,9 @@ export class PypiEngine implements SearchEngine {
       if (response.status === 404 || response.status === 400) continue;
       if (!response.ok) throw new Error(`pypi returned ${response.status}`);
 
-      const data = (await response.json()) as PypiResponse;
-      const parsed = parseProject(data, candidate);
+      const data = (await response.json()) as unknown;
+      if (!data || typeof data !== 'object') continue;
+      const parsed = parseProject(data as PypiResponse, candidate);
       if (!parsed) continue;
       results.push(parsed);
     }
