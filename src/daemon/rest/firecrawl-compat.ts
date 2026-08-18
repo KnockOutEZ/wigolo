@@ -25,6 +25,7 @@ import { guardServeTarget } from './target-guard.js';
 import { guardResolvedServeTarget } from '../../watch/ssrf.js';
 import { getConfig } from '../../config.js';
 import { wrapUntrusted, untrustedFenceParts } from '../../security/untrusted.js';
+import { fenceErrorMessage } from '../../server/content-fence.js';
 import { UNTRUSTED_MODE_HEADER_NAME, type UntrustedMode } from './untrusted-mode.js';
 
 /**
@@ -454,7 +455,9 @@ async function handleMap(req: IncomingMessage, ctx: CompatContext): Promise<void
   const result = await handleCrawl(input, ctx.subsystems.router);
   const mapResult = result as MapOutput;
   if (typeof mapResult.error === 'string' && mapResult.error.length > 0) {
-    return fail(ctx, statusForCrawlCacheError(mapResult.error), mapResult.error);
+    // The status is classified from the RAW producer string and the message is fenced — the same
+    // split `crawlCacheFailure` keeps on the native seam, so the fence can never move a status.
+    return fail(ctx, statusForCrawlCacheError(mapResult.error), fenceErrorMessage(mapResult.error));
   }
   const links = Array.isArray(mapResult.urls) ? mapResult.urls : [];
   ctx.respond(200, { success: true, data: { links } });
@@ -568,10 +571,22 @@ function handleCrawlStatus(id: string, ctx: CompatContext): void {
       markdown: fenceIf(ctx.untrustedMode, p.markdown, p.metadata.sourceURL),
     }));
   } else if (job.status === 'failed') {
-    payload.error = job.error ?? 'crawl failed';
+    // A failed poll DOES carry page-derived text. `job.error` is `CrawlOutput.error`, prose at every
+    // producer site: `handleCrawl`'s catch republishes `err.message`, and `handleMapStrategy` reaches
+    // it through `describeStageError`, which splices a stage error's `error_reason` into the
+    // sentence — and `error_reason` is where the fetch handler puts the first 200 characters of an
+    // upstream 4xx response body (src/tools/fetch.ts). Fenced through the same `fenceErrorMessage`
+    // the native seam's `crawlCacheFailure` uses, so the two surfaces cannot drift.
+    //
+    // Fenced HERE and not in `settle`, for the same reason the markdown is: the store stays
+    // byte-clean and each poll gets its own fresh nonce. The fallback branch is unchanged in
+    // behaviour — it is a wigolo-authored literal reached only when nothing was stored, chosen
+    // before the fence sees a value. `fenceErrorMessage` passes an empty string through for the same
+    // reason `fenceOptional` does: an `(empty)` region contains nothing and reads as a malformed
+    // result. So a stored message is reported byte-for-byte whenever there is nothing to contain.
+    payload.error = job.error !== undefined ? fenceErrorMessage(job.error) : 'crawl failed';
     payload.data = [];
   }
-  // Only a completed job carries page text; a still-scraping or failed poll has nothing to fence.
   ctx.respond(200, job.status === 'completed' ? withCompatEnvelope(ctx.untrustedMode, payload) : payload);
 }
 

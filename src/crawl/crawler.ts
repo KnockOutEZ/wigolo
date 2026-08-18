@@ -1,5 +1,5 @@
 import type { FetchOutput, CrawlInput, CrawlOutput, CrawlResultItem, LinkEdge, RawFetchResult } from '../types.js';
-import { matchesPatterns, canonicalForCrawl, canonicalForOutput, stripFragment } from './url-utils.js';
+import { matchesPatterns, canonicalForCrawl, canonicalForOutput, normalizeLinkTarget } from './url-utils.js';
 import { RateLimiter } from './rate-limiter.js';
 import { RobotsParser } from './robots.js';
 import {
@@ -386,9 +386,41 @@ export function linkEdgeKey(from: string, canonicalTo: string): string {
   return `${from}\0${canonicalTo}`;
 }
 
-// M14: emit one LinkEdge per (from, fragment-stripped to). Bench audit:
-// /foo, /foo#section-a, /foo#section-b previously created three distinct
-// edges; collapse to one by keying off the fragment-stripped target.
+/**
+ * M14: emit one LinkEdge per (from, fragment-stripped to). Bench audit:
+ * /foo, /foo#section-a, /foo#section-b previously created three distinct
+ * edges; collapse to one by keying off the fragment-stripped target.
+ *
+ * The target is RESOLVED here, not merely fragment-stripped. `links` is the
+ * FULL extracted list — deliberately, so the graph keeps outbound edges that
+ * `filterLinks` drops from traversal — and its members are raw markdown link
+ * destinations, i.e. page text. `stripFragment` used to be the only thing
+ * standing between that text and `LinkEdge.to`, and it is fail-open: an
+ * unparseable target came back byte-for-byte, so `to` could ship arbitrary
+ * page prose, of arbitrary length and spanning multiple lines, on a field the
+ * schema, the docs and every consumer read as a URL.
+ *
+ * `normalizeLinkTarget` makes `to` URL-shaped BY CONSTRUCTION — the same
+ * property that makes `MapOutput.urls` sound to ship raw. It is not a value
+ * judgement applied to some targets and not others: every target goes through
+ * the identical parse, and the guarantee is a property of the parser's output
+ * (no whitespace survives it), never of an inspection of the input.
+ *
+ * A null — a target no base can make into a URL — is DROPPED and logged at
+ * warn with its source page, never passed through. The target itself is NOT
+ * logged: it is page prose, and writing it to stderr would open the channel
+ * this change closes.
+ *
+ * Dropping changes the edge count, so be exact about what leaves. `filterLinks`
+ * already refuses these for traversal — but by a DIFFERENT parse: it calls
+ * `new URL(link)` with no base, so it rejects every relative target too. The
+ * two are not the same predicate and the comment should not claim they are.
+ * What holds is the containment: a target that fails `new URL(target, from)`
+ * fails `new URL(target)` as well, so this drop set is a strict SUBSET of what
+ * traversal already refused, and nothing reachable stops being reachable.
+ * Origin, robots and pattern filtering still apply to traversal alone, so
+ * external edges stay in the graph exactly as before.
+ */
 function addUniqueEdges(
   edges: LinkEdge[],
   seen: Set<string>,
@@ -396,7 +428,11 @@ function addUniqueEdges(
   links: string[],
 ): void {
   for (const link of links) {
-    const canonicalTo = stripFragment(link);
+    const canonicalTo = normalizeLinkTarget(link, from);
+    if (canonicalTo === null) {
+      log.warn('Dropping link edge with an unresolvable target', { from });
+      continue;
+    }
     const key = linkEdgeKey(from, canonicalTo);
     if (seen.has(key)) continue;
     seen.add(key);

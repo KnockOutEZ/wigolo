@@ -105,22 +105,30 @@ function fence(value: string, origin?: string): string {
  *    tripwire rather than left tacit: tests/integration/error-envelope-fence.test.ts, TRIP-1.
  *
  * WHAT THIS DOES NOT COVER, named rather than implied away. The two seams are the whole population of
- * StageError assemblies. THREE other REST envelopes are hand-rolled from a non-StageError shape and are
+ * StageError assemblies. TWO other REST envelopes are hand-rolled from a non-StageError shape and are
  * deliberately left alone here — each is a separate call, not an oversight:
  *   - the `search_failed` envelope in `dispatchSearch` publishes search's in-band `data.error`, whose
  *     MCP counterpart ships on the SUCCESS envelope and is not fenced there either. Fencing one surface
  *     and not the other would be a new asymmetry.
  *   - `guardFailure` / the router's validation envelopes carry the CALLER's own input, never bytes read
  *     off a response.
- *   - the firecrawl-compat surface, which is STILL OPEN to the very text the crawl/cache seams below now
- *     contain, at two sites: `src/daemon/rest/firecrawl-compat.ts` publishes `mapResult.error` as the
- *     envelope message on the map route, and settles a background crawl job with `crawl.error` for the
- *     polling client to read. Both call `handleCrawl` DIRECTLY, so neither passes through
- *     `fenceCrawlData` — the same origin-chosen `Location:` text described at `fencedInBandError` below
- *     reaches both raw. This is not the "carries no page bytes" exemption the two bullets above are; it
- *     is a live channel left for its own change, because that file carries the INVERSE untrusted-mode
- *     default by decision A11 (see the note in daemon/rest/dispatch.ts) and routing it through the
- *     shared fencer is a behaviour change on a compatibility surface, not a containment no-op.
+ *
+ * The firecrawl-compat surface was listed here as a THIRD, live and deferred rather than exempt. It is
+ * now CLOSED: `src/daemon/rest/firecrawl-compat.ts` routes both of its sites — `mapResult.error` as the
+ * map route's envelope message, and the `crawl.error` a polling client reads back off a settled job —
+ * through this same `fenceErrorMessage`. The status is still classified from the UNFENCED producer
+ * string, and the job store still holds byte-clean prose because the POLL is what fences, so nothing
+ * persists a fence and every poll carries a fresh nonce.
+ *
+ * The deferral's stated reason does not survive being checked, which is the part worth keeping: it read
+ * "that file carries the INVERSE untrusted-mode default by decision A11, so routing it through the
+ * shared fencer is a behaviour change on a compatibility surface". A11 was REVERSED — the shim's own
+ * header documents A11-R at length, and it takes the SAME fenced-by-default as the native routes. The
+ * note it was drawn from (daemon/rest/dispatch.ts, at `withUntrustedEnvelope`) still says INVERSE and is
+ * stale for the same reason; it is named here rather than silently corrected because it lives outside
+ * this seam. Two lessons, both cheap: a deferral inherits the staleness of whatever it cites, and the
+ * mode header governs SUCCESS payloads in the first place — error prose is fenced unconditionally on
+ * the native seam, so matching it was never mode-dependent work.
  *
  * `crawlCacheFailure` (daemon/rest/dispatch.ts) was listed here as a third, on the rationale that it
  * "puts the SAME string in both fields, so fencing the prose half would leave a bare copy under the code
