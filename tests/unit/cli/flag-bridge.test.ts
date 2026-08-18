@@ -82,6 +82,12 @@ describe('coerceFlags — coercion matrix', () => {
     expect(r.input.include_domains).toEqual(['a.com', 'b.com']);
   });
 
+  it('search-engines: comma-split allowlist', () => {
+    const r = coerceFlags('search', { 'search-engines': 'duckduckgo, wikipedia' });
+    expect(r.errors).toEqual([]);
+    expect(r.input.search_engines).toEqual(['duckduckgo', 'wikipedia']);
+  });
+
   it('array of objects: inline JSON accepted; comma-split REJECTED', () => {
     const ok = coerceFlags('fetch', {
       actions: '[{"type":"click","selector":".btn"}]',

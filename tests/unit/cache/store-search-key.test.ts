@@ -40,6 +40,18 @@ describe('buildSearchCacheKey', () => {
     expect(a).not.toBe(b);
   });
 
+  it('produces a different key when search_engines differs', () => {
+    const a = buildSearchCacheKey('q', { search_engines: ['bing'] });
+    const b = buildSearchCacheKey('q', { search_engines: ['duckduckgo'] });
+    expect(a).not.toBe(b);
+  });
+
+  it('produces the same key when search_engines is reordered or differently cased', () => {
+    const a = buildSearchCacheKey('q', { search_engines: ['bing', 'duckduckgo'] });
+    const b = buildSearchCacheKey('q', { search_engines: ['DuckDuckGo', 'Bing'] });
+    expect(a).toBe(b);
+  });
+
   it('treats null/undefined/empty-array filters as equivalent to no filter', () => {
     const a = buildSearchCacheKey('q');
     const b = buildSearchCacheKey('q', {});

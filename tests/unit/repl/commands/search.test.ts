@@ -60,6 +60,20 @@ describe('executeSearch', () => {
     );
   });
 
+  it('maps --search-engines flag to search_engines', async () => {
+    vi.mocked(handleSearch).mockResolvedValue({ ok: true, data: baseOutput });
+    await executeSearch(
+      { command: 'search', positional: ['q'], flags: { 'search-engines': 'duckduckgo,wikipedia' } },
+      deps,
+    );
+    expect(handleSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ search_engines: ['duckduckgo', 'wikipedia'] }),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it('maps --from flag to from_date', async () => {
     vi.mocked(handleSearch).mockResolvedValue({ ok: true, data: baseOutput });
     await executeSearch({ command: 'search', positional: ['q'], flags: { from: '2024-01-01' } }, deps);

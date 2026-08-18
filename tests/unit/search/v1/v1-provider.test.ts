@@ -96,6 +96,25 @@ describe('CoreSearchProvider', () => {
     expect(runV1SearchMock.mock.calls[0][0].category).toBe('docs');
   });
 
+  it('passes search_engines through to the orchestrator', async () => {
+    runV1SearchMock.mockClear();
+    runV1SearchMock.mockResolvedValueOnce({
+      results: [{ title: 'Gold', url: 'https://ddg.test/1', snippet: 's', relevance_score: 1, engine: 'duckduckgo' }],
+      enginesUsed: ['duckduckgo'],
+      degraded: false,
+    });
+
+    const provider = new CoreSearchProvider();
+    const result = await provider.search(
+      { query: 'gold price', search_engines: ['duckduckgo', 'wikipedia'], include_content: false },
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(runV1SearchMock).toHaveBeenCalledOnce();
+    expect(runV1SearchMock.mock.calls[0][0].searchEngines).toEqual(['duckduckgo', 'wikipedia']);
+  });
+
   it('rejects an empty query before the images check', async () => {
     const provider = new CoreSearchProvider();
     const result = await provider.search(

@@ -13,12 +13,14 @@ const verticalState: {
   code: EngineEntry[];
   docs: EngineEntry[];
   papers: EngineEntry[];
+  images: EngineEntry[];
 } = {
   general: [],
   news: [],
   code: [],
   docs: [],
   papers: [],
+  images: [],
 };
 
 vi.mock('../../../../src/search/core/verticals/general.js', () => ({
@@ -49,6 +51,12 @@ vi.mock('../../../../src/search/core/verticals/papers.js', () => ({
   getPapersEngines: () => verticalState.papers,
   _resetPapersEnginesForTest: () => {
     verticalState.papers = [];
+  },
+}));
+vi.mock('../../../../src/search/core/verticals/images.js', () => ({
+  getImageEngines: () => verticalState.images,
+  _resetImageEnginesForTest: () => {
+    verticalState.images = [];
   },
 }));
 
@@ -122,6 +130,7 @@ beforeEach(() => {
   verticalState.code = [];
   verticalState.docs = [];
   verticalState.papers = [];
+  verticalState.images = [];
 });
 
 describe('runV1Search — vertical routing', () => {
@@ -1082,6 +1091,149 @@ describe('runV1Search — per-result starvation re-dispatch', () => {
     expect(shared!.evidence_score?.components.engine_consensus).toBe(1);
     // The URL appears exactly once (dedup intact).
     expect(out.results.filter((r) => r.url === sharedUrl)).toHaveLength(1);
+  });
+});
+
+describe('runV1Search — search_engines allowlist', () => {
+  it('dispatches only the requested engines in the current vertical', async () => {
+    const bing = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/1')],
+    });
+    const ddg = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/1')],
+    });
+    const wiki = makeEntry({
+      name: 'wikipedia',
+      results: [makeResult('wikipedia', 'https://en.wikipedia.org/wiki/Gold')],
+    });
+    verticalState.general = [bing.entry, ddg.entry, wiki.entry];
+
+    const out = await runV1Search({
+      query: 'gold price',
+      searchEngines: ['duckduckgo', 'wikipedia'],
+    });
+
+    expect(bing.spy).not.toHaveBeenCalled();
+    expect(ddg.spy).toHaveBeenCalledOnce();
+    expect(wiki.spy).toHaveBeenCalledOnce();
+    expect(out.enginesUsed.sort()).toEqual(['duckduckgo', 'wikipedia']);
+    expect(out.results.map((r) => r.engine).sort()).toEqual(['duckduckgo', 'wikipedia']);
+  });
+
+  it('is case-insensitive and ignores unknown names when some engines match', async () => {
+    const ddg = makeEntry({
+      name: 'duckduckgo',
+      results: [makeResult('duckduckgo', 'https://ddg.test/1')],
+    });
+    const bing = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/1')],
+    });
+    verticalState.general = [bing.entry, ddg.entry];
+
+    const out = await runV1Search({
+      query: 'gold price',
+      searchEngines: ['DuckDuckGo', 'not-a-real-engine'],
+    });
+
+    expect(ddg.spy).toHaveBeenCalledOnce();
+    expect(bing.spy).not.toHaveBeenCalled();
+    expect(out.enginesUsed).toEqual(['duckduckgo']);
+  });
+
+  it('falls back to the vertical pool when no requested name matches', async () => {
+    const bing = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/1')],
+    });
+    verticalState.general = [bing.entry];
+
+    const out = await runV1Search({
+      query: 'gold price',
+      searchEngines: ['nonexistent'],
+    });
+
+    expect(bing.spy).toHaveBeenCalledOnce();
+    expect(out.enginesUsed).toEqual(['bing']);
+  });
+
+  it('pulls a requested engine from another vertical (overrides auto-dispatch)', async () => {
+    const bing = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/1')],
+    });
+    verticalState.general = [bing.entry];
+
+    const so = makeEntry({
+      name: 'stackoverflow',
+      results: [makeResult('stackoverflow', 'https://stackoverflow.com/q/1')],
+    });
+    verticalState.code = [so.entry];
+
+    const out = await runV1Search({
+      query: 'gold price',
+      searchEngines: ['stackoverflow'],
+    });
+
+    expect(out.vertical).toBe('general');
+    expect(bing.spy).not.toHaveBeenCalled();
+    expect(so.spy).toHaveBeenCalledOnce();
+    expect(out.enginesUsed).toEqual(['stackoverflow']);
+  });
+
+  it('does not starvation-backfill excluded engines when the allowlist is set', async () => {
+    const arxiv = makeEntry({
+      name: 'arxiv',
+      results: [makeResult('arxiv', 'https://arxiv.org/abs/only')],
+    });
+    verticalState.papers = [arxiv.entry];
+
+    const bing = makeEntry({
+      name: 'bing',
+      results: [
+        makeResult('bing', 'https://example.com/g1'),
+        makeResult('bing', 'https://example.com/g2'),
+        makeResult('bing', 'https://example.com/g3'),
+        makeResult('bing', 'https://example.com/g4'),
+      ],
+    });
+    verticalState.general = [bing.entry];
+
+    const out = await runV1Search({
+      query: 'arxiv quantum error correction surface code',
+      maxResults: 10,
+      searchEngines: ['arxiv'],
+    });
+
+    expect(out.vertical).toBe('papers');
+    expect(arxiv.spy).toHaveBeenCalledOnce();
+    expect(bing.spy).not.toHaveBeenCalled();
+    expect(out.pool_degraded?.reasons ?? []).not.toContain('starvation_redispatch');
+    expect(out.results.map((r) => r.url)).toEqual(['https://arxiv.org/abs/only']);
+  });
+
+  it('dispatches a probe-only engine in the primary wave when the caller names it', async () => {
+    const bing = makeEntry({
+      name: 'bing',
+      results: [makeResult('bing', 'https://bing.test/1')],
+    });
+    const mojeek = makeEntry({
+      name: 'mojeek',
+      results: [makeResult('mojeek', 'https://mojeek.test/1')],
+    });
+    mojeek.entry.probeOnly = true;
+    verticalState.general = [bing.entry, mojeek.entry];
+
+    const out = await runV1Search({
+      query: 'gold price',
+      searchEngines: ['mojeek'],
+    });
+
+    expect(mojeek.spy).toHaveBeenCalledOnce();
+    expect(bing.spy).not.toHaveBeenCalled();
+    expect(out.enginesUsed).toEqual(['mojeek']);
   });
 });
 
