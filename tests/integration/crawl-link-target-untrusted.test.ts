@@ -171,6 +171,35 @@ describe('L2 — LinkEdge.to is URL-shaped by construction (crawl graph)', () =>
     expect(edges[0].to).not.toContain(UNTRUSTED_END_PREFIX);
   });
 
+  it('LINKTGT-8: the guarantee is NO LINE BREAK, not "no whitespace" — opaque schemes keep spaces', async () => {
+    // This row exists because the obvious stronger claim is FALSE and was written down once.
+    // `new URL` keeps a NON-SPECIAL scheme's opaque path verbatim, so `mailto:` and friends
+    // round-trip a space unencoded and a marker CAN survive on one line. The property that is
+    // actually total — and the one containment rests on — is that tab/CR/LF are stripped before
+    // parsing, on every scheme, so a marker can never sit on a line of its own.
+    //
+    // Asserting BOTH halves is the point: the false half is pinned as false, so a future reader
+    // cannot re-derive it from a passing test, and the true half is pinned as the reason.
+    //
+    // This row is a CHARACTERIZATION of the parser property the comment rests on, not a regression
+    // guard for the seam — reverting to `stripFragment` leaves it GREEN, because `mailto:` is a
+    // valid absolute URL and that parse strips line breaks too. The seam is guarded by LINKTGT-3/4;
+    // what this catches is someone adding a normalisation pass on top and invalidating the doc.
+    // MUT: `return encodeURI(u.toString())` in normalizeLinkTarget → RED (the space is encoded and
+    // the documented "keeps spaces" half stops holding).
+    const multiline = `mailto:x@y.z\n${FORGED_END}\nrest`;
+    const result = await crawlWith([multiline]);
+    const to = (result.links ?? [])[0].to;
+
+    // TRUE half: no line break survives, on an opaque path.
+    expect(to).not.toMatch(/[\r\n\t]/);
+    // FALSE half, pinned honestly: whitespace is NOT gone here, so no caller may assume it is.
+    expect(to).toContain(' ');
+    expect(to).toContain(FORGED_END);
+    // …and the marker therefore cannot be on its own line, which is the shape an escape needs.
+    expect(to.split('\n')).toHaveLength(1);
+  });
+
   it('LINKTGT-5 (must-not-fire): ordinary links keep their identity and their edges', async () => {
     // WHY: normalising must not quietly rewrite or drop the links that were already correct — a
     // caller walking this graph would see a different site.

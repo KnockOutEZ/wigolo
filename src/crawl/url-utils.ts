@@ -27,10 +27,27 @@ export function stripFragment(url: string): string {
  * Resolving through `new URL(target, from)` is the same construction that makes
  * `MapOutput.urls` sound (src/crawl/mapper.ts). It is not a filter over the
  * value — nothing here inspects the target and decides — it is a total
- * normalisation whose OUTPUT SHAPE is guaranteed by the URL parser: the
- * serialized href carries no ASCII whitespace, because the parser removes tab
- * / CR / LF outright and percent-encodes every remaining space. That is a
- * structural property of the return type, not a judgement about the input.
+ * normalisation whose OUTPUT SHAPE is guaranteed by the URL parser.
+ *
+ * BE PRECISE ABOUT WHICH GUARANTEE THAT IS, because the obvious stronger one is
+ * FALSE. The href is NOT whitespace-free: for a non-special scheme the parser
+ * keeps an opaque path verbatim, spaces and all, so
+ * `mailto:` / `tel:` / `data:` / `about:` / `sms:` / any custom scheme round-trip
+ * a space unencoded. Only hierarchical components (path, query, fragment of a
+ * special scheme) get the percent-encode pass. An earlier draft of this comment
+ * claimed whitespace-freedom as "a structural property of the return type"; it
+ * was never true, and a flat-text renderer built on it would have inherited a
+ * guarantee the code does not provide.
+ *
+ * What IS total, on every scheme including opaque paths: the parser STRIPS ASCII
+ * tab, CR and LF outright before parsing, so no line break can survive into the
+ * href. That is the load-bearing property here — it is what makes a forged
+ * `[[END UNTRUSTED DATA nonce=…]]` on its own line unforgeable through a link
+ * target, which is the shape a fence escape would need. A marker that survives
+ * on one line (reachable via `mailto:`) is prose in a sibling JSON field, not a
+ * terminator for any region. Pinned by LINKTGT-8 in
+ * tests/integration/crawl-link-target-untrusted.test.ts rather than left to this
+ * paragraph.
  *
  * The fragment is dropped here rather than by a second `stripFragment` pass so
  * the graph keeps its existing dedup identity (/foo, /foo#a and /foo#b are ONE
