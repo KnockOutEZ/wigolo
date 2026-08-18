@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createConnection, createServer, type AddressInfo } from 'node:net';
+import { get } from 'node:http';
+import { createRequire } from 'node:module';
 import { OMIT_ENV } from '../../electron-builder.config';
 
 /**
@@ -313,5 +316,208 @@ describe.skipIf(!RUN)('negative control: asarUnpack entries removed', () => {
     const { modules } = probe('node', {}, unpackedAnchor(CONTROL_OUT), ['better-sqlite3', 'sqlite-vec']);
     expect(modules['better-sqlite3'].ok, modules['better-sqlite3'].detail).toBe(true);
     expect(modules['sqlite-vec'].ok, modules['sqlite-vec'].detail).toBe(true);
+  });
+});
+
+/**
+ * The remote-debugging-port fence, EXECUTED (cdp-fence.ts, S9 spec §6).
+ *
+ * `decideCdpDebugPort` is unit-tested exhaustively, but every one of those tests passes
+ * `isPackaged` as a literal. `app.isPackaged` is false in any unpackaged tree, so until this ran
+ * the claim "a packaged build never opens the debugger port" rested on reasoning: nothing had ever
+ * observed the packaged branch of the real `app` object, let alone the socket.
+ *
+ * A REFUSED PORT PROVES NOTHING ON ITS OWN. A probe pointed at a port nobody opened refuses
+ * identically whether the fence works, the app crashed on boot, or the probe is broken. So the
+ * fenced result is only ever asserted next to a run of the SAME probe, on the SAME port, against a
+ * build where the fence does not apply — which must come back with a live CDP browser. Anything
+ * less is the vacuous control this file's other half was already caught by once.
+ */
+/**
+ * The dev Electron binary that hosts the unfenced arm.
+ *
+ * ASK THE `electron` PACKAGE, never build the path by hand. `apps/*` is an npm workspace, so a root
+ * `npm ci` HOISTS electron to the repo-root `node_modules` and `apps/studio/node_modules/electron`
+ * does not exist at all — a hardcoded `apps/studio/...` path is correct only on a machine where
+ * someone happened to run a second, non-workspace install inside `apps/studio`. That is exactly how
+ * this passed locally and failed on the first CI run. `require('electron')` returns the absolute
+ * path to the executable wherever the package landed, and throws if the dist was never extracted.
+ */
+function looseElectronBinary(): string {
+  const req = createRequire(import.meta.url);
+  let bin: string;
+  try {
+    bin = req('electron') as string;
+  } catch (err) {
+    throw new Error(
+      `the unfenced control needs the dev Electron binary, and the 'electron' package could not ` +
+        `produce one (${(err as Error).message}). Run its install script — 'node node_modules/electron/install.js' ` +
+        `from the repo root — before this spec.`,
+    );
+  }
+  if (!bin || !existsSync(bin)) {
+    throw new Error(
+      `the 'electron' package reports its binary at ${bin || '(empty)'}, which does not exist. Run ` +
+        `'node node_modules/electron/install.js' from the repo root before this spec.`,
+    );
+  }
+  return bin;
+}
+const LOOSE_MAIN = join(APP_DIR, 'out/main/index.js');
+/** Long enough for the engine to bind a port if it is ever going to; a boot is not instant. */
+const BOOT_MS = 12_000;
+
+interface FenceObservation {
+  /** Which branch of the fence the real process took, read from its own stderr. */
+  branch: 'IGNORED' | 'OPENED' | 'NO_FENCE_LINE';
+  /** Result of a TCP connect: 'CONNECTED', or the errno the kernel returned. */
+  tcp: string;
+  /** `Browser` from the CDP `/json/version` handshake. Only a real debugger answers this. */
+  cdpBrowser: string | null;
+  /** Every TCP port the process tree is LISTENING on — "not 9222" is weaker than "nothing". */
+  listening: string[];
+}
+
+async function freeCdpPort(): Promise<number> {
+  return new Promise((resolve) => {
+    const srv = createServer();
+    srv.listen(0, '127.0.0.1', () => {
+      const p = (srv.address() as AddressInfo).port;
+      srv.close(() => resolve(p));
+    });
+  });
+}
+
+function tcpProbe(port: number): Promise<string> {
+  return new Promise((resolve) => {
+    const s = createConnection({ port, host: '127.0.0.1' });
+    const done = (v: string) => {
+      s.destroy();
+      resolve(v);
+    };
+    s.setTimeout(3000);
+    s.on('connect', () => done('CONNECTED'));
+    s.on('timeout', () => done('TIMEOUT'));
+    s.on('error', (e: NodeJS.ErrnoException) => done(e.code ?? 'ERROR'));
+  });
+}
+
+function cdpHandshake(port: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    const req = get({ host: '127.0.0.1', port, path: '/json/version', timeout: 3000 }, (res) => {
+      let body = '';
+      res.on('data', (d) => (body += d));
+      res.on('end', () => {
+        try {
+          resolve((JSON.parse(body) as { Browser?: string }).Browser ?? null);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+    req.on('error', () => resolve(null));
+  });
+}
+
+/** Every LISTEN socket held by the launched process and its descendants. */
+function listeningPorts(rootPid: number): string[] {
+  let pids: number[];
+  try {
+    const rows = execFileSync('ps', ['-Ao', 'pid=,ppid='], { encoding: 'utf8' })
+      .split('\n')
+      .map((l) => l.trim().split(/\s+/))
+      .filter((p) => p.length === 2)
+      .map(([pid, ppid]) => ({ pid: Number(pid), ppid: Number(ppid) }));
+    const want = new Set([rootPid]);
+    for (let i = 0; i < 8; i++) for (const r of rows) if (want.has(r.ppid)) want.add(r.pid);
+    pids = [...want];
+  } catch {
+    pids = [rootPid];
+  }
+  try {
+    return execFileSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', pids.join(',')], { encoding: 'utf8' })
+      .split('\n')
+      .slice(1)
+      .filter(Boolean);
+  } catch {
+    // lsof exits non-zero when the filter matches nothing. For the fenced build that IS the result.
+    return [];
+  }
+}
+
+async function observeFence(runtime: string, args: string[], port: number): Promise<FenceObservation> {
+  const dataDir = mkdtempSync(join(tmpdir(), 'wigolo-cdp-fence-'));
+  const child = spawn(runtime, args, {
+    env: {
+      ...process.env,
+      WIGOLO_STUDIO_CDP_PORT: String(port),
+      // No window: this asserts on a socket, and a visible window is not part of the claim.
+      WIGOLO_STUDIO_HIDDEN: '1',
+      WIGOLO_DATA_DIR: dataDir,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.on('data', (d) => (stderr += String(d)));
+  child.stdout.on('data', () => {});
+  try {
+    await new Promise((r) => setTimeout(r, BOOT_MS));
+    const tcp = await tcpProbe(port);
+    return {
+      branch: /was IGNORED/.test(stderr) ? 'IGNORED' : /SECURITY: .*is OPEN/.test(stderr) ? 'OPENED' : 'NO_FENCE_LINE',
+      tcp,
+      cdpBrowser: tcp === 'CONNECTED' ? await cdpHandshake(port) : null,
+      listening: listeningPorts(child.pid as number),
+    };
+  } finally {
+    child.kill('SIGKILL');
+    await new Promise((r) => setTimeout(r, 500));
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+describe.skipIf(!RUN)('the CDP fence, executed on a real packaged build', () => {
+  let port: number;
+  let packaged: FenceObservation;
+  let loose: FenceObservation;
+
+  beforeAll(async () => {
+    if (!existsSync(binary(GOOD_OUT))) pack(GOOD_OUT, {});
+    // Throws rather than skips if the binary is missing. A skipped control is indistinguishable
+    // from one that passed, and this whole block is worthless without the unfenced arm.
+    const looseElectron = looseElectronBinary();
+    port = await freeCdpPort();
+    // The unfenced arm runs FIRST and the fenced arm re-uses the very port it just held open, so
+    // "the port happened to be closed already" cannot explain the fenced result.
+    loose = await observeFence(looseElectron, [LOOSE_MAIN], port);
+    packaged = await observeFence(binary(GOOD_OUT), [], port);
+  }, 25 * 60_000);
+
+  it('CONTROL: the unpackaged build opens the port, and the probe sees a live debugger', () => {
+    // The load-bearing half. If this arm is ever anything but a real CDP browser, the fenced arm
+    // below is measuring a broken probe and must not be believed.
+    expect(loose.branch).toBe('OPENED');
+    expect(loose.tcp).toBe('CONNECTED');
+    expect(loose.cdpBrowser, 'no CDP handshake — the probe cannot tell open from closed').toMatch(/Chrome\//);
+    expect(loose.listening.join('\n')).toContain(`:${port} `);
+  });
+
+  it('takes the IGNORED branch in a packaged build and refuses the port', () => {
+    expect(packaged.branch).toBe('IGNORED');
+    expect(packaged.tcp, 'the packaged build answered on the debugger port').toBe('ECONNREFUSED');
+    expect(packaged.cdpBrowser).toBeNull();
+  });
+
+  it('opens no debugger port anywhere, not merely not the one that was asked for', () => {
+    // `remote-debugging-port` is never appended, so there is no port to find. Asserting only that
+    // the REQUESTED port refuses would leave "the engine bound somewhere else" untested — and the
+    // fence's promise to the user is "No port is open", not "not that one".
+    expect(packaged.listening.join('\n')).not.toContain(`:${port} `);
+    // The app's own gateway is expected; a second listener would want explaining.
+    expect(packaged.listening.length, packaged.listening.join('\n')).toBeLessThanOrEqual(1);
   });
 });
