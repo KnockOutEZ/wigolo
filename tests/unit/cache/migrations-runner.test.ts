@@ -248,14 +248,27 @@ describe('applyMigrations', () => {
     const insert = db.prepare(
       'INSERT INTO url_cache (url, normalized_url, content_hash, fetched_at) VALUES (?, ?, ?, ?)',
     );
-    for (let i = 0; i < 50; i++) {
-      insert.run(`https://example.com/${i}`, `https://example.com/${i}`, `hash-${i}`, '2026-01-01');
-    }
-    // A pre-existing NULL hash must not break the index build either.
-    insert.run('https://example.com/legacy', 'https://example.com/legacy', null, '2026-01-01');
-    // And a pre-existing DUPLICATE hash must not either — the index is
-    // deliberately non-unique because two URLs can serve identical markdown.
-    insert.run('https://example.com/dupe', 'https://example.com/dupe', 'hash-7', '2026-01-01');
+    // ONE transaction for the whole fixture, not one per row. What this test
+    // asserts is that the index build walks 52 rows that are ALREADY THERE —
+    // the number of transactions used to put them there carries none of that
+    // meaning. Left unbatched, each `insert.run` is its own durable commit, so
+    // the fixture alone cost 52 of the body's 66 commits, and a synchronous
+    // body costs (commits x per-commit file-op latency) with no chance to
+    // yield. On a volume where that latency is ~300ms — a loaded Windows
+    // runner writing rollback journals into %TEMP% — 66 commits crosses the
+    // 20s ceiling while this file's other tests, which commit ~15 times each,
+    // stay under it. Batching puts this test in the same commit-count class as
+    // the siblings that have never timed out.
+    db.transaction(() => {
+      for (let i = 0; i < 50; i++) {
+        insert.run(`https://example.com/${i}`, `https://example.com/${i}`, `hash-${i}`, '2026-01-01');
+      }
+      // A pre-existing NULL hash must not break the index build either.
+      insert.run('https://example.com/legacy', 'https://example.com/legacy', null, '2026-01-01');
+      // And a pre-existing DUPLICATE hash must not either — the index is
+      // deliberately non-unique because two URLs can serve identical markdown.
+      insert.run('https://example.com/dupe', 'https://example.com/dupe', 'hash-7', '2026-01-01');
+    })();
 
     expect(() => applyMigrations(db, { vecLoaded: false })).not.toThrow();
 
