@@ -125,13 +125,25 @@ function projectPageUrl(name: string, candidate: unknown): string {
   }
 }
 
+function parseUploadTime(stamp: string): number | undefined {
+  const ms = Date.parse(stamp);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
 function latestUpload(urls: unknown): string | undefined {
   if (!Array.isArray(urls)) return undefined;
+  let latestMs = Number.NEGATIVE_INFINITY;
   let latest: string | undefined;
   for (const file of urls) {
     if (!file || typeof file !== 'object') continue;
     const stamp = asString((file as PypiFile).upload_time_iso_8601);
-    if (stamp && (!latest || stamp > latest)) latest = stamp;
+    if (!stamp) continue;
+    const ms = parseUploadTime(stamp);
+    if (ms === undefined) continue;
+    if (ms > latestMs) {
+      latestMs = ms;
+      latest = stamp;
+    }
   }
   return latest;
 }

@@ -233,6 +233,46 @@ describe('PypiEngine', () => {
     expect(results[0].published_date).toBe('2024-12-06T15:37:21.509172Z');
   });
 
+  it('ignores malformed upload timestamps and keeps a valid one', async () => {
+    captureFetch(() => ({
+      body: {
+        ...projectBody(),
+        urls: [
+          { upload_time_iso_8601: 'garbage' },
+          { upload_time_iso_8601: '2024-99-99T00:00:00Z' },
+          { upload_time_iso_8601: '2024-12-06T15:37:21.509172Z' },
+        ],
+      },
+    }));
+    const results = await new PypiEngine().search('httpx');
+    expect(results[0].published_date).toBe('2024-12-06T15:37:21.509172Z');
+  });
+
+  it('compares upload times as instants, not lexicographically', async () => {
+    captureFetch(() => ({
+      body: {
+        ...projectBody(),
+        urls: [
+          { upload_time_iso_8601: '2024-01-01T00:30:00+01:00' },
+          { upload_time_iso_8601: '2024-01-01T00:00:00Z' },
+        ],
+      },
+    }));
+    const results = await new PypiEngine().search('httpx');
+    expect(results[0].published_date).toBe('2024-01-01T00:00:00Z');
+  });
+
+  it('omits published_date when every upload timestamp is malformed', async () => {
+    captureFetch(() => ({
+      body: {
+        ...projectBody(),
+        urls: [{ upload_time_iso_8601: 'not-a-timestamp' }],
+      },
+    }));
+    const results = await new PypiEngine().search('httpx');
+    expect(results[0].published_date).toBeUndefined();
+  });
+
   it('stops after maxResults valid packages', async () => {
     const { calls } = captureFetch((url) => {
       const name = url.split('/pypi/')[1]?.split('/json')[0];
