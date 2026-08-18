@@ -63,14 +63,15 @@ export class NpmRegistryEngine implements SearchEngine {
     if (!response.ok) throw new Error(`npm registry returned ${response.status}`);
 
     const data = (await response.json()) as NpmSearchResponse;
-    return this.parseObjects(data.objects ?? []);
+    return this.parseObjects(data.objects ?? [], size);
   }
 
-  private parseObjects(objects: NpmSearchObject[]): RawSearchResult[] {
+  private parseObjects(objects: NpmSearchObject[], maxResults: number): RawSearchResult[] {
     const results: RawSearchResult[] = [];
     const total = objects.length;
 
     for (let i = 0; i < total; i++) {
+      if (results.length >= maxResults) break;
       const pkg = objects[i].package;
       const name = asString(pkg?.name);
       if (!name) continue;

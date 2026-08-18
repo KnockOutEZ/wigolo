@@ -109,6 +109,20 @@ describe('NpmRegistryEngine', () => {
     expect(calls[0].url).toContain('text=q');
   });
 
+  it('stops after maxResults even if the registry returns extra objects', async () => {
+    const body = {
+      objects: [
+        { package: { name: 'one', version: '1.0.0' } },
+        { package: { name: 'two', version: '1.0.0' } },
+        { package: { name: 'three', version: '1.0.0' } },
+      ],
+    };
+    captureFetch(body);
+    const results = await new NpmRegistryEngine().search('q', { maxResults: 2 });
+    expect(results).toHaveLength(2);
+    expect(results.map((r) => r.title)).toEqual(['one', 'two']);
+  });
+
   it('clamps size to the registry maximum of 250', async () => {
     const { calls } = captureFetch({ objects: [] });
     await new NpmRegistryEngine().search('q', { maxResults: 1000 });
