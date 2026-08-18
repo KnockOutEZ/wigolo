@@ -31,12 +31,20 @@ import { isResolveError, type ResolveResult, type ResolveErrorReason } from './p
 import type { StudioActInput, StudioActOutput, StudioToolError } from '../daemon/studio-dispatch.js';
 import type { AuditRecordInput, AuditOutcome } from './audit.js';
 import { classifyRisk, type RiskTier, type RiskPatterns } from './risk.js';
-import type { ApprovalDecision, ApprovalRequest } from './approvals.js';
 import { deriveDomain, type PreGrantStore } from './pre-grant.js';
 import { refuseAgentType, type FieldSemantics } from './credential.js';
 
-/** S7: how a risky action was authorized at the gate, recorded in the audit alongside the live-verdict decisions. */
-export type AuthSource = ApprovalDecision | 'pre-grant' | 'parked';
+/**
+ * S7: how a risky action was authorized at the gate, recorded in the audit.
+ *
+ * EXHAUSTIVE, and deliberately only two: a matching human pre-grant authorizes, and everything else
+ * parks. There is NO live per-action approval verdict on this path — see the risk-gate note on
+ * `applyRiskGate` — so an `ApprovalDecision` (`approved`/`refused`/`timeout`/`superseded`) is not a
+ * value this type can take. Widening it back is the tell that someone has re-introduced a verdict
+ * wait; wire it end-to-end or leave this narrow. (`AuditRecordInput['approval']` stays wider because
+ * it also reads historical rows persisted before S7.)
+ */
+export type AuthSource = 'pre-grant' | 'parked';
 
 /** S7: a risky action with no matching pre-grant, enqueued for the human's batch review (not executed). */
 export interface ParkedAction {
@@ -79,12 +87,16 @@ export interface ActHandlerDeps {
   /** Phase 6b: the per-session append-only audit log; every action + outcome is recorded for trust + replay. Optional so the unit tests can omit it. */
   audit?: { record(input: AuditRecordInput): void };
   /**
-   * Phase 6c: the host↔human approval gate. A risky action (money/credential/destructive per the
-   * deterministic classifier) is HELD for human approval before firing. Optional so unit tests of
-   * the safe paths can omit it — but a RISKY action with no gate wired is refused (fail-closed),
-   * never fired.
+   * NO `approvals` DEP HERE — deliberate, and load-bearing. This seam once declared an
+   * `approvals?: { request(...) }` that NOTHING read: the CLI host even PASSED one and this handler
+   * never destructured it, so it advertised a per-action human verdict that did not exist (the
+   * Electron host did not pass it at all). A gate that is
+   * declared but unread is worse than no gate — it reads as protection to the next person and
+   * protects nothing. Risky actions are gated by the PRE-GRANT/PARK path below (plus the hard
+   * credential refusal, plus the D9 drive gate on `navigate`); the blocking round-trip was
+   * rejected by design (P1: risky verbs take the non-blocking park path, NOT
+   * `SessionApprovals.request()`). Re-adding a request seam here means wiring it end-to-end.
    */
-  approvals?: { request(req: ApprovalRequest): Promise<ApprovalDecision> };
   /** Phase 6c: the live page URL (host-observed) — the HARD signal the risk classifier weights over the page-controlled element role/name. */
   currentUrl?: () => string | undefined;
   /** Phase 6c: override the classifier's pattern set (configurable gate policy). Defaults to the built-in set. */
@@ -111,7 +123,7 @@ export interface ActHandlerDeps {
 
 /**
  * The internal result of dispatching one verb: the tool result PLUS the Phase-6c gating metadata
- * (risk tier + approval decision) when the action passed through the gate. The single audit choke
+ * (risk tier + authorization source) when the action passed through the gate. The single audit choke
  * point records all three from here, so every gating decision is logged.
  */
 interface ActResolution {
@@ -346,7 +358,7 @@ export function createActHandler(
     // P4: ghost cursor at the resolved centre (the point payload carries only coords + agent caption — a
     // credential-page type is still refused below, and no page-derived field ever rides this event).
     channel.announce?.({ t: 'point', center: g.center, caption: input.narration ?? '' });
-    // Slice 5a — the HARD credential-input refusal, BEFORE the approval gate and before focus.
+    // Slice 5a — the HARD credential-input refusal, BEFORE the risk gate and before focus.
     // Fail-closed, NOT approval-gated (HANDOFF §2/§4: login is human-only). Decides on the resolved
     // element's TRUE pierced-DOM semantics (never the spoofable a11y name), so a password field with a
     // blank/forged label is still caught; an unresolvable target in a credential context fails closed.

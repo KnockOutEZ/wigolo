@@ -194,7 +194,11 @@ export interface StudioHost {
   studioHandlers: StudioHostHandlers;
   /** Phase 6b: the per-session append-only audit log of every agent action + outcome (for trust + the Phase-7 replay timeline). Exposed for the timeline + headed tests. */
   audit: SessionAuditLog;
-  /** Phase 6c: the host↔human approval gate — risky actions are held here pending the human's WS answer. Exposed for the headed proof + the Phase-7 approval card. */
+  /**
+   * Phase 6c: the host↔human approval round-trip. Backs the D9 AUTHENTICATED-USE card only — it holds a
+   * `navigate` to a signed-in origin pending the human's WS answer. Risky click/type actions are NOT held
+   * here; they take the non-blocking pre-grant/park path in the act handler. Exposed for the headed proof.
+   */
   approvals: SessionApprovals;
   /** Human-only, per-session, revocable: lift the agent's localhost/RFC1918 nav block (cloud-metadata stays blocked). */
   grantAgentPrivateNav: (on: boolean) => void;
@@ -394,11 +398,12 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   };
   controller = new SessionController(controlToken, noopInputSink, (msg) => hub.broadcast(session.id, msg));
 
-  // Phase 6c approval gate: hold a risky agent action until the human answers. The {t:'approval_request'} goes
-  // out via the per-session broadcast (a no-op sink here; the Electron app renders the card). The human's answer
-  // routes back through approvals.handleWire (exposed via host.approvals — Electron IPC / tests). A human reclaim
-  // aborts every pending request (onChange below) so a held action does not survive a takeover — and the act
-  // handler layers the epoch fence on top.
+  // Phase 6c approval round-trip. Its ONE consumer is driveGate.requestApproval below (the D9 authenticated-use
+  // card), which holds a `navigate` to a signed-in origin until the human answers. It does NOT gate risky
+  // click/type — those classify → pre-grant → else park, non-blocking, via the act handler. The
+  // {t:'approval_request'} goes out via the per-session broadcast; the human's answer routes back through
+  // approvals.handleWire (exposed via host.approvals). A human reclaim aborts every pending request (onChange
+  // below) so a held navigation does not survive a takeover — and the act handler layers the epoch fence on top.
   const approvals = new SessionApprovals({ broadcast: (msg) => hub.broadcast(session.id, msg) });
 
   // S7: the pre-grant authorization scope store — CLOSURE-LOCAL (mirroring NavGrant), OFF the session object,
@@ -878,10 +883,13 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     t: 'sessions_snapshot',
     sessions: registry.list().map(sessionMeta),
   });
-  // Phase 6c: the act handler classifies each click/type (deterministic) and HOLDS a risky one for
-  // human approval before firing. currentUrl is the live page URL — the HARD signal the classifier
-  // weights over the page-controlled element role/name; a read failure degrades to undefined (the
-  // soft signal still applies). The gate composes with the epoch fence + logs every decision (6b).
+  // Phase 6c: the act handler classifies each click/type (deterministic) and gates a risky one — by the
+  // PRE-GRANT/PARK path below, NOT by holding it for a live human verdict. `approvals` is deliberately not
+  // passed: it used to be, and the handler never read it, which made this call site read like a per-action
+  // approval hold that did not exist. Its real consumer is driveGate.requestApproval (the D9 card).
+  // currentUrl is the live page URL — the HARD signal the classifier weights over the page-controlled
+  // element role/name; a read failure degrades to undefined (the soft signal still applies). The gate
+  // composes with the epoch fence + logs every decision (6b).
   const act = createActHandler({
     browser: sessionBrowser,
     controlToken,
@@ -889,7 +897,6 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     resolve,
     channel: controller,
     audit: auditLog,
-    approvals,
     // S7: the pre-grant gate. A risky action matching a live human grant is authorized (audited pre-grant);
     // no match parks (surfaced via the broadcast above, not executed). preGrant is read pull-at-eval here.
     preGrant,
