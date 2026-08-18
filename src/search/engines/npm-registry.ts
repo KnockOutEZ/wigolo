@@ -13,9 +13,6 @@ interface NpmPackage {
   description?: unknown;
   date?: unknown;
   publisher?: NpmPublisher;
-  links?: {
-    npm?: unknown;
-  };
 }
 
 interface NpmSearchObject {
@@ -59,6 +56,7 @@ export class NpmRegistryEngine implements SearchEngine {
     const response = await fetch(url, {
       signal: AbortSignal.timeout(timeoutMs),
       headers: {
+        'User-Agent': 'wigolo/0.1 (https://github.com/KnockOutEZ/wigolo)',
         Accept: 'application/json',
       },
     });
@@ -66,10 +64,13 @@ export class NpmRegistryEngine implements SearchEngine {
     if (!response.ok) throw new Error(`npm registry returned ${response.status}`);
 
     const data = (await response.json()) as NpmSearchResponse;
-    return this.parseObjects((data.objects ?? []).slice(0, maxResults));
+    // Guard against non-array payloads (objects: {} or a string) so the
+    // engine returns [] instead of throwing on .slice.
+    const objects = Array.isArray(data.objects) ? data.objects : [];
+    return this.parseObjects(objects, maxResults);
   }
 
-  private parseObjects(objects: NpmSearchObject[]): RawSearchResult[] {
+  private parseObjects(objects: NpmSearchObject[], maxResults: number): RawSearchResult[] {
     const results: RawSearchResult[] = [];
     const total = objects.length;
 
@@ -88,7 +89,9 @@ export class NpmRegistryEngine implements SearchEngine {
       const suffix = meta.length ? ` (${meta.join(', ')})` : '';
       const snippet = `${description}${suffix}`;
 
-      const url = asString(pkg?.links?.npm) ?? `https://www.npmjs.com/package/${name}`;
+      // Construct the canonical npmjs URL from the name rather than trusting
+      // the registry-supplied links.npm (untrusted JSON; could point anywhere).
+      const url = `https://www.npmjs.com/package/${name}`;
       const published_date = asString(pkg?.date);
 
       results.push({
@@ -99,6 +102,10 @@ export class NpmRegistryEngine implements SearchEngine {
         engine: 'npm-registry',
         ...(published_date ? { published_date } : {}),
       });
+
+      // Cap after mapping valid packages so nameless/invalid rows do not
+      // count against maxResults.
+      if (results.length >= maxResults) break;
     }
 
     return results;

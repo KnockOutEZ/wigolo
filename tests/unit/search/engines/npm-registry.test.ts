@@ -71,6 +71,31 @@ describe('NpmRegistryEngine', () => {
     expect(results[0].url).toBe('https://www.npmjs.com/package/left-pad');
   });
 
+  it('constructs the canonical npmjs URL instead of trusting links.npm', async () => {
+    const body = {
+      objects: [
+        {
+          package: {
+            name: '@types/node',
+            description: 'typed node',
+            links: { npm: 'https://evil.example/not-npmjs' },
+          },
+        },
+      ],
+    };
+    captureFetch(body);
+    const results = await new NpmRegistryEngine().search('types node');
+    expect(results[0].url).toBe('https://www.npmjs.com/package/@types/node');
+  });
+
+  it('sets a descriptive User-Agent header', async () => {
+    const { calls } = captureFetch({ objects: [] });
+    await new NpmRegistryEngine().search('q');
+    const headers = calls[0].init?.headers as Record<string, string>;
+    expect(headers['User-Agent']).toContain('wigolo');
+    expect(headers['User-Agent']).toContain('https://github.com/KnockOutEZ/wigolo');
+  });
+
   it('builds snippet without version/publisher metadata when absent', async () => {
     const body = {
       objects: [{ package: { name: 'foo', description: 'a thing' } }],
@@ -120,6 +145,29 @@ describe('NpmRegistryEngine', () => {
     const results = await new NpmRegistryEngine().search('q', { maxResults: 3 });
     expect(results).toHaveLength(3);
     expect(results.map((r) => r.title)).toEqual(['pkg-0', 'pkg-1', 'pkg-2']);
+  });
+
+  it('counts maxResults against valid packages, not raw objects', async () => {
+    const body = {
+      objects: [
+        { package: { name: null, description: 'no name' } },
+        { package: { name: 'first-valid', description: 'a' } },
+        { package: { name: 'second-valid', description: 'b' } },
+      ],
+    };
+    captureFetch(body);
+    const results = await new NpmRegistryEngine().search('q', { maxResults: 1 });
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('first-valid');
+  });
+
+  it('returns empty array when objects is a non-array value', async () => {
+    captureFetch({ objects: {} });
+    const results = await new NpmRegistryEngine().search('q');
+    expect(results).toEqual([]);
+    captureFetch({ objects: 'not-an-array' });
+    const results2 = await new NpmRegistryEngine().search('q');
+    expect(results2).toEqual([]);
   });
 
   it('encodes the query text parameter', async () => {
