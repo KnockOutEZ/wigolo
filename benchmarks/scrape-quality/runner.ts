@@ -31,8 +31,12 @@ export async function runFixture(
   try {
     const extracted = await extractContent(html, fixture.url);
     const structured = extractStructured(html);
+    // `sourceHtml` is the HTML THIS run extracted from — the live lane's rendered DOM on the
+    // live lane, the frozen bytes on the frozen lane. `visible_only` checks non-vacuity
+    // against it, so handing it the frozen bytes during a live run would let a node the
+    // renderer removed still count as "present in the HTML".
     const assertions: AssertionResult[] = fixture.assertions.map((a) =>
-      evaluateAssertion(a, extracted.markdown, structured),
+      evaluateAssertion(a, extracted.markdown, structured, { sourceHtml: html }),
     );
     return {
       id: fixture.id,
@@ -113,10 +117,37 @@ async function main(): Promise<void> {
   };
   const has = (name: string) => argv.includes(`--${name}`);
 
-  const report = await runBenchmark({ filter: flag('filter') });
+  const filter = flag('filter');
+  const report = await runBenchmark({ filter });
 
   if (!existsSync(OUTPUT_DIR)) mkdirSync(OUTPUT_DIR, { recursive: true });
   writeFileSync(join(OUTPUT_DIR, 'scrape-quality.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf-8');
+
+  // S12-0 — the live lane. Dynamically imported so the frozen lane (the BLOCKING gate) never
+  // pays for a browser it does not use, and so a missing browser binary cannot break the lane
+  // that has to run on every PR.
+  if (flag('lane') === 'live') {
+    const { createBrowserReader, runLiveLane, compareLanes, renderParity } = await import('./live-lane.js');
+    const seed = (flag('seed-regression') ?? 'none') as import('./live-lane.js').LiveSeed;
+    const manifest = loadManifest();
+    const reader = await createBrowserReader();
+    let live;
+    try {
+      live = await runLiveLane({ manifest, htmlDir: HTML_DIR, reader, seed, filter });
+    } finally {
+      await reader.close();
+    }
+    const parity = compareLanes(manifest, report, live);
+    writeFileSync(join(OUTPUT_DIR, 'scrape-quality-live.json'), `${JSON.stringify({ live, parity }, null, 2)}\n`, 'utf-8');
+    const out = `${renderMarkdown(live)}${renderParity(parity)}`;
+    writeFileSync(join(OUTPUT_DIR, 'scrape-quality-live.md'), out, 'utf-8');
+    process.stderr.write(out);
+    if (!parity.ok) {
+      log.error('live-lane parity FAILED', { mismatches: parity.mismatches.length, seed });
+      process.exitCode = 1;
+    }
+    return;
+  }
 
   if (has('write-baseline')) {
     const b = writeBaseline(report, flag('commit') ?? 'unknown', flag('note') ?? 'pre-S9 baseline');

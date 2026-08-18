@@ -1,5 +1,5 @@
 import type { StructuredData } from '../../src/types.js';
-import type { Assertion, AssertionResult, Category, FixtureResult, MarkdownFeature, ScrapeReport, CategorySummary } from './types.js';
+import type { Assertion, AssertionContext, AssertionResult, Category, FixtureResult, HealTier, MarkdownFeature, ScrapeReport, CategorySummary } from './types.js';
 
 /** Count a markdown feature. Deliberately simple and line-based: the point is to
  *  detect a feature DISAPPEARING (a table flattened to prose, code fences dropped),
@@ -51,10 +51,28 @@ function norm(s: string): string {
   return s.replace(/\\([!-/:-@[-`{-~])/g, '$1').replace(/\s+/g, ' ').toLowerCase();
 }
 
+/** Heal tiers are ordered; `heal_at_least` is a floor, not an equality. */
+const HEAL_RANK: Record<HealTier, number> = { none: 0, low: 1, medium: 2, high: 3 };
+
+/** Strip tags and decode the handful of entities that would hide a literal match. */
+function htmlText(html: string): string {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&apos;/g, "'");
+}
+
 export function evaluateAssertion(
   a: Assertion,
   markdown: string,
   structured: StructuredData,
+  ctx: AssertionContext = {},
 ): AssertionResult {
   switch (a.kind) {
     case 'contains': {
@@ -80,6 +98,45 @@ export function evaluateAssertion(
       const want = norm(a.value);
       const passed = cells.some((c) => c.includes(want));
       return { category: a.category, passed, describe: `some table cell contains "${a.value}"`, detail: passed ? undefined : `${cells.length} cells scanned` };
+    }
+    case 'visible_only': {
+      const describe = `invisible "${a.value}" does not survive extraction`;
+      // NON-VACUITY, checked before the property itself. The claim is "this text IS in the
+      // HTML and must NOT come out". If the text is not in the HTML, there is nothing to
+      // suppress and a "pass" would be measuring nothing — so it FAILS, loudly. Without
+      // this, one typo'd fixture value scores a free point for the life of the corpus.
+      if (ctx.sourceHtml === undefined) {
+        return { category: a.category, passed: false, describe, detail: 'not evaluated: visible_only needs sourceHtml' };
+      }
+      if (!norm(htmlText(ctx.sourceHtml)).includes(norm(a.value))) {
+        return { category: a.category, passed: false, describe, detail: 'VACUOUS: value is not in the source HTML, so this assertion suppresses nothing' };
+      }
+      const passed = !norm(markdown).includes(norm(a.value));
+      return { category: a.category, passed, describe, detail: passed ? undefined : 'invisible content leaked into extracted markdown' };
+    }
+    case 'row_columns': {
+      const describe = `replay columns == [${a.expect.join(', ')}]`;
+      if (!ctx.replay) return { category: a.category, passed: false, describe, detail: 'not evaluated: no replay outcome' };
+      // Set equality, not sequence equality. The spec (§3.3, §8-B) says "column SET"; it
+      // never states whether column ORDER is part of the recorded identity, so this scores
+      // the claim the spec actually makes rather than a stricter one it does not.
+      // Flagged in the S12-0 report as an unstated parameter for S12-4 to settle.
+      const got = new Set(ctx.replay.columns.map(norm));
+      const want = new Set(a.expect.map(norm));
+      const passed = got.size === want.size && [...want].every((c) => got.has(c));
+      return { category: a.category, passed, describe, detail: passed ? undefined : `actual [${ctx.replay.columns.join(', ')}]` };
+    }
+    case 'row_count': {
+      const describe = `replay row count in [${a.min}, ${a.max}]`;
+      if (!ctx.replay) return { category: a.category, passed: false, describe, detail: 'not evaluated: no replay outcome' };
+      const n = ctx.replay.rowCount;
+      return { category: a.category, passed: n >= a.min && n <= a.max, describe, detail: `actual ${n}` };
+    }
+    case 'heal_at_least': {
+      const describe = `heal verdict >= ${a.tier}`;
+      if (!ctx.replay) return { category: a.category, passed: false, describe, detail: 'not evaluated: no replay outcome' };
+      const got = ctx.replay.healTier;
+      return { category: a.category, passed: HEAL_RANK[got] >= HEAL_RANK[a.tier], describe, detail: `actual ${got}` };
     }
   }
 }

@@ -80,6 +80,9 @@
     "bench:embedding:quality": "RUN_FASTEMBED=1 tsx benchmarks/embedding/runner.ts",
     "bench:truncation": "tsx benchmarks/truncation/runner.ts",
     "bench:scrape": "tsx benchmarks/scrape-quality/runner.ts",
+    "bench:scrape:live": "tsx benchmarks/scrape-quality/runner.ts --lane=live",
+    "bench:scrape:corpus": "tsx benchmarks/scrape-quality/corpus-gate.ts",
+    "bench:scrape:drift": "tsx benchmarks/scrape-quality/drift.ts",
     "bench:scrape:firecrawl": "tsx benchmarks/scrape-quality/firecrawl.ts"
   },
   "publishConfig": {
