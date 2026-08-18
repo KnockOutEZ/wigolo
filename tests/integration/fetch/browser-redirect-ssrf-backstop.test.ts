@@ -103,13 +103,48 @@ describe('browser tier post-navigation backstop (no per-hop interceptor)', () =>
       return;
     }
     sinkHits.length = 0;
-    await expect(pool.fetchWithBrowser(`http://127.0.0.1:${originPort}/r1`)).rejects.toThrow(
-      /unspecified IPv4 \(0\.0\.0\.0\)/i,
+
+    // THE security property, asserted first and on its own: the blocked body is
+    // never returned to the caller. Resolving at all is the failure — deleting the
+    // post-navigation `assertNavigationChainAllowed` from browser-pool.ts makes this
+    // call resolve with SINK BODY, which is the mutation this file exists to kill.
+    const err = await pool.fetchWithBrowser(`http://127.0.0.1:${originPort}/r1`).then(
+      (r) => {
+        throw new Error(
+          `SECURITY: the blocked redirect target returned a body instead of refusing: ${String(r.html).slice(0, 120)}`,
+        );
+      },
+      (e: unknown) => e,
     );
-    // Asserted, not glossed: without CDP the request DOES go out. This is the
-    // honest ceiling of the firefox/webkit path, and it is why the interceptor
-    // exists on Chromium rather than this check being the whole fence.
-    expect(sinkHits).toEqual(['/pwned']);
+    const message = err instanceof Error ? err.message : String(err);
+
+    // Attribution, which is platform-dependent and is NOT the security property.
+    // Two refusal paths both satisfy the guarantee:
+    //   - wigolo's own backstop re-guards the navigation chain after the fact;
+    //   - the browser engine declines to route 0.0.0.0 at all, before wigolo sees
+    //     the hop (observed on windows-latest as net::ERR_ADDRESS_INVALID).
+    // Accepting either keeps the test honest cross-platform; accepting ANY rejection
+    // would not, because a timeout or a crash would then read as a refusal.
+    const byBackstop = /unspecified IPv4 \(0\.0\.0\.0\)/i.test(message);
+    const byEngine = /net::ERR_ADDRESS_(?:INVALID|UNREACHABLE)/i.test(message);
+    expect(
+      byBackstop || byEngine,
+      `refused, but for an unrecognised reason — neither wigolo's backstop nor an engine address refusal: ${message}`,
+    ).toBe(true);
+
+    // Asserted, not glossed, and correlated with WHICH path refused. Through the
+    // backstop the request DOES go out first — the honest ceiling of the
+    // firefox/webkit path, and why the interceptor exists on Chromium rather than
+    // this check being the whole fence. When the engine refuses the address up
+    // front, nothing is ever sent, so demanding a sink hit there would assert the
+    // absence of a stronger outcome.
+    expect(sinkHits).toEqual(byBackstop ? ['/pwned'] : []);
+    if (!byBackstop) {
+      console.warn(
+        'the browser engine refused 0.0.0.0 before wigolo\'s backstop was reached; ' +
+          'the refusal holds but the BACKSTOP itself is not exercised on this platform',
+      );
+    }
   }, 90_000);
 
   it('still returns an allowed redirect target, so the backstop is not a blanket refusal', async () => {
