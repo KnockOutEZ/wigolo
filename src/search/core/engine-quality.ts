@@ -42,8 +42,10 @@ import type { EngineQualityTier } from './engine-base.js';
  *  - github-code: structured JSON but the snippet is the repository
  *    description or the file path — useful for ranking but rarely
  *    quotable evidence → medium.
- *  - crates-io / npm-registry: structured package-registry JSON with
- *    reliable name/description/version fields → high.
+ *  - crates-io: structured package-registry JSON with reliable
+ *    name/description/version fields → high.
+ *  - npm-registry: structured JSON, but package descriptions are short
+ *    marketplace blurbs rather than wikipedia/MDN-grade evidence → medium.
  *  - devdocs: static slug lookup, snippet is just "Title — type" → low.
  *  - arxiv / semantic-scholar: structured paper APIs with abstracts when
  *    present, but `abstract` is frequently missing on S2 → medium.
@@ -55,9 +57,9 @@ const ENGINE_QUALITY: Record<string, EngineQualityTier> = {
   // crates.io: structured JSON API with reliable Cargo.toml-sourced
   // descriptions → high, same class as wikipedia/mdn.
   'crates-io': 'high',
-  // npm registry: structured JSON API with package name/description/version
-  // → high, same class as crates-io.
-  'npm-registry': 'high',
+  // npm registry: structured JSON, but descriptions are short package
+  // blurbs rather than wikipedia/MDN-grade evidence → medium.
+  'npm-registry': 'medium',
   bing: 'medium',
   bing_news: 'medium',
   duckduckgo: 'medium',

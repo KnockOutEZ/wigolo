@@ -82,7 +82,7 @@ export function getCodeEngines(): EngineEntry[] {
     weight: 0.3,
     supportsDateFilter: false,
     secondary: true,
-    quality: 'high',
+    quality: 'medium',
   });
 
   cached = entries;

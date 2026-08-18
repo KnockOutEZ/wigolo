@@ -62,6 +62,12 @@ describe('getCodeEngines', () => {
     expect(a).not.toBe(b);
   });
 
+  it('tags npm-registry medium quality (package blurbs, not wikipedia/MDN-grade)', () => {
+    const entries = getCodeEngines();
+    expect(entries.find((e) => e.engine.name === 'npm-registry')?.quality).toBe('medium');
+    expect(entries.find((e) => e.engine.name === 'crates-io')?.quality).toBe('high');
+  });
+
   it('marks MDN, crates-io, and npm-registry as secondary and leaves the other engines primary', () => {
     const entries = getCodeEngines();
     const secondaries = ['mdn', 'crates-io', 'npm-registry'];
