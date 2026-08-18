@@ -22,7 +22,58 @@ export type Assertion =
   /** Structured extraction must surface at least `min` items of this kind. */
   | { kind: 'structured'; category: Category; field: StructuredField; min: number; why: string }
   /** Some table produced by structured extraction must contain this cell text. */
-  | { kind: 'table_cell'; category: Category; value: string; why: string };
+  | { kind: 'table_cell'; category: Category; value: string; why: string }
+  /**
+   * S12-0 — this text IS in the source HTML and must NOT survive extraction, because the
+   * human cannot see it (display:none, a collapsed <details>, an off-screen tab panel).
+   *
+   * Deliberately NOT the same as `absent`: `absent` means "boilerplate, should never be
+   * extracted from anywhere". `visible_only` means "real content that happens to be
+   * invisible", and it carries a NON-VACUITY obligation the others do not — the value must
+   * be present in the source HTML, or the assertion is scoring nothing. A fixture typo that
+   * made the string unfindable would otherwise read as a free pass forever.
+   */
+  | { kind: 'visible_only'; category: Category; value: string; why: string }
+  /** S12-0 — a recipe replay must produce exactly this column set. Drift corpus only. */
+  | { kind: 'row_columns'; category: Category; expect: string[]; why: string }
+  /** S12-0 — a recipe replay's row count must land in [min, max]. Drift corpus only. */
+  | { kind: 'row_count'; category: Category; min: number; max: number; why: string }
+  /** S12-0 — a recipe replay's heal verdict must be at least this tier. Drift corpus only. */
+  | { kind: 'heal_at_least'; category: Category; tier: 'high' | 'medium'; why: string };
+
+/**
+ * The assertion kinds that score a RECIPE REPLAY rather than an extraction pass. They are
+ * unevaluable without a replay outcome, so they belong to the drift corpus and never to the
+ * C0 fixture manifest — `validateCorpus` enforces that separation, because an unevaluable
+ * assertion sitting in the blocking lane would either fail forever or (worse) be softened
+ * into a pass and quietly stop measuring.
+ */
+export const REPLAY_ASSERTION_KINDS = ['row_columns', 'row_count', 'heal_at_least'] as const;
+export type ReplayAssertionKind = (typeof REPLAY_ASSERTION_KINDS)[number];
+
+/** Heal verdict tiers, mirroring `src/studio/mark/heal.ts:22`. */
+export type HealTier = 'high' | 'medium' | 'low' | 'none';
+
+/** What a recipe replay produced, for the three replay assertion kinds to score. */
+export interface ReplayOutcome {
+  columns: string[];
+  rowCount: number;
+  healTier: HealTier;
+}
+
+/**
+ * Extra inputs some assertion kinds need beyond the extracted markdown.
+ *
+ * Every field is optional, and every kind that needs one FAILS LOUDLY when it is absent
+ * rather than passing. A missing input that read as a pass is the exact shape of the vacuous
+ * control this program has been caught by three times.
+ */
+export interface AssertionContext {
+  /** The HTML extraction ran on. Required by `visible_only` for its non-vacuity check. */
+  sourceHtml?: string;
+  /** A recipe replay's outcome. Required by the three replay kinds. */
+  replay?: ReplayOutcome;
+}
 
 export type MarkdownFeature = 'heading' | 'table_row' | 'link' | 'code_block' | 'list_item' | 'char';
 export type StructuredField = 'tables' | 'definitions' | 'jsonld' | 'chart_hints' | 'key_value_pairs';
