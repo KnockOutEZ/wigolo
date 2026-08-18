@@ -45,11 +45,11 @@ const OPEN_RE = new RegExp(`\\[\\[BEGIN UNTRUSTED DATA nonce=(${NONCE})(?: origi
  * marker text or a foreign nonce's terminator; neither produces a span here, so pseudo-fenced bytes
  * are still reported as unfenced.
  */
-function closedRegionSpans(s: string): Array<{ open: number; close: number }> {
-  const spans: Array<{ open: number; close: number }> = [];
+export function closedRegionSpans(s: string): Array<{ open: number; close: number; nonce: string }> {
+  const spans: Array<{ open: number; close: number; nonce: string }> = [];
   for (const m of s.matchAll(new RegExp(OPEN_RE))) {
     const close = s.indexOf(`${UNTRUSTED_END_PREFIX}${m[1]}]]`, m.index + m[0].length);
-    if (close >= 0) spans.push({ open: m.index, close });
+    if (close >= 0) spans.push({ open: m.index, close, nonce: m[1] });
   }
   return spans;
 }
