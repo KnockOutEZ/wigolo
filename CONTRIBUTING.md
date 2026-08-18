@@ -30,7 +30,9 @@ npm run lint         # tsc --noEmit
 
 - Prefer the smallest change that fully solves the problem.
 - Match the surrounding code style. Minimal comments — only where the "why" is
-  non-obvious.
+  non-obvious. Implicit contracts that cannot fit in a comment belong next to
+  the code (search dispatch, `secondary`, and `search_engines` are in
+  [`src/search/README.md`](src/search/README.md)).
 - All logging goes to stderr (stdout is reserved for the MCP stdio protocol).
 - Don't add dependencies without a clear need; note new deps in the PR.
 
