@@ -36,7 +36,7 @@
  * test of the fence.
  */
 import { readFileSync, readdirSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -45,8 +45,12 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 // shadowed by `nav` / `control-token`.
 const SAFETY = /from\s+['"][^'"]*(?:fetch\/browser-request-guard|studio\/perception\/resolve|studio\/mark\/target|studio\/mark\/inspect|studio\/mark\/store|studio\/mark\/generalize|studio\/mark\/heal|studio\/nav-policy|studio\/session-control|studio\/control-token|studio\/nav|studio\/audit|studio\/approvals|studio\/act|studio\/risk|studio\/input|studio\/handle|daemon\/studio-dispatch|security\/untrusted|server\/content-fence|helpers\/untrusted-fence)\.js['"]/;
 
+// tsconfig `include` entries are always `/`-separated; `path.relative` yields `\` on win32.
+// Compare in POSIX form on both sides or the guard flags EVERY gated file as missing.
+const posix = (p) => p.split(sep).join('/');
+
 const cfg = JSON.parse(readFileSync(join(ROOT, 'tsconfig.test.json'), 'utf8'));
-const gated = new Set(cfg.include.filter((p) => p.startsWith('tests/')));
+const gated = new Set(cfg.include.map(posix).filter((p) => p.startsWith('tests/')));
 
 function walk(dir) {
   const out = [];
@@ -60,7 +64,7 @@ function walk(dir) {
 
 const offenders = [];
 for (const file of walk(join(ROOT, 'tests'))) {
-  const rel = relative(ROOT, file);
+  const rel = posix(relative(ROOT, file));
   if (SAFETY.test(readFileSync(file, 'utf8')) && !gated.has(rel)) offenders.push(rel);
 }
 
