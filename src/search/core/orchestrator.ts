@@ -239,6 +239,9 @@ export interface OrchestratorOutput {
   allowlistFallback?: boolean;
 }
 
+// Vertical roster, `secondary` ranking, `search_engines` allowlist, and
+// unknown-name warnings: src/search/README.md. Keep that page in sync with
+// this file — the functions below are the implementation of that contract.
 function getEntriesForVertical(vertical: Vertical): EngineEntry[] {
   switch (vertical) {
     case 'general':
