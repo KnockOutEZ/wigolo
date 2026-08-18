@@ -1,7 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import config, { ASAR_UNPACK, BROKER_ASAR_UNPACK, NATIVE_ASAR_UNPACK, OMIT_ENV, resolveAsarUnpack } from '../../electron-builder.config';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import config, {
+  ASAR_UNPACK,
+  BROKER_ASAR_UNPACK,
+  NATIVE_ASAR_UNPACK,
+  OMIT_CLOSURE_ENV,
+  OMIT_ENV,
+  resolveAsarUnpack,
+  wigoloRuntimeClosure,
+} from '../../electron-builder.config';
 
 const appPkg = JSON.parse(readFileSync(join(import.meta.dirname, '../../package.json'), 'utf8')) as {
   dependencies: Record<string, string>;
@@ -153,6 +161,102 @@ describe('dev-channel packaging invariants', () => {
     for (const dir of ['src', 'tests', 'internal-docs', 'benchmarks']) {
       expect(files).toMatch(new RegExp(`!node_modules/wigolo/\\{[^}]*\\b${dir}\\b`));
     }
+  });
+});
+
+describe("wigolo's own dependencies have to be carried into the artifact", () => {
+  /**
+   * Found by copying the packaged app OUT of the repository and launching it: one process, no
+   * helpers, no stderr, parked in a modal load error —
+   * `ERR_MODULE_NOT_FOUND: Cannot find package '@modelcontextprotocol/sdk' imported from
+   * .../node_modules/wigolo/dist/daemon/proxy.js`. electron-builder collects the app's dependency
+   * tree, `wigolo` is in it, and `wigolo`'s own 28 dependencies are NOT: npm hoists them to the
+   * workspace root and `npm list` from the app directory does not report them under the `file:` link.
+   *
+   * In-repo the app rescues itself by resolving up and out of the `.app` into the workspace, which is
+   * why nothing caught it. These run on every push; `tests/e2e/packaging.spec.ts` proves the same
+   * thing against a real artifact staged outside the repo.
+   */
+  const REPO_ROOT = resolve(import.meta.dirname, '../../../..');
+  const { modulesDir, entries } = wigoloRuntimeClosure(REPO_ROOT);
+  const shipped = new Set(entries.map((e) => e.rel));
+
+  it("carries every one of the core package's direct dependencies", () => {
+    // Read from package.json, never listed here. A literal list would be satisfied by the six
+    // packages the crash report happened to name and would go stale on the next `npm install <x>`.
+    for (const name of Object.keys(corePkg.dependencies)) {
+      expect(shipped.has(name), `${name} is a wigolo dependency and is missing from the artifact`).toBe(true);
+    }
+  });
+
+  it('is closed under resolution, so nothing it carries can reach a package it does not', () => {
+    // THE property, and the one a plausible-looking optimisation broke: an earlier attempt subtracted
+    // the packages electron-builder already ships into `app.asar.unpacked/node_modules`, and the app
+    // died on `Cannot find module 'inherits'`. That tree and this one are SIBLINGS — Node only walks
+    // up — so a set placed above the archive cannot borrow from a set placed inside it.
+    const missing: string[] = [];
+    for (const { rel } of entries) {
+      const dir = join(modulesDir, rel);
+      const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
+        dependencies?: Record<string, string>;
+      };
+      for (const dep of Object.keys(pkg.dependencies ?? {})) {
+        // Node's own lookup, restricted to what the artifact actually contains: nested first, then
+        // each ancestor up to the root of the shipped tree.
+        let segments = rel.split('/');
+        let found = false;
+        for (;;) {
+          if (shipped.has([...segments, 'node_modules', dep].join('/')) || (segments.length === 0 && shipped.has(dep))) {
+            found = true;
+            break;
+          }
+          if (segments.length === 0) break;
+          segments = segments.slice(0, -1);
+        }
+        if (!found) missing.push(`${rel} -> ${dep}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it('resolves every shipped package to a directory that really exists', () => {
+    for (const { rel } of entries) expect(existsSync(join(modulesDir, rel, 'package.json'))).toBe(true);
+  });
+
+  it('lands above the archive, where resolution from inside app.asar can reach it', () => {
+    // `Contents/Resources/node_modules` is the first `node_modules` ABOVE `app.asar`. Measured: a
+    // destination of `app.asar.unpacked/node_modules` does NOT work — resolution from
+    // `app.asar/node_modules/wigolo/…` consults the archive's virtual node_modules and then
+    // `Resources/node_modules`, and never looks inside the sibling unpacked tree.
+    const sets = config.extraResources as Array<{ from: string; to: string; filter: string[] }>;
+    expect(sets).toHaveLength(1);
+    expect(sets[0].to).toBe('node_modules');
+    expect(sets[0].from).toBe(modulesDir);
+  });
+
+  it('names no package in its exclusions', () => {
+    // The exclusions are allowed to remove FILE CLASSES that no runtime reads. The moment one names a
+    // package it becomes the hand-maintained list this whole mechanism exists to avoid.
+    const sets = config.extraResources as Array<{ filter: string[] }>;
+    const negations = sets[0].filter.filter((p) => p.startsWith('!'));
+    expect(negations).toEqual(['!**/*.{d.ts,map}']);
+  });
+
+  it('fails the build rather than shipping a gap, when a dependency is not installed', () => {
+    // The failure mode this guards is silence. A closure that quietly skipped what it could not find
+    // would produce an artifact that starts on the build machine and nowhere else — which is exactly
+    // the defect, rebuilt inside the fix.
+    expect(() => wigoloRuntimeClosure(join(REPO_ROOT, 'apps'))).toThrow();
+  });
+});
+
+describe(`${OMIT_CLOSURE_ENV} negative-control seam`, () => {
+  it('is a seam of its own, not folded into the asarUnpack one', () => {
+    // The two remove different mechanisms: OMIT_ENV decides archived-vs-unpacked for files already
+    // collected, this decides whether wigolo's dependencies are collected at all. A control that
+    // conflated them could not tell which one it had broken.
+    expect(OMIT_CLOSURE_ENV).not.toBe(OMIT_ENV);
+    expect(() => resolveAsarUnpack('wigolo-closure')).toThrow(/not one of/);
   });
 });
 
