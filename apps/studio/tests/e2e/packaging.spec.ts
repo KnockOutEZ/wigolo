@@ -1,17 +1,18 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { createConnection, createServer, type AddressInfo } from 'node:net';
 import { get } from 'node:http';
 import { createRequire } from 'node:module';
-import { OMIT_ENV } from '../../electron-builder.config';
+import { _electron as electron } from 'playwright';
+import { OMIT_ENV, OMIT_CLOSURE_ENV } from '../../electron-builder.config';
 
 /**
- * GATED (RUN_STUDIO_PACKAGE_E2E) — separately from RUN_STUDIO_E2E, because this file BUILDS three
- * complete Electron artifacts (~380 MB and several minutes each). It is the only place the packaged
- * code path is actually executed rather than reasoned about.
+ * GATED (RUN_STUDIO_PACKAGE_E2E) — separately from RUN_STUDIO_E2E, because this file BUILDS four
+ * complete Electron artifacts (~380–670 MB and several minutes each) and copies two of them again.
+ * It is the only place the packaged code path is actually executed rather than reasoned about.
  *
  * BE HONEST ABOUT WHAT THE GATE COSTS: nothing in ordinary CI runs any of this, so a packaged-only
  * regression reaches a launch before it reaches a failing test. That is exactly how the DB-broker
@@ -19,6 +20,13 @@ import { OMIT_ENV } from '../../electron-builder.config';
  * simulates the two packaged trees with ordinary directories and DOES run on every push.
  *
  * What it proves, and why each half is needed:
+ *
+ *  - OUTSIDE THE REPO: the artifact is copied to a temp dir with ZERO `node_modules` in any ancestor
+ *    and launched there. Every other block in this file runs the artifact where it was built, and
+ *    that location can always answer a missing dependency out of the developer's own workspace —
+ *    which is precisely how a packaged app that never starts anywhere else passed every gate. Its
+ *    control builds the same app with wigolo's dependency closure dropped and shows the failure both
+ *    ways round: broken outside, green inside.
  *
  *  - POSITIVE: every native module the studio depends on loads from INSIDE the packaged app. Not
  *    "the file is present" — an opened DB with a working FTS5 MATCH, a real KNN query through the
@@ -49,11 +57,14 @@ import { OMIT_ENV } from '../../electron-builder.config';
 const RUN = !!process.env.RUN_STUDIO_PACKAGE_E2E;
 
 const APP_DIR = join(import.meta.dirname, '../..');
+const REPO_ROOT = resolve(APP_DIR, '../..');
 const PROBE = join(import.meta.dirname, '../native-probe.cjs');
 const BROKER_PROBE = join(import.meta.dirname, '../broker-probe.cjs');
+const CLOSURE_PROBE = join(import.meta.dirname, '../closure-probe.cjs');
 const GOOD_OUT = 'release-e2e';
 const CONTROL_OUT = 'release-e2e-control';
 const BROKER_CONTROL_OUT = 'release-e2e-broker-control';
+const CLOSURE_CONTROL_OUT = 'release-e2e-closure-control';
 
 const appPath = (out: string) => join(APP_DIR, out, 'mac-arm64', 'Wigolo Studio.app');
 const binary = (out: string) => join(appPath(out), 'Contents/MacOS/Wigolo Studio');
@@ -137,6 +148,144 @@ function brokerProbe(anchor: string, out: string, host?: { runtime: string; env:
   }
   return JSON.parse(stdout.trim().split('\n').pop() as string) as BrokerProbeResult;
 }
+
+interface ClosureProbeResult {
+  bundleRoot: string | null;
+  stages: Record<string, { ok: boolean; detail: string }>;
+}
+
+/** Every ancestor directory of `dir` that contains a `node_modules`. */
+function ancestorNodeModules(dir: string): string[] {
+  const hits: string[] = [];
+  for (let d = dir; ; ) {
+    const nm = join(d, 'node_modules');
+    if (existsSync(nm)) hits.push(nm);
+    const parent = dirname(d);
+    if (parent === d) return hits;
+    d = parent;
+  }
+}
+
+/**
+ * Copy a built artifact somewhere Node's resolver cannot climb out of it, and REFUSE to hand back a
+ * path that does not have that property.
+ *
+ * This is the single most important line in the file. Every other probe here runs against an
+ * artifact sitting inside the repository, where a missing dependency is silently supplied by the
+ * developer's own workspace — `apps/studio/node_modules`, the workspace root, and (because this repo
+ * is routinely checked out as a nested git worktree) the PARENT checkout's `node_modules` as well.
+ * Three chances to pass for the wrong reason. The refusal is not paranoia: a temp dir that happened
+ * to sit under a package would quietly restore the escape and this whole describe block would go
+ * green against a broken artifact.
+ */
+function stageOutsideRepo(out: string): string {
+  const dest = mkdtempSync(join(tmpdir(), 'wigolo-outside-'));
+  const escapes = ancestorNodeModules(dest);
+  if (escapes.length > 0) {
+    throw new Error(`staging dir ${dest} can resolve up into ${escapes.join(', ')} — it is not outside anything`);
+  }
+  if (dest.startsWith(REPO_ROOT + sep)) throw new Error(`staging dir ${dest} is inside the repo at ${REPO_ROOT}`);
+  execFileSync('cp', ['-R', appPath(out), dest], { timeout: 10 * 60_000 });
+  return join(dest, 'Wigolo Studio.app');
+}
+
+/** Load the packaged main process's real module graph, hosted on the packaged Electron binary. */
+function closureProbe(bundle: string): ClosureProbeResult {
+  const anchor = join(bundle, 'Contents/Resources/app.asar/out/main/index.js');
+  let stdout: string;
+  try {
+    stdout = execFileSync(join(bundle, 'Contents/MacOS/Wigolo Studio'), [CLOSURE_PROBE, anchor], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      encoding: 'utf8',
+      timeout: 120_000,
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (err) {
+    // A failing stage exits non-zero BY DESIGN — its JSON is the result, not an error.
+    const e = err as { stdout?: string; message?: string };
+    if (!e.stdout?.trim()) throw new Error(`closure probe produced no output: ${e.message}`);
+    stdout = e.stdout;
+  }
+  return JSON.parse(stdout.trim().split('\n').pop() as string) as ClosureProbeResult;
+}
+
+/**
+ * THE SHIP GATE. Everything above this line runs against an artifact inside the repository, and that
+ * is exactly how the dependency-closure defect reached a launch: `wigolo` is a `file:../..` workspace
+ * dependency whose own 28 dependencies npm HOISTS to the workspace root, electron-builder's collector
+ * never walks them, and in-repo the app rescues itself by resolving up and out of the `.app` into the
+ * developer's tree. One process, no helpers, no stderr, parked in a modal error dialog — on every
+ * machine except the one that built it.
+ */
+describe.skipIf(!RUN)('the packaged app starts from OUTSIDE the repository', () => {
+  let bundle: string;
+
+  beforeAll(() => {
+    if (!existsSync(binary(GOOD_OUT))) pack(GOOD_OUT, {});
+    bundle = stageOutsideRepo(GOOD_OUT);
+  }, 30 * 60_000);
+
+  it('is staged where nothing can resolve up into a workspace', () => {
+    // Stated as an assertion and not just a helper precondition, because it is the property that
+    // makes every other expectation in this block mean anything.
+    expect(ancestorNodeModules(bundle)).toEqual([]);
+    expect(bundle.startsWith(REPO_ROOT + sep)).toBe(false);
+  });
+
+  it('loads the whole main-process module graph from inside the bundle', () => {
+    // Not "the files are present": `wigolo/studio` is the only external import the packaged main has,
+    // and importing it pulls the real transitive graph — @modelcontextprotocol/sdk, the extractors,
+    // the LLM adapters, all of it.
+    const { stages, bundleRoot } = closureProbe(bundle);
+    expect(stages.resolve?.ok, stages.resolve?.detail).toBe(true);
+    expect(stages.containment?.ok, stages.containment?.detail).toBe(true);
+    expect(bundleRoot).toBe(realpathSync(bundle));
+    expect(stages.load?.ok, stages.load?.detail).toBe(true);
+  }, 3 * 60_000);
+
+  it('launches and comes up ready', async () => {
+    // The acceptance criterion in its own words. The module probe above is more diagnostic, but only
+    // a real GUI launch can fail the way the defect failed — silently, with the error swallowed by a
+    // modal dialog that never reaches stderr.
+    const app = await electron.launch({ executablePath: join(bundle, 'Contents/MacOS/Wigolo Studio'), timeout: 90_000 });
+    try {
+      expect(await app.evaluate(({ app: a }) => a.getVersion())).toBeTruthy();
+    } finally {
+      await app.close();
+    }
+  }, 3 * 60_000);
+});
+
+describe.skipIf(!RUN)('negative control: the wigolo dependency closure omitted', () => {
+  let bundle: string;
+
+  beforeAll(() => {
+    pack(CLOSURE_CONTROL_OUT, { [OMIT_CLOSURE_ENV]: '1' });
+    bundle = stageOutsideRepo(CLOSURE_CONTROL_OUT);
+  }, 30 * 60_000);
+
+  it('reproduces the production signature exactly', () => {
+    const { stages } = closureProbe(bundle);
+    // Resolution of the ENTRY still succeeds — the trap, stated out loud. Only the graph behind it
+    // is missing, which is why nothing about this artifact looks wrong until it is executed.
+    expect(stages.resolve?.ok, stages.resolve?.detail).toBe(true);
+    expect(stages.load?.ok).toBe(false);
+    expect(stages.load?.detail).toContain('ERR_MODULE_NOT_FOUND');
+    expect(stages.load?.detail).toContain("Cannot find package '@modelcontextprotocol/sdk'");
+    expect(stages.load?.detail).toContain('node_modules/wigolo/dist/daemon/proxy.js');
+  }, 3 * 60_000);
+
+  it('passes when that same broken artifact is left inside the repo', () => {
+    // The discriminating half, and the reason this slice exists. Same build, same probe, same
+    // machine — only the LOCATION differs, and in-repo the missing packages are supplied by the
+    // developer's workspace. Any future gate that runs the app from inside the tree is measuring
+    // this, not the artifact.
+    const inRepo = appPath(CLOSURE_CONTROL_OUT);
+    expect(ancestorNodeModules(inRepo).length).toBeGreaterThan(0);
+    const { stages } = closureProbe(inRepo);
+    expect(stages.load?.ok, stages.load?.detail).toBe(true);
+  }, 3 * 60_000);
+});
 
 describe.skipIf(!RUN)('packaged darwin-arm64 artifact', () => {
   beforeAll(() => {

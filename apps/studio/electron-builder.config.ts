@@ -1,4 +1,6 @@
 import type { Configuration } from 'electron-builder';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname, join, relative, sep } from 'node:path';
 
 /**
  * S16-alpha packaging: a dev-channel, UNSIGNED, darwin-arm64-only local artifact. Code signing,
@@ -123,12 +125,196 @@ const WIGOLO_REPO_TRIM: readonly string[] = [
   '!node_modules/wigolo/assets/!(blocks|legacy-skill-hashes.json)',
 ];
 
-if (process.env[OMIT_ENV]) {
+/**
+ * `wigolo`'s OWN runtime dependencies do not ship with it, and electron-builder cannot notice.
+ *
+ * THE DEFECT THIS EXISTS TO FIX (measured 2026-08-18, artifact copied outside the repo): the packaged
+ * app never started. One process, no helpers, no stderr, parked in a modal load error —
+ * `ERR_MODULE_NOT_FOUND: Cannot find package '@modelcontextprotocol/sdk' imported from
+ * app.asar/node_modules/wigolo/dist/daemon/proxy.js`.
+ *
+ * WHY. electron-builder collects the production dependency tree of `apps/studio/package.json`.
+ * `wigolo` is in it (`file:../..`), so the package itself lands in the artifact. Its own 28
+ * dependencies do not: npm HOISTS them to the workspace root `node_modules`, which is not under the
+ * app directory and is not part of any dependency edge electron-builder walks. `asarUnpack` cannot
+ * help — it only chooses archived-vs-unpacked for files that were already collected.
+ *
+ * WHY NO TEST SAW IT. In-repo the app rescues itself: Node's resolver walks `node_modules` UPWARD out
+ * of the `.app` bundle and lands in the developer's workspace. Same escape PR #347 fixed for the
+ * broker child, one level up at Electron main. Everything in `packaging.spec.ts` ran inside the repo,
+ * so every probe measured a tree that could always cheat. The launch assertion added by this change
+ * runs against a copy in the OS temp dir with zero `node_modules` in any ancestor.
+ *
+ * WHY A COMPUTED CLOSURE AND NOT A LIST. The six packages named in the crash report are a symptom
+ * sample, not the closure — the real answer is 386 package directories. A hand-written list is wrong the first
+ * time anyone adds an import, and wrong SILENTLY, in the only environment nothing tests. So the
+ * closure is derived from the installed tree the same way Node resolves it, and a dependency it
+ * cannot find is a BUILD failure, never a quiet omission.
+ *
+ * The walk is bounded at the wigolo package root. That bound is load-bearing here: this repo is
+ * routinely checked out as a nested git worktree under another copy of itself, so an unbounded
+ * upward walk would happily satisfy a missing dependency from the PARENT checkout and bake a
+ * machine-specific artifact.
+ */
+interface ClosureEntry {
+  /** Package directory, relative to the workspace root `node_modules`, with `/` separators. */
+  readonly rel: string;
+  /** Package name, for diagnostics. */
+  readonly name: string;
+}
+
+function readPackageJson(dir: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as Record<string, unknown>;
+}
+
+/** Node's directory resolution for `name`, starting at `fromDir` and refusing to pass `boundary`. */
+function resolvePackageDir(name: string, fromDir: string, boundary: string): string | undefined {
+  let dir = fromDir;
+  for (;;) {
+    const candidate = join(dir, 'node_modules', name);
+    if (existsSync(join(candidate, 'package.json'))) return realpathSync(candidate);
+    if (dir === boundary) return undefined;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/**
+ * Every package `wigolo` can reach at runtime: `dependencies`, `optionalDependencies` and
+ * non-optional `peerDependencies`, transitively.
+ *
+ * Keyed by DIRECTORY, not by name. npm nests a package whenever two requirers want incompatible
+ * versions, and a name-keyed set would collapse `express/node_modules/debug` into the root `debug` and
+ * ship one version where two are needed.
+ */
+export function wigoloRuntimeClosure(wigoloRoot: string): { modulesDir: string; entries: ClosureEntry[] } {
+  const modulesDir = join(wigoloRoot, 'node_modules');
+  const found = new Map<string, ClosureEntry>();
+  const visited = new Set<string>([wigoloRoot]);
+  const queue: string[] = [wigoloRoot];
+
+  while (queue.length > 0) {
+    const dir = queue.shift() as string;
+    const pkg = readPackageJson(dir);
+    const peerMeta = (pkg.peerDependenciesMeta ?? {}) as Record<string, { optional?: boolean }>;
+    const wanted: Array<[string, boolean]> = [
+      ...Object.keys((pkg.dependencies ?? {}) as object).map((n): [string, boolean] => [n, false]),
+      ...Object.keys((pkg.optionalDependencies ?? {}) as object).map((n): [string, boolean] => [n, true]),
+      ...Object.keys((pkg.peerDependencies ?? {}) as object).map((n): [string, boolean] => [
+        n,
+        peerMeta[n]?.optional === true,
+      ]),
+    ];
+
+    for (const [name, optional] of wanted) {
+      const dep = resolvePackageDir(name, dir, wigoloRoot);
+      if (dep === undefined) {
+        // Optional deps legitimately go uninstalled (platform-specific bindings, opt-in extras).
+        if (optional) continue;
+        throw new Error(
+          `wigoloRuntimeClosure: '${name}', required by ${dir}, is not installed at or below ${wigoloRoot}. ` +
+            `Run npm install at the workspace root. Shipping without it would produce an artifact that ` +
+            `only starts on a machine that has this repository checked out.`,
+        );
+      }
+      if (!dep.startsWith(modulesDir + sep)) {
+        throw new Error(
+          `wigoloRuntimeClosure: '${name}' resolved to ${dep}, outside ${modulesDir}. The artifact can ` +
+            `only carry packages that live under the workspace root node_modules.`,
+        );
+      }
+      if (visited.has(dep)) continue;
+      visited.add(dep);
+      queue.push(dep);
+      found.set(dep, { rel: relative(modulesDir, dep).split(sep).join('/'), name });
+    }
+  }
+
+  return { modulesDir, entries: [...found.values()].sort((a, b) => a.rel.localeCompare(b.rel)) };
+}
+
+/**
+ * Negative-control seam for the closure, separate from {@link OMIT_ENV} because it removes a
+ * different mechanism: OMIT_ENV drops `asarUnpack` globs (archived vs unpacked), this drops the
+ * collection of wigolo's dependencies entirely and reproduces the pre-fix artifact.
+ */
+export const OMIT_CLOSURE_ENV = 'WIGOLO_PACK_OMIT_CLOSURE';
+
+for (const flag of [OMIT_ENV, OMIT_CLOSURE_ENV]) {
+  if (!process.env[flag]) continue;
   // stderr, not stdout — and unmissable. An artifact built this way is a test fixture.
   process.stderr.write(
-    `\n!! ${OMIT_ENV}=${process.env[OMIT_ENV]} — asarUnpack entries DROPPED. This artifact is a deliberately broken negative control and must not be shipped or launched as a real build. !!\n\n`,
+    `\n!! ${flag}=${process.env[flag]} — packaging content DROPPED. This artifact is a deliberately broken negative control and must not be shipped or launched as a real build. !!\n\n`,
   );
 }
+
+/**
+ * The workspace root, which is where `wigolo` itself lives (`"wigolo": "file:../.."`) AND where npm
+ * hoists its dependencies to. It is both the resolution target and the ceiling for every walk in this
+ * file — see the nested-worktree note above.
+ */
+const APP_DIR = realpathSync(import.meta.dirname);
+const WORKSPACE_ROOT = realpathSync(join(APP_DIR, '..', '..'));
+
+const WIGOLO_ROOT = (() => {
+  // Both ends realpathed, or the `dir === boundary` stop never fires on a symlinked checkout and the
+  // walk silently escapes into whatever is above it.
+  const found = resolvePackageDir('wigolo', APP_DIR, WORKSPACE_ROOT);
+  if (found === undefined) {
+    throw new Error(
+      `electron-builder.config: cannot resolve the 'wigolo' package from ${APP_DIR} without ` +
+        `leaving ${WORKSPACE_ROOT}. Run npm install at the workspace root.`,
+    );
+  }
+  const name = readPackageJson(found).name;
+  if (name !== 'wigolo') {
+    throw new Error(`electron-builder.config: ${found} is '${String(name)}', not 'wigolo'.`);
+  }
+  return found;
+})();
+
+type FileSet = { from: string; to: string; filter: string[] };
+
+/**
+ * `extraResources`, NOT `files` — and that is a measured constraint, not a preference.
+ *
+ * The closure must end up as real files on disk, because the DB broker is a plain-Node child with no
+ * asar layer. Routing it through `files` puts it inside `app.asar`, and `asarUnpack` CANNOT be
+ * trusted to pull it back out: `app-builder-lib/out/util/filter.js` matches unpack globs against
+ * `file.substring(appDir.length)`, so a source path that is not under the app directory produces a
+ * garbage relative string. Measured 2026-08-18 — that garbage happened to match for 31 of the 386
+ * packages and not the rest, and it also stopped unpacking sqlite-vec and sharp, which had been
+ * working. `extraResources` does not go through that matcher at all.
+ *
+ * `Contents/Resources/node_modules` is the destination because it is the first `node_modules` ABOVE
+ * the archive: resolution from `app.asar/node_modules/wigolo/dist/daemon/proxy.js` misses in the
+ * archive's own (virtual) `node_modules` and lands there next. Measured — the whole set has to go
+ * there, WITHOUT subtracting the packages electron-builder already ships into
+ * `app.asar.unpacked/node_modules`. Those two trees are SIBLINGS and Node only ever walks up, so a
+ * package at `Resources/node_modules/http-errors` cannot reach `inherits` in the unpacked tree; a
+ * build that subtracted the overlap died on exactly that. The set placed here must be closed under
+ * resolution on its own, which costs a duplicated copy of the ~65 MB the two trees share.
+ */
+const wigoloDependencyResources = (): FileSet[] => {
+  if (process.env[OMIT_CLOSURE_ENV]) return [];
+  const { modulesDir, entries } = wigoloRuntimeClosure(WIGOLO_ROOT);
+  process.stderr.write(`  • wigolo runtime dependency closure  packages=${entries.length} from=${modulesDir}\n`);
+  return [
+    {
+      from: modulesDir,
+      to: 'node_modules',
+      filter: [
+        ...entries.map((e) => `${e.rel}/**/*`),
+        // Two whole classes of file that no runtime ever reads — 88 MB across this closure, measured.
+        // `d.ts` is already in electron-builder's own `excludedExts` for the sets it collects itself;
+        // `extraResources` gets none of those defaults, so parity has to be stated here. Class rules
+        // only: nothing in this filter may name a package.
+        '!**/*.{d.ts,map}',
+      ],
+    },
+  ];
+};
 
 const config: Configuration = {
   appId: 'dev.wigolo.studio',
@@ -137,6 +323,8 @@ const config: Configuration = {
   directories: { output: 'release' },
 
   files: ['out/**', 'package.json', ...WIGOLO_REPO_TRIM],
+
+  extraResources: wigoloDependencyResources(),
 
   asar: true,
   asarUnpack: resolveAsarUnpack(process.env[OMIT_ENV]),
