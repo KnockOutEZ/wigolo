@@ -60,7 +60,13 @@ describe('migration 008_studio_artifacts — dedup index + trust columns + sessi
     // Match production (src/cache/db.ts) so the session FK is enforced and the
     // seed below is load-bearing rather than cosmetic.
     db.pragma('foreign_keys = ON');
-    applyMigrations(db, { vecLoaded: false });
+    // ONE commit for the whole fixture — see the note in
+    // studio-artifacts-009-content-fts.test.ts. A bare `new Database(<file>)` runs
+    // journal_mode=delete + synchronous=FULL, so the runner's per-migration
+    // transactions cost 15 journal fsyncs per test; the outer transaction demotes them
+    // to SAVEPOINTs. Every case here asserts the SCHEMA the migrations leave behind,
+    // not the number of transactions that produced it.
+    db.transaction(() => { applyMigrations(db, { vecLoaded: false }); })();
   });
 
   afterEach(() => {

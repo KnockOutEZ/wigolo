@@ -64,7 +64,14 @@ describe('studio/capture/handler — Phase 4c studio_capture boundary (RED)', ()
     // 008 + 009 applied → studio_sessions / studio_artifacts (+content cols) / FTS exist.
     // The host session is NOT pre-seeded — the handler's captureFromPage auto-seeds it
     // (4b-3), so a smuggled session_id can be shown to seed nothing (C2).
-    applyMigrations(db, { vecLoaded: false });
+    //
+    // ONE commit for the whole fixture — see the note in
+    // tests/unit/cache/studio-artifacts-009-content-fts.test.ts. A bare
+    // `new Database(<file>)` runs journal_mode=delete + synchronous=FULL, so the
+    // runner's per-migration transactions cost 15 journal fsyncs per test; the outer
+    // transaction demotes them to SAVEPOINTs. These cases assert what the handler writes
+    // into the migrated schema, not how many transactions produced it.
+    db.transaction(() => { applyMigrations(db, { vecLoaded: false }); })();
   });
 
   afterEach(() => {
@@ -268,7 +275,8 @@ describe('studio/capture/handler — Phase 4d qa gate (C5)', () => {
     dir = mkdtempSync(join(tmpdir(), 'wigolo-studio-c5-'));
     db = new Database(join(dir, 'cache.db'));
     db.pragma('foreign_keys = ON');
-    applyMigrations(db, { vecLoaded: false });
+    // ONE commit for the whole fixture — see the first beforeEach in this file.
+    db.transaction(() => { applyMigrations(db, { vecLoaded: false }); })();
   });
   afterEach(() => {
     try { db.close(); } catch { /* ignore */ }
@@ -365,7 +373,8 @@ describe('studio/capture/handler — Slice 5b credential-context exclusion', () 
     dir = mkdtempSync(join(tmpdir(), 'wigolo-studio-5b-'));
     db = new Database(join(dir, 'cache.db'));
     db.pragma('foreign_keys = ON');
-    applyMigrations(db, { vecLoaded: false });
+    // ONE commit for the whole fixture — see the first beforeEach in this file.
+    db.transaction(() => { applyMigrations(db, { vecLoaded: false }); })();
   });
   afterEach(() => {
     try { db.close(); } catch { /* ignore */ }

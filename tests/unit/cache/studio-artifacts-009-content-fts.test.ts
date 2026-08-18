@@ -62,10 +62,19 @@ describe('migration 009_studio_artifacts content — columns + created_at + FTS 
     dir = mkdtempSync(join(tmpdir(), 'wigolo-studio-4b1-'));
     db = new Database(join(dir, 'cache.db'));
     db.pragma('foreign_keys = ON');
-    applyMigrations(db, { vecLoaded: false });
-    // 008 is applied, so studio_sessions exists and this seed succeeds. Artifacts
-    // reference this row (FK, NOT NULL session_id from 008).
-    db.prepare('INSERT OR IGNORE INTO studio_sessions (id) VALUES (?)').run('sess');
+    // ONE commit for the whole fixture. applyMigrations wraps each migration in its
+    // own transaction, so a bare `new Database(<file>)` — journal_mode=delete +
+    // synchronous=FULL, unlike production's WAL+NORMAL — pays a journal
+    // create+fsync+delete 16 times per test (14 migrations + the schema_migrations
+    // DDL + this seed). The outer transaction demotes those to SAVEPOINTs. What each
+    // case asserts is the SCHEMA these migrations leave behind; the number of
+    // transactions used to reach it carries none of that meaning.
+    db.transaction(() => {
+      applyMigrations(db, { vecLoaded: false });
+      // 008 is applied, so studio_sessions exists and this seed succeeds. Artifacts
+      // reference this row (FK, NOT NULL session_id from 008).
+      db.prepare('INSERT OR IGNORE INTO studio_sessions (id) VALUES (?)').run('sess');
+    })();
   });
 
   afterEach(() => {

@@ -56,7 +56,14 @@ describe('studio/capture/listSessionArtifacts — Phase 7e S2 (value-flip pins, 
     dir = mkdtempSync(join(tmpdir(), 'wigolo-studio-7e-s2-'));
     db = new Database(join(dir, 'cache.db'));
     db.pragma('foreign_keys = ON');
-    applyMigrations(db, { vecLoaded: false });
+    // ONE commit for the whole fixture — see the note in
+    // tests/unit/cache/studio-artifacts-009-content-fts.test.ts. A bare
+    // `new Database(<file>)` runs journal_mode=delete + synchronous=FULL, so the
+    // runner's per-migration transactions cost 15 journal fsyncs per test; the outer
+    // transaction demotes them to SAVEPOINTs. These cases assert what
+    // listSessionArtifacts returns from the migrated schema, not how many transactions
+    // produced it.
+    db.transaction(() => { applyMigrations(db, { vecLoaded: false }); })();
   });
 
   afterEach(() => {
