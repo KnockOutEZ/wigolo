@@ -8,7 +8,8 @@ import { buildSnapshot, type AxNode, type DomNode, type PerceptionCdp } from '..
 import { isStudioToolError, type StudioActOutput, type StudioToolError } from '../../../src/daemon/studio-dispatch.js';
 import { SessionAuditLog } from '../../../src/studio/audit.js';
 import { PreGrantStore } from '../../../src/studio/pre-grant.js';
-import type { ParkedAction } from '../../../src/studio/act.js';
+import type { AuthSource, ParkedAction } from '../../../src/studio/act.js';
+import { readFileSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 
@@ -526,6 +527,91 @@ describe('createActHandler — S7 pre-grant authorization gate', () => {
     expect(parkedAudit.replay()).toEqual([
       { seq: 1, ts: 1000, action: 'click', epoch: 5, target: { ref: 'e9' }, outcome: { ok: false, error_reason: 'parked_for_review' }, risk: 'money', approval: 'parked' },
     ]);
+  });
+});
+
+describe('createActHandler — the risky-action gate is pre-grant/park, with NO live approval round-trip', () => {
+  /**
+   * WHY THIS BLOCK EXISTS.
+   *
+   * `ActHandlerDeps` used to declare `approvals?: { request(...): Promise<ApprovalDecision> }`, documented as
+   * "a risky action is HELD for human approval before firing". NOTHING read it: `createActHandler` never
+   * destructured it, `applyRiskGate` never called it, and no host passed it (the Electron host wires
+   * `preGrant`/`park`, and implements the D9 card with its own parked-card map). So the code advertised a
+   * per-action human verdict that did not exist, and the program's canon read "approval gates intact" off
+   * that declaration.
+   *
+   * A declared-but-unread gate is strictly worse than an absent one — it reads as protection to the next
+   * person and protects nothing. The gate that IS real on this path is: classify (deterministic, code-only)
+   * → matching human pre-grant authorizes → otherwise PARK, never execute. Plus the hard credential refusal,
+   * plus the D9 drive gate on `navigate`.
+   *
+   * These pins keep that claim and the code in agreement. They fail if someone re-introduces an approval
+   * seam here without wiring it end-to-end — which is precisely how this defect recurs.
+   */
+
+  // COMPILE-TIME PIN. `Record<AuthSource, true>` is exhaustive by construction: widening `AuthSource` back to
+  // include an `ApprovalDecision` ('approved'/'refused'/'timeout'/'superseded') makes this object literal
+  // missing-key and `npm run typecheck:studio` fails. A widened AuthSource is the type-level tell that a
+  // verdict wait has been re-introduced, so the build is the right place to catch it.
+  const AUTH_SOURCES: Record<AuthSource, true> = { 'pre-grant': true, parked: true };
+
+  it('CLAIM-PIN(type): the only ways a risky action can be authorized are a pre-grant or a park', () => {
+    // Asserted at runtime too, so the intent survives a reader who does not run the typechecker.
+    expect(Object.keys(AUTH_SOURCES).sort()).toEqual(['parked', 'pre-grant']);
+  });
+
+  it('CLAIM-PIN(no-unread-seam): ActHandlerDeps declares no approval-request dependency', () => {
+    // The defect was a DECLARATION that nothing honoured, so the pin is on the declaration itself. Scoped to
+    // the ActHandlerDeps body and anchored to a property position, so the prose above it explaining WHY the
+    // seam is absent does not satisfy (or trip) the check.
+    const source = readFileSync(new URL('../../../src/studio/act.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('export interface ActHandlerDeps');
+    const end = source.indexOf('export function createActHandler');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const declared = source.slice(start, end);
+    // Control: the slice really is the deps interface (a property we know is there), so a pass cannot come
+    // from having sliced an empty/wrong region.
+    expect(declared).toMatch(/^\s*preGrant\??:/m);
+    expect(declared).not.toMatch(/^\s*approvals\??:/m);
+  });
+
+  it('CLAIM-PIN(behaviour): a risky action is refused with NO approval hook reachable — the park IS the gate', async () => {
+    // The refusal proof. An agent acting through this handler on a money page with no pre-grant cannot
+    // execute, and there is no seam it could have been let through by: the handler is constructed with the
+    // full production-shaped dep set and still parks.
+    const ch = recordingChannel();
+    const pk = parkRecorder();
+    const act = createActHandler({
+      browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
+      resolve: fixedResolve({ backendNodeId: 7, center: { x: 1, y: 2 } }),
+      channel: ch.channel, currentUrl: () => 'https://shop.example/checkout',
+      preGrant: new PreGrantStore(), park: pk.park,
+    });
+    const r = asErr(await act({ action: 'click', ref: 'e9' }));
+    expect(r.error_reason).toBe('parked_for_review');
+    // Never executed — the refusal is real, not merely reported.
+    expect(ch.calls).toHaveLength(0);
+    // And it is a do-not-retry refusal, so the agent does not spin against the human.
+    expect(r.hint).toMatch(/do not retry/i);
+    expect(pk.parked).toHaveLength(1);
+  });
+
+  it('MUST-NOT-FIRE: the human-authorized path is untouched — a matching pre-grant still executes', async () => {
+    // The other half. Removing the phantom approval seam must not have tightened anything for a user who
+    // HAS authorized the action: a matching human pre-grant still authorizes, dispatches, and never parks.
+    const ch = recordingChannel();
+    const pk = parkRecorder();
+    const act = createActHandler({
+      browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [5]), grant: allowGrant,
+      resolve: fixedResolve({ backendNodeId: 7, center: { x: 1, y: 2 } }),
+      channel: ch.channel, currentUrl: () => 'https://shop.example/checkout',
+      preGrant: grantStore({ domain: 'shop.example', actionType: 'click', riskTier: 'money' }), park: pk.park,
+    });
+    expect(await act({ action: 'click', ref: 'e9' })).toMatchObject({ ok: true, action: 'click' });
+    expect(ch.calls).toHaveLength(1);
+    expect(pk.parked).toHaveLength(0);
   });
 });
 
