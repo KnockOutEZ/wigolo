@@ -1,0 +1,100 @@
+name: Studio packaging e2e
+
+# `apps/studio/tests/e2e/packaging.spec.ts` is the ONLY place the packaged code path is
+# executed rather than reasoned about. It was gated behind `RUN_STUDIO_PACKAGE_E2E`, which
+# nothing in CI ever set — `ci.yml`'s studio-e2e job sets only `RUN_STUDIO_E2E` — so the
+# file contributed ZERO while sitting in a green suite. This workflow is what sets it.
+#
+# WHY A SEPARATE WORKFLOW, AND WHY THESE TRIGGERS
+#
+#   macos-latest only, and that is not a preference. The spec is hardcoded to darwin-arm64
+#   end to end: it shells `electron-builder --mac --arm64`, resolves artifacts at
+#   `<out>/mac-arm64/Wigolo Studio.app`, and probes @rpath-linked dylibs and an ad-hoc
+#   signature. `electron-builder.config.ts` declares the same ("a dev-channel, UNSIGNED,
+#   darwin-arm64-only local artifact"; win/linux targets are deliberately absent until
+#   S16-final). There is no second OS to run it on. macos-latest is arm64, so it is the
+#   matching runner. Nothing here needs signing secrets: the config sets `identity: null`
+#   and `notarize: false`, so this works on a fork PR too.
+#
+#   PATH-FILTERED rather than on every push. The job builds THREE complete Electron
+#   artifacts (~380 MB each) — the real one plus two negative controls — so paying for it
+#   on a commit that cannot affect packaging is waste. The filter lists exactly the inputs
+#   that can change packaging behaviour: the studio app itself (asarUnpack globs, the
+#   broker entry point, the main process), and the dependency manifests (a native module
+#   arriving, moving, or changing its @rpath is the defect class this catches).
+#
+#   NO `schedule:`, on evidence rather than on cost. Scheduled runs only ever fire on the
+#   DEFAULT branch, which is `main` — and `apps/studio` does not exist on `main`; the
+#   Studio v2 program merges into `studio-handoff`. A nightly would therefore check out a
+#   tree with no studio app and no packaging spec and report green having built nothing:
+#   the exact vacuity this workflow exists to remove. Add the schedule in the same change
+#   that lands `apps/studio` on the default branch, not before.
+#
+#   `workflow_dispatch` so a release gate can demand the packaged proof on demand,
+#   regardless of what the diff touched.
+
+on:
+  pull_request:
+    branches: [main, studio-handoff]
+    paths:
+      - 'apps/studio/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/studio-packaging.yml'
+  push:
+    branches: [main, studio-handoff]
+    paths:
+      - 'apps/studio/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/studio-packaging.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: studio-packaging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packaging-e2e:
+    name: packaged artifact e2e (macos-arm64)
+    runs-on: macos-latest
+    # Three electron-builder packs, each with its own 15-minute timeout in the spec, plus
+    # install and build. The cap is deliberately above 3x15 so that a genuinely slow pack
+    # fails on the spec's own timeout — which names the pack that hung — rather than on the
+    # job's, which names nothing.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      # Full install, no ELECTRON_SKIP_BINARY_DOWNLOAD: electron-builder needs the real
+      # electron dist to pack, and the positive test hosts its probe ON the packaged
+      # Electron binary.
+      - name: Install dependencies
+        run: npm ci
+
+      # Same fix as ci.yml's studio-e2e job: npm ci's electron postinstall can extract
+      # partially or race the exec, which surfaces as ETXTBSY or "failed to install
+      # correctly" at pack time.
+      - name: Ensure Electron binary is fully installed
+        run: |
+          node node_modules/electron/install.js
+          node -p "require('electron')"
+
+      # RUN_STUDIO_E2E is deliberately NOT set. The other nine specs under tests/e2e are
+      # gated on it and stay skipped here, so this job pays only for packaging — they are
+      # already covered by ci.yml's studio-e2e job under xvfb.
+      - name: Packaging e2e (builds 3 artifacts, ~380 MB each)
+        run: npm run test:e2e -w apps/studio
+        env:
+          RUN_STUDIO_PACKAGE_E2E: '1'
+
+      # Proves the artifacts were really produced, so a future change that makes the specs
+      # skip themselves cannot present as a pass.
+      - name: Show what was built
+        if: always()
+        run: du -sh apps/studio/release-e2e* 2>/dev/null || echo 'no artifacts produced'
