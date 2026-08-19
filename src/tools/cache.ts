@@ -38,8 +38,41 @@ const DEFAULT_HYBRID_LIMIT = 5;
 const HYBRID_CANDIDATE_FLOOR = 50;
 const HYBRID_CANDIDATE_FACTOR = 5;
 
+/**
+ * The present-tense mode a time-axis request collides with, or null.
+ *
+ * Named rather than inlined so the set is enumerated in one place: a fourth
+ * present-tense flag added later has exactly one line to miss instead of an
+ * `if` chain to be quietly appended after.
+ */
+function conflictingModeFor(input: CacheInput): string | null {
+  if (!isVersionRequest(input)) return null;
+  if (input.check_changes) return 'check_changes';
+  if (input.stats) return 'stats';
+  if (input.clear) return 'clear';
+  return null;
+}
+
 export async function handleCache(input: CacheInput, router?: SmartRouter): Promise<CacheOutput> {
   try {
+    // `at` / `versions` ask about the PAST; check_changes, stats and clear all act
+    // on the present, and each of them returns before the time-axis branch below.
+    // So the combination cannot be served — and it must not be served PARTIALLY:
+    // `cache({url, at, check_changes: true})` would issue live network re-fetches
+    // and answer with present-tense change reports while silently dropping `at`,
+    // which is a past-time question answered with the present. That is the exact
+    // failure this surface exists to refuse, so it is refused explicitly here
+    // rather than left to branch order to decide.
+    const conflict = conflictingModeFor(input);
+    if (conflict) {
+      const axis = input.at !== undefined ? 'at' : 'versions';
+      return {
+        error:
+          `${conflict} cannot be combined with ${axis}: ${conflict} acts on the current ` +
+          `state of the cache, while ${axis} reads retained history. Run them as separate calls.`,
+      };
+    }
+
     if (input.check_changes) {
       log.info('Checking for content changes', {
         query: input.query,
@@ -160,9 +193,11 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
       return { cleared: count };
     }
 
-    // The time axis. Checked before the search paths because `at` and `versions`
-    // ask a different question of a different table — a caller who passed them
-    // must never silently receive an ordinary current-page search instead.
+    // The time axis. This sits AFTER the present-tense modes above, which is why
+    // the collision is refused at the top of the function rather than described
+    // here: a caller who passed `at` or `versions` must never silently receive an
+    // ordinary current-page answer, and branch order alone does not deliver that.
+    // It DOES precede the search paths, so `query` + `at` reads history.
     if (isVersionRequest(input)) {
       log.debug('Cache version read', { url: input.url, at: input.at, versions: input.versions });
       return readVersions({

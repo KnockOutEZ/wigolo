@@ -35,8 +35,19 @@ const ENV_KEYS = [
   'WIGOLO_CORPUS_VERSION_MAX_AGE_DAYS',
 ];
 
+/**
+ * Every fixture carries bytes a normaliser would touch — combining marks that NFC
+ * and NFD disagree about, an em-dash, a trailing space, a tab and a CRLF.
+ *
+ * On BODY_2 specifically, because BODY_2 is what the byte-for-byte clause asserts
+ * on. It was plain ASCII, so the test whose stated job IS byte fidelity could not
+ * expose a normalising bug: a plausible `NFD` + trailing-whitespace-strip in
+ * `toRetained` reddened only the nearest-later test, which asserts on BODY_1 for
+ * an unrelated reason. Byte-fidelity coverage was real but riding on a test that
+ * exists for another purpose, so editing that test would have silently deleted it.
+ */
 const BODY_1 = '# One\n\nThe body as it stood at t1. é—trailing space \n';
-const BODY_2 = '# Two\n\nA different body at t2.\n';
+const BODY_2 = '# Two\r\n\nA different body at t2. café́ — tab\there, trailing \n';
 const BODY_3 = '# Three\n\nThe body it serves now, at t3.\n';
 
 function hashOf(markdown: string): string {
@@ -490,6 +501,35 @@ describe('cache(url, versions: true) — the version list', () => {
     expect(out.version_list).toBeDefined();
     expect(out.version_list!.versions).toEqual([]);
     expect(out.error).toBeUndefined();
+  });
+
+  it('resolves limit at the default, the ceiling, the floor, and on garbage', async () => {
+    // `limit` is caller-controlled and reaches SQLite's `LIMIT ?` directly, so the
+    // clamp is the only thing between a caller and an unbounded read of the body
+    // table. It was entirely untested: replacing the whole clamp with
+    // `typeof limit === 'number' ? limit : 100000` left every test green, because
+    // the only limit case passed `limit: 5`, which ANY implementation satisfies.
+    //
+    // Negative and fractional matter specifically: in SQLite `LIMIT -1` means NO
+    // limit, and a non-integer bind is not an integer row count.
+    process.env.WIGOLO_CORPUS_MAX_VERSIONS_PER_URL = '400';
+    resetConfig();
+    for (let i = 0; i < 205; i++) write(`# Version ${i}`);
+
+    const cases: Array<[unknown, number]> = [
+      [undefined, 20],   // default
+      [9999, 200],       // ceiling
+      [0, 1],            // floor
+      [-1, 1],           // floor, not "no limit"
+      [1.9, 1],          // floored to an integer
+      [Number.NaN, 20],  // non-finite falls back to the default
+      [Number.POSITIVE_INFINITY, 20],
+    ];
+
+    for (const [limit, expected] of cases) {
+      const out = await handleCache({ url: URL, versions: true, limit: limit as number });
+      expect(out.version_list!.versions.length, `limit=${String(limit)}`).toBe(expected);
+    }
   });
 
   it('caps the number of entries returned', async () => {
