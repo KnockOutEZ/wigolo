@@ -220,7 +220,7 @@ function storeSeeds(db: Database.Database, fixture: string, view: PageView): See
 // ---------------------------------------------------------------------------
 
 export type ArmOutcome =
-  | { resolved: true; ref: string; role: string | undefined; confidence: string }
+  | { resolved: true; ref: string; role: string | undefined; confidence: string; degraded?: boolean }
   | { resolved: false; reason: string };
 
 /**
@@ -263,12 +263,23 @@ export function armH(seed: Seed, view: PageView): ArmOutcome {
   return { resolved: true, ref: h.ref, role: hit?.target.role, confidence: h.confidence };
 }
 
-/** arm B: the shipped resolver — seed → `heal` tiers 1–3 → ref, WITH §5.3's halts. The product. */
+/**
+ * arm B: the shipped resolver — seed → `heal` tiers 1–3 → ref, WITH §5.3's halts. The product.
+ *
+ * ⚠️ **Since A174 (2026-08-19) §5.3 has THREE halts, not four.** A weaker-than-recorded resolution now
+ * resolves carrying a `degraded` marker instead of refusing, so `haltedFromH` no longer counts it while
+ * `degradedResolutions` does. **Arm B therefore moved TOWARD arm H by exactly the old `haltedFromH`, which
+ * this corpus measures at 0** — so the amendment's predicted effect on every C0 count is zero, and
+ * `runDegradationProbe` is the one artifact that flips.
+ */
 export function armB(seed: Seed, view: PageView): ArmOutcome {
   const r = resolveFlowStep(seed.step, view.candidates);
   if (!r.ok) return { resolved: false, reason: r.reason };
   const hit = view.candidates.find((c) => c.ref === r.ref);
-  return { resolved: true, ref: r.ref, role: hit?.target.role, confidence: r.confidence };
+  return {
+    resolved: true, ref: r.ref, role: hit?.target.role, confidence: r.confidence,
+    ...(r.degraded ? { degraded: true } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -306,8 +317,20 @@ export interface FlowDriftReport {
   /**
    * Cases arm H resolves and arm B does not: resolutions `heal` found and §5.3's halt declined.
    * The cost of the safety ruling, stated as its own number so it is not read as healing's failure.
+   *
+   * ⚠️ **Since A174 this counts the THREE surviving halts only.** A degradation no longer lands here.
    */
   haltedFromH: number;
+  /**
+   * Cases arm B resolved **below the tier they were recorded at** (§5.3 as amended, A174).
+   *
+   * 🔑 **This number exists because the amendment turned a refusal into an acceptance.** Before A174 the
+   * cost of the degradation rule was visible as `haltedFromH`; surfacing would otherwise have made that
+   * cost vanish from the report rather than change category — and a risk we decided to accept is exactly
+   * the risk that must stay countable. **`degradedResolutions + haltedFromH` is what the old
+   * `haltedFromH` alone used to be**, which is the identity a reader can check the amendment against.
+   */
+  degradedResolutions: number;
   /**
    * `heal_tier_at_record` → the tier **`heal` itself reported**, e.g. `high->medium` (§11.A.6).
    *
@@ -481,6 +504,7 @@ export function runFlowDrift(): FlowDriftReport {
   const report: FlowDriftReport = {
     fixtures: files.length, fixturesWithSeeds: 0, seeds: 0, cases: 0,
     a: emptyTally(), b: emptyTally(), h: emptyTally(), aOnly: 0, bOnly: 0, hOnly: 0, haltedFromH: 0,
+    degradedResolutions: 0,
     tierTransitions: {}, resolverOutcomes: {}, perMutation: {}, mutationPreservesRawElements: true, harnessViewDelta: {},
     seedsWithoutStableAttrs: 0,
     mustRefuse: {
@@ -531,6 +555,13 @@ export function runFlowDrift(): FlowDriftReport {
         } else bump(report.a.refusalsByReason, a.reason);
         if (b.resolved) {
           report.b.resolved += 1; per.b += 1;
+          // ⚠️ NOT MUTATION-COVERED, and measured rather than assumed: deleting this line reds NOTHING
+          // (probe M6, 2026-08-19 — 0 reds, exit 0). No §3.4 class perturbs a stable attr, so the corpus
+          // produces zero degradations and `degradedResolutions == 0` holds whether or not this counts.
+          // The assertion on it is a must-not-fire control, NOT evidence the counter works. Reaching it
+          // needs a mutation class that moves {type,name,placeholder} — S12 drift work, not this slice.
+          // Recorded as K35.
+          if (b.degraded) report.degradedResolutions += 1;
           if (b.role !== recordedRole) { report.b.wrong += 1; per.wrongB += 1; }
         } else bump(report.b.refusalsByReason, b.reason);
         if (hOut.resolved) {
@@ -548,7 +579,14 @@ export function runFlowDrift(): FlowDriftReport {
         // resolver's refusal reasons here would collapse `medium` into `none`, because a medium
         // recovery surfaces as `confidence_degraded` rather than as an ambiguity.
         bump(report.tierTransitions, transitionLabel(seed.step.healTierAtRecord, hOut));
-        bump(report.resolverOutcomes, b.resolved ? `resolved:${b.confidence}` : b.reason);
+        // A degraded acceptance gets its OWN key rather than folding into `resolved:medium`: after
+        // A174 those two are different events (one held its recorded tier, one did not) and a shared
+        // key would make the distribution unable to express the difference — the same defect
+        // `transitionLabel` was extracted to fix.
+        bump(
+          report.resolverOutcomes,
+          b.resolved ? (b.degraded ? `resolved:${b.confidence}:degraded` : `resolved:${b.confidence}`) : b.reason,
+        );
       }
 
       // The must-refuse control, on the same drifted page.
@@ -665,7 +703,7 @@ export function runWrongElementProbe(): WrongElementProbe {
 }
 
 // ---------------------------------------------------------------------------
-// The degradation probe — what §5.3's halt costs, forced into existence
+// The degradation probe — the case the corpus cannot produce, forced into existence
 // ---------------------------------------------------------------------------
 
 /**
@@ -678,8 +716,13 @@ export function runWrongElementProbe(): WrongElementProbe {
  *
  * It exists because the C0 corpus reports `hOnly == 0` and `haltedFromH == 0`, which would leave the
  * arm-H/arm-B split unable to differ from each other on any input — the split would look like a
- * measurement while being incapable of producing a difference. This probe forces the difference, so
- * "§5.3's halt subtracts from heal's reach" is measured rather than reasoned about.
+ * measurement while being incapable of producing a difference. This probe forces the difference.
+ *
+ * ⚠️ **Its VERDICT was inverted by A174 and its VALUE was not.** It was built to measure what §5.3's halt
+ * subtracted from heal's reach; the halt is now a `degraded` marker, so it measures that the weaker
+ * resolution is **accepted and labelled** instead. It remains **the only case in the whole harness that
+ * exercises the degradation path at all**, so it is also the only place the amendment is observable —
+ * which is why the amendment's blast radius is this probe and nothing else.
  */
 const DEGRADATION_HTML = `<html><body><main><form>
 <input type="text" name="q" aria-label="Search orders">
@@ -700,9 +743,11 @@ export interface DegradationProbe {
   healResolved: boolean;
   /** arm A: the ref was a pure function of the fingerprint, so it is gone. */
   armAResolved: boolean;
-  /** arm B: the product declines the weaker resolution (§5.3). */
+  /** arm B: the product ACCEPTS the weaker resolution and marks it (§5.3 as amended, A174). */
   armBResolved: boolean;
   armBReason: string;
+  /** The `degraded` marker arm B carried, as `from->to`. Empty when it resolved at full confidence. */
+  armBDegraded: string;
   /** The §11.A.6 label this case contributes — the value a resolver-bucketed map could not produce. */
   transitionLabel: string;
 }
@@ -733,6 +778,10 @@ export function runDegradationProbe(): DegradationProbe {
   const h = armH(seed, drifted);
   const a = armA(seed, drifted);
   const b = armB(seed, drifted);
+  // Read from the resolver directly rather than from `ArmOutcome`'s boolean: the probe's whole claim is
+  // WHICH tiers it moved between, and a boolean cannot carry that.
+  const resolution = resolveFlowStep(seed.step, drifted.candidates);
+  const degraded = resolution.ok ? resolution.degraded : undefined;
   return {
     fingerprintChanged: field.target.fingerprint !== after.target.fingerprint,
     roleNameHeld: field.target.role === after.target.role && field.target.name === after.target.name,
@@ -742,6 +791,7 @@ export function runDegradationProbe(): DegradationProbe {
     armAResolved: a.resolved,
     armBResolved: b.resolved,
     armBReason: b.resolved ? '' : b.reason,
+    armBDegraded: degraded ? `${degraded.from}->${degraded.to}` : '',
     transitionLabel: transitionLabel(tierAtRecord, h),
   };
 }
@@ -762,7 +812,8 @@ export function renderFlowDriftReport(r: FlowDriftReport): string {
     ``,
     `  REACH  H-A ${r.h.resolved - r.a.resolved}   B-A ${r.b.resolved - r.a.resolved}   (G2 threshold >= ${G2.minArmBAdvantage} at ${G2.minCases} cases)`,
     `  H-only ${r.hOnly}   B-only ${r.bOnly}   A-only ${r.aOnly}`,
-    `  halted by the §5.3 degradation rule after heal succeeded: ${r.haltedFromH}`,
+    `  halted by §5.3's THREE surviving halts after heal succeeded: ${r.haltedFromH}`,
+    `  resolved BELOW the recorded tier, surfaced not halted (A174): ${r.degradedResolutions}`,
     ``,
     `  must-refuse controls            ${mr.cases}  A fired ${mr.aFired}  B fired ${mr.bFired}`,
     `    ambiguous                     ${mr.ambiguousCases}  A fired ${mr.ambiguousAFired}  (${mr.ambiguousDistinctShapes} distinct shapes)`,

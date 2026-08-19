@@ -40,9 +40,21 @@ export type StepHaltReason =
   /** `heal` found several. The caller re-observes or asks; it does not pick one. */
   | 'ambiguous_target'
   /** A different role is a different control — the cheapest structural check available (§5.3). */
-  | 'role_changed'
-  /** Resolved less confidently than the recording did (§5.3). */
-  | 'confidence_degraded';
+  | 'role_changed';
+// `confidence_degraded` was a halt reason until 2026-08-19 (A174). It is deliberately ABSENT rather
+// than retained-and-unused, so every consumer that switched on it is a type error rather than a
+// silently dead branch.
+
+/**
+ * A step that resolved BELOW the confidence its recording achieved (§5.3 as amended, **A174**).
+ *
+ * `from` is always the stronger of the two — the resolver only sets this when the observed rank is
+ * strictly lower — so a reader never has to compare them to learn which direction it moved.
+ */
+export interface StepDegraded {
+  from: RecordedHealTier;
+  to: AcceptConfidence;
+}
 
 export interface StepResolved {
   ok: true;
@@ -51,13 +63,26 @@ export interface StepResolved {
   confidence: AcceptConfidence;
   /** Passed through from `heal` for reporting only — never a decision input here. */
   tier?: HealResult['tier'];
+  /**
+   * Set ONLY when this step resolved below its recorded tier. **Absent means "held", never
+   * "unknown"** — a step with no `healTierAtRecord` has nothing to degrade from and is not marked.
+   *
+   * This used to be a halt. The halt could not pass on any input: every recordable seed records at
+   * `high` (the live resolver refuses ambiguity, so every capturable element is uniquely
+   * fingerprinted) and every `heal` recovery is `medium` (`high` ⟺ tier 1), so it made 100% of
+   * healing's reach unreachable. **A174's reversal condition — a wrong action traced to a step that
+   * ran below its recorded confidence — is only observable because this marker is carried.**
+   */
+  degraded?: StepDegraded;
 }
 
 export interface StepHalted {
   ok: false;
   reason: StepHaltReason;
   confidence?: HealConfidence;
-  confidenceAtRecord?: RecordedHealTier;
+  // `confidenceAtRecord` was declared here and REMOVED with A174: its only writer was the
+  // degradation halt, so it would have survived as a field no producer sets — the same
+  // declared-with-no-producer shape this program has already recorded twice (K19, F4).
   /** For an ambiguous halt: how many candidates matched at the deciding tier. */
   candidates?: number;
   observedRole?: string;
@@ -109,10 +134,20 @@ export function resolveFlowStep(step: FlowStep, candidates: HealCandidate[]): St
     };
   }
 
+  // §5.3 as amended (A174): a weaker-than-recorded resolution is REPORTED, not refused. The three
+  // conditions that stop an agent — a halting confidence, a role change, a typed refusal — are all
+  // handled above and none of them route through here.
   const atRecord = step.healTierAtRecord;
-  if (atRecord && CONFIDENCE_RANK[confidence] < CONFIDENCE_RANK[atRecord]) {
-    return { ok: false, reason: 'confidence_degraded', confidence, confidenceAtRecord: atRecord };
-  }
+  const degraded: StepDegraded | undefined =
+    atRecord && CONFIDENCE_RANK[confidence] < CONFIDENCE_RANK[atRecord]
+      ? { from: atRecord, to: confidence }
+      : undefined;
 
-  return { ok: true, ref: result.ref, confidence, ...(result.tier ? { tier: result.tier } : {}) };
+  return {
+    ok: true,
+    ref: result.ref,
+    confidence,
+    ...(result.tier ? { tier: result.tier } : {}),
+    ...(degraded ? { degraded } : {}),
+  };
 }
