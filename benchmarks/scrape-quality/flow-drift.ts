@@ -254,7 +254,22 @@ export interface FlowDriftReport {
    * cannot recover what tier 1 missed. The structural reason arm B ≈ arm A on this corpus.
    */
   seedsWithoutStableAttrs: number;
-  mustRefuse: { cases: number; aFired: number; bFired: number };
+  /**
+   * Split by kind, because the two kinds are refused for different reasons and only one of them is a
+   * case arm A can even attempt: an ABSENT identity has no ref on any page, so arm A trivially
+   * refuses it, while an AMBIGUOUS identity has a positionally-tiebroken ref that arm A may still
+   * match — resolving to one member of an identical-sibling run it cannot tell apart. Reporting only
+   * the total would let the trivial half dilute the rate on the half that discriminates.
+   */
+  mustRefuse: {
+    cases: number;
+    aFired: number;
+    bFired: number;
+    absentCases: number;
+    absentAFired: number;
+    ambiguousCases: number;
+    ambiguousAFired: number;
+  };
 }
 
 /**
@@ -282,10 +297,12 @@ function bump(rec: Record<string, number>, key: string): void {
  * only-must-resolve cases cannot catch over-firing, and over-firing is the silent-wrong failure the
  * binding half of G2 exists to detect.
  */
-function mustRefuseSeeds(base: Seed, original: PageView): Seed[] {
+type MustRefuseKind = 'absent' | 'ambiguous';
+
+function mustRefuseSeeds(base: Seed, original: PageView): Array<Seed & { kind: MustRefuseKind }> {
   const t = base.step.target;
   if (!t) return [];
-  const out: Seed[] = [];
+  const out: Array<Seed & { kind: MustRefuseKind }> = [];
 
   // (1) ABSENT — an identity no page carries, so ANY resolution is over-firing. The fingerprint is
   // built by the shipped `computeFingerprint`, so it is a well-formed value that simply has no match.
@@ -293,6 +310,7 @@ function mustRefuseSeeds(base: Seed, original: PageView): Seed[] {
   const name = 'wg-absent-control-target';
   out.push({
     ...base,
+    kind: 'absent',
     recordedRef: 'e-wg-absent-control-ref',
     step: {
       ...base.step,
@@ -316,6 +334,7 @@ function mustRefuseSeeds(base: Seed, original: PageView): Seed[] {
     const first = collided[0];
     out.push({
       ...base,
+      kind: 'ambiguous',
       // The ref the recorder WOULD have minted for it: positionally tiebroken, hence unstable.
       recordedRef: first.ref,
       step: {
@@ -341,7 +360,7 @@ export function runFlowDrift(): FlowDriftReport {
     a: emptyTally(), b: emptyTally(), aOnly: 0, bOnly: 0,
     tierTransitions: {}, perMutation: {}, mutationPreservesRawElements: true, harnessViewDelta: {},
     seedsWithoutStableAttrs: 0,
-    mustRefuse: { cases: 0, aFired: 0, bFired: 0 },
+    mustRefuse: { cases: 0, aFired: 0, bFired: 0, absentCases: 0, absentAFired: 0, ambiguousCases: 0, ambiguousAFired: 0 },
   };
   for (const m of MUTATION_CLASSES) report.perMutation[m] = { cases: 0, a: 0, b: 0, bOnly: 0, wrongA: 0, wrongB: 0 };
 
@@ -392,9 +411,17 @@ export function runFlowDrift(): FlowDriftReport {
 
       // The must-refuse control, on the same drifted page.
       for (const seed of mustRefuseSeeds(seeds[0], original)) {
+        const aFired = armA(seed, view).resolved;
         report.mustRefuse.cases += 1;
-        if (armA(seed, view).resolved) report.mustRefuse.aFired += 1;
+        if (aFired) report.mustRefuse.aFired += 1;
         if (armB(seed, view).resolved) report.mustRefuse.bFired += 1;
+        if (seed.kind === 'absent') {
+          report.mustRefuse.absentCases += 1;
+          if (aFired) report.mustRefuse.absentAFired += 1;
+        } else {
+          report.mustRefuse.ambiguousCases += 1;
+          if (aFired) report.mustRefuse.ambiguousAFired += 1;
+        }
       }
     }
   }
@@ -417,6 +444,8 @@ export function renderFlowDriftReport(r: FlowDriftReport): string {
     `  arm B advantage           ${advantage}   (threshold >= ${G2.minArmBAdvantage} at ${G2.minCases} cases)`,
     `  B-only ${r.bOnly}   A-only ${r.aOnly} (expected 0 — same fingerprint key)`,
     `  must-refuse controls      ${r.mustRefuse.cases}  A fired ${r.mustRefuse.aFired}  B fired ${r.mustRefuse.bFired}`,
+    `    of which ambiguous      ${r.mustRefuse.ambiguousCases}  A fired ${r.mustRefuse.ambiguousAFired}  <- the discriminating half`,
+    `    of which absent         ${r.mustRefuse.absentCases}  A fired ${r.mustRefuse.absentAFired}`,
     `  seeds with no stable attr ${r.seedsWithoutStableAttrs}/${r.seeds}  (fingerprint == role+name for these)`,
     `  mutation removes no raw element (oracle premise): ${r.mutationPreservesRawElements}`,
     `  harness snapshot delta    ${JSON.stringify(r.harnessViewDelta)}  (negative = 400-child walk cap, not a deletion)`,

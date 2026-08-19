@@ -43,7 +43,24 @@ describe('G2 — the corpus is big enough, and its oracle is sound', () => {
   it('carries a non-empty must-REFUSE set, so the over-firing row can fail at all', () => {
     // Without this the "wrong resolutions" row is vacuous: a corpus of only-must-resolve cases cannot
     // catch over-firing, and over-firing is the silent-wrong failure G2's binding half exists to detect.
-    expect(report().mustRefuse.cases).toBeGreaterThan(0);
+    const r = report();
+    expect(r.mustRefuse.cases).toBeGreaterThan(0);
+    // Both kinds, asserted separately: an ABSENT identity has no ref on any page, so arm A refuses it
+    // trivially. Only the AMBIGUOUS half can distinguish the arms, so a total count alone could be
+    // satisfied entirely by cases neither arm can get wrong.
+    expect(r.mustRefuse.absentCases).toBeGreaterThan(0);
+    expect(r.mustRefuse.ambiguousCases).toBeGreaterThan(0);
+    expect(r.mustRefuse.cases).toBe(r.mustRefuse.absentCases + r.mustRefuse.ambiguousCases);
+  }, TIMEOUT);
+
+  it('shows arm A over-fires ONLY on the ambiguous half, which localises the failure mode', () => {
+    // An identical-sibling run shares a role, so role comparison cannot detect this: arm A returns a
+    // confident ref for one member of a run it cannot tell apart. Refusing at the point of ambiguity
+    // is the only thing that catches it — which is what `heal` does and ref equality cannot.
+    const r = report();
+    expect(r.mustRefuse.absentAFired).toBe(0);
+    expect(r.mustRefuse.ambiguousAFired).toBeGreaterThan(0);
+    expect(r.mustRefuse.aFired).toBe(r.mustRefuse.ambiguousAFired);
   }, TIMEOUT);
 });
 
