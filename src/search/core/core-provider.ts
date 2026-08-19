@@ -217,6 +217,7 @@ export class CoreSearchProvider implements SearchProvider {
     let cachedAt: string | undefined;
     let engineOutcomes: EngineOutcomeSummary[] | undefined;
     let engineTelemetry: EngineTelemetry[] | undefined;
+    let enginesDispatched: string[] | undefined;
     // Reasons any dispatch reported its engine pool degraded (e.g. a thin
     // vertical starved and backfilled from general). Surfaced on engine_pool.
     const poolReasons = new Set<string>();
@@ -552,6 +553,19 @@ export class CoreSearchProvider implements SearchProvider {
       }
       engineTelemetry = [...telemetryByEngine.values()];
 
+      // `engines_dispatched` is the engines that actually ran, not the
+      // aggregated telemetry outcome. A later breaker-skip must not drop an
+      // engine that already returned ok/error on an earlier variant.
+      enginesDispatched = [];
+      const dispatchedSeen = new Set<string>();
+      for (const d of dispatches) {
+        for (const o of d.outcomes ?? []) {
+          if (o.skipped || dispatchedSeen.has(o.engine)) continue;
+          dispatchedSeen.add(o.engine);
+          enginesDispatched.push(o.engine);
+        }
+      }
+
       // `engines_used` = engines that contributed >= 1 result
       // to the deduped fused list (semantic — "who ended up in the answer").
       // `engine_telemetry` already carries the per-engine dedup_kept count;
@@ -840,13 +854,7 @@ export class CoreSearchProvider implements SearchProvider {
       ...(queriesExecuted.length > 0 ? { queries_executed: [...queriesExecuted] } : {}),
       ...(engineOutcomes ? { engine_outcomes: engineOutcomes } : {}),
       ...(engineTelemetry ? { engine_telemetry: engineTelemetry } : {}),
-      ...(engineTelemetry
-        ? {
-            engines_dispatched: engineTelemetry
-              .filter((t) => t.outcome !== 'skipped')
-              .map((t) => t.name),
-          }
-        : {}),
+      ...(engineTelemetry ? { engines_dispatched: enginesDispatched ?? [] } : {}),
       // Always emit on the engine-pool path (telemetry present). Also emit
       // when the allowlist produced warnings even if no adapter ran.
       ...(engineTelemetry || engineWarnings.length > 0 ? { engine_warnings: engineWarnings } : {}),

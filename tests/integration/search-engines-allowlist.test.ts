@@ -20,18 +20,20 @@ import type {
 import type { SmartRouter } from '../../src/fetch/router.js';
 import type { EngineEntry } from '../../src/search/core/engine-base.js';
 
-const verticalState: {
-  general: EngineEntry[];
-  news: EngineEntry[];
-  code: EngineEntry[];
-  docs: EngineEntry[];
-  papers: EngineEntry[];
-  images: EngineEntry[];
-} = { general: [], news: [], code: [], docs: [], papers: [], images: [] };
+const { verticalState, leftoverState } = vi.hoisted(() => ({
+  verticalState: {
+    general: [] as EngineEntry[],
+    news: [] as EngineEntry[],
+    code: [] as EngineEntry[],
+    docs: [] as EngineEntry[],
+    papers: [] as EngineEntry[],
+    images: [] as EngineEntry[],
+  },
+  leftoverState: { engines: [] as SearchEngine[] },
+}));
 
 /** Production leftover seed (`createKeylessDirectEngines`) — distinct spies
  * from the vertical catalog so a leak through `ctx.engines` is visible. */
-const leftoverState: { engines: SearchEngine[] } = { engines: [] };
 
 vi.mock('../../src/search/core/verticals/general.js', () => ({
   getGeneralEngines: () => verticalState.general,

@@ -146,6 +146,30 @@ describe('engines_used vs engine_telemetry semantics', () => {
     expect(out.data.engines_used).not.toContain('ddg');
   });
 
+  it('keeps engines_dispatched when a later variant is breaker-skipped', async () => {
+    const { BreakerOpenError } = await import('../../../src/search/core/engine-base.js');
+    const engine: SearchEngine = {
+      name: 'bing',
+      search: vi.fn(async (q: string) => {
+        if (q === 'q2') throw new BreakerOpenError('bing', 1000);
+        return [makeResult('bing', 'https://a.com/x')];
+      }),
+    };
+    verticalState.general = [{ engine }];
+    const provider = new CoreSearchProvider();
+    const out = await provider.search(
+      { query: ['q1', 'q2'], include_content: false },
+      { router: undefined as never, samplingServer: undefined as never, engines: [], backendStatus: undefined as never },
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+
+    expect(out.data.engines_dispatched).toContain('bing');
+    expect(out.data.engines_used).toContain('bing');
+    const row = (out.data.engine_telemetry ?? []).find((t) => t.name === 'bing');
+    expect(row).toBeDefined();
+  });
+
   it('engines_used reflects dedup_kept across the fused list, not raw result count', async () => {
     // Both engines return overlapping URLs. dedup_kept will be >0 for at
     // least one of them. The engine whose results all got de-duped out

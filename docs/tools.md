@@ -37,7 +37,9 @@ Notable response fields:
   - `freshness_signal` — `published_date`, `inferred` flag, `confidence`.
 - `evidence[]` + `citations[]` — quotable excerpts with `citation_id` and `source_span` (exact character range in the source), so an agent can cite verbatim.
 - `query_understanding` — classifier view: `intent`, `entities`, `date_hint`, `language`, `is_brand_collision_prone`, considered `rewrites`, `compound_terms`.
-- `engines_used`, `engine_telemetry[]` (`name`, `latency_ms`, `result_count`, `outcome`, `dedup_kept`), `engine_warnings`, `engine_pool` — degraded engines are reported, not hidden.
+- `engines_used` — engines that contributed results.
+- `engines_dispatched` — engines that ran during live dispatch.
+- `engine_telemetry[]` (`name`, `latency_ms`, `result_count`, `outcome`, `dedup_kept`), `engine_warnings`, `engine_pool` — degraded engines are reported, not hidden.
 - `total_time_ms`, `response_time_ms`, `search_time_ms`, `fetch_time_ms`.
 - On the `hybrid` backend, a merged response carries `fallback_signal` naming why the fallback fired.
 

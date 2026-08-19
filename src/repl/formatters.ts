@@ -56,9 +56,12 @@ function formatEngineSummary(output: SearchOutput): string {
   if (!dispatched || dispatched.length === 0) {
     return `engines: ${used.join(', ')}`;
   }
-  const usedKey = used.join(',');
-  const dispatchedKey = dispatched.join(',');
-  if (used.length === 0 || usedKey === dispatchedKey) {
+  const usedSet = new Set(used);
+  const dispatchedSet = new Set(dispatched);
+  const sameEngines =
+    usedSet.size === dispatchedSet.size &&
+    [...usedSet].every((name) => dispatchedSet.has(name));
+  if (used.length === 0 || sameEngines) {
     return `engines: ${dispatched.join(', ')}`;
   }
   return `engines: ${dispatched.join(', ')}; used: ${used.join(', ')}`;

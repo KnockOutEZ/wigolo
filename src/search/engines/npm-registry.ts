@@ -56,8 +56,9 @@ export class NpmRegistryEngine implements SearchEngine {
 
   async search(query: string, options: SearchEngineOptions = {}): Promise<RawSearchResult[]> {
     const timeoutMs = options.timeoutMs ?? 10000;
-    const maxResults = options.maxResults ?? 10;
-    const size = Math.min(Math.max(maxResults, 1), MAX_SIZE);
+    const maxResults = Math.max(options.maxResults ?? 10, 0);
+    if (maxResults === 0) return [];
+    const size = Math.min(maxResults, MAX_SIZE);
 
     const params = new URLSearchParams({
       text: query,
@@ -84,11 +85,10 @@ export class NpmRegistryEngine implements SearchEngine {
 
   private parseObjects(objects: NpmSearchObject[], maxResults: number): RawSearchResult[] {
     const results: RawSearchResult[] = [];
-    const total = objects.length;
 
-    for (let i = 0; i < total; i++) {
+    for (const obj of objects) {
       if (results.length >= maxResults) break;
-      const pkg = objects[i].package;
+      const pkg = obj.package;
       const name = asString(pkg?.name);
       if (!name) continue;
 
@@ -102,12 +102,16 @@ export class NpmRegistryEngine implements SearchEngine {
         title: name,
         url,
         snippet,
-        relevance_score: 1 - i / Math.max(total, 1),
+        relevance_score: 0,
         engine: 'npm-registry',
         ...(published_date ? { published_date } : {}),
       });
     }
 
-    return results;
+    const total = results.length;
+    return results.map((result, i) => ({
+      ...result,
+      relevance_score: 1 - i / Math.max(total, 1),
+    }));
   }
 }

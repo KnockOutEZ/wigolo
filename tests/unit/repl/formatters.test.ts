@@ -67,6 +67,17 @@ describe('formatSearchResults', () => {
     expect(formatted).toContain('engines: bing, duckduckgo; used: bing');
   });
 
+  it('treats dispatched and used as the same set regardless of order', () => {
+    const output: SearchOutput = {
+      ...searchOutput,
+      engines_dispatched: ['bing', 'duckduckgo'],
+      engines_used: ['duckduckgo', 'bing'],
+    };
+    const formatted = stripAnsi(formatSearchResults(output));
+    expect(formatted).toContain('engines: bing, duckduckgo');
+    expect(formatted).not.toContain('used:');
+  });
+
   it('handles empty results', () => {
     const empty: SearchOutput = {
       results: [],

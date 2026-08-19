@@ -41,7 +41,7 @@ Multi-engine web search with ML reranking, explainable scoring, and per-engine t
 // Direct-answer synthesis
 { "query": "RSC vs SSR differences", "format": "answer" }
 
-// Exclude a noisy engine
+// Restrict to selected engines
 { "query": "US ISM manufacturing PMI", "search_engines": ["duckduckgo", "wikipedia"] }
 
 // Fresh content (bypass cache)
