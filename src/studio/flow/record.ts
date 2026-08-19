@@ -26,7 +26,7 @@
  * layers keyed on the same predicate, which would only read as depth.
  */
 import { createLogger } from '../../logger.js';
-import { isCredentialUrl } from '../credential.js';
+import { isCredentialUrl, redactCredentialParams } from '../credential.js';
 import type { StructuredTarget } from '../mark/target.js';
 import { flowIdForSession, insertFlowStep, type FlowDb, type FlowProjection, type FlowStep } from './store.js';
 
@@ -82,6 +82,8 @@ export function isCredentialRecordingContext(input: { pageUrl?: string; pageHasC
   return input.pageHasCredentialField === true || isCredentialUrl(input.pageUrl);
 }
 
+
+
 /**
  * A stable, value-free name for a `type` step's parameter, derived from locators the step already
  * stores (the element's accessible name, then its `name`/`placeholder` attribute). Deriving it
@@ -115,7 +117,15 @@ export function slotNameFor(target: StructuredTarget | null | undefined, seq: nu
  */
 export function narrowPageUrl(action: string, pageUrl: string | undefined): string | undefined {
   if (pageUrl === undefined) return undefined;
-  if (action === 'navigate') return pageUrl;
+  // A175 — a navigate URL is kept whole because it IS the step, but a credential-shaped parameter is
+  // removed from it first. `isCredentialUrl` cannot do this job: it matches login words as PATH segments
+  // and never reads the query, so `/reset?token=…`, `?sso_session=…` and `?access_token=…` all read as
+  // ordinary pages to it (measured: 3 of 4 secret-bearing URLs were stored whole).
+  //
+  // The parameter is removed rather than the STEP refused. Dropping a navigate would leave the sequence
+  // numbers contiguous while the recording silently lost its navigation, and replay would then run the
+  // following clicks against whatever page was already open.
+  if (action === 'navigate') return redactCredentialParams(pageUrl) || undefined;
   try {
     const u = new URL(pageUrl);
     return `${u.origin}${u.pathname}`;

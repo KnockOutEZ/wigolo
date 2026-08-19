@@ -76,6 +76,91 @@ export function isCredentialUrl(url: string | undefined): boolean {
 }
 
 /**
+ * Credential-shaped QUERY-PARAMETER names. A fixed, non-injectable constant for the same reason
+ * `CREDENTIAL_URL` is one.
+ *
+ * `CREDENTIAL_URL` matches login words as PATH segments and is therefore blind to the query string:
+ * `/orders?sso_session=…` and `/reset?token=…` both read as ordinary pages. That blindness is harmless
+ * wherever the query is dropped before storage, and it is NOT harmless where a URL is kept whole.
+ *
+ * Names only — never values. A value-matching heuristic would have to look at the secret to decide, and
+ * would then be a component that reads secrets in order to avoid storing them.
+ */
+export const CREDENTIAL_PARAM_NAMES: ReadonlySet<string> = new Set([
+  'token', 'tokens', 'secret', 'secrets', 'password', 'passwd', 'pwd', 'passcode', 'pin',
+  'session', 'sessionid', 'sid', 'apikey', 'auth', 'authorization', 'otp', 'signature', 'sig',
+  'credential', 'credentials', 'jwt', 'bearer',
+]);
+
+/**
+ * Whether one parameter NAME is credential-shaped.
+ *
+ * Matched on the whole name with separators removed AND on each separated part, because neither alone
+ * is sufficient: `api_key` is only credential-shaped as a whole (`apikey`), while `sso_session` is only
+ * credential-shaped in a part (`session`).
+ *
+ * Deliberately NOT a substring test. `auth` as a substring matches `author`, and refusing to record a
+ * step because a page listed articles by author would be the kind of silent over-refusal that makes a
+ * guard get switched off.
+ */
+export function isCredentialParamName(name: string): boolean {
+  const lower = name.toLowerCase();
+  if (CREDENTIAL_PARAM_NAMES.has(lower.replace(/[^a-z0-9]+/g, ''))) return true;
+  return lower.split(/[^a-z0-9]+/).some((part) => part !== '' && CREDENTIAL_PARAM_NAMES.has(part));
+}
+
+/**
+ * A fragment read as `k=v` pairs, or empty when it is an ordinary anchor.
+ *
+ * `#tab=2` and `#access_token=…` are the same syntax, so the shape cannot distinguish them — the NAME
+ * does. An anchor with no `=` yields nothing and is left alone.
+ */
+function fragmentParams(hash: string): URLSearchParams {
+  const body = hash.startsWith('#') ? hash.slice(1) : hash;
+  return body.includes('=') ? new URLSearchParams(body) : new URLSearchParams();
+}
+
+/**
+ * A URL with every credential-shaped parameter REMOVED from its query and fragment, and everything else
+ * left byte-intact.
+ *
+ * **Why redact rather than refuse the step.** Refusing a `navigate` would drop a step out of the middle
+ * of a recorded flow while leaving the sequence numbers contiguous — so the recording would look
+ * complete and replay the following clicks against whatever page happened to be open. A flow that is
+ * silently missing its navigation is a worse object than a token in a local database. Redaction keeps
+ * the step, keeps its benign parameters, and stores no secret.
+ *
+ * A navigation that genuinely REQUIRED the removed parameter will fail at replay — visibly, at the next
+ * step's divergence halt, which is the correct place for it to fail.
+ *
+ * An unparseable URL is returned EMPTY rather than raw: there is no way to redact a string we cannot
+ * parse, and returning it unchanged would pass the secret through the function whose job is removing it.
+ */
+export function redactCredentialParams(url: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return '';
+  }
+  for (const name of [...parsed.searchParams.keys()]) {
+    if (isCredentialParamName(name)) parsed.searchParams.delete(name);
+  }
+  const frag = fragmentParams(parsed.hash);
+  if ([...frag.keys()].length > 0) {
+    let touched = false;
+    for (const name of [...frag.keys()]) {
+      if (isCredentialParamName(name)) { frag.delete(name); touched = true; }
+    }
+    if (touched) {
+      const rest = frag.toString();
+      parsed.hash = rest === '' ? '' : `#${rest}`;
+    }
+  }
+  return parsed.toString();
+}
+
+/**
  * The factored credential-CONTEXT predicate (Slice 5b reuses this): a login URL OR any credential
  * field present on the page. "Field present" uses the same true-semantics test, so the context view
  * here and a snapshot's precomputed `hasCredentialField` agree by construction.
