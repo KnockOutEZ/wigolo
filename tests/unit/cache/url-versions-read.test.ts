@@ -365,6 +365,42 @@ describe('cache(url, at:) — point-in-time reconstruction (G-S14-2a)', () => {
     expect(out.version_not_retained).toBeUndefined();
   });
 
+  it('refuses `at` combined with a present-tense mode instead of silently dropping it', async () => {
+    // check_changes, stats and clear all return BEFORE the time-axis branch, so
+    // the combination would be served partially: `at` silently dropped and a
+    // present-tense answer returned in its place — a past-time question answered
+    // with the present, which is the failure this whole surface exists to refuse.
+    // check_changes is the sharpest, because it also spends live network requests
+    // the caller never asked for.
+    buildTimeline();
+    for (const mode of [{ check_changes: true }, { stats: true }, { clear: true }]) {
+      const which = Object.keys(mode)[0];
+      const out = await handleCache({ url: URL, at: stamp(0), ...mode });
+      expect(out.error, `${which} + at must be refused`).toMatch(new RegExp(which));
+      expect(out.version, `${which} + at must not answer`).toBeUndefined();
+      expect(out.changes, `${which} must not run`).toBeUndefined();
+      expect(out.stats).toBeUndefined();
+      expect(out.cleared).toBeUndefined();
+    }
+  });
+
+  it('refuses `versions` combined with a present-tense mode', async () => {
+    buildTimeline();
+    const out = await handleCache({ url: URL, versions: true, check_changes: true });
+    expect(out.error).toMatch(/check_changes/);
+    expect(out.version_list).toBeUndefined();
+    expect(out.changes).toBeUndefined();
+  });
+
+  it('still allows `query` alongside `at` — both read the local store', async () => {
+    // The refusal is scoped to the PRESENT-tense modes. `query` is another local
+    // read, so it must not be caught by the same guard.
+    const { t2 } = buildTimeline();
+    const out = await handleCache({ url: URL, at: plusSeconds(t2, 1), query: 'ignored' });
+    expect(out.error).toBeUndefined();
+    expect(out.version!.markdown).toBe(BODY_2);
+  });
+
   it('requires a url alongside `at`', async () => {
     const out = await handleCache({ at: stamp(0) });
     expect(out.error).toMatch(/url/i);
@@ -618,6 +654,38 @@ describe('diff reaches a past version (G-S14-2b)', () => {
     if (result.ok) return;
     expect(result.error).toBe('cache_miss');
     expect(JSON.stringify(result)).not.toContain('The body it serves now');
+  });
+
+  it('refuses a hash whose live row is EXPIRED even though history retains it', async () => {
+    // The one explicit security claim in this diff: the version table must not be
+    // a way to read around a TTL refusal the cache just made about the SAME bytes.
+    // The mock-level test in tools/diff.test.ts proves `versionByHash` is never
+    // called; this proves the end-to-end OUTCOME against a real database, where
+    // the retained row demonstrably exists and is demonstrably not served.
+    write(BODY_3);
+    const hash = hashOf(BODY_3);
+
+    getDatabase()
+      .prepare("UPDATE url_cache SET expires_at = datetime('now', '-1 day') WHERE content_hash = ?")
+      .run(hash);
+
+    // BOTH halves of the premise, or this could pass because the live row was
+    // missing rather than because it was expired.
+    const liveRows = getDatabase()
+      .prepare('SELECT COUNT(*) AS n FROM url_cache WHERE content_hash = ?')
+      .get(hash) as { n: number };
+    expect(liveRows.n, 'premise: a live row still carries the hash').toBe(1);
+    expect(versionByHash(hash), 'premise: history retains the same bytes').not.toBeNull();
+
+    const result = await handleDiff({
+      old: { content_hash: hash },
+      new: { markdown: BODY_1 },
+      output: 'summary',
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('cache_miss');
   });
 
   it('still resolves a hash that IS the live row, without consulting history', async () => {
