@@ -14,7 +14,14 @@
  *    none. So the seed apparatus buys correct refusal, which is the half the reach threshold cannot see.
  */
 import { describe, it, expect } from 'vitest';
-import { runFlowDrift, renderFlowDriftReport, G2, type FlowDriftReport } from '../../benchmarks/scrape-quality/flow-drift.js';
+import {
+  runFlowDrift,
+  renderFlowDriftReport,
+  runWrongElementProbe,
+  runDegradationProbe,
+  G2,
+  type FlowDriftReport,
+} from '../../benchmarks/scrape-quality/flow-drift.js';
 import { computeFingerprint, STABLE_ATTRS } from '../../src/studio/perception/id.js';
 
 let cached: FlowDriftReport | undefined;
@@ -23,7 +30,9 @@ function report(): FlowDriftReport {
   return cached;
 }
 
-const TIMEOUT = 180_000;
+// 3x the measured 8.0s file duration. Deliberately not larger: the repo default is 20s, and a ceiling
+// set many multiples above observed cost cannot fail on a harness regression the default would catch.
+const TIMEOUT = 60_000;
 
 describe('G2 — the corpus is big enough, and its oracle is sound', () => {
   it(`runs at least ${G2.minCases} cases over a non-empty seed set`, () => {
@@ -91,11 +100,16 @@ describe('G2 — REACH: the measured advantage, and why it is what it is', () =>
     expect(report().b.resolved).toBeGreaterThanOrEqual(report().a.resolved);
   }, TIMEOUT);
 
-  it('buys NO additional reach on the five §3.4 classes, because every one preserves the fingerprint', () => {
+  it('buys NO additional reach on the five §3.4 classes, at the heal boundary OR at the resolver', () => {
     const r = report();
+    // Asserted on BOTH arms. Only arm B would leave the cause ambiguous: a 0 there is produced either
+    // by heal finding nothing or by §5.3 declining what it found, and those are different findings.
+    expect(r.hOnly).toBe(0);
     expect(r.bOnly).toBe(0);
+    expect(r.h.resolved - r.a.resolved).toBeLessThan(G2.minArmBAdvantage);
     expect(r.b.resolved - r.a.resolved).toBeLessThan(G2.minArmBAdvantage);
-    // The mechanism, not just the count: tier 1 carries every case, so no transition degrades.
+    // On THIS corpus the halt costs nothing, because heal never had to drop a tier.
+    expect(r.haltedFromH).toBe(0);
     expect(Object.keys(r.tierTransitions)).toEqual(['high->high']);
   }, TIMEOUT);
 
@@ -131,7 +145,73 @@ describe('G2 — the heal-tier transition distribution (§11.A.6)', () => {
 
   it('renders a report a decision-maker can read', () => {
     const text = renderFlowDriftReport(report());
-    expect(text).toContain('arm B advantage');
+    // Every arm named, and the two numbers a decision rests on present with their labels.
+    expect(text).toContain('arm A  ref equality only');
+    expect(text).toContain('arm H  heal boundary');
+    expect(text).toContain('arm B  shipped resolver');
+    expect(text).toContain('REACH');
+    expect(text).toContain('halted by the §5.3 degradation rule');
     expect(text).toContain('must-refuse controls');
+    expect(text).toContain('DIFFERENT element');
+  }, TIMEOUT);
+});
+
+describe('G2 — what the C0 corpus CANNOT produce, constructed so the rows mean what they say', () => {
+  it('arm A lands on a DIFFERENT element where the corpus only ever shows it landing on the right one', () => {
+    // Two links sharing an accessible name in one <tbody>, differing only by href, under
+    // `sibling_reorder`. The C0 corpus reports `firedDifferentElement == 0` because its mutations
+    // preserve positional paths, so arm A fires there only when the ref still designates the same
+    // node. Without this probe, "arm A over-fires" could not be distinguished from "arm A is fine".
+    const p = runWrongElementProbe();
+    expect(p.fingerprintCollides).toBe(true);
+    expect(p.armAResolved).toBe(true);
+    expect(p.armARecordedIdentity).toBe('link|Open order|/row-ONE');
+    expect(p.armAResolvedIdentity).toBe('link|Open order|/row-TWO');
+    expect(p.armALandedOnDifferentElement).toBe(true);
+    // arm B refuses at the point of ambiguity, which is the only thing that catches this.
+    expect(p.armBResolved).toBe(false);
+    expect(p.armBReason).toBe('ambiguous_target');
+    expect(p.armBConfidence).toBe('low');
+    expect(p.armBCandidates).toBe(2);
+  }, TIMEOUT);
+
+  it('on the C0 corpus, every one of arm A\'s firings landed on the INTENDED element', () => {
+    // Stated as its own row so the must-refuse count is never read as N wrong clicks. Arm A resolved
+    // targets it could not know were safe; on this corpus none was observably wrong.
+    const r = report();
+    expect(r.mustRefuse.firedDifferentElement).toBe(0);
+    expect(r.mustRefuse.firedSameElement).toBe(r.mustRefuse.ambiguousAFired);
+  }, TIMEOUT);
+
+  it('reports the EFFECTIVE sample behind the ambiguous cases, not just the replay count', () => {
+    // 5 mutations x N shapes: the same shape replayed five times is five cases and one sample.
+    const r = report();
+    expect(r.mustRefuse.ambiguousDistinctShapes).toBeGreaterThan(0);
+    expect(r.mustRefuse.ambiguousDistinctShapes).toBeLessThan(r.mustRefuse.ambiguousCases);
+  }, TIMEOUT);
+});
+
+describe('G2 — §5.3\'s degradation halt is what caps the reach row', () => {
+  it('heal RECOVERS a drifted stable attr at medium, and the resolver then declines it', () => {
+    // The decisive decomposition. The record tier is MEASURED (`high`, because a recordable target is
+    // uniquely fingerprinted on its own page), heal drops to `medium`, and §5.3 halts on worse-than-
+    // recorded. So every reach gain healing can produce is converted into a halt, and G2's reach
+    // threshold is unreachable while that rule stands — a property of the ruling, not of the corpus.
+    const p = runDegradationProbe();
+    expect(p.fingerprintChanged).toBe(true);
+    expect(p.roleNameHeld).toBe(true);
+    expect(p.tierAtRecord).toBe('high');
+    expect(p.healResolved).toBe(true);
+    expect(p.healConfidence).toBe('medium');
+    expect(p.armAResolved).toBe(false);
+    expect(p.armBResolved).toBe(false);
+    expect(p.armBReason).toBe('confidence_degraded');
+  }, TIMEOUT);
+
+  it('proves the heal-tier distribution CAN express high->medium, so its C0 value is a measurement', () => {
+    // Blocker 2's regression guard: the distribution used to be bucketed from the RESOLVER's refusal
+    // reasons, where a medium recovery surfaces as `confidence_degraded` and landed in `none`. That map
+    // could never contain `high->medium` for any corpus, which made the C0 reading vacuous.
+    expect(runDegradationProbe().healConfidence).toBe('medium');
   }, TIMEOUT);
 });

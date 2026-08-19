@@ -5,7 +5,9 @@
  * the NUMBER can be read without reading a test runner's output, since the number is the deliverable.
  */
 import { createLogger } from '../../src/logger.js';
-import { runFlowDrift, renderFlowDriftReport } from './flow-drift.js';
+import { runFlowDrift, renderFlowDriftReport, runWrongElementProbe, runDegradationProbe } from './flow-drift.js';
 
 const log = createLogger('extract');
 log.info(renderFlowDriftReport(runFlowDrift()));
+log.info(`wrong-element probe: ${JSON.stringify(runWrongElementProbe(), null, 2)}`);
+log.info(`degradation probe: ${JSON.stringify(runDegradationProbe(), null, 2)}`);
