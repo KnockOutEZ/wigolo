@@ -326,6 +326,43 @@ CREATE INDEX IF NOT EXISTS idx_studio_flow_steps_session
   ON studio_flow_steps(session_id);
 `;
 
+// S14-1: the corpus time axis. url_cache is INSERT OR REPLACE — one row per URL —
+// so every re-fetch destroys the body it replaces and no past state of any page is
+// reachable by any path. url_versions is the append-on-change side table holding the
+// older bodies. D-S14-1 forbids touching url_cache's schema: a history column on a
+// REPLACEd row is destroyed by the same mechanism this table exists to escape.
+//
+// Standalone by construction — NO foreign key to url_cache. url_cache is created
+// inline by initDatabase(), which the runner-only harness skips; an FK here would
+// make this migration throw on a bare DB and abort every migration queued behind it
+// (the failure mode 012's guard exists for). A version also legitimately outlives
+// the cache row it was captured from.
+//
+// D-S14-6: versions are NOT embedded and NOT joined to url_cache_fts. Mirrored in
+// 013-url-versions.sql.
+const MIGRATION_013_URL_VERSIONS = `
+CREATE TABLE IF NOT EXISTS url_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  normalized_url TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  markdown TEXT NOT NULL,
+  title TEXT,
+  http_status INTEGER,
+  fetched_at TEXT NOT NULL,
+  byte_len INTEGER NOT NULL,
+  origin_authenticated INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_url_versions_url_hash
+  ON url_versions(normalized_url, content_hash);
+
+CREATE INDEX IF NOT EXISTS idx_url_versions_url_time
+  ON url_versions(normalized_url, fetched_at, id);
+
+CREATE INDEX IF NOT EXISTS idx_url_versions_time
+  ON url_versions(fetched_at, id, byte_len);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -507,6 +544,7 @@ export const MIGRATIONS: Migration[] = [
   // studio_sessions (the FK parent) is created by 008-studio-artifacts, which is earlier in this
   // same array — so the FK resolves on a fresh DB in one pass.
   { name: '013-studio-flows', sql: MIGRATION_013_STUDIO_FLOWS },
+  { name: '013-url-versions', sql: MIGRATION_013_URL_VERSIONS },
 ];
 
 function isReadOnlyError(err: unknown): boolean {
