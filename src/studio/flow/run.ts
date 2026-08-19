@@ -62,8 +62,15 @@ export type RunHaltReason =
   | 'unresolved_target'
   | 'ambiguous_target'
   | 'role_changed'
-  /** A `type` step whose slot has no value for this run. Values are per-run and never stored (§6). */
+  /**
+   * A `type` step's slot has no value for this run. Raised PRE-FLIGHT (`atSeq: 0`) with every missing
+   * name, so a caller learns all of them in one round trip. Values are per-run and never stored (§6).
+   */
   | 'slot_unfilled'
+  /** A value was supplied for a slot this flow does not have — a caller has misread the flow. */
+  | 'unknown_slot'
+  /** A `type` step carrying no slot name: a corrupt or hand-written row, never one the recorder wrote. */
+  | 'malformed_step'
   /** The act handler refused or failed. Its own reason travels in `detail`. */
   | 'act_refused';
 
@@ -112,6 +119,21 @@ export interface FlowRunDeps {
   values?: Readonly<Record<string, string>>;
 }
 
+/**
+ * The slot names a caller must supply before this flow can run, in `seq` order, de-duplicated.
+ *
+ * De-duplicated because a slot is a NAMED PARAMETER, not a position: two fields that take the same value
+ * are one question to ask, not two. Ordered by `seq` so a prompt follows the flow rather than the array.
+ */
+export function requiredSlots(steps: readonly FlowStep[]): string[] {
+  const out: string[] = [];
+  for (const step of [...steps].sort((a, b) => a.seq - b.seq)) {
+    if (step.action !== 'type' || step.slot === undefined) continue;
+    if (!out.includes(step.slot)) out.push(step.slot);
+  }
+  return out;
+}
+
 /** `error_reason` is how every refusal and failure arrives from the act handler. */
 function refused(out: StudioActOutput | StudioToolError): string | undefined {
   return typeof out === 'object' && out !== null && 'error_reason' in out
@@ -134,6 +156,28 @@ export async function runFlow(deps: FlowRunDeps): Promise<RunResult> {
   // Pre-flight, before anything is dispatched — see the ceiling's note above.
   if (steps.length > MAX_REPLAY_STEPS) {
     return { ok: false, dispatched, halt: { atSeq: 0, reason: 'too_long', detail: String(steps.length) } };
+  }
+
+  // ── Slot pre-flight (S13-3) ────────────────────────────────────────────────────────────────────
+  // Validated BEFORE the first dispatch, for the same reason the ceiling refuses up front: discovering a
+  // missing value at step 7 leaves steps 1-6 already executed against a live site. Everything knowable
+  // in advance is checked in advance.
+  const malformed = steps.find((s) => s.action === 'type' && s.slot === undefined);
+  if (malformed) {
+    return { ok: false, dispatched, halt: { atSeq: malformed.seq, reason: 'malformed_step', detail: 'type step carries no slot' } };
+  }
+  const needed = requiredSlots(steps);
+  const supplied = deps.values ?? {};
+  const missing = needed.filter((name) => supplied[name] === undefined);
+  if (missing.length > 0) {
+    // Every missing name, not just the first: one round trip should tell a caller everything it must ask.
+    return { ok: false, dispatched, halt: { atSeq: 0, reason: 'slot_unfilled', detail: missing.join(', ') } };
+  }
+  const unknown = Object.keys(supplied).find((name) => !needed.includes(name));
+  if (unknown !== undefined) {
+    // Loudly, rather than ignoring it. A caller that passed `querry` has misread the flow, and running
+    // with the real slot unfilled would be the worst of both outcomes.
+    return { ok: false, dispatched, halt: { atSeq: 0, reason: 'unknown_slot', detail: unknown } };
   }
 
   for (const step of steps) {
@@ -159,14 +203,12 @@ export async function runFlow(deps: FlowRunDeps): Promise<RunResult> {
       case 'click':
         input = { action: 'click', ref } as StudioActInput;
         break;
-      case 'type': {
-        const value = step.slot === undefined ? undefined : deps.values?.[step.slot];
-        if (value === undefined) {
-          return { ok: false, dispatched, halt: { atSeq: step.seq, reason: 'slot_unfilled', detail: step.slot } };
-        }
-        input = { action: 'type', ref, text: value } as StudioActInput;
+      case 'type':
+        // `step.slot` is present and `supplied[slot]` is defined: both were established by the pre-flight
+        // above, so there is no second check here. A duplicate guard on the same predicate would read as
+        // depth while being one decision, and would leave a branch no input can reach.
+        input = { action: 'type', ref, text: supplied[step.slot as string] } as StudioActInput;
         break;
-      }
       case 'scroll':
         input = { action: 'scroll', direction: step.direction, amount: step.amount } as StudioActInput;
         break;
