@@ -1,3 +1,9 @@
+# Ways to support wigolo, for the repo's "Sponsor this project" sidebar.
+#
+# Only genuine funding destinations belong here — GitHub does not permit funding
+# links to be used for advertising, so a sponsor's own link must never be listed
+# as one. Sponsors are thanked in SPONSORS.md and on the site instead.
 buy_me_a_coffee: knockoutez
 custom:
+  - "https://knockoutez.github.io/wigolo/#sponsors"
   - "https://github.com/KnockOutEZ/wigolo/blob/main/SPONSORS.md"
