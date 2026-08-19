@@ -115,15 +115,36 @@ describe('resolveFlowStep — halts (§5.3), and never guesses', () => {
     });
   });
 
-  it('HALTS when the observed confidence is WORSE than the confidence at record time', () => {
+  it('SURFACES rather than halts when the observed confidence is WORSE than at record time (§5.3 as amended, A174)', () => {
+    // Was a halt until 2026-08-19. The halt could not pass on ANY input: every recordable seed
+    // records at `high` and every heal RECOVERY is `medium`, so halting here made 100% of healing's
+    // reach unreachable. It now resolves and says so — and the marker is what makes the reversal
+    // condition ("a wrong action traced to a step that ran below its recorded confidence")
+    // observable at all.
     const cand = candidate('e-live', { attrs: { type: 'submit' } }); // fingerprint drift ⇒ medium
     const r = resolveFlowStep(step({ healTierAtRecord: 'high' }), [cand]);
     expect(r).toEqual({
-      ok: false,
-      reason: 'confidence_degraded',
+      ok: true,
+      ref: 'e-live',
       confidence: 'medium',
-      confidenceAtRecord: 'high',
+      tier: 'role-name',
+      degraded: { from: 'high', to: 'medium' },
     });
+  });
+
+  it('marks NOTHING as degraded when the confidence held — the flag is not set on every resolution', () => {
+    // Paired deliberately with the test above rather than standing alone: an absence assertion is
+    // satisfied by a detector that cannot fire, so it is only evidence next to a case that DOES fire.
+    const r = resolveFlowStep(step({ healTierAtRecord: 'high' }), [candidate('e-live')]);
+    expect(r.ok && 'degraded' in r).toBe(false);
+  });
+
+  it('still HALTS on a halting confidence even when the recorded tier is lower — surfacing did not widen the accept set', () => {
+    // The must-not-happen for A174: `medium` recorded, ambiguous live ⇒ heal `low`. `low` is a HALT
+    // confidence, and the degradation comparison must never be reached to "rescue" it as merely
+    // degraded. Ranking `low` below `medium` would make that rescue look principled.
+    const r = resolveFlowStep(step({ healTierAtRecord: 'medium' }), [candidate('e-a'), candidate('e-b', {}, 2)]);
+    expect(r).toEqual({ ok: false, reason: 'ambiguous_target', confidence: 'low', candidates: 2 });
   });
 
   it('does NOT halt when the observed confidence is BETTER than at record time', () => {
