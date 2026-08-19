@@ -102,8 +102,15 @@ describe('013-studio-flows migration', () => {
     const after = freshDb();
     applyMigrations(after, { vecLoaded: false });
 
+    // Keyed on tbl_name, NOT on the object's own name: an index over studio_audit is
+    // conventionally called `idx_studio_audit_*`, so a `name LIKE 'studio_audit%'` filter would
+    // miss exactly the object a careless migration is most likely to add.
     const sqlOf = (db: Database.Database) =>
-      (db.prepare(`SELECT name, sql FROM sqlite_master WHERE name LIKE 'studio_audit%' ORDER BY name`).all() as Array<{ name: string; sql: string }>);
+      (db.prepare(`SELECT type, name, sql FROM sqlite_master WHERE tbl_name = 'studio_audit' ORDER BY type, name`)
+        .all() as Array<{ type: string; name: string; sql: string }>);
+    const cols = (db: Database.Database) =>
+      (db.pragma('table_info(studio_audit)') as Array<{ name: string; type: string }>).map((c) => `${c.name} ${c.type}`);
     expect(sqlOf(after)).toEqual(sqlOf(before));
+    expect(cols(after)).toEqual(cols(before));
   });
 });
