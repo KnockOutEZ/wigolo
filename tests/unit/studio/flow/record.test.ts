@@ -203,6 +203,45 @@ describe('the recorder — what lands in the sidecar', () => {
     expect(listFlowSteps(db, flowIdForSession('sess-boom'))).toHaveLength(0);
   });
 
+  it('a DB failure inside record() never turns a successful action into an error the agent retries', async () => {
+    // The seed half of this contract is already covered above, and `seed()` is awaited behind a
+    // `.catch()` on the act path — so a seed throw proves nothing about `record()`, whose two
+    // INSERTs run bare. SQLITE_BUSY / readonly / disk-full are the real shapes here. If the write
+    // escapes, the agent is told a click FAILED that already reached the page — and it retries,
+    // re-executing an action that fired. That is the one outcome this slice must not produce.
+    const db = migratedDb();
+    const throwingDb = {
+      prepare(sql: string) {
+        const stmt = db.prepare(sql);
+        if (/INSERT\s+OR\s+IGNORE\s+INTO\s+studio_flow_steps/i.test(sql)) {
+          return { run: () => { throw new Error('database is locked'); }, all: () => [] };
+        }
+        return { run: (...a: unknown[]) => stmt.run(...(a as [])), all: (...a: unknown[]) => stmt.all(...(a as [])) };
+      },
+    };
+    const flow = createFlowRecorder({
+      db: throwingDb,
+      sessionId: 'sess-db-boom',
+      now: () => 1,
+      seed: async () => liveTarget(),
+    });
+    const act = createActHandler({
+      browser: { navigate: async () => {} },
+      controlToken: agentToken,
+      grant: allowGrant,
+      resolve: async () => ({ backendNodeId: 42, center: { x: 1, y: 1 }, role: 'button', name: 'Go' }),
+      channel: { dispatchAgentUnit: async () => true, viewportCenter: () => ({ x: 0, y: 0 }) },
+      audit: new SessionAuditLog({ db, sessionId: 'sess-db-boom' }),
+      currentUrl: () => 'https://example.com/a',
+      flow,
+    });
+    await expect(act({ action: 'click', ref: 'e1' })).resolves.toEqual({ ok: true, action: 'click' });
+    // The forensic record still holds the act: the click landed, so the audit row is the truth and
+    // the sidecar's loss is the only casualty.
+    const audited = db.prepare('SELECT COUNT(*) AS n FROM studio_audit').get() as { n: number };
+    expect(audited.n).toBe(1);
+  });
+
   it('resumes numbering after a restart rather than colliding on seq 1', async () => {
     const a = harness({ sessionId: 'sess-resume', currentUrl: 'https://example.com/a' });
     await a.act({ action: 'click', ref: 'e1' });

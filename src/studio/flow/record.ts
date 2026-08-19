@@ -25,9 +25,12 @@
  * ONE credential decision, applied at the earliest point each verb has its inputs — not two
  * layers keyed on the same predicate, which would only read as depth.
  */
+import { createLogger } from '../../logger.js';
 import { isCredentialUrl } from '../credential.js';
 import type { StructuredTarget } from '../mark/target.js';
 import { flowIdForSession, insertFlowStep, type FlowDb, type FlowProjection } from './store.js';
+
+const log = createLogger('studio');
 
 /**
  * The seam the act handler holds. Deliberately narrow: the recorder never reaches for a browser,
@@ -98,6 +101,16 @@ const RECORDABLE_ACTIONS = new Set(['navigate', 'click', 'type', 'scroll']);
 export function createFlowRecorder(deps: FlowRecorderDeps): FlowRecorderHook {
   const now = deps.now ?? (() => Date.now());
   const flowId = flowIdForSession(deps.sessionId);
+  /**
+   * `projectAttrs` rejects a WHOLE step when the page offers a credential-shaped attribute name,
+   * and its own comment justifies that as failing LOUDLY rather than quietly shedding a field.
+   * With no host consumer wired for `onReject`, the optional callback made it the exact opposite —
+   * silent. Logging is what makes the claim true independently of whether a host ever subscribes.
+   */
+  const onReject = (rejection: Extract<FlowProjection, { ok: false }>): void => {
+    log.warn('flow step rejected by the recording allow-list', { reason: rejection.reason, key: rejection.key });
+    deps.onReject?.(rejection);
+  };
   // Resume after a restart rather than colliding on seq 1: the unique (flow_id, seq) index would
   // silently drop the colliding row, and a flow missing its middle is worse than a short one.
   const prior = deps.db
@@ -116,37 +129,51 @@ export function createFlowRecorder(deps: FlowRecorderDeps): FlowRecorderHook {
       if (TARGETED_ACTIONS.has(input.action) && !input.target) return;
 
       const next = seq + 1;
-      const projected = insertFlowStep(deps.db, {
-        flowId,
-        sessionId: deps.sessionId,
-        seq: next,
-        auditSeq: input.auditSeq,
-        action: input.action,
-        ...(input.pageUrl !== undefined ? { pageUrl: input.pageUrl } : {}),
-        ...(input.target
-          ? {
-              target: {
-                role: input.target.role,
-                name: input.target.name,
-                fingerprint: input.target.fingerprint,
-                ancestorPath: input.target.ancestorPath,
-                attrs: input.target.attrs,
-              },
-              // DERIVED, not asserted: `resolve()` refuses a low-confidence ref, and a ref is
-              // low-confidence exactly when its fingerprint collided in that snapshot. A ref that
-              // resolved therefore had a unique fingerprint on the page — which is what heal's
-              // strongest tier matches on.
-              healTierAtRecord: 'high' as const,
-            }
-          : {}),
-        ...(input.recordedRef !== undefined ? { recordedRef: input.recordedRef } : {}),
-        ...(input.action === 'type' ? { slot: slotNameFor(input.target, next) } : {}),
-        ...(input.direction !== undefined ? { direction: input.direction } : {}),
-        ...(input.amount !== undefined ? { amount: input.amount } : {}),
-        ts: now(),
-      });
+      let projected: FlowProjection;
+      try {
+        projected = insertFlowStep(deps.db, {
+          flowId,
+          sessionId: deps.sessionId,
+          seq: next,
+          auditSeq: input.auditSeq,
+          action: input.action,
+          ...(input.pageUrl !== undefined ? { pageUrl: input.pageUrl } : {}),
+          ...(input.target
+            ? {
+                target: {
+                  role: input.target.role,
+                  name: input.target.name,
+                  fingerprint: input.target.fingerprint,
+                  ancestorPath: input.target.ancestorPath,
+                  attrs: input.target.attrs,
+                },
+                // DERIVED, not asserted: `resolve()` refuses a low-confidence ref, and a ref is
+                // low-confidence exactly when its fingerprint collided in that snapshot. A ref that
+                // resolved therefore had a unique fingerprint on the page — which is what heal's
+                // strongest tier matches on.
+                healTierAtRecord: 'high' as const,
+              }
+            : {}),
+          ...(input.recordedRef !== undefined ? { recordedRef: input.recordedRef } : {}),
+          ...(input.action === 'type' ? { slot: slotNameFor(input.target, next) } : {}),
+          ...(input.direction !== undefined ? { direction: input.direction } : {}),
+          ...(input.amount !== undefined ? { amount: input.amount } : {}),
+          ts: now(),
+        });
+      } catch (err) {
+        // The contract above ("must never throw") is the whole point of the sidecar being a
+        // DERIVED artefact, and until now it lived only in a docstring. `insertFlowStep` runs two
+        // `db.prepare().run()` calls, and SQLITE_BUSY / a readonly file / a full disk throw from
+        // any of them. Escaping here would report a FAILURE for an action that already reached the
+        // page and is already in the audit log — and an agent told a click failed retries it,
+        // re-executing an action that fired. Losing the step is the strictly cheaper outcome.
+        // `seq` is deliberately NOT advanced: the next step reuses this number, so a transient
+        // lock costs one step rather than a permanent hole in the sequence.
+        log.warn('flow step not recorded', { action: input.action, error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
       if (!projected.ok) {
-        deps.onReject?.(projected);
+        onReject(projected);
         return;
       }
       seq = next;
