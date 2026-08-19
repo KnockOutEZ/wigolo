@@ -86,6 +86,24 @@ export interface Config {
   dataDir: string;
   cacheTtlSearch: number;
   cacheTtlContent: number;
+  /**
+   * Retention bounds for the corpus time axis (`url_versions`). All three apply;
+   * whichever binds first wins. Setting ANY of them to 0 (or below) disables the
+   * time axis for NEW writes and deletes nothing that already exists — disable is
+   * not purge. Unbounded is deliberately not an available setting: a per-URL
+   * history with no ceiling is the same defect class as the disk leak this
+   * project has already paid for twice.
+   *
+   * `corpusMaxVersionBytes` is NOT a database-file size limit. It bounds the sum
+   * of the retained versions' markdown measured as UTF-8 bytes, and nothing else:
+   * not the title, not the stored URL, not the three indexes (two of which repeat
+   * `normalized_url`), not SQLite's own page and WAL overhead. Actual on-disk cost
+   * at the 512 MB default sits meaningfully above 512 MB, and freed pages are not
+   * returned to the OS because no auto_vacuum is set.
+   */
+  corpusMaxVersionsPerUrl: number;
+  corpusMaxVersionBytes: number;
+  corpusVersionMaxAgeDays: number;
   fastStaleMaxHours: number;
   fastTimeoutMs: number;
   crawlConcurrency: number;
@@ -692,6 +710,9 @@ export function getConfig(): Config {
     dataDir,
     cacheTtlSearch: envInt('CACHE_TTL_SEARCH', 86400, settings, 'cacheTtlSearch'),
     cacheTtlContent: envInt('CACHE_TTL_CONTENT', 604800, settings, 'cacheTtlContent'),
+    corpusMaxVersionsPerUrl: envInt('WIGOLO_CORPUS_MAX_VERSIONS_PER_URL', 10, settings, 'corpusMaxVersionsPerUrl'),
+    corpusMaxVersionBytes: envInt('WIGOLO_CORPUS_MAX_VERSION_BYTES', 512 * 1024 * 1024, settings, 'corpusMaxVersionBytes'),
+    corpusVersionMaxAgeDays: envInt('WIGOLO_CORPUS_VERSION_MAX_AGE_DAYS', 180, settings, 'corpusVersionMaxAgeDays'),
     fastStaleMaxHours: envInt('WIGOLO_FAST_STALE_MAX_HOURS', 24, settings, 'fastStaleMaxHours'),
     fastTimeoutMs: envInt('WIGOLO_FAST_TIMEOUT_MS', 800, settings, 'fastTimeoutMs'),
     crawlConcurrency: envInt('CRAWL_CONCURRENCY', 2, settings, 'crawlConcurrency'),

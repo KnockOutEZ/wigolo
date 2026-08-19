@@ -288,6 +288,43 @@ const MIGRATION_010_CLEARANCE_ROUTE = '';
 // CREATE INDEX on a missing table throws (mirrors the 006/009 guard).
 const MIGRATION_012_URL_CACHE_CONTENT_HASH_INDEX = '';
 
+// S14-1: the corpus time axis. url_cache is INSERT OR REPLACE — one row per URL —
+// so every re-fetch destroys the body it replaces and no past state of any page is
+// reachable by any path. url_versions is the append-on-change side table holding the
+// older bodies. D-S14-1 forbids touching url_cache's schema: a history column on a
+// REPLACEd row is destroyed by the same mechanism this table exists to escape.
+//
+// Standalone by construction — NO foreign key to url_cache. url_cache is created
+// inline by initDatabase(), which the runner-only harness skips; an FK here would
+// make this migration throw on a bare DB and abort every migration queued behind it
+// (the failure mode 012's guard exists for). A version also legitimately outlives
+// the cache row it was captured from.
+//
+// D-S14-6: versions are NOT embedded and NOT joined to url_cache_fts. Mirrored in
+// 013-url-versions.sql.
+const MIGRATION_013_URL_VERSIONS = `
+CREATE TABLE IF NOT EXISTS url_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  normalized_url TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  markdown TEXT NOT NULL,
+  title TEXT,
+  http_status INTEGER,
+  fetched_at TEXT NOT NULL,
+  byte_len INTEGER NOT NULL,
+  origin_authenticated INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_url_versions_url_hash
+  ON url_versions(normalized_url, content_hash);
+
+CREATE INDEX IF NOT EXISTS idx_url_versions_url_time
+  ON url_versions(normalized_url, fetched_at, id);
+
+CREATE INDEX IF NOT EXISTS idx_url_versions_time
+  ON url_versions(fetched_at, id, byte_len);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { name: '001-sqlite-vec', sql: MIGRATION_001_SQLITE_VEC, requiresVec: true },
   { name: '002-feed-items', sql: MIGRATION_002_FEED_ITEMS },
@@ -466,6 +503,7 @@ export const MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_url_cache_content_hash ON url_cache(content_hash)');
     },
   },
+  { name: '013-url-versions', sql: MIGRATION_013_URL_VERSIONS },
 ];
 
 function isReadOnlyError(err: unknown): boolean {

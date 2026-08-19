@@ -4,6 +4,7 @@ import { getConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { mergeCompleteness } from '../extraction/completeness.js';
 import { deleteVectorsByExternalId } from './sqlite-vec-store.js';
+import { recordVersion, deleteVersionsForUrls } from './version-store.js';
 import type { RawFetchResult, ExtractionResult, CachedContent, SearchResultItem, CacheStats, ContentCompleteness } from '../types.js';
 
 const log = createLogger('cache');
@@ -152,6 +153,22 @@ export function cacheContent(result: RawFetchResult, extraction: ExtractionResul
       completenessLevel: completeness?.level ?? null,
       completenessReason: completeness?.reason ?? null,
       completenessSettledBy: completeness?.settled_by ?? null,
+    });
+
+    // Append the body to the time axis when it differs from this URL's newest
+    // retained version. Deliberately AFTER the url_cache write and internally
+    // non-throwing: url_cache is the hot path for "give me the current page"
+    // and S14-1's contract is that its behaviour is unchanged, so a history
+    // failure must never be reported as a caching failure. Same `now` and same
+    // hash as the row above — the two must never disagree about when a body
+    // was seen.
+    recordVersion(db, {
+      normalizedUrl,
+      contentHash,
+      markdown: extraction.markdown,
+      title: extraction.title ?? null,
+      httpStatus: typeof result.statusCode === 'number' ? result.statusCode : null,
+      fetchedAt: toIsoSeconds(now),
     });
   } catch (err) {
     log.warn('cacheContent failed', {
@@ -650,6 +667,11 @@ export function clearCacheEntries(options: {
       ids.add(row.url);
     }
     const evicted = deleteVectorsByExternalId(db, [...ids]);
+    // The same argument the vector eviction above makes, applied to the time
+    // axis: a version row outlives the url_cache row it came from, so a clear
+    // that stops at url_cache leaves full page bodies on disk in a table the
+    // user's clear never reached.
+    deleteVersionsForUrls(db, [...ids]);
     return { changes: result.changes, evicted };
   });
 
