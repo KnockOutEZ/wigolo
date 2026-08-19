@@ -115,13 +115,15 @@ export function cacheContent(result: RawFetchResult, extraction: ExtractionResul
         url, normalized_url, title, markdown, raw_html,
         metadata, links, images, fetch_method, extractor_used,
         content_hash, fetched_at, expires_at, http_status,
-        content_completeness_level, content_completeness_reason, content_completeness_settled_by
+        content_completeness_level, content_completeness_reason, content_completeness_settled_by,
+        origin_authenticated
       )
       VALUES (
         @url, @normalizedUrl, @title, @markdown, @rawHtml,
         @metadata, @links, @images, @fetchMethod, @extractorUsed,
         @contentHash, @fetchedAt, @expiresAt, @httpStatus,
-        @completenessLevel, @completenessReason, @completenessSettledBy
+        @completenessLevel, @completenessReason, @completenessSettledBy,
+        @originAuthenticated
       )
     `);
 
@@ -153,6 +155,11 @@ export function cacheContent(result: RawFetchResult, extraction: ExtractionResul
       completenessLevel: completeness?.level ?? null,
       completenessReason: completeness?.reason ?? null,
       completenessSettledBy: completeness?.settled_by ?? null,
+      // K9. Keyed on what the fetch APPLIED, never on what a caller requested: this function is only
+      // handed the result, so it has no access to the request flag and structurally cannot mark on it.
+      // `INSERT OR REPLACE` means the marker always describes the body now stored — a page re-fetched
+      // anonymously reads 0, while its authenticated body keeps its own marked row in `url_versions`.
+      originAuthenticated: result.authApplied === true ? 1 : 0,
     });
 
     // Append the body to the time axis when it differs from this URL's newest
@@ -169,6 +176,9 @@ export function cacheContent(result: RawFetchResult, extraction: ExtractionResul
       title: extraction.title ?? null,
       httpStatus: typeof result.statusCode === 'number' ? result.statusCode : null,
       fetchedAt: toIsoSeconds(now),
+      // K9. The SAME value the url_cache row got, from the same result — the two must never disagree
+      // about whether a body was authenticated, and deriving it twice is how they would.
+      originAuthenticated: result.authApplied === true,
     });
   } catch (err) {
     log.warn('cacheContent failed', {

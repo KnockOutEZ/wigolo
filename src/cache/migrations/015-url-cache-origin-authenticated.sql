@@ -1,0 +1,18 @@
+-- K9: url_cache carried no record of whether a body was fetched with authenticated session
+-- material, so authenticated and public content sat in one corpus, undifferentiated.
+--
+-- WHY THIS COULD NOT WAIT. The marker CANNOT BE BACKFILLED: nothing on disk says whether a row
+-- already present was fetched with a session, and no later pass can recover it. Every day without
+-- the column, more unmarked authenticated content accumulates permanently. S14-3 — a corpus-informed
+-- ranker over cached pages — is the first feature that makes the distinction matter, which is why
+-- this closes BEFORE that slice rather than after it.
+--
+-- THE MARKER BELONGS TO THE BODY, NOT THE URL. `cacheContent` writes with INSERT OR REPLACE, so the
+-- row always describes the body currently stored: a page fetched with a session and later re-fetched
+-- anonymously reads 0, because the body it now holds is the anonymous one. The authenticated body is
+-- not lost from the record — `url_versions` keeps its own per-body row with its own marker, so
+-- history stays labelled while the current row tells the truth about what it contains.
+--
+-- Guarded ALTER rather than a column in the inline DDL, mirroring 009-content-completeness:
+-- `url_cache` is created by initDatabase(), and the runner-only harness never creates it.
+ALTER TABLE url_cache ADD COLUMN origin_authenticated INTEGER NOT NULL DEFAULT 0;

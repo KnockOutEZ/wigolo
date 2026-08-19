@@ -514,6 +514,24 @@ function isConnectionTimeout(err: unknown): boolean {
   return code !== undefined && TIMEOUT_ERROR_CODES.has(code);
 }
 
+/**
+ * Mark a result as authenticated only when session material was ACTUALLY applied.
+ *
+ * `useAuth ? (await getAuthOptions() ?? {}) : {}` yields an EMPTY object when auth was requested but no
+ * session is stored — the fetch then goes out anonymous. Keying the marker on the request instead of on
+ * the applied options would label ordinary public pages as authenticated, and the marker's whole purpose
+ * is telling those two apart.
+ */
+function stampAuthApplied(
+  result: StageError | RawFetchResult,
+  authOptions: object,
+): StageError | RawFetchResult {
+  if (Object.keys(authOptions).length === 0) return result;
+  // A failed stage has no body to mark, and marking one would put an authenticated label on a row that
+  // was never written.
+  return isStageError(result) ? result : { ...result, authApplied: true };
+}
+
 export class SmartRouter {
   private readonly domainMap = new Map<string, DomainStats>();
   private readonly httpClient?: HttpClient;
@@ -1272,14 +1290,17 @@ export class SmartRouter {
       if (!this.browserPool) throw new Error('SmartRouter: browserPool not configured');
       const authOptions = useAuth ? (await getAuthOptions() ?? {}) : {};
       logger.debug('routing to playwright', { url, reason: 'actions present' });
-      return this.browserFetch(url, {
-        headers,
-        screenshot,
-        actions,
-        ...authOptions,
-        signal,
-        stealth: stealthForBrowser(config, { antiBotEscalation: false }),
-      });
+      return stampAuthApplied(
+        await this.browserFetch(url, {
+          headers,
+          screenshot,
+          actions,
+          ...authOptions,
+          signal,
+          stealth: stealthForBrowser(config, { antiBotEscalation: false }),
+        }),
+        authOptions,
+      );
     }
 
     // Always Playwright for auth or explicit override
@@ -1289,13 +1310,16 @@ export class SmartRouter {
       logger.debug('routing to playwright', { url, reason: useAuth ? 'auth' : 'render_js=always' });
       // Explicit browser request (auth / render_js:always) — not an anti-bot
       // escalation, so 'auto' leaves it unhardened; 'on' still hardens.
-      return this.browserFetch(url, {
-        headers,
-        screenshot,
-        ...authOptions,
-        signal,
-        stealth: stealthForBrowser(config, { antiBotEscalation: false }),
-      });
+      return stampAuthApplied(
+        await this.browserFetch(url, {
+          headers,
+          screenshot,
+          ...authOptions,
+          signal,
+          stealth: stealthForBrowser(config, { antiBotEscalation: false }),
+        }),
+        authOptions,
+      );
     }
 
     // HTTP only, no fallback
