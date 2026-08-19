@@ -6,6 +6,13 @@ vi.mock('../../../src/cache/store.js', () => ({
   isExpired: vi.fn(),
 }));
 
+// The store mock stubs out the database, so the version-read seam must be
+// stubbed alongside it — an unmocked `versionByHash` reaches a real
+// `getDatabase()` and turns every hash miss into `diff_failed`.
+vi.mock('../../../src/cache/version-read.js', () => ({
+  versionByHash: vi.fn(),
+}));
+
 vi.mock('../../../src/logger.js', () => ({
   createLogger: () => ({
     debug: vi.fn(),
@@ -18,6 +25,7 @@ vi.mock('../../../src/logger.js', () => ({
 import { handleDiff } from '../../../src/tools/diff.js';
 import type { CachedContent } from '../../../src/types.js';
 import { getCachedContent, getCachedContentByHash, isExpired } from '../../../src/cache/store.js';
+import { versionByHash } from '../../../src/cache/version-read.js';
 
 function makeCached(overrides: Partial<CachedContent> = {}): CachedContent {
   return {
@@ -44,6 +52,7 @@ describe('handleDiff', () => {
     vi.clearAllMocks();
     vi.mocked(getCachedContent).mockReturnValue(null);
     vi.mocked(getCachedContentByHash).mockReturnValue(null);
+    vi.mocked(versionByHash).mockReturnValue(null);
     vi.mocked(isExpired).mockReturnValue(false);
   });
 
@@ -400,6 +409,41 @@ describe('handleDiff', () => {
 
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error).toBe('cache_miss');
+    });
+
+    // Why: the version table is not TTL'd, so consulting it after a TTL refusal
+    // about the SAME bytes would let a caller read around the refusal the cache
+    // just made. History is reached only when no live row carries the hash at
+    // all — the ordinary state once a page has changed.
+    it('does not consult retained versions when a live row carries the hash but is expired', async () => {
+      vi.mocked(getCachedContentByHash).mockReturnValue(makeCached({ markdown: 'stale\n' }));
+      vi.mocked(isExpired).mockReturnValue(true);
+      vi.mocked(versionByHash).mockReturnValue({
+        normalizedUrl: 'https://example.com/a',
+        contentHash: HASH,
+        markdown: 'retained body\n',
+        title: null,
+        httpStatus: 200,
+        observedAt: '2026-08-18 00:00:00',
+        byteLen: 14,
+      });
+
+      const r = await handleDiff({ old: { content_hash: HASH }, new: { markdown: 'anything\n' } });
+
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toBe('cache_miss');
+      expect(versionByHash).not.toHaveBeenCalled();
+    });
+
+    // Why: the live row is the cheaper lookup and the authoritative current
+    // body. History exists for hashes the live table can no longer answer.
+    it('does not consult retained versions when a live row resolves the hash', async () => {
+      vi.mocked(getCachedContentByHash).mockReturnValue(makeCached({ markdown: 'live body\n' }));
+
+      const r = await handleDiff({ old: { content_hash: HASH }, new: { markdown: 'anything\n' } });
+
+      expect(r.ok).toBe(true);
+      expect(versionByHash).not.toHaveBeenCalled();
     });
 
     // Why: markdown is the caller's explicit content, so it must win over a

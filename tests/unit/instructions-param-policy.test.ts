@@ -84,7 +84,7 @@ const PINNED: Record<string, string[]> = {
   fetch: ['actions', 'force_refresh', 'include_full_markdown', 'max_content_chars', 'max_tokens_out', 'mode', 'render_js', 'section', 'use_auth'],
   search: ['category', 'citation_format', 'country', 'exact_match', 'exclude_domains', 'force_refresh', 'format', 'from_date', 'include_domains', 'include_favicon', 'include_images', 'max_content_chars', 'max_results', 'max_tokens_out', 'mode', 'query', 'search_depth', 'time_range', 'to_date'],
   crawl: ['citation_format', 'exclude_patterns', 'include_full_markdown', 'include_patterns', 'max_depth', 'max_pages', 'max_tokens_out', 'strategy'],
-  cache: ['clear', 'query', 'since', 'stats', 'url_pattern'],
+  cache: ['at', 'clear', 'query', 'since', 'stats', 'url', 'url_pattern', 'versions'],
   extract: ['css_selector', 'max_tokens_out', 'mode', 'multiple', 'named_schema', 'schema'],
   find_similar: ['citation_format', 'concept', 'include_cache', 'include_full_markdown', 'include_ranking_debug', 'include_web', 'max_results', 'max_tokens_out', 'threshold', 'url'],
   research: ['citation_format', 'depth', 'exclude_domains', 'include_domains', 'include_full_markdown', 'max_sources', 'max_tokens_out', 'question', 'schema', 'stream'],

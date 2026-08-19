@@ -294,6 +294,25 @@ export const CACHE_TOOL_SCHEMA = {
       type: 'string',
       description: 'ISO date — only results cached after this date',
     },
+    url: {
+      type: 'string',
+      description: 'The page to read history for. Required by `at` and `versions`.',
+    },
+    at: {
+      type: 'string',
+      description:
+        'Point-in-time read: return the body this url served at or before this moment (ISO 8601, ' +
+        'a UTC offset, or YYYY-MM-DD). Returns the newest version observed at or before it — never ' +
+        'a later one and never the current page. If nothing that old is retained you get ' +
+        '`version_not_retained`, not a body.',
+    },
+    versions: {
+      type: 'boolean',
+      description:
+        'List what is retained for `url`, newest first, with a content_hash per entry you can pass ' +
+        "to diff's old.content_hash. Returns no page bodies. Retained versions are bounded and " +
+        'evicted oldest-first across all urls, so this is what survives now, not a full history.',
+    },
     clear: {
       type: 'boolean',
       description: 'Clear matching cache entries (requires at least one filter: query, url_pattern, or since)',

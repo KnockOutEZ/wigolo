@@ -74,6 +74,7 @@ const RESPONSE_FIELDS: Record<RestToolName, Record<string, string>> = {
   },
   cache: {
     results: 'array', stats: 'object', cleared: 'number', changes: 'array', error: 'string',
+    version: 'object', version_not_retained: 'object', version_list: 'object',
   },
   extract: {
     data: 'object', source_url: 'string', mode: 'string', warnings: 'array',
