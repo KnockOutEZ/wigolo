@@ -242,8 +242,11 @@ Key parameters:
 - since: ISO date — only entries cached after this date.
 - stats: true to get cache size, entry count, oldest/newest dates.
 - clear: true to delete matching entries.
+- url: the page to read history for; required by at and versions.
+- at: the body that page served at or before a moment. Hit -> \`version\`; nothing that old retained -> \`version_not_retained\` (never a later version, never the current page).
+- versions: what is retained for that page, newest first, no bodies. Each entry's content_hash works as diff's old.content_hash.
 
-Persists across sessions. No remote round-trip.`,
+Persists across sessions. No remote round-trip. Retained versions are bounded and evicted oldest-first across all pages, so history is what survives now, not a full record.`,
 
   extract: `Extract structured data from a URL or raw HTML. Use for specific data points (tables, prices, schema fields) rather than whole-page markdown.
 

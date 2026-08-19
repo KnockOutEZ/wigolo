@@ -611,6 +611,34 @@ export function fenceCacheData(data: CacheOutput): CacheOutput {
         }
       : {}),
     ...(Array.isArray(data.changes) ? { changes: fenceChangeReports(data.changes) } : {}),
+    // S14-2's time axis returns the SAME class of bytes by a second route: a
+    // retained past body is page-derived exactly as `results[].markdown` is, and
+    // being older makes it no less attacker-authored. `content_hash`,
+    // `observed_at`, `requested_at`, `bytes`, `http_status`, `source`,
+    // `trusted` and `truncated` stay raw — digests, timestamps and operational
+    // tags a consumer compares rather than reads as prose.
+    ...(data.version
+      ? {
+          version: {
+            ...data.version,
+            title: fenceOptional(data.version.title, data.version.url),
+            markdown: fenceOptional(data.version.markdown, data.version.url) as string,
+          },
+        }
+      : {}),
+    // The list carries no bodies, but it does carry each version's `<title>`,
+    // which is page-derived. `note` is wigolo-authored and stays raw.
+    ...(data.version_list
+      ? {
+          version_list: {
+            ...data.version_list,
+            versions: data.version_list.versions.map((v) => ({
+              ...v,
+              title: fenceOptional(v.title, data.version_list!.url),
+            })),
+          },
+        }
+      : {}),
   };
 }
 

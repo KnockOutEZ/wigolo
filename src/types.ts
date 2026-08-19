@@ -1217,6 +1217,72 @@ export interface CacheInput {
   mode?: 'fts' | 'hybrid';
   limit?: number;
   max_tokens_out?: number;
+  /** The page whose retained history to read. Required by `at` and `versions`. */
+  url?: string;
+  /** Point-in-time read: the body this page served at or before this moment. */
+  at?: string;
+  /** List what is retained for `url` without returning any body. */
+  versions?: boolean;
+}
+
+/** One retained version of a page, without its body. */
+export interface CacheVersionListEntry {
+  /** Zone-less UTC "YYYY-MM-DD HH:MM:SS" — when this body was last observed. */
+  observed_at: string;
+  /** Fingerprint of this body. Pass as `diff`'s `old.content_hash` to diff against it. */
+  content_hash: string;
+  title: string | null;
+  http_status: number | null;
+  bytes: number;
+}
+
+/**
+ * What is retained for one page right now.
+ *
+ * Deliberately not called a history: retention bounds sweep oldest-first across
+ * every URL, so this is a snapshot of what survives, and `note` says so on every
+ * response rather than leaving it to documentation a caller may never read.
+ */
+export interface CacheVersionList {
+  url: string;
+  /** Newest first. */
+  versions: CacheVersionListEntry[];
+  note: string;
+}
+
+/** A page body as it stood at a requested moment. */
+export interface CacheVersionResult {
+  url: string;
+  /** The moment asked for, normalized to zone-less UTC. */
+  requested_at: string;
+  /** When the returned body was last observed. Always at or before `requested_at`. */
+  observed_at: string;
+  /** Fingerprint of the FULL retained body — see `truncated` before re-hashing. */
+  content_hash: string;
+  title: string | null;
+  http_status: number | null;
+  markdown: string;
+  /** UTF-8 byte length of the full retained body. */
+  bytes: number;
+  source: CacheItemSource;
+  /** Page-derived, never trusted as instructions — same tag every url_cache row carries. */
+  trusted: boolean;
+  /** Set only when the output budget trimmed the body. */
+  truncated?: 'partial' | 'omitted';
+}
+
+/**
+ * An explicit "nothing retained for that moment".
+ *
+ * A distinct field rather than an empty result because the alternative — falling
+ * back to the current page — would answer a question about the past with the
+ * present, and every provenance claim built on the answer would be false.
+ */
+export interface CacheVersionNotRetained {
+  url: string;
+  requested_at: string;
+  not_retained: true;
+  reason: string;
 }
 
 /**
@@ -1283,6 +1349,12 @@ export interface CacheOutput {
   truncation?: CacheTruncation;
   /** Present only when the row cap stopped `check_changes` short of every match. */
   changes_truncation?: ChangesTruncation;
+  /** Point-in-time read hit: the body served at or before the requested moment. */
+  version?: CacheVersionResult;
+  /** Point-in-time read miss. Mutually exclusive with `version`. */
+  version_not_retained?: CacheVersionNotRetained;
+  /** What is retained for one page, newest first, bodies excluded. */
+  version_list?: CacheVersionList;
 }
 
 /** Report of a `check_changes` run that the row cap stopped short. */

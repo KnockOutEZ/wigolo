@@ -217,7 +217,7 @@ const CASES: Case[] = [
       const { handleCache } = await import('../../src/tools/cache.js');
       vi.mocked(handleCache).mockResolvedValue(F.cacheFixture() as never);
     },
-    covers: ['CacheOutput', 'CacheResultItem', 'CacheStats', 'CacheTruncation', 'ChangesTruncation', 'ChangeReport'],
+    covers: ['CacheOutput', 'CacheResultItem', 'CacheStats', 'CacheTruncation', 'ChangesTruncation', 'ChangeReport', 'CacheVersionResult', 'CacheVersionNotRetained', 'CacheVersionList', 'CacheVersionListEntry'],
   },
   {
     // `cache` WITHOUT a results array — the check_changes shape. `fenceCacheData` used to open with an
