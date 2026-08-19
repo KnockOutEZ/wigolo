@@ -268,19 +268,57 @@ describe('G1 — is a recording sufficient to attempt a run at all?', () => {
   });
 
   /**
-   * REPORTED, NOT THRESHOLDED — this count is the input to the open decision on whether a stored
-   * flow keeps a navigate URL's query string, and a gate cannot be written on it before that
-   * decision is taken. It is pinned here so that a change to the corpus re-opens the measurement
-   * instead of silently invalidating it.
+   * The decision this used to defer is now taken: a non-navigate step keeps origin + path only.
+   *
+   * The predecessor filtered to `action === 'navigate'` and asserted zero query strings, which was
+   * structurally incapable of measuring the thing at issue. The exposure is NOT on navigate — a
+   * navigate URL is agent-authored and byte-identical to the audit's own `target_url`. It is on
+   * click/type/scroll, for which the audit stores no URL at all and the recorder stored the live,
+   * post-redirect, server-authored one. Restricting the census to navigate ignored every one of
+   * those steps, and no corpus URL carries a query string anyway, so the assertion could not fail
+   * in either direction.
+   *
+   * So: census EVERY stored URL, and drive a case that actually has a query string — the corpus
+   * cannot supply one.
+   *
+   * Division of labour, stated because it is not visible from the assertions: no corpus URL has a
+   * query string, so this census does NOT die when the narrowing is removed — the test below is
+   * the one that kills that mutant. This census guards the corpus-wide invariant, and would fire
+   * if a future fixture URL gained a query string and the narrowing were not applied to it.
    */
-  it('reports how many navigate steps carry a non-empty query string', async () => {
+  it('keeps origin+path only on every non-navigate step, across the whole census', async () => {
     const flows = await corpus();
-    const navigates = flows.flatMap((f) => f.steps).filter((s) => s.action === 'navigate');
-    const withQuery = navigates.filter((s) => {
-      try { return new URL(s.pageUrl ?? '').search.length > 1; } catch { return false; }
-    });
-    expect(navigates.length).toBe(24);
-    expect(withQuery.length).toBe(0);
+    const steps = flows.flatMap((f) => f.steps);
+    const nonNavigate = steps.filter((s) => s.action !== 'navigate' && s.pageUrl !== undefined);
+    // Anti-vacuity: the census must actually contain the class it is judging.
+    expect(nonNavigate.length).toBeGreaterThan(100);
+    for (const s of nonNavigate) {
+      const u = new URL(s.pageUrl!);
+      expect(s.pageUrl).toBe(`${u.origin}${u.pathname}`);
+    }
+  });
+
+  it('drops a session-bearing query string from the live page URL a non-navigate step stores', async () => {
+    // The corpus has no URL with a query string, so this drives one through the SAME shipped path
+    // the corpus uses. `?sso_session=` is the realistic shape: it survives the credential-URL
+    // guard, which matches login words as PATH segments, and it is server-authored — it appears
+    // after a redirect, which is precisely why the agent's own navigate URL never contains it.
+    const fresh = migratedDb();
+    const file = readdirSync(FIXTURE_DIR).filter((f) => f.endsWith('.html')).sort()[0]!;
+    const html = readFileSync(join(FIXTURE_DIR, file), 'utf-8');
+    const landed = 'https://app.example.com/reports?sso_session=eyJhbGciOiJIUzI1NiJ9.SECRET#tab=2';
+    const flow = await recordFlow(fresh, 'query-case', landed, html);
+
+    const navigate = flow.steps.filter((s) => s.action === 'navigate');
+    const others = flow.steps.filter((s) => s.action !== 'navigate');
+    expect(navigate.length).toBe(1);
+    expect(others.length).toBeGreaterThan(0);
+    // The instruction the agent issued is kept whole — it is the step, not context about it.
+    expect(navigate[0]!.pageUrl).toBe(landed);
+    for (const s of others) expect(s.pageUrl).toBe('https://app.example.com/reports');
+    // And the secret is nowhere in any step that was not the agent's own instruction.
+    expect(JSON.stringify(others)).not.toContain('SECRET');
+    fresh.close();
   });
 
   /**
