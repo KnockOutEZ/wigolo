@@ -19,10 +19,13 @@ import {
   renderFlowDriftReport,
   runWrongElementProbe,
   runDegradationProbe,
+  transitionLabel,
   G2,
   type FlowDriftReport,
 } from '../../benchmarks/scrape-quality/flow-drift.js';
 import { computeFingerprint, STABLE_ATTRS } from '../../src/studio/perception/id.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 let cached: FlowDriftReport | undefined;
 function report(): FlowDriftReport {
@@ -209,9 +212,26 @@ describe('G2 — §5.3\'s degradation halt is what caps the reach row', () => {
   }, TIMEOUT);
 
   it('proves the heal-tier distribution CAN express high->medium, so its C0 value is a measurement', () => {
-    // Blocker 2's regression guard: the distribution used to be bucketed from the RESOLVER's refusal
-    // reasons, where a medium recovery surfaces as `confidence_degraded` and landed in `none`. That map
-    // could never contain `high->medium` for any corpus, which made the C0 reading vacuous.
-    expect(runDegradationProbe().healConfidence).toBe('medium');
+    // The distribution used to be bucketed from the RESOLVER's refusal reasons, where a medium recovery
+    // surfaces as `confidence_degraded` and landed in the `none` bucket — so `high->medium` was
+    // unreachable for every corpus and the C0 reading of it was vacuous. Asserted on the label the
+    // shared deriver produces, which is the same code path the corpus loop uses, so a regression to
+    // resolver-bucketing reds here rather than silently flattening the distribution again.
+    const p = runDegradationProbe();
+    expect(p.transitionLabel).toBe('high->medium');
+    expect(transitionLabel('high', { resolved: true, ref: 'e1', role: 'link', confidence: 'medium' })).toBe('high->medium');
+    // And the resolver's own verdict on the same case is NOT the tier — the two must not be conflated.
+    expect(p.armBReason).toBe('confidence_degraded');
+  }, TIMEOUT);
+
+  it('keeps the record tier a MEASUREMENT of the page, not a constant', () => {
+    // The pin this slice removed has no signature in the C0 numbers (every recordable target is uniquely
+    // fingerprinted, so the measured value IS 'high'). Guarded structurally instead: the call site must
+    // not pass a tier literal, or the reach comparison silently becomes a theorem again.
+    const src = readFileSync(join(process.cwd(), 'benchmarks/scrape-quality/flow-drift.ts'), 'utf-8');
+    const storeSeeds = src.slice(src.indexOf('function storeSeeds'), src.indexOf('// The arms'));
+    expect(storeSeeds).toContain('healTierAtRecord: recordTier(');
+    expect(storeSeeds).not.toContain("healTierAtRecord: 'high'");
+    expect(storeSeeds).not.toContain("healTierAtRecord: 'medium'");
   }, TIMEOUT);
 });

@@ -223,6 +223,19 @@ export type ArmOutcome =
   | { resolved: true; ref: string; role: string | undefined; confidence: string }
   | { resolved: false; reason: string };
 
+/**
+ * The §11.A.6 transition label for one case: the tier at record → the tier **`heal` reported**.
+ *
+ * Extracted and exported so the blocker it fixes is testable. Derived from an arm-H outcome, never from
+ * the resolver's refusal reason: a medium recovery surfaces at the resolver as `confidence_degraded`,
+ * which is not an ambiguity, so a resolver-bucketed map folds it into `none` and can never contain
+ * `high->medium` for ANY corpus. On the C0 pages both derivations happen to agree (everything resolves
+ * at high), so only a case that actually degrades can tell them apart — hence `runDegradationProbe`.
+ */
+export function transitionLabel(tierAtRecord: string | undefined, healOutcome: ArmOutcome): string {
+  return `${tierAtRecord ?? 'unknown'}->${healOutcome.resolved ? healOutcome.confidence : healOutcome.reason}`;
+}
+
 /** arm A: the recorded ref string, matched against the drifted page's refs. Nothing else. */
 export function armA(seed: Seed, view: PageView): ArmOutcome {
   if (!view.refs.has(seed.recordedRef)) return { resolved: false, reason: 'ref_absent' };
@@ -534,8 +547,7 @@ export function runFlowDrift(): FlowDriftReport {
         // The heal-tier transition (§11.A.6), taken from `heal`'s OWN confidence. Bucketing the
         // resolver's refusal reasons here would collapse `medium` into `none`, because a medium
         // recovery surfaces as `confidence_degraded` rather than as an ambiguity.
-        const observedTier = hOut.resolved ? hOut.confidence : hOut.reason;
-        bump(report.tierTransitions, `${seed.step.healTierAtRecord ?? 'unknown'}->${observedTier}`);
+        bump(report.tierTransitions, transitionLabel(seed.step.healTierAtRecord, hOut));
         bump(report.resolverOutcomes, b.resolved ? `resolved:${b.confidence}` : b.reason);
       }
 
@@ -691,6 +703,8 @@ export interface DegradationProbe {
   /** arm B: the product declines the weaker resolution (§5.3). */
   armBResolved: boolean;
   armBReason: string;
+  /** The §11.A.6 label this case contributes — the value a resolver-bucketed map could not produce. */
+  transitionLabel: string;
 }
 
 export function runDegradationProbe(): DegradationProbe {
@@ -728,6 +742,7 @@ export function runDegradationProbe(): DegradationProbe {
     armAResolved: a.resolved,
     armBResolved: b.resolved,
     armBReason: b.resolved ? '' : b.reason,
+    transitionLabel: transitionLabel(tierAtRecord, h),
   };
 }
 
