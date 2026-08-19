@@ -94,6 +94,36 @@ export function slotNameFor(target: StructuredTarget | null | undefined, seq: nu
   return slug || `input_${seq}`;
 }
 
+/**
+ * What a stored `page_url` may say, by verb.
+ *
+ * The retention decision for this sidecar rests on the sidecar adding no exposure the audit does
+ * not already carry. That holds for `navigate` — its URL is byte-identical to the
+ * `studio_audit.target_url` of the same act — and it does NOT hold for the other verbs: the audit
+ * stores no URL at all for `click`/`type`/`scroll`, while the recorder stores the LIVE page URL.
+ * A navigate URL is agent-authored; a live URL is SERVER-authored and post-redirect, which is
+ * exactly where a session-bearing query parameter appears (`?sso_session=…`). The credential-URL
+ * guard does not catch those — it matches login words as PATH segments, so a `?sso_session=` sails
+ * through.
+ *
+ * So the other verbs keep origin + path and drop search + hash. A step's page URL is CONTEXT for
+ * re-resolution; the target locator does the actual work. The search/hash carry the risk without
+ * carrying the replay value. A navigate URL is the instruction itself and is kept whole.
+ *
+ * A URL that will not parse is dropped rather than stored raw — storing an unparsed string is how
+ * the narrowing gets bypassed by something that never looked like a URL to us.
+ */
+export function narrowPageUrl(action: string, pageUrl: string | undefined): string | undefined {
+  if (pageUrl === undefined) return undefined;
+  if (action === 'navigate') return pageUrl;
+  try {
+    const u = new URL(pageUrl);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Verbs whose step is defined by an element seed; the others carry none. */
 const TARGETED_ACTIONS = new Set(['click', 'type']);
 const RECORDABLE_ACTIONS = new Set(['navigate', 'click', 'type', 'scroll']);
@@ -128,6 +158,8 @@ export function createFlowRecorder(deps: FlowRecorderDeps): FlowRecorderHook {
       if (isCredentialRecordingContext({ pageUrl: input.pageUrl, pageHasCredentialField: input.pageHasCredentialField })) return;
       if (TARGETED_ACTIONS.has(input.action) && !input.target) return;
 
+      // Narrow AFTER the credential check, which must keep seeing the full URL.
+      const storedPageUrl = narrowPageUrl(input.action, input.pageUrl);
       const next = seq + 1;
       let projected: FlowProjection;
       try {
@@ -137,7 +169,7 @@ export function createFlowRecorder(deps: FlowRecorderDeps): FlowRecorderHook {
           seq: next,
           auditSeq: input.auditSeq,
           action: input.action,
-          ...(input.pageUrl !== undefined ? { pageUrl: input.pageUrl } : {}),
+          ...(storedPageUrl !== undefined ? { pageUrl: storedPageUrl } : {}),
           ...(input.target
             ? {
                 target: {

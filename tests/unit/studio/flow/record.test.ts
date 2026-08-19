@@ -203,6 +203,56 @@ describe('the recorder — what lands in the sidecar', () => {
     expect(listFlowSteps(db, flowIdForSession('sess-boom'))).toHaveLength(0);
   });
 
+  it('drops the query string and fragment from a NON-navigate page URL, and keeps a navigate URL whole', async () => {
+    // The audit stores NO url for click/type/scroll, so for those verbs the sidecar is the only
+    // place a URL exists — and it is the LIVE, post-redirect, SERVER-authored one, which is where
+    // a session-bearing parameter lands. The credential-URL guard does not catch it: it matches
+    // login words as PATH segments, so `?sso_session=` is invisible to it.
+    const live = 'https://app.example.com/reports?sso_session=eyJhbGciOiJIUzI1NiJ9.SECRET#tab=2';
+    const h = harness({ currentUrl: live });
+    await h.act({ action: 'click', ref: 'e1' });
+    await h.act({ action: 'scroll', direction: 'down', amount: 100 });
+    await h.act({ action: 'navigate', url: 'https://app.example.com/reports?tab=archive' });
+    const [click, scroll, navigate] = h.steps();
+    expect(click.pageUrl).toBe('https://app.example.com/reports');
+    expect(scroll.pageUrl).toBe('https://app.example.com/reports');
+    // A navigate URL is agent-authored and IS the instruction — it stays whole, and it is byte-
+    // identical to the audit's own target_url for the same act, so it adds no exposure.
+    expect(navigate.pageUrl).toBe('https://app.example.com/reports?tab=archive');
+    const auditUrl = h.db
+      .prepare("SELECT target_url FROM studio_audit WHERE action = 'navigate'")
+      .get() as { target_url: string };
+    expect(navigate.pageUrl).toBe(auditUrl.target_url);
+    // Nothing anywhere in the sidecar retains the secret.
+    const dump = JSON.stringify(h.steps());
+    expect(dump).not.toContain('sso_session');
+    expect(dump).not.toContain('SECRET');
+  });
+
+  it('records NO step for an act that resolved but was then REFUSED', async () => {
+    // The guard at the record call site is `!('error_reason' in result)`. The existing
+    // refused-act test resolves to `element_occluded`, which returns BEFORE a seed is built — so
+    // `TARGETED_ACTIONS && !target` short-circuits and the outcome condition is never reached.
+    // A credential-field refusal is the case that gets all the way past resolve WITH a seed: the
+    // page is not login-shaped, so the recorder's own credential refusal does not fire either, and
+    // the outcome check is the only thing standing between a refused act and a stored step
+    // carrying a password field's seed and `slot: "password"`.
+    const h = harness({
+      currentUrl: 'https://example.com/settings',
+      resolve: {
+        backendNodeId: 42,
+        center: { x: 1, y: 1 },
+        role: 'textbox',
+        name: 'Password',
+        semantics: { tag: 'input', type: 'password' },
+      },
+      target: liveTarget({ role: 'textbox', name: 'Password' }),
+    });
+    const result = await h.act({ action: 'type', ref: 'e1', text: 'hunter2' });
+    expect(result).toMatchObject({ error_reason: 'credential_field_refused' });
+    expect(h.steps()).toHaveLength(0);
+  });
+
   it('a DB failure inside record() never turns a successful action into an error the agent retries', async () => {
     // The seed half of this contract is already covered above, and `seed()` is awaited behind a
     // `.catch()` on the act path — so a seed throw proves nothing about `record()`, whose two
