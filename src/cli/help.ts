@@ -247,6 +247,8 @@ Subcommands:
   backfill [--json]       Backfill embeddings for cached pages without them
   export [--out DIR] [--url-pattern GLOB] [--since DATE] [--dry-run] [--json]
                           Write the cached corpus out as dated Markdown + a manifest
+  flow <list|show> [FLOW_ID] [--json]
+                          Inspect flows recorded during a supervised browser session
 
 Tools (one-shot; add --json for machine-readable output, --help for flags):
   search <query>          Search the web
