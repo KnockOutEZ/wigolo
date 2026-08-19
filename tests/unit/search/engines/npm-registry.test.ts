@@ -92,6 +92,7 @@ describe('NpmRegistryEngine', () => {
     const results = await new NpmRegistryEngine().search('q');
     expect(results).toHaveLength(1);
     expect(results[0].title).toBe('valid');
+    expect(results[0].relevance_score).toBe(1);
   });
 
   it('does not count nameless packages toward maxResults', async () => {
@@ -158,6 +159,13 @@ describe('NpmRegistryEngine', () => {
     const { calls } = captureFetch({ objects: [] });
     await new NpmRegistryEngine().search('q', { maxResults: 1000 });
     expect(calls[0].url).toContain('size=250');
+  });
+
+  it('returns empty without fetching when maxResults is zero', async () => {
+    const { calls } = captureFetch({ objects: [{ package: { name: 'one', version: '1.0.0' } }] });
+    const results = await new NpmRegistryEngine().search('q', { maxResults: 0 });
+    expect(results).toEqual([]);
+    expect(calls).toHaveLength(0);
   });
 
   it('passes timeoutMs to AbortSignal.timeout', async () => {
