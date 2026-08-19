@@ -113,6 +113,12 @@ describe('G2 — REACH: the measured advantage, and why it is what it is', () =>
     expect(r.b.resolved - r.a.resolved).toBeLessThan(G2.minArmBAdvantage);
     // On THIS corpus the halt costs nothing, because heal never had to drop a tier.
     expect(r.haltedFromH).toBe(0);
+    // A174's predicted effect on every C0 count was ZERO, and this is where that is checkable: no case
+    // on this corpus degrades, so surfacing instead of halting moved nothing. A non-zero here would
+    // mean the amendment had a side effect on the corpus that the prediction did not model.
+    // ⚠️ This is a MUST-NOT-FIRE control, not coverage of the counter. Deleting the counter's increment
+    // reds nothing (probe M6): the corpus cannot degrade, so 0 holds either way. K35.
+    expect(r.degradedResolutions).toBe(0);
     expect(Object.keys(r.tierTransitions)).toEqual(['high->high']);
   }, TIMEOUT);
 
@@ -137,10 +143,14 @@ describe('G2 — the heal-tier transition distribution (§11.A.6)', () => {
     expect(total).toBe(r.cases);
   }, TIMEOUT);
 
-  it('shows high->medium is NOT the common transition on this corpus, so §5.3 halt-on-worse stands', () => {
-    // The risk §5.3 names: if degrading a tier were the common case, halting would break every flow on
+  it('shows high->medium does not occur on this corpus at all — which is why the corpus could not decide §5.3', () => {
+    // ⚠️ This test was named "...so §5.3 halt-on-worse stands" until A174 reversed that conclusion. The
+    // ASSERTION was and is correct; only the sentence drawn from it was wrong. Renamed rather than
+    // deleted, because the number it guards is still the number that mattered.
+    // The risk §5.3 named: if degrading a tier were the common case, halting would break every flow on
     // the first redesign. It is 0 here — but only because no §3.4 class perturbs a fingerprint, so this
-    // is weak evidence for the ruling rather than a vindication of it.
+    // was never evidence for the ruling in either direction. The ruling was decided on the resolver's
+    // reachable tiers (every recovery is `medium`), not on this distribution.
     const r = report();
     const degraded = r.tierTransitions['high->medium'] ?? 0;
     expect(degraded).toBeLessThan(r.cases / 2);
@@ -153,7 +163,10 @@ describe('G2 — the heal-tier transition distribution (§11.A.6)', () => {
     expect(text).toContain('arm H  heal boundary');
     expect(text).toContain('arm B  shipped resolver');
     expect(text).toContain('REACH');
-    expect(text).toContain('halted by the §5.3 degradation rule');
+    expect(text).toContain("halted by §5.3's THREE surviving halts");
+    // The acceptance count has to be readable too, or the amendment removed a number from the report
+    // instead of changing what it counts.
+    expect(text).toContain('resolved BELOW the recorded tier');
     expect(text).toContain('must-refuse controls');
     expect(text).toContain('DIFFERENT element');
   }, TIMEOUT);
@@ -194,21 +207,34 @@ describe('G2 — what the C0 corpus CANNOT produce, constructed so the rows mean
   }, TIMEOUT);
 });
 
-describe('G2 — §5.3\'s degradation halt is what caps the reach row', () => {
-  it('heal RECOVERS a drifted stable attr at medium, and the resolver then declines it', () => {
-    // The decisive decomposition. The record tier is MEASURED (`high`, because a recordable target is
-    // uniquely fingerprinted on its own page), heal drops to `medium`, and §5.3 halts on worse-than-
-    // recorded. So every reach gain healing can produce is converted into a halt, and G2's reach
-    // threshold is unreachable while that rule stands — a property of the ruling, not of the corpus.
+describe('G2 — §5.3\'s degradation is SURFACED, not halted (A174)', () => {
+  it('heal RECOVERS a drifted stable attr at medium, and the resolver now ACCEPTS it, marked', () => {
+    // The decisive decomposition, and the one case in the harness that exercises the degradation path.
+    // The record tier is MEASURED (`high`, because a recordable target is uniquely fingerprinted on its
+    // own page) and heal drops to `medium`. Until A174 §5.3 halted here, which made every reach gain
+    // healing can produce into a halt and G2's reach threshold unreachable by any corpus change. It now
+    // resolves carrying `high->medium`, so the reach is available AND the lower confidence is on record.
     const p = runDegradationProbe();
     expect(p.fingerprintChanged).toBe(true);
     expect(p.roleNameHeld).toBe(true);
     expect(p.tierAtRecord).toBe('high');
     expect(p.healResolved).toBe(true);
     expect(p.healConfidence).toBe('medium');
+    // arm A still fails: its ref is a pure function of the fingerprint, which drifted.
     expect(p.armAResolved).toBe(false);
-    expect(p.armBResolved).toBe(false);
-    expect(p.armBReason).toBe('confidence_degraded');
+    expect(p.armBResolved).toBe(true);
+    expect(p.armBReason).toBe('');
+    expect(p.armBDegraded).toBe('high->medium');
+  }, TIMEOUT);
+
+  it('does NOT mark a case degraded when the tier held — the marker distinguishes two acceptances', () => {
+    // Guards the half of A174 that could silently over-fire: if `degraded` were set on every
+    // resolution, the report's new count would be a case count wearing a risk label. The wrong-element
+    // probe's page resolves at full confidence, so it must carry no marker.
+    const r = report();
+    expect(r.degradedResolutions).toBe(0);
+    expect(r.b.resolved).toBeGreaterThan(0);
+    expect(Object.keys(r.resolverOutcomes).some((k) => k.endsWith(':degraded'))).toBe(false);
   }, TIMEOUT);
 
   it('proves the heal-tier distribution CAN express high->medium, so its C0 value is a measurement', () => {
@@ -221,7 +247,10 @@ describe('G2 — §5.3\'s degradation halt is what caps the reach row', () => {
     expect(p.transitionLabel).toBe('high->medium');
     expect(transitionLabel('high', { resolved: true, ref: 'e1', role: 'link', confidence: 'medium' })).toBe('high->medium');
     // And the resolver's own verdict on the same case is NOT the tier — the two must not be conflated.
-    expect(p.armBReason).toBe('confidence_degraded');
+    // Post-A174 the resolver ACCEPTS this case, so the distinction is carried by the `degraded` marker
+    // rather than by a refusal reason. That the two derivations still differ in KIND is the point.
+    expect(p.armBDegraded).toBe('high->medium');
+    expect(p.armBReason).toBe('');
   }, TIMEOUT);
 
   it('keeps the record tier a MEASUREMENT of the page, not a constant', () => {
