@@ -36,6 +36,11 @@ directly to the developer who writes the code, not a sales inbox.
 A one-off contribution is just as welcome as a sponsorship, via
 [Buy Me a Coffee](https://buymeacoffee.com/knockoutez).
 
+Companies are invoiced directly and paid by bank transfer, so there's no
+platform account to set up on your side and nothing skimmed off the top by a
+middleman. Whatever billing details your finance team needs on the invoice, just
+say and I'll put them on it.
+
 ### What sponsorship funds
 
 Sponsorship goes into the work itself: maintenance and releases across macOS,
