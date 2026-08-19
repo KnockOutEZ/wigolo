@@ -130,7 +130,7 @@ Here's what one real result looks like, dissected. It includes the failed engine
 
 ## Sponsors
 
-Thank you to the sponsors below, who help keep wigolo maintained and free to use. They get no say over the roadmap and no feature you don't also get.
+Thank you to the sponsors below, who help keep wigolo maintained and free for everyone to use. Their support goes straight into the work.
 
 <div align="center">
 

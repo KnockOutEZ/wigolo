@@ -10,8 +10,8 @@ export default function Sponsors() {
         <h2 className={styles.title}>Thank you</h2>
         <p className={styles.body}>
           wigolo is free for everyone and stays that way. The sponsors below
-          help keep it maintained. They get no say over the roadmap and no
-          feature you don&rsquo;t also get.
+          help keep it maintained, and their support goes straight into the
+          work.
         </p>
 
         <ul className={styles.list}>

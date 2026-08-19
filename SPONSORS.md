@@ -50,24 +50,30 @@ time to answer issues from people running wigolo in production.
 - A link on every placement, with its reach measured — figures available on
   request, see [Measurement](#measurement) below.
 
-### What a sponsor does not get
+### How sponsorship and the project stay separate
 
-These are the project's standing terms, and they aren't negotiable.
+Sponsors support the work without steering it. That protects them as much as it
+protects users: nobody has to wonder whether a ranking, a benchmark, or a doc
+was shaped by who paid, and a sponsor is never on the hook for what the project
+ships. These are the standing terms for every sponsor, so they're the same
+conversation each time.
 
-- **No influence over the roadmap or the code.** Nothing gets built, ranked,
-  prioritised, or benchmarked differently because of sponsorship.
-- **No preferential treatment in the product.** A sponsor's own service gets no
-  special standing in search results, adapters, or docs.
-- **No exclusivity.** Other sponsors, including competitors, are welcome.
-- **No say over other sponsors, tiers, or how the sponsors section is run.**
+- **The roadmap and the code stay independent.** Nothing is built, ranked,
+  prioritised, or benchmarked differently because of sponsorship, and a
+  sponsor's own service gets no special standing in search results, adapters,
+  or docs.
+- **Non-exclusive.** Other sponsors are welcome, including ones in the same
+  market.
+- **The sponsors section stays the project's to run** — its placements, tiers,
+  and who appears in it.
 - **No claim over the project.** No CLA, no copyright assignment, and no limit
   on how wigolo is licensed or commercialised, now or later.
 - **No endorsement implied in either direction.** A logo here is a thank-you,
   not a technical endorsement of wigolo by the sponsor, or of the sponsor by
   wigolo.
 
-Sponsorship amounts and duration are worked out per conversation — reach out and
-we'll find something that fits.
+Amounts and duration are worked out per conversation — reach out and we'll find
+something that fits.
 
 ## Measurement
 
