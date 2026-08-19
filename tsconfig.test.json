@@ -11,6 +11,8 @@
     "tests/unit/studio/nav.test.ts",
     "tests/unit/studio/nav-policy.test.ts",
     "tests/unit/studio/act.test.ts",
+    "tests/unit/studio/flow/record.test.ts",
+    "tests/unit/studio/flow/store.test.ts",
     "tests/unit/studio/s5-agent-drive.test.ts",
     "tests/unit/studio/session-drive.test.ts",
     "tests/unit/studio/perception/resolve.test.ts",
