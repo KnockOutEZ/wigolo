@@ -26,6 +26,15 @@ export interface HealCandidate {
   target: StructuredTarget;
 }
 
+/**
+ * The seed fields `heal` actually reads — exactly the four locators, and NOT `backendNodeId`.
+ *
+ * Stated as its own type so a caller holding a DURABLE seed (a stored flow step, whose
+ * `backendNodeId` is invalid rather than merely stale) can heal without inventing a live handle to
+ * satisfy a parameter that is never read. A full `StructuredTarget` still satisfies it.
+ */
+export type HealSeed = Pick<StructuredTarget, 'role' | 'name' | 'fingerprint' | 'ancestorPath'>;
+
 export interface HealResult {
   confidence: HealConfidence;
   /** Set ONLY for a single confident match (high/medium): the live ref the 2J resolver resolves. */
@@ -36,7 +45,7 @@ export interface HealResult {
   candidates?: number;
 }
 
-export function heal(seed: StructuredTarget, candidates: HealCandidate[]): HealResult {
+export function heal(seed: HealSeed, candidates: HealCandidate[]): HealResult {
   // Tier 1 — fingerprint (role+name+stable-attrs): the strongest, position-free locator.
   const fp = candidates.filter((c) => c.target.fingerprint === seed.fingerprint);
   if (fp.length === 1) return { confidence: 'high', ref: fp[0].ref, backendNodeId: fp[0].target.backendNodeId, tier: 'fingerprint' };
