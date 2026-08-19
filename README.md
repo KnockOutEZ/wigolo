@@ -21,7 +21,7 @@ Local-first web intelligence for AI agents — **no keys, no cloud, no metered b
 <a href="https://trendshift.io/repositories/79424?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-79424" target="_blank"><img src="https://trendshift.io/api/badge/repositories/79424" alt="wigolo on Trendshift" width="250" height="55"/></a>
 <a href="https://trendshift.io/repositories/79424?utm_source=trendshift-badge&utm_medium=badge&utm_campaign=badge-trendshift-79424" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/79424/daily?language=TypeScript" alt="KnockOutEZ%2Fwigolo | Trendshift" width="250" height="55"/></a>
 
-[Quickstart](#quickstart) · [Tools](#tools) · [Why wigolo](#why-its-different) · [Benchmark](#benchmark) · [Docs](docs/README.md) · [Examples](examples/README.md) · [Feedback](#beta--feedback) · [FAQ](#faq)
+[Quickstart](#quickstart) · [Tools](#tools) · [Why wigolo](#why-its-different) · [Sponsors](#sponsors) · [Benchmark](#benchmark) · [Docs](docs/README.md) · [Examples](examples/README.md) · [Feedback](#beta--feedback) · [FAQ](#faq)
 
 New features and updates ship steadily. Follow <a href="https://x.com/yourtowhid"><b>@yourtowhid on X</b></a> for all of it and new ways to use wigolo, and reach out there for collaborations or feedback · also on <a href="https://www.linkedin.com/in/yourtowhid/">LinkedIn</a>
 
@@ -127,6 +127,25 @@ Here's what one real result looks like, dissected. It includes the failed engine
 </picture>
 
 </div>
+
+## Sponsors
+
+A sincere thank you to the sponsors below. They chose to support a project they didn't have to, and asked for nothing in return — no say over the roadmap, no feature they get and you don't. That generosity is part of what keeps the core tools keyless for everyone else.
+
+<div align="center">
+
+<a href="https://knockoutez.github.io/wigolo/go/testmu/?ref=readme">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/sponsors/testmu-ai-dark.svg">
+<img alt="TestMu AI" src="assets/sponsors/testmu-ai.svg" width="240">
+</picture>
+</a>
+
+<sub>**[TestMu AI](https://knockoutez.github.io/wigolo/go/testmu/?ref=readme)** (formerly LambdaTest) is the world's first full-stack agentic AI quality engineering platform, trusted by 18,000+ enterprises.</sub>
+
+</div>
+
+**wigolo is free for all and is meant to stay that way.** If you or your company would like to help keep a free-forever project maintained, there's room for more sponsors alongside the ones above — reach out at **[ktowhid20@gmail.com](mailto:ktowhid20@gmail.com)**. Details are in [SPONSORS.md](SPONSORS.md); a coffee-sized one-off works too, via [Buy Me a Coffee](https://buymeacoffee.com/knockoutez). Every bit of it goes back into the project.
 
 ## Benchmark
 

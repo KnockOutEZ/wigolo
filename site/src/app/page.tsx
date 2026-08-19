@@ -7,6 +7,7 @@ import HowItWorks from "@/components/HowItWorks";
 import TrustedBy from "@/components/TrustedBy";
 import Tools from "@/components/Tools";
 import OpenSource from "@/components/OpenSource";
+import Sponsors from "@/components/Sponsors";
 import Testimonials from "@/components/Testimonials";
 import Parity from "@/components/Parity";
 import StartShipping from "@/components/StartShipping";
@@ -27,6 +28,7 @@ export default function Home() {
         <TrustedBy />
         <Tools />
         <OpenSource />
+        <Sponsors />
         <Testimonials />
         <Parity />
         <StartShipping />
