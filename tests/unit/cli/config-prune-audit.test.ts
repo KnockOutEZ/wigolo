@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { SessionAuditLog } from '../../../src/studio/audit.js';
 import { applyMigrations, _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
+import { insertFlowStep, flowIdForSession } from '../../../src/studio/flow/store.js';
 
 /**
  * D9 — the operator-CLI entry for the audit prune: `wigolo config --prune-audit --older-than <dur> --yes`.
@@ -44,6 +45,34 @@ describe('wigolo config --prune-audit (operator-CLI entry)', () => {
     const rows = testDb.prepare('SELECT action FROM studio_audit WHERE session_id = ?').all('sess-1') as { action: string }[];
     expect(rows.map((r) => r.action)).toEqual(['click']); // fresh row survived
     expect(sessionCount()).toBe(1); // studio_sessions parent NOT deleted (pin #7)
+  });
+
+  it('reports the recorded flow steps it deleted, not only the audit rows', async () => {
+    // The prune deletes recorded flow steps alongside the audit rows. An operator who is told only
+    // the audit count cannot tell how much of the recording surface the command just removed —
+    // and the flow steps are the half that carries page URLs and element seeds.
+    insertFlowStep(testDb, {
+      flowId: flowIdForSession('sess-1'),
+      sessionId: 'sess-1',
+      seq: 1,
+      auditSeq: 1,
+      action: 'navigate',
+      pageUrl: 'https://example.com/a',
+      ts: 1000,
+    });
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      expect(await runConfig(['--prune-audit', '--older-than', '1h', '--yes'])).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+    const out = written.join('');
+    expect(out).toContain('1 studio audit row(s)');
+    expect(out).toContain('1 recorded flow step(s)');
   });
 
   it('fail-closed: WITHOUT --yes, nothing is deleted (pin #5)', async () => {

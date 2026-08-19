@@ -54,7 +54,7 @@ describe('pruneStudioAudit — by-age prune of the forensic audit log', () => {
     const fresh = new SessionAuditLog({ db, sessionId: 'sess-1', now: () => 9000 });
     fresh.record({ action: 'scroll', epoch: 2, outcome: { ok: true } });
     expect(auditCount(db, 'sess-1')).toBe(1);
-    expect(fresh.replay().map((e) => e.action)).toEqual(['scroll']);
+    expect(fresh.entries().map((e) => e.action)).toEqual(['scroll']);
     db.close();
   });
 
@@ -149,5 +149,37 @@ describe('D9 retention — security seams (structural)', () => {
       // mutation: add a `remove`/`prune` method to SessionAuditLog → REDS (writer must never also delete).
       expect((log as unknown as Record<string, unknown>)[m]).toBeUndefined();
     }
+  });
+
+  /**
+   * S13-0 — the flow sidecar is DERIVED from the audit and carries the same page URLs. Pruning the
+   * source while the derivative survives would leave a readable shadow of exactly the rows the
+   * operator asked to be gone, which is a privacy regression introduced by the sidecar's existence.
+   */
+  it('prunes the derived flow sidecar with the audit rows it was derived from', () => {
+    const db = migratedDb();
+    db.prepare('INSERT OR IGNORE INTO studio_sessions (id) VALUES (?)').run('sess-derived');
+    new SessionAuditLog({ db, sessionId: 'sess-derived', now: () => 1000 }).record({ action: 'navigate', epoch: 0, outcome: { ok: true } });
+    const ins = db.prepare(
+      `INSERT INTO studio_flow_steps (flow_id, session_id, seq, audit_seq, action, page_url, ts) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    ins.run('flw_old', 'sess-derived', 1, 1, 'navigate', 'https://example.com/orders?token=abc', 1000);
+    ins.run('flw_new', 'sess-derived', 1, 2, 'navigate', 'https://example.com/orders?token=xyz', 9000);
+
+    const result = pruneStudioAudit(db, { cutoffMs: 5000 });
+    expect(result.deleted).toBe(1);
+    expect(result.flowStepsDeleted).toBe(1);
+    const left = db.prepare('SELECT flow_id, page_url FROM studio_flow_steps').all() as Array<{ flow_id: string; page_url: string }>;
+    expect(left).toEqual([{ flow_id: 'flw_new', page_url: 'https://example.com/orders?token=xyz' }]);
+  });
+
+  it('a non-finite cutoff deletes no flow step either — fail-closed on both tables', () => {
+    const db = migratedDb();
+    db.prepare('INSERT OR IGNORE INTO studio_sessions (id) VALUES (?)').run('sess-nan');
+    db.prepare(`INSERT INTO studio_flow_steps (flow_id, session_id, seq, audit_seq, action, ts) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('flw_x', 'sess-nan', 1, 1, 'navigate', 1000);
+    const result = pruneStudioAudit(db, { cutoffMs: Number.NaN });
+    expect(result).toEqual({ deleted: 0, flowStepsDeleted: 0 });
+    expect((db.prepare('SELECT COUNT(*) c FROM studio_flow_steps').get() as { c: number }).c).toBe(1);
   });
 });

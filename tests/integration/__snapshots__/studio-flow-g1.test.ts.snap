@@ -1,0 +1,15 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`G1 — is a recording sufficient to attempt a run at all? > reports the recorded flow-length distribution 1`] = `
+{
+  "histogram": {
+    "2": 1,
+    "6": 17,
+    "7": 4,
+    "8": 2,
+  },
+  "max": 8,
+  "median": 6,
+  "min": 2,
+}
+`;

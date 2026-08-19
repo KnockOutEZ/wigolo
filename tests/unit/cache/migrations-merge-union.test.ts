@@ -50,6 +50,7 @@ const STUDIO_RELEASED = [
  */
 const POST_MERGE_ADDED = [
   '012-url-cache-content-hash-index',
+  '013-studio-flows',
   '013-url-versions',
 ];
 

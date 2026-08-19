@@ -33,6 +33,8 @@ import type { AuditRecordInput, AuditOutcome } from './audit.js';
 import { classifyRisk, type RiskTier, type RiskPatterns } from './risk.js';
 import { deriveDomain, type PreGrantStore } from './pre-grant.js';
 import { refuseAgentType, type FieldSemantics } from './credential.js';
+import { isCredentialRecordingContext, type FlowRecorderHook } from './flow/record.js';
+import type { StructuredTarget } from './mark/target.js';
 
 /**
  * S7: how a risky action was authorized at the gate, recorded in the audit.
@@ -84,8 +86,21 @@ export interface ActHandlerDeps {
   resolve: (ref: string) => Promise<ResolveResult>;
   /** The single epoch-gated input channel; click/type/scroll dispatch here — NEVER action-executor.page.* or a raw CDP Input side-channel (those bypass the fence + neutralization). */
   channel: AgentInputChannel;
-  /** Phase 6b: the per-session append-only audit log; every action + outcome is recorded for trust + replay. Optional so the unit tests can omit it. */
-  audit?: { record(input: AuditRecordInput): void };
+  /**
+   * Phase 6b: the per-session append-only audit log; every action + outcome is recorded for trust + the
+   * display timeline. Optional so the unit tests can omit it.
+   *
+   * The return is `{seq}`-or-nothing rather than `void` so the S13 flow sidecar can JOIN a recorded step
+   * back to the audit row it was derived from. A fake that returns nothing stays valid; a step whose
+   * audit row is missing is simply never recorded (see `flow`).
+   */
+  audit?: { record(input: AuditRecordInput): { seq: number } | void };
+  /**
+   * S13-0: the flow sidecar recorder. Notify-only, like `audit` — a recording failure never turns a
+   * successful action into an error the agent would retry. Absent (every pre-S13 host and unit test) ⇒
+   * no seed is built and nothing is written, so the act path behaves exactly as it did.
+   */
+  flow?: FlowRecorderHook;
   /**
    * NO `approvals` DEP HERE — deliberate, and load-bearing. This seam once declared an
    * `approvals?: { request(...) }` that NOTHING read: the CLI host even PASSED one and this handler
@@ -130,6 +145,14 @@ interface ActResolution {
   result: StudioActOutput | StudioToolError;
   risk?: RiskTier;
   approval?: AuthSource;
+  /**
+   * S13-0: the durable seed for the element this act touched, built at RESOLVE time (the element is
+   * live then; after a click it may be gone). Carried, not written — the choke point writes it only if
+   * the action landed.
+   */
+  flowTarget?: StructuredTarget | null;
+  /** The page's credential-field signal from the same resolve, so the recorder decides on the live scan. */
+  pageHasCredentialField?: boolean;
 }
 
 /** CDP modifier bitmask for Shift. */
@@ -226,7 +249,7 @@ function auditOutcome(result: StudioActOutput | StudioToolError): AuditOutcome {
 export function createActHandler(
   deps: ActHandlerDeps,
 ): (input: StudioActInput) => Promise<StudioActOutput | StudioToolError> {
-  const { browser, controlToken, grant, resolve, channel, audit, currentUrl, riskPatterns, preGrant, park } = deps;
+  const { browser, controlToken, grant, resolve, channel, audit, currentUrl, riskPatterns, preGrant, park, flow } = deps;
 
   const refused = (currentEpoch: number): StudioToolError => ({ error_reason: 'not_holder', hint: HOLD_HINT, currentEpoch });
   const standDown = (charsLanded?: number): StudioToolError => ({
@@ -327,7 +350,7 @@ export function createActHandler(
    */
   const gateAndResolve = async (
     input: StudioActInput,
-  ): Promise<{ ok: true; gateEpoch: number; center: { x: number; y: number }; role?: string; name?: string; semantics?: FieldSemantics; pageHasCredentialField?: boolean } | StudioToolError> => {
+  ): Promise<{ ok: true; gateEpoch: number; center: { x: number; y: number }; role?: string; name?: string; semantics?: FieldSemantics; pageHasCredentialField?: boolean; flowTarget?: StructuredTarget | null } | StudioToolError> => {
     const gate = controlToken.assertCanDrive('agent');
     if (!gate.ok) return refused(gate.currentEpoch);
     const gateEpoch = controlToken.epoch;
@@ -335,26 +358,36 @@ export function createActHandler(
     if (!ref) return { error_reason: 'missing_ref', hint: `${input.action} requires the \`ref\` of an element from studio_observe.` };
     const resolved = await resolve(ref); // LIVE — fresh snapshot, occlusion hit-test, never cached coords
     if (isResolveError(resolved)) return mapResolveError(resolved.error);
+    // S13-0: seed the flow sidecar HERE — the element is live at this instant and may be gone after
+    // the dispatch. Built BEFORE the risk gate so the "only await between the gate and the dispatch"
+    // invariant below stays exactly as it was. A credential context builds NOTHING (refuse-at-creation,
+    // mirroring the mark path), and a seed failure is swallowed: a recording is never worth an action.
+    let flowTarget: StructuredTarget | null | undefined;
+    if (flow && !isCredentialRecordingContext({ pageUrl: currentUrl?.(), pageHasCredentialField: resolved.pageHasCredentialField })) {
+      flowTarget = await flow.seed(resolved.backendNodeId).catch(() => null);
+    }
     // role/name (page-derived, untrusted) ride along for the 6c risk gate's soft signal; the TRUE
     // pierced-DOM semantics + the page credential flag ride along for the 5a hard credential guard.
-    return { ok: true, gateEpoch, center: resolved.center, role: resolved.role, name: resolved.name, semantics: resolved.semantics, pageHasCredentialField: resolved.pageHasCredentialField };
+    return { ok: true, gateEpoch, center: resolved.center, role: resolved.role, name: resolved.name, semantics: resolved.semantics, pageHasCredentialField: resolved.pageHasCredentialField, flowTarget };
   };
 
   const clickAct = async (input: StudioActInput): Promise<ActResolution> => {
     const g = await gateAndResolve(input);
     if ('error_reason' in g) return { result: g };
+    const seed = { flowTarget: g.flowTarget, pageHasCredentialField: g.pageHasCredentialField };
     // P4: the ghost cursor rides the resolved LIVE centre (viewport CSS px — same space the overlay draws in).
     channel.announce?.({ t: 'point', center: g.center, caption: input.narration ?? '' });
     const gate = await applyRiskGate(input, g.gateEpoch, g.role, g.name);
-    if ('blocked' in gate) return { result: gate.blocked, risk: gate.risk, approval: gate.approval };
+    if ('blocked' in gate) return { result: gate.blocked, risk: gate.risk, approval: gate.approval, ...seed };
     const landed = await channel.dispatchAgentUnit(g.gateEpoch, clickUnit(g.center));
-    if (!landed) return { result: standDown(), risk: gate.risk, approval: gate.approval };
-    return { result: { ok: true, action: 'click' }, risk: gate.risk, approval: gate.approval };
+    if (!landed) return { result: standDown(), risk: gate.risk, approval: gate.approval, ...seed };
+    return { result: { ok: true, action: 'click' }, risk: gate.risk, approval: gate.approval, ...seed };
   };
 
   const typeAct = async (input: StudioActInput): Promise<ActResolution> => {
     const g = await gateAndResolve(input);
     if ('error_reason' in g) return { result: g };
+    const seed = { flowTarget: g.flowTarget, pageHasCredentialField: g.pageHasCredentialField };
     // P4: ghost cursor at the resolved centre (the point payload carries only coords + agent caption — a
     // credential-page type is still refused below, and no page-derived field ever rides this event).
     channel.announce?.({ t: 'point', center: g.center, caption: input.narration ?? '' });
@@ -363,12 +396,12 @@ export function createActHandler(
     // element's TRUE pierced-DOM semantics (never the spoofable a11y name), so a password field with a
     // blank/forged label is still caught; an unresolvable target in a credential context fails closed.
     if (refuseAgentType({ target: g.semantics, pageUrl: currentUrl?.(), pageHasCredentialField: g.pageHasCredentialField })) {
-      return { result: credentialRefused() };
+      return { result: credentialRefused(), ...seed };
     }
     // Gate BEFORE focusing/typing — a credential-context type must not even focus the field unapproved.
     const gate = await applyRiskGate(input, g.gateEpoch, g.role, g.name);
-    if ('blocked' in gate) return { result: gate.blocked, risk: gate.risk, approval: gate.approval };
-    const meta = { risk: gate.risk, approval: gate.approval };
+    if ('blocked' in gate) return { result: gate.blocked, risk: gate.risk, approval: gate.approval, ...seed };
+    const meta = { risk: gate.risk, approval: gate.approval, ...seed };
     const text = typeof input.text === 'string' ? input.text : '';
     // Focus the resolved element with a gated click at its centre (same channel, abortable).
     const focused = await channel.dispatchAgentUnit(g.gateEpoch, clickUnit(g.center));
@@ -427,7 +460,7 @@ export function createActHandler(
 
   // Every agent action + its resolved outcome lands in the per-session APPEND-ONLY audit
   // log (Phase 6b) — successes, refusals, AND unknown verbs alike, never silently dropped —
-  // for trust + the Phase-7 replay timeline. Phase 6c adds the gating decision (risk tier +
+  // for trust + the Phase-7 DISPLAY timeline. Phase 6c adds the gating decision (risk tier +
   // approval) on a gated action, recorded through this SAME single choke point so every gate
   // decision is logged from commit one. The optional-chain leaves the args unevaluated when no
   // log is wired (the unit tests that omit it).
@@ -436,15 +469,35 @@ export function createActHandler(
     // salvaged narration contract (broadcast regardless of the verdict, so a refused/preempted act still
     // names its step in the drive banner). Agent-authored text only; never page-derived.
     channel.announce?.({ t: 'act', action: typeof input.action === 'string' ? input.action : String((input as { action?: unknown }).action), ...(input.narration ? { narration: input.narration } : {}) });
-    const { result, risk, approval } = await dispatch(input);
-    audit?.record({
-      action: typeof input.action === 'string' ? input.action : String((input as { action?: unknown }).action),
+    const action = typeof input.action === 'string' ? input.action : String((input as { action?: unknown }).action);
+    // Read the page BEFORE the act: a click can navigate, and a step recorded against the page the
+    // agent LANDED on would replay against the wrong document.
+    const pageUrlAtStart = currentUrl?.();
+    const { result, risk, approval, flowTarget, pageHasCredentialField } = await dispatch(input);
+    const entry = audit?.record({
+      action,
       epoch: controlToken.epoch,
       target: auditTarget(input),
       outcome: auditOutcome(result),
       ...(risk ? { risk } : {}),
       ...(approval ? { approval } : {}),
     });
+    // S13-0: the flow sidecar records only what LANDED, and only what the audit already recorded —
+    // it is a derived artefact, never a second forensic record. Notify-only: it cannot fail the act.
+    if (flow && !('error_reason' in result)) {
+      flow.record({
+        action,
+        ...(entry && typeof entry.seq === 'number' ? { auditSeq: entry.seq } : {}),
+        ...(action === 'navigate'
+          ? { pageUrl: typeof input.url === 'string' ? input.url : undefined }
+          : { pageUrl: pageUrlAtStart }),
+        ...(flowTarget !== undefined ? { target: flowTarget } : {}),
+        ...(typeof input.ref === 'string' ? { recordedRef: input.ref } : {}),
+        ...(input.direction ? { direction: input.direction } : {}),
+        ...(typeof input.amount === 'number' ? { amount: input.amount } : {}),
+        ...(pageHasCredentialField !== undefined ? { pageHasCredentialField } : {}),
+      });
+    }
     return result;
   };
 }

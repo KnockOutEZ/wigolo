@@ -1,0 +1,240 @@
+import { describe, it, expect } from 'vitest';
+import Database from 'better-sqlite3';
+import { applyMigrations, _resetMigrationGuard } from '../../../../src/cache/migrations/runner.js';
+import {
+  projectFlowStep,
+  insertFlowStep,
+  listFlowSteps,
+  flowIdForSession,
+  FLOW_STEP_KEYS,
+  FLOW_TARGET_KEYS,
+  FLOW_ATTR_KEYS,
+  FlowStepReadError,
+} from '../../../../src/studio/flow/store.js';
+import { computeFingerprint, STABLE_ATTRS } from '../../../../src/studio/perception/id.js';
+
+function migratedDb(): Database.Database {
+  _resetMigrationGuard();
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  applyMigrations(db, { vecLoaded: false });
+  return db;
+}
+
+const seedTarget = {
+  role: 'button',
+  name: 'Next page',
+  fingerprint: 'button\0Next page\0type=button',
+  ancestorPath: 'html/body/div/main/nav',
+  attrs: { type: 'button' },
+};
+
+function step(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    flowId: 'flw_abc',
+    sessionId: 's1',
+    seq: 1,
+    auditSeq: 7,
+    action: 'click',
+    pageUrl: 'https://example.com/orders',
+    target: { ...seedTarget },
+    recordedRef: 'e1a2b3c',
+    healTierAtRecord: 'high',
+    ts: 1000,
+    ...over,
+  };
+}
+
+describe('flow step — the WRITE allow-list', () => {
+  it('projects a well-formed step', () => {
+    const p = projectFlowStep(step());
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    expect(p.step.action).toBe('click');
+    expect(p.step.target).toEqual(seedTarget);
+  });
+
+  it('is an ALLOW-list, not a deny-list: an unknown, entirely harmless key is rejected', () => {
+    // The mutation this kills: swapping the allow-list for a deny-list of credential-shaped
+    // names. A deny-list would happily let this through, and would then let through every key
+    // nobody thought to name.
+    const p = projectFlowStep(step({ harmless_unknown_field: 'nothing secret here' }));
+    expect(p).toEqual({ ok: false, reason: 'disallowed_key', key: 'harmless_unknown_field' });
+  });
+
+  it.each(['cookie', 'storageState', 'Authorization', 'Set-Cookie'])(
+    'rejects the credential-shaped top-level key %s',
+    (key) => {
+      const p = projectFlowStep(step({ [key]: 'sensitive' }));
+      expect(p.ok).toBe(false);
+      if (p.ok) return;
+      expect(p.reason).toBe('disallowed_key');
+      expect(p.key).toBe(key);
+    },
+  );
+
+  it.each(['cookie', 'storageState', 'Authorization', 'Set-Cookie'])(
+    'rejects the credential-shaped key %s nested inside the target',
+    (key) => {
+      const p = projectFlowStep(step({ target: { ...seedTarget, [key]: 'sensitive' } }));
+      expect(p.ok).toBe(false);
+      if (p.ok) return;
+      expect(p.reason).toBe('disallowed_target_key');
+      expect(p.key).toBe(key);
+    },
+  );
+
+  it.each(['cookie', 'storageState', 'Authorization', 'Set-Cookie'])(
+    'rejects the credential-shaped attribute %s carried on the element itself',
+    (key) => {
+      // attrs come from the PAGE. A page can name an attribute anything it likes, so this is
+      // the one place a hostile document could smuggle a key past a naive projection.
+      const p = projectFlowStep(step({ target: { ...seedTarget, attrs: { type: 'button', [key]: 'sensitive' } } }));
+      expect(p.ok).toBe(false);
+      if (p.ok) return;
+      expect(p.reason).toBe('disallowed_attr');
+      expect(p.key).toBe(key);
+    },
+  );
+
+  it('rejects a raw typed value under any name (§6 — a step stores a SLOT, never a value)', () => {
+    expect(projectFlowStep(step({ action: 'type', text: 'hunter2' }))).toEqual({
+      ok: false, reason: 'disallowed_key', key: 'text',
+    });
+    expect(projectFlowStep(step({ action: 'type', value: 'hunter2' }))).toEqual({
+      ok: false, reason: 'disallowed_key', key: 'value',
+    });
+  });
+
+  it('rejects backendNodeId — invalid in a stored step, not merely stale', () => {
+    const p = projectFlowStep(step({ target: { ...seedTarget, backendNodeId: 42 } }));
+    expect(p).toEqual({ ok: false, reason: 'disallowed_target_key', key: 'backendNodeId' });
+  });
+
+  it('rejects a recorded risk or approval — a recording carries no authorization', () => {
+    expect(projectFlowStep(step({ risk: 'money' })).ok).toBe(false);
+    expect(projectFlowStep(step({ approval: 'pre-grant' })).ok).toBe(false);
+  });
+
+  it('stores exactly the attribute subset the fingerprint is computed from, and no more', () => {
+    // This is what makes the attrs allow-list free rather than lossy: the stored attrs are
+    // EXACTLY sufficient to recompute the stored fingerprint, and `heal()` reads no other
+    // attribute. Anything else on the element is storage without a reader.
+    expect([...FLOW_ATTR_KEYS]).toEqual([...STABLE_ATTRS]);
+    const p = projectFlowStep(step({
+      target: {
+        role: 'textbox', name: 'Search', ancestorPath: 'html/body/form',
+        fingerprint: computeFingerprint({ role: 'textbox', name: 'Search', attrs: { type: 'search', placeholder: 'Find' } }),
+        attrs: { type: 'search', placeholder: 'Find' },
+      },
+    }));
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    expect(computeFingerprint({ role: p.step.target!.role, name: p.step.target!.name, attrs: p.step.target!.attrs }))
+      .toBe(p.step.target!.fingerprint);
+  });
+
+  it('drops a page attribute that is outside the subset without rejecting the step', () => {
+    // `class`/`id`/`style` are deliberately excluded from the fingerprint (they churn on every
+    // re-render) so dropping them loses nothing a reader consumes — but they are ordinary page
+    // attributes, so their presence must not fail a recording.
+    const p = projectFlowStep(step({ target: { ...seedTarget, attrs: { type: 'button', class: 'pager-next', id: 'x' } } }));
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    expect(p.step.target!.attrs).toEqual({ type: 'button' });
+  });
+
+  it('rejects a click/type step missing any locator field (G1: exactly 0 incomplete steps)', () => {
+    for (const drop of FLOW_TARGET_KEYS) {
+      const partial: Record<string, unknown> = { ...seedTarget };
+      delete partial[drop];
+      const p = projectFlowStep(step({ target: partial }));
+      expect(p.ok, `dropping ${drop} was accepted`).toBe(false);
+    }
+  });
+
+  it('requires a target for click and type, and forbids one for navigate and scroll', () => {
+    expect(projectFlowStep(step({ action: 'click', target: undefined })).ok).toBe(false);
+    expect(projectFlowStep(step({ action: 'type', target: undefined })).ok).toBe(false);
+    expect(projectFlowStep(step({ action: 'navigate', target: undefined, recordedRef: undefined, healTierAtRecord: undefined })).ok).toBe(true);
+  });
+
+  it('only ever stores a heal tier that was actionable', () => {
+    expect(projectFlowStep(step({ healTierAtRecord: 'low' })).ok).toBe(false);
+    expect(projectFlowStep(step({ healTierAtRecord: 'none' })).ok).toBe(false);
+    expect(projectFlowStep(step({ healTierAtRecord: 'medium' })).ok).toBe(true);
+  });
+
+  it('exposes the allow-list as data so a reader can be checked against the same list', () => {
+    expect(FLOW_STEP_KEYS).toContain('slot');
+    expect(FLOW_STEP_KEYS).not.toContain('text');
+    expect(FLOW_TARGET_KEYS).not.toContain('backendNodeId');
+    expect(FLOW_TARGET_KEYS).not.toContain('trusted');
+  });
+});
+
+describe('flow step — persistence and the READ allow-list', () => {
+  it('round-trips an ordered flow', () => {
+    const db = migratedDb();
+    insertFlowStep(db, step({ seq: 1, action: 'navigate', target: undefined, recordedRef: undefined, healTierAtRecord: undefined }));
+    insertFlowStep(db, step({ seq: 2 }));
+    insertFlowStep(db, step({ seq: 3, action: 'scroll', target: undefined, recordedRef: undefined, healTierAtRecord: undefined, direction: 'down', amount: 600 }));
+    const read = listFlowSteps(db, 'flw_abc');
+    expect(read.map((s) => s.seq)).toEqual([1, 2, 3]);
+    expect(read[1].target).toEqual(seedTarget);
+    expect(read[2].direction).toBe('down');
+    expect(read[2].amount).toBe(600);
+  });
+
+  it('seeds the session parent so a first step never trips the FK', () => {
+    const db = migratedDb();
+    expect(() => insertFlowStep(db, step({ sessionId: 'brand-new' }))).not.toThrow();
+    expect(listFlowSteps(db, 'flw_abc')).toHaveLength(1);
+  });
+
+  it('refuses to insert a step the write allow-list rejected', () => {
+    const db = migratedDb();
+    expect(insertFlowStep(db, step({ cookie: 'x' }))).toEqual({ ok: false, reason: 'disallowed_key', key: 'cookie' });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM studio_flow_steps').get()).toEqual({ n: 0 });
+  });
+
+  it('REJECTS a row whose stored target carries backendNodeId — never accept-and-ignore (T4)', () => {
+    const db = migratedDb();
+    insertFlowStep(db, step());
+    // Simulate a row written by something that bypassed the writer (a future migration, a
+    // hand-edited DB). Accepting-and-ignoring is how a dead handle eventually gets dereferenced
+    // by something that trusted the field's presence.
+    db.prepare('UPDATE studio_flow_steps SET target_attrs = ? WHERE seq = 1')
+      .run(JSON.stringify({ type: 'button', backendNodeId: 42 }));
+    expect(() => listFlowSteps(db, 'flw_abc')).toThrow(FlowStepReadError);
+  });
+
+  it.each(['cookie', 'storageState', 'Authorization', 'Set-Cookie'])(
+    'REJECTS a row whose stored attrs carry %s',
+    (key) => {
+      const db = migratedDb();
+      insertFlowStep(db, step());
+      db.prepare('UPDATE studio_flow_steps SET target_attrs = ? WHERE seq = 1')
+        .run(JSON.stringify({ type: 'button', [key]: 'sensitive' }));
+      expect(() => listFlowSteps(db, 'flw_abc')).toThrow(FlowStepReadError);
+    },
+  );
+
+  it('scopes a read to one flow', () => {
+    const db = migratedDb();
+    insertFlowStep(db, step({ flowId: 'flw_a', seq: 1 }));
+    insertFlowStep(db, step({ flowId: 'flw_b', seq: 1 }));
+    expect(listFlowSteps(db, 'flw_a')).toHaveLength(1);
+  });
+});
+
+describe('flow identity', () => {
+  it('is a stable function of the session, so appending a step does not rename the flow', () => {
+    // A content hash cannot name a sequence that is still growing, and the recorder appends on
+    // every successful act. The session IS the recording (one session owns exactly one tab).
+    const a = flowIdForSession('sess-1');
+    expect(flowIdForSession('sess-1')).toBe(a);
+    expect(flowIdForSession('sess-2')).not.toBe(a);
+    expect(a).toMatch(/^flw_[0-9a-f]{16}$/);
+  });
+});

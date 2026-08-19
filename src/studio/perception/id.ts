@@ -9,7 +9,12 @@
  * fixtures (tests/fixtures/studio/*) — do not tweak it without re-pinning them.
  */
 
-const STABLE_ATTRS = ['type', 'name', 'placeholder'] as const;
+/**
+ * The fixed attribute subset a fingerprint is built from. Exported so the flow sidecar's stored
+ * `attrs` allow-list IS this list rather than a copy of it — a second copy would drift, and a
+ * seed whose attrs no longer reproduce its own fingerprint is a silently broken locator.
+ */
+export const STABLE_ATTRS = ['type', 'name', 'placeholder'] as const;
 
 /** Deterministic 32-bit FNV-1a, rendered base36 — a compact opaque ref body. Exported so the snapshot id + churn-group share one stable hash. */
 export function hash(s: string): string {

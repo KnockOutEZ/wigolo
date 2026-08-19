@@ -49,7 +49,7 @@ describe('SessionAuditLog — per-session append-only audit log', () => {
     log.record({ action: 'navigate', epoch: 0, target: { url: 'https://a/' }, outcome: { ok: true } });
     log.record({ action: 'type', epoch: 0, target: { ref: 'e2' }, outcome: { ok: true, charsLanded: 5 } });
     log.record({ action: 'click', epoch: 1, target: { ref: 'e3' }, outcome: { ok: false, error_reason: 'not_holder' } });
-    const seq = log.replay();
+    const seq = log.entries();
     expect(seq.map((e) => e.action)).toEqual(['navigate', 'type', 'click']);
     expect(seq.map((e) => e.seq)).toEqual([1, 2, 3]);
     expect(seq[1].outcome).toEqual({ ok: true, charsLanded: 5 });
@@ -58,10 +58,10 @@ describe('SessionAuditLog — per-session append-only audit log', () => {
   it('is APPEND-ONLY: mutating the array returned by replay() cannot corrupt the log (replay hands out a copy)', () => {
     const log = new SessionAuditLog({ now: () => 0 });
     log.record({ action: 'navigate', epoch: 0, outcome: { ok: true } });
-    const tamper = log.replay() as AuditEntry[]; // a malicious/buggy consumer tries to rewrite history
+    const tamper = log.entries() as AuditEntry[]; // a malicious/buggy consumer tries to rewrite history
     tamper.pop();
     tamper.push({ seq: 999, ts: 0, action: 'forged', epoch: 0, outcome: { ok: true } });
-    expect(log.replay().map((e) => e.action)).toEqual(['navigate']); // log unchanged
+    expect(log.entries().map((e) => e.action)).toEqual(['navigate']); // log unchanged
     expect(log.size).toBe(1);
   });
 
@@ -71,7 +71,7 @@ describe('SessionAuditLog — per-session append-only audit log', () => {
     expect(Object.isFrozen(e)).toBe(true);
     expect(Object.isFrozen(e.outcome)).toBe(true); // the outcome cannot be flipped to ok:true after the fact — the load-bearing tamper-proof property
     expect(Object.isFrozen(e.target)).toBe(true); // the target (url/ref) cannot be rewritten either
-    expect(Object.isFrozen(log.replay()[0])).toBe(true);
+    expect(Object.isFrozen(log.entries()[0])).toBe(true);
   });
 
   it('carries the Phase-6c risk tier + approval decision on a gated action (frozen); absent on an ungated one', () => {
@@ -113,7 +113,7 @@ describe('SessionAuditLog — durable persistence (Phase 6b)', () => {
 
     // A FRESH log instance reading the SAME session from the DB — empty unless the entries persisted.
     const log2 = new SessionAuditLog({ db, sessionId: 'sess-A' });
-    const seq = log2.replay();
+    const seq = log2.entries();
 
     expect(seq.map((e) => e.action)).toEqual(['navigate', 'click']);
     expect(seq.map((e) => e.seq)).toEqual([1, 2]); // ordered by seq
@@ -144,7 +144,7 @@ describe('SessionAuditLog — durable persistence (Phase 6b)', () => {
     }
     // A fresh hydrate over the persisted sequence is ordered + each entry frozen (tamper-proof).
     const fresh = new SessionAuditLog({ db, sessionId: 'sess-AO' });
-    const seq = fresh.replay();
+    const seq = fresh.entries();
     expect(seq.map((e) => e.seq)).toEqual([1, 2]);
     expect(Object.isFrozen(seq[0])).toBe(true);
     expect(Object.isFrozen(seq[1])).toBe(true);

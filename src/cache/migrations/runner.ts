@@ -288,6 +288,44 @@ const MIGRATION_010_CLEARANCE_ROUTE = '';
 // CREATE INDEX on a missing table throws (mirrors the 006/009 guard).
 const MIGRATION_012_URL_CACHE_CONTENT_HASH_INDEX = '';
 
+// S13-0: the flow sidecar — an ordered record of the agent's SUCCESSFUL actions carrying the
+// full re-resolution seed the audit deliberately does not keep. A SIDECAR: studio_audit gains no
+// writer, no reader, no column and no index from S13. A TABLE rather than a studio_artifacts row
+// because a flow is an ORDERED sequence (studio_artifacts has no ordering column, and its dedup
+// indexes would collapse two steps sharing a URL + target) and because the studio_artifacts FTS
+// triggers would put a second, allow-list-unreachable copy of the body in a shadow table.
+// Structurally absent: any text/value column (a `type` step stores a named slot), any
+// risk/approval column (a recording never carries authorization), any backend-node-id column.
+// Mirrored in 013-studio-flows.sql.
+const MIGRATION_013_STUDIO_FLOWS = `
+CREATE TABLE IF NOT EXISTS studio_flow_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  flow_id TEXT NOT NULL,
+  session_id TEXT NOT NULL REFERENCES studio_sessions(id),
+  seq INTEGER NOT NULL,
+  audit_seq INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  page_url TEXT,
+  target_role TEXT,
+  target_name TEXT,
+  target_fingerprint TEXT,
+  target_ancestor_path TEXT,
+  target_attrs TEXT,
+  recorded_ref TEXT,
+  heal_tier_at_record TEXT,
+  slot TEXT,
+  direction TEXT,
+  amount REAL,
+  ts INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_flow_steps_flow_seq
+  ON studio_flow_steps(flow_id, seq);
+
+CREATE INDEX IF NOT EXISTS idx_studio_flow_steps_session
+  ON studio_flow_steps(session_id);
+`;
+
 // S14-1: the corpus time axis. url_cache is INSERT OR REPLACE — one row per URL —
 // so every re-fetch destroys the body it replaces and no past state of any page is
 // reachable by any path. url_versions is the append-on-change side table holding the
@@ -503,6 +541,9 @@ export const MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_url_cache_content_hash ON url_cache(content_hash)');
     },
   },
+  // studio_sessions (the FK parent) is created by 008-studio-artifacts, which is earlier in this
+  // same array — so the FK resolves on a fresh DB in one pass.
+  { name: '013-studio-flows', sql: MIGRATION_013_STUDIO_FLOWS },
   { name: '013-url-versions', sql: MIGRATION_013_URL_VERSIONS },
 ];
 
