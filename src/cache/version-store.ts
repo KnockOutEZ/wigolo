@@ -12,6 +12,18 @@ export interface VersionRecord {
   httpStatus: number | null;
   /** Zone-less UTC "YYYY-MM-DD HH:MM:SS", the same shape url_cache.fetched_at uses. */
   fetchedAt: string;
+  /**
+   * K9. Whether THIS BODY was fetched with authenticated session material applied.
+   *
+   * Per-body rather than per-URL, and that is the point: `url_cache` holds one row per URL and replaces
+   * it, so a page re-fetched anonymously loses the authenticated label there. The body that WAS
+   * authenticated keeps its own row here, still marked — history stays labelled while the current row
+   * tells the truth about what it contains.
+   *
+   * The column shipped with `013-url-versions` and had **no writer** until now, which is the
+   * declared-with-no-producer shape this codebase has had to correct before.
+   */
+  originAuthenticated: boolean;
 }
 
 interface RetentionBounds {
@@ -162,8 +174,9 @@ export function recordVersion(db: Database.Database, record: VersionRecord): voi
       // occurrence's timestamp is not kept.
       db.prepare(
         `INSERT OR REPLACE INTO url_versions (
-           normalized_url, content_hash, markdown, title, http_status, fetched_at, byte_len
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           normalized_url, content_hash, markdown, title, http_status, fetched_at, byte_len,
+           origin_authenticated
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         record.normalizedUrl,
         record.contentHash,
@@ -172,6 +185,7 @@ export function recordVersion(db: Database.Database, record: VersionRecord): voi
         record.httpStatus,
         record.fetchedAt,
         byteLen,
+        record.originAuthenticated ? 1 : 0,
       );
 
       evict(db, record.normalizedUrl, bounds);

@@ -378,6 +378,11 @@ CREATE INDEX IF NOT EXISTS idx_url_versions_time
 //
 // fetched_at and id ride along so the newest-first pick that resolves ties is
 // served from the index instead of fetching rows to sort them.
+const MIGRATION_015_URL_CACHE_ORIGIN_AUTHENTICATED = `
+-- K9: the authenticated-origin marker. Applied by the guarded postStep below, because url_cache is
+-- created inline by initDatabase() and SQLite has no ADD COLUMN IF NOT EXISTS.
+`;
+
 const MIGRATION_014_URL_VERSIONS_HASH_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_url_versions_hash
   ON url_versions(content_hash, fetched_at, id);
@@ -566,6 +571,28 @@ export const MIGRATIONS: Migration[] = [
   { name: '013-studio-flows', sql: MIGRATION_013_STUDIO_FLOWS },
   { name: '013-url-versions', sql: MIGRATION_013_URL_VERSIONS },
   { name: '014-url-versions-hash-index', sql: MIGRATION_014_URL_VERSIONS_HASH_INDEX },
+  {
+    name: '015-url-cache-origin-authenticated',
+    sql: MIGRATION_015_URL_CACHE_ORIGIN_AUTHENTICATED,
+    /**
+     * K9. Adds the authenticated-origin marker to url_cache, skipping it when present — mirrors the
+     * 009 postStep. `url_cache` is created inline by initDatabase(), and the runner-only harness skips
+     * that, so an empty table_info means "no table yet" and the column arrives with the next ALTER
+     * rather than throwing here.
+     *
+     * A DEFAULT of 0 on existing rows is a claim this migration cannot verify — nothing on disk
+     * records how a row already present was fetched. It is the only available default and it reads as
+     * "not known to be authenticated", which is why the marker cannot be backfilled and had to land
+     * before a corpus ranker rather than after one.
+     */
+    postStep: (db) => {
+      const cols = db.pragma('table_info(url_cache)') as Array<{ name: string }>;
+      if (cols.length === 0) return;
+      if (!cols.some((c) => c.name === 'origin_authenticated')) {
+        db.exec('ALTER TABLE url_cache ADD COLUMN origin_authenticated INTEGER NOT NULL DEFAULT 0');
+      }
+    },
+  },
 ];
 
 function isReadOnlyError(err: unknown): boolean {

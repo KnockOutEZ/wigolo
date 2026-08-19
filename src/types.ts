@@ -288,6 +288,13 @@ export interface RawFetchResult {
    *   - 'reddit-api'        : opt-in Reddit OAuth API path (credential-gated)
    */
   method: 'http' | 'tls-impersonation' | 'browser' | 'reddit-api';
+  /**
+   * Whether authenticated session material was ACTUALLY applied to this fetch — not whether it was
+   * requested. `use_auth: true` with no stored session yields an empty option set and an anonymous
+   * fetch, so keying a privacy marker on the request would label ordinary public content as
+   * authenticated. Absent means anonymous.
+   */
+  authApplied?: boolean;
   headers: Record<string, string>;
   rawBuffer?: Buffer;
   screenshot?: string;
