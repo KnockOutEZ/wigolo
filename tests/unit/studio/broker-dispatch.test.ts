@@ -220,6 +220,51 @@ describe('studio-db-broker — createBrokerHandlers (dispatch, real in-memory DB
     expect(methods).toContain('listAudit');
   });
 
+  // ─── K34: the flow sidecar's writer, so the Electron surface can record at all ───
+  const flowStep = (over: Record<string, unknown> = {}) => ({
+    flowId: 'flw_abc', sessionId: 's1', seq: 1, auditSeq: 1, action: 'navigate',
+    pageUrl: 'https://ex.com/a', ts: 1_700_000_000, ...over,
+  });
+  const flowCount = (): number =>
+    (db().prepare('SELECT COUNT(*) AS n FROM studio_flow_steps').get() as { n: number }).n;
+
+  it('K34: recordFlowStep inserts a step the Electron host cannot insert itself', async () => {
+    // The host holds no DB handle — this child owns the native module — so without this method the app
+    // records nothing while the CLI surface records normally.
+    const r = await handlers.recordFlowStep({ step: flowStep() as never });
+    expect(r.ok).toBe(true);
+    expect(flowCount()).toBe(1);
+  });
+
+  it('K34: recordFlowStep refuses through the SAME allow-list as the CLI path, not a broker-local copy', async () => {
+    // The projection runs where the row is written. A disallowed key must be refused identically here;
+    // two allow-lists would mean the app and the CLI could store different things.
+    const r = await handlers.recordFlowStep({ step: flowStep({ smuggled: 'value' }) as never });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('disallowed_key');
+    expect(flowCount()).toBe(0);
+  });
+
+  it('K34: flowMaxSeq reports 0 for an unseen flow and MAX(seq) after appends, so a restart resumes', async () => {
+    // Without this the host would restart numbering at 1 and the unique (flow_id, seq) index would
+    // SILENTLY drop the colliding row — a flow missing its middle rather than a loud failure.
+    expect(await handlers.flowMaxSeq({ flowId: 'flw_none' })).toEqual({ seq: 0 });
+    await handlers.recordFlowStep({ step: flowStep({ seq: 1 }) as never });
+    await handlers.recordFlowStep({ step: flowStep({ seq: 2, auditSeq: 2 }) as never });
+    expect(await handlers.flowMaxSeq({ flowId: 'flw_abc' })).toEqual({ seq: 2 });
+    // Scoped per flow, not per database.
+    expect(await handlers.flowMaxSeq({ flowId: 'flw_other' })).toEqual({ seq: 0 });
+  });
+
+  it('K34: both new methods are reachable by the NAME the host calls them with', () => {
+    // `broker-client.ts` types `call` as `(method: string, params?: unknown)`, so a misspelled method
+    // name compiles clean and fails only at runtime — the same shape as the studio tool name-guard that
+    // 404s with a green typecheck. Asserted on the literal strings the host passes.
+    const methods = Object.keys(handlers);
+    expect(methods).toContain('recordFlowStep');
+    expect(methods).toContain('flowMaxSeq');
+  });
+
   // ─── P6 F3: cross-tab synthesis (brief-shaping over the local corpus, no network) ───
   it('P6 F3: synthesizeSession shapes captured clips into a brief + persists a qa artifact', async () => {
     // Two clips across the session (observe stamps the epoch so the capture TOCTOU passes).

@@ -21,6 +21,11 @@ export function makeFakeBroker(
     listComments: () => [],
     findSimilar: () => ({ results: [], method: 'fts5' }),
     persistAudit: () => ({ seq: 1 }),
+    // K34 — the flow sidecar's broker seam. Present here because the host now calls both on every
+    // recordable act, and an absent handler makes this fake THROW, which the recorder then swallows: the
+    // host tests would stay green while the app recorded nothing. That is the exact failure K34 is.
+    flowMaxSeq: () => ({ seq: 0 }),
+    recordFlowStep: (p: unknown) => ({ ok: true, step: (p as { step: unknown }).step }),
     listAudit: () => [],
     synthesizeSession: () => ({ empty: true }),
   };
