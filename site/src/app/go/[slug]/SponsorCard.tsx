@@ -25,8 +25,8 @@ export default function SponsorCard({
           Continue to {sponsor.name} →
         </a>
         <p className={styles.note}>
-          You&rsquo;re being forwarded from a wigolo sponsor link. We count the
-          click so we can tell our sponsors what their support reached — no
+          You&rsquo;re being forwarded from a wigolo sponsor link. We count
+          clicks on these links to measure how much reach a placement gets — no
           cookies, no tracking script, nothing stored about you.
         </p>
       </div>

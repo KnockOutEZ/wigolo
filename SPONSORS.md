@@ -47,8 +47,8 @@ time to answer issues from people running wigolo in production.
 - A logo and a one-line description in the **README sponsors section**.
 - The same placement on the **[project website](https://knockoutez.github.io/wigolo/)**
   and on this page.
-- A link on every placement, and reporting on what it did — see
-  [Reporting](#reporting) below.
+- A link on every placement, with its reach measured — figures available on
+  request, see [Measurement](#measurement) below.
 
 ### What a sponsor does not get
 
@@ -69,22 +69,23 @@ These are the project's standing terms, and they aren't negotiable.
 Sponsorship amounts and duration are worked out per conversation — reach out and
 we'll find something that fits.
 
-## Reporting
+## Measurement
 
-Sponsors get numbers, and the way they're collected is public.
+Sponsor placements are measured, so there are real figures behind them rather
+than a vague claim of exposure. The method is public here; the numbers are
+shared on request.
 
 Every sponsor link on every surface points at a **`/go/<slug>/` link on the
 wigolo site** rather than straight at the sponsor. That hop counts the click,
 then forwards to the sponsor's own URL with a `utm_content` tag naming the
-placement it came from, so each placement is separable in both my numbers and
-the sponsor's own analytics.
+placement it came from, so each placement can be told apart.
 
-What this means in practice:
+What is measured:
 
-- **Clicks, by placement, over time** — from the project's own counter.
+- **Clicks, by placement, over time**, from the project's own counter.
 - **Reach, as a proxy for impressions** — repository traffic and the site's
   pageviews. README impressions can't be counted accurately, because GitHub
-  proxies and caches images; repo views are the stand-in, and they're reported
+  proxies and caches images; repo views are the stand-in, and they're described
   as exactly that.
 - **What is never collected** — no cookies, no third-party tracking script, no
   local storage, and nothing stored about the individual visitor. The counter
