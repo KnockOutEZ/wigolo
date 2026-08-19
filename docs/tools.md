@@ -107,7 +107,10 @@ Query the persistent local knowledge cache — every page wigolo has already see
 | `stats` | boolean | Totals: URL count, size, date range. |
 | `clear` | boolean | Delete matching entries, including the semantic-search vectors built from them (requires at least one filter). |
 | `check_changes` | boolean | Re-fetch matching URLs and report changed/unchanged with diff summaries. Capped at `limit` entries (default 100, hard ceiling 200). |
-| `limit` | number | Maximum rows returned. Default 5 (100 for `check_changes`, which is clamped to a ceiling of 200). |
+| `url` | string | The page to read history for. Required by `at` and `versions`. |
+| `at` | string | Point-in-time read: the body `url` served at or before this moment. |
+| `versions` | boolean | List what is retained for `url`, newest first, without page bodies. |
+| `limit` | number | Maximum rows returned. Default 5 (100 for `check_changes`, clamped to a ceiling of 200; 20 for `versions`, clamped to a ceiling of 200). |
 | `max_tokens_out` | number | Token-budget cap on the returned page bodies. Default 16000. |
 
 `limit` caps rows and is applied first; `max_tokens_out` then caps the total bytes of whatever rows survived. Both have defaults, so a cache check has a bounded cost even against a large cache.
@@ -119,6 +122,18 @@ Trimmed bodies end on a markdown boundary and carry a visible truncation marker.
 `check_changes` re-fetches every entry it reports on, so its row cap bounds live network requests as well as output. `limit` raises the count up to a hard ceiling of 200 — a scoped `url_pattern` points every one of those requests at the same host, so the ceiling is there to keep a single call from turning into a burst against one site. A `limit` above the ceiling is reduced rather than silently honoured.
 
 When more entries matched than were checked, the response carries `changes_truncation` with `matched`, `checked`, a hint, and `limit_clamped_from` when the ceiling was what reduced the work. To continue past it, narrow the filter with `query` / `url_pattern` / `since` and call again.
+
+### Reading a page's history
+
+`url` + `at` returns the body that page served at or before a moment, as `version` (with `observed_at`, `content_hash`, `markdown`). It returns the newest version at or before the timestamp — **never a later one, and never the current page**. When nothing that old is retained you get `version_not_retained` instead of a body, so a past-time question is never answered with the present.
+
+`at` accepts an ISO 8601 instant (`2026-08-18T12:00:00Z`), a value with a UTC offset, `YYYY-MM-DD`, or an offset-less `2026-08-18T12:00:00` / `2026-08-18 12:00:00` — an offset-less value is read as **UTC**, not as the host's local zone. Other formats are refused with an error rather than guessed at, because guessing means silently answering about the wrong instant.
+
+`url` + `versions: true` lists what is retained, newest first, with no page bodies. Each entry's `content_hash` works as `diff`'s `old.content_hash`.
+
+**What history does not promise.** Retention is bounded and sweeps **oldest-first across every URL**, so a busy site's churn can evict a quiet page's only retained version. A gap between entries is not evidence the page held still, and a version listed today may be gone later — every `versions` response carries a `note` saying so. A body that returns to a form it served before is re-timed onto its existing entry rather than added, so the entry count is a count of distinct retained bodies, **not a count of changes**.
+
+`at` and `versions` read the past, so they cannot be combined with `check_changes`, `stats` or `clear`, which act on the present — the combination is refused rather than served with the time argument silently dropped.
 
 ```json
 { "query": "connection pool exhaustion", "mode": "hybrid", "limit": 10 }
