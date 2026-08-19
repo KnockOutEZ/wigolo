@@ -1,4 +1,4 @@
-export type LLMProvider = 'anthropic' | 'openai' | 'gemini' | 'groq';
+export type LLMProvider = 'anthropic' | 'openai' | 'gemini' | 'groq' | 'minimax';
 
 export interface LLMExtractResult {
   values: Record<string, unknown>;
