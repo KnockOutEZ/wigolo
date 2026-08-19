@@ -354,7 +354,7 @@ describe('createActHandler — audit log (Phase 6b: every agent action is record
     const audit = new SessionAuditLog(fixedClock);
     const act = createActHandler({ ...base, audit, browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [3]), grant: denyGrant });
     await act({ action: 'navigate', url: 'https://example.com/' });
-    expect(audit.replay()).toEqual([
+    expect(audit.entries()).toEqual([
       { seq: 1, ts: 1000, action: 'navigate', epoch: 3, target: { url: 'https://example.com/' }, outcome: { ok: true } },
     ]);
   });
@@ -363,7 +363,7 @@ describe('createActHandler — audit log (Phase 6b: every agent action is record
     const audit = new SessionAuditLog(fixedClock);
     const act = createActHandler({ ...base, audit, browser: makeFakeBrowser().browser, controlToken: makeFakeToken('human', [7]), grant: denyGrant });
     await act({ action: 'navigate', url: 'https://example.com/' });
-    expect(audit.replay()).toEqual([
+    expect(audit.entries()).toEqual([
       { seq: 1, ts: 1000, action: 'navigate', epoch: 7, target: { url: 'https://example.com/' }, outcome: { ok: false, error_reason: 'not_holder' } },
     ]);
   });
@@ -375,7 +375,7 @@ describe('createActHandler — audit log (Phase 6b: every agent action is record
       resolve: fixedResolve({ error: 'element_occluded' }), channel: recordingChannel().channel, audit,
     });
     await act({ action: 'click', ref: 'e9' });
-    expect(audit.replay()).toEqual([
+    expect(audit.entries()).toEqual([
       { seq: 1, ts: 1000, action: 'click', epoch: 2, target: { ref: 'e9' }, outcome: { ok: false, error_reason: 'element_occluded' } },
     ]);
   });
@@ -388,7 +388,7 @@ describe('createActHandler — audit log (Phase 6b: every agent action is record
       resolve: fixedResolve({ backendNodeId: 7, center: { x: 0, y: 0 } }), channel: ch.channel, audit,
     });
     await act({ action: 'type', ref: 'e1', text: 'ab' });
-    expect(audit.replay()).toEqual([
+    expect(audit.entries()).toEqual([
       { seq: 1, ts: 1000, action: 'type', epoch: 5, target: { ref: 'e1' }, outcome: { ok: false, error_reason: 'aborted_reclaimed', charsLanded: 1 } },
     ]);
   });
@@ -397,7 +397,7 @@ describe('createActHandler — audit log (Phase 6b: every agent action is record
     const audit = new SessionAuditLog(fixedClock);
     const act = createActHandler({ ...base, audit, browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent', [1]), grant: allowGrant });
     await act({ action: 'frobnicate' } as unknown as { action: 'navigate' });
-    expect(audit.replay()).toEqual([
+    expect(audit.entries()).toEqual([
       { seq: 1, ts: 1000, action: 'frobnicate', epoch: 1, outcome: { ok: false, error_reason: 'action_not_supported' } },
     ]);
   });
@@ -412,7 +412,7 @@ describe('createActHandler — audit log (Phase 6b: every agent action is record
     await act({ action: 'scroll', direction: 'down', amount: 600 });
     await act({ action: 'click', ref: 'e1' });
     await act({ action: 'type', ref: 'e2', text: 'hi' });
-    expect(audit.replay().map((e) => ({ seq: e.seq, action: e.action, outcome: e.outcome }))).toEqual([
+    expect(audit.entries().map((e) => ({ seq: e.seq, action: e.action, outcome: e.outcome }))).toEqual([
       { seq: 1, action: 'navigate', outcome: { ok: true } },
       { seq: 2, action: 'scroll', outcome: { ok: true } },
       { seq: 3, action: 'click', outcome: { ok: true } },
@@ -514,7 +514,7 @@ describe('createActHandler — S7 pre-grant authorization gate', () => {
       resolve: resolvedAt(), channel: recordingChannel().channel, currentUrl: moneyUrl,
       preGrant: grantStore({ domain: 'shop.example', actionType: 'click', riskTier: 'money' }), park: () => {}, audit: grantedAudit,
     })({ action: 'click', ref: 'e9' });
-    expect(grantedAudit.replay()).toEqual([
+    expect(grantedAudit.entries()).toEqual([
       { seq: 1, ts: 1000, action: 'click', epoch: 5, target: { ref: 'e9' }, outcome: { ok: true }, risk: 'money', approval: 'pre-grant' },
     ]);
 
@@ -524,7 +524,7 @@ describe('createActHandler — S7 pre-grant authorization gate', () => {
       resolve: resolvedAt(), channel: recordingChannel().channel, currentUrl: moneyUrl,
       preGrant: new PreGrantStore(), park: () => {}, audit: parkedAudit,
     })({ action: 'click', ref: 'e9' });
-    expect(parkedAudit.replay()).toEqual([
+    expect(parkedAudit.entries()).toEqual([
       { seq: 1, ts: 1000, action: 'click', epoch: 5, target: { ref: 'e9' }, outcome: { ok: false, error_reason: 'parked_for_review' }, risk: 'money', approval: 'parked' },
     ]);
   });
@@ -806,7 +806,7 @@ describe('audit persistence — guard pins through the act choke (P6-b)', () => 
     const agent = createActHandler({ browser: makeFakeBrowser().browser, controlToken: makeFakeToken('agent'), grant: allowGrant, ...base, audit });
     await agent({ action: 'navigate', url: 'https://y/' }); // success
     // Read from a FRESH log — proves all three durably persisted, in order.
-    const persisted = new SessionAuditLog({ db, sessionId: 'sess-C' }).replay();
+    const persisted = new SessionAuditLog({ db, sessionId: 'sess-C' }).entries();
     expect(persisted.map((e) => e.action)).toEqual(['navigate', 'frobnicate', 'navigate']);
     expect(persisted.map((e) => e.outcome.ok)).toEqual([false, false, true]);
     db.close();
@@ -829,7 +829,7 @@ describe('audit persistence — guard pins through the act choke (P6-b)', () => 
     const r = await handler({ action: 'type', ref: 'e1', text: SECRET });
     expect(r).toMatchObject({ ok: true, action: 'type', charsLanded: SECRET.length });
     // The secret is in NEITHER the hydrated entries NOR the raw columns; only charsLanded survives.
-    const replayed = new SessionAuditLog({ db, sessionId: 'sess-R' }).replay();
+    const replayed = new SessionAuditLog({ db, sessionId: 'sess-R' }).entries();
     expect(replayed).toHaveLength(1);
     expect(JSON.stringify(replayed)).not.toContain(SECRET);
     expect(replayed[0].outcome).toMatchObject({ ok: true, charsLanded: SECRET.length });

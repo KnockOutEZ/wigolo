@@ -54,7 +54,7 @@ describe('pruneStudioAudit — by-age prune of the forensic audit log', () => {
     const fresh = new SessionAuditLog({ db, sessionId: 'sess-1', now: () => 9000 });
     fresh.record({ action: 'scroll', epoch: 2, outcome: { ok: true } });
     expect(auditCount(db, 'sess-1')).toBe(1);
-    expect(fresh.replay().map((e) => e.action)).toEqual(['scroll']);
+    expect(fresh.entries().map((e) => e.action)).toEqual(['scroll']);
     db.close();
   });
 

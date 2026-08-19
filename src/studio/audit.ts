@@ -3,10 +3,13 @@
  *
  * Records each studio_act the agent attempts together with its resolved outcome, for the
  * two jobs the studio's trust story needs: forensics (what did the agent do, did it
- * succeed or get refused?) and replay (the Phase-7 timeline IS this log, played in order).
+ * succeed or get refused?) and the DISPLAY timeline (this log, shown in order).
+ *
+ * This log NEVER re-executes anything. The vocabulary for re-execution is `flow`
+ * (src/studio/flow/), and this module deliberately does not use the word for its reader.
  *
  * Append-only by construction: there is no mutate / remove / clear method, every recorded
- * entry is frozen (target + outcome included), and `replay()` hands out a fresh array — so
+ * entry is frozen (target + outcome included), and `entries()` hands out a fresh array — so
  * no consumer can rewrite session history. In-memory per session for now; Phase 4 owns the
  * persistent schema/migration.
  *
@@ -43,7 +46,7 @@ export interface AuditRecordInput {
 
 /** A stamped, immutable audit entry. */
 export interface AuditEntry extends AuditRecordInput {
-  /** Host-assigned monotonic sequence (1-based) — the replay order. */
+  /** Host-assigned monotonic sequence (1-based) — the stable display order. */
   seq: number;
   /** Record-time timestamp from the injected clock. */
   ts: number;
@@ -129,7 +132,7 @@ export function listSessionAudit(db: AuditDb, sessionId: string, limit: number, 
 }
 
 export class SessionAuditLog {
-  private readonly entries: AuditEntry[] = [];
+  private readonly log: AuditEntry[] = [];
   private seq = 0;
   private readonly now: () => number;
   private readonly db?: AuditDb;
@@ -151,7 +154,7 @@ export class SessionAuditLog {
        FROM studio_audit WHERE session_id = ? ORDER BY seq ASC`,
     ).all(this.sessionId) as AuditRow[];
     for (const r of rows) {
-      this.entries.push(rowToEntry(r));
+      this.log.push(rowToEntry(r));
       if (r.seq > this.seq) this.seq = r.seq;
     }
   }
@@ -194,7 +197,7 @@ export class SessionAuditLog {
       seq: ++this.seq,
       ts: this.now(),
     });
-    this.entries.push(entry);
+    this.log.push(entry);
     if (this.db && this.sessionId) this.persist(entry);
     // 7d S2: notify-only — hand the SAME deeply-frozen entry to each subscriber (the host wires this to
     // hub.broadcast({t:'audit', <entry>}) for the live Phase-7 timeline). Mirrors controlToken.onChange:
@@ -208,13 +211,22 @@ export class SessionAuditLog {
     this.recordHandlers.push(cb);
   }
 
-  /** The full ordered session sequence — a fresh array of frozen entries (append-only: tampering the result cannot corrupt the log). */
-  replay(): readonly AuditEntry[] {
-    return [...this.entries];
+  /**
+   * The full ordered session sequence — a fresh array of frozen entries (append-only: tampering the
+   * result cannot corrupt the log).
+   *
+   * NAMED `entries`, NOT `replay`. This method hands out rows for DISPLAY and it has never
+   * re-executed anything; meanwhile "replay the clearance" elsewhere in this tree means reusing a
+   * cookie. A flow runner that re-executes a recorded sequence is now being built, and shipping it
+   * alongside a `replay()` that deliberately does not re-execute would put the two in one grep, in
+   * the same directory, meaning opposite things. The re-execution vocabulary is `flow`.
+   */
+  entries(): readonly AuditEntry[] {
+    return [...this.log];
   }
 
   /** Number of recorded actions. */
   get size(): number {
-    return this.entries.length;
+    return this.log.length;
   }
 }

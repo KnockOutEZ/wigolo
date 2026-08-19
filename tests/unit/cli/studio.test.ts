@@ -168,7 +168,7 @@ describe('cli/studio startStudioHost', () => {
       const r = await host.act({ action: 'navigate', url: 'https://example.com/' });
       expect(r).toMatchObject({ ok: true, action: 'navigate' });
       expect(host.audit.size).toBe(1); // recorded — the host path never silently drops an action from the trail
-      expect(host.audit.replay()[0]).toMatchObject({ action: 'navigate', outcome: { ok: true } });
+      expect(host.audit.entries()[0]).toMatchObject({ action: 'navigate', outcome: { ok: true } });
     } finally {
       await host.daemon.stop();
     }

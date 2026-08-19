@@ -32,6 +32,6 @@ describe('wigolo/studio subpath resolves the built core', () => {
     const log = new studio.SessionAuditLog({});
     const e = log.record({ action: 'navigate', epoch: 1, outcome: { ok: true } });
     expect(typeof e.seq).toBe('number');
-    expect(log.replay()).toHaveLength(1);
+    expect(log.entries()).toHaveLength(1);
   });
 });

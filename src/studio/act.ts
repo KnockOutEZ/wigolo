@@ -460,7 +460,7 @@ export function createActHandler(
 
   // Every agent action + its resolved outcome lands in the per-session APPEND-ONLY audit
   // log (Phase 6b) — successes, refusals, AND unknown verbs alike, never silently dropped —
-  // for trust + the Phase-7 replay timeline. Phase 6c adds the gating decision (risk tier +
+  // for trust + the Phase-7 DISPLAY timeline. Phase 6c adds the gating decision (risk tier +
   // approval) on a gated action, recorded through this SAME single choke point so every gate
   // decision is logged from commit one. The optional-chain leaves the args unevaluated when no
   // log is wired (the unit tests that omit it).

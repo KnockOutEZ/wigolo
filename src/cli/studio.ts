@@ -849,11 +849,11 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // post-hello backfill). The frozen entry is broadcast verbatim; the human read surface renders it inert.
   auditLog.onRecord((entry) => hub.broadcast(session.id, { t: 'audit', ...entry }));
   // 7d S3: the post-hello audit backfill — a connecting human client hydrates its timeline from the
-  // most-recent AUDIT_SNAPSHOT_CAP recorded actions (decision #8). replay() hands out the frozen entries in
+  // most-recent AUDIT_SNAPSHOT_CAP recorded actions (decision #8). entries() hands out the frozen entries in
   // append order; slice(-N) keeps the tail (the most recent), so a fresh client sees the latest history.
   const auditSnapshot = (): { t: 'audit_snapshot'; entries: AuditEntry[] } => ({
     t: 'audit_snapshot',
-    entries: auditLog.replay().slice(-AUDIT_SNAPSHOT_CAP),
+    entries: auditLog.entries().slice(-AUDIT_SNAPSHOT_CAP),
   });
   // 7b-notes S2: the post-hello comment backfill — a connecting human client hydrates its comments panel from
   // this session's stored comments (most-recent N), session-scoped (listSessionComments' WHERE session_id is
