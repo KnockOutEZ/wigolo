@@ -1,0 +1,195 @@
+{
+  "writtenAt": "2026-08-19T13:53:42.526Z",
+  "commit": "27becaaa",
+  "note": "S14-0 instrument revival; synthetic corpus, 45 judged queries",
+  "queries": 45,
+  "summary": {
+    "meanReciprocalRank": 0.674074074074074,
+    "averageNdcg": 0.7632715421242477,
+    "averageNdcgAt10": 0.7632715421242477,
+    "averagePrecisionAt5": 0.24444444444444435,
+    "queryCoverage": 1
+  },
+  "perQuery": {
+    "docs-001": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "docs-002": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714574
+    },
+    "docs-003": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "docs-004": {
+      "mrr": 0.3333333333333333,
+      "ndcg": 0.5
+    },
+    "docs-005": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "docs-006": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714574
+    },
+    "docs-007": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "docs-008": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "error-001": {
+      "mrr": 0.5,
+      "ndcg": 0.6787622294601761
+    },
+    "error-002": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "error-003": {
+      "mrr": 0.3333333333333333,
+      "ndcg": 0.5
+    },
+    "error-004": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714574
+    },
+    "error-005": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "error-006": {
+      "mrr": 0.25,
+      "ndcg": 0.43067655807339306
+    },
+    "conceptual-001": {
+      "mrr": 0.3333333333333333,
+      "ndcg": 0.5
+    },
+    "conceptual-002": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "conceptual-003": {
+      "mrr": 0.5,
+      "ndcg": 0.6787622294601761
+    },
+    "conceptual-004": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "conceptual-005": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714574
+    },
+    "code-001": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "code-002": {
+      "mrr": 0.3333333333333333,
+      "ndcg": 0.5540663910176149
+    },
+    "code-003": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "code-004": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714574
+    },
+    "code-005": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "code-006": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714574
+    },
+    "api-001": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "api-002": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714574
+    },
+    "api-003": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "api-004": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "config-001": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714574
+    },
+    "config-002": {
+      "mrr": 0.3333333333333333,
+      "ndcg": 0.5
+    },
+    "config-003": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714574
+    },
+    "security-001": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "security-002": {
+      "mrr": 0.5,
+      "ndcg": 0.6787622294601761
+    },
+    "security-003": {
+      "mrr": 0.25,
+      "ndcg": 0.43067655807339306
+    },
+    "debug-001": {
+      "mrr": 0.3333333333333333,
+      "ndcg": 0.5
+    },
+    "debug-002": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714575
+    },
+    "tutorial-001": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "tutorial-002": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714574
+    },
+    "comparison-001": {
+      "mrr": 0.5,
+      "ndcg": 0.6934264036172708
+    },
+    "comparison-002": {
+      "mrr": 0.3333333333333333,
+      "ndcg": 0.5
+    },
+    "multi-query-001": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714575
+    },
+    "multi-query-002": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "recent-001": {
+      "mrr": 1,
+      "ndcg": 1
+    },
+    "recent-002": {
+      "mrr": 0.5,
+      "ndcg": 0.6309297535714574
+    }
+  }
+}
