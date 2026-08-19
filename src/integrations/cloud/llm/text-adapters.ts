@@ -165,6 +165,39 @@ export async function callGroqText(opts: TextCallOpts, apiKey: string): Promise<
   };
 }
 
+export async function callOrcaRouterText(opts: TextCallOpts, apiKey: string): Promise<TextCallResult> {
+  const { default: OpenAI } = await import('openai');
+  const client = new OpenAI({ apiKey, baseURL: 'https://api.orcarouter.ai/v1' });
+  const start = Date.now();
+  const content = opts.image
+    ? [
+        { type: 'text' as const, text: opts.prompt },
+        {
+          type: 'image_url' as const,
+          image_url: { url: `data:${opts.image.mediaType};base64,${opts.image.data}` },
+        },
+      ]
+    : opts.prompt;
+  const response = await client.chat.completions.create(
+    {
+      model: opts.model,
+      max_completion_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+      messages: [{ role: 'user', content }],
+    },
+    { signal: opts.signal },
+  );
+  const text = response.choices?.[0]?.message?.content;
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    throw new Error('orcarouter: empty content in response');
+  }
+  return {
+    text,
+    provider: 'orcarouter',
+    model: response.model ?? opts.model,
+    latencyMs: Date.now() - start,
+  };
+}
+
 export const TEXT_ADAPTERS: Record<
   LLMProvider,
   (opts: TextCallOpts, apiKey: string) => Promise<TextCallResult>
@@ -173,4 +206,5 @@ export const TEXT_ADAPTERS: Record<
   openai: callOpenAIText,
   gemini: callGeminiText,
   groq: callGroqText,
+  orcarouter: callOrcaRouterText,
 };

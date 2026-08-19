@@ -69,7 +69,7 @@ export WIGOLO_LLM_PROVIDER=gemini
 export GEMINI_API_KEY=<free-key>      # grab one at aistudio.google.com/apikey — the free tier is plenty
 ```
 
-Any provider works (`anthropic` · `openai` · `groq`), or stay fully local and keyless with `WIGOLO_LLM_PROVIDER=ollama` (or any OpenAI-compatible URL). Set it in your shell or your agent's MCP `env` block. Providers, models, and the keyless local-model ladder are in the [configuration guide](docs/configuration.md).
+Any provider works (`anthropic` · `openai` · `groq` · `orcarouter`), or stay fully local and keyless with `WIGOLO_LLM_PROVIDER=ollama` (or any OpenAI-compatible URL). Set it in your shell or your agent's MCP `env` block. Providers, models, and the keyless local-model ladder are in the [configuration guide](docs/configuration.md).
 
 ## What your agent gets back
 
@@ -321,7 +321,7 @@ A clean install works out of the box. Three settings raise output quality:
 
 ```bash
 # 1. Synthesis — the biggest lever (research / agent / search-answer write real prose)
-export WIGOLO_LLM_PROVIDER=gemini                   # or anthropic / openai / groq / ollama (keyless)
+export WIGOLO_LLM_PROVIDER=gemini                   # or anthropic / openai / groq / orcarouter / ollama (keyless)
 export GEMINI_API_KEY=<your-key>
 
 # 2. Wider retrieval funnel

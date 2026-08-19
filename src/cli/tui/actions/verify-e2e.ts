@@ -412,7 +412,7 @@ function buildDefaultExtractProbe(): () => Promise<CapabilityResult> {
 
 function buildDefaultSynthesisProbe(): () => Promise<CapabilityResult> {
   const SYNTHESIS_SKIP_DETAIL =
-    'no provider key configured — add a provider key via `wigolo config` (or set ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY) to enable synthesis';
+    'no provider key configured — add a provider key via `wigolo config` (or set ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / ORCAROUTER_API_KEY) to enable synthesis';
 
   return async (): Promise<CapabilityResult> => {
     // Resolve a provider key through SP4's secure key store (keychain →

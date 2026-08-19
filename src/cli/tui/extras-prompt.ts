@@ -9,6 +9,7 @@ const PROVIDER_CHOICES: ReadonlyArray<{ name: string; value: LLMProvider }> = [
   { name: 'Anthropic (Claude)', value: 'anthropic' },
   { name: 'OpenAI (GPT)', value: 'openai' },
   { name: 'Google Gemini', value: 'gemini' },
+  { name: 'OrcaRouter', value: 'orcarouter' },
 ];
 
 // Index signature lets us pass an ExtrasChoices straight to saveInitConfig
