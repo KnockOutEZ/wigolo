@@ -72,6 +72,7 @@
     "tests/unit/server/search-response.test.ts",
     "tests/unit/cache/export-corpus.test.ts",
     "tests/unit/cli/export-command.test.ts",
+    "tests/unit/cli/flow-command.test.ts",
     "tests/unit/daemon/rest-untrusted-representation.test.ts",
     "tests/unit/daemon/rest-table-row-keys.test.ts",
     "tests/unit/daemon/rest-compat-untrusted.test.ts",

@@ -354,6 +354,39 @@ export function listFlowSteps(db: FlowDb, flowId: string): FlowStep[] {
   return rows.map(rowToStep);
 }
 
+/** One recorded flow, summarised for a listing — no step bodies, so nothing page-derived is read. */
+export interface FlowSummary {
+  flowId: string;
+  sessionId: string;
+  steps: number;
+  firstTs: number;
+  lastTs: number;
+}
+
+/**
+ * Every recorded flow, newest activity first.
+ *
+ * Aggregated in SQL rather than by reading every step: a listing needs counts and timestamps, and
+ * loading step bodies to count them would pull target locators through a path that has no use for them.
+ */
+export function listFlows(db: FlowDb): FlowSummary[] {
+  const rows = db
+    .prepare(
+      `SELECT flow_id, session_id, COUNT(*) AS n, MIN(ts) AS first_ts, MAX(ts) AS last_ts
+         FROM studio_flow_steps
+        GROUP BY flow_id, session_id
+        ORDER BY last_ts DESC, flow_id ASC`,
+    )
+    .all() as Array<{ flow_id: string; session_id: string; n: number; first_ts: number; last_ts: number }>;
+  return rows.map((r) => ({
+    flowId: r.flow_id,
+    sessionId: r.session_id,
+    steps: r.n,
+    firstTs: r.first_ts,
+    lastTs: r.last_ts,
+  }));
+}
+
 /** Every flow id recorded for a session (one today; the query does not assume it). */
 export function listSessionFlowIds(db: FlowDb, sessionId: string): string[] {
   const rows = db
