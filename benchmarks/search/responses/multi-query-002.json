@@ -1,0 +1,77 @@
+{
+  "queryId": "multi-query-002",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "Tutorial: Getting started with generics — go.dev",
+      "url": "https://go.dev/doc/tutorial/generics",
+      "snippet": "Reference material for go generics type constraints. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "go generics type constraints notes (2)",
+      "url": "https://notes.example.com/go-generics-type-constraints/2",
+      "snippet": "Unjudged filler for go generics type constraints. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "go generics type constraints notes (3)",
+      "url": "https://blog.example.org/go-generics-type-constraints/3",
+      "snippet": "Unjudged filler for go generics type constraints. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "go generics type constraints notes (4)",
+      "url": "https://forum.example.net/go-generics-type-constraints/4",
+      "snippet": "Unjudged filler for go generics type constraints. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "go generics type constraints notes (5)",
+      "url": "https://wiki.example.io/go-generics-type-constraints/5",
+      "snippet": "Unjudged filler for go generics type constraints. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "go generics type constraints notes (6)",
+      "url": "https://example.dev/go-generics-type-constraints/6",
+      "snippet": "Unjudged filler for go generics type constraints. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "go generics type constraints notes (7)",
+      "url": "https://notes.example.com/go-generics-type-constraints/7",
+      "snippet": "Unjudged filler for go generics type constraints. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "go generics type constraints notes (8)",
+      "url": "https://blog.example.org/go-generics-type-constraints/8",
+      "snippet": "Unjudged filler for go generics type constraints. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "go generics type constraints notes (9)",
+      "url": "https://forum.example.net/go-generics-type-constraints/9",
+      "snippet": "Unjudged filler for go generics type constraints. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "go generics type constraints notes (10)",
+      "url": "https://wiki.example.io/go-generics-type-constraints/10",
+      "snippet": "Unjudged filler for go generics type constraints. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

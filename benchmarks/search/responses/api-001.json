@@ -1,0 +1,77 @@
+{
+  "queryId": "api-001",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "Configuring Vite — vite.dev",
+      "url": "https://vite.dev/config/",
+      "snippet": "Reference material for vite define config plugins. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "vite define config plugins notes (2)",
+      "url": "https://notes.example.com/vite-define-config-plugins/2",
+      "snippet": "Unjudged filler for vite define config plugins. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "vite define config plugins notes (3)",
+      "url": "https://blog.example.org/vite-define-config-plugins/3",
+      "snippet": "Unjudged filler for vite define config plugins. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "vite define config plugins notes (4)",
+      "url": "https://forum.example.net/vite-define-config-plugins/4",
+      "snippet": "Unjudged filler for vite define config plugins. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "vite define config plugins notes (5)",
+      "url": "https://wiki.example.io/vite-define-config-plugins/5",
+      "snippet": "Unjudged filler for vite define config plugins. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "vite define config plugins notes (6)",
+      "url": "https://example.dev/vite-define-config-plugins/6",
+      "snippet": "Unjudged filler for vite define config plugins. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "vite define config plugins notes (7)",
+      "url": "https://notes.example.com/vite-define-config-plugins/7",
+      "snippet": "Unjudged filler for vite define config plugins. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "vite define config plugins notes (8)",
+      "url": "https://blog.example.org/vite-define-config-plugins/8",
+      "snippet": "Unjudged filler for vite define config plugins. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "vite define config plugins notes (9)",
+      "url": "https://forum.example.net/vite-define-config-plugins/9",
+      "snippet": "Unjudged filler for vite define config plugins. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "vite define config plugins notes (10)",
+      "url": "https://wiki.example.io/vite-define-config-plugins/10",
+      "snippet": "Unjudged filler for vite define config plugins. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "queryId": "code-006",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "rust iterator collect into hashmap notes (1)",
+      "url": "https://example.dev/rust-iterator-collect-into-hashmap/1",
+      "snippet": "Unjudged filler for rust iterator collect into hashmap. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "Iterator — doc.rust-lang.org",
+      "url": "https://doc.rust-lang.org/std/iter/trait.Iterator.html",
+      "snippet": "Reference material for rust iterator collect into hashmap. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "rust iterator collect into hashmap notes (3)",
+      "url": "https://blog.example.org/rust-iterator-collect-into-hashmap/3",
+      "snippet": "Unjudged filler for rust iterator collect into hashmap. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "rust iterator collect into hashmap notes (4)",
+      "url": "https://forum.example.net/rust-iterator-collect-into-hashmap/4",
+      "snippet": "Unjudged filler for rust iterator collect into hashmap. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "rust iterator collect into hashmap notes (5)",
+      "url": "https://wiki.example.io/rust-iterator-collect-into-hashmap/5",
+      "snippet": "Unjudged filler for rust iterator collect into hashmap. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "rust iterator collect into hashmap notes (6)",
+      "url": "https://example.dev/rust-iterator-collect-into-hashmap/6",
+      "snippet": "Unjudged filler for rust iterator collect into hashmap. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "rust iterator collect into hashmap notes (7)",
+      "url": "https://notes.example.com/rust-iterator-collect-into-hashmap/7",
+      "snippet": "Unjudged filler for rust iterator collect into hashmap. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "rust iterator collect into hashmap notes (8)",
+      "url": "https://blog.example.org/rust-iterator-collect-into-hashmap/8",
+      "snippet": "Unjudged filler for rust iterator collect into hashmap. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "rust iterator collect into hashmap notes (9)",
+      "url": "https://forum.example.net/rust-iterator-collect-into-hashmap/9",
+      "snippet": "Unjudged filler for rust iterator collect into hashmap. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "rust iterator collect into hashmap notes (10)",
+      "url": "https://wiki.example.io/rust-iterator-collect-into-hashmap/10",
+      "snippet": "Unjudged filler for rust iterator collect into hashmap. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

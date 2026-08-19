@@ -1,0 +1,77 @@
+{
+  "queryId": "error-003",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "too many SQL variables notes (1)",
+      "url": "https://example.dev/too-many-sql-variables/1",
+      "snippet": "Unjudged filler for too many SQL variables. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "too many SQL variables notes (2)",
+      "url": "https://notes.example.com/too-many-sql-variables/2",
+      "snippet": "Unjudged filler for too many SQL variables. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "Limits In SQLite — www.sqlite.org",
+      "url": "https://www.sqlite.org/limits.html",
+      "snippet": "Reference material for too many SQL variables. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "too many SQL variables notes (4)",
+      "url": "https://forum.example.net/too-many-sql-variables/4",
+      "snippet": "Unjudged filler for too many SQL variables. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "too many SQL variables notes (5)",
+      "url": "https://wiki.example.io/too-many-sql-variables/5",
+      "snippet": "Unjudged filler for too many SQL variables. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "too many SQL variables notes (6)",
+      "url": "https://example.dev/too-many-sql-variables/6",
+      "snippet": "Unjudged filler for too many SQL variables. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "too many SQL variables notes (7)",
+      "url": "https://notes.example.com/too-many-sql-variables/7",
+      "snippet": "Unjudged filler for too many SQL variables. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "too many SQL variables notes (8)",
+      "url": "https://blog.example.org/too-many-sql-variables/8",
+      "snippet": "Unjudged filler for too many SQL variables. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "too many SQL variables notes (9)",
+      "url": "https://forum.example.net/too-many-sql-variables/9",
+      "snippet": "Unjudged filler for too many SQL variables. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "too many SQL variables notes (10)",
+      "url": "https://wiki.example.io/too-many-sql-variables/10",
+      "snippet": "Unjudged filler for too many SQL variables. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

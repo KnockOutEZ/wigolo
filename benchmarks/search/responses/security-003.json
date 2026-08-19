@@ -1,0 +1,77 @@
+{
+  "queryId": "security-003",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "node ssrf prevent private ip fetch notes (1)",
+      "url": "https://example.dev/node-ssrf-prevent-private-ip-fetch/1",
+      "snippet": "Unjudged filler for node ssrf prevent private ip fetch. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node ssrf prevent private ip fetch notes (2)",
+      "url": "https://notes.example.com/node-ssrf-prevent-private-ip-fetch/2",
+      "snippet": "Unjudged filler for node ssrf prevent private ip fetch. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node ssrf prevent private ip fetch notes (3)",
+      "url": "https://blog.example.org/node-ssrf-prevent-private-ip-fetch/3",
+      "snippet": "Unjudged filler for node ssrf prevent private ip fetch. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "Net — nodejs.org",
+      "url": "https://nodejs.org/api/net.html",
+      "snippet": "Reference material for node ssrf prevent private ip fetch. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node ssrf prevent private ip fetch notes (5)",
+      "url": "https://wiki.example.io/node-ssrf-prevent-private-ip-fetch/5",
+      "snippet": "Unjudged filler for node ssrf prevent private ip fetch. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node ssrf prevent private ip fetch notes (6)",
+      "url": "https://example.dev/node-ssrf-prevent-private-ip-fetch/6",
+      "snippet": "Unjudged filler for node ssrf prevent private ip fetch. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node ssrf prevent private ip fetch notes (7)",
+      "url": "https://notes.example.com/node-ssrf-prevent-private-ip-fetch/7",
+      "snippet": "Unjudged filler for node ssrf prevent private ip fetch. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node ssrf prevent private ip fetch notes (8)",
+      "url": "https://blog.example.org/node-ssrf-prevent-private-ip-fetch/8",
+      "snippet": "Unjudged filler for node ssrf prevent private ip fetch. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node ssrf prevent private ip fetch notes (9)",
+      "url": "https://forum.example.net/node-ssrf-prevent-private-ip-fetch/9",
+      "snippet": "Unjudged filler for node ssrf prevent private ip fetch. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node ssrf prevent private ip fetch notes (10)",
+      "url": "https://wiki.example.io/node-ssrf-prevent-private-ip-fetch/10",
+      "snippet": "Unjudged filler for node ssrf prevent private ip fetch. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

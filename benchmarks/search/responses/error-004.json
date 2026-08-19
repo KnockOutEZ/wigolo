@@ -1,0 +1,77 @@
+{
+  "queryId": "error-004",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "python ModuleNotFoundError no module named notes (1)",
+      "url": "https://example.dev/python-modulenotfounderror-no-module-nam/1",
+      "snippet": "Unjudged filler for python ModuleNotFoundError no module named. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "Modules — docs.python.org",
+      "url": "https://docs.python.org/3/tutorial/modules.html",
+      "snippet": "Reference material for python ModuleNotFoundError no module named. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "python ModuleNotFoundError no module named notes (3)",
+      "url": "https://blog.example.org/python-modulenotfounderror-no-module-nam/3",
+      "snippet": "Unjudged filler for python ModuleNotFoundError no module named. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "python ModuleNotFoundError no module named notes (4)",
+      "url": "https://forum.example.net/python-modulenotfounderror-no-module-nam/4",
+      "snippet": "Unjudged filler for python ModuleNotFoundError no module named. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "python ModuleNotFoundError no module named notes (5)",
+      "url": "https://wiki.example.io/python-modulenotfounderror-no-module-nam/5",
+      "snippet": "Unjudged filler for python ModuleNotFoundError no module named. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "python ModuleNotFoundError no module named notes (6)",
+      "url": "https://example.dev/python-modulenotfounderror-no-module-nam/6",
+      "snippet": "Unjudged filler for python ModuleNotFoundError no module named. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "python ModuleNotFoundError no module named notes (7)",
+      "url": "https://notes.example.com/python-modulenotfounderror-no-module-nam/7",
+      "snippet": "Unjudged filler for python ModuleNotFoundError no module named. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "python ModuleNotFoundError no module named notes (8)",
+      "url": "https://blog.example.org/python-modulenotfounderror-no-module-nam/8",
+      "snippet": "Unjudged filler for python ModuleNotFoundError no module named. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "python ModuleNotFoundError no module named notes (9)",
+      "url": "https://forum.example.net/python-modulenotfounderror-no-module-nam/9",
+      "snippet": "Unjudged filler for python ModuleNotFoundError no module named. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "python ModuleNotFoundError no module named notes (10)",
+      "url": "https://wiki.example.io/python-modulenotfounderror-no-module-nam/10",
+      "snippet": "Unjudged filler for python ModuleNotFoundError no module named. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "queryId": "code-002",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "react useDeferredValue vs useTransition notes (1)",
+      "url": "https://example.dev/react-usedeferredvalue-vs-usetransition/1",
+      "snippet": "Unjudged filler for react useDeferredValue vs useTransition. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "react useDeferredValue vs useTransition notes (2)",
+      "url": "https://notes.example.com/react-usedeferredvalue-vs-usetransition/2",
+      "snippet": "Unjudged filler for react useDeferredValue vs useTransition. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "useDeferredValue — react.dev",
+      "url": "https://react.dev/reference/react/useDeferredValue",
+      "snippet": "Reference material for react useDeferredValue vs useTransition. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "useTransition — react.dev",
+      "url": "https://react.dev/reference/react/useTransition",
+      "snippet": "Reference material for react useDeferredValue vs useTransition. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "react useDeferredValue vs useTransition notes (5)",
+      "url": "https://wiki.example.io/react-usedeferredvalue-vs-usetransition/5",
+      "snippet": "Unjudged filler for react useDeferredValue vs useTransition. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "react useDeferredValue vs useTransition notes (6)",
+      "url": "https://example.dev/react-usedeferredvalue-vs-usetransition/6",
+      "snippet": "Unjudged filler for react useDeferredValue vs useTransition. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "react useDeferredValue vs useTransition notes (7)",
+      "url": "https://notes.example.com/react-usedeferredvalue-vs-usetransition/7",
+      "snippet": "Unjudged filler for react useDeferredValue vs useTransition. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "react useDeferredValue vs useTransition notes (8)",
+      "url": "https://blog.example.org/react-usedeferredvalue-vs-usetransition/8",
+      "snippet": "Unjudged filler for react useDeferredValue vs useTransition. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "react useDeferredValue vs useTransition notes (9)",
+      "url": "https://forum.example.net/react-usedeferredvalue-vs-usetransition/9",
+      "snippet": "Unjudged filler for react useDeferredValue vs useTransition. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "react useDeferredValue vs useTransition notes (10)",
+      "url": "https://wiki.example.io/react-usedeferredvalue-vs-usetransition/10",
+      "snippet": "Unjudged filler for react useDeferredValue vs useTransition. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

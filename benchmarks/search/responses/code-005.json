@@ -1,0 +1,77 @@
+{
+  "queryId": "code-005",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "Vi — vitest.dev",
+      "url": "https://vitest.dev/api/vi.html",
+      "snippet": "Reference material for vitest mock module factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "Mocking — vitest.dev",
+      "url": "https://vitest.dev/guide/mocking.html",
+      "snippet": "Reference material for vitest mock module factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "vitest mock module factory notes (3)",
+      "url": "https://blog.example.org/vitest-mock-module-factory/3",
+      "snippet": "Unjudged filler for vitest mock module factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "vitest mock module factory notes (4)",
+      "url": "https://forum.example.net/vitest-mock-module-factory/4",
+      "snippet": "Unjudged filler for vitest mock module factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "vitest mock module factory notes (5)",
+      "url": "https://wiki.example.io/vitest-mock-module-factory/5",
+      "snippet": "Unjudged filler for vitest mock module factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "vitest mock module factory notes (6)",
+      "url": "https://example.dev/vitest-mock-module-factory/6",
+      "snippet": "Unjudged filler for vitest mock module factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "vitest mock module factory notes (7)",
+      "url": "https://notes.example.com/vitest-mock-module-factory/7",
+      "snippet": "Unjudged filler for vitest mock module factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "vitest mock module factory notes (8)",
+      "url": "https://blog.example.org/vitest-mock-module-factory/8",
+      "snippet": "Unjudged filler for vitest mock module factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "vitest mock module factory notes (9)",
+      "url": "https://forum.example.net/vitest-mock-module-factory/9",
+      "snippet": "Unjudged filler for vitest mock module factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "vitest mock module factory notes (10)",
+      "url": "https://wiki.example.io/vitest-mock-module-factory/10",
+      "snippet": "Unjudged filler for vitest mock module factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

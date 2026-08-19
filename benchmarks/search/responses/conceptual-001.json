@@ -1,0 +1,77 @@
+{
+  "queryId": "conceptual-001",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "what is reciprocal rank fusion notes (1)",
+      "url": "https://example.dev/what-is-reciprocal-rank-fusion/1",
+      "snippet": "Unjudged filler for what is reciprocal rank fusion. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "what is reciprocal rank fusion notes (2)",
+      "url": "https://notes.example.com/what-is-reciprocal-rank-fusion/2",
+      "snippet": "Unjudged filler for what is reciprocal rank fusion. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "Controlling Text Search — www.postgresql.org",
+      "url": "https://www.postgresql.org/docs/current/textsearch-controls.html",
+      "snippet": "Reference material for what is reciprocal rank fusion. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "what is reciprocal rank fusion notes (4)",
+      "url": "https://forum.example.net/what-is-reciprocal-rank-fusion/4",
+      "snippet": "Unjudged filler for what is reciprocal rank fusion. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "what is reciprocal rank fusion notes (5)",
+      "url": "https://wiki.example.io/what-is-reciprocal-rank-fusion/5",
+      "snippet": "Unjudged filler for what is reciprocal rank fusion. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "what is reciprocal rank fusion notes (6)",
+      "url": "https://example.dev/what-is-reciprocal-rank-fusion/6",
+      "snippet": "Unjudged filler for what is reciprocal rank fusion. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "what is reciprocal rank fusion notes (7)",
+      "url": "https://notes.example.com/what-is-reciprocal-rank-fusion/7",
+      "snippet": "Unjudged filler for what is reciprocal rank fusion. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "what is reciprocal rank fusion notes (8)",
+      "url": "https://blog.example.org/what-is-reciprocal-rank-fusion/8",
+      "snippet": "Unjudged filler for what is reciprocal rank fusion. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "what is reciprocal rank fusion notes (9)",
+      "url": "https://forum.example.net/what-is-reciprocal-rank-fusion/9",
+      "snippet": "Unjudged filler for what is reciprocal rank fusion. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "what is reciprocal rank fusion notes (10)",
+      "url": "https://wiki.example.io/what-is-reciprocal-rank-fusion/10",
+      "snippet": "Unjudged filler for what is reciprocal rank fusion. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

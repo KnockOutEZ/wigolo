@@ -1,0 +1,77 @@
+{
+  "queryId": "config-003",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "postgres shared_buffers tuning notes (1)",
+      "url": "https://example.dev/postgres-shared-buffers-tuning/1",
+      "snippet": "Unjudged filler for postgres shared_buffers tuning. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "Resource Consumption — www.postgresql.org",
+      "url": "https://www.postgresql.org/docs/current/runtime-config-resource.html",
+      "snippet": "Reference material for postgres shared_buffers tuning. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "postgres shared_buffers tuning notes (3)",
+      "url": "https://blog.example.org/postgres-shared-buffers-tuning/3",
+      "snippet": "Unjudged filler for postgres shared_buffers tuning. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "postgres shared_buffers tuning notes (4)",
+      "url": "https://forum.example.net/postgres-shared-buffers-tuning/4",
+      "snippet": "Unjudged filler for postgres shared_buffers tuning. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "postgres shared_buffers tuning notes (5)",
+      "url": "https://wiki.example.io/postgres-shared-buffers-tuning/5",
+      "snippet": "Unjudged filler for postgres shared_buffers tuning. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "postgres shared_buffers tuning notes (6)",
+      "url": "https://example.dev/postgres-shared-buffers-tuning/6",
+      "snippet": "Unjudged filler for postgres shared_buffers tuning. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "postgres shared_buffers tuning notes (7)",
+      "url": "https://notes.example.com/postgres-shared-buffers-tuning/7",
+      "snippet": "Unjudged filler for postgres shared_buffers tuning. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "postgres shared_buffers tuning notes (8)",
+      "url": "https://blog.example.org/postgres-shared-buffers-tuning/8",
+      "snippet": "Unjudged filler for postgres shared_buffers tuning. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "postgres shared_buffers tuning notes (9)",
+      "url": "https://forum.example.net/postgres-shared-buffers-tuning/9",
+      "snippet": "Unjudged filler for postgres shared_buffers tuning. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "postgres shared_buffers tuning notes (10)",
+      "url": "https://wiki.example.io/postgres-shared-buffers-tuning/10",
+      "snippet": "Unjudged filler for postgres shared_buffers tuning. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

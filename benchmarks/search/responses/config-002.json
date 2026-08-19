@@ -1,0 +1,77 @@
+{
+  "queryId": "config-002",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "tsconfig exclude tests directory notes (1)",
+      "url": "https://example.dev/tsconfig-exclude-tests-directory/1",
+      "snippet": "Unjudged filler for tsconfig exclude tests directory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "tsconfig exclude tests directory notes (2)",
+      "url": "https://notes.example.com/tsconfig-exclude-tests-directory/2",
+      "snippet": "Unjudged filler for tsconfig exclude tests directory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "exclude — www.typescriptlang.org",
+      "url": "https://www.typescriptlang.org/tsconfig/#exclude",
+      "snippet": "Reference material for tsconfig exclude tests directory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "tsconfig exclude tests directory notes (4)",
+      "url": "https://forum.example.net/tsconfig-exclude-tests-directory/4",
+      "snippet": "Unjudged filler for tsconfig exclude tests directory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "tsconfig exclude tests directory notes (5)",
+      "url": "https://wiki.example.io/tsconfig-exclude-tests-directory/5",
+      "snippet": "Unjudged filler for tsconfig exclude tests directory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "tsconfig exclude tests directory notes (6)",
+      "url": "https://example.dev/tsconfig-exclude-tests-directory/6",
+      "snippet": "Unjudged filler for tsconfig exclude tests directory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "tsconfig exclude tests directory notes (7)",
+      "url": "https://notes.example.com/tsconfig-exclude-tests-directory/7",
+      "snippet": "Unjudged filler for tsconfig exclude tests directory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "tsconfig exclude tests directory notes (8)",
+      "url": "https://blog.example.org/tsconfig-exclude-tests-directory/8",
+      "snippet": "Unjudged filler for tsconfig exclude tests directory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "tsconfig exclude tests directory notes (9)",
+      "url": "https://forum.example.net/tsconfig-exclude-tests-directory/9",
+      "snippet": "Unjudged filler for tsconfig exclude tests directory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "tsconfig exclude tests directory notes (10)",
+      "url": "https://wiki.example.io/tsconfig-exclude-tests-directory/10",
+      "snippet": "Unjudged filler for tsconfig exclude tests directory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

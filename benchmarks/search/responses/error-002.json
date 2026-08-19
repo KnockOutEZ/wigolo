@@ -1,0 +1,77 @@
+{
+  "queryId": "error-002",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "Result and Error Codes — www.sqlite.org",
+      "url": "https://www.sqlite.org/rescode.html",
+      "snippet": "Reference material for SQLITE_BUSY database is locked. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "File Locking And Concurrency — www.sqlite.org",
+      "url": "https://www.sqlite.org/lockingv3.html",
+      "snippet": "Reference material for SQLITE_BUSY database is locked. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "SQLITE_BUSY database is locked notes (3)",
+      "url": "https://blog.example.org/sqlite-busy-database-is-locked/3",
+      "snippet": "Unjudged filler for SQLITE_BUSY database is locked. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "SQLITE_BUSY database is locked notes (4)",
+      "url": "https://forum.example.net/sqlite-busy-database-is-locked/4",
+      "snippet": "Unjudged filler for SQLITE_BUSY database is locked. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "SQLITE_BUSY database is locked notes (5)",
+      "url": "https://wiki.example.io/sqlite-busy-database-is-locked/5",
+      "snippet": "Unjudged filler for SQLITE_BUSY database is locked. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "SQLITE_BUSY database is locked notes (6)",
+      "url": "https://example.dev/sqlite-busy-database-is-locked/6",
+      "snippet": "Unjudged filler for SQLITE_BUSY database is locked. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "SQLITE_BUSY database is locked notes (7)",
+      "url": "https://notes.example.com/sqlite-busy-database-is-locked/7",
+      "snippet": "Unjudged filler for SQLITE_BUSY database is locked. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "SQLITE_BUSY database is locked notes (8)",
+      "url": "https://blog.example.org/sqlite-busy-database-is-locked/8",
+      "snippet": "Unjudged filler for SQLITE_BUSY database is locked. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "SQLITE_BUSY database is locked notes (9)",
+      "url": "https://forum.example.net/sqlite-busy-database-is-locked/9",
+      "snippet": "Unjudged filler for SQLITE_BUSY database is locked. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "SQLITE_BUSY database is locked notes (10)",
+      "url": "https://wiki.example.io/sqlite-busy-database-is-locked/10",
+      "snippet": "Unjudged filler for SQLITE_BUSY database is locked. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

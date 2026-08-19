@@ -1,0 +1,77 @@
+{
+  "queryId": "conceptual-002",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "Write-Ahead Logging — www.sqlite.org",
+      "url": "https://www.sqlite.org/wal.html",
+      "snippet": "Reference material for how does write ahead logging work. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "how does write ahead logging work notes (2)",
+      "url": "https://notes.example.com/how-does-write-ahead-logging-work/2",
+      "snippet": "Unjudged filler for how does write ahead logging work. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "how does write ahead logging work notes (3)",
+      "url": "https://blog.example.org/how-does-write-ahead-logging-work/3",
+      "snippet": "Unjudged filler for how does write ahead logging work. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "how does write ahead logging work notes (4)",
+      "url": "https://forum.example.net/how-does-write-ahead-logging-work/4",
+      "snippet": "Unjudged filler for how does write ahead logging work. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "how does write ahead logging work notes (5)",
+      "url": "https://wiki.example.io/how-does-write-ahead-logging-work/5",
+      "snippet": "Unjudged filler for how does write ahead logging work. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "how does write ahead logging work notes (6)",
+      "url": "https://example.dev/how-does-write-ahead-logging-work/6",
+      "snippet": "Unjudged filler for how does write ahead logging work. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "how does write ahead logging work notes (7)",
+      "url": "https://notes.example.com/how-does-write-ahead-logging-work/7",
+      "snippet": "Unjudged filler for how does write ahead logging work. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "how does write ahead logging work notes (8)",
+      "url": "https://blog.example.org/how-does-write-ahead-logging-work/8",
+      "snippet": "Unjudged filler for how does write ahead logging work. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "how does write ahead logging work notes (9)",
+      "url": "https://forum.example.net/how-does-write-ahead-logging-work/9",
+      "snippet": "Unjudged filler for how does write ahead logging work. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "how does write ahead logging work notes (10)",
+      "url": "https://wiki.example.io/how-does-write-ahead-logging-work/10",
+      "snippet": "Unjudged filler for how does write ahead logging work. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

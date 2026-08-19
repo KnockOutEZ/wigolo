@@ -1,0 +1,77 @@
+{
+  "queryId": "code-001",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "useSyncExternalStore — react.dev",
+      "url": "https://react.dev/reference/react/useSyncExternalStore",
+      "snippet": "Reference material for react useSyncExternalStore example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "react useSyncExternalStore example notes (2)",
+      "url": "https://notes.example.com/react-usesyncexternalstore-example/2",
+      "snippet": "Unjudged filler for react useSyncExternalStore example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "react useSyncExternalStore example notes (3)",
+      "url": "https://blog.example.org/react-usesyncexternalstore-example/3",
+      "snippet": "Unjudged filler for react useSyncExternalStore example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "react useSyncExternalStore example notes (4)",
+      "url": "https://forum.example.net/react-usesyncexternalstore-example/4",
+      "snippet": "Unjudged filler for react useSyncExternalStore example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "react useSyncExternalStore example notes (5)",
+      "url": "https://wiki.example.io/react-usesyncexternalstore-example/5",
+      "snippet": "Unjudged filler for react useSyncExternalStore example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "react useSyncExternalStore example notes (6)",
+      "url": "https://example.dev/react-usesyncexternalstore-example/6",
+      "snippet": "Unjudged filler for react useSyncExternalStore example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "react useSyncExternalStore example notes (7)",
+      "url": "https://notes.example.com/react-usesyncexternalstore-example/7",
+      "snippet": "Unjudged filler for react useSyncExternalStore example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "react useSyncExternalStore example notes (8)",
+      "url": "https://blog.example.org/react-usesyncexternalstore-example/8",
+      "snippet": "Unjudged filler for react useSyncExternalStore example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "react useSyncExternalStore example notes (9)",
+      "url": "https://forum.example.net/react-usesyncexternalstore-example/9",
+      "snippet": "Unjudged filler for react useSyncExternalStore example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "react useSyncExternalStore example notes (10)",
+      "url": "https://wiki.example.io/react-usesyncexternalstore-example/10",
+      "snippet": "Unjudged filler for react useSyncExternalStore example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

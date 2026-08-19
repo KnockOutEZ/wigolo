@@ -1,0 +1,77 @@
+{
+  "queryId": "docs-003",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "File system — nodejs.org",
+      "url": "https://nodejs.org/api/fs.html",
+      "snippet": "Reference material for node fs promises readFile. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "Promises API — nodejs.org",
+      "url": "https://nodejs.org/api/promises.html",
+      "snippet": "Reference material for node fs promises readFile. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node fs promises readFile notes (3)",
+      "url": "https://blog.example.org/node-fs-promises-readfile/3",
+      "snippet": "Unjudged filler for node fs promises readFile. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node fs promises readFile notes (4)",
+      "url": "https://forum.example.net/node-fs-promises-readfile/4",
+      "snippet": "Unjudged filler for node fs promises readFile. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node fs promises readFile notes (5)",
+      "url": "https://wiki.example.io/node-fs-promises-readfile/5",
+      "snippet": "Unjudged filler for node fs promises readFile. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node fs promises readFile notes (6)",
+      "url": "https://example.dev/node-fs-promises-readfile/6",
+      "snippet": "Unjudged filler for node fs promises readFile. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node fs promises readFile notes (7)",
+      "url": "https://notes.example.com/node-fs-promises-readfile/7",
+      "snippet": "Unjudged filler for node fs promises readFile. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node fs promises readFile notes (8)",
+      "url": "https://blog.example.org/node-fs-promises-readfile/8",
+      "snippet": "Unjudged filler for node fs promises readFile. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node fs promises readFile notes (9)",
+      "url": "https://forum.example.net/node-fs-promises-readfile/9",
+      "snippet": "Unjudged filler for node fs promises readFile. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node fs promises readFile notes (10)",
+      "url": "https://wiki.example.io/node-fs-promises-readfile/10",
+      "snippet": "Unjudged filler for node fs promises readFile. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

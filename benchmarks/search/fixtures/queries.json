@@ -1,142 +1,382 @@
 {
-  "version": "1.0.0",
   "queries": [
     {
       "id": "docs-001",
       "query": "typescript Record utility type",
       "category": "docs",
-      "expectedDomains": ["typescriptlang.org"],
-      "tags": ["typescript", "utility-types"]
+      "expectedDomains": [
+        "www.typescriptlang.org"
+      ],
+      "tags": [
+        "typescript"
+      ]
     },
     {
       "id": "docs-002",
-      "query": "playwright page.goto options",
+      "query": "typescript satisfies operator",
       "category": "docs",
-      "expectedDomains": ["playwright.dev"],
-      "tags": ["playwright", "api"]
+      "expectedDomains": [
+        "www.typescriptlang.org"
+      ],
+      "tags": [
+        "typescript"
+      ]
+    },
+    {
+      "id": "docs-003",
+      "query": "node fs promises readFile",
+      "category": "docs",
+      "expectedDomains": [
+        "nodejs.org"
+      ],
+      "tags": [
+        "node"
+      ]
+    },
+    {
+      "id": "docs-004",
+      "query": "node worker threads shared memory",
+      "category": "docs",
+      "expectedDomains": [
+        "nodejs.org"
+      ],
+      "tags": [
+        "node"
+      ]
+    },
+    {
+      "id": "docs-005",
+      "query": "mdn intersection observer options",
+      "category": "docs",
+      "expectedDomains": [
+        "developer.mozilla.org"
+      ]
+    },
+    {
+      "id": "docs-006",
+      "query": "css container queries syntax",
+      "category": "docs",
+      "expectedDomains": [
+        "developer.mozilla.org"
+      ]
+    },
+    {
+      "id": "docs-007",
+      "query": "postgres generated columns",
+      "category": "docs",
+      "expectedDomains": [
+        "www.postgresql.org"
+      ],
+      "tags": [
+        "postgres"
+      ]
+    },
+    {
+      "id": "docs-008",
+      "query": "sqlite fts5 match syntax",
+      "category": "docs",
+      "expectedDomains": [
+        "www.sqlite.org"
+      ],
+      "tags": [
+        "sqlite"
+      ]
     },
     {
       "id": "error-001",
-      "query": "TypeError: Cannot read properties of undefined",
+      "query": "ERR_MODULE_NOT_FOUND cannot find package",
       "category": "error",
-      "tags": ["javascript", "runtime-error"]
+      "expectedDomains": [
+        "nodejs.org"
+      ]
     },
     {
       "id": "error-002",
-      "query": "ECONNREFUSED 127.0.0.1:3000 node",
+      "query": "SQLITE_BUSY database is locked",
       "category": "error",
-      "tags": ["node", "network"]
+      "expectedDomains": [
+        "www.sqlite.org"
+      ]
     },
     {
-      "id": "concept-001",
-      "query": "how does javascript event loop work",
+      "id": "error-003",
+      "query": "too many SQL variables",
+      "category": "error",
+      "expectedDomains": [
+        "www.sqlite.org"
+      ]
+    },
+    {
+      "id": "error-004",
+      "query": "python ModuleNotFoundError no module named",
+      "category": "error",
+      "expectedDomains": [
+        "docs.python.org"
+      ]
+    },
+    {
+      "id": "error-005",
+      "query": "rust borrow checker cannot borrow as mutable",
+      "category": "error",
+      "expectedDomains": [
+        "doc.rust-lang.org"
+      ]
+    },
+    {
+      "id": "error-006",
+      "query": "go nil pointer dereference panic",
+      "category": "error",
+      "expectedDomains": [
+        "go.dev"
+      ]
+    },
+    {
+      "id": "conceptual-001",
+      "query": "what is reciprocal rank fusion",
       "category": "conceptual",
-      "tags": ["javascript", "fundamentals"]
+      "expectedDomains": [
+        "www.postgresql.org"
+      ]
+    },
+    {
+      "id": "conceptual-002",
+      "query": "how does write ahead logging work",
+      "category": "conceptual",
+      "expectedDomains": [
+        "www.sqlite.org"
+      ]
+    },
+    {
+      "id": "conceptual-003",
+      "query": "difference between mapped and conditional types",
+      "category": "conceptual",
+      "expectedDomains": [
+        "www.typescriptlang.org"
+      ]
+    },
+    {
+      "id": "conceptual-004",
+      "query": "react server components explained",
+      "category": "conceptual",
+      "expectedDomains": [
+        "react.dev"
+      ]
+    },
+    {
+      "id": "conceptual-005",
+      "query": "rust ownership model overview",
+      "category": "conceptual",
+      "expectedDomains": [
+        "doc.rust-lang.org"
+      ]
     },
     {
       "id": "code-001",
-      "query": "express middleware error handling pattern",
+      "query": "react useSyncExternalStore example",
       "category": "code",
-      "tags": ["express", "patterns"]
+      "expectedDomains": [
+        "react.dev"
+      ]
     },
     {
-      "id": "multi-001",
-      "query": "[\"vitest mock\", \"vitest vi.fn\"]",
-      "category": "multi-query",
-      "tags": ["vitest", "testing"]
+      "id": "code-002",
+      "query": "react useDeferredValue vs useTransition",
+      "category": "code",
+      "expectedDomains": [
+        "react.dev"
+      ]
     },
     {
-      "id": "tutorial-001",
-      "query": "react useEffect cleanup function",
-      "category": "tutorial",
-      "expectedDomains": ["react.dev", "reactjs.org"],
-      "tags": ["react", "hooks"]
+      "id": "code-003",
+      "query": "python dataclass field default_factory",
+      "category": "code",
+      "expectedDomains": [
+        "docs.python.org"
+      ]
     },
     {
-      "id": "tutorial-002",
-      "query": "python asyncio gather vs wait",
-      "category": "tutorial",
-      "expectedDomains": ["docs.python.org"],
-      "tags": ["python", "async"]
+      "id": "code-004",
+      "query": "go context with timeout example",
+      "category": "code",
+      "expectedDomains": [
+        "go.dev"
+      ]
+    },
+    {
+      "id": "code-005",
+      "query": "vitest mock module factory",
+      "category": "code",
+      "expectedDomains": [
+        "vitest.dev"
+      ]
+    },
+    {
+      "id": "code-006",
+      "query": "rust iterator collect into hashmap",
+      "category": "code",
+      "expectedDomains": [
+        "doc.rust-lang.org"
+      ]
     },
     {
       "id": "api-001",
-      "query": "github rest api create pull request",
+      "query": "vite define config plugins",
       "category": "api",
-      "expectedDomains": ["docs.github.com"],
-      "tags": ["github", "rest-api"]
+      "expectedDomains": [
+        "vite.dev"
+      ]
     },
     {
       "id": "api-002",
-      "query": "stripe api create payment intent",
+      "query": "vitest config coverage provider",
       "category": "api",
-      "expectedDomains": ["stripe.com"],
-      "tags": ["stripe", "payments"]
+      "expectedDomains": [
+        "vitest.dev"
+      ]
     },
     {
-      "id": "comparison-001",
-      "query": "bun vs node.js performance benchmarks",
-      "category": "comparison",
-      "tags": ["bun", "nodejs", "performance"]
+      "id": "api-003",
+      "query": "docker compose healthcheck syntax",
+      "category": "api",
+      "expectedDomains": [
+        "docs.docker.com"
+      ]
     },
     {
-      "id": "comparison-002",
-      "query": "postgresql vs mysql json support",
-      "category": "comparison",
-      "tags": ["postgresql", "mysql", "json"]
-    },
-    {
-      "id": "recent-001",
-      "query": "deno 2.0 breaking changes",
-      "category": "recent",
-      "expectedDomains": ["deno.com", "deno.land"],
-      "tags": ["deno", "migration"]
-    },
-    {
-      "id": "recent-002",
-      "query": "typescript 5.5 new features",
-      "category": "recent",
-      "expectedDomains": ["devblogs.microsoft.com", "typescriptlang.org"],
-      "tags": ["typescript", "release"]
-    },
-    {
-      "id": "debug-001",
-      "query": "segfault in node native addon",
-      "category": "debug",
-      "tags": ["node", "native-addon", "crash"]
-    },
-    {
-      "id": "debug-002",
-      "query": "cors preflight request blocked",
-      "category": "debug",
-      "tags": ["cors", "http", "browser"]
+      "id": "api-004",
+      "query": "node crypto createHash algorithms",
+      "category": "api",
+      "expectedDomains": [
+        "nodejs.org"
+      ]
     },
     {
       "id": "config-001",
-      "query": "nginx reverse proxy websocket configuration",
+      "query": "tsconfig moduleResolution bundler",
       "category": "config",
-      "expectedDomains": ["nginx.org"],
-      "tags": ["nginx", "websocket", "proxy"]
+      "expectedDomains": [
+        "www.typescriptlang.org"
+      ]
     },
     {
       "id": "config-002",
-      "query": "docker compose health check",
+      "query": "tsconfig exclude tests directory",
       "category": "config",
-      "expectedDomains": ["docs.docker.com"],
-      "tags": ["docker", "compose", "healthcheck"]
+      "expectedDomains": [
+        "www.typescriptlang.org"
+      ]
+    },
+    {
+      "id": "config-003",
+      "query": "postgres shared_buffers tuning",
+      "category": "config",
+      "expectedDomains": [
+        "www.postgresql.org"
+      ]
     },
     {
       "id": "security-001",
-      "query": "jwt token refresh rotation strategy",
+      "query": "content security policy frame-ancestors",
       "category": "security",
-      "tags": ["jwt", "auth", "security"]
+      "expectedDomains": [
+        "developer.mozilla.org"
+      ]
     },
     {
-      "id": "multi-002",
-      "query": "[\"react server components\", \"RSC streaming\", \"next.js app router\"]",
+      "id": "security-002",
+      "query": "same origin policy cors preflight",
+      "category": "security",
+      "expectedDomains": [
+        "developer.mozilla.org"
+      ]
+    },
+    {
+      "id": "security-003",
+      "query": "node ssrf prevent private ip fetch",
+      "category": "security",
+      "expectedDomains": [
+        "nodejs.org"
+      ]
+    },
+    {
+      "id": "debug-001",
+      "query": "chrome devtools protocol accessibility tree",
+      "category": "debug",
+      "expectedDomains": [
+        "developer.mozilla.org"
+      ]
+    },
+    {
+      "id": "debug-002",
+      "query": "node inspect memory heap snapshot",
+      "category": "debug",
+      "expectedDomains": [
+        "nodejs.org"
+      ]
+    },
+    {
+      "id": "tutorial-001",
+      "query": "getting started with vite react",
+      "category": "tutorial",
+      "expectedDomains": [
+        "vite.dev"
+      ]
+    },
+    {
+      "id": "tutorial-002",
+      "query": "python asyncio tutorial tasks",
+      "category": "tutorial",
+      "expectedDomains": [
+        "docs.python.org"
+      ]
+    },
+    {
+      "id": "comparison-001",
+      "query": "sqlite vs postgres full text search",
+      "category": "comparison",
+      "expectedDomains": [
+        "www.sqlite.org"
+      ]
+    },
+    {
+      "id": "comparison-002",
+      "query": "npm vs pnpm workspaces",
+      "category": "comparison",
+      "expectedDomains": [
+        "nodejs.org"
+      ]
+    },
+    {
+      "id": "multi-query-001",
+      "query": "rust async runtime comparison",
       "category": "multi-query",
-      "expectedDomains": ["react.dev", "nextjs.org"],
-      "tags": ["react", "nextjs", "rsc"]
+      "expectedDomains": [
+        "doc.rust-lang.org"
+      ]
+    },
+    {
+      "id": "multi-query-002",
+      "query": "go generics type constraints",
+      "category": "multi-query",
+      "expectedDomains": [
+        "go.dev"
+      ]
+    },
+    {
+      "id": "recent-001",
+      "query": "react 19 use hook",
+      "category": "recent",
+      "expectedDomains": [
+        "react.dev"
+      ]
+    },
+    {
+      "id": "recent-002",
+      "query": "node permission model flags",
+      "category": "recent",
+      "expectedDomains": [
+        "nodejs.org"
+      ]
     }
   ]
 }

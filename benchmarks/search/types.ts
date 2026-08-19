@@ -25,6 +25,14 @@ interface PrerecordedResult {
 
 export interface PrerecordedResponse {
   queryId: string;
+  /**
+   * Provenance of this fixture, mirroring C0's per-fixture `licence` field — the only reason that corpus
+   * is auditable. `'synthetic'` means every title, snippet and ordering was authored for this corpus:
+   * search-engine output may not be used as a fixture, so a corpus with no licence field could not be
+   * distinguished from one that was harvested.
+   */
+  licence?: 'synthetic';
+  licenceNote?: string;
   results: PrerecordedResult[];
 }
 

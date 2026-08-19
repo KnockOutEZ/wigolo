@@ -1,0 +1,77 @@
+{
+  "queryId": "tutorial-002",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "python asyncio tutorial tasks notes (1)",
+      "url": "https://example.dev/python-asyncio-tutorial-tasks/1",
+      "snippet": "Unjudged filler for python asyncio tutorial tasks. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "Coroutines and Tasks — docs.python.org",
+      "url": "https://docs.python.org/3/library/asyncio-task.html",
+      "snippet": "Reference material for python asyncio tutorial tasks. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "python asyncio tutorial tasks notes (3)",
+      "url": "https://blog.example.org/python-asyncio-tutorial-tasks/3",
+      "snippet": "Unjudged filler for python asyncio tutorial tasks. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "python asyncio tutorial tasks notes (4)",
+      "url": "https://forum.example.net/python-asyncio-tutorial-tasks/4",
+      "snippet": "Unjudged filler for python asyncio tutorial tasks. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "python asyncio tutorial tasks notes (5)",
+      "url": "https://wiki.example.io/python-asyncio-tutorial-tasks/5",
+      "snippet": "Unjudged filler for python asyncio tutorial tasks. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "python asyncio tutorial tasks notes (6)",
+      "url": "https://example.dev/python-asyncio-tutorial-tasks/6",
+      "snippet": "Unjudged filler for python asyncio tutorial tasks. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "python asyncio tutorial tasks notes (7)",
+      "url": "https://notes.example.com/python-asyncio-tutorial-tasks/7",
+      "snippet": "Unjudged filler for python asyncio tutorial tasks. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "python asyncio tutorial tasks notes (8)",
+      "url": "https://blog.example.org/python-asyncio-tutorial-tasks/8",
+      "snippet": "Unjudged filler for python asyncio tutorial tasks. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "python asyncio tutorial tasks notes (9)",
+      "url": "https://forum.example.net/python-asyncio-tutorial-tasks/9",
+      "snippet": "Unjudged filler for python asyncio tutorial tasks. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "python asyncio tutorial tasks notes (10)",
+      "url": "https://wiki.example.io/python-asyncio-tutorial-tasks/10",
+      "snippet": "Unjudged filler for python asyncio tutorial tasks. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

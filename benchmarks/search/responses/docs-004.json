@@ -1,0 +1,77 @@
+{
+  "queryId": "docs-004",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "node worker threads shared memory notes (1)",
+      "url": "https://example.dev/node-worker-threads-shared-memory/1",
+      "snippet": "Unjudged filler for node worker threads shared memory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node worker threads shared memory notes (2)",
+      "url": "https://notes.example.com/node-worker-threads-shared-memory/2",
+      "snippet": "Unjudged filler for node worker threads shared memory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "Worker threads — nodejs.org",
+      "url": "https://nodejs.org/api/worker_threads.html",
+      "snippet": "Reference material for node worker threads shared memory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node worker threads shared memory notes (4)",
+      "url": "https://forum.example.net/node-worker-threads-shared-memory/4",
+      "snippet": "Unjudged filler for node worker threads shared memory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node worker threads shared memory notes (5)",
+      "url": "https://wiki.example.io/node-worker-threads-shared-memory/5",
+      "snippet": "Unjudged filler for node worker threads shared memory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node worker threads shared memory notes (6)",
+      "url": "https://example.dev/node-worker-threads-shared-memory/6",
+      "snippet": "Unjudged filler for node worker threads shared memory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node worker threads shared memory notes (7)",
+      "url": "https://notes.example.com/node-worker-threads-shared-memory/7",
+      "snippet": "Unjudged filler for node worker threads shared memory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node worker threads shared memory notes (8)",
+      "url": "https://blog.example.org/node-worker-threads-shared-memory/8",
+      "snippet": "Unjudged filler for node worker threads shared memory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node worker threads shared memory notes (9)",
+      "url": "https://forum.example.net/node-worker-threads-shared-memory/9",
+      "snippet": "Unjudged filler for node worker threads shared memory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node worker threads shared memory notes (10)",
+      "url": "https://wiki.example.io/node-worker-threads-shared-memory/10",
+      "snippet": "Unjudged filler for node worker threads shared memory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}
