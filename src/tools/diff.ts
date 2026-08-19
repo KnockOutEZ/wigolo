@@ -6,9 +6,28 @@ import type {
 } from '../types.js';
 import { computeDiffEnvelope } from '../cache/diff-engine.js';
 import { getCachedContent, getCachedContentByHash, isExpired } from '../cache/store.js';
+import { versionByHash } from '../cache/version-read.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('cache');
+
+/**
+ * The one shape a `content_hash` miss takes.
+ *
+ * Explicit, never a fall-through to the current row: answering a question about
+ * a past body with the page's present one is the failure §1.1.1 records, and a
+ * caller diffing against it would be told the page had not changed.
+ */
+function hashMiss(hash: string): { ok: false; error: string; error_reason: string } {
+  return {
+    ok: false,
+    error: 'cache_miss',
+    error_reason:
+      `No cached content for content_hash ${hash}. It is not the live body for any cached URL ` +
+      'and no retained version carries it — retained versions are bounded and evicted ' +
+      'oldest-first. Run `fetch` or `crawl` first, or pass the markdown directly.',
+  };
+}
 
 const VALID_OUTPUT: DiffOutputShape[] = ['unified', 'hunks', 'summary'];
 const VALID_GRANULARITY: DiffGranularity[] = ['line', 'word', 'section'];
@@ -69,14 +88,21 @@ function resolveSide(
     // network round-trip. Same TTL rule as the URL form — the cache only
     // serves live rows — and the same structured miss.
     const cached = getCachedContentByHash(hash);
-    if (!cached || isExpired(cached)) {
-      return {
-        ok: false,
-        error: 'cache_miss',
-        error_reason: `No cached content for content_hash ${hash}. Run \`fetch\` or \`crawl\` first to populate the cache, or pass the markdown directly.`,
-      };
+    if (cached) {
+      if (isExpired(cached)) return hashMiss(hash);
+      return { ok: true, markdown: cached.markdown };
     }
-    return { ok: true, markdown: cached.markdown };
+    // S14-2: no live row carries this hash. `url_cache` is one row per URL under
+    // INSERT OR REPLACE, so that is the ordinary state of a hash handed out
+    // before the page changed — the retained version is where it now lives, and
+    // reaching it is the whole point of the time axis (G-S14-2b).
+    //
+    // Consulted ONLY when the live lookup found nothing. An expired live row is
+    // a TTL decision about that body, and the version table must not be a way to
+    // read around a refusal the cache just made about the same bytes.
+    const version = versionByHash(hash);
+    if (version) return { ok: true, markdown: version.markdown };
+    return hashMiss(hash);
   }
   return { ok: false, error: 'invalid_input', error_reason: required };
 }

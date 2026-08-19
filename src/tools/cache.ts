@@ -7,6 +7,7 @@ import {
   getCachedContentByNormalizedUrl,
 } from '../cache/store.js';
 import { detectChange } from '../cache/change-detector.js';
+import { isVersionRequest, readVersions } from '../cache/version-read.js';
 import { getExtractProvider } from '../providers/extract-provider.js';
 import { isStageError, describeStageError } from '../fetch/error-describe.js';
 import { reciprocalRankFusion, sortByRRFScore, buildRankMap } from '../search/rrf.js';
@@ -157,6 +158,20 @@ export async function handleCache(input: CacheInput, router?: SmartRouter): Prom
         since: input.since,
       });
       return { cleared: count };
+    }
+
+    // The time axis. Checked before the search paths because `at` and `versions`
+    // ask a different question of a different table — a caller who passed them
+    // must never silently receive an ordinary current-page search instead.
+    if (isVersionRequest(input)) {
+      log.debug('Cache version read', { url: input.url, at: input.at, versions: input.versions });
+      return readVersions({
+        url: input.url,
+        at: input.at,
+        versions: input.versions,
+        limit: input.limit,
+        maxTokensOut: input.max_tokens_out,
+      });
     }
 
     if (input.mode === 'hybrid' && input.query) {
