@@ -42,7 +42,29 @@ export interface RetainedVersion {
   byteLen: number;
 }
 
-const ZONELESS_UTC = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+/**
+ * A date-TIME carrying NO zone designator, in either separator.
+ *
+ * Both separators, deliberately. The space form is what `fetched_at` is stored
+ * in; the `T` form is plain ISO 8601 and is what this tool's own schema invites
+ * a caller to send. ECMAScript parses the first as local by its legacy fallback
+ * and the second as local by specification, so the two shapes exhibit the SAME
+ * hazard and closing one is not closing it.
+ *
+ * Seconds and fractions are optional because "2026-08-18T13:00" is equally
+ * offset-less and equally shifted.
+ */
+const ZONELESS_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+
+/** `YYYY-MM-DD`. ECMAScript reads the date-only ISO form as UTC already. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * The same date-time carrying an explicit `Z` or numeric offset. Unambiguous by
+ * construction, so `Date.parse` resolves it correctly and is left to.
+ */
+const ZONED_DATETIME =
+  /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
 
 const SELECT_COLUMNS =
   'normalized_url, content_hash, markdown, title, http_status, fetched_at, byte_len';
@@ -83,10 +105,19 @@ function toRetained(row: VersionRow): RetainedVersion {
  * A caller's `at` in the zone-less UTC shape `fetched_at` is stored in, or null
  * when it cannot be parsed.
  *
- * An already-zone-less value is returned untouched rather than round-tripped
- * through `Date`: JavaScript parses "YYYY-MM-DD HH:MM:SS" as LOCAL time, so the
- * round trip would shift the comparison by the host's UTC offset and confidently
- * return the wrong version on any machine that is not on UTC.
+ * A value carrying NO zone designator is read as UTC, in BOTH separators.
+ * JavaScript reads an offset-less date-time as LOCAL — the space form by its
+ * legacy fallback parser, the `T` form by specification — so handing either to
+ * `Date` shifts the coordinate by the host's UTC offset. West of UTC that shift
+ * reaches FORWARD, and `fetched_at <= ?` then matches a version the page had not
+ * served yet at the instant asked for: a later body returned for a past
+ * question, with `requested_at` echoing the shifted value so the response reads
+ * as internally consistent. That is the exact provenance failure this surface
+ * exists to refuse, which is why the offset is removed from the problem rather
+ * than assumed away.
+ *
+ * A value that DOES carry `Z` or an explicit offset is unambiguous and goes to
+ * `Date.parse`, which resolves it correctly.
  *
  * Sub-second precision truncates DOWN, which keeps "at or before" true: rounding
  * up could reach a version the page had not served yet at the instant asked for.
@@ -94,7 +125,11 @@ function toRetained(row: VersionRow): RetainedVersion {
 export function toVersionTimestamp(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
-  if (ZONELESS_UTC.test(trimmed)) return trimmed;
+  if (ZONELESS_DATETIME.test(trimmed)) {
+    const ms = Date.parse(`${trimmed.replace(' ', 'T')}Z`);
+    if (Number.isNaN(ms)) return null;
+    return new Date(ms).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+  }
   const ms = Date.parse(trimmed);
   if (Number.isNaN(ms)) return null;
   return new Date(ms).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
