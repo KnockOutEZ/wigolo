@@ -1,0 +1,77 @@
+{
+  "queryId": "code-004",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "go context with timeout example notes (1)",
+      "url": "https://example.dev/go-context-with-timeout-example/1",
+      "snippet": "Unjudged filler for go context with timeout example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "Go Concurrency Patterns: Context — go.dev",
+      "url": "https://go.dev/blog/context",
+      "snippet": "Reference material for go context with timeout example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "go context with timeout example notes (3)",
+      "url": "https://blog.example.org/go-context-with-timeout-example/3",
+      "snippet": "Unjudged filler for go context with timeout example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "go context with timeout example notes (4)",
+      "url": "https://forum.example.net/go-context-with-timeout-example/4",
+      "snippet": "Unjudged filler for go context with timeout example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "go context with timeout example notes (5)",
+      "url": "https://wiki.example.io/go-context-with-timeout-example/5",
+      "snippet": "Unjudged filler for go context with timeout example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "go context with timeout example notes (6)",
+      "url": "https://example.dev/go-context-with-timeout-example/6",
+      "snippet": "Unjudged filler for go context with timeout example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "go context with timeout example notes (7)",
+      "url": "https://notes.example.com/go-context-with-timeout-example/7",
+      "snippet": "Unjudged filler for go context with timeout example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "go context with timeout example notes (8)",
+      "url": "https://blog.example.org/go-context-with-timeout-example/8",
+      "snippet": "Unjudged filler for go context with timeout example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "go context with timeout example notes (9)",
+      "url": "https://forum.example.net/go-context-with-timeout-example/9",
+      "snippet": "Unjudged filler for go context with timeout example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "go context with timeout example notes (10)",
+      "url": "https://wiki.example.io/go-context-with-timeout-example/10",
+      "snippet": "Unjudged filler for go context with timeout example. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

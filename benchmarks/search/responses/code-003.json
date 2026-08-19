@@ -1,0 +1,77 @@
+{
+  "queryId": "code-003",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "dataclasses — docs.python.org",
+      "url": "https://docs.python.org/3/library/dataclasses.html",
+      "snippet": "Reference material for python dataclass field default_factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "python dataclass field default_factory notes (2)",
+      "url": "https://notes.example.com/python-dataclass-field-default-factory/2",
+      "snippet": "Unjudged filler for python dataclass field default_factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "python dataclass field default_factory notes (3)",
+      "url": "https://blog.example.org/python-dataclass-field-default-factory/3",
+      "snippet": "Unjudged filler for python dataclass field default_factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "python dataclass field default_factory notes (4)",
+      "url": "https://forum.example.net/python-dataclass-field-default-factory/4",
+      "snippet": "Unjudged filler for python dataclass field default_factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "python dataclass field default_factory notes (5)",
+      "url": "https://wiki.example.io/python-dataclass-field-default-factory/5",
+      "snippet": "Unjudged filler for python dataclass field default_factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "python dataclass field default_factory notes (6)",
+      "url": "https://example.dev/python-dataclass-field-default-factory/6",
+      "snippet": "Unjudged filler for python dataclass field default_factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "python dataclass field default_factory notes (7)",
+      "url": "https://notes.example.com/python-dataclass-field-default-factory/7",
+      "snippet": "Unjudged filler for python dataclass field default_factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "python dataclass field default_factory notes (8)",
+      "url": "https://blog.example.org/python-dataclass-field-default-factory/8",
+      "snippet": "Unjudged filler for python dataclass field default_factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "python dataclass field default_factory notes (9)",
+      "url": "https://forum.example.net/python-dataclass-field-default-factory/9",
+      "snippet": "Unjudged filler for python dataclass field default_factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "python dataclass field default_factory notes (10)",
+      "url": "https://wiki.example.io/python-dataclass-field-default-factory/10",
+      "snippet": "Unjudged filler for python dataclass field default_factory. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

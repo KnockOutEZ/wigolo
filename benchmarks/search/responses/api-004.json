@@ -1,0 +1,77 @@
+{
+  "queryId": "api-004",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "Crypto — nodejs.org",
+      "url": "https://nodejs.org/api/crypto.html",
+      "snippet": "Reference material for node crypto createHash algorithms. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node crypto createHash algorithms notes (2)",
+      "url": "https://notes.example.com/node-crypto-createhash-algorithms/2",
+      "snippet": "Unjudged filler for node crypto createHash algorithms. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node crypto createHash algorithms notes (3)",
+      "url": "https://blog.example.org/node-crypto-createhash-algorithms/3",
+      "snippet": "Unjudged filler for node crypto createHash algorithms. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node crypto createHash algorithms notes (4)",
+      "url": "https://forum.example.net/node-crypto-createhash-algorithms/4",
+      "snippet": "Unjudged filler for node crypto createHash algorithms. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node crypto createHash algorithms notes (5)",
+      "url": "https://wiki.example.io/node-crypto-createhash-algorithms/5",
+      "snippet": "Unjudged filler for node crypto createHash algorithms. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node crypto createHash algorithms notes (6)",
+      "url": "https://example.dev/node-crypto-createhash-algorithms/6",
+      "snippet": "Unjudged filler for node crypto createHash algorithms. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node crypto createHash algorithms notes (7)",
+      "url": "https://notes.example.com/node-crypto-createhash-algorithms/7",
+      "snippet": "Unjudged filler for node crypto createHash algorithms. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node crypto createHash algorithms notes (8)",
+      "url": "https://blog.example.org/node-crypto-createhash-algorithms/8",
+      "snippet": "Unjudged filler for node crypto createHash algorithms. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node crypto createHash algorithms notes (9)",
+      "url": "https://forum.example.net/node-crypto-createhash-algorithms/9",
+      "snippet": "Unjudged filler for node crypto createHash algorithms. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node crypto createHash algorithms notes (10)",
+      "url": "https://wiki.example.io/node-crypto-createhash-algorithms/10",
+      "snippet": "Unjudged filler for node crypto createHash algorithms. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

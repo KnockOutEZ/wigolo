@@ -1,0 +1,77 @@
+{
+  "queryId": "debug-001",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "chrome devtools protocol accessibility tree notes (1)",
+      "url": "https://example.dev/chrome-devtools-protocol-accessibility-t/1",
+      "snippet": "Unjudged filler for chrome devtools protocol accessibility tree. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "chrome devtools protocol accessibility tree notes (2)",
+      "url": "https://notes.example.com/chrome-devtools-protocol-accessibility-t/2",
+      "snippet": "Unjudged filler for chrome devtools protocol accessibility tree. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "Accessibility tree — developer.mozilla.org",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/Accessibility/Accessibility_tree",
+      "snippet": "Reference material for chrome devtools protocol accessibility tree. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "chrome devtools protocol accessibility tree notes (4)",
+      "url": "https://forum.example.net/chrome-devtools-protocol-accessibility-t/4",
+      "snippet": "Unjudged filler for chrome devtools protocol accessibility tree. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "chrome devtools protocol accessibility tree notes (5)",
+      "url": "https://wiki.example.io/chrome-devtools-protocol-accessibility-t/5",
+      "snippet": "Unjudged filler for chrome devtools protocol accessibility tree. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "chrome devtools protocol accessibility tree notes (6)",
+      "url": "https://example.dev/chrome-devtools-protocol-accessibility-t/6",
+      "snippet": "Unjudged filler for chrome devtools protocol accessibility tree. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "chrome devtools protocol accessibility tree notes (7)",
+      "url": "https://notes.example.com/chrome-devtools-protocol-accessibility-t/7",
+      "snippet": "Unjudged filler for chrome devtools protocol accessibility tree. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "chrome devtools protocol accessibility tree notes (8)",
+      "url": "https://blog.example.org/chrome-devtools-protocol-accessibility-t/8",
+      "snippet": "Unjudged filler for chrome devtools protocol accessibility tree. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "chrome devtools protocol accessibility tree notes (9)",
+      "url": "https://forum.example.net/chrome-devtools-protocol-accessibility-t/9",
+      "snippet": "Unjudged filler for chrome devtools protocol accessibility tree. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "chrome devtools protocol accessibility tree notes (10)",
+      "url": "https://wiki.example.io/chrome-devtools-protocol-accessibility-t/10",
+      "snippet": "Unjudged filler for chrome devtools protocol accessibility tree. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

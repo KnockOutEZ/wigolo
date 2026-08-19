@@ -1,0 +1,77 @@
+{
+  "queryId": "comparison-002",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "npm vs pnpm workspaces notes (1)",
+      "url": "https://example.dev/npm-vs-pnpm-workspaces/1",
+      "snippet": "Unjudged filler for npm vs pnpm workspaces. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "npm vs pnpm workspaces notes (2)",
+      "url": "https://notes.example.com/npm-vs-pnpm-workspaces/2",
+      "snippet": "Unjudged filler for npm vs pnpm workspaces. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "Modules: Packages — nodejs.org",
+      "url": "https://nodejs.org/api/packages.html",
+      "snippet": "Reference material for npm vs pnpm workspaces. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "npm vs pnpm workspaces notes (4)",
+      "url": "https://forum.example.net/npm-vs-pnpm-workspaces/4",
+      "snippet": "Unjudged filler for npm vs pnpm workspaces. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "npm vs pnpm workspaces notes (5)",
+      "url": "https://wiki.example.io/npm-vs-pnpm-workspaces/5",
+      "snippet": "Unjudged filler for npm vs pnpm workspaces. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "npm vs pnpm workspaces notes (6)",
+      "url": "https://example.dev/npm-vs-pnpm-workspaces/6",
+      "snippet": "Unjudged filler for npm vs pnpm workspaces. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "npm vs pnpm workspaces notes (7)",
+      "url": "https://notes.example.com/npm-vs-pnpm-workspaces/7",
+      "snippet": "Unjudged filler for npm vs pnpm workspaces. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "npm vs pnpm workspaces notes (8)",
+      "url": "https://blog.example.org/npm-vs-pnpm-workspaces/8",
+      "snippet": "Unjudged filler for npm vs pnpm workspaces. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "npm vs pnpm workspaces notes (9)",
+      "url": "https://forum.example.net/npm-vs-pnpm-workspaces/9",
+      "snippet": "Unjudged filler for npm vs pnpm workspaces. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "npm vs pnpm workspaces notes (10)",
+      "url": "https://wiki.example.io/npm-vs-pnpm-workspaces/10",
+      "snippet": "Unjudged filler for npm vs pnpm workspaces. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

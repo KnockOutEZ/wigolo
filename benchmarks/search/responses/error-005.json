@@ -1,0 +1,77 @@
+{
+  "queryId": "error-005",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "References and Borrowing — doc.rust-lang.org",
+      "url": "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html",
+      "snippet": "Reference material for rust borrow checker cannot borrow as mutable. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "rust borrow checker cannot borrow as mutable notes (2)",
+      "url": "https://notes.example.com/rust-borrow-checker-cannot-borrow-as-mut/2",
+      "snippet": "Unjudged filler for rust borrow checker cannot borrow as mutable. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "rust borrow checker cannot borrow as mutable notes (3)",
+      "url": "https://blog.example.org/rust-borrow-checker-cannot-borrow-as-mut/3",
+      "snippet": "Unjudged filler for rust borrow checker cannot borrow as mutable. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "rust borrow checker cannot borrow as mutable notes (4)",
+      "url": "https://forum.example.net/rust-borrow-checker-cannot-borrow-as-mut/4",
+      "snippet": "Unjudged filler for rust borrow checker cannot borrow as mutable. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "rust borrow checker cannot borrow as mutable notes (5)",
+      "url": "https://wiki.example.io/rust-borrow-checker-cannot-borrow-as-mut/5",
+      "snippet": "Unjudged filler for rust borrow checker cannot borrow as mutable. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "rust borrow checker cannot borrow as mutable notes (6)",
+      "url": "https://example.dev/rust-borrow-checker-cannot-borrow-as-mut/6",
+      "snippet": "Unjudged filler for rust borrow checker cannot borrow as mutable. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "rust borrow checker cannot borrow as mutable notes (7)",
+      "url": "https://notes.example.com/rust-borrow-checker-cannot-borrow-as-mut/7",
+      "snippet": "Unjudged filler for rust borrow checker cannot borrow as mutable. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "rust borrow checker cannot borrow as mutable notes (8)",
+      "url": "https://blog.example.org/rust-borrow-checker-cannot-borrow-as-mut/8",
+      "snippet": "Unjudged filler for rust borrow checker cannot borrow as mutable. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "rust borrow checker cannot borrow as mutable notes (9)",
+      "url": "https://forum.example.net/rust-borrow-checker-cannot-borrow-as-mut/9",
+      "snippet": "Unjudged filler for rust borrow checker cannot borrow as mutable. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "rust borrow checker cannot borrow as mutable notes (10)",
+      "url": "https://wiki.example.io/rust-borrow-checker-cannot-borrow-as-mut/10",
+      "snippet": "Unjudged filler for rust borrow checker cannot borrow as mutable. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

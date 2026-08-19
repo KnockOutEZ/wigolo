@@ -1,0 +1,77 @@
+{
+  "queryId": "docs-002",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "typescript satisfies operator notes (1)",
+      "url": "https://example.dev/typescript-satisfies-operator/1",
+      "snippet": "Unjudged filler for typescript satisfies operator. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "TypeScript 4.9 — www.typescriptlang.org",
+      "url": "https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html",
+      "snippet": "Reference material for typescript satisfies operator. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "typescript satisfies operator notes (3)",
+      "url": "https://blog.example.org/typescript-satisfies-operator/3",
+      "snippet": "Unjudged filler for typescript satisfies operator. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "typescript satisfies operator notes (4)",
+      "url": "https://forum.example.net/typescript-satisfies-operator/4",
+      "snippet": "Unjudged filler for typescript satisfies operator. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "typescript satisfies operator notes (5)",
+      "url": "https://wiki.example.io/typescript-satisfies-operator/5",
+      "snippet": "Unjudged filler for typescript satisfies operator. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "typescript satisfies operator notes (6)",
+      "url": "https://example.dev/typescript-satisfies-operator/6",
+      "snippet": "Unjudged filler for typescript satisfies operator. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "typescript satisfies operator notes (7)",
+      "url": "https://notes.example.com/typescript-satisfies-operator/7",
+      "snippet": "Unjudged filler for typescript satisfies operator. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "typescript satisfies operator notes (8)",
+      "url": "https://blog.example.org/typescript-satisfies-operator/8",
+      "snippet": "Unjudged filler for typescript satisfies operator. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "typescript satisfies operator notes (9)",
+      "url": "https://forum.example.net/typescript-satisfies-operator/9",
+      "snippet": "Unjudged filler for typescript satisfies operator. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "typescript satisfies operator notes (10)",
+      "url": "https://wiki.example.io/typescript-satisfies-operator/10",
+      "snippet": "Unjudged filler for typescript satisfies operator. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "queryId": "conceptual-005",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "rust ownership model overview notes (1)",
+      "url": "https://example.dev/rust-ownership-model-overview/1",
+      "snippet": "Unjudged filler for rust ownership model overview. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "What is Ownership? — doc.rust-lang.org",
+      "url": "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html",
+      "snippet": "Reference material for rust ownership model overview. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "rust ownership model overview notes (3)",
+      "url": "https://blog.example.org/rust-ownership-model-overview/3",
+      "snippet": "Unjudged filler for rust ownership model overview. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "rust ownership model overview notes (4)",
+      "url": "https://forum.example.net/rust-ownership-model-overview/4",
+      "snippet": "Unjudged filler for rust ownership model overview. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "rust ownership model overview notes (5)",
+      "url": "https://wiki.example.io/rust-ownership-model-overview/5",
+      "snippet": "Unjudged filler for rust ownership model overview. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "rust ownership model overview notes (6)",
+      "url": "https://example.dev/rust-ownership-model-overview/6",
+      "snippet": "Unjudged filler for rust ownership model overview. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "rust ownership model overview notes (7)",
+      "url": "https://notes.example.com/rust-ownership-model-overview/7",
+      "snippet": "Unjudged filler for rust ownership model overview. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "rust ownership model overview notes (8)",
+      "url": "https://blog.example.org/rust-ownership-model-overview/8",
+      "snippet": "Unjudged filler for rust ownership model overview. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "rust ownership model overview notes (9)",
+      "url": "https://forum.example.net/rust-ownership-model-overview/9",
+      "snippet": "Unjudged filler for rust ownership model overview. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "rust ownership model overview notes (10)",
+      "url": "https://wiki.example.io/rust-ownership-model-overview/10",
+      "snippet": "Unjudged filler for rust ownership model overview. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

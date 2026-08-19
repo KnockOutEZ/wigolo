@@ -1,0 +1,77 @@
+{
+  "queryId": "docs-007",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "Generated Columns — www.postgresql.org",
+      "url": "https://www.postgresql.org/docs/current/ddl-generated-columns.html",
+      "snippet": "Reference material for postgres generated columns. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "postgres generated columns notes (2)",
+      "url": "https://notes.example.com/postgres-generated-columns/2",
+      "snippet": "Unjudged filler for postgres generated columns. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "postgres generated columns notes (3)",
+      "url": "https://blog.example.org/postgres-generated-columns/3",
+      "snippet": "Unjudged filler for postgres generated columns. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "postgres generated columns notes (4)",
+      "url": "https://forum.example.net/postgres-generated-columns/4",
+      "snippet": "Unjudged filler for postgres generated columns. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "postgres generated columns notes (5)",
+      "url": "https://wiki.example.io/postgres-generated-columns/5",
+      "snippet": "Unjudged filler for postgres generated columns. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "postgres generated columns notes (6)",
+      "url": "https://example.dev/postgres-generated-columns/6",
+      "snippet": "Unjudged filler for postgres generated columns. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "postgres generated columns notes (7)",
+      "url": "https://notes.example.com/postgres-generated-columns/7",
+      "snippet": "Unjudged filler for postgres generated columns. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "postgres generated columns notes (8)",
+      "url": "https://blog.example.org/postgres-generated-columns/8",
+      "snippet": "Unjudged filler for postgres generated columns. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "postgres generated columns notes (9)",
+      "url": "https://forum.example.net/postgres-generated-columns/9",
+      "snippet": "Unjudged filler for postgres generated columns. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "postgres generated columns notes (10)",
+      "url": "https://wiki.example.io/postgres-generated-columns/10",
+      "snippet": "Unjudged filler for postgres generated columns. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

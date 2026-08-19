@@ -39,8 +39,22 @@ jobs:
             benchmarks/search/output/search-benchmark.md
           retention-days: 90
 
-      - name: Check for regressions
+      # The runner itself compares the run against fixtures/baseline.json and sets a non-zero exit code
+      # on a regression, so the check lives with the numbers rather than in shell here. The previous
+      # version asserted MRR >= 0.4 against a file the runner never wrote — an absolute floor on a
+      # synthetic corpus measures the fixture, while a delta against the committed baseline measures a
+      # change. `bench:search` above already fails the job.
+      - name: Confirm the baseline comparison ran
         run: |
-          MRR=$(node -e "const r=require('./benchmarks/search/output/search-benchmark.json'); console.log(r.summary.meanReciprocalRank)")
-          echo "MRR: $MRR"
-          node -e "if (parseFloat('$MRR') < 0.4) { console.error('MRR below threshold (0.4)'); process.exit(1); }"
+          node -e "
+            const fs = require('node:fs');
+            const out = './benchmarks/search/output/search-benchmark.json';
+            if (!fs.existsSync(out)) { console.error('benchmark wrote no output'); process.exit(1); }
+            const r = JSON.parse(fs.readFileSync(out, 'utf-8'));
+            const b = JSON.parse(fs.readFileSync('./benchmarks/search/fixtures/baseline.json', 'utf-8'));
+            if (r.summary.totalQueries < b.queries) {
+              console.error('corpus shrank: ' + b.queries + ' -> ' + r.summary.totalQueries);
+              process.exit(1);
+            }
+            console.log('queries=' + r.summary.totalQueries + ' mrr=' + r.summary.meanReciprocalRank.toFixed(4) + ' baseline=' + b.summary.meanReciprocalRank.toFixed(4));
+          "

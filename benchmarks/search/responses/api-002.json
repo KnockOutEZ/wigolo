@@ -1,0 +1,77 @@
+{
+  "queryId": "api-002",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "vitest config coverage provider notes (1)",
+      "url": "https://example.dev/vitest-config-coverage-provider/1",
+      "snippet": "Unjudged filler for vitest config coverage provider. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "Configuring Vitest — vitest.dev",
+      "url": "https://vitest.dev/config/",
+      "snippet": "Reference material for vitest config coverage provider. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "vitest config coverage provider notes (3)",
+      "url": "https://blog.example.org/vitest-config-coverage-provider/3",
+      "snippet": "Unjudged filler for vitest config coverage provider. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "vitest config coverage provider notes (4)",
+      "url": "https://forum.example.net/vitest-config-coverage-provider/4",
+      "snippet": "Unjudged filler for vitest config coverage provider. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "vitest config coverage provider notes (5)",
+      "url": "https://wiki.example.io/vitest-config-coverage-provider/5",
+      "snippet": "Unjudged filler for vitest config coverage provider. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "vitest config coverage provider notes (6)",
+      "url": "https://example.dev/vitest-config-coverage-provider/6",
+      "snippet": "Unjudged filler for vitest config coverage provider. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "vitest config coverage provider notes (7)",
+      "url": "https://notes.example.com/vitest-config-coverage-provider/7",
+      "snippet": "Unjudged filler for vitest config coverage provider. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "vitest config coverage provider notes (8)",
+      "url": "https://blog.example.org/vitest-config-coverage-provider/8",
+      "snippet": "Unjudged filler for vitest config coverage provider. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "vitest config coverage provider notes (9)",
+      "url": "https://forum.example.net/vitest-config-coverage-provider/9",
+      "snippet": "Unjudged filler for vitest config coverage provider. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "vitest config coverage provider notes (10)",
+      "url": "https://wiki.example.io/vitest-config-coverage-provider/10",
+      "snippet": "Unjudged filler for vitest config coverage provider. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

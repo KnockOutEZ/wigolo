@@ -1,0 +1,77 @@
+{
+  "queryId": "docs-001",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "Utility Types — www.typescriptlang.org",
+      "url": "https://www.typescriptlang.org/docs/handbook/utility-types.html",
+      "snippet": "Reference material for typescript Record utility type. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "Mapped Types — www.typescriptlang.org",
+      "url": "https://www.typescriptlang.org/docs/handbook/2/mapped-types.html",
+      "snippet": "Reference material for typescript Record utility type. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "typescript Record utility type notes (3)",
+      "url": "https://blog.example.org/typescript-record-utility-type/3",
+      "snippet": "Unjudged filler for typescript Record utility type. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "typescript Record utility type notes (4)",
+      "url": "https://forum.example.net/typescript-record-utility-type/4",
+      "snippet": "Unjudged filler for typescript Record utility type. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "typescript Record utility type notes (5)",
+      "url": "https://wiki.example.io/typescript-record-utility-type/5",
+      "snippet": "Unjudged filler for typescript Record utility type. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "typescript Record utility type notes (6)",
+      "url": "https://example.dev/typescript-record-utility-type/6",
+      "snippet": "Unjudged filler for typescript Record utility type. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "typescript Record utility type notes (7)",
+      "url": "https://notes.example.com/typescript-record-utility-type/7",
+      "snippet": "Unjudged filler for typescript Record utility type. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "typescript Record utility type notes (8)",
+      "url": "https://blog.example.org/typescript-record-utility-type/8",
+      "snippet": "Unjudged filler for typescript Record utility type. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "typescript Record utility type notes (9)",
+      "url": "https://forum.example.net/typescript-record-utility-type/9",
+      "snippet": "Unjudged filler for typescript Record utility type. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "typescript Record utility type notes (10)",
+      "url": "https://wiki.example.io/typescript-record-utility-type/10",
+      "snippet": "Unjudged filler for typescript Record utility type. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

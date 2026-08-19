@@ -1,0 +1,77 @@
+{
+  "queryId": "security-002",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "same origin policy cors preflight notes (1)",
+      "url": "https://example.dev/same-origin-policy-cors-preflight/1",
+      "snippet": "Unjudged filler for same origin policy cors preflight. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "Cross-Origin Resource Sharing — developer.mozilla.org",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS",
+      "snippet": "Reference material for same origin policy cors preflight. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "Same-origin policy — developer.mozilla.org",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy",
+      "snippet": "Reference material for same origin policy cors preflight. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "same origin policy cors preflight notes (4)",
+      "url": "https://forum.example.net/same-origin-policy-cors-preflight/4",
+      "snippet": "Unjudged filler for same origin policy cors preflight. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "same origin policy cors preflight notes (5)",
+      "url": "https://wiki.example.io/same-origin-policy-cors-preflight/5",
+      "snippet": "Unjudged filler for same origin policy cors preflight. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "same origin policy cors preflight notes (6)",
+      "url": "https://example.dev/same-origin-policy-cors-preflight/6",
+      "snippet": "Unjudged filler for same origin policy cors preflight. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "same origin policy cors preflight notes (7)",
+      "url": "https://notes.example.com/same-origin-policy-cors-preflight/7",
+      "snippet": "Unjudged filler for same origin policy cors preflight. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "same origin policy cors preflight notes (8)",
+      "url": "https://blog.example.org/same-origin-policy-cors-preflight/8",
+      "snippet": "Unjudged filler for same origin policy cors preflight. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "same origin policy cors preflight notes (9)",
+      "url": "https://forum.example.net/same-origin-policy-cors-preflight/9",
+      "snippet": "Unjudged filler for same origin policy cors preflight. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "same origin policy cors preflight notes (10)",
+      "url": "https://wiki.example.io/same-origin-policy-cors-preflight/10",
+      "snippet": "Unjudged filler for same origin policy cors preflight. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

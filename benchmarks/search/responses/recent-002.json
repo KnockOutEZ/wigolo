@@ -1,0 +1,77 @@
+{
+  "queryId": "recent-002",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "node permission model flags notes (1)",
+      "url": "https://example.dev/node-permission-model-flags/1",
+      "snippet": "Unjudged filler for node permission model flags. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "Permissions — nodejs.org",
+      "url": "https://nodejs.org/api/permissions.html",
+      "snippet": "Reference material for node permission model flags. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node permission model flags notes (3)",
+      "url": "https://blog.example.org/node-permission-model-flags/3",
+      "snippet": "Unjudged filler for node permission model flags. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node permission model flags notes (4)",
+      "url": "https://forum.example.net/node-permission-model-flags/4",
+      "snippet": "Unjudged filler for node permission model flags. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node permission model flags notes (5)",
+      "url": "https://wiki.example.io/node-permission-model-flags/5",
+      "snippet": "Unjudged filler for node permission model flags. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node permission model flags notes (6)",
+      "url": "https://example.dev/node-permission-model-flags/6",
+      "snippet": "Unjudged filler for node permission model flags. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node permission model flags notes (7)",
+      "url": "https://notes.example.com/node-permission-model-flags/7",
+      "snippet": "Unjudged filler for node permission model flags. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "node permission model flags notes (8)",
+      "url": "https://blog.example.org/node-permission-model-flags/8",
+      "snippet": "Unjudged filler for node permission model flags. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "node permission model flags notes (9)",
+      "url": "https://forum.example.net/node-permission-model-flags/9",
+      "snippet": "Unjudged filler for node permission model flags. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "node permission model flags notes (10)",
+      "url": "https://wiki.example.io/node-permission-model-flags/10",
+      "snippet": "Unjudged filler for node permission model flags. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

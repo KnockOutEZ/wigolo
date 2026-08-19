@@ -1,0 +1,77 @@
+{
+  "queryId": "tutorial-001",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "Getting Started — vite.dev",
+      "url": "https://vite.dev/guide/",
+      "snippet": "Reference material for getting started with vite react. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "getting started with vite react notes (2)",
+      "url": "https://notes.example.com/getting-started-with-vite-react/2",
+      "snippet": "Unjudged filler for getting started with vite react. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "getting started with vite react notes (3)",
+      "url": "https://blog.example.org/getting-started-with-vite-react/3",
+      "snippet": "Unjudged filler for getting started with vite react. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "getting started with vite react notes (4)",
+      "url": "https://forum.example.net/getting-started-with-vite-react/4",
+      "snippet": "Unjudged filler for getting started with vite react. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "getting started with vite react notes (5)",
+      "url": "https://wiki.example.io/getting-started-with-vite-react/5",
+      "snippet": "Unjudged filler for getting started with vite react. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "getting started with vite react notes (6)",
+      "url": "https://example.dev/getting-started-with-vite-react/6",
+      "snippet": "Unjudged filler for getting started with vite react. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "getting started with vite react notes (7)",
+      "url": "https://notes.example.com/getting-started-with-vite-react/7",
+      "snippet": "Unjudged filler for getting started with vite react. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "getting started with vite react notes (8)",
+      "url": "https://blog.example.org/getting-started-with-vite-react/8",
+      "snippet": "Unjudged filler for getting started with vite react. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "getting started with vite react notes (9)",
+      "url": "https://forum.example.net/getting-started-with-vite-react/9",
+      "snippet": "Unjudged filler for getting started with vite react. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "getting started with vite react notes (10)",
+      "url": "https://wiki.example.io/getting-started-with-vite-react/10",
+      "snippet": "Unjudged filler for getting started with vite react. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "queryId": "comparison-001",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "sqlite vs postgres full text search notes (1)",
+      "url": "https://www.postgresql.org/sqlite-vs-postgres-full-text-search/1",
+      "snippet": "Unjudged filler for sqlite vs postgres full text search. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "SQLite FTS5 Extension — www.sqlite.org",
+      "url": "https://www.sqlite.org/fts5.html",
+      "snippet": "Reference material for sqlite vs postgres full text search. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "Appropriate Uses For SQLite — www.sqlite.org",
+      "url": "https://www.sqlite.org/whentouse.html",
+      "snippet": "Reference material for sqlite vs postgres full text search. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "sqlite vs postgres full text search notes (4)",
+      "url": "https://blog.example.org/sqlite-vs-postgres-full-text-search/4",
+      "snippet": "Unjudged filler for sqlite vs postgres full text search. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "sqlite vs postgres full text search notes (5)",
+      "url": "https://forum.example.net/sqlite-vs-postgres-full-text-search/5",
+      "snippet": "Unjudged filler for sqlite vs postgres full text search. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "sqlite vs postgres full text search notes (6)",
+      "url": "https://wiki.example.io/sqlite-vs-postgres-full-text-search/6",
+      "snippet": "Unjudged filler for sqlite vs postgres full text search. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "sqlite vs postgres full text search notes (7)",
+      "url": "https://www.postgresql.org/sqlite-vs-postgres-full-text-search/7",
+      "snippet": "Unjudged filler for sqlite vs postgres full text search. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "sqlite vs postgres full text search notes (8)",
+      "url": "https://example.dev/sqlite-vs-postgres-full-text-search/8",
+      "snippet": "Unjudged filler for sqlite vs postgres full text search. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "sqlite vs postgres full text search notes (9)",
+      "url": "https://notes.example.com/sqlite-vs-postgres-full-text-search/9",
+      "snippet": "Unjudged filler for sqlite vs postgres full text search. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "sqlite vs postgres full text search notes (10)",
+      "url": "https://blog.example.org/sqlite-vs-postgres-full-text-search/10",
+      "snippet": "Unjudged filler for sqlite vs postgres full text search. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

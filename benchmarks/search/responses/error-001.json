@@ -1,0 +1,77 @@
+{
+  "queryId": "error-001",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "ERR_MODULE_NOT_FOUND cannot find package notes (1)",
+      "url": "https://example.dev/err-module-not-found-cannot-find-package/1",
+      "snippet": "Unjudged filler for ERR_MODULE_NOT_FOUND cannot find package. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "Errors — nodejs.org",
+      "url": "https://nodejs.org/api/errors.html",
+      "snippet": "Reference material for ERR_MODULE_NOT_FOUND cannot find package. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "ECMAScript modules — nodejs.org",
+      "url": "https://nodejs.org/api/esm.html",
+      "snippet": "Reference material for ERR_MODULE_NOT_FOUND cannot find package. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "ERR_MODULE_NOT_FOUND cannot find package notes (4)",
+      "url": "https://forum.example.net/err-module-not-found-cannot-find-package/4",
+      "snippet": "Unjudged filler for ERR_MODULE_NOT_FOUND cannot find package. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "ERR_MODULE_NOT_FOUND cannot find package notes (5)",
+      "url": "https://wiki.example.io/err-module-not-found-cannot-find-package/5",
+      "snippet": "Unjudged filler for ERR_MODULE_NOT_FOUND cannot find package. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "ERR_MODULE_NOT_FOUND cannot find package notes (6)",
+      "url": "https://example.dev/err-module-not-found-cannot-find-package/6",
+      "snippet": "Unjudged filler for ERR_MODULE_NOT_FOUND cannot find package. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "ERR_MODULE_NOT_FOUND cannot find package notes (7)",
+      "url": "https://notes.example.com/err-module-not-found-cannot-find-package/7",
+      "snippet": "Unjudged filler for ERR_MODULE_NOT_FOUND cannot find package. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "ERR_MODULE_NOT_FOUND cannot find package notes (8)",
+      "url": "https://blog.example.org/err-module-not-found-cannot-find-package/8",
+      "snippet": "Unjudged filler for ERR_MODULE_NOT_FOUND cannot find package. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "ERR_MODULE_NOT_FOUND cannot find package notes (9)",
+      "url": "https://forum.example.net/err-module-not-found-cannot-find-package/9",
+      "snippet": "Unjudged filler for ERR_MODULE_NOT_FOUND cannot find package. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "ERR_MODULE_NOT_FOUND cannot find package notes (10)",
+      "url": "https://wiki.example.io/err-module-not-found-cannot-find-package/10",
+      "snippet": "Unjudged filler for ERR_MODULE_NOT_FOUND cannot find package. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "queryId": "docs-005",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "IntersectionObserver — developer.mozilla.org",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/API/IntersectionObserver",
+      "snippet": "Reference material for mdn intersection observer options. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "IntersectionObserverEntry — developer.mozilla.org",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/API/IntersectionObserverEntry",
+      "snippet": "Reference material for mdn intersection observer options. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "mdn intersection observer options notes (3)",
+      "url": "https://blog.example.org/mdn-intersection-observer-options/3",
+      "snippet": "Unjudged filler for mdn intersection observer options. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "mdn intersection observer options notes (4)",
+      "url": "https://forum.example.net/mdn-intersection-observer-options/4",
+      "snippet": "Unjudged filler for mdn intersection observer options. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "mdn intersection observer options notes (5)",
+      "url": "https://wiki.example.io/mdn-intersection-observer-options/5",
+      "snippet": "Unjudged filler for mdn intersection observer options. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "mdn intersection observer options notes (6)",
+      "url": "https://example.dev/mdn-intersection-observer-options/6",
+      "snippet": "Unjudged filler for mdn intersection observer options. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "mdn intersection observer options notes (7)",
+      "url": "https://notes.example.com/mdn-intersection-observer-options/7",
+      "snippet": "Unjudged filler for mdn intersection observer options. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "mdn intersection observer options notes (8)",
+      "url": "https://blog.example.org/mdn-intersection-observer-options/8",
+      "snippet": "Unjudged filler for mdn intersection observer options. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "mdn intersection observer options notes (9)",
+      "url": "https://forum.example.net/mdn-intersection-observer-options/9",
+      "snippet": "Unjudged filler for mdn intersection observer options. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "mdn intersection observer options notes (10)",
+      "url": "https://wiki.example.io/mdn-intersection-observer-options/10",
+      "snippet": "Unjudged filler for mdn intersection observer options. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

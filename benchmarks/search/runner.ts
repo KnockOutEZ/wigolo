@@ -213,3 +213,115 @@ export async function runSearchBenchmark(options: SearchRunnerOptions): Promise<
 
   return report;
 }
+
+// ---------------------------------------------------------------------------
+// CLI entry (S14-0). Without this the module exported a function nobody called,
+// so `npm run bench:search` exited 0 having written nothing — the benchmark was
+// "green" in the way an unrun test is green.
+// ---------------------------------------------------------------------------
+
+const FIXTURES = join(process.cwd(), 'benchmarks/search/fixtures');
+const RESPONSES_DIR = join(process.cwd(), 'benchmarks/search/responses');
+const OUTPUT_DIR = join(process.cwd(), 'benchmarks/search/output');
+const BASELINE_PATH = join(FIXTURES, 'baseline.json');
+
+/** The committed reference point a regression is measured against. */
+export interface SearchBaseline {
+  writtenAt: string;
+  commit: string;
+  note: string;
+  queries: number;
+  summary: {
+    meanReciprocalRank: number;
+    averageNdcg: number;
+    averageNdcgAt10: number;
+    averagePrecisionAt5: number;
+    queryCoverage: number;
+  };
+  perQuery: Record<string, { mrr: number; ndcg: number }>;
+}
+
+export function toBaseline(report: SearchBenchmarkReport, commit: string, note: string): SearchBaseline {
+  return {
+    writtenAt: report.runDate,
+    commit,
+    note,
+    queries: report.summary.totalQueries,
+    summary: {
+      meanReciprocalRank: report.summary.meanReciprocalRank,
+      averageNdcg: report.summary.averageNdcg,
+      averageNdcgAt10: report.summary.averageNdcgAt10,
+      averagePrecisionAt5: report.summary.averagePrecisionAt5,
+      queryCoverage: report.summary.queryCoverage,
+    },
+    // Per-query as well as aggregate: an aggregate that held while two queries moved in opposite
+    // directions would report "no change" for a real one.
+    perQuery: Object.fromEntries(report.results.map((r) => [r.queryId, { mrr: r.mrr, ndcg: r.ndcg }])),
+  };
+}
+
+/**
+ * Compare a run against the committed baseline. Returns the regressions, so the caller decides the exit
+ * code — a function that called `process.exit` itself could not be tested.
+ */
+export function compareToBaseline(
+  report: SearchBenchmarkReport,
+  baseline: SearchBaseline,
+  tolerance = 0.001,
+): { regressions: string[]; deltas: Record<string, number> } {
+  const regressions: string[] = [];
+  const deltas: Record<string, number> = {};
+  for (const [key, was] of Object.entries(baseline.summary)) {
+    const now = (report.summary as unknown as Record<string, number>)[key];
+    if (typeof now !== 'number') continue;
+    const delta = now - was;
+    deltas[key] = Number(delta.toFixed(6));
+    if (delta < -tolerance) regressions.push(`${key}: ${was.toFixed(4)} → ${now.toFixed(4)}`);
+  }
+  if (report.summary.totalQueries < baseline.queries) {
+    regressions.push(`corpus shrank: ${baseline.queries} → ${report.summary.totalQueries}`);
+  }
+  return { regressions, deltas };
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  const has = (f: string): boolean => argv.includes(`--${f}`);
+  const flag = (f: string): string | undefined => {
+    const i = argv.indexOf(`--${f}`);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+
+  const report = await runSearchBenchmark({
+    queriesPath: join(FIXTURES, 'queries.json'),
+    relevancePath: join(FIXTURES, 'relevance.json'),
+    responsesDir: RESPONSES_DIR,
+    outputDir: OUTPUT_DIR,
+    ...(flag('filter') ? { filter: flag('filter') } : {}),
+    verbose: has('verbose'),
+  });
+
+  if (has('write-baseline')) {
+    const baseline = toBaseline(report, flag('commit') ?? 'unknown', flag('note') ?? 'S14-0 instrument revival');
+    writeFileSync(BASELINE_PATH, `${JSON.stringify(baseline, null, 2)}\n`, 'utf-8');
+    log.info('baseline written', { queries: baseline.queries, mrr: baseline.summary.meanReciprocalRank.toFixed(4) });
+    return;
+  }
+
+  if (existsSync(BASELINE_PATH)) {
+    const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf-8')) as SearchBaseline;
+    const { regressions, deltas } = compareToBaseline(report, baseline);
+    log.info('compared to baseline', { deltas, baselineCommit: baseline.commit });
+    if (regressions.length > 0) {
+      log.error('search quality REGRESSED against the committed baseline', { regressions });
+      process.exitCode = 1;
+    }
+  } else {
+    log.warn('no committed baseline — run with --write-baseline to create one', { path: BASELINE_PATH });
+  }
+}
+
+// `tsx benchmarks/search/runner.ts` runs this; importing the module for tests does not.
+if (process.argv[1] && process.argv[1].endsWith('runner.ts')) {
+  void main();
+}

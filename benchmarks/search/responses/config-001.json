@@ -1,0 +1,77 @@
+{
+  "queryId": "config-001",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "tsconfig moduleResolution bundler notes (1)",
+      "url": "https://example.dev/tsconfig-moduleresolution-bundler/1",
+      "snippet": "Unjudged filler for tsconfig moduleResolution bundler. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "moduleResolution — www.typescriptlang.org",
+      "url": "https://www.typescriptlang.org/tsconfig/#moduleResolution",
+      "snippet": "Reference material for tsconfig moduleResolution bundler. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "tsconfig moduleResolution bundler notes (3)",
+      "url": "https://blog.example.org/tsconfig-moduleresolution-bundler/3",
+      "snippet": "Unjudged filler for tsconfig moduleResolution bundler. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "tsconfig moduleResolution bundler notes (4)",
+      "url": "https://forum.example.net/tsconfig-moduleresolution-bundler/4",
+      "snippet": "Unjudged filler for tsconfig moduleResolution bundler. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "tsconfig moduleResolution bundler notes (5)",
+      "url": "https://wiki.example.io/tsconfig-moduleresolution-bundler/5",
+      "snippet": "Unjudged filler for tsconfig moduleResolution bundler. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "tsconfig moduleResolution bundler notes (6)",
+      "url": "https://example.dev/tsconfig-moduleresolution-bundler/6",
+      "snippet": "Unjudged filler for tsconfig moduleResolution bundler. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "tsconfig moduleResolution bundler notes (7)",
+      "url": "https://notes.example.com/tsconfig-moduleresolution-bundler/7",
+      "snippet": "Unjudged filler for tsconfig moduleResolution bundler. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "tsconfig moduleResolution bundler notes (8)",
+      "url": "https://blog.example.org/tsconfig-moduleresolution-bundler/8",
+      "snippet": "Unjudged filler for tsconfig moduleResolution bundler. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "tsconfig moduleResolution bundler notes (9)",
+      "url": "https://forum.example.net/tsconfig-moduleresolution-bundler/9",
+      "snippet": "Unjudged filler for tsconfig moduleResolution bundler. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "tsconfig moduleResolution bundler notes (10)",
+      "url": "https://wiki.example.io/tsconfig-moduleresolution-bundler/10",
+      "snippet": "Unjudged filler for tsconfig moduleResolution bundler. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}

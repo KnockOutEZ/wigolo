@@ -1,0 +1,77 @@
+{
+  "queryId": "recent-001",
+  "licence": "synthetic",
+  "licenceNote": "Authored for this corpus. No engine output, ranking or snippet is reproduced; the URLs name public documentation paths.",
+  "results": [
+    {
+      "title": "use — react.dev",
+      "url": "https://react.dev/reference/react/use",
+      "snippet": "Reference material for react 19 use hook. Written for the wigolo retrieval corpus.",
+      "relevance_score": 1,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "react 19 use hook notes (2)",
+      "url": "https://notes.example.com/react-19-use-hook/2",
+      "snippet": "Unjudged filler for react 19 use hook. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.93,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "react 19 use hook notes (3)",
+      "url": "https://blog.example.org/react-19-use-hook/3",
+      "snippet": "Unjudged filler for react 19 use hook. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.86,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "react 19 use hook notes (4)",
+      "url": "https://forum.example.net/react-19-use-hook/4",
+      "snippet": "Unjudged filler for react 19 use hook. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.79,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "react 19 use hook notes (5)",
+      "url": "https://wiki.example.io/react-19-use-hook/5",
+      "snippet": "Unjudged filler for react 19 use hook. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.72,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "react 19 use hook notes (6)",
+      "url": "https://example.dev/react-19-use-hook/6",
+      "snippet": "Unjudged filler for react 19 use hook. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.65,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "react 19 use hook notes (7)",
+      "url": "https://notes.example.com/react-19-use-hook/7",
+      "snippet": "Unjudged filler for react 19 use hook. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.58,
+      "engine": "synthetic-a"
+    },
+    {
+      "title": "react 19 use hook notes (8)",
+      "url": "https://blog.example.org/react-19-use-hook/8",
+      "snippet": "Unjudged filler for react 19 use hook. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.51,
+      "engine": "synthetic-b"
+    },
+    {
+      "title": "react 19 use hook notes (9)",
+      "url": "https://forum.example.net/react-19-use-hook/9",
+      "snippet": "Unjudged filler for react 19 use hook. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.44,
+      "engine": "synthetic-c"
+    },
+    {
+      "title": "react 19 use hook notes (10)",
+      "url": "https://wiki.example.io/react-19-use-hook/10",
+      "snippet": "Unjudged filler for react 19 use hook. Written for the wigolo retrieval corpus.",
+      "relevance_score": 0.37,
+      "engine": "synthetic-a"
+    }
+  ]
+}
