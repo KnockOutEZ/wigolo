@@ -28,7 +28,7 @@
 import { createLogger } from '../../logger.js';
 import { isCredentialUrl } from '../credential.js';
 import type { StructuredTarget } from '../mark/target.js';
-import { flowIdForSession, insertFlowStep, type FlowDb, type FlowProjection } from './store.js';
+import { flowIdForSession, insertFlowStep, type FlowDb, type FlowProjection, type FlowStep } from './store.js';
 
 const log = createLogger('studio');
 
@@ -128,6 +128,179 @@ export function narrowPageUrl(action: string, pageUrl: string | undefined): stri
 const TARGETED_ACTIONS = new Set(['click', 'type']);
 const RECORDABLE_ACTIONS = new Set(['navigate', 'click', 'type', 'scroll']);
 
+/** One step's fields, minus the three the persister owns: `flowId`, `sessionId`, `seq`. */
+export type FlowStepFields = Omit<FlowStep, 'flowId' | 'sessionId' | 'seq'>;
+
+/**
+ * EVERY decision about WHETHER to record, in one place, called by every recorder.
+ *
+ * A TYPE PREDICATE, not a boolean: one of the four refusals is "no audit seq", so callers past this
+ * point genuinely have one. Returning `boolean` compiled but silently dropped the narrowing the inline
+ * check used to provide, and the alternative — asserting past it at the use site — would have made the
+ * join key non-null by assertion rather than by construction.
+ *
+ * Extracted for K34: the Electron host cannot persist synchronously (it holds no database handle and
+ * reaches the native DB through an async broker call), so it needs a different PERSISTER — and the
+ * one thing it must not have is a different notion of what gets recorded. This module's own opening
+ * comment is the reason: *"Recording from a second observer would mean a second notion of 'this
+ * happened', and the two would drift."* The persister varies; this function does not.
+ *
+ * `null` means "record nothing", and each `null` is a refusal the sidecar is designed around rather
+ * than a filter applied afterwards.
+ */
+export function isRecordableAct(input: FlowRecordInput): input is FlowRecordInput & { auditSeq: number } {
+  if (!RECORDABLE_ACTIONS.has(input.action)) return false;
+  // A step with no audit row is not written at all: the sidecar is DERIVED from the forensic record,
+  // and a fabricated join key would be worse than a missing step.
+  if (input.auditSeq === undefined) return false;
+  if (isCredentialRecordingContext({ pageUrl: input.pageUrl, pageHasCredentialField: input.pageHasCredentialField })) {
+    return false;
+  }
+  if (TARGETED_ACTIONS.has(input.action) && !input.target) return false;
+  return true;
+}
+
+/**
+ * The step's fields, or `null` if it is not to be recorded. Calls `isRecordableAct` rather than
+ * repeating it, so a recorder that needs the verdict WITHOUT building a step (to skip a broker round
+ * trip on a credential page) asks the same predicate this does.
+ */
+export function draftFlowStep(input: FlowRecordInput, seq: number, ts: number): FlowStepFields | null {
+  if (!isRecordableAct(input)) return null;
+
+  // Narrow AFTER the credential check, which must keep seeing the full URL.
+  const storedPageUrl = narrowPageUrl(input.action, input.pageUrl);
+  return {
+    auditSeq: input.auditSeq,
+    action: input.action,
+    ...(storedPageUrl !== undefined ? { pageUrl: storedPageUrl } : {}),
+    ...(input.target
+      ? {
+          target: {
+            role: input.target.role,
+            name: input.target.name,
+            fingerprint: input.target.fingerprint,
+            ancestorPath: input.target.ancestorPath,
+            attrs: input.target.attrs,
+          },
+          // DERIVED, not asserted: `resolve()` refuses a low-confidence ref, and a ref is
+          // low-confidence exactly when its fingerprint collided in that snapshot. A ref that
+          // resolved therefore had a unique fingerprint on the page — which is what heal's
+          // strongest tier matches on.
+          healTierAtRecord: 'high' as const,
+        }
+      : {}),
+    ...(input.recordedRef !== undefined ? { recordedRef: input.recordedRef } : {}),
+    ...(input.action === 'type' ? { slot: slotNameFor(input.target, seq) } : {}),
+    ...(input.direction !== undefined ? { direction: input.direction } : {}),
+    ...(input.amount !== undefined ? { amount: input.amount } : {}),
+    ts,
+  };
+}
+
+/**
+ * The Electron host's recorder. Same `record(): void` contract, an async persister underneath.
+ *
+ * K34: that host holds no database handle — every persist is a `broker.call(...)` into the child
+ * process that owns the native DB — and its audit log is in-memory while the durable rows are written
+ * by the broker. Three consequences are designed for here:
+ *
+ *  1. **The join key is the DURABLE audit seq**, obtained from `resolveAuditSeq`. The host's in-memory
+ *     seq and the broker's durable seq both count from 1, so they agree until a persist fails and then
+ *     silently disagree forever — and `013-studio-flows.sql` has no foreign key on `audit_seq`, so
+ *     nothing downstream would notice. **No durable seq ⇒ no step**, which is the sidecar's own
+ *     existing rule (a step with no audit row is not written) rather than a new failure mode.
+ *  2. **Ordering is a promise chain**, mirroring the host's `auditPersist` chain, because the unique
+ *     `(flow_id, seq)` index silently drops a collision and three racing appends would produce one.
+ *  3. **`seq` advances only after a successful insert**, exactly as the synchronous recorder does, so a
+ *     transient broker outage costs one step instead of leaving a permanent hole in the sequence.
+ */
+export interface BrokerFlowRecorderDeps {
+  sessionId: string;
+  seed(backendNodeId: number): Promise<StructuredTarget | null>;
+  /** The flow's highest stored `seq`, read once, so numbering resumes rather than colliding on 1. */
+  maxSeq(): Promise<number>;
+  /**
+   * The durable `studio_audit.seq` for an in-memory seq. `undefined` means the audit row never landed,
+   * and therefore that no step may be written.
+   */
+  resolveAuditSeq(inMemorySeq: number): Promise<number | undefined>;
+  /** Persist one step. May reject; a rejection loses the step and never reaches the caller. */
+  insert(step: FlowStep): Promise<FlowProjection>;
+  now?: () => number;
+  onReject?: (rejection: Extract<FlowProjection, { ok: false }>) => void;
+}
+
+/** The async recorder, plus the drain its tests and a clean shutdown need. */
+export interface BrokerFlowRecorder extends FlowRecorderHook {
+  /** Resolve once every queued append has been attempted. Never rejects. */
+  flush(): Promise<void>;
+}
+
+export function createBrokerFlowRecorder(deps: BrokerFlowRecorderDeps): BrokerFlowRecorder {
+  const now = deps.now ?? (() => Date.now());
+  const flowId = flowIdForSession(deps.sessionId);
+  const onReject = (rejection: Extract<FlowProjection, { ok: false }>): void => {
+    log.warn('flow step rejected by the recording allow-list', { reason: rejection.reason, key: rejection.key });
+    deps.onReject?.(rejection);
+  };
+
+  // Read once, lazily, and shared by every append: the chain serialises the appends, so a single
+  // in-flight read cannot be raced by the second record() call.
+  let resumed: Promise<number> | undefined;
+  const startSeq = (): Promise<number> => (resumed ??= deps.maxSeq().catch(() => 0));
+
+  let seq: number | undefined;
+  let chain: Promise<void> = Promise.resolve();
+
+  return {
+    async seed(backendNodeId: number): Promise<StructuredTarget | null> {
+      return deps.seed(backendNodeId);
+    },
+    record(input: FlowRecordInput): void {
+      // Everything below runs INSIDE the chain: the audit-seq lookup and the insert are both async, and
+      // doing either eagerly would let two record() calls interleave and allocate the same seq.
+      chain = chain.then(async () => {
+        try {
+          if (seq === undefined) seq = await startSeq();
+          // Cheap refusals first, through the SAME predicate the drafter uses, so a credential-context
+          // act costs no broker round trip and cannot be refused here for a different reason than there.
+          if (!isRecordableAct(input)) return;
+
+          const auditSeq = await deps.resolveAuditSeq(input.auditSeq ?? -1);
+          if (auditSeq === undefined) {
+            log.warn('flow step not recorded: its audit row did not land', { action: input.action });
+            return;
+          }
+
+          const next = seq + 1;
+          const fields = draftFlowStep({ ...input, auditSeq }, next, now());
+          if (!fields) return;
+
+          const projected = await deps.insert({ flowId, sessionId: deps.sessionId, seq: next, ...fields });
+          if (!projected.ok) {
+            onReject(projected);
+            return;
+          }
+          seq = next;
+        } catch (err) {
+          // Same contract as the synchronous recorder, and for the same reason: this runs after an
+          // action already reached the page and is already in the audit log. Surfacing a failure here
+          // would tell an agent its click failed, and an agent told that retries — re-executing an
+          // action that fired. Losing the step is strictly cheaper. `seq` is deliberately not advanced.
+          log.warn('flow step not recorded', {
+            action: input.action,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      });
+    },
+    async flush(): Promise<void> {
+      await chain;
+    },
+  };
+}
+
 export function createFlowRecorder(deps: FlowRecorderDeps): FlowRecorderHook {
   const now = deps.now ?? (() => Date.now());
   const flowId = flowIdForSession(deps.sessionId);
@@ -153,45 +326,13 @@ export function createFlowRecorder(deps: FlowRecorderDeps): FlowRecorderHook {
       return deps.seed(backendNodeId);
     },
     record(input: FlowRecordInput): void {
-      if (!RECORDABLE_ACTIONS.has(input.action)) return;
-      if (input.auditSeq === undefined) return;
-      if (isCredentialRecordingContext({ pageUrl: input.pageUrl, pageHasCredentialField: input.pageHasCredentialField })) return;
-      if (TARGETED_ACTIONS.has(input.action) && !input.target) return;
-
-      // Narrow AFTER the credential check, which must keep seeing the full URL.
-      const storedPageUrl = narrowPageUrl(input.action, input.pageUrl);
       const next = seq + 1;
+      const fields = draftFlowStep(input, next, now());
+      if (!fields) return;
+
       let projected: FlowProjection;
       try {
-        projected = insertFlowStep(deps.db, {
-          flowId,
-          sessionId: deps.sessionId,
-          seq: next,
-          auditSeq: input.auditSeq,
-          action: input.action,
-          ...(storedPageUrl !== undefined ? { pageUrl: storedPageUrl } : {}),
-          ...(input.target
-            ? {
-                target: {
-                  role: input.target.role,
-                  name: input.target.name,
-                  fingerprint: input.target.fingerprint,
-                  ancestorPath: input.target.ancestorPath,
-                  attrs: input.target.attrs,
-                },
-                // DERIVED, not asserted: `resolve()` refuses a low-confidence ref, and a ref is
-                // low-confidence exactly when its fingerprint collided in that snapshot. A ref that
-                // resolved therefore had a unique fingerprint on the page — which is what heal's
-                // strongest tier matches on.
-                healTierAtRecord: 'high' as const,
-              }
-            : {}),
-          ...(input.recordedRef !== undefined ? { recordedRef: input.recordedRef } : {}),
-          ...(input.action === 'type' ? { slot: slotNameFor(input.target, next) } : {}),
-          ...(input.direction !== undefined ? { direction: input.direction } : {}),
-          ...(input.amount !== undefined ? { amount: input.amount } : {}),
-          ts: now(),
-        });
+        projected = insertFlowStep(deps.db, { flowId, sessionId: deps.sessionId, seq: next, ...fields });
       } catch (err) {
         // The contract above ("must never throw") is the whole point of the sidecar being a
         // DERIVED artefact, and until now it lived only in a docstring. `insertFlowStep` runs two

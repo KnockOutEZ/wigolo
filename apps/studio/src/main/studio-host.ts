@@ -36,6 +36,8 @@ import {
   LoginHandoff,
   createLoginCapture,
   SessionAuditLog,
+  createBrokerFlowRecorder,
+  flowIdForSession,
   UNTRUSTED_STUDIO_NOTICE,
   type AgentDriveGate,
   type CookieFacts,
@@ -82,6 +84,8 @@ import {
   type HandoffCompletionContext,
   type AuditEntry,
   type AuditRecordInput,
+  type FlowStep,
+  type FlowProjection,
   type ResearchBriefDto,
 } from 'wigolo/studio';
 import type { TabDrive } from './drive-engine';
@@ -505,7 +509,33 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
     // action + resolved outcome into it (act.ts:409), and each record is (a) broadcast to the live timeline
     // and (b) forwarded to the broker for durable, append-only persistence (the broker owns the native db).
     const audit = new SessionAuditLog({});
+    // K34 — the in-memory audit seq the act path hands the recorder → the DURABLE seq the broker assigned.
+    // Held as the PROMISE, not the resolved number: the act path calls the recorder synchronously, one
+    // statement after `audit.record()`, so the persist that produces the durable seq has not settled yet.
+    // Bounded below, because an entry is consumed by the very next step and a session is long-lived.
+    const durableAuditSeq = new Map<number, Promise<number | undefined>>();
+    const DURABLE_SEQ_RETAINED = 256;
+    // K34 — the flow sidecar's recorder for THIS surface. Without it a user driving Studio through the app
+    // builds no flows at all, while the CLI surface records normally.
+    const flow = createBrokerFlowRecorder({
+      sessionId,
+      // The same privileged AX⋈DOM path a human mark resolves through, so a recorded step and a marked
+      // element are the same object. Bound here rather than reusing `resolvePicked` (which takes an
+      // overlay PATH, not a backendNodeId).
+      seed: async (backendNodeId: number): Promise<StructuredTarget | null> => {
+        const ax = (await transport.send('Accessibility.getFullAXTree')) as { nodes?: AxNode[] };
+        const doc = (await transport.send('DOM.getDocument', { depth: -1, pierce: true })) as { root?: DomNode };
+        return buildTarget(ax.nodes ?? [], doc.root, backendNodeId);
+      },
+      maxSeq: async () =>
+        (await deps.broker.call<{ seq: number }>('flowMaxSeq', { flowId: flowIdForSession(sessionId) })).seq,
+      // `undefined` here means the audit row never landed, and the recorder then writes nothing — which is
+      // the sidecar's existing rule, not a new failure mode.
+      resolveAuditSeq: (inMemorySeq: number) => durableAuditSeq.get(inMemorySeq) ?? Promise.resolve(undefined),
+      insert: (step: FlowStep) => deps.broker.call<FlowProjection>('recordFlowStep', { step }),
+    });
     const actHandler = createActHandler({
+      flow,
       browser: tab.browser,
       controlToken: tab.drive.controlToken,
       grant: tab.drive.grant,
@@ -534,9 +564,25 @@ export function createStudioHost(deps: StudioHostDeps): StudioHost {
       tab.drive.channel.announce?.({ t: 'audit', ...auditToWire(entry) });
       const toPersist: AuditRecordInput =
         entry.target?.url ? { ...entry, target: { ...entry.target, url: originOnly(entry.target.url) } } : entry;
-      auditPersist = auditPersist
-        .then(() => deps.broker.call('persistAudit', { sessionId, entry: toPersist }))
-        .catch(() => { /* broker down → timeline degrades; session + agent line unaffected */ });
+      // K34: the returned `{ seq }` used to be DISCARDED, and the flow sidecar would then have joined on
+      // the host's in-memory seq. Both counters start at 1, so they agree until a persist fails — and this
+      // `.catch` is exactly that failure, after which every later durable seq is offset by one and the
+      // sidecar's `audit_seq` silently points at a DIFFERENT action's row. `013-studio-flows.sql` puts no
+      // foreign key on the column, so nothing downstream would have caught it.
+      const persisted: Promise<number | undefined> = auditPersist
+        .then(() => deps.broker.call<{ seq: number }>('persistAudit', { sessionId, entry: toPersist }))
+        .then((r) => r.seq)
+        .catch(() => undefined); /* broker down → timeline degrades; session + agent line unaffected */
+      durableAuditSeq.set(entry.seq, persisted);
+      // Keep the map bounded: the recorder consumes an entry on the act immediately following, so a window
+      // of the most recent few hundred is far more than any in-flight step needs.
+      if (durableAuditSeq.size > DURABLE_SEQ_RETAINED) {
+        for (const k of durableAuditSeq.keys()) {
+          if (durableAuditSeq.size <= DURABLE_SEQ_RETAINED) break;
+          durableAuditSeq.delete(k);
+        }
+      }
+      auditPersist = persisted;
     });
 
     const actImpl = async (input: StudioActInput): Promise<StudioActOutput | StudioToolError> => {

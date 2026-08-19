@@ -24,6 +24,7 @@ import {
 } from '../studio/capture/artifacts.js';
 import { findSimilar } from '../search/find-similar.js';
 import { SessionAuditLog, listSessionAudit, type AuditRecordInput, type AuditDto } from '../studio/audit.js';
+import { insertFlowStep, type FlowProjection, type FlowStep } from '../studio/flow/store.js';
 import { listSessionArtifactsFull } from '../studio/capture/artifacts.js';
 import { artifactsToSources, type ResearchBriefDto } from '../studio/synthesize.js';
 import { buildResearchBrief } from '../research/brief.js';
@@ -104,6 +105,22 @@ export function createBrokerHandlers(deps: BrokerHandlerDeps) {
     persistAudit: async (p: { sessionId: string; entry: AuditRecordInput }): Promise<{ seq: number }> => {
       const log = new SessionAuditLog({ db: deps.db, sessionId: p.sessionId });
       return { seq: log.record(p.entry).seq };
+    },
+    // K34 — the flow sidecar's writer for the Electron surface. The host cannot insert: it holds no DB
+    // handle and this child owns the native module. The projection/allow-list runs HERE, where the row is
+    // actually written, so a rejected step is refused by the same code the CLI path is refused by.
+    //
+    // The host owns `seq` (it is the sole writer for its own flow and allocates from `flowMaxSeq` below),
+    // and `audit_seq` arrives already resolved to a DURABLE seq — this method does not translate it,
+    // because only the host knows which in-memory record a step came from.
+    recordFlowStep: async (p: { step: FlowStep }): Promise<FlowProjection> => insertFlowStep(deps.db, p.step),
+    // The flow's highest stored seq, so a restarted host resumes numbering instead of colliding on 1
+    // (the unique (flow_id, seq) index would otherwise silently drop the collision).
+    flowMaxSeq: async (p: { flowId: string }): Promise<{ seq: number }> => {
+      const rows = deps.db
+        .prepare('SELECT MAX(seq) AS m FROM studio_flow_steps WHERE flow_id = ?')
+        .all(p.flowId) as Array<{ m: number | null }>;
+      return { seq: rows[0]?.m ?? 0 };
     },
     // Reverse-chronological read for the timeline (backfill + paging). Metadata columns only.
     listAudit: async (p: { sessionId: string; limit: number; before?: number }): Promise<AuditDto[]> =>
