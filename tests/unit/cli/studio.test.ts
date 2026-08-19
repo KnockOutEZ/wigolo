@@ -46,6 +46,7 @@ import { ProfileStore } from '../../../src/studio/profile-store.js';
 import { scopeStorageStateToOrigin } from '../../../src/studio/login-capture.js';
 import { readFileSync } from 'node:fs';
 import { initDatabase, closeDatabase, getDatabase } from '../../../src/cache/db.js';
+import { flowIdForSession } from '../../../src/studio/flow/store.js';
 import { _resetMigrationGuard } from '../../../src/cache/migrations/runner.js';
 import { createCaptureHandler, type StudioCaptureInput } from '../../../src/studio/capture/handler.js';
 import { STUDIO_ACT_TOOL_SCHEMA, STUDIO_OBSERVE_TOOL_SCHEMA, TOOL_SCHEMAS } from '../../../src/server/tool-schemas.js';
@@ -1195,6 +1196,52 @@ describe('cli/studio startStudioHost — 7b-notes S1 comment persistence', () =>
     expect(row.content_trusted).toBe(0); // mutation→captureHumanNote / trusted param flips this to 1 (RED)
   });
 
+});
+
+/**
+ * S13-0 — the recorder's PRODUCTION wiring.
+ *
+ * Every other flow test builds its own `createActHandler`, so all of them passed while
+ * `createFlowRecorder` had no caller outside tests and a shipped binary recorded nothing. This
+ * drives the REAL host seam (`host.act`) and reads the sidecar table, so the wiring itself is what
+ * is under test — not the recorder, which is covered elsewhere.
+ */
+describe('cli/studio startStudioHost — S13-0 flow recording is wired in the shipped host', () => {
+  beforeEach(() => {
+    events.length = 0;
+    resetConfig();
+    _resetMigrationGuard();
+    initDatabase(':memory:');
+  });
+  afterEach(() => {
+    try { closeDatabase(); } catch { /* already closed */ }
+    resetConfig();
+  });
+
+  it('records a successful act into the flow sidecar', async () => {
+    const host = await startStudioHost({ port: 0, host: '127.0.0.1', allowRemote: false, browserLauncher: fakeBrowserLauncher });
+    try {
+      host.controller.handleControl({ op: 'grant', to: 'agent' }); // human holds by default
+      const r = await host.act({ action: 'navigate', url: 'https://example.com/orders' });
+      expect((r as { error_reason?: string }).error_reason).toBeUndefined(); // the act must actually land
+      const steps = getDatabase()
+        .prepare('SELECT flow_id, action, page_url, audit_seq FROM studio_flow_steps WHERE session_id = ? ORDER BY seq')
+        .all(host.session.id) as Array<{ flow_id: string; action: string; page_url: string | null; audit_seq: number }>;
+      // Removing `flow` from the host's createActHandler call leaves this at 0 — which is exactly
+      // the state the slice shipped in before this wiring existed.
+      expect(steps.length).toBe(1);
+      expect(steps[0].action).toBe('navigate');
+      expect(steps[0].page_url).toBe('https://example.com/orders');
+      expect(steps[0].flow_id).toBe(flowIdForSession(host.session.id));
+      // Derived from the forensic record, not invented: the join key names a real audit row.
+      const audit = getDatabase()
+        .prepare('SELECT COUNT(*) AS n FROM studio_audit WHERE session_id = ? AND seq = ?')
+        .get(host.session.id, steps[0].audit_seq) as { n: number };
+      expect(audit.n).toBe(1);
+    } finally {
+      await host.daemon.stop();
+    }
+  });
 });
 
 /**

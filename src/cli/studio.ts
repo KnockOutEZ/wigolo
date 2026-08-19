@@ -41,6 +41,7 @@ import { LoginHandoff } from '../studio/handoff.js';
 import { createLoginCapture, type OriginMismatch } from '../studio/login-capture.js';
 import { UNTRUSTED_STUDIO_NOTICE, neutralizeMarkers } from '../security/untrusted.js';
 import { buildTarget, buildTargetFromFlat, indexAxByBackendNode, type StructuredTarget } from '../studio/mark/target.js';
+import { createFlowRecorder, type FlowRecorderHook } from '../studio/flow/record.js';
 import { heal, type HealResult } from '../studio/mark/heal.js';
 import { generalize, applyGeometry, type GenBox } from '../studio/mark/generalize.js';
 import type {
@@ -890,6 +891,35 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
   // currentUrl is the live page URL — the HARD signal the classifier weights over the page-controlled
   // element role/name; a read failure degrades to undefined (the soft signal still applies). The gate
   // composes with the epoch fence + logs every decision (6b).
+  // S13-0: the flow sidecar recorder. Without this the recorder has no production caller and a
+  // shipped binary records nothing, which is what §10's "a recorded flow is inspectable" promises.
+  //
+  // Requires a REAL db handle: the sidecar is a table and there is no in-memory fallback, so a
+  // degraded (no-DB) host records nothing rather than pretending to. `AuditDb` is structurally the
+  // same narrow surface as `FlowDb`, so the handle is passed as-is.
+  //
+  // The constructor reads MAX(seq) to resume after a restart, so it CAN throw on a DB that predates
+  // migration 013. That is a construction-time failure, outside the record()-never-throws contract,
+  // and it must not take the session down — a session without a recording is a working session.
+  let flow: FlowRecorderHook | undefined;
+  if (auditDb) {
+    try {
+      flow = createFlowRecorder({
+        db: auditDb,
+        sessionId: session.id,
+        // The same privileged AX⋈DOM path a human mark resolves through (buildTarget → the mark
+        // layer's own builder), so a recorded step and a marked element are the same object.
+        seed: async (backendNodeId: number): Promise<StructuredTarget | null> => {
+          const ax = (await sessionBrowser.cdp.send('Accessibility.getFullAXTree')) as { nodes?: AxNode[] };
+          const doc = (await sessionBrowser.cdp.send('DOM.getDocument', { depth: -1, pierce: true })) as { root?: DomNode };
+          return buildTarget(ax.nodes ?? [], doc.root, backendNodeId);
+        },
+      });
+    } catch (e) {
+      flow = undefined;
+      log(`WARNING: flow recording unavailable (${e instanceof Error ? e.message : String(e)}) — this session's actions will be audited but not recorded as a re-runnable flow.`);
+    }
+  }
   const act = createActHandler({
     browser: sessionBrowser,
     controlToken,
@@ -897,6 +927,7 @@ export async function startStudioHost(opts: StudioHostOptions): Promise<StudioHo
     resolve,
     channel: controller,
     audit: auditLog,
+    ...(flow ? { flow } : {}),
     // S7: the pre-grant gate. A risky action matching a live human grant is authorized (audited pre-grant);
     // no match parks (surfaced via the broadcast above, not executed). preGrant is read pull-at-eval here.
     preGrant,
